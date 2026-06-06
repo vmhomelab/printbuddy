@@ -99,7 +99,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     return (localStorage.getItem('dark-background') as DarkBackground) || 'cool';
   });
   const [darkAccent, setDarkAccentState] = useState<ThemeAccent>(() => {
-    return (localStorage.getItem('dark-accent') as ThemeAccent) || 'blue';
+    return (localStorage.getItem('dark-accent') as ThemeAccent) || 'teal';
   });
 
   // Light mode settings
@@ -110,7 +110,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     return (localStorage.getItem('light-background') as LightBackground) || 'neutral';
   });
   const [lightAccent, setLightAccentState] = useState<ThemeAccent>(() => {
-    return (localStorage.getItem('light-accent') as ThemeAccent) || 'blue';
+    return (localStorage.getItem('light-accent') as ThemeAccent) || 'teal';
   });
 
   // Sync from API on mount
