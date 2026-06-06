@@ -159,6 +159,36 @@ describe('PrintersPage', () => {
       openSpy.mockRestore();
     });
 
+    it('opens the camera window under the Home Assistant ingress base path', async () => {
+      const user = userEvent.setup();
+      const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+      window.history.pushState({}, '', '/api/hassio_ingress/printbuddy123/');
+
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          ...mockPrinters[0],
+          provider: 'fluidd',
+          name: 'Neptune 4 Pro',
+          external_camera_url: 'http://neptune.local/webcam/?action=stream',
+          external_camera_type: 'mjpeg',
+          external_camera_enabled: true,
+        }])),
+      );
+
+      render(<PrintersPage />);
+
+      const cameraButton = await screen.findByRole('button', { name: /open camera in new window/i });
+      await user.click(cameraButton);
+
+      expect(openSpy).toHaveBeenCalledWith(
+        '/api/hassio_ingress/printbuddy123/camera/1',
+        'camera-1',
+        expect.any(String),
+      );
+      openSpy.mockRestore();
+      window.history.pushState({}, '', '/');
+    });
+
     it('shows printer models', async () => {
       render(<PrintersPage />);
 
