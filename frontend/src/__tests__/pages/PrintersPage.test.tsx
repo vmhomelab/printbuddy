@@ -7,6 +7,7 @@ import { screen, waitFor, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { render } from '../utils';
 import { PrintersPage } from '../../pages/PrintersPage';
+import { setAuthToken } from '../../api/client';
 import { http, HttpResponse } from 'msw';
 import { server } from '../mocks/server';
 
@@ -70,7 +71,9 @@ const selectToolbarDropdownOption = async (triggerName: RegExp, optionName: RegE
 
 describe('PrintersPage', () => {
   beforeEach(() => {
+    window.history.pushState({}, '', '/');
     localStorage.removeItem('printerCardSize');
+    setAuthToken(null);
 
     server.use(
       http.get('/api/v1/printers/', () => {
@@ -182,6 +185,37 @@ describe('PrintersPage', () => {
 
       expect(openSpy).toHaveBeenCalledWith(
         '/api/hassio_ingress/printbuddy123/camera/1',
+        'camera-1',
+        expect.any(String),
+      );
+      openSpy.mockRestore();
+      window.history.pushState({}, '', '/');
+    });
+
+    it('passes the current auth token into the camera popup URL because popup sessionStorage is unreliable', async () => {
+      const user = userEvent.setup();
+      const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+      setAuthToken('app-token-123');
+      window.history.pushState({}, '', '/api/hassio_ingress/printbuddy123/');
+
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          ...mockPrinters[0],
+          provider: 'fluidd',
+          name: 'Neptune 4 Pro',
+          external_camera_url: 'http://neptune.local/webcam/?action=stream',
+          external_camera_type: 'mjpeg',
+          external_camera_enabled: true,
+        }])),
+      );
+
+      render(<PrintersPage />);
+
+      const cameraButton = await screen.findByRole('button', { name: /open camera in new window/i });
+      await user.click(cameraButton);
+
+      expect(openSpy).toHaveBeenCalledWith(
+        '/api/hassio_ingress/printbuddy123/camera/1?token=app-token-123',
         'camera-1',
         expect.any(String),
       );
