@@ -35,8 +35,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const checkAuthStatus = async () => {
     try {
       // Bootstrap: if URL has ?token= param, store it session-only first and
-      // strip it from the URL. Allows SpoolBuddy kiosk to pass an API key via
-      // URL on first load. Persistence to localStorage is deferred until the
+      // strip it from the URL. Persistence to localStorage is deferred until the
       // token has been verified by the server (L-4: prevents session fixation
       // where an attacker-crafted URL immediately persists a forged/stolen token).
       const urlParams = new URLSearchParams(window.location.search);

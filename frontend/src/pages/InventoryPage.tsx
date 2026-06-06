@@ -9,7 +9,7 @@ import {
   ArrowUp, ArrowDown, ArrowUpDown, Group, ChevronDown, Check, RefreshCw, TrendingUp, Lock, Copy, Eraser,
 } from 'lucide-react';
 import { ForecastPanel } from '../components/ForecastPanel';
-import { api, spoolbuddyApi, ApiError } from '../api/client';
+import { api, ApiError } from '../api/client';
 import type { InventorySpool, SpoolCatalogEntry } from '../api/client';
 import { Button } from '../components/Button';
 import { FilamentSwatch } from '../components/FilamentSwatch';
@@ -155,7 +155,7 @@ type CellCtx = {
   onSyncWeight?: (spool: InventorySpool) => void;
 };
 
-// Column header labels (25 columns — matching SpoolBuddy exactly)
+// Column header labels
 const columnHeaders: Record<string, (t: TFn) => string> = {
   id: () => '#',
   added_time: () => 'Added',
@@ -188,7 +188,7 @@ const columnHeaders: Record<string, (t: TFn) => string> = {
   weight_check: (t) => t('inventory.weightCheck'),
 };
 
-// Column cell renderers (25 columns — matching SpoolBuddy exactly)
+// Column cell renderers
 const columnCells: Record<string, (ctx: CellCtx) => ReactNode> = {
   id: ({ spool }) => (
     <span className="text-sm font-medium text-white">{spool.id}</span>
@@ -725,11 +725,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   const handleSyncWeight = async (spool: InventorySpool) => {
     if (spool.last_scale_weight == null) return;
     try {
-      if (spoolmanMode) {
-        await api.syncSpoolmanSpoolWeight(spool.id, spool.last_scale_weight);
-      } else {
-        await spoolbuddyApi.updateSpoolWeight(spool.id, spool.last_scale_weight);
-      }
+      await api.syncSpoolmanSpoolWeight(spool.id, spool.last_scale_weight);
       queryClient.invalidateQueries({ queryKey: spoolsQueryKey });
       const spoolName = [spool.brand, spool.material, spool.color_name].filter(Boolean).join(' ');
       showToast(`Synced "${spoolName}" to scale weight`, 'success');
@@ -2278,7 +2274,7 @@ function SpoolTableGroup({
   );
 }
 
-/* Empty state matching SpoolBuddy's design */
+/* Empty inventory filter state */
 function EmptyFilterState({
   hasFilters,
   onAddSpool,

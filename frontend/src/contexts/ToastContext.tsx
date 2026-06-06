@@ -44,9 +44,8 @@ interface ToastContextType {
   dismissToast: (id: string) => void;
   /**
    * Suppress the visible toast viewport while keeping the state machine alive.
-   * Used by the SpoolBuddy kiosk layout to keep the kiosk display free of
-   * main-app notifications (background dispatch progress, etc.) without
-   * tearing down the dispatch-job subscription that other tabs rely on.
+   * Allows layouts to suppress visible notifications without tearing down
+   * the dispatch-job subscription that other tabs rely on.
    */
   setViewportSuppressed: (suppressed: boolean) => void;
 }
@@ -490,9 +489,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     <ToastContext.Provider value={{ showToast, showPersistentToast, dismissToast, setViewportSuppressed }}>
       {children}
 
-      {/* Toast Container — to the left of the bug-report bubble (bottom-4 right-4 w-12).
-          The kiosk layout suppresses this entire viewport so SpoolBuddy displays stay
-          free of main-app notifications. */}
+      {/* Toast Container — to the left of the bug-report bubble (bottom-4 right-4 w-12). */}
       <div className={`fixed bottom-4 right-20 z-[60] flex flex-col items-end gap-2 ${viewportSuppressed ? 'hidden' : ''}`}>
         {toasts.map((toast) => (
           <div

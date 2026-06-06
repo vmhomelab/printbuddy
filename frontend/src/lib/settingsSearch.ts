@@ -17,7 +17,6 @@ export type SettingsSearchTab =
   | 'network'
   | 'apikeys'
   | 'virtual-printer'
-  | 'spoolbuddy'
   | 'users'
   | 'backup'
   | 'failure-detection';

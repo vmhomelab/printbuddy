@@ -54,15 +54,10 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
   }, [isOpen]);
 
   // Unique cache key — different consumers of `['inventory-spools']` call
-  // `getSpools()` with different `includeArchived` arguments (InventoryPage:
-  // true, SpoolBuddyDashboard / SpoolBuddyInventoryPage: false), but they
-  // all share the same key. React Query treats them as one query and
-  // serves whichever response landed first, so a SpoolBuddy component
-  // priming the cache with the archived-excluded payload makes the picker
-  // miss spools that *are* archived OR (more subtly) miss any spool that
-  // wasn't yet present when SpoolBuddy ran its initial fetch. The picker
-  // gets its own key + a fetch-everything call so this consumer is never
-  // at the mercy of someone else's cache state. Archived spools are then
+  // `getSpools()` with different `includeArchived` arguments. React Query
+  // treats them as one query and serves whichever response landed first.
+  // The picker gets its own key + a fetch-everything call so this consumer
+  // is never at the mercy of someone else's cache state. Archived spools are then
   // explicitly excluded client-side because the backend rejects archived
   // assignments with HTTP 400 anyway, so listing them would only let the
   // user click a button that fails.
@@ -221,8 +216,7 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
   // Show every spool that isn't already taken by another slot — including
   // RFID-tagged Bambu Lab spools (#1133). The earlier "manual spools only"
   // gate (tag_uid && tray_uuid both null) blocked the workflow where a
-  // user has a Bambu Lab spool in inventory but doesn't want to scan it
-  // via SpoolBuddy NFC every time and just wants to pick it from the list.
+  // user has a Bambu Lab spool in inventory and just wants to pick it from the list.
   // External slots (amsId 254/255) have always been allowed to pick from
   // any spool because the slot itself has no RFID reader; that
   // distinction collapses now that AMS slots also accept any spool.

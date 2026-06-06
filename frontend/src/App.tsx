@@ -32,13 +32,6 @@ import { ToastProvider } from './contexts/ToastContext';
 import { SliceJobTrackerProvider } from './contexts/SliceJobTrackerContext';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { ColorCatalogProvider } from './contexts/ColorCatalogContext';
-import { SpoolBuddyLayout } from './components/spoolbuddy/SpoolBuddyLayout';
-import { SpoolBuddyDashboard } from './pages/spoolbuddy/SpoolBuddyDashboard';
-import { SpoolBuddyAmsPage } from './pages/spoolbuddy/SpoolBuddyAmsPage';
-import { SpoolBuddySettingsPage } from './pages/spoolbuddy/SpoolBuddySettingsPage';
-import { SpoolBuddyCalibrationPage } from './pages/spoolbuddy/SpoolBuddyCalibrationPage';
-import { SpoolBuddyWriteTagPage } from './pages/spoolbuddy/SpoolBuddyWriteTagPage';
-import { SpoolBuddyInventoryPage } from './pages/spoolbuddy/SpoolBuddyInventoryPage';
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null; errorInfo: ErrorInfo | null }> {
   state = { error: null as Error | null, errorInfo: null as ErrorInfo | null };
 
@@ -174,16 +167,6 @@ function App() {
 
                 {/* Stream overlay page - standalone for OBS/streaming embeds, no auth required */}
                 <Route path="/overlay/:printerId" element={<StreamOverlayPage />} />
-
-                {/* SpoolBuddy kiosk UI */}
-                <Route element={<ProtectedRoute><WebSocketProvider><SpoolBuddyLayout /></WebSocketProvider></ProtectedRoute>}>
-                  <Route path="spoolbuddy" element={<SpoolBuddyDashboard />} />
-                  <Route path="spoolbuddy/ams" element={<SpoolBuddyAmsPage />} />
-                  <Route path="spoolbuddy/write-tag" element={<SpoolBuddyWriteTagPage />} />
-                  <Route path="spoolbuddy/inventory" element={<SpoolBuddyInventoryPage />} />
-                  <Route path="spoolbuddy/settings" element={<SpoolBuddySettingsPage />} />
-                  <Route path="spoolbuddy/calibration" element={<SpoolBuddyCalibrationPage />} />
-                </Route>
 
                 {/* Main app with WebSocket for real-time updates */}
                 <Route element={<ProtectedRoute><WebSocketProvider><Layout /></WebSocketProvider></ProtectedRoute>}>

@@ -75,8 +75,8 @@ function serveGcodeViewer() {
 
 export default defineConfig({
   // Default base ('/') emits absolute asset URLs (/assets/...). Required so
-  // deep SPA routes (camera popup at /camera/<id>, /projects/<id>, kiosk
-  // /spoolbuddy/ams, refresh on any nested route) resolve their <script>
+  // deep SPA routes (camera popup at /camera/<id>, /projects/<id>, refresh
+  // on any nested route) resolve their <script>
   // and <link> tags to /assets/... instead of /<route-prefix>/assets/...,
   // which the SPA fallback would otherwise return as text/html and the
   // browser would refuse to execute (#1221). The earlier `base: ''` partial

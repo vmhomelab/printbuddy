@@ -10,9 +10,9 @@ stale HTML across browser restarts. That stale HTML references an old
 bundle hash, which is also still in disk cache, so the kiosk runs
 pre-deploy JS indefinitely without ever knowing why.
 
-Reproduced in the wild during the #1133 rollout — the SpoolBuddy
-display kept serving the pre-fix picker for hours after every
-cache-clear attempt because Chromium would re-seed its cache from
+Reproduced in the wild during the #1133 rollout — clients kept serving
+the pre-fix picker for hours after every cache-clear attempt because
+Chromium would re-seed its cache from
 disk on next start. Fixed by sending ``no-cache, must-revalidate`` on
 the two routes that serve ``index.html``.
 
@@ -34,10 +34,6 @@ from httpx import AsyncClient
 # only guard against one being added later without the other.
 HTML_ROUTES = [
     pytest.param("/", id="root"),
-    # Catch-all routes a path like /spoolbuddy/ to index.html. The trailing
-    # slash matters — without it FastAPI redirects, which would skip the
-    # cache-control middleware. Tested as a real-world client URL.
-    pytest.param("/spoolbuddy/", id="spa-catchall-spoolbuddy"),
     pytest.param("/printers", id="spa-catchall-printers"),
 ]
 

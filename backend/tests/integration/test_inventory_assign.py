@@ -594,7 +594,7 @@ class TestAssignSpoolEmptySlotPreConfig:
 
     Updated for the #1322 follow-up: only the firmware's *explicit* empty
     signal (state ∈ {9, 10}) skips MQTT. Anything else — including the
-    SpoolBuddy weigh-then-assign-before-insert case where state/tray_type
+    deferred assign-before-insert case where state/tray_type
     can't tell us whether a spool is loaded — attempts MQTT. The deferred-
     config workflow still works because on_ams_change at main.py:1031-1054
     re-fires when an AMS push eventually reports the loaded slot.
@@ -707,7 +707,7 @@ class TestAssignSpoolEmptySlotPreConfig:
         printer = await printer_factory(name="H2D")
         spool = await spool_factory(slicer_filament="GFL05", material="PLA")
 
-        # Pre-existing assignment with empty fingerprint (the SpoolBuddy state)
+        # Pre-existing assignment with empty fingerprint
         pre_assignment = SpoolAssignment(
             spool_id=spool.id,
             printer_id=printer.id,
@@ -821,8 +821,8 @@ class TestAssignSpoolEmptySlotPreConfig:
     async def test_on_ams_change_fires_replay_when_tray_type_appears_without_state_11(
         self, async_client: AsyncClient, printer_factory, spool_factory, db_session: AsyncSession
     ):
-        """A1 Mini / P1S firmware variant of the SpoolBuddy pre-config replay
-        (#1322). The user pre-assigned via SpoolBuddy (fingerprint empty), then
+        """A1 Mini / P1S firmware variant of the deferred pre-config replay
+        (#1322). The user pre-assigned the slot (fingerprint empty), then
         configured the slot manually in Bambu Studio so tray_type went from ''
         to 'PLA' — but state stays at 3 because these firmwares never set it
         to 11. With state-only detection the replay never fired."""
@@ -958,7 +958,7 @@ class TestAssignSpoolEmptyDetection:
             )
 
         assert response.status_code == 200
-        # SpoolBuddy weigh-then-assign workflow: firmware drops MQTT for
+        # Deferred assign-before-insert workflow: firmware drops MQTT for
         # unloaded slots, so we don't bother sending it.
         mock_client.ams_set_filament_setting.assert_not_called()
         body = response.json()

@@ -24,8 +24,6 @@ from backend.app.models.user import User
 
 logger = logging.getLogger(__name__)
 
-# SETTINGS_READ is intentionally not denied — the SpoolBuddy kiosk reads settings
-# via API key (e.g. to sync the UI language).
 _APIKEY_DENIED_PERMISSIONS: frozenset[Permission] = frozenset(
     {
         Permission.SETTINGS_UPDATE,
