@@ -16,6 +16,6 @@ jobs:
       - name: run-ghrs
         uses: jgehrcke/github-repo-stats@v1.4.2
         with:
-          repository: maziggy/bambuddy
+          repository: ${{ github.repository }}
           ghtoken: ${{ secrets.GHRS_GITHUB_API_TOKEN }}
-          ghpagesprefix: https://maziggy.github.io/bambuddy
+          ghpagesprefix: https://vmhomelab.github.io/Printbuddy

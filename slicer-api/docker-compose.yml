@@ -1,34 +1,34 @@
-# Optional slicer-API sidecar stack for Bambuddy.
+# Optional slicer-API sidecar stack for Printbuddy.
 #
 # Both services are HTTP wrappers around a slicer CLI: the same Node code
-# (`maziggy/orca-slicer-api`, `bambuddy/profile-resolver` branch) bundled
-# with a different binary in each image. Bambuddy talks to them via the
+# (configured via SLICER_API_BUILD_CONTEXT in .env) bundled with a
+# different binary in each image. Printbuddy talks to them via the
 # URLs configured in Settings -> Slicer.
 #
 #   bambu-studio-api  → host port 3001 (BambuStudio CLI)
 #   orca-slicer-api   → host port 3003 (OrcaSlicer CLI)
 #
-# Bambuddy's virtual-printer feature reserves host ports 3000 and 3002,
+# Printbuddy's virtual-printer feature reserves host ports 3000 and 3002,
 # which is why the OrcaSlicer sidecar sits on 3003. Override either port
-# in `.env` (see `.env.example`) if you don't run Bambuddy on this host.
+# in `.env` (see `.env.example`) if you don't run Printbuddy on this host.
 #
 # Usage:
 #   cd slicer-api/
 #   docker compose up -d                       # starts OrcaSlicer only
 #   docker compose --profile bambu up -d       # starts both
 #
-# First build pulls the source from the fork over git (~5 min — downloads
-# the BambuStudio AppImage, ~220 MB) and caches the image locally.
+# First build pulls the sidecar source over git (~5 min — downloads the
+# BambuStudio AppImage, ~220 MB) and caches the image locally.
 # Subsequent runs reuse the cache. Pin the slicer versions via .env.
 
 services:
   orca-slicer-api:
     build:
-      context: https://github.com/maziggy/orca-slicer-api.git#bambuddy/profile-resolver
+      context: "${SLICER_API_BUILD_CONTEXT}"
       dockerfile: Dockerfile
       args:
         ORCA_VERSION: "${ORCA_VERSION:-2.3.2}"
-    image: bambuddy-orca-slicer-api:orca${ORCA_VERSION:-2.3.2}
+    image: printbuddy-orca-slicer-api:orca${ORCA_VERSION:-2.3.2}
     container_name: orca-slicer-api
     restart: unless-stopped
     ports:
@@ -47,11 +47,11 @@ services:
 
   bambu-studio-api:
     build:
-      context: https://github.com/maziggy/orca-slicer-api.git#bambuddy/profile-resolver
+      context: "${SLICER_API_BUILD_CONTEXT}"
       dockerfile: Dockerfile.bambu-studio
       args:
         BAMBU_VERSION: "${BAMBU_VERSION:-02.06.00.51}"
-    image: bambuddy-bambu-studio-api:bambu${BAMBU_VERSION:-02.06.00.51}
+    image: printbuddy-bambu-studio-api:bambu${BAMBU_VERSION:-02.06.00.51}
     container_name: bambu-studio-api
     restart: unless-stopped
     ports:

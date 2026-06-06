@@ -21,10 +21,13 @@ import {
   Square,
   MinusSquare,
   Box,
+  Upload,
+  ListPlus,
 } from 'lucide-react';
 import { api } from '../api/client';
 import { parseUTCDate } from '../utils/date';
 import { Button } from './Button';
+import { PrintModal } from './PrintModal';
 import { ConfirmModal } from './ConfirmModal';
 import { ModelViewer } from './ModelViewer';
 import { GcodeViewer } from './GcodeViewer';
@@ -285,6 +288,9 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
   const queryClient = useQueryClient();
   const [currentPath, setCurrentPath] = useState('/');
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
+  const [uploadingFile, setUploadingFile] = useState(false);
+  const [queueingFile, setQueueingFile] = useState(false);
+  const [queuedLibraryFile, setQueuedLibraryFile] = useState<{ id: number; filename: string } | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [filesToDelete, setFilesToDelete] = useState<string[]>([]);
   const [sortBy, setSortBy] = useState<SortOption>('name-asc');
@@ -408,6 +414,53 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
     }
   };
 
+  const isPrintableFile = (name: string) => {
+    const lower = name.toLowerCase();
+    return lower.endsWith('.gcode') || lower.endsWith('.gco') || lower.endsWith('.g') || lower.endsWith('.bgcode') || lower.endsWith('.3mf') || lower.includes('.gcode.');
+  };
+
+  const selectedPrintableFile = () => {
+    if (selectedFiles.size !== 1) return null;
+    const path = Array.from(selectedFiles)[0];
+    const file = data?.files?.find((entry) => entry.path === path);
+    if (!file || file.is_directory || !isPrintableFile(file.name)) return null;
+    return file;
+  };
+
+  const handleUploadToPrinter = async (file: File | null | undefined) => {
+    if (!file) return;
+    if (!isPrintableFile(file.name)) {
+      showToast('Unsupported printer file. Use .gcode, .bgcode, .gco, .g or sliced .3mf files.', 'error');
+      return;
+    }
+    setUploadingFile(true);
+    try {
+      await api.uploadPrinterFile(printerId, file, currentPath);
+      showToast(`Uploaded ${file.name} to printer`);
+      queryClient.invalidateQueries({ queryKey: ['printerFiles', printerId] });
+      refetch();
+    } catch (error) {
+      showToast(`Upload failed: ${error instanceof Error ? error.message : 'Unknown error'}`, 'error');
+    } finally {
+      setUploadingFile(false);
+    }
+  };
+
+  const handleQueueSelectedFile = async () => {
+    const file = selectedPrintableFile();
+    if (!file) return;
+    setQueueingFile(true);
+    try {
+      const blob = await api.getPrinterFileBlob(printerId, file.path);
+      const upload = await api.uploadLibraryFile(new window.File([blob], file.name), null);
+      setQueuedLibraryFile({ id: upload.id, filename: upload.filename });
+    } catch (error) {
+      showToast(`Could not prepare queue item: ${error instanceof Error ? error.message : 'Unknown error'}`, 'error');
+    } finally {
+      setQueueingFile(false);
+    }
+  };
+
   const handleDelete = () => {
     if (selectedFiles.size === 0) return;
     setFilesToDelete(Array.from(selectedFiles));
@@ -510,6 +563,20 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
               ))}
             </select>
           </div>
+          <label className={`inline-flex items-center justify-center rounded-lg border border-bambu-dark-tertiary px-3 py-1.5 text-sm transition-colors ${uploadingFile ? 'opacity-60 cursor-wait' : 'cursor-pointer hover:border-bambu-green text-bambu-gray hover:text-white'}`}>
+            {uploadingFile ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
+            <input
+              type="file"
+              className="hidden"
+              accept=".gcode,.gco,.g,.bgcode,.3mf"
+              disabled={uploadingFile}
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                event.currentTarget.value = '';
+                handleUploadToPrinter(file);
+              }}
+            />
+          </label>
           <Button
             variant="secondary"
             size="sm"
@@ -683,6 +750,14 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
           <div className="flex gap-2">
             <Button
               variant="secondary"
+              disabled={!selectedPrintableFile() || queueingFile}
+              onClick={handleQueueSelectedFile}
+            >
+              {queueingFile ? <Loader2 className="w-4 h-4 animate-spin" /> : <ListPlus className="w-4 h-4" />}
+              Add to Queue
+            </Button>
+            <Button
+              variant="secondary"
               disabled={selectedFiles.size === 0 || downloadProgress !== null}
               onClick={handleDownload}
             >
@@ -739,6 +814,22 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
           filePath={viewerFile.path}
           filename={viewerFile.name}
           onClose={() => setViewerFile(null)}
+        />
+      )}
+
+      {queuedLibraryFile && (
+        <PrintModal
+          mode="add-to-queue"
+          libraryFileId={queuedLibraryFile.id}
+          archiveName={queuedLibraryFile.filename}
+          initialSelectedPrinterIds={[printerId]}
+          cleanupLibraryAfterDispatch
+          onClose={() => setQueuedLibraryFile(null)}
+          onSuccess={() => {
+            setQueuedLibraryFile(null);
+            setSelectedFiles(new Set());
+            showToast('Added printer file to queue');
+          }}
         />
       )}
     </div>

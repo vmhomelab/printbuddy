@@ -17,6 +17,7 @@ import { Card, CardHeader, CardContent } from './Card';
 import { parseUTCDate } from '../utils/date';
 import { Button } from './Button';
 import { BugReportBubble } from './BugReportBubble';
+import { appAssetPath } from '../utils/assetPaths';
 
 
 interface NavItem {
@@ -499,8 +500,8 @@ export function Layout() {
             <Menu className="w-6 h-6 text-white" />
           </button>
           <img
-            src={mode === 'dark' ? '/img/bambuddy_logo_dark_transparent.png' : '/img/bambuddy_logo_light.png'}
-            alt="Bambuddy"
+            src={appAssetPath(mode === 'dark' ? '/img/printbuddy_logo_dark.png' : '/img/printbuddy_logo_light.png')}
+            alt="Printbuddy"
             className="h-8 ml-3"
           />
         </header>
@@ -525,8 +526,8 @@ export function Layout() {
         {/* Logo */}
         <div className={`border-b border-bambu-dark-tertiary flex items-center justify-center ${isSidebarCompact || sidebarExpanded ? 'p-4' : 'p-2'}`}>
           <img
-            src={mode === 'dark' ? '/img/bambuddy_logo_dark_transparent.png' : '/img/bambuddy_logo_light.png'}
-            alt="Bambuddy"
+            src={appAssetPath(mode === 'dark' ? '/img/printbuddy_logo_dark.png' : '/img/printbuddy_logo_light.png')}
+            alt="Printbuddy"
             className={isSidebarCompact || sidebarExpanded ? 'h-16 w-auto' : 'h-8 w-8 object-cover object-left'}
           />
         </div>
@@ -735,7 +736,7 @@ export function Layout() {
                 )}
                 <InstallAppButton />
                 <a
-                  href="https://github.com/maziggy/bambuddy"
+                  href="https://github.com/vmhomelab/Printbuddy"
                   target="_blank"
                   rel="noopener noreferrer"
                   className="p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors text-bambu-gray-light hover:text-white"
@@ -778,7 +779,7 @@ export function Layout() {
               </div>
               {/* Bottom row: version */}
               <div className="flex items-center justify-center gap-2">
-                <span className="text-sm text-bambu-gray">v{versionInfo?.version || '...'}</span>
+                <span className="text-sm text-bambu-gray">v{versionInfo?.display_version || versionInfo?.version || '...'}</span>
                 {updateCheck?.update_available && (
                   <button
                     onClick={() => navigate('/settings')}
@@ -840,7 +841,7 @@ export function Layout() {
               )}
               <InstallAppButton />
               <a
-                href="https://github.com/maziggy/bambuddy"
+                href="https://github.com/vmhomelab/Printbuddy"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors text-bambu-gray-light hover:text-white"

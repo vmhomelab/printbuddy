@@ -50,6 +50,28 @@ import type { UsersSubTab } from '../lib/settingsSearch';
 const validTabs = ['general', 'plugs', 'notifications', 'queue', 'filament', 'network', 'apikeys', 'virtual-printer', 'spoolbuddy', 'failure-detection', 'users', 'backup'] as const;
 type TabType = typeof validTabs[number];
 
+function inferExternalCameraType(url: string): string {
+  const normalized = url.trim().toLowerCase();
+  if (normalized.startsWith('rtsp://') || normalized.startsWith('rtsps://')) {
+    return 'rtsp';
+  }
+  if (normalized.startsWith('/dev/video') || normalized.startsWith('usb://')) {
+    return 'usb';
+  }
+  const path = normalized.split('?', 1)[0];
+  if (
+    normalized.includes('/snapshot') ||
+    normalized.includes('/frame') ||
+    path.endsWith('.jpg') ||
+    path.endsWith('.jpeg') ||
+    path.endsWith('.png') ||
+    path.endsWith('.webp')
+  ) {
+    return 'snapshot';
+  }
+  return 'mjpeg';
+}
+
 // Cross-tab search registrations for cards rendered inline in this file.
 // Adding a new settings card? Register it here (or, if the card lives in its
 // own component file, call registerSettingsSearch at that file's module scope).
@@ -1116,16 +1138,36 @@ export function SettingsPage() {
   }, [authEnabled, hasPermission, showToast, t]);
 
   const handleTestExternalCamera = async (printerId: number, url: string, cameraType: string) => {
-    if (!url) {
+    const trimmedUrl = url.trim();
+    if (!trimmedUrl) {
       showToast(t('settings.toast.enterCameraUrl'), 'error');
       return;
     }
     setExtCameraTestLoading(prev => ({ ...prev, [printerId]: true }));
     setExtCameraTestResults(prev => ({ ...prev, [printerId]: null }));
     try {
-      const result = await api.testExternalCamera(printerId, url, cameraType);
+      const result = await api.testExternalCamera(printerId, trimmedUrl, cameraType);
       setExtCameraTestResults(prev => ({ ...prev, [printerId]: result }));
       if (result.success) {
+        // The Test button uses the local input value, but the printer card and
+        // /camera/:id stream route only use the persisted printer fields. Save
+        // the working URL immediately on success so users do not have to wait
+        // for the debounced input PATCH before opening the camera window.
+        if (cameraType === 'snapshot') {
+          updatePrinterMutation.mutate({
+            id: printerId,
+            data: { external_camera_snapshot_url: trimmedUrl },
+          });
+        } else {
+          updatePrinterMutation.mutate({
+            id: printerId,
+            data: {
+              external_camera_url: trimmedUrl,
+              external_camera_enabled: true,
+              external_camera_type: cameraType || inferExternalCameraType(trimmedUrl),
+            },
+          });
+        }
         showToast(t('settings.toast.cameraConnected', { resolution: result.resolution || '' }), 'success');
       } else {
         showToast(result.error || t('settings.toast.connectionFailed'), 'error');
@@ -1182,9 +1224,20 @@ export function SettingsPage() {
 
     // Debounce the save (800ms delay)
     cameraUrlSaveTimeoutRef.current[printerId] = setTimeout(() => {
+      const trimmedUrl = url.trim();
       updatePrinterMutation.mutate({
         id: printerId,
-        data: { external_camera_url: url || null }
+        data: trimmedUrl
+          ? {
+              external_camera_url: trimmedUrl,
+              external_camera_enabled: true,
+              external_camera_type: inferExternalCameraType(trimmedUrl),
+            }
+          : {
+              external_camera_url: null,
+              external_camera_enabled: false,
+              external_camera_type: null,
+            }
       });
     }, 800);
   };
@@ -1262,7 +1315,7 @@ export function SettingsPage() {
             <SettingsIcon className="w-7 h-7 text-bambu-green" />
             {t('settings.title')}
           </h1>
-          <p className="text-bambu-gray mt-1">{t('settings.configureBambuddy')}</p>
+          <p className="text-bambu-gray mt-1">{t('settings.configurePrintbuddy')}</p>
         </div>
         {/* Cross-tab search */}
         <div className="relative sm:w-72">
@@ -2301,7 +2354,7 @@ export function SettingsPage() {
                 <div className="flex items-center justify-between mb-2">
                   <div>
                     <p className="text-white">{t('settings.currentVersion')}</p>
-                    <p className="text-sm text-bambu-gray">v{versionInfo?.version || '...'}</p>
+                    <p className="text-sm text-bambu-gray">v{versionInfo?.display_version || versionInfo?.version || '...'}</p>
                   </div>
                   <Button
                     variant="secondary"

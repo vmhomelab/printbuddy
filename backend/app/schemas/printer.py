@@ -1,10 +1,102 @@
 from datetime import datetime
+from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+PrinterProvider = Literal["bambu", "klipper", "mainsail", "fluidd", "prusalink"]
+MOONRAKER_PROVIDERS = {"klipper", "mainsail", "fluidd"}
+HTTP_PROVIDERS = MOONRAKER_PROVIDERS | {"prusalink"}
+
+
+def _synthetic_moonraker_serial(value: object) -> str:
+    raw = str(value or "moonraker").strip().upper()
+    # Keep synthetic serials within the existing DB column while avoiding
+    # characters users commonly enter in hostnames / URLs that are awkward in
+    # MQTT-topic-shaped UI assumptions elsewhere.
+    normalized = "".join(ch if ch.isalnum() else "-" for ch in raw).strip("-") or "MOONRAKER"
+    return f"KLIPPER-{normalized}"[:50]
+
+
+def _synthetic_prusalink_serial(value: object) -> str:
+    raw = str(value or "prusalink").strip().upper()
+    normalized = "".join(ch if ch.isalnum() else "-" for ch in raw).strip("-") or "PRUSALINK"
+    return f"PRUSALINK-{normalized}"[:50]
+
+
+def infer_external_camera_type(camera_url: str) -> str:
+    lower_url = camera_url.lower()
+    if lower_url.startswith(("rtsp://", "rtsps://")):
+        return "rtsp"
+    if lower_url.startswith("/dev/video") or lower_url.startswith("usb://"):
+        return "usb"
+    if any(token in lower_url for token in ("/snapshot", "/frame")) or lower_url.split("?", 1)[0].endswith(
+        (".jpg", ".jpeg", ".png", ".webp")
+    ):
+        return "snapshot"
+    return "mjpeg"
+
+
+def normalize_external_camera_update(update_data: dict) -> dict:
+    """Normalize partial printer camera PATCH payloads.
+
+    Creation uses PrinterBase's model validator, but settings edits arrive as a
+    partial PrinterUpdate. If the UI/API patches only external_camera_url, leaving
+    external_camera_enabled false means the camera button still opens the built-in
+    Bambu stream path and the external camera never starts.
+    """
+    if "external_camera_url" not in update_data:
+        return update_data
+
+    camera_url = str(update_data.get("external_camera_url") or "").strip()
+    if not camera_url:
+        update_data["external_camera_url"] = None
+        update_data["external_camera_enabled"] = False
+        update_data["external_camera_type"] = None
+        return update_data
+
+    update_data["external_camera_url"] = camera_url
+    update_data.setdefault("external_camera_enabled", True)
+    if not str(update_data.get("external_camera_type") or "").strip():
+        update_data["external_camera_type"] = infer_external_camera_type(camera_url)
+    return update_data
 
 
 class PrinterBase(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _fill_http_provider_defaults(cls, data):
+        if not isinstance(data, dict):
+            return data
+        provider = str(data.get("provider") or "bambu").strip().lower()
+        if provider in MOONRAKER_PROVIDERS:
+            if not str(data.get("serial_number") or "").strip():
+                data["serial_number"] = _synthetic_moonraker_serial(data.get("ip_address") or data.get("api_url"))
+            if not str(data.get("access_code") or "").strip():
+                data["access_code"] = "moonraker"
+            if not data.get("api_url") and data.get("ip_address"):
+                data["api_url"] = f"http://{str(data['ip_address']).strip()}:7125"
+        elif provider == "prusalink":
+            if not str(data.get("serial_number") or "").strip():
+                data["serial_number"] = _synthetic_prusalink_serial(data.get("ip_address") or data.get("api_url"))
+            if not str(data.get("access_code") or "").strip():
+                data["access_code"] = "prusalink"
+            if not data.get("api_url") and data.get("ip_address"):
+                data["api_url"] = f"http://{str(data['ip_address']).strip()}"
+        if provider in HTTP_PROVIDERS:
+            camera_url = str(data.get("external_camera_url") or "").strip()
+            if not camera_url:
+                data["external_camera_url"] = None
+                data["external_camera_type"] = None
+                data["external_camera_enabled"] = False
+                return data
+            data["external_camera_url"] = camera_url
+            data["external_camera_enabled"] = True
+            if not str(data.get("external_camera_type") or "").strip():
+                data["external_camera_type"] = infer_external_camera_type(camera_url)
+        return data
+
     serial_number: str = Field(..., min_length=1, max_length=50)
 
     @field_validator("serial_number")
@@ -30,6 +122,10 @@ class PrinterBase(BaseModel):
         pattern=r"^(\d{1,3}(\.\d{1,3}){3}|[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*)$",
     )
     access_code: str = Field(..., min_length=1, max_length=20)
+    provider: PrinterProvider = "bambu"
+    api_url: str | None = Field(default=None, max_length=500)
+    auth_token: str | None = Field(default=None, max_length=500)
+    provider_options: str | None = Field(default=None, max_length=4000)
     model: str | None = None
     location: str | None = None  # Group/location name
     auto_archive: bool = True
@@ -61,6 +157,10 @@ class PrinterUpdate(BaseModel):
         pattern=r"^(\d{1,3}(\.\d{1,3}){3}|[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*)$",
     )
     access_code: str | None = None
+    provider: PrinterProvider | None = None
+    api_url: str | None = Field(default=None, max_length=500)
+    auth_token: str | None = Field(default=None, max_length=500)
+    provider_options: str | None = Field(default=None, max_length=4000)
     model: str | None = None
     location: str | None = None
     is_active: bool | None = None
@@ -102,6 +202,10 @@ class PrinterResponse(PrinterBase):
             "serial_number": printer.serial_number,
             "ip_address": printer.ip_address,
             "access_code": printer.access_code,
+            "provider": getattr(printer, "provider", "bambu"),
+            "api_url": getattr(printer, "api_url", None),
+            "auth_token": getattr(printer, "auth_token", None),
+            "provider_options": getattr(printer, "provider_options", None),
             "model": printer.model,
             "location": printer.location,
             "auto_archive": printer.auto_archive,

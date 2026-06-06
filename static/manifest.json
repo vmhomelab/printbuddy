@@ -1,12 +1,12 @@
 {
   "id": "/",
-  "name": "Bambuddy",
-  "short_name": "Bambuddy",
-  "description": "Monitor and manage your Bambu Lab 3D printers",
+  "name": "Printbuddy",
+  "short_name": "Printbuddy",
+  "description": "Monitor and manage Bambu Lab, Klipper, and Mainsail 3D printers",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#1a1a1a",
-  "theme_color": "#00ae42",
+  "theme_color": "#2563eb",
   "orientation": "any",
   "scope": "/",
   "icons": [
@@ -51,14 +51,14 @@
       "sizes": "1080x1920",
       "type": "image/png",
       "form_factor": "narrow",
-      "label": "Bambuddy on mobile"
+      "label": "Printbuddy on mobile"
     },
     {
       "src": "/img/screenshot-desktop.png",
       "sizes": "1920x1080",
       "type": "image/png",
       "form_factor": "wide",
-      "label": "Bambuddy on desktop"
+      "label": "Printbuddy on desktop"
     }
   ],
   "categories": ["utilities", "productivity"],

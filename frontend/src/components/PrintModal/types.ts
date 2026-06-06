@@ -203,6 +203,7 @@ export interface PrintOptionsProps {
   options: PrintOptions;
   onChange: (options: PrintOptions) => void;
   defaultExpanded?: boolean;
+  supportedOptions?: Array<keyof PrintOptions>;
 }
 
 /**

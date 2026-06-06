@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { X, Copy, Check, Signal, Cable } from 'lucide-react';
 import { Card, CardContent } from './Card';
 import { formatDateOnly } from '../utils/date';
-import { getPrinterImage, getWifiStrength } from '../utils/printer';
+import { getDefaultPrinterImage, getPrinterImage, getWifiStrength } from '../utils/printer';
 import type { Printer, PrinterStatus } from '../api/client';
 
 interface PrinterInfoModalProps {
@@ -244,6 +244,12 @@ export function PrinterInfoModal({ printer, status, totalPrintHours, onClose }: 
               src={getPrinterImage(printer.model)}
               alt={printer.model ?? printer.name}
               className="h-24 object-contain"
+              onError={(event) => {
+                const fallback = getDefaultPrinterImage();
+                if (event.currentTarget.getAttribute('src') !== fallback) {
+                  event.currentTarget.src = fallback;
+                }
+              }}
             />
           </div>
 

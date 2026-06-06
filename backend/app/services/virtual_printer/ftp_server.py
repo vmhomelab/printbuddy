@@ -80,7 +80,7 @@ class FTPSession:
         """Handle the FTP session."""
         try:
             # Send welcome banner
-            await self.send(220, "Bambuddy Virtual Printer FTP ready")
+            await self.send(220, "Printbuddy Virtual Printer FTP ready")
 
             while True:
                 try:

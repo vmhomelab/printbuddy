@@ -1098,7 +1098,7 @@ async def queue_system_config_update(
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
         raise HTTPException(
             status_code=400,
-            detail="backend_url must be a full URL with scheme, e.g. http://192.168.1.100:5000 or http://bambuddy.local",
+            detail="backend_url must be a full URL with scheme, e.g. http://192.168.1.100:5000 or http://printbuddy.local",
         )
 
     payload = {

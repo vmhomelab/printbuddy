@@ -2,7 +2,7 @@
  * Tests for the PrintersPage component.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { screen, waitFor, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { render } from '../utils';
@@ -131,6 +131,34 @@ describe('PrintersPage', () => {
       });
     });
 
+    it('opens a configured external camera even when the printer status is offline', async () => {
+      const user = userEvent.setup();
+      const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          ...mockPrinters[0],
+          provider: 'fluidd',
+          name: 'Neptune 4 Pro',
+          external_camera_url: 'http://neptune.local/webcam/?action=stream',
+          external_camera_type: 'mjpeg',
+          external_camera_enabled: true,
+        }])),
+        http.get('/api/v1/printers/:id/status', () => HttpResponse.json({
+          ...mockPrinterStatus,
+          connected: false,
+        })),
+      );
+
+      render(<PrintersPage />);
+
+      const cameraButton = await screen.findByRole('button', { name: /open camera in new window/i });
+      expect(cameraButton).not.toBeDisabled();
+      await user.click(cameraButton);
+
+      expect(openSpy).toHaveBeenCalledWith('/camera/1', 'camera-1', expect.any(String));
+      openSpy.mockRestore();
+    });
+
     it('shows printer models', async () => {
       render(<PrintersPage />);
 
@@ -146,6 +174,300 @@ describe('PrintersPage', () => {
       await waitFor(() => {
         // Status should be shown - may vary based on state
         expect(screen.getByText('X1 Carbon')).toBeInTheDocument();
+      });
+    });
+
+    it('labels the fan/status strip as status and only shows reported fan capabilities', async () => {
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([mockPrinters[0]])),
+        http.get('/api/v1/printers/:id/status', () => HttpResponse.json({
+          ...mockPrinterStatus,
+          state: 'RUNNING',
+          cooling_fan_speed: 35,
+          big_fan1_speed: 0,
+          big_fan2_speed: null,
+          heatbreak_fan_speed: null,
+          speed_level: 2,
+        }))
+      );
+
+      render(<PrintersPage />);
+
+      await waitFor(() => {
+        expect(screen.getAllByText('Status').length).toBeGreaterThan(0);
+        expect(screen.getByTitle('Part Cooling Fan')).toBeInTheDocument();
+        expect(screen.getByTitle('Auxiliary Fan')).toBeInTheDocument();
+        expect(screen.getByText('35%')).toBeInTheDocument();
+        expect(screen.getByText('0%')).toBeInTheDocument();
+      });
+
+      expect(screen.queryByTitle('Chamber Fan')).not.toBeInTheDocument();
+      expect(screen.queryByTitle('Heatbreak Fan')).not.toBeInTheDocument();
+      expect(screen.queryByTitle('Move build plate')).not.toBeInTheDocument();
+    });
+
+    it('groups add-printer model choices by vendor and includes common Klipper machines', async () => {
+      const user = userEvent.setup();
+
+      render(<PrintersPage />);
+
+      await user.click((await screen.findAllByRole('button', { name: /add printer/i })).at(-1)!);
+      const modelSelect = screen.getByLabelText('Model (optional)') as HTMLSelectElement;
+      const groupLabels = Array.from(modelSelect.querySelectorAll('optgroup')).map((group) => group.label);
+      const optionValues = Array.from(modelSelect.options).map((option) => option.value);
+
+      expect(groupLabels).toEqual(['Bambu Lab', 'Elegoo', 'Voron', 'Creality Klipper', 'Prusa', 'Generic']);
+      expect(optionValues).toContain('P1S');
+      expect(optionValues).toContain('Elegoo Neptune 4 Pro');
+      expect(optionValues).toContain('Elegoo Centauri Carbon');
+      expect(optionValues).toContain('Voron 2.4');
+      expect(optionValues).toContain('Creality Ender-3 V2');
+      expect(optionValues).toContain('Prusa MK4S');
+      expect(optionValues).toContain('Generic Klipper Printer');
+    });
+
+    it('shows Prusa models when Prusa is selected as printer type', async () => {
+      const user = userEvent.setup();
+
+      render(<PrintersPage />);
+
+      await user.click((await screen.findAllByRole('button', { name: /add printer/i })).at(-1)!);
+      await user.selectOptions(screen.getByLabelText(/printer type/i), 'prusalink');
+
+      const modelSelect = screen.getByLabelText('Model (optional)') as HTMLSelectElement;
+      const groupLabels = Array.from(modelSelect.querySelectorAll('optgroup')).map((group) => group.label);
+      const optionValues = Array.from(modelSelect.options).map((option) => option.value);
+
+      expect(groupLabels).toEqual(['Prusa', 'Generic']);
+      expect(optionValues).toContain('Prusa CORE One');
+      expect(optionValues).toContain('Prusa MK4');
+      expect(optionValues).toContain('Prusa MK4S');
+      expect(optionValues).not.toContain('P1S');
+      expect(optionValues).not.toContain('Elegoo Neptune 4 Pro');
+    }, 10000);
+
+    it.each([
+      { provider: 'klipper', name: 'Voron 2.4', host: 'voron.local', serial: 'KLIPPER-VORON-LOCAL', model: 'Voron 2.4' },
+      { provider: 'fluidd', name: 'Elegoo Neptune 4 Pro', host: 'neptune.local', serial: 'KLIPPER-NEPTUNE-LOCAL', model: 'Elegoo Neptune 4 Pro' },
+    ])('can add a $provider printer through Moonraker without Bambu serial/access fields', async ({ provider, name, host, serial, model }) => {
+      const user = userEvent.setup();
+      let createdPayload: Record<string, unknown> | null = null;
+      let diagnosticCalled = false;
+
+      server.use(
+        http.get('/api/v1/discovery/info', () => HttpResponse.json({ is_docker: false, subnets: [] })),
+        http.post('/api/v1/printers/diagnose', () => {
+          diagnosticCalled = true;
+          return HttpResponse.json({ checks: [] });
+        }),
+        http.post('/api/v1/printers/', async ({ request }) => {
+          createdPayload = await request.json() as Record<string, unknown>;
+          return HttpResponse.json({
+            id: 3,
+            name,
+            serial_number: serial,
+            ip_address: host,
+            access_code: 'moonraker',
+            provider,
+            api_url: `http://${host}:7125`,
+            auth_token: null,
+            provider_options: null,
+            model: 'Klipper',
+            location: null,
+            auto_archive: true,
+            is_active: true,
+            nozzle_count: 1,
+            external_camera_url: null,
+            external_camera_type: null,
+            external_camera_enabled: false,
+            external_camera_snapshot_url: null,
+            camera_rotation: 0,
+            plate_detection_enabled: false,
+            created_at: '2024-01-03T00:00:00Z',
+            updated_at: '2024-01-03T00:00:00Z',
+          });
+        }),
+      );
+
+      render(<PrintersPage />);
+
+      await user.click((await screen.findAllByRole('button', { name: /add printer/i })).at(-1)!);
+      await user.selectOptions(screen.getByLabelText(/printer type/i), provider);
+      await user.selectOptions(screen.getByLabelText('Model (optional)'), model);
+      await user.type(screen.getByPlaceholderText('My Printer'), name);
+      await user.type(screen.getByPlaceholderText('192.168.1.100 or printer.local'), host);
+      await user.type(screen.getByPlaceholderText('http://printer.local/webcam/?action=stream'), `http://${host}/webcam/?action=stream`);
+      await user.click(screen.getAllByRole('button', { name: /^add printer$/i }).at(-1)!);
+
+      await waitFor(() => {
+        expect(createdPayload).toMatchObject({
+          name,
+          provider,
+          ip_address: host,
+          api_url: `http://${host}:7125`,
+          model,
+          external_camera_url: `http://${host}/webcam/?action=stream`,
+          external_camera_type: 'mjpeg',
+          external_camera_enabled: true,
+        });
+      });
+      expect(createdPayload).not.toHaveProperty('serial_number');
+      expect(createdPayload).not.toHaveProperty('access_code');
+      expect(diagnosticCalled).toBe(false);
+    }, 10000);
+
+    it('can add a non-Bambu printer without configuring an external camera', async () => {
+      const user = userEvent.setup();
+      let createdPayload: Record<string, unknown> | null = null;
+
+      server.use(
+        http.get('/api/v1/discovery/info', () => HttpResponse.json({ is_docker: false, subnets: [] })),
+        http.post('/api/v1/printers/', async ({ request }) => {
+          createdPayload = await request.json() as Record<string, unknown>;
+          return HttpResponse.json({
+            ...mockPrinters[0],
+            provider: 'fluidd',
+            api_url: 'http://neptune.local:7125',
+            external_camera_url: null,
+            external_camera_type: null,
+            external_camera_enabled: false,
+          });
+        }),
+      );
+
+      render(<PrintersPage />);
+
+      await user.click((await screen.findAllByRole('button', { name: /add printer/i })).at(-1)!);
+      await user.selectOptions(screen.getByLabelText(/printer type/i), 'fluidd');
+      await user.selectOptions(screen.getByLabelText('Model (optional)'), 'Elegoo Neptune 4 Pro');
+      await user.type(screen.getByPlaceholderText('My Printer'), 'Elegoo Neptune 4 Pro');
+      await user.type(screen.getByPlaceholderText('192.168.1.100 or printer.local'), 'neptune.local');
+
+      const cameraInput = screen.getByPlaceholderText('http://printer.local/webcam/?action=stream');
+      expect(cameraInput).not.toBeRequired();
+
+      await user.click(screen.getAllByRole('button', { name: /^add printer$/i }).at(-1)!);
+
+      await waitFor(() => {
+        expect(createdPayload).toMatchObject({
+          name: 'Elegoo Neptune 4 Pro',
+          provider: 'fluidd',
+          ip_address: 'neptune.local',
+          api_url: 'http://neptune.local:7125',
+          model: 'Elegoo Neptune 4 Pro',
+          external_camera_enabled: false,
+        });
+      });
+      expect(createdPayload).not.toHaveProperty('external_camera_url');
+      expect(createdPayload).not.toHaveProperty('external_camera_type');
+    }, 10000);
+  });
+
+  describe('manual controls', () => {
+    it('renders the PrusaLink controls with the Klipper-style layout and sends jog requests', async () => {
+      const user = userEvent.setup();
+      const jogRequests: string[] = [];
+      const disableRequests: string[] = [];
+
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{ ...mockPrinters[0], name: 'Boženka', provider: 'prusalink', model: 'Prusa MK4S' }])),
+        http.get('/api/v1/printers/:id/status', () => HttpResponse.json({
+          ...mockPrinterStatus,
+          temperatures: { nozzle: 25, nozzle_target: 0, bed: 25, bed_target: 0 },
+          position: { x: 10.2, y: 0, z: 54.2 },
+        })),
+        http.post('/api/v1/printers/:id/axis-jog', ({ request }) => {
+          jogRequests.push(new URL(request.url).search);
+          return HttpResponse.json({ success: true, message: 'Jog sent' });
+        }),
+        http.post('/api/v1/printers/:id/disable-steppers', ({ request }) => {
+          disableRequests.push(new URL(request.url).pathname);
+          return HttpResponse.json({ success: true, message: 'Steppers disabled' });
+        })
+      );
+
+      render(<PrintersPage />);
+
+      const controlsToggle = await screen.findByRole('button', { name: /manual controls/i });
+      expect(controlsToggle).toHaveAttribute('aria-expanded', 'false');
+      expect(screen.queryByRole('heading', { name: /Boženka printer control/i })).not.toBeInTheDocument();
+
+      await user.click(controlsToggle);
+
+      const xPlusButton = await screen.findByRole('button', { name: 'X+' });
+      expect(screen.queryByRole('heading', { name: /Boženka printer control/i })).not.toBeInTheDocument();
+      expect(screen.queryByText(/heated bed X and Y move/i)).not.toBeInTheDocument();
+      expect(xPlusButton).toHaveClass('bg-[var(--accent)]');
+      expect(xPlusButton).not.toHaveClass('bg-red-700');
+      expect(screen.getByText(/extrusion length/i)).toBeInTheDocument();
+      await user.click(xPlusButton);
+      await user.click(screen.getByRole('button', { name: /disable steppers/i }));
+
+      await waitFor(() => {
+        expect(jogRequests).toContain('?axis=x&distance=10');
+        expect(disableRequests).toContain('/api/v1/printers/1/disable-steppers');
+      });
+    });
+
+    it('sends XYZ jog requests from the printer card controls', async () => {
+      const user = userEvent.setup();
+      const jogRequests: string[] = [];
+
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{ ...mockPrinters[0], provider: 'fluidd', model: 'Klipper' }])),
+        http.post('/api/v1/printers/:id/axis-jog', ({ request }) => {
+          jogRequests.push(new URL(request.url).search);
+          return HttpResponse.json({ success: true, message: 'Jog sent' });
+        })
+      );
+
+      render(<PrintersPage />);
+
+      await screen.findByText('X1 Carbon');
+      const controlsToggle = await screen.findByRole('button', { name: /manual controls/i });
+      expect(controlsToggle).toHaveAttribute('aria-expanded', 'false');
+      expect(screen.queryByRole('button', { name: 'X+' })).not.toBeInTheDocument();
+      await user.click(controlsToggle);
+      const klipperXPlusButton = await screen.findByRole('button', { name: 'X+' });
+      expect(klipperXPlusButton).toHaveClass('bg-[var(--accent)]');
+      expect(klipperXPlusButton).not.toHaveClass('bg-red-700');
+      await user.click(klipperXPlusButton);
+
+      await waitFor(() => {
+        expect(jogRequests).toContain('?axis=x&distance=10');
+      });
+    });
+
+    it('sets nozzle and bed temperatures from the printer card controls', async () => {
+      const user = userEvent.setup();
+      const temperatureRequests: string[] = [];
+
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{ ...mockPrinters[0], provider: 'fluidd', model: 'Klipper' }])),
+        http.post('/api/v1/printers/:id/temperature/nozzle', ({ request }) => {
+          temperatureRequests.push(`nozzle:${new URL(request.url).search}`);
+          return HttpResponse.json({ success: true, message: 'Nozzle set' });
+        }),
+        http.post('/api/v1/printers/:id/temperature/bed', ({ request }) => {
+          temperatureRequests.push(`bed:${new URL(request.url).search}`);
+          return HttpResponse.json({ success: true, message: 'Bed set' });
+        })
+      );
+
+      render(<PrintersPage />);
+
+      await screen.findByText('X1 Carbon');
+      await user.click(await screen.findByRole('button', { name: /manual controls/i }));
+      await user.type(await screen.findByLabelText('Nozzle temperature target'), '210');
+      await user.click(screen.getByRole('button', { name: 'Nozzle' }));
+      await user.type(await screen.findByLabelText('Bed temperature target'), '60');
+      await user.click(screen.getByRole('button', { name: 'Bed' }));
+
+      await waitFor(() => {
+        expect(temperatureRequests).toEqual(expect.arrayContaining([
+          'nozzle:?target=210',
+          'bed:?target=60',
+        ]));
       });
     });
   });

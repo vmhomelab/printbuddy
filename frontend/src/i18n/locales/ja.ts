@@ -27,7 +27,7 @@ export default {
     smartSwitches: 'スマートスイッチ',
     logout: 'ログアウト',
     installApp: 'アプリをインストール',
-    installAppSuccess: 'Bambuddyをインストールしました',
+    installAppSuccess: 'Printbuddyをインストールしました',
   },
 
   // Common
@@ -349,6 +349,7 @@ export default {
     },
     // Controls section
     controls: 'コントロール',
+    indicators: 'ステータス',
     // RFID
     rfid: {
       reread: 'RFID再読み取り',
@@ -565,6 +566,7 @@ export default {
       partCooling: 'パーツ冷却ファン',
       auxiliary: '補助ファン',
       chamber: 'チャンバーファン',
+      heatbreak: 'ヒートブレークファン',
     },
     // HMS errors
     clickToViewHmsErrors: 'クリックしてHMSエラーを表示',
@@ -622,7 +624,8 @@ export default {
     developerModeWarning: '開発者LANモードが有効になっていません: {{names}}。一部の機能が動作しない可能性があります。',
     howToEnable: '有効化方法',
     incompatibleFile: 'このファイルは{{slicedFor}}用にスライスされていますが、このプリンターは{{printerModel}}です',
-    dropNotPrintable: '.gcodeおよび.gcode.3mfファイルのみ印刷できます',
+    dropNotPrintable: 'このプリンターでは {{extensions}} ファイルのみ印刷できます',
+    printUploadAccepts: 'このプリンターで印刷可能なファイル: {{extensions}}',
     dropToPrint: 'ドロップして印刷',
     cannotPrint: 'プリンター使用中',
   },
@@ -1482,7 +1485,7 @@ export default {
       disabled: 'LDAP認証を無効にしました',
       feature1: 'LDAP資格情報でログインできます',
       feature2: 'ローカル管理者アカウントはフォールバックとして残ります',
-      feature3: 'ログイン時にLDAPグループがBamBuddyグループにマッピングされます',
+      feature3: 'ログイン時にLDAPグループがPrintbuddyグループにマッピングされます',
       serverConfig: 'LDAPサーバー設定',
       serverUrl: 'サーバーURL',
       serverUrlHint: '標準はldap://、SSL接続はldaps://を使用',
@@ -1495,12 +1498,12 @@ export default {
       userFilterHint: '{username}はログインユーザー名に置き換えられます。OpenLDAPの場合は(uid={username})を使用。',
       advanced: '詳細設定',
       autoProvision: 'ユーザー自動作成',
-      autoProvisionHint: '初回LDAPログイン時にBamBuddyアカウントを自動作成',
+      autoProvisionHint: '初回LDAPログイン時にPrintbuddyアカウントを自動作成',
       defaultGroup: 'デフォルトグループ',
       defaultGroupNone: '— なし（フォールバックなし）—',
       defaultGroupHint: 'LDAPユーザーが認証されたがマッピングされたLDAPグループに属していない場合に割り当てられるフォールバックグループ。空欄の場合、マッピングされていないユーザーは権限なしのままになります。',
       groupMapping: 'グループマッピング（JSON）',
-      groupMappingHint: 'LDAPグループDNをBamBuddyグループにマッピング。利用可能なグループ: ',
+      groupMappingHint: 'LDAPグループDNをPrintbuddyグループにマッピング。利用可能なグループ: ',
       testConnection: '接続テスト',
       settingsSaved: 'LDAP設定を保存しました',
       errors: {
@@ -1867,8 +1870,8 @@ export default {
     // User management
     authentication: '認証',
     authEnabledDescription: 'ユーザー認証でインスタンスが保護されています',
-    authDisabledDescription: '認証を有効にして、ユーザーアカウントの作成、権限の管理、Bambuddyインスタンスのセキュリティを確保しましょう。',
-    authDisabledMessage: '認証を有効にして、ユーザーアカウントの作成、権限の管理、Bambuddyインスタンスのセキュリティを確保しましょう。',
+    authDisabledDescription: '認証を有効にして、ユーザーアカウントの作成、権限の管理、Printbuddyインスタンスのセキュリティを確保しましょう。',
+    authDisabledMessage: '認証を有効にして、ユーザーアカウントの作成、権限の管理、Printbuddyインスタンスのセキュリティを確保しましょう。',
     enableAuthentication: '認証を有効にする',
     currentUser: '現在のユーザー',
     changePassword: 'パスワードを変更',
@@ -1907,10 +1910,10 @@ export default {
     deleteGroup: 'グループを削除',
     // Modal: Disable auth
     disableAuthenticationTitle: '認証を無効化',
-    disableAuthenticationMessage: '認証を無効にしますか？Bambuddyインスタンスにログインなしでアクセスできるようになります。ユーザーはデータベースに残りますが、認証は無効になります。',
+    disableAuthenticationMessage: '認証を無効にしますか？Printbuddyインスタンスにログインなしでアクセスできるようになります。ユーザーはデータベースに残りますが、認証は無効になります。',
     disableAuthentication: '認証を無効化',
     // Additional settings
-    configureBambuddy: 'Bambuddyを設定',
+    configurePrintbuddy: 'Printbuddyを設定',
     systemDefault: 'システムデフォルト',
     archiveSettings: 'アーカイブ設定',
     newWindow: '新しいウィンドウ',
@@ -2182,13 +2185,13 @@ export default {
     // Updates
     printerFirmware: 'プリンターファームウェア',
     checkFirmwareDescription: 'Bambu Labのプリンターファームウェア更新を確認',
-    bambuddySoftware: 'Bambuddyソフトウェア',
+    bambuddySoftware: 'Printbuddyソフトウェア',
     autoCheckDescription: '起動時に自動的に新しいバージョンを確認',
     checkNow: '今すぐ確認',
     updateAvailableVersion: 'アップデート利用可能: v{{version}}',
     releaseNotes: 'リリースノート',
     updateViaDocker: 'Docker Composeでアップデート:',
-    updateViaHomeAssistant: 'アップデートはHome Assistant Supervisorによって管理されます。Home Assistantの設定→アドオン→Bambuddyを開いて新しいバージョンをインストールしてください。',
+    updateViaHomeAssistant: 'アップデートはHome Assistant Supervisorによって管理されます。Home Assistantの設定→アドオン→Printbuddyを開いて新しいバージョンをインストールしてください。',
     installUpdate: 'アップデートをインストール',
     latestVersionRunning: '最新バージョンを使用しています',
     failedToCheckUpdates: 'アップデートの確認に失敗しました: {{error}}',
@@ -2198,8 +2201,8 @@ export default {
     goToBackup: 'バックアップへ',
     // Network tab
     externalUrl: '外部URL',
-    externalUrlDescription: 'Bambuddyがアクセス可能な外部URL。通知画像や外部連携に使用されます。',
-    bambuddyUrl: 'BambuddyのURL',
+    externalUrlDescription: 'Printbuddyがアクセス可能な外部URL。通知画像や外部連携に使用されます。',
+    bambuddyUrl: 'PrintbuddyのURL',
     externalUrlHint: 'プロトコルとポートを含めてください（例: http://192.168.1.100:8000）',
     ftpRetry: 'FTPリトライ',
     ftpRetryDescription: 'プリンターのWi-Fiが不安定な場合にFTP操作をリトライ。3MFダウンロード、印刷アップロード、タイムラプスダウンロード、ファームウェア更新に適用。',
@@ -2225,7 +2228,7 @@ export default {
     haConnectionFailed: 'Home Assistantへの接続に失敗しました。',
     // MQTT
     mqttPublishing: 'MQTTパブリッシュ',
-    mqttDescription: 'Node-RED、Home Assistant、その他の自動化システムとの統合のため、外部MQTTブローカーにBamBuddyイベントをパブリッシュ。',
+    mqttDescription: 'Node-RED、Home Assistant、その他の自動化システムとの統合のため、外部MQTTブローカーにPrintbuddyイベントをパブリッシュ。',
     mqttEnableDescription: '外部MQTTブローカーにイベントをパブリッシュ',
     brokerHostname: 'ブローカーホスト名',
     port: 'ポート',
@@ -2358,7 +2361,7 @@ export default {
       enabledFromFile: '保存時の暗号化が有効（データディレクトリから読み込んだキー）',
       enabledGenerated: '保存時の暗号化が自動生成キーで有効',
       notConfigured: '保存時の暗号化が設定されていません',
-      notConfiguredDesc: 'TOTPシークレットとOIDCのclient_secretsは平文で保存されています。MFA_ENCRYPTION_KEYを設定するか、書き込み可能なデータディレクトリでBambuddyを再起動して自動生成してください。',
+      notConfiguredDesc: 'TOTPシークレットとOIDCのclient_secretsは平文で保存されています。MFA_ENCRYPTION_KEYを設定するか、書き込み可能なデータディレクトリでPrintbuddyを再起動して自動生成してください。',
       allEncrypted: 'すべてのMFAシークレットは保存時に暗号化されています。',
       legacyRowsLabel: 'レガシー平文行',
       encryptedRowsLabel: '暗号化された行',
@@ -2366,7 +2369,7 @@ export default {
       backupHint: '自動生成キーは DATA_DIR/.mfa_encryption_key に保存され、ローカルバックアップZIPに含まれます。バックアップを安全に保管するか、MFA_ENCRYPTION_KEYを明示的に設定してください。',
       decryptionBrokenTitle: '暗号化キーが見つかりません',
       decryptionBrokenError: '{{count}}件の暗号化レコードを復号できません。暗号化キーが見つかりません。以前のMFA_ENCRYPTION_KEYまたはDATA_DIR/.mfa_encryption_keyを復元してください。',
-      migrationErrorWarning: '{{count}} 件のレガシー行を起動時に再暗号化できませんでした。サーバーログを確認し、Bambuddy を再起動して再試行してください。',
+      migrationErrorWarning: '{{count}} 件のレガシー行を起動時に再暗号化できませんでした。サーバーログを確認し、Printbuddy を再起動して再試行してください。',
     },
 
   },
@@ -2485,7 +2488,7 @@ export default {
 
   // Login page
   login: {
-    title: 'Bambuddy ログイン',
+    title: 'Printbuddy ログイン',
     subtitle: 'アカウントにサインイン',
     username: 'ユーザー名',
     usernamePlaceholder: 'ユーザー名を入力',
@@ -2531,7 +2534,7 @@ export default {
     sending: '送信中...',
     sendResetEmail: 'リセットメールを送信',
     howToReset: 'パスワードのリセット方法：',
-    resetStep1: 'Bambuddy管理者に連絡',
+    resetStep1: 'Printbuddy管理者に連絡',
     resetStep2: 'ユーザー管理でパスワードリセットを依頼',
     resetStep3: '管理者が新しい仮パスワードを設定',
     resetStep4: '新しいパスワードでログインし、設定で変更',
@@ -2542,7 +2545,7 @@ export default {
       methodAuthenticator: '認証アプリ',
       methodEmail: 'メール認証',
       methodBackup: 'バックアップコード',
-      instructionsTotp: '認証アプリを開いて、Bambuddy用の6桁のコードを入力してください。',
+      instructionsTotp: '認証アプリを開いて、Printbuddy用の6桁のコードを入力してください。',
       instructionsEmail: '6桁の確認コードをメールアドレスに送信しました。有効期限は10分です。',
       instructionsEmailNotSent: '下のボタンをクリックして、メールで確認コードを受け取ってください。',
       instructionsBackup: '8文字のバックアップコードをいずれか1つ入力してください。各コードは1回のみ使用可能です。',
@@ -2581,8 +2584,8 @@ export default {
 
   // Setup page
   setup: {
-    title: 'Bambuddy セットアップ',
-    subtitle: 'Bambuddyインスタンスの認証を設定',
+    title: 'Printbuddy セットアップ',
+    subtitle: 'Printbuddyインスタンスの認証を設定',
     enableAuth: '認証を有効化',
     adminAccount: '管理者アカウント',
     adminAccountDesc: '既に管理者ユーザーが存在する場合、既存の管理者アカウントを使用して認証が有効化されます。既存の管理者を使用する場合は下のフィールドを空のままにするか、新しい認証情報を入力して新しい管理者ユーザーを作成してください。',
@@ -2738,7 +2741,7 @@ export default {
   // Users management
   users: {
     title: 'ユーザー管理',
-    subtitle: 'ユーザーとBambuddyインスタンスへのアクセスを管理',
+    subtitle: 'ユーザーとPrintbuddyインスタンスへのアクセスを管理',
     backToSettings: '設定に戻る',
     createUser: 'ユーザーを作成',
     noPermission: 'このページにアクセスする権限がありません。',
@@ -2894,7 +2897,7 @@ export default {
       loggedOut: 'ログアウトしました',
     },
     login: {
-      title: 'Bambuddy ログイン',
+      title: 'Printbuddy ログイン',
       subtitle: 'アカウントにサインイン',
       email: 'メールアドレス',
       password: 'パスワード',
@@ -3547,8 +3550,8 @@ export default {
     title: 'スプール在庫管理',
     subtitle: 'スプールを管理',
     spoolmanMixedContentTitle: 'Spoolman を HTTPS で読み込めません — ブラウザが混在コンテンツをブロックしています',
-    spoolmanMixedContentBody: 'Bambuddy はリバースプロキシ経由で HTTPS 配信されていますが、Spoolman の URL は HTTP のままです。ブラウザはセキュリティ上の理由で混在コンテンツをブロックするため、埋め込みの Spoolman UI を表示できません。Spoolman も HTTPS でアクセスできる必要があります。',
-    spoolmanMixedContentFixReverseProxy: 'Spoolman を Bambuddy と同じリバースプロキシ（Traefik / Nginx / Caddy）の後ろに HTTPS で配置し、設定で Spoolman URL を新しい HTTPS アドレスに更新してください。',
+    spoolmanMixedContentBody: 'Printbuddy はリバースプロキシ経由で HTTPS 配信されていますが、Spoolman の URL は HTTP のままです。ブラウザはセキュリティ上の理由で混在コンテンツをブロックするため、埋め込みの Spoolman UI を表示できません。Spoolman も HTTPS でアクセスできる必要があります。',
+    spoolmanMixedContentFixReverseProxy: 'Spoolman を Printbuddy と同じリバースプロキシ（Traefik / Nginx / Caddy）の後ろに HTTPS で配置し、設定で Spoolman URL を新しい HTTPS アドレスに更新してください。',
     spoolmanMixedContentFixOpenNewTab: '回避策として Spoolman を新しいタブで HTTP として開くことができます — 混在コンテンツのルールは埋め込みフレームのみに適用され、独立したタブは問題なく動作します。',
     spoolmanOpenInNewTab: 'Spoolman を新しいタブで開く',
     labels: {
@@ -3954,8 +3957,8 @@ export default {
     cloudLoginRequiredShort: 'Cloudログインが必要',
     githubDescription: 'プロファイルをプライベートGitHubリポジトリに自動的に同期し、バックアップとバージョン履歴を保持します。',
     repoIsPrivate: 'リポジトリはプライベートです — バックアップしても安全です。',
-    repoIsPublicWarning: 'リポジトリが公開（PUBLIC）です。Bambuddyのバックアップには MQTT 認証情報、Home Assistant トークン、Prometheus トークン、Bambu Cloud のメールアドレス、K-プロファイル経由のプリンタアクセスコードが含まれます。プロバイダー側でリポジトリをプライベートに変更するまで保存はブロックされます。',
-    repoVisibilityUnknown: 'リポジトリの公開設定を確認できませんでした。Bambuddy はプライベートと確認できないリポジトリへのバックアップを拒否します。保存はブロックされます。',
+    repoIsPublicWarning: 'リポジトリが公開（PUBLIC）です。Printbuddyのバックアップには MQTT 認証情報、Home Assistant トークン、Prometheus トークン、Bambu Cloud のメールアドレス、K-プロファイル経由のプリンタアクセスコードが含まれます。プロバイダー側でリポジトリをプライベートに変更するまで保存はブロックされます。',
+    repoVisibilityUnknown: 'リポジトリの公開設定を確認できませんでした。Printbuddy はプライベートと確認できないリポジトリへのバックアップを拒否します。保存はブロックされます。',
     repositoryUrl: 'リポジトリURL',
     repoUrlPlaceholderGitHub: 'https://github.com/username/repo-name',
 	repoUrlPlaceholderGitea: 'https://gitea.example.com/username/repo-name',
@@ -3985,7 +3988,7 @@ export default {
     cloudProfiles: 'クラウドプロファイル',
     cloudProfilesDescription: 'Bambu Cloudからのフィラメント、プリンター、プロセスプリセット',
     appSettings: 'アプリ設定',
-    appSettingsDescription: 'Bambuddy設定（データベース全体）',
+    appSettingsDescription: 'Printbuddy設定（データベース全体）',
     spoolInventory: 'スプール在庫',
     spoolInventoryDescription: 'フィラメントスプール、使用履歴、コスト追跡',
     printArchives: '印刷アーカイブ',
@@ -4020,7 +4023,7 @@ export default {
 
     // Local Backup
     localBackup: 'ローカルバックアップ',
-    localBackupDescription: 'データベース、アーカイブ、アップロード、すべてのファイルを含むBambuddyデータの完全なバックアップを作成します。',
+    localBackupDescription: 'データベース、アーカイブ、アップロード、すべてのファイルを含むPrintbuddyデータの完全なバックアップを作成します。',
     downloadBackupLabel: 'バックアップをダウンロード',
     completeBackupZip: '完全バックアップ: データベース + 全ファイル (ZIP)',
     download: 'ダウンロード',
@@ -4036,7 +4039,7 @@ export default {
     restoreConfirmMessage: '"{{filename}}"から復元してもよろしいですか？現在のデータベースとすべてのファイルが完全に置き換えられます。復元後にアプリケーションの再起動が必要です。',
     restoreConfirmButton: 'バックアップを復元',
     uploadingFile: 'バックアップファイルをアップロードしています...',
-    backupRestoredRestart: 'バックアップが復元されました。Bambuddyを再起動してください。',
+    backupRestoredRestart: 'バックアップが復元されました。Printbuddyを再起動してください。',
     failedToRestore: 'バックアップの復元に失敗しました。ファイル形式を確認してください。',
     reloadNow: '今すぐリロード',
     creatingBackup: 'バックアップを作成中',
@@ -4268,7 +4271,7 @@ export default {
       right: '右',
       notes: 'メモ（ローカル保存）',
       notesPlaceholder: 'このプロファイルのメモを追加...',
-      notesHelp: 'メモはBambuddyに保存され、プリンターには保存されません',
+      notesHelp: 'メモはPrintbuddyに保存され、プリンターには保存されません',
       syncing: 'プリンターと同期中...',
       savingExtruder: 'エクストルーダーに保存中 {{current}}/{{total}}...',
       pleaseWait: 'お待ちください',
@@ -4323,7 +4326,7 @@ export default {
     },
     enable: {
       title: '仮想プリンターを有効化',
-      visibleInSlicer: 'スライサーの検出リストに「Bambuddy」として表示',
+      visibleInSlicer: 'スライサーの検出リストに「Printbuddy」として表示',
       proxyingTo: '{{name}}にプロキシ中',
       notActive: '非アクティブ',
     },
@@ -4354,7 +4357,7 @@ export default {
       configured: 'インターフェース上書き有効',
       optional: 'オプション — 自動検出IPが間違っている場合に使用（複数NIC、Docker、VPNなど）',
       placeholder: '自動検出（デフォルト）...',
-      hint: 'SSDPで広告され、TLS証明書に使用されるIPアドレスを上書きします。Bambuddyに複数のネットワークインターフェースがある場合に便利です。',
+      hint: 'SSDPで広告され、TLS証明書に使用されるIPアドレスを上書きします。Printbuddyに複数のネットワークインターフェースがある場合に便利です。',
     },
     mode: {
       title: 'モード',
@@ -4387,7 +4390,7 @@ export default {
     howItWorks: {
       title: '仕組み',
       step1: '同じLAN上では、仮想プリンターはスライサー（Bambu Studio / OrcaSlicer）に自動的に表示されます。他のネットワークからは、IPアドレスとアクセスコードで手動で追加してください。',
-      step2: 'アーカイブ、レビュー、キューモードでは、スライサーの「送信」ボタンを使用して3MFファイルをBambuddyにアップロードします。スライサーは「印刷成功」と表示しますが、ファイルは保存され、印刷はされません。',
+      step2: 'アーカイブ、レビュー、キューモードでは、スライサーの「送信」ボタンを使用して3MFファイルをPrintbuddyにアップロードします。スライサーは「印刷成功」と表示しますが、ファイルは保存され、印刷はされません。',
       step3: 'プロキシモードでは、仮想プリンターはすべてのトラフィックを実際のプリンターに転送します。直接接続されているかのように印刷がすぐに開始されます。',
     },
     status: {
@@ -4449,7 +4452,7 @@ export default {
     },
     caCert: {
       title: 'スライサー証明書',
-      description: '仮想プリンターは Bambuddy CA が署名した TLS 証明書を使用します。この CA 証明書をスライサーの信頼ストアに一度インポートすると接続が受け入れられます — コマンドラインからコピーする必要はありません。',
+      description: '仮想プリンターは Printbuddy CA が署名した TLS 証明書を使用します。この CA 証明書をスライサーの信頼ストアに一度インポートすると接続が受け入れられます — コマンドラインからコピーする必要はありません。',
       copy: 'コピー',
       copied: 'コピーしました',
       download: 'ダウンロード',
@@ -5143,7 +5146,7 @@ export default {
   // Email Settings
   emailSettings: {
     placeholders: {
-      fromName: 'Bambuddy',
+      fromName: 'Printbuddy',
     },
   },
 
@@ -5437,7 +5440,7 @@ export default {
       upToDate: '最新です',
       includeBeta: 'ベータ版を含む',
       systemConfig: 'バックエンドと認証',
-      backendUrl: 'BambuddyバックエンドURL',
+      backendUrl: 'PrintbuddyバックエンドURL',
       apiToken: 'APIトークン',
       apiTokenPlaceholder: 'APIトークンを入力',
       saveConfig: '設定を保存',
@@ -5536,13 +5539,13 @@ export default {
       network_mode: {
         title: 'Dockerネットワークモード',
         pass: 'ホストネットワークモードで実行中です。',
-        warn: 'BambuddyはDockerブリッジネットワークで実行されています。プリンター検出と仮想プリンターにはホストネットワークモードが必要です — "network_mode: host" でコンテナを再作成してください。',
+        warn: 'PrintbuddyはDockerブリッジネットワークで実行されています。プリンター検出と仮想プリンターにはホストネットワークモードが必要です — "network_mode: host" でコンテナを再作成してください。',
         skip: 'Dockerで実行されていません — 該当しません。',
       },
       subnet: {
         title: 'ネットワークサブネット',
-        pass: 'プリンターとBambuddyは同じサブネットにあります。',
-        warn: 'プリンター ({{printer_ip}}) とBambuddy ({{host_ip}}) は異なるサブネットにあります。サブネット間のルーティングが設定されていない限り、互いに到達できない可能性があります。',
+        pass: 'プリンターとPrintbuddyは同じサブネットにあります。',
+        warn: 'プリンター ({{printer_ip}}) とPrintbuddy ({{host_ip}}) は異なるサブネットにあります。サブネット間のルーティングが設定されていない限り、互いに到達できない可能性があります。',
         skip: 'サブネットを判定できませんでした — スキップしました。',
       },
       mqtt_auth: {
@@ -5578,12 +5581,12 @@ export default {
       'ftp-auth-rejected': {
         name: 'プリンターがアクセスコードを拒否しました',
         cause: 'プリンターがファイル転送のログインを拒否しました。アクセスコードが間違っているか、開発者モードの切り替え後に変更されています。',
-        fix: 'プリンター画面（LAN設定）からアクセスコードをコピーし直し、Bambuddy のプリンター設定で更新してください。',
+        fix: 'プリンター画面（LAN設定）からアクセスコードをコピーし直し、Printbuddy のプリンター設定で更新してください。',
       },
       'ftp-connection-timeout': {
         name: 'ファイル転送の接続がタイムアウトしました',
-        cause: 'Bambuddy がプリンターのファイル転送ポート（FTPS 990）に到達できませんでした。ポートがブロックされているか、プリンターの電源が切れているか、別のサブネットにあります。',
-        fix: 'Bambuddy とプリンターの間でポート 990 がブロックされていないこと、両者が同じネットワークにあることを確認してください。',
+        cause: 'Printbuddy がプリンターのファイル転送ポート（FTPS 990）に到達できませんでした。ポートがブロックされているか、プリンターの電源が切れているか、別のサブネットにあります。',
+        fix: 'Printbuddy とプリンターの間でポート 990 がブロックされていないこと、両者が同じネットワークにあることを確認してください。',
       },
       'ftp-ssl-error': {
         name: 'セキュアなファイル転送のハンドシェイクに失敗しました',
@@ -5603,7 +5606,7 @@ export default {
       'database-locked': {
         name: 'データベースの書き込み競合',
         cause: '負荷時に SQLite データベースで "database is locked" エラーが発生しています。複数のプリンターを同時に使用する場合によく起こります。',
-        fix: 'Bambuddy を外部の PostgreSQL データベースに切り替えてください。ドキュメントの PostgreSQL ガイドを参照してください。',
+        fix: 'Printbuddy を外部の PostgreSQL データベースに切り替えてください。ドキュメントの PostgreSQL ガイドを参照してください。',
       },
     },
   },
@@ -5626,7 +5629,7 @@ export default {
       },
       running: {
         title: 'サービスが稼働中',
-        fail: '仮想プリンターは有効ですが、サービスが稼働していません。Bambuddy のログを確認してください — 通常はバインド IP の競合または権限エラーが原因で停止します。',
+        fail: '仮想プリンターは有効ですが、サービスが稼働していません。Printbuddy のログを確認してください — 通常はバインド IP の競合または権限エラーが原因で停止します。',
       },
       bind_interface: {
         title: 'バインドネットワークインターフェース',
@@ -5655,8 +5658,8 @@ export default {
       },
       certificate: {
         title: 'TLS 証明書',
-        pass: '証明書の準備ができています。Bambuddy CA 証明書（上記）がスライサーの信頼ストアにインポートされていることを確認してください。',
-        fail: 'この仮想プリンターの TLS 証明書がありません。Bambuddy のデータディレクトリが書き込み可能か確認してください。',
+        pass: '証明書の準備ができています。Printbuddy CA 証明書（上記）がスライサーの信頼ストアにインポートされていることを確認してください。',
+        fail: 'この仮想プリンターの TLS 証明書がありません。Printbuddy のデータディレクトリが書き込み可能か確認してください。',
       },
     },
   },
@@ -5689,7 +5692,7 @@ export default {
     submittingStepConnection: 'プリンターの接続確認を実行中',
     submittingStepVirtualPrinters: '仮想プリンターのセットアップ確認を実行中',
     submittingStepLogScan: '最近のログから既知の問題をスキャン中',
-    submittingStepSubmit: 'GitHub にレポートを送信中',
+    submittingStepSubmit: 'GitHub Issueリンクを準備中',
     submitSuccess: 'バグレポートが正常に送信されました！',
     submitFailed: 'バグレポートの送信に失敗しました',
     diagnosticChecking: 'プリンター接続を確認中...',
@@ -5698,6 +5701,9 @@ export default {
     diagnosticIntro: '1 台以上のプリンターに接続の問題があり、それが今回の問題の原因である可能性があります。下記のプリンターを展開して対処法を確認してください — それを解決すれば、バグ報告なしで問題が解決するかもしれません。下記から報告を送信することもできます。',
     thankYou: 'ありがとうございます！',
     submitted: 'バグレポートが送信されました。',
+    prepared: 'バグレポートを準備しました',
+    preparedMessage: '準備されたGitHub Issueを確認し、手動で送信してください。',
+    openGitHubIssue: 'GitHub Issueを開く',
     viewIssue: 'Issueを表示',
     unexpectedError: '予期しないエラーが発生しました',
   },
@@ -5721,7 +5727,7 @@ export default {
     pollInterval: 'ポーリング間隔(秒)',
     pollIntervalHint: '印刷中に各プリンターをチェックする頻度。最小 5 秒、最大 120 秒。',
     externalUrlMissing: '外部URLが設定されていません。',
-    externalUrlHint: 'ML APIはURLでカメラスナップショットを取得します。MLAPIコンテナがBambuddyに到達できるよう、一般設定で外部URLを設定してください。',
+    externalUrlHint: 'ML APIはURLでカメラスナップショットを取得します。MLAPIコンテナがPrintbuddyに到達できるよう、一般設定で外部URLを設定してください。',
     perPrinterTitle: '監視対象プリンター',
     perPrinterHint: '検出サービスが監視するプリンターを選択します。',
     monitorAll: '接続されているすべてのプリンターを監視',
@@ -5735,7 +5741,7 @@ export default {
   },
   makerworld: {
     title: 'MakerWorld',
-    description: 'MakerWorld モデルの URL を貼り付けると、Bambu Handy アプリを開かなくても Bambuddy から直接インポート・印刷できます。',
+    description: 'MakerWorld モデルの URL を貼り付けると、Bambu Handy アプリを開かなくても Printbuddy から直接インポート・印刷できます。',
     pasteUrlHeader: 'MakerWorld からインポート',
     pasteUrlPlaceholder: 'https://makerworld.com/en/models/… または任意の MakerWorld リンク',
     resolveButton: '読み込む',
@@ -5758,7 +5764,7 @@ export default {
     alsoCompatible: '互換性ありとも記録: {{printers}}',
     importToLibrary: '保存',
     sliceIn: '保存して {{slicer}} でスライス',
-    disclaimer: 'MakerWorld 連携はコミュニティで文書化された API エンドポイントを使用しています。Bambuddy は MakerWorld または Bambu Lab との提携・承認関係はありません。',
+    disclaimer: 'MakerWorld 連携はコミュニティで文書化された API エンドポイントを使用しています。Printbuddy は MakerWorld または Bambu Lab との提携・承認関係はありません。',
     lastImportSuccess: 'ライブラリにインポートしました',
     lastImportAlreadyInLibrary: '既にライブラリに存在します',
     viewInLibrary: 'ファイルマネージャーで表示',
@@ -5854,7 +5860,7 @@ export default {
     effect1: '一致するファイルはゴミ箱に移動されます。ディスクからはまだ削除されません。',
     effect2: '保持期間が過ぎるまで、いつでもゴミ箱から復元できます。',
     effect3: '保持期間が過ぎると、ゴミ箱クリーナーがディスクから完全に削除します。',
-    effect4: '外部（リンク済み）フォルダー内のファイルはスキップされます — Bambuddyは所有していないバイトを削除しません。',    previewLoading: '対象ファイル数を確認中…',
+    effect4: '外部（リンク済み）フォルダー内のファイルはスキップされます — Printbuddyは所有していないバイトを削除しません。',    previewLoading: '対象ファイル数を確認中…',
     previewFailed: 'プレビューを取得できませんでした。',
     previewSummary: '{{count}} 件 · {{size}} がゴミ箱に移動されます',
     andMore: '…ほか {{count}} 件',

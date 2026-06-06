@@ -235,6 +235,10 @@ class TelegramConfig(BaseModel):
 
     bot_token: str = Field(..., description="Bot token from @BotFather")
     chat_id: str = Field(..., description="Chat ID to send messages to")
+    message_thread_id: str | None = Field(
+        default=None,
+        description="Optional Telegram forum topic/thread ID",
+    )
 
 
 class EmailConfig(BaseModel):

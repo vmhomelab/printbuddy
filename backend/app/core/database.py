@@ -670,6 +670,12 @@ async def run_migrations(conn):
     # Migration: Add location column to printers for grouping
     await _safe_execute(conn, "ALTER TABLE printers ADD COLUMN location VARCHAR(100)")
 
+    # Migration: Add provider metadata for Printbuddy multi-printer backends
+    await _safe_execute(conn, "ALTER TABLE printers ADD COLUMN provider VARCHAR(20) DEFAULT 'bambu'")
+    await _safe_execute(conn, "ALTER TABLE printers ADD COLUMN api_url VARCHAR(500)")
+    await _safe_execute(conn, "ALTER TABLE printers ADD COLUMN auth_token VARCHAR(500)")
+    await _safe_execute(conn, "ALTER TABLE printers ADD COLUMN provider_options TEXT")
+
     # Migration: Add interval_type column to maintenance_types
     await _safe_execute(conn, "ALTER TABLE maintenance_types ADD COLUMN interval_type VARCHAR(20) DEFAULT 'hours'")
 
@@ -1669,7 +1675,7 @@ async def run_migrations(conn):
                                  NULL, :remote_iface, '391800001', 0)
                         """),
                         {
-                            "name": "Bambuddy",
+                            "name": "Printbuddy",
                             "enabled": old_enabled,
                             "mode": old_mode or "immediate",
                             "model": old_model,
@@ -2332,6 +2338,16 @@ async def run_migrations(conn):
                 )
         except (OperationalError, ProgrammingError):
             pass
+
+    # Printbuddy rebrand: switch old Bambuddy-green accent settings to blue.
+    # This intentionally updates existing green rows so upgraded Docker installs
+    # move to the new blue default without requiring users to reset theme state.
+    try:
+        await conn.execute(
+            text("UPDATE settings SET value = 'blue' WHERE key IN ('dark_accent', 'light_accent') AND value = 'green'")
+        )
+    except (OperationalError, ProgrammingError):
+        pass
 
     # Migration: Create filament_sku_settings table for reorder forecasting
     if is_sqlite():

@@ -58,6 +58,7 @@ export function BugReportBubble() {
   const [issueUrl, setIssueUrl] = useState<string | null>(null);
   const [issueNumber, setIssueNumber] = useState<number | null>(null);
   const [errorMessage, setErrorMessage] = useState('');
+  const [successMessage, setSuccessMessage] = useState('');
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [wasDebug, setWasDebug] = useState(false);
   const modalRef = useRef<HTMLDivElement>(null);
@@ -118,6 +119,7 @@ export function BugReportBubble() {
     setIssueUrl(null);
     setIssueNumber(null);
     setErrorMessage('');
+    setSuccessMessage('');
     setElapsedSeconds(0);
     setWasDebug(false);
   };
@@ -203,6 +205,7 @@ export function BugReportBubble() {
       if (result.success) {
         setIssueUrl(result.issue_url || null);
         setIssueNumber(result.issue_number || null);
+        setSuccessMessage(result.message || t('bugReport.prepared'));
         setViewState('success');
       } else {
         setErrorMessage(result.message);
@@ -511,8 +514,8 @@ export function BugReportBubble() {
               {viewState === 'success' && (
                 <div className="flex flex-col items-center justify-center py-8 gap-3">
                   <CheckCircle className="w-12 h-12 text-green-500" />
-                  <p className="text-lg font-semibold text-gray-900 dark:text-white">{t('bugReport.thankYou')}</p>
-                  <p className="text-sm text-gray-600 dark:text-gray-400">{t('bugReport.submitted')}</p>
+                  <p className="text-lg font-semibold text-gray-900 dark:text-white">{t('bugReport.prepared')}</p>
+                  <p className="text-sm text-gray-600 dark:text-gray-400 text-center">{successMessage || t('bugReport.preparedMessage')}</p>
                   {issueUrl && (
                     <a
                       href={issueUrl}
@@ -520,7 +523,7 @@ export function BugReportBubble() {
                       rel="noopener noreferrer"
                       className="text-sm text-blue-500 hover:text-blue-600 underline"
                     >
-                      {t('bugReport.viewIssue')} #{issueNumber}
+                      {issueNumber ? `${t('bugReport.viewIssue')} #${issueNumber}` : t('bugReport.openGitHubIssue')}
                     </a>
                   )}
                   <button

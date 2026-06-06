@@ -108,6 +108,48 @@ describe('AddNotificationModal — ntfy Priority (#990)', () => {
     expect(screen.queryByText(/ntfy priority/i)).not.toBeInTheDocument();
   });
 
+  it('renders and saves Telegram forum topic thread ID', async () => {
+    let captured: unknown = null;
+    server.use(
+      http.patch('*/api/v1/notifications/1', async ({ request }) => {
+        captured = await request.json();
+        return HttpResponse.json({ id: 1 });
+      }),
+    );
+
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <AddNotificationModal
+        provider={buildProvider({
+          provider_type: 'telegram',
+          config: {
+            bot_token: '123:abc',
+            chat_id: '-1001234567890',
+            message_thread_id: '17585',
+          },
+        })}
+        onClose={onClose}
+      />,
+    );
+
+    expect(await screen.findByDisplayValue('-1001234567890')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('17585')).toBeInTheDocument();
+
+    await user.clear(screen.getByDisplayValue('17585'));
+    await user.type(screen.getByPlaceholderText(/optional forum topic id/i), '42');
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(captured).not.toBeNull();
+    const payload = captured as { config: Record<string, unknown> };
+    expect(payload.config).toMatchObject({
+      bot_token: '123:abc',
+      chat_id: '-1001234567890',
+      message_thread_id: '42',
+    });
+  });
+
   it('persists event_priorities into config on save', async () => {
     let captured: unknown = null;
     server.use(

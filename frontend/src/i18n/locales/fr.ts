@@ -27,7 +27,7 @@ export default {
     smartSwitches: 'Interrupteurs intelligents',
     logout: 'Déconnexion',
     installApp: "Installer l'application",
-    installAppSuccess: 'Bambuddy a été installé',
+    installAppSuccess: 'Printbuddy a été installé',
   },
 
   // Common
@@ -350,6 +350,7 @@ export default {
     },
     // Controls section
     controls: 'Contrôles',
+    indicators: 'Statut',
     // RFID
     rfid: {
       reread: 'Relire RFID',
@@ -566,6 +567,7 @@ export default {
       partCooling: 'Ventilateur pièce',
       auxiliary: 'Ventilateur auxiliaire',
       chamber: 'Ventilateur chambre',
+      heatbreak: 'Ventilateur du heatbreak',
     },
     // HMS errors
     clickToViewHmsErrors: 'Cliquez pour voir les erreurs HMS',
@@ -623,7 +625,8 @@ export default {
     developerModeWarning: 'Le mode développeur LAN n\'est pas activé sur : {{names}}. Certaines fonctionnalités peuvent ne pas fonctionner.',
     howToEnable: 'Comment activer',
     incompatibleFile: 'Ce fichier a été tranché pour {{slicedFor}}, mais cette imprimante est une {{printerModel}}',
-    dropNotPrintable: 'Seuls les fichiers .gcode et .gcode.3mf peuvent être imprimés',
+    dropNotPrintable: 'Seuls les fichiers {{extensions}} peuvent être imprimés sur cette imprimante',
+    printUploadAccepts: 'Fichiers imprimables pour cette imprimante : {{extensions}}',
     dropToPrint: 'Déposer pour imprimer',
     cannotPrint: 'Imprimante occupée',
   },
@@ -1439,7 +1442,7 @@ export default {
       disabled: 'Authentification LDAP désactivée',
       feature1: 'Les utilisateurs peuvent se connecter avec leurs identifiants LDAP',
       feature2: "Le compte administrateur local reste disponible en secours",
-      feature3: 'Les groupes LDAP sont associés aux groupes BamBuddy à la connexion',
+      feature3: 'Les groupes LDAP sont associés aux groupes Printbuddy à la connexion',
       serverConfig: 'Configuration du serveur LDAP',
       serverUrl: 'URL du serveur',
       serverUrlHint: 'Utilisez ldap:// pour standard ou ldaps:// pour les connexions SSL',
@@ -1452,12 +1455,12 @@ export default {
       userFilterHint: "{username} est remplacé par le nom d'utilisateur. Utilisez (uid={username}) pour OpenLDAP.",
       advanced: 'Avancé',
       autoProvision: 'Provisionnement automatique',
-      autoProvisionHint: 'Créer automatiquement un compte BamBuddy lors de la première connexion LDAP',
+      autoProvisionHint: 'Créer automatiquement un compte Printbuddy lors de la première connexion LDAP',
       defaultGroup: 'Groupe par défaut',
       defaultGroupNone: '— Aucun (pas de repli) —',
       defaultGroupHint: "Groupe de repli attribué lorsqu'un utilisateur LDAP s'authentifie mais n'est dans aucun groupe LDAP mappé. Laissez vide pour laisser les utilisateurs non mappés sans autorisations.",
       groupMapping: 'Mappage de groupes (JSON)',
-      groupMappingHint: 'Associer les DN de groupes LDAP aux groupes BamBuddy. Groupes disponibles : ',
+      groupMappingHint: 'Associer les DN de groupes LDAP aux groupes Printbuddy. Groupes disponibles : ',
       testConnection: 'Tester la connexion',
       settingsSaved: 'Paramètres LDAP enregistrés',
       errors: {
@@ -1538,7 +1541,7 @@ export default {
     autoUpdate: 'Mise à jour auto',
     currentVersion: 'Version actuelle',
     latestVersion: 'Dernière version',
-    upToDate: 'Bambuddy est à jour',
+    upToDate: 'Printbuddy est à jour',
     updateAvailable: 'Mise à jour disponible',
     // Notifications
     notificationLanguage: 'Langue des notifications',
@@ -1867,7 +1870,7 @@ export default {
     disableAuthenticationMessage: 'Instance accessible sans connexion. Les comptes sont conservés.',
     disableAuthentication: 'Désactiver',
     // Additional settings
-    configureBambuddy: 'Configurer Bambuddy',
+    configurePrintbuddy: 'Configurer Printbuddy',
     systemDefault: 'Défaut système',
     archiveSettings: 'Réglages Archives',
     newWindow: 'Nouvelle fenêtre',
@@ -2133,13 +2136,13 @@ export default {
     lowDiskSpaceDescription: 'Afficher un avertissement lorsque l\'espace disque libre descend sous ce seuil',
     printerFirmware: 'Firmware imprimante',
     checkFirmwareDescription: 'Vérifier les mises à jour firmware de Bambu Lab',
-    bambuddySoftware: 'Logiciel Bambuddy',
+    bambuddySoftware: 'Logiciel Printbuddy',
     autoCheckDescription: 'Vérifier automatiquement les nouvelles versions au démarrage',
     checkNow: 'Vérifier maintenant',
     updateAvailableVersion: 'Mise à jour disponible : v{{version}}',
     releaseNotes: 'Notes de version',
     updateViaDocker: 'Mettre à jour via Docker Compose :',
-    updateViaHomeAssistant: 'Les mises à jour sont gérées par le superviseur Home Assistant. Ouvrez Paramètres → Modules complémentaires → Bambuddy dans Home Assistant pour installer la nouvelle version.',
+    updateViaHomeAssistant: 'Les mises à jour sont gérées par le superviseur Home Assistant. Ouvrez Paramètres → Modules complémentaires → Printbuddy dans Home Assistant pour installer la nouvelle version.',
     installUpdate: 'Installer la mise à jour',
     latestVersionRunning: 'Vous utilisez la dernière version',
     failedToCheckUpdates: 'Échec de la vérification des mises à jour : {{error}}',
@@ -2147,8 +2150,8 @@ export default {
     backupRestoreDescription: 'Exporter/importer les paramètres et configurer la sauvegarde GitHub',
     goToBackup: 'Aller à la sauvegarde',
     externalUrl: 'URL externe',
-    externalUrlDescription: 'L\'URL externe où Bambuddy est accessible. Utilisée pour les images de notification et les intégrations externes.',
-    bambuddyUrl: 'URL Bambuddy',
+    externalUrlDescription: 'L\'URL externe où Printbuddy est accessible. Utilisée pour les images de notification et les intégrations externes.',
+    bambuddyUrl: 'URL Printbuddy',
     externalUrlHint: 'Inclure le protocole et le port (ex : http://192.168.1.100:8000)',
     ftpRetry: 'Réessai FTP',
     ftpRetryDescription: 'Réessayer les opérations FTP lorsque le WiFi de l\'imprimante est instable. S\'applique aux téléchargements 3MF, uploads d\'impression, téléchargements timelapse et mises à jour firmware.',
@@ -2172,7 +2175,7 @@ export default {
     haConnectionSuccess: 'Connexion à Home Assistant réussie.',
     haConnectionFailed: 'Échec de la connexion à Home Assistant.',
     mqttPublishing: 'Publication MQTT',
-    mqttDescription: 'Publier les événements BamBuddy vers un broker MQTT externe pour l\'intégration avec Node-RED, Home Assistant et d\'autres systèmes d\'automatisation.',
+    mqttDescription: 'Publier les événements Printbuddy vers un broker MQTT externe pour l\'intégration avec Node-RED, Home Assistant et d\'autres systèmes d\'automatisation.',
     mqttEnableDescription: 'Publier les événements vers un broker MQTT externe',
     brokerHostname: 'Nom d\'hôte du broker',
     port: 'Port',
@@ -2302,7 +2305,7 @@ export default {
       enabledFromFile: 'Chiffrement au repos activé (clé chargée depuis le répertoire de données)',
       enabledGenerated: 'Chiffrement au repos activé avec une clé auto-générée',
       notConfigured: 'Chiffrement au repos non configuré',
-      notConfiguredDesc: 'Les secrets TOTP et client_secrets OIDC sont stockés en clair. Définissez MFA_ENCRYPTION_KEY ou redémarrez Bambuddy avec un répertoire de données accessible en écriture pour en générer un automatiquement.',
+      notConfiguredDesc: 'Les secrets TOTP et client_secrets OIDC sont stockés en clair. Définissez MFA_ENCRYPTION_KEY ou redémarrez Printbuddy avec un répertoire de données accessible en écriture pour en générer un automatiquement.',
       allEncrypted: 'Tous les secrets MFA sont chiffrés au repos.',
       legacyRowsLabel: 'Lignes héritées en clair',
       encryptedRowsLabel: 'Lignes chiffrées',
@@ -2310,7 +2313,7 @@ export default {
       backupHint: 'La clé auto-générée est stockée dans DATA_DIR/.mfa_encryption_key et incluse dans les ZIP de sauvegarde locale. Conservez vos sauvegardes en sécurité ou définissez MFA_ENCRYPTION_KEY explicitement.',
       decryptionBrokenTitle: 'Clé de chiffrement manquante',
       decryptionBrokenError: '{{count}} enregistrement(s) chiffré(s) ne peuvent pas être déchiffrés car la clé de chiffrement n\'est plus disponible. Restaurez le MFA_ENCRYPTION_KEY précédent ou DATA_DIR/.mfa_encryption_key pour récupérer.',
-      migrationErrorWarning: "{{count}} ligne(s) ancienne(s) n'ont pas pu être rechiffrée(s) au démarrage. Vérifiez les journaux du serveur et redémarrez Bambuddy pour réessayer.",
+      migrationErrorWarning: "{{count}} ligne(s) ancienne(s) n'ont pas pu être rechiffrée(s) au démarrage. Vérifiez les journaux du serveur et redémarrez Printbuddy pour réessayer.",
     },
 
 
@@ -2474,7 +2477,7 @@ export default {
 
   // Login page
   login: {
-    title: 'Connexion Bambuddy',
+    title: 'Connexion Printbuddy',
     subtitle: 'Connectez-vous à votre compte',
     username: 'Utilisateur',
     usernamePlaceholder: 'Entrez votre utilisateur',
@@ -2520,7 +2523,7 @@ export default {
     sending: 'Envoi...',
     sendResetEmail: 'Envoyer l\'email',
     howToReset: 'Comment réinitialiser :',
-    resetStep1: 'Contactez votre admin Bambuddy',
+    resetStep1: 'Contactez votre admin Printbuddy',
     resetStep2: 'Demandez une réinitialisation dans la Gestion Utilisateurs',
     resetStep3: 'Il vous donnera un mot de passe temporaire',
     resetStep4: 'Connectez-vous et changez-le dans les Paramètres',
@@ -2531,7 +2534,7 @@ export default {
       methodAuthenticator: "Application d'authentification",
       methodEmail: 'Code par e-mail',
       methodBackup: 'Code de récupération',
-      instructionsTotp: "Ouvrez votre application d'authentification et saisissez le code à 6 chiffres pour Bambuddy.",
+      instructionsTotp: "Ouvrez votre application d'authentification et saisissez le code à 6 chiffres pour Printbuddy.",
       instructionsEmail: 'Un code à 6 chiffres a été envoyé à votre adresse e-mail. Il est valable 10 minutes.',
       instructionsEmailNotSent: 'Cliquez ci-dessous pour recevoir un code de vérification par e-mail.',
       instructionsBackup: "Saisissez l'un de vos codes de récupération à 8 caractères. Chaque code ne peut être utilisé qu'une seule fois.",
@@ -2570,7 +2573,7 @@ export default {
 
   // Setup page
   setup: {
-    title: 'Configuration Bambuddy',
+    title: 'Configuration Printbuddy',
     subtitle: 'Configurez l\'authentification',
     enableAuth: 'Activer l\'authentification',
     adminAccount: 'Compte Admin',
@@ -2727,7 +2730,7 @@ export default {
   // Users management
   users: {
     title: 'Gestion des Utilisateurs',
-    subtitle: 'Gérez les accès à Bambuddy',
+    subtitle: 'Gérez les accès à Printbuddy',
     backToSettings: 'Retour aux paramètres',
     createUser: 'Créer un utilisateur',
     noPermission: 'Accès refusé.',
@@ -3536,8 +3539,8 @@ export default {
     title: 'Inventaire de Bobines',
     subtitle: 'Gérez vos bobines',
     spoolmanMixedContentTitle: 'Spoolman ne peut pas se charger en HTTPS — contenu mixte bloqué par votre navigateur',
-    spoolmanMixedContentBody: 'Bambuddy est servi en HTTPS (via votre reverse proxy), mais votre URL Spoolman est encore en HTTP. Les navigateurs bloquent le contenu mixte pour des raisons de sécurité, donc l\'interface Spoolman intégrée ne peut pas s\'afficher. Spoolman doit être accessible en HTTPS.',
-    spoolmanMixedContentFixReverseProxy: 'Placez Spoolman derrière le même reverse proxy que Bambuddy (Traefik / Nginx / Caddy) en HTTPS, puis mettez à jour l\'URL Spoolman dans les Paramètres avec la nouvelle adresse HTTPS.',
+    spoolmanMixedContentBody: 'Printbuddy est servi en HTTPS (via votre reverse proxy), mais votre URL Spoolman est encore en HTTP. Les navigateurs bloquent le contenu mixte pour des raisons de sécurité, donc l\'interface Spoolman intégrée ne peut pas s\'afficher. Spoolman doit être accessible en HTTPS.',
+    spoolmanMixedContentFixReverseProxy: 'Placez Spoolman derrière le même reverse proxy que Printbuddy (Traefik / Nginx / Caddy) en HTTPS, puis mettez à jour l\'URL Spoolman dans les Paramètres avec la nouvelle adresse HTTPS.',
     spoolmanMixedContentFixOpenNewTab: 'Alternative : ouvrez Spoolman dans un nouvel onglet en HTTP — les règles de contenu mixte ne s\'appliquent qu\'aux cadres intégrés, un onglet autonome fonctionne.',
     spoolmanOpenInNewTab: 'Ouvrir Spoolman dans un nouvel onglet',
     labels: {
@@ -3943,8 +3946,8 @@ export default {
     cloudLoginRequiredShort: 'Connexion Cloud requise',
     githubDescription: 'Synchronisez automatiquement vos profils vers un dépôt GitHub privé pour la sauvegarde et l\'historique des versions.',
     repoIsPrivate: 'Le dépôt est privé — la sauvegarde peut s\'y faire en toute sécurité.',
-    repoIsPublicWarning: 'Le dépôt est PUBLIC. Les sauvegardes Bambuddy contiennent les identifiants MQTT, les jetons Home Assistant, les jetons Prometheus, votre adresse Bambu Cloud, et les codes d\'accès des imprimantes via les K-profils. L\'enregistrement est bloqué tant que le dépôt n\'est pas passé en privé dans les paramètres de votre hébergeur.',
-    repoVisibilityUnknown: 'Impossible de déterminer la visibilité du dépôt. Bambuddy refuse toute sauvegarde vers un dépôt non confirmé privé ; l\'enregistrement sera bloqué.',
+    repoIsPublicWarning: 'Le dépôt est PUBLIC. Les sauvegardes Printbuddy contiennent les identifiants MQTT, les jetons Home Assistant, les jetons Prometheus, votre adresse Bambu Cloud, et les codes d\'accès des imprimantes via les K-profils. L\'enregistrement est bloqué tant que le dépôt n\'est pas passé en privé dans les paramètres de votre hébergeur.',
+    repoVisibilityUnknown: 'Impossible de déterminer la visibilité du dépôt. Printbuddy refuse toute sauvegarde vers un dépôt non confirmé privé ; l\'enregistrement sera bloqué.',
     repositoryUrl: 'URL du dépôt',
     repoUrlPlaceholderGitHub: 'https://github.com/username/repo-name',
 	repoUrlPlaceholderGitea: 'https://gitea.example.com/username/repo-name',
@@ -3974,7 +3977,7 @@ export default {
     cloudProfiles: 'Profils Cloud',
     cloudProfilesDescription: 'Préréglages de filament, imprimante et processus depuis Bambu Cloud',
     appSettings: 'Paramètres de l\'application',
-    appSettingsDescription: 'Configuration Bambuddy (base de données complète)',
+    appSettingsDescription: 'Configuration Printbuddy (base de données complète)',
     spoolInventory: 'Inventaire des bobines',
     spoolInventoryDescription: 'Bobines de filament, historique d\'utilisation et suivi des coûts',
     printArchives: 'Archives d\'impression',
@@ -4009,7 +4012,7 @@ export default {
 
     // Local Backup
     localBackup: 'Sauvegarde locale',
-    localBackupDescription: 'Créez une sauvegarde complète de vos données Bambuddy incluant la base de données, les archives, les téléchargements et tous les fichiers.',
+    localBackupDescription: 'Créez une sauvegarde complète de vos données Printbuddy incluant la base de données, les archives, les téléchargements et tous les fichiers.',
     downloadBackupLabel: 'Télécharger la sauvegarde',
     completeBackupZip: 'Sauvegarde complète : base de données + tous les fichiers (ZIP)',
     download: 'Télécharger',
@@ -4025,7 +4028,7 @@ export default {
     restoreConfirmMessage: 'Êtes-vous sûr de vouloir restaurer depuis "{{filename}}" ? Cela remplacera complètement votre base de données et tous vos fichiers. L\'application devra être redémarrée après la restauration.',
     restoreConfirmButton: 'Restaurer la sauvegarde',
     uploadingFile: 'Téléchargement du fichier de sauvegarde...',
-    backupRestoredRestart: 'Sauvegarde restaurée. Veuillez redémarrer Bambuddy.',
+    backupRestoredRestart: 'Sauvegarde restaurée. Veuillez redémarrer Printbuddy.',
     failedToRestore: 'Échec de la restauration. Veuillez vérifier le format du fichier.',
     reloadNow: 'Recharger maintenant',
     creatingBackup: 'Création de la sauvegarde',
@@ -4257,7 +4260,7 @@ export default {
       right: 'Droite',
       notes: 'Notes (locales)',
       notesPlaceholder: 'Notes sur ce profil...',
-      notesHelp: 'Enregistré dans Bambuddy, pas sur l\'imprimante',
+      notesHelp: 'Enregistré dans Printbuddy, pas sur l\'imprimante',
       syncing: 'Sync avec l\'imprimante...',
       savingExtruder: 'Sauvegarde extrudeur {{current}}/{{total}}...',
       pleaseWait: 'Patientez...',
@@ -4312,7 +4315,7 @@ export default {
     },
     enable: {
       title: 'Activer l\'imprimante virtuelle',
-      visibleInSlicer: 'Visible comme "Bambuddy" dans le Slicer',
+      visibleInSlicer: 'Visible comme "Printbuddy" dans le Slicer',
       proxyingTo: 'Proxy vers {{name}}',
       notActive: 'Inactive',
     },
@@ -4376,7 +4379,7 @@ export default {
     howItWorks: {
       title: 'Fonctionnement',
       step1: 'Sur le même LAN, les imprimantes virtuelles apparaissent automatiquement dans votre slicer (Bambu Studio / OrcaSlicer). Depuis d\'autres réseaux, ajoutez-les manuellement par adresse IP et code d\'accès.',
-      step2: 'En mode Archive, Revue et File d\'attente, utilisez le bouton "Envoyer" dans votre slicer pour envoyer des fichiers 3MF à Bambuddy. Le slicer affichera "Impression réussie" — le fichier est stocké, pas imprimé.',
+      step2: 'En mode Archive, Revue et File d\'attente, utilisez le bouton "Envoyer" dans votre slicer pour envoyer des fichiers 3MF à Printbuddy. Le slicer affichera "Impression réussie" — le fichier est stocké, pas imprimé.',
       step3: 'En mode Proxy, l\'imprimante virtuelle relaie tout le trafic vers une vraie imprimante — les impressions démarrent immédiatement comme en connexion directe.',
     },
     status: {
@@ -4438,7 +4441,7 @@ export default {
     },
     caCert: {
       title: 'Certificat du slicer',
-      description: 'Les imprimantes virtuelles utilisent un certificat TLS signé par l\'autorité de certification Bambuddy. Importez ce certificat CA dans le magasin de confiance de votre slicer une seule fois pour qu\'il accepte la connexion — plus besoin de le copier depuis la ligne de commande.',
+      description: 'Les imprimantes virtuelles utilisent un certificat TLS signé par l\'autorité de certification Printbuddy. Importez ce certificat CA dans le magasin de confiance de votre slicer une seule fois pour qu\'il accepte la connexion — plus besoin de le copier depuis la ligne de commande.',
       copy: 'Copier',
       copied: 'Copié',
       download: 'Télécharger',
@@ -5132,7 +5135,7 @@ export default {
   // Email Settings
   emailSettings: {
     placeholders: {
-      fromName: 'Bambuddy',
+      fromName: 'Printbuddy',
     },
   },
 
@@ -5426,7 +5429,7 @@ export default {
       upToDate: 'À jour',
       includeBeta: 'Inclure les versions bêta',
       systemConfig: 'Backend & authentification',
-      backendUrl: 'URL du backend Bambuddy',
+      backendUrl: 'URL du backend Printbuddy',
       apiToken: 'Jeton d\'API',
       apiTokenPlaceholder: 'Saisir un jeton d\'API',
       saveConfig: 'Enregistrer la configuration',
@@ -5525,13 +5528,13 @@ export default {
       network_mode: {
         title: 'Mode réseau Docker',
         pass: 'Fonctionne en mode réseau host.',
-        warn: 'Bambuddy fonctionne en réseau Docker bridge. La découverte d\'imprimantes et l\'imprimante virtuelle nécessitent le mode réseau host — recréez le conteneur avec "network_mode: host".',
+        warn: 'Printbuddy fonctionne en réseau Docker bridge. La découverte d\'imprimantes et l\'imprimante virtuelle nécessitent le mode réseau host — recréez le conteneur avec "network_mode: host".',
         skip: 'Ne fonctionne pas dans Docker — non applicable.',
       },
       subnet: {
         title: 'Sous-réseau',
-        pass: 'L\'imprimante et Bambuddy sont sur le même sous-réseau.',
-        warn: 'L\'imprimante ({{printer_ip}}) et Bambuddy ({{host_ip}}) sont sur des sous-réseaux différents. Ils peuvent ne pas se joindre, sauf si un routage entre les sous-réseaux est configuré.',
+        pass: 'L\'imprimante et Printbuddy sont sur le même sous-réseau.',
+        warn: 'L\'imprimante ({{printer_ip}}) et Printbuddy ({{host_ip}}) sont sur des sous-réseaux différents. Ils peuvent ne pas se joindre, sauf si un routage entre les sous-réseaux est configuré.',
         skip: 'Le sous-réseau n\'a pas pu être déterminé — ignoré.',
       },
       mqtt_auth: {
@@ -5567,12 +5570,12 @@ export default {
       'ftp-auth-rejected': {
         name: 'L\'imprimante a refusé le code d\'accès',
         cause: 'L\'imprimante a refusé la connexion de transfert de fichiers. Le code d\'accès est incorrect, ou il a changé après l\'activation du mode développeur.',
-        fix: 'Recopiez le code d\'accès depuis l\'écran de l\'imprimante (paramètres LAN) et mettez-le à jour dans les paramètres de l\'imprimante dans Bambuddy.',
+        fix: 'Recopiez le code d\'accès depuis l\'écran de l\'imprimante (paramètres LAN) et mettez-le à jour dans les paramètres de l\'imprimante dans Printbuddy.',
       },
       'ftp-connection-timeout': {
         name: 'Délai de connexion de transfert de fichiers dépassé',
-        cause: 'Bambuddy n\'a pas pu atteindre le port de transfert de fichiers de l\'imprimante (FTPS 990). Le port est bloqué, ou l\'imprimante est éteinte ou sur un autre sous-réseau.',
-        fix: 'Assurez-vous que rien ne bloque le port 990 entre Bambuddy et l\'imprimante, et que les deux sont sur le même réseau.',
+        cause: 'Printbuddy n\'a pas pu atteindre le port de transfert de fichiers de l\'imprimante (FTPS 990). Le port est bloqué, ou l\'imprimante est éteinte ou sur un autre sous-réseau.',
+        fix: 'Assurez-vous que rien ne bloque le port 990 entre Printbuddy et l\'imprimante, et que les deux sont sur le même réseau.',
       },
       'ftp-ssl-error': {
         name: 'Échec de la négociation sécurisée du transfert de fichiers',
@@ -5592,7 +5595,7 @@ export default {
       'database-locked': {
         name: 'Conflits d\'écriture dans la base de données',
         cause: 'La base de données SQLite rencontre des erreurs "database is locked" sous charge — fréquent lorsque plusieurs imprimantes sont utilisées en même temps.',
-        fix: 'Faites passer Bambuddy à une base de données PostgreSQL externe. Consultez le guide PostgreSQL dans la documentation.',
+        fix: 'Faites passer Printbuddy à une base de données PostgreSQL externe. Consultez le guide PostgreSQL dans la documentation.',
       },
     },
   },
@@ -5615,7 +5618,7 @@ export default {
       },
       running: {
         title: 'Services en cours d\'exécution',
-        fail: 'L\'imprimante virtuelle est activée mais ses services ne sont pas en cours d\'exécution. Consultez le journal Bambuddy — un conflit d\'IP de liaison ou une erreur de permission les arrête généralement.',
+        fail: 'L\'imprimante virtuelle est activée mais ses services ne sont pas en cours d\'exécution. Consultez le journal Printbuddy — un conflit d\'IP de liaison ou une erreur de permission les arrête généralement.',
       },
       bind_interface: {
         title: 'Interface réseau de liaison',
@@ -5644,8 +5647,8 @@ export default {
       },
       certificate: {
         title: 'Certificat TLS',
-        pass: 'Certificat prêt. Assurez-vous que le certificat CA Bambuddy (ci-dessus) est importé dans le magasin de confiance de votre slicer.',
-        fail: 'Le certificat TLS de cette imprimante virtuelle est manquant. Vérifiez que le répertoire de données Bambuddy est accessible en écriture.',
+        pass: 'Certificat prêt. Assurez-vous que le certificat CA Printbuddy (ci-dessus) est importé dans le magasin de confiance de votre slicer.',
+        fail: 'Le certificat TLS de cette imprimante virtuelle est manquant. Vérifiez que le répertoire de données Printbuddy est accessible en écriture.',
       },
     },
   },
@@ -5678,7 +5681,7 @@ export default {
     submittingStepConnection: 'Vérification de la connectivité des imprimantes',
     submittingStepVirtualPrinters: 'Vérification de la configuration des imprimantes virtuelles',
     submittingStepLogScan: 'Analyse des journaux récents pour les problèmes connus',
-    submittingStepSubmit: 'Envoi du rapport vers GitHub',
+    submittingStepSubmit: "Préparation du lien d'issue GitHub",
     submitSuccess: 'Rapport de bug envoyé avec succès !',
     submitFailed: 'Échec de l\'envoi du rapport de bug',
     diagnosticChecking: 'Vérification des connexions des imprimantes...',
@@ -5687,6 +5690,9 @@ export default {
     diagnosticIntro: 'Une ou plusieurs imprimantes ont un problème de connexion qui pourrait être à l\'origine de votre problème. Dépliez une imprimante ci-dessous pour voir la solution — la résoudre pourrait régler le problème sans rapport de bug. Vous pouvez tout de même envoyer un rapport ci-dessous.',
     thankYou: 'Merci !',
     submitted: 'Votre rapport de bug a été soumis.',
+    prepared: 'Rapport de bug préparé',
+    preparedMessage: "Vérifiez l'issue GitHub préparée puis envoyez-la manuellement.",
+    openGitHubIssue: "Ouvrir l'issue GitHub",
     viewIssue: 'Voir l\'issue',
     unexpectedError: 'Une erreur inattendue est survenue',
   },
@@ -5710,7 +5716,7 @@ export default {
     pollInterval: 'Intervalle de vérification (secondes)',
     pollIntervalHint: 'Fréquence de vérification de chaque imprimante pendant l\'impression. Minimum 5s, maximum 120s.',
     externalUrlMissing: 'L\'URL externe n\'est pas définie.',
-    externalUrlHint: 'L\'API ML récupère la capture caméra par URL. Définissez l\'URL externe dans les paramètres généraux pour que le conteneur API ML puisse atteindre Bambuddy.',
+    externalUrlHint: 'L\'API ML récupère la capture caméra par URL. Définissez l\'URL externe dans les paramètres généraux pour que le conteneur API ML puisse atteindre Printbuddy.',
     perPrinterTitle: 'Imprimantes surveillées',
     perPrinterHint: 'Choisissez quelles imprimantes le service de détection surveille.',
     monitorAll: 'Surveiller toutes les imprimantes connectées',
@@ -5724,7 +5730,7 @@ export default {
   },
   makerworld: {
     title: 'MakerWorld',
-    description: 'Collez une URL de modèle MakerWorld pour l\'importer et l\'imprimer directement depuis Bambuddy — sans passer par l\'application Bambu Handy.',
+    description: 'Collez une URL de modèle MakerWorld pour l\'importer et l\'imprimer directement depuis Printbuddy — sans passer par l\'application Bambu Handy.',
     pasteUrlHeader: 'Importer depuis MakerWorld',
     pasteUrlPlaceholder: 'https://makerworld.com/en/models/… ou collez n\'importe quel lien MakerWorld',
     resolveButton: 'Résoudre',
@@ -5747,7 +5753,7 @@ export default {
     alsoCompatible: 'Également marqué compatible : {{printers}}',
     importToLibrary: 'Enregistrer',
     sliceIn: 'Enregistrer et découper dans {{slicer}}',
-    disclaimer: 'L\'intégration MakerWorld utilise des points de terminaison API documentés par la communauté. Bambuddy n\'est ni affilié ni approuvé par MakerWorld ou Bambu Lab.',
+    disclaimer: 'L\'intégration MakerWorld utilise des points de terminaison API documentés par la communauté. Printbuddy n\'est ni affilié ni approuvé par MakerWorld ou Bambu Lab.',
     lastImportSuccess: 'Importé dans votre bibliothèque',
     lastImportAlreadyInLibrary: 'Déjà dans votre bibliothèque',
     viewInLibrary: 'Voir dans le Gestionnaire de fichiers',
@@ -5843,7 +5849,7 @@ export default {
     effect1: 'Les fichiers correspondants sont déplacés vers la corbeille — pas encore supprimés du disque.',
     effect2: 'Vous pouvez les restaurer depuis la corbeille jusqu\'à l\'expiration de la fenêtre de rétention.',
     effect3: 'Après la période de rétention, le balayeur de corbeille les supprime définitivement.',
-    effect4: 'Les fichiers dans les dossiers externes (liés) sont ignorés — Bambuddy ne supprime jamais d\'octets qu\'il ne possède pas.',    previewLoading: 'Vérification du nombre de fichiers concernés…',
+    effect4: 'Les fichiers dans les dossiers externes (liés) sont ignorés — Printbuddy ne supprime jamais d\'octets qu\'il ne possède pas.',    previewLoading: 'Vérification du nombre de fichiers concernés…',
     previewFailed: 'Impossible de prévisualiser la purge.',
     previewSummary: '{{count}} fichiers · {{size}} seraient déplacés vers la corbeille',
     andMore: '…et {{count}} de plus',

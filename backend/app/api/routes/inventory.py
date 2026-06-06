@@ -827,7 +827,7 @@ async def sync_from_filamentcolors(
             # outbound client (bambu_cloud, makerworld, firmware_check).
             async with httpx.AsyncClient(
                 timeout=120.0,
-                headers={"User-Agent": "Bambuddy/1.0 (+https://github.com/maziggy/bambuddy)"},
+                headers={"User-Agent": "Bambuddy/1.0 (+https://github.com/vmhomelab/printbuddy-ha-addon)"},
             ) as client:
                 page = 1
                 while True:
@@ -1244,7 +1244,13 @@ async def assign_spool(
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_UPDATE),
 ):
-    """Assign a spool to an AMS slot and auto-configure via MQTT."""
+    """Assign a spool to a printer slot.
+
+    ``ams_id=-1, tray_id=0`` is the virtual "loaded spool" marker for
+    non-AMS printers. It is stored in the same assignment table so inventory
+    accounting and picker filtering keep one source of truth, but it never
+    attempts Bambu MQTT slot configuration.
+    """
     from backend.app.services.printer_manager import printer_manager
 
     # 1. Validate spool exists and is not archived
@@ -1254,6 +1260,8 @@ async def assign_spool(
         raise HTTPException(404, "Spool not found")
     if spool.archived_at:
         raise HTTPException(400, "Cannot assign an archived spool")
+
+    is_loaded_spool_marker = data.ams_id == -1 and data.tray_id == 0
 
     # 2. Get current AMS tray state for fingerprint + existing filament ID.
     # tray_state: Bambu firmware reports 11=loaded, 9=empty, 10=spool present
@@ -1267,7 +1275,7 @@ async def assign_spool(
     current_tray_info_idx = ""
     tray_state: int | None = None
     state = printer_manager.get_status(data.printer_id)
-    if state and state.raw_data:
+    if not is_loaded_spool_marker and state and state.raw_data:
         if data.ams_id == 255:
             # External slot: look up tray from vt_tray by global ID
             vt_tray = state.raw_data.get("vt_tray") or []
@@ -1327,6 +1335,28 @@ async def assign_spool(
     db.add(assignment)
     await db.commit()
     await db.refresh(assignment)
+
+    if is_loaded_spool_marker:
+        result = await db.execute(
+            select(SpoolAssignment)
+            .options(
+                selectinload(SpoolAssignment.spool).selectinload(Spool.k_profiles),
+                selectinload(SpoolAssignment.printer),
+            )
+            .where(SpoolAssignment.id == assignment.id)
+        )
+        response = SpoolAssignmentResponse.model_validate(result.scalar_one())
+        response.configured = True
+        response.pending_config = False
+        await ws_manager.broadcast(
+            {
+                "type": "spool_assignment_changed",
+                "printer_id": data.printer_id,
+                "ams_id": data.ams_id,
+                "tray_id": data.tray_id,
+            }
+        )
+        return response
 
     # 4. Auto-configure AMS slot via MQTT.
     #

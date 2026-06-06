@@ -31,11 +31,11 @@ set -e
 # Configuration
 GHCR_REGISTRY="ghcr.io"
 DOCKERHUB_REGISTRY="docker.io"
-IMAGE_NAME="maziggy/bambuddy"
+IMAGE_NAME="vmhomelab/printbuddy"
 GHCR_IMAGE="${GHCR_REGISTRY}/${IMAGE_NAME}"
 DOCKERHUB_IMAGE="${DOCKERHUB_REGISTRY}/${IMAGE_NAME}"
 PLATFORMS="linux/amd64,linux/arm64"
-BUILDER_NAME="bambuddy-builder"
+BUILDER_NAME="printbuddy-builder"
 
 # Colors for output
 RED='\033[0;31m'

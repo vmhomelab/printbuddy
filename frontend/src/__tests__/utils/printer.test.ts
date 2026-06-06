@@ -61,6 +61,65 @@ describe('getPrinterImage', () => {
       expect(getPrinterImage('A1 Mini')).toBe('/img/printers/a1mini.png');
     });
 
+    it('A1 F → a1f.png (not a1.png)', () => {
+      expect(getPrinterImage('A1 F')).toBe('/img/printers/a1f.png');
+      expect(getPrinterImage('A1-F')).toBe('/img/printers/a1f.png');
+    });
+
+    it('O1 family resolves to its specific artwork', () => {
+      expect(getPrinterImage('O1C')).toBe('/img/printers/o1c.png');
+      expect(getPrinterImage('O1E')).toBe('/img/printers/o1e.png');
+      expect(getPrinterImage('O1S')).toBe('/img/printers/o1s.png');
+    });
+
+    it('non-Bambu models with bundled artwork resolve to their images', () => {
+      const expected: Array<[string, string]> = [
+        ['Elegoo Neptune 3', 'elegoo-neptune-3.png'],
+        ['Elegoo Neptune 3 Pro', 'elegoo-neptune-3-pro.png'],
+        ['Elegoo Neptune 3 Plus', 'elegoo-neptune-3-plus.png'],
+        ['Elegoo Neptune 3 Max', 'elegoo-neptune-3-max.png'],
+        ['Elegoo Neptune 4', 'elegoo-neptune-4.png'],
+        ['Elegoo Neptune 4 Pro', 'elegoo-neptune-4-pro.png'],
+        ['Elegoo Neptune 4 Plus', 'elegoo-neptune-4-plus.png'],
+        ['Elegoo Neptune 4 Max', 'elegoo-neptune-4-max.png'],
+        ['Prusa CORE One', 'prusa-core-one.png'],
+        ['Prusa MK4S', 'prusa-mk4s.png'],
+        ['Prusa MK4', 'prusa-mk4.png'],
+        ['Prusa MK3.9S', 'prusa-mk3.9S.png'],
+        ['Prusa MK3.9', 'prusa-mk3.9.png'],
+        ['Prusa MK3.5S', 'prusa-mk3.5S.png'],
+        ['Prusa MK3.5', 'prusa-mk3.5.png'],
+        ['Prusa XL', 'prusa-xl.png'],
+        ['Prusa MINI+', 'prusa-mini+.png'],
+        ['Prusa MK3S+', 'prusa-mk3s+.png'],
+      ];
+
+      for (const [model, filename] of expected) {
+        expect(getPrinterImage(model), model).toBe(`/img/printers/${filename}`);
+      }
+    });
+
+    it('keeps adjacent non-Bambu models distinct', () => {
+      expect(getPrinterImage('Elegoo Neptune 4')).toBe('/img/printers/elegoo-neptune-4.png');
+      expect(getPrinterImage('Elegoo Neptune 4 Pro')).toBe('/img/printers/elegoo-neptune-4-pro.png');
+      expect(getPrinterImage('Prusa MK4')).toBe('/img/printers/prusa-mk4.png');
+      expect(getPrinterImage('Prusa MK4S')).toBe('/img/printers/prusa-mk4s.png');
+    });
+
+    it('uses the Home Assistant ingress base for static printer images', () => {
+      window.history.replaceState({}, '', '/api/hassio_ingress/abc123/printers');
+      expect(getPrinterImage('P1S')).toBe('/api/hassio_ingress/abc123/img/printers/p1s.png');
+      window.history.replaceState({}, '', '/');
+    });
+
+    it('uses generic-printer.png for models from the Generic group', () => {
+      const genericModels = ['Klipper', 'PrusaLink', 'Generic Klipper Printer', 'Generic FDM Printer'];
+
+      for (const model of genericModels) {
+        expect(getPrinterImage(model), model).toBe('/img/printers/generic-printer.png');
+      }
+    });
+
     it('null / undefined → default.png', () => {
       expect(getPrinterImage(null)).toBe('/img/printers/default.png');
       expect(getPrinterImage(undefined)).toBe('/img/printers/default.png');

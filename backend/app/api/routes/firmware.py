@@ -142,14 +142,30 @@ async def check_printer_firmware(
     if not printer:
         raise HTTPException(status_code=404, detail="Printer not found")
 
+    # Firmware update checks currently target Bambu printers only. Moonraker
+    # printers do not expose Bambu firmware metadata and should not make the
+    # dashboard poll fail with AttributeError/500.
+    model = printer.model or "Unknown"
+    if (printer.provider or "bambu").lower() != "bambu":
+        return FirmwareUpdateInfo(
+            printer_id=printer.id,
+            printer_name=printer.name,
+            model=model,
+            current_version=None,
+            latest_version=None,
+            update_available=False,
+            download_url=None,
+            release_notes=None,
+            available_versions=[],
+        )
+
     # Get current firmware version from MQTT state
     current_version = None
     mqtt_client = printer_manager.get_client(printer.id)
     if mqtt_client and mqtt_client.state:
-        current_version = mqtt_client.state.firmware_version
+        current_version = getattr(mqtt_client.state, "firmware_version", None)
 
     # Check for update
-    model = printer.model or "Unknown"
     update_info = await firmware_service.check_for_update(model, current_version or "")
 
     return FirmwareUpdateInfo(

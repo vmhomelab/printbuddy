@@ -70,6 +70,15 @@ describe('SettingsPage', () => {
       }),
       http.get('/api/v1/auth/status', () => {
         return HttpResponse.json({ auth_enabled: false, requires_setup: false });
+      }),
+      http.get('/api/v1/updates/version', () => {
+        return HttpResponse.json({
+          version: '0.2.4.3',
+          display_version: '0.2.4.3 (abc1234)',
+          source_ref: 'abc1234567890abc1234567890abc1234567890ab',
+          source_ref_short: 'abc1234',
+          repo: 'vmhomelab/Printbuddy',
+        });
       })
     );
   });
@@ -170,6 +179,14 @@ describe('SettingsPage', () => {
         expect(screen.getByText('Updates')).toBeInTheDocument();
         expect(screen.getByText('Check for updates')).toBeInTheDocument();
         expect(screen.getByText('Check printer firmware')).toBeInTheDocument();
+      });
+    });
+
+    it('shows the source revision in the current version field', async () => {
+      render(<SettingsPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('v0.2.4.3 (abc1234)')).toBeInTheDocument();
       });
     });
   });
@@ -886,6 +903,77 @@ describe('SettingsPage', () => {
       });
       expect(screen.queryByPlaceholderText(/api\/frame\.jpeg\?src=printer/)).not.toBeInTheDocument();
     });
+
+    it(
+      'PATCHes external_camera_url together with enabled=true and inferred type when the user enters a camera URL',
+      async () => {
+        let receivedBody: Record<string, unknown> | null = null;
+        server.use(
+          http.get('/api/v1/printers/', () =>
+            HttpResponse.json([{ ...mjpegPrinter, external_camera_url: null, external_camera_type: null }]),
+          ),
+          http.patch('/api/v1/printers/7', async ({ request }) => {
+            receivedBody = (await request.json()) as Record<string, unknown>;
+            return HttpResponse.json({ ...mjpegPrinter, ...receivedBody });
+          }),
+        );
+
+        render(<SettingsPage />);
+
+        const input = await waitFor(() => screen.getByPlaceholderText(/Camera URL/i));
+
+        const user = userEvent.setup();
+        await user.type(input, 'rtsp://neptune.local/stream');
+
+        await waitFor(
+          () => {
+            expect(receivedBody).not.toBeNull();
+            expect(receivedBody).toMatchObject({
+              external_camera_url: 'rtsp://neptune.local/stream',
+              external_camera_enabled: true,
+              external_camera_type: 'rtsp',
+            });
+          },
+          { timeout: 5000 },
+        );
+      },
+      15_000,
+    );
+
+    it(
+      'persists a successful live camera test immediately so the camera window can use the saved stream fields',
+      async () => {
+        let testUrl: string | null = null;
+        let receivedBody: Record<string, unknown> | null = null;
+        server.use(
+          http.get('/api/v1/printers/', () => HttpResponse.json([mjpegPrinter])),
+          http.post('/api/v1/printers/7/camera/external/test', ({ request }) => {
+            testUrl = new URL(request.url).searchParams.get('url');
+            return HttpResponse.json({ success: true, resolution: '640x480' });
+          }),
+          http.patch('/api/v1/printers/7', async ({ request }) => {
+            receivedBody = (await request.json()) as Record<string, unknown>;
+            return HttpResponse.json({ ...mjpegPrinter, ...receivedBody });
+          }),
+        );
+
+        render(<SettingsPage />);
+
+        const testButtons = await waitFor(() => screen.getAllByRole('button', { name: 'Test' }));
+        const user = userEvent.setup();
+        await user.click(testButtons[0]);
+
+        await waitFor(() => {
+          expect(testUrl).toBe('http://192.168.1.61:1984/api/stream.mjpeg?src=printer');
+          expect(receivedBody).toMatchObject({
+            external_camera_url: 'http://192.168.1.61:1984/api/stream.mjpeg?src=printer',
+            external_camera_enabled: true,
+            external_camera_type: 'mjpeg',
+          });
+        });
+      },
+      15_000,
+    );
 
     it(
       'PATCHes the printer with external_camera_snapshot_url when the user types into the input',

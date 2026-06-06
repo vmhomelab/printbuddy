@@ -15,17 +15,17 @@ BAMBU_API_BASE = "https://api.bambulab.com"
 BAMBU_API_BASE_CN = "https://api.bambulab.cn"
 
 # Client identity sent to Bambu Lab's cloud services. We identify honestly as
-# Bambuddy — the URL in parens makes the source unambiguous so Bambu can
+# Printbuddy — the URL in parens makes the source unambiguous so Bambu can
 # distinguish our traffic from impersonators. This is the opposite of what the
 # OrcaSlicer fork was called out for in the May 2026 Bambu Lab blog post
 # ("Setting the record straight on cloud access and community"): we do not
 # introduce ourselves as official Bambu Studio.
-_USER_AGENT = "Bambuddy/1.0 (+https://github.com/maziggy/bambuddy)"
+_USER_AGENT = "Printbuddy/1.0 (+https://github.com/vmhomelab/Printbuddy)"
 
 # The `/v1/iot-service/api/slicer/setting` endpoint requires a `version` query
 # parameter in the XX.YY.ZZ.WW format Bambu Studio releases use (without it the
 # API returns HTTP 400 "field 'version' is not set"; non-matching formats like
-# "bambuddy-1.0" return HTTP 422 "Invalid input parameters"). However, Bambu's
+# "printbuddy-1.0" return HTTP 422 "Invalid input parameters"). However, Bambu's
 # server accepts ANY value within that format — it doesn't validate against a
 # release manifest. We therefore use a neutral "1.0.0.0" placeholder that does
 # not impersonate any real Bambu Studio release. Our client identity is in the
@@ -196,7 +196,7 @@ class BambuCloudService:
             # We previously sent a Chrome User-Agent plus Origin/Referer headers
             # under the assumption Cloudflare would block bot-identified
             # requests. Verified 2026-05-12 via curl that the endpoint accepts
-            # honest "Bambuddy/X.Y.Z" identification cleanly (HTTP 400 with the
+            # honest "Printbuddy/X.Y.Z" identification cleanly (HTTP 400 with the
             # expected application-level "Login failed" JSON, no Cloudflare
             # interstitial). Browser-impersonation removed to stay clearly on
             # the right side of Bambu Lab's "no falsified client identity" line.

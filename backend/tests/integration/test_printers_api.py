@@ -355,6 +355,42 @@ class TestPrintersAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_get_moonraker_printer_status_returns_basic_values(self, async_client: AsyncClient, printer_factory):
+        """Fluidd/Moonraker status must not assume Bambu-only HMS/AMS fields exist."""
+        from backend.app.services.printer_providers.moonraker import MoonrakerPrinterState
+
+        printer = await printer_factory(
+            provider="fluidd",
+            model="Elegoo Neptune 4 Pro",
+            api_url="http://neptune.local:7125",
+            serial_number="KLIPPER-NEPTUNE-LOCAL",
+        )
+        state = MoonrakerPrinterState(
+            connected=True,
+            state="RUNNING",
+            current_print="benchy.gcode",
+            gcode_file="benchy.gcode",
+            progress=42.5,
+            temperatures={"nozzle": 211.0, "nozzle_target": 215.0, "bed": 59.0, "bed_target": 60.0},
+        )
+
+        with patch("backend.app.api.routes.printers.printer_manager") as mock_pm:
+            mock_pm.get_status = MagicMock(return_value=state)
+            mock_pm.is_awaiting_plate_clear = MagicMock(return_value=False)
+            response = await async_client.get(f"/api/v1/printers/{printer.id}/status")
+
+        assert response.status_code == 200
+        result = response.json()
+        assert result["connected"] is True
+        assert result["state"] == "RUNNING"
+        assert result["current_print"] == "benchy.gcode"
+        assert result["progress"] == 42.5
+        assert result["temperatures"]["nozzle"] == 211.0
+        assert result["temperatures"]["bed"] == 59.0
+        assert result["hms_errors"] == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_get_printer_status_not_found(self, async_client: AsyncClient):
         """Verify 404 for status of non-existent printer."""
         response = await async_client.get("/api/v1/printers/9999/status")

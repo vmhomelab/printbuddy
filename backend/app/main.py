@@ -127,7 +127,7 @@ def _start_error_server(missing_packages: list):
     html = f"""<!DOCTYPE html>
 <html>
 <head>
-    <title>Bambuddy - Setup Required</title>
+    <title>Printbuddy - Setup Required</title>
     <style>
         body {{
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -164,8 +164,8 @@ def _start_error_server(missing_packages: list):
         <div class="command">pip install -r requirements.txt</div>
         <p>Or if using a virtual environment:</p>
         <div class="command">./venv/bin/pip install -r requirements.txt</div>
-        <p class="note">After installing, restart Bambuddy:<br>
-        <code>sudo systemctl restart bambuddy</code></p>
+        <p class="note">After installing, restart Printbuddy:<br>
+        <code>docker compose restart printbuddy</code></p>
     </div>
 </body>
 </html>"""
@@ -324,7 +324,7 @@ if not app_settings.debug:
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("paho.mqtt").setLevel(logging.WARNING)
 
-logging.info("Bambuddy starting - debug=%s, log_level=%s", app_settings.debug, log_level_str)
+logging.info("Printbuddy starting - debug=%s, log_level=%s", app_settings.debug, log_level_str)
 
 
 # Track active prints: {(printer_id, filename): archive_id}
@@ -5534,7 +5534,7 @@ async def serve_frontend():
     if index_file.exists():
         return FileResponse(index_file, headers=_HTML_CACHE_HEADERS)
     return {
-        "message": "Bambuddy API",
+        "message": "Printbuddy API",
         "docs": "/docs",
         "frontend": "Build and place React app in /static directory",
     }

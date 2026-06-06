@@ -43,6 +43,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
+from urllib.parse import urlparse
 
 from backend.app.services.camera import (
     capture_camera_frame_bytes,
@@ -215,6 +216,109 @@ def _summary_for_stages(stages: list[CameraDiagnoseStage]) -> str:
             return "no_frame"
         return "unknown_failure"
     return "all_ok"
+
+
+async def _check_first_external_frame(
+    camera_url: str,
+    camera_type: str | None,
+    timeout: int,
+    snapshot_url: str | None = None,
+) -> CameraDiagnoseStage:
+    """Stage 2 for configured external cameras — capture one frame through
+    the same helper used by /camera/stream and /camera/snapshot."""
+    started = time.monotonic()
+    try:
+        from backend.app.services.external_camera import capture_frame
+
+        jpeg = await capture_frame(
+            camera_url,
+            camera_type or "mjpeg",
+            timeout=timeout,
+            snapshot_url=snapshot_url,
+        )
+    except Exception as exc:  # noqa: BLE001 — preserve diagnostic shape for UI
+        logger.warning("External camera diagnose first-frame capture raised: %s", exc)
+        return CameraDiagnoseStage(
+            name="first_frame",
+            status="failed",
+            duration_ms=int((time.monotonic() - started) * 1000),
+            code="capture_exception",
+        )
+    if jpeg:
+        return CameraDiagnoseStage(
+            name="first_frame",
+            status="ok",
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
+    return CameraDiagnoseStage(
+        name="first_frame",
+        status="failed",
+        duration_ms=int((time.monotonic() - started) * 1000),
+        code="no_frame",
+    )
+
+
+def _external_camera_endpoint(camera_url: str) -> tuple[str | None, int | None]:
+    """Return host/port for a URL-backed external camera, if it has one."""
+    parsed = urlparse(camera_url)
+    if parsed.scheme in {"", "usb"} or camera_url.startswith("/dev/"):
+        return None, None
+    host = parsed.hostname
+    if not host:
+        return None, None
+    if parsed.port:
+        return host, parsed.port
+    if parsed.scheme == "https":
+        return host, 443
+    if parsed.scheme in {"rtsp", "rtsps"}:
+        return host, 554
+    return host, 80
+
+
+async def diagnose_external_camera(
+    camera_url: str,
+    camera_type: str | None,
+    printer_id: int,
+    *,
+    snapshot_url: str | None = None,
+    tcp_timeout: float = 3.0,
+    capture_timeout: int = 15,
+) -> CameraDiagnoseResult:
+    """Run diagnostics for a configured external camera.
+
+    External cameras are independent from the Bambu built-in camera ports.
+    The camera window chooses them first when ``external_camera_enabled`` is
+    set, so the Diagnose button must test the same URL instead of falling
+    through to the model-derived port 6000/322 path.
+    """
+    host, port = _external_camera_endpoint(camera_url)
+    result = CameraDiagnoseResult(
+        printer_id=printer_id,
+        protocol=camera_type or "external",
+        port=port or 0,
+        profile="external",
+        overall_status="ok",
+        stages=[],
+    )
+
+    if host and port:
+        tcp_stage = await _check_tcp_reachable(host, port, tcp_timeout)
+        result.stages.append(tcp_stage)
+        if tcp_stage.status != "ok":
+            result.overall_status = "failed"
+            result.stages.append(CameraDiagnoseStage(name="first_frame", status="skipped", duration_ms=0))
+            result.summary_code = _summary_for_stages(result.stages)
+            return result
+    else:
+        # USB/local device paths have no remote TCP boundary to probe.
+        result.stages.append(CameraDiagnoseStage(name="tcp_reachable", status="skipped", duration_ms=0))
+
+    frame_stage = await _check_first_external_frame(camera_url, camera_type, capture_timeout, snapshot_url)
+    result.stages.append(frame_stage)
+    if frame_stage.status != "ok":
+        result.overall_status = "failed"
+    result.summary_code = _summary_for_stages(result.stages)
+    return result
 
 
 async def diagnose_camera(

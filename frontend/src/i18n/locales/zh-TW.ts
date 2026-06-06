@@ -27,7 +27,7 @@ export default {
     smartSwitches: '智慧開關',
     logout: '登出',
     installApp: '安裝應用程式',
-    installAppSuccess: 'Bambuddy 已安裝',
+    installAppSuccess: 'Printbuddy 已安裝',
   },
 
   // Common
@@ -350,6 +350,7 @@ export default {
     },
     // Controls section
     controls: '控制',
+    indicators: '狀態',
     // RFID
     rfid: {
       reread: '重新讀取 RFID',
@@ -566,6 +567,7 @@ export default {
       partCooling: '零件冷卻風扇',
       auxiliary: '輔助風扇',
       chamber: '腔室風扇',
+      heatbreak: '喉管風扇',
     },
     // HMS errors
     clickToViewHmsErrors: '點選檢視 HMS 錯誤',
@@ -623,7 +625,8 @@ export default {
     developerModeWarning: '以下印表機未啟用開發者區域網路模式：{{names}}。某些功能可能無法使用。',
     howToEnable: '如何啟用',
     incompatibleFile: '此檔案是為 {{slicedFor}} 切片的，但該印表機是 {{printerModel}}',
-    dropNotPrintable: '只能列印 .gcode 和 .gcode.3mf 檔案',
+    dropNotPrintable: '此印表機只能列印 {{extensions}} 檔案',
+    printUploadAccepts: '此印表機可列印的檔案：{{extensions}}',
     dropToPrint: '拖放以列印',
     cannotPrint: '印表機忙碌',
   },
@@ -1484,7 +1487,7 @@ export default {
       disabled: 'LDAP 認證已停用',
       feature1: '使用者可以使用 LDAP 憑據登入',
       feature2: '本機管理員帳戶作為後備保留',
-      feature3: '登入時 LDAP 群組對應到 BamBuddy 群組',
+      feature3: '登入時 LDAP 群組對應到 Printbuddy 群組',
       serverConfig: 'LDAP 伺服器設定',
       serverUrl: '伺服器 URL',
       serverUrlHint: '使用 ldap:// 進行標準連線或 ldaps:// 進行 SSL 連線',
@@ -1497,12 +1500,12 @@ export default {
       userFilterHint: '{username} 替換為登入使用者名稱。OpenLDAP 使用 (uid={username})。',
       advanced: '進階',
       autoProvision: '自動建立使用者',
-      autoProvisionHint: '首次 LDAP 登入時自動建立 BamBuddy 帳戶',
+      autoProvisionHint: '首次 LDAP 登入時自動建立 Printbuddy 帳戶',
       defaultGroup: '預設群組',
       defaultGroupNone: '— 無（無復原）—',
       defaultGroupHint: '當 LDAP 使用者透過身份驗證但不在任何已對應的 LDAP 群組中時分配的備援群組。留空以使未對應的使用者沒有權限。',
       groupMapping: '群組對應（JSON）',
-      groupMappingHint: '將 LDAP 群組 DN 對應到 BamBuddy 群組。可用群組：',
+      groupMappingHint: '將 LDAP 群組 DN 對應到 Printbuddy 群組。可用群組：',
       testConnection: '測試連線',
       settingsSaved: 'LDAP 設定已儲存',
       errors: {
@@ -1870,7 +1873,7 @@ export default {
     authentication: '身份驗證',
     authEnabledDescription: '您的實例已透過使用者身份驗證保護',
     authDisabledDescription: '啟用以要求登入並管理使用者存取',
-    authDisabledMessage: '啟用身份驗證以建立使用者帳戶、管理權限並保護您的 Bambuddy 實例。',
+    authDisabledMessage: '啟用身份驗證以建立使用者帳戶、管理權限並保護您的 Printbuddy 實例。',
     enableAuthentication: '啟用身份驗證',
     currentUser: '目前使用者',
     changePassword: '修改密碼',
@@ -1909,10 +1912,10 @@ export default {
     deleteGroup: '刪除群組',
     // Modal: Disable auth
     disableAuthenticationTitle: '停用身份驗證',
-    disableAuthenticationMessage: '確定要停用身份驗證嗎？這將使您的 Bambuddy 實例無需登入即可存取。所有使用者將保留在資料庫中但身份驗證將被停用。',
+    disableAuthenticationMessage: '確定要停用身份驗證嗎？這將使您的 Printbuddy 實例無需登入即可存取。所有使用者將保留在資料庫中但身份驗證將被停用。',
     disableAuthentication: '停用身份驗證',
     // Additional settings
-    configureBambuddy: '設定 Bambuddy',
+    configurePrintbuddy: '設定 Printbuddy',
     systemDefault: '系統預設',
     archiveSettings: '歸檔設定',
     newWindow: '新視窗',
@@ -2177,13 +2180,13 @@ export default {
     lowDiskSpaceDescription: '當可用磁碟空間低於此閾值時顯示警告',
     printerFirmware: '印表機韌體',
     checkFirmwareDescription: '檢查Bambu Lab的印表機韌體更新',
-    bambuddySoftware: 'Bambuddy 軟體',
+    bambuddySoftware: 'Printbuddy 軟體',
     autoCheckDescription: '啟動時自動檢查新版本',
     checkNow: '立即檢查',
     updateAvailableVersion: '可用更新：v{{version}}',
     releaseNotes: '發布說明',
     updateViaDocker: '透過 Docker Compose 更新：',
-    updateViaHomeAssistant: '更新由 Home Assistant Supervisor 管理。請在 Home Assistant 中開啟 設定 → 附加元件 → Bambuddy 以安裝新版本。',
+    updateViaHomeAssistant: '更新由 Home Assistant Supervisor 管理。請在 Home Assistant 中開啟 設定 → 附加元件 → Printbuddy 以安裝新版本。',
     installUpdate: '安裝更新',
     latestVersionRunning: '您正在執行最新版本',
     failedToCheckUpdates: '檢查更新失敗：{{error}}',
@@ -2191,8 +2194,8 @@ export default {
     backupRestoreDescription: '匯出/匯入設定並設定GitHub 備份',
     goToBackup: '前往備份',
     externalUrl: '外部URL',
-    externalUrlDescription: 'Bambuddy可存取的外部URL。用於通知影像和外部整合。',
-    bambuddyUrl: 'Bambuddy URL',
+    externalUrlDescription: 'Printbuddy可存取的外部URL。用於通知影像和外部整合。',
+    bambuddyUrl: 'Printbuddy URL',
     externalUrlHint: '包含協定和連接埠（例如：http://192.168.1.100:8000）',
     ftpRetry: 'FTP重試',
     ftpRetryDescription: '當印表機Wi-Fi 不穩定時重試FTP操作。適用於3MF下載、列印上傳、縮時攝影下載和韌體更新。',
@@ -2216,7 +2219,7 @@ export default {
     haConnectionSuccess: '已成功連線到Home Assistant。',
     haConnectionFailed: '連線Home Assistant失敗。',
     mqttPublishing: 'MQTT發布',
-    mqttDescription: '將BamBuddy事件發布到外部MQTT代理，用於與Node-RED、Home Assistant和其他自動化系統整合。',
+    mqttDescription: '將Printbuddy事件發布到外部MQTT代理，用於與Node-RED、Home Assistant和其他自動化系統整合。',
     mqttEnableDescription: '向外部MQTT代理發布事件',
     brokerHostname: '代理主機名稱',
     port: '連接埠',
@@ -2346,7 +2349,7 @@ export default {
       enabledFromFile: '已啟用靜態加密（金鑰從資料目錄載入）',
       enabledGenerated: '使用自動產生的金鑰啟用靜態加密',
       notConfigured: '未設定靜態加密',
-      notConfiguredDesc: 'TOTP 機密和 OIDC client_secrets 以明文儲存。請設定 MFA_ENCRYPTION_KEY 或使用可寫資料目錄重新啟動 Bambuddy 以自動產生。',
+      notConfiguredDesc: 'TOTP 機密和 OIDC client_secrets 以明文儲存。請設定 MFA_ENCRYPTION_KEY 或使用可寫資料目錄重新啟動 Printbuddy 以自動產生。',
       allEncrypted: '所有 MFA 機密皆已靜態加密。',
       legacyRowsLabel: '舊版明文列',
       encryptedRowsLabel: '已加密列',
@@ -2354,7 +2357,7 @@ export default {
       backupHint: '自動產生的金鑰儲存在 DATA_DIR/.mfa_encryption_key 中，並包含在本機備份 ZIP 中。請保護備份安全或顯式設定 MFA_ENCRYPTION_KEY。',
       decryptionBrokenTitle: '加密金鑰遺失',
       decryptionBrokenError: '無法解密 {{count}} 條加密記錄，因為加密金鑰不再可用。請還原先前的 MFA_ENCRYPTION_KEY 或 DATA_DIR/.mfa_encryption_key 以恢復存取。',
-      migrationErrorWarning: '{{count}} 行舊資料在啟動時未能重新加密。請檢查伺服器日誌並重新啟動 Bambuddy 以重試。',
+      migrationErrorWarning: '{{count}} 行舊資料在啟動時未能重新加密。請檢查伺服器日誌並重新啟動 Printbuddy 以重試。',
     },
 
   },
@@ -2473,7 +2476,7 @@ export default {
 
   // Login page
   login: {
-    title: 'Bambuddy 登入',
+    title: 'Printbuddy 登入',
     subtitle: '登入您的帳戶',
     username: '使用者名稱',
     usernamePlaceholder: '輸入您的使用者名稱',
@@ -2519,7 +2522,7 @@ export default {
     sending: '傳送中...',
     sendResetEmail: '傳送重設郵件',
     howToReset: '如何重設密碼：',
-    resetStep1: '聯絡您的 Bambuddy 管理員',
+    resetStep1: '聯絡您的 Printbuddy 管理員',
     resetStep2: '請他們在使用者管理中重設您的密碼',
     resetStep3: '他們可以為您設定一個臨時密碼',
     resetStep4: '使用新密碼登入並在設定中修改密碼',
@@ -2544,7 +2547,7 @@ export default {
       methodAuthenticator: '身份驗證器 App',
       methodEmail: '信箱驗證碼',
       methodBackup: '備用恢復碼',
-      instructionsTotp: '請開啟您的身份驗證器 App，輸入 Bambuddy 的 6 位驗證碼。',
+      instructionsTotp: '請開啟您的身份驗證器 App，輸入 Printbuddy 的 6 位驗證碼。',
       instructionsEmail: '6 位驗證碼已傳送至您的信箱，有效期為 10 分鐘。',
       instructionsEmailNotSent: '點選下方按鈕，透過郵件獲取驗證碼。',
       instructionsBackup: '請輸入您的一個 8 位備用恢復碼。每個恢復碼只能使用一次。',
@@ -2569,8 +2572,8 @@ export default {
 
   // Setup page
   setup: {
-    title: 'Bambuddy 設定',
-    subtitle: '為您的 Bambuddy 實例設定身份驗證',
+    title: 'Printbuddy 設定',
+    subtitle: '為您的 Printbuddy 實例設定身份驗證',
     enableAuth: '啟用身份驗證',
     adminAccount: '管理員帳戶',
     adminAccountDesc: '如果管理員使用者已存在，將使用現有管理員帳戶啟用身份驗證。如需使用現有管理員，請將下方欄位留空，或輸入新憑據建立新管理員使用者。',
@@ -2726,7 +2729,7 @@ export default {
   // Users management
   users: {
     title: '使用者管理',
-    subtitle: '管理使用者及其對 Bambuddy 實例的存取',
+    subtitle: '管理使用者及其對 Printbuddy 實例的存取',
     backToSettings: '返回設定',
     createUser: '建立使用者',
     noPermission: '您沒有存取此頁面的權限。',
@@ -3535,8 +3538,8 @@ export default {
     title: '耗材庫存',
     subtitle: '管理您的料盤',
     spoolmanMixedContentTitle: 'Spoolman 無法透過 HTTPS 載入 — 瀏覽器已封鎖混合內容',
-    spoolmanMixedContentBody: 'Bambuddy 透過您的反向代理以 HTTPS 提供服務，但您的 Spoolman 位址仍為 HTTP。基於安全考量，瀏覽器會封鎖混合內容，因此內嵌的 Spoolman 介面無法載入。Spoolman 也必須可透過 HTTPS 存取。',
-    spoolmanMixedContentFixReverseProxy: '請將 Spoolman 置於與 Bambuddy 相同的反向代理（Traefik / Nginx / Caddy）之後並啟用 HTTPS，然後在設定中將 Spoolman URL 更新為新的 HTTPS 位址。',
+    spoolmanMixedContentBody: 'Printbuddy 透過您的反向代理以 HTTPS 提供服務，但您的 Spoolman 位址仍為 HTTP。基於安全考量，瀏覽器會封鎖混合內容，因此內嵌的 Spoolman 介面無法載入。Spoolman 也必須可透過 HTTPS 存取。',
+    spoolmanMixedContentFixReverseProxy: '請將 Spoolman 置於與 Printbuddy 相同的反向代理（Traefik / Nginx / Caddy）之後並啟用 HTTPS，然後在設定中將 Spoolman URL 更新為新的 HTTPS 位址。',
     spoolmanMixedContentFixOpenNewTab: '作為替代方案，可在新分頁以 HTTP 開啟 Spoolman — 混合內容規則僅適用於內嵌框架，獨立分頁仍可正常運作。',
     spoolmanOpenInNewTab: '在新分頁開啟 Spoolman',
     labels: {
@@ -3942,8 +3945,8 @@ export default {
     cloudLoginRequiredShort: '需要雲端登入',
     githubDescription: '自動將您的設定檔案同步到私有 GitHub 倉庫以進行備份和版本歷史紀錄。',
     repoIsPrivate: '儲存庫為私有 — 可安全備份。',
-    repoIsPublicWarning: '儲存庫為公開（PUBLIC）。Bambuddy 備份包含 MQTT 認證、Home Assistant 權杖、Prometheus 權杖、您的 Bambu Cloud 電子郵件，以及透過 K-profile 暴露的印表機存取碼。在您於服務商設定中將儲存庫改為私有之前，儲存將被阻擋。',
-    repoVisibilityUnknown: '無法確認儲存庫的可見性。Bambuddy 拒絕向任何未確認為私有的目標進行備份；儲存將被阻擋。',
+    repoIsPublicWarning: '儲存庫為公開（PUBLIC）。Printbuddy 備份包含 MQTT 認證、Home Assistant 權杖、Prometheus 權杖、您的 Bambu Cloud 電子郵件，以及透過 K-profile 暴露的印表機存取碼。在您於服務商設定中將儲存庫改為私有之前，儲存將被阻擋。',
+    repoVisibilityUnknown: '無法確認儲存庫的可見性。Printbuddy 拒絕向任何未確認為私有的目標進行備份；儲存將被阻擋。',
     repositoryUrl: '倉庫 URL',
     repoUrlPlaceholderGitHub: 'https://github.com/username/repo-name',
 	repoUrlPlaceholderGitea: 'https://gitea.example.com/username/repo-name',
@@ -3973,7 +3976,7 @@ export default {
     cloudProfiles: '雲設定檔案',
     cloudProfilesDescription: '來自 Bambu Cloud 的耗材、印表機和工藝預設',
     appSettings: '應用程式設定',
-    appSettingsDescription: 'Bambuddy 設定（完整資料庫）',
+    appSettingsDescription: 'Printbuddy 設定（完整資料庫）',
     spoolInventory: '耗材庫存',
     spoolInventoryDescription: '耗材卷軸、使用紀錄和成本追蹤',
     printArchives: '列印檔案',
@@ -4008,7 +4011,7 @@ export default {
 
     // Local Backup
     localBackup: '本機備份',
-    localBackupDescription: '建立 Bambuddy 資料的完整備份，包括資料庫、檔案、上傳和所有檔案。',
+    localBackupDescription: '建立 Printbuddy 資料的完整備份，包括資料庫、檔案、上傳和所有檔案。',
     downloadBackupLabel: '下載備份',
     completeBackupZip: '完整備份：資料庫 + 所有檔案（ZIP）',
     download: '下載',
@@ -4024,7 +4027,7 @@ export default {
     restoreConfirmMessage: '您確定要從"{{filename}}"恢復嗎？這將完全替換您目前的資料庫和所有檔案。恢復後需要重新啟動應用程式。',
     restoreConfirmButton: '恢復備份',
     uploadingFile: '正在上傳備份檔案...',
-    backupRestoredRestart: '備份已恢復。請重新啟動 Bambuddy。',
+    backupRestoredRestart: '備份已恢復。請重新啟動 Printbuddy。',
     failedToRestore: '恢復備份失敗。請檢查檔案格式。',
     reloadNow: '立即重新載入',
     creatingBackup: '正在建立備份',
@@ -4256,7 +4259,7 @@ export default {
       right: '右',
       notes: '備註（本機儲存）',
       notesPlaceholder: '新增關於此設定的備註...',
-      notesHelp: '備註儲存在 Bambuddy 中，不在印表機上',
+      notesHelp: '備註儲存在 Printbuddy 中，不在印表機上',
       syncing: '與印表機同步中...',
       savingExtruder: '儲存到擠出機 {{current}}/{{total}}...',
       pleaseWait: '請稍候',
@@ -4311,7 +4314,7 @@ export default {
     },
     enable: {
       title: '啟用虛擬印表機',
-      visibleInSlicer: '在切片軟體發現中顯示為"Bambuddy"',
+      visibleInSlicer: '在切片軟體發現中顯示為"Printbuddy"',
       proxyingTo: '代理到 {{name}}',
       notActive: '未啟用',
     },
@@ -4342,7 +4345,7 @@ export default {
       configured: '介面覆蓋已啟用',
       optional: '可選 - 當自動檢測的 IP 不正確時使用（例如多網路卡、Docker、VPN）',
       placeholder: '自動檢測（預設）...',
-      hint: '覆蓋透過 SSDP 廣播並在 TLS 憑證中使用的 IP 位址。在 Bambuddy 有多個網路介面時很有用。',
+      hint: '覆蓋透過 SSDP 廣播並在 TLS 憑證中使用的 IP 位址。在 Printbuddy 有多個網路介面時很有用。',
     },
     mode: {
       title: '模式',
@@ -4380,7 +4383,7 @@ export default {
     },
     caCert: {
       title: '切片軟體憑證',
-      description: '虛擬印表機使用由 Bambuddy CA 簽發的 TLS 憑證。將此 CA 憑證匯入切片軟體的信任庫一次，切片軟體即可接受連線 — 無需再透過命令列取得。',
+      description: '虛擬印表機使用由 Printbuddy CA 簽發的 TLS 憑證。將此 CA 憑證匯入切片軟體的信任庫一次，切片軟體即可接受連線 — 無需再透過命令列取得。',
       copy: '複製',
       copied: '已複製',
       download: '下載',
@@ -4389,7 +4392,7 @@ export default {
     howItWorks: {
       title: '工作原理',
       step1: '在同一區域網路中，虛擬印表機會透過發現機制自動出現在您的切片軟體（Bambu Studio / OrcaSlicer）中。從其他網路，透過 IP 位址和存取碼手動新增。',
-      step2: '在歸檔、審核和佇列模式下，使用切片軟體中的"傳送"按鈕將 3MF 檔案上傳到 Bambuddy。切片軟體會顯示"列印成功"— 檔案已儲存，未列印。',
+      step2: '在歸檔、審核和佇列模式下，使用切片軟體中的"傳送"按鈕將 3MF 檔案上傳到 Printbuddy。切片軟體會顯示"列印成功"— 檔案已儲存，未列印。',
       step3: '在代理模式下，虛擬印表機將所有流量中繼到真實印表機 — 列印會立即開始，就像直接連線一樣。',
     },
     status: {
@@ -5130,7 +5133,7 @@ export default {
   // Email Settings
   emailSettings: {
     placeholders: {
-      fromName: 'Bambuddy',
+      fromName: 'Printbuddy',
     },
   },
 
@@ -5385,7 +5388,7 @@ export default {
       hostname: '主機',
       uptime: '執行時間',
       systemConfig: '後端與認證',
-      backendUrl: 'Bambuddy 後端 URL',
+      backendUrl: 'Printbuddy 後端 URL',
       apiToken: 'API 權杖',
       apiTokenPlaceholder: '輸入 API 權杖',
       saveConfig: '儲存設定',
@@ -5523,13 +5526,13 @@ export default {
       network_mode: {
         title: 'Docker 網路模式',
         pass: '正在以 host 網路模式執行。',
-        warn: 'Bambuddy 正在以 Docker bridge 網路執行。印表機探索與虛擬印表機需要 host 網路模式 — 請使用 "network_mode: host" 重新建立容器。',
+        warn: 'Printbuddy 正在以 Docker bridge 網路執行。印表機探索與虛擬印表機需要 host 網路模式 — 請使用 "network_mode: host" 重新建立容器。',
         skip: '未在 Docker 中執行 — 不適用。',
       },
       subnet: {
         title: '網路子網路',
-        pass: '印表機與 Bambuddy 位於同一子網路。',
-        warn: '印表機（{{printer_ip}}）與 Bambuddy（{{host_ip}}）位於不同的子網路。除非設定了子網路之間的路由，否則它們可能無法互相連線。',
+        pass: '印表機與 Printbuddy 位於同一子網路。',
+        warn: '印表機（{{printer_ip}}）與 Printbuddy（{{host_ip}}）位於不同的子網路。除非設定了子網路之間的路由，否則它們可能無法互相連線。',
         skip: '無法判定子網路 — 已略過。',
       },
       mqtt_auth: {
@@ -5565,12 +5568,12 @@ export default {
       'ftp-auth-rejected': {
         name: '印表機拒絕了存取碼',
         cause: '印表機拒絕了檔案傳輸登入。存取碼錯誤，或在切換開發者模式後已變更。',
-        fix: '從印表機螢幕（區域網路設定）重新複製存取碼，並在 Bambuddy 的印表機設定中更新。',
+        fix: '從印表機螢幕（區域網路設定）重新複製存取碼，並在 Printbuddy 的印表機設定中更新。',
       },
       'ftp-connection-timeout': {
         name: '檔案傳輸連線逾時',
-        cause: 'Bambuddy 無法連線印表機的檔案傳輸連接埠（FTPS 990）。該連接埠被封鎖，或印表機已關機或位於其他子網路。',
-        fix: '請確認 Bambuddy 與印表機之間的 990 連接埠未被封鎖，且兩者位於同一網路。',
+        cause: 'Printbuddy 無法連線印表機的檔案傳輸連接埠（FTPS 990）。該連接埠被封鎖，或印表機已關機或位於其他子網路。',
+        fix: '請確認 Printbuddy 與印表機之間的 990 連接埠未被封鎖，且兩者位於同一網路。',
       },
       'ftp-ssl-error': {
         name: '安全檔案傳輸交握失敗',
@@ -5590,7 +5593,7 @@ export default {
       'database-locked': {
         name: '資料庫寫入衝突',
         cause: '在負載下 SQLite 資料庫出現 "database is locked" 錯誤——同時使用多台印表機時較為常見。',
-        fix: '請將 Bambuddy 切換到外部 PostgreSQL 資料庫。參見文件中的 PostgreSQL 指南。',
+        fix: '請將 Printbuddy 切換到外部 PostgreSQL 資料庫。參見文件中的 PostgreSQL 指南。',
       },
     },
   },
@@ -5613,7 +5616,7 @@ export default {
       },
       running: {
         title: '服務正在執行',
-        fail: '虛擬印表機已啟用，但其服務未執行。請檢查 Bambuddy 記錄 — 通常是繫結 IP 衝突或權限錯誤使其停止。',
+        fail: '虛擬印表機已啟用，但其服務未執行。請檢查 Printbuddy 記錄 — 通常是繫結 IP 衝突或權限錯誤使其停止。',
       },
       bind_interface: {
         title: '繫結網路介面',
@@ -5642,8 +5645,8 @@ export default {
       },
       certificate: {
         title: 'TLS 憑證',
-        pass: '憑證已就緒。請確保已將 Bambuddy CA 憑證（上方）匯入切片軟體的信任庫。',
-        fail: '此虛擬印表機的 TLS 憑證遺失。請檢查 Bambuddy 資料目錄是否可寫入。',
+        pass: '憑證已就緒。請確保已將 Printbuddy CA 憑證（上方）匯入切片軟體的信任庫。',
+        fail: '此虛擬印表機的 TLS 憑證遺失。請檢查 Printbuddy 資料目錄是否可寫入。',
       },
     },
   },
@@ -5676,7 +5679,7 @@ export default {
     submittingStepConnection: '正在執行印表機連線檢查',
     submittingStepVirtualPrinters: '正在執行虛擬印表機設定檢查',
     submittingStepLogScan: '正在掃描最近的日誌以尋找已知問題',
-    submittingStepSubmit: '正在將報告提交至 GitHub',
+    submittingStepSubmit: '正在準備 GitHub Issue 連結',
     submitSuccess: '錯誤報告提交成功！',
     submitFailed: '提交錯誤報告失敗',
     diagnosticChecking: '正在檢查印表機連線...',
@@ -5685,6 +5688,9 @@ export default {
     diagnosticIntro: '一台或多台印表機存在連線問題，可能正是您遇到問題的原因。請展開下方的印表機查看解決方法 — 解決它也許無需提交錯誤報告即可解決問題。您仍然可以在下方提交報告。',
     thankYou: '謝謝！',
     submitted: '您的錯誤報告已提交。',
+    prepared: '錯誤報告已準備好',
+    preparedMessage: '請檢查已準備好的 GitHub Issue，然後手動提交。',
+    openGitHubIssue: '開啟 GitHub Issue',
     viewIssue: '檢視 Issue',
     unexpectedError: '發生了意外錯誤',
   },
@@ -5708,7 +5714,7 @@ export default {
     pollInterval: '檢查間隔(秒)',
     pollIntervalHint: '列印過程中每臺印表機的檢查頻率。最小 5 秒,最大 120 秒。',
     externalUrlMissing: '尚未設定外部 URL。',
-    externalUrlHint: 'ML API 透過 URL 擷取攝影機快照。請在一般設定中設定外部 URL，讓 ML API 容器可以連線到 Bambuddy。',
+    externalUrlHint: 'ML API 透過 URL 擷取攝影機快照。請在一般設定中設定外部 URL，讓 ML API 容器可以連線到 Printbuddy。',
     perPrinterTitle: '監控的印表機',
     perPrinterHint: '選擇檢測服務要監視哪些印表機。',
     monitorAll: '監控所有已連線的印表機',
@@ -5722,7 +5728,7 @@ export default {
   },
   makerworld: {
     title: 'MakerWorld',
-    description: '貼上 MakerWorld 模型連結，即可直接在 Bambuddy 中匯入並列印 —— 無需切換至 Bambu Handy 應用程式。',
+    description: '貼上 MakerWorld 模型連結，即可直接在 Printbuddy 中匯入並列印 —— 無需切換至 Bambu Handy 應用程式。',
     pasteUrlHeader: '從 MakerWorld 匯入',
     pasteUrlPlaceholder: 'https://makerworld.com/en/models/… 或貼上任意 MakerWorld 連結',
     resolveButton: '解析',
@@ -5745,7 +5751,7 @@ export default {
     alsoCompatible: '還標記為相容：{{printers}}',
     importToLibrary: '儲存',
     sliceIn: '儲存並在 {{slicer}} 中切片',
-    disclaimer: 'MakerWorld 整合使用由社群記錄的 API 介面。Bambuddy 與 MakerWorld 或 Bambu Lab 無從屬或認可關係。',
+    disclaimer: 'MakerWorld 整合使用由社群記錄的 API 介面。Printbuddy 與 MakerWorld 或 Bambu Lab 無從屬或認可關係。',
     lastImportSuccess: '已匯入您的資料庫',
     lastImportAlreadyInLibrary: '已存在於您的資料庫中',
     viewInLibrary: '在檔案管理員中查看',
@@ -5841,7 +5847,7 @@ export default {
     effect1: '符合的檔案移至回收筒 — 尚未從磁碟刪除。',
     effect2: '在保留期到期之前，您可以隨時從回收筒復原。',
     effect3: '保留期滿後，回收筒清理器將它們從磁碟永久刪除。',
-    effect4: '外部（連結）資料夾中的檔案將被略過 — Bambuddy 從不刪除不屬於自己的位元組。',    previewLoading: '正在檢查符合的檔案數量…',
+    effect4: '外部（連結）資料夾中的檔案將被略過 — Printbuddy 從不刪除不屬於自己的位元組。',    previewLoading: '正在檢查符合的檔案數量…',
     previewFailed: '無法預覽清理結果。',
     previewSummary: '{{count}} 個檔案 · {{size}} 將被移至資源回收筒',
     andMore: '…還有 {{count}} 個',

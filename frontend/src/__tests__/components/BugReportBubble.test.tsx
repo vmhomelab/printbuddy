@@ -146,7 +146,7 @@ describe('BugReportBubble', () => {
     });
   });
 
-  it('shows success state after successful submission', async () => {
+  it('shows prepared state with manual GitHub issue link after successful submission', async () => {
     const user = userEvent.setup();
 
     setupLoggingEndpoints();
@@ -154,9 +154,9 @@ describe('BugReportBubble', () => {
       http.post('*/bug-report/submit', () => {
         return HttpResponse.json({
           success: true,
-          message: 'Bug report submitted successfully!',
-          issue_url: 'https://github.com/maziggy/bambuddy/issues/42',
-          issue_number: 42,
+          message: 'Bug report prepared. Review and submit it on GitHub.',
+          issue_url: 'https://github.com/vmhomelab/Printbuddy/issues/new?title=Bug+report',
+          issue_number: null,
         });
       })
     );
@@ -182,11 +182,16 @@ describe('BugReportBubble', () => {
 
     await waitFor(
       () => {
-        expect(screen.getByText(/#42/)).toBeInTheDocument();
+        expect(screen.getAllByText(/prepared/i).length).toBeGreaterThan(0);
+        expect(screen.getByRole('link', { name: /open github issue/i })).toHaveAttribute(
+          'href',
+          'https://github.com/vmhomelab/Printbuddy/issues/new?title=Bug+report'
+        );
+        expect(screen.queryByText(/#42/)).not.toBeInTheDocument();
       },
-      { timeout: 10000 }
+      { timeout: 2000 }
     );
-  });
+  }, 10000);
 
   it('shows error state after failed submission', async () => {
     const user = userEvent.setup();

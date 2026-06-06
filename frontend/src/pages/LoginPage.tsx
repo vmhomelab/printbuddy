@@ -9,6 +9,7 @@ import { X, Mail, Shield, Smartphone, Key } from 'lucide-react';
 import { api, type LoginResponse, type OIDCProvider, type TokenPersistence } from '../api/client';
 import { Card, CardHeader, CardContent } from '../components/Card';
 import { Button } from '../components/Button';
+import { appAssetPath } from '../utils/assetPaths';
 
 type LoginStep = 'credentials' | '2fa' | 'reset-password';
 
@@ -599,8 +600,8 @@ export function LoginPage() {
         <div className="text-center">
           <div className="flex items-center justify-center mb-6">
             <img
-              src={mode === 'dark' ? '/img/bambuddy_logo_dark_transparent.png' : '/img/bambuddy_logo_light.png'}
-              alt="Bambuddy"
+              src={appAssetPath(mode === 'dark' ? '/img/printbuddy_logo.svg' : '/img/printbuddy_logo.svg')}
+              alt="Printbuddy"
               className="h-16"
             />
           </div>

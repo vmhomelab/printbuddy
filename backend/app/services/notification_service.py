@@ -139,7 +139,7 @@ class NotificationService:
         """Build notification title and body from template."""
         # Add common variables
         variables["timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-        variables["app_name"] = "Bambuddy"
+        variables["app_name"] = "Printbuddy"
 
         template = await self._get_template(db, event_type)
         if not template:
@@ -159,7 +159,7 @@ class NotificationService:
         if db:
             title, message = await self._build_message_from_template(db, "test", {})
         else:
-            title = "Bambuddy Test"
+            title = "Printbuddy Test"
             message = "This is a test notification. If you see this, notifications are working!"
 
         try:
@@ -313,10 +313,22 @@ class NotificationService:
             except Exception:
                 return False, f"HTTP {response.status_code}: {response.text[:200]}"
 
+    def _telegram_thread_id(self, config: dict) -> str | None:
+        """Return an optional Telegram forum topic/thread id from provider config."""
+        for key in ("message_thread_id", "thread_id", "topic_id"):
+            value = config.get(key)
+            if value is None:
+                continue
+            thread_id = str(value).strip()
+            if thread_id:
+                return thread_id
+        return None
+
     async def _send_telegram(self, config: dict, message: str, image_data: bytes | None = None) -> tuple[bool, str]:
         """Send notification via Telegram bot."""
         bot_token = config.get("bot_token", "").strip()
         chat_id = config.get("chat_id", "").strip()
+        thread_id = self._telegram_thread_id(config)
 
         if not bot_token or not chat_id:
             return False, "Bot token and chat ID are required"
@@ -331,19 +343,27 @@ class NotificationService:
             message = f"{title_part}\n{body_part}"
 
         client = await self._get_client()
+        telegram_payload = {"chat_id": chat_id}
+        if thread_id:
+            telegram_payload["message_thread_id"] = thread_id
 
         if image_data:
             # Use sendPhoto to attach the thumbnail with the caption
             url = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
+            data = {
+                **telegram_payload,
+                "caption": message,
+                "parse_mode": "Markdown",
+            }
             response = await client.post(
                 url,
-                data={"chat_id": chat_id, "caption": message, "parse_mode": "Markdown"},
+                data=data,
                 files={"photo": ("photo.jpg", image_data, "image/jpeg")},
             )
         else:
             url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
             data = {
-                "chat_id": chat_id,
+                **telegram_payload,
                 "text": message,
                 "parse_mode": "Markdown",
             }
@@ -381,7 +401,7 @@ class NotificationService:
             msg = MIMEMultipart()
             msg["From"] = from_email
             msg["To"] = to_email
-            msg["Subject"] = f"[Bambuddy] {subject}"
+            msg["Subject"] = f"[Printbuddy] {subject}"
             msg.attach(MIMEText(body, "plain"))
 
             if security == "ssl":
@@ -484,7 +504,7 @@ class NotificationService:
                 custom_field_title: title,
                 custom_field_message: message,
                 "timestamp": datetime.now().isoformat(),
-                "source": "Bambuddy",
+                "source": "Printbuddy",
             }
 
         # For generic format, include structured event data for automation tools

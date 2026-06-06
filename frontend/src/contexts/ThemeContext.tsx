@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 import { api } from '../api/client';
+import { appAssetPath } from '../utils/assetPaths';
 
 type ThemeMode = 'light' | 'dark';
 type ThemeStyle = 'classic' | 'glow' | 'vibrant';
@@ -30,6 +31,58 @@ interface ThemeContextType {
 
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
 
+const BRAND_ICONS = {
+  light: {
+    favicon16: '/img/favicon-16x16.png',
+    favicon32: '/img/favicon-32x32.png',
+    appleTouchIcon: '/img/apple-touch-icon.png',
+    startupImage: '/img/android-chrome-512x512.png',
+  },
+  dark: {
+    favicon16: '/img/favicon-16x16-dark.png',
+    favicon32: '/img/favicon-32x32-dark.png',
+    appleTouchIcon: '/img/apple-touch-icon-dark.png',
+    startupImage: '/img/android-chrome-512x512-dark.png',
+  },
+} satisfies Record<ThemeMode, Record<string, string>>;
+
+function updateOrCreateLink(selector: string, attributes: Record<string, string>) {
+  const existing = document.head.querySelector<HTMLLinkElement>(selector);
+  const link = existing ?? document.createElement('link');
+
+  Object.entries(attributes).forEach(([key, value]) => link.setAttribute(key, value));
+
+  if (!existing) {
+    document.head.appendChild(link);
+  }
+}
+
+function applyBrandIcons(mode: ThemeMode) {
+  const icons = BRAND_ICONS[mode];
+
+  updateOrCreateLink('link[rel="icon"][sizes="16x16"]', {
+    rel: 'icon',
+    type: 'image/png',
+    sizes: '16x16',
+    href: appAssetPath(icons.favicon16),
+  });
+  updateOrCreateLink('link[rel="icon"][sizes="32x32"]', {
+    rel: 'icon',
+    type: 'image/png',
+    sizes: '32x32',
+    href: appAssetPath(icons.favicon32),
+  });
+  updateOrCreateLink('link[rel="apple-touch-icon"]', {
+    rel: 'apple-touch-icon',
+    sizes: '180x180',
+    href: appAssetPath(icons.appleTouchIcon),
+  });
+  updateOrCreateLink('link[rel="apple-touch-startup-image"]', {
+    rel: 'apple-touch-startup-image',
+    href: appAssetPath(icons.startupImage),
+  });
+}
+
 export function ThemeProvider({ children }: { children: ReactNode }) {
   // Mode
   const [mode, setModeState] = useState<ThemeMode>(() => {
@@ -46,7 +99,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     return (localStorage.getItem('dark-background') as DarkBackground) || 'cool';
   });
   const [darkAccent, setDarkAccentState] = useState<ThemeAccent>(() => {
-    return (localStorage.getItem('dark-accent') as ThemeAccent) || 'green';
+    return (localStorage.getItem('dark-accent') as ThemeAccent) || 'blue';
   });
 
   // Light mode settings
@@ -57,7 +110,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     return (localStorage.getItem('light-background') as LightBackground) || 'neutral';
   });
   const [lightAccent, setLightAccentState] = useState<ThemeAccent>(() => {
-    return (localStorage.getItem('light-accent') as ThemeAccent) || 'green';
+    return (localStorage.getItem('light-accent') as ThemeAccent) || 'blue';
   });
 
   // Sync from API on mount
@@ -116,6 +169,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       root.classList.add(`accent-${lightAccent}`);
     }
 
+    applyBrandIcons(mode);
     localStorage.setItem('theme-mode', mode);
     localStorage.removeItem('theme');
   }, [mode, darkStyle, darkBackground, darkAccent, lightStyle, lightBackground, lightAccent]);

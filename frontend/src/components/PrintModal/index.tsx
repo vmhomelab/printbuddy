@@ -21,6 +21,10 @@ import { PlateSelector } from './PlateSelector';
 import { PrinterSelector } from './PrinterSelector';
 import { PrintOptionsPanel } from './PrintOptions';
 import { ScheduleOptionsPanel } from './ScheduleOptions';
+import {
+  getSharedSupportedPrintOptionKeys,
+  sanitizePrintOptionsForPrinter,
+} from './printOptionCapabilities';
 import type {
   AssignmentMode,
   PrintModalProps,
@@ -259,6 +263,14 @@ export function PrintModal({
     queryKey: ['printers'],
     queryFn: api.getPrinters,
   });
+  const selectedPrinterRecords = useMemo(
+    () => printers?.filter((printer) => selectedPrinters.includes(printer.id)) ?? [],
+    [printers, selectedPrinters]
+  );
+  const supportedPrintOptions = useMemo(
+    () => getSharedSupportedPrintOptionKeys(selectedPrinterRecords),
+    [selectedPrinterRecords]
+  );
 
   const { data: spoolAssignments } = useQuery({
     queryKey: ['spool-assignments'],
@@ -344,7 +356,14 @@ export function PrintModal({
   });
 
   // Get AMS mapping from hook (only when single printer selected)
-  const { amsMapping } = useFilamentMapping(effectiveFilamentReqs, printerStatus, manualMappings, settings?.prefer_lowest_filament);
+  const { amsMapping } = useFilamentMapping(
+    effectiveFilamentReqs,
+    printerStatus,
+    manualMappings,
+    settings?.prefer_lowest_filament,
+    spoolAssignments,
+    effectivePrinterId ?? undefined,
+  );
 
   // Multi-printer filament mapping (for per-printer configuration)
   const multiPrinterMapping = useMultiPrinterFilamentMapping(
@@ -355,6 +374,7 @@ export function PrintModal({
     perPrinterConfigs,
     setPerPrinterConfigs,
     settings?.prefer_lowest_filament,
+    spoolAssignments,
   );
 
   // Auto-select first plate when plates load (single or multi-plate)
@@ -530,7 +550,7 @@ export function PrintModal({
             ? multiPrinterMapping.printerResults.find((result) => result.printerId === printerId)?.status
             : printerStatus;
 
-          const loadedFilaments = buildLoadedFilaments(printerStatusForWarning);
+          const loadedFilaments = buildLoadedFilaments(printerStatusForWarning, spoolAssignments, printerId);
           const slotLabelByTray = new Map(loadedFilaments.map((f) => [f.globalTrayId, f.label]));
           const assignments = spoolAssignmentsByPrinter.get(printerId);
           const printerName = printers?.find((p) => p.id === printerId)?.name ?? `Printer ${printerId}`;
@@ -636,6 +656,9 @@ export function PrintModal({
     };
 
     const filamentOverridesArray = buildFilamentOverridesArray();
+    const getPrinterById = (printerId: number | null) => printers?.find((printer) => printer.id === printerId);
+    const getPrintOptionsForPrinter = (printerId: number | null) =>
+      sanitizePrintOptionsForPrinter(printOptions, getPrinterById(printerId));
 
     // Common queue data for add-to-queue and edit modes
     const getQueueData = (printerId: number | null, plateOverride?: number | null): PrintQueueItemCreate => ({
@@ -655,7 +678,7 @@ export function PrintModal({
       scheduled_time: scheduleOptions.scheduleType === 'scheduled' && scheduleOptions.scheduledTime
         ? new Date(scheduleOptions.scheduledTime).toISOString()
         : undefined,
-      ...printOptions,
+      ...getPrintOptionsForPrinter(printerId),
       project_id: projectId ?? undefined,
     });
 
@@ -690,7 +713,7 @@ export function PrintModal({
               scheduled_time: scheduleOptions.scheduleType === 'scheduled' && scheduleOptions.scheduledTime
                 ? new Date(scheduleOptions.scheduledTime).toISOString()
                 : null,
-              ...printOptions,
+              ...getPrintOptionsForPrinter(null),
             };
             await updateQueueMutation.mutateAsync(updateData);
           } else {
@@ -736,7 +759,7 @@ export function PrintModal({
                   plate_id: selectedPlate ?? undefined,
                   plate_name: selectedPlateName,
                   ams_mapping: printerMapping,
-                  ...printOptions,
+                  ...getPrintOptionsForPrinter(printerId),
                   project_id: projectId,
                   cleanup_library_after_dispatch: cleanupLibraryAfterDispatch,
                 });
@@ -747,7 +770,7 @@ export function PrintModal({
                   plate_id: selectedPlate ?? undefined,
                   plate_name: selectedPlateName,
                   ams_mapping: printerMapping,
-                  ...printOptions,
+                  ...getPrintOptionsForPrinter(printerId),
                 });
               }
               // Queue remaining copies if quantity > 1
@@ -772,7 +795,7 @@ export function PrintModal({
                 scheduled_time: scheduleOptions.scheduleType === 'scheduled' && scheduleOptions.scheduledTime
                   ? new Date(scheduleOptions.scheduledTime).toISOString()
                   : null,
-                ...printOptions,
+                ...getPrintOptionsForPrinter(printerId),
               };
               await updateQueueMutation.mutateAsync(updateData);
             } else {
@@ -1067,7 +1090,12 @@ export function PrintModal({
 
             {/* Print options */}
             {(mode === 'reprint' || effectivePrinterCount > 0 || (assignmentMode === 'model' && targetModel)) && (
-              <PrintOptionsPanel options={printOptions} onChange={setPrintOptions} defaultExpanded={!!initialSelectedPrinterIds?.length} />
+              <PrintOptionsPanel
+                options={printOptions}
+                onChange={setPrintOptions}
+                defaultExpanded={!!initialSelectedPrinterIds?.length}
+                supportedOptions={supportedPrintOptions}
+              />
             )}
 
             {/* Quantity — create multiple copies (batch). Hidden for multi-printer selection. */}

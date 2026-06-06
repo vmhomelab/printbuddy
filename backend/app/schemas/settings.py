@@ -126,12 +126,12 @@ class AppSettings(BaseModel):
     dark_background: str = Field(
         default="cool", description="Dark mode background: neutral, warm, cool, oled, slate, forest"
     )
-    dark_accent: str = Field(default="green", description="Dark mode accent: green, teal, blue, orange, purple, red")
+    dark_accent: str = Field(default="blue", description="Dark mode accent: green, teal, blue, orange, purple, red")
 
     # Light mode theme settings
     light_style: str = Field(default="classic", description="Light mode style: classic, glow, vibrant")
     light_background: str = Field(default="neutral", description="Light mode background: neutral, warm, cool")
-    light_accent: str = Field(default="green", description="Light mode accent: green, teal, blue, orange, purple, red")
+    light_accent: str = Field(default="blue", description="Light mode accent: green, teal, blue, orange, purple, red")
 
     # FTP retry settings for unreliable WiFi connections
     ftp_retry_enabled: bool = Field(default=True, description="Enable automatic retry for FTP operations")
@@ -150,7 +150,7 @@ class AppSettings(BaseModel):
 
     # External URL for notifications
     external_url: str = Field(
-        default="", description="External URL where Bambuddy is accessible (for notification images)"
+        default="", description="External URL where Printbuddy is accessible (for notification images)"
     )
 
     # Home Assistant integration for smart plug control
@@ -271,15 +271,15 @@ class AppSettings(BaseModel):
     ldap_security: str = Field(default="starttls", description="LDAP security: 'starttls' or 'ldaps'")
     ldap_group_mapping: str = Field(
         default="",
-        description="JSON: LDAP group to BamBuddy group mapping {ldap_group_dn: bambuddy_group_name}",
+        description="JSON: LDAP group to Printbuddy group mapping {ldap_group_dn: printbuddy_group_name}",
     )
     ldap_auto_provision: bool = Field(
         default=False,
-        description="Auto-create BamBuddy user on first successful LDAP login",
+        description="Auto-create Printbuddy user on first successful LDAP login",
     )
     ldap_default_group: str = Field(
         default="",
-        description="Fallback BamBuddy group name assigned when an LDAP user authenticates but has no mapped groups. Empty = no fallback.",
+        description="Fallback Printbuddy group name assigned when an LDAP user authenticates but has no mapped groups. Empty = no fallback.",
     )
 
     # Obico AI failure detection (#172)
@@ -450,7 +450,9 @@ class AppSettingsUpdate(BaseModel):
         except json.JSONDecodeError:
             raise ValueError("ldap_group_mapping must be valid JSON or empty")
         if not isinstance(parsed, dict):
-            raise ValueError("ldap_group_mapping must be a JSON object mapping LDAP group DNs to BamBuddy group names")
+            raise ValueError(
+                "ldap_group_mapping must be a JSON object mapping LDAP group DNs to Printbuddy group names"
+            )
         return v
 
     @field_validator("obico_enabled_printers")

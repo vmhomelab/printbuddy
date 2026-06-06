@@ -1141,3 +1141,34 @@ class TestAssignSpoolEmptyDetection:
         body = response.json()
         assert body["pending_config"] is False
         assert body["configured"] is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_loaded_spool_marker_skips_mqtt_and_returns_configured(
+        self, async_client: AsyncClient, printer_factory, spool_factory
+    ):
+        """Non-AMS loaded-spool assignment is inventory-only and never publishes MQTT."""
+        printer = await printer_factory(name="Elegoo Neptune 4 Pro", provider="moonraker")
+        spool = await spool_factory(slicer_filament="Generic PLA", material="PLA")
+
+        mock_client = MagicMock()
+        status = _make_mock_status(ams_data=[], vt_tray=[])
+
+        with patch("backend.app.services.printer_manager.printer_manager") as mock_pm:
+            mock_pm.get_client.return_value = mock_client
+            mock_pm.get_status.return_value = status
+
+            response = await async_client.post(
+                "/api/v1/inventory/assignments",
+                json={"spool_id": spool.id, "printer_id": printer.id, "ams_id": -1, "tray_id": 0},
+            )
+
+        assert response.status_code == 200
+        mock_client.ams_set_filament_setting.assert_not_called()
+        body = response.json()
+        assert body["printer_id"] == printer.id
+        assert body["ams_id"] == -1
+        assert body["tray_id"] == 0
+        assert body["spool"]["id"] == spool.id
+        assert body["pending_config"] is False
+        assert body["configured"] is True

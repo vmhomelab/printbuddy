@@ -59,10 +59,18 @@ jobs:
 
       - name: Upload Bandit results to GitHub Security
         uses: github/codeql-action/upload-sarif@v4
-        if: always()
+        if: always() && github.event.repository.private == false
         with:
           sarif_file: bandit-results.sarif
           category: bandit
+
+      - name: Upload Bandit SARIF artifact
+        if: always() && hashFiles('bandit-results.sarif') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: bandit-results
+          path: bandit-results.sarif
+          retention-days: 30
 
   trivy:
     name: Container Security Scan (Trivy)
@@ -74,23 +82,31 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build Docker image
-        run: docker build -t bambuddy:security-scan .
+        run: docker build -t printbuddy:security-scan .
 
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@v0.35.0
         with:
-          image-ref: 'bambuddy:security-scan'
+          image-ref: 'printbuddy:security-scan'
           format: 'sarif'
           output: 'trivy-results.sarif'
           severity: 'CRITICAL,HIGH,MEDIUM'
-          version: 'v0.69.1'
+          version: 'latest'
 
       - name: Upload Trivy results to GitHub Security
         uses: github/codeql-action/upload-sarif@v4
-        if: always() && hashFiles('trivy-results.sarif') != ''
+        if: always() && github.event.repository.private == false && hashFiles('trivy-results.sarif') != ''
         with:
           sarif_file: trivy-results.sarif
           category: trivy
+
+      - name: Upload Trivy SARIF artifact
+        if: always() && hashFiles('trivy-results.sarif') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-results
+          path: trivy-results.sarif
+          retention-days: 30
 
       - name: Run Trivy for Dockerfile/IaC
         uses: aquasecurity/trivy-action@v0.35.0
@@ -100,14 +116,22 @@ jobs:
           format: 'sarif'
           output: 'trivy-config-results.sarif'
           severity: 'CRITICAL,HIGH,MEDIUM'
-          version: 'v0.69.1'
+          version: 'latest'
 
       - name: Upload Trivy config results
         uses: github/codeql-action/upload-sarif@v4
-        if: always() && hashFiles('trivy-config-results.sarif') != ''
+        if: always() && github.event.repository.private == false && hashFiles('trivy-config-results.sarif') != ''
         with:
           sarif_file: trivy-config-results.sarif
           category: trivy-config
+
+      - name: Upload Trivy config SARIF artifact
+        if: always() && hashFiles('trivy-config-results.sarif') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-config-results
+          path: trivy-config-results.sarif
+          retention-days: 30
 
   backend-audit:
     name: Backend Security Audit

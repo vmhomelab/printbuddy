@@ -1,6 +1,6 @@
-# Contributing to Bambuddy
+# Contributing to Printbuddy
 
-Thank you for your interest in contributing to Bambuddy! This document provides guidelines and instructions for contributing.
+Thank you for your interest in contributing to Printbuddy! This document provides guidelines and instructions for contributing.
 
 ## Table of Contents
 
@@ -38,10 +38,7 @@ This keeps everyone on the same page, avoids wasted effort on changes that may n
 
 ## Documentation Requirements
 
-Features and user-visible behavior changes **must** include matching documentation updates in the docs repos:
-
-- **[bambuddy-wiki](https://github.com/maziggy/bambuddy-wiki)** — end-user guide (installation, configuration, feature walkthroughs, reference)
-- **[bambuddy-website](https://github.com/maziggy/bambuddy-website)** — marketing site (updated only when the change affects public claims or feature lists)
+Features and user-visible behavior changes **must** include matching documentation updates. Most docs live in this repository; if a separate docs or website repo is introduced later, link the matching companion PR from the code PR.
 
 ### When docs updates are required
 
@@ -58,25 +55,22 @@ Features and user-visible behavior changes **must** include matching documentati
 
 ### Workflow
 
-1. Open your code PR here in `bambuddy`
-2. Open companion PR(s) in `bambuddy-wiki` and/or `bambuddy-website`
-3. **Link the companion PR(s) in the code PR description** (the PR template has a dedicated section)
+1. Open your code PR here in `Printbuddy`
+2. Include matching docs changes in the same PR when the docs live in this repository
+3. If the change also affects a separate docs or website repository, open companion PR(s) there and **link them in the code PR description**
 4. Merge the PRs together — usually code first, then docs, unless the docs reference new things that don't exist yet
 
 If your change truly doesn't need docs (internal refactor, silent bug fix), say so in the PR description and give a one-line reason.
 
 ### Previews before you merge
 
-Clone the docs repo and run it locally to see your changes rendered with the real theme before opening the PR:
-
-- **Wiki** (`bambuddy-wiki`) — `pip install -r requirements.txt && mkdocs serve` — live-reload on `http://localhost:8000`
-- **Website** (`bambuddy-website`) — static HTML/CSS, open the changed file directly or serve with `python -m http.server`
+Preview documentation locally before opening the PR. For repository markdown, review the rendered diff on GitHub. If a separate docs site is involved, run that site locally with its documented preview command before linking the companion PR.
 
 Review like you would the production site. Catch broken links, layout regressions, typos, missing images. If it looks right, open the PR.
 
 ### Editing docs without a local clone
 
-Both docs repos can be edited directly in the browser, no `git clone` required:
+Documentation can be edited directly in the browser, no `git clone` required:
 
 - **GitHub web editor** — click the pencil icon on any file in the repo
 - **github.dev** — press `.` (period) on any repo page to open VS Code in your browser, with multi-file editing and syntax highlighting
@@ -86,12 +80,12 @@ Both docs repos can be edited directly in the browser, no `git clone` required:
 1. **Fork the repository** on GitHub
 2. **Clone your fork** locally:
    ```bash
-   git clone https://github.com/YOUR_USERNAME/bambuddy.git
-   cd bambuddy
+   git clone https://github.com/YOUR_USERNAME/Printbuddy.git
+   cd Printbuddy
    ```
 3. **Add the upstream remote**:
    ```bash
-   git remote add upstream https://github.com/maziggy/bambuddy.git
+   git remote add upstream https://github.com/vmhomelab/Printbuddy.git
    ```
 
 ## Development Setup
@@ -259,7 +253,7 @@ function MyComponent() {
 
 ## Authentication & Permissions
 
-Bambuddy has an optional authentication system. When auth is enabled, API endpoints are protected by granular permissions.
+Printbuddy has an optional authentication system. When auth is enabled, API endpoints are protected by granular permissions.
 
 ### How It Works
 
@@ -386,7 +380,7 @@ All checks must pass before merging. Run `./test_all.sh` locally before pushing 
 
 ## Reporting Bugs
 
-Use the [Bug Report template](https://github.com/maziggy/bambuddy/issues/new?template=bug_report.yml) and include:
+Use the [Bug Report template](https://github.com/vmhomelab/Printbuddy/issues/new?template=bug_report.yml) and include:
 
 - Clear description of the bug
 - Steps to reproduce
@@ -397,7 +391,7 @@ Use the [Bug Report template](https://github.com/maziggy/bambuddy/issues/new?tem
 
 ## Requesting Features
 
-Use the [Feature Request template](https://github.com/maziggy/bambuddy/issues/new?template=feature_request.yml) and include:
+Use the [Feature Request template](https://github.com/vmhomelab/Printbuddy/issues/new?template=feature_request.yml) and include:
 
 - Clear description of the feature
 - Use case / problem it solves
@@ -406,10 +400,10 @@ Use the [Feature Request template](https://github.com/maziggy/bambuddy/issues/ne
 
 ## Questions?
 
-- Check the [Documentation](http://wiki.bambuddy.cool)
-- Open a [Discussion](https://github.com/maziggy/bambuddy/discussions)
-- Review existing [Issues](https://github.com/maziggy/bambuddy/issues)
+- Check the [README](https://github.com/vmhomelab/Printbuddy#readme)
+- Open a [Discussion](https://github.com/vmhomelab/Printbuddy/discussions)
+- Review existing [Issues](https://github.com/vmhomelab/Printbuddy/issues)
 
 ---
 
-Thank you for contributing to Bambuddy!
+Thank you for contributing to Printbuddy!

@@ -31,7 +31,7 @@ class TailscaleStatusResponse(BaseModel):
 
 
 class VirtualPrinterCreate(BaseModel):
-    name: str = "Bambuddy"
+    name: str = "Printbuddy"
     enabled: bool = False
     mode: str = "immediate"
     model: str | None = None

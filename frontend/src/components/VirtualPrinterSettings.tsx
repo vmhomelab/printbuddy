@@ -480,7 +480,7 @@ export function VirtualPrinterSettings() {
                   {t('virtualPrinter.setupRequired.description')}
                 </p>
                 <a
-                  href="https://wiki.bambuddy.cool/features/virtual-printer/"
+                  href="https://github.com/vmhomelab/Printbuddy#readme"
                   target="_blank"
                   rel="noopener noreferrer"
                   className="inline-flex items-center gap-2 px-4 py-2 bg-yellow-500/20 border border-yellow-500/50 rounded-md text-yellow-400 hover:bg-yellow-500/30 transition-colors"

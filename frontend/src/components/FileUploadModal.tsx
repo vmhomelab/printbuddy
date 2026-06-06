@@ -36,9 +36,13 @@ interface FileUploadModalProps {
   validateFile?: (file: File) => string | undefined;
   /** Restrict file picker to specific file types (e.g. ".gcode,.gcode.3mf") */
   accept?: string;
+  /** Human-readable description shown in the drop zone for restricted uploads. */
+  acceptedFileDescription?: string;
+  /** Optional printer context for backend provider-specific print-file validation. */
+  uploadTargetPrinterId?: number;
 }
 
-export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUploaded, autoUpload, validateFile, accept }: FileUploadModalProps) {
+export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUploaded, autoUpload, validateFile, accept, acceptedFileDescription, uploadTargetPrinterId }: FileUploadModalProps) {
   const { t } = useTranslation();
   const [files, setFiles] = useState<UploadFile[]>([]);
   const [isDragging, setIsDragging] = useState(false);
@@ -92,7 +96,7 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
             error: result.errors.length > 0 ? t('fileManager.zipFilesFailed', '{{count}} files failed', { count: result.errors.length }) : undefined,
           });
         } else {
-          const result = await api.uploadLibraryFile(uf.file, folderId, generateStlThumbnails);
+          const result = await api.uploadLibraryFile(uf.file, folderId, generateStlThumbnails, uploadTargetPrinterId);
           updateFileStatus(uf.file, { status: 'success' });
           const error = onFileUploaded?.(result);
           if (error) {
@@ -187,7 +191,7 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
               {isDragging ? t('fileManager.dropFilesHere') : t('fileManager.dragDropFiles')}
             </p>
             <p className="text-sm text-bambu-gray mt-1">{t('fileManager.orClickToBrowse')}</p>
-            <p className="text-xs text-bambu-gray/70 mt-2">{t('fileManager.allFileTypesSupported')}</p>
+            <p className="text-xs text-bambu-gray/70 mt-2">{acceptedFileDescription ?? t('fileManager.allFileTypesSupported')}</p>
           </div>
 
           <input

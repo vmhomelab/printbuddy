@@ -657,9 +657,9 @@ async def test_smtp_connection(
         send_email(
             smtp_settings=smtp_settings,
             to_email=test_request.test_recipient,
-            subject="BamBuddy SMTP Test",
-            body_text="This is a test email from BamBuddy. If you received this, your SMTP settings are working correctly!",
-            body_html="<p>This is a test email from <strong>BamBuddy</strong>.</p><p>If you received this, your SMTP settings are working correctly!</p>",
+            subject="Printbuddy SMTP Test",
+            body_text="This is a test email from Printbuddy. If you received this, your SMTP settings are working correctly!",
+            body_html="<p>This is a test email from <strong>Printbuddy</strong>.</p><p>If you received this, your SMTP settings are working correctly!</p>",
         )
 
         logger.info(f"Test email sent successfully to {test_request.test_recipient}")

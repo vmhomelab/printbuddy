@@ -1,10 +1,10 @@
 # Slicer-API sidecar (optional)
 
 Self-contained Docker Compose stack that runs HTTP wrappers around the
-OrcaSlicer and/or Bambu Studio CLI. Bambuddy's **Slice** action calls
+OrcaSlicer and/or Bambu Studio CLI. Printbuddy's **Slice** action calls
 these to slice models server-side, no desktop slicer required.
 
-This folder is **optional**. Bambuddy works without it — Slice falls back
+This folder is **optional**. Printbuddy works without it — Slice falls back
 to opening the model in the user's local desktop slicer via URI scheme.
 Enable the API path by:
 
@@ -36,14 +36,14 @@ Subsequent runs reuse the local image — instant start.
 
 | Service | Default host port | Why this port |
 |---|---|---|
-| `orca-slicer-api` | **3003** | Bambuddy's virtual-printer feature reserves 3000 and 3002 |
+| `orca-slicer-api` | **3003** | Printbuddy's virtual-printer feature reserves 3000 and 3002 |
 | `bambu-studio-api` | **3001** | First free port in that range |
 
 Override via `ORCA_API_PORT` / `BAMBU_API_PORT` in `.env`.
 
-## Bambuddy wiring
+## Printbuddy wiring
 
-In the Bambuddy UI: **Settings → Slicer**:
+In the Printbuddy UI: **Settings → Slicer**:
 
 - **Preferred Slicer**: pick OrcaSlicer or Bambu Studio.
 - **Use Slicer API**: turn on.
@@ -53,15 +53,14 @@ In the Bambuddy UI: **Settings → Slicer**:
   - Bambu Studio: `http://localhost:3001`
 
 Leaving the URL field blank uses the `SLICER_API_URL` /
-`BAMBU_STUDIO_API_URL` environment defaults from Bambuddy's config.
+`BAMBU_STUDIO_API_URL` environment defaults from Printbuddy's config.
 
 ## Where the source lives
 
-Both images build from the
-[`maziggy/orca-slicer-api`](https://github.com/maziggy/orca-slicer-api)
-fork (`bambuddy/profile-resolver` branch). The Compose file uses
-Docker's git build context, so you don't need to clone it manually —
-Docker pulls the repo at build time.
+Both images build from the git context configured by
+`SLICER_API_BUILD_CONTEXT` in `.env`. The Compose file uses Docker's git build
+context, so you don't need to clone the sidecar manually — Docker pulls the repo
+at build time.
 
 The fork patches AFKFelix's upstream wrapper with the `inherits:`
 chain resolver, `from: "User"` → `"system"` rewrite, `# ` clone-prefix
@@ -84,7 +83,7 @@ inline; Docker won't re-fetch it on a version change otherwise.
 
 ## Troubleshooting
 
-- **`address already in use` on port 3000 or 3002** — Bambuddy's
+- **`address already in use` on port 3000 or 3002** — Printbuddy's
   virtual-printer feature owns those. Don't change `ORCA_API_PORT` to
   3000 or 3002.
 - **`/health` reports `version: "unknown"`** — cosmetic. The bundled

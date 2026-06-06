@@ -64,7 +64,6 @@ import {
   Gauge,
   DoorOpen,
   DoorClosed,
-  MoveVertical,
   LogIn,
   LogOut,
   MoreHorizontal,
@@ -98,11 +97,13 @@ import { FileUploadModal } from '../components/FileUploadModal';
 import { PrintModal } from '../components/PrintModal';
 import { PrinterInfoModal } from '../components/PrinterInfoModal';
 import { getGlobalTrayId, getFillBarColor, getSpoolmanFillLevel, getFallbackSpoolTag, isBambuLabSpool } from '../utils/amsHelpers';
-import { getPrinterImage, getWifiStrength, filterCompatibleQueueItems } from '../utils/printer';
+import { getDefaultPrinterImage, getPrinterImage, getWifiStrength, filterCompatibleQueueItems } from '../utils/printer';
 import { FilamentSlotCircle } from '../components/FilamentSlotCircle';
 import { Collapsible } from '../components/Collapsible';
 import { ConnectionDiagnosticModal, DiagnosticChecklist } from '../components/ConnectionDiagnostic';
+import { KlipperControlPanel } from '../components/KlipperControlPanel';
 import { getColorName, parseFilamentColor, isLightColor } from '../utils/colors';
+import { getPrinterFileRuleSet, isPrintableForProvider } from '../utils/printerFileRules';
 
 export interface SpoolmanSlotAssignmentRow {
   printer_id: number;
@@ -118,6 +119,191 @@ export interface SpoolmanSlotAssignmentRow {
 function formatKValue(k: number | null | undefined): string {
   const value = k ?? 0.020;
   return value.toFixed(3);
+}
+
+type PrinterModelOptionGroup = {
+  label: string;
+  options: Array<{ value: string; label: string }>;
+};
+
+function inferExternalCameraType(url: string): NonNullable<PrinterCreate['external_camera_type']> {
+  const normalized = url.trim().toLowerCase();
+  if (normalized.startsWith('rtsp://') || normalized.startsWith('rtsps://')) {
+    return 'rtsp';
+  }
+  if (normalized.startsWith('/dev/video') || normalized.startsWith('usb://')) {
+    return 'usb';
+  }
+  if (/\.(jpe?g|png|webp)(\?|#|$)/.test(normalized) || normalized.includes('/snapshot') || normalized.includes('/frame')) {
+    return 'snapshot';
+  }
+  return 'mjpeg';
+}
+
+const PRINTER_MODEL_GROUPS: PrinterModelOptionGroup[] = [
+  {
+    label: 'Bambu Lab',
+    options: [
+      { value: 'A1', label: 'A1' },
+      { value: 'A1 F', label: 'A1 F' },
+      { value: 'A1 Mini', label: 'A1 Mini' },
+      { value: 'O1C', label: 'O1C' },
+      { value: 'O1E', label: 'O1E' },
+      { value: 'O1S', label: 'O1S' },
+      { value: 'P1P', label: 'P1P' },
+      { value: 'P1S', label: 'P1S' },
+      { value: 'P2S', label: 'P2S' },
+      { value: 'X1', label: 'X1' },
+      { value: 'X1C', label: 'X1 Carbon' },
+      { value: 'X1E', label: 'X1E' },
+      { value: 'X2D', label: 'X2D' },
+      { value: 'H2C', label: 'H2C' },
+      { value: 'H2D', label: 'H2D' },
+      { value: 'H2D Pro', label: 'H2D Pro' },
+      { value: 'H2S', label: 'H2S' },
+    ],
+  },
+  {
+    label: 'Elegoo',
+    options: [
+      { value: 'Elegoo Neptune 3', label: 'Neptune 3' },
+      { value: 'Elegoo Neptune 3 Pro', label: 'Neptune 3 Pro' },
+      { value: 'Elegoo Neptune 3 Plus', label: 'Neptune 3 Plus' },
+      { value: 'Elegoo Neptune 3 Max', label: 'Neptune 3 Max' },
+      { value: 'Elegoo Neptune 4', label: 'Neptune 4' },
+      { value: 'Elegoo Neptune 4 Pro', label: 'Neptune 4 Pro' },
+      { value: 'Elegoo Neptune 4 Plus', label: 'Neptune 4 Plus' },
+      { value: 'Elegoo Neptune 4 Max', label: 'Neptune 4 Max' },
+      { value: 'Elegoo Centauri', label: 'Centauri' },
+      { value: 'Elegoo Centauri Carbon', label: 'Centauri Carbon' },
+    ],
+  },
+  {
+    label: 'Voron',
+    options: [
+      { value: 'Voron V0.2', label: 'V0.2' },
+      { value: 'Voron Trident', label: 'Trident' },
+      { value: 'Voron 2.4', label: '2.4' },
+      { value: 'Voron Switchwire', label: 'Switchwire' },
+      { value: 'Voron Legacy', label: 'Legacy' },
+    ],
+  },
+  {
+    label: 'Creality Klipper',
+    options: [
+      { value: 'Creality Ender-3', label: 'Ender-3' },
+      { value: 'Creality Ender-3 Pro', label: 'Ender-3 Pro' },
+      { value: 'Creality Ender-3 V2', label: 'Ender-3 V2' },
+      { value: 'Creality Ender-3 S1', label: 'Ender-3 S1' },
+      { value: 'Creality Ender-5 Plus', label: 'Ender-5 Plus' },
+      { value: 'Creality CR-10S Pro', label: 'CR-10S Pro' },
+      { value: 'Creality CR-10S Pro V2', label: 'CR-10S Pro V2' },
+    ],
+  },
+  {
+    label: 'Prusa',
+    options: [
+      { value: 'Prusa CORE One', label: 'CORE One' },
+      { value: 'Prusa MK4S', label: 'MK4S' },
+      { value: 'Prusa MK4', label: 'MK4' },
+      { value: 'Prusa MK3.9S', label: 'MK3.9S' },
+      { value: 'Prusa MK3.9', label: 'MK3.9' },
+      { value: 'Prusa MK3.5S', label: 'MK3.5S' },
+      { value: 'Prusa MK3.5', label: 'MK3.5' },
+      { value: 'Prusa XL', label: 'XL' },
+      { value: 'Prusa MINI+', label: 'MINI+' },
+      { value: 'Prusa MK3S+', label: 'MK3S+' },
+      { value: 'Prusa SL1S SPEED', label: 'SL1S SPEED' },
+    ],
+  },
+  {
+    label: 'Generic',
+    options: [
+      { value: 'Klipper', label: 'Klipper / Moonraker' },
+      { value: 'PrusaLink', label: 'PrusaLink' },
+      { value: 'Generic Klipper Printer', label: 'Generic Klipper Printer' },
+      { value: 'Generic FDM Printer', label: 'Generic FDM Printer' },
+    ],
+  },
+];
+
+function PrinterModelSelect({
+  id,
+  label,
+  value,
+  onChange,
+  provider,
+}: {
+  id: string;
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  provider?: PrinterCreate['provider'];
+}) {
+  const { t } = useTranslation();
+  const visibleGroups = provider === 'prusalink'
+    ? PRINTER_MODEL_GROUPS
+        .map((group) => {
+          if (group.label === 'Prusa') return group;
+          if (group.label === 'Generic') {
+            return {
+              ...group,
+              options: group.options.filter((option) => option.value === 'PrusaLink' || option.value === 'Generic FDM Printer'),
+            };
+          }
+          return { ...group, options: [] };
+        })
+        .filter((group) => group.options.length > 0)
+    : PRINTER_MODEL_GROUPS;
+
+  return (
+    <div>
+      <label htmlFor={id} className="block text-sm text-bambu-gray mb-1">{label}</label>
+      <select
+        id={id}
+        className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      >
+        <option value="">{t('printers.modal.selectModel')}</option>
+        {visibleGroups.map((group) => (
+          <optgroup key={group.label} label={group.label}>
+            {group.options.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </optgroup>
+        ))}
+      </select>
+    </div>
+  );
+}
+
+function PrinterModelImagePreview({ model }: { model: string | null | undefined }) {
+  const { t } = useTranslation();
+  const imageSrc = getPrinterImage(model);
+  const label = model || t('printers.modal.selectModel');
+
+  return (
+    <div className="mt-3 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark/60 p-3 flex items-center gap-3">
+      <img
+        src={imageSrc}
+        alt={label}
+        className="w-20 h-20 object-contain rounded bg-bambu-dark flex-shrink-0"
+        onError={(event) => {
+          const fallback = getDefaultPrinterImage();
+          if (event.currentTarget.getAttribute('src') !== fallback) {
+            event.currentTarget.src = fallback;
+          }
+        }}
+      />
+      <div className="min-w-0">
+        <div className="text-sm font-medium text-white truncate">{label}</div>
+        <div className="text-xs text-bambu-gray">
+          {t('printers.modal.modelImagePreview', 'Preview image changes with the selected model.')}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 // Nozzle side indicators (Bambu Lab style - square badge with L/R)
@@ -1506,9 +1692,6 @@ function PrinterCard({
   const [showPauseConfirm, setShowPauseConfirm] = useState(false);
   const [showSpeedMenu, setShowSpeedMenu] = useState<number | null>(null);
   const [showAirductMenu, setShowAirductMenu] = useState<number | null>(null);
-  const [showBedJogMenu, setShowBedJogMenu] = useState<number | null>(null);
-  const [bedJogStep, setBedJogStep] = useState<number>(10);
-  const [showNotHomedModal, setShowNotHomedModal] = useState<null | { distance: number }>(null);
   const [showResumeConfirm, setShowResumeConfirm] = useState(false);
   const [showSkipObjectsModal, setShowSkipObjectsModal] = useState(false);
   const [showUploadForPrint, setShowUploadForPrint] = useState(false);
@@ -1616,6 +1799,8 @@ function PrinterCard({
     return Array.from(ids);
   }, [status?.ams, status?.vt_tray, status?.nozzle_rack]);
 
+  const loadedSpoolAssignment = onGetAssignment?.(printer.id, -1, 0);
+
   // Collect loaded filament types for queue widget filtering
   const loadedFilamentTypes = useMemo(() => {
     const types = new Set<string>();
@@ -1629,8 +1814,11 @@ function PrinterCard({
     for (const vt of status?.vt_tray ?? []) {
       if (vt.tray_type) types.add(vt.tray_type.toUpperCase());
     }
+    if (loadedSpoolAssignment?.spool?.material) {
+      types.add(loadedSpoolAssignment.spool.material.toUpperCase());
+    }
     return types;
-  }, [status?.ams, status?.vt_tray]);
+  }, [status?.ams, status?.vt_tray, loadedSpoolAssignment?.spool?.material]);
 
   // Collect loaded filament type+color pairs for queue widget override matching
   // Format: "TYPE:rrggbb" (e.g., "PETG:ffffff") — mirrors backend _count_override_color_matches()
@@ -1652,8 +1840,13 @@ function PrinterCard({
         filaments.add(`${vt.tray_type.toUpperCase()}:${color}`);
       }
     }
+    const loaded = loadedSpoolAssignment?.spool;
+    if (loaded?.material && loaded.rgba) {
+      const color = loaded.rgba.replace('#', '').toLowerCase().slice(0, 6);
+      filaments.add(`${loaded.material.toUpperCase()}:${color}`);
+    }
     return filaments;
-  }, [status?.ams, status?.vt_tray]);
+  }, [status?.ams, status?.vt_tray, loadedSpoolAssignment?.spool]);
 
   // Fetch cloud filament info for tooltips (name includes color, also has K value)
   const { data: filamentInfo } = useQuery({
@@ -1711,6 +1904,8 @@ function PrinterCard({
     }
   }, [status?.connected]);
   const isConnected = status?.connected ?? cachedConnected.current;
+  const hasExternalCamera = Boolean(printer.external_camera_enabled && printer.external_camera_url);
+  const canOpenCamera = hasPermission('camera:view') && (isConnected || hasExternalCamera);
 
   // Cache ams_extruder_map to prevent L/R indicators bouncing on updates
   const cachedAmsExtruderMap = useRef<Record<string, number>>({});
@@ -1746,6 +1941,8 @@ function PrinterCard({
   const effectiveTrayNow = (currentTrayNow !== undefined && currentTrayNow !== 255)
     ? currentTrayNow
     : cachedTrayNow.current;
+
+  const showLoadedSpoolPicker = (amsData.length === 0) && ((status?.vt_tray?.length ?? 0) === 0);
 
   // Fetch smart plug for this printer
   const { data: smartPlug } = useQuery({
@@ -2027,27 +2224,6 @@ function PrinterCard({
       }
       showToast(error.message || t('printers.toast.failedToSendCommand'), 'error');
     },
-  });
-
-  const bedJogMutation = useMutation({
-    mutationFn: ({ distance, force }: { distance: number; force?: boolean }) =>
-      api.bedJog(printer.id, distance, force ?? false),
-    onError: (error: Error) =>
-      showToast(error.message || t('printers.toast.failedToSendCommand'), 'error'),
-  });
-
-  const homeAxesMutation = useMutation({
-    mutationFn: (axes: 'z' | 'xy' | 'all') => api.homeAxes(printer.id, axes),
-    onSuccess: () => {
-      // Flip the session-scoped "warned" flag so the next bed-jog click doesn't re-prompt
-      // the not-homed modal. The flag is the same one "Move anyway" sets; after a successful
-      // auto-home request the printer is (or will shortly be) in a known-homed state, so
-      // prompting again in the same session is noise — #1052 follow-up.
-      try { sessionStorage.setItem(`bambuddy.bedJog.warned.${printer.id}`, '1'); } catch { /* ignore */ }
-      showToast(t('printers.bedJog.homingStarted'));
-    },
-    onError: (error: Error) =>
-      showToast(error.message || t('printers.toast.failedToSendCommand'), 'error'),
   });
 
   // Plate detection setting mutation
@@ -2355,6 +2531,18 @@ function PrinterCard({
     }
   };
 
+  const printableFileRules = getPrinterFileRuleSet(printer.provider);
+  const printableFileDescription = t(
+    'printers.printUploadAccepts',
+    'Printable files for this printer: {{extensions}}',
+    { extensions: printableFileRules.descriptionExtensions }
+  );
+  const printableFileError = t(
+    'printers.dropNotPrintable',
+    'Only {{extensions}} files can be printed on this printer',
+    { extensions: printableFileRules.descriptionExtensions }
+  );
+
   const canDrop = isConnected && status?.state !== 'RUNNING' && status?.state !== 'PAUSE' && hasPermission('printers:control');
 
   const handleCardDragEnter = (e: React.DragEvent) => {
@@ -2385,16 +2573,15 @@ function PrinterCard({
     const file = droppedFiles[0];
     if (!file) return;
 
-    // Only accept sliced/printable files (.gcode, .gcode.3mf, etc.)
-    const lower = file.name.toLowerCase();
-    if (!lower.endsWith('.gcode') && !lower.includes('.gcode.')) {
-      showToast(t('printers.dropNotPrintable', 'Only .gcode and .gcode.3mf files can be printed'), 'error');
+    // Only accept files that the selected printer provider can print.
+    if (!isPrintableForProvider(file.name, printer.provider)) {
+      showToast(printableFileError, 'error');
       return;
     }
 
     setIsDropUploading(true);
     try {
-      const result = await api.uploadLibraryFile(file, null);
+      const result = await api.uploadLibraryFile(file, null, true, printer.id);
 
       // Check printer compatibility if sliced_for_model is available in metadata
       const slicedFor = (result.metadata as Record<string, unknown>)?.sliced_for_model as string | undefined;
@@ -2479,6 +2666,12 @@ function PrinterCard({
                 src={getPrinterImage(printer.model)}
                 alt={printer.model || t('common.printer')}
                 className={`object-contain rounded-lg bg-bambu-dark flex-shrink-0 ${getImageSize()}`}
+                onError={(event) => {
+                  const fallback = getDefaultPrinterImage();
+                  if (event.currentTarget.getAttribute('src') !== fallback) {
+                    event.currentTarget.src = fallback;
+                  }
+                }}
               />
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
@@ -3001,6 +3194,53 @@ function PrinterCard({
                   </div>
                 </div>
 
+                {showLoadedSpoolPicker && (
+                  <div className="flex items-center justify-between gap-3 rounded-lg bg-bambu-dark/70 border border-bambu-dark-tertiary px-3 py-2">
+                    <div className="min-w-0">
+                      <p className="text-[10px] uppercase tracking-wide text-bambu-gray">Loaded spool</p>
+                      {loadedSpoolAssignment?.spool ? (
+                        <p className="text-xs text-white truncate">
+                          {loadedSpoolAssignment.spool.brand ? `${loadedSpoolAssignment.spool.brand} ` : ''}
+                          {loadedSpoolAssignment.spool.material}
+                          {loadedSpoolAssignment.spool.subtype ? ` ${loadedSpoolAssignment.spool.subtype}` : ''}
+                          {loadedSpoolAssignment.spool.color_name ? ` · ${loadedSpoolAssignment.spool.color_name}` : ''}
+                        </p>
+                      ) : (
+                        <p className="text-xs text-bambu-gray">No inventory spool selected</p>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      {loadedSpoolAssignment && (
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          onClick={() => onUnassignSpool?.(printer.id, -1, 0)}
+                        >
+                          Clear
+                        </Button>
+                      )}
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => setAssignSpoolModal({
+                          printerId: printer.id,
+                          amsId: -1,
+                          trayId: 0,
+                          trayInfo: {
+                            type: loadedSpoolAssignment?.spool?.material || '',
+                            material: loadedSpoolAssignment?.spool?.material || undefined,
+                            profile: loadedSpoolAssignment?.spool?.slicer_filament_name || loadedSpoolAssignment?.spool?.slicer_filament || '',
+                            color: loadedSpoolAssignment?.spool?.rgba?.slice(0, 6) || '',
+                            location: 'Loaded spool',
+                          },
+                        })}
+                      >
+                        {loadedSpoolAssignment ? 'Change' : 'Assign'}
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
                 {/* Queue Widget - always visible when there are pending items */}
                 <PrinterQueueWidget printerId={printer.id} printerModel={printer.model} loadedFilamentTypes={loadedFilamentTypes} loadedFilaments={loadedFilaments} />
               </>
@@ -3116,7 +3356,7 @@ function PrinterCard({
               </button>
             )}
 
-            {/* Controls - Fans + Print Buttons */}
+            {/* Printer indicators - Fans + Print Buttons */}
             {viewMode === 'expanded' && (() => {
               // Determine print state for control buttons
               const isRunning = status.state === 'RUNNING';
@@ -3124,59 +3364,43 @@ function PrinterCard({
               const isPrinting = isRunning || isPaused;
               const isControlBusy = stopPrintMutation.isPending || pausePrintMutation.isPending || resumePrintMutation.isPending;
 
-              // Fan data
-              const partFan = status.cooling_fan_speed;
-              const auxFan = status.big_fan1_speed;
-              const chamberFan = status.big_fan2_speed;
+              const fanItems = [
+                { key: 'part', value: status.cooling_fan_speed, title: t('printers.fans.partCooling'), Icon: Fan, active: 'text-cyan-400', bg: 'bg-cyan-500/10' },
+                { key: 'aux', value: status.big_fan1_speed, title: t('printers.fans.auxiliary'), Icon: Wind, active: 'text-blue-400', bg: 'bg-blue-500/10' },
+                { key: 'chamber', value: status.big_fan2_speed, title: t('printers.fans.chamber'), Icon: AirVent, active: 'text-green-400', bg: 'bg-green-500/10' },
+                { key: 'heatbreak', value: status.heatbreak_fan_speed, title: t('printers.fans.heatbreak'), Icon: Fan, active: 'text-purple-400', bg: 'bg-purple-500/10' },
+              ].filter((fan) => fan.value !== null && fan.value !== undefined);
 
               return (
                 <div className="mt-3">
                   {/* Section Header */}
                   <div className="flex items-center gap-2 mb-2">
                     <span className="text-[10px] uppercase tracking-wider text-bambu-gray font-medium">
-                      {t('printers.controls')}
+                      {t('printers.indicators')}
                     </span>
                     <div className="flex-1 h-px bg-bambu-dark-tertiary/30" />
                   </div>
 
                   <div className="flex flex-wrap items-start justify-between gap-x-2 gap-y-2">
-                    {/* Left: Fan Status - always visible, dynamic coloring */}
+                    {/* Left: Printer indicators - only render capabilities reported by this printer */}
                     <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 min-w-0">
-                      {/* Part Cooling Fan */}
-                      <div
-                        className={`flex items-center gap-1 px-1.5 py-1 rounded ${partFan && partFan > 0 ? 'bg-cyan-500/10' : 'bg-bambu-dark'}`}
-                        title={t('printers.fans.partCooling')}
-                      >
-                        <Fan className={`w-3.5 h-3.5 ${partFan && partFan > 0 ? 'text-cyan-400' : 'text-bambu-gray/50'}`} />
-                        <span className={`text-[10px] ${partFan && partFan > 0 ? 'text-cyan-400' : 'text-bambu-gray/50'}`}>
-                          {partFan ?? 0}%
-                        </span>
-                      </div>
+                      {fanItems.map(({ key, value, title, Icon, active, bg }) => {
+                        const running = (value ?? 0) > 0;
+                        return (
+                          <div
+                            key={key}
+                            className={`flex items-center gap-1 px-1.5 py-1 rounded ${running ? bg : 'bg-bambu-dark'}`}
+                            title={title}
+                          >
+                            <Icon className={`w-3.5 h-3.5 ${running ? active : 'text-bambu-gray/50'}`} />
+                            <span className={`text-[10px] ${running ? active : 'text-bambu-gray/50'}`}>
+                              {value}%
+                            </span>
+                          </div>
+                        );
+                      })}
 
-                      {/* Auxiliary Fan */}
-                      <div
-                        className={`flex items-center gap-1 px-1.5 py-1 rounded ${auxFan && auxFan > 0 ? 'bg-blue-500/10' : 'bg-bambu-dark'}`}
-                        title={t('printers.fans.auxiliary')}
-                      >
-                        <Wind className={`w-3.5 h-3.5 ${auxFan && auxFan > 0 ? 'text-blue-400' : 'text-bambu-gray/50'}`} />
-                        <span className={`text-[10px] ${auxFan && auxFan > 0 ? 'text-blue-400' : 'text-bambu-gray/50'}`}>
-                          {auxFan ?? 0}%
-                        </span>
-                      </div>
-
-                      {/* Chamber Fan */}
-                      <div
-                        className={`flex items-center gap-1 px-1.5 py-1 rounded ${chamberFan && chamberFan > 0 ? 'bg-green-500/10' : 'bg-bambu-dark'}`}
-                        title={t('printers.fans.chamber')}
-                      >
-                        <AirVent className={`w-3.5 h-3.5 ${chamberFan && chamberFan > 0 ? 'text-green-400' : 'text-bambu-gray/50'}`} />
-                        <span className={`text-[10px] ${chamberFan && chamberFan > 0 ? 'text-green-400' : 'text-bambu-gray/50'}`}>
-                          {chamberFan ?? 0}%
-                        </span>
-                      </div>
-
-                      {/* Separator */}
-                      <div className="w-px h-5 bg-bambu-gray/30" />
+                      {fanItems.length > 0 && <div className="w-px h-5 bg-bambu-gray/30" />}
 
                       {/* Airduct Mode (P2S / X2D / H2*) */}
                       {(['P2S', 'X2D', 'H2D', 'H2C', 'H2S'].includes(printer.model ?? '')) && (() => {
@@ -3278,93 +3502,6 @@ function PrinterCard({
                                       {label}
                                     </button>
                                   ))}
-                                </div>
-                              </>
-                            )}
-                          </div>
-                        );
-                      })()}
-
-                      {/* Separator */}
-                      <div className="w-px h-5 bg-bambu-gray/30" />
-
-                      {/* Bed Jog (Z-axis) — compact badge, popover holds the actual controls */}
-                      {(() => {
-                        const canControl = hasPermission('printers:control');
-                        const disabled = isPrinting || !canControl;
-                        const bambuIsPlateBelow = true; // positive Z moves plate away from nozzle
-                        const requestJog = (direction: 1 | -1) => {
-                          const signed = direction * bedJogStep * (bambuIsPlateBelow ? 1 : -1);
-                          const warnedKey = `bambuddy.bedJog.warned.${printer.id}`;
-                          const warned = (() => {
-                            try { return sessionStorage.getItem(warnedKey) === '1'; }
-                            catch { return false; }
-                          })();
-                          setShowBedJogMenu(null);
-                          if (warned) {
-                            bedJogMutation.mutate({ distance: signed, force: true });
-                          } else {
-                            setShowNotHomedModal({ distance: signed });
-                          }
-                        };
-                        return (
-                          <div className="relative">
-                            <button
-                              onClick={() => setShowBedJogMenu(showBedJogMenu === printer.id ? null : printer.id)}
-                              disabled={disabled}
-                              className={`flex items-center gap-1 px-1.5 py-1 rounded transition-colors ${
-                                disabled
-                                  ? 'bg-bambu-dark cursor-not-allowed'
-                                  : 'bg-indigo-500/10 hover:bg-indigo-500/20'
-                              }`}
-                              title={!canControl ? t('printers.permission.noControl') : isPrinting ? t('printers.bedJog.disabledWhilePrinting') : t('printers.bedJog.title')}
-                            >
-                              <MoveVertical className={`w-3.5 h-3.5 ${disabled ? 'text-bambu-gray/50' : 'text-indigo-400'}`} />
-                              <span className={`text-[10px] ${disabled ? 'text-bambu-gray/50' : 'text-indigo-400'}`}>
-                                {t('printers.bedJog.bed')}
-                              </span>
-                              <span className={`text-[10px] tabular-nums opacity-70 ${disabled ? 'text-bambu-gray/50' : 'text-indigo-400'}`}>
-                                {bedJogStep}mm
-                              </span>
-                            </button>
-                            {showBedJogMenu === printer.id && (
-                              <>
-                                <div className="fixed inset-0 z-40" onClick={() => setShowBedJogMenu(null)} />
-                                <div className="absolute bottom-full left-0 mb-1 z-50 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-lg p-2 min-w-[140px]">
-                                  <div className="flex items-center justify-between gap-1 mb-2">
-                                    <button
-                                      onClick={() => requestJog(-1)}
-                                      className="flex-1 flex items-center justify-center py-1.5 rounded bg-indigo-500/15 hover:bg-indigo-500/30 text-indigo-300"
-                                      aria-label={t('printers.bedJog.up')}
-                                    >
-                                      <ArrowUp className="w-4 h-4" />
-                                    </button>
-                                    <button
-                                      onClick={() => requestJog(1)}
-                                      className="flex-1 flex items-center justify-center py-1.5 rounded bg-indigo-500/15 hover:bg-indigo-500/30 text-indigo-300"
-                                      aria-label={t('printers.bedJog.down')}
-                                    >
-                                      <ArrowDown className="w-4 h-4" />
-                                    </button>
-                                  </div>
-                                  <div className="text-[9px] uppercase tracking-wider text-bambu-gray/70 px-1 mb-1">
-                                    {t('printers.bedJog.step')}
-                                  </div>
-                                  <div className="flex gap-1">
-                                    {[1, 10, 50].map((step) => (
-                                      <button
-                                        key={step}
-                                        onClick={() => setBedJogStep(step)}
-                                        className={`flex-1 px-1 py-1 rounded text-[10px] transition-colors ${
-                                          bedJogStep === step
-                                            ? 'bg-bambu-green/20 text-bambu-green'
-                                            : 'bg-bambu-dark text-bambu-gray hover:bg-bambu-dark-tertiary'
-                                        }`}
-                                      >
-                                        {step}
-                                      </button>
-                                    ))}
-                                  </div>
                                 </div>
                               </>
                             )}
@@ -4771,7 +4908,8 @@ function PrinterCard({
                     window.open(`/camera/${printer.id}`, `camera-${printer.id}`, features);
                   }
                 }}
-                disabled={!status?.connected || !hasPermission('camera:view')}
+                disabled={!canOpenCamera}
+                aria-label={cameraViewMode === 'embedded' ? t('printers.openCameraOverlay') : t('printers.openCameraWindow')}
                 title={!hasPermission('camera:view') ? t('printers.permission.noCamera') : (cameraViewMode === 'embedded' ? t('printers.openCameraOverlay') : t('printers.openCameraWindow'))}
               >
                 <Video className="w-4 h-4" />
@@ -4831,6 +4969,37 @@ function PrinterCard({
               )}
           </div>
         )}
+
+        {/* Moonraker and PrusaLink toolhead control panels */}
+        {(printer.provider === 'klipper' || printer.provider === 'mainsail' || printer.provider === 'fluidd' || printer.provider === 'prusalink') && viewMode === 'expanded' && (
+          <Collapsible
+            defaultOpen={false}
+            className="mt-4 pt-3 border-t border-bambu-dark-tertiary"
+            summaryClassName="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark/50 px-3 py-2 hover:bg-bambu-dark transition-colors"
+            summary={
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2 min-w-0">
+                  <SlidersHorizontal className="w-4 h-4 text-bambu-green flex-shrink-0" />
+                  <div className="min-w-0">
+                    <p className="text-xs font-semibold text-white truncate">Manual controls</p>
+                    <p className="text-[10px] text-bambu-gray truncate">
+                      {printer.provider === 'prusalink' ? 'PrusaLink movement and extrusion' : 'Klipper movement, extrusion, and temperatures'}
+                    </p>
+                  </div>
+                </div>
+                <span className="hidden sm:inline text-[10px] uppercase tracking-wide text-bambu-gray bg-bambu-dark-secondary rounded px-2 py-1">
+                  collapsed
+                </span>
+              </div>
+            }
+          >
+            <KlipperControlPanel
+              printer={printer}
+              status={status}
+              showToast={showToast}
+            />
+          </Collapsible>
+        )}
       </CardContent>
 
       {/* File Manager Modal */}
@@ -4849,11 +5018,12 @@ function PrinterCard({
           onClose={() => setShowUploadForPrint(false)}
           onUploadComplete={() => {}}
           autoUpload
-          accept=".gcode,.3mf"
+          accept={printableFileRules.accept}
+          acceptedFileDescription={printableFileDescription}
+          uploadTargetPrinterId={printer.id}
           validateFile={(file) => {
-            const lower = file.name.toLowerCase();
-            if (!lower.endsWith('.gcode') && !lower.includes('.gcode.')) {
-              return t('printers.dropNotPrintable', 'Only .gcode and .gcode.3mf files can be printed');
+            if (!isPrintableForProvider(file.name, printer.provider)) {
+              return printableFileError;
             }
           }}
           onFileUploaded={(uploadedFile) => {
@@ -5272,53 +5442,6 @@ function PrinterCard({
         />
       )}
 
-      {/* Bed Jog — not-homed warning (Studio-style) */}
-      {showNotHomedModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
-          <div className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl w-full max-w-sm p-5">
-            <div className="flex items-start gap-3 mb-4">
-              <AlertTriangle className="w-5 h-5 text-yellow-400 flex-shrink-0 mt-0.5" />
-              <div>
-                <h3 className="text-sm font-semibold text-white mb-1">
-                  {t('printers.bedJog.notHomedTitle')}
-                </h3>
-                <p className="text-xs text-bambu-gray leading-relaxed">
-                  {t('printers.bedJog.notHomedMessage')}
-                </p>
-              </div>
-            </div>
-            <div className="flex flex-col gap-2">
-              <button
-                onClick={() => {
-                  homeAxesMutation.mutate('all');
-                  setShowNotHomedModal(null);
-                }}
-                className="w-full px-3 py-2 rounded-lg text-xs font-medium bg-bambu-green/20 text-bambu-green hover:bg-bambu-green/30 transition-colors"
-              >
-                {t('printers.bedJog.homeZ')}
-              </button>
-              <button
-                onClick={() => {
-                  const d = showNotHomedModal.distance;
-                  try { sessionStorage.setItem(`bambuddy.bedJog.warned.${printer.id}`, '1'); } catch { /* ignore */ }
-                  bedJogMutation.mutate({ distance: d, force: true });
-                  setShowNotHomedModal(null);
-                }}
-                className="w-full px-3 py-2 rounded-lg text-xs font-medium bg-yellow-500/20 text-yellow-400 hover:bg-yellow-500/30 transition-colors"
-              >
-                {t('printers.bedJog.moveAnyway')}
-              </button>
-              <button
-                onClick={() => setShowNotHomedModal(null)}
-                className="w-full px-3 py-2 rounded-lg text-xs font-medium bg-bambu-dark text-bambu-gray hover:bg-bambu-dark-tertiary transition-colors"
-              >
-                {t('common.cancel')}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* Skip Objects Modal */}
       <SkipObjectsModal
         printerId={printer.id}
@@ -5579,9 +5702,13 @@ function AddPrinterModal({
     serial_number: '',
     ip_address: '',
     access_code: '',
+    provider: 'bambu',
+    api_url: '',
+    auth_token: '',
     model: '',
     location: '',
     auto_archive: true,
+    external_camera_url: '',
   });
 
   // Discovery state
@@ -5618,14 +5745,43 @@ function AddPrinterModal({
   // Filter out already-added printers
   const newPrinters = discovered.filter(p => !existingSerials.includes(p.serial));
 
+  const isMoonrakerProvider = form.provider === 'klipper' || form.provider === 'mainsail' || form.provider === 'fluidd';
+  const isPrusaLinkProvider = form.provider === 'prusalink';
+  const isHttpProvider = isMoonrakerProvider || isPrusaLinkProvider;
+
+  const buildSubmitPayload = (): PrinterCreate => {
+    const ipAddress = form.ip_address.trim();
+    const fallbackUrl = isMoonrakerProvider ? `http://${ipAddress}:7125` : isPrusaLinkProvider ? `http://${ipAddress}` : undefined;
+    const apiUrl = (form.api_url || '').trim() || fallbackUrl;
+    const externalCameraUrl = isHttpProvider ? (form.external_camera_url || '').trim() : '';
+    return {
+      ...form,
+      ip_address: ipAddress,
+      provider: form.provider || 'bambu',
+      serial_number: isHttpProvider ? (form.serial_number?.trim() || undefined) : form.serial_number?.trim(),
+      access_code: isHttpProvider ? (form.access_code?.trim() || undefined) : form.access_code,
+      api_url: isHttpProvider ? apiUrl : undefined,
+      auth_token: isHttpProvider ? ((form.auth_token || '').trim() || undefined) : undefined,
+      external_camera_url: externalCameraUrl || undefined,
+      external_camera_type: externalCameraUrl ? inferExternalCameraType(externalCameraUrl) : undefined,
+      external_camera_enabled: isHttpProvider && Boolean(externalCameraUrl),
+      external_camera_snapshot_url: undefined,
+    };
+  };
+
   const handleAddSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    const payload = buildSubmitPayload();
+    if (isHttpProvider) {
+      onAdd(payload);
+      return;
+    }
     setCheckingSave(true);
     try {
       const result = await api.diagnoseConnection({
-        ip_address: form.ip_address.trim(),
-        serial_number: form.serial_number.trim() || undefined,
-        access_code: form.access_code || undefined,
+        ip_address: payload.ip_address,
+        serial_number: payload.serial_number || undefined,
+        access_code: payload.access_code || undefined,
       });
       if (result.checks.some((c) => c.status === 'fail')) {
         setSaveWarning(result);
@@ -5636,7 +5792,7 @@ function AddPrinterModal({
     } finally {
       setCheckingSave(false);
     }
-    onAdd(form);
+    onAdd(payload);
   };
 
   const startDiscovery = async () => {
@@ -5753,7 +5909,49 @@ function AddPrinterModal({
         <CardContent>
           <h2 className="text-xl font-semibold mb-4">{t('printers.addPrinter')}</h2>
 
+          <div className="mb-4">
+            <label htmlFor="printer_provider" className="block text-sm text-bambu-gray mb-1">Printer type</label>
+            <select
+              id="printer_provider"
+              className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+              value={form.provider || 'bambu'}
+              onChange={(e) => {
+                const provider = e.target.value as PrinterCreate['provider'];
+                setSaveWarning(null);
+                setForm({
+                  ...form,
+                  provider,
+                  serial_number: provider === 'bambu' ? form.serial_number : '',
+                  access_code: provider === 'bambu' ? form.access_code : '',
+                  api_url: provider === 'bambu' ? '' : form.api_url,
+                  auth_token: provider === 'bambu' ? '' : form.auth_token,
+                  external_camera_url: provider === 'bambu' ? '' : form.external_camera_url,
+                  external_camera_type: provider === 'bambu' ? undefined : form.external_camera_type,
+                  external_camera_enabled: provider === 'bambu' ? false : form.external_camera_enabled,
+                  model: provider === 'bambu' ? form.model : '',
+                });
+              }}
+            >
+              <option value="bambu">Bambu Lab</option>
+              <option value="klipper">Klipper / Moonraker</option>
+              <option value="mainsail">Mainsail / Moonraker</option>
+              <option value="fluidd">Fluidd / Moonraker</option>
+              <option value="prusalink">Prusa</option>
+            </select>
+            {isMoonrakerProvider && (
+              <p className="text-xs text-bambu-gray mt-1">
+                Klipper printers are reached through Moonraker, usually at http://printer-host:7125. If you paste a Fluidd URL, Printbuddy will also try Moonraker on port 7125. Add a Moonraker API token only if your instance requires one.
+              </p>
+            )}
+            {isPrusaLinkProvider && (
+              <p className="text-xs text-bambu-gray mt-1">
+                Prusa printers are reached through PrusaLink, usually at http://printer-host. Enter the PrusaLink password / API key below; username defaults to maker.
+              </p>
+            )}
+          </div>
+
           {/* Discovery Section */}
+          {!isHttpProvider && (
           <div className="mb-4 pb-4 border-b border-bambu-dark-tertiary">
             {isDocker && (
               <div className="mb-3">
@@ -5856,9 +6054,12 @@ function AddPrinterModal({
               </p>
             )}
           </div>
+          )}
           <form onSubmit={handleAddSubmit} className="space-y-4">
             <div>
-              <label className="block text-sm text-bambu-gray mb-1">{t('printers.name')}</label>
+              <label className="block text-sm text-bambu-gray mb-1">
+                {isHttpProvider ? 'Printer / camera name' : t('printers.name')}
+              </label>
               <input
                 type="text"
                 required
@@ -5880,60 +6081,108 @@ function AddPrinterModal({
                 placeholder="192.168.1.100 or printer.local"
               />
             </div>
+            {!isHttpProvider && (
+              <>
+                <div>
+                  <label className="block text-sm text-bambu-gray mb-1">{t('printers.serialNumber')}</label>
+                  <input
+                    type="text"
+                    required
+                    className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                    value={form.serial_number || ''}
+                    onChange={(e) => setForm({ ...form, serial_number: e.target.value })}
+                    placeholder="01P00A000000000"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm text-bambu-gray mb-1">{t('printers.accessCode')}</label>
+                  <input
+                    type="password"
+                    required
+                    className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                    value={form.access_code || ''}
+                    onChange={(e) => setForm({ ...form, access_code: e.target.value })}
+                    placeholder={t('printers.modal.fromPrinterSettings')}
+                  />
+                </div>
+              </>
+            )}
+            {isMoonrakerProvider && (
+              <>
+                <div>
+                  <label className="block text-sm text-bambu-gray mb-1">Moonraker URL</label>
+                  <input
+                    type="url"
+                    className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                    value={form.api_url || ''}
+                    onChange={(e) => setForm({ ...form, api_url: e.target.value })}
+                    placeholder="http://voron.local:7125"
+                  />
+                  <p className="text-xs text-bambu-gray mt-1">Leave empty to use http://host:7125 from the IP/hostname above.</p>
+                </div>
+                <div>
+                  <label className="block text-sm text-bambu-gray mb-1">Moonraker API token (optional)</label>
+                  <input
+                    type="password"
+                    className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                    value={form.auth_token || ''}
+                    onChange={(e) => setForm({ ...form, auth_token: e.target.value })}
+                    placeholder="Bearer token if Moonraker auth is enabled"
+                  />
+                </div>
+              </>
+            )}
+            {isPrusaLinkProvider && (
+              <>
+                <div>
+                  <label className="block text-sm text-bambu-gray mb-1">PrusaLink URL</label>
+                  <input
+                    type="url"
+                    className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                    value={form.api_url || ''}
+                    onChange={(e) => setForm({ ...form, api_url: e.target.value })}
+                    placeholder="http://prusa.local"
+                  />
+                  <p className="text-xs text-bambu-gray mt-1">Leave empty to use http://host from the IP/hostname above.</p>
+                </div>
+                <div>
+                  <label className="block text-sm text-bambu-gray mb-1">PrusaLink password / API key</label>
+                  <input
+                    type="password"
+                    className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                    value={form.auth_token || ''}
+                    onChange={(e) => setForm({ ...form, auth_token: e.target.value })}
+                    placeholder="PrusaLink password"
+                  />
+                </div>
+              </>
+            )}
+            {isHttpProvider && (
+              <div className="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary/40 p-3 space-y-3">
+                <div>
+                  <label className="block text-sm text-bambu-gray mb-1">Camera URL</label>
+                  <input
+                    type="text"
+                    className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                    value={form.external_camera_url || ''}
+                    onChange={(e) => setForm({ ...form, external_camera_url: e.target.value })}
+                    placeholder="http://printer.local/webcam/?action=stream"
+                  />
+                  <p className="text-xs text-bambu-gray mt-1">
+                    Optional for non-Bambu printers. Add a camera stream or snapshot URL if available; Printbuddy will detect MJPEG, RTSP, snapshot, or USB camera type automatically.
+                  </p>
+                </div>
+              </div>
+            )}
             <div>
-              <label className="block text-sm text-bambu-gray mb-1">{t('printers.serialNumber')}</label>
-              <input
-                type="text"
-                required
-                className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                value={form.serial_number}
-                onChange={(e) => setForm({ ...form, serial_number: e.target.value })}
-                placeholder="01P00A000000000"
-              />
-            </div>
-            <div>
-              <label className="block text-sm text-bambu-gray mb-1">{t('printers.accessCode')}</label>
-              <input
-                type="password"
-                required
-                className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                value={form.access_code}
-                onChange={(e) => setForm({ ...form, access_code: e.target.value })}
-                placeholder={t('printers.modal.fromPrinterSettings')}
-              />
-            </div>
-            <div>
-              <label className="block text-sm text-bambu-gray mb-1">{t('printers.modal.modelOptional')}</label>
-              <select
-                className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+              <PrinterModelSelect
+                id="printer_model"
+                label={t('printers.modal.modelOptional')}
                 value={form.model || ''}
-                onChange={(e) => setForm({ ...form, model: e.target.value })}
-              >
-                <option value="">{t('printers.modal.selectModel')}</option>
-                <optgroup label="H2 Series">
-                  <option value="H2C">H2C</option>
-                  <option value="H2D">H2D</option>
-                  <option value="H2D Pro">H2D Pro</option>
-                  <option value="H2S">H2S</option>
-                </optgroup>
-                <optgroup label="X2 Series">
-                  <option value="X2D">X2D</option>
-                </optgroup>
-                <optgroup label="X1 Series">
-                  <option value="X1E">X1E</option>
-                  <option value="X1C">X1 Carbon</option>
-                  <option value="X1">X1</option>
-                </optgroup>
-                <optgroup label="P Series">
-                  <option value="P2S">P2S</option>
-                  <option value="P1S">P1S</option>
-                  <option value="P1P">P1P</option>
-                </optgroup>
-                <optgroup label="A1 Series">
-                  <option value="A1">A1</option>
-                  <option value="A1 Mini">A1 Mini</option>
-                </optgroup>
-              </select>
+                onChange={(model) => setForm({ ...form, model })}
+                provider={form.provider}
+              />
+              <PrinterModelImagePreview model={form.model} />
             </div>
             <div>
               <label className="block text-sm text-bambu-gray mb-1">{t('printers.modal.locationGroup')}</label>
@@ -5958,15 +6207,17 @@ function AddPrinterModal({
                 {t('printers.modal.autoArchiveLabel')}
               </label>
             </div>
-            <button
-              type="button"
-              onClick={() => setShowDiagnostic(true)}
-              disabled={!form.ip_address.trim()}
-              className="w-full flex items-center justify-center gap-2 px-3 py-2 text-sm text-bambu-gray hover:text-white disabled:opacity-40 disabled:cursor-not-allowed border border-bambu-dark-tertiary rounded-lg transition-colors"
-            >
-              <Stethoscope className="w-4 h-4" />
-              {t('diagnostic.runButton')}
-            </button>
+            {!isHttpProvider && (
+              <button
+                type="button"
+                onClick={() => setShowDiagnostic(true)}
+                disabled={!form.ip_address.trim()}
+                className="w-full flex items-center justify-center gap-2 px-3 py-2 text-sm text-bambu-gray hover:text-white disabled:opacity-40 disabled:cursor-not-allowed border border-bambu-dark-tertiary rounded-lg transition-colors"
+              >
+                <Stethoscope className="w-4 h-4" />
+                {t('diagnostic.runButton')}
+              </button>
+            )}
             {saveWarning ? (
               <div className="rounded-lg bg-amber-500/10 border border-amber-500/30 p-3 space-y-3">
                 <div className="flex items-start gap-2">
@@ -5983,7 +6234,7 @@ function AddPrinterModal({
                   >
                     {t('printers.addPreflight.back')}
                   </Button>
-                  <Button type="button" onClick={() => onAdd(form)} className="flex-1">
+                  <Button type="button" onClick={() => onAdd(buildSubmitPayload())} className="flex-1">
                     {t('printers.addPreflight.saveAnyway')}
                   </Button>
                 </div>
@@ -6006,7 +6257,7 @@ function AddPrinterModal({
       <ConnectionDiagnosticModal
         connection={{
           ip_address: form.ip_address.trim(),
-          serial_number: form.serial_number.trim() || undefined,
+          serial_number: form.serial_number?.trim() || undefined,
           access_code: form.access_code || undefined,
         }}
         printerName={form.name || null}
@@ -6429,37 +6680,13 @@ function EditPrinterModal({
               />
             </div>
             <div>
-              <label className="block text-sm text-bambu-gray mb-1">{t('printers.model')}</label>
-              <select
-                className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+              <PrinterModelSelect
+                id="edit_printer_model"
+                label={t('printers.model')}
                 value={form.model}
-                onChange={(e) => setForm({ ...form, model: e.target.value })}
-              >
-                <option value="">{t('printers.modal.selectModel')}</option>
-                <optgroup label="H2 Series">
-                  <option value="H2C">H2C</option>
-                  <option value="H2D">H2D</option>
-                  <option value="H2D Pro">H2D Pro</option>
-                  <option value="H2S">H2S</option>
-                </optgroup>
-                <optgroup label="X2 Series">
-                  <option value="X2D">X2D</option>
-                </optgroup>
-                <optgroup label="X1 Series">
-                  <option value="X1E">X1E</option>
-                  <option value="X1C">X1 Carbon</option>
-                  <option value="X1">X1</option>
-                </optgroup>
-                <optgroup label="P Series">
-                  <option value="P2S">P2S</option>
-                  <option value="P1S">P1S</option>
-                  <option value="P1P">P1P</option>
-                </optgroup>
-                <optgroup label="A1 Series">
-                  <option value="A1">A1</option>
-                  <option value="A1 Mini">A1 Mini</option>
-                </optgroup>
-              </select>
+                onChange={(model) => setForm({ ...form, model })}
+              />
+              <PrinterModelImagePreview model={form.model} />
             </div>
             <div>
               <label className="block text-sm text-bambu-gray mb-1">Location / Group</label>

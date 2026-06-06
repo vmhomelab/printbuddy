@@ -2,7 +2,7 @@
  * Tests for the Layout component.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { waitFor } from '@testing-library/react';
 import { render } from '../utils';
 import { Layout } from '../../components/Layout';
@@ -11,6 +11,13 @@ import { server } from '../mocks/server';
 
 describe('Layout', () => {
   beforeEach(() => {
+    localStorage.clear();
+    window.history.replaceState({}, '', '/');
+    vi.mocked(localStorage.getItem).mockReset();
+    vi.mocked(localStorage.setItem).mockReset();
+    vi.mocked(localStorage.removeItem).mockReset();
+    vi.mocked(localStorage.clear).mockReset();
+
     server.use(
       http.get('/api/v1/printers/', () => {
         return HttpResponse.json([
@@ -23,8 +30,14 @@ describe('Layout', () => {
           state: 'IDLE',
         });
       }),
-      http.get('/api/v1/version', () => {
-        return HttpResponse.json({ version: '0.1.6', build: 'test' });
+      http.get('/api/v1/updates/version', () => {
+        return HttpResponse.json({
+          version: '0.1.6',
+          display_version: '0.1.6 (abc1234)',
+          source_ref: 'abc1234567890abc1234567890abc1234567890ab',
+          source_ref_short: 'abc1234',
+          repo: 'vmhomelab/Printbuddy',
+        });
       }),
       http.get('/api/v1/settings/', () => {
         return HttpResponse.json({
@@ -105,12 +118,63 @@ describe('Layout', () => {
   });
 
   describe('version display', () => {
-    it('shows version info', async () => {
+    it('shows the backend version and running repository revision in the sidebar footer', async () => {
       render(<Layout />);
 
       await waitFor(() => {
-        // Version info is displayed in sidebar
-        expect(document.body).toBeInTheDocument();
+        expect(document.body.textContent).toContain('v0.1.6 (abc1234)');
+      });
+      expect(document.body.textContent).not.toContain('printbuddy.');
+    });
+  });
+
+  describe('theme-aware branding', () => {
+    it('uses the dark-mode Printbuddy logo when the app theme is dark', async () => {
+      vi.mocked(localStorage.getItem).mockImplementation((key: string) => (
+        key === 'theme-mode' ? 'dark' : null
+      ));
+
+      render(<Layout />);
+
+      const logo = await waitFor(() => document.querySelector('img[alt="Printbuddy"]')) as HTMLImageElement;
+      expect(logo).toBeInTheDocument();
+      expect(logo.getAttribute('src')).toBe('/img/printbuddy_logo_dark.png');
+      await waitFor(() => {
+        expect(document.head.querySelector('link[rel="icon"][sizes="32x32"]')).toHaveAttribute('href', '/img/favicon-32x32-dark.png');
+      });
+    });
+
+    it('uses the light-mode Printbuddy logo when the app theme is light', async () => {
+      vi.mocked(localStorage.getItem).mockImplementation((key: string) => (
+        key === 'theme-mode' ? 'light' : null
+      ));
+
+      render(<Layout />);
+
+      const logo = await waitFor(() => document.querySelector('img[alt="Printbuddy"]')) as HTMLImageElement;
+      expect(logo).toBeInTheDocument();
+      expect(logo.getAttribute('src')).toBe('/img/printbuddy_logo_light.png');
+      await waitFor(() => {
+        expect(document.head.querySelector('link[rel="icon"][sizes="32x32"]')).toHaveAttribute('href', '/img/favicon-32x32.png');
+      });
+    });
+
+    it('prefixes the sidebar logo and favicon when running under Home Assistant ingress', async () => {
+      window.history.replaceState({}, '', '/api/hassio_ingress/test-token/');
+      vi.mocked(localStorage.getItem).mockImplementation((key: string) => (
+        key === 'theme-mode' ? 'dark' : null
+      ));
+
+      render(<Layout />);
+
+      const logo = await waitFor(() => document.querySelector('img[alt="Printbuddy"]')) as HTMLImageElement;
+      expect(logo).toBeInTheDocument();
+      expect(logo.getAttribute('src')).toBe('/api/hassio_ingress/test-token/img/printbuddy_logo_dark.png');
+      await waitFor(() => {
+        expect(document.head.querySelector('link[rel="icon"][sizes="32x32"]')).toHaveAttribute(
+          'href',
+          '/api/hassio_ingress/test-token/img/favicon-32x32-dark.png'
+        );
       });
     });
   });

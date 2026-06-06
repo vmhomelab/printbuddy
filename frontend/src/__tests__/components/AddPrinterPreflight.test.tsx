@@ -54,7 +54,7 @@ describe('AddPrinterModal pre-flight', () => {
     expect(await screen.findByText(/Some connection checks failed/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /save anyway/i })).toBeInTheDocument();
     expect(screen.getByText(/LAN Developer Mode/i)).toBeInTheDocument();
-  });
+  }, 10000);
 
   it('saves directly when all connection checks pass', async () => {
     const user = userEvent.setup();
@@ -89,5 +89,45 @@ describe('AddPrinterModal pre-flight', () => {
 
     await waitFor(() => expect(created).toBe(true));
     expect(screen.queryByText(/Some connection checks failed/i)).not.toBeInTheDocument();
-  });
+  }, 10000);
+
+  it('shows an optional camera URL for non-Bambu printers and submits it when provided', async () => {
+    const user = userEvent.setup();
+    let payload: Record<string, unknown> | null = null;
+    server.use(
+      http.post('/api/v1/printers/', async ({ request }) => {
+        payload = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json({ id: 12, name: 'Neptune Camera' });
+      }),
+    );
+
+    render(<PrintersPage />);
+    await user.click(await screen.findByText(/add printer/i));
+
+    await user.selectOptions(screen.getByLabelText(/printer type/i), 'fluidd');
+    expect(await screen.findByText(/camera url/i)).toBeInTheDocument();
+
+    await user.type(screen.getByPlaceholderText('My Printer'), 'Neptune Camera');
+    await user.type(screen.getByPlaceholderText('192.168.1.100 or printer.local'), 'neptune.local');
+    const cameraInput = screen.getByPlaceholderText('http://printer.local/webcam/?action=stream');
+    expect(cameraInput).not.toBeRequired();
+
+    await user.type(cameraInput, 'http://neptune.local/webcam/?action=stream');
+
+    const submit = screen
+      .getAllByRole('button', { name: /add printer/i })
+      .find((b) => b.getAttribute('type') === 'submit')!;
+    await user.click(submit);
+
+    await waitFor(() => expect(payload).not.toBeNull());
+    expect(payload).toMatchObject({
+      name: 'Neptune Camera',
+      provider: 'fluidd',
+      ip_address: 'neptune.local',
+      api_url: 'http://neptune.local:7125',
+      external_camera_url: 'http://neptune.local/webcam/?action=stream',
+      external_camera_type: 'mjpeg',
+      external_camera_enabled: true,
+    });
+  }, 10000);
 });

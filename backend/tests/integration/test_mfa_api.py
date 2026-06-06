@@ -132,7 +132,7 @@ class TestTOTPSetup:
         assert "secret" in data
         assert len(data["secret"]) > 0
         assert "qr_code_b64" in data
-        assert data["issuer"] == "Bambuddy"
+        assert data["issuer"] == "Printbuddy"
 
     @pytest.mark.asyncio
     @pytest.mark.integration

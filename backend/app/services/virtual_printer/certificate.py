@@ -203,7 +203,7 @@ class CertificateService:
         """Build Subject Alternative Name entries for the printer certificate."""
         entries: list[x509.GeneralName] = [
             x509.DNSName("localhost"),
-            x509.DNSName("bambuddy"),
+            x509.DNSName("printbuddy"),
             x509.DNSName(self.serial),
             x509.IPAddress(IPv4Address(local_ip)),
             x509.IPAddress(IPv4Address("127.0.0.1")),

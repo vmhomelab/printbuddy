@@ -272,12 +272,18 @@ export interface LongLivedCameraToken {
 }
 
 // Printer types
+export type PrinterProvider = 'bambu' | 'klipper' | 'mainsail' | 'fluidd' | 'prusalink';
+
 export interface Printer {
   id: number;
   name: string;
   serial_number: string;
   ip_address: string;
   access_code: string;
+  provider: PrinterProvider;
+  api_url: string | null;
+  auth_token: string | null;
+  provider_options: string | null;
   model: string | null;
   location: string | null;  // Group/location name
   nozzle_count: number;  // 1 or 2, auto-detected from MQTT
@@ -477,9 +483,13 @@ export interface PrinterStatus {
 
 export interface PrinterCreate {
   name: string;
-  serial_number: string;
+  serial_number?: string;
   ip_address: string;
-  access_code: string;
+  access_code?: string;
+  provider?: PrinterProvider;
+  api_url?: string | null;
+  auth_token?: string | null;
+  provider_options?: string | null;
   model?: string;
   location?: string;
   auto_archive?: boolean;
@@ -2369,6 +2379,7 @@ export interface PushoverConfig {
 export interface TelegramConfig {
   bot_token: string;
   chat_id: string;
+  message_thread_id?: string | null;
 }
 
 export interface EmailConfig {
@@ -2651,6 +2662,9 @@ export interface ShoppingListItemCreate {
 // Update types
 export interface VersionInfo {
   version: string;
+  display_version?: string;
+  source_ref?: string | null;
+  source_ref_short?: string | null;
   repo: string;
 }
 
@@ -3416,9 +3430,44 @@ export const api = {
       `/printers/${printerId}/bed-jog?distance=${distance}&force=${force}`,
       { method: 'POST' }
     ),
+  axisJog: (printerId: number, axis: 'x' | 'y' | 'z', distance: number) =>
+    request<{ success: boolean; message: string }>(
+      `/printers/${printerId}/axis-jog?axis=${axis}&distance=${distance}`,
+      { method: 'POST' }
+    ),
+  setNozzleTemperature: (printerId: number, target: number) =>
+    request<{ success: boolean; message: string }>(
+      `/printers/${printerId}/temperature/nozzle?target=${target}`,
+      { method: 'POST' }
+    ),
+  setBedTemperature: (printerId: number, target: number) =>
+    request<{ success: boolean; message: string }>(
+      `/printers/${printerId}/temperature/bed?target=${target}`,
+      { method: 'POST' }
+    ),
   homeAxes: (printerId: number, axes: 'z' | 'xy' | 'all' = 'z') =>
     request<{ success: boolean; message: string }>(
       `/printers/${printerId}/home-axes?axes=${axes}`,
+      { method: 'POST' }
+    ),
+  disableSteppers: (printerId: number) =>
+    request<{ success: boolean; message: string }>(
+      `/printers/${printerId}/disable-steppers`,
+      { method: 'POST' }
+    ),
+  klipperHome: (printerId: number, axes?: string[]) =>
+    request<{ success: boolean }>(
+      `/printers/${printerId}/klipper/home${axes?.length ? `?axes=${axes.join(',')}` : ''}`,
+      { method: 'POST' }
+    ),
+  klipperExtrude: (printerId: number, length: number, speed = 300) =>
+    request<{ success: boolean }>(
+      `/printers/${printerId}/klipper/extrude?length=${length}&speed=${speed}`,
+      { method: 'POST' }
+    ),
+  klipperZOffset: (printerId: number, amount: number, save = false) =>
+    request<{ success: boolean }>(
+      `/printers/${printerId}/klipper/z_offset?amount=${amount}&save=${save}`,
       { method: 'POST' }
     ),
 
@@ -3566,6 +3615,21 @@ export const api = {
     document.body.removeChild(a);
     window.URL.revokeObjectURL(url);
   },
+  getPrinterFileBlob: async (printerId: number, path: string): Promise<Blob> => {
+    const headers: Record<string, string> = {};
+    if (authToken) {
+      headers['Authorization'] = `Bearer ${authToken}`;
+    }
+    const response = await fetch(
+      `${API_BASE}/printers/${printerId}/files/download?path=${encodeURIComponent(path)}`,
+      { headers }
+    );
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || `HTTP ${response.status}`);
+    }
+    return response.blob();
+  },
   downloadPrinterFilesAsZip: async (printerId: number, paths: string[]): Promise<Blob> => {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (authToken) {
@@ -3581,6 +3645,24 @@ export const api = {
       throw new Error(error.detail || `HTTP ${response.status}`);
     }
     return response.blob();
+  },
+  uploadPrinterFile: async (printerId: number, file: File, path = '/'): Promise<{ status: string; path: string; filename: string }> => {
+    const headers: Record<string, string> = {};
+    if (authToken) {
+      headers['Authorization'] = `Bearer ${authToken}`;
+    }
+    const formData = new FormData();
+    formData.append('file', file);
+    const response = await fetch(`${API_BASE}/printers/${printerId}/files/upload?path=${encodeURIComponent(path)}`, {
+      method: 'POST',
+      headers,
+      body: formData,
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || `HTTP ${response.status}`);
+    }
+    return response.json();
   },
   deletePrinterFile: (printerId: number, path: string) =>
     request<{ status: string; path: string }>(`/printers/${printerId}/files?path=${encodeURIComponent(path)}`, {
@@ -4821,6 +4903,13 @@ export const api = {
     }),
   unassignSpool: (printerId: number, amsId: number, trayId: number) =>
     request<{ status: string }>(`/inventory/assignments/${printerId}/${amsId}/${trayId}`, { method: 'DELETE' }),
+  assignLoadedSpool: (printerId: number, spoolId: number) =>
+    request<SpoolAssignment>('/inventory/assignments', {
+      method: 'POST',
+      body: JSON.stringify({ spool_id: spoolId, printer_id: printerId, ams_id: -1, tray_id: 0 }),
+    }),
+  unassignLoadedSpool: (printerId: number) =>
+    request<{ status: string }>(`/inventory/assignments/${printerId}/-1/0`, { method: 'DELETE' }),
   // ── Spool label printing (#809) ──────────────────────────────────────────
   // Both endpoints return application/pdf. Frontend opens the resulting Blob
   // in a new tab so the user can print or save from the browser's PDF viewer.
@@ -5465,13 +5554,15 @@ export const api = {
   uploadLibraryFile: async (
     file: File,
     folderId?: number | null,
-    generateStlThumbnails: boolean = true
+    generateStlThumbnails: boolean = true,
+    targetPrinterId?: number | null
   ): Promise<LibraryFileUploadResponse> => {
     const formData = new FormData();
     formData.append('file', file);
     const params = new URLSearchParams();
     if (folderId) params.set('folder_id', String(folderId));
     params.set('generate_stl_thumbnails', String(generateStlThumbnails));
+    if (targetPrinterId) params.set('target_printer_id', String(targetPrinterId));
     const headers: Record<string, string> = {};
     if (authToken) {
       headers['Authorization'] = `Bearer ${authToken}`;

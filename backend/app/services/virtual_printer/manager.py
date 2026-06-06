@@ -1066,7 +1066,7 @@ class VirtualPrinterManager:
             "enabled": False,
             "running": False,
             "mode": "immediate",
-            "name": "Bambuddy",
+            "name": "Printbuddy",
             "serial": "",
             "model": DEFAULT_VIRTUAL_PRINTER_MODEL,
             "model_name": VIRTUAL_PRINTER_MODELS[DEFAULT_VIRTUAL_PRINTER_MODEL],
