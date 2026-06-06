@@ -54,7 +54,7 @@ Planned providers:
 
 - `bambu` — existing Bambuddy/Bambu Lab MQTT + FTP support.
 - `klipper` — Moonraker-backed Klipper printer status and control.
-- `mainsail` — Mainsail UI environments using the same Moonraker API surface.
+- `prusa` — Prusa environments using the PrusaLink and Mobile Conenct API surface.
 
 The first implementation step adds provider metadata to printers and a Moonraker client scaffold. Bambu remains the default provider for backwards compatibility.
 
