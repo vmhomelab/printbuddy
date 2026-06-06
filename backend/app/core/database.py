@@ -1689,7 +1689,6 @@ async def run_migrations(conn):
     # Migration: Add filament_overrides column to print_queue for filament override in model-based assignment
     await _safe_execute(conn, "ALTER TABLE print_queue ADD COLUMN filament_overrides TEXT")
 
-
     # Migration: Convert ams_labels table from (printer_id, ams_id) key to ams_serial_number key
     # Labels are now keyed by AMS serial number so they persist when the AMS is moved to another printer.
     # PostgreSQL gets the correct schema from create_all(), so skip this
