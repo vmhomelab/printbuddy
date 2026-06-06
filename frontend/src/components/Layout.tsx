@@ -487,6 +487,10 @@ export function Layout() {
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [handleKeyDown]);
 
+  const sidebarBrandImagePath = !isSidebarCompact && !sidebarExpanded
+    ? (mode === 'dark' ? '/img/printbuddy_icon_dark.png' : '/img/printbuddy_icon.png')
+    : (mode === 'dark' ? '/img/printbuddy_logo_dark.png' : '/img/printbuddy_logo_light.png');
+
   return (
     <div className="flex min-h-screen">
       {/* Compact Header */}
@@ -526,9 +530,9 @@ export function Layout() {
         {/* Logo */}
         <div className={`border-b border-bambu-dark-tertiary flex items-center justify-center ${isSidebarCompact || sidebarExpanded ? 'p-4' : 'p-2'}`}>
           <img
-            src={appAssetPath(mode === 'dark' ? '/img/printbuddy_logo_dark.png' : '/img/printbuddy_logo_light.png')}
+            src={appAssetPath(sidebarBrandImagePath)}
             alt="Printbuddy"
-            className={isSidebarCompact || sidebarExpanded ? 'h-16 w-auto' : 'h-8 w-8 object-cover object-left'}
+            className={isSidebarCompact || sidebarExpanded ? 'h-16 w-auto' : 'h-8 w-8'}
           />
         </div>
 

@@ -159,6 +159,21 @@ describe('Layout', () => {
       });
     });
 
+    it('uses only the Printbuddy icon when the desktop sidebar is collapsed', async () => {
+      vi.mocked(localStorage.getItem).mockImplementation((key: string) => {
+        if (key === 'theme-mode') return 'dark';
+        if (key === 'sidebarExpanded') return 'false';
+        return null;
+      });
+
+      render(<Layout />);
+
+      const logo = await waitFor(() => document.querySelector('aside img[alt="Printbuddy"]')) as HTMLImageElement;
+      expect(logo).toBeInTheDocument();
+      expect(logo.getAttribute('src')).toBe('/img/printbuddy_icon_dark.png');
+      expect(logo).toHaveClass('h-8', 'w-8');
+    });
+
     it('prefixes the sidebar logo and favicon when running under Home Assistant ingress', async () => {
       window.history.replaceState({}, '', '/api/hassio_ingress/test-token/');
       vi.mocked(localStorage.getItem).mockImplementation((key: string) => (
