@@ -162,7 +162,7 @@ describe('PrintersPage', () => {
       openSpy.mockRestore();
     });
 
-    it('opens a configured Fluidd printer URL directly from the camera icon', async () => {
+    it('does not open a Fluidd/Moonraker API URL as a camera target', async () => {
       const user = userEvent.setup();
       const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
       server.use(
@@ -180,9 +180,10 @@ describe('PrintersPage', () => {
       render(<PrintersPage />);
 
       const cameraButton = await screen.findByRole('button', { name: /open camera in new window/i });
+      expect(cameraButton).toBeDisabled();
       await user.click(cameraButton);
 
-      expect(openSpy).toHaveBeenCalledWith('http://10.17.10.31', '_blank', 'noopener,noreferrer');
+      expect(openSpy).not.toHaveBeenCalled();
       openSpy.mockRestore();
     });
 
