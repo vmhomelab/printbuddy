@@ -61,7 +61,7 @@ Open **http://localhost:8000** and add your printer.
 ```yaml
 services:
   printbuddy:
-    image: ghcr.io/vmhomelab/printbuddy:latest
+    image: vmhomelabde/printbuddy:latest
     container_name: printbuddy
     network_mode: host
     environment:
@@ -92,7 +92,7 @@ docker compose pull && docker compose up -d
 Development builds are published from the `dev` branch:
 
 ```bash
-docker pull ghcr.io/vmhomelab/printbuddy:dev
+docker pull vmhomelabde/printbuddy:dev
 ```
 
 Use `latest` for stable releases and `dev` only when you explicitly want to test the current development branch.
@@ -112,7 +112,7 @@ Use `latest` for stable releases and `dev` only when you explicitly want to test
 ## Links
 
 - **GitHub:** [github.com/vmhomelab/Printbuddy](https://github.com/vmhomelab/Printbuddy)
-- **Container image:** [ghcr.io/vmhomelab/printbuddy](https://github.com/vmhomelab/Printbuddy/pkgs/container/printbuddy)
+- **Container image:** [Docker Hub: vmhomelabde/printbuddy](https://hub.docker.com/r/vmhomelabde/printbuddy)
 - **Issues:** [GitHub Issues](https://github.com/vmhomelab/Printbuddy/issues)
 
 ## License
