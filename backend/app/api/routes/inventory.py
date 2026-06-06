@@ -827,7 +827,7 @@ async def sync_from_filamentcolors(
             # outbound client (bambu_cloud, makerworld, firmware_check).
             async with httpx.AsyncClient(
                 timeout=120.0,
-                headers={"User-Agent": "Bambuddy/1.0 (+https://github.com/vmhomelab/printbuddy-ha-addon)"},
+                headers={"User-Agent": "Printbuddy/1.0 (+https://github.com/vmhomelab/Printbuddy)"},
             ) as client:
                 page = 1
                 while True:

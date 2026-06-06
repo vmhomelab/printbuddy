@@ -170,7 +170,7 @@ async def test_client_headers_identify_honestly_and_send_browser_accept():
     """
     svc = FirmwareCheckService()
     headers = svc._client.headers
-    assert headers["User-Agent"].startswith("Bambuddy/")
+    assert headers["User-Agent"].startswith("Printbuddy/")
     assert "Chrome" not in headers["User-Agent"]
     assert "Accept" in headers
     assert "Accept-Language" in headers
