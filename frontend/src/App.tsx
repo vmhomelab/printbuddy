@@ -24,6 +24,7 @@ import { LoginPage } from './pages/LoginPage';
 import { SetupPage } from './pages/SetupPage';
 import { NotificationsPage } from './pages/NotificationsPage';
 import { GCodeViewerPage } from './pages/GCodeViewerPage';
+import { appBasePath } from './utils/assetPaths';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useStreamTokenSync } from './hooks/useCameraStreamToken';
 import { ThemeProvider } from './contexts/ThemeContext';
@@ -160,7 +161,7 @@ function App() {
             <ColorCatalogProvider>
             <SliceJobTrackerProvider>
             <StreamTokenSync />
-            <BrowserRouter>
+            <BrowserRouter basename={appBasePath() || undefined}>
               <Routes>
                 {/* Setup page - only accessible if auth not enabled */}
                 <Route path="/setup" element={<SetupRoute><SetupPage /></SetupRoute>} />
