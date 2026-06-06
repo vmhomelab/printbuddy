@@ -4377,6 +4377,10 @@ def stop_ams_history_recording():
 _runtime_tracking_task: asyncio.Task | None = None
 RUNTIME_TRACKING_INTERVAL = 30  # Update every 30 seconds
 
+# Camera stream orphan cleanup
+_camera_cleanup_task: asyncio.Task | None = None
+CAMERA_CLEANUP_INTERVAL = 30  # seconds
+
 
 async def track_printer_runtime():
     """Background task to track printer active runtime (RUNNING/PAUSE states)."""
@@ -4478,6 +4482,20 @@ def stop_runtime_tracking():
         _runtime_tracking_task.cancel()
         _runtime_tracking_task = None
         logging.getLogger(__name__).info("Printer runtime tracking stopped")
+
+
+async def _camera_cleanup_loop() -> None:
+    """Periodically clean up orphaned camera stream processes."""
+    from backend.app.api.routes.camera import cleanup_orphaned_streams
+
+    while True:
+        try:
+            await cleanup_orphaned_streams()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logging.getLogger(__name__).warning("Camera stream cleanup failed: %s", e)
+        await asyncio.sleep(CAMERA_CLEANUP_INTERVAL)
 
 
 def start_camera_cleanup():
