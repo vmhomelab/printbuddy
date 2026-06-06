@@ -141,6 +141,14 @@ function inferExternalCameraType(url: string): NonNullable<PrinterCreate['extern
   return 'mjpeg';
 }
 
+function configuredPrinterUrl(printer: Pick<Printer, 'provider' | 'api_url'>): string | null {
+  if (printer.provider === 'bambu') return null;
+  const rawUrl = printer.api_url?.trim();
+  if (!rawUrl) return null;
+  if (/^https?:\/\//i.test(rawUrl)) return rawUrl;
+  return `http://${rawUrl}`;
+}
+
 const PRINTER_MODEL_GROUPS: PrinterModelOptionGroup[] = [
   {
     label: 'Bambu Lab',
@@ -1905,8 +1913,9 @@ function PrinterCard({
     }
   }, [status?.connected]);
   const isConnected = status?.connected ?? cachedConnected.current;
+  const configuredCameraTargetUrl = configuredPrinterUrl(printer);
   const hasExternalCamera = Boolean(printer.external_camera_enabled && printer.external_camera_url);
-  const canOpenCamera = hasPermission('camera:view') && (isConnected || hasExternalCamera);
+  const canOpenCamera = hasPermission('camera:view') && (isConnected || hasExternalCamera || configuredCameraTargetUrl);
 
   // Cache ams_extruder_map to prevent L/R indicators bouncing on updates
   const cachedAmsExtruderMap = useRef<Record<string, number>>({});
@@ -4891,7 +4900,9 @@ function PrinterCard({
                 variant="secondary"
                 size="sm"
                 onClick={() => {
-                  if (cameraViewMode === 'embedded' && onOpenEmbeddedCamera) {
+                  if (configuredCameraTargetUrl) {
+                    window.open(configuredCameraTargetUrl, '_blank', 'noopener,noreferrer');
+                  } else if (cameraViewMode === 'embedded' && onOpenEmbeddedCamera) {
                     onOpenEmbeddedCamera(printer.id, printer.name);
                   } else {
                     // Use saved window state or defaults

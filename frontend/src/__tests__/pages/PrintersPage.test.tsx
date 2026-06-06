@@ -162,6 +162,30 @@ describe('PrintersPage', () => {
       openSpy.mockRestore();
     });
 
+    it('opens a configured Fluidd printer URL directly from the camera icon', async () => {
+      const user = userEvent.setup();
+      const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          ...mockPrinters[0],
+          provider: 'fluidd',
+          name: 'Neptune 4 Pro',
+          api_url: 'http://10.17.10.31',
+          external_camera_url: null,
+          external_camera_type: null,
+          external_camera_enabled: false,
+        }])),
+      );
+
+      render(<PrintersPage />);
+
+      const cameraButton = await screen.findByRole('button', { name: /open camera in new window/i });
+      await user.click(cameraButton);
+
+      expect(openSpy).toHaveBeenCalledWith('http://10.17.10.31', '_blank', 'noopener,noreferrer');
+      openSpy.mockRestore();
+    });
+
     it('opens the camera window under the Home Assistant ingress base path', async () => {
       const user = userEvent.setup();
       const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
