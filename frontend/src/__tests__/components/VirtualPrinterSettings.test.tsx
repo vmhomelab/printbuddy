@@ -13,6 +13,7 @@ import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { render } from '../utils';
 import { VirtualPrinterSettings } from '../../components/VirtualPrinterSettings';
+import { VIRTUAL_PRINTER_SETUP_GUIDE_URL } from '../../constants/documentation';
 
 // Mock the API client
 vi.mock('../../api/client', () => ({
@@ -463,7 +464,10 @@ describe('VirtualPrinterSettings', () => {
       render(<VirtualPrinterSettings />);
 
       await waitFor(() => {
-        expect(screen.getByText('Read the setup guide before enabling')).toBeInTheDocument();
+        const link = screen.getByRole('link', { name: /read the setup guide before enabling/i });
+
+        expect(link).toBeInTheDocument();
+        expect(link).toHaveAttribute('href', VIRTUAL_PRINTER_SETUP_GUIDE_URL);
       });
     });
 

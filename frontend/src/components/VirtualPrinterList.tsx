@@ -8,6 +8,7 @@ import { Button } from './Button';
 import { Toggle } from './Toggle';
 import { useToast } from '../contexts/ToastContext';
 import { copyTextToClipboard, downloadTextFile } from '../utils/clipboard';
+import { VIRTUAL_PRINTER_SETUP_GUIDE_URL } from '../constants/documentation';
 import { VirtualPrinterCard } from './VirtualPrinterCard';
 import { VirtualPrinterAddDialog } from './VirtualPrinterAddDialog';
 
@@ -93,7 +94,7 @@ export function VirtualPrinterList() {
                 <p className="text-white font-medium">{t('virtualPrinter.setupRequired.title')}</p>
                 <p className="text-bambu-gray mt-1">{t('virtualPrinter.setupRequired.description')}</p>
                 <a
-                  href="https://github.com/vmhomelab/Printbuddy#readme"
+                  href={VIRTUAL_PRINTER_SETUP_GUIDE_URL}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="inline-flex items-center gap-1.5 mt-2 px-3 py-1.5 bg-yellow-500/20 border border-yellow-500/50 rounded text-yellow-400 hover:bg-yellow-500/30 transition-colors text-xs"
