@@ -1,4 +1,4 @@
-# Bambuddy Python Security & Quality Suite
+# Printbuddy Python Security & Quality Suite
 #
 # Extends the standard python-security-and-quality suite, excluding
 # accepted-risk findings documented below.
@@ -8,7 +8,7 @@
 #   - Confirmed false positive after code inspection
 #   - Accepted risk for a local-network admin tool
 
-- description: "Bambuddy Python security and quality"
+- description: "Printbuddy Python security and quality"
 
 - import: codeql-suites/python-security-and-quality.qls
   from: codeql/python-queries

@@ -1,7 +1,7 @@
 # Third-Party Notices — gcode_viewer
 
 The `gcode_viewer/` directory bundles the following third-party libraries.
-All licenses are compatible with Bambuddy's AGPL-3.0.
+All licenses are compatible with Printbuddy's AGPL-3.0.
 
 ---
 

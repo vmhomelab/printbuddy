@@ -15,7 +15,7 @@
 #
 
 [Unit]
-Description=Printbuddy - Bambu Lab Print Management
+Description=Printbuddy - 3D Printer Management
 Documentation=https://github.com/vmhomelab/Printbuddy
 After=network.target
 

@@ -1,19 +1,18 @@
 /**
- * bambuddy_adapter.js
- * Bridges OctoPrint-PrettyGCode to Bambuddy's API.
+ * printbuddy_adapter.js
+ * Bridges OctoPrint-PrettyGCode to Printbuddy's API.
  *
  * Load this BEFORE prettygcode.js. It provides:
  *   - OCTOPRINT_VIEWMODELS shim
  *   - Minimal KnockoutJS observable shim (ko.observable)
  *   - fetch() + XHR interceptors for path rewriting
- *   - Bambuddy WebSocket → fromCurrentData bridge
- *   - File picker backed by Bambuddy's library API
+ *   - File picker backed by Printbuddy's library API
  *   - Settings load/save via plugin settings endpoint
  *
  * What works:
  *   - Full 3D GCode visualisation
  *   - Dark mode and all dat.GUI settings
- *   - File selection from Bambuddy's file library
+ *   - File selection from Printbuddy's file library
  *   - Print progress highlight (% based)
  *   - Auto-load currently printing file
  *
@@ -146,7 +145,7 @@
     var fakeControl = {};
 
     // -------------------------------------------------------------------------
-    // 4. fetch() interceptor — rewrite OctoPrint paths to Bambuddy
+    // 4. fetch() interceptor — rewrite OctoPrint paths to Printbuddy
     // -------------------------------------------------------------------------
     var _originalFetch = window.fetch.bind(window);
     window.fetch = function (resource, init) {
@@ -165,26 +164,26 @@
 
             var newPath = path;
 
-            // OctoPrint file download  →  Bambuddy library download
+            // OctoPrint file download  →  Printbuddy library download
             newPath = newPath.replace(
-                /^\/?downloads\/files\/local\/__bambuddy_file_(\d+)$/,
+                /^\/?downloads\/files\/local\/__printbuddy_file_(\d+)$/,
                 API_BASE + '/library/files/$1/download'
             );
-            // OctoPrint file download  →  Bambuddy archive gcode (specific plate)
+            // OctoPrint file download  →  Printbuddy archive gcode (specific plate)
             newPath = newPath.replace(
-                /^\/?downloads\/files\/local\/__bambuddy_archive_(\d+)_plate(\d+)$/,
+                /^\/?downloads\/files\/local\/__printbuddy_archive_(\d+)_plate(\d+)$/,
                 API_BASE + '/archives/$1/gcode?plate=$2'
             );
-            // OctoPrint file download  →  Bambuddy archive gcode (first plate)
+            // OctoPrint file download  →  Printbuddy archive gcode (first plate)
             newPath = newPath.replace(
-                /^\/?downloads\/files\/local\/__bambuddy_archive_(\d+)$/,
+                /^\/?downloads\/files\/local\/__printbuddy_archive_(\d+)$/,
                 API_BASE + '/archives/$1/gcode'
             );
-            // OctoPrint file download  →  Bambuddy library file gcode
+            // OctoPrint file download  →  Printbuddy library file gcode
             // (sliced LibraryFile — extracts embedded gcode from .gcode.3mf
             // or returns plain .gcode). Plate is ignored upstream for now.
             newPath = newPath.replace(
-                /^\/?downloads\/files\/local\/__bambuddy_libgcode_(\d+)(?:_plate\d+)?$/,
+                /^\/?downloads\/files\/local\/__printbuddy_libgcode_(\d+)(?:_plate\d+)?$/,
                 API_BASE + '/library/files/$1/gcode'
             );
             // OctoPrint plugin static assets  →  gcode-viewer static files
@@ -198,7 +197,7 @@
                 resource = url; // always pass as string after rewriting
             }
 
-            // Inject auth header for all Bambuddy API calls
+            // Inject auth header for all Printbuddy API calls
             if (url.startsWith(API_BASE)) {
                 var hdrs = authHeaders();
                 init = init || {};
@@ -360,7 +359,7 @@
     // 10. Archive loader — invoked via /gcode-viewer/?archive=<id>
     // -------------------------------------------------------------------------
     function loadArchiveById(archiveId, plate) {
-        // Pretygcode downloads /downloads/files/local/__bambuddy_archive_<id>(_plate<N>)
+        // PrettyGCode downloads /downloads/files/local/__printbuddy_archive_<id>(_plate<N>)
         // and the fetch intercept rewrites it to /api/v1/archives/<id>/gcode[?plate=N].
         var plateSuffix = (typeof plate === 'number' && plate >= 1) ? ('_plate' + plate) : '';
         currentFileId = 'archive_' + archiveId + plateSuffix;
@@ -376,7 +375,7 @@
             viewModel.fromCurrentData({
                 job: {
                     file: {
-                        path: '__bambuddy_archive_' + archiveId + plateSuffix,
+                        path: '__printbuddy_archive_' + archiveId + plateSuffix,
                         date: currentFileDate,
                     },
                     estimatedPrintTime: null,
@@ -442,7 +441,7 @@
             viewModel.fromCurrentData({
                 job: {
                     file: {
-                        path: '__bambuddy_libgcode_' + fileId + plateSuffix,
+                        path: '__printbuddy_libgcode_' + fileId + plateSuffix,
                         date: currentFileDate,
                     },
                     estimatedPrintTime: null,
@@ -510,7 +509,7 @@
             }
         }
 
-        console.log('[PrettyGCode] Bambuddy adapter initialised');
+        console.log('[PrettyGCode] Printbuddy adapter initialised');
 
         // Wire up playback controls
         var playBtn = document.getElementById('bb-play-btn');
@@ -637,7 +636,7 @@
     // -------------------------------------------------------------------------
     // Public API
     // -------------------------------------------------------------------------
-    window.BambuddyPrettyGCode = {
+    window.PrintbuddyPrettyGCode = {
         loadArchive: loadArchiveById,
         loadLibraryFile: loadLibraryFileById,
         getViewModel: function () { return viewModel; },

@@ -1,9 +1,9 @@
-# Bambuddy JavaScript Security & Quality Suite
+# Printbuddy JavaScript Security & Quality Suite
 #
 # Extends the standard javascript-security-and-quality suite,
 # excluding false positives documented below.
 
-- description: "Bambuddy JavaScript security and quality"
+- description: "Printbuddy JavaScript security and quality"
 
 - import: codeql-suites/javascript-security-and-quality.qls
   from: codeql/javascript-queries
