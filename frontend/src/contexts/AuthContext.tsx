@@ -1,6 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { api, getAuthToken, setAuthToken } from '../api/client';
 import type { LoginResponse, Permission, TokenPersistence, UserResponse } from '../api/client';
+import { appAssetPath, appBasePath } from '../utils/assetPaths';
 
 interface AuthContextType {
   user: UserResponse | null;
@@ -105,10 +106,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // Don't redirect if user manually navigated to /setup or is on camera page
     if (!loading && requiresSetup && !authEnabled) {
       const currentPath = window.location.pathname;
+      const base = appBasePath();
+      const appPath = base && currentPath.startsWith(base) ? currentPath.slice(base.length) || '/' : currentPath;
       // Only redirect if not already on setup page or camera page, and haven't redirected yet
-      if (currentPath !== '/setup' && !currentPath.startsWith('/camera/') && !hasRedirectedRef.current) {
+      if (appPath !== '/setup' && !appPath.startsWith('/camera/') && !hasRedirectedRef.current) {
         hasRedirectedRef.current = true;
-        window.location.href = '/setup';
+        window.location.href = appAssetPath('/setup');
       }
     } else if (!requiresSetup) {
       // Reset redirect flag when setup is no longer required
