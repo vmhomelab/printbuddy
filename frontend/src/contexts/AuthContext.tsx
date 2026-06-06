@@ -140,7 +140,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     api.logout().catch(() => {
       // Ignore logout errors
     });
-    window.location.href = '/login';
+    window.location.href = appAssetPath('/login');
   };
 
   const refreshUser = async () => {
