@@ -98,6 +98,7 @@ import { PrintModal } from '../components/PrintModal';
 import { PrinterInfoModal } from '../components/PrinterInfoModal';
 import { getGlobalTrayId, getFillBarColor, getSpoolmanFillLevel, getFallbackSpoolTag, isBambuLabSpool } from '../utils/amsHelpers';
 import { getDefaultPrinterImage, getPrinterImage, getWifiStrength, filterCompatibleQueueItems } from '../utils/printer';
+import { appAssetPath } from '../utils/assetPaths';
 import { FilamentSlotCircle } from '../components/FilamentSlotCircle';
 import { Collapsible } from '../components/Collapsible';
 import { ConnectionDiagnosticModal, DiagnosticChecklist } from '../components/ConnectionDiagnostic';
@@ -4905,7 +4906,7 @@ function PrinterCard({
                       // copies sessionStorage (auth token) into the new window.
                       'menubar=no,toolbar=no,location=no,status=no',
                     ].filter(Boolean).join(',');
-                    window.open(`/camera/${printer.id}`, `camera-${printer.id}`, features);
+                    window.open(appAssetPath(`/camera/${printer.id}`), `camera-${printer.id}`, features);
                   }
                 }}
                 disabled={!canOpenCamera}
