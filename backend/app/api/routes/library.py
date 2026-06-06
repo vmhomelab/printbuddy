@@ -33,6 +33,7 @@ from backend.app.core.permissions import Permission
 from backend.app.models.archive import PrintArchive
 from backend.app.models.library import LibraryFile, LibraryFolder
 from backend.app.models.print_queue import PrintQueueItem
+from backend.app.models.printer import Printer
 from backend.app.models.project import Project
 from backend.app.models.user import User
 from backend.app.schemas.library import (
@@ -139,7 +140,7 @@ def calculate_file_hash(file_path: Path) -> str:
     return sha256_hash.hexdigest()
 
 
-def validate_print_file_upload(filename: str, content: bytes) -> None:
+def validate_print_file_upload(filename: str, content: bytes, printer_provider: str | None = None) -> None:
     """Reject obviously-unprintable uploads early so the printer doesn't see them (#1401).
 
     Bambu printers in network mode only parse ``.gcode.3mf`` zip containers
@@ -166,7 +167,7 @@ def validate_print_file_upload(filename: str, content: bytes) -> None:
     is_3mf_upload = lower_filename.endswith(".3mf")
     is_raw_gcode_upload = lower_filename.endswith(".gcode") and not lower_filename.endswith(".gcode.3mf")
 
-    if is_raw_gcode_upload:
+    if is_raw_gcode_upload and (printer_provider is None or printer_provider == "bambu"):
         raise HTTPException(
             status_code=400,
             detail=(
@@ -1568,6 +1569,7 @@ async def upload_file(
     file: UploadFile = File(...),
     folder_id: int | None = None,
     generate_stl_thumbnails: bool = Query(default=True),
+    target_printer_id: int | None = Query(default=None),
     db: AsyncSession = Depends(get_db),
     current_user: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_UPLOAD)),
 ):
@@ -1598,10 +1600,18 @@ async def upload_file(
         # ordering / tests.
         file_path, is_external_upload = _resolve_upload_destination(target_folder, filename)
 
+        target_printer_provider = None
+        if target_printer_id is not None:
+            printer_result = await db.execute(select(Printer).where(Printer.id == target_printer_id))
+            target_printer = printer_result.scalar_one_or_none()
+            if not target_printer:
+                raise HTTPException(status_code=404, detail="Target printer not found")
+            target_printer_provider = target_printer.provider
+
         # Read upload now so the validation can sniff magic bytes; the file
         # is written to disk only after the checks. #1401.
         content = await file.read()
-        validate_print_file_upload(filename, content)
+        validate_print_file_upload(filename, content, printer_provider=target_printer_provider)
 
         # Save file
         with open(file_path, "wb") as f:

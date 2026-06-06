@@ -17,9 +17,9 @@ import { server } from '../mocks/server';
 import type { PrintQueueItem } from '../../api/client';
 
 const mockPrinters = [
-  { id: 1, name: 'X1 Carbon', model: 'X1C', ip_address: '192.168.1.100', enabled: true, is_active: true },
-  { id: 2, name: 'P1S', model: 'P1S', ip_address: '192.168.1.101', enabled: true, is_active: true },
-  { id: 3, name: 'A1 Mini', model: 'A1M', ip_address: '192.168.1.102', enabled: true, is_active: true },
+  { id: 1, name: 'X1 Carbon', model: 'X1C', provider: 'bambu', ip_address: '192.168.1.100', enabled: true, is_active: true },
+  { id: 2, name: 'P1S', model: 'P1S', provider: 'bambu', ip_address: '192.168.1.101', enabled: true, is_active: true },
+  { id: 3, name: 'A1 Mini', model: 'A1M', provider: 'bambu', ip_address: '192.168.1.102', enabled: true, is_active: true },
 ];
 
 const createMockQueueItem = (overrides: Partial<PrintQueueItem> = {}): PrintQueueItem => ({
@@ -228,6 +228,63 @@ describe('PrintModal', () => {
       );
 
       expect(screen.getByText('Print Options')).toBeInTheDocument();
+    });
+
+    it('hides unsupported Bambu print options and submits them disabled for an Elegoo Moonraker printer', async () => {
+      server.use(
+        http.get('/api/v1/printers/', () => {
+          return HttpResponse.json([
+            {
+              id: 4,
+              name: 'Elegoo Neptune 4 Pro',
+              model: 'N4PRO',
+              provider: 'fluidd',
+              ip_address: '10.17.10.31',
+              enabled: true,
+              is_active: true,
+            },
+          ]);
+        })
+      );
+
+      let capturedBody: Record<string, unknown> | null = null;
+      server.use(
+        http.post('/api/v1/archives/:id/reprint', async ({ request }) => {
+          capturedBody = await request.json() as Record<string, unknown>;
+          return HttpResponse.json({ status: 'dispatched' });
+        })
+      );
+
+      const user = userEvent.setup();
+      render(
+        <PrintModal
+          mode="reprint"
+          archiveId={1}
+          archiveName="Benchy"
+          initialSelectedPrinterIds={[4]}
+          onClose={mockOnClose}
+          onSuccess={mockOnSuccess}
+        />
+      );
+
+      await screen.findByText('No configurable print options for the selected printer.');
+
+      expect(screen.queryByText('Vibration Calibration')).not.toBeInTheDocument();
+      expect(screen.queryByText('Flow Calibration')).not.toBeInTheDocument();
+      expect(screen.queryByText('First Layer Inspection')).not.toBeInTheDocument();
+
+      await user.click(screen.getByRole('button', { name: /^print$/i }));
+
+      await waitFor(() => {
+        expect(capturedBody).not.toBeNull();
+      });
+      expect(capturedBody).toMatchObject({
+        bed_levelling: false,
+        flow_cali: false,
+        vibration_cali: false,
+        layer_inspect: false,
+        timelapse: false,
+      });
     });
   });
 

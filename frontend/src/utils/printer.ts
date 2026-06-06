@@ -1,20 +1,65 @@
+import { appAssetPath } from './assetPaths';
+import type { PrintQueueItem } from '../api/client';
+
+const PRINTER_IMAGE_BASE = '/img/printers';
+const DEFAULT_PRINTER_IMAGE = `${PRINTER_IMAGE_BASE}/default.png`;
+
+const MODEL_IMAGE_ALIASES: Array<[RegExp, string]> = [
+  [/^(?:x1e|x1e.*)$/, 'x1e'],
+  [/^(?:x1c|x1carbon|x1.*carbon.*)$/, 'x1c'],
+  [/^x1$/, 'x1c'],
+  [/^(?:x2d|n6)$/, 'x2d'],
+  [/^h2dpro$/, 'h2dpro'],
+  [/^h2d$/, 'h2d'],
+  [/^h2c$/, 'h2c'],
+  [/^h2s$/, 'h2d'],
+  [/^o1c$/, 'o1c'],
+  [/^o1e$/, 'o1e'],
+  [/^o1s$/, 'o1s'],
+  [/^p2s$/, 'p1s'],
+  [/^p1s$/, 'p1s'],
+  [/^p1p$/, 'p1p'],
+  [/^a1mini$/, 'a1mini'],
+  [/^a1f$/, 'a1f'],
+  [/^a1$/, 'a1'],
+  [/^elegooneptune3$/, 'elegoo-neptune-3'],
+  [/^elegooneptune3pro$/, 'elegoo-neptune-3-pro'],
+  [/^elegooneptune3plus$/, 'elegoo-neptune-3-plus'],
+  [/^elegooneptune3max$/, 'elegoo-neptune-3-max'],
+  [/^elegooneptune4$/, 'elegoo-neptune-4'],
+  [/^elegooneptune4pro$/, 'elegoo-neptune-4-pro'],
+  [/^elegooneptune4plus$/, 'elegoo-neptune-4-plus'],
+  [/^elegooneptune4max$/, 'elegoo-neptune-4-max'],
+  [/^prusacoreone$/, 'prusa-core-one'],
+  [/^prusamk4s$/, 'prusa-mk4s'],
+  [/^prusamk4$/, 'prusa-mk4'],
+  [/^prusamk39s$/, 'prusa-mk3.9S'],
+  [/^prusamk39$/, 'prusa-mk3.9'],
+  [/^prusamk35s$/, 'prusa-mk3.5S'],
+  [/^prusamk35$/, 'prusa-mk3.5'],
+  [/^prusaxl$/, 'prusa-xl'],
+  [/^prusamini$/, 'prusa-mini+'],
+  [/^prusamk3s$/, 'prusa-mk3s+'],
+  [/^(?:klipper|prusalink|genericklipperprinter|genericfdmprinter)$/, 'generic-printer'],
+];
+
+function normalizePrinterModel(model: string): string {
+  return model.toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+function printerImagePath(filename: string): string {
+  return appAssetPath(`${PRINTER_IMAGE_BASE}/${filename}`);
+}
+
+export function getDefaultPrinterImage(): string {
+  return appAssetPath(DEFAULT_PRINTER_IMAGE);
+}
+
 export function getPrinterImage(model: string | null | undefined): string {
-  if (!model) return '/img/printers/default.png';
-  const m = model.toLowerCase().replace(/\s+/g, '');
-  if (m.includes('x1e')) return '/img/printers/x1e.png';
-  if (m.includes('x1c') || m.includes('x1carbon')) return '/img/printers/x1c.png';
-  if (m.includes('x1')) return '/img/printers/x1c.png';
-  if (m.includes('x2d') || m === 'n6') return '/img/printers/x2d.png';
-  if (m.includes('h2dpro') || m.includes('h2d-pro')) return '/img/printers/h2dpro.png';
-  if (m.includes('h2d')) return '/img/printers/h2d.png';
-  if (m.includes('h2c')) return '/img/printers/h2c.png';
-  if (m.includes('h2s')) return '/img/printers/h2d.png';
-  if (m.includes('p2s')) return '/img/printers/p1s.png';
-  if (m.includes('p1s')) return '/img/printers/p1s.png';
-  if (m.includes('p1p')) return '/img/printers/p1p.png';
-  if (m.includes('a1mini')) return '/img/printers/a1mini.png';
-  if (m.includes('a1')) return '/img/printers/a1.png';
-  return '/img/printers/default.png';
+  if (!model) return getDefaultPrinterImage();
+  const normalizedModel = normalizePrinterModel(model);
+  const imageKey = MODEL_IMAGE_ALIASES.find(([pattern]) => pattern.test(normalizedModel))?.[1];
+  return imageKey ? printerImagePath(`${imageKey}.png`) : getDefaultPrinterImage();
 }
 
 export function getWifiStrength(rssi: number): { labelKey: string; color: string; bars: number } {
@@ -24,8 +69,6 @@ export function getWifiStrength(rssi: number): { labelKey: string; color: string
   if (rssi >= -80) return { labelKey: 'printers.wifiSignal.weak', color: 'text-orange-400', bars: 1 };
   return { labelKey: 'printers.wifiSignal.veryWeak', color: 'text-red-400', bars: 1 };
 }
-
-import type { PrintQueueItem } from '../api/client';
 
 /**
  * Filters queue items based on printer compatibility (filament types and colors).

@@ -1,22 +1,22 @@
-# BamBuddy Systemd Service Template
+# Printbuddy Systemd Service Template
 #
 # INSTALLATION:
-# 1. Copy this file to /etc/systemd/system/bambuddy.service
+# 1. Copy this file to /etc/systemd/system/printbuddy.service
 # 2. Replace placeholders:
-#    - INSTALL_PATH: Where BamBuddy is installed (e.g., /opt/bambuddy)
-#    - SERVICE_USER: User to run as (e.g., bambuddy)
-#    - DATA_DIR: Data directory (e.g., /opt/bambuddy/data)
-#    - LOG_DIR: Log directory (e.g., /opt/bambuddy/logs)
+#    - INSTALL_PATH: Where Printbuddy is installed (e.g., /opt/printbuddy)
+#    - SERVICE_USER: User to run as (e.g., printbuddy)
+#    - DATA_DIR: Data directory (e.g., /opt/printbuddy/data)
+#    - LOG_DIR: Log directory (e.g., /opt/printbuddy/logs)
 # 3. Run: sudo systemctl daemon-reload
-# 4. Run: sudo systemctl enable bambuddy
-# 5. Run: sudo systemctl start bambuddy
+# 4. Run: sudo systemctl enable printbuddy
+# 5. Run: sudo systemctl start printbuddy
 #
 # Or use the install script: ./install/install.sh
 #
 
 [Unit]
-Description=BamBuddy - Bambu Lab Print Management
-Documentation=https://github.com/maziggy/bambuddy
+Description=Printbuddy - Bambu Lab Print Management
+Documentation=https://github.com/vmhomelab/Printbuddy
 After=network.target
 
 [Service]
@@ -42,13 +42,13 @@ RestartSec=5
 TimeoutStopSec=10
 
 # Kill zombie ffmpeg processes (timelapse processing)
-ExecStartPre=-/usr/bin/pkill -9 -f "ffmpeg.*bambuddy"
-ExecStopPost=-/usr/bin/pkill -9 -f "ffmpeg.*bambuddy"
+ExecStartPre=-/usr/bin/pkill -9 -f "ffmpeg.*printbuddy"
+ExecStopPost=-/usr/bin/pkill -9 -f "ffmpeg.*printbuddy"
 
 # Logging
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=bambuddy
+SyslogIdentifier=printbuddy
 
 # Security hardening
 NoNewPrivileges=true

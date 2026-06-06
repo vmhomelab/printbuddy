@@ -1,6 +1,6 @@
 @import "tailwindcss";
 
-/* Inter, self-hosted (#1460).  Bambuddy is a local-first, offline-capable PWA;
+/* Inter, self-hosted (#1460).  Printbuddy is a local-first, offline-capable PWA;
    pulling the font from fonts.googleapis.com at runtime broke the install on
    Android (CSP-blocked cross-origin fetch) and meant the UI couldn't render
    offline.  These are the variable woff2 files Google Fonts serves — one file
@@ -55,10 +55,10 @@ html {
 }
 
 :root {
-  /* Default accent color (green) */
-  --accent: #00ae42;
-  --accent-light: #00c64d;
-  --accent-dark: #009438;
+  /* Default accent color (Printbuddy blue) */
+  --accent: #3b82f6;
+  --accent-light: #60a5fa;
+  --accent-dark: #2563eb;
 
   /* Semantic status colors - these never change with accent theme */
   --status-ok: #22c55e;      /* green-500 - always green for success/online/ok */
@@ -333,9 +333,9 @@ body {
   opacity: 0.4;
 }
 
-/* Green-colored icon for active status indicators */
+/* Accent-colored icon for active status indicators */
 .icon-green {
-  filter: invert(48%) sepia(89%) saturate(459%) hue-rotate(93deg) brightness(95%) contrast(92%);
+  filter: invert(47%) sepia(88%) saturate(1805%) hue-rotate(203deg) brightness(99%) contrast(94%);
   opacity: 1;
 }
 

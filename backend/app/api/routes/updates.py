@@ -120,6 +120,58 @@ def _is_ha_addon() -> bool:
     return bool(os.environ.get("SUPERVISOR_TOKEN"))
 
 
+def _short_source_ref(source_ref: str | None) -> str | None:
+    """Return a compact display form for git-style source refs."""
+    if not source_ref:
+        return None
+    cleaned = source_ref.strip()
+    if re.fullmatch(r"[0-9a-fA-F]{40}", cleaned):
+        return cleaned[:7]
+    return cleaned
+
+
+def _get_source_ref() -> str | None:
+    """Return the exact repository revision this runtime was built from.
+
+    Docker/Home Assistant add-on builds download a GitHub tarball, so there is
+    usually no usable .git directory at runtime. The add-on Dockerfile exports
+    PRINTBUDDY_REF for that case. Native/git installs fall back to reading HEAD.
+    """
+    env_ref = os.environ.get("PRINTBUDDY_REF", "").strip()
+    if env_ref:
+        return env_ref
+
+    git_dir = settings.app_dir / ".git"
+    head_path = git_dir / "HEAD"
+    try:
+        head = head_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+
+    if head.startswith("ref:"):
+        ref_name = head.removeprefix("ref:").strip()
+        ref_path = git_dir / ref_name
+        try:
+            return ref_path.read_text(encoding="utf-8").strip() or None
+        except OSError:
+            # Some installations only have packed refs.
+            packed_refs = git_dir / "packed-refs"
+            try:
+                for line in packed_refs.read_text(encoding="utf-8").splitlines():
+                    if not line or line.startswith("#") or line.startswith("^"):
+                        continue
+                    commit, _, name = line.partition(" ")
+                    if name == ref_name:
+                        return commit.strip() or None
+            except OSError:
+                return None
+            return None
+
+    if re.fullmatch(r"[0-9a-fA-F]{40}", head):
+        return head
+    return None
+
+
 def _find_executable(name: str) -> str | None:
     """Find an executable in PATH or common locations."""
     # Try standard PATH first
@@ -183,7 +235,7 @@ def _parse_github_remote(url: str) -> tuple[str, str] | None:
 
 async def _origin_points_at_repo(git_path: str, git_config: list[str], base_dir, expected_repo: str) -> bool:
     """Return True iff the working tree's `origin` already resolves to
-    `<owner>/<repo>` matching `expected_repo` (e.g. "maziggy/bambuddy"),
+    `<owner>/<repo>` matching `expected_repo` (e.g. "vmhomelab/Printbuddy"),
     regardless of whether it's the SSH or HTTPS form. Used to skip the
     `git remote set-url origin https://...` rewrite when the developer's
     SSH origin is already correct — see `_perform_update` for context."""
@@ -309,12 +361,21 @@ def is_newer_version(latest: str, current: str) -> bool:
 
 @router.get("/version")
 async def get_version():
-    """Get current application version.
+    """Get current application version and the running repository revision.
 
     Note: Unauthenticated - needed to display version in UI without login.
     """
+    source_ref = _get_source_ref()
+    source_ref_short = _short_source_ref(source_ref)
+    display_version = APP_VERSION
+    if source_ref_short:
+        display_version = f"{APP_VERSION} ({source_ref_short})"
+
     return {
         "version": APP_VERSION,
+        "display_version": display_version,
+        "source_ref": source_ref,
+        "source_ref_short": source_ref_short,
         "repo": GITHUB_REPO,
     }
 
@@ -584,7 +645,7 @@ async def _perform_update(target_ref: str):
         # origin to HTTPS unconditionally on the assumption that systemd
         # service users wouldn't have SSH keys configured — which is fine
         # for that case, but stomps on developer checkouts where origin is
-        # legitimately `git@github.com:maziggy/bambuddy.git` and the user
+        # legitimately `git@github.com:vmhomelab/Printbuddy.git` and the user
         # auths via SSH keys. After the rewrite, `git push` prompts for
         # HTTPS credentials and fails.
         # New behaviour: read the current origin, parse out the
@@ -801,9 +862,9 @@ async def apply_update(
             "is_ha_addon": True,
             "is_docker": True,
             "message": (
-                "Bambuddy is running as a Home Assistant addon. "
+                "Printbuddy is running as a Home Assistant add-on. "
                 "Updates are managed by the Home Assistant Supervisor "
-                "(Settings → Add-ons → Bambuddy → Update)."
+                "(Settings → Add-ons → Printbuddy → Update)."
             ),
         }
     if _is_docker_environment():

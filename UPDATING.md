@@ -1,68 +1,77 @@
-# Updating Bambuddy
+# Updating Printbuddy
 
-> **0.2.3 note:** the in-app **Update** button is unreliable when upgrading from
+> **Note:** The in-app **Update** button may be unreliable when upgrading from
 > older releases. Use the commands below instead — they cover every supported
 > install path and are safe to run repeatedly.
 
-Pick the section that matches how Bambuddy was installed.
+Pick the section that matches how Printbuddy was installed.
 
 ---
 
-## Docker
+## Docker / Docker Compose
 
 ```bash
-# 1. Make sure your compose file isn't pinned to an old version.
-#    The image line should read one of:
-#      image: ghcr.io/maziggy/bambuddy:latest
-#      image: ghcr.io/maziggy/bambuddy:0.2.3
-#    If it pins an older tag (e.g. :0.2.2.2), edit it first.
+# 1. Make sure your compose file isn't pinned to an old image or old project.
+#    The image line should point at the Printbuddy GHCR package, for example:
+#      image: ghcr.io/vmhomelab/printbuddy:latest
+#
+#    If you intentionally test the development channel, use:
+#      image: ghcr.io/vmhomelab/printbuddy:dev
+#
+#    Do not use the old upstream image name from the pre-fork project.
 
 # 2. Pull and restart
 docker compose pull
 docker compose up -d
 ```
 
-**If your `docker-compose.yml` is older than 0.2.3,** also refresh it from the
-repo — recent releases added `cap_add: NET_BIND_SERVICE`, extra virtual-printer
-ports for bridge mode, and an optional Postgres block:
+**If your `docker-compose.yml` is old or still references the pre-fork project,** refresh it
+from the Printbuddy repository. Recent compose files use the `printbuddy` service
+name, `ghcr.io/vmhomelab/printbuddy` image, Printbuddy data/log volumes,
+`cap_add: NET_BIND_SERVICE`, virtual-printer ports, and the optional Postgres
+block.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/maziggy/bambuddy/main/docker-compose.yml \
+curl -fsSL https://raw.githubusercontent.com/vmhomelab/Printbuddy/main/docker-compose.yml \
   -o docker-compose.yml.new
+
 # Diff against yours, merge by hand, then:
 docker compose up -d
 ```
+
+For the dev/test channel, replace `main` with `dev` in the raw URL or change the
+image tag to `ghcr.io/vmhomelab/printbuddy:dev` after downloading.
 
 ---
 
 ## Native install (`install.sh` or manual `git clone`)
 
-Both paths produce a git working tree at the install directory, so the update
-is the same. Preferred:
+Both paths produce a git working tree at the install directory, so the update is
+the same. Preferred:
 
 ```bash
-sudo /opt/bambuddy/install/update.sh
+sudo /opt/printbuddy/install/update.sh
 ```
 
 `update.sh` stops the service, snapshots the database via the built-in backup
-API, fast-forwards to `origin/main`, installs Python deps, rebuilds the
-frontend, and restarts the service. It rolls back automatically if any step
-fails.
+API, fast-forwards to the configured upstream branch, installs Python deps,
+rebuilds the frontend, and restarts the service. It rolls back automatically if
+any step fails.
 
 ### Manual equivalent
 
 If you'd rather run the steps yourself:
 
 ```bash
-cd /opt/bambuddy
-sudo systemctl stop bambuddy
-sudo -u bambuddy git fetch origin
-sudo -u bambuddy git reset --hard origin/main
-sudo -u bambuddy venv/bin/pip install -r requirements.txt
-sudo systemctl start bambuddy
+cd /opt/printbuddy
+sudo systemctl stop printbuddy
+sudo -u printbuddy git fetch origin
+sudo -u printbuddy git reset --hard origin/main
+sudo -u printbuddy venv/bin/pip install -r requirements.txt
+sudo systemctl start printbuddy
 ```
 
-Replace `/opt/bambuddy` with your install path if different. Database schema
+Replace `/opt/printbuddy` with your install path if different. Database schema
 migrations run automatically on startup — no Alembic step is required.
 
 ---
@@ -74,20 +83,20 @@ These installs have no `.git` directory, so neither `update.sh` nor a plain
 
 ```bash
 # 1. Back up your stateful data
-sudo systemctl stop bambuddy
-sudo tar czf ~/bambuddy-backup.tgz -C /opt/bambuddy \
-  data bambuddy.db bambuddy.db-shm bambuddy.db-wal \
+sudo systemctl stop printbuddy
+sudo tar czf ~/printbuddy-backup.tgz -C /opt/printbuddy \
+  data printbuddy.db printbuddy.db-shm printbuddy.db-wal \
   virtual_printer archive projects icons .env 2>/dev/null || true
 
 # 2. Remove the old install and reinstall via install.sh
-sudo rm -rf /opt/bambuddy
-curl -fsSL https://raw.githubusercontent.com/maziggy/bambuddy/main/install/install.sh \
-  -o /tmp/install.sh && sudo bash /tmp/install.sh --path /opt/bambuddy
+sudo rm -rf /opt/printbuddy
+curl -fsSL https://raw.githubusercontent.com/vmhomelab/Printbuddy/main/install/install.sh \
+  -o /tmp/install.sh && sudo bash /tmp/install.sh --path /opt/printbuddy
 
 # 3. Restore your data
-sudo systemctl stop bambuddy
-sudo tar xzf ~/bambuddy-backup.tgz -C /opt/bambuddy
-sudo systemctl start bambuddy
+sudo systemctl stop printbuddy
+sudo tar xzf ~/printbuddy-backup.tgz -C /opt/printbuddy
+sudo systemctl start printbuddy
 ```
 
 ---
@@ -95,5 +104,5 @@ sudo systemctl start bambuddy
 ## Before you upgrade
 
 Take a backup. Settings → Backup → **Create Backup** downloads a ZIP containing
-the database and all stateful directories. Any bare-metal update via
-`update.sh` does this automatically; Docker and manual upgrades do not.
+the database and all stateful directories. Any bare-metal update via `update.sh`
+does this automatically; Docker and manual upgrades do not.

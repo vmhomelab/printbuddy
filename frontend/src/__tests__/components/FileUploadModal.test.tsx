@@ -578,6 +578,45 @@ describe('FileUploadModal', () => {
       expect(fileInput.accept).toBe('.gcode,.gcode.3mf');
     });
 
+    it('shows a restricted file description when provided', () => {
+      render(
+        <FileUploadModal
+          {...defaultProps}
+          accept=".bgcode,.gcode"
+          acceptedFileDescription="Printable files for this printer: .bgcode, .gcode"
+        />
+      );
+
+      expect(screen.getByText('Printable files for this printer: .bgcode, .gcode')).toBeInTheDocument();
+      expect(screen.queryByText('All file types supported. ZIP files will be extracted.')).not.toBeInTheDocument();
+    });
+
+    it('passes printer context to the backend upload validation when provided', async () => {
+      const user = userEvent.setup();
+      let seenTargetPrinterId: string | null = null;
+      server.use(
+        http.post('/api/v1/library/files', ({ request }) => {
+          seenTargetPrinterId = new URL(request.url).searchParams.get('target_printer_id');
+          return HttpResponse.json({
+            id: 1,
+            filename: 'neptune.gcode',
+            file_type: 'gcode',
+            file_size: 100,
+            thumbnail_path: null,
+            duplicate_of: null,
+            metadata: null,
+          });
+        })
+      );
+
+      render(<FileUploadModal {...defaultProps} uploadTargetPrinterId={42} />);
+      const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+      await user.upload(fileInput, new File(['G28'], 'neptune.gcode', { type: 'application/octet-stream' }));
+      await user.click(screen.getByRole('button', { name: /Upload \(1\)/i }));
+
+      await waitFor(() => expect(seenTargetPrinterId).toBe('42'));
+    });
+
     it('does not set accept attribute when prop is omitted', () => {
       render(<FileUploadModal {...defaultProps} />);
       const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;

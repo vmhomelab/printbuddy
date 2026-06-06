@@ -16,6 +16,11 @@ RUN npm run build
 # Production image
 FROM python:3.13-slim-trixie
 
+LABEL org.opencontainers.image.title="Printbuddy" \
+      org.opencontainers.image.description="Self-hosted printer management for Bambu Lab, Klipper, and Mainsail/Moonraker printers" \
+      org.opencontainers.image.source="https://github.com/vmhomelab/Printbuddy" \
+      org.opencontainers.image.licenses="AGPL-3.0"
+
 WORKDIR /app
 
 # Install system dependencies
@@ -32,7 +37,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install the Tailscale CLI only (no tailscaled — the daemon runs on the host).
-# Bambuddy calls `tailscale status` / `tailscale cert` via the host's socket,
+# Printbuddy calls `tailscale status` / `tailscale cert` via the host's socket,
 # which the user mounts in via docker-compose when they want to enable the
 # Tailscale integration for virtual printers. Without the socket mount, the
 # binary is harmless — the code logs a hint and falls back to self-signed.
@@ -66,13 +71,13 @@ COPY backend/ ./backend/
 # flow reads at runtime via detect_current_branch() in spoolbuddy_ssh.py.
 # Without this, the production image has no git metadata at all and would
 # always pull `main` on the remote device regardless of which branch
-# Bambuddy itself was built from.
+# Printbuddy itself was built from.
 COPY .git/HEAD ./.git/HEAD
 
 # Copy built frontend from builder stage
 COPY --from=frontend-builder /app/static ./static
 
-# Copy embedded GCode viewer static assets (PrettyGCode + Bambuddy adapter).
+# Copy embedded GCode viewer static assets (PrettyGCode + Printbuddy adapter).
 # Served by the explicit @app.get("/gcode-viewer/{...}") routes in main.py,
 # which resolve files under (static_dir.parent / "gcode_viewer") = /app/gcode_viewer/.
 # Without this COPY the routes return a bare 404 at request time and the 3D
@@ -97,8 +102,8 @@ COPY gcode_viewer/ ./gcode_viewer/
 # volume populated and stops resyncing, so the chown is genuinely
 # one-shot.
 RUN mkdir -p /app/data /app/logs && \
-    : >/app/data/.bambuddy && \
-    : >/app/logs/.bambuddy
+    : >/app/data/.printbuddy && \
+    : >/app/logs/.printbuddy
 
 # Entrypoint script: handles PUID/PGID + ownership normalisation +
 # privilege drop. See deploy/docker-entrypoint.sh for the full rationale.
@@ -119,8 +124,8 @@ ENV PORT=8000
 # makes getpass.getuser() resolve via env vars instead of the passwd db;
 # HOME=/app gives a writable home that is guaranteed to exist.
 ENV HOME=/app
-ENV USER=bambuddy
-ENV LOGNAME=bambuddy
+ENV USER=printbuddy
+ENV LOGNAME=printbuddy
 
 # Matplotlib (imported lazily by the STL thumbnail generator) tries to create
 # its font/style cache at $HOME/.config/matplotlib on first import. /app is

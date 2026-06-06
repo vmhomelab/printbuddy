@@ -108,7 +108,7 @@ export function CameraPage() {
       document.title = `${printer.name} - Camera`;
     }
     return () => {
-      document.title = 'Bambuddy';
+      document.title = 'Printbuddy';
     };
   }, [printer]);
 

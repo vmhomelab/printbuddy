@@ -37,7 +37,7 @@ export function VirtualPrinterAddDialog({ onClose }: VirtualPrinterAddDialogProp
   const createMutation = useMutation({
     mutationFn: () =>
       multiVirtualPrinterApi.create({
-        name: name.trim() || 'Bambuddy',
+        name: name.trim() || 'Printbuddy',
         mode,
         target_printer_id: mode === 'proxy' ? (targetPrinterId ?? undefined) : undefined,
       }),
@@ -70,7 +70,7 @@ export function VirtualPrinterAddDialog({ onClose }: VirtualPrinterAddDialogProp
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="Bambuddy"
+              placeholder="Printbuddy"
               className="w-full bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-md px-3 py-2 text-white text-sm placeholder-bambu-gray"
               autoFocus
             />

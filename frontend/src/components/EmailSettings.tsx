@@ -35,7 +35,7 @@ export function EmailSettings() {
     smtp_security: 'starttls',
     smtp_auth_enabled: true,
     smtp_from_email: '',
-    smtp_from_name: 'BamBuddy',
+    smtp_from_name: 'Printbuddy',
   });
   const [testEmail, setTestEmail] = useState('');
 
@@ -364,7 +364,7 @@ export function EmailSettings() {
                     type="text"
                     value={smtpSettings.smtp_from_name}
                     onChange={(e) => setSMTPSettings({ ...smtpSettings, smtp_from_name: e.target.value })}
-                    placeholder="BamBuddy"
+                    placeholder="Printbuddy"
                     className={inputClasses}
                   />
                 </div>

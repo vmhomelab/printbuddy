@@ -18,8 +18,10 @@ export function PrintOptionsPanel({
   options,
   onChange,
   defaultExpanded = false,
+  supportedOptions,
 }: PrintOptionsProps) {
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
+  const visibleOptions = PRINT_OPTIONS_CONFIG.filter(({ key }) => !supportedOptions || supportedOptions.includes(key));
 
   const handleToggle = (key: keyof PrintOptionsType) => {
     onChange({ ...options, [key]: !options[key] });
@@ -42,7 +44,9 @@ export function PrintOptionsPanel({
       </button>
       {isExpanded && (
         <div className="mt-2 bg-bambu-dark rounded-lg p-3 space-y-2">
-          {PRINT_OPTIONS_CONFIG.map(({ key, label, desc }) => (
+          {visibleOptions.length === 0 ? (
+            <p className="text-xs text-bambu-gray">No configurable print options for the selected printer.</p>
+          ) : visibleOptions.map(({ key, label, desc }) => (
             <label key={key} className="flex items-center justify-between cursor-pointer group">
               <div>
                 <span className="text-sm text-white">{label}</span>

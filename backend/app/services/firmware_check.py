@@ -30,7 +30,7 @@ BAMBU_WIKI_BASE = "https://wiki.bambulab.com"
 # Cache TTL in seconds (1 hour)
 CACHE_TTL = 3600
 
-# Map Bambuddy model names to Bambu Lab API keys
+# Map Printbuddy model names to Bambu Lab API keys
 MODEL_TO_API_KEY = {
     "X1": "x1",
     "X1C": "x1",
@@ -124,11 +124,11 @@ class FirmwareCheckService:
         self._client = httpx.AsyncClient(
             timeout=30.0,
             headers={
-                # Identify honestly as Bambuddy when scraping the public Bambu
+                # Identify honestly as Printbuddy when scraping the public Bambu
                 # Lab firmware wiki — verified 2026-05-12 that the wiki serves
                 # this UA identically to a Chrome UA (same HTML response shape).
                 # No browser impersonation needed for read-only public pages.
-                "User-Agent": "Bambuddy/1.0 (+https://github.com/maziggy/bambuddy)",
+                "User-Agent": "Printbuddy/1.0 (+https://github.com/vmhomelab/Printbuddy)",
                 # Some Cloudflare bot rules on bambulab.com 403 requests with a
                 # bare UA but no browser-like Accept headers (seen on AU IPs in
                 # #1350). Sending normal Accept hints removes that signal while
@@ -386,7 +386,7 @@ class FirmwareCheckService:
         Get the latest firmware version for a printer model.
 
         Args:
-            model: Bambuddy printer model name (e.g., "X1C", "P1S", "H2D")
+            model: Printbuddy printer model name (e.g., "X1C", "P1S", "H2D")
 
         Returns:
             FirmwareVersion if found, None otherwise

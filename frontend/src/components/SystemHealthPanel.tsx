@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { XCircle, AlertTriangle, CheckCircle2, ExternalLink, Wrench, ServerCog, Bug } from 'lucide-react';
 import type { LogFinding, LogFindingCategory, SystemHealthResult } from '../api/client';
 
-const WIKI_TROUBLESHOOTING = 'https://wiki.bambuddy.cool/reference/troubleshooting/';
+const TROUBLESHOOTING_DOC = 'https://github.com/vmhomelab/Printbuddy/blob/main/DEPLOYMENT.md#';
 
 const CATEGORY_META: Record<LogFindingCategory, { icon: ElementType; badgeClass: string }> = {
   layer8: { icon: Wrench, badgeClass: 'bg-bambu-green/15 text-bambu-green border-bambu-green/30' },
@@ -60,7 +60,7 @@ function FindingCard({ finding }: { finding: LogFinding }) {
           {t('systemHealth.occurrences', { times: finding.count, lastSeen: finding.last_seen })}
         </span>
         <a
-          href={`${WIKI_TROUBLESHOOTING}#${finding.wiki_anchor}`}
+          href={`${TROUBLESHOOTING_DOC}${finding.wiki_anchor}`}
           target="_blank"
           rel="noopener noreferrer"
           className="inline-flex items-center gap-1 text-xs text-bambu-green hover:underline"

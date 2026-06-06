@@ -1,6 +1,6 @@
-// Bambuddy Service Worker
-const CACHE_NAME = 'bambuddy-v28';
-const STATIC_CACHE = 'bambuddy-static-v27';
+// Printbuddy Service Worker
+const CACHE_NAME = 'printbuddy-v1';
+const STATIC_CACHE = 'printbuddy-static-v1';
 
 // Static assets to cache on install
 const STATIC_ASSETS = [
@@ -12,7 +12,7 @@ const STATIC_ASSETS = [
   '/img/android-chrome-192x192.png',
   '/img/android-chrome-512x512.png',
   '/img/apple-touch-icon.png',
-  '/img/bambuddy_logo_dark.png',
+  '/img/printbuddy_logo_dark_transparent.png',
   // Self-hosted Inter font (#1460) - cached so the UI renders offline.
   '/fonts/inter-latin.woff2',
   '/fonts/inter-latin-ext.woff2',
@@ -181,7 +181,7 @@ self.addEventListener('push', (event) => {
 
   const data = event.data.json();
   const options = {
-    body: data.body || 'New notification from Bambuddy',
+    body: data.body || 'New notification from Printbuddy',
     icon: '/img/android-chrome-192x192.png',
     badge: '/img/favicon-32x32.png',
     vibrate: [100, 50, 100],
@@ -191,7 +191,7 @@ self.addEventListener('push', (event) => {
   };
 
   event.waitUntil(
-    self.registration.showNotification(data.title || 'Bambuddy', options)
+    self.registration.showNotification(data.title || 'Printbuddy', options)
   );
 });
 

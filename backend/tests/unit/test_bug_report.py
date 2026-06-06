@@ -10,49 +10,39 @@ class TestBugReportService:
 
     @pytest.mark.asyncio
     @pytest.mark.unit
-    async def test_submit_success(self):
-        """Successful relay call saves report and returns issue details."""
+    async def test_submit_prepares_github_issue_without_external_relay(self):
+        """Preparing a report returns a prefilled GitHub issue URL and performs no outbound relay call."""
         from backend.app.services.bug_report import submit_report
-
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "success": True,
-            "message": "Created",
-            "issue_url": "https://github.com/maziggy/bambuddy/issues/99",
-            "issue_number": 99,
-        }
 
         mock_db = AsyncMock()
         mock_db.add = MagicMock()
         mock_db.commit = AsyncMock()
 
         with (
-            patch("backend.app.services.bug_report.httpx.AsyncClient") as mock_client_cls,
             patch("backend.app.services.bug_report.async_session") as mock_session,
             patch("backend.app.services.bug_report._rate_limit_timestamps", []),
-            patch("backend.app.services.bug_report.BUG_REPORT_RELAY_URL", "https://example.com/api/bug-report"),
         ):
-            mock_client = AsyncMock()
-            mock_client.post = AsyncMock(return_value=mock_response)
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            mock_client_cls.return_value = mock_client
-
             mock_session.return_value.__aenter__ = AsyncMock(return_value=mock_db)
             mock_session.return_value.__aexit__ = AsyncMock(return_value=False)
 
             result = await submit_report(
                 description="Test bug",
                 reporter_email="user@test.com",
-                screenshot_base64=None,
-                support_info=None,
+                screenshot_base64="abc123",
+                support_info={"app_version": "1.2.3", "recent_logs": "sanitized log line"},
             )
 
         assert result["success"] is True
-        assert result["issue_number"] == 99
-        assert result["issue_url"] == "https://github.com/maziggy/bambuddy/issues/99"
+        assert result["issue_number"] is None
+        assert result["issue_url"].startswith("https://github.com/vmhomelab/Printbuddy/issues/new?")
+        assert "Test+bug" in result["issue_url"]
+        assert "sanitized+log+line" in result["issue_url"]
+        assert "screenshot" in result["message"].lower()
         mock_db.add.assert_called_once()
+        saved_report = mock_db.add.call_args.args[0]
+        assert saved_report.status == "prepared"
+        assert saved_report.github_issue_number is None
+        assert saved_report.email_sent is False
 
     @pytest.mark.asyncio
     @pytest.mark.unit
@@ -74,142 +64,6 @@ class TestBugReportService:
 
         assert result["success"] is False
         assert "Rate limit" in result["message"]
-
-    @pytest.mark.asyncio
-    @pytest.mark.unit
-    async def test_submit_no_relay_url(self):
-        """Returns failure when relay URL is not configured."""
-        from backend.app.services.bug_report import submit_report
-
-        with (
-            patch("backend.app.services.bug_report._rate_limit_timestamps", []),
-            patch("backend.app.services.bug_report.BUG_REPORT_RELAY_URL", ""),
-        ):
-            result = await submit_report(
-                description="Test",
-                reporter_email=None,
-                screenshot_base64=None,
-                support_info=None,
-            )
-
-        assert result["success"] is False
-        assert "not configured" in result["message"]
-
-    @pytest.mark.asyncio
-    @pytest.mark.unit
-    async def test_submit_relay_http_error(self):
-        """Non-200 relay response saves failed report."""
-        from backend.app.services.bug_report import submit_report
-
-        mock_response = MagicMock()
-        mock_response.status_code = 500
-
-        mock_db = AsyncMock()
-        mock_db.add = MagicMock()
-        mock_db.commit = AsyncMock()
-
-        with (
-            patch("backend.app.services.bug_report.httpx.AsyncClient") as mock_client_cls,
-            patch("backend.app.services.bug_report.async_session") as mock_session,
-            patch("backend.app.services.bug_report._rate_limit_timestamps", []),
-            patch("backend.app.services.bug_report.BUG_REPORT_RELAY_URL", "https://example.com/api/bug-report"),
-        ):
-            mock_client = AsyncMock()
-            mock_client.post = AsyncMock(return_value=mock_response)
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            mock_client_cls.return_value = mock_client
-
-            mock_session.return_value.__aenter__ = AsyncMock(return_value=mock_db)
-            mock_session.return_value.__aexit__ = AsyncMock(return_value=False)
-
-            result = await submit_report(
-                description="Test",
-                reporter_email=None,
-                screenshot_base64=None,
-                support_info=None,
-            )
-
-        assert result["success"] is False
-        assert "not available" in result["message"]
-        mock_db.add.assert_called_once()
-
-    @pytest.mark.asyncio
-    @pytest.mark.unit
-    async def test_submit_relay_connection_error(self):
-        """Connection failure saves failed report."""
-        from backend.app.services.bug_report import submit_report
-
-        mock_db = AsyncMock()
-        mock_db.add = MagicMock()
-        mock_db.commit = AsyncMock()
-
-        with (
-            patch("backend.app.services.bug_report.httpx.AsyncClient") as mock_client_cls,
-            patch("backend.app.services.bug_report.async_session") as mock_session,
-            patch("backend.app.services.bug_report._rate_limit_timestamps", []),
-            patch("backend.app.services.bug_report.BUG_REPORT_RELAY_URL", "https://example.com/api/bug-report"),
-        ):
-            mock_client = AsyncMock()
-            mock_client.post = AsyncMock(side_effect=ConnectionError("Connection refused"))
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            mock_client_cls.return_value = mock_client
-
-            mock_session.return_value.__aenter__ = AsyncMock(return_value=mock_db)
-            mock_session.return_value.__aexit__ = AsyncMock(return_value=False)
-
-            result = await submit_report(
-                description="Test",
-                reporter_email=None,
-                screenshot_base64=None,
-                support_info=None,
-            )
-
-        assert result["success"] is False
-        assert "Failed to submit" in result["message"]
-
-    @pytest.mark.asyncio
-    @pytest.mark.unit
-    async def test_submit_relay_failure_response(self):
-        """Relay returns success=false in JSON body."""
-        from backend.app.services.bug_report import submit_report
-
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "success": False,
-            "message": "GitHub API error",
-        }
-
-        mock_db = AsyncMock()
-        mock_db.add = MagicMock()
-        mock_db.commit = AsyncMock()
-
-        with (
-            patch("backend.app.services.bug_report.httpx.AsyncClient") as mock_client_cls,
-            patch("backend.app.services.bug_report.async_session") as mock_session,
-            patch("backend.app.services.bug_report._rate_limit_timestamps", []),
-            patch("backend.app.services.bug_report.BUG_REPORT_RELAY_URL", "https://example.com/api/bug-report"),
-        ):
-            mock_client = AsyncMock()
-            mock_client.post = AsyncMock(return_value=mock_response)
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            mock_client_cls.return_value = mock_client
-
-            mock_session.return_value.__aenter__ = AsyncMock(return_value=mock_db)
-            mock_session.return_value.__aexit__ = AsyncMock(return_value=False)
-
-            result = await submit_report(
-                description="Test",
-                reporter_email=None,
-                screenshot_base64=None,
-                support_info=None,
-            )
-
-        assert result["success"] is False
-        assert "GitHub API error" in result["message"]
 
 
 class TestStartLogging:
@@ -370,7 +224,7 @@ class TestSubmitBugReportRoute:
             mock_submit.return_value = {
                 "success": True,
                 "message": "Created",
-                "issue_url": "https://github.com/maziggy/bambuddy/issues/1",
+                "issue_url": "https://github.com/vmhomelab/Printbuddy/issues/1",
                 "issue_number": 1,
             }
 

@@ -970,9 +970,18 @@ async def diagnose_camera_route(
     """
     import time
 
-    from backend.app.services.camera_diagnose import diagnose_camera
+    from backend.app.services.camera_diagnose import diagnose_camera, diagnose_external_camera
 
     printer = await get_printer_or_404(printer_id, db)
+
+    if printer.external_camera_enabled and printer.external_camera_url:
+        result = await diagnose_external_camera(
+            camera_url=printer.external_camera_url,
+            camera_type=printer.external_camera_type,
+            printer_id=printer_id,
+            snapshot_url=printer.external_camera_snapshot_url,
+        )
+        return result.to_dict()
 
     # Look up live-stream evidence so the diagnostic can short-circuit
     # instead of fighting a viewer for the printer's single camera slot.

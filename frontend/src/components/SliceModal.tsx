@@ -164,6 +164,40 @@ function pickFilamentForSlot(
   return best.ref;
 }
 
+function pickFilamentForLoadedSpool(
+  by: UnifiedPresetsResponse,
+  spool: { material?: string | null; rgba?: string | null; slicer_filament?: string | null; slicer_filament_name?: string | null } | null | undefined,
+  required: { type: string; color: string },
+  printerName: string | null,
+  compatIndex: PrinterCompatibilityIndex,
+): PresetRef | null {
+  if (!spool) return null;
+
+  const spoolType = (spool.material ?? '').trim().toUpperCase();
+  const reqType = required.type.trim().toUpperCase();
+  if (reqType && spoolType && reqType !== spoolType) return null;
+
+  const preferredNames = [spool.slicer_filament_name, spool.slicer_filament]
+    .map((value) => (value ?? '').trim())
+    .filter(Boolean);
+  for (const name of preferredNames) {
+    const preset = findPresetByName(by, 'filament', name);
+    if (!preset) continue;
+    const resolved = findPreset(by, preset, 'filament');
+    if (resolved && presetCompatibility(resolved, 'filament', printerName, compatIndex) !== 'mismatch') {
+      return preset;
+    }
+  }
+
+  if (!spoolType && !spool.rgba) return null;
+  return pickFilamentForSlot(
+    by,
+    { type: spool.material ?? required.type, color: spool.rgba ?? required.color },
+    printerName,
+    compatIndex,
+  );
+}
+
 function toRefValue(ref: PresetRef | null): string {
   // The HTML `<select>` value space is flat strings; encode source + id so
   // the same preset name can live in multiple tiers without collision.
@@ -452,6 +486,18 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
     queryFn: api.getSlicerPrinterModels,
     staleTime: Infinity,
   });
+  const printersQuery = useQuery({
+    queryKey: ['printers'],
+    queryFn: api.getPrinters,
+    staleTime: 60_000,
+    enabled: !platesQuery.isLoading && !needsPlatePicker,
+  });
+  const assignmentsQuery = useQuery({
+    queryKey: ['spool-assignments'],
+    queryFn: () => api.getAssignments(),
+    staleTime: 30_000,
+    enabled: !platesQuery.isLoading && !needsPlatePicker,
+  });
   const selectedBundle: SlicerBundle | null = useMemo(() => {
     if (!selectedBundleId || !bundlesQuery.data) return null;
     return bundlesQuery.data.find((b) => b.id === selectedBundleId) ?? null;
@@ -463,6 +509,18 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
     if (!presetsQuery.data || !printerPreset) return null;
     return findPreset(presetsQuery.data, printerPreset, 'printer')?.name ?? null;
   }, [presetsQuery.data, printerPreset]);
+  const loadedSpoolForSelectedPrinter = useMemo(() => {
+    const loaded = (assignmentsQuery.data ?? []).filter((a) => a.ams_id === -1 && a.tray_id === 0 && a.spool);
+    if (loaded.length === 0) return null;
+    if (!selectedPrinterName) return loaded[0].spool ?? null;
+    const normalizedPreset = selectedPrinterName.toLowerCase();
+    const matched = loaded.find((assignment) => {
+      const printer = (printersQuery.data ?? []).find((p) => p.id === assignment.printer_id);
+      const candidates = [printer?.name, printer?.model].map((v) => (v ?? '').toLowerCase()).filter(Boolean);
+      return candidates.some((candidate) => normalizedPreset.includes(candidate) || candidate.includes(normalizedPreset));
+    });
+    return (matched ?? loaded[0]).spool ?? null;
+  }, [assignmentsQuery.data, printersQuery.data, selectedPrinterName]);
   // Compatibility ground truth: the user's uploaded Slicer Bundles plus the
   // backend Bambu printer-model registry (#1325 + follow-up). The bundle
   // path handles imported / custom presets; the registry-driven @BBL name
@@ -528,15 +586,24 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
             return cur;
           }
         }
-        return pickFilamentForSlot(
-          data,
-          { type: slot.type, color: slot.color },
-          selectedPrinterName,
-          compatIndex,
+        return (
+          pickFilamentForLoadedSpool(
+            data,
+            loadedSpoolForSelectedPrinter,
+            { type: slot.type, color: slot.color },
+            selectedPrinterName,
+            compatIndex,
+          ) ??
+          pickFilamentForSlot(
+            data,
+            { type: slot.type, color: slot.color },
+            selectedPrinterName,
+            compatIndex,
+          )
         );
       });
     });
-  }, [presetsQuery.data, filamentSlots, selectedPrinterName, compatIndex]);
+  }, [presetsQuery.data, filamentSlots, selectedPrinterName, compatIndex, loadedSpoolForSelectedPrinter]);
 
   // Bundle-mode auto-pick: when the user picks a bundle (or the slot count
   // changes after the picker is open), default the process to the bundle's

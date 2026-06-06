@@ -858,7 +858,7 @@ export function GitHubBackupSettings() {
                       <span>
                         {t(
                           'backup.repoIsPublicWarning',
-                          'Repository is PUBLIC. Bambuddy backups include MQTT credentials, Home Assistant tokens, Prometheus tokens, your Bambu Cloud email, and printer access codes via K-profiles. Saving is blocked until you make the repository private in your provider\'s settings.',
+                          'Repository is PUBLIC. Printbuddy backups include MQTT credentials, Home Assistant tokens, Prometheus tokens, your Bambu Cloud email, and printer access codes via K-profiles. Saving is blocked until you make the repository private in your provider\'s settings.',
                         )}
                       </span>
                     </div>
@@ -869,7 +869,7 @@ export function GitHubBackupSettings() {
                       <span>
                         {t(
                           'backup.repoVisibilityUnknown',
-                          'Could not determine repository visibility. Bambuddy refuses to back up to anything not confirmed private; saving will be blocked.',
+                          'Could not determine repository visibility. Printbuddy refuses to back up to anything not confirmed private; saving will be blocked.',
                         )}
                       </span>
                     </div>

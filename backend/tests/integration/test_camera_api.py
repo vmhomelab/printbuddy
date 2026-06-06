@@ -240,6 +240,57 @@ class TestCameraAPI:
         assert [s["name"] for s in body["stages"]] == ["tcp_reachable", "first_frame"]
         assert body["stages"][1]["code"] == "no_frame"
 
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_camera_diagnose_uses_external_camera_when_configured(
+        self, async_client: AsyncClient, printer_factory
+    ):
+        """The Diagnose button must test the same external camera URL that
+        /camera/stream chooses, not the printer model's built-in 6000/322 port.
+        """
+        from backend.app.services.camera_diagnose import CameraDiagnoseResult, CameraDiagnoseStage
+
+        printer = await printer_factory(
+            external_camera_enabled=True,
+            external_camera_url="http://192.168.178.130/ipcam/mjpeg.cgi",
+            external_camera_type="mjpeg",
+        )
+        fake = CameraDiagnoseResult(
+            printer_id=printer.id,
+            protocol="mjpeg",
+            port=80,
+            profile="external",
+            overall_status="ok",
+            stages=[
+                CameraDiagnoseStage(name="tcp_reachable", status="ok", duration_ms=3),
+                CameraDiagnoseStage(name="first_frame", status="ok", duration_ms=50),
+            ],
+            summary_code="all_ok",
+        )
+        with (
+            patch(
+                "backend.app.services.camera_diagnose.diagnose_external_camera",
+                new_callable=AsyncMock,
+                return_value=fake,
+            ) as external_diag,
+            patch("backend.app.services.camera_diagnose.diagnose_camera", new_callable=AsyncMock) as built_in_diag,
+        ):
+            response = await async_client.post(f"/api/v1/printers/{printer.id}/camera/diagnose")
+
+        assert response.status_code == 200
+        external_diag.assert_awaited_once_with(
+            camera_url="http://192.168.178.130/ipcam/mjpeg.cgi",
+            camera_type="mjpeg",
+            printer_id=printer.id,
+            snapshot_url=None,
+        )
+        built_in_diag.assert_not_called()
+        body = response.json()
+        assert body["protocol"] == "mjpeg"
+        assert body["port"] == 80
+        assert body["profile"] == "external"
+        assert body["summary_code"] == "all_ok"
+
     # ========================================================================
     # Camera Snapshot Endpoint
     # ========================================================================

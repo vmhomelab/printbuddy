@@ -1,5 +1,5 @@
 #!/bin/sh
-# Bambuddy container entrypoint.
+# Printbuddy container entrypoint.
 #
 # Runs as root (the image leaves USER unset, so containers start as
 # root by default), chowns /app/data and /app/logs to PUID:PGID, then

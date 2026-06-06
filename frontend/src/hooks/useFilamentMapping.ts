@@ -7,13 +7,17 @@ import {
   formatSlotLabel,
   getGlobalTrayId,
 } from '../utils/amsHelpers';
-import type { PrinterStatus } from '../api/client';
+import type { PrinterStatus, SpoolAssignment } from '../api/client';
 
 /**
  * Build loaded filaments list from printer status (non-hook version).
  * Extracts filaments from all AMS units (regular and HT) and external spool.
  */
-export function buildLoadedFilaments(printerStatus: PrinterStatus | undefined): LoadedFilament[] {
+export function buildLoadedFilaments(
+  printerStatus: PrinterStatus | undefined,
+  assignments?: SpoolAssignment[],
+  printerId?: number,
+): LoadedFilament[] {
   const filaments: LoadedFilament[] = [];
   const amsExtruderMap = printerStatus?.ams_extruder_map;
   // Dual-nozzle detection. The backend always emits a 2-entry nozzles array
@@ -79,6 +83,45 @@ export function buildLoadedFilaments(printerStatus: PrinterStatus | undefined): 
     }
   }
 
+  // Some non-Bambu / non-AMS printers (for example Moonraker/Elegoo) do not
+  // report a `vt_tray` filament state. Printbuddy still has the user's explicit
+  // spool assignment in inventory, so surface that assignment as a selectable
+  // external slot in the print modal. Do not overwrite live printer-reported
+  // tray data when it exists; the assignment is only a fallback source for the
+  // mapping UI and spool usage tracking.
+  for (const assignment of assignments ?? []) {
+    if (printerId != null && assignment.printer_id !== printerId) continue;
+    const spool = assignment.spool;
+    if (!spool) continue;
+
+    const isExternal = assignment.ams_id === 255;
+    const globalTrayId = getGlobalTrayId(assignment.ams_id, assignment.tray_id, isExternal);
+    if (filaments.some((f) => f.globalTrayId === globalTrayId)) continue;
+
+    const color = normalizeColor(spool.rgba || assignment.fingerprint_color || '#CCCCCC');
+    const remaining = spool.label_weight > 0
+      ? Math.max(0, Math.round(((spool.label_weight - spool.weight_used) / spool.label_weight) * 100))
+      : -1;
+    const trayLabel = isExternal
+      ? (assignment.tray_id === 1 ? 'Ext-R' : 'External')
+      : formatSlotLabel(assignment.ams_id, assignment.tray_id, false, false);
+
+    filaments.push({
+      type: spool.material || assignment.fingerprint_type || '',
+      color,
+      colorName: spool.color_name || getColorName(color),
+      amsId: isExternal ? -1 : assignment.ams_id,
+      trayId: assignment.tray_id,
+      isHt: false,
+      isExternal,
+      label: trayLabel,
+      globalTrayId,
+      trayInfoIdx: spool.slicer_filament || '',
+      traySubBrands: spool.slicer_filament_name || spool.subtype || '',
+      remain: remaining,
+    });
+  }
+
   return filaments;
 }
 
@@ -102,10 +145,12 @@ export function computeAmsMapping(
   filamentReqs: { filaments: FilamentRequirement[] } | undefined,
   printerStatus: PrinterStatus | undefined,
   preferLowest?: boolean,
+  assignments?: SpoolAssignment[],
+  printerId?: number,
 ): number[] | undefined {
   if (!filamentReqs?.filaments || filamentReqs.filaments.length === 0) return undefined;
 
-  const loadedFilaments = buildLoadedFilaments(printerStatus);
+  const loadedFilaments = buildLoadedFilaments(printerStatus, assignments, printerId);
   if (loadedFilaments.length === 0) return undefined;
 
   // FTS routes any AMS slot to any extruder, so per-nozzle slot restriction
@@ -305,11 +350,13 @@ interface UseFilamentMappingResult {
  * Extracts filaments from all AMS units (regular and HT) and external spool.
  */
 export function useLoadedFilaments(
-  printerStatus: PrinterStatus | undefined
+  printerStatus: PrinterStatus | undefined,
+  assignments?: SpoolAssignment[],
+  printerId?: number,
 ): LoadedFilament[] {
   return useMemo(() => {
-    return buildLoadedFilaments(printerStatus);
-  }, [printerStatus]);
+    return buildLoadedFilaments(printerStatus, assignments, printerId);
+  }, [printerStatus, assignments, printerId]);
 }
 
 /**
@@ -325,8 +372,10 @@ export function useFilamentMapping(
   printerStatus: PrinterStatus | undefined,
   manualMappings: Record<number, number>,
   preferLowest?: boolean,
+  assignments?: SpoolAssignment[],
+  printerId?: number,
 ): UseFilamentMappingResult {
-  const loadedFilaments = useLoadedFilaments(printerStatus);
+  const loadedFilaments = useLoadedFilaments(printerStatus, assignments, printerId);
 
   // FTS routes any AMS slot to any extruder, so per-nozzle slot restriction
   // doesn't apply when it's installed (#1162).

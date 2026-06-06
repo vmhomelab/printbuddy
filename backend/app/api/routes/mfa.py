@@ -649,7 +649,7 @@ async def setup_totp(
 
     secret = pyotp.random_base32()
     totp = pyotp.TOTP(secret)
-    provisioning_uri = totp.provisioning_uri(name=current_user.username, issuer_name="Bambuddy")
+    provisioning_uri = totp.provisioning_uri(name=current_user.username, issuer_name="Printbuddy")
     qr_b64 = _generate_totp_qr_b64(provisioning_uri)
 
     if existing:
@@ -661,7 +661,7 @@ async def setup_totp(
 
     await db.commit()
 
-    return TOTPSetupResponse(secret=secret, qr_code_b64=qr_b64, issuer="Bambuddy")
+    return TOTPSetupResponse(secret=secret, qr_code_b64=qr_b64, issuer="Printbuddy")
 
 
 @router.post("/2fa/totp/enable", response_model=TOTPEnableResponse)
@@ -885,14 +885,14 @@ async def enable_email_otp(
         send_email(
             smtp_settings=smtp_settings,
             to_email=current_user.email,
-            subject="Verify your Bambuddy email address for 2FA",
+            subject="Verify your Printbuddy email address for 2FA",
             body_text=(
-                f"Your Bambuddy email 2FA setup code is: {code}\n\n"
+                f"Your Printbuddy email 2FA setup code is: {code}\n\n"
                 "Enter this code to confirm email-based two-factor authentication.\n"
                 "The code expires in 10 minutes."
             ),
             body_html=(
-                "<p>To enable <strong>email-based two-factor authentication</strong> on your Bambuddy account, "
+                "<p>To enable <strong>email-based two-factor authentication</strong> on your Printbuddy account, "
                 "enter the code below:</p>"
                 f"<h2 style='letter-spacing:4px'>{code}</h2>"
                 "<p>The code expires in <strong>10 minutes</strong>. "
@@ -1049,10 +1049,10 @@ async def send_email_otp(
         send_email(
             smtp_settings=smtp_settings,
             to_email=user.email,
-            subject="Your Bambuddy verification code",
-            body_text=f"Your Bambuddy login code is: {code}\n\nThis code expires in {UserOTPCode.OTP_TTL_MINUTES} minutes and can only be used once.",
+            subject="Your Printbuddy verification code",
+            body_text=f"Your Printbuddy login code is: {code}\n\nThis code expires in {UserOTPCode.OTP_TTL_MINUTES} minutes and can only be used once.",
             body_html=(
-                f"<p>Your <strong>Bambuddy</strong> login verification code is:</p>"
+                f"<p>Your <strong>Printbuddy</strong> login verification code is:</p>"
                 f"<h2 style='letter-spacing:4px'>{code}</h2>"
                 f"<p>This code expires in <strong>{UserOTPCode.OTP_TTL_MINUTES} minutes</strong> and can only be used once.</p>"
                 f"<p>If you did not request this code, you can safely ignore this email.</p>"

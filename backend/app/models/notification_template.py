@@ -118,7 +118,7 @@ DEFAULT_TEMPLATES = [
     {
         "event_type": "test",
         "name": "Test Notification",
-        "title_template": "Bambuddy Test",
+        "title_template": "Printbuddy Test",
         "body_template": "This is a test notification. If you see this, notifications are working!",
     },
     # Queue notifications

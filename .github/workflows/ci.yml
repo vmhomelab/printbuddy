@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
   workflow_dispatch:
     # Run on PRs targeting main, but skip for repo owner (runs local tests)
 
@@ -340,13 +340,13 @@ jobs:
 
       # Test 1: Docker Build
       - name: Build production image
-        run: docker build -t bambuddy:test .
+        run: docker build -t printbuddy:test .
 
       - name: Verify backend imports
-        run: docker run --rm bambuddy:test python -c "import backend.app.main; print('Backend imports OK')"
+        run: docker run --rm printbuddy:test python -c "import backend.app.main; print('Backend imports OK')"
 
       - name: Verify static files exist
-        run: docker run --rm bambuddy:test test -d /app/static
+        run: docker run --rm printbuddy:test test -d /app/static
 
       # Test 4: Integration Tests
       - name: Build integration container

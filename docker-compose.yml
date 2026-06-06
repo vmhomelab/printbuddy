@@ -1,11 +1,11 @@
 services:
-  bambuddy:
-    image: ghcr.io/maziggy/bambuddy:latest
+  printbuddy:
+    image: ghcr.io/vmhomelab/printbuddy:dev
     build: .
     # Usage:
     #   docker compose up -d          → pulls pre-built image from ghcr.io
     #   docker compose up -d --build  → builds locally from source
-    container_name: bambuddy
+    container_name: printbuddy
     # File ownership inside the data and logs volumes is normalised by the
     # entrypoint at startup (chowns to PUID:PGID and drops privileges via
     # gosu before running the app). Override PUID / PGID below to match
@@ -36,10 +36,10 @@ services:
     #  - "2024-2026:2024-2026"        # Virtual printer proprietary ports (A1/P1S)
     #  - "50000-50100:50000-50100"    # Virtual printer FTP passive data
     volumes:
-      - bambuddy_data:/app/data
-      - bambuddy_logs:/app/logs
+      - printbuddy_data:/app/data
+      - printbuddy_logs:/app/logs
       #
-      # OPTIONAL — only needed if you ALSO run a native install of Bambuddy
+      # OPTIONAL — only needed if you ALSO run a native install of Printbuddy
       # on the same host and want both installs to share the same Virtual
       # Printer CA certificate (so the slicer only has to trust one CA).
       # Most Docker-only users should leave this commented out — the
@@ -51,23 +51,23 @@ services:
       # Mount scheduled backup output to NAS or external storage
       # Backups default to DATA_DIR/backups/ inside the data volume.
       # Uncomment to store them externally (e.g. on a NAS share).
-      #- /path/to/nas/bambuddy-backups:/app/data/backups
+      #- /path/to/nas/printbuddy-backups:/app/data/backups
       #
       # Tailscale integration (optional): mount the host's tailscaled socket
-      # so Bambuddy can request Let's Encrypt certs for virtual printers via
+      # so Printbuddy can request Let's Encrypt certs for virtual printers via
       # your tailnet's MagicDNS name. Requires:
       #   1. Tailscale installed + `tailscale up` completed on the host
       #   2. `sudo tailscale set --operator=<container-user>` on the host so
       #      the user running the container can call `tailscale cert`
       # Without this mount, the Tailscale toggle in the UI is harmless —
-      # Bambuddy falls back to self-signed certs.
+      # Printbuddy falls back to self-signed certs.
       #- /var/run/tailscale/tailscaled.sock:/var/run/tailscale/tailscaled.sock
       #
       # Using a self signed certificate for Home Assistant
       # Add your certificate to certs directory and mount it to the container.
       # The certificate will be added to the system trust store on container startup.
       # Enable the system trust store with the USE_SYSTEM_TRUST_STORE env var to
-      # have Bambuddy trust the certificate.
+      # have Printbuddy trust the certificate.
       # - /path/to/certs:/usr/local/share/ca-certificates
     environment:
       - TZ=${TZ:-Europe/Berlin}
@@ -77,7 +77,7 @@ services:
       # show up as your user on the host. Defaults to 1000:1000.
       - PUID=${PUID:-1000}
       - PGID=${PGID:-1000}
-      # Port BamBuddy runs on (default: 8000)
+      # Port Printbuddy runs on (default: 8000)
       # Usage: PORT=8080 docker compose up -d
       - PORT=${PORT:-8000}
       # Virtual printer: Set to the Docker host's IP when using bridge mode (ports:).
@@ -86,14 +86,13 @@ services:
       #- VIRTUAL_PRINTER_PASV_ADDRESS=
       #
       # External PostgreSQL (optional — uses SQLite by default)
-      # Example: DATABASE_URL=postgresql+asyncpg://bambuddy:password@db-host:5432/bambuddy
+      # Example: DATABASE_URL=postgresql+asyncpg://printbuddy:password@db-host:5432/printbuddy
       #- DATABASE_URL=
       #
       # Slicer API sidecar (optional — Settings → "Use Slicer API" toggles this on).
       # Default points at the OrcaSlicer sidecar on the docker host; change if you
       # run the sidecar on a different host/port. The matching docker-compose.yml
-      # for the sidecars lives in the orca-slicer-api fork
-      # (https://github.com/maziggy/orca-slicer-api).
+      # for the sidecars lives under slicer-api/ in this repository.
       #- SLICER_API_URL=http://localhost:3003
       #
       # MFA at-rest encryption key (#1219). Auto-generated to
@@ -107,21 +106,21 @@ services:
     restart: unless-stopped
 
   # Optional: External PostgreSQL database
-  # Uncomment to run Postgres alongside Bambuddy (or use an external Postgres host)
+  # Uncomment to run Postgres alongside Printbuddy (or use an external Postgres host)
   #postgres:
   #  image: postgres:16-alpine
-  #  container_name: bambuddy-db
+  #  container_name: printbuddy-db
   #  restart: unless-stopped
   #  environment:
-  #    POSTGRES_USER: bambuddy
+  #    POSTGRES_USER: printbuddy
   #    POSTGRES_PASSWORD: changeme
-  #    POSTGRES_DB: bambuddy
+  #    POSTGRES_DB: printbuddy
   #  volumes:
-  #    - bambuddy_pgdata:/var/lib/postgresql/data
+  #    - printbuddy_pgdata:/var/lib/postgresql/data
   #  ports:
   #    - "5432:5432"
 
 volumes:
-  bambuddy_data:
-  bambuddy_logs:
-  #bambuddy_pgdata:
+  printbuddy_data:
+  printbuddy_logs:
+  #printbuddy_pgdata:

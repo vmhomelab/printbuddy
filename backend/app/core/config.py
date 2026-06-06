@@ -7,8 +7,7 @@ from pydantic_settings import BaseSettings
 
 # Application version - single source of truth
 APP_VERSION = "0.2.4.3"
-GITHUB_REPO = "maziggy/bambuddy"
-BUG_REPORT_RELAY_URL = os.environ.get("BUG_REPORT_RELAY_URL", "https://bambuddy.cool/api/bug-report")
+GITHUB_REPO = "vmhomelab/Printbuddy"
 
 # App directory - where the application is installed (for static files)
 _app_dir = Path(__file__).resolve().parent.parent.parent.parent
@@ -56,7 +55,7 @@ _db_path = _migrate_database() if not _external_db_url else None
 
 
 class Settings(BaseSettings):
-    app_name: str = "Bambuddy"
+    app_name: str = "Printbuddy"
     debug: bool = False  # Default to production mode
 
     # Paths
@@ -81,7 +80,7 @@ class Settings(BaseSettings):
     api_prefix: str = "/api/v1"
 
     # Slicer API sidecars. Defaults match the docker-compose.yml ports in the
-    # orca-slicer-api fork (https://github.com/maziggy/orca-slicer-api):
+    # slicer sidecar build context:
     #   OrcaSlicer  → port 3003 (default profile)
     #   BambuStudio → port 3001 (built locally via Dockerfile.bambu-studio)
     # The slice route picks which one based on the user's preferred_slicer
@@ -110,7 +109,6 @@ _INTENTIONAL_UNSETTINGS = {
     "DATABASE_URL",  # config.py (above)
     "LOG_DIR",  # config.py (above)
     "LOG_LEVEL",  # main.py logging setup
-    "BUG_REPORT_RELAY_URL",  # config.py (above)
 }
 
 _known_settings_fields = {f.upper() for f in settings.model_fields}

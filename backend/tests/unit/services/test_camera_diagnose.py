@@ -14,6 +14,7 @@ import pytest
 from backend.app.services.camera_diagnose import (
     _LIVE_FRAME_FRESHNESS_SECONDS,
     diagnose_camera,
+    diagnose_external_camera,
 )
 
 
@@ -221,6 +222,77 @@ class TestFirstFrameStage:
         assert result.overall_status == "ok"
         assert result.summary_code == "all_ok"
         assert all(s.status == "ok" for s in result.stages)
+
+
+class TestExternalCameraDiagnostic:
+    """External camera diagnostics must follow the same source that the
+    camera window uses. A configured MJPEG/RTSP URL should not fall back to
+    the model-derived Bambu ports 6000/322.
+    """
+
+    @pytest.mark.asyncio
+    async def test_mjpeg_url_reports_url_port_and_captures_external_frame(self):
+        opened = []
+
+        async def _tcp_ok(host, port):
+            opened.append((host, port))
+            writer = AsyncMock()
+            return AsyncMock(), writer
+
+        with (
+            patch("backend.app.services.camera_diagnose.asyncio.open_connection", new=_tcp_ok),
+            patch(
+                "backend.app.services.external_camera.capture_frame",
+                new_callable=AsyncMock,
+                return_value=b"\xff\xd8\xff\xd9",
+            ) as capture,
+        ):
+            result = await diagnose_external_camera(
+                "http://192.168.178.130/ipcam/mjpeg.cgi",
+                "mjpeg",
+                printer_id=1,
+            )
+
+        assert opened == [("192.168.178.130", 80)]
+        capture.assert_awaited_once_with(
+            "http://192.168.178.130/ipcam/mjpeg.cgi",
+            "mjpeg",
+            timeout=15,
+            snapshot_url=None,
+        )
+        assert result.overall_status == "ok"
+        assert result.summary_code == "all_ok"
+        assert result.protocol == "mjpeg"
+        assert result.port == 80
+        assert result.profile == "external"
+        assert [stage.status for stage in result.stages] == ["ok", "ok"]
+
+    @pytest.mark.asyncio
+    async def test_explicit_external_port_is_used_instead_of_bambu_camera_port(self):
+        opened = []
+
+        async def _tcp_ok(host, port):
+            opened.append((host, port))
+            writer = AsyncMock()
+            return AsyncMock(), writer
+
+        with (
+            patch("backend.app.services.camera_diagnose.asyncio.open_connection", new=_tcp_ok),
+            patch(
+                "backend.app.services.external_camera.capture_frame",
+                new_callable=AsyncMock,
+                return_value=b"\xff\xd8\xff\xd9",
+            ),
+        ):
+            result = await diagnose_external_camera(
+                "http://192.168.178.130:8081/ipcam/mjpeg.cgi",
+                "mjpeg",
+                printer_id=1,
+            )
+
+        assert opened == [("192.168.178.130", 8081)]
+        assert result.port == 8081
+        assert result.protocol == "mjpeg"
 
 
 class TestResultMetadata:

@@ -207,7 +207,8 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
       case 'telegram':
         return [
           { key: 'bot_token', label: 'Bot Token', placeholder: 'Bot token from @BotFather', type: 'password', required: true },
-          { key: 'chat_id', label: 'Chat ID', placeholder: 'Your chat or group ID', type: 'text', required: true },
+          { key: 'chat_id', label: 'Chat ID', placeholder: 'Your chat or group ID, e.g. -1001234567890', type: 'text', required: true },
+          { key: 'message_thread_id', label: 'Topic / Thread ID', placeholder: 'Optional forum topic ID, e.g. 17585', type: 'text', required: false },
         ];
       case 'email':
         return [

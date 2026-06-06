@@ -1,6 +1,6 @@
-# BamBuddy Installation Scripts
+# Printbuddy Installation Scripts
 
-Interactive installation scripts for BamBuddy with support for both native and Docker deployments.
+Interactive installation scripts for Printbuddy with support for both native and Docker deployments.
 
 ## Quick Start
 
@@ -8,12 +8,12 @@ Interactive installation scripts for BamBuddy with support for both native and D
 
 **Linux/macOS:**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/maziggy/bambuddy/main/install/docker-install.sh -o docker-install.sh && chmod +x docker-install.sh && ./docker-install.sh
+curl -fsSL https://raw.githubusercontent.com/vmhomelab/Printbuddy/main/install/docker-install.sh -o docker-install.sh && chmod +x docker-install.sh && ./docker-install.sh
 ```
 
 **Windows (Command Prompt or PowerShell):**
 ```cmd
-powershell -ExecutionPolicy Bypass -Command "iwr -useb https://raw.githubusercontent.com/maziggy/bambuddy/main/install/docker-install.ps1 -OutFile docker-install.ps1; .\docker-install.ps1"
+powershell -ExecutionPolicy Bypass -Command "iwr -useb https://raw.githubusercontent.com/vmhomelab/Printbuddy/main/install/docker-install.ps1 -OutFile docker-install.ps1; .\docker-install.ps1"
 ```
 
 > Requires Docker Desktop running. Printer auto-discovery is unavailable in Docker Desktop — add printers manually by IP.
@@ -22,7 +22,7 @@ powershell -ExecutionPolicy Bypass -Command "iwr -useb https://raw.githubusercon
 
 **Linux/macOS:**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/maziggy/bambuddy/main/install/install.sh -o install.sh && chmod +x install.sh && ./install.sh
+curl -fsSL https://raw.githubusercontent.com/vmhomelab/Printbuddy/main/install/install.sh -o install.sh && chmod +x install.sh && ./install.sh
 ```
 
 ---
@@ -42,7 +42,7 @@ curl -fsSL https://raw.githubusercontent.com/maziggy/bambuddy/main/install/insta
 
 ### `install.sh` (Linux/macOS)
 
-Installs BamBuddy with Python virtual environment and optional systemd/launchd service.
+Installs Printbuddy with Python virtual environment and optional systemd/launchd service.
 
 **Supported Systems:**
 - Debian/Ubuntu (apt)
@@ -53,7 +53,7 @@ Installs BamBuddy with Python virtual environment and optional systemd/launchd s
 
 **Options:**
 ```
---path PATH        Installation directory (default: /opt/bambuddy)
+--path PATH        Installation directory (default: /opt/printbuddy)
 --port PORT        Port to listen on (default: 8000)
 --tz TIMEZONE      Timezone (default: system timezone)
 --data-dir PATH    Data directory (default: INSTALL_PATH/data)
@@ -70,7 +70,7 @@ Installs BamBuddy with Python virtual environment and optional systemd/launchd s
 ./install.sh
 
 # Unattended with custom settings
-./install.sh --path /srv/bambuddy --port 3000 --tz America/New_York --yes
+./install.sh --path /srv/printbuddy --port 3000 --tz America/New_York --yes
 
 # Minimal unattended
 ./install.sh -y
@@ -85,11 +85,11 @@ Installs BamBuddy with Python virtual environment and optional systemd/launchd s
 
 ### `docker-install.sh` (Linux/macOS)
 
-Installs BamBuddy using Docker containers.
+Installs Printbuddy using Docker containers.
 
 **Options:**
 ```
---path PATH        Installation directory (default: ~/bambuddy)
+--path PATH        Installation directory (default: ~/printbuddy)
 --port PORT        Port to expose (default: 8000)
 --tz TIMEZONE      Timezone (default: system timezone)
 --build            Build from source instead of using pre-built image
@@ -102,7 +102,7 @@ Installs BamBuddy using Docker containers.
 ./docker-install.sh
 
 # Unattended with custom settings
-./docker-install.sh --path /srv/bambuddy --port 3000 --tz Europe/Berlin --yes
+./docker-install.sh --path /srv/printbuddy --port 3000 --tz Europe/Berlin --yes
 
 # Build from source
 ./docker-install.sh --build --yes
@@ -121,7 +121,7 @@ networking), and starts the container.
 
 **Parameters:**
 ```
--InstallPath PATH    Installation directory (default: %USERPROFILE%\bambuddy)
+-InstallPath PATH    Installation directory (default: %USERPROFILE%\printbuddy)
 -Port PORT           Port to expose (default: 8000)
 -TimeZone TZ         IANA timezone (default: derived from Get-TimeZone or UTC)
 -Build               Build from source instead of pulling pre-built image
@@ -135,7 +135,7 @@ networking), and starts the container.
 .\docker-install.ps1
 
 # Unattended
-.\docker-install.ps1 -InstallPath C:\bambuddy -Port 8080 -TimeZone Europe/Berlin -Yes
+.\docker-install.ps1 -InstallPath C:\printbuddy -Port 8080 -TimeZone Europe/Berlin -Yes
 
 # Build from source
 .\docker-install.ps1 -Build -Yes
@@ -155,7 +155,7 @@ All scripts support these configuration options:
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| Install Path | Where BamBuddy is installed | `/opt/bambuddy` (Linux/Docker) |
+| Install Path | Where Printbuddy is installed | `/opt/printbuddy` (Linux/Docker) |
 | Port | HTTP port for web interface | `8000` |
 | Timezone | Server timezone | System timezone or `UTC` |
 | Data Directory | Database and archives | `INSTALL_PATH/data` |
@@ -167,7 +167,7 @@ All scripts support these configuration options:
 
 ## Post-Installation
 
-### Accessing BamBuddy
+### Accessing Printbuddy
 
 After installation, open your browser to:
 ```
@@ -180,18 +180,18 @@ Or use the port you specified during installation.
 
 **Linux (systemd):**
 ```bash
-sudo systemctl status bambuddy    # Check status
-sudo systemctl start bambuddy     # Start
-sudo systemctl stop bambuddy      # Stop
-sudo systemctl restart bambuddy   # Restart
-sudo journalctl -u bambuddy -f    # View logs
+sudo systemctl status printbuddy    # Check status
+sudo systemctl start printbuddy     # Start
+sudo systemctl stop printbuddy      # Stop
+sudo systemctl restart printbuddy   # Restart
+sudo journalctl -u printbuddy -f    # View logs
 ```
 
 **macOS (launchd):**
 ```bash
-launchctl list | grep bambuddy                              # Check status
-launchctl load ~/Library/LaunchAgents/com.bambuddy.app.plist    # Start
-launchctl unload ~/Library/LaunchAgents/com.bambuddy.app.plist  # Stop
+launchctl list | grep printbuddy                              # Check status
+launchctl load ~/Library/LaunchAgents/com.printbuddy.app.plist    # Start
+launchctl unload ~/Library/LaunchAgents/com.printbuddy.app.plist  # Stop
 ```
 
 **Docker:**
@@ -207,7 +207,7 @@ docker compose logs -f      # View logs
 
 **Native installation:**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/maziggy/bambuddy/main/install/update.sh -o update.sh
+curl -fsSL https://raw.githubusercontent.com/vmhomelab/Printbuddy/main/install/update.sh -o update.sh
 chmod +x update.sh
 sudo ./update.sh
 ```
@@ -223,7 +223,7 @@ The updater performs:
 Useful environment overrides:
 ```bash
 # Typical native install defaults
-INSTALL_DIR=/opt/bambuddy SERVICE_NAME=bambuddy sudo ./update.sh
+INSTALL_DIR=/opt/printbuddy SERVICE_NAME=printbuddy sudo ./update.sh
 
 # Require backup to succeed (abort update if backup fails)
 BACKUP_MODE=require sudo ./update.sh
@@ -237,14 +237,14 @@ BAMBUDDY_API_KEY=bb_xxx BACKUP_MODE=require sudo ./update.sh
 
 **Docker (pre-built image):**
 ```bash
-cd ~/bambuddy
+cd ~/printbuddy
 docker compose pull
 docker compose up -d
 ```
 
 **Docker (from source):**
 ```bash
-cd ~/bambuddy
+cd ~/printbuddy
 git pull
 docker compose up -d --build
 ```
@@ -260,16 +260,16 @@ sudo ./install.sh
 ```
 
 ### Docker: Printer Discovery Not Working
-Docker Desktop for macOS doesn't support host networking. Add printers manually by IP address in the BamBuddy web interface.
+Docker Desktop for macOS doesn't support host networking. Add printers manually by IP address in the Printbuddy web interface.
 
 ### Service Won't Start
 Check logs for errors:
 ```bash
 # Linux
-sudo journalctl -u bambuddy -n 50
+sudo journalctl -u printbuddy -n 50
 
 # Docker
-docker compose logs bambuddy
+docker compose logs printbuddy
 ```
 
 ### Port Already in Use
@@ -297,6 +297,5 @@ sudo lsof -i :8000  # Linux/macOS
 
 ## Support
 
-- **Documentation:** https://wiki.bambuddy.cool
-- **Discord:** https://discord.gg/aFS3ZfScHM
-- **Issues:** https://github.com/maziggy/bambuddy/issues
+- **Documentation:** https://github.com/vmhomelab/Printbuddy#readme
+- **Issues:** https://github.com/vmhomelab/Printbuddy/issues

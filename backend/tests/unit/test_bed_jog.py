@@ -138,6 +138,79 @@ class TestBedJogAPI:
             assert "G1 Z-10.00" in sent_gcode
 
 
+class TestAxisJogAPI:
+    @pytest.mark.asyncio
+    async def test_axis_jog_rejects_invalid_axis(self, async_client: AsyncClient, printer_factory):
+        printer = await printer_factory(name="Klipper")
+        response = await async_client.post(f"/api/v1/printers/{printer.id}/axis-jog?axis=e&distance=10")
+        assert response.status_code == 400
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("axis", "distance", "expected"),
+        [("x", 10, "G1 X10.00 F3000"), ("y", -5, "G1 Y-5.00 F3000"), ("z", 1, "G1 Z1.00 F600")],
+    )
+    async def test_axis_jog_sends_relative_move(
+        self, async_client: AsyncClient, printer_factory, axis, distance, expected
+    ):
+        printer = await printer_factory(name="Klipper", provider="klipper", model="Klipper/Moonraker")
+        mock_client = MagicMock()
+        mock_client.send_gcode.return_value = True
+        with patch("backend.app.api.routes.printers.printer_manager") as mock_pm:
+            mock_pm.get_client.return_value = mock_client
+            response = await async_client.post(
+                f"/api/v1/printers/{printer.id}/axis-jog?axis={axis}&distance={distance}"
+            )
+            assert response.status_code == 200
+            sent_gcode = mock_client.send_gcode.call_args[0][0]
+            assert sent_gcode.splitlines() == ["G91", expected, "G90"]
+
+
+class TestDisableSteppersAPI:
+    @pytest.mark.asyncio
+    async def test_disable_steppers_uses_provider_gcode_transport(self, async_client: AsyncClient, printer_factory):
+        printer = await printer_factory(name="Prusa MK4S", provider="prusalink", model="Prusa MK4S")
+        mock_client = MagicMock()
+        mock_client.send_gcode.return_value = True
+        with patch("backend.app.api.routes.printers.printer_manager") as mock_pm:
+            mock_pm.get_client.return_value = mock_client
+            response = await async_client.post(f"/api/v1/printers/{printer.id}/disable-steppers")
+            assert response.status_code == 200
+            mock_client.send_gcode.assert_called_once_with("M84")
+
+
+class TestTemperatureControlAPI:
+    @pytest.mark.asyncio
+    async def test_set_nozzle_temperature_uses_provider_helper(self, async_client: AsyncClient, printer_factory):
+        printer = await printer_factory(name="Klipper", provider="klipper", model="Klipper/Moonraker")
+        mock_client = MagicMock()
+        mock_client.set_nozzle_temperature.return_value = True
+        with patch("backend.app.api.routes.printers.printer_manager") as mock_pm:
+            mock_pm.get_client.return_value = mock_client
+            response = await async_client.post(f"/api/v1/printers/{printer.id}/temperature/nozzle?target=215")
+            assert response.status_code == 200
+            mock_client.set_nozzle_temperature.assert_called_once_with(215)
+
+    @pytest.mark.asyncio
+    async def test_set_bed_temperature_uses_provider_helper(self, async_client: AsyncClient, printer_factory):
+        printer = await printer_factory(name="Klipper", provider="klipper", model="Klipper/Moonraker")
+        mock_client = MagicMock()
+        mock_client.set_bed_temperature.return_value = True
+        with patch("backend.app.api.routes.printers.printer_manager") as mock_pm:
+            mock_pm.get_client.return_value = mock_client
+            response = await async_client.post(f"/api/v1/printers/{printer.id}/temperature/bed?target=60")
+            assert response.status_code == 200
+            mock_client.set_bed_temperature.assert_called_once_with(60)
+
+    @pytest.mark.asyncio
+    async def test_temperature_limits_are_validated(self, async_client: AsyncClient, printer_factory):
+        printer = await printer_factory(name="Klipper")
+        nozzle = await async_client.post(f"/api/v1/printers/{printer.id}/temperature/nozzle?target=400")
+        bed = await async_client.post(f"/api/v1/printers/{printer.id}/temperature/bed?target=160")
+        assert nozzle.status_code == 400
+        assert bed.status_code == 400
+
+
 class TestHomeAxesAPI:
     @pytest.mark.asyncio
     async def test_home_axes_not_found(self, async_client: AsyncClient):

@@ -1,97 +1,36 @@
 # Security Policy
 
+The Printbuddy maintainers take security seriously. We appreciate responsible disclosure and will handle security reports with care.
+
 ## Reporting a Vulnerability
 
-The Bambuddy team takes security seriously. We appreciate your efforts to responsibly disclose your findings.
+Please report security vulnerabilities privately through GitHub Security Advisories:
 
-### How to Report
+1. Go to the [Security tab](https://github.com/vmhomelab/Printbuddy/security)
+2. Click **Report a vulnerability**
+3. Include as much detail as possible
 
-**Please DO NOT report security vulnerabilities through public GitHub issues.**
+Please do **not** open public issues for vulnerabilities.
 
-Instead, please report them via email to:
+## What to Include
 
-**security@bambuddy.cool**
-
-Or use GitHub's private vulnerability reporting feature:
-1. Go to the [Security tab](https://github.com/maziggy/bambuddy/security)
-2. Click "Report a vulnerability"
-3. Fill out the form with details
-
-### What to Include
-
-Please include the following information in your report:
-
-- **Description** of the vulnerability
-- **Steps to reproduce** the issue
-- **Affected versions** of Bambuddy
-- **Potential impact** of the vulnerability
-- **Any suggested fixes** (if you have them)
-
-### What to Expect
-
-- **Acknowledgment**: We will acknowledge receipt of your report within 48 hours
-- **Assessment**: We will investigate and validate the issue within 7 days
-- **Updates**: We will keep you informed of our progress
-- **Resolution**: We aim to release a fix within 30 days for critical issues
-- **Credit**: We will credit you in our release notes (unless you prefer to remain anonymous)
+- Affected Printbuddy version or commit
+- Installation method: Docker, native install, Home Assistant add-on, or source checkout
+- A clear description of the vulnerability and impact
+- Reproduction steps or proof of concept, if safe to share
+- Relevant logs, screenshots, or configuration snippets with secrets removed
 
 ## Supported Versions
 
-| Version | Supported          |
-| ------- | ------------------ |
-| 0.1.x   | :white_check_mark: |
-| 0.2.x   | :white_check_mark: |
+Security fixes are applied to the active `main` release line. Development fixes land on `dev` first when testing is required, then are merged to `main` before release.
 
-## Security Considerations
+## Network and Credential Notes
 
-### Network Security
+Printbuddy communicates with printers and integrations over your local network. Treat the instance like any other self-hosted service that can reach trusted LAN devices:
 
-Bambuddy communicates with your printers over your local network using:
+- Run it only on a trusted network or behind your own access controls.
+- Use authentication for shared or exposed instances.
+- Keep API keys, printer access codes, MQTT credentials, SMTP credentials, and cloud tokens private.
+- Do not publish support bundles without reviewing them for environment-specific details.
 
-- **MQTT over TLS** (port 8883) - Encrypted printer communication
-- **FTPS** (port 990) - Encrypted file transfers
-
-### Recommendations
-
-1. **Run on trusted network**: Bambuddy should only be accessible on your local network
-2. **Use reverse proxy**: If exposing to the internet, use a reverse proxy with HTTPS
-3. **Keep updated**: Always run the latest version for security patches
-4. **Secure API keys**: Treat API keys like passwords; don't share them publicly
-5. **Developer Mode**: Use your printer's Developer Mode access code; don't share it
-
-### Known Security Features
-
-- API key authentication for external access
-- No default credentials
-- Local-only by default (no cloud dependency)
-- TLS encryption for printer communication
-
-## Scope
-
-The following are **in scope** for security reports:
-
-- Authentication/authorization bypasses
-- Remote code execution
-- SQL injection
-- Cross-site scripting (XSS)
-- Cross-site request forgery (CSRF)
-- Sensitive data exposure
-- Insecure direct object references
-
-The following are **out of scope**:
-
-- Issues in dependencies (report to the upstream project)
-- Social engineering attacks
-- Physical attacks
-- Denial of service (DoS) attacks
-- Issues requiring physical access to the server
-
-## Acknowledgments
-
-We thank the following individuals for responsibly disclosing security issues:
-
-*No security issues have been reported yet.*
-
----
-
-Thank you for helping keep Bambuddy and its users safe!
+Thank you for helping keep Printbuddy and its users safe.

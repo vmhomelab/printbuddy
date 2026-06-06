@@ -693,12 +693,12 @@ export function SpoolBuddyDashboard() {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
               <p className="text-sm text-amber-200/80">
-                {t('spoolbuddy.modal.quickAddHint', 'For best results, add the spool in the Bambuddy web interface first (with material, color, brand), then use "Assign Spool" here to assign the NFC tag.')}
+                {t('spoolbuddy.modal.quickAddHint', 'For best results, add the spool in the Printbuddy web interface first (with material, color, brand), then use "Assign Spool" here to assign the NFC tag.')}
               </p>
             </div>
 
             <p className="text-sm text-zinc-400 mb-1">
-              {t('spoolbuddy.modal.quickAddDesc', 'This will create a basic PLA spool entry with this NFC tag. You can edit the details later in Bambuddy.')}
+              {t('spoolbuddy.modal.quickAddDesc', 'This will create a basic PLA spool entry with this NFC tag. You can edit the details later in Printbuddy.')}
             </p>
             <p className="text-xs text-zinc-500 font-mono mb-5">{displayedTagId}</p>
 

@@ -6,6 +6,7 @@ import { Layers, Clock, Timer, Printer } from 'lucide-react';
 import { api, withStreamToken } from '../api/client';
 import type { PrinterStatus } from '../api/client';
 import { formatDuration, formatETA, type TimeFormat } from '../utils/date';
+import { appAssetPath } from '../utils/assetPaths';
 
 type TFunction = (key: string, options?: Record<string, unknown>) => string;
 
@@ -172,7 +173,7 @@ export function StreamOverlayPage() {
   useEffect(() => {
     document.title = printer ? `${printer.name} - ${t('streamOverlay.title')}` : t('streamOverlay.title');
     return () => {
-      document.title = 'Bambuddy';
+      document.title = 'Printbuddy';
     };
   }, [printer, t]);
 
@@ -217,16 +218,16 @@ export function StreamOverlayPage() {
         />
       )}
 
-      {/* Bambuddy logo - top right */}
+      {/* Printbuddy logo - top right */}
       <a
-        href="https://github.com/maziggy/bambuddy"
+        href="https://github.com/vmhomelab/Printbuddy"
         target="_blank"
         rel="noopener noreferrer"
         className="absolute top-4 right-4 z-10"
       >
         <img
-          src="/img/bambuddy_logo_dark_transparent.png"
-          alt="Bambuddy"
+          src={appAssetPath('/img/printbuddy_logo.svg')}
+          alt="Printbuddy"
           className={`${sizes.logoHeight} object-contain drop-shadow-lg hover:scale-105 transition-transform`}
         />
       </a>

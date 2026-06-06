@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-INSTALL_DIR="${INSTALL_DIR:-/opt/bambuddy}"
-SERVICE_NAME="${SERVICE_NAME:-com.bambuddy.app}"
-PLIST_PATH="${PLIST_PATH:-$HOME/Library/LaunchAgents/com.bambuddy.app.plist}"
+INSTALL_DIR="${INSTALL_DIR:-/opt/printbuddy}"
+SERVICE_NAME="${SERVICE_NAME:-com.printbuddy.app}"
+PLIST_PATH="${PLIST_PATH:-$HOME/Library/LaunchAgents/com.printbuddy.app.plist}"
 BRANCH="${BRANCH:-}"
 VENV_PIP="${VENV_PIP:-$INSTALL_DIR/venv/bin/pip}"
 FRONTEND_DIR="${FRONTEND_DIR:-$INSTALL_DIR/frontend}"
@@ -19,15 +19,15 @@ CODE_UPDATED=0
 old_commit=""
 
 log() {
-  printf '[bambuddy-update] %s\n' "$*"
+  printf '[printbuddy-update] %s\n' "$*"
 }
 
 warn() {
-  printf '[bambuddy-update] WARNING: %s\n' "$*" >&2
+  printf '[printbuddy-update] WARNING: %s\n' "$*" >&2
 }
 
 die() {
-  printf '[bambuddy-update] ERROR: %s\n' "$*" >&2
+  printf '[printbuddy-update] ERROR: %s\n' "$*" >&2
   exit 1
 }
 
@@ -41,7 +41,7 @@ cleanup_old_backups() {
 
   [ "$max_count" -gt 0 ] || return 0
 
-  mapfile -t backup_files < <(ls -1t "$BACKUP_DIR"/bambuddy-backup-*.zip 2>/dev/null || true)
+  mapfile -t backup_files < <(ls -1t "$BACKUP_DIR"/printbuddy-backup-*.zip 2>/dev/null || true)
   if [ "${#backup_files[@]}" -le "$max_count" ]; then
     return 0
   fi
@@ -93,7 +93,7 @@ create_backup() {
 
   mkdir -p "$BACKUP_DIR"
   ts="$(date +%Y%m%d-%H%M%S)"
-  backup_file="$BACKUP_DIR/bambuddy-backup-$ts.zip"
+  backup_file="$BACKUP_DIR/printbuddy-backup-$ts.zip"
 
   [ -n "$BAMBUDDY_API_KEY" ] && auth_args=(-H "X-API-Key: $BAMBUDDY_API_KEY")
 
@@ -153,14 +153,14 @@ log "Current commit: ${old_commit:-unknown}"
 log "Remote commit: ${remote_commit:-unknown}"
 
 if git diff --quiet HEAD "origin/$BRANCH"; then
-  log "You are already running the latest version of Bambuddy."
+  log "You are already running the latest version of Printbuddy."
   read -r -p "Do you want to run the update process anyway? [y/N]: " run_anyway
   case "${run_anyway:-}" in
     y|Y|yes|YES) ;;
     *) exit 0 ;;
   esac
 else
-  read -r -p "An update for Bambuddy is available. Install now? [y/N]: " install_now
+  read -r -p "An update for Printbuddy is available. Install now? [y/N]: " install_now
   case "${install_now:-}" in
     y|Y|yes|YES) ;;
     *) exit 0 ;;

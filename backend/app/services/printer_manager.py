@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.printer import Printer
 from backend.app.services.bambu_mqtt import BambuMQTTClient, MQTTLogEntry, PrinterState, get_stage_name
+from backend.app.services.printer_providers.factory import create_printer_client, normalize_provider
 
 logger = logging.getLogger(__name__)
 
@@ -402,20 +403,34 @@ class PrinterManager:
             if self._on_drying_complete:
                 self._schedule_async(self._on_drying_complete(printer_id, ams_id))
 
-        client = BambuMQTTClient(
-            ip_address=printer.ip_address,
-            serial_number=printer.serial_number,
-            access_code=printer.access_code,
-            model=printer.model,
-            on_state_change=on_state_change,
-            on_print_start=on_print_start,
-            on_print_complete=on_print_complete,
-            on_ams_change=on_ams_change,
-            on_layer_change=on_layer_change,
-            on_bed_temp_update=on_bed_temp_update,
-            on_drying_complete=on_drying_complete,
-            on_print_running_observed=on_print_running_observed,
-        )
+        provider = normalize_provider(getattr(printer, "provider", None))
+        if provider == "bambu":
+            client = BambuMQTTClient(
+                ip_address=printer.ip_address,
+                serial_number=printer.serial_number,
+                access_code=printer.access_code,
+                model=printer.model,
+                on_state_change=on_state_change,
+                on_print_start=on_print_start,
+                on_print_complete=on_print_complete,
+                on_ams_change=on_ams_change,
+                on_layer_change=on_layer_change,
+                on_bed_temp_update=on_bed_temp_update,
+                on_drying_complete=on_drying_complete,
+                on_print_running_observed=on_print_running_observed,
+            )
+        else:
+            client = create_printer_client(
+                printer,
+                on_state_change=on_state_change,
+                on_print_start=on_print_start,
+                on_print_complete=on_print_complete,
+                on_ams_change=on_ams_change,
+                on_layer_change=on_layer_change,
+                on_bed_temp_update=on_bed_temp_update,
+                on_drying_complete=on_drying_complete,
+                on_print_running_observed=on_print_running_observed,
+            )
 
         client.connect()
         self._clients[printer_id] = client
@@ -645,17 +660,46 @@ class PrinterManager:
         ip_address: str,
         serial_number: str,
         access_code: str,
+        provider: str = "bambu",
+        api_url: str | None = None,
+        auth_token: str | None = None,
     ) -> dict:
         """Test connection to a printer without persisting.
 
-        Polls for up to PROBE_TIMEOUT_SECONDS and tears the probe client down
-        off-loop. The teardown matters: `client.disconnect()` ends in paho's
-        `loop_stop()` which `join()`s the network thread — if the thread is
-        still mid-TLS-handshake to a slow printer, that join blocks the
-        asyncio event loop and every other HTTP request queues behind it. The
-        original synchronous teardown produced the #1445 "Docker container
-        hangs" symptom on P1S when called from POST /printers/.
+        Bambu uses the LAN MQTT probe. Klipper/Mainsail use Moonraker's HTTP API
+        (normally port 7125): Mainsail/Fluidd are UIs, Moonraker is the control
+        API they talk to. Blocking provider clients are always called off-loop so
+        a cold TLS or HTTP handshake cannot stall the FastAPI event loop.
         """
+        provider_name = normalize_provider(provider)
+        if provider_name != "bambu":
+            probe_printer = type(
+                "ProbePrinter",
+                (),
+                {
+                    "provider": provider_name,
+                    "api_url": api_url,
+                    "auth_token": auth_token,
+                    "ip_address": ip_address,
+                },
+            )()
+            client = create_printer_client(probe_printer)
+            try:
+                await asyncio.to_thread(client.connect)
+                model_label = "PrusaLink" if provider_name == "prusalink" else "Klipper/Moonraker"
+                return {
+                    "success": True,
+                    "state": getattr(getattr(client, "state", None), "state", "connected"),
+                    "model": model_label,
+                }
+            except Exception as exc:
+                model_label = "PrusaLink" if provider_name == "prusalink" else "Klipper/Moonraker"
+                return {"success": False, "state": None, "model": model_label, "error": type(exc).__name__}
+            finally:
+                disconnect = getattr(client, "disconnect", None)
+                if disconnect:
+                    await asyncio.to_thread(disconnect)
+
         client = BambuMQTTClient(
             ip_address=ip_address,
             serial_number=serial_number,
@@ -1051,4 +1095,12 @@ async def init_printer_connections(db: AsyncSession):
     printers = result.scalars().all()
 
     for printer in printers:
-        await printer_manager.connect_printer(printer)
+        try:
+            await printer_manager.connect_printer(printer)
+        except Exception as exc:  # noqa: BLE001 - one offline saved printer must not abort app startup
+            logger.warning(
+                "Skipping saved printer %s during startup: %s",
+                getattr(printer, "name", getattr(printer, "id", "unknown")),
+                exc,
+                exc_info=True,
+            )

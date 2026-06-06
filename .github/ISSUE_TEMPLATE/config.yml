@@ -1,11 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: Printer won't connect or won't print?
-    url: https://wiki.bambuddy.cool/reference/troubleshooting/
+    url: https://github.com/vmhomelab/Printbuddy/blob/main/DEPLOYMENT.md#troubleshooting
     about: Most connection and printing problems are setup issues. Check the troubleshooting guide and run the in-app Connection Diagnostic (printer card or System page) before opening an issue.
   - name: Documentation
-    url: https://wiki.bambuddy.cool/
-    about: Setup guides, feature documentation, and reference.
-  - name: Community Forum
-    url: https://forum.bambuddy.cool
-    about: Ask questions and share ideas with the community.
+    url: https://github.com/vmhomelab/Printbuddy#readme
+    about: Setup guides, feature documentation, and reference for Printbuddy.

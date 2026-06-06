@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
 import { useQueries } from '@tanstack/react-query';
 import { api } from '../api/client';
-import type { PrinterStatus, Printer } from '../api/client';
+import type { PrinterStatus, Printer, SpoolAssignment } from '../api/client';
 import {
   buildLoadedFilaments,
   computeAmsMapping,
@@ -194,10 +194,12 @@ function computeMappingWithOverrides(
   printerStatus: PrinterStatus | undefined,
   manualMappings: Record<number, number>,
   preferLowest?: boolean,
+  assignments?: SpoolAssignment[],
+  printerId?: number,
 ): number[] | undefined {
   if (!filamentReqs?.filaments || filamentReqs.filaments.length === 0) return undefined;
 
-  const loadedFilaments = buildLoadedFilaments(printerStatus);
+  const loadedFilaments = buildLoadedFilaments(printerStatus, assignments, printerId);
   if (loadedFilaments.length === 0) return undefined;
 
   const usedTrayIds = new Set<number>(Object.values(manualMappings));
@@ -290,6 +292,7 @@ export function useMultiPrinterFilamentMapping(
   perPrinterConfigs: Record<number, PerPrinterConfig>,
   setPerPrinterConfigs: React.Dispatch<React.SetStateAction<Record<number, PerPrinterConfig>>>,
   preferLowest?: boolean,
+  assignments?: SpoolAssignment[],
 ): UseMultiPrinterFilamentMappingResult {
   // Fetch printer status for all selected printers in parallel
   const statusQueries = useQueries({
@@ -309,11 +312,11 @@ export function useMultiPrinterFilamentMapping(
       const printer = printers?.find((p) => p.id === printerId);
       const printerName = printer?.name || `Printer ${printerId}`;
 
-      const loadedFilaments = buildLoadedFilaments(printerStatus);
+      const loadedFilaments = buildLoadedFilaments(printerStatus, assignments, printerId);
       const config = perPrinterConfigs[printerId] || DEFAULT_PRINTER_CONFIG;
 
       // Compute auto mapping for this printer
-      const autoMapping = computeAmsMapping(filamentReqs, printerStatus, preferLowest);
+      const autoMapping = computeAmsMapping(filamentReqs, printerStatus, preferLowest, assignments, printerId);
 
       // Determine which mappings to use:
       // If printer has override (useDefault=false), use its custom mappings
@@ -323,7 +326,7 @@ export function useMultiPrinterFilamentMapping(
         : defaultMappings;
 
       // Compute final mapping with overrides
-      const finalMapping = computeMappingWithOverrides(filamentReqs, printerStatus, effectiveMappings, preferLowest);
+      const finalMapping = computeMappingWithOverrides(filamentReqs, printerStatus, effectiveMappings, preferLowest, assignments, printerId);
 
       // Compute match details
       const matchDetails = computeMatchDetails(
@@ -349,7 +352,7 @@ export function useMultiPrinterFilamentMapping(
         config,
       };
     });
-  }, [selectedPrinterIds, statusQueries, printers, filamentReqs, perPrinterConfigs, defaultMappings, preferLowest]);
+  }, [selectedPrinterIds, statusQueries, printers, filamentReqs, perPrinterConfigs, defaultMappings, preferLowest, assignments]);
 
   const isLoading = statusQueries.some((q) => q.isLoading);
 
@@ -370,7 +373,7 @@ export function useMultiPrinterFilamentMapping(
     if (!result || !result.status || !filamentReqs?.filaments) return;
 
     // Compute optimal mapping for this printer
-    const autoMapping = computeAmsMapping(filamentReqs, result.status, preferLowest);
+    const autoMapping = computeAmsMapping(filamentReqs, result.status, preferLowest, assignments, printerId);
     if (!autoMapping) return;
 
     // Convert autoMapping array to manualMappings record

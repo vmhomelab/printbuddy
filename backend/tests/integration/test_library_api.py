@@ -1141,6 +1141,38 @@ class TestPrintFileUploadValidation:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_library_allows_raw_gcode_when_target_printer_is_non_bambu(
+        self, async_client: AsyncClient, db_session, printer_factory
+    ):
+        """Print-button uploads carry printer context so Klipper/Prusa raw
+        G-code is not rejected by the Bambu-only .gcode.3mf guard."""
+        printer = await printer_factory(provider="fluidd", model="Elegoo Neptune 4 Pro")
+        files = {"file": ("neptune_plate.gcode", b"; raw gcode\nG28\n", "application/octet-stream")}
+        response = await async_client.post(
+            "/api/v1/library/files",
+            files=files,
+            params={"target_printer_id": printer.id},
+        )
+        assert response.status_code == 200
+        assert response.json()["filename"] == "neptune_plate.gcode"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_library_rejects_raw_gcode_when_target_printer_is_bambu(
+        self, async_client: AsyncClient, db_session, printer_factory
+    ):
+        printer = await printer_factory(provider="bambu", model="X1C")
+        files = {"file": ("plate_1.gcode", b"; raw gcode\nG28\n", "application/octet-stream")}
+        response = await async_client.post(
+            "/api/v1/library/files",
+            files=files,
+            params={"target_printer_id": printer.id},
+        )
+        assert response.status_code == 400
+        assert "gcode.3mf" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_library_rejects_non_zip_3mf_upload(self, async_client: AsyncClient, db_session):
         """A ``.3mf`` upload whose body isn't a zip is rejected — covers
         raw gcode renamed to .3mf, corrupted downloads, etc."""

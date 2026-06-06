@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-INSTALL_DIR="${INSTALL_DIR:-/opt/bambuddy}"
-SERVICE_NAME="${SERVICE_NAME:-bambuddy}"
+INSTALL_DIR="${INSTALL_DIR:-/opt/printbuddy}"
+SERVICE_NAME="${SERVICE_NAME:-printbuddy}"
 BRANCH="${BRANCH:-}"
 VENV_PIP="${VENV_PIP:-$INSTALL_DIR/venv/bin/pip}"
 FRONTEND_DIR="${FRONTEND_DIR:-$INSTALL_DIR/frontend}"
@@ -18,15 +18,15 @@ CODE_UPDATED=0
 old_commit=""
 
 log() {
-  printf '[bambuddy-update] %s\n' "$*"
+  printf '[printbuddy-update] %s\n' "$*"
 }
 
 warn() {
-  printf '[bambuddy-update] WARNING: %s\n' "$*" >&2
+  printf '[printbuddy-update] WARNING: %s\n' "$*" >&2
 }
 
 die() {
-  printf '[bambuddy-update] ERROR: %s\n' "$*" >&2
+  printf '[printbuddy-update] ERROR: %s\n' "$*" >&2
   exit 1
 }
 
@@ -40,7 +40,7 @@ cleanup_old_backups() {
 
   [ "$max_count" -gt 0 ] || return 0
 
-  mapfile -t backup_files < <(ls -1t "$BACKUP_DIR"/bambuddy-backup-*.zip 2>/dev/null || true)
+  mapfile -t backup_files < <(ls -1t "$BACKUP_DIR"/printbuddy-backup-*.zip 2>/dev/null || true)
   if [ "${#backup_files[@]}" -le "$max_count" ]; then
     return 0
   fi
@@ -88,7 +88,7 @@ create_backup() {
 
   mkdir -p "$BACKUP_DIR"
   ts="$(date +%Y%m%d-%H%M%S)"
-  backup_file="$BACKUP_DIR/bambuddy-backup-$ts.zip"
+  backup_file="$BACKUP_DIR/printbuddy-backup-$ts.zip"
 
   [ -n "$BAMBUDDY_API_KEY" ] && auth_args=(-H "X-API-Key: $BAMBUDDY_API_KEY")
 
@@ -125,25 +125,25 @@ require_cmd curl
 cd "$INSTALL_DIR"
 if [ ! -d .git ]; then
   cat >&2 <<EOF
-[bambuddy-update] ERROR: No .git directory found in $INSTALL_DIR.
+[printbuddy-update] ERROR: No .git directory found in $INSTALL_DIR.
 
 This update script requires a git-based install. If you installed by
 downloading a ZIP or tarball from GitHub, reinstall from scratch:
 
   1. Back up your data:
        sudo systemctl stop $SERVICE_NAME
-       sudo tar czf ~/bambuddy-backup.tgz -C $INSTALL_DIR \\
-         data bambuddy.db bambuddy.db-shm bambuddy.db-wal \\
+       sudo tar czf ~/printbuddy-backup.tgz -C $INSTALL_DIR \\
+         data printbuddy.db printbuddy.db-shm printbuddy.db-wal \\
          virtual_printer archive projects icons .env 2>/dev/null || true
 
   2. Remove the old install and reinstall via install.sh:
        sudo rm -rf $INSTALL_DIR
-       curl -fsSL https://raw.githubusercontent.com/maziggy/bambuddy/main/install/install.sh \\
+       curl -fsSL https://raw.githubusercontent.com/vmhomelab/Printbuddy/main/install/install.sh \\
          -o /tmp/install.sh && sudo bash /tmp/install.sh --path $INSTALL_DIR
 
   3. Restore your data:
        sudo systemctl stop $SERVICE_NAME
-       sudo tar xzf ~/bambuddy-backup.tgz -C $INSTALL_DIR
+       sudo tar xzf ~/printbuddy-backup.tgz -C $INSTALL_DIR
        sudo systemctl start $SERVICE_NAME
 EOF
   exit 1
@@ -169,14 +169,14 @@ log "Current commit: ${old_commit:-unknown}"
 log "Remote commit: ${remote_commit:-unknown}"
 
 if git diff --quiet HEAD "origin/$BRANCH"; then
-  log "You are already running the latest version of Bambuddy."
+  log "You are already running the latest version of Printbuddy."
   read -r -p "Do you want to run the update process anyway? [y/N]: " run_anyway
   case "${run_anyway:-}" in
     y|Y|yes|YES) ;;
     *) exit 0 ;;
   esac
 else
-  read -r -p "An update for Bambuddy is available. Install now? [y/N]: " install_now
+  read -r -p "An update for Printbuddy is available. Install now? [y/N]: " install_now
   case "${install_now:-}" in
     y|Y|yes|YES) ;;
     *) exit 0 ;;

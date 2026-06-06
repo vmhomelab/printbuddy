@@ -1039,7 +1039,7 @@ async def restore_backup(
             await init_db()
 
             logger.info("Restore complete - restart required")
-            message = "Backup restored successfully. Please restart Bambuddy for changes to take effect."
+            message = "Backup restored successfully. Please restart Printbuddy for changes to take effect."
             if skipped_dirs:
                 message += f" Note: Some directories could not be restored ({', '.join(skipped_dirs)})."
             return {

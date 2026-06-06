@@ -4,15 +4,14 @@ import { useMutation } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api/client';
 import { useToast } from '../contexts/ToastContext';
-import { useTheme } from '../contexts/ThemeContext';
 import { useAuth } from '../contexts/AuthContext';
 import { Info } from 'lucide-react';
+import { appAssetPath } from '../utils/assetPaths';
 
 export function SetupPage() {
   const navigate = useNavigate();
   const { t } = useTranslation();
   const { showToast } = useToast();
-  const { mode } = useTheme();
   const { refreshAuth } = useAuth();
   const [authEnabled, setAuthEnabled] = useState(false);
   const [adminUsername, setAdminUsername] = useState('');
@@ -77,12 +76,20 @@ export function SetupPage() {
     <div className="min-h-screen flex items-center justify-center bg-bambu-dark p-4">
       <div className="max-w-md w-full space-y-8 p-8 bg-gradient-to-br from-bambu-card to-bambu-dark-secondary rounded-xl border border-bambu-dark-tertiary shadow-lg">
         <div className="text-center">
-          <div className="flex items-center justify-center mb-6">
+          <div className="flex items-center justify-center gap-3 mb-6" aria-label="Printbuddy">
             <img
-              src={mode === 'dark' ? '/img/bambuddy_logo_dark_transparent.png' : '/img/bambuddy_logo_light.png'}
-              alt="Bambuddy"
-              className="h-16"
+              src={appAssetPath('/img/printbuddy_icon.png')}
+              alt="Printbuddy app icon"
+              className="h-12 w-12 rounded-xl object-contain"
             />
+            <div className="text-left leading-none">
+              <div className="text-2xl font-extrabold tracking-tight text-white">
+                Print<span className="text-bambu-green-light">buddy</span>
+              </div>
+              <div className="mt-1 text-[0.55rem] font-semibold uppercase tracking-[0.22em] text-bambu-gray">
+                Bambu Lab · Klipper · Mainsail
+              </div>
+            </div>
           </div>
           <h2 className="text-3xl font-bold text-white">
             {t('setup.title')}

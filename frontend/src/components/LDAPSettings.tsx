@@ -215,7 +215,7 @@ export function LDAPSettings() {
                   <ul className="text-sm text-green-300 space-y-1 list-disc list-inside">
                     <li>{t('settings.ldap.feature1') || 'Users can login with LDAP credentials'}</li>
                     <li>{t('settings.ldap.feature2') || 'Local admin account remains as fallback'}</li>
-                    <li>{t('settings.ldap.feature3') || 'LDAP groups are mapped to BamBuddy groups on login'}</li>
+                    <li>{t('settings.ldap.feature3') || 'LDAP groups are mapped to Printbuddy groups on login'}</li>
                   </ul>
                 </div>
               </div>
@@ -363,7 +363,7 @@ export function LDAPSettings() {
                       {t('settings.ldap.autoProvision') || 'Auto-provision users'}
                     </label>
                     <p className="text-xs text-bambu-gray mt-0.5">
-                      {t('settings.ldap.autoProvisionHint') || 'Automatically create a BamBuddy account on first LDAP login'}
+                      {t('settings.ldap.autoProvisionHint') || 'Automatically create a Printbuddy account on first LDAP login'}
                     </p>
                   </div>
                   <button
@@ -413,7 +413,7 @@ export function LDAPSettings() {
                     onChange={e => setForm({ ...form, ldap_group_mapping: e.target.value })}
                   />
                   <p className="text-xs text-bambu-gray mt-1">
-                    {t('settings.ldap.groupMappingHint') || 'Map LDAP group DNs to BamBuddy groups. Available groups: '}{groups.map(g => g.name).join(', ')}
+                    {t('settings.ldap.groupMappingHint') || 'Map LDAP group DNs to Printbuddy groups. Available groups: '}{groups.map(g => g.name).join(', ')}
                   </p>
                 </div>
               </div>

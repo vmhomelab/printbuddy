@@ -1,7 +1,7 @@
 [project]
-name = "bambuddy"
-version = "0.1.5"
-description = "Archive and manage Bambu Lab 3MF files"
+name = "printbuddy"
+version = "0.1.0-dev"
+description = "Printbuddy printer management for Bambu Lab, Klipper, and Mainsail workflows"
 requires-python = ">=3.10"
 
 [tool.ruff]

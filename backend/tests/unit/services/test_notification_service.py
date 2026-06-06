@@ -670,6 +670,119 @@ class TestNotificationProviderTypes:
             assert "image" not in payload
 
 
+class TestTelegramProvider:
+    """Telegram bot notification delivery."""
+
+    @pytest.fixture
+    def service(self):
+        return NotificationService()
+
+    @pytest.mark.asyncio
+    async def test_send_message_includes_forum_thread_id(self, service):
+        config = {
+            "bot_token": "token-123",
+            "chat_id": "-1001234567890",
+            "message_thread_id": "17585",
+        }
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"ok": True}
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+
+        with patch.object(service, "_get_client", new_callable=AsyncMock) as mock_get_client:
+            mock_get_client.return_value = mock_client
+
+            success, message = await service._send_telegram(config, "*Test*\nBody")
+
+        assert success is True
+        assert message == "Message sent successfully"
+        mock_client.post.assert_awaited_once()
+        call_args = mock_client.post.await_args
+        assert call_args.args[0] == "https://api.telegram.org/bottoken-123/sendMessage"
+        assert call_args.kwargs["json"] == {
+            "chat_id": "-1001234567890",
+            "message_thread_id": "17585",
+            "text": "*Test*\nBody",
+            "parse_mode": "Markdown",
+        }
+
+    @pytest.mark.asyncio
+    async def test_send_photo_includes_forum_thread_id(self, service):
+        config = {
+            "bot_token": "token-123",
+            "chat_id": "-1001234567890",
+            "message_thread_id": "17585",
+        }
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"ok": True}
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+
+        with patch.object(service, "_get_client", new_callable=AsyncMock) as mock_get_client:
+            mock_get_client.return_value = mock_client
+
+            success, _message = await service._send_telegram(
+                config,
+                "*Test*\nBody",
+                image_data=b"jpeg-bytes",
+            )
+
+        assert success is True
+        call_args = mock_client.post.await_args
+        assert call_args.args[0] == "https://api.telegram.org/bottoken-123/sendPhoto"
+        assert call_args.kwargs["data"] == {
+            "chat_id": "-1001234567890",
+            "message_thread_id": "17585",
+            "caption": "*Test*\nBody",
+            "parse_mode": "Markdown",
+        }
+        assert "photo" in call_args.kwargs["files"]
+
+    @pytest.mark.asyncio
+    async def test_legacy_thread_id_alias_is_supported(self, service):
+        config = {
+            "bot_token": "token-123",
+            "chat_id": "-1001234567890",
+            "thread_id": 42,
+        }
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"ok": True}
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+
+        with patch.object(service, "_get_client", new_callable=AsyncMock) as mock_get_client:
+            mock_get_client.return_value = mock_client
+
+            success, _message = await service._send_telegram(config, "*Test*\nBody")
+
+        assert success is True
+        assert mock_client.post.await_args.kwargs["json"]["message_thread_id"] == "42"
+
+    @pytest.mark.asyncio
+    async def test_blank_thread_id_is_omitted(self, service):
+        config = {
+            "bot_token": "token-123",
+            "chat_id": "-1001234567890",
+            "message_thread_id": "  ",
+        }
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"ok": True}
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+
+        with patch.object(service, "_get_client", new_callable=AsyncMock) as mock_get_client:
+            mock_get_client.return_value = mock_client
+
+            success, _message = await service._send_telegram(config, "*Test*\nBody")
+
+        assert success is True
+        assert "message_thread_id" not in mock_client.post.await_args.kwargs["json"]
+
+
 class TestDiscordProvider:
     """Discord webhook URL host validation (#1363)."""
 

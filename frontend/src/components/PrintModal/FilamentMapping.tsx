@@ -40,7 +40,7 @@ export function FilamentMapping({
   });
 
   const { loadedFilaments, filamentComparison, hasTypeMismatch, hasColorMismatch } =
-    useFilamentMapping(filamentReqs, printerStatus, manualMappings);
+    useFilamentMapping(filamentReqs, printerStatus, manualMappings, undefined, assignments, printerId);
 
   const trayCostMap = useMemo(() => {
     const map = new Map<number, number | null>();

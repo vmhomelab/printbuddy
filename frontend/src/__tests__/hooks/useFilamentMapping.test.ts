@@ -10,7 +10,7 @@ import {
   buildLoadedFilaments,
   computeAmsMapping,
 } from '../../hooks/useFilamentMapping';
-import type { PrinterStatus } from '../../api/client';
+import type { PrinterStatus, SpoolAssignment } from '../../api/client';
 
 // Helper to create a minimal printer status with AMS data
 function createPrinterStatus(ams: PrinterStatus['ams'], vt_tray: PrinterStatus['vt_tray'] = []): PrinterStatus {
@@ -178,6 +178,86 @@ describe('buildLoadedFilaments', () => {
 
     expect(result[0].isHt).toBe(true);
     expect(result[0].globalTrayId).toBe(128);  // AMS-HT uses ams_id directly
+  });
+  it('adds explicitly assigned external spool when printer status has no vt_tray filament data', () => {
+    const assignments = [
+      {
+        id: 1,
+        spool_id: 10,
+        printer_id: 42,
+        printer_name: 'Elegoo',
+        ams_id: 255,
+        tray_id: 0,
+        fingerprint_color: null,
+        fingerprint_type: null,
+        configured: true,
+        created_at: '2026-01-01T00:00:00Z',
+        spool: {
+          id: 10,
+          material: 'PLA',
+          subtype: 'PLA Basic',
+          color_name: 'Black',
+          rgba: '#111111',
+          label_weight: 1000,
+          weight_used: 250,
+          slicer_filament: 'Pcustom',
+          slicer_filament_name: 'Custom PLA',
+        },
+      } as SpoolAssignment,
+    ];
+
+    const result = buildLoadedFilaments(createPrinterStatus([]), assignments, 42);
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      type: 'PLA',
+      color: '#111111',
+      colorName: 'Black',
+      isExternal: true,
+      label: 'External',
+      globalTrayId: 254,
+      trayInfoIdx: 'Pcustom',
+      traySubBrands: 'Custom PLA',
+      remain: 75,
+    });
+  });
+
+  it('keeps live vt_tray data over an inventory assignment for the same external slot', () => {
+    const assignments = [
+      {
+        id: 1,
+        spool_id: 10,
+        printer_id: 42,
+        ams_id: 255,
+        tray_id: 0,
+        configured: true,
+        created_at: '2026-01-01T00:00:00Z',
+        spool: {
+          id: 10,
+          material: 'PLA',
+          subtype: 'PLA Basic',
+          color_name: 'Black',
+          rgba: '#111111',
+          label_weight: 1000,
+          weight_used: 250,
+          slicer_filament: 'Pcustom',
+          slicer_filament_name: 'Custom PLA',
+        },
+      } as SpoolAssignment,
+    ];
+
+    const result = buildLoadedFilaments(
+      createPrinterStatus([], [{ id: 254, tray_type: 'PETG', tray_color: '00FF00', tray_info_idx: 'LIVE' }]),
+      assignments,
+      42,
+    );
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      type: 'PETG',
+      globalTrayId: 254,
+      trayInfoIdx: 'LIVE',
+    });
   });
 });
 
@@ -388,6 +468,40 @@ describe('computeAmsMapping', () => {
     const result = computeAmsMapping(reqs, status);
 
     expect(result).toEqual([254]);  // External spool global ID
+  });
+
+  it('maps to an assigned external spool when a non-AMS printer has no live tray data', () => {
+    const reqs = {
+      filaments: [
+        { slot_id: 1, type: 'PLA', color: '#111111', used_grams: 10, tray_info_idx: 'Pcustom' },
+      ],
+    };
+    const assignments = [
+      {
+        id: 1,
+        spool_id: 10,
+        printer_id: 42,
+        ams_id: 255,
+        tray_id: 0,
+        configured: true,
+        created_at: '2026-01-01T00:00:00Z',
+        spool: {
+          id: 10,
+          material: 'PLA',
+          subtype: 'PLA Basic',
+          color_name: 'Black',
+          rgba: '#111111',
+          label_weight: 1000,
+          weight_used: 250,
+          slicer_filament: 'Pcustom',
+          slicer_filament_name: 'Custom PLA',
+        },
+      } as SpoolAssignment,
+    ];
+
+    const result = computeAmsMapping(reqs, createPrinterStatus([]), false, assignments, 42);
+
+    expect(result).toEqual([254]);
   });
 });
 

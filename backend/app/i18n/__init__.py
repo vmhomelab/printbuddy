@@ -29,8 +29,8 @@ EN = {
         "overdue": "OVERDUE",
         "soon": "Soon",
         # Test notification
-        "test_title": "Bambuddy Test",
-        "test_message": "This is a test notification from Bambuddy. If you see this, notifications are working correctly!",
+        "test_title": "Printbuddy Test",
+        "test_message": "This is a test notification from Printbuddy. If you see this, notifications are working correctly!",
     }
 }
 
@@ -61,8 +61,8 @@ DE = {
         "overdue": "ÜBERFÄLLIG",
         "soon": "Bald",
         # Test notification
-        "test_title": "Bambuddy Test",
-        "test_message": "Dies ist eine Testbenachrichtigung von Bambuddy. Wenn Sie dies sehen, funktionieren die Benachrichtigungen!",
+        "test_title": "Printbuddy Test",
+        "test_message": "Dies ist eine Testbenachrichtigung von Printbuddy. Wenn Sie dies sehen, funktionieren die Benachrichtigungen!",
     }
 }
 

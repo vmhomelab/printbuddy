@@ -1,9 +1,11 @@
 import asyncio
 import logging
 import re
+import tempfile
 import zipfile
+from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -30,6 +32,7 @@ from backend.app.schemas.printer import (
     PrinterStatus,
     PrinterUpdate,
     PrintOptionsResponse,
+    normalize_external_camera_update,
 )
 from backend.app.services.bambu_ftp import (
     cache_3mf_download,
@@ -39,6 +42,7 @@ from backend.app.services.bambu_ftp import (
     get_cached_3mf,
     get_storage_info_async,
     list_files_async,
+    upload_file_async,
 )
 from backend.app.services.printer_diagnostic import run_connection_diagnostic
 from backend.app.services.printer_manager import (
@@ -48,10 +52,48 @@ from backend.app.services.printer_manager import (
     supports_chamber_temp,
     supports_drying,
 )
+from backend.app.services.printer_providers.factory import create_printer_client, normalize_provider
 from backend.app.utils.http import build_content_disposition
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/printers", tags=["printers"])
+
+
+PRINTABLE_PRINTER_FILE_EXTENSIONS = {".gcode", ".gco", ".g", ".bgcode", ".3mf"}
+
+
+def _is_printable_printer_file(filename: str) -> bool:
+    lower = filename.lower()
+    return any(lower.endswith(ext) for ext in PRINTABLE_PRINTER_FILE_EXTENSIONS) or ".gcode." in lower
+
+
+def _safe_remote_upload_path(directory: str, filename: str) -> str:
+    safe_name = Path(filename).name.strip()
+    if not safe_name or safe_name in {".", ".."}:
+        raise HTTPException(400, "Invalid filename")
+    if not _is_printable_printer_file(safe_name):
+        raise HTTPException(400, "Unsupported printer file type")
+    normalized_dir = "/" + directory.strip("/") if directory.strip("/") else ""
+    return f"{normalized_dir}/{safe_name}"
+
+
+def _normalize_provider_file_entry(entry: dict) -> dict:
+    file_type = str(entry.get("type") or "file").lower()
+    is_directory = bool(entry.get("is_directory")) or file_type in {"directory", "folder", "dir"}
+    return {
+        **entry,
+        "type": "directory" if is_directory else "file",
+        "is_directory": is_directory,
+        "size": entry.get("size") or 0,
+        "mtime": entry.get("mtime") or entry.get("modified"),
+    }
+
+
+def _provider_for_printer(printer: Printer):
+    provider = normalize_provider(getattr(printer, "provider", "bambu"))
+    if provider == "bambu":
+        return None
+    return create_printer_client(printer)
 
 
 @router.get("/", response_model=list[PrinterResponse])
@@ -87,19 +129,30 @@ async def create_printer(
         ip_address=printer_data.ip_address,
         serial_number=printer_data.serial_number,
         access_code=printer_data.access_code,
+        provider=printer_data.provider,
+        api_url=printer_data.api_url,
+        auth_token=printer_data.auth_token,
     )
     if not test_result.get("success"):
+        if printer_data.provider == "bambu":
+            failure_message = (
+                "Could not connect to the printer. Verify IP address, serial number, "
+                "and access code, and confirm LAN-only mode is enabled. "
+                "The printer was not added."
+            )
+        else:
+            failure_message = (
+                "Could not connect to Moonraker. Verify the IP/hostname, Moonraker URL "
+                "(usually http://host:7125), and API token if authentication is enabled. "
+                "The printer was not added."
+            )
         # The frontend renders the user-facing message via i18n on `code`;
         # `message` is an English fallback for non-UI clients (curl / scripts).
         raise HTTPException(
             status_code=400,
             detail={
                 "code": "printer_connection_failed",
-                "message": (
-                    "Could not connect to the printer. Verify IP address, serial number, "
-                    "and access code, and confirm LAN-only mode is enabled. "
-                    "The printer was not added."
-                ),
+                "message": failure_message,
             },
         )
 
@@ -281,7 +334,7 @@ async def update_printer(
     if not printer:
         raise HTTPException(404, "Printer not found")
 
-    update_data = printer_data.model_dump(exclude_unset=True)
+    update_data = normalize_external_camera_update(printer_data.model_dump(exclude_unset=True))
 
     # Handle nested ROI object - flatten to individual columns
     if "plate_detection_roi" in update_data:
@@ -1086,16 +1139,61 @@ async def list_printer_files(
     if not printer:
         raise HTTPException(404, "Printer not found")
 
-    files = await list_files_async(printer.ip_address, printer.access_code, path, printer_model=printer.model)
-
-    # Add full path to each file
-    for f in files:
-        f["path"] = f"{path.rstrip('/')}/{f['name']}" if path != "/" else f"/{f['name']}"
+    provider_client = _provider_for_printer(printer)
+    if provider_client is not None:
+        files = [_normalize_provider_file_entry(f) for f in provider_client.list_files(path)]
+    else:
+        files = await list_files_async(printer.ip_address, printer.access_code, path, printer_model=printer.model)
+        # Add full path to each file
+        for f in files:
+            f["path"] = f"{path.rstrip('/')}/{f['name']}" if path != "/" else f"/{f['name']}"
 
     return {
         "path": path,
         "files": files,
+        "supported_print_extensions": sorted(PRINTABLE_PRINTER_FILE_EXTENSIONS),
     }
+
+
+@router.post("/{printer_id}/files/upload")
+async def upload_printer_file(
+    printer_id: int,
+    file: UploadFile = File(...),
+    path: str = "/",
+    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_FILES),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upload a sliced/printable file directly to the printer storage."""
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+
+    remote_path = _safe_remote_upload_path(path, file.filename or "upload.gcode")
+    suffix = Path(remote_path).suffix or ".gcode"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp_path = Path(tmp.name)
+        while chunk := await file.read(1024 * 1024):
+            tmp.write(chunk)
+
+    try:
+        provider_client = _provider_for_printer(printer)
+        if provider_client is not None:
+            success = provider_client.upload_file(tmp_path, remote_path)
+        else:
+            success = await upload_file_async(
+                printer.ip_address,
+                printer.access_code,
+                tmp_path,
+                remote_path,
+                printer_model=printer.model,
+            )
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+    if not success:
+        raise HTTPException(500, f"Failed to upload file: {remote_path}")
+    return {"status": "uploaded", "path": remote_path, "filename": Path(remote_path).name}
 
 
 @router.get("/{printer_id}/files/download")
@@ -1111,7 +1209,13 @@ async def download_printer_file(
     if not printer:
         raise HTTPException(404, "Printer not found")
 
-    data = await download_file_bytes_async(printer.ip_address, printer.access_code, path, printer_model=printer.model)
+    provider_client = _provider_for_printer(printer)
+    if provider_client is not None:
+        data = provider_client.download_file(path)
+    else:
+        data = await download_file_bytes_async(
+            printer.ip_address, printer.access_code, path, printer_model=printer.model
+        )
     if data is None:
         raise HTTPException(404, f"File not found: {path}")
 
@@ -1155,7 +1259,13 @@ async def get_printer_file_gcode(
     if not printer:
         raise HTTPException(404, "Printer not found")
 
-    data = await download_file_bytes_async(printer.ip_address, printer.access_code, path, printer_model=printer.model)
+    provider_client = _provider_for_printer(printer)
+    if provider_client is not None:
+        data = provider_client.download_file(path)
+    else:
+        data = await download_file_bytes_async(
+            printer.ip_address, printer.access_code, path, printer_model=printer.model
+        )
     if data is None:
         raise HTTPException(404, f"File not found: {path}")
 
@@ -1207,7 +1317,13 @@ async def get_printer_file_plates(
             "is_multi_plate": False,
         }
 
-    data = await download_file_bytes_async(printer.ip_address, printer.access_code, path, printer_model=printer.model)
+    provider_client = _provider_for_printer(printer)
+    if provider_client is not None:
+        data = provider_client.download_file(path)
+    else:
+        data = await download_file_bytes_async(
+            printer.ip_address, printer.access_code, path, printer_model=printer.model
+        )
     if data is None:
         raise HTTPException(404, f"File not found: {path}")
 
@@ -1438,7 +1554,13 @@ async def get_printer_file_plate_thumbnail(
     if not printer:
         raise HTTPException(404, "Printer not found")
 
-    data = await download_file_bytes_async(printer.ip_address, printer.access_code, path, printer_model=printer.model)
+    provider_client = _provider_for_printer(printer)
+    if provider_client is not None:
+        data = provider_client.download_file(path)
+    else:
+        data = await download_file_bytes_async(
+            printer.ip_address, printer.access_code, path, printer_model=printer.model
+        )
     if data is None:
         raise HTTPException(404, f"File not found: {path}")
 
@@ -1514,7 +1636,11 @@ async def delete_printer_file(
     if not printer:
         raise HTTPException(404, "Printer not found")
 
-    success = await delete_file_async(printer.ip_address, printer.access_code, path, printer_model=printer.model)
+    provider_client = _provider_for_printer(printer)
+    if provider_client is not None:
+        success = provider_client.delete_file(path)
+    else:
+        success = await delete_file_async(printer.ip_address, printer.access_code, path, printer_model=printer.model)
     if not success:
         raise HTTPException(500, f"Failed to delete file: {path}")
 
@@ -2845,6 +2971,120 @@ async def bed_jog(
     return {"success": True, "message": f"Bed jog {distance:+.1f} mm sent"}
 
 
+@router.post("/{printer_id}/axis-jog")
+async def axis_jog(
+    printer_id: int,
+    axis: str = Query(..., description="Axis to jog: x, y, or z"),
+    distance: float = Query(..., description="Signed relative move in mm"),
+    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_CONTROL),
+    db: AsyncSession = Depends(get_db),
+):
+    """Move X/Y/Z by a relative distance using provider G-code transport."""
+    axis = axis.lower()
+    if axis not in ("x", "y", "z"):
+        raise HTTPException(400, "axis must be 'x', 'y', or 'z'")
+    if distance == 0 or abs(distance) > 200:
+        raise HTTPException(400, "Distance must be non-zero and ≤ 200 mm")
+
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+
+    client = printer_manager.get_client(printer_id)
+    if not client:
+        raise HTTPException(400, "Printer not connected")
+
+    feedrate = 600 if axis == "z" else 3000
+    command = f"G91\nG1 {axis.upper()}{distance:.2f} F{feedrate}\nG90"
+    send_gcode = getattr(client, "send_gcode", None)
+    if not callable(send_gcode):
+        raise HTTPException(400, "Printer provider does not support axis jogging")
+    if not send_gcode(command):
+        raise HTTPException(500, "Failed to send axis-jog command")
+
+    return {"success": True, "message": f"{axis.upper()} jog {distance:+.1f} mm sent"}
+
+
+@router.post("/{printer_id}/disable-steppers")
+async def disable_steppers(
+    printer_id: int,
+    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_CONTROL),
+    db: AsyncSession = Depends(get_db),
+):
+    """Disable stepper motors via provider G-code transport."""
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+
+    client = printer_manager.get_client(printer_id)
+    if not client:
+        raise HTTPException(400, "Printer not connected")
+
+    send_gcode = getattr(client, "send_gcode", None)
+    if not callable(send_gcode):
+        raise HTTPException(400, "Printer provider does not support stepper control")
+    if not send_gcode("M84"):
+        raise HTTPException(500, "Failed to disable steppers")
+
+    return {"success": True, "message": "Stepper disable command sent"}
+
+
+@router.post("/{printer_id}/temperature/nozzle")
+async def set_nozzle_temperature(
+    printer_id: int,
+    target: int = Query(..., description="Nozzle target temperature in °C; 0 turns heater off"),
+    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_CONTROL),
+    db: AsyncSession = Depends(get_db),
+):
+    """Set nozzle target temperature."""
+    if target < 0 or target > 350:
+        raise HTTPException(400, "Nozzle temperature must be 0-350°C")
+
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+
+    client = printer_manager.get_client(printer_id)
+    if not client:
+        raise HTTPException(400, "Printer not connected")
+    set_temp = getattr(client, "set_nozzle_temperature", None)
+    if not callable(set_temp):
+        raise HTTPException(400, "Printer provider does not support nozzle temperature control")
+    if not set_temp(target):
+        raise HTTPException(500, "Failed to set nozzle temperature")
+    return {"success": True, "message": f"Nozzle target set to {target}°C"}
+
+
+@router.post("/{printer_id}/temperature/bed")
+async def set_bed_temperature(
+    printer_id: int,
+    target: int = Query(..., description="Bed target temperature in °C; 0 turns heater off"),
+    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_CONTROL),
+    db: AsyncSession = Depends(get_db),
+):
+    """Set heated bed target temperature."""
+    if target < 0 or target > 140:
+        raise HTTPException(400, "Bed temperature must be 0-140°C")
+
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+
+    client = printer_manager.get_client(printer_id)
+    if not client:
+        raise HTTPException(400, "Printer not connected")
+    set_temp = getattr(client, "set_bed_temperature", None)
+    if not callable(set_temp):
+        raise HTTPException(400, "Printer provider does not support bed temperature control")
+    if not set_temp(target):
+        raise HTTPException(500, "Failed to set bed temperature")
+    return {"success": True, "message": f"Bed target set to {target}°C"}
+
+
 @router.post("/{printer_id}/home-axes")
 async def home_axes(
     printer_id: int,
@@ -3417,3 +3657,79 @@ async def get_runtime_debug(
         else None,
         "is_active": printer.is_active,
     }
+
+
+# ── Additional Klipper / Moonraker control endpoints ─────────────────────────
+
+
+def _require_send_gcode(printer_id: int):
+    client = printer_manager.get_client(printer_id)
+    if not client:
+        raise HTTPException(400, "Printer not connected")
+    fn = getattr(client, "send_gcode", None)
+    if not callable(fn):
+        raise HTTPException(400, "Printer provider does not support G-code commands")
+    return fn
+
+
+@router.post("/{printer_id}/klipper/home")
+async def klipper_home(
+    printer_id: int,
+    axes: str | None = Query(None, description="Comma-separated axes to home, e.g. 'x,y'. Omit to home all."),
+    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_CONTROL),
+    db: AsyncSession = Depends(get_db),
+):
+    """Home one or more axes. Omit axes to run a full G28."""
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    if not result.scalar_one_or_none():
+        raise HTTPException(404, "Printer not found")
+    send_gcode = _require_send_gcode(printer_id)
+    if axes:
+        script = "G28 " + " ".join(a.strip().upper() for a in axes.split(",") if a.strip())
+    else:
+        script = "G28"
+    if not send_gcode(script):
+        raise HTTPException(500, "Failed to send home command")
+    return {"success": True}
+
+
+@router.post("/{printer_id}/klipper/extrude")
+async def klipper_extrude(
+    printer_id: int,
+    length: float = Query(..., description="Signed extrude/retract length in mm"),
+    speed: int = Query(300, description="Feedrate in mm/min"),
+    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_CONTROL),
+    db: AsyncSession = Depends(get_db),
+):
+    """Extrude (positive) or retract (negative) filament."""
+    if abs(length) > 500:
+        raise HTTPException(400, "Length must be ≤ 500 mm")
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    if not result.scalar_one_or_none():
+        raise HTTPException(404, "Printer not found")
+    send_gcode = _require_send_gcode(printer_id)
+    if not send_gcode(f"M83\nG1 E{length:.2f} F{speed}\nM82"):
+        raise HTTPException(500, "Failed to send extrude command")
+    return {"success": True}
+
+
+@router.post("/{printer_id}/klipper/z_offset")
+async def klipper_z_offset(
+    printer_id: int,
+    amount: float = Query(..., description="Signed Z-offset adjustment in mm"),
+    save: bool = Query(False, description="Also run SAVE_CONFIG after adjustment"),
+    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_CONTROL),
+    db: AsyncSession = Depends(get_db),
+):
+    """Nudge the live Z-offset and optionally persist it with SAVE_CONFIG."""
+    if abs(amount) > 5:
+        raise HTTPException(400, "Z-offset adjustment must be ≤ 5 mm")
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    if not result.scalar_one_or_none():
+        raise HTTPException(404, "Printer not found")
+    send_gcode = _require_send_gcode(printer_id)
+    if amount != 0 and not send_gcode(f"SET_GCODE_OFFSET Z_ADJUST={amount} MOVE=1"):
+        raise HTTPException(500, "Failed to set Z-offset")
+    if save:
+        send_gcode("SAVE_CONFIG")
+    return {"success": True}

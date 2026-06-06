@@ -30,7 +30,7 @@ class VirtualPrinterSSDPServer:
 
     def __init__(
         self,
-        name: str = "Bambuddy",
+        name: str = "Printbuddy",
         serial: str = "00M09A391800001",  # X1C serial format for compatibility
         model: str = "BL-P001",  # X1C model code for best compatibility
         advertise_ip: str = "",
