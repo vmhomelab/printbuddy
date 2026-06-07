@@ -38,7 +38,7 @@
 
 ## What is Printbuddy?
 
-**Printbuddy** is a fork of [Bambuddy](https://github.com/vmhomelab/printbuddy-ha-addon) with a broader goal:
+**Printbuddy** is a fork of [Bambuddy](https://github.com/maziggy/bambuddy) with a broader goal:
 
 > A single, modern, self-hosted dashboard for managing different 3D printer ecosystems.
 
