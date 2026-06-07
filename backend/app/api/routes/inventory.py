@@ -91,7 +91,7 @@ async def apply_spool_to_slot_via_mqtt(
     """Publish ams_filament_setting + extrusion_cali_sel for a spool on a slot.
 
     Shared by `assign_spool` (initial assign for a loaded slot) and
-    `on_ams_change` (re-fire when a SpoolBuddy-pre-assigned slot transitions
+    `on_ams_change` (re-fire when a pre-assigned slot transitions
     empty → loaded). Returns True when MQTT commands were published, False if
     no client was available or setup failed mid-way.
 
@@ -1384,8 +1384,8 @@ async def assign_spool(
     # still has empty fingerprint_type because nothing in the assign path
     # updates that column, and on_ams_change at main.py:1031-1054 still
     # fires the deferred config when a spool eventually appears. So the
-    # SpoolBuddy weigh-then-assign-before-insert workflow continues to
-    # work — just without the optimization of skipping a no-op MQTT call.
+    # deferred assign-before-insert workflow continues to work — just without
+    # the optimization of skipping a no-op MQTT call.
     #
     # state ∈ {9, 10} stays as an explicit short-circuit so we don't churn
     # a doomed MQTT push when the firmware has positively confirmed "no

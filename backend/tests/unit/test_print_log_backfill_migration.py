@@ -74,7 +74,6 @@ def _register_all_models():
         spool_catalog,
         spool_k_profile,
         spool_usage_history,
-        spoolbuddy_device,
         user,
         user_email_pref,
         virtual_printer,

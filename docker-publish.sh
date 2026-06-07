@@ -31,7 +31,7 @@ set -e
 # Configuration
 GHCR_REGISTRY="ghcr.io"
 DOCKERHUB_REGISTRY="docker.io"
-IMAGE_NAME="vmhomelab/printbuddy"
+IMAGE_NAME="vmhomelabde/printbuddy"
 GHCR_IMAGE="${GHCR_REGISTRY}/${IMAGE_NAME}"
 DOCKERHUB_IMAGE="${DOCKERHUB_REGISTRY}/${IMAGE_NAME}"
 PLATFORMS="linux/amd64,linux/arm64"

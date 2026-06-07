@@ -1,6 +1,6 @@
 """Scheduled local backup service.
 
-Creates ZIP snapshots of the full Bambuddy data (database + data directories)
+Creates ZIP snapshots of the full Printbuddy data (database + data directories)
 on a configurable schedule with retention management.
 """
 
@@ -22,6 +22,20 @@ SCHEDULE_INTERVALS = {
     "daily": 86400,
     "weekly": 604800,
 }
+BACKUP_FILENAME_PREFIX = "printbuddy-backup-"
+LEGACY_BACKUP_FILENAME_PREFIX = "bambuddy-backup-"
+BACKUP_FILENAME_SUFFIX = ".zip"
+
+
+def _is_backup_filename(filename: str) -> bool:
+    return filename.endswith(BACKUP_FILENAME_SUFFIX) and filename.startswith(
+        (BACKUP_FILENAME_PREFIX, LEGACY_BACKUP_FILENAME_PREFIX)
+    )
+
+
+def _iter_backup_files(backup_dir: Path):
+    yield from backup_dir.glob(f"{BACKUP_FILENAME_PREFIX}*{BACKUP_FILENAME_SUFFIX}")
+    yield from backup_dir.glob(f"{LEGACY_BACKUP_FILENAME_PREFIX}*{BACKUP_FILENAME_SUFFIX}")
 
 
 def _default_backup_dir() -> Path:
@@ -195,7 +209,7 @@ class LocalBackupService:
     def _prune_backups(self, backup_dir: Path, retention: int):
         """Delete oldest backups exceeding the retention count."""
         backups = sorted(
-            backup_dir.glob("bambuddy-backup-*.zip"),
+            _iter_backup_files(backup_dir),
             key=lambda p: p.stat().st_mtime,
             reverse=True,
         )
@@ -220,7 +234,7 @@ class LocalBackupService:
         """Resolve a backup filename to a full path, with safety checks."""
         if "/" in filename or "\\" in filename or ".." in filename:
             return None
-        if not filename.startswith("bambuddy-backup-") or not filename.endswith(".zip"):
+        if not _is_backup_filename(filename):
             return None
         backup_dir = self._resolve_backup_dir(path_setting)
         target = backup_dir / filename
@@ -235,7 +249,7 @@ class LocalBackupService:
             return []
 
         backups = []
-        for f in sorted(backup_dir.glob("bambuddy-backup-*.zip"), key=lambda p: p.stat().st_mtime, reverse=True):
+        for f in sorted(_iter_backup_files(backup_dir), key=lambda p: p.stat().st_mtime, reverse=True):
             stat = f.stat()
             backups.append(
                 {
@@ -257,7 +271,7 @@ class LocalBackupService:
 
         if not target.exists():
             return {"success": False, "message": "Backup not found"}
-        if not target.name.startswith("bambuddy-backup-") or not target.name.endswith(".zip"):
+        if not _is_backup_filename(target.name):
             return {"success": False, "message": "Invalid backup file"}
 
         try:

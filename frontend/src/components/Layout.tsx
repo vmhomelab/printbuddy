@@ -19,6 +19,7 @@ import { Button } from './Button';
 import { BugReportBubble } from './BugReportBubble';
 import { appAssetPath } from '../utils/assetPaths';
 
+const SOURCE_CODE_URL = 'https://github.com/vmhomelab/Printbuddy';
 
 interface NavItem {
   id: string;
@@ -487,6 +488,10 @@ export function Layout() {
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [handleKeyDown]);
 
+  const sidebarBrandImagePath = !isSidebarCompact && !sidebarExpanded
+    ? (mode === 'dark' ? '/img/printbuddy_icon_dark.png' : '/img/printbuddy_icon.png')
+    : (mode === 'dark' ? '/img/printbuddy_logo_dark.png' : '/img/printbuddy_logo_light.png');
+
   return (
     <div className="flex min-h-screen">
       {/* Compact Header */}
@@ -526,9 +531,9 @@ export function Layout() {
         {/* Logo */}
         <div className={`border-b border-bambu-dark-tertiary flex items-center justify-center ${isSidebarCompact || sidebarExpanded ? 'p-4' : 'p-2'}`}>
           <img
-            src={appAssetPath(mode === 'dark' ? '/img/printbuddy_logo_dark.png' : '/img/printbuddy_logo_light.png')}
+            src={appAssetPath(sidebarBrandImagePath)}
             alt="Printbuddy"
-            className={isSidebarCompact || sidebarExpanded ? 'h-16 w-auto' : 'h-8 w-8 object-cover object-left'}
+            className={isSidebarCompact || sidebarExpanded ? 'h-16 w-auto' : 'h-8 w-8'}
           />
         </div>
 
@@ -736,13 +741,14 @@ export function Layout() {
                 )}
                 <InstallAppButton />
                 <a
-                  href="https://github.com/vmhomelab/Printbuddy"
+                  href={SOURCE_CODE_URL}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors text-bambu-gray-light hover:text-white"
-                  title={t('nav.viewOnGithub')}
+                  className="flex items-center gap-1.5 px-2 py-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors text-bambu-gray-light hover:text-white"
+                  title="Source code"
                 >
                   <Github className="w-5 h-5" />
+                  <span className="text-xs font-medium">Source code</span>
                 </a>
                 <button
                   onClick={() => setShowShortcuts(true)}
@@ -841,11 +847,12 @@ export function Layout() {
               )}
               <InstallAppButton />
               <a
-                href="https://github.com/vmhomelab/Printbuddy"
+                href={SOURCE_CODE_URL}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors text-bambu-gray-light hover:text-white"
-                title={t('nav.viewOnGithub')}
+                title="Source code"
+                aria-label="Source code"
               >
                 <Github className="w-5 h-5" />
               </a>

@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Loader2, Plus, Plug, AlertTriangle, RotateCcw, Bell, Download, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, Unlock, ChevronDown, Save, Mail, Flame, Layers, ListOrdered, Code, Search, Scale, Settings as SettingsIcon, ScanEye, Cog } from 'lucide-react';
+import { Loader2, Plus, Plug, AlertTriangle, RotateCcw, Bell, Download, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, Unlock, ChevronDown, Save, Mail, Flame, Layers, ListOrdered, Code, Search, Settings as SettingsIcon, ScanEye, Cog } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
@@ -27,7 +27,6 @@ import { SpoolCatalogSettings } from '../components/SpoolCatalogSettings';
 import { ColorCatalogSettings } from '../components/ColorCatalogSettings';
 import { ExternalLinksSettings } from '../components/ExternalLinksSettings';
 import { VirtualPrinterList } from '../components/VirtualPrinterList';
-import { SpoolBuddySettings } from '../components/SpoolBuddySettings';
 import { GitHubBackupSettings } from '../components/GitHubBackupSettings';
 import { FailureDetectionSettings } from '../components/FailureDetectionSettings';
 import { EmailSettings } from '../components/EmailSettings';
@@ -37,7 +36,7 @@ import { OIDCProviderSettings } from '../components/OIDCProviderSettings';
 import { SecurityStatusCard } from '../components/SecurityStatusCard';
 import { APIBrowser } from '../components/APIBrowser';
 import { Toggle } from '../components/Toggle';
-import { virtualPrinterApi, spoolbuddyApi } from '../api/client';
+import { virtualPrinterApi } from '../api/client';
 import { defaultNavItems, getDefaultView, setDefaultView } from '../components/Layout';
 import { availableLanguages } from '../i18n';
 import { useToast } from '../contexts/ToastContext';
@@ -47,7 +46,7 @@ import { Palette } from 'lucide-react';
 import { registerSettingsSearch, getSettingsSearchEntries } from '../lib/settingsSearch';
 import type { UsersSubTab } from '../lib/settingsSearch';
 
-const validTabs = ['general', 'plugs', 'notifications', 'queue', 'filament', 'network', 'apikeys', 'virtual-printer', 'spoolbuddy', 'failure-detection', 'users', 'backup'] as const;
+const validTabs = ['general', 'plugs', 'notifications', 'queue', 'filament', 'network', 'apikeys', 'virtual-printer', 'failure-detection', 'users', 'backup'] as const;
 type TabType = typeof validTabs[number];
 
 function inferExternalCameraType(url: string): string {
@@ -105,7 +104,6 @@ registerSettingsSearch({ labelKey: 'settings.webhookEndpoints', tab: 'apikeys', 
 registerSettingsSearch({ labelKey: 'settings.apiBrowser', tab: 'apikeys', keywords: 'api browser endpoint documentation test', anchor: 'card-apibrowser' });
 registerSettingsSearch({ labelKey: 'cameraTokens.title', tab: 'apikeys', keywords: 'camera token long-lived home assistant frigate kiosk stream', anchor: 'card-camera-tokens' });
 registerSettingsSearch({ labelKey: 'settings.tabs.virtualPrinter', tab: 'virtual-printer', keywords: 'virtual printer proxy archive slicer bambustudio orcaslicer ip bind', anchor: 'card-vp' });
-registerSettingsSearch({ labelKey: 'settings.tabs.spoolbuddy', tab: 'spoolbuddy', keywords: 'spoolbuddy device scale nfc rfid kiosk unregister', anchor: 'card-spoolbuddy' });
 registerSettingsSearch({ labelKey: 'settings.currentUser', tab: 'users', subTab: 'users', keywords: 'current user profile password change', anchor: 'card-currentuser' });
 registerSettingsSearch({ labelKey: 'settings.users', tab: 'users', subTab: 'users', keywords: 'users accounts list', anchor: 'card-users' });
 registerSettingsSearch({ labelKey: 'settings.groups', tab: 'users', subTab: 'users', keywords: 'groups roles permissions administrators operators viewers', anchor: 'card-groups' });
@@ -203,6 +201,14 @@ export function SettingsPage() {
   const initialTab = isLegacyEmailTab ? 'users' : (tabParam && validTabs.includes(tabParam as TabType) ? tabParam as TabType : 'general');
   const [activeTab, setActiveTab] = useState<TabType>(initialTab);
   const [usersSubTab, setUsersSubTab] = useState<UsersSubTab>(isLegacyEmailTab ? 'email' : 'users');
+
+  useEffect(() => {
+    if (tabParam && !isLegacyEmailTab && !validTabs.includes(tabParam as TabType)) {
+      const nextParams = new URLSearchParams(searchParams);
+      nextParams.set('tab', 'general');
+      setSearchParams(nextParams, { replace: true });
+    }
+  }, [isLegacyEmailTab, searchParams, setSearchParams, tabParam]);
 
   // Update URL when tab changes
   const handleTabChange = (tab: TabType) => {
@@ -461,15 +467,6 @@ export function SettingsPage() {
     refetchInterval: 10000,
   });
   const virtualPrinterRunning = virtualPrinterSettings?.status?.running ?? false;
-
-  // SpoolBuddy devices for tab indicator
-  const { data: spoolbuddyDevices } = useQuery({
-    queryKey: ['spoolbuddy-devices'],
-    queryFn: () => spoolbuddyApi.getDevices(),
-    refetchInterval: 15000,
-  });
-  const spoolbuddyDeviceCount = spoolbuddyDevices?.length ?? 0;
-  const spoolbuddyAnyOnline = spoolbuddyDevices?.some((d) => d.online) ?? false;
 
   // Obico failure-detection service status for tab indicator
   const { data: obicoStatus } = useQuery({
@@ -1468,23 +1465,6 @@ export function SettingsPage() {
           <Printer className="w-4 h-4" />
           {t('settings.tabs.virtualPrinter')}
           <span className={`w-2 h-2 rounded-full ${virtualPrinterRunning ? 'bg-green-400' : 'bg-gray-500'}`} />
-        </button>
-        <button
-          onClick={() => handleTabChange('spoolbuddy')}
-          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px lg:border-b-0 lg:border-l-2 lg:-ml-px lg:mb-0 lg:justify-start flex items-center gap-2 ${
-            activeTab === 'spoolbuddy'
-              ? 'text-bambu-green border-bambu-green'
-              : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
-          }`}
-        >
-          <Scale className="w-4 h-4" />
-          {t('settings.tabs.spoolbuddy')}
-          {spoolbuddyDeviceCount > 0 && (
-            <span className="text-xs bg-bambu-dark-tertiary px-1.5 py-0.5 rounded-full">
-              {spoolbuddyDeviceCount}
-            </span>
-          )}
-          <span className={`w-2 h-2 rounded-full ${spoolbuddyAnyOnline ? 'bg-green-400' : 'bg-gray-500'}`} />
         </button>
         <button
           onClick={() => handleTabChange('failure-detection')}
@@ -4028,13 +4008,6 @@ export function SettingsPage() {
       {activeTab === 'virtual-printer' && (
         <div id="card-vp">
           <VirtualPrinterList />
-        </div>
-      )}
-
-      {/* SpoolBuddy Tab */}
-      {activeTab === 'spoolbuddy' && (
-        <div id="card-spoolbuddy">
-          <SpoolBuddySettings />
         </div>
       )}
 

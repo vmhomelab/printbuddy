@@ -204,7 +204,6 @@ async def init_db():
         spool_catalog,
         spool_k_profile,
         spool_usage_history,
-        spoolbuddy_device,
         spoolman_k_profile,
         spoolman_slot_assignment,
         user,
@@ -1581,7 +1580,7 @@ async def run_migrations(conn):
     # Migration: Add weight_locked flag to spool table (skip AMS auto-sync for manually-entered weights)
     await _safe_execute(conn, "ALTER TABLE spool ADD COLUMN weight_locked BOOLEAN DEFAULT 0")
 
-    # Migration: Add SpoolBuddy scale weight tracking columns to spool table
+    # Migration: Add scale weight tracking columns to spool table
     await _safe_execute(conn, "ALTER TABLE spool ADD COLUMN last_scale_weight INTEGER")
     await _safe_execute(conn, "ALTER TABLE spool ADD COLUMN last_weighed_at DATETIME")
 
@@ -1689,36 +1688,6 @@ async def run_migrations(conn):
 
     # Migration: Add filament_overrides column to print_queue for filament override in model-based assignment
     await _safe_execute(conn, "ALTER TABLE print_queue ADD COLUMN filament_overrides TEXT")
-
-    # Migration: Add NFC reader and display control columns to spoolbuddy_devices
-    await _safe_execute(conn, "ALTER TABLE spoolbuddy_devices ADD COLUMN nfc_reader_type VARCHAR(20)")
-    await _safe_execute(conn, "ALTER TABLE spoolbuddy_devices ADD COLUMN nfc_connection VARCHAR(20)")
-    await _safe_execute(conn, "ALTER TABLE spoolbuddy_devices ADD COLUMN display_brightness INTEGER DEFAULT 100")
-    await _safe_execute(conn, "ALTER TABLE spoolbuddy_devices ADD COLUMN display_blank_timeout INTEGER DEFAULT 0")
-    await _safe_execute(conn, "ALTER TABLE spoolbuddy_devices ADD COLUMN has_backlight BOOLEAN DEFAULT 0")
-    await _safe_execute(conn, "ALTER TABLE spoolbuddy_devices ADD COLUMN last_calibrated_at DATETIME")
-
-    # Migration: Add NFC tag write payload column to spoolbuddy_devices
-    await _safe_execute(conn, "ALTER TABLE spoolbuddy_devices ADD COLUMN pending_write_payload TEXT")
-
-    # Migration: Add OTA update tracking columns to spoolbuddy_devices
-    await _safe_execute(conn, "ALTER TABLE spoolbuddy_devices ADD COLUMN update_status VARCHAR(20)")
-    await _safe_execute(conn, "ALTER TABLE spoolbuddy_devices ADD COLUMN update_message VARCHAR(255)")
-
-    # Migration: Persist SpoolBuddy backend URL and queued system payload
-    await _safe_execute(conn, "ALTER TABLE spoolbuddy_devices ADD COLUMN backend_url VARCHAR(255)")
-    await _safe_execute(conn, "ALTER TABLE spoolbuddy_devices ADD COLUMN pending_system_payload TEXT")
-
-    # Migration: Add system_stats JSON blob column to spoolbuddy_devices
-    await _safe_execute(conn, "ALTER TABLE spoolbuddy_devices ADD COLUMN system_stats TEXT")
-
-    # Migration: Add SSH host key for TOFU verification (H1 security fix)
-    await _safe_execute(conn, "ALTER TABLE spoolbuddy_devices ADD COLUMN ssh_host_key VARCHAR(500)")
-    # Migration: Widen ssh_host_key from VARCHAR(500) to TEXT — RSA-3072+ host keys
-    # in OpenSSH format exceed 500 chars (RSA-4096 ~720 chars). PostgreSQL enforces
-    # the limit and rejects the UPDATE; SQLite ignores VARCHAR length so no-op there.
-    if not is_sqlite():
-        await _safe_execute(conn, "ALTER TABLE spoolbuddy_devices ALTER COLUMN ssh_host_key TYPE TEXT")
 
     # Migration: Convert ams_labels table from (printer_id, ams_id) key to ams_serial_number key
     # Labels are now keyed by AMS serial number so they persist when the AMS is moved to another printer.

@@ -306,47 +306,6 @@ export function useWebSocket() {
         );
         break;
 
-      case 'spoolbuddy_weight':
-        window.dispatchEvent(new CustomEvent('spoolbuddy-weight', { detail: message }));
-        break;
-
-      case 'spoolbuddy_tag_matched':
-        window.dispatchEvent(new CustomEvent('spoolbuddy-tag-matched', { detail: message }));
-        debouncedInvalidate('inventory-spools');
-        break;
-
-      case 'spoolbuddy_unknown_tag':
-        window.dispatchEvent(new CustomEvent('spoolbuddy-unknown-tag', { detail: message }));
-        break;
-
-      case 'spoolbuddy_tag_removed':
-        window.dispatchEvent(new CustomEvent('spoolbuddy-tag-removed', { detail: message }));
-        break;
-
-      case 'spoolbuddy_tag_written':
-        window.dispatchEvent(new CustomEvent('spoolbuddy-tag-written', { detail: message }));
-        debouncedInvalidate('inventory-spools');
-        break;
-
-      case 'spoolbuddy_tag_write_failed':
-        window.dispatchEvent(new CustomEvent('spoolbuddy-tag-write-failed', { detail: message }));
-        break;
-
-      case 'spoolbuddy_online':
-        window.dispatchEvent(new CustomEvent('spoolbuddy-online', { detail: message }));
-        debouncedInvalidate('spoolbuddy-devices');
-        debouncedInvalidate('spoolbuddy-update-check');
-        break;
-
-      case 'spoolbuddy_offline':
-        window.dispatchEvent(new CustomEvent('spoolbuddy-offline', { detail: message }));
-        debouncedInvalidate('spoolbuddy-devices');
-        break;
-
-      case 'spoolbuddy_update':
-        debouncedInvalidate('spoolbuddy-devices');
-        debouncedInvalidate('spoolbuddy-update-check');
-        break;
     }
   }, [queryClient, debouncedInvalidate, throttledPrinterStatusUpdate, showToast, t]);
 

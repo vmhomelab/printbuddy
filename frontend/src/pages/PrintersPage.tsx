@@ -72,7 +72,7 @@ import {
 } from 'lucide-react';
 
 import { useNavigate } from 'react-router-dom';
-import { api, discoveryApi, firmwareApi, withStreamToken, ApiError } from '../api/client';
+import { api, discoveryApi, firmwareApi, withStreamToken, ApiError, getAuthToken } from '../api/client';
 import { formatDateOnly, formatETA, formatDuration, parseUTCDate } from '../utils/date';
 import type { Printer, PrinterCreate, PrinterStatus, AMSUnit, DiscoveredPrinter, FirmwareUpdateInfo, FirmwareUploadStatus, LinkedSpoolInfo, SpoolAssignment, HMSError, InventorySpool, SmartPlug, PrinterDiagnosticResult } from '../api/client';
 import { Card, CardContent } from '../components/Card';
@@ -105,6 +105,7 @@ import { ConnectionDiagnosticModal, DiagnosticChecklist } from '../components/Co
 import { KlipperControlPanel } from '../components/KlipperControlPanel';
 import { getColorName, parseFilamentColor, isLightColor } from '../utils/colors';
 import { getPrinterFileRuleSet, isPrintableForProvider } from '../utils/printerFileRules';
+import { canOpenPrinterCamera } from '../utils/printerCamera';
 
 export interface SpoolmanSlotAssignmentRow {
   printer_id: number;
@@ -1905,8 +1906,7 @@ function PrinterCard({
     }
   }, [status?.connected]);
   const isConnected = status?.connected ?? cachedConnected.current;
-  const hasExternalCamera = Boolean(printer.external_camera_enabled && printer.external_camera_url);
-  const canOpenCamera = hasPermission('camera:view') && (isConnected || hasExternalCamera);
+  const canOpenCamera = canOpenPrinterCamera(printer, isConnected, hasPermission('camera:view'));
 
   // Cache ams_extruder_map to prevent L/R indicators bouncing on updates
   const cachedAmsExtruderMap = useRef<Record<string, number>>({});
@@ -4906,7 +4906,16 @@ function PrinterCard({
                       // copies sessionStorage (auth token) into the new window.
                       'menubar=no,toolbar=no,location=no,status=no',
                     ].filter(Boolean).join(',');
-                    window.open(appAssetPath(`/camera/${printer.id}`), `camera-${printer.id}`, features);
+                    let cameraUrl = appAssetPath(`/camera/${printer.id}`);
+                    const authToken = getAuthToken();
+                    if (authToken) {
+                      const separator = cameraUrl.includes('?') ? '&' : '?';
+                      // HA/mobile browsers do not reliably copy sessionStorage into popup windows.
+                      // Pass the app auth token once; AuthProvider consumes it and removes it from
+                      // the address bar before the camera stream URL is rendered.
+                      cameraUrl = `${cameraUrl}${separator}token=${encodeURIComponent(authToken)}`;
+                    }
+                    window.open(cameraUrl, `camera-${printer.id}`, features);
                   }
                 }}
                 disabled={!canOpenCamera}

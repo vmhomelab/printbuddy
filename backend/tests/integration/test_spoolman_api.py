@@ -560,8 +560,7 @@ class TestSpoolmanAPI:
         merge_spool_extra acquires extra_lock(spool_id) internally, so wrapping
         the call in another `async with client.extra_lock(spool_id)` deadlocks
         — asyncio.Lock is non-reentrant. Pre-fix: every unlink request hung
-        indefinitely; the SpoolBuddy kiosk's "Unassign" button looked
-        unresponsive because the mutation isPending stayed true forever.
+        indefinitely; the UI looked unresponsive because the mutation isPending stayed true forever.
 
         This test verifies the request completes promptly by mocking
         merge_spool_extra to fail if the lock is already held by the caller —

@@ -176,9 +176,7 @@ describe('ToastContext background dispatch — upload-done UX', () => {
 });
 
 describe('ToastContext viewport suppression', () => {
-  // The kiosk layout flips setViewportSuppressed(true) on mount so the
-  // SpoolBuddy display stays free of main-app toasts (background dispatch
-  // progress, login flows, etc.). Verify the gate hides the visible viewport
+  // Verify the suppression gate hides the visible viewport
   // without affecting the underlying state machine.
   function ViewportProbe() {
     const { showToast, setViewportSuppressed } = useToast();

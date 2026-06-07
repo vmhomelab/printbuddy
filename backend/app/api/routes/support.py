@@ -984,44 +984,6 @@ async def _collect_support_info() -> dict:
     except Exception:
         logger.debug("Failed to collect MQTT relay info", exc_info=True)
 
-    # SpoolBuddy devices (anonymized — no hostnames, IPs or device IDs)
-    try:
-        async with async_session() as db:
-            from backend.app.models.spoolbuddy_device import SpoolBuddyDevice
-
-            result = await db.execute(select(SpoolBuddyDevice))
-            devices = result.scalars().all()
-            info["integrations"]["spoolbuddy"] = {
-                "device_count": len(devices),
-                "online_count": sum(
-                    1
-                    for d in devices
-                    if d.last_seen
-                    and (datetime.now(tz=timezone.utc) - d.last_seen.replace(tzinfo=timezone.utc)).total_seconds() < 30
-                ),
-                "devices": [
-                    {
-                        "index": i + 1,
-                        "firmware_version": d.firmware_version,
-                        "has_nfc": d.has_nfc,
-                        "has_scale": d.has_scale,
-                        "nfc_reader_type": d.nfc_reader_type,
-                        "nfc_connection": d.nfc_connection,
-                        "has_backlight": d.has_backlight,
-                        "nfc_ok": d.nfc_ok,
-                        "scale_ok": d.scale_ok,
-                        "uptime_s": d.uptime_s,
-                        "calibration_factor": d.calibration_factor,
-                        "tare_offset": d.tare_offset,
-                        "last_calibrated_at": d.last_calibrated_at.isoformat() if d.last_calibrated_at else None,
-                        "update_status": d.update_status,
-                    }
-                    for i, d in enumerate(devices)
-                ],
-            }
-    except Exception:
-        logger.debug("Failed to collect SpoolBuddy info", exc_info=True)
-
     # Home Assistant (check ha_enabled setting)
     try:
         info["integrations"]["homeassistant"] = {

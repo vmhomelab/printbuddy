@@ -107,7 +107,7 @@ class MQTTRelayService:
             # Create client with callback API version 2 (use MQTTv311 for broader compatibility)
             self.client = mqtt.Client(
                 callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
-                client_id=f"bambuddy-{id(self)}",
+                client_id=f"printbuddy-{id(self)}",
                 protocol=mqtt.MQTTv311,
             )
 

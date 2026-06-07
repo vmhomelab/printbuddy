@@ -1,4 +1,4 @@
-name: "Bambuddy CodeQL Configuration"
+name: "Printbuddy CodeQL Configuration"
 
 # Uses the default query suite with accepted-risk exclusions.
 # Each exclusion is reviewed and documented below.

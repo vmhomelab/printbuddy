@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { useTheme } from '../contexts/ThemeContext';
-import { X, Mail, Shield, Smartphone, Key } from 'lucide-react';
+import { X, Mail, Shield, Smartphone, Key, Github } from 'lucide-react';
 import { api, type LoginResponse, type OIDCProvider, type TokenPersistence } from '../api/client';
 import { Card, CardHeader, CardContent } from '../components/Card';
 import { Button } from '../components/Button';
@@ -17,6 +17,23 @@ type LoginStep = 'credentials' | '2fa' | 'reset-password';
 // Read + remove in one try so all branches in the OIDC useEffect see the same
 // value and a subsequent page load does not replay the flag.
 const REMEMBER_ME_KEY = 'auth_remember_me';
+const SOURCE_CODE_URL = 'https://github.com/vmhomelab/Printbuddy';
+
+function SourceCodeLink() {
+  return (
+    <div className="text-center text-xs text-bambu-gray">
+      <a
+        href={SOURCE_CODE_URL}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="inline-flex items-center justify-center gap-1.5 hover:text-bambu-green transition-colors"
+      >
+        <Github className="w-3.5 h-3.5" />
+        <span>Source code</span>
+      </a>
+    </div>
+  );
+}
 
 function toPersistence(remember: boolean): TokenPersistence {
   return remember ? 'persistent' : 'session';
@@ -427,6 +444,8 @@ export function LoginPage() {
               {t('login.resetPassword.backToLogin')}
             </button>
           </div>
+
+          <SourceCodeLink />
         </div>
       </div>
     );
@@ -588,6 +607,8 @@ export function LoginPage() {
               {t('login.twoFA.backToLogin')}
             </button>
           </div>
+
+          <SourceCodeLink />
         </div>
       </div>
     );
@@ -710,6 +731,8 @@ export function LoginPage() {
             </div>
           </div>
         )}
+
+        <SourceCodeLink />
       </div>
 
       {/* Forgot Password Modal */}

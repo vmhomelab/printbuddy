@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { waitFor } from '@testing-library/react';
+import { screen, waitFor } from '@testing-library/react';
 import { render } from '../utils';
 import { Layout } from '../../components/Layout';
 import { http, HttpResponse } from 'msw';
@@ -128,6 +128,15 @@ describe('Layout', () => {
     });
   });
 
+  describe('AGPL source access', () => {
+    it('shows a prominent source-code link in the sidebar footer', async () => {
+      render(<Layout />);
+
+      const sourceLink = await screen.findByRole('link', { name: /source code/i });
+      expect(sourceLink).toHaveAttribute('href', 'https://github.com/vmhomelab/Printbuddy');
+    });
+  });
+
   describe('theme-aware branding', () => {
     it('uses the dark-mode Printbuddy logo when the app theme is dark', async () => {
       vi.mocked(localStorage.getItem).mockImplementation((key: string) => (
@@ -157,6 +166,21 @@ describe('Layout', () => {
       await waitFor(() => {
         expect(document.head.querySelector('link[rel="icon"][sizes="32x32"]')).toHaveAttribute('href', '/img/favicon-32x32.png');
       });
+    });
+
+    it('uses only the Printbuddy icon when the desktop sidebar is collapsed', async () => {
+      vi.mocked(localStorage.getItem).mockImplementation((key: string) => {
+        if (key === 'theme-mode') return 'dark';
+        if (key === 'sidebarExpanded') return 'false';
+        return null;
+      });
+
+      render(<Layout />);
+
+      const logo = await waitFor(() => document.querySelector('aside img[alt="Printbuddy"]')) as HTMLImageElement;
+      expect(logo).toBeInTheDocument();
+      expect(logo.getAttribute('src')).toBe('/img/printbuddy_icon_dark.png');
+      expect(logo).toHaveClass('h-8', 'w-8');
     });
 
     it('prefixes the sidebar logo and favicon when running under Home Assistant ingress', async () => {

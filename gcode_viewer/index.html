@@ -6,7 +6,7 @@
   <!-- CSP: all scripts are local; unsafe-eval needed by Three.js shader compiler;
        unsafe-inline needed by dat.GUI and jQuery for inline styles/event handlers -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws: wss:; font-src 'self' data:; worker-src blob:;">
-  <title>PrettyGCode — Bambuddy</title>
+  <title>PrettyGCode — Printbuddy</title>
 
   <link rel="stylesheet" href="css/prettygcode.css">
 
@@ -222,10 +222,10 @@
 <script src="js/dat.gui.js"></script>
 
 <!-- Adapter MUST load before prettygcode.js -->
-<script src="js/bambuddy_adapter.js"></script>
+<script src="js/printbuddy_adapter.js"></script>
 <script src="js/prettygcode.js"></script>
 
-<!-- Button wiring is in bambuddy_adapter.js — inline scripts are blocked by the
+<!-- Button wiring is in printbuddy_adapter.js — inline scripts are blocked by the
      script-src CSP on this page (no 'unsafe-inline'). -->
 
 </body>

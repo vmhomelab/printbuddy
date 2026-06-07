@@ -27,6 +27,25 @@ def _mock_client(handler) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=transport, timeout=10.0)
 
 
+class TestSlicerApiIdentity:
+    @pytest.mark.asyncio
+    async def test_requests_identify_as_printbuddy(self):
+        captured: dict[str, str] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["user_agent"] = request.headers.get("user-agent", "")
+            return httpx.Response(status_code=200, json={"ok": True})
+
+        client = _mock_client(handler)
+        service = SlicerApiService("http://slicer.local", client=client)
+
+        await service.health()
+        await client.aclose()
+
+        assert captured["user_agent"].startswith("Printbuddy/")
+        assert "Bambuddy" not in captured["user_agent"]
+
+
 class TestGuessModelContentType:
     """The sidecar's multer middleware rejects octet-stream for STL uploads,
     so we guess by extension."""

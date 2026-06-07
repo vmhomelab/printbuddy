@@ -228,7 +228,7 @@ def _map_spoolman_spool(spool: dict) -> MappedSpoolFields:
     # RFID tag stored as JSON-encoded string in Spoolman extra.tag.
     # 32-char hex → Bambu Lab tray UUID; 8–30-char hex → NFC tag UID.
     # Accepting the full realistic UID range (4-byte = 8 chars, 7-byte = 14 chars,
-    # 10-byte = 20 chars) avoids silently dropping valid SpoolBuddy-written tags.
+    # 10-byte = 20 chars) avoids silently dropping valid NFC tags.
     raw_tag: str = (extra.get("tag") or "").strip('"').upper()
     _raw_is_hex = bool(_TAG_HEX_RE.match(raw_tag))
     tag_uid = raw_tag if _raw_is_hex and 8 <= len(raw_tag) <= 30 else None

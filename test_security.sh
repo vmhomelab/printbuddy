@@ -131,7 +131,7 @@ scan_codeql_python() {
     gh codeql database create --overwrite --language=python --threads=0 /tmp/bambuddy-codeql-python &>/dev/null
     echo "Analyzing..."
     gh codeql database analyze /tmp/bambuddy-codeql-python \
-        "$PROJECT_ROOT/.codeql/python-bambuddy.qls" \
+        "$PROJECT_ROOT/.codeql/python-printbuddy.qls" \
         --threads=0 --format=sarifv2.1.0 --output="$sarif" &>/dev/null
     echo ""
     parse_sarif "$sarif"
@@ -147,7 +147,7 @@ scan_codeql_js() {
     gh codeql database create --overwrite --language=javascript --source-root=frontend --threads=0 /tmp/bambuddy-codeql-javascript &>/dev/null
     echo "Analyzing..."
     gh codeql database analyze /tmp/bambuddy-codeql-javascript \
-        "$PROJECT_ROOT/.codeql/javascript-bambuddy.qls" \
+        "$PROJECT_ROOT/.codeql/javascript-printbuddy.qls" \
         --threads=0 --format=sarifv2.1.0 --output="$sarif" &>/dev/null
     echo ""
     parse_sarif "$sarif"

@@ -202,6 +202,19 @@ class TestSettingsAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_new_install_theme_defaults_are_dark_turquoise(self, async_client: AsyncClient):
+        """New installs should start with dark mode styling and turquoise accents."""
+        response = await async_client.get("/api/v1/settings/")
+
+        assert response.status_code == 200
+        result = response.json()
+        assert result["dark_style"] == "vibrant"
+        assert result["dark_background"] == "cool"
+        assert result["dark_accent"] == "teal"
+        assert result["light_accent"] == "teal"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_update_theme_settings(self, async_client: AsyncClient):
         """Verify theme settings can be updated."""
         response = await async_client.put(

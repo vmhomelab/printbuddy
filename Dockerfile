@@ -67,8 +67,7 @@ COPY backend/ ./backend/
 
 # Capture the current git branch at build time. `.git/HEAD` is the only
 # .git metadata the build context lets through (see .dockerignore); it
-# contains `ref: refs/heads/<branch>`, which the SpoolBuddy remote-update
-# flow reads at runtime via detect_current_branch() in spoolbuddy_ssh.py.
+# contains `ref: refs/heads/<branch>` for runtime version/source reporting.
 # Without this, the production image has no git metadata at all and would
 # always pull `main` on the remote device regardless of which branch
 # Printbuddy itself was built from.
@@ -120,7 +119,7 @@ ENV PORT=8000
 # stock python:3.13-slim image has no /etc/passwd entry for that UID, so
 # pwd.getpwuid() raises and breaks libraries that do host-level user lookups
 # (notably asyncssh, which uses the local username for ~/.ssh/config host
-# matching during the SpoolBuddy remote-update flow). Setting LOGNAME/USER
+# matching). Setting LOGNAME/USER
 # makes getpass.getuser() resolve via env vars instead of the passwd db;
 # HOME=/app gives a writable home that is guaranteed to exist.
 ENV HOME=/app

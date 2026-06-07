@@ -82,10 +82,9 @@ describe('AssignSpoolModal', () => {
   });
 
   // Inverted from the original "filters out BL spools" expectation in #1133.
-  // Bambu Lab spools (tag_uid + tray_uuid populated by SpoolBuddy NFC scan or
-  // auto-creation) used to be hidden from this picker, blocking the workflow
-  // where a user has a BL spool in inventory but doesn't want to scan it via
-  // SpoolBuddy each time and just wants to pick it from the list. The picker
+  // Bambu Lab spools (tag_uid + tray_uuid populated by RFID auto-creation)
+  // used to be hidden from this picker, blocking the workflow where a user
+  // has a BL spool in inventory and just wants to pick it from the list. The picker
   // now lists every spool that isn't already assigned to another slot.
   it('lists Bambu Lab spools (with tag_uid/tray_uuid) alongside manual ones (#1133)', async () => {
     render(<AssignSpoolModal {...defaultProps} />);

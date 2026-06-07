@@ -488,7 +488,7 @@ async def create_backup_zip(output_path: Path | None = None) -> tuple[Path, str]
     from backend.app.core.db_dialect import is_sqlite
 
     base_dir = app_settings.base_dir
-    filename = f"bambuddy-backup-{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip"
+    filename = f"printbuddy-backup-{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip"
 
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)

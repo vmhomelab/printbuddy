@@ -31,9 +31,7 @@
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
 
-    <!-- Service Worker Registration (skip on SpoolBuddy kiosk).
-         Kept as an external file so the CSP `script-src 'self'` covers it
-         without needing 'unsafe-inline' or per-build hashes. -->
+    <!-- Service Worker Registration. Kept as an external file so the CSP `script-src 'self'` covers it without needing 'unsafe-inline' or per-build hashes. -->
     <script src="/sw-register.js"></script>
   </body>
 </html>

@@ -35,7 +35,7 @@ export function VirtualKeyboard({ onVisibilityChange }: { onVisibilityChange?: (
     if (closingRef.current) return;
     const target = e.target as HTMLElement;
 
-    // Skip inputs that opt out (e.g. SpoolBuddySettingsPage numpad field)
+    // Skip inputs that opt out of the virtual keyboard.
     if (target.closest('[data-vkb="false"]')) return;
 
     if (target instanceof HTMLInputElement) {

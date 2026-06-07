@@ -64,7 +64,6 @@ async def legacy_engine():
         spool_catalog,
         spool_k_profile,
         spool_usage_history,
-        spoolbuddy_device,
         user,
         user_email_pref,
         virtual_printer,

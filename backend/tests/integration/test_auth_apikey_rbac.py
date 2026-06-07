@@ -116,8 +116,8 @@ class TestApiKeyDenylistIntegrity:
         from backend.app.core.permissions import Permission
 
         expected_denied = {
-            # SETTINGS_READ is intentionally NOT denied — SpoolBuddy kiosk reads
-            # settings via API key (e.g. to sync the UI language).
+            # SETTINGS_READ is intentionally NOT denied — read-only clients may read
+            # settings via API key.
             Permission.SETTINGS_UPDATE,
             Permission.SETTINGS_BACKUP,
             Permission.SETTINGS_RESTORE,
@@ -154,7 +154,7 @@ class TestApiKeyDenylistIntegrity:
             Permission.PRINTERS_READ,
             Permission.PRINTERS_CONTROL,
             Permission.ARCHIVES_READ,
-            # SpoolBuddy kiosk reads settings (e.g. language) via API key — must stay allowed.
+            # Read-only clients may read settings via API key — must stay allowed.
             Permission.SETTINGS_READ,
         }
         incorrectly_denied = expected_allowed & _APIKEY_DENIED_PERMISSIONS
