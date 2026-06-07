@@ -1,6 +1,20 @@
 # Changelog
 
-All notable changes to Bambuddy will be documented in this file.
+All notable Printbuddy changes are documented in the Printbuddy section below.
+The historical Bambuddy changelog is preserved after that section for fork/upstream context only; inherited entries describe Bambuddy releases and should not be read as Printbuddy release claims.
+
+## Printbuddy
+
+### Unreleased
+
+#### Changed
+- Removed stale SpoolBuddy issue-template options so Printbuddy issue reports and feature requests no longer present Bambuddy's SpoolBuddy hardware/product areas as Printbuddy components.
+
+---
+
+## Inherited Bambuddy changelog
+
+The entries below are inherited from Bambuddy and retained only for historical context from the fork point.
 
 ## [0.2.4.3] - 2026-05-24
 
