@@ -84,6 +84,7 @@ def _parse_bundle_summary(payload: dict) -> BundleSummary:
 
 
 _shared_http_client: httpx.AsyncClient | None = None
+_USER_AGENT = "Printbuddy/1.0 (+https://github.com/vmhomelab/Printbuddy)"
 
 
 def _format_sidecar_error(response: httpx.Response) -> str:
@@ -148,6 +149,7 @@ class SlicerApiService:
         else:
             self._client = httpx.AsyncClient(timeout=timeout_seconds)
             self._owns_client = True
+        self._client.headers["User-Agent"] = _USER_AGENT
 
     async def close(self) -> None:
         if self._owns_client:

@@ -4363,7 +4363,7 @@ export const api = {
 
     // Get filename from Content-Disposition header
     const contentDisposition = response.headers.get('Content-Disposition');
-    let filename = 'bambuddy-backup.zip';
+    let filename = 'printbuddy-backup.zip';
     if (contentDisposition) {
       const match = contentDisposition.match(/filename=([^;]+)/);
       if (match) filename = match[1].trim().replace(/^"(.*)"$/, '$1');

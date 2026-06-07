@@ -3238,7 +3238,7 @@ class BambuMQTTClient:
         """
         self._loop = loop
         BambuMQTTClient._client_instance_counter += 1
-        client_id = f"bambuddy_{self.serial_number}_{os.getpid()}_{BambuMQTTClient._client_instance_counter}"
+        client_id = f"printbuddy_{self.serial_number}_{os.getpid()}_{BambuMQTTClient._client_instance_counter}"
         self._client = mqtt.Client(
             callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
             client_id=client_id,

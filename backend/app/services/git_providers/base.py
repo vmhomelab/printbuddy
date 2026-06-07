@@ -51,7 +51,7 @@ class GitProviderBackend(ABC):
         return {
             "Authorization": f"token {token}",
             "Accept": "application/vnd.github.v3+json",
-            "User-Agent": "Bambuddy-Backup",
+            "User-Agent": "Printbuddy-Backup",
         }
 
     @abstractmethod

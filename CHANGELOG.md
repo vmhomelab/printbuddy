@@ -8,6 +8,7 @@ The historical Bambuddy changelog is preserved after that section for fork/upstr
 ### Unreleased
 
 #### Changed
+- Replaced remaining outbound identity strings that still presented the fork as Bambuddy: backup Git API requests now send a Printbuddy User-Agent, MQTT printer/relay/smart-plug clients use `printbuddy*` client IDs, slicer-sidecar HTTP calls now send the Printbuddy User-Agent, and newly-created/downloaded backup ZIPs use the `printbuddy-backup-*` prefix while legacy `bambuddy-backup-*` files remain readable.
 - Added prominent `Source code` links to the authenticated sidebar footer and unauthenticated login flows so network users can reach Printbuddy's complete corresponding source from the UI for AGPL-3.0 section 13.
 - Added `NOTICE-modifications.md` to provide AGPL-3.0 section 5(a) modification notices for Printbuddy-conveyed source files, with modified paths and relevant dates relative to the inherited Bambuddy base.
 - Removed stale SpoolBuddy issue-template options so Printbuddy issue reports and feature requests no longer present Bambuddy's SpoolBuddy hardware/product areas as Printbuddy components.
