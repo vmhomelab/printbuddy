@@ -242,6 +242,17 @@ Historical upstream documentation and changelog entries may still reference Bamb
 
 ---
 
+## Star History
+
+<a href="https://www.star-history.com/?repos=vmhomelab%2Fprintbuddy&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=vmhomelab/printbuddy&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=vmhomelab/printbuddy&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=vmhomelab/printbuddy&type=date&legend=top-left" />
+ </picture>
+</a>
+
+
 <p align="center">
   <strong>Printbuddy</strong><br>
   Your tiny helper for keeping the printer chaos under control.
