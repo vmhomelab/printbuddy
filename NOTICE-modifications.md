@@ -6,7 +6,7 @@ Printbuddy is a modified fork of Bambuddy. The Bambuddy history is retained in g
 
 - Upstream Bambuddy comparison base: `5d248e16ba0954b175896a56f9c569e6808d0c9d`
 - Notice date: 2026-06-07
-- Date meaning: the most recent Printbuddy-side git commit date touching the path, based on the current repository history. For this notice file itself, the date is its creation date.
+- Date meaning: the most recent Printbuddy-side git commit date touching the path, based on the current repository history. For files changed in the working release change, the date is the notice update date.
 
 ## Modified files
 
@@ -190,7 +190,7 @@ Printbuddy is a modified fork of Bambuddy. The Bambuddy history is retained in g
 - `frontend/src/__tests__/components/FilamentHoverCard.test.tsx` — modified by Printbuddy; latest modification date: 2026-06-07.
 - `frontend/src/__tests__/components/FileUploadModal.test.tsx` — modified by Printbuddy; latest modification date: 2026-06-06.
 - `frontend/src/__tests__/components/InventorySpoolInfoCard.test.tsx` — deleted by Printbuddy; latest modification date: 2026-06-07.
-- `frontend/src/__tests__/components/Layout.test.tsx` — modified by Printbuddy; latest modification date: 2026-06-06.
+- `frontend/src/__tests__/components/Layout.test.tsx` — modified by Printbuddy; latest modification date: 2026-06-07.
 - `frontend/src/__tests__/components/PrintModal.test.tsx` — modified by Printbuddy; latest modification date: 2026-06-06.
 - `frontend/src/__tests__/components/spoolbuddy/AmsUnitCard.test.tsx` — deleted by Printbuddy; latest modification date: 2026-06-07.
 - `frontend/src/__tests__/components/spoolbuddy/SpoolBuddyBottomNav.test.tsx` — deleted by Printbuddy; latest modification date: 2026-06-07.
@@ -210,7 +210,7 @@ Printbuddy is a modified fork of Bambuddy. The Bambuddy history is retained in g
 - `frontend/src/__tests__/hooks/useFilamentMapping.test.ts` — modified by Printbuddy; latest modification date: 2026-06-06.
 - `frontend/src/__tests__/hooks/useSpoolBuddyState.test.ts` — deleted by Printbuddy; latest modification date: 2026-06-07.
 - `frontend/src/__tests__/mocks/handlers.ts` — modified by Printbuddy; latest modification date: 2026-06-07.
-- `frontend/src/__tests__/pages/LoginPage.test.tsx` — modified by Printbuddy; latest modification date: 2026-06-06.
+- `frontend/src/__tests__/pages/LoginPage.test.tsx` — modified by Printbuddy; latest modification date: 2026-06-07.
 - `frontend/src/__tests__/pages/PrintersPage.test.tsx` — modified by Printbuddy; latest modification date: 2026-06-07.
 - `frontend/src/__tests__/pages/PrintersPageCameraAction.test.ts` — added by Printbuddy; latest modification date: 2026-06-07.
 - `frontend/src/__tests__/pages/SettingsPage.test.tsx` — modified by Printbuddy; latest modification date: 2026-06-07.
@@ -236,7 +236,7 @@ Printbuddy is a modified fork of Bambuddy. The Bambuddy history is retained in g
 - `frontend/src/components/FileUploadModal.tsx` — modified by Printbuddy; latest modification date: 2026-06-06.
 - `frontend/src/components/GitHubBackupSettings.tsx` — modified by Printbuddy; latest modification date: 2026-06-06.
 - `frontend/src/components/KlipperControlPanel.tsx` — added by Printbuddy; latest modification date: 2026-06-06.
-- `frontend/src/components/Layout.tsx` — modified by Printbuddy; latest modification date: 2026-06-06.
+- `frontend/src/components/Layout.tsx` — modified by Printbuddy; latest modification date: 2026-06-07.
 - `frontend/src/components/LDAPSettings.tsx` — modified by Printbuddy; latest modification date: 2026-06-06.
 - `frontend/src/components/PrinterInfoModal.tsx` — modified by Printbuddy; latest modification date: 2026-06-06.
 - `frontend/src/components/PrintModal/FilamentMapping.tsx` — modified by Printbuddy; latest modification date: 2026-06-06.
@@ -286,7 +286,7 @@ Printbuddy is a modified fork of Bambuddy. The Bambuddy history is retained in g
 - `frontend/src/lib/settingsSearch.ts` — modified by Printbuddy; latest modification date: 2026-06-07.
 - `frontend/src/pages/CameraPage.tsx` — modified by Printbuddy; latest modification date: 2026-06-06.
 - `frontend/src/pages/InventoryPage.tsx` — modified by Printbuddy; latest modification date: 2026-06-07.
-- `frontend/src/pages/LoginPage.tsx` — modified by Printbuddy; latest modification date: 2026-06-06.
+- `frontend/src/pages/LoginPage.tsx` — modified by Printbuddy; latest modification date: 2026-06-07.
 - `frontend/src/pages/PrintersPage.tsx` — modified by Printbuddy; latest modification date: 2026-06-07.
 - `frontend/src/pages/SettingsPage.tsx` — modified by Printbuddy; latest modification date: 2026-06-07.
 - `frontend/src/pages/SetupPage.tsx` — modified by Printbuddy; latest modification date: 2026-06-06.
@@ -311,7 +311,7 @@ Printbuddy is a modified fork of Bambuddy. The Bambuddy history is retained in g
 - `install/README.md` — modified by Printbuddy; latest modification date: 2026-06-06.
 - `install/update.sh` — modified by Printbuddy; latest modification date: 2026-06-06.
 - `install/update_macos.sh` — modified by Printbuddy; latest modification date: 2026-06-06.
-- `NOTICE-modifications.md` — added by Printbuddy; latest modification date: 2026-06-07.
+- `NOTICE-modifications.md` — modified by Printbuddy; latest modification date: 2026-06-07.
 - `pyproject.toml` — modified by Printbuddy; latest modification date: 2026-06-06.
 - `README.md` — modified by Printbuddy; latest modification date: 2026-06-07.
 - `requirements.txt` — modified by Printbuddy; latest modification date: 2026-06-07.
@@ -347,7 +347,9 @@ Printbuddy is a modified fork of Bambuddy. The Bambuddy history is retained in g
 - `spoolbuddy/tests/test_main.py` — deleted by Printbuddy; latest modification date: 2026-06-07.
 - `spoolbuddy/tests/test_tag_parser.py` — deleted by Printbuddy; latest modification date: 2026-06-07.
 - `static/assets/index-Bcq2D1pW.css` — added by Printbuddy; latest modification date: 2026-06-07.
-- `static/assets/index-C-YgIh3u.js → static/assets/index-DFRy1S-W.js` — renamed by Printbuddy; latest modification date: 2026-06-07.
+- `static/assets/index-C-YgIh3u.js` — deleted by Printbuddy; latest modification date: 2026-06-06.
+- `static/assets/index-DFRy1S-W.js` — deleted by Printbuddy; latest modification date: 2026-06-07.
+- `static/assets/index-DlHdgt0X.js` — added by Printbuddy; latest modification date: 2026-06-07.
 - `static/assets/index-y4woBlMv.css` — deleted by Printbuddy; latest modification date: 2026-06-06.
 - `static/icons/ventilation.svg` — modified by Printbuddy; latest modification date: 2026-06-06.
 - `static/img/android-chrome-192x192-dark.png` — added by Printbuddy; latest modification date: 2026-06-06.

@@ -8,6 +8,7 @@ The historical Bambuddy changelog is preserved after that section for fork/upstr
 ### Unreleased
 
 #### Changed
+- Added prominent `Source code` links to the authenticated sidebar footer and unauthenticated login flows so network users can reach Printbuddy's complete corresponding source from the UI for AGPL-3.0 section 13.
 - Added `NOTICE-modifications.md` to provide AGPL-3.0 section 5(a) modification notices for Printbuddy-conveyed source files, with modified paths and relevant dates relative to the inherited Bambuddy base.
 - Removed stale SpoolBuddy issue-template options so Printbuddy issue reports and feature requests no longer present Bambuddy's SpoolBuddy hardware/product areas as Printbuddy components.
 

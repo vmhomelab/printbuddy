@@ -39,6 +39,13 @@ describe('LoginPage', () => {
         expect(screen.getByText(/Sign in to your account/i)).toBeInTheDocument();
       });
     });
+
+    it('offers the public source code link before authentication', async () => {
+      render(<LoginPage />);
+
+      const sourceLink = await screen.findByRole('link', { name: /source code/i });
+      expect(sourceLink).toHaveAttribute('href', 'https://github.com/vmhomelab/Printbuddy');
+    });
   });
 
   describe('form validation', () => {

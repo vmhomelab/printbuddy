@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { waitFor } from '@testing-library/react';
+import { screen, waitFor } from '@testing-library/react';
 import { render } from '../utils';
 import { Layout } from '../../components/Layout';
 import { http, HttpResponse } from 'msw';
@@ -125,6 +125,15 @@ describe('Layout', () => {
         expect(document.body.textContent).toContain('v0.1.6 (abc1234)');
       });
       expect(document.body.textContent).not.toContain('printbuddy.');
+    });
+  });
+
+  describe('AGPL source access', () => {
+    it('shows a prominent source-code link in the sidebar footer', async () => {
+      render(<Layout />);
+
+      const sourceLink = await screen.findByRole('link', { name: /source code/i });
+      expect(sourceLink).toHaveAttribute('href', 'https://github.com/vmhomelab/Printbuddy');
     });
   });
 
