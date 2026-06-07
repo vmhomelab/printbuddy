@@ -1,6 +1,6 @@
 # Printbuddy
 
-Printbuddy is a fork of [Bambuddy](https://github.com/vmhomelab/printbuddy-ha-addon) with a broader goal: one modern self-hosted dashboard for **Bambu Lab**, **Klipper**, and **Prusa** printers.
+Printbuddy is a fork of [Bambuddy](https://github.com/maziggy/bambuddy) with a broader goal: one modern self-hosted dashboard for **Bambu Lab**, **Klipper**, and **Prusa** printers.
 
 > [!WARNING]
 > **This repository is still under active development**
