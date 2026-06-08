@@ -14,6 +14,12 @@
 </p>
 
 <p align="center">
+  <a href="https://wiki.printbuddy.tech">📚 Wiki</a>
+  ·
+  <a href="https://demo.printbuddy.tech">🚀 Demo</a>
+</p>
+
+<p align="center">
   <a href="#docker-quick-start">Quick Start</a>
   ·
   <a href="#printer-provider-direction">Providers</a>
