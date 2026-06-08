@@ -169,8 +169,8 @@ Then enable the commented `ports:` block in the compose file instead.
 Once GHCR publishing is enabled, the planned image tags are:
 
 ```text
-ghcr.io/vmhomelab/printbuddy:dev
-ghcr.io/vmhomelab/printbuddy:latest
+docker.io/vmhomelabde/printbuddy
+docker.io/vmhomelabde/printbuddy:latest
 ```
 
 ---

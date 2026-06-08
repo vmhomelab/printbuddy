@@ -12,11 +12,11 @@ Pick the section that matches how Printbuddy was installed.
 
 ```bash
 # 1. Make sure your compose file isn't pinned to an old image or old project.
-#    The image line should point at the Printbuddy GHCR package, for example:
-#      image: ghcr.io/vmhomelab/printbuddy:latest
+#    The image line should point at the Printbuddy Docker Hub package, for example:
+#      image: docker.io/vmhomelabde/printbuddy:latest
 #
 #    If you intentionally test the development channel, use:
-#      image: ghcr.io/vmhomelab/printbuddy:dev
+#      image: docker.io/vmhomelabde/printbuddy:dev
 #
 #    Do not use the old upstream image name from the pre-fork project.
 
@@ -27,7 +27,7 @@ docker compose up -d
 
 **If your `docker-compose.yml` is old or still references the pre-fork project,** refresh it
 from the Printbuddy repository. Recent compose files use the `printbuddy` service
-name, `ghcr.io/vmhomelab/printbuddy` image, Printbuddy data/log volumes,
+name, `docker.io/vmhomelabde/printbuddy` image, Printbuddy data/log volumes,
 `cap_add: NET_BIND_SERVICE`, virtual-printer ports, and the optional Postgres
 block.
 
@@ -40,7 +40,7 @@ docker compose up -d
 ```
 
 For the dev/test channel, replace `main` with `dev` in the raw URL or change the
-image tag to `ghcr.io/vmhomelab/printbuddy:dev` after downloading.
+image tag to `docker.io/vmhomelabde/printbuddy:dev` after downloading.
 
 ---
 
