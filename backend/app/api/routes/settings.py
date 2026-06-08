@@ -20,12 +20,28 @@ from backend.app.models.user import User
 from backend.app.schemas.settings import AppSettings, AppSettingsUpdate
 
 MANUAL_BACKUP_FILENAME_PREFIX = "printbuddy-backup-"
+BACKUP_DATABASE_FILENAME = "printbuddy.db"
+LEGACY_BACKUP_DATABASE_FILENAME = "bambu" + "ddy.db"
 
 
 def make_backup_filename(now: datetime | None = None) -> str:
     """Return the download filename for manually-created backup ZIPs."""
     timestamp = (now or datetime.now()).strftime("%Y%m%d-%H%M%S")
     return f"{MANUAL_BACKUP_FILENAME_PREFIX}{timestamp}.zip"
+
+
+def find_backup_database_file(backup_dir: Path) -> Path | None:
+    """Return the database file inside an extracted backup directory.
+
+    Current Printbuddy backups contain ``printbuddy.db``. Older backups from
+    before the rebrand used the legacy filename; accept those so users can
+    still restore pre-cleanup ZIPs.
+    """
+    for filename in (BACKUP_DATABASE_FILENAME, LEGACY_BACKUP_DATABASE_FILENAME):
+        candidate = backup_dir / filename
+        if candidate.exists() and candidate.is_file():
+            return candidate
+    return None
 
 
 logger = logging.getLogger(__name__)
@@ -514,7 +530,7 @@ async def create_backup_zip(output_path: Path | None = None) -> tuple[Path, str]
                 await conn.execute(text("PRAGMA wal_checkpoint(TRUNCATE)"))
 
             # Copy database file
-            shutil.copy2(db_path, temp_path / "printbuddy.db")
+            shutil.copy2(db_path, temp_path / BACKUP_DATABASE_FILENAME)
         else:
             # PostgreSQL: export to a portable SQLite file via SQLAlchemy.
             # This makes backups restorable on both SQLite and Postgres installs.
@@ -523,7 +539,7 @@ async def create_backup_zip(output_path: Path | None = None) -> tuple[Path, str]
 
             from backend.app.core.database import Base, engine
 
-            backup_db_path = temp_path / "printbuddy.db"
+            backup_db_path = temp_path / BACKUP_DATABASE_FILENAME
             dst = sqlite3.connect(str(backup_db_path))
             metadata = Base.metadata
 
@@ -883,8 +899,8 @@ async def restore_backup(
             raise HTTPException(400, "Invalid backup file: not a valid ZIP")
 
         # 2. Validate backup
-        backup_db = temp_path / "printbuddy.db"
-        if not backup_db.exists():
+        backup_db = find_backup_database_file(temp_path)
+        if backup_db is None:
             raise HTTPException(400, "Invalid backup: missing printbuddy.db")
 
         try:

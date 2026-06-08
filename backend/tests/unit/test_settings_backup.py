@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from backend.app.api.routes.settings import make_backup_filename
+from backend.app.api.routes.settings import find_backup_database_file, make_backup_filename
 
 
 def test_manual_backup_filename_uses_printbuddy_prefix():
@@ -10,3 +10,19 @@ def test_manual_backup_filename_uses_printbuddy_prefix():
 
     assert filename == "printbuddy-backup-20260412-131415.zip"
     assert not filename.startswith("bam" + "buddy-backup-")
+
+
+def test_restore_prefers_printbuddy_database_file(tmp_path):
+    current_db = tmp_path / "printbuddy.db"
+    legacy_db = tmp_path / ("bambu" + "ddy.db")
+    current_db.write_text("current")
+    legacy_db.write_text("legacy")
+
+    assert find_backup_database_file(tmp_path) == current_db
+
+
+def test_restore_accepts_legacy_database_file(tmp_path):
+    legacy_db = tmp_path / ("bambu" + "ddy.db")
+    legacy_db.write_text("legacy")
+
+    assert find_backup_database_file(tmp_path) == legacy_db
