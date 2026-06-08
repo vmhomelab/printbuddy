@@ -28,6 +28,8 @@
   ·
   <a href="#printer-provider-direction">Providers</a>
   ·
+  <a href="#home-assistant">Home Assistant</a>
+  ·
   <a href="#screenshots">Screenshots</a>
   ·
   <a href="#printbuddy-mascot--stl">Printbuddy STL</a>
@@ -188,6 +190,20 @@ Planned providers:
 The first implementation step adds the provider and printer metadata to allow printers to be added.
 
 Bambu remains the default provider for backwards compatibility.
+
+---
+
+## Home Assistant
+
+Printbuddy can be used with Home Assistant in two ways:
+
+- **Home Assistant add-on:** run Printbuddy directly inside Home Assistant with Ingress, persistent add-on storage, and LAN printer access through host networking. Repository: [vmhomelab/printbuddy-ha-addon](https://github.com/vmhomelab/printbuddy-ha-addon)
+- **Home Assistant custom integration:** connect Home Assistant to an existing Printbuddy instance and expose configured printers as Home Assistant devices and telemetry entities. Repository: [vmhomelab/ha-printbuddy-integration](https://github.com/vmhomelab/ha-printbuddy-integration)
+
+Wiki pages:
+
+- [Printbuddy Home Assistant Add-on](https://github.com/vmhomelab/printbuddy/wiki/Home-Assistant-Add-on)
+- [Printbuddy Home Assistant Integration](https://github.com/vmhomelab/printbuddy/wiki/Home-Assistant-Integration)
 
 ---
 
