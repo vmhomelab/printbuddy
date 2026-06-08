@@ -19,6 +19,15 @@ from backend.app.models.settings import Settings
 from backend.app.models.user import User
 from backend.app.schemas.settings import AppSettings, AppSettingsUpdate
 
+MANUAL_BACKUP_FILENAME_PREFIX = "printbuddy-backup-"
+
+
+def make_backup_filename(now: datetime | None = None) -> str:
+    """Return the download filename for manually-created backup ZIPs."""
+    timestamp = (now or datetime.now()).strftime("%Y%m%d-%H%M%S")
+    return f"{MANUAL_BACKUP_FILENAME_PREFIX}{timestamp}.zip"
+
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/settings", tags=["settings"])
@@ -488,7 +497,7 @@ async def create_backup_zip(output_path: Path | None = None) -> tuple[Path, str]
     from backend.app.core.db_dialect import is_sqlite
 
     base_dir = app_settings.base_dir
-    filename = f"printbuddy-backup-{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip"
+    filename = make_backup_filename()
 
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
