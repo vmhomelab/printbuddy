@@ -191,9 +191,7 @@ class PrusaConnectMobilePrinterClient:
             "nozzle_target": _float_or_zero(
                 _first_present(telemetry, "temperatureNozzleTarget", "target_nozzle", "nozzle_target")
             ),
-            "bed": _float_or_zero(
-                _first_present(telemetry, "temperatureHeatbedCurrent", "temp_bed", "bed")
-            ),
+            "bed": _float_or_zero(_first_present(telemetry, "temperatureHeatbedCurrent", "temp_bed", "bed")),
             "bed_target": _float_or_zero(
                 _first_present(telemetry, "temperatureHeatbedTarget", "target_bed", "bed_target")
             ),
@@ -201,7 +199,9 @@ class PrusaConnectMobilePrinterClient:
         self.state.temperatures["nozzle_heating"] = (
             self.state.temperatures["nozzle_target"] - self.state.temperatures["nozzle"] > 1.0
         )
-        self.state.temperatures["bed_heating"] = self.state.temperatures["bed_target"] - self.state.temperatures["bed"] > 1.0
+        self.state.temperatures["bed_heating"] = (
+            self.state.temperatures["bed_target"] - self.state.temperatures["bed"] > 1.0
+        )
 
         axis_z = _first_present(telemetry, "axisZ", "axis_z", "z")
         if axis_z is not None:
