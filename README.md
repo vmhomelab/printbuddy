@@ -20,6 +20,10 @@
 </p>
 
 <p align="center">
+  Demo login: <code>admin</code> / <code>printbuddy</code>
+</p>
+
+<p align="center">
   <a href="#docker-quick-start">Quick Start</a>
   ·
   <a href="#printer-provider-direction">Providers</a>
