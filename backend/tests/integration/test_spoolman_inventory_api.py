@@ -1,7 +1,7 @@
 """Integration tests for the Spoolman inventory proxy endpoints.
 
 These tests verify that /api/v1/spoolman/inventory/spools/* correctly
-translates between Spoolman's data model and Bambuddy's InventorySpool format.
+translates between Spoolman's data model and Printbuddy's InventorySpool format.
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -704,7 +704,7 @@ class TestSpoolmanInventoryCRUD:
 class TestSpoolmanInventorySlicerFilament:
     """slicer_filament persistence via Spoolman extra dict.
 
-    Spoolman has no native slicer_filament field — Bambuddy persists the
+    Spoolman has no native slicer_filament field — Printbuddy persists the
     BambuStudio preset under bambu_slicer_filament[_name] keys in the
     spool's extra dict and unwraps them in _map_spoolman_spool. Without
     this round-trip the user's slicer-preset selection on the spool form
@@ -1062,7 +1062,7 @@ class TestSpoolmanInventoryInputValidation:
         """SSRF: dangerous schemes, cloud metadata IPs, multicast, unspecified,
         and numeric-encoded IPs must be rejected with 400. Loopback and
         RFC-1918 private ranges are allowed — they are legitimate Spoolman
-        topologies for self-hosted Bambuddy deployments."""
+        topologies for self-hosted Printbuddy deployments."""
         from backend.app.models.settings import Settings
 
         db_session.add(Settings(key="spoolman_enabled", value="true"))
@@ -1093,7 +1093,7 @@ class TestSpoolmanInventoryInputValidation:
         mock_spoolman_client,
         lan_url: str,
     ):
-        """Regression: Bambuddy's normal deployment is LAN-local Spoolman.
+        """Regression: Printbuddy's normal deployment is LAN-local Spoolman.
         Loopback and RFC-1918 private addresses must NOT be rejected as SSRF."""
         from backend.app.models.settings import Settings
 
@@ -1265,7 +1265,7 @@ class TestStorageLocationPassthrough:
 class TestColorNamePassthrough:
     """color_name persistence via spool.extra.bambu_color_name (#1357).
 
-    Spoolman 0.23.1 has no `color_name` field on Filament, so Bambuddy owns
+    Spoolman 0.23.1 has no `color_name` field on Filament, so Printbuddy owns
     the round-trip via the spool's extra dict — same shape as the existing
     bambu_slicer_filament storage. These tests pin that the create/update
     routes register the extra field and write to merge_spool_extra, NOT to

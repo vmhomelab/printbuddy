@@ -1,4 +1,4 @@
-"""S6: warn on unknown MFA_*/BAMBUDDY_* env vars so typos like
+"""S6: warn on unknown MFA_*/PRINTBUDDY_* env vars so typos like
 ``MFA_ENCYPTION_KEY`` are not silently swallowed by ``extra="ignore"``."""
 
 from __future__ import annotations
@@ -23,16 +23,16 @@ def test_unknown_mfa_env_var_logs_info(monkeypatch, caplog):
 
 
 @pytest.mark.unit
-def test_unknown_bambuddy_env_var_logs_info(monkeypatch, caplog):
-    """An unrecognised BAMBUDDY_* env var must also be logged."""
-    monkeypatch.setenv("BAMBUDDY_NEW_FEATURE", "v1")
+def test_unknown_printbuddy_env_var_logs_info(monkeypatch, caplog):
+    """An unrecognised PRINTBUDDY_* env var must also be logged."""
+    monkeypatch.setenv("PRINTBUDDY_NEW_FEATURE", "v1")
 
     import backend.app.core.config as cfg_mod
 
     with caplog.at_level(logging.INFO):
         importlib.reload(cfg_mod)
 
-    assert any("BAMBUDDY_NEW_FEATURE" in rec.message for rec in caplog.records)
+    assert any("PRINTBUDDY_NEW_FEATURE" in rec.message for rec in caplog.records)
 
 
 @pytest.mark.unit

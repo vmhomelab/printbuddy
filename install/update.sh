@@ -7,8 +7,8 @@ BRANCH="${BRANCH:-}"
 VENV_PIP="${VENV_PIP:-$INSTALL_DIR/venv/bin/pip}"
 FRONTEND_DIR="${FRONTEND_DIR:-$INSTALL_DIR/frontend}"
 BACKUP_DIR="${BACKUP_DIR:-$INSTALL_DIR/backups}"
-BAMBUDDY_API_URL="${BAMBUDDY_API_URL:-http://127.0.0.1:8000/api/v1}"
-BAMBUDDY_API_KEY="${BAMBUDDY_API_KEY:-}"
+PRINTBUDDY_API_URL="${PRINTBUDDY_API_URL:-http://127.0.0.1:8000/api/v1}"
+PRINTBUDDY_API_KEY="${PRINTBUDDY_API_KEY:-}"
 BACKUP_MODE="${BACKUP_MODE:-auto}" # auto|require|skip
 BACKUP_KEEP_COUNT=5
 FORCE="${FORCE:-0}"
@@ -90,13 +90,13 @@ create_backup() {
   ts="$(date +%Y%m%d-%H%M%S)"
   backup_file="$BACKUP_DIR/printbuddy-backup-$ts.zip"
 
-  [ -n "$BAMBUDDY_API_KEY" ] && auth_args=(-H "X-API-Key: $BAMBUDDY_API_KEY")
+  [ -n "$PRINTBUDDY_API_KEY" ] && auth_args=(-H "X-API-Key: $PRINTBUDDY_API_KEY")
 
   log "Creating built-in backup via API: $backup_file"
   if curl --silent --show-error --fail --location \
     --connect-timeout 5 --max-time 900 \
     "${auth_args[@]}" \
-    "$BAMBUDDY_API_URL/settings/backup" \
+    "$PRINTBUDDY_API_URL/settings/backup" \
     --output "$backup_file"; then
     log "Backup created successfully"
     cleanup_old_backups "$BACKUP_KEEP_COUNT"

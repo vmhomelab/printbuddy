@@ -20,8 +20,8 @@ interface ModelViewerModalProps {
   // When set and `settings.use_slicer_api` is on, the header's slicer button
   // becomes "Slice" and calls this instead of opening BambuStudio / Orca
   // externally — so the preview modal's slice action matches the file row's
-  // Cog (in-app Bambuddy SliceModal) when the slicer API is enabled.
-  onSliceWithBambuddy?: () => void;
+  // Cog (in-app Printbuddy SliceModal) when the slicer API is enabled.
+  onSliceWithPrintbuddy?: () => void;
 }
 
 interface Capabilities {
@@ -32,7 +32,7 @@ interface Capabilities {
   filament_colors: string[];
 }
 
-export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, onClose, onSliceWithBambuddy }: ModelViewerModalProps) {
+export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, onClose, onSliceWithPrintbuddy }: ModelViewerModalProps) {
   const { t } = useTranslation();
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
   const preferredSlicer: SlicerType = settings?.preferred_slicer || 'bambu_studio';
@@ -270,7 +270,7 @@ export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, on
 
   // When the user has the in-app Slicer API enabled (Settings → Workflow →
   // Slicer → Use Slicer API), library-mode previews route the header's slicer
-  // button into Bambuddy's own SliceModal — same behaviour as the Cog button
+  // button into Printbuddy's own SliceModal — same behaviour as the Cog button
   // in the file-row actions. Falls back to the external-slicer launcher when
   // the API is off, when no in-app handler is wired (e.g. archive preview),
   // or when the file type can't be sliced (.gcode / .gcode.3mf, etc.).
@@ -278,8 +278,8 @@ export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, on
     const t = (fileType || '').toLowerCase();
     return t === '3mf' || t === 'stl' || t === 'step' || t === 'stp';
   })();
-  const useBambuddySlicer = Boolean(
-    isLibrary && settings?.use_slicer_api && onSliceWithBambuddy && sliceableType,
+  const usePrintbuddySlicer = Boolean(
+    isLibrary && settings?.use_slicer_api && onSliceWithPrintbuddy && sliceableType,
   );
 
   const handleOpenInSlicer = async () => {
@@ -329,8 +329,8 @@ export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, on
             )}
           </div>
           <div className="flex items-center gap-2">
-            {useBambuddySlicer ? (
-              <Button variant="secondary" size="sm" onClick={onSliceWithBambuddy}>
+            {usePrintbuddySlicer ? (
+              <Button variant="secondary" size="sm" onClick={onSliceWithPrintbuddy}>
                 <Cog className="w-4 h-4" />
                 {t('slice.action')}
               </Button>

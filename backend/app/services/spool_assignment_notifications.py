@@ -11,7 +11,7 @@ from backend.app.services.printer_manager import printer_manager
 
 
 def _global_tray_from_assignment(ams_id: int, tray_id: int) -> int:
-    """Convert an assignment tuple to Bambuddy global tray ID."""
+    """Convert an assignment tuple to Printbuddy global tray ID."""
     if ams_id in (254, 255):
         return 254 + tray_id
     if ams_id >= 128:
@@ -73,7 +73,7 @@ def _tray_profile_and_color_for_global_id(state: PrinterState | None, global_tra
 
 
 def _decode_mqtt_mapping_to_global_trays(mapping_raw: object) -> list[int]:
-    """Decode printer MQTT mapping values into Bambuddy global tray IDs."""
+    """Decode printer MQTT mapping values into Printbuddy global tray IDs."""
     if not isinstance(mapping_raw, list) or not mapping_raw:
         return []
 

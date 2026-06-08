@@ -3,7 +3,7 @@
 The scheduler used to own this logic (`PrintScheduler._get_filament_requirements`)
 because it ran during dispatch decisions. Extracted here so the VP queue-mode
 write path can use the same parser to populate `filament_overrides` /
-`required_filament_types` at upload time (#1188 — Bambuddy was creating queue
+`required_filament_types` at upload time (#1188 — Printbuddy was creating queue
 items with no filament fields, which made the scheduler fall through to
 model-only matching and dispatch onto whatever printer happened to be free
 regardless of loaded colour).

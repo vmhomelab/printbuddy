@@ -274,7 +274,7 @@ async def _resolve_slicer_api_url(db: AsyncSession) -> str | None:
     """Pick the sidecar URL the bundled-listing fetch should hit.
 
     Mirrors the slice route's resolution at ``library.py:_run_slicer_with_fallback``:
-    the user's ``preferred_slicer`` setting decides which sidecar Bambuddy
+    the user's ``preferred_slicer`` setting decides which sidecar Printbuddy
     talks to, and the per-install URL setting overrides the env default.
     A user who prefers Bambu Studio gets the *bambu-studio-api* sidecar's
     bundled list; a user who prefers OrcaSlicer gets the *orca-slicer-api*

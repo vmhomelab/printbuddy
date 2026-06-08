@@ -2362,7 +2362,7 @@ export function FileManagerPage() {
           title={viewerFile.print_name || viewerFile.filename}
           fileType={viewerFile.file_type}
           onClose={() => setViewerFile(null)}
-          onSliceWithBambuddy={
+          onSliceWithPrintbuddy={
             // Only offer in-app slicing on files the SliceModal can actually
             // handle (matches the file-row Cog visibility check at :2127).
             isSliceableFilename(viewerFile.filename) && hasPermission('library:upload')

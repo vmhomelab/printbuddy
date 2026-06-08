@@ -251,7 +251,7 @@ class GitHubBackend(GitProviderBackend):
                 msg = f"Malformed tree-create response ({err}): {self._truncated_response_text(tree_response)}"
                 logger.warning("push_files %s/%s: %s", owner, repo, msg)
                 return {"status": "failed", "message": msg}
-            commit_message = f"Bambuddy backup - {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}"
+            commit_message = f"Printbuddy backup - {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}"
             commit_response = await client.post(
                 f"{api_base}/repos/{owner}/{repo}/git/commits",
                 headers=headers,
@@ -399,7 +399,7 @@ class GitHubBackend(GitProviderBackend):
                 f"{api_base}/repos/{owner}/{repo}/git/commits",
                 headers=headers,
                 json={
-                    "message": f"Initial Bambuddy backup - {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}",
+                    "message": f"Initial Printbuddy backup - {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}",
                     "tree": tree_sha,
                 },
             )

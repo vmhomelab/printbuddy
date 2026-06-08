@@ -1453,7 +1453,7 @@ describe('PrintersPage Phase 13 — EmptySlotHoverCard onAssignSpool wiring', ()
   });
 
   it('#1322: empty slot kind is "physical" when state=9 and "reset" otherwise', async () => {
-    // Bambuddy now distinguishes a firmware-confirmed empty slot (state=9
+    // Printbuddy now distinguishes a firmware-confirmed empty slot (state=9
     // via tray_exist_bits) from a slot the user reset but where the
     // firmware still has a spool registered. The kind prop drives both
     // the inline label ("Empty" vs "Reset") and the hover card label.

@@ -664,7 +664,7 @@ class SimpleMQTTServer:
                 # push_status (no SD card inserted, older field shapes), and BambuStudio
                 # rejects the send pre-flight with the generic "storage needs to be
                 # inserted before send to printer" error before even attempting FTP.
-                # For VP usage the slicer uploads via FTPS to Bambuddy's filesystem —
+                # For VP usage the slicer uploads via FTPS to Printbuddy's filesystem —
                 # the printer's actual SD/storage state is irrelevant on that path.
                 # Force "available" indicators so the pre-flight passes regardless of
                 # what the real printer reports. Restores the 0.2.3.2 synthetic-stub
@@ -1016,7 +1016,7 @@ class SimpleMQTTServer:
                 logger.info("MQTT print command: %s for %s", command, filename)
 
                 if command in ("project_file", "gcode_file"):
-                    # File lives on Bambuddy, not the printer — synthetic only.
+                    # File lives on Printbuddy, not the printer — synthetic only.
                     file_3mf = print_data.get("file", filename)
                     await self._send_print_response(writer, sequence_id, file_3mf, serial=client_serial)
                     if self.on_print_command:

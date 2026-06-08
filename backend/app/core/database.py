@@ -2308,7 +2308,7 @@ async def run_migrations(conn):
         except (OperationalError, ProgrammingError):
             pass
 
-    # Printbuddy rebrand: switch old Bambuddy-green accent settings to blue.
+    # Printbuddy rebrand: switch old Printbuddy-green accent settings to blue.
     # This intentionally updates existing green rows so upgraded Docker installs
     # move to the new blue default without requiring users to reset theme state.
     try:

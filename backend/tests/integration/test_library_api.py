@@ -1213,7 +1213,7 @@ class TestPrintFileUploadValidation:
     @pytest.mark.integration
     async def test_library_still_accepts_non_print_extensions(self, async_client: AsyncClient, db_session):
         """STL / image / other non-print uploads bypass the validator
-        entirely — Bambuddy is also a library, not just a print dispatcher."""
+        entirely — Printbuddy is also a library, not just a print dispatcher."""
         files = {"file": ("model.stl", b"solid test\nendsolid test", "application/octet-stream")}
         response = await async_client.post(
             "/api/v1/library/files", files=files, params={"generate_stl_thumbnails": "false"}

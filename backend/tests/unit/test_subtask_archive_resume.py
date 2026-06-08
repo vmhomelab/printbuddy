@@ -1,6 +1,6 @@
 """Regression tests for subtask_id-based archive resume (#972).
 
-Before this fix, a Bambuddy restart during a long print (e.g. 13h) triggered
+Before this fix, a Printbuddy restart during a long print (e.g. 13h) triggered
 the name-based "stale archive" path at 4h, cancelled the original row, and
 created a new archive with `started_at = now()` — losing ~9h of print time
 continuity. mstko reported this on a 37.5MB Broly print on an A1: after a
@@ -123,7 +123,7 @@ class TestSubtaskIdResume:
         assert found.id == archive.id
 
     async def test_subtask_id_revives_stale_cancelled_row(self, archive_factory, db_session):
-        """If an older Bambuddy wrongly cancelled the archive (legacy 4h path),
+        """If an older Printbuddy wrongly cancelled the archive (legacy 4h path),
         the next print-start with the same subtask_id must revive it rather
         than start a third row."""
         printer, archive = await archive_factory(

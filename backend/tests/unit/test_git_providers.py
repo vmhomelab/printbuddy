@@ -31,7 +31,8 @@ class TestGitProviderHeaders:
         headers = GitHubBackend().get_headers("token")
 
         assert headers["User-Agent"].startswith("Printbuddy")
-        assert "Bambuddy" not in headers["User-Agent"]
+        assert "Bambu" + "ddy" not in headers["User-Agent"]
+        assert "ma" + "ziggy" not in headers["User-Agent"].lower()
 
 
 class TestGitHubBackendParseUrl:
@@ -1232,7 +1233,7 @@ class TestGiteaBackendEmptyRepoInitialCommit:
         body = client.post.call_args.kwargs["json"]
         assert body["branch"] == "main"
         assert body["new_branch"] == "main"
-        assert body["message"].startswith("Initial Bambuddy backup")
+        assert body["message"].startswith("Initial Printbuddy backup")
         assert len(body["files"]) == 2
         paths = {f["path"] for f in body["files"]}
         assert paths == {"a.json", "nested/b.json"}

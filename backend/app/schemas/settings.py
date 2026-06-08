@@ -145,7 +145,7 @@ class AppSettings(BaseModel):
     mqtt_port: int = Field(default=1883, description="MQTT broker port (default 1883, TLS typically 8883)")
     mqtt_username: str = Field(default="", description="MQTT username for authentication (optional)")
     mqtt_password: str = Field(default="", description="MQTT password for authentication (optional)")
-    mqtt_topic_prefix: str = Field(default="bambuddy", description="Topic prefix for all published messages")
+    mqtt_topic_prefix: str = Field(default="printbuddy", description="Topic prefix for all published messages")
     mqtt_use_tls: bool = Field(default=False, description="Use TLS/SSL encryption for MQTT connection")
 
     # External URL for notifications
@@ -190,7 +190,7 @@ class AppSettings(BaseModel):
     # Slicer dispatch mode: when True, "Slice" actions open the in-app
     # SliceModal and call the slicer-API sidecar. When False (default), they
     # hand off to the user's local desktop slicer via URI scheme — preserving
-    # the original Bambuddy behavior for users who don't run a sidecar.
+    # the original Printbuddy behavior for users who don't run a sidecar.
     use_slicer_api: bool = Field(
         default=False,
         description="Use the slicer-API sidecar for slicing instead of the desktop slicer URI scheme",

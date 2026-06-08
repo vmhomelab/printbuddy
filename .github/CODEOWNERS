@@ -2,19 +2,19 @@
 # See: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
 
 # Default owner for everything
-* @maziggy
+* @vmhomelab
 
 # Backend code
-/backend/ @maziggy
+/backend/ @vmhomelab
 
 # Frontend code
-/frontend/ @maziggy
+/frontend/ @vmhomelab
 
 # Infrastructure and deployment
-/Dockerfile* @maziggy
-/docker-compose*.yml @maziggy
-/.github/ @maziggy
+/Dockerfile* @vmhomelab
+/docker-compose*.yml @vmhomelab
+/.github/ @vmhomelab
 
 # Documentation
-/*.md @maziggy
-/docs/ @maziggy
+/*.md @vmhomelab
+/docs/ @vmhomelab

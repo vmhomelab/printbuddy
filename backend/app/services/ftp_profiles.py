@@ -35,7 +35,7 @@ class FTPProfile:
     # Pin the SSL context's ``maximum_version`` to TLS 1.2.
     #
     # Python 3.13's default ``ssl.create_default_context()`` negotiates
-    # TLS 1.3 when both peers support it. The Bambuddy Docker image is
+    # TLS 1.3 when both peers support it. The Printbuddy Docker image is
     # ``python:3.13-slim-trixie``, so every Docker user gets 1.3 by
     # default. Some Bambu printer firmwares (P2S 01.02.00.00 confirmed
     # by @iitazz, #1401) implement session reuse on the FTPS data

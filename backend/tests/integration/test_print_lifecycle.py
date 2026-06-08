@@ -64,7 +64,7 @@ class TestPlateClearGate:
     next print until the user acknowledges the bed was cleared. The gate must
     be raised on every terminal status that could have left material on the
     bed — including aborted (printer self-abort or touchscreen stop) and
-    cancelled (user stopped via Bambuddy queue UI). #1171: prior code only
+    cancelled (user stopped via Printbuddy queue UI). #1171: prior code only
     raised the flag for completed/failed, so an aborted print auto-dispatched
     the next queue item onto a fouled bed two seconds later."""
 
@@ -99,7 +99,7 @@ class TestPlateClearGate:
         """Regression for #1171. Every terminal status that can leave material
         on the bed must raise the gate. Pre-fix the gate was raised only for
         completed/failed, so aborted (printer touchscreen stop, self-abort) and
-        cancelled (Bambuddy queue stop) auto-dispatched the next queue item
+        cancelled (Printbuddy queue stop) auto-dispatched the next queue item
         onto a fouled bed."""
         from contextlib import ExitStack
 

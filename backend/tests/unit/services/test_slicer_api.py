@@ -43,7 +43,8 @@ class TestSlicerApiIdentity:
         await client.aclose()
 
         assert captured["user_agent"].startswith("Printbuddy/")
-        assert "Bambuddy" not in captured["user_agent"]
+        assert "Bambu" + "ddy" not in captured["user_agent"]
+        assert "ma" + "ziggy" not in captured["user_agent"].lower()
 
 
 class TestGuessModelContentType:
@@ -155,7 +156,7 @@ class TestSliceWithProfiles:
     @pytest.mark.asyncio
     async def test_5xx_includes_sidecar_details_field(self):
         """Sidecar's AppError emits ``{message, details}`` — both must end up
-        in the raised error so ``bambuddy.log`` carries the actual CLI
+        in the raised error so ``printbuddy.log`` carries the actual CLI
         rejection reason instead of just the generic outer message.
         Pinned to fix the regression where every 3MF slice surfaced as
         the unhelpful ``Failed to slice the model`` line in production."""

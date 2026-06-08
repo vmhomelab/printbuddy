@@ -23,13 +23,13 @@ logger = logging.getLogger(__name__)
 
 
 def _decode_mqtt_mapping(mapping_raw: list | None) -> list[int] | None:
-    """Decode MQTT mapping field (snow-encoded) to bambuddy global tray IDs.
+    """Decode MQTT mapping field (snow-encoded) to printbuddy global tray IDs.
 
     The printer's MQTT mapping field is an array indexed by slicer filament slot
     (0-based). Each value uses snow encoding: ams_hw_id * 256 + local_slot.
     65535 means unmapped.
 
-    Returns a list of bambuddy global tray IDs (or -1 for unmapped), or None if
+    Returns a list of printbuddy global tray IDs (or -1 for unmapped), or None if
     no valid mappings found.
     """
     if not isinstance(mapping_raw, list) or not mapping_raw:

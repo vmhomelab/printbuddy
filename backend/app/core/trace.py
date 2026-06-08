@@ -3,7 +3,7 @@
 Each HTTP request gets a short hex ID set in a ``ContextVar``; downstream
 log records (application *and* uvicorn access) read the same context and
 include the ID in their output. The result is that one ``grep <trace_id>``
-on ``bambuddy.log`` returns the access line + every line emitted on the
+on ``printbuddy.log`` returns the access line + every line emitted on the
 server side while that request was being handled — closing the loop
 opened by piping uvicorn access into the file: the access line tells you
 *who* called the endpoint, the trace ID tells you *what else happened*
@@ -44,7 +44,7 @@ trace_id_var: ContextVar[str] = ContextVar("trace_id", default=TRACE_ID_PLACEHOL
 
 # Length of a freshly minted trace ID in hex chars. 8 chars = 32 bits of
 # entropy = ~4 billion possibilities; collisions are astronomically
-# unlikely within a single rotation window of bambuddy.log and grep stays
+# unlikely within a single rotation window of printbuddy.log and grep stays
 # easy at this length. Increase later if it proves too short for a busy
 # install — the filter and format don't care about width.
 _GENERATED_LENGTH = 8

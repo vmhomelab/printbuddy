@@ -1,7 +1,7 @@
 /**
  * Copy text to the clipboard, with a fallback for non-secure contexts.
  *
- * Bambuddy is usually reached over plain HTTP on a LAN / tailnet IP, where
+ * Printbuddy is usually reached over plain HTTP on a LAN / tailnet IP, where
  * `navigator.clipboard` is unavailable — so the hidden-textarea + execCommand
  * fallback is required, not optional. Returns true if the copy succeeded.
  */

@@ -1523,7 +1523,7 @@ async def refresh_oidc_provider_icon(
     """Refetch the icon from the stored `icon_url` (admin only).
 
     Used when:
-    - The IdP changed its icon and the admin wants Bambuddy to pick up the
+    - The IdP changed its icon and the admin wants Printbuddy to pick up the
       new bytes.
     - An upgrade left the provider with an `icon_url` but no cached bytes
       (covered automatically by `update_oidc_provider` too, but this gives

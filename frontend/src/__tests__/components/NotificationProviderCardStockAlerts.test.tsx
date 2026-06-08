@@ -28,7 +28,7 @@ function buildProvider(overrides: Partial<NotificationProvider> = {}): Notificat
     name: 'Test Provider',
     provider_type: 'ntfy',
     enabled: true,
-    config: { server: 'https://ntfy.sh', topic: 'bambuddy' },
+    config: { server: 'https://ntfy.sh', topic: 'printbuddy' },
     on_print_start: false,
     on_print_complete: false,
     on_print_failed: false,

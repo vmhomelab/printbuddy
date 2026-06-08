@@ -249,7 +249,7 @@ class TestMapSpoolmanSpool:
         """#1357: the canonical store for color_name is
         spool.extra.bambu_color_name (JSON-encoded). Read priority is
         extra > filament.color_name > subtype-synth. The user's
-        Bambuddy-saved value MUST win even when Spoolman's own
+        Printbuddy-saved value MUST win even when Spoolman's own
         filament.color_name happens to be populated from some other source.
         """
         spool = {

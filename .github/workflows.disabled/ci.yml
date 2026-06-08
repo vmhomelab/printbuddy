@@ -260,7 +260,7 @@ jobs:
         if: always()
         with:
           name: e2e-screenshots
-          path: /tmp/bambuddy_*.png
+          path: /tmp/printbuddy_*.png
           if-no-files-found: ignore
 
   # ============================================================================

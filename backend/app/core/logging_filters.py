@@ -1,4 +1,4 @@
-"""Logging filters for the Bambuddy log pipeline.
+"""Logging filters for the Printbuddy log pipeline.
 
 Holds two filters: ``WriteRequestsOnlyFilter`` keeps the file-side
 uvicorn access log focused on state-changing HTTP methods, and
@@ -21,7 +21,7 @@ class WriteRequestsOnlyFilter(logging.Filter):
 
         ``<client_addr> - "<METHOD> <path> HTTP/<ver>" <status>``
 
-    On a typical Bambuddy install the bulk of that traffic is GETs — the
+    On a typical Printbuddy install the bulk of that traffic is GETs — the
     frontend status-polling loop, the camera stream, snapshots, websocket
     upgrades. None of those can change server state on their own, so for
     incident triage ("who hit ``/print/stop`` at 09:23?") they're noise that

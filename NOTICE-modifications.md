@@ -2,17 +2,17 @@
 
 This file provides the prominent modification notices for Printbuddy under AGPL-3.0 section 5(a).
 
-Printbuddy is a modified fork of Bambuddy. The Bambuddy history is retained in git and in the inherited changelog, but the paths below have been added, renamed, or modified by the Printbuddy fork relative to the upstream Bambuddy base commit listed here.
+Printbuddy is a modified fork of an upstream AGPL-3.0 project. The upstream history is retained in git and in the inherited changelog, but the paths below have been added, renamed, or modified by the Printbuddy fork relative to the upstream base commit listed here.
 
-- Upstream Bambuddy comparison base: `5d248e16ba0954b175896a56f9c569e6808d0c9d`
+- Upstream comparison base: `5d248e16ba0954b175896a56f9c569e6808d0c9d`
 - Notice date: 2026-06-07
 - Date meaning: the most recent Printbuddy-side git commit date touching the path, based on the current repository history. For files changed in the working release change, the date is the notice update date.
 
 ## Modified files
 
 - `.codeql/codeql-config.yml` — modified by Printbuddy; latest modification date: 2026-06-06.
-- `.codeql/javascript-bambuddy.qls → .codeql/javascript-printbuddy.qls` — renamed by Printbuddy; latest modification date: 2026-06-06.
-- `.codeql/python-bambuddy.qls → .codeql/python-printbuddy.qls` — renamed by Printbuddy; latest modification date: 2026-06-06.
+- `.codeql/javascript-printbuddy.qls → .codeql/javascript-printbuddy.qls` — renamed by Printbuddy; latest modification date: 2026-06-06.
+- `.codeql/python-printbuddy.qls → .codeql/python-printbuddy.qls` — renamed by Printbuddy; latest modification date: 2026-06-06.
 - `.env.example` — modified by Printbuddy; latest modification date: 2026-06-06.
 - `.github/FUNDING.yml` — modified by Printbuddy; latest modification date: 2026-06-06.
 - `.github/ISSUE_TEMPLATE/bug_report.yml` — modified by Printbuddy; latest modification date: 2026-06-07.
@@ -121,7 +121,7 @@ Printbuddy is a modified fork of Bambuddy. The Bambuddy history is retained in g
 - `CHANGELOG.md` — modified by Printbuddy; latest modification date: 2026-06-07.
 - `CODE_OF_CONDUCT.md` — modified by Printbuddy; latest modification date: 2026-06-06.
 - `CONTRIBUTING.md` — modified by Printbuddy; latest modification date: 2026-06-06.
-- `deploy/bambuddy.service → deploy/printbuddy.service` — renamed by Printbuddy; latest modification date: 2026-06-06.
+- `deploy/printbuddy.service → deploy/printbuddy.service` — renamed by Printbuddy; latest modification date: 2026-06-06.
 - `deploy/docker-entrypoint.sh` — modified by Printbuddy; latest modification date: 2026-06-06.
 - `DEPLOYMENT.md` — added by Printbuddy; latest modification date: 2026-06-06.
 - `docker-compose.yml` — modified by Printbuddy; latest modification date: 2026-06-06.
@@ -142,9 +142,9 @@ Printbuddy is a modified fork of Bambuddy. The Bambuddy history is retained in g
 - `frontend/public/img/android-chrome-512x512.png` — modified by Printbuddy; latest modification date: 2026-06-06.
 - `frontend/public/img/apple-touch-icon-dark.png` — added by Printbuddy; latest modification date: 2026-06-06.
 - `frontend/public/img/apple-touch-icon.png` — modified by Printbuddy; latest modification date: 2026-06-06.
-- `frontend/public/img/bambuddy_logo_dark.png` — deleted by Printbuddy; latest modification date: 2026-06-06.
-- `frontend/public/img/bambuddy_logo_dark_transparent.png` — deleted by Printbuddy; latest modification date: 2026-06-06.
-- `frontend/public/img/bambuddy_logo_light.png` — deleted by Printbuddy; latest modification date: 2026-06-06.
+- `frontend/public/img/printbuddy_logo_dark.png` — deleted by Printbuddy; latest modification date: 2026-06-06.
+- `frontend/public/img/printbuddy_logo_dark_transparent.png` — deleted by Printbuddy; latest modification date: 2026-06-06.
+- `frontend/public/img/printbuddy_logo_light.png` — deleted by Printbuddy; latest modification date: 2026-06-06.
 - `frontend/public/img/favicon-16x16-dark.png` — added by Printbuddy; latest modification date: 2026-06-06.
 - `frontend/public/img/favicon-16x16.png` — modified by Printbuddy; latest modification date: 2026-06-06.
 - `frontend/public/img/favicon-32x32-dark.png` — added by Printbuddy; latest modification date: 2026-06-06.
@@ -313,7 +313,7 @@ Printbuddy is a modified fork of Bambuddy. The Bambuddy history is retained in g
 - `frontend/src/utils/printerFileRules.ts` — added by Printbuddy; latest modification date: 2026-06-06.
 - `frontend/vite.config.ts` — modified by Printbuddy; latest modification date: 2026-06-07.
 - `gcode_viewer/index.html` — modified by Printbuddy; latest modification date: 2026-06-06.
-- `gcode_viewer/js/bambuddy_adapter.js → gcode_viewer/js/printbuddy_adapter.js` — renamed by Printbuddy; latest modification date: 2026-06-06.
+- `gcode_viewer/js/printbuddy_adapter.js → gcode_viewer/js/printbuddy_adapter.js` — renamed by Printbuddy; latest modification date: 2026-06-06.
 - `gcode_viewer/VENDORED.md` — modified by Printbuddy; latest modification date: 2026-06-06.
 - `install/docker-install.ps1` — modified by Printbuddy; latest modification date: 2026-06-06.
 - `install/docker-install.sh` — modified by Printbuddy; latest modification date: 2026-06-06.
@@ -368,9 +368,9 @@ Printbuddy is a modified fork of Bambuddy. The Bambuddy history is retained in g
 - `static/img/android-chrome-512x512.png` — modified by Printbuddy; latest modification date: 2026-06-06.
 - `static/img/apple-touch-icon-dark.png` — added by Printbuddy; latest modification date: 2026-06-06.
 - `static/img/apple-touch-icon.png` — modified by Printbuddy; latest modification date: 2026-06-06.
-- `static/img/bambuddy_logo_dark.png` — deleted by Printbuddy; latest modification date: 2026-06-06.
-- `static/img/bambuddy_logo_dark_transparent.png` — deleted by Printbuddy; latest modification date: 2026-06-06.
-- `static/img/bambuddy_logo_light.png` — deleted by Printbuddy; latest modification date: 2026-06-06.
+- `static/img/printbuddy_logo_dark.png` — deleted by Printbuddy; latest modification date: 2026-06-06.
+- `static/img/printbuddy_logo_dark_transparent.png` — deleted by Printbuddy; latest modification date: 2026-06-06.
+- `static/img/printbuddy_logo_light.png` — deleted by Printbuddy; latest modification date: 2026-06-06.
 - `static/img/favicon-16x16-dark.png` — added by Printbuddy; latest modification date: 2026-06-06.
 - `static/img/favicon-16x16.png` — modified by Printbuddy; latest modification date: 2026-06-06.
 - `static/img/favicon-32x32-dark.png` — added by Printbuddy; latest modification date: 2026-06-06.

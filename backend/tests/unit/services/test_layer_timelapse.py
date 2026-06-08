@@ -27,7 +27,7 @@ class TestTimelapseSessionManagement:
         _active_sessions.clear()
 
         with patch("backend.app.services.layer_timelapse.settings") as mock_settings:
-            mock_settings.base_dir = Path("/tmp/test_bambuddy")
+            mock_settings.base_dir = Path("/tmp/test_printbuddy")
 
             session = start_session(
                 printer_id=1,
@@ -63,7 +63,7 @@ class TestTimelapseSessionManagement:
         _active_sessions.clear()
 
         with patch("backend.app.services.layer_timelapse.settings") as mock_settings:
-            mock_settings.base_dir = Path("/tmp/test_bambuddy")
+            mock_settings.base_dir = Path("/tmp/test_printbuddy")
 
             # Start first session
             session1 = start_session(1, 100, "http://cam1/", "mjpeg")
@@ -107,7 +107,7 @@ class TestTimelapseSessionManagement:
         _active_sessions.clear()
 
         with patch("backend.app.services.layer_timelapse.settings") as mock_settings:
-            mock_settings.base_dir = Path("/tmp/test_bambuddy")
+            mock_settings.base_dir = Path("/tmp/test_printbuddy")
 
             session = start_session(1, 100, "http://cam/", "mjpeg")
 
@@ -141,7 +141,7 @@ class TestTimelapseSession:
         _active_sessions.clear()
 
         with patch("backend.app.services.layer_timelapse.settings") as mock_settings:
-            mock_settings.base_dir = Path("/tmp/test_bambuddy")
+            mock_settings.base_dir = Path("/tmp/test_printbuddy")
 
             session = TimelapseSession(
                 printer_id=1,
@@ -165,7 +165,7 @@ class TestTimelapseSession:
         from backend.app.services.layer_timelapse import TimelapseSession
 
         with patch("backend.app.services.layer_timelapse.settings") as mock_settings:
-            mock_settings.base_dir = Path("/data/bambuddy")
+            mock_settings.base_dir = Path("/data/printbuddy")
 
             with patch.object(Path, "mkdir"):  # Avoid creating real directories
                 session = TimelapseSession(
@@ -175,7 +175,7 @@ class TestTimelapseSession:
                     camera_type="mjpeg",
                 )
 
-                expected_path = Path("/data/bambuddy/timelapse_frames/42") / session.session_id
+                expected_path = Path("/data/printbuddy/timelapse_frames/42") / session.session_id
                 assert session.frames_dir == expected_path
 
 

@@ -2140,7 +2140,7 @@ export default {
     // Updates
     printerFirmware: 'プリンターファームウェア',
     checkFirmwareDescription: 'Bambu Labのプリンターファームウェア更新を確認',
-    bambuddySoftware: 'Printbuddyソフトウェア',
+    printbuddySoftware: 'Printbuddyソフトウェア',
     autoCheckDescription: '起動時に自動的に新しいバージョンを確認',
     checkNow: '今すぐ確認',
     updateAvailableVersion: 'アップデート利用可能: v{{version}}',
@@ -2157,7 +2157,7 @@ export default {
     // Network tab
     externalUrl: '外部URL',
     externalUrlDescription: 'Printbuddyがアクセス可能な外部URL。通知画像や外部連携に使用されます。',
-    bambuddyUrl: 'PrintbuddyのURL',
+    printbuddyUrl: 'PrintbuddyのURL',
     externalUrlHint: 'プロトコルとポートを含めてください（例: http://192.168.1.100:8000）',
     ftpRetry: 'FTPリトライ',
     ftpRetryDescription: 'プリンターのWi-Fiが不安定な場合にFTP操作をリトライ。3MFダウンロード、印刷アップロード、タイムラプスダウンロード、ファームウェア更新に適用。',

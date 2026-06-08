@@ -389,7 +389,7 @@ class TestSliceLibraryFile:
         self, async_client: AsyncClient, db_session, slice_test_setup
     ):
         # When the slicer CLI fails on the --load-settings path (segfault
-        # on complex H2D models), Bambuddy retries with no profile triplet
+        # on complex H2D models), Printbuddy retries with no profile triplet
         # so the CLI uses the file's embedded settings.
         src_3mf_path = slice_test_setup["tmp_path"] / "library" / "files" / "complex.3mf"
         src_3mf_path.write_bytes(_make_3mf_with_settings({"prime_tower_brim_width": "-1"}))
@@ -599,7 +599,7 @@ class TestSliceWithBundle:
     async def test_bundle_dispatch_forwards_bed_type_when_set(self, async_client: AsyncClient, slice_test_setup):
         """#1337 follow-up: bed-type override flows through the bundle path
         as a `bedType` form field so the sidecar can pass
-        `--curr_bed_type` to the CLI. Bambuddy can't patch the bundle's
+        `--curr_bed_type` to the CLI. Printbuddy can't patch the bundle's
         process JSON locally — the sidecar materialises it from the stored
         .bbscfg — so the form field is the only handle."""
         captured: dict = {}
@@ -808,7 +808,7 @@ def _make_sliced_3mf(printer_model_id: str, bed_type: str | None = None) -> byte
 
 class TestCrossClassSliceAllLoop:
     """#1493: when the user picks "Slice all plates" on a cross-class source
-    (X1C → H2D), Bambuddy must NOT send a single ``--slice 0 --arrange 1``
+    (X1C → H2D), Printbuddy must NOT send a single ``--slice 0 --arrange 1``
     call — that consolidates every plate's objects onto one bed via BS's
     project-wide arrange. Instead it loops per plate (``plate=N, arrange=true``)
     and merges the N single-plate outputs into one multi-plate 3MF locally.
@@ -956,7 +956,7 @@ class TestCrossClassSliceAllLoop:
         assert all(arrange_used), arrange_used
 
         # The merged archive has plate_1..plate_3.gcode inside its one
-        # output 3MF (single Bambuddy archive, three plates).
+        # output 3MF (single Printbuddy archive, three plates).
         new_archive = await db_session.get(PrintArchive, final["result"]["archive_id"])
         archive_path = tmp_path / new_archive.file_path
         with zipfile.ZipFile(archive_path, "r") as zf:

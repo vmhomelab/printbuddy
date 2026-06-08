@@ -822,7 +822,7 @@ async def sync_from_filamentcolors(
         total_available = 0
 
         try:
-            # Identify honestly as Bambuddy rather than leaking httpx's
+            # Identify honestly as Printbuddy rather than leaking httpx's
             # default "python-httpx/x.y" UA — consistent with every other
             # outbound client (bambu_cloud, makerworld, firmware_check).
             async with httpx.AsyncClient(

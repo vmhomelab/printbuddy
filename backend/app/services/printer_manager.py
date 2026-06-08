@@ -209,12 +209,12 @@ class PrinterManager:
     def set_awaiting_plate_clear(self, printer_id: int, awaiting: bool):
         """Set/clear the awaiting-plate-clear gate and persist it to DB.
 
-        Persisted so the gate survives Bambuddy/printer restarts (#961): after Auto Off
+        Persisted so the gate survives Printbuddy/printer restarts (#961): after Auto Off
         cycles the printer, the printer boots into IDLE with no memory of the previous
         finish, and without persistence the queue would bypass the confirmation prompt.
 
         Also broadcasts an updated ``printer_status`` over the WebSocket (#1128).
-        ``awaiting_plate_clear`` is a Bambuddy-side flag — toggling it does not
+        ``awaiting_plate_clear`` is a Printbuddy-side flag — toggling it does not
         produce an MQTT push from the printer, so without an explicit broadcast
         any UI subscriber that's NOT the originating tab would stay stale until
         the next coincidental status refresh. The plate-clear button on the
@@ -239,10 +239,10 @@ class PrinterManager:
         """Emit a ``printer_status`` WebSocket update for this printer (#1128).
 
         Used for state changes that don't come from MQTT — currently just the
-        ``awaiting_plate_clear`` flag, but any future Bambuddy-side flag added
+        ``awaiting_plate_clear`` flag, but any future Printbuddy-side flag added
         to ``printer_state_to_dict`` should plumb through here too. The
         existing MQTT-driven broadcast in ``main.on_printer_status_change``
-        deduplicates on a status_key that intentionally excludes Bambuddy
+        deduplicates on a status_key that intentionally excludes Printbuddy
         flags (so e.g. queue-state changes don't get echoed as printer
         events), which is precisely why those flags need their own emit.
 
@@ -266,7 +266,7 @@ class PrinterManager:
             )
         except Exception as e:
             logger.warning(
-                "Failed to broadcast printer_status after Bambuddy-side state change for printer %d: %s",
+                "Failed to broadcast printer_status after Printbuddy-side state change for printer %d: %s",
                 printer_id,
                 e,
             )
@@ -314,7 +314,7 @@ class PrinterManager:
     def set_print_running_observed_callback(self, callback: Callable[[int, dict], None]):
         """Set callback for restart-recovery RUNNING-state observations (#1485
         follow-up). Fires the first time we see ``state == RUNNING`` for a
-        printer that started its print before Bambuddy came up — the #1304
+        printer that started its print before Printbuddy came up — the #1304
         guard suppresses ``on_print_start`` for these, so anything that
         normally hangs off it (e.g. timelapse baseline capture) needs this
         hook to recover."""
@@ -808,10 +808,10 @@ def resolve_plate_id(state) -> int | None:
 
     Some firmware versions (e.g. P1S 01.10.00.00, #1166) put only the .3mf
     filename in print.gcode_file, so parse_plate_id() returns None and the
-    printer card falls back to plate 1 — wrong thumbnail. When Bambuddy
+    printer card falls back to plate 1 — wrong thumbnail. When Printbuddy
     dispatched the print itself we already know the right plate, so we prefer
     that over the gcode_file echo. The subtask check prevents stale values
-    from a previous Bambuddy-dispatched print bleeding into a Studio-direct
+    from a previous Printbuddy-dispatched print bleeding into a Studio-direct
     print on the same printer.
     """
     dispatched_plate = getattr(state, "dispatched_plate_id", None)

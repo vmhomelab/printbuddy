@@ -155,7 +155,7 @@ class GitHubBackupService:
                         else "could not confirm the target repository is private"
                     )
                     abort_message = (
-                        f"Backup aborted: {visibility_note}. Bambuddy backups carry credentials "
+                        f"Backup aborted: {visibility_note}. Printbuddy backups carry credentials "
                         "and are refused for any non-private target. Make the repository private "
                         "to resume scheduled backups."
                     )
@@ -290,7 +290,7 @@ class GitHubBackupService:
         # Metadata file (no timestamps - git tracks file history)
         metadata = {
             "version": "1.0",
-            "backup_type": "bambuddy_profiles",
+            "backup_type": "printbuddy_profiles",
             "contents": {
                 "kprofiles": config.backup_kprofiles,
                 "cloud_profiles": config.backup_cloud_profiles,

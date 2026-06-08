@@ -236,7 +236,7 @@ async def update_settings(
                 "mqtt_port": int(await get_setting(db, "mqtt_port") or "1883"),
                 "mqtt_username": await get_setting(db, "mqtt_username") or "",
                 "mqtt_password": await get_setting(db, "mqtt_password") or "",
-                "mqtt_topic_prefix": await get_setting(db, "mqtt_topic_prefix") or "bambuddy",
+                "mqtt_topic_prefix": await get_setting(db, "mqtt_topic_prefix") or "printbuddy",
                 "mqtt_use_tls": (await get_setting(db, "mqtt_use_tls") or "false") == "true",
             }
             await mqtt_relay.configure(mqtt_settings)
@@ -505,7 +505,7 @@ async def create_backup_zip(output_path: Path | None = None) -> tuple[Path, str]
                 await conn.execute(text("PRAGMA wal_checkpoint(TRUNCATE)"))
 
             # Copy database file
-            shutil.copy2(db_path, temp_path / "bambuddy.db")
+            shutil.copy2(db_path, temp_path / "printbuddy.db")
         else:
             # PostgreSQL: export to a portable SQLite file via SQLAlchemy.
             # This makes backups restorable on both SQLite and Postgres installs.
@@ -514,7 +514,7 @@ async def create_backup_zip(output_path: Path | None = None) -> tuple[Path, str]
 
             from backend.app.core.database import Base, engine
 
-            backup_db_path = temp_path / "bambuddy.db"
+            backup_db_path = temp_path / "printbuddy.db"
             dst = sqlite3.connect(str(backup_db_path))
             metadata = Base.metadata
 
@@ -572,7 +572,7 @@ async def create_backup_zip(output_path: Path | None = None) -> tuple[Path, str]
                     logger.warning("Permission denied copying %s: %s", name, e)
 
         # Include the MFA encryption key as a ZIP top-level entry alongside
-        # bambuddy.db. Without it, encrypted client_secret / TOTP secret rows
+        # printbuddy.db. Without it, encrypted client_secret / TOTP secret rows
         # would be unrecoverable after restore on a host without MFA_ENCRYPTION_KEY set.
         from backend.app.core.paths import resolve_data_dir
 
@@ -874,9 +874,9 @@ async def restore_backup(
             raise HTTPException(400, "Invalid backup file: not a valid ZIP")
 
         # 2. Validate backup
-        backup_db = temp_path / "bambuddy.db"
+        backup_db = temp_path / "printbuddy.db"
         if not backup_db.exists():
-            raise HTTPException(400, "Invalid backup: missing bambuddy.db")
+            raise HTTPException(400, "Invalid backup: missing printbuddy.db")
 
         try:
             import asyncio
@@ -952,7 +952,7 @@ async def restore_backup(
                 # to the live DB before this call that hasn't been
                 # checkpointed yet (seed_default_groups + init_db on first
                 # start, plus whatever background heartbeats wrote during
-                # the request window) sits in bambuddy.db-wal with valid
+                # the request window) sits in printbuddy.db-wal with valid
                 # checksums. The route handler's own `db: Depends(get_db)`
                 # session also keeps a connection checked out across
                 # engine.dispose(), holding fds to the WAL inode. With

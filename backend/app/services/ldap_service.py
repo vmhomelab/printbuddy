@@ -384,9 +384,9 @@ def resolve_group_mapping(ldap_groups: list[str], group_mapping: dict[str, str])
     mapping_lower = {k.lower(): v for k, v in group_mapping.items()}
     result = []
     for ldap_group in ldap_groups:
-        bambuddy_group = mapping_lower.get(ldap_group.lower())
-        if bambuddy_group:
-            result.append(bambuddy_group)
+        printbuddy_group = mapping_lower.get(ldap_group.lower())
+        if printbuddy_group:
+            result.append(printbuddy_group)
     return result
 
 

@@ -12,7 +12,7 @@ def _line(level, logger, msg, ts="2026-05-22 10:00:00,000"):
 
 
 def _write_log(tmp_path, monkeypatch, lines):
-    log_file = tmp_path / "bambuddy.log"
+    log_file = tmp_path / "printbuddy.log"
     log_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
     monkeypatch.setattr(settings, "log_dir", tmp_path)
     return log_file

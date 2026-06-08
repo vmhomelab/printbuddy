@@ -1,6 +1,6 @@
 """MakerWorld integration routes.
 
-User pastes a MakerWorld URL → Bambuddy resolves it → shows plate list →
+User pastes a MakerWorld URL → Printbuddy resolves it → shows plate list →
 one-click import/print. The URL-paste flow covers the actual discovery
 pattern (Reddit/YouTube/shared links) without needing to replicate
 MakerWorld's whole search UI.

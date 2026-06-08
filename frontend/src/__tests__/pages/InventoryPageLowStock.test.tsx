@@ -62,7 +62,7 @@ const mockSettings = {
   mqtt_port: 1883,
   mqtt_username: '',
   mqtt_password: '',
-  mqtt_topic_prefix: 'bambuddy',
+  mqtt_topic_prefix: 'printbuddy',
   mqtt_use_tls: false,
   external_url: '',
   ha_enabled: false,
@@ -220,7 +220,7 @@ describe('InventoryPage - Low Stock Threshold', () => {
 
     it('does not use localStorage for threshold', async () => {
       // Set a value in localStorage that should be ignored
-      localStorage.setItem('bambuddy-low-stock-threshold', '50');
+      localStorage.setItem('printbuddy-low-stock-threshold', '50');
 
       render(<InventoryPageRouter />);
 

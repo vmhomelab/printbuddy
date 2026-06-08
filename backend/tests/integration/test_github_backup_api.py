@@ -11,7 +11,7 @@ def _mock_private_repo_check():
     """Default mock: test_connection returns success + confirmed private.
 
     POST /config and PATCH /config now refuse to save when the target repo
-    isn't confirmed private (Bambuddy backups carry credentials — see
+    isn't confirmed private (Printbuddy backups carry credentials — see
     `_enforce_private_repo` in github_backup.py routes). The default mock
     here keeps the existing test suite green; tests that need to exercise
     the public / unknown-visibility branches override this fixture inline.
@@ -264,7 +264,7 @@ class TestGitHubBackupConfigAPI:
 class TestGitHubBackupPrivateRepoGuard:
     """Refuse to save a config when the target repository is not private.
 
-    Bambuddy backups contain MQTT credentials, HA/Prometheus tokens, the
+    Printbuddy backups contain MQTT credentials, HA/Prometheus tokens, the
     Bambu Cloud email, and printer access codes via K-profiles — they must
     never be pushed to a public or internal-visibility repository.
     """

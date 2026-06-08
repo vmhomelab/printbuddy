@@ -858,7 +858,7 @@ class PrintScheduler:
         # Check if user prefers lowest remaining filament when multiple spools match
         prefer_lowest = await self._get_bool_setting(db, "prefer_lowest_filament")
 
-        # When the preference is on, surface Bambuddy's inventory-side
+        # When the preference is on, surface Printbuddy's inventory-side
         # remaining for each slot that's bound to a tracked spool, so the
         # sort beats the MQTT-only blind spot (#1508). Skip the lookup
         # entirely when the preference is off — no behaviour change for
@@ -1033,7 +1033,7 @@ class PrintScheduler:
         self, db: AsyncSession, printer_id: int, loaded: list[dict]
     ) -> dict[int, float]:
         """Return ``{global_tray_id: remaining_grams}`` for AMS slots the user
-        has bound to an inventory spool — Bambuddy-side or Spoolman-side.
+        has bound to an inventory spool — Printbuddy-side or Spoolman-side.
 
         The MQTT ``remain`` field on a tray is the printer firmware's
         RFID-decremented value, which has two limitations the "Prefer Lowest
@@ -1044,10 +1044,10 @@ class PrintScheduler:
           compare equal and the sort collapses to AMS-slot order — the user
           who's curating inventory weights gets the lower-slot pick instead
           of the lower-remaining pick;
-        - even when set, it's the *printer's* counter, not Bambuddy's
+        - even when set, it's the *printer's* counter, not Printbuddy's
           ``label_weight - weight_used`` (internal mode) or Spoolman's
           ``remaining_weight`` (Spoolman mode) — the two diverge any time the
-          user re-spools, swaps cardboard, or runs a print outside Bambuddy.
+          user re-spools, swaps cardboard, or runs a print outside Printbuddy.
 
         When the user has bound a spool to a slot, their own inventory
         tracking is authoritative; this helper surfaces that value so the
@@ -2274,7 +2274,7 @@ class PrintScheduler:
     ) -> None:
         """Revert a queue item if the printer never acknowledges the start command.
 
-        Bambuddy optimistically marks the queue item as "printing" right after the
+        Printbuddy optimistically marks the queue item as "printing" right after the
         MQTT project_file publish succeeds locally. If the printer drops/ignores the
         command (half-broken MQTT session — #887/#936), the state never transitions
         and the item would otherwise stay stuck in "printing" forever (#967).

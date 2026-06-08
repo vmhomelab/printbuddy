@@ -1,6 +1,6 @@
 """Per-printer-model camera tuning knobs.
 
-Bambuddy talks to multiple Bambu Lab printer models that all expose a
+Printbuddy talks to multiple Bambu Lab printer models that all expose a
 camera but in subtly different ways:
 
 - **Chamber image** (port 6000, proprietary binary protocol) — A1, A1

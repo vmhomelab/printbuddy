@@ -3,7 +3,7 @@
 Background — see #1211 / #668. The live database runs in WAL mode
 (``database.py:19``: ``PRAGMA journal_mode = WAL``). Anything written to
 the database before the restore call that hasn't been checkpointed yet
-sits in ``bambuddy.db-wal`` with valid checksums. The original restore
+sits in ``printbuddy.db-wal`` with valid checksums. The original restore
 implementation used ``shutil.copy2(backup_db, db_path)`` which only
 overwrites the main DB file's content, so on the next open SQLite found
 the stale WAL and silently re-applied those page-level writes on top of

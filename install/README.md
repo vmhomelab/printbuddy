@@ -232,7 +232,7 @@ BACKUP_MODE=require sudo ./update.sh
 BACKUP_MODE=skip sudo ./update.sh
 
 # Auth-enabled instances: provide API key for backup endpoint
-BAMBUDDY_API_KEY=bb_xxx BACKUP_MODE=require sudo ./update.sh
+PRINTBUDDY_API_KEY=bb_xxx BACKUP_MODE=require sudo ./update.sh
 ```
 
 **Docker (pre-built image):**

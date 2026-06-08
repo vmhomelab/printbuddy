@@ -7,11 +7,11 @@ archive's 3MF on disk and populates bed_type from slice_info.config (and
 project_settings.config as a fallback).
 
 Usage:
-    # From the bambuddy directory:
+    # From the printbuddy directory:
     python scripts/backfill_archive_bed_type.py
 
     # Or via docker:
-    docker exec -it bambuddy python scripts/backfill_archive_bed_type.py
+    docker exec -it printbuddy python scripts/backfill_archive_bed_type.py
 
     # Preview without writing:
     python scripts/backfill_archive_bed_type.py --dry-run

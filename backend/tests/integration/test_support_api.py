@@ -43,7 +43,7 @@ class TestSupportLogsAPI:
 2024-01-15 10:30:48,012 ERROR [backend.app.services.ftp] Failed to download file
 """
         with tempfile.TemporaryDirectory() as tmpdir:
-            log_file = Path(tmpdir) / "bambuddy.log"
+            log_file = Path(tmpdir) / "printbuddy.log"
             log_file.write_text(log_content)
 
             with patch("backend.app.services.log_reader.settings") as mock_settings:
@@ -73,7 +73,7 @@ class TestSupportLogsAPI:
 2024-01-15 10:30:48,012 ERROR [backend.app.services.ftp] Failed to download file
 """
         with tempfile.TemporaryDirectory() as tmpdir:
-            log_file = Path(tmpdir) / "bambuddy.log"
+            log_file = Path(tmpdir) / "printbuddy.log"
             log_file.write_text(log_content)
 
             with patch("backend.app.services.log_reader.settings") as mock_settings:
@@ -97,7 +97,7 @@ class TestSupportLogsAPI:
 2024-01-15 10:30:48,012 ERROR [backend.app.services.ftp] Failed to download file
 """
         with tempfile.TemporaryDirectory() as tmpdir:
-            log_file = Path(tmpdir) / "bambuddy.log"
+            log_file = Path(tmpdir) / "printbuddy.log"
             log_file.write_text(log_content)
 
             with patch("backend.app.services.log_reader.settings") as mock_settings:
@@ -121,7 +121,7 @@ class TestSupportLogsAPI:
 2024-01-15 10:30:49,345 INFO [backend.app.main] Line 5
 """
         with tempfile.TemporaryDirectory() as tmpdir:
-            log_file = Path(tmpdir) / "bambuddy.log"
+            log_file = Path(tmpdir) / "printbuddy.log"
             log_file.write_text(log_content)
 
             with patch("backend.app.services.log_reader.settings") as mock_settings:
@@ -150,7 +150,7 @@ ValueError: test error
 2024-01-15 10:30:47,789 INFO [backend.app.main] Recovery complete
 """
         with tempfile.TemporaryDirectory() as tmpdir:
-            log_file = Path(tmpdir) / "bambuddy.log"
+            log_file = Path(tmpdir) / "printbuddy.log"
             log_file.write_text(log_content)
 
             with patch("backend.app.services.log_reader.settings") as mock_settings:
@@ -180,7 +180,7 @@ ValueError: test error
 2024-01-15 10:30:46,456 DEBUG [backend.app.services.printer] Some debug info
 """
         with tempfile.TemporaryDirectory() as tmpdir:
-            log_file = Path(tmpdir) / "bambuddy.log"
+            log_file = Path(tmpdir) / "printbuddy.log"
             log_file.write_text(log_content)
 
             with patch("backend.app.api.routes.support.settings") as mock_settings:

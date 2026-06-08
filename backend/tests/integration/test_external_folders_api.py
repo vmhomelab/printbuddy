@@ -728,8 +728,8 @@ class TestCrossBoundaryMove:
 
     Pre-fix symptom (reported by @Carter3DP after testing 0.2.4b1): a file
     moved from a managed folder to a NAS-backed external folder showed up
-    in Bambuddy's UI under the external folder but was never written to
-    the NAS — so the SMB mount and Bambuddy disagreed about what was
+    in Printbuddy's UI under the external folder but was never written to
+    the NAS — so the SMB mount and Printbuddy disagreed about what was
     actually there.
     """
 

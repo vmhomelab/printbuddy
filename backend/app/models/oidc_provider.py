@@ -144,7 +144,7 @@ class OIDCProvider(Base):
 
 
 class UserOIDCLink(Base):
-    """Links a local Bambuddy user account to an identity at an OIDC provider."""
+    """Links a local Printbuddy user account to an identity at an OIDC provider."""
 
     __tablename__ = "user_oidc_links"
     __table_args__ = (

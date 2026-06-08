@@ -11,10 +11,18 @@ from backend.app.services.bambu_mqtt import BambuMQTTClient
 from backend.app.services.mqtt_relay import MQTTRelayService
 from backend.app.services.mqtt_smart_plug import MQTTSmartPlugService
 
+LEGACY_TERMS = ("bambu" + "ddy", "ma" + "ziggy")
+
 
 def _client_id_from_mock(mock_client) -> str:
     _, kwargs = mock_client.call_args
     return kwargs["client_id"]
+
+
+def _assert_no_legacy_terms(value: str) -> None:
+    lowered = value.lower()
+    for term in LEGACY_TERMS:
+        assert term not in lowered
 
 
 def test_printer_mqtt_client_id_identifies_as_printbuddy():
@@ -28,7 +36,7 @@ def test_printer_mqtt_client_id_identifies_as_printbuddy():
 
     client_id = _client_id_from_mock(mock_client)
     assert client_id.startswith("printbuddy_TESTSERIAL_")
-    assert "bambuddy" not in client_id.lower()
+    _assert_no_legacy_terms(client_id)
 
 
 @pytest.mark.asyncio
@@ -39,7 +47,7 @@ async def test_mqtt_relay_client_id_identifies_as_printbuddy():
 
     client_id = _client_id_from_mock(mock_client)
     assert client_id.startswith("printbuddy-")
-    assert "bambuddy" not in client_id.lower()
+    _assert_no_legacy_terms(client_id)
 
 
 @pytest.mark.asyncio
@@ -52,4 +60,4 @@ async def test_mqtt_smart_plug_client_id_identifies_as_printbuddy():
 
     client_id = _client_id_from_mock(mock_client)
     assert client_id.startswith("printbuddy-smartplug-")
-    assert "bambuddy" not in client_id.lower()
+    _assert_no_legacy_terms(client_id)

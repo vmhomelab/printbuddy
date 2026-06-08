@@ -564,7 +564,7 @@ export const handlers = [
     HttpResponse.json({ version: '0.1.5', commit: 'test' })
   ),
   http.get('/openapi.json', () =>
-    HttpResponse.json({ openapi: '3.0.0', info: { title: 'Bambuddy', version: '0.1.5' }, paths: {} })
+    HttpResponse.json({ openapi: '3.0.0', info: { title: 'Printbuddy', version: '0.1.5' }, paths: {} })
   ),
   http.post('/api/v1/cloud/filament-info', () => HttpResponse.json({ filaments: [] })),
   http.post('/api/v1/printers/camera/stream-token', () =>

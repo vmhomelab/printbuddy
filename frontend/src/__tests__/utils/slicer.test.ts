@@ -81,7 +81,7 @@ describe('slicer utility', () => {
     it('encodes filenames with spaces so the slicer receives %20 after url_decode (issue #1059)', () => {
       vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue('Mozilla/5.0 (Windows NT 10.0)');
       // A download URL that already contains percent-encoded spaces — this is how
-      // Bambuddy emits archive paths (the filename in the URL is URL-path-encoded).
+      // Printbuddy emits archive paths (the filename in the URL is URL-path-encoded).
       const url = 'http://localhost:8000/api/v1/archives/1/dl/TOKEN/Toothpick%20Launcher%20Print-in-Place.3mf';
       openInSlicer(url, 'orcaslicer');
 

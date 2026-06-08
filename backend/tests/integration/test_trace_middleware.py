@@ -67,7 +67,7 @@ class TestGeneratedTraceId:
     def test_response_carries_x_trace_id_header(self, client):
         """Every response must echo X-Trace-Id so a client can paste it
         into a server-side log search later — without it, the trace ID
-        column in bambuddy.log is one-way only."""
+        column in printbuddy.log is one-way only."""
         response = client.get("/echo-trace")
         assert response.status_code == 200
         assert "X-Trace-Id" in response.headers
@@ -123,7 +123,7 @@ class TestInboundTraceIdRespected:
         assert " " not in echoed
 
     def test_overlong_inbound_id_is_replaced(self, client):
-        """The cap protects bambuddy.log from a 1KB-per-line blowup if
+        """The cap protects printbuddy.log from a 1KB-per-line blowup if
         a caller sends a huge X-Trace-Id."""
         too_long = "a" * 100
         response = client.get("/echo-trace", headers={"X-Trace-Id": too_long})

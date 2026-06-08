@@ -43,7 +43,7 @@ export function GCodeViewerPage() {
   // the adapter inside can pick up the archive to load. The iframe itself must
   // keep the trailing slash on /gcode-viewer/ so it hits the raw-viewer route;
   // the outer SPA URL uses no trailing slash so a reload falls through to the
-  // SPA catch-all and keeps the Bambuddy layout shell.
+  // SPA catch-all and keeps the Printbuddy layout shell.
   const iframeSrc = `/gcode-viewer/${window.location.search}`;
 
   return (

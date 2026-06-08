@@ -2,7 +2,7 @@
 
 The MQTT ``remain`` field on an AMS tray is the printer firmware's
 RFID-tracked value, which is ``-1`` for non-Bambu spools (and even when
-set diverges from Bambuddy's inventory). When the user has bound an
+set diverges from Printbuddy's inventory). When the user has bound an
 inventory spool to an AMS slot, that inventory record's
 ``label_weight - weight_used`` (or Spoolman's ``remaining_weight``) is
 the authoritative remaining-weight signal. These tests verify

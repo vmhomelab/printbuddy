@@ -126,7 +126,7 @@ async def test_restore_drops_tables_with_cascade_not_metadata_drop_all():
 @pytest.mark.asyncio
 async def test_restore_cascade_drop_targets_only_public_schema():
     """Defensive: the CASCADE drop must scope to the `public` schema so a
-    shared Postgres holding non-Bambuddy tables in other schemas doesn't
+    shared Postgres holding non-Printbuddy tables in other schemas doesn't
     lose data on restore."""
     from backend.app.api.routes import settings as settings_module
 

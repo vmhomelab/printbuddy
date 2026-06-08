@@ -199,7 +199,7 @@ class GitLabBackend(GitProviderBackend):
             if not actions:
                 return {"status": "skipped", "message": "No changes to commit", "commit_sha": None, "files_changed": 0}
 
-            commit_message = f"Bambuddy backup - {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}"
+            commit_message = f"Printbuddy backup - {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}"
             commit_response = await client.post(
                 f"{api_base}/projects/{encoded_path}/repository/commits",
                 headers=headers,
@@ -244,7 +244,7 @@ class GitLabBackend(GitProviderBackend):
                     }
                 )
 
-            commit_message = f"Initial Bambuddy backup - {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}"
+            commit_message = f"Initial Printbuddy backup - {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}"
             commit_response = await client.post(
                 f"{api_base}/projects/{encoded_path}/repository/commits",
                 headers=headers,

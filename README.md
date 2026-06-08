@@ -38,16 +38,16 @@
 
 ## What is Printbuddy?
 
-**Printbuddy** is a fork of [Bambuddy](https://github.com/maziggy/bambuddy) with a broader goal:
+**Printbuddy** is a modern, self-hosted dashboard with a broader goal:
 
 > A single, modern, self-hosted dashboard for managing different 3D printer ecosystems.
 
-Printbuddy currently starts from the existing Bambuddy foundation and expands it with a provider-based architecture for multiple printer platforms.
+Printbuddy expands the original Bambu-focused foundation with a provider-based architecture for multiple printer platforms.
 
 Current state:
 
 - Initial fork setup on `dev`
-- Bambu Lab support inherited from Bambuddy
+- Bambu Lab support from the original foundation
 - Klipper and Prusa support being added
 - Provider architecture in progress
 
@@ -171,7 +171,7 @@ Planned providers:
 
 | Provider | Description | Status |
 |---|---|---|
-| `bambu` | Existing Bambuddy / Bambu Lab MQTT + FTP support | Inherited |
+| `bambu` | Existing Printbuddy / Bambu Lab MQTT + FTP support | Inherited |
 | `klipper` | Moonraker-backed Klipper printer status and control | In progress |
 | `prusa` | Future Prusa / PrusaLink support | Planned |
 
@@ -236,9 +236,9 @@ For now, the best way to contribute is:
 
 ## Attribution and license
 
-Printbuddy is forked from Bambuddy and keeps the upstream **AGPL-3.0** license.
+Printbuddy keeps the upstream **AGPL-3.0** license.
 
-Historical upstream documentation and changelog entries may still reference Bambuddy while the fork is being rebranded.
+Historical upstream documentation and changelog entries are retained only where needed for license and release-history context.
 
 ---
 

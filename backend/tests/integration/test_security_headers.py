@@ -153,7 +153,7 @@ async def test_trusted_origins_applies_to_docs_branch(async_client: AsyncClient,
 async def test_default_block_img_src_excludes_https(async_client: AsyncClient, monkeypatch):
     """#1333 regression guard: the default SPA CSP must NOT allow img-src https:.
 
-    Bambuddy's policy for external images is a backend proxy (see
+    Printbuddy's policy for external images is a backend proxy (see
     /api/v1/makerworld/thumbnail and /api/v1/auth/oidc/providers/{id}/icon),
     not a CSP relaxation. If a future change adds ``https:`` to img-src to
     "fix" a broken-image, the proxy pattern silently degrades into a

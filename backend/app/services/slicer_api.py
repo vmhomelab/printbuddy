@@ -1,6 +1,6 @@
 """HTTP client for an OrcaSlicer / BambuStudio API sidecar.
 
-Bambuddy stores user printer/process/filament profiles itself (cloud-synced
+Printbuddy stores user printer/process/filament profiles itself (cloud-synced
 or locally imported), so the slice flow always sends the model file plus an
 explicit JSON profile triplet to the sidecar's `/slice` endpoint. The sidecar
 shape mirrors `AFKFelix/orca-slicer-api` (multipart upload, `--load-settings`
@@ -95,7 +95,7 @@ def _format_sidecar_error(response: httpx.Response) -> str:
     client only read ``message``, which left every CLI failure surfaced
     as the generic ``Failed to slice the model`` because the *actual*
     CLI stderr / `error_string` lives in ``details``. Including both
-    means ``bambuddy.log`` carries the real reason a slice rejected
+    means ``printbuddy.log`` carries the real reason a slice rejected
     the supplied profiles instead of an unhelpful generic line.
     """
     try:
@@ -175,7 +175,7 @@ class SlicerApiService:
     async def list_bundled_profiles(self) -> dict:
         """GET /profiles/bundled — return the slicer's stock profiles by slot.
 
-        Powers the "Standard" tier of Bambuddy's SliceModal preset dropdowns.
+        Powers the "Standard" tier of Printbuddy's SliceModal preset dropdowns.
         The sidecar walks the slicer's read-only `resources/profiles/BBL/`
         tree and returns ``{printer, process, filament}`` arrays of
         ``{name, base_id}`` (alphabetised, instantiable presets only — abstract
@@ -354,7 +354,7 @@ class SlicerApiService:
 
         ``arrange`` forwards the sidecar's ``--arrange`` flag to BambuStudio.
         When True the slicer auto-repositions objects on the target bed,
-        which Bambuddy uses for cross-nozzle-class re-slices (#1493) where
+        which Printbuddy uses for cross-nozzle-class re-slices (#1493) where
         the source's X1C-coordinate layout would otherwise drop into an H2D
         dead zone or trigger the multi-extruder geometry pipeline's polygon
         clipping crash. Default off so single-printer slices preserve the
@@ -362,7 +362,7 @@ class SlicerApiService:
 
         ``request_id``: when supplied, the sidecar wires --pipe to a
         per-request FIFO and publishes structured JSON progress events to
-        its in-memory ProgressStore under this id. Bambuddy's slice
+        its in-memory ProgressStore under this id. Printbuddy's slice
         dispatch polls ``GET /slice/progress/{request_id}`` in parallel
         to drive the live-progress toast.
 
@@ -503,7 +503,7 @@ class SlicerApiService:
             # #1337: bed-plate override flows through to the sidecar as a
             # standalone field. The sidecar wraps this as --curr_bed_type on
             # the CLI invocation, overriding whatever the bundle's process
-            # JSON specifies. Bambuddy can't patch the bundle's JSON locally
+            # JSON specifies. Printbuddy can't patch the bundle's JSON locally
             # (the sidecar materialises it from disk), so this round-trip is
             # the only path. Silently no-ops on sidecar versions that don't
             # yet recognise the field — the user's slice still runs with the

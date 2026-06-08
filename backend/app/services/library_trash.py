@@ -11,7 +11,7 @@ Two-stage file deletion for the library:
    whose ``deleted_at`` is older than the configured retention window.
 
 External files (``is_external=True``) are never placed in the trash — their
-bytes live outside Bambuddy's control, so there's nothing to restore.
+bytes live outside Printbuddy's control, so there's nothing to restore.
 """
 
 from __future__ import annotations

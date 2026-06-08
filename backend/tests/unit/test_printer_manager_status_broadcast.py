@@ -1,7 +1,7 @@
 """Regression tests for ``PrinterManager._broadcast_status_change`` and
 its wiring from ``set_awaiting_plate_clear`` (#1128).
 
-The bug: ``awaiting_plate_clear`` is a Bambuddy-side flag, so toggling it
+The bug: ``awaiting_plate_clear`` is a Printbuddy-side flag, so toggling it
 doesn't produce an MQTT push from the printer. Before the fix,
 ``set_awaiting_plate_clear()`` mutated state and persisted to DB but never
 notified WebSocket subscribers. The plate-clear button on the printer card

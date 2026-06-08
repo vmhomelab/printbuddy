@@ -193,11 +193,11 @@ class PrinterState:
     # Filament Track Switch (FTS) accessory — when installed, AMS info reports
     # bits 8-11 = 0xE (uninitialized) because routing is dynamic. See #1162.
     fila_switch: "FilaSwitchState" = field(default_factory=lambda: FilaSwitchState())
-    # Plate dispatched by Bambuddy for the current print. Some firmware versions
+    # Plate dispatched by Printbuddy for the current print. Some firmware versions
     # (P1S 01.10.00.00) only put the .3mf filename in print.gcode_file, so the
     # regex used to derive the plate number from the path always falls back to
     # plate 1 — and the printer card shows the wrong thumbnail (#1166). When
-    # Bambuddy dispatches the print itself we know the plate authoritatively;
+    # Printbuddy dispatches the print itself we know the plate authoritatively;
     # we record it here and prefer it over the gcode_file regex. The subtask
     # field guards against staleness: if the printer is currently running a
     # different subtask (e.g. a Studio-direct dispatch), these values are
@@ -350,7 +350,7 @@ class BambuMQTTClient:
         # Receives the AMS id of the unit that finished drying.
         self.on_drying_complete = on_drying_complete
         # #1485 follow-up: fired the first time we see RUNNING state in a
-        # session WHEN on_print_start was suppressed (Bambuddy started mid-
+        # session WHEN on_print_start was suppressed (Printbuddy started mid-
         # print, the #1304 first-push guard skipped the start event). Lets
         # main.py capture a fresh timelapse baseline at restart-recovery
         # time so the completion-time snapshot-diff still works. Receives
@@ -419,7 +419,7 @@ class BambuMQTTClient:
         self._last_load_tray_id: int | None = None
 
         # Captured ams_mapping from print commands on the request topic
-        # Intercepts slicer/Bambuddy print commands to get the slot-to-tray mapping
+        # Intercepts slicer/Printbuddy print commands to get the slot-to-tray mapping
         self._captured_ams_mapping: list[int] | None = None
 
         # Request topic subscription tracking
@@ -501,7 +501,7 @@ class BambuMQTTClient:
                     "[%s] Connected and subscribed, but the printer has sent zero "
                     "status reports. The most common cause is a wrong or mis-cased "
                     "serial number — the device/<serial>/report MQTT topic is "
-                    "case-sensitive. Verify the serial number configured in Bambuddy "
+                    "case-sensitive. Verify the serial number configured in Printbuddy "
                     "exactly matches the printer.",
                     self.serial_number,
                 )
@@ -763,7 +763,7 @@ class BambuMQTTClient:
             self._last_message_time = time.time()
             self.state.connected = True
 
-            # Intercept request-topic messages (print commands from slicer/Bambuddy)
+            # Intercept request-topic messages (print commands from slicer/Printbuddy)
             if msg.topic == self.topic_publish:
                 self._handle_request_message(payload)
                 return
@@ -2904,7 +2904,7 @@ class BambuMQTTClient:
         current_file = self.state.gcode_file or self.state.current_print
         is_new_print = (
             self.state.state == "RUNNING"
-            and self._previous_gcode_state is not None  # #1304: skip on first push after Bambuddy startup
+            and self._previous_gcode_state is not None  # #1304: skip on first push after Printbuddy startup
             and self._previous_gcode_state != "RUNNING"
             and current_file
             and not self._was_running  # Prevent duplicates when resuming from PAUSE
@@ -2930,7 +2930,7 @@ class BambuMQTTClient:
                 # If is_new_print also fires below, on_print_start handles
                 # baseline capture and we suppress on_print_running_observed
                 # to avoid double-capture. If is_new_print does NOT fire
-                # (Bambuddy started mid-print — the #1304 guard suppressed
+                # (Printbuddy started mid-print — the #1304 guard suppressed
                 # it), main.py needs this hook to catch the restart-recovery
                 # case (#1485 follow-up).
                 running_first_observed = True
@@ -2980,7 +2980,7 @@ class BambuMQTTClient:
                 }
             )
         elif running_first_observed and self.on_print_running_observed:
-            # Restart-recovery hook (#1485 follow-up): Bambuddy started mid-
+            # Restart-recovery hook (#1485 follow-up): Printbuddy started mid-
             # print, so the #1304 first-push guard suppressed on_print_start,
             # but we still need main.py to capture a fresh timelapse baseline
             # before the printer uploads the in-flight MP4. Same payload

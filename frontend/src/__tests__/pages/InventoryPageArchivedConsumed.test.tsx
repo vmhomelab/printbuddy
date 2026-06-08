@@ -69,7 +69,7 @@ const baseSettings = {
   mqtt_port: 1883,
   mqtt_username: '',
   mqtt_password: '',
-  mqtt_topic_prefix: 'bambuddy',
+  mqtt_topic_prefix: 'printbuddy',
   mqtt_use_tls: false,
   external_url: '',
   ha_enabled: false,

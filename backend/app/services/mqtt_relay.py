@@ -28,7 +28,7 @@ class MQTTRelayService:
         self.client: mqtt.Client | None = None
         self.enabled = False
         self.connected = False
-        self.topic_prefix = "bambuddy"
+        self.topic_prefix = "printbuddy"
         self._lock = threading.Lock()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._broker = ""
@@ -57,7 +57,7 @@ class MQTTRelayService:
         port = settings.get("mqtt_port", 1883)
         username = settings.get("mqtt_username", "")
         password = settings.get("mqtt_password", "")
-        self.topic_prefix = settings.get("mqtt_topic_prefix", "bambuddy")
+        self.topic_prefix = settings.get("mqtt_topic_prefix", "printbuddy")
         use_tls = settings.get("mqtt_use_tls", False)
 
         if not broker:

@@ -102,5 +102,5 @@ export const EXTENDED_COLORS: ColorPreset[] = [
 export const ALL_COLORS: ColorPreset[] = [...QUICK_COLORS, ...EXTENDED_COLORS];
 
 // Local storage keys
-export const RECENT_COLORS_KEY = 'bambuddy-recent-colors';
+export const RECENT_COLORS_KEY = 'printbuddy-recent-colors';
 export const MAX_RECENT_COLORS = 8;

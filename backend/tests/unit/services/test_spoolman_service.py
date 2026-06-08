@@ -148,7 +148,7 @@ class TestSpoolmanClient:
             call_kwargs = mock_update.call_args.kwargs
             # remaining_weight should be None (not updated)
             assert call_kwargs.get("remaining_weight") is None
-            # location must never be written by Bambuddy — user-managed in Spoolman
+            # location must never be written by Printbuddy — user-managed in Spoolman
             assert "location" not in call_kwargs
 
     @pytest.mark.asyncio
@@ -177,7 +177,7 @@ class TestSpoolmanClient:
             await client.sync_ams_tray(sample_tray, "My Printer", disable_weight_sync=True)
 
             call_kwargs = mock_update.call_args.kwargs
-            # Bambuddy must never auto-set spool.location — it is user-managed in Spoolman
+            # Printbuddy must never auto-set spool.location — it is user-managed in Spoolman
             assert "location" not in call_kwargs
 
     # ========================================================================
@@ -596,7 +596,7 @@ class TestInitSpoolmanClientSSRFGuard:
 
     Scope: cloud metadata endpoints, multicast, unspecified, non-http(s) schemes,
     and numeric-encoded IP bypasses. Loopback and RFC-1918 private ranges are
-    explicitly allowed — Bambuddy's primary deployment is LAN-local Spoolman.
+    explicitly allowed — Printbuddy's primary deployment is LAN-local Spoolman.
     """
 
     @pytest.mark.asyncio

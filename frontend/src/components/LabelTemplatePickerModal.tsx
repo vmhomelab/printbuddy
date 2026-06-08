@@ -76,7 +76,7 @@ function openBlobInNewTab(blob: Blob): void {
   if (!win) {
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'bambuddy-labels.pdf';
+    a.download = 'printbuddy-labels.pdf';
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);

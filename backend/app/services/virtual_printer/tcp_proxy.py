@@ -6,7 +6,7 @@ enabling remote printing over any network connection.
 
 Most protocols (FTP, FileTransfer, Camera) use transparent TCP proxying —
 raw bytes are forwarded without decryption, preserving end-to-end TLS
-between slicer and printer. Only MQTT is TLS-terminated so Bambuddy can
+between slicer and printer. Only MQTT is TLS-terminated so Printbuddy can
 rewrite the printer's real IP with the proxy's bind IP in MQTT payloads.
 """
 
@@ -108,7 +108,7 @@ class TLSProxy:
     """TLS terminating proxy that forwards data between client and target.
 
     This proxy terminates TLS on both ends, allowing the slicer to connect
-    to Bambuddy's certificate while Bambuddy connects to the real printer.
+    to Printbuddy's certificate while Printbuddy connects to the real printer.
     """
 
     def __init__(

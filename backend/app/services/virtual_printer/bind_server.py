@@ -37,7 +37,7 @@ TRAILER_SIZE = 2
 class BindServer:
     """Responds to slicer bind/detect requests on ports 3000 and 3002.
 
-    In server mode, Bambuddy IS the printer — it responds with its own
+    In server mode, Printbuddy IS the printer — it responds with its own
     identity so the slicer can discover and bind to it.
 
     Port 3000 is plain TCP, port 3002 is TLS.  BambuStudio chooses which

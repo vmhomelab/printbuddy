@@ -6,7 +6,7 @@ Support Bambu Lab, Klipper, and Mainsail/Moonraker printers behind one provider-
 
 ## Providers
 
-- `bambu`: existing Bambu Lab MQTT/FTP implementation inherited from Bambuddy.
+- `bambu`: existing Bambu Lab MQTT/FTP implementation from the original foundation.
 - `klipper`: Moonraker API/WebSocket implementation for Klipper printers.
 - `mainsail`: UI label for printers managed through Mainsail; technically uses Moonraker like Klipper.
 

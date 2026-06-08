@@ -359,7 +359,7 @@ async def _resolve_spool_id_via_slot_assignment(printer_id: int, ams_id: int, tr
     """Look up the Spoolman spool ID locally bound to (printer, ams, tray).
 
     Fallback path for #1459: when a tag-less spool was assigned via the
-    Bambuddy UI, the user's deterministic fallback tag is intentionally NOT
+    Printbuddy UI, the user's deterministic fallback tag is intentionally NOT
     written to Spoolman's extra.tag (kept clean per #1457), so
     find_spool_by_tag misses. The local spoolman_slot_assignments table is
     the authoritative binding for those spools.
@@ -392,7 +392,7 @@ async def _report_spool_usage_for_slots(
     Resolution order per slot: (1) Spoolman extra.tag match against the
     tray's RFID or deterministic fallback tag, (2) #1459 fallback —
     local spoolman_slot_assignments table keyed by (printer_id, ams_id,
-    tray_id). Without (2), tag-less spools assigned via the Bambuddy UI
+    tray_id). Without (2), tag-less spools assigned via the Printbuddy UI
     never get their weight decremented because their extra.tag is empty
     on the Spoolman side.
 

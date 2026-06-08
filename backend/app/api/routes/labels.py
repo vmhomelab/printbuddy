@@ -7,7 +7,7 @@ Two endpoints, one per inventory backend:
 
 Both accept ``{spool_ids: [int], template: str}`` and return a PDF stream.
 The QR code on each label deep-links to ``/inventory?spool=<id>`` so a phone
-scan jumps straight back into Bambuddy at that spool's row.
+scan jumps straight back into Printbuddy at that spool's row.
 """
 
 from __future__ import annotations
@@ -72,7 +72,7 @@ def _split_extra_colors(raw: str | None) -> list[str] | None:
 
 async def _resolve_deeplink_base(request: Request, db: AsyncSession) -> str:
     """Where the QR codes should point. Prefers `external_url` when set so a
-    phone scan reaches the user's public Bambuddy URL rather than an internal
+    phone scan reaches the user's public Printbuddy URL rather than an internal
     address; falls back to the request's own scheme+host when no setting is
     configured.
     """
@@ -171,7 +171,7 @@ async def render_local_inventory_labels(
     data_list = [_spool_to_label_data(s, deeplink_base) for s in ordered]
 
     pdf = render_labels(body.template, data_list)
-    filename = f"bambuddy-labels-{body.template}.pdf"
+    filename = f"printbuddy-labels-{body.template}.pdf"
     return _stream_pdf(pdf, filename)
 
 
@@ -215,5 +215,5 @@ async def render_spoolman_labels(
     data_list = [_spoolman_dict_to_label_data(by_id[sid], deeplink_base) for sid in body.spool_ids]
 
     pdf = render_labels(body.template, data_list)
-    filename = f"bambuddy-labels-spoolman-{body.template}.pdf"
+    filename = f"printbuddy-labels-spoolman-{body.template}.pdf"
     return _stream_pdf(pdf, filename)

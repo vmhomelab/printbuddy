@@ -31,7 +31,7 @@ function buildProvider(overrides: Partial<NotificationProvider> = {}): Notificat
     name: 'My ntfy',
     provider_type: 'ntfy',
     enabled: true,
-    config: { server: 'https://ntfy.sh', topic: 'bambuddy' },
+    config: { server: 'https://ntfy.sh', topic: 'printbuddy' },
     on_print_start: false,
     on_print_complete: true,
     on_print_failed: true,
@@ -177,7 +177,7 @@ describe('AddNotificationModal — ntfy Priority (#990)', () => {
     const payload = captured as { config: Record<string, unknown> };
     expect(payload.config).toMatchObject({
       server: 'https://ntfy.sh',
-      topic: 'bambuddy',
+      topic: 'printbuddy',
       event_priorities: { on_print_failed: 5 },
     });
   });
@@ -186,7 +186,7 @@ describe('AddNotificationModal — ntfy Priority (#990)', () => {
     const provider = buildProvider({
       config: {
         server: 'https://ntfy.sh',
-        topic: 'bambuddy',
+        topic: 'printbuddy',
         event_priorities: { on_print_failed: 5, on_print_complete: 2 },
       },
     });

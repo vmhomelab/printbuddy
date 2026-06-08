@@ -55,7 +55,7 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
 
   // Host-level Tailscale identity (same for every VP) — shown inline on the card when
   // the user has marked this VP as "exposed over Tailscale". Cert handling does NOT
-  // depend on this toggle; the slicer trusts the bambuddy CA the user imports once.
+  // depend on this toggle; the slicer trusts the printbuddy CA the user imports once.
   const { data: tailscaleStatus } = useQuery({
     queryKey: ['tailscale-status'],
     queryFn: multiVirtualPrinterApi.getTailscaleStatus,

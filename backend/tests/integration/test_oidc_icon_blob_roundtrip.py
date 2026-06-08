@@ -1,6 +1,6 @@
 """Type-mapping coverage for the OIDC icon BLOB column (#1333).
 
-Bambuddy's ``create_backup_zip`` rebuilds the SQLite backup schema from
+Printbuddy's ``create_backup_zip`` rebuilds the SQLite backup schema from
 ``Base.metadata`` when the source database is PostgreSQL. The column-type
 mapping previously fell through to ``TEXT`` for any unknown SQLAlchemy
 type — including ``LargeBinary`` / ``BYTEA`` — which corrupts non-UTF8

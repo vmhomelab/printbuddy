@@ -29,7 +29,7 @@ router = APIRouter(prefix="/github-backup", tags=["github-backup"])
 
 
 _PUBLIC_REPO_ERROR = (
-    "Refusing to save: the target repository is not private. Bambuddy backups "
+    "Refusing to save: the target repository is not private. Printbuddy backups "
     "include MQTT credentials, Home Assistant tokens, Prometheus tokens, your "
     "Bambu Cloud email, the printer access codes via K-profiles, and other "
     "settings that must not be exposed publicly. Make the repository private "
@@ -37,7 +37,7 @@ _PUBLIC_REPO_ERROR = (
 )
 _UNKNOWN_VISIBILITY_ERROR = (
     "Refusing to save: could not confirm the target repository is private. "
-    "Bambuddy backups contain credentials and must never go to a public or "
+    "Printbuddy backups contain credentials and must never go to a public or "
     "internal-visibility repository. Verify the URL, the access token's scope, "
     "and that your provider exposes the 'private' / 'visibility' field on its "
     "repo API."
@@ -112,7 +112,7 @@ async def save_config(
     """Create or update GitHub backup configuration.
 
     Only one configuration is supported. If one exists, it will be updated.
-    The target repository must be private — Bambuddy backups carry MQTT
+    The target repository must be private — Printbuddy backups carry MQTT
     credentials, HA/Prometheus tokens, the Bambu Cloud email, and printer
     access codes (via K-profiles), so a public repo is a hard reject.
     """

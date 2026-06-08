@@ -127,7 +127,7 @@ class TestGenerateTraceId:
 class TestNormaliseInboundTraceId:
     """Hostile / buggy callers sending ``X-Trace-Id`` must NOT be able
     to push log-injection payloads (newlines, control chars, megabyte
-    blobs) into bambuddy.log via the trace ID column. Anything that
+    blobs) into printbuddy.log via the trace ID column. Anything that
     fails the gate gets ``None`` so the middleware mints fresh."""
 
     def test_none_input_returns_none(self):
@@ -191,7 +191,7 @@ class TestFilterMustBeAttachedToHandlerNotLogger:
     in the app) never trigger it. Attaching TraceIDFilter to root_logger meant
     child-logger records arrived at the file handler with no trace_id
     attribute, the formatter raised KeyError, and the record was silently
-    dropped — manifesting as "logs/bambuddy.log only shows logs partially".
+    dropped — manifesting as "logs/printbuddy.log only shows logs partially".
     The filter must live on each *handler* so every record passing through it
     gets annotated regardless of which logger emitted it."""
 

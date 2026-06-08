@@ -29,9 +29,9 @@ function pickString(obj: Record<string, unknown> | undefined, key: string): stri
 }
 
 // Rewrite MakerWorld CDN URLs inside HTML content (design summary, etc.) to
-// use Bambuddy's thumbnail proxy. MakerWorld summaries are authored HTML and
+// use Printbuddy's thumbnail proxy. MakerWorld summaries are authored HTML and
 // commonly contain ``<img src="https://makerworld.bblmw.com/...">`` tags;
-// Bambuddy's img-src CSP only allows ``'self' data: blob:``, so these would
+// Printbuddy's img-src CSP only allows ``'self' data: blob:``, so these would
 // otherwise be blocked. Pairs with ``proxyCdn`` below for explicit <img>
 // renders.
 function proxyCdnUrlsInHtml(html: string): string {
@@ -41,7 +41,7 @@ function proxyCdnUrlsInHtml(html: string): string {
   );
 }
 
-// MakerWorld CDN images can't be hotlinked — Bambuddy's img-src CSP blocks
+// MakerWorld CDN images can't be hotlinked — Printbuddy's img-src CSP blocks
 // external hosts. Route them through the /makerworld/thumbnail proxy.
 // Empty string in → empty string out so the ``{coverUrl && ...}`` checks
 // in the render keep short-circuiting.
@@ -605,7 +605,7 @@ export function MakerworldPage() {
                 // Both come from the design endpoint's per-instance
                 // extention.modelInfo, merged into the instance by the
                 // backend resolve route. The "compat" list is informational
-                // — Bambuddy can't actually re-slice across printers, but
+                // — Printbuddy can't actually re-slice across printers, but
                 // the user gets to see what they're picking.
                 const compat = (inst?.['compatibility'] as { devProductName?: string } | null) ?? null;
                 const others = (inst?.['otherCompatibility'] as Array<{ devProductName?: string }> | null) ?? null;

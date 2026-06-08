@@ -1,4 +1,4 @@
-# Dockerfile USER directive (DS-0002): Bambuddy runs as a single-host
+# Dockerfile USER directive (DS-0002): Printbuddy runs as a single-host
 # Docker container where root is needed for device access and FFmpeg.
 DS-0002
 
@@ -17,7 +17,7 @@ CVE-2012-2663
 
 # ffmpeg DVD subtitle parser heap OOB write (MEDIUM). Debian Security Tracker
 # marks it "postponed" for both bookworm and trixie; no upstream fix yet.
-# Not reachable in Bambuddy — ffmpeg here only ingests printer-camera RTSP
+# Not reachable in Printbuddy — ffmpeg here only ingests printer-camera RTSP
 # and MJPEG/H.264/H.265 streams, never DVD/VOB files with subtitle tracks.
 CVE-2026-6385
 
@@ -27,6 +27,6 @@ CVE-2026-6385
 CVE-2026-30997
 
 # openjpeg JPEG 2000 integer overflow (LOW). No Debian fix available.
-# libopenjp2-7 is pulled in transitively by ffmpeg but Bambuddy never
+# libopenjp2-7 is pulled in transitively by ffmpeg but Printbuddy never
 # decodes JPEG 2000 files (printer thumbnails are PNG, camera is MJPEG/H.264).
 CVE-2026-6192

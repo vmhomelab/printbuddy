@@ -1,7 +1,7 @@
 """Integration tests for #1459 — per-print weight tracker falls back to the
 local spoolman_slot_assignments table when Spoolman's extra.tag is empty.
 
-Without this, tag-less spools assigned via the Bambuddy UI never get their
+Without this, tag-less spools assigned via the Printbuddy UI never get their
 weight decremented because the Assign route intentionally leaves extra.tag
 unset (per #1457 — fallback tags must not pollute Spoolman).
 """
@@ -57,7 +57,7 @@ async def test_printer(db_session):
 @pytest.mark.usefixtures("patch_async_session")
 class TestSlotAssignmentFallback:
     async def test_falls_back_to_slot_assignment_when_tag_missing(self, test_printer, mock_spoolman_client, db_session):
-        """Tag-less spool assigned via Bambuddy UI: extra.tag is empty (find_spool_by_tag
+        """Tag-less spool assigned via Printbuddy UI: extra.tag is empty (find_spool_by_tag
         returns None) but the local spoolman_slot_assignments row says spool 42 lives in
         AMS 0 tray 2 — the tracker must still report usage to spool 42.
 

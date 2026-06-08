@@ -11,7 +11,7 @@ class SpoolmanSlotAssignment(Base):
 
     Tracks which Spoolman spool ID occupies a given (printer, ams, tray) slot.
     This is the source of truth for Spoolman slot assignments — Spoolman's own
-    ``spool.location`` field is NOT managed by Bambuddy and is left for the user.
+    ``spool.location`` field is NOT managed by Printbuddy and is left for the user.
     """
 
     __tablename__ = "spoolman_slot_assignments"

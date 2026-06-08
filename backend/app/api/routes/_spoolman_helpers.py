@@ -81,7 +81,7 @@ class NormalizedFilament(TypedDict):
 def assert_safe_spoolman_url(url: str) -> None:
     """Raise ValueError if *url* should be blocked as an SSRF risk.
 
-    Bambuddy is typically deployed on a home LAN alongside Spoolman, so
+    Printbuddy is typically deployed on a home LAN alongside Spoolman, so
     loopback (127.0.0.1) and RFC-1918 private ranges (192.168.x.x, 10.x.x.x,
     172.16-31.x) must be permitted — they are THE normal Spoolman topology.
     This guard therefore targets the genuinely dangerous cases only.
@@ -121,7 +121,7 @@ def assert_safe_spoolman_url(url: str) -> None:
         # Not a bare IP address — includes intentional cases such as "localhost" and
         # RFC-1918 hostnames ("spoolman.lan", "192.168.1.10" would be caught above as
         # a dotted-decimal IP; symbolic names resolve via DNS which is out of scope).
-        # Running Spoolman on the same host or home LAN is the standard Bambuddy
+        # Running Spoolman on the same host or home LAN is the standard Printbuddy
         # topology, so loopback and private ranges are deliberately NOT blocked here.
         return
 

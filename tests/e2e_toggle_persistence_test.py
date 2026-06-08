@@ -10,7 +10,7 @@ import time
 
 from playwright.sync_api import sync_playwright
 
-BASE_URL = os.environ.get("BAMBUDDY_URL", "http://localhost:8000")
+BASE_URL = os.environ.get("PRINTBUDDY_URL", "http://localhost:8000")
 
 
 def test_smart_plug_auto_off_toggle_persistence(page):
@@ -287,7 +287,7 @@ def test_smart_plug_power_off_confirmation(page):
 def run_all_toggle_tests():
     """Run all toggle persistence tests."""
     print("=" * 60)
-    print("Bambuddy Toggle Persistence E2E Tests")
+    print("Printbuddy Toggle Persistence E2E Tests")
     print("=" * 60)
 
     with sync_playwright() as p:

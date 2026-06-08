@@ -90,7 +90,7 @@ class SmartPlug(Base):
     # (which only fires after a print finishes). Uses its own delay because
     # the AMS is hot after a drying cycle and users may want longer cooldown
     # than the print-finish default. Fires whenever any AMS attached to the
-    # linked printer finishes a dry cycle — Bambuddy doesn't model per-AMS
+    # linked printer finishes a dry cycle — Printbuddy doesn't model per-AMS
     # plug routing, the trigger is plug-vs-printer-level.
     auto_off_after_drying: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     off_delay_after_drying_minutes: Mapped[int] = mapped_column(Integer, default=10, server_default="10")

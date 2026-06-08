@@ -193,7 +193,7 @@ class TestUpdatesAPI:
         """#1420: once GitHub returns 403 with X-RateLimit-Remaining=0, the
         next call must short-circuit on the backoff window instead of hitting
         api.github.com again. Otherwise the user's logs flood with rate-limit
-        errors and Bambuddy keeps adding to whatever throttle GitHub applies."""
+        errors and Printbuddy keeps adding to whatever throttle GitHub applies."""
         import time
 
         import httpx as _httpx
@@ -288,7 +288,7 @@ class TestUpdatesAPI:
         # Empty / malformed → None.
         assert _parse_github_remote("") is None
         assert _parse_github_remote("not-a-url") is None
-        assert _parse_github_remote("https://github.com/maziggy") is None  # no /repo
+        assert _parse_github_remote("https://github.com/vmhomelab") is None  # no /repo
 
     @pytest.mark.asyncio
     async def test_perform_update_preserves_ssh_origin_when_pointing_at_correct_repo(self, tmp_path):
@@ -533,7 +533,7 @@ class TestUpdatesAPI:
         from backend.app.api.routes import updates as updates_module
 
         # Set up fake install layout: app_dir has requirements.txt, data_dir is
-        # a sibling (mirroring `INSTALL_PATH=/opt/bambuddy`, `DATA_DIR=/opt/bambuddy/data`).
+        # a sibling (mirroring `INSTALL_PATH=/opt/printbuddy`, `DATA_DIR=/opt/printbuddy/data`).
         app_dir = tmp_path / "app"
         data_dir = tmp_path / "app" / "data"
         app_dir.mkdir()

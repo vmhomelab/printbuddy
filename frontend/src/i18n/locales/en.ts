@@ -2143,7 +2143,7 @@ export default {
     // Updates
     printerFirmware: 'Printer Firmware',
     checkFirmwareDescription: 'Check for printer firmware updates from Bambu Lab',
-    bambuddySoftware: 'Printbuddy Software',
+    printbuddySoftware: 'Printbuddy Software',
     autoCheckDescription: 'Automatically check for new versions on startup',
     checkNow: 'Check now',
     updateAvailableVersion: 'Update available: v{{version}}',
@@ -2160,7 +2160,7 @@ export default {
     // Network tab
     externalUrl: 'External URL',
     externalUrlDescription: 'The external URL where Printbuddy is accessible. Used for notification images and external integrations.',
-    bambuddyUrl: 'Printbuddy URL',
+    printbuddyUrl: 'Printbuddy URL',
     externalUrlHint: 'Include protocol and port (e.g., http://192.168.1.100:8000)',
     ftpRetry: 'FTP Retry',
     ftpRetryDescription: 'Retry FTP operations when printer WiFi is unreliable. Applies to 3MF downloads, print uploads, timelapse downloads, and firmware updates.',

@@ -319,7 +319,7 @@ class TestSystemHealthAPI:
         """A log with no known issues returns an empty, healthy result."""
         from backend.app.core.config import settings
 
-        (tmp_path / "bambuddy.log").write_text(
+        (tmp_path / "printbuddy.log").write_text(
             "2026-05-22 10:00:00,000 INFO [backend.app.main] Application startup complete\n",
             encoding="utf-8",
         )
@@ -339,7 +339,7 @@ class TestSystemHealthAPI:
         """A known signature in the log surfaces as a finding."""
         from backend.app.core.config import settings
 
-        (tmp_path / "bambuddy.log").write_text(
+        (tmp_path / "printbuddy.log").write_text(
             "2026-05-22 10:00:00,000 WARNING [backend.app.services.bambu_ftp] "
             "FTP connection permission error to 10.0.0.9: 530\n",
             encoding="utf-8",

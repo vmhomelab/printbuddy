@@ -1,6 +1,6 @@
 """Database dialect helpers for SQLite/PostgreSQL dual support.
 
-Bambuddy defaults to SQLite (zero-config). When DATABASE_URL points to PostgreSQL,
+Printbuddy defaults to SQLite (zero-config). When DATABASE_URL points to PostgreSQL,
 these helpers ensure dialect-specific operations use the correct SQL.
 """
 

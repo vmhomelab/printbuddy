@@ -60,7 +60,7 @@ def _detect_docker_network_mode() -> str:
 
 
 def _get_host_ip() -> str | None:
-    """Best-effort IPv4 address the Bambuddy host routes from."""
+    """Best-effort IPv4 address the Printbuddy host routes from."""
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:

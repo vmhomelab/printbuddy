@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Import spools from Spoolman into Bambuddy inventory.
+"""Import spools from Spoolman into Printbuddy inventory.
 
 Usage:
-    python scripts/import_spoolman.py --spoolman-url http://localhost:7912 --bambuddy-url http://localhost:8000
-    python scripts/import_spoolman.py --spoolman-url http://localhost:7912 --bambuddy-url http://localhost:8000 --api-key YOUR_KEY
-    python scripts/import_spoolman.py --spoolman-url http://localhost:7912 --bambuddy-url http://localhost:8000 --dry-run
+    python scripts/import_spoolman.py --spoolman-url http://localhost:7912 --printbuddy-url http://localhost:8000
+    python scripts/import_spoolman.py --spoolman-url http://localhost:7912 --printbuddy-url http://localhost:8000 --api-key YOUR_KEY
+    python scripts/import_spoolman.py --spoolman-url http://localhost:7912 --printbuddy-url http://localhost:8000 --dry-run
 """
 
 import argparse
@@ -22,13 +22,13 @@ def fetch_spoolman_spools(spoolman_url: str) -> list[dict]:
 
 
 def map_spool(sm_spool: dict) -> dict:
-    """Map a Spoolman spool to a Bambuddy SpoolCreate payload."""
+    """Map a Spoolman spool to a Printbuddy SpoolCreate payload."""
     filament = sm_spool.get("filament") or {}
     vendor = filament.get("vendor") or {}
 
     material = filament.get("material") or "PLA"
     color_hex = filament.get("color_hex") or ""
-    # Spoolman color_hex is 6-char (#RRGGBB or RRGGBB), Bambuddy rgba is 8-char RRGGBBAA
+    # Spoolman color_hex is 6-char (#RRGGBB or RRGGBB), Printbuddy rgba is 8-char RRGGBBAA
     rgba = None
     if color_hex:
         color_hex = color_hex.lstrip("#")
@@ -95,9 +95,9 @@ def map_spool(sm_spool: dict) -> dict:
     return payload
 
 
-def create_bambuddy_spool(bambuddy_url: str, spool_data: dict, api_key: str | None = None) -> dict:
-    """Create a spool in Bambuddy inventory."""
-    url = f"{bambuddy_url.rstrip('/')}/api/v1/inventory/spools"
+def create_printbuddy_spool(printbuddy_url: str, spool_data: dict, api_key: str | None = None) -> dict:
+    """Create a spool in Printbuddy inventory."""
+    url = f"{printbuddy_url.rstrip('/')}/api/v1/inventory/spools"
     headers = {}
     if api_key:
         headers["X-API-Key"] = api_key
@@ -107,10 +107,10 @@ def create_bambuddy_spool(bambuddy_url: str, spool_data: dict, api_key: str | No
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Import spools from Spoolman into Bambuddy inventory")
+    parser = argparse.ArgumentParser(description="Import spools from Spoolman into Printbuddy inventory")
     parser.add_argument("--spoolman-url", required=True, help="Spoolman URL (e.g. http://localhost:7912)")
-    parser.add_argument("--bambuddy-url", required=True, help="Bambuddy URL (e.g. http://localhost:8000)")
-    parser.add_argument("--api-key", help="Bambuddy API key (required if auth is enabled)")
+    parser.add_argument("--printbuddy-url", required=True, help="Printbuddy URL (e.g. http://localhost:8000)")
+    parser.add_argument("--api-key", help="Printbuddy API key (required if auth is enabled)")
     parser.add_argument("--dry-run", action="store_true", help="Print mapped spools without importing")
     parser.add_argument("--archived", action="store_true", help="Include archived Spoolman spools")
     args = parser.parse_args()
@@ -151,8 +151,8 @@ def main():
             continue
 
         try:
-            result = create_bambuddy_spool(args.bambuddy_url, payload, args.api_key)
-            print(f"  Imported {label} -> Bambuddy spool #{result['id']}")
+            result = create_printbuddy_spool(args.printbuddy_url, payload, args.api_key)
+            print(f"  Imported {label} -> Printbuddy spool #{result['id']}")
             created += 1
         except requests.RequestException as e:
             print(f"  FAILED {label}: {e}", file=sys.stderr)

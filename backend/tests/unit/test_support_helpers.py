@@ -546,7 +546,7 @@ class TestCollectSupportInfo:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             log_dir = Path(tmpdir)
-            log_file = log_dir / "bambuddy.log"
+            log_file = log_dir / "printbuddy.log"
             log_file.write_text("some log content\n" * 100)
 
             with (

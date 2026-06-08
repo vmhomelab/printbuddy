@@ -76,7 +76,7 @@ jobs:
           #
           # CVE-2025-45768 (PYSEC-2025-183 / GHSA-65pc-fj4g-8rjx): disputed by PyJWT maintainers.
           # Advisory says "key length is chosen by the application that uses the library" — no
-          # PyJWT fix exists or will exist. Bambuddy is safe: backend/app/core/auth.py:184 uses
+          # PyJWT fix exists or will exist. Printbuddy is safe: backend/app/core/auth.py:184 uses
           # secrets.token_urlsafe(64) (~86 chars of entropy) for auto-generated secrets and
           # rejects file-loaded secrets shorter than 32 chars at :177. Keep ignored permanently.
           pip-audit --desc on \
@@ -312,7 +312,7 @@ jobs:
           file: Dockerfile.test
           target: backend-test
           load: true
-          tags: bambuddy-backend-test:latest
+          tags: printbuddy-backend-test:latest
           cache-from: type=gha,scope=backend-test
           cache-to: type=gha,scope=backend-test,mode=max
 
@@ -321,7 +321,7 @@ jobs:
           docker run --rm \
             -e TESTING=1 \
             -e PYTHONUNBUFFERED=1 \
-            bambuddy-backend-test:latest \
+            printbuddy-backend-test:latest \
             pytest backend/tests/ \
               --tb=short \
               --timeout=60 --timeout-method=thread \

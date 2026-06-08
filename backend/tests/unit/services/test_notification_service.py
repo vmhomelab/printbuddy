@@ -856,7 +856,7 @@ class TestNtfyPriority:
     async def test_priority_header_set_for_mapped_event(self, service):
         """Mapped event → ntfy Priority header carries the configured value."""
         config = {
-            "topic": "bambuddy",
+            "topic": "printbuddy",
             "event_priorities": {"on_print_failed": 5, "on_print_complete": 2},
         }
         mock_client = self._mock_client(service)
@@ -872,7 +872,7 @@ class TestNtfyPriority:
     async def test_priority_header_omitted_for_unmapped_event(self, service):
         """Unmapped event → no Priority header so ntfy uses its server default."""
         config = {
-            "topic": "bambuddy",
+            "topic": "printbuddy",
             "event_priorities": {"on_print_failed": 5},
         }
         mock_client = self._mock_client(service)
@@ -886,7 +886,7 @@ class TestNtfyPriority:
     @pytest.mark.asyncio
     async def test_priority_header_omitted_when_no_priorities_set(self, service):
         """Existing setups (no event_priorities key) keep current behaviour."""
-        config = {"topic": "bambuddy"}
+        config = {"topic": "printbuddy"}
         mock_client = self._mock_client(service)
         with patch.object(service, "_get_client", new_callable=AsyncMock) as mock_get:
             mock_get.return_value = mock_client
@@ -899,7 +899,7 @@ class TestNtfyPriority:
     async def test_priority_header_omitted_when_event_type_missing(self, service):
         """Test sends (no event_type) must not emit a Priority header."""
         config = {
-            "topic": "bambuddy",
+            "topic": "printbuddy",
             "event_priorities": {"on_print_failed": 5},
         }
         mock_client = self._mock_client(service)
@@ -915,7 +915,7 @@ class TestNtfyPriority:
         """Values outside 1-5 (or non-numeric) are dropped, not clamped."""
         for bad in (0, 6, 99, -1, "not-a-number", None):
             config = {
-                "topic": "bambuddy",
+                "topic": "printbuddy",
                 "event_priorities": {"on_print_failed": bad},
             }
             mock_client = self._mock_client(service)
@@ -930,7 +930,7 @@ class TestNtfyPriority:
     async def test_priority_header_set_on_attachment_path(self, service):
         """Image-attachment path (PUT) must also carry the Priority header."""
         config = {
-            "topic": "bambuddy",
+            "topic": "printbuddy",
             "event_priorities": {"on_first_layer_complete": 4},
         }
         mock_client = self._mock_client(service)

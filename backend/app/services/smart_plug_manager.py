@@ -303,7 +303,7 @@ class SmartPlugManager:
         toggle. Always uses the time-delay branch — temperature-based
         cooldown is about the printer's hotend, which isn't meaningful
         after a drying cycle (AMS chamber is the thing that's hot, and
-        Bambuddy doesn't track its temperature).
+        Printbuddy doesn't track its temperature).
         """
         plugs = await self._get_plugs_for_printer(printer_id, db)
         if not plugs:

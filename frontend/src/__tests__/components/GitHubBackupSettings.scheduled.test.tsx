@@ -25,7 +25,7 @@ const mockLocalBackupStatus = {
 
 const mockLocalBackups = [
   {
-    filename: 'bambuddy-backup-20260412-120000.zip',
+    filename: 'printbuddy-backup-20260412-120000.zip',
     size: 52428800,
     created_at: '2026-04-12T12:00:00+00:00',
   },
@@ -86,7 +86,7 @@ describe('GitHubBackupSettings - Scheduled Backups', () => {
   it('shows backup file list', async () => {
     render(<GitHubBackupSettings />);
     await waitFor(() => {
-      expect(screen.getByText('bambuddy-backup-20260412-120000.zip')).toBeInTheDocument();
+      expect(screen.getByText('printbuddy-backup-20260412-120000.zip')).toBeInTheDocument();
     });
   });
 

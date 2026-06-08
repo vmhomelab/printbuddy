@@ -20,7 +20,7 @@ TEST_IDS = ["GFG02", "GFL05", "GFA00", "GFA02", "GFA06"]
 
 def get_token_from_db() -> str | None:
     """Get the stored token from the database."""
-    db_path = settings.base_dir / "bambuddy.db"
+    db_path = settings.base_dir / "printbuddy.db"
     engine = create_engine(f"sqlite:///{db_path}")
 
     with engine.connect() as conn:
@@ -65,7 +65,7 @@ async def main():
 
     if not token:
         print("Could not find token in database.")
-        print("Make sure you're logged into Bambu Cloud in Bambuddy.")
+        print("Make sure you're logged into Bambu Cloud in Printbuddy.")
         sys.exit(1)
 
     print(f"Found token in database (length: {len(token)})")

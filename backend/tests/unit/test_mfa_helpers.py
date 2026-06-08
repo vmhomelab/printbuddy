@@ -43,7 +43,7 @@ class TestTOTPQRCode:
     """Tests for QR code generation helper."""
 
     def test_generates_base64_png(self):
-        uri = "otpauth://totp/Bambuddy:testuser?secret=BASE32SECRET&issuer=Bambuddy"
+        uri = "otpauth://totp/Printbuddy:testuser?secret=BASE32SECRET&issuer=Printbuddy"
         result = _generate_totp_qr_b64(uri)
         decoded = base64.b64decode(result)
         assert decoded[:4] == b"\x89PNG"

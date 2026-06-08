@@ -137,7 +137,7 @@ class TestVirtualPrinterSettingsAPI:
                     "enabled": True,
                     "running": True,
                     "mode": "immediate",
-                    "name": "Bambuddy",
+                    "name": "Printbuddy",
                     "serial": "00M09A391800001",
                     "pending_files": 0,
                 }
@@ -158,7 +158,7 @@ class TestVirtualPrinterSettingsAPI:
                     "enabled": False,
                     "running": False,
                     "mode": "immediate",
-                    "name": "Bambuddy",
+                    "name": "Printbuddy",
                     "serial": "00M09A391800001",
                     "pending_files": 0,
                 }

@@ -8,7 +8,7 @@ replaced by a simpler approach: forwarding the sidecar's existing
 ``--arrange`` flag (see ``slicer_api.SlicerApiService.slice_with_profiles``
 and ``_run_slicer_with_fallback`` in ``api/routes/library.py``). BambuStudio
 itself reconciles the embedded ``project_settings.config`` against the
-target printer when ``--arrange`` is on, so Bambuddy never has to reproduce
+target printer when ``--arrange`` is on, so Printbuddy never has to reproduce
 that schema logic locally.
 """
 
@@ -85,7 +85,7 @@ def merge_plate_3mfs(
 ) -> bytes:
     """Combine N single-plate sliced 3MFs into one multi-plate 3MF.
 
-    Used by the cross-class slice-all loop (#1493) where Bambuddy slices
+    Used by the cross-class slice-all loop (#1493) where Printbuddy slices
     each plate independently against the target printer (BS CLI's
     ``--arrange`` is project-wide so a single ``--slice 0`` call would
     consolidate every plate's objects onto one bed — the bug this whole

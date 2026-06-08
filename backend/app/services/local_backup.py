@@ -23,7 +23,7 @@ SCHEDULE_INTERVALS = {
     "weekly": 604800,
 }
 BACKUP_FILENAME_PREFIX = "printbuddy-backup-"
-LEGACY_BACKUP_FILENAME_PREFIX = "bambuddy-backup-"
+LEGACY_BACKUP_FILENAME_PREFIX = "printbuddy-backup-"
 BACKUP_FILENAME_SUFFIX = ".zip"
 
 
@@ -34,8 +34,13 @@ def _is_backup_filename(filename: str) -> bool:
 
 
 def _iter_backup_files(backup_dir: Path):
-    yield from backup_dir.glob(f"{BACKUP_FILENAME_PREFIX}*{BACKUP_FILENAME_SUFFIX}")
-    yield from backup_dir.glob(f"{LEGACY_BACKUP_FILENAME_PREFIX}*{BACKUP_FILENAME_SUFFIX}")
+    seen: set[Path] = set()
+    for prefix in (BACKUP_FILENAME_PREFIX, LEGACY_BACKUP_FILENAME_PREFIX):
+        for candidate in backup_dir.glob(f"{prefix}*{BACKUP_FILENAME_SUFFIX}"):
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            yield candidate
 
 
 def _default_backup_dir() -> Path:

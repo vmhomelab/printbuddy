@@ -507,7 +507,7 @@ class TestPreferLowestFilament:
 
 class TestPreferLowestInventoryOverride:
     """Tests for the #1508 inventory-aware sort: when the user has bound a
-    Bambuddy inventory spool to an AMS slot, that spool's remaining weight
+    Printbuddy inventory spool to an AMS slot, that spool's remaining weight
     becomes the sort signal instead of the MQTT ``remain`` percentage.
 
     The fix is two-tier: inventory-tracked spools always sort before

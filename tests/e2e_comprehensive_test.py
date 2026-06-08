@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Comprehensive end-to-end test for Bambuddy application."""
+"""Comprehensive end-to-end test for Printbuddy application."""
 
 import os
 import time
 
 from playwright.sync_api import expect, sync_playwright
 
-BASE_URL = os.environ.get("BAMBUDDY_URL", "http://localhost:8000")
+BASE_URL = os.environ.get("PRINTBUDDY_URL", "http://localhost:8000")
 
 
 def test_navigation_and_sidebar(page):
@@ -18,7 +18,7 @@ def test_navigation_and_sidebar(page):
     page.wait_for_load_state("networkidle")
 
     # Take initial screenshot
-    page.screenshot(path="/tmp/bambuddy_home.png", full_page=True)
+    page.screenshot(path="/tmp/printbuddy_home.png", full_page=True)
     print("✓ Home page loaded")
 
     # Check sidebar is visible
@@ -72,7 +72,7 @@ def test_printers_page(page):
         print(f"✓ Found {len(ams_elements)} AMS unit(s) displayed")
 
     # Take screenshot
-    page.screenshot(path="/tmp/bambuddy_printers.png", full_page=True)
+    page.screenshot(path="/tmp/printbuddy_printers.png", full_page=True)
     print("✓ Printers page screenshot saved")
 
     return True
@@ -101,7 +101,7 @@ def test_archives_page(page):
         print("✓ Upload button found")
 
     # Take screenshot
-    page.screenshot(path="/tmp/bambuddy_archives.png", full_page=True)
+    page.screenshot(path="/tmp/printbuddy_archives.png", full_page=True)
     print("✓ Archives page screenshot saved")
 
     return True
@@ -122,7 +122,7 @@ def test_queue_page(page):
         print("✓ Queue page content detected")
 
     # Take screenshot
-    page.screenshot(path="/tmp/bambuddy_queue.png", full_page=True)
+    page.screenshot(path="/tmp/printbuddy_queue.png", full_page=True)
     print("✓ Queue page screenshot saved")
 
     return True
@@ -146,7 +146,7 @@ def test_statistics_page(page):
         print(f"✓ Statistics found: {', '.join(found_stats)}")
 
     # Take screenshot
-    page.screenshot(path="/tmp/bambuddy_statistics.png", full_page=True)
+    page.screenshot(path="/tmp/printbuddy_statistics.png", full_page=True)
     print("✓ Statistics page screenshot saved")
 
     return True
@@ -174,7 +174,7 @@ def test_settings_page(page):
             print(f"✓ Settings section found: {section}")
 
     # Take screenshot
-    page.screenshot(path="/tmp/bambuddy_settings.png", full_page=True)
+    page.screenshot(path="/tmp/printbuddy_settings.png", full_page=True)
     print("✓ Settings page screenshot saved")
 
     return True
@@ -196,7 +196,7 @@ def test_keyboard_shortcuts(page):
     modal = page.locator('text="Keyboard Shortcuts"').first
     if modal.is_visible():
         print("✓ Keyboard shortcuts modal opened with '?'")
-        page.screenshot(path="/tmp/bambuddy_shortcuts_modal.png")
+        page.screenshot(path="/tmp/printbuddy_shortcuts_modal.png")
 
         # Close with Escape
         page.keyboard.press("Escape")
@@ -271,7 +271,7 @@ def test_responsive_design(page):
         page.wait_for_load_state("networkidle")
         time.sleep(0.5)
 
-        page.screenshot(path=f"/tmp/bambuddy_{name.lower()}.png", full_page=True)
+        page.screenshot(path=f"/tmp/printbuddy_{name.lower()}.png", full_page=True)
         print(f"✓ {name} viewport ({width}x{height}) screenshot saved")
 
     # Reset to desktop
@@ -332,7 +332,7 @@ def test_api_health(page):
 def run_comprehensive_test():
     """Run all comprehensive tests."""
     print("=" * 60)
-    print("BAMBUDDY COMPREHENSIVE E2E TEST")
+    print("PRINTBUDDY COMPREHENSIVE E2E TEST")
     print("=" * 60)
     print(f"Target: {BASE_URL}")
 
@@ -366,7 +366,7 @@ def run_comprehensive_test():
             except Exception as e:
                 print(f"\n❌ {test_name} FAILED: {e}")
                 results[test_name] = False
-                page.screenshot(path=f"/tmp/bambuddy_error_{test_name.lower().replace(' ', '_')}.png")
+                page.screenshot(path=f"/tmp/printbuddy_error_{test_name.lower().replace(' ', '_')}.png")
 
         browser.close()
 
@@ -383,7 +383,7 @@ def run_comprehensive_test():
         print(f"  {status} - {test_name}")
 
     print(f"\nTotal: {passed}/{total} tests passed")
-    print("Screenshots saved to /tmp/bambuddy_*.png")
+    print("Screenshots saved to /tmp/printbuddy_*.png")
 
     return all(results.values())
 

@@ -1,7 +1,7 @@
 """Tests for ``backend.app.core.logging_filters.WriteRequestsOnlyFilter``.
 
 The filter is attached to uvicorn's ``access`` logger so we get an on-disk
-record of state-changing HTTP requests in ``bambuddy.log`` (incident-triage
+record of state-changing HTTP requests in ``printbuddy.log`` (incident-triage
 need: trace which endpoint fired a state change, e.g. ``stop_print``)
 without churning the rotation window with the frontend's high-volume GET
 status polls.
@@ -67,7 +67,7 @@ class TestReadOnlyVerbsDropped:
         """GET / HEAD / OPTIONS account for the bulk of access traffic on a
         running install (status polls, camera streams, CORS preflights) and
         none of them can change server state, so dropping them keeps
-        bambuddy.log focused on lines that matter for incident triage."""
+        printbuddy.log focused on lines that matter for incident triage."""
         record = _record(f'192.168.1.42:54812 - "{request_line}" 200')
         assert filter_under_test.filter(record) is False
 
@@ -75,7 +75,7 @@ class TestReadOnlyVerbsDropped:
 class TestNoFalseMatchInUrl:
     """The matcher anchors on ``" `` + verb + space so an unrelated literal
     substring inside a URL can't false-match. Important because URLs in
-    Bambuddy include things like ``/print/stop``, ``/print/pause`` — words
+    Printbuddy include things like ``/print/stop``, ``/print/pause`` — words
     that happen to contain the verb names as substrings."""
 
     def test_url_containing_verb_substring_does_not_match(self, filter_under_test):
@@ -100,7 +100,7 @@ class TestEdgeCases:
         """If the filter ever ends up attached to the wrong logger by
         mistake, it must not leak unrelated records — silent fallthrough
         on application logs would defeat the whole point."""
-        record = _record("Bambuddy starting - debug=False, log_level=INFO")
+        record = _record("Printbuddy starting - debug=False, log_level=INFO")
         assert filter_under_test.filter(record) is False
 
     def test_filter_is_idempotent_across_records(self, filter_under_test):

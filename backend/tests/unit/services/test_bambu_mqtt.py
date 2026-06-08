@@ -339,7 +339,7 @@ class TestRealisticMessageFlow:
         mqtt_client.on_print_start = on_start
         mqtt_client.on_print_complete = on_complete
         # Seed a prior state so the first RUNNING push is treated as a real
-        # state transition rather than a Bambuddy-restart catch-up (#1304).
+        # state transition rather than a Printbuddy-restart catch-up (#1304).
         mqtt_client._previous_gcode_state = "IDLE"
 
         # 1. Print starts with timelapse
@@ -1729,7 +1729,7 @@ class TestRequestTopicAmsMapping:
         mqtt_client.on_print_start = on_start
         mqtt_client._captured_ams_mapping = [0, 4, -1, -1]
         # Seed a prior state so the first RUNNING push is treated as a real
-        # state transition rather than a Bambuddy-restart catch-up (#1304).
+        # state transition rather than a Printbuddy-restart catch-up (#1304).
         mqtt_client._previous_gcode_state = "IDLE"
 
         # Trigger print start
@@ -1754,7 +1754,7 @@ class TestRequestTopicAmsMapping:
 
         mqtt_client.on_print_start = on_start
         # Seed a prior state so the first RUNNING push is treated as a real
-        # state transition rather than a Bambuddy-restart catch-up (#1304).
+        # state transition rather than a Printbuddy-restart catch-up (#1304).
         mqtt_client._previous_gcode_state = "IDLE"
 
         mqtt_client._process_message(
@@ -1770,10 +1770,10 @@ class TestRequestTopicAmsMapping:
         assert "ams_mapping" in start_data
         assert start_data["ams_mapping"] is None
 
-    def test_first_running_push_after_bambuddy_restart_does_not_fire_print_start(self, mqtt_client):
-        """Regression for #1304: Bambuddy restart mid-print misfired plate check + archive.
+    def test_first_running_push_after_printbuddy_restart_does_not_fire_print_start(self, mqtt_client):
+        """Regression for #1304: Printbuddy restart mid-print misfired plate check + archive.
 
-        When Bambuddy restarts while a print is already in progress, the freshly
+        When Printbuddy restarts while a print is already in progress, the freshly
         constructed BambuMQTTClient has `_previous_gcode_state = None`. The first
         push_status the printer sends reports `gcode_state: RUNNING`. Before the
         fix, the (None → RUNNING) transition satisfied is_new_print's guard and
@@ -1790,7 +1790,7 @@ class TestRequestTopicAmsMapping:
             start_data.update(data)
 
         mqtt_client.on_print_start = on_start
-        # Explicit: this simulates a fresh Bambuddy process attaching to a
+        # Explicit: this simulates a fresh Printbuddy process attaching to a
         # printer that's already in the middle of a print.
         mqtt_client._previous_gcode_state = None
         mqtt_client._was_running = False
@@ -1805,7 +1805,7 @@ class TestRequestTopicAmsMapping:
             }
         )
 
-        assert start_data == {}, "on_print_start must not fire on Bambuddy-restart catch-up"
+        assert start_data == {}, "on_print_start must not fire on Printbuddy-restart catch-up"
         # Completion detection still needs to know we're tracking a running job.
         assert mqtt_client._was_running is True
         # And the state-update bookkeeping ran so the NEXT push won't keep
@@ -2545,7 +2545,7 @@ class TestTrayNowDualNozzleH2DSnow(_H2DFixtureMixin):
 
 
 class TestTrayNowDualNozzleH2DPendingTarget(_H2DFixtureMixin):
-    """Pending target disambiguation (when Bambuddy initiates load)."""
+    """Pending target disambiguation (when Printbuddy initiates load)."""
 
     def test_pending_target_matches_slot(self, h2d_client):
         """pending=5, tray_now='1' (5%4=1 matches) → tray_now=5."""
@@ -3898,7 +3898,7 @@ class TestStartPrintUniqueIdentityFields:
     def test_submission_id_is_numeric_string(self, mqtt_client):
         """ID format: digits-only string. Studio uses cloud task IDs that are
         also numeric-looking strings; the DB column is VARCHAR(64) and
-        Bambuddy's own subtask_id parser treats '0'/'' as absent — any valid
+        Printbuddy's own subtask_id parser treats '0'/'' as absent — any valid
         digit string that isn't '0' is fine."""
         mqtt_client.start_print("test.3mf")
         cmd = self._get_published_command(mqtt_client)
@@ -5222,7 +5222,7 @@ class TestDryingCompleteCallback:
 class TestPrintRunningObservedCallback:
     """#1485 follow-up: on_print_running_observed fires the FIRST time we
     see ``state == RUNNING`` for a printer whose print started before
-    Bambuddy came up. It lets main.py capture a timelapse baseline at
+    Printbuddy came up. It lets main.py capture a timelapse baseline at
     restart-recovery time — when on_print_start was suppressed by the
     #1304 first-push guard. Must NOT fire when on_print_start handles the
     transition (avoids double-capture), and must NOT fire again after
@@ -5249,7 +5249,7 @@ class TestPrintRunningObservedCallback:
         mqtt_client.on_print_running_observed = lambda data: running_observed_calls.append(data)
 
         # Pristine state — exactly what we have right after BambuMQTTClient
-        # construction following a Bambuddy restart.
+        # construction following a Printbuddy restart.
         mqtt_client._was_running = False
         mqtt_client._previous_gcode_state = None
 

@@ -7,7 +7,7 @@ Regression guard for #1010, where the startup-restore code path had
 drifted from the create/update routes: it only looked at the legacy
 `mqtt_topic` field and silently skipped plugs whose topics were set
 only in the newer per-type fields, so the MQTT smart-plug subscription
-was lost on every Bambuddy restart until the user re-saved the plug.
+was lost on every Printbuddy restart until the user re-saved the plug.
 """
 
 from types import SimpleNamespace

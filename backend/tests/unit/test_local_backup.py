@@ -131,11 +131,11 @@ class TestResolveBackupFile:
         result = service.resolve_backup_file(str(tmp_path), "printbuddy-backup-20260412-120000.zip")
         assert result == f
 
-    def test_legacy_bambuddy_filename_still_resolves(self, tmp_path):
+    def test_printbuddy_filename_still_resolves(self, tmp_path):
         service = LocalBackupService()
-        f = tmp_path / "bambuddy-backup-20260412-120000.zip"
+        f = tmp_path / "printbuddy-backup-20260412-120000.zip"
         f.write_text("data")
-        result = service.resolve_backup_file(str(tmp_path), "bambuddy-backup-20260412-120000.zip")
+        result = service.resolve_backup_file(str(tmp_path), "printbuddy-backup-20260412-120000.zip")
         assert result == f
 
     def test_path_traversal_blocked(self, tmp_path):
@@ -210,14 +210,14 @@ class TestListBackups:
         assert len(result) == 2
         assert all(r["filename"].startswith("printbuddy-backup-") for r in result)
 
-    def test_list_includes_legacy_bambuddy_backups(self, tmp_path):
+    def test_list_includes_printbuddy_backups(self, tmp_path):
         service = LocalBackupService()
         (tmp_path / "printbuddy-backup-20260412-120000.zip").write_text("a")
-        (tmp_path / "bambuddy-backup-20260412-130000.zip").write_text("bb")
+        (tmp_path / "printbuddy-backup-20260412-130000.zip").write_text("bb")
         result = service.list_backups(str(tmp_path))
         assert {r["filename"] for r in result} == {
             "printbuddy-backup-20260412-120000.zip",
-            "bambuddy-backup-20260412-130000.zip",
+            "printbuddy-backup-20260412-130000.zip",
         }
 
     def test_list_sorted_newest_first(self, tmp_path):

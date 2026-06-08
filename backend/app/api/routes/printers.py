@@ -903,7 +903,7 @@ async def get_printer_cover(
         raise HTTPException(404, f"No subtask_name in printer state (state={state.state})")
 
     # Resolve the active plate. Precedence (#1166):
-    #   1. The plate Bambuddy dispatched (authoritative when we sent the print)
+    #   1. The plate Printbuddy dispatched (authoritative when we sent the print)
     #   2. plate_(\d+)\.gcode regex on state.gcode_file (works on firmware that
     #      reflects the full path, e.g. some X1C builds)
     #   3. Scan the downloaded 3MF for a unique Metadata/plate_*.gcode (covers
@@ -2361,7 +2361,7 @@ async def configure_ams_slot(
 
     # Persist the user's K-profile choice so it survives RFID re-reads and
     # session restarts. Pre-Phase-13 this was ephemeral — the MQTT command
-    # took effect on the printer but bambuddy never recorded it, so the next
+    # took effect on the printer but printbuddy never recorded it, so the next
     # `_apply_pa_after_refresh` cycle had no stored profile to re-assert.
     if cali_idx >= 0:
         try:

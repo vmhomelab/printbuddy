@@ -427,7 +427,7 @@ class VirtualPrinterInstance:
                         return bool(slicer_opts[field_mqtt])
                     return settings_default
 
-                # Note the MQTT field names differ from Bambuddy's column
+                # Note the MQTT field names differ from Printbuddy's column
                 # names: MQTT uses `bed_leveling` (single L) while the
                 # column / settings key use `bed_levelling` (double L).
                 bed_levelling = _slicer_or(

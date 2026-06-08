@@ -11,7 +11,7 @@ interface BeforeInstallPromptEvent extends Event {
 }
 
 /**
- * Sidebar-footer button that installs Bambuddy as a PWA.
+ * Sidebar-footer button that installs Printbuddy as a PWA.
  *
  * Chrome for Android removed the automatic install banner in Chrome 108, so
  * without an in-app trigger the only install path on Android is a buried

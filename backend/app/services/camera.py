@@ -75,7 +75,7 @@ def rtsp_socket_timeout_flag() -> str:
     RTSP demuxer's client-side TCP socket I/O timeout, in microseconds.
 
     ffmpeg has shipped three different option arrangements for this over
-    time, and Bambuddy supports the full range:
+    time, and Printbuddy supports the full range:
 
     - **Modern ffmpeg (5.x / 6.x / 7.x)** — Debian 13, Ubuntu 24.04, current
       Homebrew, etc. ``-timeout`` is the socket I/O timeout (microseconds);

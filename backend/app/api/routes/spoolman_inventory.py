@@ -1,6 +1,6 @@
 """Spoolman inventory proxy endpoints.
 
-Translates between Spoolman's data model and Bambuddy's internal
+Translates between Spoolman's data model and Printbuddy's internal
 InventorySpool format so the frontend can use a single unified inventory UI
 regardless of whether data comes from the local database or Spoolman.
 """
@@ -747,7 +747,7 @@ async def update_spool(
     remaining = max(0.0, label_weight - weight_used)
 
     # Tag removal: clear only the "tag" key so other custom Spoolman extra fields
-    # set outside Bambuddy are preserved.
+    # set outside Printbuddy are preserved.
     tag_nulled = (
         ("tag_uid" in data.model_fields_set or "tray_uuid" in data.model_fields_set)
         and _tag_cleared(data.tag_uid)

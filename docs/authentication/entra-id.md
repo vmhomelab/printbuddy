@@ -18,7 +18,7 @@ This guide shows how to configure BamBuddy's OIDC integration with **Microsoft A
 3. Under **Supported account types**, select the option that matches your organisation.
 4. Add a **Redirect URI** of type **Web**:
    ```
-   https://<your-bambuddy-host>/api/v1/auth/oidc/callback
+   https://<your-printbuddy-host>/api/v1/auth/oidc/callback
    ```
 5. Click **Register**.
 

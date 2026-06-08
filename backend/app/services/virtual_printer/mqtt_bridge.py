@@ -1,7 +1,7 @@
 """MQTT bridge for non-proxy virtual printers.
 
 Mirrors the target printer's state to slicers connected to a virtual printer
-without opening a second MQTT session on the printer (reuses Bambuddy's
+without opening a second MQTT session on the printer (reuses Printbuddy's
 existing subscription — firmware inflight budget unaffected, see PR #1164).
 
 Architecture (cached-as-base, not a separate fan-out stream):
@@ -25,7 +25,7 @@ Identity rewriting at cache time:
     serial) → VP serial
   - `net.info[*].ip` little-endian uint32 → VP bind IP. BambuStudio reads
     this as the FTP destination IP. Without this the slicer FTPs straight
-    to the real printer and bypasses Bambuddy.
+    to the real printer and bypasses Printbuddy.
   - `ipcam.rtsp_url` is left unchanged: BambuStudio overrides the URL host
     with the device IP it bound to (the VP), so the slicer hits the VP's
     own RTSPS proxy on port 322.
@@ -54,7 +54,7 @@ REFRESH_INTERVAL_SECONDS = 30.0
 # fields across incremental updates, the bridge cache would lose AMS info
 # (and friends) between pushalls — slicers reading the cache would see a
 # stripped-down state and the fix would only re-appear on a manual printer
-# power-cycle (#1371). Mirrors the same set Bambuddy itself preserves in
+# power-cycle (#1371). Mirrors the same set Printbuddy itself preserves in
 # bambu_mqtt.py:2686-2711 for its own internal raw_data, with a few more
 # entries that the slicer cares about (net, ipcam, lights_report).
 _SLICER_VISIBLE_STICKY_KEYS: tuple[str, ...] = (
@@ -86,7 +86,7 @@ def _merge_ams_dict(prev_ams: dict, new_ams: dict) -> dict:
        — every unit + every tray populated.
 
     2. Status-only incremental: ``{ams_status: 1}`` or ``{humidity: 30}`` —
-       no ``ams`` array at all. Bambuddy logs these as "AMS partial update
+       no ``ams`` array at all. Printbuddy logs these as "AMS partial update
        (no tray data)" (#784 vintage).
 
     3. Tray-targeted incremental during a print: ``{ams: [{id: 0, tray:
@@ -298,7 +298,7 @@ class MQTTBridge:
         )
 
         # Trigger a fresh get_version + pushall against the printer so the bridge
-        # cache populates immediately. Bambuddy itself queries these on connect,
+        # cache populates immediately. Printbuddy itself queries these on connect,
         # but that fires before the bridge attaches as a raw-message consumer,
         # so without this nudge the cache stays empty until the next periodic
         # query (which can be minutes away).
@@ -395,7 +395,7 @@ class MQTTBridge:
             # between pushalls would see a stripped-down printer state with
             # no AMS visible until the next pushall — typically only when
             # the user power-cycles the printer (#1371). Mirror the same
-            # preservation pattern Bambuddy uses for its own internal state
+            # preservation pattern Printbuddy uses for its own internal state
             # in bambu_mqtt.py (see _SLICER_VISIBLE_STICKY_KEYS below).
             prev = self._latest_print_state
             if prev is not None:
@@ -409,7 +409,7 @@ class MQTTBridge:
                     # incremental updates, which would overwrite the cached
                     # full blob and break the slicer's AMS render (#1387).
                     # For `ams` specifically the deep-merge mirrors what
-                    # Bambuddy already does internally in `_handle_ams_data`.
+                    # Printbuddy already does internally in `_handle_ams_data`.
                     if (
                         sticky_key == "ams"
                         and isinstance(new_state.get("ams"), dict)
@@ -439,7 +439,7 @@ class MQTTBridge:
 
         # Everything else (extrusion_cali_get response, AMS write acks, xcam
         # responses, …): fan out to the slicer. These are responses to commands
-        # the slicer (or Bambuddy) issued; the slicer matches by sequence_id and
+        # the slicer (or Printbuddy) issued; the slicer matches by sequence_id and
         # ignores responses to commands it didn't send. Without this, slicer-
         # initiated queries like extrusion_cali_get hang forever and BambuStudio
         # blocks Send waiting for the response.

@@ -1,6 +1,6 @@
 """Log-health scanner.
 
-Matches the recent Bambuddy app log against a curated catalog of known failure
+Matches the recent Printbuddy app log against a curated catalog of known failure
 signatures, so users can self-diagnose setup ("layer 8") issues before filing a
 bug report.
 
@@ -189,7 +189,7 @@ def scan_logs(
     codes never leave the process. Even when it is ``None`` the regex-based
     redaction passes still run.
     """
-    log_file = settings.log_dir / "bambuddy.log"
+    log_file = settings.log_dir / "printbuddy.log"
     log_available = log_file.exists()
 
     entries, _total = read_log_entries(limit=limit)

@@ -1,4 +1,4 @@
-"""Shared primitives for reading, parsing, and sanitizing the Bambuddy app log.
+"""Shared primitives for reading, parsing, and sanitizing the Printbuddy app log.
 
 Extracted from ``routes/support.py`` so service-layer code (e.g. the log-health
 scanner in ``log_health.py``) can reuse log reading and redaction without
@@ -53,12 +53,12 @@ def read_log_entries(
     level_filter: str | None = None,
     search: str | None = None,
 ) -> tuple[list[LogEntry], int]:
-    """Read and parse log entries from ``bambuddy.log``, newest first.
+    """Read and parse log entries from ``printbuddy.log``, newest first.
 
     Continuation lines (tracebacks etc.) are folded into the message of the
     entry they belong to. Returns ``(entries, total_lines_in_file)``.
     """
-    log_file = settings.log_dir / "bambuddy.log"
+    log_file = settings.log_dir / "printbuddy.log"
     if not log_file.exists():
         return [], 0
 

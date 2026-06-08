@@ -16,7 +16,7 @@ from backend.app.core.config import settings
 
 def update_archive_date(archive_id: int, new_date: datetime) -> bool:
     """Update created_at for an archive."""
-    db_path = settings.base_dir / "bambuddy.db"
+    db_path = settings.base_dir / "printbuddy.db"
     engine = create_engine(f"sqlite:///{db_path}")
 
     with engine.connect() as conn:

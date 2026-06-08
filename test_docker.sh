@@ -165,18 +165,18 @@ if [ "$RUN_BUILD" = true ]; then
     print_header "Test 1: Docker Build (Production)"
     print_info "Building production Docker image..."
 
-    if sudo docker build -t bambuddy:test . $CACHE_FLAG --progress=plain; then
+    if sudo docker build -t printbuddy:test . $CACHE_FLAG --progress=plain; then
         print_success "Production image builds successfully"
 
         # Verify image has expected labels/structure
         print_info "Verifying image structure..."
-        if sudo docker run --rm bambuddy:test python -c "import backend.app.main; print('Backend imports OK')"; then
+        if sudo docker run --rm printbuddy:test python -c "import backend.app.main; print('Backend imports OK')"; then
             print_success "Backend module imports correctly"
         else
             print_failure "Backend module import failed"
         fi
 
-        if sudo docker run --rm bambuddy:test test -d /app/static; then
+        if sudo docker run --rm printbuddy:test test -d /app/static; then
             print_success "Static files directory exists"
         else
             print_failure "Static files directory missing"

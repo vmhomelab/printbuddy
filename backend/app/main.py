@@ -259,7 +259,7 @@ root_logger.setLevel(log_level)
 # trace_id injected just before the formatter runs, regardless of which
 # logger created the record. Without this, the formatter raises
 # KeyError on every child-logger record and the record is silently
-# dropped — which is exactly the "logs/bambuddy.log only shows logs
+# dropped — which is exactly the "logs/printbuddy.log only shows logs
 # partially" bug we hit. See backend/app/core/trace.py for the
 # ContextVar the filter reads.
 from backend.app.core.trace import TraceIDFilter
@@ -275,7 +275,7 @@ root_logger.addHandler(console_handler)
 
 # File handler - only in production or if explicitly enabled
 if app_settings.log_to_file:
-    log_file = app_settings.log_dir / "bambuddy.log"
+    log_file = app_settings.log_dir / "printbuddy.log"
     file_handler = RotatingFileHandler(
         log_file,
         maxBytes=5 * 1024 * 1024,  # 5MB
@@ -288,7 +288,7 @@ if app_settings.log_to_file:
     root_logger.addHandler(file_handler)
     logging.info("Logging to file: %s", log_file)
 
-    # Pipe uvicorn's HTTP access log to bambuddy.log too. Uvicorn ships its
+    # Pipe uvicorn's HTTP access log to printbuddy.log too. Uvicorn ships its
     # access logger with propagate=False by default, so without this attach
     # there is no on-disk record of which endpoint triggered a server-state
     # change — the rogue stop_print mystery on 2026-04-26 was untraceable
@@ -2042,10 +2042,10 @@ async def on_print_start(printer_id: int, data: dict):
                 # Persist a restart-stable id so a later restart resumes this
                 # archive by subtask_id instead of name-matching + duplicating
                 # it (#1485). The printer often hasn't echoed subtask_id back
-                # this soon after dispatch, so fall back to the id Bambuddy
+                # this soon after dispatch, so fall back to the id Printbuddy
                 # minted when it sent the print command. Scoped to this
                 # expected-print branch on purpose: an expected match means
-                # Bambuddy dispatched this exact print in this process, so the
+                # Printbuddy dispatched this exact print in this process, so the
                 # client's last-dispatch id genuinely belongs to it — using it
                 # for an externally-started print could mis-tag the archive.
                 effective_subtask_id = subtask_id
@@ -2156,7 +2156,7 @@ async def on_print_start(printer_id: int, data: dict):
         # across a backend restart for the same print, so this is the most
         # reliable way to reattach. We also accept a previously stale-cancelled
         # archive here so users upgrading mid-print get revived when the row
-        # their earlier Bambuddy version wrongly cancelled reappears (#972).
+        # their earlier Printbuddy version wrongly cancelled reappears (#972).
         if subtask_id:
             by_id = await db.execute(
                 select(PrintArchive)
@@ -3025,10 +3025,10 @@ async def _scan_for_timelapse_with_retries(archive_id: int, baseline_names: set[
 
 async def on_print_running_observed(printer_id: int, data: dict):
     """Restart-recovery: capture a fresh timelapse baseline for a print that
-    started before Bambuddy came up.
+    started before Printbuddy came up.
 
     bambu_mqtt.py suppresses ``on_print_start`` on the first RUNNING push
-    after Bambuddy startup (#1304 guard, prevents duplicate archive
+    after Printbuddy startup (#1304 guard, prevents duplicate archive
     creation). Without that path, ``_capture_timelapse_baseline_at_start``
     never runs and ``_scan_for_timelapse_with_retries`` falls into its
     "take baseline now" fallback at completion time — but by then the
@@ -3043,7 +3043,7 @@ async def on_print_running_observed(printer_id: int, data: dict):
     logger = logging.getLogger(__name__)
 
     # Avoid double-capture: on_print_start may have run earlier in this
-    # Bambuddy process if the print started AFTER startup and we crashed
+    # Printbuddy process if the print started AFTER startup and we crashed
     # later in the same session. (Realistically this can't happen — the
     # MQTT client object would have been recreated — but the cheap guard
     # is correct regardless.)
@@ -3123,10 +3123,10 @@ async def on_print_complete(printer_id: int, data: dict):
     # twelve-hour print, a printer can self-abort mid-job after a clog, and a
     # touchscreen-stop reports `aborted` rather than `cancelled` because
     # `_user_stopped_printers` is only populated when the user stops via the
-    # Bambuddy queue UI. Earlier code raised the flag only for completed/failed,
+    # Printbuddy queue UI. Earlier code raised the flag only for completed/failed,
     # which auto-dispatched the next queued print onto a fouled bed two seconds
     # after a touchscreen-abort (#1171). Persisted to DB so the gate survives
-    # Auto Off power cycles and Bambuddy restarts.
+    # Auto Off power cycles and Printbuddy restarts.
     _final_status = data.get("status", "completed")
     if _final_status in ("completed", "failed", "aborted", "cancelled"):
         printer_manager.set_awaiting_plate_clear(printer_id, True)
@@ -4843,7 +4843,7 @@ async def lifespan(app: FastAPI):
             "mqtt_port": int(await get_setting(db, "mqtt_port") or "1883"),
             "mqtt_username": await get_setting(db, "mqtt_username") or "",
             "mqtt_password": await get_setting(db, "mqtt_password") or "",
-            "mqtt_topic_prefix": await get_setting(db, "mqtt_topic_prefix") or "bambuddy",
+            "mqtt_topic_prefix": await get_setting(db, "mqtt_topic_prefix") or "printbuddy",
             "mqtt_use_tls": (await get_setting(db, "mqtt_use_tls") or "false") == "true",
         }
         await mqtt_relay.configure(mqtt_settings)
@@ -5094,7 +5094,7 @@ def _parse_trusted_frame_origins() -> tuple[str, ...]:
 
     Used by ``security_headers_middleware`` to relax ``frame-ancestors`` for
     trusted same-LAN deployments (e.g. Home Assistant Webpage panel embedding
-    Bambuddy from a different port). Defaults to empty — strict ``'none'``.
+    Printbuddy from a different port). Defaults to empty — strict ``'none'``.
 
     Invalid entries are dropped with a warning rather than failing startup, so
     a typo in one origin doesn't take the whole deployment down.
@@ -5156,7 +5156,7 @@ def _frame_ancestors(default_value: str) -> str:
 async def security_headers_middleware(request, call_next):
     """Add standard HTTP security headers to every response."""
     # Per-request nonce stamped into `script-src` (#1460). On its own this
-    # changes nothing for Bambuddy's own pages — index.html has no inline
+    # changes nothing for Printbuddy's own pages — index.html has no inline
     # scripts since the SW registration moved to /sw-register.js. The reason
     # it's here is Cloudflare: a CF-fronted deployment has the bot-detection
     # script injected into the HTML on the edge, with a fresh hash on every

@@ -164,7 +164,7 @@ async def test_get_available_versions_sorts_newest_first():
 @pytest.mark.asyncio
 async def test_client_headers_identify_honestly_and_send_browser_accept():
     """
-    The httpx client must identify as Bambuddy (no Chrome impersonation) and
+    The httpx client must identify as Printbuddy (no Chrome impersonation) and
     must send Accept + Accept-Language so Cloudflare on bambulab.com doesn't
     403 us for looking like a bare scraper (#1350).
     """

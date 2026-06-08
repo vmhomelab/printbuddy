@@ -1,6 +1,6 @@
 /**
  * Tests for PrinterInfoModal — focused on the CopyButton clipboard fallback
- * (#1174). Bambuddy is commonly deployed over plain HTTP on a LAN, where
+ * (#1174). Printbuddy is commonly deployed over plain HTTP on a LAN, where
  * `navigator.clipboard` is gated by the secure-context requirement and the
  * previous code (which only tried the modern API and silently swallowed the
  * failure) left both copy buttons inert.

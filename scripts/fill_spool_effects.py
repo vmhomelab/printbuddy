@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Seed Bambuddy with a quick visual set of filament effect spools.
+"""Seed Printbuddy with a quick visual set of filament effect spools.
 
 Usage:
-    python scripts/fill_spool_effects.py --bambuddy-url http://localhost:8000
-    python scripts/fill_spool_effects.py --bambuddy-url http://localhost:8000 --api-key YOUR_KEY
+    python scripts/fill_spool_effects.py --printbuddy-url http://localhost:8000
+    python scripts/fill_spool_effects.py --printbuddy-url http://localhost:8000 --api-key YOUR_KEY
 
 This script creates stock spools for every effect type defined in the `SPOOLS` list below,
 using the bulk endpoint for creation:
@@ -148,14 +148,14 @@ def build_spool_payload(variant: TestSpool) -> dict:
 
 
 def create_bulk_spools(
-    bambuddy_url: str,
+    printbuddy_url: str,
     spool_data: dict,
     quantity: int,
     api_key: str | None,
     timeout: int,
 ) -> list[dict]:
     "Function that creates multiple spools using the bulk API endpoint and returns the list of created spools"
-    url = f"{bambuddy_url.rstrip('/')}{API_PATH_BULK_CREATE}"
+    url = f"{printbuddy_url.rstrip('/')}{API_PATH_BULK_CREATE}"
     headers: dict[str, str] = {}
     if api_key:
         headers["X-API-Key"] = api_key
@@ -170,8 +170,8 @@ def create_bulk_spools(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Create development stock spools for every effect type")
-    parser.add_argument("--bambuddy-url", required=True, help="Bambuddy URL (e.g. http://localhost:8000)")
-    parser.add_argument("--api-key", help="Bambuddy API key (required if auth is enabled)")
+    parser.add_argument("--printbuddy-url", required=True, help="Printbuddy URL (e.g. http://localhost:8000)")
+    parser.add_argument("--api-key", help="Printbuddy API key (required if auth is enabled)")
     parser.add_argument("--timeout", type=int, default=30, help="HTTP timeout in seconds (default: 30)")
     args = parser.parse_args()
 
@@ -182,7 +182,7 @@ def main() -> None:
         payload = build_spool_payload(variant)
         try:
             created_spools = create_bulk_spools(
-                args.bambuddy_url,
+                args.printbuddy_url,
                 payload,
                 quantity=variant.quantity,
                 api_key=args.api_key,

@@ -54,11 +54,11 @@ describe('downloadTextFile', () => {
         clickedDownload = this.download;
       });
 
-    downloadTextFile('cert-body', 'bambuddy-virtual-printer-ca.crt', 'application/x-pem-file');
+    downloadTextFile('cert-body', 'printbuddy-virtual-printer-ca.crt', 'application/x-pem-file');
 
     expect(clickSpy).toHaveBeenCalled();
     expect(clickedHref).toContain('blob:fake');
-    expect(clickedDownload).toBe('bambuddy-virtual-printer-ca.crt');
+    expect(clickedDownload).toBe('printbuddy-virtual-printer-ca.crt');
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:fake');
 
     clickSpy.mockRestore();

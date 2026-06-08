@@ -192,7 +192,7 @@ async def clear_logs(
     _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_UPDATE),
 ):
     """Clear the application log file."""
-    log_file = settings.log_dir / "bambuddy.log"
+    log_file = settings.log_dir / "printbuddy.log"
 
     if log_file.exists():
         try:
@@ -891,9 +891,9 @@ async def _collect_support_info() -> dict:
                 result = await db.execute(text("PRAGMA quick_check"))
                 quick_check = result.scalar()
 
-                db_path = settings.base_dir / "bambuddy.db"
+                db_path = settings.base_dir / "printbuddy.db"
                 db_size = db_path.stat().st_size if db_path.exists() else 0
-                wal_path = settings.base_dir / "bambuddy.db-wal"
+                wal_path = settings.base_dir / "printbuddy.db-wal"
                 wal_size = wal_path.stat().st_size if wal_path.exists() else 0
 
                 info["database_health"] = {
@@ -1031,7 +1031,7 @@ async def _collect_support_info() -> dict:
 
     # Log file info
     try:
-        log_file = settings.log_dir / "bambuddy.log"
+        log_file = settings.log_dir / "printbuddy.log"
         if log_file.exists():
             size = log_file.stat().st_size
             info["log_file"] = {
@@ -1064,7 +1064,7 @@ async def _collect_support_info() -> dict:
     # Active diagnostics — per-printer connection check, per-VP setup check,
     # and the log-health scan. These all surface in the UI today (System page +
     # bug-report bubble) but were never persisted into what the maintainer
-    # receives, so a "looks broken in bambuddy" report arrived with no
+    # receives, so a "looks broken in printbuddy" report arrived with no
     # actionable signal beyond raw logs. The snapshot helper is fail-soft per
     # probe and bounded by a per-probe wall-clock cap, so a hung interface
     # adds at most ~15 s to bundle generation regardless of fleet size (probes
@@ -1082,7 +1082,7 @@ async def _collect_support_info() -> dict:
 
 def _get_log_content(max_bytes: int = 10 * 1024 * 1024, sensitive_strings: dict[str, str] | None = None) -> bytes:
     """Get log file content, limited to max_bytes from the end."""
-    log_file = settings.log_dir / "bambuddy.log"
+    log_file = settings.log_dir / "printbuddy.log"
     if not log_file.exists():
         return b"Log file not found"
 
@@ -1108,7 +1108,7 @@ async def _get_recent_sanitized_logs(max_lines: int = 200) -> str:
     async with async_session() as db:
         sensitive_strings = await collect_sensitive_strings(db)
 
-    log_file = settings.log_dir / "bambuddy.log"
+    log_file = settings.log_dir / "printbuddy.log"
     if not log_file.exists():
         return ""
 
@@ -1155,11 +1155,11 @@ async def generate_support_bundle(
 
         # Add log file
         log_content = _get_log_content(sensitive_strings=sensitive_strings)
-        zf.writestr("bambuddy.log", log_content)
+        zf.writestr("printbuddy.log", log_content)
 
     zip_buffer.seek(0)
 
-    filename = f"bambuddy-support-{timestamp}.zip"
+    filename = f"printbuddy-support-{timestamp}.zip"
     logger.info("Generated support bundle: %s", filename)
 
     return StreamingResponse(
