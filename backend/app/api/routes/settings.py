@@ -30,6 +30,17 @@ def make_backup_filename(now: datetime | None = None) -> str:
     return f"{MANUAL_BACKUP_FILENAME_PREFIX}{timestamp}.zip"
 
 
+def is_supported_backup_upload_filename(filename: str | None) -> bool:
+    """Return whether an uploaded backup filename is accepted for restore.
+
+    Restore compatibility is intentionally based on the ZIP extension, not the
+    product prefix. Users migrating from the old name may upload backups whose
+    download filename used the legacy prefix; the archive contents are validated
+    after extraction.
+    """
+    return bool(filename and filename.endswith(".zip"))
+
+
 def find_backup_database_file(backup_dir: Path) -> Path | None:
     """Return the database file inside an extracted backup directory.
 
@@ -877,7 +888,7 @@ async def restore_backup(
         content = await file.read()
 
         # Check if it's a valid ZIP
-        if not file.filename or not file.filename.endswith(".zip"):
+        if not is_supported_backup_upload_filename(file.filename):
             raise HTTPException(400, "Invalid backup file: must be a .zip file")
 
         try:
