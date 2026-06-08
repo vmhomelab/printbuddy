@@ -19,9 +19,6 @@
   <a href="https://github.com/vmhomelab/Printbuddy/releases/latest">📦 Latest release</a>
   ·
   <a href="https://demo.printbuddy.tech">🚀 Demo</a>
-  ·
-  <a href="https://demo.printbuddy.tech"><img alt="Demo status" src="https://img.shields.io/website?url=https%3A%2F%2Fdemo.printbuddy.tech&label=demo&up_message=online&down_message=offline"></a>
-</p>
 
 <p align="center">
   Demo login: <code>admin</code> / <code>printbuddy</code>
@@ -54,7 +51,7 @@
 
 ## What is Printbuddy?
 
-**Printbuddy** is a modern, self-hosted dashboard with a broader goal:
+**Printbuddy** is a Fork of [Bambuddy](https://github.com/maziggy/bambuddy) and a modern, self-hosted dashboard with a broader goal:
 
 > A single, modern, self-hosted dashboard for managing different 3D printer ecosystems.
 
