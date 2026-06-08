@@ -20,6 +20,10 @@ docker-compose.override.yml
 *.egg-info/
 dist/
 build/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
 
 # Node
 frontend/node_modules/

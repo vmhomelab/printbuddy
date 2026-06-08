@@ -1165,7 +1165,7 @@ async def _provision_ldap_user(db: AsyncSession, ldap_user, ldap_config) -> User
         is_active=True,
     )
 
-    # Map LDAP groups to BamBuddy groups, falling back to the configured default group
+    # Map LDAP groups to Printbuddy groups, falling back to the configured default group
     # when the user is authenticated but has no matching group mapping (#921-follow-up).
     mapped_group_names = resolve_group_mapping(ldap_user.groups, ldap_config.group_mapping)
     if not mapped_group_names and ldap_config.default_group:
@@ -1189,12 +1189,12 @@ async def _provision_ldap_user(db: AsyncSession, ldap_user, ldap_config) -> User
 async def _sync_ldap_user(db: AsyncSession, user: User, ldap_user, ldap_config) -> None:
     """Sync LDAP user attributes (email, groups) on each login.
 
-    Group sync only touches BamBuddy groups that LDAP is configured to manage —
+    Group sync only touches Printbuddy groups that LDAP is configured to manage —
     that is, the values of `group_mapping` plus `default_group`. Any group
     outside that set is assumed to be a manual admin assignment and is
-    preserved across logins (#1292). Manual assignments to a BamBuddy group
+    preserved across logins (#1292). Manual assignments to a Printbuddy group
     that IS LDAP-managed are still overridden by LDAP truth, because revoking
-    access in LDAP must propagate to BamBuddy on next login.
+    access in LDAP must propagate to Printbuddy on next login.
     """
     import logging
 
@@ -1209,7 +1209,7 @@ async def _sync_ldap_user(db: AsyncSession, user: User, ldap_user, ldap_config) 
         user.email = ldap_user.email
         changed = True
 
-    # Compute the set of BamBuddy groups LDAP is allowed to manage. Anything
+    # Compute the set of Printbuddy groups LDAP is allowed to manage. Anything
     # outside this set is left alone so manual admin assignments survive logins.
     ldap_managed_names: set[str] = set(ldap_config.group_mapping.values())
     if ldap_config.default_group:
@@ -1323,7 +1323,7 @@ async def search_ldap_directory(
     wildcards on both sides) against sAMAccountName, uid, mail, displayName,
     and cn — covering both AD and OpenLDAP layouts. Each result is annotated
     with `already_provisioned` so the UI can grey out usernames that already
-    exist as BamBuddy users.
+    exist as Printbuddy users.
 
     Requires USERS_CREATE permission. Minimum query length is 2 characters.
     """
@@ -1390,7 +1390,7 @@ async def provision_ldap_user(
     _: User | None = RequirePermissionIfAuthEnabled(Permission.USERS_CREATE),
     db: AsyncSession = Depends(get_db),
 ):
-    """Provision a BamBuddy user from an existing LDAP directory entry.
+    """Provision a Printbuddy user from an existing LDAP directory entry.
 
     Re-resolves the username via the service-account bind (rather than trusting
     the request body) so group mappings and email come from a fresh LDAP read.

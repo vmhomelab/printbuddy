@@ -1,4 +1,4 @@
-"""MQTT Relay Service for publishing BamBuddy events to external MQTT brokers.
+"""MQTT Relay Service for publishing Printbuddy events to external MQTT brokers.
 
 This service enables integration with external automation systems like
 Node-RED, Home Assistant, and other MQTT-based platforms.
@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 class MQTTRelayService:
-    """Publishes BamBuddy events to an external MQTT broker."""
+    """Publishes Printbuddy events to an external MQTT broker."""
 
     # Minimum interval between status updates per printer (seconds)
     STATUS_THROTTLE_SECONDS = 1.0
@@ -208,7 +208,7 @@ class MQTTRelayService:
                 self.connected = False
 
     def _publish_status(self, status: str):
-        """Publish BamBuddy status (online/offline)."""
+        """Publish Printbuddy status (online/offline)."""
         self._publish(
             f"{self.topic_prefix}/status",
             {"status": status, "timestamp": datetime.now(timezone.utc).isoformat()},

@@ -1,4 +1,4 @@
-"""Shared test fixtures for BamBuddy backend tests."""
+"""Shared test fixtures for Printbuddy backend tests."""
 
 import asyncio
 import atexit

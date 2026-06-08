@@ -1928,7 +1928,7 @@ async def on_print_start(printer_id: int, data: dict):
 
         if not printer.auto_archive:
             # auto-archive disabled — check if there's an expected print (dispatched
-            # by BamBuddy via queue/reprint) that already has an archive to promote.
+            # by Printbuddy via queue/reprint) that already has an archive to promote.
             # If so, fall through to the expected-print handling below so the archive
             # is tracked in _active_prints and usage tracking works at completion.
             _fn = data.get("filename", "")

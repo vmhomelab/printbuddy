@@ -3172,7 +3172,7 @@ class TestOIDCExpiredTokenRejection:
 class TestOIDCIssuerUrlTrailingSlash:
     """Providers like Authentik use issuer URLs with a trailing slash.
 
-    BamBuddy must strip the slash before appending /.well-known/openid-configuration
+    Printbuddy must strip the slash before appending /.well-known/openid-configuration
     to avoid a double-slash that results in a 404.
     """
 

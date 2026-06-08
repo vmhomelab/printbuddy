@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Docker Test Suite for BamBuddy
+# Docker Test Suite for Printbuddy
 # Runs build verification, unit tests, and integration tests in Docker
 #
 
@@ -129,7 +129,7 @@ if [ "$FRESH_BUILD" = true ]; then
     print_info "Fresh build enabled (--no-cache)"
 fi
 
-print_header "BamBuddy Docker Test Suite"
+print_header "Printbuddy Docker Test Suite"
 
 # ============================================
 # Pre-build: Build all test images in parallel

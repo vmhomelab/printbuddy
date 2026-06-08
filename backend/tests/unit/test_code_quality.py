@@ -1,5 +1,5 @@
 """
-Code quality tests for BamBuddy backend.
+Code quality tests for Printbuddy backend.
 
 These tests check for common anti-patterns and code quality issues
 that could cause runtime errors but aren't caught by normal tests.

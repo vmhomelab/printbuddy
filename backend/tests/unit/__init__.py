@@ -1,1 +1,1 @@
-"""Unit tests for BamBuddy backend services."""
+"""Unit tests for Printbuddy backend services."""

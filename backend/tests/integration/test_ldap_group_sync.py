@@ -1,6 +1,6 @@
 """Regression tests for LDAP user group sync behavior (#1292).
 
-Reporter @Fuechslein: when an admin manually assigned a BamBuddy group to an
+Reporter @Fuechslein: when an admin manually assigned a Printbuddy group to an
 LDAP user, the assignment was silently wiped on the user's next login. Cause
 was that _sync_ldap_user used to replace `user.groups` entirely on every login,
 overwriting anything not derived from LDAP state.

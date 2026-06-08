@@ -1,4 +1,4 @@
-"""LDAP authentication service for BamBuddy (#794).
+"""LDAP authentication service for Printbuddy (#794).
 
 Supports:
 - LDAP bind authentication (simple bind with user's credentials)
@@ -48,10 +48,10 @@ class LDAPConfig:
     search_base: str
     user_filter: str  # e.g. "(sAMAccountName={username})"
     security: str  # "none", "starttls", "ldaps"
-    group_mapping: dict[str, str]  # LDAP group DN -> BamBuddy group name
+    group_mapping: dict[str, str]  # LDAP group DN -> Printbuddy group name
     auto_provision: bool
     ca_cert_path: str  # Path to CA certificate file (empty = skip verification)
-    default_group: str  # Fallback BamBuddy group assigned when user has no mapped groups (empty = no fallback)
+    default_group: str  # Fallback Printbuddy group assigned when user has no mapped groups (empty = no fallback)
 
 
 def parse_ldap_config(settings: dict[str, str]) -> LDAPConfig | None:
@@ -271,7 +271,7 @@ def lookup_ldap_user(config: LDAPConfig, username: str) -> LDAPUserInfo | None:
     """Look up a directory user by exact username via the service-account bind.
 
     Performs no password verification — intended for the admin manual-provision
-    flow, where the caller has already been authenticated as a BamBuddy admin
+    flow, where the caller has already been authenticated as a Printbuddy admin
     and now needs the directory attributes (email, display name, group DNs)
     to create the user.
 
@@ -372,9 +372,9 @@ def search_ldap_users(config: LDAPConfig, query: str, limit: int = 25) -> list[L
 
 
 def resolve_group_mapping(ldap_groups: list[str], group_mapping: dict[str, str]) -> list[str]:
-    """Map LDAP group DNs to BamBuddy group names.
+    """Map LDAP group DNs to Printbuddy group names.
 
-    Returns list of BamBuddy group names that the user should be added to.
+    Returns list of Printbuddy group names that the user should be added to.
     Comparison is case-insensitive on the LDAP group DN.
     """
     if not group_mapping:

@@ -1,6 +1,6 @@
 """Tests for expected print promotion when auto_archive is disabled (#839).
 
-When auto_archive=False but a print was dispatched by BamBuddy (queue/reprint),
+When auto_archive=False but a print was dispatched by Printbuddy (queue/reprint),
 the on_print_start callback must still promote the expected print to _active_prints
 so that at print completion the archive_id and ams_mapping are available for
 filament usage tracking.

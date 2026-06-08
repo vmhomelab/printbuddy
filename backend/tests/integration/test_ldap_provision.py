@@ -1,6 +1,6 @@
 """Integration tests for the manual LDAP user provisioning routes (#1298).
 
-Reporter @Fuechslein noted that BamBuddy forced admins to leave auto-provision
+Reporter @Fuechslein noted that Printbuddy forced admins to leave auto-provision
 on because there was no UI path to create an LDAP user by hand. The new
 endpoints are GET /auth/ldap/search (admin types a partial name, picks a
 candidate) and POST /auth/ldap/provision (server re-resolves and creates the

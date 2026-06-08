@@ -100,7 +100,7 @@ class LDAPSearchResultResponse(BaseModel):
     email: str | None = None
     display_name: str | None = None
     dn: str
-    already_provisioned: bool = False  # True if this username already exists as a BamBuddy user
+    already_provisioned: bool = False  # True if this username already exists as a Printbuddy user
 
 
 class LDAPProvisionRequest(BaseModel):

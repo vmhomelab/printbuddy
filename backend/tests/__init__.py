@@ -1,1 +1,1 @@
-"""BamBuddy backend tests."""
+"""Printbuddy backend tests."""

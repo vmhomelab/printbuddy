@@ -158,7 +158,7 @@ class TestLDAPEscape:
 
 
 class TestResolveGroupMapping:
-    """Verify LDAP group DN to BamBuddy group name resolution."""
+    """Verify LDAP group DN to Printbuddy group name resolution."""
 
     def test_empty_mapping(self):
         assert resolve_group_mapping(["cn=admins,dc=example"], {}) == []

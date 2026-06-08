@@ -1,4 +1,4 @@
-# Pre-commit hooks for BamBuddy
+# Pre-commit hooks for Printbuddy
 # Install with: pip install pre-commit && pre-commit install
 
 repos:
