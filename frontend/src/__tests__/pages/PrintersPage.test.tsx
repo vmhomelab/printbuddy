@@ -327,12 +327,64 @@ describe('PrintersPage', () => {
       const groupLabels = Array.from(modelSelect.querySelectorAll('optgroup')).map((group) => group.label);
       const optionValues = Array.from(modelSelect.options).map((option) => option.value);
 
+      expect(screen.getByLabelText(/prusa connection/i)).toBeInTheDocument();
       expect(groupLabels).toEqual(['Prusa', 'Generic']);
       expect(optionValues).toContain('Prusa CORE One');
       expect(optionValues).toContain('Prusa MK4');
       expect(optionValues).toContain('Prusa MK4S');
       expect(optionValues).not.toContain('P1S');
       expect(optionValues).not.toContain('Elegoo Neptune 4 Pro');
+    }, 10000);
+
+    it('can add a Prusa printer through the Connect Mobile API connection mode', async () => {
+      const user = userEvent.setup();
+      let createdPayload: Record<string, unknown> | null = null;
+      let diagnosticCalled = false;
+
+      server.use(
+        http.get('/api/v1/discovery/info', () => HttpResponse.json({ is_docker: false, subnets: [] })),
+        http.post('/api/v1/printers/diagnose', () => {
+          diagnosticCalled = true;
+          return HttpResponse.json({ checks: [] });
+        }),
+        http.post('/api/v1/printers/', async ({ request }) => {
+          createdPayload = await request.json() as Record<string, unknown>;
+          return HttpResponse.json({
+            ...mockPrinters[0],
+            name: 'MK4S Cloud',
+            provider: 'prusaconnect',
+            ip_address: '13b5af3d-7b44-42b1-9327-cf8a6fbf3f3c',
+            api_url: 'https://connect-mobile-api.prusa3d.com',
+            auth_token: null,
+            model: 'Prusa MK4S',
+          });
+        }),
+      );
+
+      render(<PrintersPage />);
+
+      await user.click((await screen.findAllByRole('button', { name: /add printer/i })).at(-1)!);
+      await user.selectOptions(screen.getByLabelText(/printer type/i), 'prusalink');
+      await user.selectOptions(screen.getByLabelText(/prusa connection/i), 'prusaconnect');
+      await user.selectOptions(screen.getByLabelText('Model (optional)'), 'Prusa MK4S');
+      await user.type(screen.getByPlaceholderText('My Printer'), 'MK4S Cloud');
+      await user.type(screen.getByPlaceholderText('13b5af3d-7b44-42b1-9327-cf8a6fbf3f3c'), '13b5af3d-7b44-42b1-9327-cf8a6fbf3f3c');
+      await user.type(screen.getByPlaceholderText('Authorization token from the Prusa Connect mobile API'), 'dummy-connect-token');
+      await user.click(screen.getAllByRole('button', { name: /^add printer$/i }).at(-1)!);
+
+      await waitFor(() => {
+        expect(createdPayload).toMatchObject({
+          name: 'MK4S Cloud',
+          provider: 'prusaconnect',
+          ip_address: '13b5af3d-7b44-42b1-9327-cf8a6fbf3f3c',
+          api_url: 'https://connect-mobile-api.prusa3d.com',
+          auth_token: 'dummy-connect-token',
+          model: 'Prusa MK4S',
+        });
+      });
+      expect(createdPayload).not.toHaveProperty('serial_number');
+      expect(createdPayload).not.toHaveProperty('access_code');
+      expect(diagnosticCalled).toBe(false);
     }, 10000);
 
     it.each([

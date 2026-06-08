@@ -686,14 +686,20 @@ class PrinterManager:
             client = create_printer_client(probe_printer)
             try:
                 await asyncio.to_thread(client.connect)
-                model_label = "PrusaLink" if provider_name == "prusalink" else "Klipper/Moonraker"
+                model_label = {
+                    "prusalink": "PrusaLink",
+                    "prusaconnect": "Prusa Connect Mobile",
+                }.get(provider_name, "Klipper/Moonraker")
                 return {
                     "success": True,
                     "state": getattr(getattr(client, "state", None), "state", "connected"),
                     "model": model_label,
                 }
             except Exception as exc:
-                model_label = "PrusaLink" if provider_name == "prusalink" else "Klipper/Moonraker"
+                model_label = {
+                    "prusalink": "PrusaLink",
+                    "prusaconnect": "Prusa Connect Mobile",
+                }.get(provider_name, "Klipper/Moonraker")
                 return {"success": False, "state": None, "model": model_label, "error": type(exc).__name__}
             finally:
                 disconnect = getattr(client, "disconnect", None)

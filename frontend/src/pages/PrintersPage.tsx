@@ -243,7 +243,7 @@ function PrinterModelSelect({
   provider?: PrinterCreate['provider'];
 }) {
   const { t } = useTranslation();
-  const visibleGroups = provider === 'prusalink'
+  const visibleGroups = provider === 'prusalink' || provider === 'prusaconnect'
     ? PRINTER_MODEL_GROUPS
         .map((group) => {
           if (group.label === 'Prusa') return group;
@@ -5757,11 +5757,19 @@ function AddPrinterModal({
 
   const isMoonrakerProvider = form.provider === 'klipper' || form.provider === 'mainsail' || form.provider === 'fluidd';
   const isPrusaLinkProvider = form.provider === 'prusalink';
-  const isHttpProvider = isMoonrakerProvider || isPrusaLinkProvider;
+  const isPrusaConnectProvider = form.provider === 'prusaconnect';
+  const isPrusaProvider = isPrusaLinkProvider || isPrusaConnectProvider;
+  const isHttpProvider = isMoonrakerProvider || isPrusaProvider;
 
   const buildSubmitPayload = (): PrinterCreate => {
     const ipAddress = form.ip_address.trim();
-    const fallbackUrl = isMoonrakerProvider ? `http://${ipAddress}:7125` : isPrusaLinkProvider ? `http://${ipAddress}` : undefined;
+    const fallbackUrl = isMoonrakerProvider
+      ? `http://${ipAddress}:7125`
+      : isPrusaLinkProvider
+        ? `http://${ipAddress}`
+        : isPrusaConnectProvider
+          ? 'https://connect-mobile-api.prusa3d.com'
+          : undefined;
     const apiUrl = (form.api_url || '').trim() || fallbackUrl;
     const externalCameraUrl = isHttpProvider ? (form.external_camera_url || '').trim() : '';
     return {
@@ -5924,7 +5932,7 @@ function AddPrinterModal({
             <select
               id="printer_provider"
               className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-              value={form.provider || 'bambu'}
+              value={isPrusaProvider ? 'prusalink' : (form.provider || 'bambu')}
               onChange={(e) => {
                 const provider = e.target.value as PrinterCreate['provider'];
                 setSaveWarning(null);
@@ -5948,6 +5956,32 @@ function AddPrinterModal({
               <option value="fluidd">Fluidd / Moonraker</option>
               <option value="prusalink">Prusa</option>
             </select>
+            {isPrusaProvider && (
+              <div className="mt-3">
+                <label htmlFor="prusa_connection_mode" className="block text-sm text-bambu-gray mb-1">Prusa connection</label>
+                <select
+                  id="prusa_connection_mode"
+                  className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                  value={form.provider}
+                  onChange={(e) => {
+                    const provider = e.target.value as PrinterCreate['provider'];
+                    setSaveWarning(null);
+                    setForm({
+                      ...form,
+                      provider,
+                      serial_number: '',
+                      access_code: '',
+                      api_url: provider === 'prusaconnect' ? '' : form.api_url,
+                      auth_token: form.auth_token,
+                      model: form.model,
+                    });
+                  }}
+                >
+                  <option value="prusalink">PrusaLink (local network)</option>
+                  <option value="prusaconnect">Connect Mobile API (Prusa cloud)</option>
+                </select>
+              </div>
+            )}
             {isMoonrakerProvider && (
               <p className="text-xs text-bambu-gray mt-1">
                 Klipper printers are reached through Moonraker, usually at http://printer-host:7125. If you paste a Fluidd URL, Printbuddy will also try Moonraker on port 7125. Add a Moonraker API token only if your instance requires one.
@@ -5956,6 +5990,11 @@ function AddPrinterModal({
             {isPrusaLinkProvider && (
               <p className="text-xs text-bambu-gray mt-1">
                 Prusa printers are reached through PrusaLink, usually at http://printer-host. Enter the PrusaLink password / API key below; username defaults to maker.
+              </p>
+            )}
+            {isPrusaConnectProvider && (
+              <p className="text-xs text-bambu-gray mt-1">
+                Prusa Connect Mobile uses Prusa's cloud mobile API at connect-mobile-api.prusa3d.com. Enter the printer UUID and a Connect Mobile API authorization token.
               </p>
             )}
           </div>
@@ -6080,7 +6119,9 @@ function AddPrinterModal({
               />
             </div>
             <div>
-              <label className="block text-sm text-bambu-gray mb-1">{t('printers.ipAddress')}</label>
+              <label className="block text-sm text-bambu-gray mb-1">
+                {isPrusaConnectProvider ? 'Prusa Connect printer UUID' : t('printers.ipAddress')}
+              </label>
               <input
                 type="text"
                 required
@@ -6088,8 +6129,11 @@ function AddPrinterModal({
                 className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                 value={form.ip_address}
                 onChange={(e) => setForm({ ...form, ip_address: e.target.value })}
-                placeholder="192.168.1.100 or printer.local"
+                placeholder={isPrusaConnectProvider ? '13b5af3d-7b44-42b1-9327-cf8a6fbf3f3c' : '192.168.1.100 or printer.local'}
               />
+              {isPrusaConnectProvider && (
+                <p className="text-xs text-bambu-gray mt-1">Use the printer UUID from Prusa Connect, not the local IP address.</p>
+              )}
             </div>
             {!isHttpProvider && (
               <>
@@ -6166,6 +6210,20 @@ function AddPrinterModal({
                   />
                 </div>
               </>
+            )}
+            {isPrusaConnectProvider && (
+              <div>
+                <label className="block text-sm text-bambu-gray mb-1">Connect Mobile API token</label>
+                <input
+                  type="password"
+                  required
+                  className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                  value={form.auth_token || ''}
+                  onChange={(e) => setForm({ ...form, auth_token: e.target.value })}
+                  placeholder="Authorization token from the Prusa Connect mobile API"
+                />
+                <p className="text-xs text-bambu-gray mt-1">Paste the token value; Printbuddy will add the Bearer prefix when needed.</p>
+              </div>
             )}
             {isHttpProvider && (
               <div className="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary/40 p-3 space-y-3">

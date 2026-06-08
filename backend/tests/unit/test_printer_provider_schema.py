@@ -89,6 +89,23 @@ def test_prusalink_printer_can_be_created_without_bambu_serial_or_access_code():
     assert printer.auth_token == "dummy-prusalink-password"
 
 
+def test_prusa_connect_mobile_printer_can_be_created_with_uuid_and_token_only():
+    printer = PrinterCreate.model_validate(
+        {
+            "name": "MK4S via Connect",
+            "provider": "prusaconnect",
+            "ip_address": "13b5af3d-7b44-42b1-9327-cf8a6fbf3f3c",
+            "auth_token": "dummy-connect-jwt",
+        }
+    )
+
+    assert printer.provider == "prusaconnect"
+    assert printer.serial_number == "PRUSACONNECT-13B5AF3D-7B44-42B1-9327-CF8A6FBF3F3C"[:50]
+    assert printer.access_code == "prusaconnect"
+    assert printer.api_url == "https://connect-mobile-api.prusa3d.com"
+    assert printer.auth_token == "dummy-connect-jwt"
+
+
 def test_non_bambu_printer_can_be_created_without_external_camera_url():
     printer = PrinterCreate(
         name="Voron 2.4",
