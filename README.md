@@ -16,7 +16,11 @@
 <p align="center">
   <a href="https://wiki.printbuddy.tech">📚 Wiki</a>
   ·
+  <a href="https://github.com/vmhomelab/Printbuddy/releases/latest">📦 Latest release</a>
+  ·
   <a href="https://demo.printbuddy.tech">🚀 Demo</a>
+  ·
+  <a href="https://demo.printbuddy.tech"><img alt="Demo status" src="https://img.shields.io/website?url=https%3A%2F%2Fdemo.printbuddy.tech&label=demo&up_message=online&down_message=offline"></a>
 </p>
 
 <p align="center">
