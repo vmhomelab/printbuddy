@@ -51,11 +51,11 @@
 
 ## What is Printbuddy?
 
-**Printbuddy** is a Fork of [Bambuddy](https://github.com/maziggy/bambuddy) and a modern, self-hosted dashboard with a broader goal:
+**Printbuddy** is a modern, self-hosted dashboard with a broader goal:
 
 > A single, modern, self-hosted dashboard for managing different 3D printer ecosystems.
 
-Printbuddy expands the original Bambu-focused foundation with a provider-based architecture for multiple printer platforms.
+Printbuddy uses a provider-based architecture for multiple printer platforms.
 
 Current state:
 
