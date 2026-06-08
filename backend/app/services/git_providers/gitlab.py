@@ -244,7 +244,9 @@ class GitLabBackend(GitProviderBackend):
                     }
                 )
 
-            commit_message = f"Initial Printbuddy backup - {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}"
+            commit_message = (
+                f"Initial Printbuddy backup - {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}"
+            )
             commit_response = await client.post(
                 f"{api_base}/projects/{encoded_path}/repository/commits",
                 headers=headers,

@@ -326,7 +326,9 @@ class GiteaBackend(GitHubBackend):
                 content_b64 = base64.b64encode(content_str.encode("utf-8")).decode()
                 api_files.append({"operation": "create", "path": path, "content": content_b64})
 
-            commit_message = f"Initial Printbuddy backup - {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}"
+            commit_message = (
+                f"Initial Printbuddy backup - {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}"
+            )
             body = {
                 "branch": branch,
                 "new_branch": branch,
