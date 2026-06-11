@@ -431,8 +431,19 @@ async def _report_spool_usage_for_slots(
         # the slot-assignment path only yields an id and is fetched below.
         spool_color_hex: str | None = None
 
+        ams_id, tray_id = _global_tray_id_to_ams_slot(global_tray_id)
+
+        # External/non-AMS/virtual-tray slots are user-assigned in Printbuddy.
+        # Prefer the local row before any tag lookup so a stale deterministic
+        # fallback tag in Spoolman's extra.tag cannot steal usage from the
+        # spool currently assigned to the external holder.
+        if is_external and printer_id is not None:
+            spool_id_to_use = await _resolve_spool_id_via_slot_assignment(printer_id, ams_id, tray_id)
+            if spool_id_to_use is not None:
+                resolution_path = "slot-assignment"
+
         spool_tag = _resolve_spool_tag(tray_info, printer_serial, global_tray_id)
-        if spool_tag:
+        if spool_id_to_use is None and spool_tag:
             spool = await client.find_spool_by_tag(spool_tag)
             if spool:
                 spool_id_to_use = spool["id"]
@@ -440,7 +451,6 @@ async def _report_spool_usage_for_slots(
                 spool_color_hex = (spool.get("filament") or {}).get("color_hex")
 
         if spool_id_to_use is None and printer_id is not None:
-            ams_id, tray_id = _global_tray_id_to_ams_slot(global_tray_id)
             spool_id_to_use = await _resolve_spool_id_via_slot_assignment(printer_id, ams_id, tray_id)
             if spool_id_to_use is not None:
                 resolution_path = "slot-assignment"

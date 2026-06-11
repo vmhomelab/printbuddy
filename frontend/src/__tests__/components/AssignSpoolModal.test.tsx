@@ -344,6 +344,70 @@ describe('AssignSpoolModal — Spoolman enabled (T-Gap 7)', () => {
     (api.getSpools as ReturnType<typeof vi.fn>).mockResolvedValue([]);
     (api.getAssignments as ReturnType<typeof vi.fn>).mockResolvedValue([]);
     (api.getSpoolmanInventorySpools as ReturnType<typeof vi.fn>).mockResolvedValue([spoolmanSpool]);
+    (api.assignSpoolmanSlot as ReturnType<typeof vi.fn>).mockResolvedValue({ id: spoolmanSpool.id });
+  });
+
+  it('assigns an external/non-AMS Spoolman spool through slot assignment', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const user = userEvent.setup();
+
+    render(
+      <AssignSpoolModal
+        {...defaultProps}
+        spoolmanEnabled
+        amsId={255}
+        trayId={0}
+        trayInfo={{ type: 'TPU', color: '000000', location: 'External Spool' }}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/Bambu Lab/)).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByText(/Bambu Lab/));
+    await user.click(screen.getByRole('button', { name: /assign spool/i }));
+
+    await waitFor(() => {
+      expect(api.assignSpoolmanSlot).toHaveBeenCalledWith({
+        spoolman_spool_id: 200,
+        printer_id: 1,
+        ams_id: 255,
+        tray_id: 0,
+      });
+    });
+    expect(api.assignSpool).not.toHaveBeenCalled();
+  });
+
+  it('assigns the dual-external right Spoolman slot as tray_id=1', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const user = userEvent.setup();
+
+    render(
+      <AssignSpoolModal
+        {...defaultProps}
+        spoolmanEnabled
+        amsId={255}
+        trayId={1}
+        trayInfo={{ type: 'PETG', color: '0000FF', location: 'External Spool Right' }}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/Bambu Lab/)).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByText(/Bambu Lab/));
+    await user.click(screen.getByRole('button', { name: /assign spool/i }));
+
+    await waitFor(() => {
+      expect(api.assignSpoolmanSlot).toHaveBeenCalledWith({
+        spoolman_spool_id: 200,
+        printer_id: 1,
+        ams_id: 255,
+        tray_id: 1,
+      });
+    });
   });
 
   it('shows Spoolman spool section when spoolmanEnabled=true', async () => {

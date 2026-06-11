@@ -180,3 +180,35 @@ class TestSlotAssignmentFallback:
 
         assert spools_updated == 1
         mock_spoolman_client.use_spool.assert_awaited_once_with(88, 25.0)
+
+    async def test_external_slot_assignment_wins_over_stale_fallback_tag(
+        self, test_printer, mock_spoolman_client, db_session
+    ):
+        """External/non-AMS slots are intentionally slot-assignment based.
+
+        A deterministic fallback tag can remain attached to an old Spoolman spool
+        from earlier versions or manual edits. For external slots, the local
+        (printer, 255, tray) assignment must be authoritative so usage is
+        deducted from the spool the user currently selected in Printbuddy.
+        """
+        db_session.add(SpoolmanSlotAssignment(printer_id=test_printer.id, ams_id=255, tray_id=0, spoolman_spool_id=88))
+        await db_session.commit()
+
+        # Simulate a stale fallback-tag match pointing at an old spool.
+        mock_spoolman_client.find_spool_by_tag = AsyncMock(return_value={"id": 7})
+
+        ams_trays = {254: {"tray_uuid": "", "tag_uid": "", "tray_type": "TPU"}}
+        usage_items = [(1, 12.5)]
+
+        spools_updated = await _report_spool_usage_for_slots(
+            mock_spoolman_client,
+            usage_items,
+            ams_trays,
+            slot_to_tray=None,
+            method_label="Test",
+            printer_serial=test_printer.serial_number,
+            printer_id=test_printer.id,
+        )
+
+        assert spools_updated == 1
+        mock_spoolman_client.use_spool.assert_awaited_once_with(88, 12.5)

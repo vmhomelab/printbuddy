@@ -370,6 +370,52 @@ class TestGetSpoolmanSlotAssignment:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_get_returns_external_slot_assignment(
+        self, async_client: AsyncClient, slot_settings, test_printer, mock_client
+    ):
+        """External/non-AMS Spoolman assignments use ams_id=255 and must be
+        readable through the exact-slot lookup, not only the /all list endpoint.
+        """
+        await async_client.post(
+            "/api/v1/spoolman/inventory/slot-assignments",
+            json={"spoolman_spool_id": 10, "printer_id": test_printer.id, "ams_id": 255, "tray_id": 0},
+        )
+        mock_client.get_spool.reset_mock()
+
+        response = await async_client.get(
+            "/api/v1/spoolman/inventory/slot-assignments",
+            params={"printer_id": test_printer.id, "ams_id": 255, "tray_id": 0},
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body is not None
+        assert body["id"] == 10
+        mock_client.get_spool.assert_awaited_once_with(10)
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_get_returns_dual_external_right_slot_assignment(
+        self, async_client: AsyncClient, slot_settings, test_printer, mock_client
+    ):
+        """Dual external/H2D right-feed assignments use ams_id=255, tray_id=1."""
+        await async_client.post(
+            "/api/v1/spoolman/inventory/slot-assignments",
+            json={"spoolman_spool_id": 10, "printer_id": test_printer.id, "ams_id": 255, "tray_id": 1},
+        )
+        mock_client.get_spool.reset_mock()
+
+        response = await async_client.get(
+            "/api/v1/spoolman/inventory/slot-assignments",
+            params={"printer_id": test_printer.id, "ams_id": 255, "tray_id": 1},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["id"] == 10
+        mock_client.get_spool.assert_awaited_once_with(10)
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_get_returns_null_when_no_assignment(
         self, async_client: AsyncClient, slot_settings, test_printer, mock_client
     ):

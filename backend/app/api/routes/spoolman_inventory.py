@@ -1501,12 +1501,15 @@ async def unassign_spoolman_slot(
 @router.get("/slot-assignments")
 async def get_spoolman_slot_assignment(
     printer_id: int = Query(..., gt=0),
-    ams_id: int = Query(..., ge=0, le=7),
+    ams_id: int = Query(..., ge=0, le=255),
     tray_id: int = Query(..., ge=0, le=3),
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_READ),
 ) -> dict | None:
     """Return the Spoolman spool assigned to a specific printer slot, or null if unassigned."""
+    if not ((0 <= ams_id <= 7) or (128 <= ams_id <= 191) or ams_id == 255):
+        raise HTTPException(status_code=422, detail="Invalid AMS ID")
+
     client = await _get_client(db)
     result = await db.execute(select(Printer).where(Printer.id == printer_id))
     printer = result.scalar_one_or_none()
