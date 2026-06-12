@@ -40,6 +40,14 @@ describe('LoginPage', () => {
       });
     });
 
+    it('uses the app icon rather than the old full logo on the login header', async () => {
+      render(<LoginPage />);
+
+      const icon = await screen.findByAltText('Printbuddy app icon');
+      expect(icon).toHaveAttribute('src', expect.stringContaining('/img/printbuddy_icon.png'));
+      expect(icon).not.toHaveAttribute('src', expect.stringContaining('printbuddy_logo.svg'));
+    });
+
     it('offers the public source code link before authentication', async () => {
       render(<LoginPage />);
 

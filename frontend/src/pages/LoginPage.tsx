@@ -4,7 +4,6 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
-import { useTheme } from '../contexts/ThemeContext';
 import { X, Mail, Shield, Smartphone, Key, Github } from 'lucide-react';
 import { api, type LoginResponse, type OIDCProvider, type TokenPersistence } from '../api/client';
 import { Card, CardHeader, CardContent } from '../components/Card';
@@ -99,7 +98,6 @@ export function LoginPage() {
   const { t } = useTranslation();
   const { login, loginWithToken } = useAuth();
   const { showToast } = useToast();
-  const { mode } = useTheme();
 
   // Credentials step state
   const [username, setUsername] = useState('');
@@ -619,12 +617,20 @@ export function LoginPage() {
     <div className="min-h-screen flex items-center justify-center bg-bambu-dark p-4">
       <div className="max-w-md w-full space-y-8 p-8 bg-gradient-to-br from-bambu-card to-bambu-dark-secondary rounded-xl border border-bambu-dark-tertiary shadow-lg">
         <div className="text-center">
-          <div className="flex items-center justify-center mb-6">
+          <div className="flex items-center justify-center gap-3 mb-6" aria-label="Printbuddy">
             <img
-              src={appAssetPath(mode === 'dark' ? '/img/printbuddy_logo.svg' : '/img/printbuddy_logo.svg')}
-              alt="Printbuddy"
-              className="h-16"
+              src={appAssetPath('/img/printbuddy_icon.png')}
+              alt="Printbuddy app icon"
+              className="h-12 w-12 rounded-xl object-contain"
             />
+            <div className="text-left leading-none">
+              <div className="text-2xl font-extrabold tracking-tight text-white">
+                Print<span className="text-bambu-green-light">buddy</span>
+              </div>
+              <div className="mt-1 text-[0.55rem] font-semibold uppercase tracking-[0.22em] text-bambu-gray">
+                Bambu Lab · Klipper · Mainsail
+              </div>
+            </div>
           </div>
           <h2 className="text-3xl font-bold text-white">
             {t('login.title')}
