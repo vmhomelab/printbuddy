@@ -1,10 +1,16 @@
-"""MQTT bridge for BIQU Panda Breath Mod.
+"""MQTT bridge for BIQU Panda Breath.
 
-The community Panda Breath bridge exposes its Home Assistant-style control
-surface over MQTT under a configurable topic prefix (default
-``panda_breath_mod``). Printbuddy talks to that same topic contract directly so
-users can monitor and control Panda Breath from Settings without running Home
-Assistant.
+Panda Breath can expose Home Assistant MQTT entities directly from the device.
+The native topic shape observed from the device is::
+
+    panda_breath/<device_id>/state         # JSON state document
+    panda_breath/<device_id>/availability  # online/offline
+    panda_breath/<device_id>/command       # JSON command document
+
+Older community bridge scripts used one topic per value under a prefix such as
+``panda_breath_mod/ist`` and ``panda_breath_mod/soll``. Printbuddy supports both
+contracts so existing setups keep working while native Panda Breath MQTT can be
+used directly.
 """
 
 from __future__ import annotations
@@ -32,19 +38,31 @@ class PandaBreathState:
     bed_temperature: float | None = None
     bed_limit: float | None = None
     filter_activation_temp: float | None = None
+    heater_trigger_temp: float | None = None
+    custom_temp: float | None = None
+    custom_timer_hours: float | None = None
     drying_temperature: float | None = None
     drying_time_hours: float | None = None
+    drying_remaining_min: float | None = None
     slicer_target: float | None = None
     mode: str | None = None
+    filament_drying_mode: str | None = None
     status: str | None = None
     lock_status: str | None = None
     fan_on: bool | None = None
     power_on: bool | None = None
     work_on: bool | None = None
+    drying_running: bool | None = None
     slicer_priority_mode: bool | None = None
+    printer_sn: str | None = None
+    printer_bind: str | None = None
+    printer_ip: str | None = None
+    printer_name: str | None = None
     version: str | None = None
+    availability: str | None = None
+    device_id: str | None = None
     last_seen: datetime | None = None
-    raw: dict[str, str] = field(default_factory=dict)
+    raw: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -54,33 +72,89 @@ class PandaBreathState:
 
 
 class PandaBreathMQTTService:
-    """Subscribe/publish client for the Panda Breath MQTT topic contract."""
+    """Subscribe/publish client for Panda Breath MQTT topic contracts."""
 
+    # Native device payload keys from the Home Assistant MQTT config.
+    JSON_NUMERIC_FIELDS = {
+        "chamber_temp": "chamber_actual",
+        "target_temp": "chamber_target",
+        "filter_temp": "filter_activation_temp",
+        "heater_temp": "heater_trigger_temp",
+        "custom_temp": "custom_temp",
+        "custom_timer": "custom_timer_hours",
+        "drying_remaining_min": "drying_remaining_min",
+    }
+    JSON_TEXT_FIELDS = {
+        "mode": "mode",
+        "filament_drying_mode": "filament_drying_mode",
+        "printer_sn": "printer_sn",
+        "printer_bind": "printer_bind",
+        "printer_ip": "printer_ip",
+        "printer_name": "printer_name",
+    }
+    JSON_BOOL_FIELDS = {
+        "work_on": "work_on",
+        "drying_running": "drying_running",
+    }
+    JSON_COMMAND_KEYS = {
+        "work_on": "work_on",
+        "mode": "mode",
+        "filament_drying_mode": "filament_drying_mode",
+        "chamber_target": "target_temp",
+        "target_temp": "target_temp",
+        "filter_activation_temp": "filter_temp",
+        "filter_temp": "filter_temp",
+        "heater_trigger_temp": "heater_temp",
+        "heater_temp": "heater_temp",
+        "custom_temp": "custom_temp",
+        "custom_timer": "custom_timer",
+        "drying_running": "drying_running",
+    }
+
+    # Older community bridge topic suffixes.
     NUMERIC_TOPICS = {
         "soll": "chamber_target",
         "ist": "chamber_actual",
         "bed": "bed_temperature",
+        "bett": "bed_temperature",
         "limit": "bed_limit",
+        "bett_limit": "bed_limit",
         "filtertemp": "filter_activation_temp",
+        "filter_temp": "filter_activation_temp",
+        "heater_temp": "heater_trigger_temp",
+        "custom_temp": "custom_temp",
+        "custom_timer": "custom_timer_hours",
         "dry_temp": "drying_temperature",
+        "drying_temperature": "drying_temperature",
         "dry_time": "drying_time_hours",
+        "drying_time": "drying_time_hours",
+        "drying_remaining_min": "drying_remaining_min",
         "slicer_soll": "slicer_target",
+        "slicer_target": "slicer_target",
         "slicer_target_temp": "slicer_target",
     }
     TEXT_TOPICS = {
         "panda_modus": "mode",
+        "mode": "mode",
+        "filament_drying_mode": "filament_drying_mode",
         "status": "status",
         "lock_status": "lock_status",
+        "printer_sn": "printer_sn",
+        "printer_bind": "printer_bind",
+        "printer_ip": "printer_ip",
+        "printer_name": "printer_name",
         "version": "version",
         "fw_version": "version",
     }
     BOOL_TOPICS = {
         "fan": "fan_on",
         "panda_power": "power_on",
+        "work": "work_on",
         "work_on": "work_on",
+        "drying_running": "drying_running",
         "slicer_priority_mode": "slicer_priority_mode",
     }
-    COMMAND_TOPICS = {
+    LEGACY_COMMAND_TOPICS = {
         "manual": "manual/set",
         "auto": "auto/set",
         "drying": "drying/set",
@@ -95,12 +169,14 @@ class PandaBreathMQTTService:
         "drying_temperature": "dry_temp/set",
         "drying_time_hours": "dry_time/set",
     }
+    # Backwards-compatible public alias used by existing tests/callers.
+    COMMAND_TOPICS = LEGACY_COMMAND_TOPICS
 
     def __init__(self) -> None:
         self.client: mqtt.Client | None = None
         self.enabled = False
         self.connected = False
-        self.topic_prefix = "panda_breath_mod"
+        self.topic_prefix = "panda_breath"
         self._broker = ""
         self._port = 1883
         self._username = ""
@@ -119,7 +195,7 @@ class PandaBreathMQTTService:
         username = str(settings.get("mqtt_username") or "")
         password = str(settings.get("mqtt_password") or "")
         use_tls = bool(settings.get("mqtt_use_tls", False))
-        topic_prefix = str(settings.get("panda_breath_topic_prefix") or "panda_breath_mod").strip().strip("/")
+        topic_prefix = str(settings.get("panda_breath_topic_prefix") or "panda_breath").strip().strip("/")
 
         if not enabled:
             self.enabled = False
@@ -148,7 +224,7 @@ class PandaBreathMQTTService:
         self._username = username
         self._password = password
         self._use_tls = use_tls
-        self.topic_prefix = topic_prefix or "panda_breath_mod"
+        self.topic_prefix = topic_prefix or "panda_breath"
 
         if changed and self.client:
             await self.disconnect()
@@ -232,19 +308,92 @@ class PandaBreathMQTTService:
 
     def apply_message(self, suffix: str, payload: str) -> None:
         """Apply one raw topic suffix/payload pair to the in-memory state."""
+        suffix = suffix.strip("/")
         now = datetime.now(timezone.utc)
         with self._lock:
-            self.state.raw[suffix] = payload
+            self.state.raw[suffix] = self._raw_payload(payload)
             self.state.last_seen = now
+
+            # Native Panda Breath shape: <device_id>/state with one JSON document.
+            if suffix.endswith("/state"):
+                device_id = suffix.rsplit("/", 1)[0]
+                if device_id:
+                    self.state.device_id = device_id
+                self._apply_json_state(payload)
+                return
+
+            # Native availability topic: <device_id>/availability.
+            if suffix.endswith("/availability"):
+                device_id = suffix.rsplit("/", 1)[0]
+                if device_id:
+                    self.state.device_id = device_id
+                self.state.availability = payload
+                self.connected = payload.strip().lower() == "online"
+                return
+
+            # Also accept a bare "state" suffix if the configured prefix already
+            # includes the device id, e.g. panda_breath/9C139E456884.
+            if suffix == "state":
+                self._apply_json_state(payload)
+                return
+            if suffix == "availability":
+                self.state.availability = payload
+                self.connected = payload.strip().lower() == "online"
+                return
+
             if suffix in self.NUMERIC_TOPICS:
-                try:
-                    setattr(self.state, self.NUMERIC_TOPICS[suffix], float(payload))
-                except ValueError:
-                    logger.debug("Ignoring non-numeric Panda Breath payload %s=%r", suffix, payload)
+                self._set_numeric(self.NUMERIC_TOPICS[suffix], payload)
             elif suffix in self.TEXT_TOPICS:
                 setattr(self.state, self.TEXT_TOPICS[suffix], payload)
             elif suffix in self.BOOL_TOPICS:
-                setattr(self.state, self.BOOL_TOPICS[suffix], payload.upper() in {"ON", "1", "TRUE"})
+                setattr(self.state, self.BOOL_TOPICS[suffix], self._to_bool(payload))
+
+    def _apply_json_state(self, payload: str) -> None:
+        try:
+            data = json.loads(payload)
+        except json.JSONDecodeError:
+            logger.debug("Ignoring non-JSON Panda Breath state payload: %r", payload)
+            return
+        if not isinstance(data, dict):
+            return
+        self.state.raw["state_json"] = data
+
+        for key, attr in self.JSON_NUMERIC_FIELDS.items():
+            if key in data:
+                self._set_numeric(attr, data[key])
+        for key, attr in self.JSON_TEXT_FIELDS.items():
+            if key in data:
+                value = data[key]
+                setattr(self.state, attr, None if value is None else str(value))
+        for key, attr in self.JSON_BOOL_FIELDS.items():
+            if key in data:
+                setattr(self.state, attr, self._to_bool(data[key]))
+
+    def _set_numeric(self, attr: str, value: Any) -> None:
+        try:
+            setattr(self.state, attr, float(value))
+        except (TypeError, ValueError):
+            logger.debug("Ignoring non-numeric Panda Breath payload %s=%r", attr, value)
+
+    @staticmethod
+    def _to_bool(value: Any) -> bool | None:
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return None
+        normalized = str(value).strip().lower()
+        if normalized in {"on", "1", "true", "yes", "ja", "online"}:
+            return True
+        if normalized in {"off", "0", "false", "no", "nein", "offline"}:
+            return False
+        return bool(normalized)
+
+    @staticmethod
+    def _raw_payload(payload: str) -> Any:
+        try:
+            return json.loads(payload)
+        except json.JSONDecodeError:
+            return payload
 
     async def disconnect(self, timeout: float = 0) -> None:
         if self.client:
@@ -260,17 +409,49 @@ class PandaBreathMQTTService:
                 self.connected = False
 
     def publish_command(self, command: str, value: Any = None) -> bool:
-        """Publish a Panda Breath command using the community bridge topics."""
-        if command not in self.COMMAND_TOPICS:
+        """Publish a Panda Breath command."""
+        if command not in self.LEGACY_COMMAND_TOPICS and command not in self.JSON_COMMAND_KEYS:
             raise ValueError(f"Unsupported Panda Breath command: {command}")
         if not self.enabled or not self.connected or not self.client:
             return False
 
-        topic = f"{self.topic_prefix}/{self.COMMAND_TOPICS[command]}"
-        payload = self._payload_for_command(command, value)
+        topic, payload = self._command_topic_payload(command, value)
         with self._lock:
             self.client.publish(topic, payload, qos=1, retain=False)
         return True
+
+    def _command_topic_payload(self, command: str, value: Any) -> tuple[str, str]:
+        if self._uses_native_device_topics():
+            command_key = self.JSON_COMMAND_KEYS.get(command)
+            if not command_key:
+                # Map button-style aliases onto the native mode selector.
+                if command == "auto":
+                    command_key, value = "mode", "auto mode"
+                elif command in {"power", "manual"}:
+                    command_key, value = "mode", "power on"
+                elif command == "drying":
+                    command_key, value = "mode", "filament drying"
+                elif command == "stop":
+                    command_key, value = "work_on", "OFF"
+                else:
+                    raise ValueError(f"Unsupported Panda Breath native command: {command}")
+            if value is None:
+                raise ValueError(f"Command {command} requires a value")
+            return f"{self._native_device_prefix()}/command", json.dumps({command_key: value})
+
+        return f"{self.topic_prefix}/{self.LEGACY_COMMAND_TOPICS[command]}", self._payload_for_command(command, value)
+
+    def _uses_native_device_topics(self) -> bool:
+        return self.topic_prefix.startswith("panda_breath") and self.topic_prefix != "panda_breath_mod"
+
+    def _native_device_prefix(self) -> str:
+        if self.topic_prefix.count("/") >= 1:
+            return self.topic_prefix
+        if self.state.device_id:
+            return f"{self.topic_prefix}/{self.state.device_id}"
+        raise ValueError(
+            "Panda Breath device id is unknown; wait for a state/availability message or set the prefix to panda_breath/<device_id>"
+        )
 
     @staticmethod
     def _payload_for_command(command: str, value: Any) -> str:
@@ -293,6 +474,8 @@ class PandaBreathMQTTService:
             "broker": self._broker if self.enabled else "",
             "port": self._port if self.enabled else 0,
             "topic_prefix": self.topic_prefix,
+            "device_id": self.state.device_id,
+            "availability": self.state.availability,
             "state": self.state.to_dict(),
         }
 

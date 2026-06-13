@@ -151,8 +151,8 @@ class AppSettings(BaseModel):
     # BIQU Panda Breath Mod integration (uses the shared MQTT broker settings)
     panda_breath_enabled: bool = Field(default=False, description="Enable BIQU Panda Breath Mod MQTT control")
     panda_breath_topic_prefix: str = Field(
-        default="panda_breath_mod",
-        description="MQTT topic prefix exposed by the Panda Breath bridge (default: panda_breath_mod)",
+        default="panda_breath",
+        description="MQTT topic prefix exposed by Panda Breath; use panda_breath or panda_breath/<device_id>",
     )
 
     # External URL for notifications

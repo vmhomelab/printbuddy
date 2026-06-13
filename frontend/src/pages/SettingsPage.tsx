@@ -1029,7 +1029,7 @@ export function SettingsPage() {
       settings.mqtt_topic_prefix !== localSettings.mqtt_topic_prefix ||
       settings.mqtt_use_tls !== localSettings.mqtt_use_tls ||
       (settings.panda_breath_enabled ?? false) !== (localSettings.panda_breath_enabled ?? false) ||
-      (settings.panda_breath_topic_prefix ?? 'panda_breath_mod') !== (localSettings.panda_breath_topic_prefix ?? 'panda_breath_mod') ||
+      (settings.panda_breath_topic_prefix ?? 'panda_breath') !== (localSettings.panda_breath_topic_prefix ?? 'panda_breath') ||
       settings.external_url !== localSettings.external_url ||
       settings.ha_enabled !== localSettings.ha_enabled ||
       settings.ha_url !== localSettings.ha_url ||
@@ -3095,7 +3095,7 @@ export function SettingsPage() {
             </CardHeader>
             <CardContent className="space-y-3">
               <p className="text-sm text-bambu-gray">
-                Connect to the BIQU Panda Breath Mod through the same MQTT broker above. Printbuddy subscribes to <code className="text-orange-300">{localSettings.panda_breath_topic_prefix || 'panda_breath_mod'}/#</code> and publishes commands to the community bridge topics.
+                Connect to the BIQU Panda Breath through the same MQTT broker above. Printbuddy subscribes to <code className="text-orange-300">{localSettings.panda_breath_topic_prefix || 'panda_breath'}/#</code> and reads the native <code className="text-orange-300">state</code>/<code className="text-orange-300">availability</code> topics.
               </p>
 
               {!localSettings.mqtt_broker && (
@@ -3121,13 +3121,13 @@ export function SettingsPage() {
                     <label className="block text-sm text-bambu-gray mb-1">Panda Breath topic prefix</label>
                     <input
                       type="text"
-                      value={localSettings.panda_breath_topic_prefix ?? 'panda_breath_mod'}
+                      value={localSettings.panda_breath_topic_prefix ?? 'panda_breath'}
                       onChange={(e) => updateSetting('panda_breath_topic_prefix', e.target.value)}
-                      placeholder="panda_breath_mod"
+                      placeholder="panda_breath"
                       className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                     />
                     <p className="text-xs text-bambu-gray mt-1">
-                      Must match <code>MQTT_TOPIC_PREFIX</code> in the Panda Breath bridge config.
+                      Use <code>panda_breath</code> to auto-detect the device id from <code>panda_breath/&lt;device_id&gt;/state</code>, or set the full prefix such as <code>panda_breath/9C139E456884</code>.
                     </p>
                   </div>
 

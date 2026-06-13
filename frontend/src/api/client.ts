@@ -1181,25 +1181,39 @@ export interface PandaBreathStatus {
   broker: string;
   port: number;
   topic_prefix: string;
+  device_id?: string | null;
+  availability?: string | null;
   state: {
     chamber_target?: number | null;
     chamber_actual?: number | null;
     bed_temperature?: number | null;
     bed_limit?: number | null;
     filter_activation_temp?: number | null;
+    heater_trigger_temp?: number | null;
+    custom_temp?: number | null;
+    custom_timer_hours?: number | null;
     drying_temperature?: number | null;
     drying_time_hours?: number | null;
+    drying_remaining_min?: number | null;
     slicer_target?: number | null;
     mode?: string | null;
+    filament_drying_mode?: string | null;
     status?: string | null;
     lock_status?: string | null;
     fan_on?: boolean | null;
     power_on?: boolean | null;
     work_on?: boolean | null;
+    drying_running?: boolean | null;
     slicer_priority_mode?: boolean | null;
+    printer_sn?: string | null;
+    printer_bind?: string | null;
+    printer_ip?: string | null;
+    printer_name?: string | null;
     version?: string | null;
+    availability?: string | null;
+    device_id?: string | null;
     last_seen?: string | null;
-    raw?: Record<string, string>;
+    raw?: Record<string, unknown>;
   };
 }
 

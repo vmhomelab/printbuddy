@@ -4852,7 +4852,7 @@ async def lifespan(app: FastAPI):
         panda_settings = {
             **mqtt_settings,
             "panda_breath_enabled": (await get_setting(db, "panda_breath_enabled") or "false") == "true",
-            "panda_breath_topic_prefix": await get_setting(db, "panda_breath_topic_prefix") or "panda_breath_mod",
+            "panda_breath_topic_prefix": await get_setting(db, "panda_breath_topic_prefix") or "panda_breath",
         }
         await panda_breath_mqtt.configure(panda_settings)
 

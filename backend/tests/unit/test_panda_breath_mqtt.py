@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from backend.app.services.panda_breath_mqtt import PandaBreathMQTTService
@@ -5,6 +7,7 @@ from backend.app.services.panda_breath_mqtt import PandaBreathMQTTService
 
 def test_panda_breath_applies_community_mqtt_topics():
     service = PandaBreathMQTTService()
+    service.topic_prefix = "panda_breath_mod"
 
     service.apply_message("ist", "42.5")
     service.apply_message("soll", "45")
@@ -24,8 +27,58 @@ def test_panda_breath_applies_community_mqtt_topics():
     assert status["state"]["last_seen"] is not None
 
 
+def test_panda_breath_applies_native_state_json_from_device_payloads():
+    service = PandaBreathMQTTService()
+
+    service.apply_message(
+        "9C139E456884/state",
+        json.dumps(
+            {
+                "chamber_temp": 36.5,
+                "work_on": "ON",
+                "mode": "auto mode",
+                "filament_drying_mode": "petg",
+                "target_temp": 45,
+                "filter_temp": 60,
+                "heater_temp": 48,
+                "custom_temp": 50,
+                "custom_timer": 4,
+                "drying_remaining_min": 120,
+                "drying_running": "OFF",
+                "printer_sn": "01S00C000000000",
+                "printer_bind": "bind",
+                "printer_ip": "192.168.1.55",
+                "printer_name": "P1S",
+            }
+        ),
+    )
+    service.apply_message("9C139E456884/availability", "online")
+
+    status = service.get_status()
+    assert status["topic_prefix"] == "panda_breath"
+    assert status["device_id"] == "9C139E456884"
+    assert status["availability"] == "online"
+    assert status["connected"] is True
+    assert status["state"]["chamber_actual"] == 36.5
+    assert status["state"]["work_on"] is True
+    assert status["state"]["mode"] == "auto mode"
+    assert status["state"]["filament_drying_mode"] == "petg"
+    assert status["state"]["chamber_target"] == 45.0
+    assert status["state"]["filter_activation_temp"] == 60.0
+    assert status["state"]["heater_trigger_temp"] == 48.0
+    assert status["state"]["custom_temp"] == 50.0
+    assert status["state"]["custom_timer_hours"] == 4.0
+    assert status["state"]["drying_remaining_min"] == 120.0
+    assert status["state"]["drying_running"] is False
+    assert status["state"]["printer_sn"] == "01S00C000000000"
+    assert status["state"]["printer_ip"] == "192.168.1.55"
+    assert status["state"]["printer_name"] == "P1S"
+    assert status["state"]["raw"]["state_json"]["target_temp"] == 45
+
+
 def test_panda_breath_command_payloads_and_topics():
     service = PandaBreathMQTTService()
+    service.topic_prefix = "panda_breath_mod"
 
     assert service.COMMAND_TOPICS["manual"] == "manual/set"
     assert service.COMMAND_TOPICS["auto"] == "auto/set"
@@ -41,3 +94,36 @@ def test_panda_breath_command_payloads_and_topics():
 
     with pytest.raises(ValueError):
         service._payload_for_command("chamber_target", None)
+
+
+def test_panda_breath_native_command_topic_and_payload():
+    service = PandaBreathMQTTService()
+    service.apply_message("9C139E456884/availability", "online")
+
+    topic, payload = service._command_topic_payload("chamber_target", 50)
+    assert topic == "panda_breath/9C139E456884/command"
+    assert json.loads(payload) == {"target_temp": 50}
+
+    topic, payload = service._command_topic_payload("mode", "filament drying")
+    assert topic == "panda_breath/9C139E456884/command"
+    assert json.loads(payload) == {"mode": "filament drying"}
+
+    topic, payload = service._command_topic_payload("stop", None)
+    assert topic == "panda_breath/9C139E456884/command"
+    assert json.loads(payload) == {"work_on": "OFF"}
+
+
+def test_panda_breath_native_command_requires_device_id_when_prefix_is_root():
+    service = PandaBreathMQTTService()
+
+    with pytest.raises(ValueError, match="device id is unknown"):
+        service._command_topic_payload("chamber_target", 50)
+
+
+def test_panda_breath_native_full_device_prefix_can_publish_before_state_seen():
+    service = PandaBreathMQTTService()
+    service.topic_prefix = "panda_breath/9C139E456884"
+
+    topic, payload = service._command_topic_payload("filter_temp", 70)
+    assert topic == "panda_breath/9C139E456884/command"
+    assert json.loads(payload) == {"filter_temp": 70}
