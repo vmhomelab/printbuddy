@@ -2,7 +2,14 @@ import json
 
 import pytest
 
+from backend.app.schemas.settings import AppSettings
 from backend.app.services.panda_breath_mqtt import PandaBreathMQTTService
+
+
+def test_panda_breath_settings_default_to_native_topic():
+    settings = AppSettings()
+
+    assert settings.panda_breath_topic_prefix == "panda_breath"
 
 
 def test_panda_breath_applies_community_mqtt_topics():

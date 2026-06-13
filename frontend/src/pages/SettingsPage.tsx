@@ -3118,8 +3118,9 @@ export function SettingsPage() {
               {localSettings.panda_breath_enabled && (
                 <div className="space-y-3 pt-2 border-t border-bambu-dark-tertiary">
                   <div>
-                    <label className="block text-sm text-bambu-gray mb-1">Panda Breath topic prefix</label>
+                    <label htmlFor="panda-breath-topic-prefix" className="block text-sm text-bambu-gray mb-1">Panda Breath topic prefix</label>
                     <input
+                      id="panda-breath-topic-prefix"
                       type="text"
                       value={localSettings.panda_breath_topic_prefix ?? 'panda_breath'}
                       onChange={(e) => updateSetting('panda_breath_topic_prefix', e.target.value)}
@@ -3128,6 +3129,19 @@ export function SettingsPage() {
                     />
                     <p className="text-xs text-bambu-gray mt-1">
                       Use <code>panda_breath</code> to auto-detect the device id from <code>panda_breath/&lt;device_id&gt;/state</code>, or set the full prefix such as <code>panda_breath/9C139E456884</code>.
+                    </p>
+                    <p className="mt-2 rounded-lg border border-orange-500/30 bg-orange-500/10 px-3 py-2 text-xs text-orange-100">
+                      Tip: keep the topic prefix set to <code>panda_breath</code> when the Panda Breath connects
+                      directly to an MQTT broker such as Home Assistant. Use <code>panda_breath_mod</code> only for
+                      the community bridge used by the{' '}
+                      <a
+                        href="https://github.com/mikigua/ha-panda-breath"
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-orange-200 underline hover:text-orange-100"
+                      >
+                        ha-panda-breath integration by mikigua
+                      </a>.
                     </p>
                   </div>
 

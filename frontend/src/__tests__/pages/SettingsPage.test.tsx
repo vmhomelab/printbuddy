@@ -23,8 +23,11 @@ const mockSettings = {
   time_format: 'system',
   date_format: 'system',
   mqtt_enabled: false,
+  mqtt_broker: '',
   mqtt_host: '',
   mqtt_port: 1883,
+  panda_breath_enabled: false,
+  panda_breath_topic_prefix: 'panda_breath',
   spoolman_enabled: false,
   spoolman_url: '',
   ha_enabled: false,
@@ -64,6 +67,14 @@ describe('SettingsPage', () => {
       }),
       http.get('/api/v1/mqtt/status', () => {
         return HttpResponse.json({ enabled: false });
+      }),
+      http.get('/api/v1/settings/panda-breath/status', () => {
+        return HttpResponse.json({
+          enabled: false,
+          connected: false,
+          topic_prefix: 'panda_breath',
+          state: {},
+        });
       }),
       http.get('/api/v1/virtual-printer/status', () => {
         return HttpResponse.json({ running: false });
@@ -319,6 +330,47 @@ describe('SettingsPage', () => {
         // Network tab contains MQTT Publishing section
         expect(screen.getByText('MQTT Publishing')).toBeInTheDocument();
       });
+    });
+
+    it('shows native Panda Breath as the default topic with bridge guidance', async () => {
+      const user = userEvent.setup();
+      server.use(
+        http.get('/api/v1/settings/', () => {
+          return HttpResponse.json({
+            ...mockSettings,
+            mqtt_broker: 'homeassistant.local',
+            panda_breath_enabled: true,
+            panda_breath_topic_prefix: 'panda_breath',
+          });
+        }),
+        http.get('/api/v1/settings/panda-breath/status', () => {
+          return HttpResponse.json({
+            enabled: true,
+            connected: false,
+            topic_prefix: 'panda_breath',
+            state: {},
+          });
+        })
+      );
+
+      render(<SettingsPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Network')).toBeInTheDocument();
+      });
+
+      await user.click(screen.getByText('Network'));
+
+      await waitFor(() => {
+        expect(screen.getByLabelText('Panda Breath topic prefix')).toHaveValue('panda_breath');
+      });
+      expect(screen.getByText(/connects directly to an MQTT broker such as Home Assistant/i)).toBeInTheDocument();
+      expect(screen.getByText('panda_breath_mod')).toBeInTheDocument();
+      expect(screen.getByText(/community bridge used by the/i)).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: /ha-panda-breath integration by mikigua/i })).toHaveAttribute(
+        'href',
+        'https://github.com/mikigua/ha-panda-breath'
+      );
     });
 
     it('can switch to Smart Plugs tab', async () => {
