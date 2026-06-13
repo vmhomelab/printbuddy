@@ -5,7 +5,7 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, select
@@ -156,6 +156,7 @@ async def _build_settings_response(db: AsyncSession, is_api_key: bool = False) -
             "ftp_retry_enabled",
             "mqtt_enabled",
             "mqtt_use_tls",
+            "panda_breath_enabled",
             "ha_enabled",
             "per_printer_mapping_expanded",
             "prometheus_enabled",
@@ -244,6 +245,8 @@ async def update_settings(
         "mqtt_password",
         "mqtt_topic_prefix",
         "mqtt_use_tls",
+        "panda_breath_enabled",
+        "panda_breath_topic_prefix",
     }
     mqtt_updated = bool(mqtt_keys & set(update_data.keys()))
 
@@ -276,6 +279,14 @@ async def update_settings(
                 "mqtt_use_tls": (await get_setting(db, "mqtt_use_tls") or "false") == "true",
             }
             await mqtt_relay.configure(mqtt_settings)
+            from backend.app.services.panda_breath_mqtt import panda_breath_mqtt
+
+            panda_settings = {
+                **mqtt_settings,
+                "panda_breath_enabled": (await get_setting(db, "panda_breath_enabled") or "false") == "true",
+                "panda_breath_topic_prefix": await get_setting(db, "panda_breath_topic_prefix") or "panda_breath_mod",
+            }
+            await panda_breath_mqtt.configure(panda_settings)
         except Exception:
             pass  # Don't fail the settings update if MQTT reconfiguration fails
 
@@ -1347,3 +1358,43 @@ async def get_mqtt_status(
     from backend.app.services.mqtt_relay import mqtt_relay
 
     return mqtt_relay.get_status()
+
+
+# =============================================================================
+# Panda Breath MQTT Settings
+# =============================================================================
+
+
+class PandaBreathCommand(BaseModel):
+    """Command payload for the BIQU Panda Breath MQTT bridge."""
+
+    command: str
+    value: str | int | float | bool | None = None
+
+
+@router.get("/panda-breath/status")
+async def get_panda_breath_status(
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_READ),
+):
+    """Get BIQU Panda Breath MQTT connection and latest device state."""
+    from backend.app.services.panda_breath_mqtt import panda_breath_mqtt
+
+    return panda_breath_mqtt.get_status()
+
+
+@router.post("/panda-breath/command")
+async def send_panda_breath_command(
+    payload: PandaBreathCommand,
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_UPDATE),
+):
+    """Send a BIQU Panda Breath command via MQTT."""
+    from backend.app.services.panda_breath_mqtt import panda_breath_mqtt
+
+    try:
+        published = panda_breath_mqtt.publish_command(payload.command, payload.value)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if not published:
+        raise HTTPException(status_code=503, detail="Panda Breath MQTT is not connected")
+    return {"ok": True}

@@ -1096,6 +1096,8 @@ export interface AppSettings {
   mqtt_password: string;
   mqtt_topic_prefix: string;
   mqtt_use_tls: boolean;
+  panda_breath_enabled: boolean;
+  panda_breath_topic_prefix: string;
   // External URL for notifications
   external_url: string;
   // Home Assistant integration
@@ -1171,6 +1173,34 @@ export interface MQTTStatus {
   broker: string;
   port: number;
   topic_prefix: string;
+}
+
+export interface PandaBreathStatus {
+  enabled: boolean;
+  connected: boolean;
+  broker: string;
+  port: number;
+  topic_prefix: string;
+  state: {
+    chamber_target?: number | null;
+    chamber_actual?: number | null;
+    bed_temperature?: number | null;
+    bed_limit?: number | null;
+    filter_activation_temp?: number | null;
+    drying_temperature?: number | null;
+    drying_time_hours?: number | null;
+    slicer_target?: number | null;
+    mode?: string | null;
+    status?: string | null;
+    lock_status?: string | null;
+    fan_on?: boolean | null;
+    power_on?: boolean | null;
+    work_on?: boolean | null;
+    slicer_priority_mode?: boolean | null;
+    version?: string | null;
+    last_seen?: string | null;
+    raw?: Record<string, string>;
+  };
 }
 
 // Cloud types
@@ -4344,6 +4374,12 @@ export const api = {
       body: JSON.stringify(data),
     }),
   getMQTTStatus: () => request<MQTTStatus>('/settings/mqtt/status'),
+  getPandaBreathStatus: () => request<PandaBreathStatus>('/settings/panda-breath/status'),
+  sendPandaBreathCommand: (data: { command: string; value?: string | number | boolean | null }) =>
+    request<{ ok: boolean }>('/settings/panda-breath/command', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
   resetSettings: () =>
     request<AppSettings>('/settings/reset', { method: 'POST' }),
   exportBackup: async (): Promise<{ blob: Blob; filename: string }> => {

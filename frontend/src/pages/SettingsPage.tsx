@@ -98,6 +98,7 @@ registerSettingsSearch({ labelKey: 'settings.externalUrl', tab: 'network', keywo
 registerSettingsSearch({ labelKey: 'settings.ftpRetry', tab: 'network', keywords: 'ftp retry upload retries backoff', anchor: 'card-ftpretry' });
 registerSettingsSearch({ labelKey: 'settings.homeAssistant', tab: 'network', keywords: 'home assistant ha hass mqtt integration', anchor: 'card-ha' });
 registerSettingsSearch({ labelKey: 'settings.mqttPublishing', tab: 'network', keywords: 'mqtt publish broker topic', anchor: 'card-mqtt' });
+registerSettingsSearch({ labelKey: 'settings.pandaBreath.title', labelFallback: 'Panda Breath', tab: 'network', keywords: 'panda breath biqu chamber heater mqtt bambu', anchor: 'card-panda-breath' });
 registerSettingsSearch({ labelKey: 'settings.prometheusMetrics', tab: 'network', keywords: 'prometheus metrics grafana monitoring bearer token', anchor: 'card-prometheus' });
 registerSettingsSearch({ labelKey: 'settings.createNewApiKey', tab: 'apikeys', keywords: 'api key create permission scope', anchor: 'card-createapi' });
 registerSettingsSearch({ labelKey: 'settings.webhookEndpoints', tab: 'apikeys', keywords: 'webhook endpoint post http', anchor: 'card-webhooks' });
@@ -590,6 +591,22 @@ export function SettingsPage() {
     refetchInterval: activeTab === 'network' ? 5000 : false, // Poll every 5s when on Network tab
   });
 
+  const { data: pandaBreathStatus } = useQuery({
+    queryKey: ['panda-breath-status'],
+    queryFn: api.getPandaBreathStatus,
+    refetchInterval: activeTab === 'network' ? 5000 : false,
+  });
+
+  const pandaBreathCommandMutation = useMutation({
+    mutationFn: (data: { command: string; value?: string | number | boolean | null }) => api.sendPandaBreathCommand(data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['panda-breath-status'] });
+    },
+    onError: (error: Error) => {
+      showToast(error.message, 'error');
+    },
+  });
+
   // GitHub backup status for Backup tab indicator
   const { data: githubBackupStatus } = useQuery<GitHubBackupStatus>({
     queryKey: ['github-backup-status'],
@@ -1011,6 +1028,8 @@ export function SettingsPage() {
       settings.mqtt_password !== localSettings.mqtt_password ||
       settings.mqtt_topic_prefix !== localSettings.mqtt_topic_prefix ||
       settings.mqtt_use_tls !== localSettings.mqtt_use_tls ||
+      (settings.panda_breath_enabled ?? false) !== (localSettings.panda_breath_enabled ?? false) ||
+      (settings.panda_breath_topic_prefix ?? 'panda_breath_mod') !== (localSettings.panda_breath_topic_prefix ?? 'panda_breath_mod') ||
       settings.external_url !== localSettings.external_url ||
       settings.ha_enabled !== localSettings.ha_enabled ||
       settings.ha_url !== localSettings.ha_url ||
@@ -1095,6 +1114,8 @@ export function SettingsPage() {
         mqtt_password: localSettings.mqtt_password,
         mqtt_topic_prefix: localSettings.mqtt_topic_prefix,
         mqtt_use_tls: localSettings.mqtt_use_tls,
+        panda_breath_enabled: localSettings.panda_breath_enabled,
+        panda_breath_topic_prefix: localSettings.panda_breath_topic_prefix,
         external_url: localSettings.external_url,
         ha_enabled: localSettings.ha_enabled,
         ha_url: localSettings.ha_url,
@@ -3048,6 +3069,146 @@ export function SettingsPage() {
                       </div>
                     </div>
                   )}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Panda Breath MQTT */}
+          <Card id="card-panda-breath">
+            <CardHeader>
+              <div className="flex items-center justify-between gap-3">
+                <h2 className="text-lg font-semibold text-white flex items-center gap-2">
+                  <Flame className="w-5 h-5 text-orange-400" />
+                  Panda Breath
+                  <BambuScopeBadge />
+                </h2>
+                {pandaBreathStatus?.enabled && (
+                  <div className="flex items-center gap-2">
+                    <span className={`w-2.5 h-2.5 rounded-full ${pandaBreathStatus.connected ? 'bg-green-400' : 'bg-red-400'}`} />
+                    <span className={`text-sm ${pandaBreathStatus.connected ? 'text-green-400' : 'text-red-400'}`}>
+                      {pandaBreathStatus.connected ? t('settings.connected') : t('settings.disconnected')}
+                    </span>
+                  </div>
+                )}
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <p className="text-sm text-bambu-gray">
+                Connect to the BIQU Panda Breath Mod through the same MQTT broker above. Printbuddy subscribes to <code className="text-orange-300">{localSettings.panda_breath_topic_prefix || 'panda_breath_mod'}/#</code> and publishes commands to the community bridge topics.
+              </p>
+
+              {!localSettings.mqtt_broker && (
+                <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-3 text-sm text-yellow-200">
+                  Configure the MQTT broker first. Panda Breath uses the shared broker, port, username, password and TLS settings from MQTT Publishing.
+                </div>
+              )}
+
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-white">Enable Panda Breath control</p>
+                  <p className="text-sm text-bambu-gray">Monitor chamber temperature and send heater mode commands via MQTT.</p>
+                </div>
+                <Toggle
+                  checked={localSettings.panda_breath_enabled ?? false}
+                  onChange={(checked) => updateSetting('panda_breath_enabled', checked)}
+                />
+              </div>
+
+              {localSettings.panda_breath_enabled && (
+                <div className="space-y-3 pt-2 border-t border-bambu-dark-tertiary">
+                  <div>
+                    <label className="block text-sm text-bambu-gray mb-1">Panda Breath topic prefix</label>
+                    <input
+                      type="text"
+                      value={localSettings.panda_breath_topic_prefix ?? 'panda_breath_mod'}
+                      onChange={(e) => updateSetting('panda_breath_topic_prefix', e.target.value)}
+                      placeholder="panda_breath_mod"
+                      className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                    />
+                    <p className="text-xs text-bambu-gray mt-1">
+                      Must match <code>MQTT_TOPIC_PREFIX</code> in the Panda Breath bridge config.
+                    </p>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2 text-sm">
+                    <div className="rounded-lg bg-bambu-dark p-3">
+                      <p className="text-bambu-gray">Mode</p>
+                      <p className="text-white font-medium">{pandaBreathStatus?.state.mode || '—'}</p>
+                    </div>
+                    <div className="rounded-lg bg-bambu-dark p-3">
+                      <p className="text-bambu-gray">Status</p>
+                      <p className="text-white font-medium">{pandaBreathStatus?.state.status || pandaBreathStatus?.state.lock_status || '—'}</p>
+                    </div>
+                    <div className="rounded-lg bg-bambu-dark p-3">
+                      <p className="text-bambu-gray">Chamber</p>
+                      <p className="text-white font-medium">{pandaBreathStatus?.state.chamber_actual ?? '—'} °C</p>
+                    </div>
+                    <div className="rounded-lg bg-bambu-dark p-3">
+                      <p className="text-bambu-gray">Target</p>
+                      <p className="text-white font-medium">{pandaBreathStatus?.state.chamber_target ?? '—'} °C</p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    {[
+                      ['manual', 'Manual'],
+                      ['auto', 'Auto'],
+                      ['drying', 'Drying'],
+                      ['unlock', 'Unlock'],
+                    ].map(([command, label]) => (
+                      <Button
+                        key={command}
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => pandaBreathCommandMutation.mutate({ command })}
+                        disabled={!pandaBreathStatus?.connected || pandaBreathCommandMutation.isPending}
+                      >
+                        {label}
+                      </Button>
+                    ))}
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => pandaBreathCommandMutation.mutate({ command: 'power', value: !(pandaBreathStatus?.state.power_on ?? false) })}
+                      disabled={!pandaBreathStatus?.connected || pandaBreathCommandMutation.isPending}
+                    >
+                      {pandaBreathStatus?.state.power_on ? 'Power off' : 'Power on'}
+                    </Button>
+                    <Button
+                      variant="danger"
+                      size="sm"
+                      onClick={() => pandaBreathCommandMutation.mutate({ command: 'stop' })}
+                      disabled={!pandaBreathStatus?.connected || pandaBreathCommandMutation.isPending}
+                    >
+                      Heater stop
+                    </Button>
+                  </div>
+
+                  <div className="flex gap-2">
+                    <input
+                      type="number"
+                      min="1"
+                      max="80"
+                      defaultValue={pandaBreathStatus?.state.chamber_target ?? 45}
+                      className="w-28 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                      id="panda-breath-target-temp"
+                    />
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      disabled={!pandaBreathStatus?.connected || pandaBreathCommandMutation.isPending}
+                      onClick={() => {
+                        const input = document.getElementById('panda-breath-target-temp') as HTMLInputElement | null;
+                        pandaBreathCommandMutation.mutate({ command: 'chamber_target', value: Number(input?.value || 45) });
+                      }}
+                    >
+                      Set chamber target
+                    </Button>
+                  </div>
                 </div>
               )}
             </CardContent>

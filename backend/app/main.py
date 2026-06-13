@@ -4847,6 +4847,14 @@ async def lifespan(app: FastAPI):
             "mqtt_use_tls": (await get_setting(db, "mqtt_use_tls") or "false") == "true",
         }
         await mqtt_relay.configure(mqtt_settings)
+        from backend.app.services.panda_breath_mqtt import panda_breath_mqtt
+
+        panda_settings = {
+            **mqtt_settings,
+            "panda_breath_enabled": (await get_setting(db, "panda_breath_enabled") or "false") == "true",
+            "panda_breath_topic_prefix": await get_setting(db, "panda_breath_topic_prefix") or "panda_breath_mod",
+        }
+        await panda_breath_mqtt.configure(panda_settings)
 
         # Restore MQTT smart plug subscriptions
         if mqtt_settings.get("mqtt_enabled"):
