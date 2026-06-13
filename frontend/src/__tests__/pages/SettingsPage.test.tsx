@@ -28,6 +28,7 @@ const mockSettings = {
   mqtt_port: 1883,
   panda_breath_enabled: false,
   panda_breath_topic_prefix: 'panda_breath',
+  panda_breath_printer_assignments: '{}',
   spoolman_enabled: false,
   spoolman_url: '',
   ha_enabled: false,
@@ -371,6 +372,66 @@ describe('SettingsPage', () => {
         'href',
         'https://github.com/mikigua/ha-panda-breath'
       );
+    });
+
+    it('lets users assign detected Panda Breath device ids to Printbuddy printers', async () => {
+      const user = userEvent.setup();
+      const savedBodies: unknown[] = [];
+      server.use(
+        http.get('/api/v1/settings/', () => {
+          return HttpResponse.json({
+            ...mockSettings,
+            mqtt_broker: 'homeassistant.local',
+            panda_breath_enabled: true,
+            panda_breath_topic_prefix: 'panda_breath',
+            panda_breath_printer_assignments: '{}',
+          });
+        }),
+        http.patch('/api/v1/settings/', async ({ request }) => {
+          const body = await request.json();
+          savedBodies.push(body);
+          return HttpResponse.json({ ...mockSettings, ...(body as Record<string, unknown>) });
+        }),
+        http.put('/api/v1/settings/', async ({ request }) => {
+          const body = await request.json();
+          savedBodies.push(body);
+          return HttpResponse.json({ ...mockSettings, ...(body as Record<string, unknown>) });
+        }),
+        http.get('/api/v1/printers/', () => {
+          return HttpResponse.json([
+            { id: 1, name: 'X1 Carbon' },
+            { id: 2, name: 'P1S Backup' },
+          ]);
+        }),
+        http.get('/api/v1/settings/panda-breath/status', () => {
+          return HttpResponse.json({
+            enabled: true,
+            connected: true,
+            topic_prefix: 'panda_breath',
+            state: {},
+            devices: {
+              DEVICE_A: { device_id: 'DEVICE_A', chamber_actual: 31.2, chamber_target: 45, printer_name: 'Breath A' },
+              DEVICE_B: { device_id: 'DEVICE_B', chamber_actual: 42.8, chamber_target: 55, printer_name: 'Breath B' },
+            },
+          });
+        })
+      );
+
+      render(<SettingsPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Network')).toBeInTheDocument();
+      });
+      await user.click(screen.getByText('Network'));
+
+      const assignmentSelect = await screen.findByLabelText('Assign Panda Breath DEVICE_B to printer');
+      await user.selectOptions(assignmentSelect, '2');
+
+      await waitFor(() => {
+        expect(savedBodies.some((body) => (
+          body as { panda_breath_printer_assignments?: string }
+        ).panda_breath_printer_assignments === '{"DEVICE_B":2}')).toBe(true);
+      });
     });
 
     it('can switch to Smart Plugs tab', async () => {

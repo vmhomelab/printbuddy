@@ -313,6 +313,7 @@ class TestSettingsAPI:
             json={
                 "panda_breath_enabled": True,
                 "panda_breath_topic_prefix": "panda_breath_mod",
+                "panda_breath_printer_assignments": '{"DEVICE_A":1}',
             },
         )
 
@@ -320,6 +321,11 @@ class TestSettingsAPI:
         result = response.json()
         assert result["panda_breath_enabled"] is True
         assert result["panda_breath_topic_prefix"] == "panda_breath_mod"
+        assert result["panda_breath_printer_assignments"] == '{"DEVICE_A":1}'
+
+        ui_response = await async_client.get("/api/v1/settings/ui-preferences")
+        assert ui_response.status_code == 200
+        assert ui_response.json()["panda_breath_printer_assignments"] == '{"DEVICE_A":1}'
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -335,6 +341,7 @@ class TestSettingsAPI:
         assert "port" in result
         assert "topic_prefix" in result
         assert "state" in result
+        assert "devices" in result
 
     @pytest.mark.asyncio
     @pytest.mark.integration

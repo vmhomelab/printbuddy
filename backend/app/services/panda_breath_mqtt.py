@@ -185,6 +185,7 @@ class PandaBreathMQTTService:
         self._lock = threading.Lock()
         self._disconnection_event: threading.Event | None = None
         self.state = PandaBreathState()
+        self.device_states: dict[str, PandaBreathState] = {}
 
     async def configure(self, settings: dict[str, Any]) -> bool:
         """Configure the Panda Breath MQTT client from app settings."""
@@ -311,30 +312,49 @@ class PandaBreathMQTTService:
         suffix = suffix.strip("/")
         now = datetime.now(timezone.utc)
         with self._lock:
-            self.state.raw[suffix] = self._raw_payload(payload)
-            self.state.last_seen = now
-
             # Native Panda Breath shape: <device_id>/state with one JSON document.
             if suffix.endswith("/state"):
                 device_id = suffix.rsplit("/", 1)[0]
                 if device_id:
-                    self.state.device_id = device_id
-                self._apply_json_state(payload)
+                    state = self._state_for_device(device_id)
+                    state.raw[suffix] = self._raw_payload(payload)
+                    state.last_seen = now
+                    state.device_id = device_id
+                    self.state = state
+                else:
+                    self.state.raw[suffix] = self._raw_payload(payload)
+                    self.state.last_seen = now
+                    state = self.state
+                self._apply_json_state(payload, state)
                 return
 
             # Native availability topic: <device_id>/availability.
             if suffix.endswith("/availability"):
                 device_id = suffix.rsplit("/", 1)[0]
                 if device_id:
-                    self.state.device_id = device_id
-                self.state.availability = payload
-                self.connected = payload.strip().lower() == "online"
+                    state = self._state_for_device(device_id)
+                    state.raw[suffix] = self._raw_payload(payload)
+                    state.last_seen = now
+                    state.device_id = device_id
+                    state.availability = payload
+                    self.state = state
+                else:
+                    self.state.raw[suffix] = self._raw_payload(payload)
+                    self.state.last_seen = now
+                    self.state.availability = payload
+                self.connected = any(
+                    device.availability and device.availability.strip().lower() == "online"
+                    for device in self.device_states.values()
+                ) or payload.strip().lower() == "online"
                 return
+
+            self.state.raw[suffix] = self._raw_payload(payload)
+            self.state.last_seen = now
 
             # Also accept a bare "state" suffix if the configured prefix already
             # includes the device id, e.g. panda_breath/9C139E456884.
             if suffix == "state":
-                self._apply_json_state(payload)
+                self._apply_json_state(payload, self.state)
                 return
             if suffix == "availability":
                 self.state.availability = payload
@@ -342,13 +362,19 @@ class PandaBreathMQTTService:
                 return
 
             if suffix in self.NUMERIC_TOPICS:
-                self._set_numeric(self.NUMERIC_TOPICS[suffix], payload)
+                self._set_numeric(self.NUMERIC_TOPICS[suffix], payload, self.state)
             elif suffix in self.TEXT_TOPICS:
                 setattr(self.state, self.TEXT_TOPICS[suffix], payload)
             elif suffix in self.BOOL_TOPICS:
                 setattr(self.state, self.BOOL_TOPICS[suffix], self._to_bool(payload))
 
-    def _apply_json_state(self, payload: str) -> None:
+    def _state_for_device(self, device_id: str) -> PandaBreathState:
+        if device_id not in self.device_states:
+            self.device_states[device_id] = PandaBreathState(device_id=device_id)
+        return self.device_states[device_id]
+
+    def _apply_json_state(self, payload: str, state: PandaBreathState | None = None) -> None:
+        target = state or self.state
         try:
             data = json.loads(payload)
         except json.JSONDecodeError:
@@ -356,22 +382,22 @@ class PandaBreathMQTTService:
             return
         if not isinstance(data, dict):
             return
-        self.state.raw["state_json"] = data
+        target.raw["state_json"] = data
 
         for key, attr in self.JSON_NUMERIC_FIELDS.items():
             if key in data:
-                self._set_numeric(attr, data[key])
+                self._set_numeric(attr, data[key], target)
         for key, attr in self.JSON_TEXT_FIELDS.items():
             if key in data:
                 value = data[key]
-                setattr(self.state, attr, None if value is None else str(value))
+                setattr(target, attr, None if value is None else str(value))
         for key, attr in self.JSON_BOOL_FIELDS.items():
             if key in data:
-                setattr(self.state, attr, self._to_bool(data[key]))
+                setattr(target, attr, self._to_bool(data[key]))
 
-    def _set_numeric(self, attr: str, value: Any) -> None:
+    def _set_numeric(self, attr: str, value: Any, state: PandaBreathState | None = None) -> None:
         try:
-            setattr(self.state, attr, float(value))
+            setattr(state or self.state, attr, float(value))
         except (TypeError, ValueError):
             logger.debug("Ignoring non-numeric Panda Breath payload %s=%r", attr, value)
 
@@ -477,6 +503,7 @@ class PandaBreathMQTTService:
             "device_id": self.state.device_id,
             "availability": self.state.availability,
             "state": self.state.to_dict(),
+            "devices": {device_id: state.to_dict() for device_id, state in self.device_states.items()},
         }
 
 

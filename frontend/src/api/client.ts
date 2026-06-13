@@ -1098,6 +1098,7 @@ export interface AppSettings {
   mqtt_use_tls: boolean;
   panda_breath_enabled: boolean;
   panda_breath_topic_prefix: string;
+  panda_breath_printer_assignments: string;
   // External URL for notifications
   external_url: string;
   // Home Assistant integration
@@ -1215,6 +1216,7 @@ export interface PandaBreathStatus {
     last_seen?: string | null;
     raw?: Record<string, unknown>;
   };
+  devices?: Record<string, PandaBreathStatus['state']>;
 }
 
 // Cloud types
@@ -4381,6 +4383,7 @@ export const api = {
       ams_temp_good?: number;
       ams_temp_fair?: number;
       bed_cooled_threshold?: number;
+      panda_breath_printer_assignments?: string;
     }>('/settings/ui-preferences'),
   updateSettings: (data: AppSettingsUpdate) =>
     request<AppSettings>('/settings/', {

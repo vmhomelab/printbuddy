@@ -74,7 +74,7 @@ import {
 import { useNavigate } from 'react-router-dom';
 import { api, discoveryApi, firmwareApi, withStreamToken, ApiError, getAuthToken } from '../api/client';
 import { formatDateOnly, formatETA, formatDuration, parseUTCDate } from '../utils/date';
-import type { Printer, PrinterCreate, PrinterStatus, AMSUnit, DiscoveredPrinter, FirmwareUpdateInfo, FirmwareUploadStatus, LinkedSpoolInfo, SpoolAssignment, HMSError, InventorySpool, SmartPlug, PrinterDiagnosticResult } from '../api/client';
+import type { Printer, PrinterCreate, PrinterStatus, AMSUnit, DiscoveredPrinter, FirmwareUpdateInfo, FirmwareUploadStatus, LinkedSpoolInfo, SpoolAssignment, HMSError, InventorySpool, SmartPlug, PrinterDiagnosticResult, PandaBreathStatus } from '../api/client';
 import { Card, CardContent } from '../components/Card';
 import { Button } from '../components/Button';
 import { ConfirmModal } from '../components/ConfirmModal';
@@ -106,6 +106,7 @@ import { KlipperControlPanel } from '../components/KlipperControlPanel';
 import { getColorName, parseFilamentColor, isLightColor } from '../utils/colors';
 import { getPrinterFileRuleSet, isPrintableForProvider } from '../utils/printerFileRules';
 import { canOpenPrinterCamera } from '../utils/printerCamera';
+import { getAssignedPandaBreathState } from '../utils/pandaBreath';
 
 export interface SpoolmanSlotAssignmentRow {
   printer_id: number;
@@ -1638,6 +1639,7 @@ function PrinterCard({
   checkPrinterFirmware = true,
   dryingPresets = DRYING_PRESETS,
   requirePlateClear = false,
+  pandaBreathState,
   selectionMode = false,
   isSelected = false,
   onToggleSelect,
@@ -1671,6 +1673,7 @@ function PrinterCard({
   checkPrinterFirmware?: boolean;
   dryingPresets?: Record<string, { n3f: number; n3s: number; n3f_hours: number; n3s_hours: number }>;
   requirePlateClear?: boolean;
+  pandaBreathState?: PandaBreathStatus['state'] | null;
   selectionMode?: boolean;
   isSelected?: boolean;
   onToggleSelect?: (id: number) => void;
@@ -3309,6 +3312,16 @@ function PrinterCard({
                       </p>
                     </div>
                   )}
+                  {pandaBreathState && (
+                    <div className="text-center px-2 py-1.5 bg-bambu-dark rounded-lg flex-1 flex flex-col justify-center items-center" title={`Panda Breath ${pandaBreathState.device_id || ''}`.trim()}>
+                      <HeaterThermometer className="w-3.5 h-3.5 mb-0.5" color="text-emerald-400" isHeating={Boolean(pandaBreathState.work_on || pandaBreathState.drying_running)} />
+                      <p className="text-[9px] text-bambu-gray">Panda Breath</p>
+                      <p className="text-[11px] text-white">
+                        {pandaBreathState.chamber_actual != null ? `${Math.round(pandaBreathState.chamber_actual)}°C` : '—'}
+                        {pandaBreathState.chamber_target != null ? ` / ${Math.round(pandaBreathState.chamber_target)}°` : ''}
+                      </p>
+                    </div>
+                  )}
                   {/* Active nozzle indicator for dual-nozzle printers */}
                   {isDualNozzle && (
                     <DualNozzleHoverCard
@@ -3339,6 +3352,19 @@ function PrinterCard({
                 </div>
               );
             })()}
+
+            {viewMode === 'expanded' && pandaBreathState && !status.temperatures && (
+              <div className="flex items-stretch gap-1.5 flex-wrap">
+                <div className="text-center px-2 py-1.5 bg-bambu-dark rounded-lg flex-1 flex flex-col justify-center items-center" title={`Panda Breath ${pandaBreathState.device_id || ''}`.trim()}>
+                  <HeaterThermometer className="w-3.5 h-3.5 mb-0.5" color="text-emerald-400" isHeating={Boolean(pandaBreathState.work_on || pandaBreathState.drying_running)} />
+                  <p className="text-[9px] text-bambu-gray">Panda Breath</p>
+                  <p className="text-[11px] text-white">
+                    {pandaBreathState.chamber_actual != null ? `${Math.round(pandaBreathState.chamber_actual)}°C` : '—'}
+                    {pandaBreathState.chamber_target != null ? ` / ${Math.round(pandaBreathState.chamber_target)}°` : ''}
+                  </p>
+                </div>
+              </div>
+            )}
 
             {viewMode === 'expanded' && showClearPlateButton && (
               <button
@@ -6971,6 +6997,12 @@ export function PrintersPage() {
     queryFn: api.getUiPreferences,
   });
 
+  const { data: pandaBreathStatus } = useQuery({
+    queryKey: ['panda-breath-status'],
+    queryFn: api.getPandaBreathStatus,
+    refetchInterval: 30000,
+  });
+
   // Compute drying presets: user-configured (from settings) merged over built-in defaults
   const effectiveDryingPresets = useMemo(() => {
     if (settings?.drying_presets) {
@@ -7859,6 +7891,7 @@ export function PrintersPage() {
                       checkPrinterFirmware={settings?.check_printer_firmware !== false}
                       dryingPresets={effectiveDryingPresets}
                       requirePlateClear={settings?.require_plate_clear === true}
+                      pandaBreathState={getAssignedPandaBreathState(printer.id, settings?.panda_breath_printer_assignments, pandaBreathStatus)}
                       selectionMode={selectionMode}
                       isSelected={selectedPrinterIds.has(printer.id)}
                       onToggleSelect={toggleSelect}
@@ -7903,6 +7936,7 @@ export function PrintersPage() {
               checkPrinterFirmware={settings?.check_printer_firmware !== false}
               dryingPresets={effectiveDryingPresets}
               requirePlateClear={settings?.require_plate_clear === true}
+              pandaBreathState={getAssignedPandaBreathState(printer.id, settings?.panda_breath_printer_assignments, pandaBreathStatus)}
               selectionMode={selectionMode}
               isSelected={selectedPrinterIds.has(printer.id)}
               onToggleSelect={toggleSelect}

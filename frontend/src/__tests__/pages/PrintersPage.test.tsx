@@ -108,7 +108,11 @@ describe('PrintersPage', () => {
           ams_temp_good: 30,
           ams_temp_fair: 35,
           require_plate_clear: true,
+          panda_breath_printer_assignments: '{}',
         });
+      }),
+      http.get('/api/v1/settings/panda-breath/status', () => {
+        return HttpResponse.json({ enabled: false, connected: false, state: {} });
       }),
       http.get('/api/v1/queue/', () => {
         return HttpResponse.json([]);
@@ -132,6 +136,38 @@ describe('PrintersPage', () => {
         expect(screen.getByText('X1 Carbon')).toBeInTheDocument();
         expect(screen.getByText('P1S Backup')).toBeInTheDocument();
       });
+    });
+
+    it('shows assigned Panda Breath data only on the matching printer card', async () => {
+      server.use(
+        http.get('/api/v1/settings/ui-preferences', () => HttpResponse.json({
+          ams_humidity_good: 40,
+          ams_humidity_fair: 60,
+          ams_temp_good: 30,
+          ams_temp_fair: 35,
+          require_plate_clear: true,
+          panda_breath_printer_assignments: '{"DEVICE_B":2}',
+        })),
+        http.get('/api/v1/settings/panda-breath/status', () => HttpResponse.json({
+          enabled: true,
+          connected: true,
+          state: {},
+          devices: {
+            DEVICE_A: { device_id: 'DEVICE_A', chamber_actual: 31.2, chamber_target: 45 },
+            DEVICE_B: { device_id: 'DEVICE_B', chamber_actual: 42.8, chamber_target: 55 },
+          },
+        }))
+      );
+
+      render(<PrintersPage />);
+
+      await screen.findByText('P1S Backup');
+      const pandaBreathLabel = await screen.findByText('Panda Breath');
+      const card = pandaBreathLabel.closest('[class*="relative"]') || document.body;
+      expect(pandaBreathLabel).toBeInTheDocument();
+      expect(card.textContent).toContain('P1S Backup');
+      expect(card.textContent).toContain('Panda Breath');
+      expect(card.textContent).toContain('43°C / 55°');
     });
 
     it('opens a configured external camera even when the printer status is offline', async () => {

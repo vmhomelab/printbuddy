@@ -154,6 +154,10 @@ class AppSettings(BaseModel):
         default="panda_breath",
         description="MQTT topic prefix exposed by Panda Breath; use panda_breath or panda_breath/<device_id>",
     )
+    panda_breath_printer_assignments: str = Field(
+        default="{}",
+        description="JSON object mapping Panda Breath device IDs to Printbuddy printer IDs",
+    )
 
     # External URL for notifications
     external_url: str = Field(
@@ -387,6 +391,7 @@ class AppSettingsUpdate(BaseModel):
     mqtt_use_tls: bool | None = None
     panda_breath_enabled: bool | None = None
     panda_breath_topic_prefix: str | None = None
+    panda_breath_printer_assignments: str | None = None
     external_url: str | None = None
     ha_enabled: bool | None = None
     ha_url: str | None = None

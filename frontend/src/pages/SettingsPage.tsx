@@ -45,6 +45,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { Palette } from 'lucide-react';
 import { registerSettingsSearch, getSettingsSearchEntries } from '../lib/settingsSearch';
 import type { UsersSubTab } from '../lib/settingsSearch';
+import { getPandaBreathDevices, parsePandaBreathAssignments, stringifyPandaBreathAssignments } from '../utils/pandaBreath';
 
 const validTabs = ['general', 'plugs', 'notifications', 'queue', 'filament', 'network', 'apikeys', 'virtual-printer', 'failure-detection', 'users', 'backup'] as const;
 type TabType = typeof validTabs[number];
@@ -607,6 +608,18 @@ export function SettingsPage() {
     },
   });
 
+  const pandaBreathDevices = getPandaBreathDevices(pandaBreathStatus);
+  const pandaBreathAssignments = parsePandaBreathAssignments(localSettings?.panda_breath_printer_assignments);
+  const updatePandaBreathAssignment = (deviceId: string, printerId: number | null) => {
+    const next = { ...pandaBreathAssignments };
+    if (printerId) {
+      next[deviceId] = printerId;
+    } else {
+      delete next[deviceId];
+    }
+    updateSetting('panda_breath_printer_assignments', stringifyPandaBreathAssignments(next));
+  };
+
   // GitHub backup status for Backup tab indicator
   const { data: githubBackupStatus } = useQuery<GitHubBackupStatus>({
     queryKey: ['github-backup-status'],
@@ -1030,6 +1043,7 @@ export function SettingsPage() {
       settings.mqtt_use_tls !== localSettings.mqtt_use_tls ||
       (settings.panda_breath_enabled ?? false) !== (localSettings.panda_breath_enabled ?? false) ||
       (settings.panda_breath_topic_prefix ?? 'panda_breath') !== (localSettings.panda_breath_topic_prefix ?? 'panda_breath') ||
+      (settings.panda_breath_printer_assignments ?? '{}') !== (localSettings.panda_breath_printer_assignments ?? '{}') ||
       settings.external_url !== localSettings.external_url ||
       settings.ha_enabled !== localSettings.ha_enabled ||
       settings.ha_url !== localSettings.ha_url ||
@@ -1116,6 +1130,7 @@ export function SettingsPage() {
         mqtt_use_tls: localSettings.mqtt_use_tls,
         panda_breath_enabled: localSettings.panda_breath_enabled,
         panda_breath_topic_prefix: localSettings.panda_breath_topic_prefix,
+        panda_breath_printer_assignments: localSettings.panda_breath_printer_assignments,
         external_url: localSettings.external_url,
         ha_enabled: localSettings.ha_enabled,
         ha_url: localSettings.ha_url,
@@ -3162,6 +3177,38 @@ export function SettingsPage() {
                       <p className="text-bambu-gray">Target</p>
                       <p className="text-white font-medium">{pandaBreathStatus?.state.chamber_target ?? '—'} °C</p>
                     </div>
+                  </div>
+
+                  <div className="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark/60 p-3 space-y-3">
+                    <div>
+                      <p className="text-sm font-medium text-white">Assign Panda Breath devices to printers</p>
+                      <p className="text-xs text-bambu-gray">Each detected device id can be assigned to one Printbuddy printer so its chamber data appears on the correct printer card.</p>
+                    </div>
+                    {Object.keys(pandaBreathDevices).length === 0 ? (
+                      <p className="text-xs text-bambu-gray">No Panda Breath device ids have been received yet. Keep the device online until a state or availability topic arrives.</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {Object.entries(pandaBreathDevices).map(([deviceId, deviceState]) => (
+                          <div key={deviceId} className="grid gap-2 rounded-md bg-bambu-dark p-2 sm:grid-cols-[minmax(0,1fr)_minmax(160px,220px)] sm:items-center">
+                            <div className="min-w-0">
+                              <p className="truncate text-sm text-white">{deviceState.printer_name || deviceId}</p>
+                              <p className="truncate text-xs text-bambu-gray">{deviceId} · Chamber {deviceState.chamber_actual ?? '—'} °C · Target {deviceState.chamber_target ?? '—'} °C</p>
+                            </div>
+                            <select
+                              aria-label={`Assign Panda Breath ${deviceId} to printer`}
+                              value={pandaBreathAssignments[deviceId] ?? ''}
+                              onChange={(e) => updatePandaBreathAssignment(deviceId, e.target.value ? Number(e.target.value) : null)}
+                              className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                            >
+                              <option value="">Unassigned</option>
+                              {(printers || []).map((printer) => (
+                                <option key={printer.id} value={printer.id}>{printer.name}</option>
+                              ))}
+                            </select>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
 
                   <div className="grid grid-cols-2 gap-2">

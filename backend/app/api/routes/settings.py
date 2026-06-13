@@ -247,6 +247,7 @@ async def update_settings(
         "mqtt_use_tls",
         "panda_breath_enabled",
         "panda_breath_topic_prefix",
+        "panda_breath_printer_assignments",
     }
     mqtt_updated = bool(mqtt_keys & set(update_data.keys()))
 
@@ -386,6 +387,7 @@ _UI_PREFERENCE_FIELDS: tuple[str, ...] = (
     "ams_temp_good",
     "ams_temp_fair",
     "bed_cooled_threshold",
+    "panda_breath_printer_assignments",
 )
 
 

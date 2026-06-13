@@ -81,6 +81,29 @@ def test_panda_breath_applies_native_state_json_from_device_payloads():
     assert status["state"]["printer_ip"] == "192.168.1.55"
     assert status["state"]["printer_name"] == "P1S"
     assert status["state"]["raw"]["state_json"]["target_temp"] == 45
+    assert status["devices"]["9C139E456884"]["chamber_actual"] == 36.5
+    assert status["devices"]["9C139E456884"]["availability"] == "online"
+
+
+def test_panda_breath_tracks_multiple_native_devices_independently():
+    service = PandaBreathMQTTService()
+
+    service.apply_message("DEVICE_A/state", json.dumps({"chamber_temp": 31.2, "target_temp": 45, "mode": "auto mode"}))
+    service.apply_message("DEVICE_A/availability", "online")
+    service.apply_message("DEVICE_B/state", json.dumps({"chamber_temp": 42.8, "target_temp": 55, "mode": "filament drying"}))
+    service.apply_message("DEVICE_B/availability", "offline")
+
+    status = service.get_status()
+
+    assert status["devices"]["DEVICE_A"]["chamber_actual"] == 31.2
+    assert status["devices"]["DEVICE_A"]["chamber_target"] == 45.0
+    assert status["devices"]["DEVICE_A"]["mode"] == "auto mode"
+    assert status["devices"]["DEVICE_A"]["availability"] == "online"
+    assert status["devices"]["DEVICE_B"]["chamber_actual"] == 42.8
+    assert status["devices"]["DEVICE_B"]["chamber_target"] == 55.0
+    assert status["devices"]["DEVICE_B"]["mode"] == "filament drying"
+    assert status["devices"]["DEVICE_B"]["availability"] == "offline"
+    assert status["state"]["device_id"] == "DEVICE_B"
 
 
 def test_panda_breath_command_payloads_and_topics():
