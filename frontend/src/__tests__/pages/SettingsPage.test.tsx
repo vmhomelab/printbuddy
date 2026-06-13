@@ -177,6 +177,25 @@ describe('SettingsPage', () => {
       });
     });
 
+    it('marks default print options as Bambu Lab only with a provider warning', async () => {
+      const user = userEvent.setup();
+      render(<SettingsPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Workflow')).toBeInTheDocument();
+      });
+
+      await user.click(screen.getByText('Workflow'));
+
+      await waitFor(() => {
+        expect(screen.getByText('Bambu Lab print-start options')).toBeInTheDocument();
+      });
+
+      expect(screen.getAllByText('Bambu Lab only')).toHaveLength(7);
+      expect(screen.getByText(/These options map to Bambu LAN\/MQTT print-start flags/i)).toBeInTheDocument();
+      expect(screen.getByText(/non-Bambu queue and print payloads are sanitized to false/i)).toBeInTheDocument();
+    });
+
     it('shows appearance section', async () => {
       render(<SettingsPage />);
 
@@ -193,6 +212,19 @@ describe('SettingsPage', () => {
         expect(screen.getByText('Check for updates')).toBeInTheDocument();
         expect(screen.getByText('Check printer firmware')).toBeInTheDocument();
       });
+    });
+
+    it('marks Bambu firmware checks as Bambu Lab only', async () => {
+      render(<SettingsPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Check printer firmware')).toBeInTheDocument();
+      });
+
+      const firmwareRow = screen.getByText('Check printer firmware').closest('.flex.items-center.justify-between');
+      expect(firmwareRow).not.toBeNull();
+      expect(firmwareRow!.textContent).toContain('Bambu Lab only');
+      expect(firmwareRow!.textContent).toContain('Bambu firmware metadata');
     });
 
     it('shows the source revision in the current version field', async () => {

@@ -167,6 +167,12 @@ const STORAGE_FALLBACK_COLORS = [
   'bg-purple-500',
 ];
 
+const BambuScopeBadge = () => (
+  <span className="inline-flex items-center rounded-full border border-bambu-green/40 bg-bambu-green/10 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-bambu-green">
+    Bambu Lab only
+  </span>
+);
+
 const getStorageColor = (key: string, index: number) =>
   STORAGE_CATEGORY_COLORS[key] || STORAGE_FALLBACK_COLORS[index % STORAGE_FALLBACK_COLORS.length];
 
@@ -2277,9 +2283,12 @@ export function SettingsPage() {
               <p className="text-xs font-medium text-bambu-gray uppercase tracking-wider">{t('settings.printerFirmware')}</p>
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-white">{t('settings.checkPrinterFirmware')}</p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="text-white">{t('settings.checkPrinterFirmware')}</p>
+                    <BambuScopeBadge />
+                  </div>
                   <p className="text-sm text-bambu-gray">
-                    {t('settings.checkFirmwareDescription')}
+                    {t('settings.checkFirmwareDescription')} Bambu firmware metadata only; other printer providers are ignored.
                   </p>
                 </div>
                 <label className="relative inline-flex items-center cursor-pointer">
@@ -4020,25 +4029,42 @@ export function SettingsPage() {
           {/* Default Print Options */}
           <Card id="card-print-options">
             <CardHeader>
-              <h3 className="text-base font-semibold text-white flex items-center gap-2">
-                <ListOrdered className="w-4 h-4 text-bambu-green" />
-                {t('settings.defaultPrintOptions', 'Default Print Options')}
-              </h3>
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between w-full">
+                <div>
+                  <h3 className="text-base font-semibold text-white flex items-center gap-2">
+                    <ListOrdered className="w-4 h-4 text-bambu-green" />
+                    {t('settings.defaultPrintOptions', 'Default Print Options')}
+                  </h3>
+                  <p className="mt-1 text-xs text-bambu-gray">
+                    {t('settings.defaultPrintOptionsDescription', 'Set default values for print options when starting new prints. These can be overridden per print in the print dialog.')}
+                  </p>
+                </div>
+                <BambuScopeBadge />
+              </div>
             </CardHeader>
             <CardContent className="space-y-3">
-              <p className="text-xs text-bambu-gray">
-                {t('settings.defaultPrintOptionsDescription', 'Set default values for print options when starting new prints. These can be overridden per print in the print dialog.')}
-              </p>
+              <div className="rounded-lg border border-bambu-green/30 bg-bambu-green/10 p-3">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <p className="text-sm font-semibold text-white">Bambu Lab print-start options</p>
+                  <BambuScopeBadge />
+                </div>
+                <p className="mt-1 text-xs text-bambu-gray">
+                  These options map to Bambu LAN/MQTT print-start flags. They stay visible here for transparency, but non-Bambu queue and print payloads are sanitized to false before dispatch.
+                </p>
+              </div>
               {[
                 { key: 'default_bed_levelling' as const, label: t('settings.defaultBedLevelling', 'Bed Levelling'), desc: t('settings.defaultBedLevellingDesc', 'Auto-level bed before print'), fallback: true },
                 { key: 'default_flow_cali' as const, label: t('settings.defaultFlowCali', 'Flow Calibration'), desc: t('settings.defaultFlowCaliDesc', 'Calibrate extrusion flow'), fallback: false },
                 { key: 'default_vibration_cali' as const, label: t('settings.defaultVibrationCali', 'Vibration Calibration'), desc: t('settings.defaultVibrationCaliDesc', 'Reduce ringing artifacts'), fallback: true },
                 { key: 'default_layer_inspect' as const, label: t('settings.defaultLayerInspect', 'First Layer Inspection'), desc: t('settings.defaultLayerInspectDesc', 'AI inspection of first layer'), fallback: false },
-                { key: 'default_timelapse' as const, label: t('settings.defaultTimelapse', 'Timelapse'), desc: t('settings.defaultTimelapseDesc', 'Record timelapse video'), fallback: false },
+                { key: 'default_timelapse' as const, label: t('settings.defaultTimelapse', 'Timelapse'), desc: t('settings.defaultTimelapseDesc', 'Record Bambu printer-side timelapse video'), fallback: false },
               ].map(({ key, label, desc, fallback }) => (
-                <div key={key} className="flex items-center justify-between">
+                <div key={key} className="flex items-center justify-between rounded-lg border border-bambu-dark-tertiary/70 bg-bambu-dark/35 px-3 py-2">
                   <div className="flex-1 mr-4">
-                    <p className="text-sm text-white">{label}</p>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="text-sm text-white">{label}</p>
+                      <BambuScopeBadge />
+                    </div>
                     <p className="text-xs text-bambu-gray mt-0.5">{desc}</p>
                   </div>
                   <label className="relative inline-flex items-center cursor-pointer">
@@ -4595,11 +4621,14 @@ export function SettingsPage() {
 
             <Card id="card-amsthresholds">
               <CardHeader>
-                <h2 className="text-lg font-semibold text-white">{t('settings.amsDisplayThresholds')}</h2>
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between w-full">
+                  <h2 className="text-lg font-semibold text-white">{t('settings.amsDisplayThresholds')}</h2>
+                  <BambuScopeBadge />
+                </div>
               </CardHeader>
               <CardContent className="space-y-3">
                 <p className="text-sm text-bambu-gray">
-                  {t('settings.amsThresholdsDescription')}
+                  {t('settings.amsThresholdsDescription')} AMS sensor thresholds are Bambu Lab only and do not apply to Klipper/Moonraker or Prusa printers.
                 </p>
 
                 {/* Humidity Thresholds */}
