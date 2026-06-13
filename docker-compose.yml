@@ -1,6 +1,6 @@
 services:
   printbuddy:
-    image: docker.io/vmhomelabde/printbuddy:dev
+    image: docker.io/vmhomelabde/printbuddy:latest
     build: .
     # Usage:
     #   docker compose up -d          → pulls pre-built image from Docker Hub
