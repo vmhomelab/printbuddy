@@ -164,17 +164,6 @@ Then enable the commented `ports:` block in the compose file instead.
 
 ---
 
-## Planned Docker images
-
-Once GHCR publishing is enabled, the planned image tags are:
-
-```text
-docker.io/vmhomelabde/printbuddy
-docker.io/vmhomelabde/printbuddy:latest
-```
-
----
-
 ## Printer provider direction
 
 Printbuddy introduces a provider boundary so printer-specific integrations can evolve without hard-coding every workflow to Bambu MQTT/FTP.
