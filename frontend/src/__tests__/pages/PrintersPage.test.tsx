@@ -162,12 +162,50 @@ describe('PrintersPage', () => {
       render(<PrintersPage />);
 
       await screen.findByText('P1S Backup');
-      const pandaBreathLabel = await screen.findByText('Panda Breath');
+      const pandaBreathLabels = await screen.findAllByText('Panda Breath');
+      const pandaBreathLabel = pandaBreathLabels[0];
       const card = pandaBreathLabel.closest('[class*="relative"]') || document.body;
-      expect(pandaBreathLabel).toBeInTheDocument();
+      expect(pandaBreathLabels.length).toBeGreaterThan(0);
       expect(card.textContent).toContain('P1S Backup');
       expect(card.textContent).toContain('Panda Breath');
       expect(card.textContent).toContain('43°C / 55°');
+    });
+
+    it('sends Panda Breath commands to the assigned device from the printer card', async () => {
+      const user = userEvent.setup();
+      let postedBody: unknown = null;
+
+      server.use(
+        http.get('/api/v1/settings/ui-preferences', () => HttpResponse.json({
+          ams_humidity_good: 40,
+          ams_humidity_fair: 60,
+          ams_temp_good: 30,
+          ams_temp_fair: 35,
+          require_plate_clear: true,
+          panda_breath_printer_assignments: '{"DEVICE_B":2}',
+        })),
+        http.get('/api/v1/settings/panda-breath/status', () => HttpResponse.json({
+          enabled: true,
+          connected: true,
+          state: {},
+          devices: {
+            DEVICE_B: { device_id: 'DEVICE_B', chamber_actual: 42.8, chamber_target: 55, work_on: false },
+          },
+        })),
+        http.post('/api/v1/settings/panda-breath/command', async ({ request }) => {
+          postedBody = await request.json();
+          return HttpResponse.json({ ok: true });
+        })
+      );
+
+      render(<PrintersPage />);
+
+      await screen.findByText('P1S Backup');
+      await user.click(await screen.findByRole('button', { name: 'Turn on' }));
+
+      await waitFor(() => {
+        expect(postedBody).toEqual({ command: 'work_on', value: 'ON', device_id: 'DEVICE_B' });
+      });
     });
 
     it('opens a configured external camera even when the printer status is offline', async () => {

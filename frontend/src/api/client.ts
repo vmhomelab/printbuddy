@@ -4392,7 +4392,7 @@ export const api = {
     }),
   getMQTTStatus: () => request<MQTTStatus>('/settings/mqtt/status'),
   getPandaBreathStatus: () => request<PandaBreathStatus>('/settings/panda-breath/status'),
-  sendPandaBreathCommand: (data: { command: string; value?: string | number | boolean | null }) =>
+  sendPandaBreathCommand: (data: { command: string; value?: string | number | boolean | null; device_id?: string | null }) =>
     request<{ ok: boolean }>('/settings/panda-breath/command', {
       method: 'POST',
       body: JSON.stringify(data),

@@ -138,6 +138,10 @@ def test_panda_breath_native_command_topic_and_payload():
     assert topic == "panda_breath/9C139E456884/command"
     assert json.loads(payload) == {"mode": "filament drying"}
 
+    topic, payload = service._command_topic_payload("chamber_target", 45, device_id="DEVICE_B")
+    assert topic == "panda_breath/DEVICE_B/command"
+    assert json.loads(payload) == {"target_temp": 45}
+
     topic, payload = service._command_topic_payload("stop", None)
     assert topic == "panda_breath/9C139E456884/command"
     assert json.loads(payload) == {"work_on": "OFF"}

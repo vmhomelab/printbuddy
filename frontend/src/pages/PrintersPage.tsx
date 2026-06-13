@@ -2161,6 +2161,16 @@ function PrinterCard({
       queryClient.invalidateQueries({ queryKey: ['printerStatus', printer.id] });
       queryClient.invalidateQueries({ queryKey: ['queue', printer.id] });
     },
+    onError: (error: Error) => showToast(error.message || t('queue.clearPlateFailed'), 'error'),
+  });
+
+  const pandaBreathCommandMutation = useMutation({
+    mutationFn: ({ command, value }: { command: string; value?: string | number | boolean | null }) =>
+      api.sendPandaBreathCommand({ command, value, device_id: pandaBreathState?.device_id ?? null }),
+    onSuccess: () => {
+      showToast('Panda Breath command sent', 'success');
+      queryClient.invalidateQueries({ queryKey: ['panda-breath-status'] });
+    },
     onError: (error: Error) => showToast(error.message || t('printers.toast.failedToSendCommand'), 'error'),
   });
 
@@ -3362,6 +3372,40 @@ function PrinterCard({
                     {pandaBreathState.chamber_actual != null ? `${Math.round(pandaBreathState.chamber_actual)}°C` : '—'}
                     {pandaBreathState.chamber_target != null ? ` / ${Math.round(pandaBreathState.chamber_target)}°` : ''}
                   </p>
+                </div>
+              </div>
+            )}
+
+            {viewMode === 'expanded' && pandaBreathState && (
+              <div className="mt-3">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-[10px] uppercase tracking-wider text-bambu-gray font-medium">
+                    Panda Breath
+                  </span>
+                  <div className="flex-1 h-px bg-bambu-dark-tertiary/30" />
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  {([
+                    { command: 'work_on', value: pandaBreathState.work_on ? 'OFF' : 'ON', label: pandaBreathState.work_on ? 'Turn off' : 'Turn on', Icon: Power },
+                    { command: 'auto', value: null, label: 'Auto', Icon: Wind },
+                    { command: 'drying', value: null, label: 'Drying', Icon: Flame },
+                    { command: 'stop', value: null, label: 'Stop', Icon: Square },
+                  ] as const).map(({ command, value, label, Icon }) => {
+                    const disabled = pandaBreathCommandMutation.isPending || !hasPermission('printers:control');
+                    return (
+                      <button
+                        key={command}
+                        type="button"
+                        onClick={() => pandaBreathCommandMutation.mutate({ command, value })}
+                        disabled={disabled}
+                        className="inline-flex items-center justify-center gap-1 px-2 py-1 rounded bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 transition-colors text-[10px] font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                        title={!hasPermission('printers:control') ? t('printers.permission.noControl') : `Send Panda Breath ${label} command`}
+                      >
+                        {pandaBreathCommandMutation.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <Icon className="w-3 h-3" />}
+                        {label}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
             )}

@@ -1372,6 +1372,7 @@ class PandaBreathCommand(BaseModel):
 
     command: str
     value: str | int | float | bool | None = None
+    device_id: str | None = None
 
 
 @router.get("/panda-breath/status")
@@ -1387,13 +1388,13 @@ async def get_panda_breath_status(
 @router.post("/panda-breath/command")
 async def send_panda_breath_command(
     payload: PandaBreathCommand,
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_UPDATE),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.PRINTERS_CONTROL),
 ):
     """Send a BIQU Panda Breath command via MQTT."""
     from backend.app.services.panda_breath_mqtt import panda_breath_mqtt
 
     try:
-        published = panda_breath_mqtt.publish_command(payload.command, payload.value)
+        published = panda_breath_mqtt.publish_command(payload.command, payload.value, device_id=payload.device_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

@@ -434,19 +434,24 @@ class PandaBreathMQTTService:
                 self.client = None
                 self.connected = False
 
-    def publish_command(self, command: str, value: Any = None) -> bool:
-        """Publish a Panda Breath command."""
+    def publish_command(self, command: str, value: Any = None, device_id: str | None = None) -> bool:
+        """Publish a Panda Breath command.
+
+        When using native BIQU topics and multiple Panda Breath devices are known,
+        ``device_id`` targets the command at the assigned device instead of the
+        most recently observed state device.
+        """
         if command not in self.LEGACY_COMMAND_TOPICS and command not in self.JSON_COMMAND_KEYS:
             raise ValueError(f"Unsupported Panda Breath command: {command}")
         if not self.enabled or not self.connected or not self.client:
             return False
 
-        topic, payload = self._command_topic_payload(command, value)
+        topic, payload = self._command_topic_payload(command, value, device_id=device_id)
         with self._lock:
             self.client.publish(topic, payload, qos=1, retain=False)
         return True
 
-    def _command_topic_payload(self, command: str, value: Any) -> tuple[str, str]:
+    def _command_topic_payload(self, command: str, value: Any, device_id: str | None = None) -> tuple[str, str]:
         if self._uses_native_device_topics():
             command_key = self.JSON_COMMAND_KEYS.get(command)
             if not command_key:
@@ -463,16 +468,18 @@ class PandaBreathMQTTService:
                     raise ValueError(f"Unsupported Panda Breath native command: {command}")
             if value is None:
                 raise ValueError(f"Command {command} requires a value")
-            return f"{self._native_device_prefix()}/command", json.dumps({command_key: value})
+            return f"{self._native_device_prefix(device_id=device_id)}/command", json.dumps({command_key: value})
 
         return f"{self.topic_prefix}/{self.LEGACY_COMMAND_TOPICS[command]}", self._payload_for_command(command, value)
 
     def _uses_native_device_topics(self) -> bool:
         return self.topic_prefix.startswith("panda_breath") and self.topic_prefix != "panda_breath_mod"
 
-    def _native_device_prefix(self) -> str:
+    def _native_device_prefix(self, device_id: str | None = None) -> str:
         if self.topic_prefix.count("/") >= 1:
             return self.topic_prefix
+        if device_id:
+            return f"{self.topic_prefix}/{device_id}"
         if self.state.device_id:
             return f"{self.topic_prefix}/{self.state.device_id}"
         raise ValueError(
