@@ -99,7 +99,7 @@ registerSettingsSearch({ labelKey: 'settings.externalUrl', tab: 'network', keywo
 registerSettingsSearch({ labelKey: 'settings.ftpRetry', tab: 'network', keywords: 'ftp retry upload retries backoff', anchor: 'card-ftpretry' });
 registerSettingsSearch({ labelKey: 'settings.homeAssistant', tab: 'network', keywords: 'home assistant ha hass mqtt integration', anchor: 'card-ha' });
 registerSettingsSearch({ labelKey: 'settings.mqttPublishing', tab: 'network', keywords: 'mqtt publish broker topic', anchor: 'card-mqtt' });
-registerSettingsSearch({ labelKey: 'settings.pandaBreath.title', labelFallback: 'Panda Breath', tab: 'network', keywords: 'panda breath biqu chamber heater mqtt bambu', anchor: 'card-panda-breath' });
+registerSettingsSearch({ labelKey: 'settings.pandaBreath.title', labelFallback: 'Panda Breath', tab: 'network', keywords: 'panda breath biqu chamber heater mqtt accessory', anchor: 'card-panda-breath' });
 registerSettingsSearch({ labelKey: 'settings.prometheusMetrics', tab: 'network', keywords: 'prometheus metrics grafana monitoring bearer token', anchor: 'card-prometheus' });
 registerSettingsSearch({ labelKey: 'settings.createNewApiKey', tab: 'apikeys', keywords: 'api key create permission scope', anchor: 'card-createapi' });
 registerSettingsSearch({ labelKey: 'settings.webhookEndpoints', tab: 'apikeys', keywords: 'webhook endpoint post http', anchor: 'card-webhooks' });
@@ -3096,7 +3096,6 @@ export function SettingsPage() {
                 <h2 className="text-lg font-semibold text-white flex items-center gap-2">
                   <Flame className="w-5 h-5 text-orange-400" />
                   Panda Breath
-                  <BambuScopeBadge />
                 </h2>
                 {pandaBreathStatus?.enabled && (
                   <div className="flex items-center gap-2">

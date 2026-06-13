@@ -366,6 +366,8 @@ describe('SettingsPage', () => {
         expect(screen.getByLabelText('Panda Breath topic prefix')).toHaveValue('panda_breath');
       });
       expect(screen.getByText(/connects directly to an MQTT broker such as Home Assistant/i)).toBeInTheDocument();
+      const pandaBreathCard = document.querySelector('#card-panda-breath');
+      expect(pandaBreathCard?.textContent).not.toContain('Bambu Lab only');
       expect(screen.getByText('panda_breath_mod')).toBeInTheDocument();
       expect(screen.getByText(/community bridge used by the/i)).toBeInTheDocument();
       expect(screen.getByRole('link', { name: /ha-panda-breath integration by mikigua/i })).toHaveAttribute(
