@@ -3518,7 +3518,7 @@ class TestSendDryingCommand:
             "command": "ams_filament_drying",
             "ams_id": 128,
             "temp": 75,
-            "cooling_temp": 0,
+            "cooling_temp": 45,
             "duration": 8,
             "humidity": 0,
             "mode": 1,

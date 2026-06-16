@@ -3780,19 +3780,20 @@ class BambuMQTTClient:
             return False
         self._sequence_id += 1
         # Keep this wire payload aligned with Bambu's LAN MQTT command shape.
-        # ha-bambulab/pybambu exposes the same AMS_FILAMENT_DRYING_TEMPLATE and
-        # only includes these fields.  H2/AMS-HT firmware is picky here: extra
-        # keys such as ``filament``/``close_power_conflict`` or a non-zero
-        # ``cooling_temp`` can make the printer ACK the publish but ignore the
-        # drying start.  The ``filament`` argument is still accepted for older
-        # callers/log context, but it is intentionally not sent on the wire.
+        # ha-bambulab starts from AMS_FILAMENT_DRYING_TEMPLATE, then its service
+        # layer overwrites cooling_temp to 45; upstream notes that lower values
+        # make the command get ignored.  H2/AMS-HT firmware is picky here: extra
+        # keys such as ``filament``/``close_power_conflict`` can also make the
+        # printer ACK the publish but ignore the drying start.  The ``filament``
+        # argument is still accepted for older callers/log context, but it is
+        # intentionally not sent on the wire.
         command = {
             "print": {
                 "sequence_id": str(self._sequence_id),
                 "command": "ams_filament_drying",
                 "ams_id": ams_id,
                 "temp": temp,
-                "cooling_temp": 0,
+                "cooling_temp": 45,
                 "duration": duration,
                 "humidity": 0,
                 "mode": mode,
