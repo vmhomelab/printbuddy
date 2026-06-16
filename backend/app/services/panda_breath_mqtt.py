@@ -342,10 +342,13 @@ class PandaBreathMQTTService:
                     self.state.raw[suffix] = self._raw_payload(payload)
                     self.state.last_seen = now
                     self.state.availability = payload
-                self.connected = any(
-                    device.availability and device.availability.strip().lower() == "online"
-                    for device in self.device_states.values()
-                ) or payload.strip().lower() == "online"
+                self.connected = (
+                    any(
+                        device.availability and device.availability.strip().lower() == "online"
+                        for device in self.device_states.values()
+                    )
+                    or payload.strip().lower() == "online"
+                )
                 return
 
             self.state.raw[suffix] = self._raw_payload(payload)

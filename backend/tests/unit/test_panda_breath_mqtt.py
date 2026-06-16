@@ -90,7 +90,9 @@ def test_panda_breath_tracks_multiple_native_devices_independently():
 
     service.apply_message("DEVICE_A/state", json.dumps({"chamber_temp": 31.2, "target_temp": 45, "mode": "auto mode"}))
     service.apply_message("DEVICE_A/availability", "online")
-    service.apply_message("DEVICE_B/state", json.dumps({"chamber_temp": 42.8, "target_temp": 55, "mode": "filament drying"}))
+    service.apply_message(
+        "DEVICE_B/state", json.dumps({"chamber_temp": 42.8, "target_temp": 55, "mode": "filament drying"})
+    )
     service.apply_message("DEVICE_B/availability", "offline")
 
     status = service.get_status()
