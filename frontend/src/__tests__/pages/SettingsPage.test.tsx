@@ -85,8 +85,8 @@ describe('SettingsPage', () => {
       }),
       http.get('/api/v1/updates/version', () => {
         return HttpResponse.json({
-          version: '0.2.4.3',
-          display_version: '0.2.4.3 (abc1234)',
+          version: '0.2.4.7',
+          display_version: '0.2.4.7 (abc1234)',
           source_ref: 'abc1234567890abc1234567890abc1234567890ab',
           source_ref_short: 'abc1234',
           repo: 'vmhomelab/Printbuddy',
@@ -243,7 +243,7 @@ describe('SettingsPage', () => {
       render(<SettingsPage />);
 
       await waitFor(() => {
-        expect(screen.getByText('v0.2.4.3 (abc1234)')).toBeInTheDocument();
+        expect(screen.getByText('v0.2.4.7 (abc1234)')).toBeInTheDocument();
       });
     });
   });
