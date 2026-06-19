@@ -149,6 +149,36 @@ class TestPrintQueueAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_add_to_queue_sanitizes_bambu_print_options_for_non_bambu_printers(
+        self, async_client: AsyncClient, printer_factory, archive_factory, db_session
+    ):
+        """Non-Bambu printers must never persist Bambu LAN/MQTT print-start flags as enabled."""
+        printer = await printer_factory(provider="fluidd", model="Elegoo Neptune 4 Pro")
+        archive = await archive_factory()
+
+        response = await async_client.post(
+            "/api/v1/queue/",
+            json={
+                "printer_id": printer.id,
+                "archive_id": archive.id,
+                "bed_levelling": True,
+                "flow_cali": True,
+                "vibration_cali": True,
+                "layer_inspect": True,
+                "timelapse": True,
+            },
+        )
+
+        assert response.status_code == 200
+        result = response.json()
+        assert result["bed_levelling"] is False
+        assert result["flow_cali"] is False
+        assert result["vibration_cali"] is False
+        assert result["layer_inspect"] is False
+        assert result["timelapse"] is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_add_to_queue_with_project_id(
         self, async_client: AsyncClient, printer_factory, archive_factory, db_session
     ):

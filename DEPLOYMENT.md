@@ -37,7 +37,7 @@ The provided `docker-compose.yml` uses:
 
 - service name: `printbuddy`
 - container name: `printbuddy`
-- image: `ghcr.io/vmhomelab/printbuddy:dev`
+- image: `docker.io/vmhomelabde/printbuddy:dev`
 - data volume: `printbuddy_data` mounted at `/app/data`
 - log volume: `printbuddy_logs` mounted at `/app/logs`
 - `network_mode: host` for printer discovery, camera streaming, MQTT/FTP, and virtual printer ports

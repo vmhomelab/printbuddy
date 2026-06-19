@@ -3506,24 +3506,27 @@ class TestSendDryingCommand:
         payload = json.loads(call_args[0][1])
         assert payload["print"]["rotate_tray"] is False
 
-    def test_all_required_fields_present(self, mqtt_client):
-        """Verify all required MQTT fields are present in the drying command."""
+    def test_matches_bambu_ams_filament_drying_command_shape(self, mqtt_client):
+        """Drying start payload matches the Bambu/ha-bambulab MQTT template."""
         mqtt_client.send_drying_command(ams_id=128, temp=75, duration=8, mode=1, filament="ABS", rotate_tray=True)
 
         call_args = mqtt_client._client.publish.call_args
         payload = json.loads(call_args[0][1])
         cmd = payload["print"]
-        assert cmd["command"] == "ams_filament_drying"
-        assert cmd["ams_id"] == 128
-        assert cmd["temp"] == 75
-        assert cmd["duration"] == 8
-        assert cmd["mode"] == 1
-        assert cmd["rotate_tray"] is True
-        assert cmd["filament"] == "ABS"
-        assert cmd["cooling_temp"] == 20
-        assert cmd["humidity"] == 0
-        assert cmd["close_power_conflict"] is False
+        assert cmd == {
+            "sequence_id": cmd["sequence_id"],
+            "command": "ams_filament_drying",
+            "ams_id": 128,
+            "temp": 75,
+            "cooling_temp": 45,
+            "duration": 8,
+            "humidity": 0,
+            "mode": 1,
+            "rotate_tray": True,
+        }
         assert "sequence_id" in cmd
+        assert "filament" not in cmd
+        assert "close_power_conflict" not in cmd
 
     def test_publishes_with_qos_1(self, mqtt_client):
         """Verify drying commands are published with QoS 1."""

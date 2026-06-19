@@ -10,11 +10,12 @@ from backend.app.services.printer_providers.factory import (
     normalize_provider,
 )
 from backend.app.services.printer_providers.moonraker import MoonrakerPrinterClient
+from backend.app.services.printer_providers.prusaconnect import PrusaConnectMobilePrinterClient
 from backend.app.services.printer_providers.prusalink import PrusaLinkPrinterClient
 
 
 def test_supported_printbuddy_providers_are_registered():
-    assert {"bambu", "klipper", "mainsail", "fluidd", "prusalink"} == SUPPORTED_PROVIDERS
+    assert {"bambu", "klipper", "mainsail", "fluidd", "prusalink", "prusaconnect"} == SUPPORTED_PROVIDERS
 
 
 @pytest.mark.parametrize("provider", ["klipper", "mainsail", "fluidd"])
@@ -68,6 +69,76 @@ def test_prusalink_provider_preserves_custom_port_url():
 
     assert isinstance(client, PrusaLinkPrinterClient)
     assert client.base_url == "http://10.17.1.96:8087/"
+
+
+def test_prusa_connect_mobile_provider_creates_cloud_client_with_default_api_url():
+    printer = SimpleNamespace(
+        provider="prusaconnect",
+        api_url=None,
+        auth_token="dummy-connect-token",
+        ip_address="13b5af3d-7b44-42b1-9327-cf8a6fbf3f3c",
+        provider_options=None,
+    )
+
+    client = create_printer_client(printer)
+
+    assert isinstance(client, PrusaConnectMobilePrinterClient)
+    assert client.base_url == "https://connect-mobile-api.prusa3d.com/"
+    assert client.printer_uuid == "13b5af3d-7b44-42b1-9327-cf8a6fbf3f3c"
+    assert client.auth_token == "dummy-connect-token"
+
+
+def test_prusa_connect_mobile_status_update_maps_prusa_connect_payload(monkeypatch):
+    requested: list[tuple[str, dict[str, str]]] = []
+
+    def fake_get(url, *, headers, timeout):  # noqa: ARG001
+        requested.append((str(url), headers))
+        assert headers == {"Authorization": "Bearer dummy-connect-token"}
+        return httpx.Response(
+            200,
+            json={
+                "uuid": "13b5af3d-7b44-42b1-9327-cf8a6fbf3f3c",
+                "name": "MK4S",
+                "state": "PRINTING",
+                "telemetry": {
+                    "temp_nozzle": 214.2,
+                    "target_nozzle": 215,
+                    "temp_bed": 59.7,
+                    "target_bed": 60,
+                    "axis_z": 12.34,
+                },
+                "job": {
+                    "display_name": "benchy_connect.gcode",
+                    "progress": 42.5,
+                    "time_remaining": 1200,
+                },
+            },
+            request=httpx.Request("GET", str(url)),
+        )
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    client = PrusaConnectMobilePrinterClient(
+        "13b5af3d-7b44-42b1-9327-cf8a6fbf3f3c",
+        auth_token="dummy-connect-token",
+    )
+
+    assert client.request_status_update() is True
+    assert requested == [
+        (
+            "https://connect-mobile-api.prusa3d.com/api/v1/printers/13b5af3d-7b44-42b1-9327-cf8a6fbf3f3c",
+            {"Authorization": "Bearer dummy-connect-token"},
+        )
+    ]
+    assert client.state.connected is True
+    assert client.state.state == "RUNNING"
+    assert client.state.gcode_file == "benchy_connect.gcode"
+    assert client.state.progress == 42.5
+    assert client.state.remaining_time == 20
+    assert client.state.temperatures["nozzle"] == 214.2
+    assert client.state.temperatures["nozzle_target"] == 215.0
+    assert client.state.temperatures["bed"] == 59.7
+    assert client.state.temperatures["bed_target"] == 60.0
+    assert client.state.position["z"] == 12.34
 
 
 def test_prusalink_status_update_maps_openapi_status_payload(monkeypatch):

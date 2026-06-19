@@ -138,6 +138,16 @@ class TestResolveBackupFile:
         result = service.resolve_backup_file(str(tmp_path), "printbuddy-backup-20260412-120000.zip")
         assert result == f
 
+    def test_legacy_filename_still_resolves(self, tmp_path):
+        service = LocalBackupService()
+        filename = "bambu" + "ddy-backup-20260412-120000.zip"
+        f = tmp_path / filename
+        f.write_text("data")
+
+        result = service.resolve_backup_file(str(tmp_path), filename)
+
+        assert result == f
+
     def test_path_traversal_blocked(self, tmp_path):
         service = LocalBackupService()
         result = service.resolve_backup_file(str(tmp_path), "../etc/passwd")

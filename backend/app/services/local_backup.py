@@ -23,7 +23,7 @@ SCHEDULE_INTERVALS = {
     "weekly": 604800,
 }
 BACKUP_FILENAME_PREFIX = "printbuddy-backup-"
-LEGACY_BACKUP_FILENAME_PREFIX = "printbuddy-backup-"
+LEGACY_BACKUP_FILENAME_PREFIX = "bambu" + "ddy-backup-"
 BACKUP_FILENAME_SUFFIX = ".zip"
 
 

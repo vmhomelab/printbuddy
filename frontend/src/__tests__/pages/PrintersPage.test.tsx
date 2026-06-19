@@ -108,7 +108,11 @@ describe('PrintersPage', () => {
           ams_temp_good: 30,
           ams_temp_fair: 35,
           require_plate_clear: true,
+          panda_breath_printer_assignments: '{}',
         });
+      }),
+      http.get('/api/v1/settings/panda-breath/status', () => {
+        return HttpResponse.json({ enabled: false, connected: false, state: {} });
       }),
       http.get('/api/v1/queue/', () => {
         return HttpResponse.json([]);
@@ -131,6 +135,76 @@ describe('PrintersPage', () => {
       await waitFor(() => {
         expect(screen.getByText('X1 Carbon')).toBeInTheDocument();
         expect(screen.getByText('P1S Backup')).toBeInTheDocument();
+      });
+    });
+
+    it('shows assigned Panda Breath data only on the matching printer card', async () => {
+      server.use(
+        http.get('/api/v1/settings/ui-preferences', () => HttpResponse.json({
+          ams_humidity_good: 40,
+          ams_humidity_fair: 60,
+          ams_temp_good: 30,
+          ams_temp_fair: 35,
+          require_plate_clear: true,
+          panda_breath_printer_assignments: '{"DEVICE_B":2}',
+        })),
+        http.get('/api/v1/settings/panda-breath/status', () => HttpResponse.json({
+          enabled: true,
+          connected: true,
+          state: {},
+          devices: {
+            DEVICE_A: { device_id: 'DEVICE_A', chamber_actual: 31.2, chamber_target: 45 },
+            DEVICE_B: { device_id: 'DEVICE_B', chamber_actual: 42.8, chamber_target: 55 },
+          },
+        }))
+      );
+
+      render(<PrintersPage />);
+
+      await screen.findByText('P1S Backup');
+      const pandaBreathLabels = await screen.findAllByText('Panda Breath');
+      const pandaBreathLabel = pandaBreathLabels[0];
+      const card = pandaBreathLabel.closest('[class*="relative"]') || document.body;
+      expect(pandaBreathLabels.length).toBeGreaterThan(0);
+      expect(card.textContent).toContain('P1S Backup');
+      expect(card.textContent).toContain('Panda Breath');
+      expect(card.textContent).toContain('43°C / 55°');
+    });
+
+    it('sends Panda Breath commands to the assigned device from the printer card', async () => {
+      const user = userEvent.setup();
+      let postedBody: unknown = null;
+
+      server.use(
+        http.get('/api/v1/settings/ui-preferences', () => HttpResponse.json({
+          ams_humidity_good: 40,
+          ams_humidity_fair: 60,
+          ams_temp_good: 30,
+          ams_temp_fair: 35,
+          require_plate_clear: true,
+          panda_breath_printer_assignments: '{"DEVICE_B":2}',
+        })),
+        http.get('/api/v1/settings/panda-breath/status', () => HttpResponse.json({
+          enabled: true,
+          connected: true,
+          state: {},
+          devices: {
+            DEVICE_B: { device_id: 'DEVICE_B', chamber_actual: 42.8, chamber_target: 55, work_on: false },
+          },
+        })),
+        http.post('/api/v1/settings/panda-breath/command', async ({ request }) => {
+          postedBody = await request.json();
+          return HttpResponse.json({ ok: true });
+        })
+      );
+
+      render(<PrintersPage />);
+
+      await screen.findByText('P1S Backup');
+      await user.click(await screen.findByRole('button', { name: 'Turn on' }));
+
+      await waitFor(() => {
+        expect(postedBody).toEqual({ command: 'work_on', value: 'ON', device_id: 'DEVICE_B' });
       });
     });
 
@@ -327,12 +401,64 @@ describe('PrintersPage', () => {
       const groupLabels = Array.from(modelSelect.querySelectorAll('optgroup')).map((group) => group.label);
       const optionValues = Array.from(modelSelect.options).map((option) => option.value);
 
+      expect(screen.getByLabelText(/prusa connection/i)).toBeInTheDocument();
       expect(groupLabels).toEqual(['Prusa', 'Generic']);
       expect(optionValues).toContain('Prusa CORE One');
       expect(optionValues).toContain('Prusa MK4');
       expect(optionValues).toContain('Prusa MK4S');
       expect(optionValues).not.toContain('P1S');
       expect(optionValues).not.toContain('Elegoo Neptune 4 Pro');
+    }, 10000);
+
+    it('can add a Prusa printer through the Connect Mobile API connection mode', async () => {
+      const user = userEvent.setup();
+      let createdPayload: Record<string, unknown> | null = null;
+      let diagnosticCalled = false;
+
+      server.use(
+        http.get('/api/v1/discovery/info', () => HttpResponse.json({ is_docker: false, subnets: [] })),
+        http.post('/api/v1/printers/diagnose', () => {
+          diagnosticCalled = true;
+          return HttpResponse.json({ checks: [] });
+        }),
+        http.post('/api/v1/printers/', async ({ request }) => {
+          createdPayload = await request.json() as Record<string, unknown>;
+          return HttpResponse.json({
+            ...mockPrinters[0],
+            name: 'MK4S Cloud',
+            provider: 'prusaconnect',
+            ip_address: '13b5af3d-7b44-42b1-9327-cf8a6fbf3f3c',
+            api_url: 'https://connect-mobile-api.prusa3d.com',
+            auth_token: null,
+            model: 'Prusa MK4S',
+          });
+        }),
+      );
+
+      render(<PrintersPage />);
+
+      await user.click((await screen.findAllByRole('button', { name: /add printer/i })).at(-1)!);
+      await user.selectOptions(screen.getByLabelText(/printer type/i), 'prusalink');
+      await user.selectOptions(screen.getByLabelText(/prusa connection/i), 'prusaconnect');
+      await user.selectOptions(screen.getByLabelText('Model (optional)'), 'Prusa MK4S');
+      await user.type(screen.getByPlaceholderText('My Printer'), 'MK4S Cloud');
+      await user.type(screen.getByPlaceholderText('13b5af3d-7b44-42b1-9327-cf8a6fbf3f3c'), '13b5af3d-7b44-42b1-9327-cf8a6fbf3f3c');
+      await user.type(screen.getByPlaceholderText('Authorization token from the Prusa Connect mobile API'), 'dummy-connect-token');
+      await user.click(screen.getAllByRole('button', { name: /^add printer$/i }).at(-1)!);
+
+      await waitFor(() => {
+        expect(createdPayload).toMatchObject({
+          name: 'MK4S Cloud',
+          provider: 'prusaconnect',
+          ip_address: '13b5af3d-7b44-42b1-9327-cf8a6fbf3f3c',
+          api_url: 'https://connect-mobile-api.prusa3d.com',
+          auth_token: 'dummy-connect-token',
+          model: 'Prusa MK4S',
+        });
+      });
+      expect(createdPayload).not.toHaveProperty('serial_number');
+      expect(createdPayload).not.toHaveProperty('access_code');
+      expect(diagnosticCalled).toBe(false);
     }, 10000);
 
     it.each([

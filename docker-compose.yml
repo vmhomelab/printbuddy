@@ -1,9 +1,9 @@
 services:
   printbuddy:
-    image: ghcr.io/vmhomelab/printbuddy:dev
+    image: docker.io/vmhomelabde/printbuddy:latest
     build: .
     # Usage:
-    #   docker compose up -d          → pulls pre-built image from ghcr.io
+    #   docker compose up -d          → pulls pre-built image from Docker Hub
     #   docker compose up -d --build  → builds locally from source
     container_name: printbuddy
     # File ownership inside the data and logs volumes is normalised by the

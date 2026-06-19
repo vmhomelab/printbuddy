@@ -272,7 +272,7 @@ export interface LongLivedCameraToken {
 }
 
 // Printer types
-export type PrinterProvider = 'bambu' | 'klipper' | 'mainsail' | 'fluidd' | 'prusalink';
+export type PrinterProvider = 'bambu' | 'klipper' | 'mainsail' | 'fluidd' | 'prusalink' | 'prusaconnect';
 
 export interface Printer {
   id: number;
@@ -1096,6 +1096,9 @@ export interface AppSettings {
   mqtt_password: string;
   mqtt_topic_prefix: string;
   mqtt_use_tls: boolean;
+  panda_breath_enabled: boolean;
+  panda_breath_topic_prefix: string;
+  panda_breath_printer_assignments: string;
   // External URL for notifications
   external_url: string;
   // Home Assistant integration
@@ -1171,6 +1174,49 @@ export interface MQTTStatus {
   broker: string;
   port: number;
   topic_prefix: string;
+}
+
+export interface PandaBreathStatus {
+  enabled: boolean;
+  connected: boolean;
+  broker: string;
+  port: number;
+  topic_prefix: string;
+  device_id?: string | null;
+  availability?: string | null;
+  state: {
+    chamber_target?: number | null;
+    chamber_actual?: number | null;
+    bed_temperature?: number | null;
+    bed_limit?: number | null;
+    filter_activation_temp?: number | null;
+    heater_trigger_temp?: number | null;
+    custom_temp?: number | null;
+    custom_timer_hours?: number | null;
+    drying_temperature?: number | null;
+    drying_time_hours?: number | null;
+    drying_remaining_min?: number | null;
+    slicer_target?: number | null;
+    mode?: string | null;
+    filament_drying_mode?: string | null;
+    status?: string | null;
+    lock_status?: string | null;
+    fan_on?: boolean | null;
+    power_on?: boolean | null;
+    work_on?: boolean | null;
+    drying_running?: boolean | null;
+    slicer_priority_mode?: boolean | null;
+    printer_sn?: string | null;
+    printer_bind?: string | null;
+    printer_ip?: string | null;
+    printer_name?: string | null;
+    version?: string | null;
+    availability?: string | null;
+    device_id?: string | null;
+    last_seen?: string | null;
+    raw?: Record<string, unknown>;
+  };
+  devices?: Record<string, PandaBreathStatus['state']>;
 }
 
 // Cloud types
@@ -4337,6 +4383,7 @@ export const api = {
       ams_temp_good?: number;
       ams_temp_fair?: number;
       bed_cooled_threshold?: number;
+      panda_breath_printer_assignments?: string;
     }>('/settings/ui-preferences'),
   updateSettings: (data: AppSettingsUpdate) =>
     request<AppSettings>('/settings/', {
@@ -4344,6 +4391,12 @@ export const api = {
       body: JSON.stringify(data),
     }),
   getMQTTStatus: () => request<MQTTStatus>('/settings/mqtt/status'),
+  getPandaBreathStatus: () => request<PandaBreathStatus>('/settings/panda-breath/status'),
+  sendPandaBreathCommand: (data: { command: string; value?: string | number | boolean | null; device_id?: string | null }) =>
+    request<{ ok: boolean }>('/settings/panda-breath/command', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
   resetSettings: () =>
     request<AppSettings>('/settings/reset', { method: 'POST' }),
   exportBackup: async (): Promise<{ blob: Blob; filename: string }> => {

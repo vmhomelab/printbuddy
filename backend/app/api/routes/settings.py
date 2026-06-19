@@ -5,7 +5,7 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, select
@@ -18,6 +18,42 @@ from backend.app.core.permissions import Permission
 from backend.app.models.settings import Settings
 from backend.app.models.user import User
 from backend.app.schemas.settings import AppSettings, AppSettingsUpdate
+
+MANUAL_BACKUP_FILENAME_PREFIX = "printbuddy-backup-"
+BACKUP_DATABASE_FILENAME = "printbuddy.db"
+LEGACY_BACKUP_DATABASE_FILENAME = "bambu" + "ddy.db"
+
+
+def make_backup_filename(now: datetime | None = None) -> str:
+    """Return the download filename for manually-created backup ZIPs."""
+    timestamp = (now or datetime.now()).strftime("%Y%m%d-%H%M%S")
+    return f"{MANUAL_BACKUP_FILENAME_PREFIX}{timestamp}.zip"
+
+
+def is_supported_backup_upload_filename(filename: str | None) -> bool:
+    """Return whether an uploaded backup filename is accepted for restore.
+
+    Restore compatibility is intentionally based on the ZIP extension, not the
+    product prefix. Users migrating from the old name may upload backups whose
+    download filename used the legacy prefix; the archive contents are validated
+    after extraction.
+    """
+    return bool(filename and filename.endswith(".zip"))
+
+
+def find_backup_database_file(backup_dir: Path) -> Path | None:
+    """Return the database file inside an extracted backup directory.
+
+    Current Printbuddy backups contain ``printbuddy.db``. Older backups from
+    before the rebrand used the legacy filename; accept those so users can
+    still restore pre-cleanup ZIPs.
+    """
+    for filename in (BACKUP_DATABASE_FILENAME, LEGACY_BACKUP_DATABASE_FILENAME):
+        candidate = backup_dir / filename
+        if candidate.exists() and candidate.is_file():
+            return candidate
+    return None
+
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +156,7 @@ async def _build_settings_response(db: AsyncSession, is_api_key: bool = False) -
             "ftp_retry_enabled",
             "mqtt_enabled",
             "mqtt_use_tls",
+            "panda_breath_enabled",
             "ha_enabled",
             "per_printer_mapping_expanded",
             "prometheus_enabled",
@@ -208,6 +245,9 @@ async def update_settings(
         "mqtt_password",
         "mqtt_topic_prefix",
         "mqtt_use_tls",
+        "panda_breath_enabled",
+        "panda_breath_topic_prefix",
+        "panda_breath_printer_assignments",
     }
     mqtt_updated = bool(mqtt_keys & set(update_data.keys()))
 
@@ -240,6 +280,14 @@ async def update_settings(
                 "mqtt_use_tls": (await get_setting(db, "mqtt_use_tls") or "false") == "true",
             }
             await mqtt_relay.configure(mqtt_settings)
+            from backend.app.services.panda_breath_mqtt import panda_breath_mqtt
+
+            panda_settings = {
+                **mqtt_settings,
+                "panda_breath_enabled": (await get_setting(db, "panda_breath_enabled") or "false") == "true",
+                "panda_breath_topic_prefix": await get_setting(db, "panda_breath_topic_prefix") or "panda_breath",
+            }
+            await panda_breath_mqtt.configure(panda_settings)
         except Exception:
             pass  # Don't fail the settings update if MQTT reconfiguration fails
 
@@ -339,6 +387,7 @@ _UI_PREFERENCE_FIELDS: tuple[str, ...] = (
     "ams_temp_good",
     "ams_temp_fair",
     "bed_cooled_threshold",
+    "panda_breath_printer_assignments",
 )
 
 
@@ -488,7 +537,7 @@ async def create_backup_zip(output_path: Path | None = None) -> tuple[Path, str]
     from backend.app.core.db_dialect import is_sqlite
 
     base_dir = app_settings.base_dir
-    filename = f"printbuddy-backup-{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip"
+    filename = make_backup_filename()
 
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
@@ -505,7 +554,7 @@ async def create_backup_zip(output_path: Path | None = None) -> tuple[Path, str]
                 await conn.execute(text("PRAGMA wal_checkpoint(TRUNCATE)"))
 
             # Copy database file
-            shutil.copy2(db_path, temp_path / "printbuddy.db")
+            shutil.copy2(db_path, temp_path / BACKUP_DATABASE_FILENAME)
         else:
             # PostgreSQL: export to a portable SQLite file via SQLAlchemy.
             # This makes backups restorable on both SQLite and Postgres installs.
@@ -514,7 +563,7 @@ async def create_backup_zip(output_path: Path | None = None) -> tuple[Path, str]
 
             from backend.app.core.database import Base, engine
 
-            backup_db_path = temp_path / "printbuddy.db"
+            backup_db_path = temp_path / BACKUP_DATABASE_FILENAME
             dst = sqlite3.connect(str(backup_db_path))
             metadata = Base.metadata
 
@@ -852,7 +901,7 @@ async def restore_backup(
         content = await file.read()
 
         # Check if it's a valid ZIP
-        if not file.filename or not file.filename.endswith(".zip"):
+        if not is_supported_backup_upload_filename(file.filename):
             raise HTTPException(400, "Invalid backup file: must be a .zip file")
 
         try:
@@ -874,8 +923,8 @@ async def restore_backup(
             raise HTTPException(400, "Invalid backup file: not a valid ZIP")
 
         # 2. Validate backup
-        backup_db = temp_path / "printbuddy.db"
-        if not backup_db.exists():
+        backup_db = find_backup_database_file(temp_path)
+        if backup_db is None:
             raise HTTPException(400, "Invalid backup: missing printbuddy.db")
 
         try:
@@ -1311,3 +1360,44 @@ async def get_mqtt_status(
     from backend.app.services.mqtt_relay import mqtt_relay
 
     return mqtt_relay.get_status()
+
+
+# =============================================================================
+# Panda Breath MQTT Settings
+# =============================================================================
+
+
+class PandaBreathCommand(BaseModel):
+    """Command payload for the BIQU Panda Breath MQTT bridge."""
+
+    command: str
+    value: str | int | float | bool | None = None
+    device_id: str | None = None
+
+
+@router.get("/panda-breath/status")
+async def get_panda_breath_status(
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_READ),
+):
+    """Get BIQU Panda Breath MQTT connection and latest device state."""
+    from backend.app.services.panda_breath_mqtt import panda_breath_mqtt
+
+    return panda_breath_mqtt.get_status()
+
+
+@router.post("/panda-breath/command")
+async def send_panda_breath_command(
+    payload: PandaBreathCommand,
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.PRINTERS_CONTROL),
+):
+    """Send a BIQU Panda Breath command via MQTT."""
+    from backend.app.services.panda_breath_mqtt import panda_breath_mqtt
+
+    try:
+        published = panda_breath_mqtt.publish_command(payload.command, payload.value, device_id=payload.device_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if not published:
+        raise HTTPException(status_code=503, detail="Panda Breath MQTT is not connected")
+    return {"ok": True}

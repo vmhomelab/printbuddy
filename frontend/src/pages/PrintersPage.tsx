@@ -74,7 +74,7 @@ import {
 import { useNavigate } from 'react-router-dom';
 import { api, discoveryApi, firmwareApi, withStreamToken, ApiError, getAuthToken } from '../api/client';
 import { formatDateOnly, formatETA, formatDuration, parseUTCDate } from '../utils/date';
-import type { Printer, PrinterCreate, PrinterStatus, AMSUnit, DiscoveredPrinter, FirmwareUpdateInfo, FirmwareUploadStatus, LinkedSpoolInfo, SpoolAssignment, HMSError, InventorySpool, SmartPlug, PrinterDiagnosticResult } from '../api/client';
+import type { Printer, PrinterCreate, PrinterStatus, AMSUnit, DiscoveredPrinter, FirmwareUpdateInfo, FirmwareUploadStatus, LinkedSpoolInfo, SpoolAssignment, HMSError, InventorySpool, SmartPlug, PrinterDiagnosticResult, PandaBreathStatus } from '../api/client';
 import { Card, CardContent } from '../components/Card';
 import { Button } from '../components/Button';
 import { ConfirmModal } from '../components/ConfirmModal';
@@ -106,6 +106,7 @@ import { KlipperControlPanel } from '../components/KlipperControlPanel';
 import { getColorName, parseFilamentColor, isLightColor } from '../utils/colors';
 import { getPrinterFileRuleSet, isPrintableForProvider } from '../utils/printerFileRules';
 import { canOpenPrinterCamera } from '../utils/printerCamera';
+import { getAssignedPandaBreathState } from '../utils/pandaBreath';
 
 export interface SpoolmanSlotAssignmentRow {
   printer_id: number;
@@ -243,7 +244,7 @@ function PrinterModelSelect({
   provider?: PrinterCreate['provider'];
 }) {
   const { t } = useTranslation();
-  const visibleGroups = provider === 'prusalink'
+  const visibleGroups = provider === 'prusalink' || provider === 'prusaconnect'
     ? PRINTER_MODEL_GROUPS
         .map((group) => {
           if (group.label === 'Prusa') return group;
@@ -1638,6 +1639,7 @@ function PrinterCard({
   checkPrinterFirmware = true,
   dryingPresets = DRYING_PRESETS,
   requirePlateClear = false,
+  pandaBreathState,
   selectionMode = false,
   isSelected = false,
   onToggleSelect,
@@ -1671,6 +1673,7 @@ function PrinterCard({
   checkPrinterFirmware?: boolean;
   dryingPresets?: Record<string, { n3f: number; n3s: number; n3f_hours: number; n3s_hours: number }>;
   requirePlateClear?: boolean;
+  pandaBreathState?: PandaBreathStatus['state'] | null;
   selectionMode?: boolean;
   isSelected?: boolean;
   onToggleSelect?: (id: number) => void;
@@ -2157,6 +2160,16 @@ function PrinterCard({
       );
       queryClient.invalidateQueries({ queryKey: ['printerStatus', printer.id] });
       queryClient.invalidateQueries({ queryKey: ['queue', printer.id] });
+    },
+    onError: (error: Error) => showToast(error.message || t('queue.clearPlateFailed'), 'error'),
+  });
+
+  const pandaBreathCommandMutation = useMutation({
+    mutationFn: ({ command, value }: { command: string; value?: string | number | boolean | null }) =>
+      api.sendPandaBreathCommand({ command, value, device_id: pandaBreathState?.device_id ?? null }),
+    onSuccess: () => {
+      showToast('Panda Breath command sent', 'success');
+      queryClient.invalidateQueries({ queryKey: ['panda-breath-status'] });
     },
     onError: (error: Error) => showToast(error.message || t('printers.toast.failedToSendCommand'), 'error'),
   });
@@ -3309,6 +3322,16 @@ function PrinterCard({
                       </p>
                     </div>
                   )}
+                  {pandaBreathState && (
+                    <div className="text-center px-2 py-1.5 bg-bambu-dark rounded-lg flex-1 flex flex-col justify-center items-center" title={`Panda Breath ${pandaBreathState.device_id || ''}`.trim()}>
+                      <HeaterThermometer className="w-3.5 h-3.5 mb-0.5" color="text-emerald-400" isHeating={Boolean(pandaBreathState.work_on || pandaBreathState.drying_running)} />
+                      <p className="text-[9px] text-bambu-gray">Panda Breath</p>
+                      <p className="text-[11px] text-white">
+                        {pandaBreathState.chamber_actual != null ? `${Math.round(pandaBreathState.chamber_actual)}°C` : '—'}
+                        {pandaBreathState.chamber_target != null ? ` / ${Math.round(pandaBreathState.chamber_target)}°` : ''}
+                      </p>
+                    </div>
+                  )}
                   {/* Active nozzle indicator for dual-nozzle printers */}
                   {isDualNozzle && (
                     <DualNozzleHoverCard
@@ -3339,6 +3362,53 @@ function PrinterCard({
                 </div>
               );
             })()}
+
+            {viewMode === 'expanded' && pandaBreathState && !status.temperatures && (
+              <div className="flex items-stretch gap-1.5 flex-wrap">
+                <div className="text-center px-2 py-1.5 bg-bambu-dark rounded-lg flex-1 flex flex-col justify-center items-center" title={`Panda Breath ${pandaBreathState.device_id || ''}`.trim()}>
+                  <HeaterThermometer className="w-3.5 h-3.5 mb-0.5" color="text-emerald-400" isHeating={Boolean(pandaBreathState.work_on || pandaBreathState.drying_running)} />
+                  <p className="text-[9px] text-bambu-gray">Panda Breath</p>
+                  <p className="text-[11px] text-white">
+                    {pandaBreathState.chamber_actual != null ? `${Math.round(pandaBreathState.chamber_actual)}°C` : '—'}
+                    {pandaBreathState.chamber_target != null ? ` / ${Math.round(pandaBreathState.chamber_target)}°` : ''}
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {viewMode === 'expanded' && pandaBreathState && (
+              <div className="mt-3">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-[10px] uppercase tracking-wider text-bambu-gray font-medium">
+                    Panda Breath
+                  </span>
+                  <div className="flex-1 h-px bg-bambu-dark-tertiary/30" />
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  {([
+                    { command: 'work_on', value: pandaBreathState.work_on ? 'OFF' : 'ON', label: pandaBreathState.work_on ? 'Turn off' : 'Turn on', Icon: Power },
+                    { command: 'auto', value: null, label: 'Auto', Icon: Wind },
+                    { command: 'drying', value: null, label: 'Drying', Icon: Flame },
+                    { command: 'stop', value: null, label: 'Stop', Icon: Square },
+                  ] as const).map(({ command, value, label, Icon }) => {
+                    const disabled = pandaBreathCommandMutation.isPending || !hasPermission('printers:control');
+                    return (
+                      <button
+                        key={command}
+                        type="button"
+                        onClick={() => pandaBreathCommandMutation.mutate({ command, value })}
+                        disabled={disabled}
+                        className="inline-flex items-center justify-center gap-1 px-2 py-1 rounded bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 transition-colors text-[10px] font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                        title={!hasPermission('printers:control') ? t('printers.permission.noControl') : `Send Panda Breath ${label} command`}
+                      >
+                        {pandaBreathCommandMutation.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <Icon className="w-3 h-3" />}
+                        {label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
 
             {viewMode === 'expanded' && showClearPlateButton && (
               <button
@@ -5757,11 +5827,19 @@ function AddPrinterModal({
 
   const isMoonrakerProvider = form.provider === 'klipper' || form.provider === 'mainsail' || form.provider === 'fluidd';
   const isPrusaLinkProvider = form.provider === 'prusalink';
-  const isHttpProvider = isMoonrakerProvider || isPrusaLinkProvider;
+  const isPrusaConnectProvider = form.provider === 'prusaconnect';
+  const isPrusaProvider = isPrusaLinkProvider || isPrusaConnectProvider;
+  const isHttpProvider = isMoonrakerProvider || isPrusaProvider;
 
   const buildSubmitPayload = (): PrinterCreate => {
     const ipAddress = form.ip_address.trim();
-    const fallbackUrl = isMoonrakerProvider ? `http://${ipAddress}:7125` : isPrusaLinkProvider ? `http://${ipAddress}` : undefined;
+    const fallbackUrl = isMoonrakerProvider
+      ? `http://${ipAddress}:7125`
+      : isPrusaLinkProvider
+        ? `http://${ipAddress}`
+        : isPrusaConnectProvider
+          ? 'https://connect-mobile-api.prusa3d.com'
+          : undefined;
     const apiUrl = (form.api_url || '').trim() || fallbackUrl;
     const externalCameraUrl = isHttpProvider ? (form.external_camera_url || '').trim() : '';
     return {
@@ -5924,7 +6002,7 @@ function AddPrinterModal({
             <select
               id="printer_provider"
               className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-              value={form.provider || 'bambu'}
+              value={isPrusaProvider ? 'prusalink' : (form.provider || 'bambu')}
               onChange={(e) => {
                 const provider = e.target.value as PrinterCreate['provider'];
                 setSaveWarning(null);
@@ -5948,6 +6026,32 @@ function AddPrinterModal({
               <option value="fluidd">Fluidd / Moonraker</option>
               <option value="prusalink">Prusa</option>
             </select>
+            {isPrusaProvider && (
+              <div className="mt-3">
+                <label htmlFor="prusa_connection_mode" className="block text-sm text-bambu-gray mb-1">Prusa connection</label>
+                <select
+                  id="prusa_connection_mode"
+                  className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                  value={form.provider}
+                  onChange={(e) => {
+                    const provider = e.target.value as PrinterCreate['provider'];
+                    setSaveWarning(null);
+                    setForm({
+                      ...form,
+                      provider,
+                      serial_number: '',
+                      access_code: '',
+                      api_url: provider === 'prusaconnect' ? '' : form.api_url,
+                      auth_token: form.auth_token,
+                      model: form.model,
+                    });
+                  }}
+                >
+                  <option value="prusalink">PrusaLink (local network)</option>
+                  <option value="prusaconnect">Connect Mobile API (Prusa cloud)</option>
+                </select>
+              </div>
+            )}
             {isMoonrakerProvider && (
               <p className="text-xs text-bambu-gray mt-1">
                 Klipper printers are reached through Moonraker, usually at http://printer-host:7125. If you paste a Fluidd URL, Printbuddy will also try Moonraker on port 7125. Add a Moonraker API token only if your instance requires one.
@@ -5956,6 +6060,11 @@ function AddPrinterModal({
             {isPrusaLinkProvider && (
               <p className="text-xs text-bambu-gray mt-1">
                 Prusa printers are reached through PrusaLink, usually at http://printer-host. Enter the PrusaLink password / API key below; username defaults to maker.
+              </p>
+            )}
+            {isPrusaConnectProvider && (
+              <p className="text-xs text-bambu-gray mt-1">
+                Prusa Connect Mobile uses Prusa's cloud mobile API at connect-mobile-api.prusa3d.com. Enter the printer UUID and a Connect Mobile API authorization token.
               </p>
             )}
           </div>
@@ -6080,7 +6189,9 @@ function AddPrinterModal({
               />
             </div>
             <div>
-              <label className="block text-sm text-bambu-gray mb-1">{t('printers.ipAddress')}</label>
+              <label className="block text-sm text-bambu-gray mb-1">
+                {isPrusaConnectProvider ? 'Prusa Connect printer UUID' : t('printers.ipAddress')}
+              </label>
               <input
                 type="text"
                 required
@@ -6088,8 +6199,11 @@ function AddPrinterModal({
                 className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                 value={form.ip_address}
                 onChange={(e) => setForm({ ...form, ip_address: e.target.value })}
-                placeholder="192.168.1.100 or printer.local"
+                placeholder={isPrusaConnectProvider ? '13b5af3d-7b44-42b1-9327-cf8a6fbf3f3c' : '192.168.1.100 or printer.local'}
               />
+              {isPrusaConnectProvider && (
+                <p className="text-xs text-bambu-gray mt-1">Use the printer UUID from Prusa Connect, not the local IP address.</p>
+              )}
             </div>
             {!isHttpProvider && (
               <>
@@ -6166,6 +6280,20 @@ function AddPrinterModal({
                   />
                 </div>
               </>
+            )}
+            {isPrusaConnectProvider && (
+              <div>
+                <label className="block text-sm text-bambu-gray mb-1">Connect Mobile API token</label>
+                <input
+                  type="password"
+                  required
+                  className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                  value={form.auth_token || ''}
+                  onChange={(e) => setForm({ ...form, auth_token: e.target.value })}
+                  placeholder="Authorization token from the Prusa Connect mobile API"
+                />
+                <p className="text-xs text-bambu-gray mt-1">Paste the token value; Printbuddy will add the Bearer prefix when needed.</p>
+              </div>
             )}
             {isHttpProvider && (
               <div className="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary/40 p-3 space-y-3">
@@ -6911,6 +7039,12 @@ export function PrintersPage() {
   const { data: settings } = useQuery({
     queryKey: ['ui-preferences'],
     queryFn: api.getUiPreferences,
+  });
+
+  const { data: pandaBreathStatus } = useQuery({
+    queryKey: ['panda-breath-status'],
+    queryFn: api.getPandaBreathStatus,
+    refetchInterval: 30000,
   });
 
   // Compute drying presets: user-configured (from settings) merged over built-in defaults
@@ -7801,6 +7935,7 @@ export function PrintersPage() {
                       checkPrinterFirmware={settings?.check_printer_firmware !== false}
                       dryingPresets={effectiveDryingPresets}
                       requirePlateClear={settings?.require_plate_clear === true}
+                      pandaBreathState={getAssignedPandaBreathState(printer.id, settings?.panda_breath_printer_assignments, pandaBreathStatus)}
                       selectionMode={selectionMode}
                       isSelected={selectedPrinterIds.has(printer.id)}
                       onToggleSelect={toggleSelect}
@@ -7845,6 +7980,7 @@ export function PrintersPage() {
               checkPrinterFirmware={settings?.check_printer_firmware !== false}
               dryingPresets={effectiveDryingPresets}
               requirePlateClear={settings?.require_plate_clear === true}
+              pandaBreathState={getAssignedPandaBreathState(printer.id, settings?.panda_breath_printer_assignments, pandaBreathStatus)}
               selectionMode={selectionMode}
               isSelected={selectedPrinterIds.has(printer.id)}
               onToggleSelect={toggleSelect}

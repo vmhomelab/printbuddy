@@ -51,7 +51,7 @@
 
 ## What is Printbuddy?
 
-**Printbuddy** is a Fork of [Bambuddy](https://github.com/maziggy/bambuddy) and a modern, self-hosted dashboard with a broader goal:
+**Printbuddy** is a modern, self-hosted dashboard with a broader goal:
 
 > A single, modern, self-hosted dashboard for managing different 3D printer ecosystems.
 
@@ -162,17 +162,6 @@ network_mode: host
 ```
 
 Then enable the commented `ports:` block in the compose file instead.
-
----
-
-## Planned Docker images
-
-Once GHCR publishing is enabled, the planned image tags are:
-
-```text
-ghcr.io/vmhomelab/printbuddy:dev
-ghcr.io/vmhomelab/printbuddy:latest
-```
 
 ---
 

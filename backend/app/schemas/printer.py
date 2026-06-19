@@ -3,9 +3,10 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-PrinterProvider = Literal["bambu", "klipper", "mainsail", "fluidd", "prusalink"]
+PrinterProvider = Literal["bambu", "klipper", "mainsail", "fluidd", "prusalink", "prusaconnect"]
 MOONRAKER_PROVIDERS = {"klipper", "mainsail", "fluidd"}
-HTTP_PROVIDERS = MOONRAKER_PROVIDERS | {"prusalink"}
+HTTP_PROVIDERS = MOONRAKER_PROVIDERS | {"prusalink", "prusaconnect"}
+PRUSA_CONNECT_MOBILE_BASE_URL = "https://connect-mobile-api.prusa3d.com"
 
 
 def _synthetic_moonraker_serial(value: object) -> str:
@@ -21,6 +22,12 @@ def _synthetic_prusalink_serial(value: object) -> str:
     raw = str(value or "prusalink").strip().upper()
     normalized = "".join(ch if ch.isalnum() else "-" for ch in raw).strip("-") or "PRUSALINK"
     return f"PRUSALINK-{normalized}"[:50]
+
+
+def _synthetic_prusa_connect_serial(value: object) -> str:
+    raw = str(value or "prusaconnect").strip().upper()
+    normalized = "".join(ch if ch.isalnum() else "-" for ch in raw).strip("-") or "PRUSACONNECT"
+    return f"PRUSACONNECT-{normalized}"[:50]
 
 
 def infer_external_camera_type(camera_url: str) -> str:
@@ -84,6 +91,13 @@ class PrinterBase(BaseModel):
                 data["access_code"] = "prusalink"
             if not data.get("api_url") and data.get("ip_address"):
                 data["api_url"] = f"http://{str(data['ip_address']).strip()}"
+        elif provider == "prusaconnect":
+            if not str(data.get("serial_number") or "").strip():
+                data["serial_number"] = _synthetic_prusa_connect_serial(data.get("ip_address") or data.get("api_url"))
+            if not str(data.get("access_code") or "").strip():
+                data["access_code"] = "prusaconnect"
+            if not data.get("api_url"):
+                data["api_url"] = PRUSA_CONNECT_MOBILE_BASE_URL
         if provider in HTTP_PROVIDERS:
             camera_url = str(data.get("external_camera_url") or "").strip()
             if not camera_url:
