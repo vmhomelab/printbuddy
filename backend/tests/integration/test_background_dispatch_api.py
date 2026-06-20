@@ -152,6 +152,40 @@ class TestBackgroundDispatchLibraryAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_library_print_accepts_prusa_bgcode(
+        self, async_client: AsyncClient, library_file_factory, printer_factory, db_session, tmp_path
+    ):
+        """Prusa BGCODE is already sliced and must pass the library print gate."""
+        printer = await printer_factory(provider="prusalink", model="Prusa CORE One")
+        lib_file = await library_file_factory(
+            filename="core-one-plate.bgcode",
+            file_path="library/files/core-one-plate.bgcode",
+            file_type="bgcode",
+        )
+
+        disk_path = tmp_path / lib_file.file_path
+        disk_path.parent.mkdir(parents=True, exist_ok=True)
+        disk_path.write_bytes(b"BGCODE mock data")
+
+        with (
+            patch("backend.app.api.routes.library.app_settings.base_dir", tmp_path),
+            patch("backend.app.services.printer_manager.printer_manager.is_connected", return_value=True),
+            patch(
+                "backend.app.services.background_dispatch.background_dispatch.dispatch_print_library_file",
+                new=AsyncMock(return_value={"dispatch_job_id": 32, "dispatch_position": 1}),
+            ) as mock_dispatch,
+        ):
+            response = await async_client.post(
+                f"/api/v1/library/files/{lib_file.id}/print?printer_id={printer.id}",
+                json={},
+            )
+
+        assert response.status_code == 200
+        assert response.json()["status"] == "dispatched"
+        mock_dispatch.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_library_print_returns_409_when_enqueue_rejected(
         self, async_client: AsyncClient, library_file_factory, printer_factory, db_session, tmp_path
     ):

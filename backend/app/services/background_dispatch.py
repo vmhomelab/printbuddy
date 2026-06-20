@@ -751,7 +751,7 @@ class BackgroundDispatchService:
                 raise RuntimeError("File not found")
 
             if not self._is_sliced_file(lib_file.filename):
-                raise RuntimeError("Not a sliced file. Only .gcode or .gcode.3mf files can be printed.")
+                raise RuntimeError("Not a sliced file. Only .bgcode, .gcode or .gcode.3mf files can be printed.")
 
             file_path = Path(settings.base_dir) / lib_file.file_path
             if not file_path.exists():
@@ -1087,7 +1087,7 @@ class BackgroundDispatchService:
     @staticmethod
     def _is_sliced_file(filename: str) -> bool:
         lower = filename.lower()
-        return lower.endswith(".gcode") or lower.endswith(".gcode.3mf")
+        return lower.endswith((".bgcode", ".gcode", ".gcode.3mf"))
 
 
 background_dispatch = BackgroundDispatchService()

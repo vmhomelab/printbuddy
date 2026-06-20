@@ -459,6 +459,33 @@ class TestLibraryAddToQueueAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_add_prusa_bgcode_to_queue_succeeds(
+        self, async_client: AsyncClient, printer_factory, library_file_factory, db_session, tmp_path
+    ):
+        """Verify Prusa BGCODE is treated as a sliced file for queueing."""
+        await printer_factory(provider="prusalink", model="Prusa CORE One")
+        lib_file = await library_file_factory(
+            filename="core-one-plate.bgcode",
+            file_path="library/files/core-one-plate.bgcode",
+            file_type="bgcode",
+        )
+        disk_path = tmp_path / lib_file.file_path
+        disk_path.parent.mkdir(parents=True, exist_ok=True)
+        disk_path.write_bytes(b"BGCODE mock data")
+
+        data = {"file_ids": [lib_file.id]}
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("backend.app.api.routes.library.app_settings.base_dir", tmp_path)
+            response = await async_client.post("/api/v1/library/files/add-to-queue", json=data)
+
+        assert response.status_code == 200
+        result = response.json()
+        assert len(result["added"]) == 1
+        assert result["added"][0]["filename"] == "core-one-plate.bgcode"
+        assert result["errors"] == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_add_non_sliced_file_to_queue_fails(
         self, async_client: AsyncClient, printer_factory, library_file_factory, db_session
     ):
