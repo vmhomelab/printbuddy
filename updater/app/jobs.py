@@ -64,7 +64,10 @@ class JobStore:
         job = UpdateJob(
             job_id=f"upd_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:8]}",
             compose_file=settings.compose_file,
-            steps=[Step(f"docker compose pull {settings.service_name}"), Step(f"docker compose up -d {settings.service_name}")],
+            steps=[
+                Step(f"docker compose pull {settings.service_name}"),
+                Step(f"docker compose up -d {settings.service_name}"),
+            ],
         )
         self._jobs[job.job_id] = job
         return job
@@ -87,8 +90,27 @@ def sanitize_log(text: str, settings: Settings) -> str:
 
 async def run_update_job(job: UpdateJob, settings: Settings) -> None:
     commands = [
-        ["docker", "compose", "-p", settings.compose_project, "-f", str(settings.compose_file), "pull", settings.service_name],
-        ["docker", "compose", "-p", settings.compose_project, "-f", str(settings.compose_file), "up", "-d", settings.service_name],
+        [
+            "docker",
+            "compose",
+            "-p",
+            settings.compose_project,
+            "-f",
+            str(settings.compose_file),
+            "pull",
+            settings.service_name,
+        ],
+        [
+            "docker",
+            "compose",
+            "-p",
+            settings.compose_project,
+            "-f",
+            str(settings.compose_file),
+            "up",
+            "-d",
+            settings.service_name,
+        ],
     ]
     phases = ["pulling", "recreating"]
     try:

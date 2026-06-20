@@ -914,7 +914,9 @@ async def get_self_update_job_status(
     headers = {"Authorization": f"Bearer {settings.updater_token}"}
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.get(f"{settings.updater_url.rstrip('/')}/jobs/{job_id}", headers=headers, timeout=3.0)
+            response = await client.get(
+                f"{settings.updater_url.rstrip('/')}/jobs/{job_id}", headers=headers, timeout=3.0
+            )
             response.raise_for_status()
             return response.json()
     except httpx.HTTPStatusError as exc:
