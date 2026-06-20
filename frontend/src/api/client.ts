@@ -2736,6 +2736,36 @@ export interface UpdateStatus {
   error: string | null;
 }
 
+export interface SelfUpdateStatus {
+  enabled: boolean;
+  available: boolean;
+  reason?: string | null;
+  mode: 'updater-sidecar';
+  health?: {
+    ok: boolean;
+    service: string;
+    docker_available: boolean;
+    compose_file_available: boolean;
+  };
+}
+
+export interface SelfUpdateJob {
+  job_id: string;
+  status: 'queued' | 'pulling' | 'recreating' | 'completed' | 'failed';
+  started_at?: string;
+  finished_at?: string | null;
+  exit_code?: number | null;
+  message: string;
+  safe_log_tail?: string;
+  steps?: Array<{ name: string; status: string }>;
+}
+
+export interface SelfUpdateStartResult {
+  accepted: boolean;
+  job_id: string;
+  message: string;
+}
+
 // Maintenance types
 export interface MaintenanceType {
   id: number;
@@ -5177,6 +5207,9 @@ export const api = {
       method: 'POST',
     }),
   getUpdateStatus: () => request<UpdateStatus>('/updates/status'),
+  getSelfUpdateStatus: () => request<SelfUpdateStatus>('/updates/self-update/status'),
+  startSelfUpdate: () => request<SelfUpdateStartResult>('/updates/self-update', { method: 'POST' }),
+  getSelfUpdateJob: (jobId: string) => request<SelfUpdateJob>(`/updates/self-update/jobs/${jobId}`),
 
   // Maintenance
   getMaintenanceTypes: () => request<MaintenanceType[]>('/maintenance/types'),

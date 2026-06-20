@@ -79,6 +79,12 @@ class Settings(BaseSettings):
     # API
     api_prefix: str = "/api/v1"
 
+    # Optional Docker self-update sidecar. Disabled by default because the
+    # updater sidecar requires Docker socket access on the host.
+    self_update_enabled: bool = False
+    updater_url: str | None = None
+    updater_token: str | None = None
+
     # Slicer API sidecars. Defaults match the docker-compose.yml ports in the
     # slicer sidecar build context:
     #   OrcaSlicer  → port 3003 (default profile)

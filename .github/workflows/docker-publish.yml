@@ -22,6 +22,7 @@ env:
   # If the account/repo ever changes, set repository variable DOCKERHUB_IMAGE
   # in GitHub Actions instead of editing this workflow.
   DOCKERHUB_IMAGE: ${{ vars.DOCKERHUB_IMAGE || 'vmhomelabde/printbuddy' }}
+  DOCKERHUB_UPDATER_IMAGE: ${{ vars.DOCKERHUB_UPDATER_IMAGE || 'vmhomelabde/printbuddy-updater' }}
 
 jobs:
   build-and-push:
@@ -55,7 +56,18 @@ jobs:
             type=ref,event=tag
             type=sha,prefix=sha-
 
-      - name: Build and push
+      - name: Docker updater metadata
+        id: updater-meta
+        uses: docker/metadata-action@v5
+        with:
+          images: docker.io/${{ env.DOCKERHUB_UPDATER_IMAGE }}
+          tags: |
+            type=raw,value=dev,enable=${{ github.ref == 'refs/heads/dev' }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=ref,event=tag
+            type=sha,prefix=sha-
+
+      - name: Build and push Printbuddy
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -68,3 +80,15 @@ jobs:
             PRINTBUDDY_REF=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Build and push Printbuddy updater
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.updater
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.updater-meta.outputs.tags }}
+          labels: ${{ steps.updater-meta.outputs.labels }}
+          cache-from: type=gha,scope=updater
+          cache-to: type=gha,mode=max,scope=updater

@@ -52,6 +52,131 @@ class TestUpdatesAPI:
         assert "Docker Compose" not in result["message"]
 
     @pytest.mark.asyncio
+    async def test_self_update_status_disabled_by_default(self, async_client: AsyncClient):
+        with patch("backend.app.api.routes.updates.settings.self_update_enabled", False, create=True):
+            response = await async_client.get("/api/v1/updates/self-update/status")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["enabled"] is False
+        assert body["available"] is False
+        assert body["reason"] == "Self-update is not enabled"
+
+    @pytest.mark.asyncio
+    async def test_self_update_status_reports_updater_health(self, async_client: AsyncClient):
+        class _Resp:
+            status_code = 200
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {
+                    "ok": True,
+                    "service": "printbuddy-updater",
+                    "docker_available": True,
+                    "compose_file_available": True,
+                }
+
+        class _FakeClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_):
+                return None
+
+            async def get(self, url, *, headers=None, timeout=None):
+                assert url == "http://updater:8787/health"
+                assert headers == {"Authorization": "Bearer sidecar-token"}
+                assert timeout == 3.0
+                return _Resp()
+
+        with (
+            patch("backend.app.api.routes.updates.settings.self_update_enabled", True, create=True),
+            patch("backend.app.api.routes.updates.settings.updater_url", "http://updater:8787", create=True),
+            patch("backend.app.api.routes.updates.settings.updater_token", "sidecar-token", create=True),
+            patch("backend.app.api.routes.updates.httpx.AsyncClient", _FakeClient),
+        ):
+            response = await async_client.get("/api/v1/updates/self-update/status")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["enabled"] is True
+        assert body["available"] is True
+        assert body["mode"] == "updater-sidecar"
+        assert body["health"]["docker_available"] is True
+
+    @pytest.mark.asyncio
+    async def test_self_update_trigger_calls_updater(self, async_client: AsyncClient):
+        class _Resp:
+            status_code = 200
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"accepted": True, "job_id": "upd_1", "message": "Update started"}
+
+        class _FakeClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_):
+                return None
+
+            async def post(self, url, *, headers=None, timeout=None):
+                assert url == "http://updater:8787/update"
+                assert headers == {"Authorization": "Bearer sidecar-token"}
+                assert timeout == 5.0
+                return _Resp()
+
+        with (
+            patch("backend.app.api.routes.updates.settings.self_update_enabled", True, create=True),
+            patch("backend.app.api.routes.updates.settings.updater_url", "http://updater:8787", create=True),
+            patch("backend.app.api.routes.updates.settings.updater_token", "sidecar-token", create=True),
+            patch("backend.app.api.routes.updates.httpx.AsyncClient", _FakeClient),
+        ):
+            response = await async_client.post("/api/v1/updates/self-update")
+
+        assert response.status_code == 200
+        assert response.json()["job_id"] == "upd_1"
+
+    @pytest.mark.asyncio
+    async def test_self_update_job_status_proxies_updater(self, async_client: AsyncClient):
+        class _Resp:
+            status_code = 200
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"job_id": "upd_1", "status": "pulling", "message": "docker compose pull printbuddy"}
+
+        class _FakeClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_):
+                return None
+
+            async def get(self, url, *, headers=None, timeout=None):
+                assert url == "http://updater:8787/jobs/upd_1"
+                assert headers == {"Authorization": "Bearer sidecar-token"}
+                assert timeout == 3.0
+                return _Resp()
+
+        with (
+            patch("backend.app.api.routes.updates.settings.self_update_enabled", True, create=True),
+            patch("backend.app.api.routes.updates.settings.updater_url", "http://updater:8787", create=True),
+            patch("backend.app.api.routes.updates.settings.updater_token", "sidecar-token", create=True),
+            patch("backend.app.api.routes.updates.httpx.AsyncClient", _FakeClient),
+        ):
+            response = await async_client.get("/api/v1/updates/self-update/jobs/upd_1")
+
+        assert response.status_code == 200
+        assert response.json()["status"] == "pulling"
+
+    @pytest.mark.asyncio
     async def test_apply_update_non_docker(self, async_client: AsyncClient):
         """Test non-Docker path - mock _perform_update + _discover_target_release
         to prevent side effects (network call to GitHub releases API + actual
