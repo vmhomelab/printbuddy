@@ -167,7 +167,13 @@ def validate_print_file_upload(filename: str, content: bytes, printer_provider: 
     is_3mf_upload = lower_filename.endswith(".3mf")
     is_raw_gcode_upload = lower_filename.endswith(".gcode") and not lower_filename.endswith(".gcode.3mf")
 
-    if is_raw_gcode_upload and (printer_provider is None or printer_provider == "bambu"):
+    # Only apply the Bambu raw-gcode guard when the upload is explicitly tied
+    # to a Bambu printer. The File Manager itself is provider-neutral: when no
+    # target printer is supplied, raw .gcode must remain uploadable for
+    # PrusaLink/Core One, Moonraker/Klipper, and other providers that can work
+    # with normal G-code files. Printer-specific compatibility is enforced when
+    # a target printer context exists (for example drag/drop onto a Bambu card).
+    if is_raw_gcode_upload and printer_provider == "bambu":
         raise HTTPException(
             status_code=400,
             detail=(
