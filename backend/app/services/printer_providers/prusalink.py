@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -10,6 +11,8 @@ from urllib.parse import quote, urljoin
 import httpx
 
 from backend.app.services.bambu_mqtt import FilaSwitchState, NozzleInfo, PrintOptions
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -180,6 +183,9 @@ class PrusaLinkPrinterClient:
 
     def _post(self, path: str, payload: dict[str, Any]) -> bool:
         response = self._request("post", path, json_payload=payload)
+        if response.status_code == 404:
+            logger.warning("PrusaLink endpoint not found for POST %s; command unsupported by this firmware", path)
+            return False
         response.raise_for_status()
         return True
 

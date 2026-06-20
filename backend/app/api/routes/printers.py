@@ -3090,12 +3090,12 @@ async def home_axes(
     printer_id: int,
     axes: str = Query(
         "all",
-        description="Legacy; accepted values are 'z' | 'xy' | 'all'. Always runs the printer's full auto-home sequence — see below.",
+        description="Axes to home: 'x', 'y', 'z', 'xy', or 'all'. Bambu providers always run the full safe auto-home sequence.",
     ),
     _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_CONTROL),
     db: AsyncSession = Depends(get_db),
 ):
-    """Run the printer's full auto-home sequence via bare `G28`.
+    """Home printer axes via the provider G-code transport.
 
     Bambu printers (H2C / H2D / H2S / X1 family) home the Z axis by moving
     the BED UP toward an endstop at the top of travel. If the toolhead is
@@ -3104,15 +3104,22 @@ async def home_axes(
     without stopping at a safe height because `G28 Z` skipped the
     toolhead-park step that a full `G28` runs first.
 
-    The endpoint therefore ignores the `axes` argument and always sends a
-    bare `G28`, which the firmware expands into a safe multi-step sequence
-    (park toolhead → home XY → home Z). The argument is kept only for
-    backward-compat with existing clients; sending an invalid value still
-    returns 400 so typos surface instead of silently proceeding.
+    For Bambu providers this endpoint therefore ignores the `axes` argument
+    and sends a bare `G28`, which the firmware expands into a safe multi-step
+    sequence (park toolhead → home XY → home Z). For Moonraker/PrusaLink-style
+    providers, the requested axes are preserved so provider-specific panels do
+    not have to call legacy `/klipper/*` routes.
     """
     axes = axes.lower()
-    if axes not in ("z", "xy", "all"):
-        raise HTTPException(400, "axes must be 'z', 'xy', or 'all'")
+    axis_scripts = {
+        "x": "G28 X",
+        "y": "G28 Y",
+        "z": "G28 Z",
+        "xy": "G28 X Y",
+        "all": "G28",
+    }
+    if axes not in axis_scripts:
+        raise HTTPException(400, "axes must be 'x', 'y', 'z', 'xy', or 'all'")
 
     result = await db.execute(select(Printer).where(Printer.id == printer_id))
     printer = result.scalar_one_or_none()
@@ -3123,10 +3130,43 @@ async def home_axes(
     if not client:
         raise HTTPException(400, "Printer not connected")
 
-    if not client.send_gcode("G28"):
+    provider = str(getattr(printer, "provider", "") or "").lower()
+    script = axis_scripts[axes] if provider in {"klipper", "mainsail", "fluidd", "prusalink"} else "G28"
+    if not client.send_gcode(script):
         raise HTTPException(500, "Failed to send home command")
 
-    return {"success": True, "message": "Full auto-home sequence sent"}
+    message = "Full auto-home sequence sent" if script == "G28" else f"Home {axes.upper()} command sent"
+    return {"success": True, "message": message}
+
+
+@router.post("/{printer_id}/extrude")
+async def extrude(
+    printer_id: int,
+    length: float = Query(..., description="Signed extrude/retract length in mm"),
+    speed: int = Query(300, description="Feedrate in mm/min"),
+    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_CONTROL),
+    db: AsyncSession = Depends(get_db),
+):
+    """Extrude or retract filament through the provider G-code transport."""
+    if abs(length) > 500:
+        raise HTTPException(400, "Length must be ≤ 500 mm")
+
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+
+    client = printer_manager.get_client(printer_id)
+    if not client:
+        raise HTTPException(400, "Printer not connected")
+
+    send_gcode = getattr(client, "send_gcode", None)
+    if not callable(send_gcode):
+        raise HTTPException(400, "Printer provider does not support extrusion control")
+    if not send_gcode(f"M83\nG1 E{length:.2f} F{speed}\nM82"):
+        raise HTTPException(500, "Failed to send extrude command")
+
+    return {"success": True, "message": "Extrude command sent"}
 
 
 @router.post("/{printer_id}/hms/clear")

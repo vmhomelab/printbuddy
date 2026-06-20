@@ -3491,9 +3491,14 @@ export const api = {
       `/printers/${printerId}/temperature/bed?target=${target}`,
       { method: 'POST' }
     ),
-  homeAxes: (printerId: number, axes: 'z' | 'xy' | 'all' = 'z') =>
+  homeAxes: (printerId: number, axes: 'x' | 'y' | 'z' | 'xy' | 'all' = 'all') =>
     request<{ success: boolean; message: string }>(
       `/printers/${printerId}/home-axes?axes=${axes}`,
+      { method: 'POST' }
+    ),
+  extrude: (printerId: number, length: number, speed = 300) =>
+    request<{ success: boolean; message: string }>(
+      `/printers/${printerId}/extrude?length=${length}&speed=${speed}`,
       { method: 'POST' }
     ),
   disableSteppers: (printerId: number) =>

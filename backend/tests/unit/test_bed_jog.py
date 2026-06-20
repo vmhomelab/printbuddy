@@ -224,12 +224,12 @@ class TestHomeAxesAPI:
         assert response.status_code == 400
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("axes", ["z", "xy", "all"])
-    async def test_home_axes_always_runs_full_home(self, async_client: AsyncClient, printer_factory, axes):
-        # Regression for #1052: regardless of the axes argument, the endpoint must send a bare
-        # `G28` so the printer's safe auto-home sequence (toolhead park → XY home → Z home) runs.
-        # Sending `G28 Z` alone on H2C/H2D/H2S/X1 can crash the bed into the toolhead.
-        printer = await printer_factory(name="P1")
+    @pytest.mark.parametrize("axes", ["x", "y", "z", "xy", "all"])
+    async def test_home_axes_always_runs_full_home_for_bambu(self, async_client: AsyncClient, printer_factory, axes):
+        # Regression for #1052: Bambu providers must always send a bare `G28` so the printer's
+        # safe auto-home sequence (toolhead park → XY home → Z home) runs. Sending `G28 Z` alone
+        # on H2C/H2D/H2S/X1 can crash the bed into the toolhead.
+        printer = await printer_factory(name="P1", provider="bambu")
         mock_client = MagicMock()
         mock_client.send_gcode.return_value = True
         with patch("backend.app.api.routes.printers.printer_manager") as mock_pm:
@@ -237,6 +237,34 @@ class TestHomeAxesAPI:
             response = await async_client.post(f"/api/v1/printers/{printer.id}/home-axes?axes={axes}")
             assert response.status_code == 200
             mock_client.send_gcode.assert_called_once_with("G28")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("axes", "expected"),
+        [("x", "G28 X"), ("y", "G28 Y"), ("z", "G28 Z"), ("xy", "G28 X Y"), ("all", "G28")],
+    )
+    async def test_home_axes_preserves_axes_for_prusalink(self, async_client: AsyncClient, printer_factory, axes, expected):
+        printer = await printer_factory(name="Prusa MK4S", provider="prusalink", model="Prusa MK4S")
+        mock_client = MagicMock()
+        mock_client.send_gcode.return_value = True
+        with patch("backend.app.api.routes.printers.printer_manager") as mock_pm:
+            mock_pm.get_client.return_value = mock_client
+            response = await async_client.post(f"/api/v1/printers/{printer.id}/home-axes?axes={axes}")
+            assert response.status_code == 200
+            mock_client.send_gcode.assert_called_once_with(expected)
+
+
+class TestExtrudeAPI:
+    @pytest.mark.asyncio
+    async def test_extrude_uses_provider_gcode_transport(self, async_client: AsyncClient, printer_factory):
+        printer = await printer_factory(name="Prusa MK4S", provider="prusalink", model="Prusa MK4S")
+        mock_client = MagicMock()
+        mock_client.send_gcode.return_value = True
+        with patch("backend.app.api.routes.printers.printer_manager") as mock_pm:
+            mock_pm.get_client.return_value = mock_client
+            response = await async_client.post(f"/api/v1/printers/{printer.id}/extrude?length=10&speed=300")
+            assert response.status_code == 200
+            mock_client.send_gcode.assert_called_once_with("M83\nG1 E10.00 F300\nM82")
 
     @pytest.mark.asyncio
     async def test_home_axes_not_connected(self, async_client: AsyncClient, printer_factory):
