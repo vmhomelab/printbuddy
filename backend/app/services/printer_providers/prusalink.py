@@ -119,6 +119,10 @@ class PrusaLinkPrinterClient:
         username: str | None = "maker",
         password: str | None = None,
         timeout: float = 5.0,
+        on_state_change: Any | None = None,
+        on_print_start: Any | None = None,
+        on_print_complete: Any | None = None,
+        on_bed_temp_update: Any | None = None,
     ) -> None:
         if not base_url:
             raise ValueError("PrusaLink base URL is required")
@@ -128,6 +132,13 @@ class PrusaLinkPrinterClient:
         self.timeout = timeout
         self.state = PrusaLinkPrinterState()
         self._job_id: int | None = None
+        self.on_state_change = on_state_change
+        self.on_print_start = on_print_start
+        self.on_print_complete = on_print_complete
+        self.on_bed_temp_update = on_bed_temp_update
+        self._last_state: str | None = None
+        self._has_status_sample = False
+        self._last_bed_temp: float | None = None
 
     @property
     def _basic_auth(self) -> httpx.BasicAuth | None:
@@ -260,7 +271,46 @@ class PrusaLinkPrinterClient:
             self.state.connected = False
         return self.state.connected
 
+    def _build_lifecycle_payload(self) -> dict[str, Any]:
+        filename = self.state.subtask_name or self.state.current_print or self.state.gcode_file or "Unknown"
+        return {
+            "filename": filename,
+            "subtask_name": filename,
+            "progress": self.state.progress,
+            "remaining_time": self.state.remaining_time * 60 if self.state.remaining_time else None,
+            "status": self.state.state,
+        }
+
+    def _emit_status_callbacks(self, previous_state: str | None) -> None:
+        if self.on_state_change:
+            self.on_state_change(self.state)
+
+        bed_temp = self.state.temperatures.get("bed") if self.state.temperatures else None
+        if isinstance(bed_temp, (int, float)) and bed_temp != self._last_bed_temp:
+            self._last_bed_temp = float(bed_temp)
+            if self.on_bed_temp_update:
+                self.on_bed_temp_update(float(bed_temp))
+
+        current_state = self.state.state
+        previous_running = previous_state in {"RUNNING", "PRINTING"}
+        current_running = current_state in {"RUNNING", "PRINTING"}
+
+        if previous_state is not None and not previous_running and current_running:
+            if self.on_print_start:
+                self.on_print_start(self._build_lifecycle_payload())
+        elif previous_running and not current_running:
+            payload = self._build_lifecycle_payload()
+            if current_state == "FAILED":
+                payload["status"] = "failed"
+            elif current_state in {"FINISH", "IDLE"}:
+                payload["status"] = "completed" if self.state.progress >= 99 else "stopped"
+            else:
+                payload["status"] = "stopped"
+            if self.on_print_complete:
+                self.on_print_complete(payload)
+
     def request_status_update(self) -> bool:
+        previous_state = self._last_state if self._has_status_sample else None
         status = self._get("api/v1/status")
         self.state.connected = True
         self.state.raw_status = status
@@ -295,6 +345,10 @@ class PrusaLinkPrinterClient:
             job_detail = {}
         if job_detail:
             self._apply_job_detail(job_detail)
+
+        self._emit_status_callbacks(previous_state)
+        self._last_state = self.state.state
+        self._has_status_sample = True
         return True
 
     def _apply_job_detail(self, job_detail: dict[str, Any]) -> None:
@@ -396,4 +450,8 @@ def create_prusalink_client(printer: Any, **callbacks: Any) -> PrusaLinkPrinterC
         base_url=base_url,
         username=username,
         password=getattr(printer, "auth_token", None),
+        on_state_change=callbacks.get("on_state_change"),
+        on_print_start=callbacks.get("on_print_start"),
+        on_print_complete=callbacks.get("on_print_complete"),
+        on_bed_temp_update=callbacks.get("on_bed_temp_update"),
     )

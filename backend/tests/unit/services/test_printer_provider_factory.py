@@ -707,3 +707,116 @@ def test_prusalink_lists_uploads_and_starts_print(monkeypatch, tmp_path):
     assert client.start_print("/cube.bgcode") is True
     assert ("put", "http://prusa.local/api/v1/files/local/cube.bgcode") in calls
     assert ("post", "http://prusa.local/api/v1/files/local/cube.bgcode/print") in calls
+
+
+def test_prusalink_lifecycle_callbacks_fire_on_status_transitions(monkeypatch):
+    statuses = [
+        {
+            "printer": {"state": "READY", "temp_nozzle": 25, "target_nozzle": 0, "temp_bed": 24, "target_bed": 0},
+            "job": {},
+        },
+        {
+            "printer": {
+                "state": "PRINTING",
+                "temp_nozzle": 210,
+                "target_nozzle": 215,
+                "temp_bed": 60,
+                "target_bed": 60,
+            },
+            "job": {"id": 42, "progress": 12.5, "time_remaining": 1200},
+        },
+        {
+            "printer": {"state": "FINISHED", "temp_nozzle": 180, "target_nozzle": 0, "temp_bed": 45, "target_bed": 0},
+            "job": {"id": 42, "progress": 100, "time_remaining": 0},
+        },
+    ]
+    job_details = [
+        {},
+        {
+            "id": 42,
+            "state": "PRINTING",
+            "progress": 12.5,
+            "time_remaining": 1200,
+            "file": {"display_name": "mk4s_benchy.gcode"},
+        },
+        {
+            "id": 42,
+            "state": "FINISHED",
+            "progress": 100,
+            "time_remaining": 0,
+            "file": {"display_name": "mk4s_benchy.gcode"},
+        },
+    ]
+
+    def fake_get(url, *, auth, headers, timeout):  # noqa: ARG001
+        if str(url).endswith("/api/v1/status"):
+            payload = statuses.pop(0)
+        else:
+            payload = job_details.pop(0)
+        return httpx.Response(200, json=payload, request=httpx.Request("GET", str(url)))
+
+    starts: list[dict] = []
+    completes: list[dict] = []
+    states: list[str] = []
+    bed_temps: list[float] = []
+    monkeypatch.setattr(httpx, "get", fake_get)
+    client = PrusaLinkPrinterClient(
+        "http://prusa.local",
+        password="dummy-prusalink-password",
+        on_state_change=lambda state: states.append(state.state),
+        on_print_start=starts.append,
+        on_print_complete=completes.append,
+        on_bed_temp_update=bed_temps.append,
+    )
+
+    assert client.request_status_update() is True
+    assert starts == []
+    assert completes == []
+
+    assert client.request_status_update() is True
+    assert starts == [
+        {
+            "filename": "mk4s_benchy.gcode",
+            "subtask_name": "mk4s_benchy.gcode",
+            "progress": 12.5,
+            "remaining_time": 1200,
+            "status": "RUNNING",
+        }
+    ]
+
+    assert client.request_status_update() is True
+    assert completes == [
+        {
+            "filename": "mk4s_benchy.gcode",
+            "subtask_name": "mk4s_benchy.gcode",
+            "progress": 100.0,
+            "remaining_time": None,
+            "status": "completed",
+        }
+    ]
+    assert states == ["IDLE", "RUNNING", "FINISH"]
+    assert bed_temps == [24.0, 60.0, 45.0]
+
+
+def test_prusalink_factory_wires_lifecycle_callbacks():
+    printer = SimpleNamespace(
+        provider="prusalink",
+        api_url="http://prusa.local",
+        auth_token="dummy-prusalink-password",
+        ip_address="prusa.local",
+        provider_options=None,
+    )
+    callbacks = {
+        "on_state_change": object(),
+        "on_print_start": object(),
+        "on_print_complete": object(),
+        "on_bed_temp_update": object(),
+    }
+
+    client = create_printer_client(printer, **callbacks)
+
+    assert isinstance(client, PrusaLinkPrinterClient)
+    assert client.on_state_change is callbacks["on_state_change"]
+    assert client.on_print_start is callbacks["on_print_start"]
+    assert client.on_print_complete is callbacks["on_print_complete"]
+    assert client.on_bed_temp_update is callbacks["on_bed_temp_update"]
