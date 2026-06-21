@@ -243,7 +243,9 @@ class TestHomeAxesAPI:
         ("axes", "expected"),
         [("x", "G28 X"), ("y", "G28 Y"), ("z", "G28 Z"), ("xy", "G28 X Y"), ("all", "G28")],
     )
-    async def test_home_axes_preserves_axes_for_prusalink(self, async_client: AsyncClient, printer_factory, axes, expected):
+    async def test_home_axes_preserves_axes_for_prusalink(
+        self, async_client: AsyncClient, printer_factory, axes, expected
+    ):
         printer = await printer_factory(name="Prusa MK4S", provider="prusalink", model="Prusa MK4S")
         mock_client = MagicMock()
         mock_client.send_gcode.return_value = True
