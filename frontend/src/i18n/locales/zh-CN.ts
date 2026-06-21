@@ -4686,6 +4686,8 @@ export default {
     printStopped: '打印已停止',
     progressMilestones: '进度里程碑',
     progressMilestonesDescription: '在 25%、50%、75% 时通知',
+    printAlmostDone: '打印即将完成',
+    printAlmostDoneDescription: '达到 99% 时发送带摄像头截图的通知',
     printerOffline: '打印机离线',
     printerError: '打印机错误',
     lowFilamentLabel: '耗材不足',

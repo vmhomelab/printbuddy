@@ -4706,6 +4706,8 @@ export default {
     printStopped: 'Impresión detenida',
     progressMilestones: 'Hitos de progreso',
     progressMilestonesDescription: 'Notificar al 25%, 50% y 75%',
+    printAlmostDone: 'Impresión casi terminada',
+    printAlmostDoneDescription: 'Avisar al 99 % con una captura de la cámara',
     printerOffline: 'Impresora desconectada',
     printerError: 'Error de la impresora',
     lowFilamentLabel: 'Filamento bajo',

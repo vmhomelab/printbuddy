@@ -4698,6 +4698,8 @@ export default {
     printStopped: 'Druck gestoppt',
     progressMilestones: 'Fortschrittsmeilensteine',
     progressMilestonesDescription: 'Benachrichtigung bei 25%, 50%, 75%',
+    printAlmostDone: 'Druck fast fertig',
+    printAlmostDoneDescription: 'Benachrichtigen bei 99 % mit Kamera-Snapshot',
     printerOffline: 'Drucker offline',
     printerError: 'Druckerfehler',
     lowFilamentLabel: 'Filament niedrig',

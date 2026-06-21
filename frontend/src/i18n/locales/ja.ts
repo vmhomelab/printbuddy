@@ -4699,6 +4699,8 @@ export default {
     printStopped: '印刷停止',
     progressMilestones: '進捗マイルストーン',
     progressMilestonesDescription: '25%、50%、75%で通知',
+    printAlmostDone: '印刷はまもなく完了',
+    printAlmostDoneDescription: '99% 到達時にカメラスナップショット付きで通知',
     printerOffline: 'プリンターオフライン',
     printerError: 'プリンターエラー',
     lowFilamentLabel: 'フィラメント残量低下',

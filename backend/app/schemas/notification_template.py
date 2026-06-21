@@ -15,6 +15,7 @@ class EventType(StrEnum):
     PRINT_FAILED = "print_failed"
     PRINT_STOPPED = "print_stopped"
     PRINT_PROGRESS = "print_progress"
+    PRINT_ALMOST_DONE = "print_almost_done"
     PRINT_MISSING_SPOOL_ASSIGNMENT = "print_missing_spool_assignment"
     PRINTER_OFFLINE = "printer_offline"
     PRINTER_ERROR = "printer_error"
@@ -63,6 +64,7 @@ EVENT_VARIABLES: dict[str, list[str]] = {
         "app_name",
     ],
     "print_progress": ["printer", "filename", "progress", "remaining_time", "eta", "timestamp", "app_name"],
+    "print_almost_done": ["printer", "filename", "remaining_time", "finish_photo_url", "eta", "timestamp", "app_name"],
     "print_missing_spool_assignment": [
         "printer",
         "missing_slots",
@@ -146,6 +148,15 @@ SAMPLE_DATA: dict[str, dict[str, str]] = {
         "remaining_time": "0h 41m",
         "eta": "15:41",
         "timestamp": "2024-01-15 15:00",
+        "app_name": "Printbuddy",
+    },
+    "print_almost_done": {
+        "printer": "Bambu X1C",
+        "filename": "Benchy.3mf",
+        "remaining_time": "2m",
+        "finish_photo_url": "/api/v1/archives/123/photos/almost_done_20240115_154600.jpg",
+        "eta": "15:48",
+        "timestamp": "2024-01-15 15:46",
         "app_name": "Printbuddy",
     },
     "print_missing_spool_assignment": {

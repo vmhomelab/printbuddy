@@ -34,6 +34,7 @@ function buildProvider(overrides: Partial<NotificationProvider> = {}): Notificat
     on_print_failed: false,
     on_print_stopped: false,
     on_print_progress: false,
+  on_print_almost_done: false,
     on_print_missing_spool_assignment: false,
     on_printer_offline: false,
     on_printer_error: false,

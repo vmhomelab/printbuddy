@@ -4710,6 +4710,8 @@ export default {
     printStopped: 'Print Stopped',
     progressMilestones: 'Progress Milestones',
     progressMilestonesDescription: 'Notify at 25%, 50%, 75%',
+    printAlmostDone: 'Print almost done',
+    printAlmostDoneDescription: 'Notify at 99% with a camera snapshot',
     printerOffline: 'Printer Offline',
     printerError: 'Printer Error',
     lowFilamentLabel: 'Low Filament',

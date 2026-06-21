@@ -4687,6 +4687,8 @@ export default {
     printStopped: 'Stampa interrotta',
     progressMilestones: 'Traguardi di avanzamento',
     progressMilestonesDescription: 'Notifica al 25%, 50%, 75%',
+    printAlmostDone: 'Stampa quasi completata',
+    printAlmostDoneDescription: 'Notifica al 99% con uno snapshot della camera',
     printerOffline: 'Stampante offline',
     printerError: 'Errore stampante',
     lowFilamentLabel: 'Filamento scarso',
