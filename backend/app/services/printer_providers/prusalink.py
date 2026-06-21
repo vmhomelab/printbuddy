@@ -184,31 +184,36 @@ class PrusaLinkPrinterClient:
         return response
 
     def detect_api_auth_mode(self) -> dict[str, str]:
-        """Detect the PrusaLink API/auth mode using safe read-only probes."""
+        """Detect or verify the PrusaLink API/auth mode using safe read-only probes."""
         modern_info = urljoin(self.base_url, "api/v1/info")
-        response = self._request_with_auth(httpx.get, modern_info, auth_mode="digest", timeout=self.timeout)
-        if response.is_success:
-            self.api_mode = "modern"
-            self.auth_mode = "digest"
-            return {"prusalink_api_mode": "modern", "prusalink_auth_mode": "digest"}
-
-        response = self._request_with_auth(httpx.get, modern_info, auth_mode="basic_x_api_key", timeout=self.timeout)
-        if response.is_success:
-            self.api_mode = "modern"
-            self.auth_mode = "basic_x_api_key"
-            return {"prusalink_api_mode": "modern", "prusalink_auth_mode": "basic_x_api_key"}
-
         legacy_version = urljoin(self.base_url, "api/version")
-        response = self._request_with_auth(httpx.get, legacy_version, auth_mode="x_api_key", timeout=self.timeout)
-        if response.is_success:
-            self.api_mode = "legacy"
-            self.auth_mode = "x_api_key"
-            return {"prusalink_api_mode": "legacy", "prusalink_auth_mode": "x_api_key"}
 
-        response.raise_for_status()
-        raise httpx.HTTPStatusError(
-            "PrusaLink authentication auto-detection failed", request=response.request, response=response
-        )
+        probes: list[tuple[str, str, str]] = []
+        if self.api_mode == "modern" and self.auth_mode in {"digest", "basic_x_api_key"}:
+            probes = [(modern_info, "modern", self.auth_mode)]
+        elif self.api_mode == "legacy" and self.auth_mode == "x_api_key":
+            probes = [(legacy_version, "legacy", "x_api_key")]
+        else:
+            probes = [
+                (modern_info, "modern", "digest"),
+                (modern_info, "modern", "basic_x_api_key"),
+                (legacy_version, "legacy", "x_api_key"),
+            ]
+
+        response: httpx.Response | None = None
+        for url, api_mode, auth_mode in probes:
+            response = self._request_with_auth(httpx.get, url, auth_mode=auth_mode, timeout=self.timeout)
+            if response.is_success:
+                self.api_mode = api_mode  # type: ignore[assignment]
+                self.auth_mode = auth_mode  # type: ignore[assignment]
+                return {"prusalink_api_mode": api_mode, "prusalink_auth_mode": auth_mode}
+
+        if response is not None:
+            response.raise_for_status()
+            raise httpx.HTTPStatusError(
+                "PrusaLink authentication auto-detection failed", request=response.request, response=response
+            )
+        raise httpx.HTTPError("PrusaLink authentication auto-detection failed")
 
     def _request(self, method: str, path: str, *, json_payload: dict[str, Any] | None = None) -> httpx.Response:
         url = urljoin(self.base_url, path.lstrip("/"))

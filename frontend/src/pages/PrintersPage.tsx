@@ -143,6 +143,21 @@ function inferExternalCameraType(url: string): NonNullable<PrinterCreate['extern
   return 'mjpeg';
 }
 
+type PrusaLinkApiAuthMode = 'auto' | 'modern_digest' | 'modern_basic_x_api_key' | 'legacy_x_api_key';
+
+function buildPrusaLinkProviderOptions(mode: PrusaLinkApiAuthMode): string {
+  if (mode === 'modern_digest') {
+    return JSON.stringify({ prusalink_api_mode: 'modern', prusalink_auth_mode: 'digest' });
+  }
+  if (mode === 'modern_basic_x_api_key') {
+    return JSON.stringify({ prusalink_api_mode: 'modern', prusalink_auth_mode: 'basic_x_api_key' });
+  }
+  if (mode === 'legacy_x_api_key') {
+    return JSON.stringify({ prusalink_api_mode: 'legacy', prusalink_auth_mode: 'x_api_key' });
+  }
+  return JSON.stringify({ prusalink_api_mode: 'auto', prusalink_auth_mode: 'auto' });
+}
+
 function isPrusaPrinter(printer: Pick<Printer, 'provider' | 'model'>): boolean {
   const provider = printer.provider?.toLowerCase();
   const model = printer.model?.toLowerCase() ?? '';
@@ -5808,6 +5823,7 @@ function AddPrinterModal({
   const [subnet, setSubnet] = useState('');
   const [scanProgress, setScanProgress] = useState({ scanned: 0, total: 0 });
   const [showDiagnostic, setShowDiagnostic] = useState(false);
+  const [prusaLinkApiAuthMode, setPrusaLinkApiAuthMode] = useState<PrusaLinkApiAuthMode>('auto');
 
   // Setup-time pre-flight: run the connection diagnostic on save and warn
   // (not block) when checks fail, so the user doesn't add a printer that
@@ -5861,6 +5877,7 @@ function AddPrinterModal({
       external_camera_type: externalCameraUrl ? inferExternalCameraType(externalCameraUrl) : undefined,
       external_camera_enabled: isHttpProvider && Boolean(externalCameraUrl),
       external_camera_snapshot_url: undefined,
+      provider_options: isPrusaLinkProvider ? buildPrusaLinkProviderOptions(prusaLinkApiAuthMode) : form.provider_options,
     };
   };
 
@@ -6285,6 +6302,25 @@ function AddPrinterModal({
                     onChange={(e) => setForm({ ...form, auth_token: e.target.value })}
                     placeholder="PrusaLink password"
                   />
+                </div>
+                <div className="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary/40 p-3 space-y-2">
+                  <label htmlFor="prusalink_api_auth_mode" className="block text-sm text-bambu-gray mb-1">
+                    PrusaLink API / authentication mode
+                  </label>
+                  <select
+                    id="prusalink_api_auth_mode"
+                    className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                    value={prusaLinkApiAuthMode}
+                    onChange={(e) => setPrusaLinkApiAuthMode(e.target.value as PrusaLinkApiAuthMode)}
+                  >
+                    <option value="auto">Auto-detect on save (recommended)</option>
+                    <option value="modern_digest">Modern PrusaLink /api/v1 + HTTP Digest</option>
+                    <option value="legacy_x_api_key">Legacy /api + X-API-Key</option>
+                    <option value="modern_basic_x_api_key">Compatibility: /api/v1 + Basic/X-Api-Key</option>
+                  </select>
+                  <p className="text-xs text-bambu-gray">
+                    Leave this on Auto unless you know the printer API. Printbuddy will test the supported PrusaLink auth methods while adding the printer and store the working mode.
+                  </p>
                 </div>
               </>
             )}
