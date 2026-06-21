@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import re
 import tempfile
@@ -156,7 +157,19 @@ async def create_printer(
             },
         )
 
-    printer = Printer(**printer_data.model_dump())
+    printer_payload = printer_data.model_dump()
+    detected_provider_options = test_result.get("provider_options")
+    if detected_provider_options:
+        try:
+            existing_options = json.loads(printer_payload.get("provider_options") or "{}")
+            detected_options = json.loads(detected_provider_options)
+            if isinstance(existing_options, dict) and isinstance(detected_options, dict):
+                existing_options.update(detected_options)
+                printer_payload["provider_options"] = json.dumps(existing_options, separators=(",", ":"))
+        except (TypeError, ValueError):
+            printer_payload["provider_options"] = detected_provider_options
+
+    printer = Printer(**printer_payload)
     db.add(printer)
     await db.commit()
     await db.refresh(printer)

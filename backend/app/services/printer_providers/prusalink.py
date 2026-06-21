@@ -6,7 +6,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import quote, urljoin
 
 import httpx
@@ -122,6 +122,8 @@ class PrusaLinkPrinterClient:
         *,
         username: str | None = "maker",
         password: str | None = None,
+        api_mode: Literal["auto", "modern", "legacy"] = "auto",
+        auth_mode: Literal["auto", "digest", "basic_x_api_key", "x_api_key"] = "auto",
         timeout: float = 5.0,
         on_state_change: Any | None = None,
         on_print_start: Any | None = None,
@@ -133,6 +135,8 @@ class PrusaLinkPrinterClient:
         self.base_url = base_url.rstrip("/") + "/"
         self.username = username or "maker"
         self.password = password
+        self.api_mode = api_mode if api_mode in {"auto", "modern", "legacy"} else "auto"
+        self.auth_mode = auth_mode if auth_mode in {"auto", "digest", "basic_x_api_key", "x_api_key"} else "auto"
         self.timeout = timeout
         self.state = PrusaLinkPrinterState()
         self._job_id: int | None = None
@@ -157,18 +161,62 @@ class PrusaLinkPrinterClient:
     def _headers(self) -> dict[str, str]:
         return {"X-Api-Key": self.password} if self.password else {}
 
+    def _request_with_auth(
+        self,
+        request_fn: Any,
+        url: str,
+        *,
+        auth_mode: str | None = None,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        mode = auth_mode or self.auth_mode
+        if mode == "digest":
+            return request_fn(url, auth=self._digest_auth, headers={}, **kwargs)
+        if mode == "x_api_key":
+            return request_fn(url, auth=None, headers=self._headers, **kwargs)
+        if mode == "basic_x_api_key":
+            return request_fn(url, auth=self._basic_auth, headers=self._headers, **kwargs)
+
+        response = request_fn(url, auth=self._basic_auth, headers=self._headers, **kwargs)
+        authenticate = response.headers.get("www-authenticate", "").lower()
+        if response.status_code == 401 and "digest" in authenticate and self._digest_auth is not None:
+            response = request_fn(url, auth=self._digest_auth, headers={}, **kwargs)
+        return response
+
+    def detect_api_auth_mode(self) -> dict[str, str]:
+        """Detect the PrusaLink API/auth mode using safe read-only probes."""
+        modern_info = urljoin(self.base_url, "api/v1/info")
+        response = self._request_with_auth(httpx.get, modern_info, auth_mode="digest", timeout=self.timeout)
+        if response.is_success:
+            self.api_mode = "modern"
+            self.auth_mode = "digest"
+            return {"prusalink_api_mode": "modern", "prusalink_auth_mode": "digest"}
+
+        response = self._request_with_auth(httpx.get, modern_info, auth_mode="basic_x_api_key", timeout=self.timeout)
+        if response.is_success:
+            self.api_mode = "modern"
+            self.auth_mode = "basic_x_api_key"
+            return {"prusalink_api_mode": "modern", "prusalink_auth_mode": "basic_x_api_key"}
+
+        legacy_version = urljoin(self.base_url, "api/version")
+        response = self._request_with_auth(httpx.get, legacy_version, auth_mode="x_api_key", timeout=self.timeout)
+        if response.is_success:
+            self.api_mode = "legacy"
+            self.auth_mode = "x_api_key"
+            return {"prusalink_api_mode": "legacy", "prusalink_auth_mode": "x_api_key"}
+
+        response.raise_for_status()
+        raise httpx.HTTPStatusError(
+            "PrusaLink authentication auto-detection failed", request=response.request, response=response
+        )
+
     def _request(self, method: str, path: str, *, json_payload: dict[str, Any] | None = None) -> httpx.Response:
         url = urljoin(self.base_url, path.lstrip("/"))
         request_fn = getattr(httpx, method.lower())
-        kwargs: dict[str, Any] = {"auth": self._basic_auth, "headers": self._headers, "timeout": self.timeout}
+        kwargs: dict[str, Any] = {"timeout": self.timeout}
         if json_payload is not None:
             kwargs["json"] = json_payload
-        response = request_fn(url, **kwargs)
-        authenticate = response.headers.get("www-authenticate", "").lower()
-        if response.status_code == 401 and "digest" in authenticate and self._digest_auth is not None:
-            kwargs["auth"] = self._digest_auth
-            response = request_fn(url, **kwargs)
-        return response
+        return self._request_with_auth(request_fn, url, **kwargs)
 
     def _get(self, path: str) -> dict[str, Any]:
         response = self._request("get", path)
@@ -228,18 +276,33 @@ class PrusaLinkPrinterClient:
         url = urljoin(self.base_url, f"api/v1/files/local/{quote(normalized, safe='/')}")
         with open(local_path, "rb") as fh:
             kwargs: dict[str, Any] = {
-                "auth": self._basic_auth,
-                "headers": {**self._headers, "Content-Type": "application/octet-stream"},
                 "timeout": max(self.timeout, 60.0),
                 "content": fh.read(),
             }
-            response = httpx.put(url, **kwargs)
+            mode = self.auth_mode if self.auth_mode != "auto" else "basic_x_api_key"
+            headers = {} if mode == "digest" else self._headers
+            auth = self._digest_auth if mode == "digest" else None if mode == "x_api_key" else self._basic_auth
+            response = httpx.put(
+                url,
+                auth=auth,
+                headers={**headers, "Content-Type": "application/octet-stream"},
+                **kwargs,
+            )
         authenticate = response.headers.get("www-authenticate", "").lower()
-        if response.status_code == 401 and "digest" in authenticate and self._digest_auth is not None:
+        if (
+            self.auth_mode == "auto"
+            and response.status_code == 401
+            and "digest" in authenticate
+            and self._digest_auth is not None
+        ):
             with open(local_path, "rb") as fh:
-                kwargs["auth"] = self._digest_auth
                 kwargs["content"] = fh.read()
-                response = httpx.put(url, **kwargs)
+                response = httpx.put(
+                    url,
+                    auth=self._digest_auth,
+                    headers={"Content-Type": "application/octet-stream"},
+                    **kwargs,
+                )
         response.raise_for_status()
         return True
 
@@ -260,6 +323,14 @@ class PrusaLinkPrinterClient:
         return self._delete(f"api/v1/files/local/{quote(normalized, safe='/')}")
 
     def connect(self) -> None:
+        if self.api_mode == "legacy":
+            info = self._get("api/version")
+            self.state.connected = True
+            self.state.raw_data = info
+            self.state.raw_status = info
+            self.request_status_update()
+            return
+
         info = self._get("api/v1/info")
         self.state.connected = True
         self.state.raw_data = info
@@ -325,6 +396,20 @@ class PrusaLinkPrinterClient:
 
     def request_status_update(self) -> bool:
         previous_state = self._last_state if self._has_status_sample else None
+        if self.api_mode == "legacy":
+            job_detail = self._get("api/job")
+            self.state.connected = True
+            self.state.raw_status = job_detail
+            self.state.raw_data = {**self.state.raw_data, **job_detail}
+            state = job_detail.get("state") or job_detail.get("status") or "IDLE"
+            self.state.state = _map_prusalink_state(state)
+            if job_detail:
+                self._apply_job_detail(job_detail)
+            self._emit_status_callbacks(previous_state)
+            self._last_state = self.state.state
+            self._has_status_sample = True
+            return True
+
         status = self._get("api/v1/status")
         self.state.connected = True
         self.state.raw_status = status
@@ -452,18 +537,27 @@ class PrusaLinkPrinterClient:
 def create_prusalink_client(printer: Any, **callbacks: Any) -> PrusaLinkPrinterClient:  # noqa: ARG001
     base_url = printer.api_url or f"http://{printer.ip_address}"
     username = "maker"
+    api_mode = "auto"
+    auth_mode = "auto"
     options_raw = getattr(printer, "provider_options", None)
     if options_raw:
         try:
             options = json.loads(options_raw) if isinstance(options_raw, str) else options_raw
-            if isinstance(options, dict) and str(options.get("username") or "").strip():
-                username = str(options["username"]).strip()
+            if isinstance(options, dict):
+                if str(options.get("username") or "").strip():
+                    username = str(options["username"]).strip()
+                if str(options.get("prusalink_api_mode") or "").strip():
+                    api_mode = str(options["prusalink_api_mode"]).strip()
+                if str(options.get("prusalink_auth_mode") or "").strip():
+                    auth_mode = str(options["prusalink_auth_mode"]).strip()
         except (TypeError, ValueError):
             pass
     return PrusaLinkPrinterClient(
         base_url=base_url,
         username=username,
         password=getattr(printer, "auth_token", None),
+        api_mode=api_mode,  # type: ignore[arg-type]
+        auth_mode=auth_mode,  # type: ignore[arg-type]
         on_state_change=callbacks.get("on_state_change"),
         on_print_start=callbacks.get("on_print_start"),
         on_print_complete=callbacks.get("on_print_complete"),

@@ -111,6 +111,88 @@ def test_prusalink_provider_preserves_custom_port_url():
     assert client.base_url == "http://10.17.1.96:8087/"
 
 
+def test_prusalink_provider_reads_detected_api_and_auth_mode_from_options():
+    printer = SimpleNamespace(
+        provider="prusalink",
+        api_url="http://prusa.local",
+        auth_token="dummy-prusalink-password",
+        ip_address="prusa.local",
+        provider_options='{"username":"maker","prusalink_api_mode":"modern","prusalink_auth_mode":"digest"}',
+    )
+
+    client = create_printer_client(printer)
+
+    assert isinstance(client, PrusaLinkPrinterClient)
+    assert client.api_mode == "modern"
+    assert client.auth_mode == "digest"
+
+
+def test_prusalink_auto_detect_prefers_modern_digest(monkeypatch):
+    attempts: list[tuple[str, type, dict[str, str]]] = []
+
+    def fake_get(url, *, auth, headers, timeout):  # noqa: ARG001
+        attempts.append((str(url), type(auth), headers))
+        if str(url).endswith("/api/v1/info") and isinstance(auth, httpx.DigestAuth):
+            return httpx.Response(200, json={"api": "modern"}, request=httpx.Request("GET", str(url)))
+        return httpx.Response(401, request=httpx.Request("GET", str(url)))
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    client = PrusaLinkPrinterClient("http://prusa.local", password="dummy-prusalink-password")
+
+    detected = client.detect_api_auth_mode()
+
+    assert detected == {"prusalink_api_mode": "modern", "prusalink_auth_mode": "digest"}
+    assert attempts == [("http://prusa.local/api/v1/info", httpx.DigestAuth, {})]
+
+
+def test_prusalink_auto_detect_falls_back_to_legacy_x_api_key(monkeypatch):
+    attempts: list[tuple[str, object, dict[str, str]]] = []
+
+    def fake_get(url, *, auth=None, headers=None, timeout=None):  # noqa: ARG001
+        headers = headers or {}
+        attempts.append((str(url), type(auth) if auth is not None else None, headers))
+        if str(url).endswith("/api/version") and headers == {"X-Api-Key": "legacy-key"}:
+            return httpx.Response(200, json={"api": "legacy"}, request=httpx.Request("GET", str(url)))
+        return httpx.Response(403, request=httpx.Request("GET", str(url)))
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    client = PrusaLinkPrinterClient("http://prusa.local", password="legacy-key")
+
+    detected = client.detect_api_auth_mode()
+
+    assert detected == {"prusalink_api_mode": "legacy", "prusalink_auth_mode": "x_api_key"}
+    assert attempts == [
+        ("http://prusa.local/api/v1/info", httpx.DigestAuth, {}),
+        ("http://prusa.local/api/v1/info", httpx.BasicAuth, {"X-Api-Key": "legacy-key"}),
+        ("http://prusa.local/api/version", None, {"X-Api-Key": "legacy-key"}),
+    ]
+
+
+def test_prusalink_legacy_connect_uses_x_api_key_endpoints(monkeypatch):
+    requested: list[tuple[str, object, dict[str, str]]] = []
+
+    def fake_get(url, *, auth=None, headers=None, timeout=None):  # noqa: ARG001
+        headers = headers or {}
+        requested.append((str(url), type(auth) if auth is not None else None, headers))
+        if str(url).endswith("/api/version"):
+            return httpx.Response(200, json={"api": "0.1"}, request=httpx.Request("GET", str(url)))
+        return httpx.Response(204, request=httpx.Request("GET", str(url)))
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    client = PrusaLinkPrinterClient(
+        "http://prusa.local", password="legacy-key", api_mode="legacy", auth_mode="x_api_key"
+    )
+
+    client.connect()
+
+    assert client.state.connected is True
+    assert client.state.state == "IDLE"
+    assert requested == [
+        ("http://prusa.local/api/version", None, {"X-Api-Key": "legacy-key"}),
+        ("http://prusa.local/api/job", None, {"X-Api-Key": "legacy-key"}),
+    ]
+
+
 def test_prusa_connect_mobile_provider_creates_cloud_client_with_default_api_url():
     printer = SimpleNamespace(
         provider="prusaconnect",
@@ -593,6 +675,57 @@ async def test_klipper_connection_probe_uses_moonraker_client(monkeypatch):
     assert calls == [("klipper", "http://voron.local:7125", "token", "voron.local"), "connect", "disconnect"]
 
 
+@pytest.mark.asyncio
+async def test_prusalink_connection_probe_returns_detected_provider_options(monkeypatch):
+    calls = []
+
+    class FakePrusaLinkClient:
+        state = SimpleNamespace(state="IDLE")
+
+        def detect_api_auth_mode(self):
+            calls.append("detect")
+            return {"prusalink_api_mode": "modern", "prusalink_auth_mode": "digest"}
+
+        def connect(self):
+            calls.append("connect")
+
+        def disconnect(self):
+            calls.append("disconnect")
+
+    def fake_create_printer_client(printer):
+        calls.append(
+            (printer.provider, printer.api_url, printer.auth_token, printer.ip_address, printer.provider_options)
+        )
+        return FakePrusaLinkClient()
+
+    monkeypatch.setattr(
+        "backend.app.services.printer_manager.create_printer_client",
+        fake_create_printer_client,
+    )
+
+    result = await PrinterManager().test_connection(
+        ip_address="prusa.local",
+        serial_number="PRUSALINK-PRUSA-LOCAL",
+        access_code="prusalink",
+        provider="prusalink",
+        api_url="http://prusa.local",
+        auth_token="secret",
+    )
+
+    assert result == {
+        "success": True,
+        "state": "IDLE",
+        "model": "PrusaLink",
+        "provider_options": '{"prusalink_api_mode":"modern","prusalink_auth_mode":"digest"}',
+    }
+    assert calls == [
+        ("prusalink", "http://prusa.local", "secret", "prusa.local", None),
+        "detect",
+        "connect",
+        "disconnect",
+    ]
+
+
 def test_unknown_provider_is_rejected():
     with pytest.raises(ValueError, match="Unsupported printer provider"):
         normalize_provider("octoprint")
@@ -747,6 +880,28 @@ def test_prusalink_lists_uploads_and_starts_print(monkeypatch, tmp_path):
     assert client.start_print("/cube.bgcode") is True
     assert ("put", "http://prusa.local/api/v1/files/local/cube.bgcode") in calls
     assert ("post", "http://prusa.local/api/v1/files/local/cube.bgcode/print") in calls
+
+
+def test_prusalink_upload_uses_digest_when_detected(monkeypatch, tmp_path):
+    uploaded: list[tuple[str, type, dict[str, str]]] = []
+    gcode = tmp_path / "cube.gcode"
+    gcode.write_text("G28\n", encoding="utf-8")
+
+    def fake_put(url, *, auth, headers, timeout, content):  # noqa: ARG001
+        uploaded.append((str(url), type(auth), headers))
+        return httpx.Response(204, request=httpx.Request("PUT", str(url)))
+
+    monkeypatch.setattr(httpx, "put", fake_put)
+    client = PrusaLinkPrinterClient("http://prusa.local", password="secret", api_mode="modern", auth_mode="digest")
+
+    assert client.upload_file(gcode, "/cube.gcode") is True
+    assert uploaded == [
+        (
+            "http://prusa.local/api/v1/files/local/cube.gcode",
+            httpx.DigestAuth,
+            {"Content-Type": "application/octet-stream"},
+        )
+    ]
 
 
 def test_prusalink_lifecycle_callbacks_fire_on_status_transitions(monkeypatch):

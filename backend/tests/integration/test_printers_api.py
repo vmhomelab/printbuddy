@@ -103,6 +103,41 @@ class TestPrintersAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_create_prusalink_printer_persists_detected_auth_mode(
+        self, async_client: AsyncClient, _mock_printer_test_connection, monkeypatch
+    ):
+        """Verify PrusaLink auth auto-detection result is stored with the printer."""
+        _mock_printer_test_connection.return_value = {
+            "success": True,
+            "state": "IDLE",
+            "model": "PrusaLink",
+            "provider_options": '{"prusalink_api_mode":"modern","prusalink_auth_mode":"digest"}',
+        }
+        monkeypatch.setattr(
+            "backend.app.api.routes.printers.printer_manager.connect_printer",
+            AsyncMock(return_value=True),
+        )
+        data = {
+            "name": "Core One",
+            "serial_number": "PRUSALINK-COREONE",
+            "ip_address": "192.168.1.246",
+            "access_code": "prusalink",
+            "provider": "prusalink",
+            "api_url": "http://192.168.1.246",
+            "auth_token": "secret",
+            "model": "Prusa CORE One",
+            "is_active": False,
+        }
+
+        response = await async_client.post("/api/v1/printers/", json=data)
+
+        assert response.status_code == 200
+        result = response.json()
+        assert result["provider"] == "prusalink"
+        assert result["provider_options"] == '{"prusalink_api_mode":"modern","prusalink_auth_mode":"digest"}'
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_create_printer_with_fqdn(self, async_client: AsyncClient):
         """Verify printer can be created with a fully qualified domain name."""
         data = {

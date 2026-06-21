@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import re
 import traceback
@@ -681,20 +682,27 @@ class PrinterManager:
                     "api_url": api_url,
                     "auth_token": auth_token,
                     "ip_address": ip_address,
+                    "provider_options": None,
                 },
             )()
             client = create_printer_client(probe_printer)
+            detected_provider_options: dict[str, str] = {}
             try:
+                if provider_name == "prusalink" and hasattr(client, "detect_api_auth_mode"):
+                    detected_provider_options = await asyncio.to_thread(client.detect_api_auth_mode)
                 await asyncio.to_thread(client.connect)
                 model_label = {
                     "prusalink": "PrusaLink",
                     "prusaconnect": "Prusa Connect Mobile",
                 }.get(provider_name, "Klipper/Moonraker")
-                return {
+                result = {
                     "success": True,
                     "state": getattr(getattr(client, "state", None), "state", "connected"),
                     "model": model_label,
                 }
+                if detected_provider_options:
+                    result["provider_options"] = json.dumps(detected_provider_options, separators=(",", ":"))
+                return result
             except Exception as exc:
                 model_label = {
                     "prusalink": "PrusaLink",
