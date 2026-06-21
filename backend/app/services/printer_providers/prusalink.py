@@ -308,7 +308,9 @@ class PrusaLinkPrinterClient:
             payload = self._build_lifecycle_payload()
             if current_state == "FAILED":
                 payload["status"] = "failed"
-            elif current_state in {"FINISH", "IDLE"}:
+            elif current_state == "FINISH":
+                payload["status"] = "completed"
+            elif current_state == "IDLE":
                 payload["status"] = "completed" if self.state.progress >= 99 else "stopped"
             else:
                 payload["status"] = "stopped"
