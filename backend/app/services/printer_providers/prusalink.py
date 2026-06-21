@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -142,6 +143,7 @@ class PrusaLinkPrinterClient:
         self._last_state: str | None = None
         self._has_status_sample = False
         self._last_bed_temp: float | None = None
+        self._current_print_started_at: float | None = None
 
     @property
     def _basic_auth(self) -> httpx.BasicAuth | None:
@@ -302,10 +304,14 @@ class PrusaLinkPrinterClient:
         current_running = current_state in {"RUNNING", "PRINTING"}
 
         if previous_state is not None and not previous_running and current_running:
+            self._current_print_started_at = time.monotonic()
             if self.on_print_start:
                 self.on_print_start(self._build_lifecycle_payload())
         elif previous_running and not current_running:
             payload = self._build_lifecycle_payload()
+            if self._current_print_started_at is not None:
+                payload["actual_time_seconds"] = max(1, int(time.monotonic() - self._current_print_started_at))
+                self._current_print_started_at = None
             if current_state == "FAILED":
                 payload["status"] = "failed"
             elif current_state == "FINISH":

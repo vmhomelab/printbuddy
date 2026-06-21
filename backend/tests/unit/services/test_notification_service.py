@@ -190,6 +190,29 @@ class TestNotificationService:
             call_args = mock_get.call_args
             assert call_args[0][1] == "on_print_stopped"
 
+    @pytest.mark.asyncio
+    async def test_on_print_complete_uses_provider_duration_without_archive(self, service, mock_provider, mock_db):
+        """Polling providers can send elapsed time even when no archive was matched."""
+        with (
+            patch.object(service, "_get_providers_for_event", new_callable=AsyncMock) as mock_get,
+            patch.object(service, "_send_to_providers", new_callable=AsyncMock) as mock_send,
+            patch.object(service, "_build_message_from_template", new_callable=AsyncMock) as mock_build,
+        ):
+            mock_get.return_value = [mock_provider]
+            mock_build.return_value = ("Print Completed", "Test")
+
+            await service.on_print_complete(
+                printer_id=1,
+                printer_name="Core One",
+                status="completed",
+                data={"filename": "notification-test.gcode", "actual_time_seconds": 3660},
+                db=mock_db,
+            )
+
+            variables = mock_build.call_args.args[2]
+            assert variables["duration"] == "1h 1m"
+            assert mock_send.call_args.kwargs["variables"]["duration"] == "1h 1m"
+
     # ========================================================================
     # Tests for provider filtering
     # ========================================================================

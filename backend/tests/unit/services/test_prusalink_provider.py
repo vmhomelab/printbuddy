@@ -1,5 +1,6 @@
 import httpx
 
+from backend.app.services.printer_providers import prusalink
 from backend.app.services.printer_providers.prusalink import PrusaLinkPrinterClient
 
 
@@ -60,5 +61,64 @@ def test_prusalink_finished_job_state_emits_completed_even_without_full_progress
             "progress": 0.0,
             "remaining_time": None,
             "status": "completed",
+        }
+    ]
+
+
+def test_prusalink_completion_payload_includes_elapsed_time(monkeypatch):
+    complete_payloads = []
+    client = PrusaLinkPrinterClient(
+        base_url="http://prusa.local",
+        password="secret",
+        on_print_complete=lambda payload: complete_payloads.append(payload),
+    )
+
+    statuses = iter(
+        [
+            {
+                "printer": {"state": "READY"},
+                "job": {},
+            },
+            {
+                "printer": {"state": "PRINTING"},
+                "job": {"progress": 10, "time_remaining": 3600},
+            },
+            {
+                "printer": {"state": "FINISHED"},
+                "job": {"progress": 100, "time_remaining": 0},
+            },
+        ]
+    )
+    job_details = iter(
+        [
+            {},
+            {"state": "PRINTING", "progress": 10, "file": {"display_name": "Notification test.gcode"}},
+            {"state": "FINISHED", "progress": 100, "file": {"display_name": "Notification test.gcode"}},
+        ]
+    )
+
+    def fake_get(path):
+        if path == "api/v1/status":
+            return next(statuses)
+        if path == "api/v1/job":
+            return next(job_details)
+        raise AssertionError(f"unexpected path: {path}")
+
+    times = iter([100.0, 160.0])
+    monkeypatch.setattr(client, "_get", fake_get)
+    monkeypatch.setattr(prusalink.time, "monotonic", lambda: next(times))
+
+    client.request_status_update()  # baseline idle; no callbacks
+    client.request_status_update()  # start; records monotonic 100.0
+    client.request_status_update()  # finish; emits elapsed time
+
+    assert complete_payloads == [
+        {
+            "filename": "Notification test.gcode",
+            "subtask_name": "Notification test.gcode",
+            "progress": 100.0,
+            "remaining_time": None,
+            "status": "completed",
+            "actual_time_seconds": 60,
         }
     ]

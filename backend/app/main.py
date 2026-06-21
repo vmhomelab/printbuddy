@@ -3571,6 +3571,25 @@ async def on_print_complete(printer_id: int, data: dict):
                             no_archive_data["actual_filament_grams"] = round(total_from_usage, 1)
                         no_archive_data["usage_results"] = usage_results
 
+                    # Capture a notification attachment even when there is no
+                    # archive row to save a finish photo into. This is common
+                    # for provider-synthesized PrusaLink/Core One lifecycle
+                    # events and keeps Pushover/Telegram/Discord completion
+                    # notifications visually consistent with progress alerts.
+                    image_data = await _capture_snapshot_for_notification(printer_id, printer_obj, logger)
+                    if image_data:
+                        if no_archive_data is None:
+                            no_archive_data = {}
+                        no_archive_data["image_data"] = image_data
+
+                    # Try provider-synthesized elapsed time first, then MQTT remaining_time
+                    if data.get("actual_time_seconds") or data.get("duration_seconds"):
+                        if no_archive_data is None:
+                            no_archive_data = {}
+                        no_archive_data["actual_time_seconds"] = data.get("actual_time_seconds") or data.get(
+                            "duration_seconds"
+                        )
+
                     # Try MQTT remaining_time for print duration when no queue/library data
                     if no_archive_data and not no_archive_data.get("print_time_seconds"):
                         mqtt_remaining = data.get("remaining_time")

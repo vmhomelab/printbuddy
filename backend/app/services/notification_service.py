@@ -941,8 +941,15 @@ class NotificationService:
                 variables["reason"] = archive_data["failure_reason"]
             if archive_data.get("finish_photo_url"):
                 variables["finish_photo_url"] = archive_data["finish_photo_url"]
+        else:
+            # Polling providers such as PrusaLink may synthesize lifecycle events
+            # without an archive row. Preserve elapsed time from the provider
+            # payload instead of rendering "Unknown" at completion.
+            duration_seconds = data.get("actual_time_seconds") or data.get("duration_seconds")
+            if duration_seconds:
+                variables["duration"] = self._format_duration(int(duration_seconds))
 
-            # Build per-slot breakdown string with AMS info when available
+        if archive_data:
             if archive_data.get("usage_results"):
                 parts = []
                 for u in archive_data["usage_results"]:
