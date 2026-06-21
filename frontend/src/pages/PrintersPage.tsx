@@ -143,6 +143,12 @@ function inferExternalCameraType(url: string): NonNullable<PrinterCreate['extern
   return 'mjpeg';
 }
 
+function isPrusaPrinter(printer: Pick<Printer, 'provider' | 'model'>): boolean {
+  const provider = printer.provider?.toLowerCase();
+  const model = printer.model?.toLowerCase() ?? '';
+  return provider === 'prusalink' || provider === 'prusaconnect' || model.startsWith('prusa ');
+}
+
 const PRINTER_MODEL_GROUPS: PrinterModelOptionGroup[] = [
   {
     label: 'Bambu Lab',
@@ -1804,7 +1810,8 @@ function PrinterCard({
     return Array.from(ids);
   }, [status?.ams, status?.vt_tray, status?.nozzle_rack]);
 
-  const loadedSpoolAssignment = onGetAssignment?.(printer.id, -1, 0);
+  const isPrusaModelPrinter = isPrusaPrinter(printer);
+  const loadedSpoolAssignment = isPrusaModelPrinter ? undefined : onGetAssignment?.(printer.id, -1, 0);
 
   // Collect loaded filament types for queue widget filtering
   const loadedFilamentTypes = useMemo(() => {
@@ -1946,7 +1953,7 @@ function PrinterCard({
     ? currentTrayNow
     : cachedTrayNow.current;
 
-  const showLoadedSpoolPicker = (amsData.length === 0) && ((status?.vt_tray?.length ?? 0) === 0);
+  const showLoadedSpoolPicker = !isPrusaModelPrinter && (amsData.length === 0) && ((status?.vt_tray?.length ?? 0) === 0);
 
   // Fetch smart plug for this printer
   const { data: smartPlug } = useQuery({
@@ -5050,8 +5057,8 @@ function PrinterCard({
           </div>
         )}
 
-        {/* Moonraker and PrusaLink toolhead control panels */}
-        {(printer.provider === 'klipper' || printer.provider === 'mainsail' || printer.provider === 'fluidd' || printer.provider === 'prusalink') && viewMode === 'expanded' && (
+        {/* Moonraker toolhead control panels */}
+        {(printer.provider === 'klipper' || printer.provider === 'mainsail' || printer.provider === 'fluidd') && !isPrusaModelPrinter && viewMode === 'expanded' && (
           <Collapsible
             defaultOpen={false}
             className="mt-4 pt-3 border-t border-bambu-dark-tertiary"
@@ -5063,7 +5070,7 @@ function PrinterCard({
                   <div className="min-w-0">
                     <p className="text-xs font-semibold text-white truncate">Manual controls</p>
                     <p className="text-[10px] text-bambu-gray truncate">
-                      {printer.provider === 'prusalink' ? 'PrusaLink movement and extrusion' : 'Klipper movement, extrusion, and temperatures'}
+                      Klipper movement, extrusion, and temperatures
                     </p>
                   </div>
                 </div>

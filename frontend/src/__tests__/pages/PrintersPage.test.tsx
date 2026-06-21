@@ -579,11 +579,7 @@ describe('PrintersPage', () => {
   });
 
   describe('manual controls', () => {
-    it('renders the PrusaLink controls with the Klipper-style layout and sends jog requests', async () => {
-      const user = userEvent.setup();
-      const jogRequests: string[] = [];
-      const disableRequests: string[] = [];
-
+    it('hides manual controls for Prusa printers because PrusaLink model controls are unsupported', async () => {
       server.use(
         http.get('/api/v1/printers/', () => HttpResponse.json([{ ...mockPrinters[0], name: 'Boženka', provider: 'prusalink', model: 'Prusa MK4S' }])),
         http.get('/api/v1/printers/:id/status', () => HttpResponse.json({
@@ -591,37 +587,13 @@ describe('PrintersPage', () => {
           temperatures: { nozzle: 25, nozzle_target: 0, bed: 25, bed_target: 0 },
           position: { x: 10.2, y: 0, z: 54.2 },
         })),
-        http.post('/api/v1/printers/:id/axis-jog', ({ request }) => {
-          jogRequests.push(new URL(request.url).search);
-          return HttpResponse.json({ success: true, message: 'Jog sent' });
-        }),
-        http.post('/api/v1/printers/:id/disable-steppers', ({ request }) => {
-          disableRequests.push(new URL(request.url).pathname);
-          return HttpResponse.json({ success: true, message: 'Steppers disabled' });
-        })
       );
 
       render(<PrintersPage />);
 
-      const controlsToggle = await screen.findByRole('button', { name: /manual controls/i });
-      expect(controlsToggle).toHaveAttribute('aria-expanded', 'false');
-      expect(screen.queryByRole('heading', { name: /Boženka printer control/i })).not.toBeInTheDocument();
-
-      await user.click(controlsToggle);
-
-      const xPlusButton = await screen.findByRole('button', { name: 'X+' });
-      expect(screen.queryByRole('heading', { name: /Boženka printer control/i })).not.toBeInTheDocument();
-      expect(screen.queryByText(/heated bed X and Y move/i)).not.toBeInTheDocument();
-      expect(xPlusButton).toHaveClass('bg-[var(--accent)]');
-      expect(xPlusButton).not.toHaveClass('bg-red-700');
-      expect(screen.getByText(/extrusion length/i)).toBeInTheDocument();
-      await user.click(xPlusButton);
-      await user.click(screen.getByRole('button', { name: /disable steppers/i }));
-
-      await waitFor(() => {
-        expect(jogRequests).toContain('?axis=x&distance=10');
-        expect(disableRequests).toContain('/api/v1/printers/1/disable-steppers');
-      });
+      await screen.findByText('Boženka');
+      expect(screen.queryByRole('button', { name: /manual controls/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'X+' })).not.toBeInTheDocument();
     });
 
     it('sends XYZ jog requests from the printer card controls', async () => {
@@ -1498,6 +1470,48 @@ describe('PrintersPage', () => {
       // While Spoolman queries are still loading, the "Assign Spool" button must
       // not appear (inventory prop is undefined → {inventory && ...} guard fires)
       expect(screen.queryByText('Assign Spool')).not.toBeInTheDocument();
+    });
+
+    it('hides loaded-spool assignment controls for Prusa printers only', async () => {
+      const assignment = {
+        id: 99,
+        printer_id: 1,
+        ams_id: -1,
+        tray_id: 0,
+        spool_id: 123,
+        spool: {
+          id: 123,
+          brand: 'Prusament',
+          material: 'PLA',
+          subtype: 'Galaxy Black',
+          color_name: 'Black',
+          rgba: '#111111',
+          slicer_filament: 'Prusament PLA',
+          slicer_filament_name: 'Prusament PLA',
+        },
+      };
+
+      server.use(
+        http.get('/api/v1/inventory/assignments', () => HttpResponse.json([assignment])),
+        http.get('/api/v1/printers/', () => HttpResponse.json([{ ...mockPrinters[0], provider: 'prusalink', model: 'Prusa CORE One' }])),
+      );
+
+      render(<PrintersPage />);
+
+      await screen.findByText('X1 Carbon');
+      await waitFor(() => expect(screen.getAllByText(/25/).length).toBeGreaterThan(0));
+      expect(screen.queryByText('Loaded spool')).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Change' })).not.toBeInTheDocument();
+
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{ ...mockPrinters[0], provider: 'fluidd', model: 'Elegoo Neptune 4 Pro' }])),
+      );
+
+      render(<PrintersPage />);
+
+      await screen.findByText('Loaded spool');
+      expect(screen.getByText(/Prusament PLA Galaxy Black/i)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Change' })).toBeInTheDocument();
     });
   });
 
