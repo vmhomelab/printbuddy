@@ -39,6 +39,46 @@ def test_moonraker_provider_falls_back_to_default_port():
     assert client.base_url == "http://192.168.1.50:7125/"
 
 
+def test_moonraker_stop_print_posts_cancel_endpoint(monkeypatch):
+    posted: list[tuple[str, dict[str, object]]] = []
+
+    def fake_post(url, *, json, headers, timeout):  # noqa: ARG001
+        posted.append((str(url), json))
+        return httpx.Response(200, json={"result": "ok"}, request=httpx.Request("POST", str(url)))
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    client = MoonrakerPrinterClient("http://elegoo.local:7125")
+
+    assert client.stop_print() is True
+    assert posted == [("http://elegoo.local:7125/printer/print/cancel", {})]
+
+
+def test_moonraker_start_print_treats_verified_timeout_as_success(monkeypatch):
+    posts: list[tuple[str, dict[str, object]]] = []
+
+    def fake_post(url, *, json, headers, timeout):  # noqa: ARG001
+        posts.append((str(url), json))
+        raise httpx.ReadTimeout("timed out", request=httpx.Request("POST", str(url)))
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    client = MoonrakerPrinterClient("http://elegoo.local:7125")
+
+    def fake_status_update():
+        client.state.state = "RUNNING"
+        client.state.current_print = "firstlayer60x60mm_PLA_2m25s.gcode"
+        return True
+
+    monkeypatch.setattr(client, "request_status_update", fake_status_update)
+
+    assert client.start_print("/firstlayer60x60mm_PLA_2m25s.gcode") is True
+    assert posts == [
+        (
+            "http://elegoo.local:7125/printer/print/start",
+            {"filename": "firstlayer60x60mm_PLA_2m25s.gcode"},
+        )
+    ]
+
+
 def test_prusalink_provider_creates_prusalink_client_with_default_url_and_username():
     printer = SimpleNamespace(
         provider="prusalink",
@@ -785,6 +825,10 @@ def test_prusalink_lifecycle_callbacks_fire_on_status_transitions(monkeypatch):
     ]
 
     assert client.request_status_update() is True
+    assert len(completes) == 1
+    actual_time_seconds = completes[0].pop("actual_time_seconds")
+    assert isinstance(actual_time_seconds, int)
+    assert actual_time_seconds >= 0
     assert completes == [
         {
             "filename": "mk4s_benchy.gcode",

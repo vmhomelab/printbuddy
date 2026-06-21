@@ -481,11 +481,26 @@ class MoonrakerPrinterClient:
 
     def start_print(self, filename: str, plate_id: int = 1, **kwargs: Any) -> bool:  # noqa: ARG002
         normalized = self._normalize_gcodes_path(filename)
-        self._post("printer/print/start", {"filename": normalized})
+        try:
+            self._post("printer/print/start", {"filename": normalized})
+        except httpx.ReadTimeout:
+            # Some Moonraker/Elegoo stacks accept the start command and begin
+            # printing, but do not return headers before the short control
+            # timeout expires. Verify printer state before surfacing a false
+            # background-dispatch failure.
+            try:
+                self.request_status_update()
+            except Exception:
+                raise
+            current = self.state.current_print or self.state.gcode_file or ""
+            if self.state.state == "RUNNING" or current.endswith(normalized):
+                return True
+            raise
         return True
 
     def stop_print(self) -> bool:
-        return False
+        self._post("printer/print/cancel", {})
+        return True
 
 
 def create_moonraker_client(printer: Any, **callbacks: Any) -> MoonrakerPrinterClient:  # noqa: ARG001
