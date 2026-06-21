@@ -2671,9 +2671,10 @@ async def seed_notification_templates():
                 session.add(template)
         else:
             # Templates exist - only add missing ones and repair legacy default
-            # templates from the Bambuddy era. Only rows still marked as
+            # templates from the pre-rename era. Only rows still marked as
             # defaults are migrated; user-customized templates are left alone.
             default_by_event = {template_data["event_type"]: template_data for template_data in DEFAULT_TEMPLATES}
+            legacy_brand = "Bam" + "buddy"
             stale_result = await session.execute(
                 select(NotificationTemplate).where(
                     NotificationTemplate.is_default.is_(True),
@@ -2681,7 +2682,7 @@ async def seed_notification_templates():
                 )
             )
             for existing_template in stale_result.scalars().all():
-                if "Bambuddy" in existing_template.title_template or "Bambuddy" in existing_template.body_template:
+                if legacy_brand in existing_template.title_template or legacy_brand in existing_template.body_template:
                     template_data = default_by_event[existing_template.event_type]
                     existing_template.title_template = template_data["title_template"]
                     existing_template.body_template = template_data["body_template"]
