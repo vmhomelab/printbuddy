@@ -138,6 +138,46 @@ describe('PrintersPage', () => {
       });
     });
 
+    it('shows a dedicated direct Upload action for Prusa printers', async () => {
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          ...mockPrinters[0],
+          id: 7,
+          name: 'Prusa CORE One',
+          provider: 'prusalink',
+          model: 'Prusa CORE One',
+        }])),
+      );
+
+      render(<PrintersPage />);
+
+      expect((await screen.findAllByText('Prusa CORE One')).length).toBeGreaterThan(0);
+      const uploadButton = await screen.findByRole('button', { name: 'Upload' });
+      const printButton = await screen.findByRole('button', { name: 'Print' });
+      expect(uploadButton).toBeInTheDocument();
+      expect(printButton).toBeInTheDocument();
+    });
+
+    it('shows the updated Prusa USB write notice from the direct Upload action', async () => {
+      const user = userEvent.setup();
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          ...mockPrinters[0],
+          id: 7,
+          name: 'Prusa CORE One',
+          provider: 'prusalink',
+          model: 'Prusa CORE One',
+        }])),
+      );
+
+      render(<PrintersPage />);
+
+      expect((await screen.findAllByText('Prusa CORE One')).length).toBeGreaterThan(0);
+      await user.click(await screen.findByRole('button', { name: 'Upload' }));
+
+      expect(screen.getByText('Prusa uploads can take a few seconds to a few minutes depending upon file size while the printer writes the file to USB storage.')).toBeInTheDocument();
+    });
+
     it('shows assigned Panda Breath data only on the matching printer card', async () => {
       server.use(
         http.get('/api/v1/settings/ui-preferences', () => HttpResponse.json({

@@ -50,6 +50,7 @@ import {
   Wind,
   AirVent,
   Download,
+  Upload,
   ScanSearch,
   CheckCircle,
   CheckSquare,
@@ -1744,6 +1745,7 @@ function PrinterCard({
   const [showResumeConfirm, setShowResumeConfirm] = useState(false);
   const [showSkipObjectsModal, setShowSkipObjectsModal] = useState(false);
   const [showUploadForPrint, setShowUploadForPrint] = useState(false);
+  const [showPrusaDirectUpload, setShowPrusaDirectUpload] = useState(false);
   const [showPrinterInfo, setShowPrinterInfo] = useState(false);
   const [showDiagnostic, setShowDiagnostic] = useState(false);
   const closePrinterInfo = useCallback(() => setShowPrinterInfo(false), []);
@@ -5087,16 +5089,30 @@ function PrinterCard({
                 {t('printers.files')}
               </Button>
               {isConnected && status?.state !== 'RUNNING' && status?.state !== 'PAUSE' && (
-                <Button
-                  size="sm"
-                  onClick={() => setShowUploadForPrint(true)}
-                  disabled={!hasPermission('printers:control')}
-                  title={!hasPermission('printers:control') ? t('printers.permission.noControl') : t('common.print')}
-                  className="!bg-bambu-green hover:!bg-bambu-green/80 !text-white"
-                >
-                  <PrinterIcon className="w-4 h-4" />
-                  {t('common.print')}
-                </Button>
+                <>
+                  {isPrusaModelPrinter && (
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => setShowPrusaDirectUpload(true)}
+                      disabled={!hasPermission('printers:files')}
+                      title={!hasPermission('printers:files') ? t('printers.permission.noFiles') : t('common.upload', 'Upload')}
+                    >
+                      <Upload className="w-4 h-4" />
+                      {t('common.upload', 'Upload')}
+                    </Button>
+                  )}
+                  <Button
+                    size="sm"
+                    onClick={() => setShowUploadForPrint(true)}
+                    disabled={!hasPermission('printers:control')}
+                    title={!hasPermission('printers:control') ? t('printers.permission.noControl') : t('common.print')}
+                    className="!bg-bambu-green hover:!bg-bambu-green/80 !text-white"
+                  >
+                    <PrinterIcon className="w-4 h-4" />
+                    {t('common.print')}
+                  </Button>
+                </>
               )}
           </div>
         )}
@@ -5152,7 +5168,7 @@ function PrinterCard({
           accept={printableFileRules.accept}
           acceptedFileDescription={printableFileDescription}
           uploadTargetPrinterId={printer.id}
-          uploadNotice={isPrusaModelPrinter ? t('fileManager.prusaUploadPatienceNote', 'Prusa uploads can take 20–30 seconds while the printer writes the file to USB storage. Please keep this window open and be patient.') : undefined}
+          uploadNotice={isPrusaModelPrinter ? t('fileManager.prusaUploadPatienceNote', 'Prusa uploads can take a few seconds to a few minutes depending upon file size while the printer writes the file to USB storage.') : undefined}
           validateFile={(file) => {
             if (!isPrintableForProvider(file.name, printer.provider)) {
               return printableFileError;
@@ -5167,6 +5183,25 @@ function PrinterCard({
               return t('printers.incompatibleFile', 'This file was sliced for {{slicedFor}}, but this printer is a {{printerModel}}', { slicedFor, printerModel });
             }
             setPrintAfterUpload({ id: uploadedFile.id, filename: uploadedFile.filename });
+          }}
+        />
+      )}
+
+      {/* Direct Prusa Upload Modal */}
+      {showPrusaDirectUpload && (
+        <FileUploadModal
+          folderId={null}
+          onClose={() => setShowPrusaDirectUpload(false)}
+          onUploadComplete={() => {}}
+          autoUpload
+          accept={printableFileRules.accept}
+          acceptedFileDescription={printableFileDescription}
+          directPrinterUploadId={printer.id}
+          uploadNotice={t('fileManager.prusaUploadPatienceNote', 'Prusa uploads can take a few seconds to a few minutes depending upon file size while the printer writes the file to USB storage.')}
+          validateFile={(file) => {
+            if (!isPrintableForProvider(file.name, printer.provider)) {
+              return printableFileError;
+            }
           }}
         />
       )}

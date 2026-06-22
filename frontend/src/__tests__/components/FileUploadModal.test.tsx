@@ -623,6 +623,33 @@ describe('FileUploadModal', () => {
       await waitFor(() => expect(seenTargetPrinterId).toBe('42'));
     });
 
+    it('uploads directly to printer storage when directPrinterUploadId is provided', async () => {
+      const user = userEvent.setup();
+      let seenUploadPath: string | null = null;
+      let libraryUploadCalled = false;
+
+      server.use(
+        http.post('/api/v1/library/files', () => {
+          libraryUploadCalled = true;
+          return HttpResponse.json({}, { status: 500 });
+        }),
+        http.post('/api/v1/printers/:id/files/upload', ({ request, params }) => {
+          expect(params.id).toBe('7');
+          seenUploadPath = new URL(request.url).searchParams.get('path');
+          return HttpResponse.json({ status: 'uploaded', path: '/usb/prusa.gcode', filename: 'prusa.gcode' });
+        })
+      );
+
+      render(<FileUploadModal {...defaultProps} directPrinterUploadId={7} directPrinterUploadPath="/" />);
+      const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+      await user.upload(fileInput, new File(['G28'], 'prusa.gcode', { type: 'application/octet-stream' }));
+      await user.click(screen.getByRole('button', { name: /Upload \(1\)/i }));
+
+      await waitFor(() => expect(seenUploadPath).toBe('/'));
+      expect(libraryUploadCalled).toBe(false);
+      expect(defaultProps.onClose).toHaveBeenCalled();
+    });
+
     it('does not set accept attribute when prop is omitted', () => {
       render(<FileUploadModal {...defaultProps} />);
       const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;

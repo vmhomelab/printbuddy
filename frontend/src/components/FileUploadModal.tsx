@@ -41,11 +41,15 @@ interface FileUploadModalProps {
   acceptedFileDescription?: string;
   /** Optional printer context for backend provider-specific print-file validation. */
   uploadTargetPrinterId?: number;
+  /** Upload files directly to this printer storage instead of the library. */
+  directPrinterUploadId?: number;
+  /** Remote printer folder used for direct printer uploads. */
+  directPrinterUploadPath?: string;
   /** Optional notice shown in the modal before upload starts, e.g. provider-specific upload timing. */
   uploadNotice?: string;
 }
 
-export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUploaded, autoUpload, validateFile, accept, acceptedFileDescription, uploadTargetPrinterId, uploadNotice }: FileUploadModalProps) {
+export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUploaded, autoUpload, validateFile, accept, acceptedFileDescription, uploadTargetPrinterId, directPrinterUploadId, directPrinterUploadPath = '/', uploadNotice }: FileUploadModalProps) {
   const { t } = useTranslation();
   const [files, setFiles] = useState<UploadFile[]>([]);
   const [isDragging, setIsDragging] = useState(false);
@@ -98,6 +102,9 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
             extractedCount: result.extracted,
             error: result.errors.length > 0 ? t('fileManager.zipFilesFailed', '{{count}} files failed', { count: result.errors.length }) : undefined,
           });
+        } else if (directPrinterUploadId != null) {
+          await api.uploadPrinterFile(directPrinterUploadId, uf.file, directPrinterUploadPath);
+          updateFileStatus(uf.file, { status: 'success' });
         } else {
           const result = await api.uploadLibraryFile(uf.file, folderId, generateStlThumbnails, uploadTargetPrinterId);
           updateFileStatus(uf.file, { status: 'success' });

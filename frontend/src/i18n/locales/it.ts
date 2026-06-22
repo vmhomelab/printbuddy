@@ -3032,7 +3032,7 @@ export default {
     dropFilesHere: 'Rilascia file qui',
     orClickToBrowse: 'oppure clicca per sfogliare',
     allFileTypesSupported: 'Tutti i tipi di file supportati. I file ZIP saranno estratti.',
-    prusaUploadPatienceNote: 'I caricamenti su Prusa possono richiedere 20–30 secondi mentre la stampante scrive il file sulla memoria USB. Tieni aperta questa finestra e attendi.',
+    prusaUploadPatienceNote: 'I caricamenti su Prusa possono richiedere da pochi secondi a qualche minuto in base alla dimensione del file mentre la stampante scrive il file sulla memoria USB.',
     zipFilesDetected: 'File ZIP rilevati',
     zipExtractOptions: 'I file ZIP saranno estratti. Scegli come gestire la struttura cartelle:',
     preserveZipStructure: 'Mantieni struttura cartelle dal ZIP',
