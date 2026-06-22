@@ -148,6 +148,7 @@ class PrusaLinkPrinterClient:
         self._has_status_sample = False
         self._last_bed_temp: float | None = None
         self._current_print_started_at: float | None = None
+        self._file_storage: str | None = None
 
     @property
     def _basic_auth(self) -> httpx.BasicAuth | None:
@@ -249,11 +250,57 @@ class PrusaLinkPrinterClient:
         response.raise_for_status()
         return True
 
+    def _available_storage_key(self, storage: dict[str, Any]) -> str | None:
+        if storage.get("available") is False or storage.get("read_only") is True:
+            return None
+        raw_key = str(storage.get("name") or storage.get("path") or "").strip().strip("/")
+        if not raw_key:
+            return None
+        return raw_key.split("/", 1)[0]
+
+    @property
+    def file_storage(self) -> str:
+        """Return the PrusaLink storage key used for file operations.
+
+        Older PrusaLink examples used ``local``, but CORE One exposes printable
+        files on a USB storage namespace. Discover the writable storage first
+        and keep ``local`` only as a compatibility fallback when discovery is
+        unavailable.
+        """
+        if self._file_storage:
+            return self._file_storage
+        try:
+            data = self._get("api/v1/storage")
+        except Exception as exc:  # noqa: BLE001 - storage discovery is optional on older firmware/mock servers
+            logger.debug("PrusaLink storage discovery failed; falling back to local storage: %s", type(exc).__name__)
+            self._file_storage = "local"
+            return self._file_storage
+
+        storages = data.get("storage_list") or data.get("storages") or data.get("storage") or []
+        if isinstance(storages, dict):
+            storages = [storages]
+        candidates = [self._available_storage_key(item) for item in storages if isinstance(item, dict)]
+        candidates = [candidate for candidate in candidates if candidate]
+        preferred = next((candidate for candidate in candidates if candidate.lower() == "usb"), None)
+        self._file_storage = preferred or (candidates[0] if candidates else "local")
+        return self._file_storage
+
+    def _file_api_path(self, remote_path: str, *, suffix: str = "") -> str:
+        normalized = remote_path.strip("/")
+        storage = self.file_storage
+        if normalized == storage:
+            normalized = ""
+        elif normalized.startswith(f"{storage}/"):
+            normalized = normalized[len(storage) + 1 :]
+        quoted_path = quote(normalized, safe="/")
+        base = f"api/v1/files/{quote(storage, safe='')}"
+        if quoted_path:
+            base += f"/{quoted_path}"
+        return base + suffix
+
     def list_files(self, path: str = "/") -> list[dict[str, Any]]:
-        api_path = "api/v1/files/local"
+        api_path = self._file_api_path(path)
         normalized = path.strip("/")
-        if normalized:
-            api_path += "/" + quote(normalized, safe="/")
         data = self._get(api_path)
         children = data.get("children") or data.get("files") or []
         files: list[dict[str, Any]] = []
@@ -278,7 +325,7 @@ class PrusaLinkPrinterClient:
 
     def upload_file(self, local_path: Path, remote_path: str) -> bool:
         normalized = remote_path.strip("/") or local_path.name
-        url = urljoin(self.base_url, f"api/v1/files/local/{quote(normalized, safe='/')}")
+        url = urljoin(self.base_url, self._file_api_path(normalized))
         with open(local_path, "rb") as fh:
             kwargs: dict[str, Any] = {
                 "timeout": max(self.timeout, 60.0),
@@ -313,7 +360,7 @@ class PrusaLinkPrinterClient:
 
     def download_file(self, remote_path: str) -> bytes | None:
         normalized = remote_path.strip("/")
-        url = urljoin(self.base_url, f"api/v1/files/local/{quote(normalized, safe='/')}/raw")
+        url = urljoin(self.base_url, self._file_api_path(normalized, suffix="/raw"))
         response = httpx.get(url, auth=self._basic_auth, headers=self._headers, timeout=max(self.timeout, 60.0))
         authenticate = response.headers.get("www-authenticate", "").lower()
         if response.status_code == 401 and "digest" in authenticate and self._digest_auth is not None:
@@ -325,7 +372,7 @@ class PrusaLinkPrinterClient:
 
     def delete_file(self, remote_path: str) -> bool:
         normalized = remote_path.strip("/")
-        return self._delete(f"api/v1/files/local/{quote(normalized, safe='/')}")
+        return self._delete(self._file_api_path(normalized))
 
     def connect(self) -> None:
         if self.api_mode == "legacy":
@@ -519,7 +566,7 @@ class PrusaLinkPrinterClient:
 
     def start_print(self, filename: str, plate_id: int = 1, **kwargs: Any) -> bool:  # noqa: ARG002
         normalized = filename.strip("/")
-        response = self._request("post", f"api/v1/files/local/{quote(normalized, safe='/')}")
+        response = self._request("post", self._file_api_path(normalized))
         response.raise_for_status()
         return True
 

@@ -65,6 +65,72 @@ def test_prusalink_finished_job_state_emits_completed_even_without_full_progress
     ]
 
 
+def test_prusalink_upload_uses_discovered_usb_storage(monkeypatch, tmp_path):
+    client = PrusaLinkPrinterClient(base_url="http://prusa.local", password="secret")
+    local_file = tmp_path / "Love Paw Print.gcode"
+    local_file.write_text("G28\n", encoding="utf-8")
+    requested_paths: list[str] = []
+    put_urls: list[str] = []
+
+    def fake_get(path):
+        requested_paths.append(path)
+        if path == "api/v1/storage":
+            return {
+                "storage_list": [{"path": "/usb", "name": "usb", "type": "USB", "read_only": False, "available": True}]
+            }
+        raise AssertionError(f"unexpected path: {path}")
+
+    def fake_put(url, **kwargs):  # noqa: ARG001
+        put_urls.append(str(url))
+        return httpx.Response(201, request=httpx.Request("PUT", url))
+
+    monkeypatch.setattr(client, "_get", fake_get)
+    monkeypatch.setattr(httpx, "put", fake_put)
+
+    assert client.upload_file(local_file, "Love Paw Print.gcode") is True
+
+    assert requested_paths == ["api/v1/storage"]
+    assert put_urls == ["http://prusa.local/api/v1/files/usb/Love%20Paw%20Print.gcode"]
+
+
+def test_prusalink_start_print_uses_discovered_usb_storage(monkeypatch):
+    client = PrusaLinkPrinterClient(base_url="http://prusa.local", password="secret")
+    posted_paths: list[str] = []
+
+    def fake_get(path):
+        if path == "api/v1/storage":
+            return {
+                "storage_list": [{"path": "/usb", "name": "usb", "type": "USB", "read_only": False, "available": True}]
+            }
+        raise AssertionError(f"unexpected path: {path}")
+
+    def fake_request(method, path, *, json_payload=None):  # noqa: ARG001
+        posted_paths.append(f"{method.upper()} {path}")
+        return httpx.Response(204, request=httpx.Request(method.upper(), f"http://prusa.local/{path}"))
+
+    monkeypatch.setattr(client, "_get", fake_get)
+    monkeypatch.setattr(client, "_request", fake_request)
+
+    assert client.start_print("Love Paw Print.gcode") is True
+
+    assert posted_paths == ["POST api/v1/files/usb/Love%20Paw%20Print.gcode"]
+
+
+def test_prusalink_falls_back_to_local_storage_when_storage_probe_fails(monkeypatch):
+    client = PrusaLinkPrinterClient(base_url="http://prusa.local", password="secret")
+
+    def fake_get(path):
+        if path == "api/v1/storage":
+            request = httpx.Request("GET", "http://prusa.local/api/v1/storage")
+            response = httpx.Response(404, request=request)
+            raise httpx.HTTPStatusError("not found", request=request, response=response)
+        raise AssertionError(f"unexpected path: {path}")
+
+    monkeypatch.setattr(client, "_get", fake_get)
+
+    assert client.file_storage == "local"
+
+
 def test_prusalink_completion_payload_includes_elapsed_time(monkeypatch):
     complete_payloads = []
     client = PrusaLinkPrinterClient(
