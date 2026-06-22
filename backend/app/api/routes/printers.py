@@ -371,7 +371,7 @@ async def update_printer(
     await db.refresh(printer)
 
     # Reconnect if connection settings changed
-    if any(k in update_data for k in ["ip_address", "access_code", "is_active"]):
+    if any(k in update_data for k in ["ip_address", "access_code", "auth_token", "provider_options", "is_active"]):
         printer_manager.disconnect_printer(printer_id)
         if printer.is_active:
             await printer_manager.connect_printer(printer)

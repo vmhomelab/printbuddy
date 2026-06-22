@@ -158,6 +158,29 @@ function buildPrusaLinkProviderOptions(mode: PrusaLinkApiAuthMode): string {
   return JSON.stringify({ prusalink_api_mode: 'auto', prusalink_auth_mode: 'auto' });
 }
 
+function parsePrusaLinkApiAuthMode(providerOptions?: string | null): PrusaLinkApiAuthMode {
+  if (!providerOptions) {
+    return 'auto';
+  }
+  try {
+    const options = JSON.parse(providerOptions) as Record<string, unknown>;
+    const apiMode = String(options.prusalink_api_mode || 'auto');
+    const authMode = String(options.prusalink_auth_mode || 'auto');
+    if (apiMode === 'modern' && authMode === 'digest') {
+      return 'modern_digest';
+    }
+    if (apiMode === 'modern' && authMode === 'basic_x_api_key') {
+      return 'modern_basic_x_api_key';
+    }
+    if (apiMode === 'legacy' && authMode === 'x_api_key') {
+      return 'legacy_x_api_key';
+    }
+  } catch {
+    // Fall back to auto for older/malformed provider_options.
+  }
+  return 'auto';
+}
+
 function isPrusaPrinter(printer: Pick<Printer, 'provider' | 'model'>): boolean {
   const provider = printer.provider?.toLowerCase();
   const model = printer.model?.toLowerCase() ?? '';
@@ -6739,6 +6762,7 @@ function EditPrinterModal({
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
+  const isPrusaLinkProvider = printer.provider === 'prusalink';
   const [form, setForm] = useState({
     name: printer.name,
     ip_address: printer.ip_address,
@@ -6746,6 +6770,7 @@ function EditPrinterModal({
     model: printer.model || '',
     location: printer.location || '',
     auto_archive: printer.auto_archive,
+    prusa_link_api_auth_mode: parsePrusaLinkApiAuthMode(printer.provider_options),
   });
 
   // Setup-time pre-flight — same warn-on-save as the Add-Printer dialog, so an
@@ -6780,8 +6805,12 @@ function EditPrinterModal({
       location: form.location || undefined,
       auto_archive: form.auto_archive,
     };
-    // Only include access_code if it was changed
-    if (form.access_code) {
+    if (isPrusaLinkProvider) {
+      data.provider_options = buildPrusaLinkProviderOptions(form.prusa_link_api_auth_mode);
+      if (form.access_code) {
+        data.auth_token = form.access_code;
+      }
+    } else if (form.access_code) {
       data.access_code = form.access_code;
     }
     updateMutation.mutate(data);
@@ -6789,6 +6818,10 @@ function EditPrinterModal({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isPrusaLinkProvider) {
+      doSave();
+      return;
+    }
     setCheckingSave(true);
     try {
       const result = await api.diagnoseConnection({
@@ -6851,15 +6884,42 @@ function EditPrinterModal({
               <p className="text-xs text-bambu-gray mt-1">{t('printers.serialCannotBeChanged')}</p>
             </div>
             <div>
-              <label className="block text-sm text-bambu-gray mb-1">{t('printers.accessCode')}</label>
+              <label htmlFor="edit_printer_secret" className="block text-sm text-bambu-gray mb-1">
+                {isPrusaLinkProvider ? 'PrusaLink password / API key' : t('printers.accessCode')}
+              </label>
               <input
+                id="edit_printer_secret"
                 type="password"
                 className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                 value={form.access_code}
                 onChange={(e) => setForm({ ...form, access_code: e.target.value })}
                 placeholder={t('printers.accessCodePlaceholder')}
               />
+              {isPrusaLinkProvider ? (
+                <p className="text-xs text-bambu-gray mt-1">Leave empty to keep the current PrusaLink secret.</p>
+              ) : null}
             </div>
+            {isPrusaLinkProvider ? (
+              <div>
+                <label htmlFor="edit_prusalink_api_auth_mode" className="block text-sm text-bambu-gray mb-1">
+                  PrusaLink API / authentication mode
+                </label>
+                <select
+                  id="edit_prusalink_api_auth_mode"
+                  className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                  value={form.prusa_link_api_auth_mode}
+                  onChange={(e) => setForm({ ...form, prusa_link_api_auth_mode: e.target.value as PrusaLinkApiAuthMode })}
+                >
+                  <option value="auto">Auto-detect on save (recommended)</option>
+                  <option value="modern_digest">Modern PrusaLink /api/v1 + HTTP Digest</option>
+                  <option value="legacy_x_api_key">Legacy /api + X-API-Key</option>
+                  <option value="modern_basic_x_api_key">Compatibility: /api/v1 + Basic/X-Api-Key</option>
+                </select>
+                <p className="text-xs text-bambu-gray mt-1">
+                  Existing printers can be switched here if they were created before PrusaLink auth detection was added.
+                </p>
+              </div>
+            ) : null}
             <div>
               <PrinterModelSelect
                 id="edit_printer_model"
