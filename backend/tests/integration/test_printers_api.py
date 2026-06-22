@@ -295,6 +295,38 @@ class TestPrintersAPI:
 
         assert response.status_code == 404
 
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_update_prusalink_auth_mode_persists_even_if_reconnect_fails(
+        self, async_client: AsyncClient, printer_factory, db_session, monkeypatch
+    ):
+        """Editing PrusaLink auth settings must not 500 when immediate reconnect fails."""
+        printer = await printer_factory(
+            name="Prusa Mock Server",
+            provider="prusalink",
+            api_url="http://10.17.1.96:8087",
+            auth_token="old-token",
+            provider_options='{"prusalink_api_mode":"auto","prusalink_auth_mode":"auto"}',
+            is_active=True,
+        )
+        monkeypatch.setattr(
+            "backend.app.api.routes.printers.printer_manager.connect_printer",
+            AsyncMock(side_effect=RuntimeError("mock reconnect failed")),
+        )
+
+        response = await async_client.patch(
+            f"/api/v1/printers/{printer.id}",
+            json={
+                "auth_token": "updated-token",
+                "provider_options": '{"prusalink_api_mode":"modern","prusalink_auth_mode":"digest"}',
+            },
+        )
+
+        assert response.status_code == 200
+        result = response.json()
+        assert result["auth_token"] == "updated-token"
+        assert result["provider_options"] == '{"prusalink_api_mode":"modern","prusalink_auth_mode":"digest"}'
+
     # ========================================================================
     # Delete endpoints
     # ========================================================================

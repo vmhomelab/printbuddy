@@ -374,7 +374,15 @@ async def update_printer(
     if any(k in update_data for k in ["ip_address", "access_code", "auth_token", "provider_options", "is_active"]):
         printer_manager.disconnect_printer(printer_id)
         if printer.is_active:
-            await printer_manager.connect_printer(printer)
+            try:
+                await printer_manager.connect_printer(printer)
+            except Exception as exc:
+                logger.warning(
+                    "Printer %s settings were saved, but reconnect failed after update: %s",
+                    printer_id,
+                    exc,
+                    exc_info=True,
+                )
 
     return printer
 
