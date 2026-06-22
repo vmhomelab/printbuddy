@@ -47,9 +47,11 @@ interface FileUploadModalProps {
   directPrinterUploadPath?: string;
   /** Optional notice shown in the modal before upload starts, e.g. provider-specific upload timing. */
   uploadNotice?: string;
+  /** Show a direct-upload option to start printing immediately after the file lands on printer storage. */
+  allowStartPrintAfterUpload?: boolean;
 }
 
-export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUploaded, autoUpload, validateFile, accept, acceptedFileDescription, uploadTargetPrinterId, directPrinterUploadId, directPrinterUploadPath = '/', uploadNotice }: FileUploadModalProps) {
+export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUploaded, autoUpload, validateFile, accept, acceptedFileDescription, uploadTargetPrinterId, directPrinterUploadId, directPrinterUploadPath = '/', uploadNotice, allowStartPrintAfterUpload = false }: FileUploadModalProps) {
   const { t } = useTranslation();
   const [files, setFiles] = useState<UploadFile[]>([]);
   const [isDragging, setIsDragging] = useState(false);
@@ -57,6 +59,7 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
   const [preserveZipStructure, setPreserveZipStructure] = useState(true);
   const [createFolderFromZip, setCreateFolderFromZip] = useState(false);
   const [generateStlThumbnails, setGenerateStlThumbnails] = useState(true);
+  const [startPrintAfterUpload, setStartPrintAfterUpload] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -103,7 +106,10 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
             error: result.errors.length > 0 ? t('fileManager.zipFilesFailed', '{{count}} files failed', { count: result.errors.length }) : undefined,
           });
         } else if (directPrinterUploadId != null) {
-          await api.uploadPrinterFile(directPrinterUploadId, uf.file, directPrinterUploadPath);
+          const uploaded = await api.uploadPrinterFile(directPrinterUploadId, uf.file, directPrinterUploadPath);
+          if (allowStartPrintAfterUpload && startPrintAfterUpload) {
+            await api.startPrinterFile(directPrinterUploadId, uploaded.path);
+          }
           updateFileStatus(uf.file, { status: 'success' });
         } else {
           const result = await api.uploadLibraryFile(uf.file, folderId, generateStlThumbnails, uploadTargetPrinterId);
@@ -212,6 +218,18 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
             className="hidden"
             onChange={handleFileSelect}
           />
+
+          {allowStartPrintAfterUpload && directPrinterUploadId != null && (
+            <label className="flex items-center gap-2 cursor-pointer rounded-lg border border-bambu-dark-tertiary bg-bambu-dark/40 p-3">
+              <input
+                type="checkbox"
+                checked={startPrintAfterUpload}
+                onChange={(e) => setStartPrintAfterUpload(e.target.checked)}
+                className="w-4 h-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+              />
+              <span className="text-sm text-white">Start print after upload</span>
+            </label>
+          )}
 
           {uploadNotice && (
             <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg">

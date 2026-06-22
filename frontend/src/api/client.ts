@@ -3748,6 +3748,10 @@ export const api = {
     }
     return response.json();
   },
+  startPrinterFile: (printerId: number, path: string) =>
+    request<{ status: string; path: string }>(`/printers/${printerId}/files/start?path=${encodeURIComponent(path)}`, {
+      method: 'POST',
+    }),
   deletePrinterFile: (printerId: number, path: string) =>
     request<{ status: string; path: string }>(`/printers/${printerId}/files?path=${encodeURIComponent(path)}`, {
       method: 'DELETE',

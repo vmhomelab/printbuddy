@@ -5102,16 +5102,18 @@ function PrinterCard({
                       {t('common.upload', 'Upload')}
                     </Button>
                   )}
-                  <Button
-                    size="sm"
-                    onClick={() => setShowUploadForPrint(true)}
-                    disabled={!hasPermission('printers:control')}
-                    title={!hasPermission('printers:control') ? t('printers.permission.noControl') : t('common.print')}
-                    className="!bg-bambu-green hover:!bg-bambu-green/80 !text-white"
-                  >
-                    <PrinterIcon className="w-4 h-4" />
-                    {t('common.print')}
-                  </Button>
+                  {!isPrusaModelPrinter && (
+                    <Button
+                      size="sm"
+                      onClick={() => setShowUploadForPrint(true)}
+                      disabled={!hasPermission('printers:control')}
+                      title={!hasPermission('printers:control') ? t('printers.permission.noControl') : t('common.print')}
+                      className="!bg-bambu-green hover:!bg-bambu-green/80 !text-white"
+                    >
+                      <PrinterIcon className="w-4 h-4" />
+                      {t('common.print')}
+                    </Button>
+                  )}
                 </>
               )}
           </div>
@@ -5193,10 +5195,10 @@ function PrinterCard({
           folderId={null}
           onClose={() => setShowPrusaDirectUpload(false)}
           onUploadComplete={() => {}}
-          autoUpload
           accept={printableFileRules.accept}
           acceptedFileDescription={printableFileDescription}
           directPrinterUploadId={printer.id}
+          allowStartPrintAfterUpload
           uploadNotice={t('fileManager.prusaUploadPatienceNote', 'Prusa uploads can take a few seconds to a few minutes depending upon file size while the printer writes the file to USB storage.')}
           validateFile={(file) => {
             if (!isPrintableForProvider(file.name, printer.provider)) {

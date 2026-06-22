@@ -626,6 +626,7 @@ describe('FileUploadModal', () => {
     it('uploads directly to printer storage when directPrinterUploadId is provided', async () => {
       const user = userEvent.setup();
       let seenUploadPath: string | null = null;
+      let startCalled = false;
       let libraryUploadCalled = false;
 
       server.use(
@@ -636,17 +637,51 @@ describe('FileUploadModal', () => {
         http.post('/api/v1/printers/:id/files/upload', ({ request, params }) => {
           expect(params.id).toBe('7');
           seenUploadPath = new URL(request.url).searchParams.get('path');
-          return HttpResponse.json({ status: 'uploaded', path: '/usb/prusa.gcode', filename: 'prusa.gcode' });
+          return HttpResponse.json({ status: 'uploaded', path: '/prusa.gcode', filename: 'prusa.gcode' });
+        }),
+        http.post('/api/v1/printers/:id/files/start', () => {
+          startCalled = true;
+          return HttpResponse.json({ status: 'started', path: '/prusa.gcode' });
         })
       );
 
-      render(<FileUploadModal {...defaultProps} directPrinterUploadId={7} directPrinterUploadPath="/" />);
+      render(<FileUploadModal {...defaultProps} directPrinterUploadId={7} directPrinterUploadPath="/" allowStartPrintAfterUpload />);
       const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
       await user.upload(fileInput, new File(['G28'], 'prusa.gcode', { type: 'application/octet-stream' }));
       await user.click(screen.getByRole('button', { name: /Upload \(1\)/i }));
 
       await waitFor(() => expect(seenUploadPath).toBe('/'));
       expect(libraryUploadCalled).toBe(false);
+      expect(startCalled).toBe(false);
+      expect(defaultProps.onClose).toHaveBeenCalled();
+    });
+
+    it('starts printing the direct printer upload when requested', async () => {
+      const user = userEvent.setup();
+      let seenStartPath: string | null = null;
+
+      server.use(
+        http.post('/api/v1/printers/:id/files/upload', () => HttpResponse.json({
+          status: 'uploaded',
+          path: '/Love Paw Print.gcode',
+          filename: 'Love Paw Print.gcode',
+        })),
+        http.post('/api/v1/printers/:id/files/start', ({ request, params }) => {
+          expect(params.id).toBe('7');
+          seenStartPath = new URL(request.url).searchParams.get('path');
+          return HttpResponse.json({ status: 'started', path: '/Love Paw Print.gcode' });
+        })
+      );
+
+      render(<FileUploadModal {...defaultProps} directPrinterUploadId={7} allowStartPrintAfterUpload />);
+      expect(screen.getByLabelText('Start print after upload')).toBeInTheDocument();
+      await user.click(screen.getByLabelText('Start print after upload'));
+
+      const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+      await user.upload(fileInput, new File(['G28'], 'Love Paw Print.gcode', { type: 'application/octet-stream' }));
+      await user.click(screen.getByRole('button', { name: /Upload \(1\)/i }));
+
+      await waitFor(() => expect(seenStartPath).toBe('/Love Paw Print.gcode'));
       expect(defaultProps.onClose).toHaveBeenCalled();
     });
 

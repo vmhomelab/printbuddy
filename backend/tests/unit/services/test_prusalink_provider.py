@@ -116,7 +116,7 @@ def test_prusalink_start_print_uses_discovered_usb_storage(monkeypatch):
     assert posted_paths == ["POST api/v1/files/usb/Love%20Paw%20Print.gcode"]
 
 
-def test_prusalink_falls_back_to_local_storage_when_storage_probe_fails(monkeypatch):
+def test_prusalink_falls_back_to_usb_storage_when_storage_probe_fails(monkeypatch):
     client = PrusaLinkPrinterClient(base_url="http://prusa.local", password="secret")
 
     def fake_get(path):
@@ -128,7 +128,7 @@ def test_prusalink_falls_back_to_local_storage_when_storage_probe_fails(monkeypa
 
     monkeypatch.setattr(client, "_get", fake_get)
 
-    assert client.file_storage == "local"
+    assert client.file_storage == "usb"
 
 
 def test_prusalink_completion_payload_includes_elapsed_time(monkeypatch):

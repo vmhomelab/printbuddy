@@ -1217,6 +1217,30 @@ async def upload_printer_file(
     return {"status": "uploaded", "path": remote_path, "filename": Path(remote_path).name}
 
 
+@router.post("/{printer_id}/files/start")
+async def start_printer_file(
+    printer_id: int,
+    path: str,
+    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_CONTROL),
+    db: AsyncSession = Depends(get_db),
+):
+    """Start printing an already-uploaded file from printer storage."""
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+
+    provider_client = _provider_for_printer(printer)
+    if provider_client is not None:
+        success = provider_client.start_print(path)
+    else:
+        success = printer_manager.start_print(printer_id, path)
+
+    if not success:
+        raise HTTPException(500, f"Failed to start print: {path}")
+    return {"status": "started", "path": path}
+
+
 @router.get("/{printer_id}/files/download")
 async def download_printer_file(
     printer_id: int,

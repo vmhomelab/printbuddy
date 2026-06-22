@@ -264,16 +264,16 @@ class PrusaLinkPrinterClient:
 
         Older PrusaLink examples used ``local``, but CORE One exposes printable
         files on a USB storage namespace. Discover the writable storage first
-        and keep ``local`` only as a compatibility fallback when discovery is
-        unavailable.
+        and default to ``usb`` when discovery is unavailable so direct uploads
+        and starts hit the path exposed by current CORE firmware.
         """
         if self._file_storage:
             return self._file_storage
         try:
             data = self._get("api/v1/storage")
         except Exception as exc:  # noqa: BLE001 - storage discovery is optional on older firmware/mock servers
-            logger.debug("PrusaLink storage discovery failed; falling back to local storage: %s", type(exc).__name__)
-            self._file_storage = "local"
+            logger.debug("PrusaLink storage discovery failed; falling back to USB storage: %s", type(exc).__name__)
+            self._file_storage = "usb"
             return self._file_storage
 
         storages = data.get("storage_list") or data.get("storages") or data.get("storage") or []
@@ -282,7 +282,7 @@ class PrusaLinkPrinterClient:
         candidates = [self._available_storage_key(item) for item in storages if isinstance(item, dict)]
         candidates = [candidate for candidate in candidates if candidate]
         preferred = next((candidate for candidate in candidates if candidate.lower() == "usb"), None)
-        self._file_storage = preferred or (candidates[0] if candidates else "local")
+        self._file_storage = preferred or (candidates[0] if candidates else "usb")
         return self._file_storage
 
     def _file_api_path(self, remote_path: str, *, suffix: str = "") -> str:

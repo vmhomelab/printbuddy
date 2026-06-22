@@ -878,8 +878,8 @@ def test_prusalink_lists_uploads_and_starts_print(monkeypatch, tmp_path):
     ]
     assert client.upload_file(gcode, "/cube.bgcode") is True
     assert client.start_print("/cube.bgcode") is True
-    assert ("put", "http://prusa.local/api/v1/files/local/cube.bgcode") in calls
-    assert ("post", "http://prusa.local/api/v1/files/local/cube.bgcode") in calls
+    assert ("put", "http://prusa.local/api/v1/files/usb/cube.bgcode") in calls
+    assert ("post", "http://prusa.local/api/v1/files/usb/cube.bgcode") in calls
 
 
 def test_prusalink_upload_uses_digest_when_detected(monkeypatch, tmp_path):
@@ -897,7 +897,7 @@ def test_prusalink_upload_uses_digest_when_detected(monkeypatch, tmp_path):
     assert client.upload_file(gcode, "/cube.gcode") is True
     assert uploaded == [
         (
-            "http://prusa.local/api/v1/files/local/cube.gcode",
+            "http://prusa.local/api/v1/files/usb/cube.gcode",
             httpx.DigestAuth,
             {"Content-Type": "application/octet-stream"},
         )

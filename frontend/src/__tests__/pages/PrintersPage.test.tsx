@@ -138,7 +138,7 @@ describe('PrintersPage', () => {
       });
     });
 
-    it('shows a dedicated direct Upload action for Prusa printers', async () => {
+    it('shows one Upload action for Prusa printers', async () => {
       server.use(
         http.get('/api/v1/printers/', () => HttpResponse.json([{
           ...mockPrinters[0],
@@ -153,9 +153,8 @@ describe('PrintersPage', () => {
 
       expect((await screen.findAllByText('Prusa CORE One')).length).toBeGreaterThan(0);
       const uploadButton = await screen.findByRole('button', { name: 'Upload' });
-      const printButton = await screen.findByRole('button', { name: 'Print' });
       expect(uploadButton).toBeInTheDocument();
-      expect(printButton).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Print' })).not.toBeInTheDocument();
     });
 
     it('shows the updated Prusa USB write notice from the direct Upload action', async () => {
