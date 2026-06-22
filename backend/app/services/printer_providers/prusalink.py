@@ -519,7 +519,7 @@ class PrusaLinkPrinterClient:
 
     def start_print(self, filename: str, plate_id: int = 1, **kwargs: Any) -> bool:  # noqa: ARG002
         normalized = filename.strip("/")
-        response = self._request("post", f"api/v1/files/local/{quote(normalized, safe='/')}/print")
+        response = self._request("post", f"api/v1/files/local/{quote(normalized, safe='/')}")
         response.raise_for_status()
         return True
 
