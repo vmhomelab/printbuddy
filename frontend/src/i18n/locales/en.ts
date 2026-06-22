@@ -3046,6 +3046,7 @@ export default {
     dropFilesHere: 'Drop files here',
     orClickToBrowse: 'or click to browse',
     allFileTypesSupported: 'All file types supported. ZIP files will be extracted.',
+    prusaUploadPatienceNote: 'Prusa uploads can take 20–30 seconds while the printer writes the file to USB storage. Please keep this window open and be patient.',
     zipFilesDetected: 'ZIP files detected',
     zipExtractOptions: 'ZIP files will be extracted. Choose how to handle folder structure:',
     preserveZipStructure: 'Preserve folder structure from ZIP',

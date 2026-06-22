@@ -596,6 +596,24 @@ describe('PrintersPage', () => {
       expect(screen.queryByRole('button', { name: 'X+' })).not.toBeInTheDocument();
     });
 
+    it('hides unsupported light and plate-check controls for Prusa printers', async () => {
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{ ...mockPrinters[0], name: 'CORE One', provider: 'prusalink', model: 'Prusa CORE One' }])),
+        http.get('/api/v1/printers/:id/status', () => HttpResponse.json({
+          ...mockPrinterStatus,
+          connected: true,
+          chamber_light: false,
+        })),
+      );
+
+      render(<PrintersPage />);
+
+      await screen.findByText('CORE One');
+      expect(screen.queryByTitle('Turn on chamber light')).toBeNull();
+      expect(screen.queryByTitle('Plate check disabled - Click to enable')).toBeNull();
+      expect(screen.queryByTitle('Manage plate detection calibration')).toBeNull();
+    });
+
     it('sends XYZ jog requests from the printer card controls', async () => {
       const user = userEvent.setup();
       const jogRequests: string[] = [];

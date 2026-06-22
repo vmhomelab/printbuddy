@@ -10,6 +10,7 @@ import {
   Archive as ArchiveIcon,
   Printer,
   Image,
+  Info,
 } from 'lucide-react';
 import { api } from '../api/client';
 import type { LibraryFileUploadResponse } from '../api/client';
@@ -40,9 +41,11 @@ interface FileUploadModalProps {
   acceptedFileDescription?: string;
   /** Optional printer context for backend provider-specific print-file validation. */
   uploadTargetPrinterId?: number;
+  /** Optional notice shown in the modal before upload starts, e.g. provider-specific upload timing. */
+  uploadNotice?: string;
 }
 
-export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUploaded, autoUpload, validateFile, accept, acceptedFileDescription, uploadTargetPrinterId }: FileUploadModalProps) {
+export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUploaded, autoUpload, validateFile, accept, acceptedFileDescription, uploadTargetPrinterId, uploadNotice }: FileUploadModalProps) {
   const { t } = useTranslation();
   const [files, setFiles] = useState<UploadFile[]>([]);
   const [isDragging, setIsDragging] = useState(false);
@@ -202,6 +205,15 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
             className="hidden"
             onChange={handleFileSelect}
           />
+
+          {uploadNotice && (
+            <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg">
+              <div className="flex items-start gap-3">
+                <Info className="w-5 h-5 text-amber-400 mt-0.5 flex-shrink-0" />
+                <p className="text-sm text-amber-200">{uploadNotice}</p>
+              </div>
+            </div>
+          )}
 
           {/* ZIP Options */}
           {hasZipFiles && (

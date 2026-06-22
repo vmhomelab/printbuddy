@@ -3044,6 +3044,7 @@ export default {
     dropFilesHere: 'ここにファイルをドロップ',
     orClickToBrowse: 'またはクリックして選択',
     allFileTypesSupported: 'すべてのファイルタイプに対応。ZIPファイルは展開されます。',
+    prusaUploadPatienceNote: 'Prusa へのアップロードは、プリンターが USB ストレージへファイルを書き込むため 20〜30 秒かかる場合があります。このウィンドウを開いたままお待ちください。',
     zipFilesDetected: 'ZIPファイルを検出',
     zipExtractOptions: 'ZIPファイルは展開されます。フォルダー構造の処理方法を選択：',
     preserveZipStructure: 'ZIPのフォルダ構造を保持',

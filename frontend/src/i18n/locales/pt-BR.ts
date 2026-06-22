@@ -3032,6 +3032,7 @@ export default {
     dropFilesHere: 'Solte os arquivos aqui',
     orClickToBrowse: 'ou clique para procurar',
     allFileTypesSupported: 'Todos os tipos de arquivos são suportados. Arquivos ZIP serão extraídos.',
+    prusaUploadPatienceNote: 'Uploads para Prusa podem levar 20–30 segundos enquanto a impressora grava o arquivo no armazenamento USB. Mantenha esta janela aberta e aguarde.',
     zipFilesDetected: 'Arquivos ZIP detectados',
     zipExtractOptions: 'Arquivos ZIP serão extraídos. Escolha como lidar com a estrutura de pastas:',
     preserveZipStructure: 'Preservar estrutura de pastas do ZIP',

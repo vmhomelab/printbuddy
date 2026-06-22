@@ -4990,17 +4990,21 @@ function PrinterCard({
         {/* Connection Info & Actions - hidden in compact mode */}
         {viewMode === 'expanded' && (
           <div className="mt-4 pt-4 border-t border-bambu-dark-tertiary flex items-center justify-end gap-2 flex-wrap">
-              {/* Chamber Light */}
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={() => chamberLightMutation.mutate(!status?.chamber_light)}
-                disabled={!status?.connected || chamberLightMutation.isPending || !hasPermission('printers:control')}
-                title={!hasPermission('printers:control') ? t('printers.permission.noControl') : (status?.chamber_light ? t('printers.chamberLightOff') : t('printers.chamberLightOn'))}
-                className={status?.chamber_light ? '!border-yellow-500 !text-yellow-400 hover:!bg-yellow-500/20' : ''}
-              >
-                <ChamberLight on={status?.chamber_light ?? false} className={`w-4 h-4 ${status?.chamber_light ? 'text-yellow-400' : ''}`} />
-              </Button>
+              {!isPrusaModelPrinter && (
+                <>
+                  {/* Chamber Light */}
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => chamberLightMutation.mutate(!status?.chamber_light)}
+                    disabled={!status?.connected || chamberLightMutation.isPending || !hasPermission('printers:control')}
+                    title={!hasPermission('printers:control') ? t('printers.permission.noControl') : (status?.chamber_light ? t('printers.chamberLightOff') : t('printers.chamberLightOn'))}
+                    className={status?.chamber_light ? '!border-yellow-500 !text-yellow-400 hover:!bg-yellow-500/20' : ''}
+                  >
+                    <ChamberLight on={status?.chamber_light ?? false} className={`w-4 h-4 ${status?.chamber_light ? 'text-yellow-400' : ''}`} />
+                  </Button>
+                </>
+              )}
               {/* Camera Button */}
               <Button
                 variant="secondary"
@@ -5039,37 +5043,39 @@ function PrinterCard({
               >
                 <Video className="w-4 h-4" />
               </Button>
-              {/* Split button: main part toggles detection, chevron opens modal */}
-              <div className={`inline-flex rounded-md ${printer.plate_detection_enabled ? 'ring-1 ring-green-500' : ''}`}>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={handleTogglePlateDetection}
-                  disabled={!status?.connected || plateDetectionMutation.isPending || !hasPermission('printers:update')}
-                  title={!hasPermission('printers:update') ? t('printers.plateDetection.noPermission') : (printer.plate_detection_enabled ? t('printers.plateDetection.enabledClick') : t('printers.plateDetection.disabledClick'))}
-                  className={`!rounded-r-none !border-r-0 ${printer.plate_detection_enabled ? "!border-green-500 !text-green-400 hover:!bg-green-500/20" : ""}`}
-                >
-                  {plateDetectionMutation.isPending ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <ScanSearch className="w-4 h-4" />
-                  )}
-                </Button>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={handleOpenPlateManagement}
-                  disabled={!status?.connected || isCheckingPlate || !hasPermission('printers:update')}
-                  title={!hasPermission('printers:update') ? t('printers.plateDetection.noPermission') : t('printers.plateDetection.manageCalibration')}
-                  className={`!rounded-l-none !px-1.5 ${printer.plate_detection_enabled ? "!border-green-500 !text-green-400 hover:!bg-green-500/20" : ""}`}
-                >
-                  {isCheckingPlate ? (
-                    <Loader2 className="w-3 h-3 animate-spin" />
-                  ) : (
-                    <ChevronDown className="w-3 h-3" />
-                  )}
-                </Button>
-              </div>
+              {!isPrusaModelPrinter && (
+                /* Split button: main part toggles detection, chevron opens modal */
+                <div className={`inline-flex rounded-md ${printer.plate_detection_enabled ? 'ring-1 ring-green-500' : ''}`}>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={handleTogglePlateDetection}
+                    disabled={!status?.connected || plateDetectionMutation.isPending || !hasPermission('printers:update')}
+                    title={!hasPermission('printers:update') ? t('printers.plateDetection.noPermission') : (printer.plate_detection_enabled ? t('printers.plateDetection.enabledClick') : t('printers.plateDetection.disabledClick'))}
+                    className={`!rounded-r-none !border-r-0 ${printer.plate_detection_enabled ? "!border-green-500 !text-green-400 hover:!bg-green-500/20" : ""}`}
+                  >
+                    {plateDetectionMutation.isPending ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <ScanSearch className="w-4 h-4" />
+                    )}
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={handleOpenPlateManagement}
+                    disabled={!status?.connected || isCheckingPlate || !hasPermission('printers:update')}
+                    title={!hasPermission('printers:update') ? t('printers.plateDetection.noPermission') : t('printers.plateDetection.manageCalibration')}
+                    className={`!rounded-l-none !px-1.5 ${printer.plate_detection_enabled ? "!border-green-500 !text-green-400 hover:!bg-green-500/20" : ""}`}
+                  >
+                    {isCheckingPlate ? (
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                    ) : (
+                      <ChevronDown className="w-3 h-3" />
+                    )}
+                  </Button>
+                </div>
+              )}
               <Button
                 variant="secondary"
                 size="sm"
@@ -5146,6 +5152,7 @@ function PrinterCard({
           accept={printableFileRules.accept}
           acceptedFileDescription={printableFileDescription}
           uploadTargetPrinterId={printer.id}
+          uploadNotice={isPrusaModelPrinter ? t('fileManager.prusaUploadPatienceNote', 'Prusa uploads can take 20–30 seconds while the printer writes the file to USB storage. Please keep this window open and be patient.') : undefined}
           validateFile={(file) => {
             if (!isPrintableForProvider(file.name, printer.provider)) {
               return printableFileError;

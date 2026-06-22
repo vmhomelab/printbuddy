@@ -591,6 +591,12 @@ describe('FileUploadModal', () => {
       expect(screen.queryByText('All file types supported. ZIP files will be extracted.')).not.toBeInTheDocument();
     });
 
+    it('shows an upload notice when provided', () => {
+      render(<FileUploadModal {...defaultProps} uploadNotice="Prusa uploads can take 20–30 seconds." />);
+
+      expect(screen.getByText('Prusa uploads can take 20–30 seconds.')).toBeInTheDocument();
+    });
+
     it('passes printer context to the backend upload validation when provided', async () => {
       const user = userEvent.setup();
       let seenTargetPrinterId: string | null = null;

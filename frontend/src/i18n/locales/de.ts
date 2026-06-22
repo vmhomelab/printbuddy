@@ -3044,6 +3044,7 @@ export default {
     dropFilesHere: 'Dateien hier ablegen',
     orClickToBrowse: 'oder klicken zum Durchsuchen',
     allFileTypesSupported: 'Alle Dateitypen werden unterstützt. ZIP-Dateien werden extrahiert.',
+    prusaUploadPatienceNote: 'Prusa-Uploads können 20–30 Sekunden dauern, während der Drucker die Datei auf den USB-Speicher schreibt. Bitte lassen Sie dieses Fenster geöffnet und haben Sie etwas Geduld.',
     zipFilesDetected: 'ZIP-Dateien erkannt',
     zipExtractOptions: 'ZIP-Dateien werden extrahiert. Wählen Sie, wie die Ordnerstruktur behandelt werden soll:',
     preserveZipStructure: 'Ordnerstruktur aus ZIP beibehalten',

@@ -3033,6 +3033,7 @@ export default {
     dropFilesHere: 'Déposez ici',
     orClickToBrowse: 'ou cliquez pour parcourir',
     allFileTypesSupported: 'Tous types supportés. ZIP extraits.',
+    prusaUploadPatienceNote: 'Les téléversements vers Prusa peuvent prendre 20–30 secondes pendant que l’imprimante écrit le fichier sur le stockage USB. Gardez cette fenêtre ouverte et patientez.',
     zipFilesDetected: 'ZIP détectés',
     zipExtractOptions: 'Choix de structure pour ZIP :',
     preserveZipStructure: 'Garder structure ZIP',

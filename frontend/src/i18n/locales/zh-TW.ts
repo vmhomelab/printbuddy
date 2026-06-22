@@ -3031,6 +3031,7 @@ export default {
     dropFilesHere: '將檔案放在此處',
     orClickToBrowse: '或點選瀏覽',
     allFileTypesSupported: '支援所有檔案類型。ZIP 檔案將被解壓。',
+    prusaUploadPatienceNote: 'Prusa 上傳可能需要 20–30 秒，印表機會將檔案寫入 USB 儲存裝置。請保持此視窗開啟並耐心等待。',
     zipFilesDetected: '偵測到 ZIP 檔案',
     zipExtractOptions: 'ZIP 檔案將被解壓。選擇如何處理資料夾結構：',
     preserveZipStructure: '保留 ZIP 中的資料夾結構',
