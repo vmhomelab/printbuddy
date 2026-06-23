@@ -23,6 +23,7 @@ import {
   Box,
   Upload,
   ListPlus,
+  Play,
 } from 'lucide-react';
 import { api } from '../api/client';
 import { parseUTCDate } from '../utils/date';
@@ -290,6 +291,7 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
   const [uploadingFile, setUploadingFile] = useState(false);
   const [queueingFile, setQueueingFile] = useState(false);
+  const [startingFile, setStartingFile] = useState(false);
   const [queuedLibraryFile, setQueuedLibraryFile] = useState<{ id: number; filename: string } | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [filesToDelete, setFilesToDelete] = useState<string[]>([]);
@@ -458,6 +460,21 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
       showToast(`Could not prepare queue item: ${error instanceof Error ? error.message : 'Unknown error'}`, 'error');
     } finally {
       setQueueingFile(false);
+    }
+  };
+
+  const handlePrintSelectedFile = async () => {
+    const file = selectedPrintableFile();
+    if (!file) return;
+    setStartingFile(true);
+    try {
+      await api.startPrinterFile(printerId, file.path);
+      showToast(`Started ${file.name} on printer`);
+      setSelectedFiles(new Set());
+    } catch (error) {
+      showToast(`Print start failed: ${error instanceof Error ? error.message : 'Unknown error'}`, 'error');
+    } finally {
+      setStartingFile(false);
     }
   };
 
@@ -748,6 +765,14 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
             )}
           </div>
           <div className="flex gap-2">
+            <Button
+              variant="secondary"
+              disabled={!selectedPrintableFile() || startingFile}
+              onClick={handlePrintSelectedFile}
+            >
+              {startingFile ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+              Print
+            </Button>
             <Button
               variant="secondary"
               disabled={!selectedPrintableFile() || queueingFile}

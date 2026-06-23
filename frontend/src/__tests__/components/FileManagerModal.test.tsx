@@ -252,6 +252,47 @@ describe('FileManagerModal', () => {
     });
   });
 
+  describe('print existing file', () => {
+    it('starts the selected printable printer file directly from the file manager', async () => {
+      let startedPath: string | null = null;
+      server.use(
+        http.post('/api/v1/printers/:id/files/start', ({ request }) => {
+          const url = new URL(request.url);
+          startedPath = url.searchParams.get('path');
+          return HttpResponse.json({ status: 'started', path: startedPath });
+        })
+      );
+
+      render(
+        <FileManagerModal
+          printerId={1}
+          printerName="Prusa CORE One"
+          onClose={mockOnClose}
+        />
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText('print_job.gcode')).toBeInTheDocument();
+      });
+
+      const printButton = screen.getByRole('button', { name: /^Print$/i });
+      expect(printButton).toBeDisabled();
+
+      const checkboxes = screen.getAllByRole('button').filter(btn =>
+        btn.querySelector('svg')?.classList.contains('lucide-square')
+      );
+      fireEvent.click(checkboxes[1]);
+
+      await waitFor(() => expect(printButton).not.toBeDisabled());
+      fireEvent.click(printButton);
+
+      await waitFor(() => {
+        expect(startedPath).toBe('/print_job.gcode');
+        expect(screen.getByText('Started print_job.gcode on printer')).toBeInTheDocument();
+      });
+    });
+  });
+
   describe('search and filter', () => {
     it('renders search input', () => {
       render(

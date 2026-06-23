@@ -5266,12 +5266,15 @@ function PrinterCard({
             setShowPrusaDirectUpload(false);
             setDroppedPrusaFile(null);
           }}
-          onUploadComplete={() => {}}
           accept={printableFileRules.accept}
           acceptedFileDescription={printableFileDescription}
           directPrinterUploadId={printer.id}
           directPrinterUploadOverwrite
           allowStartPrintAfterUpload
+          onUploadComplete={() => {
+            showToast(t('fileManager.uploadComplete', 'Upload complete'), 'success');
+            queryClient.invalidateQueries({ queryKey: ['printerFiles', printer.id] });
+          }}
           uploadNotice={t('fileManager.prusaUploadPatienceNote', 'Prusa uploads can take a few seconds to a few minutes depending upon file size while the printer writes the file to USB storage.')}
           validateFile={(file) => {
             if (!isPrintableForProvider(file.name, printer.provider)) {
