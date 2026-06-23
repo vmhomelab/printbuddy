@@ -81,6 +81,62 @@ def _safe_remote_upload_path(directory: str, filename: str) -> str:
     return f"{normalized_dir}/{safe_name}"
 
 
+def _remote_path_with_filename(remote_path: str, filename: str) -> str:
+    parent = str(Path(remote_path).parent).replace(".", "/")
+    normalized_dir = "/" + parent.strip("/") if parent.strip("/") else ""
+    return f"{normalized_dir}/{filename}"
+
+
+def _split_numbered_copy_filename(filename: str) -> tuple[str, str]:
+    path = Path(filename)
+    stem = path.stem
+    suffix = path.suffix
+    if suffix.lower() == ".3mf" and stem.lower().endswith(".gcode"):
+        return stem, suffix
+    return stem, suffix
+
+
+def _provider_file_exists(provider_client, remote_path: str) -> bool:
+    return _provider_file_entry(provider_client, remote_path) is not None
+
+
+def _provider_renamed_upload_path(provider_client, remote_path: str) -> str:
+    filename = Path(remote_path).name
+    stem, suffix = _split_numbered_copy_filename(filename)
+    for index in range(1, 1000):
+        candidate_name = f"{stem}({index}){suffix}"
+        candidate_path = _remote_path_with_filename(remote_path, candidate_name)
+        if not _provider_file_exists(provider_client, candidate_path):
+            return candidate_path
+    raise HTTPException(409, f"Could not find a free copy filename for {filename}")
+
+
+def _delete_existing_provider_file(provider_client, remote_path: str) -> None:
+    delete_file = getattr(provider_client, "delete_file", None)
+    if not callable(delete_file):
+        raise HTTPException(409, f"File already exists and this printer provider cannot delete it: {remote_path}")
+    try:
+        deleted = delete_file(remote_path)
+    except httpx.HTTPStatusError as exc:
+        status_code = exc.response.status_code
+        raise HTTPException(
+            status_code if status_code in {400, 403, 404, 409} else 502,
+            (
+                f"File already exists but could not be deleted: HTTP {status_code}. "
+                "It may be selected or locked on the printer."
+            ),
+        ) from exc
+    except Exception as exc:  # noqa: BLE001 - convert provider delete failures into useful API errors
+        raise HTTPException(
+            502,
+            f"File already exists but could not be deleted: {type(exc).__name__}. It may be selected or locked.",
+        ) from exc
+    if not deleted:
+        raise HTTPException(409, f"File already exists but could not be deleted: {remote_path}")
+    if _provider_file_exists(provider_client, remote_path):
+        raise HTTPException(409, f"File still exists after delete and may be selected or locked: {remote_path}")
+
+
 def _normalize_provider_file_entry(entry: dict) -> dict:
     file_type = str(entry.get("type") or "file").lower()
     is_directory = bool(entry.get("is_directory")) or file_type in {"directory", "folder", "dir"}
@@ -1254,6 +1310,7 @@ async def upload_printer_file(
     file: UploadFile = File(...),
     path: str = "/",
     overwrite: bool = Query(default=False),
+    conflict_strategy: str = Query(default="error", pattern="^(error|rename|delete_replace)$"),
     _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_FILES),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1275,6 +1332,32 @@ async def upload_printer_file(
         reconciled = False
         expected_size = tmp_path.stat().st_size
         if provider_client is not None:
+            original_remote_path = remote_path
+            renamed = False
+            replaced = False
+            if _provider_file_exists(provider_client, remote_path):
+                if _provider_file_is_zero_placeholder(provider_client, remote_path):
+                    raise HTTPException(
+                        409,
+                        (
+                            f"Printer already has a 0-byte placeholder for {remote_path}. "
+                            "Delete the placeholder from the printer and retry, or upload as a renamed copy."
+                        ),
+                    )
+                if conflict_strategy == "rename":
+                    remote_path = _provider_renamed_upload_path(provider_client, remote_path)
+                    renamed = True
+                elif conflict_strategy == "delete_replace":
+                    _delete_existing_provider_file(provider_client, remote_path)
+                    replaced = True
+                else:
+                    raise HTTPException(
+                        409,
+                        (
+                            f"File already exists on the printer: {remote_path}. "
+                            "Choose upload as copy, delete the existing file, or cancel."
+                        ),
+                    )
             try:
                 success = provider_client.upload_file(tmp_path, remote_path, overwrite=overwrite)
                 if success:
@@ -1339,6 +1422,12 @@ async def upload_printer_file(
     response = {"status": "uploaded", "path": remote_path, "filename": Path(remote_path).name}
     if reconciled:
         response["reconciled"] = True
+    if provider_client is not None:
+        if renamed:
+            response["renamed"] = True
+            response["original_filename"] = Path(original_remote_path).name
+        if replaced:
+            response["replaced"] = True
     return response
 
 

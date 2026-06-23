@@ -25,6 +25,14 @@ interface UploadFile {
   extractedCount?: number;
 }
 
+type DirectUploadConflictStrategy = 'error' | 'rename' | 'delete_replace';
+
+interface DirectUploadConflict {
+  file: File;
+  existingPath: string;
+  existingSize?: number | null;
+}
+
 interface FileUploadModalProps {
   folderId: number | null;
   onClose: () => void;
@@ -63,6 +71,7 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
   const [generateStlThumbnails, setGenerateStlThumbnails] = useState(true);
   const [startPrintAfterUpload, setStartPrintAfterUpload] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [directUploadConflict, setDirectUploadConflict] = useState<DirectUploadConflict | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleDragOver = (e: DragEvent<HTMLDivElement>) => {
@@ -91,8 +100,21 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
     setFiles((prev) => prev.map((f) => (f.file === file ? { ...f, ...update } : f)));
   };
 
-  const uploadFiles = async (filesToUpload: UploadFile[]) => {
+  const findExistingDirectPrinterFile = async (file: File): Promise<DirectUploadConflict | null> => {
+    if (directPrinterUploadId == null) return null;
+    const response = await api.getPrinterFiles(directPrinterUploadId, directPrinterUploadPath);
+    const existing = response.files.find((entry) => !entry.is_directory && entry.name === file.name);
+    if (!existing) return null;
+    return {
+      file,
+      existingPath: existing.path,
+      existingSize: existing.size,
+    };
+  };
+
+  const uploadFiles = async (filesToUpload: UploadFile[], conflictStrategy: DirectUploadConflictStrategy = 'error') => {
     setIsUploading(true);
+    setDirectUploadConflict(null);
 
     for (const uf of filesToUpload) {
       if (uf.status !== 'pending') continue;
@@ -108,7 +130,22 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
             error: result.errors.length > 0 ? t('fileManager.zipFilesFailed', '{{count}} files failed', { count: result.errors.length }) : undefined,
           });
         } else if (directPrinterUploadId != null) {
-          const uploaded = await api.uploadPrinterFile(directPrinterUploadId, uf.file, directPrinterUploadPath, directPrinterUploadOverwrite);
+          if (conflictStrategy === 'error') {
+            const conflict = await findExistingDirectPrinterFile(uf.file);
+            if (conflict) {
+              updateFileStatus(uf.file, { status: 'pending' });
+              setDirectUploadConflict(conflict);
+              setIsUploading(false);
+              return;
+            }
+          }
+          const uploaded = await api.uploadPrinterFile(
+            directPrinterUploadId,
+            uf.file,
+            directPrinterUploadPath,
+            directPrinterUploadOverwrite,
+            conflictStrategy
+          );
           if (allowStartPrintAfterUpload && startPrintAfterUpload) {
             await api.startPrinterFile(directPrinterUploadId, uploaded.path);
           }
@@ -183,6 +220,13 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
   const uploadButtonLabel = allowStartPrintAfterUpload && startPrintAfterUpload
     ? t('common.uploadAndPrint', 'Upload & Print')
     : t('common.upload');
+  const conflictingUploadFile = directUploadConflict
+    ? files.find((f) => f.file === directUploadConflict.file)
+    : undefined;
+  const continueDirectConflictUpload = (strategy: Exclude<DirectUploadConflictStrategy, 'error'>) => {
+    if (!conflictingUploadFile) return;
+    uploadFiles([conflictingUploadFile], strategy);
+  };
 
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
@@ -241,6 +285,53 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
               <div className="flex items-start gap-3">
                 <Info className="w-5 h-5 text-amber-400 mt-0.5 flex-shrink-0" />
                 <p className="text-sm text-amber-200">{uploadNotice}</p>
+              </div>
+            </div>
+          )}
+
+          {directUploadConflict && (
+            <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg">
+              <div className="flex items-start gap-3">
+                <Info className="w-5 h-5 text-amber-400 mt-0.5 flex-shrink-0" />
+                <div className="flex-1 space-y-3">
+                  <div>
+                    <p className="text-sm text-amber-100 font-medium">
+                      {directUploadConflict.file.name} already exists on the printer USB.
+                    </p>
+                    <p className="text-xs text-amber-200/80 mt-1">
+                      Choose whether to upload it as a renamed copy, delete the existing file first, or cancel.
+                    </p>
+                  </div>
+                  <div className="flex flex-col sm:flex-row gap-2">
+                    <Button
+                      type="button"
+                      variant="primary"
+                      size="sm"
+                      onClick={() => continueDirectConflictUpload('rename')}
+                      disabled={isUploading}
+                    >
+                      Upload as copy
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="danger"
+                      size="sm"
+                      onClick={() => continueDirectConflictUpload('delete_replace')}
+                      disabled={isUploading}
+                    >
+                      Delete existing and upload
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => setDirectUploadConflict(null)}
+                      disabled={isUploading}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
               </div>
             </div>
           )}

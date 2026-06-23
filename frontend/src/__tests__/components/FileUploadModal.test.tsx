@@ -657,6 +657,7 @@ describe('FileUploadModal', () => {
       let libraryUploadCalled = false;
 
       server.use(
+        http.get('/api/v1/printers/:id/files', () => HttpResponse.json({ path: '/', files: [] })),
         http.post('/api/v1/library/files', () => {
           libraryUploadCalled = true;
           return HttpResponse.json({}, { status: 500 });
@@ -688,6 +689,7 @@ describe('FileUploadModal', () => {
       let seenStartPath: string | null = null;
 
       server.use(
+        http.get('/api/v1/printers/:id/files', () => HttpResponse.json({ path: '/', files: [] })),
         http.post('/api/v1/printers/:id/files/upload', () => HttpResponse.json({
           status: 'uploaded',
           path: '/Love Paw Print.gcode',
@@ -709,6 +711,71 @@ describe('FileUploadModal', () => {
       await user.click(screen.getByRole('button', { name: /Upload & Print \(1\)/i }));
 
       await waitFor(() => expect(seenStartPath).toBe('/Love Paw Print.gcode'));
+      expect(defaultProps.onClose).toHaveBeenCalled();
+    });
+
+    it('prompts before direct printer upload when the filename already exists and uploads a renamed copy', async () => {
+      const user = userEvent.setup();
+      let seenConflictStrategy: string | null = null;
+
+      server.use(
+        http.get('/api/v1/printers/:id/files', () => HttpResponse.json({
+          path: '/',
+          files: [{ name: 'Shoe_horn.gcode', path: '/Shoe_horn.gcode', size: 128, is_directory: false }],
+        })),
+        http.post('/api/v1/printers/:id/files/upload', ({ request }) => {
+          seenConflictStrategy = new URL(request.url).searchParams.get('conflict_strategy');
+          return HttpResponse.json({
+            status: 'uploaded',
+            path: '/Shoe_horn(1).gcode',
+            filename: 'Shoe_horn(1).gcode',
+            renamed: true,
+            original_filename: 'Shoe_horn.gcode',
+          });
+        })
+      );
+
+      render(<FileUploadModal {...defaultProps} directPrinterUploadId={7} />);
+      const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+      await user.upload(fileInput, new File(['G28'], 'Shoe_horn.gcode', { type: 'application/octet-stream' }));
+      await user.click(screen.getByRole('button', { name: /Upload \(1\)/i }));
+
+      expect(await screen.findByText(/already exists on the printer USB/i)).toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: /Upload as copy/i }));
+
+      await waitFor(() => expect(seenConflictStrategy).toBe('rename'));
+      expect(defaultProps.onClose).toHaveBeenCalled();
+    });
+
+    it('can delete and replace an existing direct printer file after the conflict prompt', async () => {
+      const user = userEvent.setup();
+      let seenConflictStrategy: string | null = null;
+
+      server.use(
+        http.get('/api/v1/printers/:id/files', () => HttpResponse.json({
+          path: '/',
+          files: [{ name: 'Shoe_horn.gcode', path: '/Shoe_horn.gcode', size: 128, is_directory: false }],
+        })),
+        http.post('/api/v1/printers/:id/files/upload', ({ request }) => {
+          seenConflictStrategy = new URL(request.url).searchParams.get('conflict_strategy');
+          return HttpResponse.json({
+            status: 'uploaded',
+            path: '/Shoe_horn.gcode',
+            filename: 'Shoe_horn.gcode',
+            replaced: true,
+          });
+        })
+      );
+
+      render(<FileUploadModal {...defaultProps} directPrinterUploadId={7} />);
+      const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+      await user.upload(fileInput, new File(['G28'], 'Shoe_horn.gcode', { type: 'application/octet-stream' }));
+      await user.click(screen.getByRole('button', { name: /Upload \(1\)/i }));
+
+      expect(await screen.findByText(/already exists on the printer USB/i)).toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: /Delete existing and upload/i }));
+
+      await waitFor(() => expect(seenConflictStrategy).toBe('delete_replace'));
       expect(defaultProps.onClose).toHaveBeenCalled();
     });
 

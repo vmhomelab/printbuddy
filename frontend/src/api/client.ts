@@ -3730,14 +3730,20 @@ export const api = {
     }
     return response.blob();
   },
-  uploadPrinterFile: async (printerId: number, file: File, path = '/', overwrite = false): Promise<{ status: string; path: string; filename: string }> => {
+  uploadPrinterFile: async (
+    printerId: number,
+    file: File,
+    path = '/',
+    overwrite = false,
+    conflictStrategy: 'error' | 'rename' | 'delete_replace' = 'error'
+  ): Promise<{ status: string; path: string; filename: string; renamed?: boolean; replaced?: boolean; original_filename?: string }> => {
     const headers: Record<string, string> = {};
     if (authToken) {
       headers['Authorization'] = `Bearer ${authToken}`;
     }
     const formData = new FormData();
     formData.append('file', file);
-    const params = new URLSearchParams({ path, overwrite: String(overwrite) });
+    const params = new URLSearchParams({ path, overwrite: String(overwrite), conflict_strategy: conflictStrategy });
     const response = await fetch(`${API_BASE}/printers/${printerId}/files/upload?${params.toString()}`, {
       method: 'POST',
       headers,

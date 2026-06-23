@@ -17,6 +17,7 @@ class _FakeProviderClient:
         self.reveal_file_after_list_calls: int | None = None
         self.revealed_file: dict[str, object] | None = None
         self.preserve_files_on_upload = False
+        self.deleted_paths: list[str] = []
 
     def start_print(self, path: str) -> bool:
         self.started_paths.append(path)
@@ -48,6 +49,16 @@ class _FakeProviderClient:
         ):
             self.files = [self.revealed_file]
         return self.files
+
+    def delete_file(self, remote_path: str) -> bool:
+        self.deleted_paths.append(remote_path)
+        normalized = "/" + remote_path.strip("/")
+        self.files = [
+            file
+            for file in self.files
+            if "/" + str(file.get("path") or file.get("name") or "").strip("/") != normalized
+        ]
+        return True
 
 
 @pytest.mark.asyncio
@@ -117,9 +128,13 @@ async def test_upload_printer_file_reconciles_provider_timeout_when_file_appears
     printer = await printer_factory(provider="prusalink", model="Prusa CORE One")
     fake_client = _FakeProviderClient()
     fake_client.upload_exception = httpx.ReadTimeout("printer still writing to USB")
-    fake_client.files = [
-        {"name": "Shoe_horn_thicker.gcode", "path": "/Shoe_horn_thicker.gcode", "type": "file", "size": 4}
-    ]
+    fake_client.reveal_file_after_list_calls = 2
+    fake_client.revealed_file = {
+        "name": "Shoe_horn_thicker.gcode",
+        "path": "/Shoe_horn_thicker.gcode",
+        "type": "file",
+        "size": 4,
+    }
 
     from backend.app.api.routes import printers as printer_routes
 
@@ -195,9 +210,13 @@ async def test_upload_printer_file_rejects_zero_byte_provider_placeholder(
     printer = await printer_factory(provider="prusalink", model="Prusa CORE One")
     fake_client = _FakeProviderClient()
     fake_client.preserve_files_on_upload = True
-    fake_client.files = [
-        {"name": "Shoe_horn_thicker.gcode", "path": "/Shoe_horn_thicker.gcode", "type": "file", "size": 0}
-    ]
+    fake_client.reveal_file_after_list_calls = 2
+    fake_client.revealed_file = {
+        "name": "Shoe_horn_thicker.gcode",
+        "path": "/Shoe_horn_thicker.gcode",
+        "type": "file",
+        "size": 0,
+    }
 
     from backend.app.api.routes import printers as printer_routes
 
@@ -229,9 +248,13 @@ async def test_upload_printer_file_reports_zero_byte_placeholder_on_conflict(
     request = httpx.Request("PUT", "http://printer/api/v1/files/usb/Shoe_horn_thicker.gcode")
     response = httpx.Response(409, request=request)
     fake_client.upload_exception = httpx.HTTPStatusError("Conflict", request=request, response=response)
-    fake_client.files = [
-        {"name": "Shoe_horn_thicker.gcode", "path": "/Shoe_horn_thicker.gcode", "type": "file", "size": 0}
-    ]
+    fake_client.reveal_file_after_list_calls = 2
+    fake_client.revealed_file = {
+        "name": "Shoe_horn_thicker.gcode",
+        "path": "/Shoe_horn_thicker.gcode",
+        "type": "file",
+        "size": 0,
+    }
 
     from backend.app.api.routes import printers as printer_routes
 
@@ -246,3 +269,104 @@ async def test_upload_printer_file_reports_zero_byte_placeholder_on_conflict(
     assert response.status_code == 409
     assert "0-byte placeholder" in response.json()["detail"]
     assert fake_client.upload_overwrite_flags == [True]
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_upload_printer_file_renames_existing_provider_file_when_requested(
+    async_client: AsyncClient,
+    printer_factory,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    printer = await printer_factory(provider="prusalink", model="Prusa CORE One")
+    fake_client = _FakeProviderClient()
+    fake_client.files = [
+        {"name": "Shoe_horn_thicker.gcode", "path": "/Shoe_horn_thicker.gcode", "type": "file", "size": 4},
+        {"name": "Shoe_horn_thicker(1).gcode", "path": "/Shoe_horn_thicker(1).gcode", "type": "file", "size": 4},
+    ]
+
+    from backend.app.api.routes import printers as printer_routes
+
+    monkeypatch.setattr(printer_routes, "_provider_for_printer", lambda _printer: fake_client)
+
+    response = await async_client.post(
+        f"/api/v1/printers/{printer.id}/files/upload",
+        params={"path": "/", "conflict_strategy": "rename"},
+        files={"file": ("Shoe_horn_thicker.gcode", b"G28\n", "application/octet-stream")},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "uploaded",
+        "path": "/Shoe_horn_thicker(2).gcode",
+        "filename": "Shoe_horn_thicker(2).gcode",
+        "renamed": True,
+        "original_filename": "Shoe_horn_thicker.gcode",
+    }
+    assert fake_client.uploaded_paths == ["/Shoe_horn_thicker(2).gcode"]
+    assert fake_client.deleted_paths == []
+    assert fake_client.upload_overwrite_flags == [False]
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_upload_printer_file_delete_replaces_existing_provider_file_when_requested(
+    async_client: AsyncClient,
+    printer_factory,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    printer = await printer_factory(provider="prusalink", model="Prusa CORE One")
+    fake_client = _FakeProviderClient()
+    fake_client.files = [
+        {"name": "Shoe_horn_thicker.gcode", "path": "/Shoe_horn_thicker.gcode", "type": "file", "size": 4}
+    ]
+
+    from backend.app.api.routes import printers as printer_routes
+
+    monkeypatch.setattr(printer_routes, "_provider_for_printer", lambda _printer: fake_client)
+    monkeypatch.setattr(printer_routes, "PROVIDER_UPLOAD_RECONCILE_INTERVAL_SECONDS", 0)
+
+    response = await async_client.post(
+        f"/api/v1/printers/{printer.id}/files/upload",
+        params={"path": "/", "conflict_strategy": "delete_replace"},
+        files={"file": ("Shoe_horn_thicker.gcode", b"G28\n", "application/octet-stream")},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "uploaded",
+        "path": "/Shoe_horn_thicker.gcode",
+        "filename": "Shoe_horn_thicker.gcode",
+        "replaced": True,
+    }
+    assert fake_client.deleted_paths == ["/Shoe_horn_thicker.gcode"]
+    assert fake_client.uploaded_paths == ["/Shoe_horn_thicker.gcode"]
+    assert fake_client.upload_overwrite_flags == [False]
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_upload_printer_file_reports_existing_provider_file_without_strategy(
+    async_client: AsyncClient,
+    printer_factory,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    printer = await printer_factory(provider="prusalink", model="Prusa CORE One")
+    fake_client = _FakeProviderClient()
+    fake_client.files = [
+        {"name": "Shoe_horn_thicker.gcode", "path": "/Shoe_horn_thicker.gcode", "type": "file", "size": 4}
+    ]
+
+    from backend.app.api.routes import printers as printer_routes
+
+    monkeypatch.setattr(printer_routes, "_provider_for_printer", lambda _printer: fake_client)
+
+    response = await async_client.post(
+        f"/api/v1/printers/{printer.id}/files/upload",
+        params={"path": "/"},
+        files={"file": ("Shoe_horn_thicker.gcode", b"G28\n", "application/octet-stream")},
+    )
+
+    assert response.status_code == 409
+    assert "already exists" in response.json()["detail"]
+    assert fake_client.uploaded_paths == []
