@@ -116,6 +116,29 @@ def test_prusalink_start_print_uses_discovered_usb_storage(monkeypatch):
     assert posted_paths == ["POST api/v1/files/usb/Love%20Paw%20Print.gcode"]
 
 
+def test_prusalink_storage_discovery_prefers_path_over_display_name(monkeypatch):
+    client = PrusaLinkPrinterClient(base_url="http://prusa.local", password="secret")
+
+    def fake_get(path):
+        if path == "api/v1/storage":
+            return {
+                "storage_list": [
+                    {
+                        "path": "/usb",
+                        "name": "Mock USB",
+                        "type": "USB",
+                        "read_only": False,
+                        "available": True,
+                    }
+                ]
+            }
+        raise AssertionError(f"unexpected path: {path}")
+
+    monkeypatch.setattr(client, "_get", fake_get)
+
+    assert client.file_storage == "usb"
+
+
 def test_prusalink_falls_back_to_usb_storage_when_storage_probe_fails(monkeypatch):
     client = PrusaLinkPrinterClient(base_url="http://prusa.local", password="secret")
 

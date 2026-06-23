@@ -253,7 +253,7 @@ class PrusaLinkPrinterClient:
     def _available_storage_key(self, storage: dict[str, Any]) -> str | None:
         if storage.get("available") is False or storage.get("read_only") is True:
             return None
-        raw_key = str(storage.get("name") or storage.get("path") or "").strip().strip("/")
+        raw_key = str(storage.get("path") or storage.get("name") or "").strip().strip("/")
         if not raw_key:
             return None
         return raw_key.split("/", 1)[0]
