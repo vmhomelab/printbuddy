@@ -177,6 +177,96 @@ describe('PrintersPage', () => {
       expect(screen.getByText('Prusa uploads can take a few seconds to a few minutes depending upon file size while the printer writes the file to USB storage.')).toBeInTheDocument();
     });
 
+    it('uploads Prusa files without opening the legacy Print modal when auto-start is unchecked', async () => {
+      const user = userEvent.setup();
+      let uploadCalled = false;
+      let startCalled = false;
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          ...mockPrinters[0],
+          id: 7,
+          name: 'Prusa CORE One',
+          provider: 'prusalink',
+          model: 'Prusa CORE One',
+        }])),
+        http.post('/api/v1/printers/7/files/upload', () => {
+          uploadCalled = true;
+          return HttpResponse.json({ status: 'uploaded', path: '/Shoe_horn_thicker.gcode', filename: 'Shoe_horn_thicker.gcode' });
+        }),
+        http.post('/api/v1/printers/7/files/start', () => {
+          startCalled = true;
+          return HttpResponse.json({ status: 'started', path: '/Shoe_horn_thicker.gcode' });
+        }),
+      );
+
+      render(<PrintersPage />);
+
+      await user.click(await screen.findByRole('button', { name: 'Upload' }));
+      const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+      expect(input).toBeInTheDocument();
+
+      await user.upload(input, new File(['G28\n'], 'Shoe_horn_thicker.gcode', { type: 'text/plain' }));
+      expect(screen.getByLabelText('Start print after upload')).not.toBeChecked();
+      await user.click(await screen.findByRole('button', { name: 'Upload (1)' }));
+
+      await waitFor(() => expect(uploadCalled).toBe(true));
+      expect(startCalled).toBe(false);
+      expect(screen.queryByRole('dialog', { name: 'Print' })).not.toBeInTheDocument();
+      expect(screen.queryByText('Print Options')).not.toBeInTheDocument();
+    });
+
+    it('asks whether to print or upload when dropping a file on a Prusa printer card', async () => {
+      const user = userEvent.setup();
+      let directUploadCalled = false;
+      let libraryUploadCalled = false;
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          ...mockPrinters[0],
+          id: 7,
+          name: 'Prusa CORE One',
+          provider: 'prusalink',
+          model: 'Prusa CORE One',
+        }])),
+        http.post('/api/v1/printers/7/files/upload', () => {
+          directUploadCalled = true;
+          return HttpResponse.json({ status: 'uploaded', path: '/Shoe_horn_thicker.gcode', filename: 'Shoe_horn_thicker.gcode' });
+        }),
+        http.post('/api/v1/library/files', () => {
+          libraryUploadCalled = true;
+          return HttpResponse.json({
+            id: 42,
+            filename: 'Shoe_horn_thicker.gcode',
+            original_filename: 'Shoe_horn_thicker.gcode',
+            file_size: 4,
+            file_type: 'gcode',
+            metadata: {},
+          });
+        }),
+      );
+
+      render(<PrintersPage />);
+
+      await screen.findAllByText('Prusa CORE One');
+      await screen.findByRole('button', { name: 'Upload' });
+      const card = screen.getByTestId('printer-card-7');
+
+      fireEvent.drop(card, {
+        dataTransfer: {
+          files: [new File(['G28\n'], 'Shoe_horn_thicker.gcode', { type: 'text/plain' })],
+        },
+      });
+
+      expect(await screen.findByText('Choose file action')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Print' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Upload only' })).toBeInTheDocument();
+
+      await user.click(screen.getByRole('button', { name: 'Upload only' }));
+
+      await waitFor(() => expect(directUploadCalled).toBe(true));
+      expect(libraryUploadCalled).toBe(false);
+      expect(screen.queryByText('Choose file action')).not.toBeInTheDocument();
+    });
+
     it('shows assigned Panda Breath data only on the matching printer card', async () => {
       server.use(
         http.get('/api/v1/settings/ui-preferences', () => HttpResponse.json({

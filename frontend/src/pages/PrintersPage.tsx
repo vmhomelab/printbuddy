@@ -1750,6 +1750,11 @@ function PrinterCard({
   const [showDiagnostic, setShowDiagnostic] = useState(false);
   const closePrinterInfo = useCallback(() => setShowPrinterInfo(false), []);
   const [printAfterUpload, setPrintAfterUpload] = useState<{ id: number; filename: string } | null>(null);
+  const openPrusaDirectUpload = useCallback(() => {
+    setShowUploadForPrint(false);
+    setPrintAfterUpload(null);
+    setShowPrusaDirectUpload(true);
+  }, []);
   // AMS drying popover state: which AMS unit has the popover open
   const [dryingPopoverAmsId, setDryingPopoverAmsId] = useState<number | null>(null);
   const [dryingPopoverModuleType, setDryingPopoverModuleType] = useState<string>('n3f');
@@ -1760,6 +1765,7 @@ function PrinterCard({
   const [dryingPopoverPos, setDryingPopoverPos] = useState<{ top: number; left: number } | null>(null);
   const [isDraggingFile, setIsDraggingFile] = useState(false);
   const [isDropUploading, setIsDropUploading] = useState(false);
+  const [droppedPrusaFile, setDroppedPrusaFile] = useState<File | null>(null);
   const dragCounterRef = useRef(0);
   const [amsHistoryModal, setAmsHistoryModal] = useState<{
     amsId: number;
@@ -2623,23 +2629,7 @@ function PrinterCard({
     if (dragCounterRef.current === 0) setIsDraggingFile(false);
   };
 
-  const handleCardDrop = async (e: React.DragEvent) => {
-    e.preventDefault();
-    dragCounterRef.current = 0;
-    setIsDraggingFile(false);
-
-    if (!canDrop) return;
-
-    const droppedFiles = Array.from(e.dataTransfer.files);
-    const file = droppedFiles[0];
-    if (!file) return;
-
-    // Only accept files that the selected printer provider can print.
-    if (!isPrintableForProvider(file.name, printer.provider)) {
-      showToast(printableFileError, 'error');
-      return;
-    }
-
+  const uploadDroppedFileForPrint = async (file: File) => {
     setIsDropUploading(true);
     try {
       const result = await api.uploadLibraryFile(file, null, true, printer.id);
@@ -2664,8 +2654,59 @@ function PrinterCard({
     }
   };
 
+  const uploadDroppedFileToPrusa = async (file: File) => {
+    setIsDropUploading(true);
+    try {
+      await api.uploadPrinterFile(printer.id, file, '/');
+      showToast(t('fileManager.uploadComplete', 'Upload complete'), 'success');
+      queryClient.invalidateQueries({ queryKey: ['printerFiles', printer.id] });
+    } catch {
+      showToast(t('common.uploadFailed', 'Upload failed'), 'error');
+    } finally {
+      setIsDropUploading(false);
+    }
+  };
+
+  const handleDroppedPrusaPrint = async () => {
+    const file = droppedPrusaFile;
+    setDroppedPrusaFile(null);
+    if (file) await uploadDroppedFileForPrint(file);
+  };
+
+  const handleDroppedPrusaUploadOnly = async () => {
+    const file = droppedPrusaFile;
+    setDroppedPrusaFile(null);
+    if (file) await uploadDroppedFileToPrusa(file);
+  };
+
+  const handleCardDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    dragCounterRef.current = 0;
+    setIsDraggingFile(false);
+
+    if (!canDrop) return;
+
+    const droppedFiles = Array.from(e.dataTransfer.files);
+    const file = droppedFiles[0];
+    if (!file) return;
+
+    // Only accept files that the selected printer provider can print.
+    if (!isPrintableForProvider(file.name, printer.provider)) {
+      showToast(printableFileError, 'error');
+      return;
+    }
+
+    if (isPrusaModelPrinter) {
+      setDroppedPrusaFile(file);
+      return;
+    }
+
+    await uploadDroppedFileForPrint(file);
+  };
+
   return (
     <Card
+      data-testid={`printer-card-${printer.id}`}
       className={`relative ${isSelected ? 'ring-2 ring-bambu-green' : ''} ${selectionMode ? 'cursor-pointer' : ''}`}
       onDragEnter={handleCardDragEnter}
       onDragOver={handleCardDragOver}
@@ -2705,7 +2746,7 @@ function PrinterCard({
             ) : canDrop ? (
               <>
                 <PrinterIcon className="w-8 h-8 mx-auto mb-2 text-bambu-green" />
-                <p className="text-sm font-medium text-bambu-green">{t('printers.dropToPrint', 'Drop to print')}</p>
+                <p className="text-sm font-medium text-bambu-green">{isPrusaModelPrinter ? t('printers.dropToChoosePrintOrUpload', 'Drop to print or upload') : t('printers.dropToPrint', 'Drop to print')}</p>
               </>
             ) : (
               <>
@@ -2713,6 +2754,33 @@ function PrinterCard({
                 <p className="text-sm font-medium text-red-400">{t('printers.cannotPrint', 'Printer busy')}</p>
               </>
             )}
+          </div>
+        </div>
+      )}
+      {droppedPrusaFile && (
+        <div className="absolute inset-0 z-30 flex items-center justify-center rounded-xl bg-black/70 p-4">
+          <div className="w-full max-w-xs rounded-xl border border-bambu-dark-tertiary bg-bambu-dark p-4 shadow-xl">
+            <div className="mb-3 flex items-start gap-3">
+              <Upload className="mt-0.5 h-5 w-5 flex-shrink-0 text-bambu-green" />
+              <div className="min-w-0">
+                <h4 className="text-sm font-semibold text-white">{t('printers.chooseFileAction', 'Choose file action')}</h4>
+                <p className="mt-1 truncate text-xs text-bambu-gray" title={droppedPrusaFile.name}>{droppedPrusaFile.name}</p>
+                <p className="mt-2 text-xs text-bambu-gray">
+                  {t('printers.prusaDropActionHelp', 'Print uploads it to the library and opens print options. Upload only sends it to the Prusa storage without starting a print.')}
+                </p>
+              </div>
+            </div>
+            <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+              <Button variant="ghost" size="sm" onClick={() => setDroppedPrusaFile(null)}>
+                {t('common.cancel', 'Cancel')}
+              </Button>
+              <Button variant="secondary" size="sm" onClick={handleDroppedPrusaUploadOnly}>
+                {t('printers.uploadOnly', 'Upload only')}
+              </Button>
+              <Button size="sm" onClick={handleDroppedPrusaPrint}>
+                {t('common.print', 'Print')}
+              </Button>
+            </div>
           </div>
         </div>
       )}
@@ -5094,7 +5162,7 @@ function PrinterCard({
                     <Button
                       variant="secondary"
                       size="sm"
-                      onClick={() => setShowPrusaDirectUpload(true)}
+                      onClick={openPrusaDirectUpload}
                       disabled={!hasPermission('printers:files')}
                       title={!hasPermission('printers:files') ? t('printers.permission.noFiles') : t('common.upload', 'Upload')}
                     >
