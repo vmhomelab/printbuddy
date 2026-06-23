@@ -124,6 +124,33 @@ describe('FileUploadModal', () => {
       expect(screen.getByRole('button', { name: /Upload \(2\)/i })).toBeInTheDocument();
     });
 
+    it('changes the direct printer upload button to Upload & Print when start after upload is checked', async () => {
+      const user = userEvent.setup();
+      render(<FileUploadModal {...defaultProps} directPrinterUploadId={7} allowStartPrintAfterUpload />);
+
+      const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+      await user.upload(fileInput, new File(['G28'], 'prusa.gcode', { type: 'application/octet-stream' }));
+
+      expect(screen.getByRole('button', { name: /Upload \(1\)/i })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /Upload & Print \(1\)/i })).not.toBeInTheDocument();
+
+      await user.click(screen.getByLabelText('Start print after upload'));
+
+      expect(screen.getByRole('button', { name: /Upload & Print \(1\)/i })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /^Upload \(1\)$/i })).not.toBeInTheDocument();
+    });
+
+    it('keeps the Upload label when the direct printer start-after-upload checkbox is unchecked', async () => {
+      const user = userEvent.setup();
+      render(<FileUploadModal {...defaultProps} directPrinterUploadId={7} allowStartPrintAfterUpload />);
+
+      const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+      await user.upload(fileInput, new File(['G28'], 'prusa.gcode', { type: 'application/octet-stream' }));
+
+      expect(screen.getByRole('button', { name: /^Upload \(1\)$/i })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /Upload & Print/i })).not.toBeInTheDocument();
+    });
+
     it('accepts any file type (not restricted like UploadModal)', async () => {
       const user = userEvent.setup();
       render(<FileUploadModal {...defaultProps} />);
@@ -679,7 +706,7 @@ describe('FileUploadModal', () => {
 
       const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
       await user.upload(fileInput, new File(['G28'], 'Love Paw Print.gcode', { type: 'application/octet-stream' }));
-      await user.click(screen.getByRole('button', { name: /Upload \(1\)/i }));
+      await user.click(screen.getByRole('button', { name: /Upload & Print \(1\)/i }));
 
       await waitFor(() => expect(seenStartPath).toBe('/Love Paw Print.gcode'));
       expect(defaultProps.onClose).toHaveBeenCalled();

@@ -180,6 +180,9 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
   const has3mfFiles = files.some((f) => f.is3mf && f.status === 'pending');
   const pendingCount = files.filter((f) => f.status === 'pending').length;
   const allDone = files.length > 0 && pendingCount === 0 && !isUploading;
+  const uploadButtonLabel = allowStartPrintAfterUpload && startPrintAfterUpload
+    ? t('common.uploadAndPrint', 'Upload & Print')
+    : t('common.upload');
 
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
@@ -400,7 +403,7 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
               ) : (
                 <>
                   <Upload className="w-4 h-4 mr-2" />
-                  {t('common.upload')} {pendingCount > 0 ? `(${pendingCount})` : ''}
+                  {uploadButtonLabel} {pendingCount > 0 ? `(${pendingCount})` : ''}
                 </>
               )}
             </Button>

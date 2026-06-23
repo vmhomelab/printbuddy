@@ -60,6 +60,7 @@ export default {
     refresh: 'Refresh',
     download: 'Download',
     upload: 'Upload',
+    uploadAndPrint: 'Upload & Print',
     uploading: 'Uploading...',
     uploadFailed: 'Upload failed',
     actions: 'Actions',
