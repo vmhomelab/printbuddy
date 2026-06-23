@@ -5225,6 +5225,7 @@ function PrinterCard({
         <FileManagerModal
           printerId={printer.id}
           printerName={printer.name}
+          printerProvider={printer.provider}
           onClose={() => setShowFileManager(false)}
         />
       )}

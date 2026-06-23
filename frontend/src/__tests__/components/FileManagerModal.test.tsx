@@ -253,6 +253,41 @@ describe('FileManagerModal', () => {
   });
 
   describe('print existing file', () => {
+    it('hides add to queue for Prusa printer file managers', async () => {
+      render(
+        <FileManagerModal
+          printerId={1}
+          printerName="Prusa CORE One"
+          printerProvider="prusalink"
+          onClose={mockOnClose}
+        />
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText('print_job.gcode')).toBeInTheDocument();
+      });
+
+      expect(screen.getByRole('button', { name: /^Print$/i })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /Add to Queue/i })).not.toBeInTheDocument();
+    });
+
+    it('keeps add to queue for non-Prusa printer file managers', async () => {
+      render(
+        <FileManagerModal
+          printerId={1}
+          printerName="X1 Carbon"
+          printerProvider="bambu"
+          onClose={mockOnClose}
+        />
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText('print_job.gcode')).toBeInTheDocument();
+      });
+
+      expect(screen.getByRole('button', { name: /Add to Queue/i })).toBeInTheDocument();
+    });
+
     it('starts the selected printable printer file directly from the file manager', async () => {
       let startedPath: string | null = null;
       server.use(

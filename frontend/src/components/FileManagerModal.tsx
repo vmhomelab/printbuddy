@@ -25,7 +25,7 @@ import {
   ListPlus,
   Play,
 } from 'lucide-react';
-import { api } from '../api/client';
+import { api, type PrinterProvider } from '../api/client';
 import { parseUTCDate } from '../utils/date';
 import { Button } from './Button';
 import { PrintModal } from './PrintModal';
@@ -39,6 +39,7 @@ import { formatFileSize } from '../utils/file';
 interface FileManagerModalProps {
   printerId: number;
   printerName: string;
+  printerProvider?: PrinterProvider;
   onClose: () => void;
 }
 
@@ -283,7 +284,7 @@ const SORT_OPTIONS: { value: SortOption; label: string }[] = [
   { value: 'date-desc', label: 'Date (newest)' },
 ];
 
-export function FileManagerModal({ printerId, printerName, onClose }: FileManagerModalProps) {
+export function FileManagerModal({ printerId, printerName, printerProvider, onClose }: FileManagerModalProps) {
   const { t } = useTranslation();
   const { showToast } = useToast();
   const queryClient = useQueryClient();
@@ -298,6 +299,7 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
   const [sortBy, setSortBy] = useState<SortOption>('name-asc');
   const [downloadProgress, setDownloadProgress] = useState<{ current: number; total: number } | null>(null);
   const [viewerFile, setViewerFile] = useState<{ path: string; name: string } | null>(null);
+  const isPrusaPrinter = printerProvider === 'prusalink' || printerProvider === 'prusaconnect';
 
   // Close on Escape key
   useEffect(() => {
@@ -773,14 +775,16 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
               {startingFile ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
               Print
             </Button>
-            <Button
-              variant="secondary"
-              disabled={!selectedPrintableFile() || queueingFile}
-              onClick={handleQueueSelectedFile}
-            >
-              {queueingFile ? <Loader2 className="w-4 h-4 animate-spin" /> : <ListPlus className="w-4 h-4" />}
-              Add to Queue
-            </Button>
+            {!isPrusaPrinter && (
+              <Button
+                variant="secondary"
+                disabled={!selectedPrintableFile() || queueingFile}
+                onClick={handleQueueSelectedFile}
+              >
+                {queueingFile ? <Loader2 className="w-4 h-4 animate-spin" /> : <ListPlus className="w-4 h-4" />}
+                Add to Queue
+              </Button>
+            )}
             <Button
               variant="secondary"
               disabled={selectedFiles.size === 0 || downloadProgress !== null}
