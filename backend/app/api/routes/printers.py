@@ -103,7 +103,7 @@ def _provider_file_matches_path(entry: dict, remote_path: str) -> bool:
     return bool(entry_name) and entry_name == expected_name
 
 
-def _provider_file_exists(provider_client, remote_path: str) -> bool:
+def _provider_file_entry(provider_client, remote_path: str) -> dict | None:
     try:
         files = provider_client.list_files(str(Path(remote_path).parent).replace(".", "/"))
     except Exception as exc:  # noqa: BLE001 - reconciliation is best-effort after a side-effecting upload timeout
@@ -111,13 +111,51 @@ def _provider_file_exists(provider_client, remote_path: str) -> bool:
             "Could not reconcile printer upload state after provider exception: %s",
             type(exc).__name__,
         )
+        return None
+    return next(
+        (entry for entry in files if isinstance(entry, dict) and _provider_file_matches_path(entry, remote_path)),
+        None,
+    )
+
+
+def _provider_file_reported_size(entry: dict | None) -> int | None:
+    if not entry:
+        return None
+    size = entry.get("size")
+    if size is None:
+        return None
+    try:
+        return int(size)
+    except (TypeError, ValueError):
+        return None
+
+
+def _provider_file_is_zero_placeholder(provider_client, remote_path: str) -> bool:
+    entry = _provider_file_entry(provider_client, remote_path)
+    return _provider_file_reported_size(entry) == 0
+
+
+def _provider_file_upload_verified(provider_client, remote_path: str, expected_size: int) -> bool:
+    entry = _provider_file_entry(provider_client, remote_path)
+    if entry is None:
         return False
-    return any(_provider_file_matches_path(entry, remote_path) for entry in files if isinstance(entry, dict))
+    reported_size = _provider_file_reported_size(entry)
+    if reported_size == 0 and expected_size > 0:
+        logger.warning("Printer upload created a 0-byte placeholder for %s", remote_path)
+        return False
+    if reported_size is not None and expected_size > 0 and reported_size != expected_size:
+        logger.warning(
+            "Printer upload size mismatch for %s: local=%s printer=%s",
+            remote_path,
+            expected_size,
+            reported_size,
+        )
+    return True
 
 
-async def _wait_for_provider_file(provider_client, remote_path: str) -> bool:
+async def _wait_for_provider_file(provider_client, remote_path: str, expected_size: int = 0) -> bool:
     for attempt in range(PROVIDER_UPLOAD_RECONCILE_ATTEMPTS):
-        if _provider_file_exists(provider_client, remote_path):
+        if _provider_file_upload_verified(provider_client, remote_path, expected_size):
             return True
         if attempt < PROVIDER_UPLOAD_RECONCILE_ATTEMPTS - 1:
             await asyncio.sleep(PROVIDER_UPLOAD_RECONCILE_INTERVAL_SECONDS)
@@ -1235,17 +1273,53 @@ async def upload_printer_file(
     try:
         provider_client = _provider_for_printer(printer)
         reconciled = False
+        expected_size = tmp_path.stat().st_size
         if provider_client is not None:
             try:
                 success = provider_client.upload_file(tmp_path, remote_path, overwrite=overwrite)
+                if success:
+                    success = await _wait_for_provider_file(provider_client, remote_path, expected_size)
+                    if not success and _provider_file_is_zero_placeholder(provider_client, remote_path):
+                        raise HTTPException(
+                            502,
+                            (
+                                f"Printer upload created a 0-byte placeholder for {remote_path}. "
+                                "Delete the placeholder from the printer and retry."
+                            ),
+                        )
             except (httpx.TimeoutException, TimeoutError) as exc:
                 logger.warning(
                     "Printer file upload timed out after sending %s; checking provider file list: %s",
                     remote_path,
                     type(exc).__name__,
                 )
-                success = await _wait_for_provider_file(provider_client, remote_path)
+                success = await _wait_for_provider_file(provider_client, remote_path, expected_size)
                 reconciled = success
+                if not success and _provider_file_is_zero_placeholder(provider_client, remote_path):
+                    raise HTTPException(
+                        502,
+                        (
+                            f"Printer upload created a 0-byte placeholder for {remote_path}. "
+                            "Delete the placeholder from the printer and retry."
+                        ),
+                    ) from exc
+            except httpx.HTTPStatusError as exc:
+                status_code = exc.response.status_code
+                if status_code == 409 and _provider_file_is_zero_placeholder(provider_client, remote_path):
+                    raise HTTPException(
+                        409,
+                        (
+                            f"Printer already has a 0-byte placeholder for {remote_path}. "
+                            "Delete the placeholder from the printer and retry."
+                        ),
+                    ) from exc
+                logger.exception("Printer file upload failed for %s: %s", remote_path, type(exc).__name__)
+                raise HTTPException(
+                    status_code if status_code in {400, 403, 404, 409} else 502,
+                    f"Printer upload failed: HTTP {status_code}",
+                ) from exc
+            except HTTPException:
+                raise
             except Exception as exc:  # noqa: BLE001 - convert provider failures into useful API errors
                 logger.exception("Printer file upload failed for %s: %s", remote_path, type(exc).__name__)
                 raise HTTPException(502, f"Printer upload failed: {type(exc).__name__}") from exc
