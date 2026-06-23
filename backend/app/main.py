@@ -370,6 +370,19 @@ _bed_cool_waiters: dict[int, dict] = {}
 _user_stopped_printers: set[int] = set()
 
 
+def _should_attempt_bambu_ftp_archive(printer) -> bool:
+    """Return True when print-start archiving should use Bambu FTP.
+
+    Legacy printer rows may have a null provider and historically represented
+    Bambu printers, so keep those on the existing Bambu FTP path. Explicit
+    non-Bambu providers such as PrusaLink must not hit services.bambu_ftp.
+    """
+    provider_value = getattr(printer, "provider", None)
+    if not isinstance(provider_value, str) or not provider_value.strip():
+        provider_value = "bambu"
+    return provider_value.lower() == "bambu"
+
+
 # HMS short-code → human-readable failure reason. Used by _dispatch_archive_update
 # when status="failed" to label the print's failure_reason in archives.
 #
@@ -2343,13 +2356,19 @@ async def on_print_start(printer_id: int, data: dict):
         # Try to find and download the 3MF file
         temp_path = None
         downloaded_filename = None
+        attempt_bambu_ftp_archive = _should_attempt_bambu_ftp_archive(printer)
+        if not attempt_bambu_ftp_archive:
+            logger.info(
+                "[CALLBACK] Skipping Bambu FTP archive lookup for non-Bambu provider %s",
+                getattr(printer, "provider", None),
+            )
 
         # Cache check: cover endpoint may have already pulled this 3MF during
         # the print (frontend opens the card and shows the thumbnail) — reuse
         # that file instead of re-downloading 36MB over the same FTP link that
         # just served it (#972). The cache keys on a normalized filename so
         # variants like "X", "X.3mf", "X.gcode.3mf" all collapse to one entry.
-        for try_filename in possible_names:
+        for try_filename in possible_names if attempt_bambu_ftp_archive else []:
             if not try_filename.endswith(".3mf"):
                 continue
             cached = get_cached_3mf(printer_id, try_filename)
@@ -2362,7 +2381,7 @@ async def on_print_start(printer_id: int, data: dict):
         # Get FTP retry settings
         ftp_retry_enabled, ftp_retry_count, ftp_retry_delay, ftp_timeout = await get_ftp_retry_settings()
 
-        for try_filename in possible_names if not downloaded_filename else []:
+        for try_filename in possible_names if attempt_bambu_ftp_archive and not downloaded_filename else []:
             if not try_filename.endswith(".3mf"):
                 continue
 
@@ -2428,7 +2447,7 @@ async def on_print_start(printer_id: int, data: dict):
 
         # If still not found, try listing directories to find matching file
         # Different printer models use different directory structures
-        if not downloaded_filename and (filename or subtask_name):
+        if attempt_bambu_ftp_archive and not downloaded_filename and (filename or subtask_name):
             search_term = (subtask_name or filename).lower().replace(".gcode", "").replace(".3mf", "")
             logger.info("Direct FTP download failed, searching directories for '%s'", search_term)
             search_dirs = ["/cache", "/model", "/data", "/data/Metadata", "/"]
