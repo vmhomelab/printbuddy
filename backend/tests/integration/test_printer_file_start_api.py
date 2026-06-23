@@ -226,7 +226,7 @@ async def test_upload_printer_file_reports_zero_byte_placeholder_on_conflict(
 
     printer = await printer_factory(provider="prusalink", model="Prusa CORE One")
     fake_client = _FakeProviderClient()
-    request = httpx.Request("PUT", "http://printer/api/v1/files/usb/Shoe_horn_thicker.gcode?overwrite=1")
+    request = httpx.Request("PUT", "http://printer/api/v1/files/usb/Shoe_horn_thicker.gcode")
     response = httpx.Response(409, request=request)
     fake_client.upload_exception = httpx.HTTPStatusError("Conflict", request=request, response=response)
     fake_client.files = [
