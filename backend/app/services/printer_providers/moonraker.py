@@ -360,7 +360,7 @@ class MoonrakerPrinterClient:
             )
         return files
 
-    def upload_file(self, local_path: Path, remote_path: str) -> bool:
+    def upload_file(self, local_path: Path, remote_path: str, *, overwrite: bool = False) -> bool:  # noqa: ARG002
         target = self._normalize_gcodes_path(remote_path) or local_path.name
         with open(local_path, "rb") as fh:
             response = httpx.post(

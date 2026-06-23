@@ -6,6 +6,7 @@ import tempfile
 import zipfile
 from pathlib import Path
 
+import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 from sqlalchemy import func, select
@@ -61,6 +62,8 @@ router = APIRouter(prefix="/printers", tags=["printers"])
 
 
 PRINTABLE_PRINTER_FILE_EXTENSIONS = {".gcode", ".gco", ".g", ".bgcode", ".3mf"}
+PROVIDER_UPLOAD_RECONCILE_ATTEMPTS = 30
+PROVIDER_UPLOAD_RECONCILE_INTERVAL_SECONDS = 1.0
 
 
 def _is_printable_printer_file(filename: str) -> bool:
@@ -88,6 +91,37 @@ def _normalize_provider_file_entry(entry: dict) -> dict:
         "size": entry.get("size") or 0,
         "mtime": entry.get("mtime") or entry.get("modified"),
     }
+
+
+def _provider_file_matches_path(entry: dict, remote_path: str) -> bool:
+    expected_path = "/" + remote_path.strip("/")
+    expected_name = Path(expected_path).name
+    entry_path = str(entry.get("path") or "").strip()
+    entry_name = str(entry.get("name") or entry.get("display_name") or "").strip()
+    if entry_path:
+        return "/" + entry_path.strip("/") == expected_path
+    return bool(entry_name) and entry_name == expected_name
+
+
+def _provider_file_exists(provider_client, remote_path: str) -> bool:
+    try:
+        files = provider_client.list_files(str(Path(remote_path).parent).replace(".", "/"))
+    except Exception as exc:  # noqa: BLE001 - reconciliation is best-effort after a side-effecting upload timeout
+        logger.warning(
+            "Could not reconcile printer upload state after provider exception: %s",
+            type(exc).__name__,
+        )
+        return False
+    return any(_provider_file_matches_path(entry, remote_path) for entry in files if isinstance(entry, dict))
+
+
+async def _wait_for_provider_file(provider_client, remote_path: str) -> bool:
+    for attempt in range(PROVIDER_UPLOAD_RECONCILE_ATTEMPTS):
+        if _provider_file_exists(provider_client, remote_path):
+            return True
+        if attempt < PROVIDER_UPLOAD_RECONCILE_ATTEMPTS - 1:
+            await asyncio.sleep(PROVIDER_UPLOAD_RECONCILE_INTERVAL_SECONDS)
+    return False
 
 
 def _provider_for_printer(printer: Printer):
@@ -1181,6 +1215,7 @@ async def upload_printer_file(
     printer_id: int,
     file: UploadFile = File(...),
     path: str = "/",
+    overwrite: bool = Query(default=False),
     _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_FILES),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1199,8 +1234,21 @@ async def upload_printer_file(
 
     try:
         provider_client = _provider_for_printer(printer)
+        reconciled = False
         if provider_client is not None:
-            success = provider_client.upload_file(tmp_path, remote_path)
+            try:
+                success = provider_client.upload_file(tmp_path, remote_path, overwrite=overwrite)
+            except (httpx.TimeoutException, TimeoutError) as exc:
+                logger.warning(
+                    "Printer file upload timed out after sending %s; checking provider file list: %s",
+                    remote_path,
+                    type(exc).__name__,
+                )
+                success = await _wait_for_provider_file(provider_client, remote_path)
+                reconciled = success
+            except Exception as exc:  # noqa: BLE001 - convert provider failures into useful API errors
+                logger.exception("Printer file upload failed for %s: %s", remote_path, type(exc).__name__)
+                raise HTTPException(502, f"Printer upload failed: {type(exc).__name__}") from exc
         else:
             success = await upload_file_async(
                 printer.ip_address,
@@ -1214,7 +1262,10 @@ async def upload_printer_file(
 
     if not success:
         raise HTTPException(500, f"Failed to upload file: {remote_path}")
-    return {"status": "uploaded", "path": remote_path, "filename": Path(remote_path).name}
+    response = {"status": "uploaded", "path": remote_path, "filename": Path(remote_path).name}
+    if reconciled:
+        response["reconciled"] = True
+    return response
 
 
 @router.post("/{printer_id}/files/start")

@@ -323,9 +323,9 @@ class PrusaLinkPrinterClient:
             )
         return files
 
-    def upload_file(self, local_path: Path, remote_path: str) -> bool:
+    def upload_file(self, local_path: Path, remote_path: str, *, overwrite: bool = False) -> bool:
         normalized = remote_path.strip("/") or local_path.name
-        url = urljoin(self.base_url, self._file_api_path(normalized))
+        url = urljoin(self.base_url, self._file_api_path(normalized)) + f"?overwrite={1 if overwrite else 0}"
         with open(local_path, "rb") as fh:
             kwargs: dict[str, Any] = {
                 "timeout": max(self.timeout, 60.0),

@@ -90,7 +90,7 @@ def test_prusalink_upload_uses_discovered_usb_storage(monkeypatch, tmp_path):
     assert client.upload_file(local_file, "Love Paw Print.gcode") is True
 
     assert requested_paths == ["api/v1/storage"]
-    assert put_urls == ["http://prusa.local/api/v1/files/usb/Love%20Paw%20Print.gcode"]
+    assert put_urls == ["http://prusa.local/api/v1/files/usb/Love%20Paw%20Print.gcode?overwrite=0"]
 
 
 def test_prusalink_start_print_uses_discovered_usb_storage(monkeypatch):
