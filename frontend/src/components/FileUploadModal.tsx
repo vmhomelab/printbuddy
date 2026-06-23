@@ -45,13 +45,15 @@ interface FileUploadModalProps {
   directPrinterUploadId?: number;
   /** Remote printer folder used for direct printer uploads. */
   directPrinterUploadPath?: string;
+  /** Overwrite an existing same-name file on direct printer uploads. */
+  directPrinterUploadOverwrite?: boolean;
   /** Optional notice shown in the modal before upload starts, e.g. provider-specific upload timing. */
   uploadNotice?: string;
   /** Show a direct-upload option to start printing immediately after the file lands on printer storage. */
   allowStartPrintAfterUpload?: boolean;
 }
 
-export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUploaded, autoUpload, validateFile, accept, acceptedFileDescription, uploadTargetPrinterId, directPrinterUploadId, directPrinterUploadPath = '/', uploadNotice, allowStartPrintAfterUpload = false }: FileUploadModalProps) {
+export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUploaded, autoUpload, validateFile, accept, acceptedFileDescription, uploadTargetPrinterId, directPrinterUploadId, directPrinterUploadPath = '/', directPrinterUploadOverwrite = false, uploadNotice, allowStartPrintAfterUpload = false }: FileUploadModalProps) {
   const { t } = useTranslation();
   const [files, setFiles] = useState<UploadFile[]>([]);
   const [isDragging, setIsDragging] = useState(false);
@@ -106,7 +108,7 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
             error: result.errors.length > 0 ? t('fileManager.zipFilesFailed', '{{count}} files failed', { count: result.errors.length }) : undefined,
           });
         } else if (directPrinterUploadId != null) {
-          const uploaded = await api.uploadPrinterFile(directPrinterUploadId, uf.file, directPrinterUploadPath);
+          const uploaded = await api.uploadPrinterFile(directPrinterUploadId, uf.file, directPrinterUploadPath, directPrinterUploadOverwrite);
           if (allowStartPrintAfterUpload && startPrintAfterUpload) {
             await api.startPrinterFile(directPrinterUploadId, uploaded.path);
           }

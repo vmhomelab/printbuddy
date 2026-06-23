@@ -180,6 +180,7 @@ describe('PrintersPage', () => {
     it('uploads Prusa files without opening the legacy Print modal when auto-start is unchecked', async () => {
       const user = userEvent.setup();
       let uploadCalled = false;
+      let uploadRequestUrl = '';
       let startCalled = false;
       server.use(
         http.get('/api/v1/printers/', () => HttpResponse.json([{
@@ -189,8 +190,9 @@ describe('PrintersPage', () => {
           provider: 'prusalink',
           model: 'Prusa CORE One',
         }])),
-        http.post('/api/v1/printers/7/files/upload', () => {
+        http.post('/api/v1/printers/7/files/upload', ({ request }) => {
           uploadCalled = true;
+          uploadRequestUrl = request.url;
           return HttpResponse.json({ status: 'uploaded', path: '/Shoe_horn_thicker.gcode', filename: 'Shoe_horn_thicker.gcode' });
         }),
         http.post('/api/v1/printers/7/files/start', () => {
@@ -210,6 +212,7 @@ describe('PrintersPage', () => {
       await user.click(await screen.findByRole('button', { name: 'Upload (1)' }));
 
       await waitFor(() => expect(uploadCalled).toBe(true));
+      expect(new URL(uploadRequestUrl).searchParams.get('overwrite')).toBe('true');
       expect(startCalled).toBe(false);
       expect(screen.queryByRole('dialog', { name: 'Print' })).not.toBeInTheDocument();
       expect(screen.queryByText('Print Options')).not.toBeInTheDocument();
@@ -218,6 +221,7 @@ describe('PrintersPage', () => {
     it('asks whether to print or upload when dropping a file on a Prusa printer card', async () => {
       const user = userEvent.setup();
       let directUploadCalled = false;
+      let directUploadRequestUrl = '';
       let libraryUploadCalled = false;
       server.use(
         http.get('/api/v1/printers/', () => HttpResponse.json([{
@@ -227,8 +231,9 @@ describe('PrintersPage', () => {
           provider: 'prusalink',
           model: 'Prusa CORE One',
         }])),
-        http.post('/api/v1/printers/7/files/upload', () => {
+        http.post('/api/v1/printers/7/files/upload', ({ request }) => {
           directUploadCalled = true;
+          directUploadRequestUrl = request.url;
           return HttpResponse.json({ status: 'uploaded', path: '/Shoe_horn_thicker.gcode', filename: 'Shoe_horn_thicker.gcode' });
         }),
         http.post('/api/v1/library/files', () => {
@@ -263,6 +268,7 @@ describe('PrintersPage', () => {
       await user.click(screen.getByRole('button', { name: 'Upload only' }));
 
       await waitFor(() => expect(directUploadCalled).toBe(true));
+      expect(new URL(directUploadRequestUrl).searchParams.get('overwrite')).toBe('true');
       expect(libraryUploadCalled).toBe(false);
       expect(screen.queryByText('Choose file action')).not.toBeInTheDocument();
     });

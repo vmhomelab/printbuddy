@@ -1751,6 +1751,7 @@ function PrinterCard({
   const closePrinterInfo = useCallback(() => setShowPrinterInfo(false), []);
   const [printAfterUpload, setPrintAfterUpload] = useState<{ id: number; filename: string } | null>(null);
   const openPrusaDirectUpload = useCallback(() => {
+    setDroppedPrusaFile(null);
     setShowUploadForPrint(false);
     setPrintAfterUpload(null);
     setShowPrusaDirectUpload(true);
@@ -2657,7 +2658,7 @@ function PrinterCard({
   const uploadDroppedFileToPrusa = async (file: File) => {
     setIsDropUploading(true);
     try {
-      await api.uploadPrinterFile(printer.id, file, '/');
+      await api.uploadPrinterFile(printer.id, file, '/', true);
       showToast(t('fileManager.uploadComplete', 'Upload complete'), 'success');
       queryClient.invalidateQueries({ queryKey: ['printerFiles', printer.id] });
     } catch {
@@ -5261,11 +5262,15 @@ function PrinterCard({
       {showPrusaDirectUpload && (
         <FileUploadModal
           folderId={null}
-          onClose={() => setShowPrusaDirectUpload(false)}
+          onClose={() => {
+            setShowPrusaDirectUpload(false);
+            setDroppedPrusaFile(null);
+          }}
           onUploadComplete={() => {}}
           accept={printableFileRules.accept}
           acceptedFileDescription={printableFileDescription}
           directPrinterUploadId={printer.id}
+          directPrinterUploadOverwrite
           allowStartPrintAfterUpload
           uploadNotice={t('fileManager.prusaUploadPatienceNote', 'Prusa uploads can take a few seconds to a few minutes depending upon file size while the printer writes the file to USB storage.')}
           validateFile={(file) => {
