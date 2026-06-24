@@ -6,7 +6,6 @@ import {
   Folder,
   File,
   ChevronLeft,
-  Download,
   Trash2,
   Loader2,
   HardDrive,
@@ -785,23 +784,22 @@ export function FileManagerModal({ printerId, printerName, printerProvider, onCl
                 Add to Queue
               </Button>
             )}
-            <Button
-              variant="secondary"
-              disabled={selectedFiles.size === 0 || downloadProgress !== null}
-              onClick={handleDownload}
-            >
-              {downloadProgress ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  {downloadProgress.current}/{downloadProgress.total}
-                </>
-              ) : (
-                <>
-                  <Download className="w-4 h-4" />
-                  Download{selectedFiles.size > 1 ? ` (${selectedFiles.size})` : ''}
-                </>
-              )}
-            </Button>
+            {!isPrusaPrinter && (
+              <Button
+                variant="secondary"
+                disabled={selectedFiles.size === 0 || downloadProgress !== null}
+                onClick={handleDownload}
+              >
+                {downloadProgress ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    {downloadProgress.current}/{downloadProgress.total}
+                  </>
+                ) : (
+                  <span>Download{selectedFiles.size > 1 ? ` (${selectedFiles.size})` : ''}</span>
+                )}
+              </Button>
+            )}
             <Button
               variant="secondary"
               disabled={selectedFiles.size === 0 || deleteMutation.isPending}
