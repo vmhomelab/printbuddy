@@ -60,6 +60,7 @@ export default {
     refresh: 'Aktualisieren',
     download: 'Herunterladen',
     upload: 'Hochladen',
+    uploadAndPrint: 'Hochladen & Drucken',
     uploading: 'Hochladen...',
     uploadFailed: 'Hochladen fehlgeschlagen',
     actions: 'Aktionen',
