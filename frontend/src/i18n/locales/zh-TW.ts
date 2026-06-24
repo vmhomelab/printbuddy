@@ -60,6 +60,7 @@ export default {
     refresh: '重新整理',
     download: '下載',
     upload: '上傳',
+    uploadAndPrint: '上傳並列印',
     uploading: '上傳中...',
     uploadFailed: '上傳失敗',
     actions: '操作',

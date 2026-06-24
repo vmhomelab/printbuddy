@@ -60,6 +60,7 @@ export default {
     refresh: 'Atualizar',
     download: 'Baixar',
     upload: 'Enviar',
+    uploadAndPrint: 'Enviar e imprimir',
     uploading: 'Enviando...',
     uploadFailed: 'Falha no envio',
     actions: 'Ações',

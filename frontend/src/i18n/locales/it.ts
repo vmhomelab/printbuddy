@@ -60,6 +60,7 @@ export default {
     refresh: 'Aggiorna',
     download: 'Scarica',
     upload: 'Carica',
+    uploadAndPrint: 'Carica e stampa',
     uploading: 'Caricamento...',
     uploadFailed: 'Caricamento fallito',
     actions: 'Azioni',

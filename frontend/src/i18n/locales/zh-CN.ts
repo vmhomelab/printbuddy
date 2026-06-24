@@ -60,6 +60,7 @@ export default {
     refresh: '刷新',
     download: '下载',
     upload: '上传',
+    uploadAndPrint: '上传并打印',
     uploading: '上传中...',
     uploadFailed: '上传失败',
     actions: '操作',
