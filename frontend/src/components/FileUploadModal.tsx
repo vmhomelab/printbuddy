@@ -36,7 +36,7 @@ interface DirectUploadConflict {
 interface FileUploadModalProps {
   folderId: number | null;
   onClose: () => void;
-  onUploadComplete: () => void;
+  onUploadComplete: (succeededCount?: number) => void;
   /** Called after each file is successfully uploaded with its response data. Return a string to show an error and prevent modal from closing. */
   onFileUploaded?: (file: LibraryFileUploadResponse) => string | void;
   /** When true, automatically uploads the file as soon as it's added and closes the modal */
@@ -115,6 +115,7 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
   const uploadFiles = async (filesToUpload: UploadFile[], conflictStrategy: DirectUploadConflictStrategy = 'error') => {
     setIsUploading(true);
     setDirectUploadConflict(null);
+    let succeededCount = 0;
 
     for (const uf of filesToUpload) {
       if (uf.status !== 'pending') continue;
@@ -129,6 +130,9 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
             extractedCount: result.extracted,
             error: result.errors.length > 0 ? t('fileManager.zipFilesFailed', '{{count}} files failed', { count: result.errors.length }) : undefined,
           });
+          if (result.extracted > 0 || result.errors.length === 0) {
+            succeededCount += 1;
+          }
         } else if (directPrinterUploadId != null) {
           if (conflictStrategy === 'error') {
             const conflict = await findExistingDirectPrinterFile(uf.file);
@@ -150,9 +154,11 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
             await api.startPrinterFile(directPrinterUploadId, uploaded.path);
           }
           updateFileStatus(uf.file, { status: 'success' });
+          succeededCount += 1;
         } else {
           const result = await api.uploadLibraryFile(uf.file, folderId, generateStlThumbnails, uploadTargetPrinterId);
           updateFileStatus(uf.file, { status: 'success' });
+          succeededCount += 1;
           const error = onFileUploaded?.(result);
           if (error) {
             setUploadError(error);
@@ -170,7 +176,7 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
     }
 
     setIsUploading(false);
-    onUploadComplete();
+    onUploadComplete(succeededCount);
     // #1401: don't auto-close if any file ended with an error — the user
     // needs to see the rejection message (e.g. "raw .gcode upload"), not
     // have the modal vanish before they can read it. Closing happens via

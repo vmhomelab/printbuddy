@@ -2659,7 +2659,7 @@ function PrinterCard({
     setIsDropUploading(true);
     try {
       await api.uploadPrinterFile(printer.id, file, '/', true);
-      showToast(t('fileManager.uploadComplete', 'Upload complete'), 'success');
+      showToast(t('fileManager.uploadComplete', { succeeded: 1, defaultValue: 'Upload complete: 1 succeeded' }), 'success');
       queryClient.invalidateQueries({ queryKey: ['printerFiles', printer.id] });
     } catch {
       showToast(t('common.uploadFailed', 'Upload failed'), 'error');
@@ -5272,8 +5272,8 @@ function PrinterCard({
           directPrinterUploadId={printer.id}
           directPrinterUploadOverwrite
           allowStartPrintAfterUpload
-          onUploadComplete={() => {
-            showToast(t('fileManager.uploadComplete', 'Upload complete'), 'success');
+          onUploadComplete={(succeededCount = 1) => {
+            showToast(t('fileManager.uploadComplete', { succeeded: succeededCount, defaultValue: 'Upload complete: {{succeeded}} succeeded' }), 'success');
             queryClient.invalidateQueries({ queryKey: ['printerFiles', printer.id] });
           }}
           uploadNotice={t('fileManager.prusaUploadPatienceNote', 'Prusa uploads can take a few seconds to a few minutes depending upon file size while the printer writes the file to USB storage.')}

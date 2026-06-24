@@ -190,6 +190,7 @@ describe('PrintersPage', () => {
           provider: 'prusalink',
           model: 'Prusa CORE One',
         }])),
+        http.get('/api/v1/printers/7/files', () => HttpResponse.json({ files: [] })),
         http.post('/api/v1/printers/7/files/upload', ({ request }) => {
           uploadCalled = true;
           uploadRequestUrl = request.url;
@@ -214,6 +215,8 @@ describe('PrintersPage', () => {
       await waitFor(() => expect(uploadCalled).toBe(true));
       expect(new URL(uploadRequestUrl).searchParams.get('overwrite')).toBe('true');
       expect(startCalled).toBe(false);
+      expect(await screen.findByText('Upload complete: 1 succeeded')).toBeInTheDocument();
+      expect(screen.queryByText(/\{\{succeeded\}\}/)).not.toBeInTheDocument();
       expect(screen.queryByRole('dialog', { name: 'Print' })).not.toBeInTheDocument();
       expect(screen.queryByText('Print Options')).not.toBeInTheDocument();
     });
