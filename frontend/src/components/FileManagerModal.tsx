@@ -33,7 +33,6 @@ import { ModelViewer } from './ModelViewer';
 import { GcodeViewer } from './GcodeViewer';
 import type { PlateMetadata } from '../types/plates';
 import { useToast } from '../contexts/ToastContext';
-import { formatFileSize } from '../utils/file';
 
 interface FileManagerModalProps {
   printerId: number;
@@ -668,6 +667,12 @@ export function FileManagerModal({ printerId, printerName, printerProvider, onCl
                   .map((file) => {
                     const FileIcon = getFileIcon(file.name, file.is_directory);
                     const isSelected = selectedFiles.has(file.path);
+                    const lowerName = file.name.toLowerCase();
+                    const canPreview =
+                      !file.is_directory &&
+                      (lowerName.endsWith('.3mf') ||
+                        lowerName.endsWith('.gcode') ||
+                        lowerName.endsWith('.stl'));
 
                     return (
                       <div
@@ -702,24 +707,17 @@ export function FileManagerModal({ printerId, printerName, printerProvider, onCl
                           }`}
                         />
                         <span className="flex-1 text-white truncate">{file.name}</span>
-                        {!file.is_directory && (
-                          <div className="flex items-center gap-3">
-                            <span className="text-sm text-bambu-gray">
-                              {formatFileSize(file.size)}
-                            </span>
-                            {(file.name.toLowerCase().endsWith('.3mf') || file.name.toLowerCase().endsWith('.gcode') || file.name.toLowerCase().endsWith('.stl')) && (
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setViewerFile({ path: file.path, name: file.name });
-                                }}
-                                className="p-1 rounded hover:bg-bambu-dark text-bambu-gray hover:text-bambu-green"
-                                title="3D View"
-                              >
-                                <Box className="w-4 h-4" />
-                              </button>
-                            )}
-                          </div>
+                        {canPreview && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setViewerFile({ path: file.path, name: file.name });
+                            }}
+                            className="p-1 rounded hover:bg-bambu-dark text-bambu-gray hover:text-bambu-green"
+                            title="3D View"
+                          >
+                            <Box className="w-4 h-4" />
+                          </button>
                         )}
                         {file.is_directory && (
                           <ChevronLeft className="w-4 h-4 text-bambu-gray rotate-180" />

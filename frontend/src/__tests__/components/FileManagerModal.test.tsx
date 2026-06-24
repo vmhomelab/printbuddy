@@ -125,7 +125,7 @@ describe('FileManagerModal', () => {
       });
     });
 
-    it('shows file sizes for files', async () => {
+    it('does not show file sizes in the file list', async () => {
       render(
         <FileManagerModal
           printerId={1}
@@ -135,9 +135,12 @@ describe('FileManagerModal', () => {
       );
 
       await waitFor(() => {
-        // 1024000 bytes = 1024.0 KB
-        expect(screen.getByText('1024.0 KB')).toBeInTheDocument();
+        expect(screen.getByText('benchy.3mf')).toBeInTheDocument();
       });
+
+      expect(screen.queryByText('1024.0 KB')).not.toBeInTheDocument();
+      expect(screen.queryByText('2.0 MB')).not.toBeInTheDocument();
+      expect(screen.queryByText('0 B')).not.toBeInTheDocument();
     });
   });
 
