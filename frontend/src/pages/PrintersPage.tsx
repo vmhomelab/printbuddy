@@ -3640,7 +3640,7 @@ function PrinterCard({
                       })()}
 
                       {/* Print Speed */}
-                      {(() => {
+                      {!isPrusaModelPrinter && (() => {
                         const speedLabels: Record<number, string> = { 1: '50%', 2: '100%', 3: '124%', 4: '166%' };
                         const speedPct = speedLabels[status.speed_level] || '100%';
                         return (
