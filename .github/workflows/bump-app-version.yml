@@ -1,0 +1,60 @@
+name: Bump APP_VERSION
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version to write into backend/app/core/config.py (for example: 0.2.4.8)"
+        required: true
+        type: string
+      target_branch:
+        description: "Branch to update before the release merge"
+        required: true
+        default: dev
+        type: choice
+        options:
+          - dev
+          - main
+
+permissions:
+  contents: write
+
+concurrency:
+  group: bump-app-version-${{ inputs.target_branch }}
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    name: Bump APP_VERSION on ${{ inputs.target_branch }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout target branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.target_branch }}
+          fetch-depth: 0
+
+      - name: Configure Git author
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Update APP_VERSION
+        run: python scripts/app_version.py --set "${{ inputs.version }}"
+
+      - name: Verify APP_VERSION
+        run: python scripts/app_version.py --expected "${{ inputs.version }}"
+
+      - name: Commit and push if changed
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- backend/app/core/config.py; then
+            echo "APP_VERSION is already ${{ inputs.version }}; nothing to commit."
+            exit 0
+          fi
+
+          git add backend/app/core/config.py
+          git commit -m "chore: bump app version to ${{ inputs.version }}"
+          git push origin "HEAD:${{ inputs.target_branch }}"
