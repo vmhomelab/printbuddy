@@ -54,6 +54,7 @@
 **Printbuddy** is a modern, self-hosted dashboard with a broader goal:
 
 > A single, modern, self-hosted dashboard for managing different 3D printer ecosystems.
+
 Printbuddy uses a provider-based architecture for multiple printer platforms.
 
 Current state:
