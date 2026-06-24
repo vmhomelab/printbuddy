@@ -14,6 +14,45 @@ import pytest
 _FTP_MODULE = "backend.app.services.bambu_ftp"
 
 
+class TestBambuFtpArchiveEligibility:
+    """Provider gate for Bambu FTP archive lookup on print start."""
+
+    def test_prusalink_skips_bambu_ftp_archive_lookup(self):
+        from backend.app.main import _should_attempt_bambu_ftp_archive
+
+        printer = MagicMock(provider="prusalink")
+
+        assert _should_attempt_bambu_ftp_archive(printer) is False
+
+    def test_prusaconnect_skips_bambu_ftp_archive_lookup(self):
+        from backend.app.main import _should_attempt_bambu_ftp_archive
+
+        printer = MagicMock(provider="prusaconnect")
+
+        assert _should_attempt_bambu_ftp_archive(printer) is False
+
+    def test_bambu_uses_bambu_ftp_archive_lookup(self):
+        from backend.app.main import _should_attempt_bambu_ftp_archive
+
+        printer = MagicMock(provider="bambu")
+
+        assert _should_attempt_bambu_ftp_archive(printer) is True
+
+    def test_missing_provider_defaults_to_bambu_for_legacy_printers(self):
+        from backend.app.main import _should_attempt_bambu_ftp_archive
+
+        printer = MagicMock(provider=None)
+
+        assert _should_attempt_bambu_ftp_archive(printer) is True
+
+    def test_unset_mock_provider_defaults_to_bambu(self):
+        from backend.app.main import _should_attempt_bambu_ftp_archive
+
+        printer = MagicMock()
+
+        assert _should_attempt_bambu_ftp_archive(printer) is True
+
+
 class TestCalibrationPrintFiltering:
     """Test that internal printer files under /usr/ are not archived."""
 

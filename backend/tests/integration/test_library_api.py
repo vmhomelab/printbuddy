@@ -459,6 +459,33 @@ class TestLibraryAddToQueueAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_add_prusa_bgcode_to_queue_succeeds(
+        self, async_client: AsyncClient, printer_factory, library_file_factory, db_session, tmp_path
+    ):
+        """Verify Prusa BGCODE is treated as a sliced file for queueing."""
+        await printer_factory(provider="prusalink", model="Prusa CORE One")
+        lib_file = await library_file_factory(
+            filename="core-one-plate.bgcode",
+            file_path="library/files/core-one-plate.bgcode",
+            file_type="bgcode",
+        )
+        disk_path = tmp_path / lib_file.file_path
+        disk_path.parent.mkdir(parents=True, exist_ok=True)
+        disk_path.write_bytes(b"BGCODE mock data")
+
+        data = {"file_ids": [lib_file.id]}
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("backend.app.api.routes.library.app_settings.base_dir", tmp_path)
+            response = await async_client.post("/api/v1/library/files/add-to-queue", json=data)
+
+        assert response.status_code == 200
+        result = response.json()
+        assert len(result["added"]) == 1
+        assert result["added"][0]["filename"] == "core-one-plate.bgcode"
+        assert result["errors"] == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_add_non_sliced_file_to_queue_fails(
         self, async_client: AsyncClient, printer_factory, library_file_factory, db_session
     ):
@@ -1129,15 +1156,14 @@ class TestPrintFileUploadValidation:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_library_rejects_raw_gcode_upload(self, async_client: AsyncClient, db_session):
-        """``Foo.gcode`` direct uploads are blocked at the library route —
-        the dispatcher would otherwise append ``.3mf`` and ship raw gcode
-        to the printer as a fake 3MF."""
+    async def test_library_allows_raw_gcode_upload_without_target_printer(self, async_client: AsyncClient, db_session):
+        """Provider-neutral File Manager uploads keep raw G-code usable for
+        PrusaLink, Moonraker/Klipper, and other non-Bambu providers. The
+        Bambu-only guard applies once a target printer context is known."""
         files = {"file": ("plate_1.gcode", b"; raw gcode\nG28\n", "application/octet-stream")}
         response = await async_client.post("/api/v1/library/files", files=files)
-        assert response.status_code == 400
-        # Error message must name the actual remedy, not just say "invalid".
-        assert "gcode.3mf" in response.json()["detail"]
+        assert response.status_code == 200
+        assert response.json()["filename"] == "plate_1.gcode"
 
     @pytest.mark.asyncio
     @pytest.mark.integration

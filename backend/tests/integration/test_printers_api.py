@@ -103,6 +103,41 @@ class TestPrintersAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_create_prusalink_printer_persists_detected_auth_mode(
+        self, async_client: AsyncClient, _mock_printer_test_connection, monkeypatch
+    ):
+        """Verify PrusaLink auth auto-detection result is stored with the printer."""
+        _mock_printer_test_connection.return_value = {
+            "success": True,
+            "state": "IDLE",
+            "model": "PrusaLink",
+            "provider_options": '{"prusalink_api_mode":"modern","prusalink_auth_mode":"digest"}',
+        }
+        monkeypatch.setattr(
+            "backend.app.api.routes.printers.printer_manager.connect_printer",
+            AsyncMock(return_value=True),
+        )
+        data = {
+            "name": "Core One",
+            "serial_number": "PRUSALINK-COREONE",
+            "ip_address": "192.168.1.246",
+            "access_code": "prusalink",
+            "provider": "prusalink",
+            "api_url": "http://192.168.1.246",
+            "auth_token": "secret",
+            "model": "Prusa CORE One",
+            "is_active": False,
+        }
+
+        response = await async_client.post("/api/v1/printers/", json=data)
+
+        assert response.status_code == 200
+        result = response.json()
+        assert result["provider"] == "prusalink"
+        assert result["provider_options"] == '{"prusalink_api_mode":"modern","prusalink_auth_mode":"digest"}'
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_create_printer_with_fqdn(self, async_client: AsyncClient):
         """Verify printer can be created with a fully qualified domain name."""
         data = {
@@ -259,6 +294,38 @@ class TestPrintersAPI:
         response = await async_client.patch("/api/v1/printers/9999", json={"name": "New Name"})
 
         assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_update_prusalink_auth_mode_persists_even_if_reconnect_fails(
+        self, async_client: AsyncClient, printer_factory, db_session, monkeypatch
+    ):
+        """Editing PrusaLink auth settings must not 500 when immediate reconnect fails."""
+        printer = await printer_factory(
+            name="Prusa Mock Server",
+            provider="prusalink",
+            api_url="http://10.17.1.96:8087",
+            auth_token="old-token",
+            provider_options='{"prusalink_api_mode":"auto","prusalink_auth_mode":"auto"}',
+            is_active=True,
+        )
+        monkeypatch.setattr(
+            "backend.app.api.routes.printers.printer_manager.connect_printer",
+            AsyncMock(side_effect=RuntimeError("mock reconnect failed")),
+        )
+
+        response = await async_client.patch(
+            f"/api/v1/printers/{printer.id}",
+            json={
+                "auth_token": "updated-token",
+                "provider_options": '{"prusalink_api_mode":"modern","prusalink_auth_mode":"digest"}',
+            },
+        )
+
+        assert response.status_code == 200
+        result = response.json()
+        assert result["auth_token"] == "updated-token"
+        assert result["provider_options"] == '{"prusalink_api_mode":"modern","prusalink_auth_mode":"digest"}'
 
     # ========================================================================
     # Delete endpoints

@@ -190,6 +190,65 @@ class TestNotificationService:
             call_args = mock_get.call_args
             assert call_args[0][1] == "on_print_stopped"
 
+    @pytest.mark.asyncio
+    async def test_on_print_complete_uses_provider_duration_without_archive(self, service, mock_provider, mock_db):
+        """Polling providers can send elapsed time even when no archive was matched."""
+        with (
+            patch.object(service, "_get_providers_for_event", new_callable=AsyncMock) as mock_get,
+            patch.object(service, "_send_to_providers", new_callable=AsyncMock) as mock_send,
+            patch.object(service, "_build_message_from_template", new_callable=AsyncMock) as mock_build,
+        ):
+            mock_get.return_value = [mock_provider]
+            mock_build.return_value = ("Print Completed", "Test")
+
+            await service.on_print_complete(
+                printer_id=1,
+                printer_name="Core One",
+                status="completed",
+                data={"filename": "notification-test.gcode", "actual_time_seconds": 3660},
+                db=mock_db,
+            )
+
+            variables = mock_build.call_args.args[2]
+            assert variables["duration"] == "1h 1m"
+            assert mock_send.call_args.kwargs["variables"]["duration"] == "1h 1m"
+
+    @pytest.mark.asyncio
+    async def test_on_print_almost_done_sends_snapshot_notification(self, service, mock_provider, mock_db):
+        """99% almost-done notifications use their own event and attach a camera snapshot."""
+        image_data = b"jpeg-bytes"
+
+        with (
+            patch.object(service, "_get_providers_for_event", new_callable=AsyncMock) as mock_get,
+            patch.object(service, "_send_to_providers", new_callable=AsyncMock) as mock_send,
+            patch.object(service, "_build_message_from_template", new_callable=AsyncMock) as mock_build,
+            patch.object(service, "_format_eta", new_callable=AsyncMock) as mock_eta,
+        ):
+            mock_get.return_value = [mock_provider]
+            mock_build.return_value = ("Print almost done.", "Core One: Almost Finished")
+            mock_eta.return_value = "12:34"
+
+            await service.on_print_almost_done(
+                printer_id=1,
+                printer_name="Core One",
+                filename="almost_done.bgcode",
+                db=mock_db,
+                remaining_time=120,
+                image_data=image_data,
+                finish_photo_url="",
+            )
+
+            mock_get.assert_called_once_with(mock_db, "on_print_almost_done", 1)
+            mock_build.assert_called_once()
+            assert mock_build.call_args.args[1] == "print_almost_done"
+            variables = mock_build.call_args.args[2]
+            assert variables["printer"] == "Core One"
+            assert variables["filename"] == "almost_done"
+            assert variables["remaining_time"] == "2m"
+            assert variables["finish_photo_url"] == ""
+            assert mock_send.call_args.args[4] == "print_almost_done"
+            assert mock_send.call_args.kwargs["image_data"] == image_data
+
     # ========================================================================
     # Tests for provider filtering
     # ========================================================================

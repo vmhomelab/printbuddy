@@ -124,6 +124,33 @@ describe('FileUploadModal', () => {
       expect(screen.getByRole('button', { name: /Upload \(2\)/i })).toBeInTheDocument();
     });
 
+    it('changes the direct printer upload button to Upload & Print when start after upload is checked', async () => {
+      const user = userEvent.setup();
+      render(<FileUploadModal {...defaultProps} directPrinterUploadId={7} allowStartPrintAfterUpload />);
+
+      const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+      await user.upload(fileInput, new File(['G28'], 'prusa.gcode', { type: 'application/octet-stream' }));
+
+      expect(screen.getByRole('button', { name: /Upload \(1\)/i })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /Upload & Print \(1\)/i })).not.toBeInTheDocument();
+
+      await user.click(screen.getByLabelText('Start print after upload'));
+
+      expect(screen.getByRole('button', { name: /Upload & Print \(1\)/i })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /^Upload \(1\)$/i })).not.toBeInTheDocument();
+    });
+
+    it('keeps the Upload label when the direct printer start-after-upload checkbox is unchecked', async () => {
+      const user = userEvent.setup();
+      render(<FileUploadModal {...defaultProps} directPrinterUploadId={7} allowStartPrintAfterUpload />);
+
+      const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+      await user.upload(fileInput, new File(['G28'], 'prusa.gcode', { type: 'application/octet-stream' }));
+
+      expect(screen.getByRole('button', { name: /^Upload \(1\)$/i })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /Upload & Print/i })).not.toBeInTheDocument();
+    });
+
     it('accepts any file type (not restricted like UploadModal)', async () => {
       const user = userEvent.setup();
       render(<FileUploadModal {...defaultProps} />);
@@ -591,6 +618,12 @@ describe('FileUploadModal', () => {
       expect(screen.queryByText('All file types supported. ZIP files will be extracted.')).not.toBeInTheDocument();
     });
 
+    it('shows an upload notice when provided', () => {
+      render(<FileUploadModal {...defaultProps} uploadNotice="Prusa uploads can take 20–30 seconds." />);
+
+      expect(screen.getByText('Prusa uploads can take 20–30 seconds.')).toBeInTheDocument();
+    });
+
     it('passes printer context to the backend upload validation when provided', async () => {
       const user = userEvent.setup();
       let seenTargetPrinterId: string | null = null;
@@ -615,6 +648,135 @@ describe('FileUploadModal', () => {
       await user.click(screen.getByRole('button', { name: /Upload \(1\)/i }));
 
       await waitFor(() => expect(seenTargetPrinterId).toBe('42'));
+    });
+
+    it('uploads directly to printer storage when directPrinterUploadId is provided', async () => {
+      const user = userEvent.setup();
+      let seenUploadPath: string | null = null;
+      let startCalled = false;
+      let libraryUploadCalled = false;
+
+      server.use(
+        http.get('/api/v1/printers/:id/files', () => HttpResponse.json({ path: '/', files: [] })),
+        http.post('/api/v1/library/files', () => {
+          libraryUploadCalled = true;
+          return HttpResponse.json({}, { status: 500 });
+        }),
+        http.post('/api/v1/printers/:id/files/upload', ({ request, params }) => {
+          expect(params.id).toBe('7');
+          seenUploadPath = new URL(request.url).searchParams.get('path');
+          return HttpResponse.json({ status: 'uploaded', path: '/prusa.gcode', filename: 'prusa.gcode' });
+        }),
+        http.post('/api/v1/printers/:id/files/start', () => {
+          startCalled = true;
+          return HttpResponse.json({ status: 'started', path: '/prusa.gcode' });
+        })
+      );
+
+      render(<FileUploadModal {...defaultProps} directPrinterUploadId={7} directPrinterUploadPath="/" allowStartPrintAfterUpload />);
+      const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+      await user.upload(fileInput, new File(['G28'], 'prusa.gcode', { type: 'application/octet-stream' }));
+      await user.click(screen.getByRole('button', { name: /Upload \(1\)/i }));
+
+      await waitFor(() => expect(seenUploadPath).toBe('/'));
+      expect(libraryUploadCalled).toBe(false);
+      expect(startCalled).toBe(false);
+      expect(defaultProps.onClose).toHaveBeenCalled();
+    });
+
+    it('starts printing the direct printer upload when requested', async () => {
+      const user = userEvent.setup();
+      let seenStartPath: string | null = null;
+
+      server.use(
+        http.get('/api/v1/printers/:id/files', () => HttpResponse.json({ path: '/', files: [] })),
+        http.post('/api/v1/printers/:id/files/upload', () => HttpResponse.json({
+          status: 'uploaded',
+          path: '/Love Paw Print.gcode',
+          filename: 'Love Paw Print.gcode',
+        })),
+        http.post('/api/v1/printers/:id/files/start', ({ request, params }) => {
+          expect(params.id).toBe('7');
+          seenStartPath = new URL(request.url).searchParams.get('path');
+          return HttpResponse.json({ status: 'started', path: '/Love Paw Print.gcode' });
+        })
+      );
+
+      render(<FileUploadModal {...defaultProps} directPrinterUploadId={7} allowStartPrintAfterUpload />);
+      expect(screen.getByLabelText('Start print after upload')).toBeInTheDocument();
+      await user.click(screen.getByLabelText('Start print after upload'));
+
+      const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+      await user.upload(fileInput, new File(['G28'], 'Love Paw Print.gcode', { type: 'application/octet-stream' }));
+      await user.click(screen.getByRole('button', { name: /Upload & Print \(1\)/i }));
+
+      await waitFor(() => expect(seenStartPath).toBe('/Love Paw Print.gcode'));
+      expect(defaultProps.onClose).toHaveBeenCalled();
+    });
+
+    it('prompts before direct printer upload when the filename already exists and uploads a renamed copy', async () => {
+      const user = userEvent.setup();
+      let seenConflictStrategy: string | null = null;
+
+      server.use(
+        http.get('/api/v1/printers/:id/files', () => HttpResponse.json({
+          path: '/',
+          files: [{ name: 'Shoe_horn.gcode', path: '/Shoe_horn.gcode', size: 128, is_directory: false }],
+        })),
+        http.post('/api/v1/printers/:id/files/upload', ({ request }) => {
+          seenConflictStrategy = new URL(request.url).searchParams.get('conflict_strategy');
+          return HttpResponse.json({
+            status: 'uploaded',
+            path: '/Shoe_horn(1).gcode',
+            filename: 'Shoe_horn(1).gcode',
+            renamed: true,
+            original_filename: 'Shoe_horn.gcode',
+          });
+        })
+      );
+
+      render(<FileUploadModal {...defaultProps} directPrinterUploadId={7} />);
+      const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+      await user.upload(fileInput, new File(['G28'], 'Shoe_horn.gcode', { type: 'application/octet-stream' }));
+      await user.click(screen.getByRole('button', { name: /Upload \(1\)/i }));
+
+      expect(await screen.findByText(/already exists on the printer USB/i)).toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: /Upload as copy/i }));
+
+      await waitFor(() => expect(seenConflictStrategy).toBe('rename'));
+      expect(defaultProps.onClose).toHaveBeenCalled();
+    });
+
+    it('can delete and replace an existing direct printer file after the conflict prompt', async () => {
+      const user = userEvent.setup();
+      let seenConflictStrategy: string | null = null;
+
+      server.use(
+        http.get('/api/v1/printers/:id/files', () => HttpResponse.json({
+          path: '/',
+          files: [{ name: 'Shoe_horn.gcode', path: '/Shoe_horn.gcode', size: 128, is_directory: false }],
+        })),
+        http.post('/api/v1/printers/:id/files/upload', ({ request }) => {
+          seenConflictStrategy = new URL(request.url).searchParams.get('conflict_strategy');
+          return HttpResponse.json({
+            status: 'uploaded',
+            path: '/Shoe_horn.gcode',
+            filename: 'Shoe_horn.gcode',
+            replaced: true,
+          });
+        })
+      );
+
+      render(<FileUploadModal {...defaultProps} directPrinterUploadId={7} />);
+      const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+      await user.upload(fileInput, new File(['G28'], 'Shoe_horn.gcode', { type: 'application/octet-stream' }));
+      await user.click(screen.getByRole('button', { name: /Upload \(1\)/i }));
+
+      expect(await screen.findByText(/already exists on the printer USB/i)).toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: /Delete existing and upload/i }));
+
+      await waitFor(() => expect(seenConflictStrategy).toBe('delete_replace'));
+      expect(defaultProps.onClose).toHaveBeenCalled();
     });
 
     it('does not set accept attribute when prop is omitted', () => {

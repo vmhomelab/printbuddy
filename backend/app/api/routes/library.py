@@ -167,7 +167,13 @@ def validate_print_file_upload(filename: str, content: bytes, printer_provider: 
     is_3mf_upload = lower_filename.endswith(".3mf")
     is_raw_gcode_upload = lower_filename.endswith(".gcode") and not lower_filename.endswith(".gcode.3mf")
 
-    if is_raw_gcode_upload and (printer_provider is None or printer_provider == "bambu"):
+    # Only apply the Bambu raw-gcode guard when the upload is explicitly tied
+    # to a Bambu printer. The File Manager itself is provider-neutral: when no
+    # target printer is supplied, raw .gcode must remain uploadable for
+    # PrusaLink/Core One, Moonraker/Klipper, and other providers that can work
+    # with normal G-code files. Printer-specific compatibility is enforced when
+    # a target printer context exists (for example drag/drop onto a Bambu card).
+    if is_raw_gcode_upload and printer_provider == "bambu":
         raise HTTPException(
             status_code=400,
             detail=(
@@ -2121,11 +2127,12 @@ def is_sliced_file(filename: str) -> bool:
     """Check if a file is a sliced (printable) file.
 
     Sliced files are:
+    - .bgcode files (Prusa binary G-code)
     - .gcode files
-    - .3mf files that contain '.gcode.' in the name (e.g., filename.gcode.3mf)
+    - .gcode.3mf files (Bambu sliced containers)
     """
     lower = filename.lower()
-    return lower.endswith(".gcode") or ".gcode." in lower
+    return lower.endswith((".bgcode", ".gcode", ".gcode.3mf"))
 
 
 @router.post("/files/add-to-queue", response_model=AddToQueueResponse)
@@ -2136,7 +2143,7 @@ async def add_files_to_queue(
 ):
     """Add library files to the print queue.
 
-    Only sliced files (.gcode or .gcode.3mf) can be added to the queue.
+    Only sliced files (.bgcode, .gcode, or .gcode.3mf) can be added to the queue.
     The archive will be created automatically when the print starts.
     """
     added: list[AddToQueueResult] = []
@@ -2163,7 +2170,7 @@ async def add_files_to_queue(
                 AddToQueueError(
                     file_id=file_id,
                     filename=lib_file.filename,
-                    error="Not a sliced file. Only .gcode or .gcode.3mf files can be printed.",
+                    error="Not a sliced file. Only .bgcode, .gcode or .gcode.3mf files can be printed.",
                 )
             )
             continue
@@ -3816,7 +3823,7 @@ async def print_library_file(
     The actual send/start work is handled asynchronously by background
     dispatch so the UI can continue immediately.
 
-    Only sliced files (.gcode or .gcode.3mf) can be printed.
+    Only sliced files (.bgcode, .gcode, or .gcode.3mf) can be printed.
     """
     from backend.app.models.printer import Printer
     from backend.app.services.background_dispatch import DispatchEnqueueRejected, background_dispatch
@@ -3837,7 +3844,7 @@ async def print_library_file(
     if not is_sliced_file(lib_file.filename):
         raise HTTPException(
             status_code=400,
-            detail="Not a sliced file. Only .gcode or .gcode.3mf files can be printed.",
+            detail="Not a sliced file. Only .bgcode, .gcode or .gcode.3mf files can be printed.",
         )
 
     # Get the full file path

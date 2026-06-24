@@ -7,7 +7,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { formatDateOnly } from '../utils/date';
 import { getCurrencySymbol, SUPPORTED_CURRENCIES } from '../utils/currency';
 import { checkPasswordComplexity } from '../utils/password';
-import type { APIKey, AppSettings, AppSettingsUpdate, SmartPlug, SmartPlugStatus, NotificationProvider, NotificationTemplate, UpdateStatus, GitHubBackupStatus, CloudAuthStatus, UserCreate, UserUpdate, UserResponse, StorageUsageResponse } from '../api/client';
+import type { APIKey, AppSettings, AppSettingsUpdate, SmartPlug, SmartPlugStatus, NotificationProvider, NotificationTemplate, UpdateStatus, GitHubBackupStatus, CloudAuthStatus, UserCreate, UserUpdate, UserResponse, StorageUsageResponse, SelfUpdateJob } from '../api/client';
 import { Card, CardContent, CardDensityProvider, CardHeader } from '../components/Card';
 import { SlicerBundlesPanel } from '../components/SlicerBundlesPanel';
 import { CameraTokensSection } from './CameraTokensPage';
@@ -249,6 +249,7 @@ export function SettingsPage() {
   const [showClearStorageConfirm, setShowClearStorageConfirm] = useState(false);
   const [showBulkPlugConfirm, setShowBulkPlugConfirm] = useState<'on' | 'off' | null>(null);
   const [showReleaseNotes, setShowReleaseNotes] = useState(false);
+  const [selfUpdateJobId, setSelfUpdateJobId] = useState<string | null>(null);
   const [showDisableAuthConfirm, setShowDisableAuthConfirm] = useState(false);
   const [showChangePasswordModal, setShowChangePasswordModal] = useState(false);
   const [changePasswordData, setChangePasswordData] = useState({ currentPassword: '', newPassword: '', confirmPassword: '' });
@@ -585,6 +586,36 @@ export function SettingsPage() {
     },
   });
 
+  const { data: selfUpdateStatus, refetch: refetchSelfUpdateStatus } = useQuery({
+    queryKey: ['selfUpdateStatus'],
+    queryFn: api.getSelfUpdateStatus,
+    enabled: settings?.check_updates !== false,
+    staleTime: 60 * 1000,
+  });
+
+  const { data: selfUpdateJob } = useQuery<SelfUpdateJob>({
+    queryKey: ['selfUpdateJob', selfUpdateJobId],
+    queryFn: () => api.getSelfUpdateJob(selfUpdateJobId!),
+    enabled: !!selfUpdateJobId,
+    refetchInterval: (query) => {
+      const job = query.state.data as SelfUpdateJob | undefined;
+      if (!job || job.status === 'queued' || job.status === 'pulling' || job.status === 'recreating') {
+        return 1500;
+      }
+      return false;
+    },
+  });
+
+  useEffect(() => {
+    if (selfUpdateJob?.status === 'completed') {
+      showToast(t('settings.selfUpdateCompleted', 'Update command completed. Printbuddy is restarting...'), 'success');
+      queryClient.invalidateQueries({ queryKey: ['version'] });
+      queryClient.invalidateQueries({ queryKey: ['updateCheck'] });
+    } else if (selfUpdateJob?.status === 'failed') {
+      showToast(selfUpdateJob.message || t('settings.selfUpdateFailed', 'Self-update failed'), 'error');
+    }
+  }, [queryClient, selfUpdateJob?.message, selfUpdateJob?.status, showToast, t]);
+
   // MQTT status for Network tab
   const { data: mqttStatus } = useQuery({
     queryKey: ['mqtt-status'],
@@ -859,6 +890,30 @@ export function SettingsPage() {
       }
     },
   });
+
+  const selfUpdateMutation = useMutation({
+    mutationFn: api.startSelfUpdate,
+    onSuccess: (data) => {
+      setSelfUpdateJobId(data.job_id);
+      showToast(data.message || t('settings.selfUpdateStarted', 'Update started'), 'success');
+    },
+    onError: (error: Error) => {
+      showToast(error.message || t('settings.selfUpdateFailed', 'Self-update failed'), 'error');
+      refetchSelfUpdateStatus();
+    },
+  });
+
+  const handleSelfUpdate = () => {
+    const confirmed = window.confirm(
+      t(
+        'settings.selfUpdateConfirm',
+        'Printbuddy will pull the newest Docker image and restart this container. The interface may disconnect for 30–90 seconds. Continue?'
+      )
+    );
+    if (confirmed) {
+      selfUpdateMutation.mutate();
+    }
+  };
 
   // Test all notification providers
   const [testAllResult, setTestAllResult] = useState<{
@@ -2459,12 +2514,58 @@ export function SettingsPage() {
                       </div>
                     ) : updateCheck?.is_docker ? (
                       <div className="mt-3 p-3 bg-bambu-dark-tertiary rounded-lg">
-                        <p className="text-sm text-bambu-gray mb-2">
-                          {t('settings.updateViaDocker')}
-                        </p>
-                        <code className="block text-xs bg-bambu-dark p-2 rounded text-bambu-green font-mono">
-                          docker compose pull && docker compose up -d
-                        </code>
+                        {selfUpdateJob && selfUpdateJob.status !== 'completed' && selfUpdateJob.status !== 'failed' ? (
+                          <div>
+                            <div className="flex items-center gap-2 text-sm text-bambu-gray">
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                              <span>{selfUpdateJob.message}</span>
+                            </div>
+                            <div className="mt-2 space-y-1">
+                              {selfUpdateJob.steps?.map((step) => (
+                                <div key={step.name} className="text-xs text-bambu-gray flex items-center gap-2">
+                                  {step.status === 'completed' ? <CheckCircle className="w-3 h-3 text-bambu-green" /> : <Loader2 className="w-3 h-3 animate-spin" />}
+                                  <span>{step.name}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ) : selfUpdateJob?.status === 'failed' ? (
+                          <div className="text-sm text-red-400">
+                            <p>{selfUpdateJob.message}</p>
+                            {selfUpdateJob.safe_log_tail && (
+                              <pre className="mt-2 max-h-32 overflow-auto rounded bg-bambu-dark p-2 text-xs text-red-300 whitespace-pre-wrap">
+                                {selfUpdateJob.safe_log_tail}
+                              </pre>
+                            )}
+                          </div>
+                        ) : selfUpdateStatus?.available ? (
+                          <div>
+                            <p className="text-sm text-bambu-gray mb-3">
+                              {t('settings.selfUpdateAvailable', 'Self-update is enabled. Printbuddy will pull the newest Docker image and restart this container.')}
+                            </p>
+                            <Button
+                              className="mt-1"
+                              onClick={handleSelfUpdate}
+                              disabled={selfUpdateMutation.isPending}
+                            >
+                              {selfUpdateMutation.isPending ? (
+                                <Loader2 className="w-4 h-4 animate-spin" />
+                              ) : (
+                                <Download className="w-4 h-4" />
+                              )}
+                              {t('settings.updateNow', 'Update now')}
+                            </Button>
+                          </div>
+                        ) : (
+                          <div>
+                            <p className="text-sm text-bambu-gray mb-2">
+                              {selfUpdateStatus?.reason || t('settings.updateViaDocker', 'Update this Docker installation manually:')}
+                            </p>
+                            <code className="block text-xs bg-bambu-dark p-2 rounded text-bambu-green font-mono">
+                              docker compose pull && docker compose up -d
+                            </code>
+                          </div>
+                        )}
                       </div>
                     ) : (
                       <Button

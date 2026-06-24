@@ -35,7 +35,7 @@ DEFAULT_TEMPLATES = [
         "event_type": "print_complete",
         "name": "Print Completed",
         "title_template": "Print Completed",
-        "body_template": "{printer}: {filename}\nTime: {duration}\nFilament: {filament_grams}g",
+        "body_template": "{printer}: {filename}\nTime: {duration}\nFilament: {filament_grams} grams",
     },
     {
         "event_type": "print_failed",
@@ -54,6 +54,12 @@ DEFAULT_TEMPLATES = [
         "name": "Print Progress",
         "title_template": "Print {progress}% Complete",
         "body_template": "{printer}: {filename}\nRemaining: {remaining_time}",
+    },
+    {
+        "event_type": "print_almost_done",
+        "name": "Print almost done",
+        "title_template": "Print almost done.",
+        "body_template": "{printer}: {filename}\nRemaining: {remaining_time}\n{finish_photo_url}",
     },
     {
         "event_type": "print_missing_spool_assignment",

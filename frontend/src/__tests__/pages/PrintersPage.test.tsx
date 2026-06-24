@@ -138,6 +138,144 @@ describe('PrintersPage', () => {
       });
     });
 
+    it('shows one Upload action for Prusa printers', async () => {
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          ...mockPrinters[0],
+          id: 7,
+          name: 'Prusa CORE One',
+          provider: 'prusalink',
+          model: 'Prusa CORE One',
+        }])),
+      );
+
+      render(<PrintersPage />);
+
+      expect((await screen.findAllByText('Prusa CORE One')).length).toBeGreaterThan(0);
+      const uploadButton = await screen.findByRole('button', { name: 'Upload' });
+      expect(uploadButton).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Print' })).not.toBeInTheDocument();
+    });
+
+    it('shows the updated Prusa USB write notice from the direct Upload action', async () => {
+      const user = userEvent.setup();
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          ...mockPrinters[0],
+          id: 7,
+          name: 'Prusa CORE One',
+          provider: 'prusalink',
+          model: 'Prusa CORE One',
+        }])),
+      );
+
+      render(<PrintersPage />);
+
+      expect((await screen.findAllByText('Prusa CORE One')).length).toBeGreaterThan(0);
+      await user.click(await screen.findByRole('button', { name: 'Upload' }));
+
+      expect(screen.getByText('Prusa uploads can take a few seconds to a few minutes depending upon file size while the printer writes the file to USB storage.')).toBeInTheDocument();
+    });
+
+    it('uploads Prusa files without opening the legacy Print modal when auto-start is unchecked', async () => {
+      const user = userEvent.setup();
+      let uploadCalled = false;
+      let uploadRequestUrl = '';
+      let startCalled = false;
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          ...mockPrinters[0],
+          id: 7,
+          name: 'Prusa CORE One',
+          provider: 'prusalink',
+          model: 'Prusa CORE One',
+        }])),
+        http.get('/api/v1/printers/7/files', () => HttpResponse.json({ files: [] })),
+        http.post('/api/v1/printers/7/files/upload', ({ request }) => {
+          uploadCalled = true;
+          uploadRequestUrl = request.url;
+          return HttpResponse.json({ status: 'uploaded', path: '/Shoe_horn_thicker.gcode', filename: 'Shoe_horn_thicker.gcode' });
+        }),
+        http.post('/api/v1/printers/7/files/start', () => {
+          startCalled = true;
+          return HttpResponse.json({ status: 'started', path: '/Shoe_horn_thicker.gcode' });
+        }),
+      );
+
+      render(<PrintersPage />);
+
+      await user.click(await screen.findByRole('button', { name: 'Upload' }));
+      const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+      expect(input).toBeInTheDocument();
+
+      await user.upload(input, new File(['G28\n'], 'Shoe_horn_thicker.gcode', { type: 'text/plain' }));
+      expect(screen.getByLabelText('Start print after upload')).not.toBeChecked();
+      await user.click(await screen.findByRole('button', { name: 'Upload (1)' }));
+
+      await waitFor(() => expect(uploadCalled).toBe(true));
+      expect(new URL(uploadRequestUrl).searchParams.get('overwrite')).toBe('true');
+      expect(startCalled).toBe(false);
+      expect(await screen.findByText('Upload complete: 1 succeeded')).toBeInTheDocument();
+      expect(screen.queryByText(/\{\{succeeded\}\}/)).not.toBeInTheDocument();
+      expect(screen.queryByRole('dialog', { name: 'Print' })).not.toBeInTheDocument();
+      expect(screen.queryByText('Print Options')).not.toBeInTheDocument();
+    });
+
+    it('asks whether to print or upload when dropping a file on a Prusa printer card', async () => {
+      const user = userEvent.setup();
+      let directUploadCalled = false;
+      let directUploadRequestUrl = '';
+      let libraryUploadCalled = false;
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          ...mockPrinters[0],
+          id: 7,
+          name: 'Prusa CORE One',
+          provider: 'prusalink',
+          model: 'Prusa CORE One',
+        }])),
+        http.post('/api/v1/printers/7/files/upload', ({ request }) => {
+          directUploadCalled = true;
+          directUploadRequestUrl = request.url;
+          return HttpResponse.json({ status: 'uploaded', path: '/Shoe_horn_thicker.gcode', filename: 'Shoe_horn_thicker.gcode' });
+        }),
+        http.post('/api/v1/library/files', () => {
+          libraryUploadCalled = true;
+          return HttpResponse.json({
+            id: 42,
+            filename: 'Shoe_horn_thicker.gcode',
+            original_filename: 'Shoe_horn_thicker.gcode',
+            file_size: 4,
+            file_type: 'gcode',
+            metadata: {},
+          });
+        }),
+      );
+
+      render(<PrintersPage />);
+
+      await screen.findAllByText('Prusa CORE One');
+      await screen.findByRole('button', { name: 'Upload' });
+      const card = screen.getByTestId('printer-card-7');
+
+      fireEvent.drop(card, {
+        dataTransfer: {
+          files: [new File(['G28\n'], 'Shoe_horn_thicker.gcode', { type: 'text/plain' })],
+        },
+      });
+
+      expect(await screen.findByText('Choose file action')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Print' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Upload only' })).toBeInTheDocument();
+
+      await user.click(screen.getByRole('button', { name: 'Upload only' }));
+
+      await waitFor(() => expect(directUploadCalled).toBe(true));
+      expect(new URL(directUploadRequestUrl).searchParams.get('overwrite')).toBe('true');
+      expect(libraryUploadCalled).toBe(false);
+      expect(screen.queryByText('Choose file action')).not.toBeInTheDocument();
+    });
+
     it('shows assigned Panda Breath data only on the matching printer card', async () => {
       server.use(
         http.get('/api/v1/settings/ui-preferences', () => HttpResponse.json({
@@ -579,11 +717,7 @@ describe('PrintersPage', () => {
   });
 
   describe('manual controls', () => {
-    it('renders the PrusaLink controls with the Klipper-style layout and sends jog requests', async () => {
-      const user = userEvent.setup();
-      const jogRequests: string[] = [];
-      const disableRequests: string[] = [];
-
+    it('hides manual controls for Prusa printers because PrusaLink model controls are unsupported', async () => {
       server.use(
         http.get('/api/v1/printers/', () => HttpResponse.json([{ ...mockPrinters[0], name: 'Boženka', provider: 'prusalink', model: 'Prusa MK4S' }])),
         http.get('/api/v1/printers/:id/status', () => HttpResponse.json({
@@ -591,37 +725,31 @@ describe('PrintersPage', () => {
           temperatures: { nozzle: 25, nozzle_target: 0, bed: 25, bed_target: 0 },
           position: { x: 10.2, y: 0, z: 54.2 },
         })),
-        http.post('/api/v1/printers/:id/axis-jog', ({ request }) => {
-          jogRequests.push(new URL(request.url).search);
-          return HttpResponse.json({ success: true, message: 'Jog sent' });
-        }),
-        http.post('/api/v1/printers/:id/disable-steppers', ({ request }) => {
-          disableRequests.push(new URL(request.url).pathname);
-          return HttpResponse.json({ success: true, message: 'Steppers disabled' });
-        })
       );
 
       render(<PrintersPage />);
 
-      const controlsToggle = await screen.findByRole('button', { name: /manual controls/i });
-      expect(controlsToggle).toHaveAttribute('aria-expanded', 'false');
-      expect(screen.queryByRole('heading', { name: /Boženka printer control/i })).not.toBeInTheDocument();
+      await screen.findByText('Boženka');
+      expect(screen.queryByRole('button', { name: /manual controls/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'X+' })).not.toBeInTheDocument();
+    });
 
-      await user.click(controlsToggle);
+    it('hides unsupported light and plate-check controls for Prusa printers', async () => {
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{ ...mockPrinters[0], name: 'CORE One', provider: 'prusalink', model: 'Prusa CORE One' }])),
+        http.get('/api/v1/printers/:id/status', () => HttpResponse.json({
+          ...mockPrinterStatus,
+          connected: true,
+          chamber_light: false,
+        })),
+      );
 
-      const xPlusButton = await screen.findByRole('button', { name: 'X+' });
-      expect(screen.queryByRole('heading', { name: /Boženka printer control/i })).not.toBeInTheDocument();
-      expect(screen.queryByText(/heated bed X and Y move/i)).not.toBeInTheDocument();
-      expect(xPlusButton).toHaveClass('bg-[var(--accent)]');
-      expect(xPlusButton).not.toHaveClass('bg-red-700');
-      expect(screen.getByText(/extrusion length/i)).toBeInTheDocument();
-      await user.click(xPlusButton);
-      await user.click(screen.getByRole('button', { name: /disable steppers/i }));
+      render(<PrintersPage />);
 
-      await waitFor(() => {
-        expect(jogRequests).toContain('?axis=x&distance=10');
-        expect(disableRequests).toContain('/api/v1/printers/1/disable-steppers');
-      });
+      await screen.findByText('CORE One');
+      expect(screen.queryByTitle('Turn on chamber light')).toBeNull();
+      expect(screen.queryByTitle('Plate check disabled - Click to enable')).toBeNull();
+      expect(screen.queryByTitle('Manage plate detection calibration')).toBeNull();
     });
 
     it('sends XYZ jog requests from the printer card controls', async () => {
@@ -1498,6 +1626,48 @@ describe('PrintersPage', () => {
       // While Spoolman queries are still loading, the "Assign Spool" button must
       // not appear (inventory prop is undefined → {inventory && ...} guard fires)
       expect(screen.queryByText('Assign Spool')).not.toBeInTheDocument();
+    });
+
+    it('hides loaded-spool assignment controls for Prusa printers only', async () => {
+      const assignment = {
+        id: 99,
+        printer_id: 1,
+        ams_id: -1,
+        tray_id: 0,
+        spool_id: 123,
+        spool: {
+          id: 123,
+          brand: 'Prusament',
+          material: 'PLA',
+          subtype: 'Galaxy Black',
+          color_name: 'Black',
+          rgba: '#111111',
+          slicer_filament: 'Prusament PLA',
+          slicer_filament_name: 'Prusament PLA',
+        },
+      };
+
+      server.use(
+        http.get('/api/v1/inventory/assignments', () => HttpResponse.json([assignment])),
+        http.get('/api/v1/printers/', () => HttpResponse.json([{ ...mockPrinters[0], provider: 'prusalink', model: 'Prusa CORE One' }])),
+      );
+
+      render(<PrintersPage />);
+
+      await screen.findByText('X1 Carbon');
+      await waitFor(() => expect(screen.getAllByText(/25/).length).toBeGreaterThan(0));
+      expect(screen.queryByText('Loaded spool')).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Change' })).not.toBeInTheDocument();
+
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{ ...mockPrinters[0], provider: 'fluidd', model: 'Elegoo Neptune 4 Pro' }])),
+      );
+
+      render(<PrintersPage />);
+
+      await screen.findByText('Loaded spool');
+      expect(screen.getByText(/Prusament PLA Galaxy Black/i)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Change' })).toBeInTheDocument();
     });
   });
 

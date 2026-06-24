@@ -67,6 +67,16 @@ const mockIdleStatus = {
   speed_level: 2,
 };
 
+const mockPrusaPrinters = [
+  {
+    ...mockPrinters[0],
+    id: 7,
+    name: 'Prusa CORE One',
+    provider: 'prusalink',
+    model: 'Prusa CORE One',
+  },
+];
+
 describe('PrintersPage - Print Speed Control', () => {
   beforeEach(() => {
     server.use(
@@ -153,6 +163,26 @@ describe('PrintersPage - Print Speed Control', () => {
       // The button containing the speed percentage should be disabled
       const speedBadge = screen.getByText('100%').closest('button');
       expect(speedBadge).toBeDisabled();
+    });
+
+    it('hides print speed control for PrusaLink printers because PrusaLink does not support changing speed via API', async () => {
+      server.use(
+        http.get('/api/v1/printers/', () => {
+          return HttpResponse.json(mockPrusaPrinters);
+        }),
+        http.get('/api/v1/printers/:id/status', () => {
+          return HttpResponse.json(mockPrintingStatus);
+        })
+      );
+
+      render(<PrintersPage />);
+
+      await waitFor(() => {
+        expect(screen.getAllByText('Prusa CORE One').length).toBeGreaterThan(0);
+      });
+
+      expect(screen.queryByTitle('Print Speed')).not.toBeInTheDocument();
+      expect(screen.queryByText('100%')).not.toBeInTheDocument();
     });
   });
 

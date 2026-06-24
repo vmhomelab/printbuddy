@@ -50,6 +50,7 @@ import {
   Wind,
   AirVent,
   Download,
+  Upload,
   ScanSearch,
   CheckCircle,
   CheckSquare,
@@ -141,6 +142,50 @@ function inferExternalCameraType(url: string): NonNullable<PrinterCreate['extern
     return 'snapshot';
   }
   return 'mjpeg';
+}
+
+type PrusaLinkApiAuthMode = 'auto' | 'modern_digest' | 'modern_basic_x_api_key' | 'legacy_x_api_key';
+
+function buildPrusaLinkProviderOptions(mode: PrusaLinkApiAuthMode): string {
+  if (mode === 'modern_digest') {
+    return JSON.stringify({ prusalink_api_mode: 'modern', prusalink_auth_mode: 'digest' });
+  }
+  if (mode === 'modern_basic_x_api_key') {
+    return JSON.stringify({ prusalink_api_mode: 'modern', prusalink_auth_mode: 'basic_x_api_key' });
+  }
+  if (mode === 'legacy_x_api_key') {
+    return JSON.stringify({ prusalink_api_mode: 'legacy', prusalink_auth_mode: 'x_api_key' });
+  }
+  return JSON.stringify({ prusalink_api_mode: 'auto', prusalink_auth_mode: 'auto' });
+}
+
+function parsePrusaLinkApiAuthMode(providerOptions?: string | null): PrusaLinkApiAuthMode {
+  if (!providerOptions) {
+    return 'auto';
+  }
+  try {
+    const options = JSON.parse(providerOptions) as Record<string, unknown>;
+    const apiMode = String(options.prusalink_api_mode || 'auto');
+    const authMode = String(options.prusalink_auth_mode || 'auto');
+    if (apiMode === 'modern' && authMode === 'digest') {
+      return 'modern_digest';
+    }
+    if (apiMode === 'modern' && authMode === 'basic_x_api_key') {
+      return 'modern_basic_x_api_key';
+    }
+    if (apiMode === 'legacy' && authMode === 'x_api_key') {
+      return 'legacy_x_api_key';
+    }
+  } catch {
+    // Fall back to auto for older/malformed provider_options.
+  }
+  return 'auto';
+}
+
+function isPrusaPrinter(printer: Pick<Printer, 'provider' | 'model'>): boolean {
+  const provider = printer.provider?.toLowerCase();
+  const model = printer.model?.toLowerCase() ?? '';
+  return provider === 'prusalink' || provider === 'prusaconnect' || model.startsWith('prusa ');
 }
 
 const PRINTER_MODEL_GROUPS: PrinterModelOptionGroup[] = [
@@ -1700,10 +1745,17 @@ function PrinterCard({
   const [showResumeConfirm, setShowResumeConfirm] = useState(false);
   const [showSkipObjectsModal, setShowSkipObjectsModal] = useState(false);
   const [showUploadForPrint, setShowUploadForPrint] = useState(false);
+  const [showPrusaDirectUpload, setShowPrusaDirectUpload] = useState(false);
   const [showPrinterInfo, setShowPrinterInfo] = useState(false);
   const [showDiagnostic, setShowDiagnostic] = useState(false);
   const closePrinterInfo = useCallback(() => setShowPrinterInfo(false), []);
   const [printAfterUpload, setPrintAfterUpload] = useState<{ id: number; filename: string } | null>(null);
+  const openPrusaDirectUpload = useCallback(() => {
+    setDroppedPrusaFile(null);
+    setShowUploadForPrint(false);
+    setPrintAfterUpload(null);
+    setShowPrusaDirectUpload(true);
+  }, []);
   // AMS drying popover state: which AMS unit has the popover open
   const [dryingPopoverAmsId, setDryingPopoverAmsId] = useState<number | null>(null);
   const [dryingPopoverModuleType, setDryingPopoverModuleType] = useState<string>('n3f');
@@ -1714,6 +1766,7 @@ function PrinterCard({
   const [dryingPopoverPos, setDryingPopoverPos] = useState<{ top: number; left: number } | null>(null);
   const [isDraggingFile, setIsDraggingFile] = useState(false);
   const [isDropUploading, setIsDropUploading] = useState(false);
+  const [droppedPrusaFile, setDroppedPrusaFile] = useState<File | null>(null);
   const dragCounterRef = useRef(0);
   const [amsHistoryModal, setAmsHistoryModal] = useState<{
     amsId: number;
@@ -1804,7 +1857,8 @@ function PrinterCard({
     return Array.from(ids);
   }, [status?.ams, status?.vt_tray, status?.nozzle_rack]);
 
-  const loadedSpoolAssignment = onGetAssignment?.(printer.id, -1, 0);
+  const isPrusaModelPrinter = isPrusaPrinter(printer);
+  const loadedSpoolAssignment = isPrusaModelPrinter ? undefined : onGetAssignment?.(printer.id, -1, 0);
 
   // Collect loaded filament types for queue widget filtering
   const loadedFilamentTypes = useMemo(() => {
@@ -1946,7 +2000,7 @@ function PrinterCard({
     ? currentTrayNow
     : cachedTrayNow.current;
 
-  const showLoadedSpoolPicker = (amsData.length === 0) && ((status?.vt_tray?.length ?? 0) === 0);
+  const showLoadedSpoolPicker = !isPrusaModelPrinter && (amsData.length === 0) && ((status?.vt_tray?.length ?? 0) === 0);
 
   // Fetch smart plug for this printer
   const { data: smartPlug } = useQuery({
@@ -2576,23 +2630,7 @@ function PrinterCard({
     if (dragCounterRef.current === 0) setIsDraggingFile(false);
   };
 
-  const handleCardDrop = async (e: React.DragEvent) => {
-    e.preventDefault();
-    dragCounterRef.current = 0;
-    setIsDraggingFile(false);
-
-    if (!canDrop) return;
-
-    const droppedFiles = Array.from(e.dataTransfer.files);
-    const file = droppedFiles[0];
-    if (!file) return;
-
-    // Only accept files that the selected printer provider can print.
-    if (!isPrintableForProvider(file.name, printer.provider)) {
-      showToast(printableFileError, 'error');
-      return;
-    }
-
+  const uploadDroppedFileForPrint = async (file: File) => {
     setIsDropUploading(true);
     try {
       const result = await api.uploadLibraryFile(file, null, true, printer.id);
@@ -2617,8 +2655,59 @@ function PrinterCard({
     }
   };
 
+  const uploadDroppedFileToPrusa = async (file: File) => {
+    setIsDropUploading(true);
+    try {
+      await api.uploadPrinterFile(printer.id, file, '/', true);
+      showToast(t('fileManager.uploadComplete', { succeeded: 1, defaultValue: 'Upload complete: 1 succeeded' }), 'success');
+      queryClient.invalidateQueries({ queryKey: ['printerFiles', printer.id] });
+    } catch {
+      showToast(t('common.uploadFailed', 'Upload failed'), 'error');
+    } finally {
+      setIsDropUploading(false);
+    }
+  };
+
+  const handleDroppedPrusaPrint = async () => {
+    const file = droppedPrusaFile;
+    setDroppedPrusaFile(null);
+    if (file) await uploadDroppedFileForPrint(file);
+  };
+
+  const handleDroppedPrusaUploadOnly = async () => {
+    const file = droppedPrusaFile;
+    setDroppedPrusaFile(null);
+    if (file) await uploadDroppedFileToPrusa(file);
+  };
+
+  const handleCardDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    dragCounterRef.current = 0;
+    setIsDraggingFile(false);
+
+    if (!canDrop) return;
+
+    const droppedFiles = Array.from(e.dataTransfer.files);
+    const file = droppedFiles[0];
+    if (!file) return;
+
+    // Only accept files that the selected printer provider can print.
+    if (!isPrintableForProvider(file.name, printer.provider)) {
+      showToast(printableFileError, 'error');
+      return;
+    }
+
+    if (isPrusaModelPrinter) {
+      setDroppedPrusaFile(file);
+      return;
+    }
+
+    await uploadDroppedFileForPrint(file);
+  };
+
   return (
     <Card
+      data-testid={`printer-card-${printer.id}`}
       className={`relative ${isSelected ? 'ring-2 ring-bambu-green' : ''} ${selectionMode ? 'cursor-pointer' : ''}`}
       onDragEnter={handleCardDragEnter}
       onDragOver={handleCardDragOver}
@@ -2658,7 +2747,7 @@ function PrinterCard({
             ) : canDrop ? (
               <>
                 <PrinterIcon className="w-8 h-8 mx-auto mb-2 text-bambu-green" />
-                <p className="text-sm font-medium text-bambu-green">{t('printers.dropToPrint', 'Drop to print')}</p>
+                <p className="text-sm font-medium text-bambu-green">{isPrusaModelPrinter ? t('printers.dropToChoosePrintOrUpload', 'Drop to print or upload') : t('printers.dropToPrint', 'Drop to print')}</p>
               </>
             ) : (
               <>
@@ -2666,6 +2755,33 @@ function PrinterCard({
                 <p className="text-sm font-medium text-red-400">{t('printers.cannotPrint', 'Printer busy')}</p>
               </>
             )}
+          </div>
+        </div>
+      )}
+      {droppedPrusaFile && (
+        <div className="absolute inset-0 z-30 flex items-center justify-center rounded-xl bg-black/70 p-4">
+          <div className="w-full max-w-xs rounded-xl border border-bambu-dark-tertiary bg-bambu-dark p-4 shadow-xl">
+            <div className="mb-3 flex items-start gap-3">
+              <Upload className="mt-0.5 h-5 w-5 flex-shrink-0 text-bambu-green" />
+              <div className="min-w-0">
+                <h4 className="text-sm font-semibold text-white">{t('printers.chooseFileAction', 'Choose file action')}</h4>
+                <p className="mt-1 truncate text-xs text-bambu-gray" title={droppedPrusaFile.name}>{droppedPrusaFile.name}</p>
+                <p className="mt-2 text-xs text-bambu-gray">
+                  {t('printers.prusaDropActionHelp', 'Print uploads it to the library and opens print options. Upload only sends it to the Prusa storage without starting a print.')}
+                </p>
+              </div>
+            </div>
+            <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+              <Button variant="ghost" size="sm" onClick={() => setDroppedPrusaFile(null)}>
+                {t('common.cancel', 'Cancel')}
+              </Button>
+              <Button variant="secondary" size="sm" onClick={handleDroppedPrusaUploadOnly}>
+                {t('printers.uploadOnly', 'Upload only')}
+              </Button>
+              <Button size="sm" onClick={handleDroppedPrusaPrint}>
+                {t('common.print', 'Print')}
+              </Button>
+            </div>
           </div>
         </div>
       )}
@@ -3524,7 +3640,7 @@ function PrinterCard({
                       })()}
 
                       {/* Print Speed */}
-                      {(() => {
+                      {!isPrusaModelPrinter && (() => {
                         const speedLabels: Record<number, string> = { 1: '50%', 2: '100%', 3: '124%', 4: '166%' };
                         const speedPct = speedLabels[status.speed_level] || '100%';
                         return (
@@ -4945,17 +5061,21 @@ function PrinterCard({
         {/* Connection Info & Actions - hidden in compact mode */}
         {viewMode === 'expanded' && (
           <div className="mt-4 pt-4 border-t border-bambu-dark-tertiary flex items-center justify-end gap-2 flex-wrap">
-              {/* Chamber Light */}
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={() => chamberLightMutation.mutate(!status?.chamber_light)}
-                disabled={!status?.connected || chamberLightMutation.isPending || !hasPermission('printers:control')}
-                title={!hasPermission('printers:control') ? t('printers.permission.noControl') : (status?.chamber_light ? t('printers.chamberLightOff') : t('printers.chamberLightOn'))}
-                className={status?.chamber_light ? '!border-yellow-500 !text-yellow-400 hover:!bg-yellow-500/20' : ''}
-              >
-                <ChamberLight on={status?.chamber_light ?? false} className={`w-4 h-4 ${status?.chamber_light ? 'text-yellow-400' : ''}`} />
-              </Button>
+              {!isPrusaModelPrinter && (
+                <>
+                  {/* Chamber Light */}
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => chamberLightMutation.mutate(!status?.chamber_light)}
+                    disabled={!status?.connected || chamberLightMutation.isPending || !hasPermission('printers:control')}
+                    title={!hasPermission('printers:control') ? t('printers.permission.noControl') : (status?.chamber_light ? t('printers.chamberLightOff') : t('printers.chamberLightOn'))}
+                    className={status?.chamber_light ? '!border-yellow-500 !text-yellow-400 hover:!bg-yellow-500/20' : ''}
+                  >
+                    <ChamberLight on={status?.chamber_light ?? false} className={`w-4 h-4 ${status?.chamber_light ? 'text-yellow-400' : ''}`} />
+                  </Button>
+                </>
+              )}
               {/* Camera Button */}
               <Button
                 variant="secondary"
@@ -4994,37 +5114,39 @@ function PrinterCard({
               >
                 <Video className="w-4 h-4" />
               </Button>
-              {/* Split button: main part toggles detection, chevron opens modal */}
-              <div className={`inline-flex rounded-md ${printer.plate_detection_enabled ? 'ring-1 ring-green-500' : ''}`}>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={handleTogglePlateDetection}
-                  disabled={!status?.connected || plateDetectionMutation.isPending || !hasPermission('printers:update')}
-                  title={!hasPermission('printers:update') ? t('printers.plateDetection.noPermission') : (printer.plate_detection_enabled ? t('printers.plateDetection.enabledClick') : t('printers.plateDetection.disabledClick'))}
-                  className={`!rounded-r-none !border-r-0 ${printer.plate_detection_enabled ? "!border-green-500 !text-green-400 hover:!bg-green-500/20" : ""}`}
-                >
-                  {plateDetectionMutation.isPending ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <ScanSearch className="w-4 h-4" />
-                  )}
-                </Button>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={handleOpenPlateManagement}
-                  disabled={!status?.connected || isCheckingPlate || !hasPermission('printers:update')}
-                  title={!hasPermission('printers:update') ? t('printers.plateDetection.noPermission') : t('printers.plateDetection.manageCalibration')}
-                  className={`!rounded-l-none !px-1.5 ${printer.plate_detection_enabled ? "!border-green-500 !text-green-400 hover:!bg-green-500/20" : ""}`}
-                >
-                  {isCheckingPlate ? (
-                    <Loader2 className="w-3 h-3 animate-spin" />
-                  ) : (
-                    <ChevronDown className="w-3 h-3" />
-                  )}
-                </Button>
-              </div>
+              {!isPrusaModelPrinter && (
+                /* Split button: main part toggles detection, chevron opens modal */
+                <div className={`inline-flex rounded-md ${printer.plate_detection_enabled ? 'ring-1 ring-green-500' : ''}`}>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={handleTogglePlateDetection}
+                    disabled={!status?.connected || plateDetectionMutation.isPending || !hasPermission('printers:update')}
+                    title={!hasPermission('printers:update') ? t('printers.plateDetection.noPermission') : (printer.plate_detection_enabled ? t('printers.plateDetection.enabledClick') : t('printers.plateDetection.disabledClick'))}
+                    className={`!rounded-r-none !border-r-0 ${printer.plate_detection_enabled ? "!border-green-500 !text-green-400 hover:!bg-green-500/20" : ""}`}
+                  >
+                    {plateDetectionMutation.isPending ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <ScanSearch className="w-4 h-4" />
+                    )}
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={handleOpenPlateManagement}
+                    disabled={!status?.connected || isCheckingPlate || !hasPermission('printers:update')}
+                    title={!hasPermission('printers:update') ? t('printers.plateDetection.noPermission') : t('printers.plateDetection.manageCalibration')}
+                    className={`!rounded-l-none !px-1.5 ${printer.plate_detection_enabled ? "!border-green-500 !text-green-400 hover:!bg-green-500/20" : ""}`}
+                  >
+                    {isCheckingPlate ? (
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                    ) : (
+                      <ChevronDown className="w-3 h-3" />
+                    )}
+                  </Button>
+                </div>
+              )}
               <Button
                 variant="secondary"
                 size="sm"
@@ -5036,22 +5158,38 @@ function PrinterCard({
                 {t('printers.files')}
               </Button>
               {isConnected && status?.state !== 'RUNNING' && status?.state !== 'PAUSE' && (
-                <Button
-                  size="sm"
-                  onClick={() => setShowUploadForPrint(true)}
-                  disabled={!hasPermission('printers:control')}
-                  title={!hasPermission('printers:control') ? t('printers.permission.noControl') : t('common.print')}
-                  className="!bg-bambu-green hover:!bg-bambu-green/80 !text-white"
-                >
-                  <PrinterIcon className="w-4 h-4" />
-                  {t('common.print')}
-                </Button>
+                <>
+                  {isPrusaModelPrinter && (
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={openPrusaDirectUpload}
+                      disabled={!hasPermission('printers:files')}
+                      title={!hasPermission('printers:files') ? t('printers.permission.noFiles') : t('common.upload', 'Upload')}
+                    >
+                      <Upload className="w-4 h-4" />
+                      {t('common.upload', 'Upload')}
+                    </Button>
+                  )}
+                  {!isPrusaModelPrinter && (
+                    <Button
+                      size="sm"
+                      onClick={() => setShowUploadForPrint(true)}
+                      disabled={!hasPermission('printers:control')}
+                      title={!hasPermission('printers:control') ? t('printers.permission.noControl') : t('common.print')}
+                      className="!bg-bambu-green hover:!bg-bambu-green/80 !text-white"
+                    >
+                      <PrinterIcon className="w-4 h-4" />
+                      {t('common.print')}
+                    </Button>
+                  )}
+                </>
               )}
           </div>
         )}
 
-        {/* Moonraker and PrusaLink toolhead control panels */}
-        {(printer.provider === 'klipper' || printer.provider === 'mainsail' || printer.provider === 'fluidd' || printer.provider === 'prusalink') && viewMode === 'expanded' && (
+        {/* Moonraker toolhead control panels */}
+        {(printer.provider === 'klipper' || printer.provider === 'mainsail' || printer.provider === 'fluidd') && !isPrusaModelPrinter && viewMode === 'expanded' && (
           <Collapsible
             defaultOpen={false}
             className="mt-4 pt-3 border-t border-bambu-dark-tertiary"
@@ -5063,7 +5201,7 @@ function PrinterCard({
                   <div className="min-w-0">
                     <p className="text-xs font-semibold text-white truncate">Manual controls</p>
                     <p className="text-[10px] text-bambu-gray truncate">
-                      {printer.provider === 'prusalink' ? 'PrusaLink movement and extrusion' : 'Klipper movement, extrusion, and temperatures'}
+                      Klipper movement, extrusion, and temperatures
                     </p>
                   </div>
                 </div>
@@ -5087,6 +5225,7 @@ function PrinterCard({
         <FileManagerModal
           printerId={printer.id}
           printerName={printer.name}
+          printerProvider={printer.provider}
           onClose={() => setShowFileManager(false)}
         />
       )}
@@ -5101,6 +5240,7 @@ function PrinterCard({
           accept={printableFileRules.accept}
           acceptedFileDescription={printableFileDescription}
           uploadTargetPrinterId={printer.id}
+          uploadNotice={isPrusaModelPrinter ? t('fileManager.prusaUploadPatienceNote', 'Prusa uploads can take a few seconds to a few minutes depending upon file size while the printer writes the file to USB storage.') : undefined}
           validateFile={(file) => {
             if (!isPrintableForProvider(file.name, printer.provider)) {
               return printableFileError;
@@ -5115,6 +5255,32 @@ function PrinterCard({
               return t('printers.incompatibleFile', 'This file was sliced for {{slicedFor}}, but this printer is a {{printerModel}}', { slicedFor, printerModel });
             }
             setPrintAfterUpload({ id: uploadedFile.id, filename: uploadedFile.filename });
+          }}
+        />
+      )}
+
+      {/* Direct Prusa Upload Modal */}
+      {showPrusaDirectUpload && (
+        <FileUploadModal
+          folderId={null}
+          onClose={() => {
+            setShowPrusaDirectUpload(false);
+            setDroppedPrusaFile(null);
+          }}
+          accept={printableFileRules.accept}
+          acceptedFileDescription={printableFileDescription}
+          directPrinterUploadId={printer.id}
+          directPrinterUploadOverwrite
+          allowStartPrintAfterUpload
+          onUploadComplete={(succeededCount = 1) => {
+            showToast(t('fileManager.uploadComplete', { succeeded: succeededCount, defaultValue: 'Upload complete: {{succeeded}} succeeded' }), 'success');
+            queryClient.invalidateQueries({ queryKey: ['printerFiles', printer.id] });
+          }}
+          uploadNotice={t('fileManager.prusaUploadPatienceNote', 'Prusa uploads can take a few seconds to a few minutes depending upon file size while the printer writes the file to USB storage.')}
+          validateFile={(file) => {
+            if (!isPrintableForProvider(file.name, printer.provider)) {
+              return printableFileError;
+            }
           }}
         />
       )}
@@ -5801,6 +5967,7 @@ function AddPrinterModal({
   const [subnet, setSubnet] = useState('');
   const [scanProgress, setScanProgress] = useState({ scanned: 0, total: 0 });
   const [showDiagnostic, setShowDiagnostic] = useState(false);
+  const [prusaLinkApiAuthMode, setPrusaLinkApiAuthMode] = useState<PrusaLinkApiAuthMode>('auto');
 
   // Setup-time pre-flight: run the connection diagnostic on save and warn
   // (not block) when checks fail, so the user doesn't add a printer that
@@ -5854,6 +6021,7 @@ function AddPrinterModal({
       external_camera_type: externalCameraUrl ? inferExternalCameraType(externalCameraUrl) : undefined,
       external_camera_enabled: isHttpProvider && Boolean(externalCameraUrl),
       external_camera_snapshot_url: undefined,
+      provider_options: isPrusaLinkProvider ? buildPrusaLinkProviderOptions(prusaLinkApiAuthMode) : form.provider_options,
     };
   };
 
@@ -6279,6 +6447,25 @@ function AddPrinterModal({
                     placeholder="PrusaLink password"
                   />
                 </div>
+                <div className="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary/40 p-3 space-y-2">
+                  <label htmlFor="prusalink_api_auth_mode" className="block text-sm text-bambu-gray mb-1">
+                    PrusaLink API / authentication mode
+                  </label>
+                  <select
+                    id="prusalink_api_auth_mode"
+                    className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                    value={prusaLinkApiAuthMode}
+                    onChange={(e) => setPrusaLinkApiAuthMode(e.target.value as PrusaLinkApiAuthMode)}
+                  >
+                    <option value="auto">Auto-detect on save (recommended)</option>
+                    <option value="modern_digest">Modern PrusaLink /api/v1 + HTTP Digest</option>
+                    <option value="legacy_x_api_key">Legacy /api + X-API-Key</option>
+                    <option value="modern_basic_x_api_key">Compatibility: /api/v1 + Basic/X-Api-Key</option>
+                  </select>
+                  <p className="text-xs text-bambu-gray">
+                    Leave this on Auto unless you know the printer API. Printbuddy will test the supported PrusaLink auth methods while adding the printer and store the working mode.
+                  </p>
+                </div>
               </>
             )}
             {isPrusaConnectProvider && (
@@ -6696,6 +6883,7 @@ function EditPrinterModal({
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
+  const isPrusaLinkProvider = printer.provider === 'prusalink';
   const [form, setForm] = useState({
     name: printer.name,
     ip_address: printer.ip_address,
@@ -6703,6 +6891,7 @@ function EditPrinterModal({
     model: printer.model || '',
     location: printer.location || '',
     auto_archive: printer.auto_archive,
+    prusa_link_api_auth_mode: parsePrusaLinkApiAuthMode(printer.provider_options),
   });
 
   // Setup-time pre-flight — same warn-on-save as the Add-Printer dialog, so an
@@ -6737,8 +6926,12 @@ function EditPrinterModal({
       location: form.location || undefined,
       auto_archive: form.auto_archive,
     };
-    // Only include access_code if it was changed
-    if (form.access_code) {
+    if (isPrusaLinkProvider) {
+      data.provider_options = buildPrusaLinkProviderOptions(form.prusa_link_api_auth_mode);
+      if (form.access_code) {
+        data.auth_token = form.access_code;
+      }
+    } else if (form.access_code) {
       data.access_code = form.access_code;
     }
     updateMutation.mutate(data);
@@ -6746,6 +6939,10 @@ function EditPrinterModal({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isPrusaLinkProvider) {
+      doSave();
+      return;
+    }
     setCheckingSave(true);
     try {
       const result = await api.diagnoseConnection({
@@ -6808,15 +7005,42 @@ function EditPrinterModal({
               <p className="text-xs text-bambu-gray mt-1">{t('printers.serialCannotBeChanged')}</p>
             </div>
             <div>
-              <label className="block text-sm text-bambu-gray mb-1">{t('printers.accessCode')}</label>
+              <label htmlFor="edit_printer_secret" className="block text-sm text-bambu-gray mb-1">
+                {isPrusaLinkProvider ? 'PrusaLink password / API key' : t('printers.accessCode')}
+              </label>
               <input
+                id="edit_printer_secret"
                 type="password"
                 className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                 value={form.access_code}
                 onChange={(e) => setForm({ ...form, access_code: e.target.value })}
                 placeholder={t('printers.accessCodePlaceholder')}
               />
+              {isPrusaLinkProvider ? (
+                <p className="text-xs text-bambu-gray mt-1">Leave empty to keep the current PrusaLink secret.</p>
+              ) : null}
             </div>
+            {isPrusaLinkProvider ? (
+              <div>
+                <label htmlFor="edit_prusalink_api_auth_mode" className="block text-sm text-bambu-gray mb-1">
+                  PrusaLink API / authentication mode
+                </label>
+                <select
+                  id="edit_prusalink_api_auth_mode"
+                  className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                  value={form.prusa_link_api_auth_mode}
+                  onChange={(e) => setForm({ ...form, prusa_link_api_auth_mode: e.target.value as PrusaLinkApiAuthMode })}
+                >
+                  <option value="auto">Auto-detect on save (recommended)</option>
+                  <option value="modern_digest">Modern PrusaLink /api/v1 + HTTP Digest</option>
+                  <option value="legacy_x_api_key">Legacy /api + X-API-Key</option>
+                  <option value="modern_basic_x_api_key">Compatibility: /api/v1 + Basic/X-Api-Key</option>
+                </select>
+                <p className="text-xs text-bambu-gray mt-1">
+                  Existing printers can be switched here if they were created before PrusaLink auth detection was added.
+                </p>
+              </div>
+            ) : null}
             <div>
               <PrinterModelSelect
                 id="edit_printer_model"

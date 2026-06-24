@@ -341,6 +341,9 @@ _print_ams_mappings: dict[int, list[int]] = {}
 # Milestones are 25, 50, 75. Value of 0 means no milestone notified yet for current print.
 _last_progress_milestone: dict[int, int] = {}
 
+# Track whether the 99% almost-done notification has been sent for current print
+_print_almost_done_notified: dict[int, bool] = {}
+
 # Track whether first layer complete notification has been sent for current print
 _first_layer_notified: dict[int, bool] = {}
 
@@ -365,6 +368,19 @@ _bed_cool_waiters: dict[int, dict] = {}
 # When on_print_complete fires with status "failed" for these printers we treat it
 # as "cancelled" (stopped by user) so the correct notification email is sent.
 _user_stopped_printers: set[int] = set()
+
+
+def _should_attempt_bambu_ftp_archive(printer) -> bool:
+    """Return True when print-start archiving should use Bambu FTP.
+
+    Legacy printer rows may have a null provider and historically represented
+    Bambu printers, so keep those on the existing Bambu FTP path. Explicit
+    non-Bambu providers such as PrusaLink must not hit services.bambu_ftp.
+    """
+    provider_value = getattr(printer, "provider", None)
+    if not isinstance(provider_value, str) or not provider_value.strip():
+        provider_value = "bambu"
+    return provider_value.lower() == "bambu"
 
 
 # HMS short-code → human-readable failure reason. Used by _dispatch_archive_update
@@ -824,9 +840,37 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
                     )
             except Exception as e:
                 logging.getLogger(__name__).warning(f"Progress milestone notification failed: {e}")
+
+        if progress >= 99 and not _print_almost_done_notified.get(printer_id, False):
+            _print_almost_done_notified[printer_id] = True
+            try:
+                async with async_session() as db:
+                    from backend.app.models.printer import Printer
+
+                    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+                    printer = result.scalar_one_or_none()
+                    printer_name = printer.name if printer else f"Printer {printer_id}"
+                    filename = state.subtask_name or state.gcode_file or "Unknown"
+                    remaining_time_seconds = state.remaining_time * 60 if state.remaining_time else None
+
+                    image_data = await _capture_snapshot_for_notification(
+                        printer_id, printer, logging.getLogger(__name__)
+                    )
+
+                    await notification_service.on_print_almost_done(
+                        printer_id,
+                        printer_name,
+                        filename,
+                        db,
+                        remaining_time_seconds,
+                        image_data=image_data,
+                    )
+            except Exception as e:
+                logging.getLogger(__name__).warning(f"Print almost-done notification failed: {e}")
     elif progress < 5:
         # Reset milestone tracking when print restarts or new print begins
         _last_progress_milestone[printer_id] = 0
+        _print_almost_done_notified[printer_id] = False
         _first_layer_notified[printer_id] = False
 
     # HMS error codes that should not trigger notifications even though they
@@ -2312,13 +2356,19 @@ async def on_print_start(printer_id: int, data: dict):
         # Try to find and download the 3MF file
         temp_path = None
         downloaded_filename = None
+        attempt_bambu_ftp_archive = _should_attempt_bambu_ftp_archive(printer)
+        if not attempt_bambu_ftp_archive:
+            logger.info(
+                "[CALLBACK] Skipping Bambu FTP archive lookup for non-Bambu provider %s",
+                getattr(printer, "provider", None),
+            )
 
         # Cache check: cover endpoint may have already pulled this 3MF during
         # the print (frontend opens the card and shows the thumbnail) — reuse
         # that file instead of re-downloading 36MB over the same FTP link that
         # just served it (#972). The cache keys on a normalized filename so
         # variants like "X", "X.3mf", "X.gcode.3mf" all collapse to one entry.
-        for try_filename in possible_names:
+        for try_filename in possible_names if attempt_bambu_ftp_archive else []:
             if not try_filename.endswith(".3mf"):
                 continue
             cached = get_cached_3mf(printer_id, try_filename)
@@ -2331,7 +2381,7 @@ async def on_print_start(printer_id: int, data: dict):
         # Get FTP retry settings
         ftp_retry_enabled, ftp_retry_count, ftp_retry_delay, ftp_timeout = await get_ftp_retry_settings()
 
-        for try_filename in possible_names if not downloaded_filename else []:
+        for try_filename in possible_names if attempt_bambu_ftp_archive and not downloaded_filename else []:
             if not try_filename.endswith(".3mf"):
                 continue
 
@@ -2397,7 +2447,7 @@ async def on_print_start(printer_id: int, data: dict):
 
         # If still not found, try listing directories to find matching file
         # Different printer models use different directory structures
-        if not downloaded_filename and (filename or subtask_name):
+        if attempt_bambu_ftp_archive and not downloaded_filename and (filename or subtask_name):
             search_term = (subtask_name or filename).lower().replace(".gcode", "").replace(".3mf", "")
             logger.info("Direct FTP download failed, searching directories for '%s'", search_term)
             search_dirs = ["/cache", "/model", "/data", "/data/Metadata", "/"]
@@ -3570,6 +3620,25 @@ async def on_print_complete(printer_id: int, data: dict):
                         if total_from_usage > 0:
                             no_archive_data["actual_filament_grams"] = round(total_from_usage, 1)
                         no_archive_data["usage_results"] = usage_results
+
+                    # Capture a notification attachment even when there is no
+                    # archive row to save a finish photo into. This is common
+                    # for provider-synthesized PrusaLink/Core One lifecycle
+                    # events and keeps Pushover/Telegram/Discord completion
+                    # notifications visually consistent with progress alerts.
+                    image_data = await _capture_snapshot_for_notification(printer_id, printer_obj, logger)
+                    if image_data:
+                        if no_archive_data is None:
+                            no_archive_data = {}
+                        no_archive_data["image_data"] = image_data
+
+                    # Try provider-synthesized elapsed time first, then MQTT remaining_time
+                    if data.get("actual_time_seconds") or data.get("duration_seconds"):
+                        if no_archive_data is None:
+                            no_archive_data = {}
+                        no_archive_data["actual_time_seconds"] = data.get("actual_time_seconds") or data.get(
+                            "duration_seconds"
+                        )
 
                     # Try MQTT remaining_time for print duration when no queue/library data
                     if no_archive_data and not no_archive_data.get("print_time_seconds"):

@@ -125,7 +125,7 @@ describe('FileManagerModal', () => {
       });
     });
 
-    it('shows file sizes for files', async () => {
+    it('does not show file sizes in the file list', async () => {
       render(
         <FileManagerModal
           printerId={1}
@@ -135,9 +135,12 @@ describe('FileManagerModal', () => {
       );
 
       await waitFor(() => {
-        // 1024000 bytes = 1024.0 KB
-        expect(screen.getByText('1024.0 KB')).toBeInTheDocument();
+        expect(screen.getByText('benchy.3mf')).toBeInTheDocument();
       });
+
+      expect(screen.queryByText('1024.0 KB')).not.toBeInTheDocument();
+      expect(screen.queryByText('2.0 MB')).not.toBeInTheDocument();
+      expect(screen.queryByText('0 B')).not.toBeInTheDocument();
     });
   });
 
@@ -248,6 +251,101 @@ describe('FileManagerModal', () => {
 
       await waitFor(() => {
         expect(screen.getByText('Select All')).toBeInTheDocument();
+      });
+    });
+  });
+
+  describe('print existing file', () => {
+    it('hides add to queue for Prusa printer file managers', async () => {
+      render(
+        <FileManagerModal
+          printerId={1}
+          printerName="Prusa CORE One"
+          printerProvider="prusalink"
+          onClose={mockOnClose}
+        />
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText('print_job.gcode')).toBeInTheDocument();
+      });
+
+      expect(screen.getByRole('button', { name: /^Print$/i })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /Add to Queue/i })).not.toBeInTheDocument();
+    });
+
+    it('hides download for Prusa printer file managers because modern PrusaLink USB files cannot be downloaded', async () => {
+      render(
+        <FileManagerModal
+          printerId={1}
+          printerName="Prusa CORE One"
+          printerProvider="prusalink"
+          onClose={mockOnClose}
+        />
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText('print_job.gcode')).toBeInTheDocument();
+      });
+
+      expect(screen.getByRole('button', { name: /^Print$/i })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /Download/i })).not.toBeInTheDocument();
+    });
+
+    it('keeps add to queue for non-Prusa printer file managers', async () => {
+      render(
+        <FileManagerModal
+          printerId={1}
+          printerName="X1 Carbon"
+          printerProvider="bambu"
+          onClose={mockOnClose}
+        />
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText('print_job.gcode')).toBeInTheDocument();
+      });
+
+      expect(screen.getByRole('button', { name: /Add to Queue/i })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /Download/i })).toBeInTheDocument();
+    });
+
+    it('starts the selected printable printer file directly from the file manager', async () => {
+      let startedPath: string | null = null;
+      server.use(
+        http.post('/api/v1/printers/:id/files/start', ({ request }) => {
+          const url = new URL(request.url);
+          startedPath = url.searchParams.get('path');
+          return HttpResponse.json({ status: 'started', path: startedPath });
+        })
+      );
+
+      render(
+        <FileManagerModal
+          printerId={1}
+          printerName="Prusa CORE One"
+          onClose={mockOnClose}
+        />
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText('print_job.gcode')).toBeInTheDocument();
+      });
+
+      const printButton = screen.getByRole('button', { name: /^Print$/i });
+      expect(printButton).toBeDisabled();
+
+      const checkboxes = screen.getAllByRole('button').filter(btn =>
+        btn.querySelector('svg')?.classList.contains('lucide-square')
+      );
+      fireEvent.click(checkboxes[1]);
+
+      await waitFor(() => expect(printButton).not.toBeDisabled());
+      fireEvent.click(printButton);
+
+      await waitFor(() => {
+        expect(startedPath).toBe('/print_job.gcode');
+        expect(screen.getByText('Started print_job.gcode on printer')).toBeInTheDocument();
       });
     });
   });

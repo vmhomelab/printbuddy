@@ -36,6 +36,7 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
   const [onPrintFailed, setOnPrintFailed] = useState(provider?.on_print_failed ?? true);
   const [onPrintStopped, setOnPrintStopped] = useState(provider?.on_print_stopped ?? true);
   const [onPrintProgress, setOnPrintProgress] = useState(provider?.on_print_progress ?? false);
+  const [onPrintAlmostDone, setOnPrintAlmostDone] = useState(provider?.on_print_almost_done ?? false);
   const [onPrinterOffline, setOnPrinterOffline] = useState(provider?.on_printer_offline ?? false);
   const [onPrinterError, setOnPrinterError] = useState(provider?.on_printer_error ?? false);
   const [onFilamentLow, setOnFilamentLow] = useState(provider?.on_filament_low ?? false);
@@ -165,6 +166,7 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
       on_print_failed: onPrintFailed,
       on_print_stopped: onPrintStopped,
       on_print_progress: onPrintProgress,
+      on_print_almost_done: onPrintAlmostDone,
       on_printer_offline: onPrinterOffline,
       on_printer_error: onPrinterError,
       on_filament_low: onFilamentLow,
@@ -521,6 +523,13 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
                 </div>
                 <div className="flex items-center justify-between col-span-2">
                   <div>
+                    <span className="text-sm text-white">{t('notifications.printAlmostDone')}</span>
+                    <span className="text-xs text-bambu-gray ml-1">{t('notifications.printAlmostDoneDescription')}</span>
+                  </div>
+                  <Toggle checked={onPrintAlmostDone} onChange={setOnPrintAlmostDone} />
+                </div>
+                <div className="flex items-center justify-between col-span-2">
+                  <div>
                     <span className="text-sm text-white">{t('notifications.bedCooled')}</span>
                     <span className="text-xs text-bambu-gray ml-1">{t('notifications.bedCooledAfterPrint')}</span>
                   </div>
@@ -588,6 +597,7 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
               if (onPrintFailed) enabledEvents.push({ key: 'on_print_failed', label: t('notifications.failed') });
               if (onPrintStopped) enabledEvents.push({ key: 'on_print_stopped', label: t('notifications.stopped') });
               if (onPrintProgress) enabledEvents.push({ key: 'on_print_progress', label: t('notifications.progress') });
+              if (onPrintAlmostDone) enabledEvents.push({ key: 'on_print_almost_done', label: t('notifications.printAlmostDone') });
               if (onBedCooled) enabledEvents.push({ key: 'on_bed_cooled', label: t('notifications.bedCooled') });
               if (onFirstLayerComplete) enabledEvents.push({ key: 'on_first_layer_complete', label: t('notifications.firstLayerCompleteLabel') });
               if (onPrinterOffline) enabledEvents.push({ key: 'on_printer_offline', label: t('notifications.offline') });

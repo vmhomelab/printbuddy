@@ -683,14 +683,14 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
 // Helper to check if a file is sliced (printable)
 function isSlicedFilename(filename: string): boolean {
   const lower = filename.toLowerCase();
-  return lower.endsWith('.gcode') || lower.endsWith('.gcode.3mf');
+  return lower.endsWith('.bgcode') || lower.endsWith('.gcode') || lower.endsWith('.gcode.3mf');
 }
 
 // Files that can be fed to the slicer sidecar (model geometry inputs).
 // Excludes .gcode.* (already sliced) and any other non-model formats.
 function isSliceableFilename(filename: string): boolean {
   const lower = filename.toLowerCase();
-  if (lower.endsWith('.gcode') || lower.endsWith('.gcode.3mf')) return false;
+  if (lower.endsWith('.bgcode') || lower.endsWith('.gcode') || lower.endsWith('.gcode.3mf')) return false;
   return lower.endsWith('.stl') || lower.endsWith('.3mf') || lower.endsWith('.step') || lower.endsWith('.stp');
 }
 
@@ -1334,7 +1334,7 @@ export function FileManagerPage() {
   // Helper to check if a file is sliced (printable)
   const isSlicedFile = useCallback((filename: string) => {
     const lower = filename.toLowerCase();
-    return lower.endsWith('.gcode') || lower.includes('.gcode.');
+    return lower.endsWith('.bgcode') || lower.endsWith('.gcode') || lower.endsWith('.gcode.3mf');
   }, []);
 
   // Get sliced files from selection

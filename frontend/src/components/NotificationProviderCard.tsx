@@ -132,6 +132,9 @@ export function NotificationProviderCard({ provider, onEdit }: NotificationProvi
             {provider.on_print_progress && (
               <span className="px-2 py-0.5 bg-yellow-500/20 text-yellow-400 text-xs rounded">{t('notifications.progress')}</span>
             )}
+            {provider.on_print_almost_done && (
+              <span className="px-2 py-0.5 bg-amber-500/20 text-amber-300 text-xs rounded">{t('notifications.printAlmostDone')}</span>
+            )}
             {provider.on_printer_offline && (
               <span className="px-2 py-0.5 bg-gray-500/20 text-gray-400 text-xs rounded">{t('notifications.offline')}</span>
             )}
@@ -342,6 +345,17 @@ export function NotificationProviderCard({ provider, onEdit }: NotificationProvi
                   <Toggle
                     checked={provider.on_print_progress}
                     onChange={(checked) => updateMutation.mutate({ on_print_progress: checked })}
+                  />
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm text-white">{t('notifications.printAlmostDone')}</p>
+                    <p className="text-xs text-bambu-gray">{t('notifications.printAlmostDoneDescription')}</p>
+                  </div>
+                  <Toggle
+                    checked={provider.on_print_almost_done ?? false}
+                    onChange={(checked) => updateMutation.mutate({ on_print_almost_done: checked })}
                   />
                 </div>
               </div>

@@ -2101,6 +2101,7 @@ export interface NotificationProvider {
   on_print_failed: boolean;
   on_print_stopped: boolean;
   on_print_progress: boolean;
+  on_print_almost_done: boolean;
   on_print_missing_spool_assignment: boolean;
   // Printer status events
   on_printer_offline: boolean;
@@ -2159,6 +2160,7 @@ export interface NotificationProviderCreate {
   on_print_failed?: boolean;
   on_print_stopped?: boolean;
   on_print_progress?: boolean;
+  on_print_almost_done?: boolean;
   on_print_missing_spool_assignment?: boolean;
   // Printer status events
   on_printer_offline?: boolean;
@@ -2210,6 +2212,7 @@ export interface NotificationProviderUpdate {
   on_print_failed?: boolean;
   on_print_stopped?: boolean;
   on_print_progress?: boolean;
+  on_print_almost_done?: boolean;
   on_print_missing_spool_assignment?: boolean;
   // Printer status events
   on_printer_offline?: boolean;
@@ -2734,6 +2737,36 @@ export interface UpdateStatus {
   progress: number;
   message: string;
   error: string | null;
+}
+
+export interface SelfUpdateStatus {
+  enabled: boolean;
+  available: boolean;
+  reason?: string | null;
+  mode: 'updater-sidecar';
+  health?: {
+    ok: boolean;
+    service: string;
+    docker_available: boolean;
+    compose_file_available: boolean;
+  };
+}
+
+export interface SelfUpdateJob {
+  job_id: string;
+  status: 'queued' | 'pulling' | 'recreating' | 'completed' | 'failed';
+  started_at?: string;
+  finished_at?: string | null;
+  exit_code?: number | null;
+  message: string;
+  safe_log_tail?: string;
+  steps?: Array<{ name: string; status: string }>;
+}
+
+export interface SelfUpdateStartResult {
+  accepted: boolean;
+  job_id: string;
+  message: string;
 }
 
 // Maintenance types
@@ -3491,9 +3524,14 @@ export const api = {
       `/printers/${printerId}/temperature/bed?target=${target}`,
       { method: 'POST' }
     ),
-  homeAxes: (printerId: number, axes: 'z' | 'xy' | 'all' = 'z') =>
+  homeAxes: (printerId: number, axes: 'x' | 'y' | 'z' | 'xy' | 'all' = 'all') =>
     request<{ success: boolean; message: string }>(
       `/printers/${printerId}/home-axes?axes=${axes}`,
+      { method: 'POST' }
+    ),
+  extrude: (printerId: number, length: number, speed = 300) =>
+    request<{ success: boolean; message: string }>(
+      `/printers/${printerId}/extrude?length=${length}&speed=${speed}`,
       { method: 'POST' }
     ),
   disableSteppers: (printerId: number) =>
@@ -3692,14 +3730,21 @@ export const api = {
     }
     return response.blob();
   },
-  uploadPrinterFile: async (printerId: number, file: File, path = '/'): Promise<{ status: string; path: string; filename: string }> => {
+  uploadPrinterFile: async (
+    printerId: number,
+    file: File,
+    path = '/',
+    overwrite = false,
+    conflictStrategy: 'error' | 'rename' | 'delete_replace' = 'error'
+  ): Promise<{ status: string; path: string; filename: string; renamed?: boolean; replaced?: boolean; original_filename?: string }> => {
     const headers: Record<string, string> = {};
     if (authToken) {
       headers['Authorization'] = `Bearer ${authToken}`;
     }
     const formData = new FormData();
     formData.append('file', file);
-    const response = await fetch(`${API_BASE}/printers/${printerId}/files/upload?path=${encodeURIComponent(path)}`, {
+    const params = new URLSearchParams({ path, overwrite: String(overwrite), conflict_strategy: conflictStrategy });
+    const response = await fetch(`${API_BASE}/printers/${printerId}/files/upload?${params.toString()}`, {
       method: 'POST',
       headers,
       body: formData,
@@ -3710,6 +3755,10 @@ export const api = {
     }
     return response.json();
   },
+  startPrinterFile: (printerId: number, path: string) =>
+    request<{ status: string; path: string }>(`/printers/${printerId}/files/start?path=${encodeURIComponent(path)}`, {
+      method: 'POST',
+    }),
   deletePrinterFile: (printerId: number, path: string) =>
     request<{ status: string; path: string }>(`/printers/${printerId}/files?path=${encodeURIComponent(path)}`, {
       method: 'DELETE',
@@ -5172,6 +5221,9 @@ export const api = {
       method: 'POST',
     }),
   getUpdateStatus: () => request<UpdateStatus>('/updates/status'),
+  getSelfUpdateStatus: () => request<SelfUpdateStatus>('/updates/self-update/status'),
+  startSelfUpdate: () => request<SelfUpdateStartResult>('/updates/self-update', { method: 'POST' }),
+  getSelfUpdateJob: (jobId: string) => request<SelfUpdateJob>(`/updates/self-update/jobs/${jobId}`),
 
   // Maintenance
   getMaintenanceTypes: () => request<MaintenanceType[]>('/maintenance/types'),
