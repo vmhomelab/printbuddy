@@ -32,6 +32,26 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate release APP_VERSION
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected=""
+
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            expected="${GITHUB_REF_NAME#v}"
+          elif [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
+            expected="$({ git tag --points-at HEAD --list 'v*' | sed 's/^v//' | sort -V | tail -n 1; } || true)"
+          fi
+
+          if [[ -n "${expected}" ]]; then
+            python scripts/app_version.py --expected "${expected}"
+          else
+            echo "No release tag points at this ref; skipping APP_VERSION release check."
+          fi
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
