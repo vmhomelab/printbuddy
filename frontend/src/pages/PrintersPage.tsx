@@ -70,6 +70,7 @@ import {
   MoreHorizontal,
   SlidersHorizontal,
   Stethoscope,
+  ExternalLink,
 } from 'lucide-react';
 
 import { useNavigate } from 'react-router-dom';
@@ -180,6 +181,23 @@ function parsePrusaLinkApiAuthMode(providerOptions?: string | null): PrusaLinkAp
     // Fall back to auto for older/malformed provider_options.
   }
   return 'auto';
+}
+
+function getPrusaLinkWebUrl(printer: Printer): string | null {
+  if (printer.provider !== 'prusalink') {
+    return null;
+  }
+
+  const rawUrl = (printer.api_url || printer.ip_address || '').trim();
+  if (!rawUrl) {
+    return null;
+  }
+
+  if (/^https?:\/\//i.test(rawUrl)) {
+    return rawUrl;
+  }
+
+  return `http://${rawUrl}`;
 }
 
 function isPrusaPrinter(printer: Pick<Printer, 'provider' | 'model'>): boolean {
@@ -1858,6 +1876,7 @@ function PrinterCard({
   }, [status?.ams, status?.vt_tray, status?.nozzle_rack]);
 
   const isPrusaModelPrinter = isPrusaPrinter(printer);
+  const prusaLinkWebUrl = getPrusaLinkWebUrl(printer);
   const loadedSpoolAssignment = isPrusaModelPrinter ? undefined : onGetAssignment?.(printer.id, -1, 0);
 
   // Collect loaded filament types for queue widget filtering
@@ -3026,6 +3045,20 @@ function PrinterCard({
                   </button>
                 );
               })()}
+              {/* PrusaLink web UI shortcut */}
+              {prusaLinkWebUrl && (
+                <a
+                  href={prusaLinkWebUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  aria-label={t('printers.openPrusaLink')}
+                  className="flex items-center gap-1 px-2 py-1 rounded-full text-xs cursor-pointer bg-status-ok/20 text-status-ok hover:opacity-80 transition-opacity"
+                  title={t('printers.openPrusaLinkNewTab')}
+                >
+                  <ExternalLink className="w-3 h-3" />
+                  PrusaLink
+                </a>
+              )}
               {/* Maintenance Status Indicator */}
               {maintenanceInfo && (
                 <button

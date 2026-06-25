@@ -572,6 +572,8 @@ export default {
     },
     // HMS errors
     clickToViewHmsErrors: '点击查看 HMS 错误',
+    openPrusaLink: '打开 PrusaLink',
+    openPrusaLinkNewTab: '在新标签页中打开 PrusaLink',
     estimatedCompletion: '预计完成时间',
     plateNumber: '板 {{number}}',
     slotOptions: '槽位选项',

@@ -571,6 +571,8 @@ export default {
     },
     // HMS errors
     clickToViewHmsErrors: 'クリックしてHMSエラーを表示',
+    openPrusaLink: 'PrusaLinkを開く',
+    openPrusaLinkNewTab: 'PrusaLinkを新しいタブで開く',
     estimatedCompletion: '完了予定時刻',
     plateNumber: 'プレート {{number}}',
     slotOptions: 'スロットオプション',

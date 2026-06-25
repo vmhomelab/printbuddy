@@ -157,6 +157,48 @@ describe('PrintersPage', () => {
       expect(screen.queryByRole('button', { name: 'Print' })).not.toBeInTheDocument();
     });
 
+    it('shows a PrusaLink badge that opens the printer UI in a new tab', async () => {
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          ...mockPrinters[0],
+          id: 7,
+          name: 'Prusa CORE One',
+          provider: 'prusalink',
+          model: 'Prusa CORE One',
+          ip_address: '10.17.10.42',
+          api_url: 'http://core-one.local:8087',
+        }])),
+      );
+
+      render(<PrintersPage />);
+
+      expect((await screen.findAllByText('Prusa CORE One')).length).toBeGreaterThan(0);
+      const prusaLinkBadge = await screen.findByRole('link', { name: 'Open PrusaLink' });
+      expect(prusaLinkBadge).toHaveAttribute('href', 'http://core-one.local:8087');
+      expect(prusaLinkBadge).toHaveAttribute('target', '_blank');
+      expect(prusaLinkBadge).toHaveAttribute('rel', expect.stringContaining('noopener'));
+      expect(prusaLinkBadge).toHaveTextContent('PrusaLink');
+    });
+
+    it('uses the printer IP address for the PrusaLink badge when no API URL is saved', async () => {
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          ...mockPrinters[0],
+          id: 7,
+          name: 'Prusa CORE One',
+          provider: 'prusalink',
+          model: 'Prusa CORE One',
+          ip_address: '10.17.10.42',
+          api_url: null,
+        }])),
+      );
+
+      render(<PrintersPage />);
+
+      expect((await screen.findAllByText('Prusa CORE One')).length).toBeGreaterThan(0);
+      expect(await screen.findByRole('link', { name: 'Open PrusaLink' })).toHaveAttribute('href', 'http://10.17.10.42');
+    });
+
     it('shows the updated Prusa USB write notice from the direct Upload action', async () => {
       const user = userEvent.setup();
       server.use(

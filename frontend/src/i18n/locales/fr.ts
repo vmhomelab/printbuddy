@@ -572,6 +572,8 @@ export default {
     },
     // HMS errors
     clickToViewHmsErrors: 'Cliquez pour voir les erreurs HMS',
+    openPrusaLink: 'Ouvrir PrusaLink',
+    openPrusaLinkNewTab: 'Ouvrir PrusaLink dans un nouvel onglet',
     estimatedCompletion: 'Fin estimée',
     plateNumber: 'Plaque {{number}}',
     slotOptions: 'Options du slot',
