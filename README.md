@@ -60,9 +60,10 @@ Printbuddy uses a provider-based architecture for multiple printer platforms.
 Current state:
 
 - Initial fork setup on `dev`
-- Bambu Lab support from the original foundation
-- Klipper and Prusa support being added
-- Provider architecture in progress
+- Bambu Lab support from the original foundation ✅
+- Prusa support added via PrusaLink ✅(Prusa Connect not tested)
+- Klipper (open fimrware) support being added ⌛ (not officially supported yet)
+- Provider architecture in progress ⌛
 
 ---
 
