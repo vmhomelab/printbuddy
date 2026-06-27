@@ -10,8 +10,8 @@ from datetime import datetime, timedelta, timezone
 from logging.handlers import RotatingFileHandler
 from urllib.parse import urlparse
 
-from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import delete, or_, select, text
 
@@ -5563,12 +5563,57 @@ if app_settings.static_dir.exists() and any(app_settings.static_dir.iterdir()):
         )
 
 
-@app.get("/")
-async def serve_frontend():
-    """Serve the React frontend."""
+def _ingress_base_from_request(request: Request) -> str:
+    """Return Home Assistant's dynamic ingress prefix, if present.
+
+    HA Supervisor forwards add-on requests with an ``X-Ingress-Path`` header
+    such as ``/api/hassio_ingress/<token>``. Vite's built index.html cannot
+    know that token at build time, so the backend rewrites only the SPA shell's
+    root-relative bootstrap URLs while serving through ingress.
+    """
+    candidates = (
+        request.headers.get("x-ingress-path"),
+        request.headers.get("x-hassio-ingress-path"),
+        request.scope.get("root_path"),
+    )
+    for raw in candidates:
+        if not raw:
+            continue
+        base = str(raw).rstrip("/")
+        if base.startswith("/api/hassio_ingress/") and all(char not in base for char in '<>"'):
+            return base
+    return ""
+
+
+def _serve_index_html(request: Request):
     index_file = app_settings.static_dir / "index.html"
-    if index_file.exists():
+    if not index_file.exists():
+        return None
+
+    ingress_base = _ingress_base_from_request(request)
+    if not ingress_base:
         return FileResponse(index_file, headers=_HTML_CACHE_HEADERS)
+
+    html = index_file.read_text(encoding="utf-8")
+    replacements = {
+        'src="/assets/': f'src="{ingress_base}/assets/',
+        'href="/assets/': f'href="{ingress_base}/assets/',
+        'href="/manifest.json"': f'href="{ingress_base}/manifest.json"',
+        'href="/img/': f'href="{ingress_base}/img/',
+        'href="/icons/': f'href="{ingress_base}/icons/',
+        'src="/sw-register.js"': f'src="{ingress_base}/sw-register.js"',
+    }
+    for old, new in replacements.items():
+        html = html.replace(old, new)
+    return HTMLResponse(html, headers=_HTML_CACHE_HEADERS)
+
+
+@app.get("/")
+async def serve_frontend(request: Request):
+    """Serve the React frontend."""
+    html_response = _serve_index_html(request)
+    if html_response is not None:
+        return html_response
     return {
         "message": "Printbuddy API",
         "docs": "/docs",
@@ -5681,7 +5726,7 @@ async def serve_gcode_viewer_file(file_path: str) -> FileResponse:
 
 # Catch-all route for React Router (must be last)
 @app.get("/{full_path:path}")
-async def serve_spa(full_path: str):
+async def serve_spa(full_path: str, request: Request):
     """Serve React app for client-side routing."""
     # Don't intercept API routes - raise proper 404 so FastAPI can handle redirects
     if full_path.startswith("api/"):
@@ -5689,8 +5734,8 @@ async def serve_spa(full_path: str):
 
         raise HTTPException(status_code=404, detail="Not found")
 
-    index_file = app_settings.static_dir / "index.html"
-    if index_file.exists():
-        return FileResponse(index_file, headers=_HTML_CACHE_HEADERS)
+    html_response = _serve_index_html(request)
+    if html_response is not None:
+        return html_response
 
     return {"error": "Frontend not built"}
