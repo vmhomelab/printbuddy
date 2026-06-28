@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, type CSSProperties } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { X, RefreshCw, AlertTriangle, Maximize2, Minimize2, GripVertical, WifiOff, ZoomIn, ZoomOut, Fullscreen, Minimize, Stethoscope } from 'lucide-react';
@@ -22,6 +22,10 @@ const MAX_RECONNECT_ATTEMPTS = 5;
 const INITIAL_RECONNECT_DELAY = 2000;
 const MAX_RECONNECT_DELAY = 30000;
 const STALL_CHECK_INTERVAL = 5000;
+const FLOATING_MIN_WIDTH = 200;
+const FLOATING_MIN_HEIGHT = 150;
+const INLINE_MIN_WIDTH = 320;
+const INLINE_MIN_HEIGHT = 220;
 
 interface CameraState {
   x: number;
@@ -44,6 +48,8 @@ export function EmbeddedCameraViewer({ printerId, printerName, viewerIndex = 0, 
   const { hasPermission } = useAuth();
 
   const isInline = mode === 'inline';
+  const minWidth = isInline ? INLINE_MIN_WIDTH : FLOATING_MIN_WIDTH;
+  const minHeight = isInline ? INLINE_MIN_HEIGHT : FLOATING_MIN_HEIGHT;
   // Printer-specific storage key
   const storageKey = `${STORAGE_KEY_PREFIX}${printerId}`;
 
@@ -57,8 +63,8 @@ export function EmbeddedCameraViewer({ printerId, printerName, viewerIndex = 0, 
         return {
           x: Math.min(Math.max(0, state.x), window.innerWidth - 100),
           y: Math.min(Math.max(0, state.y), window.innerHeight - 100),
-          width: Math.max(200, Math.min(state.width, window.innerWidth - 20)),
-          height: Math.max(150, Math.min(state.height, window.innerHeight - 20)),
+          width: Math.max(minWidth, Math.min(state.width, window.innerWidth - 20)),
+          height: Math.max(minHeight, Math.min(state.height, window.innerHeight - 20)),
         };
       }
     } catch {
@@ -510,8 +516,8 @@ export function EmbeddedCameraViewer({ printerId, printerName, viewerIndex = 0, 
         const rect = containerRef.current.getBoundingClientRect();
         setState((prev) => ({
           ...prev,
-          width: Math.max(200, Math.min(e.clientX - rect.left, window.innerWidth - prev.x - 10)),
-          height: Math.max(150, Math.min(e.clientY - rect.top, window.innerHeight - prev.y - 10)),
+          width: Math.max(minWidth, Math.min(e.clientX - rect.left, isInline ? window.innerWidth - 20 : window.innerWidth - prev.x - 10)),
+          height: Math.max(minHeight, Math.min(e.clientY - rect.top, isInline ? window.innerHeight - 20 : window.innerHeight - prev.y - 10)),
         }));
       }
     };
@@ -530,8 +536,8 @@ export function EmbeddedCameraViewer({ printerId, printerName, viewerIndex = 0, 
         const rect = containerRef.current.getBoundingClientRect();
         setState((prev) => ({
           ...prev,
-          width: Math.max(200, Math.min(touch.clientX - rect.left, window.innerWidth - prev.x - 10)),
-          height: Math.max(150, Math.min(touch.clientY - rect.top, window.innerHeight - prev.y - 10)),
+          width: Math.max(minWidth, Math.min(touch.clientX - rect.left, isInline ? window.innerWidth - 20 : window.innerWidth - prev.x - 10)),
+          height: Math.max(minHeight, Math.min(touch.clientY - rect.top, isInline ? window.innerHeight - 20 : window.innerHeight - prev.y - 10)),
         }));
       }
     };
@@ -555,7 +561,7 @@ export function EmbeddedCameraViewer({ printerId, printerName, viewerIndex = 0, 
         document.removeEventListener('touchcancel', handleMouseUp);
       };
     }
-  }, [isDragging, isResizing, dragOffset]);
+  }, [isDragging, isResizing, dragOffset, isInline, minHeight, minWidth]);
 
   const streamUrl = withStreamToken(`/api/v1/printers/${printerId}/camera/stream?fps=15&t=${imageKey}`);
 
@@ -563,7 +569,14 @@ export function EmbeddedCameraViewer({ printerId, printerName, viewerIndex = 0, 
     ? `${isFullscreen ? 'fixed inset-0 z-[100]' : 'relative w-full rounded-lg border border-bambu-dark-tertiary'} bg-bambu-dark-secondary overflow-hidden`
     : `${isFullscreen ? 'fixed inset-0 z-[100]' : 'fixed z-40 rounded-lg shadow-2xl border border-bambu-dark-tertiary'} bg-bambu-dark-secondary overflow-hidden`;
 
-  const containerStyle = isFullscreen || isInline ? undefined : {
+  const containerStyle: CSSProperties | undefined = isFullscreen ? undefined : isInline ? {
+    width: state.width,
+    height: isMinimized ? 40 : state.height,
+    minWidth,
+    minHeight: isMinimized ? 40 : minHeight,
+    maxWidth: 'calc(100vw - 2rem)',
+    cursor: isResizing ? 'se-resize' : 'default',
+  } : {
     left: state.x,
     top: state.y,
     width: isMinimized ? 200 : state.width,
@@ -663,7 +676,7 @@ export function EmbeddedCameraViewer({ printerId, printerName, viewerIndex = 0, 
       {/* Video area */}
       {!isMinimized && (
         <div
-          className={`relative w-full bg-black flex items-center justify-center overflow-hidden ${isFullscreen ? 'h-[calc(100%-40px)]' : isInline ? 'aspect-video min-h-[180px]' : 'h-[calc(100%-40px)]'}`}
+          className={`relative w-full bg-black flex items-center justify-center overflow-hidden ${isFullscreen ? 'h-[calc(100%-40px)]' : 'h-[calc(100%-40px)]'}`}
           onWheel={handleWheel}
           onMouseMove={handleImageMouseMove}
           onMouseUp={handleImageMouseUp}
@@ -755,7 +768,7 @@ export function EmbeddedCameraViewer({ printerId, printerName, viewerIndex = 0, 
           </div>
 
           {/* Resize handle - hide in fullscreen */}
-          {!isFullscreen && !isInline && (
+          {!isFullscreen && (
             <div
               className="absolute bottom-0 right-0 w-6 h-6 cursor-se-resize no-drag hover:bg-white/10 rounded-tl transition-colors"
               onMouseDown={handleResizeMouseDown}

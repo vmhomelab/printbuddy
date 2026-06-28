@@ -458,6 +458,76 @@ describe('PrintersPage', () => {
       openSpy.mockRestore();
     });
 
+    it('keeps printer cards aligned to the top so an expanded camera does not stretch sibling cards', async () => {
+      render(<PrintersPage />);
+
+      const firstCard = await screen.findByTestId('printer-card-1');
+      expect(firstCard.parentElement).toHaveClass('grid');
+      expect(firstCard.parentElement).toHaveClass('items-start');
+    });
+
+    it('resizes the inline camera while enforcing minimum card-friendly dimensions', async () => {
+      const user = userEvent.setup();
+      server.use(
+        http.get('/api/v1/settings/ui-preferences', () => HttpResponse.json({
+          ams_humidity_good: 40,
+          ams_humidity_fair: 60,
+          ams_temp_good: 30,
+          ams_temp_fair: 35,
+          require_plate_clear: true,
+          camera_view_mode: 'card',
+          panda_breath_printer_assignments: '{}',
+        })),
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          ...mockPrinters[0],
+          provider: 'fluidd',
+          name: 'Neptune 4 Pro',
+          external_camera_url: 'http://neptune.local/webcam/?action=stream',
+          external_camera_type: 'mjpeg',
+          external_camera_enabled: true,
+        }])),
+        http.get('/api/v1/printers/:id/status', () => HttpResponse.json({
+          ...mockPrinterStatus,
+          connected: false,
+        })),
+        http.post('/api/v1/printers/:id/camera/stop', () => HttpResponse.json({ success: true })),
+        http.get('/api/v1/printers/:id/camera/status', () => HttpResponse.json({ active: true, stalled: false })),
+      );
+
+      render(<PrintersPage />);
+      await user.click(await screen.findByRole('button', { name: /show camera in printer card/i }));
+
+      const viewer = await screen.findByTestId('inline-camera-viewer-1');
+      vi.spyOn(viewer, 'getBoundingClientRect').mockReturnValue({
+        x: 100,
+        y: 50,
+        left: 100,
+        top: 50,
+        right: 580,
+        bottom: 350,
+        width: 480,
+        height: 300,
+        toJSON: () => ({}),
+      } as DOMRect);
+      const resizeHandle = screen.getByTitle('Drag to resize');
+
+      fireEvent.mouseDown(resizeHandle, { clientX: 580, clientY: 350 });
+      fireEvent.mouseMove(document, { clientX: 860, clientY: 520 });
+      fireEvent.mouseUp(document);
+
+      await waitFor(() => {
+        expect(viewer).toHaveStyle({ width: '760px', height: '470px' });
+      });
+
+      fireEvent.mouseDown(resizeHandle, { clientX: 860, clientY: 520 });
+      fireEvent.mouseMove(document, { clientX: 120, clientY: 80 });
+      fireEvent.mouseUp(document);
+
+      await waitFor(() => {
+        expect(viewer).toHaveStyle({ width: '320px', height: '220px' });
+      });
+    });
+
     it('does not open a Fluidd/Moonraker API URL as a camera target', async () => {
       const user = userEvent.setup();
       const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
