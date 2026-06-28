@@ -107,6 +107,7 @@ import { ConnectionDiagnosticModal, DiagnosticChecklist } from '../components/Co
 import { KlipperControlPanel } from '../components/KlipperControlPanel';
 import { getColorName, parseFilamentColor, isLightColor } from '../utils/colors';
 import { getPrinterFileRuleSet, isPrintableForProvider } from '../utils/printerFileRules';
+import type { CameraViewMode } from '../api/client';
 import { canOpenPrinterCamera } from '../utils/printerCamera';
 import { getAssignedPandaBreathState } from '../utils/pandaBreath';
 
@@ -1698,6 +1699,8 @@ function PrinterCard({
   onUnassignSpoolmanSpool,
   timeFormat = 'system',
   cameraViewMode = 'window',
+  inlineCameraOpen = false,
+  onToggleInlineCamera,
   onOpenEmbeddedCamera,
   checkPrinterFirmware = true,
   dryingPresets = DRYING_PRESETS,
@@ -1731,7 +1734,9 @@ function PrinterCard({
   spoolmanLoading?: boolean;
   onUnassignSpoolmanSpool?: (spoolmanSpoolId: number) => void;
   timeFormat?: 'system' | '12h' | '24h';
-  cameraViewMode?: 'window' | 'embedded';
+  cameraViewMode?: CameraViewMode;
+  inlineCameraOpen?: boolean;
+  onToggleInlineCamera?: (printerId: number) => void;
   onOpenEmbeddedCamera?: (printerId: number, printerName: string) => void;
   checkPrinterFirmware?: boolean;
   dryingPresets?: Record<string, { n3f: number; n3s: number; n3f_hours: number; n3s_hours: number }>;
@@ -1983,6 +1988,43 @@ function PrinterCard({
   }, [status?.connected]);
   const isConnected = status?.connected ?? cachedConnected.current;
   const canOpenCamera = canOpenPrinterCamera(printer, isConnected, hasPermission('camera:view'));
+  const inlineCameraSupported = viewMode === 'expanded' && cardSize >= 2;
+  const cameraButtonLabel = cameraViewMode === 'card' && inlineCameraSupported
+    ? (inlineCameraOpen ? t('printers.hideCameraInCard') : t('printers.showCameraInCard'))
+    : cameraViewMode === 'embedded'
+      ? t('printers.openCameraOverlay')
+      : t('printers.openCameraWindow');
+
+  const handleCameraClick = () => {
+    if (cameraViewMode === 'card' && inlineCameraSupported && onToggleInlineCamera) {
+      onToggleInlineCamera(printer.id);
+    } else if (cameraViewMode === 'embedded' && onOpenEmbeddedCamera) {
+      onOpenEmbeddedCamera(printer.id, printer.name);
+    } else {
+      // Use saved window state or defaults
+      const saved = localStorage.getItem('cameraWindowState');
+      const state = saved ? JSON.parse(saved) : { width: 640, height: 400 };
+      const features = [
+        `width=${state.width}`,
+        `height=${state.height}`,
+        state.left !== undefined ? `left=${state.left}` : '',
+        state.top !== undefined ? `top=${state.top}` : '',
+        // No `noopener`: same-origin popup needs opener so the browser
+        // copies sessionStorage (auth token) into the new window.
+        'menubar=no,toolbar=no,location=no,status=no',
+      ].filter(Boolean).join(',');
+      let cameraUrl = appAssetPath(`/camera/${printer.id}`);
+      const authToken = getAuthToken();
+      if (authToken) {
+        const separator = cameraUrl.includes('?') ? '&' : '?';
+        // HA/mobile browsers do not reliably copy sessionStorage into popup windows.
+        // Pass the app auth token once; AuthProvider consumes it and removes it from
+        // the address bar before the camera stream URL is rendered.
+        cameraUrl = `${cameraUrl}${separator}token=${encodeURIComponent(authToken)}`;
+      }
+      window.open(cameraUrl, `camera-${printer.id}`, features);
+    }
+  };
 
   // Cache ams_extruder_map to prevent L/R indicators bouncing on updates
   const cachedAmsExtruderMap = useRef<Record<string, number>>({});
@@ -3135,6 +3177,33 @@ function PrinterCard({
         </div>
 
         {/* Delete Confirmation */}
+
+        {viewMode === 'expanded' && inlineCameraOpen && inlineCameraSupported && canOpenCamera && (
+          <div className="mt-4 pt-4 border-t border-bambu-dark-tertiary">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 text-sm font-medium text-white">
+                <Video className="w-4 h-4 text-bambu-green" />
+                <span>{t('printers.camera')}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => onToggleInlineCamera?.(printer.id)}
+                className="p-1 rounded text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary"
+                aria-label={t('printers.hideCameraInCard')}
+                title={t('printers.hideCameraInCard')}
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <EmbeddedCameraViewer
+              printerId={printer.id}
+              printerName={printer.name}
+              mode="inline"
+              onClose={() => onToggleInlineCamera?.(printer.id)}
+            />
+          </div>
+        )}
+
         {showDeleteConfirm && (
           <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
             <Card className="w-full max-w-md mx-4">
@@ -5113,37 +5182,11 @@ function PrinterCard({
               <Button
                 variant="secondary"
                 size="sm"
-                onClick={() => {
-                  if (cameraViewMode === 'embedded' && onOpenEmbeddedCamera) {
-                    onOpenEmbeddedCamera(printer.id, printer.name);
-                  } else {
-                    // Use saved window state or defaults
-                    const saved = localStorage.getItem('cameraWindowState');
-                    const state = saved ? JSON.parse(saved) : { width: 640, height: 400 };
-                    const features = [
-                      `width=${state.width}`,
-                      `height=${state.height}`,
-                      state.left !== undefined ? `left=${state.left}` : '',
-                      state.top !== undefined ? `top=${state.top}` : '',
-                      // No `noopener`: same-origin popup needs opener so the browser
-                      // copies sessionStorage (auth token) into the new window.
-                      'menubar=no,toolbar=no,location=no,status=no',
-                    ].filter(Boolean).join(',');
-                    let cameraUrl = appAssetPath(`/camera/${printer.id}`);
-                    const authToken = getAuthToken();
-                    if (authToken) {
-                      const separator = cameraUrl.includes('?') ? '&' : '?';
-                      // HA/mobile browsers do not reliably copy sessionStorage into popup windows.
-                      // Pass the app auth token once; AuthProvider consumes it and removes it from
-                      // the address bar before the camera stream URL is rendered.
-                      cameraUrl = `${cameraUrl}${separator}token=${encodeURIComponent(authToken)}`;
-                    }
-                    window.open(cameraUrl, `camera-${printer.id}`, features);
-                  }
-                }}
+                onClick={handleCameraClick}
                 disabled={!canOpenCamera}
-                aria-label={cameraViewMode === 'embedded' ? t('printers.openCameraOverlay') : t('printers.openCameraWindow')}
-                title={!hasPermission('camera:view') ? t('printers.permission.noCamera') : (cameraViewMode === 'embedded' ? t('printers.openCameraOverlay') : t('printers.openCameraWindow'))}
+                aria-label={cameraButtonLabel}
+                title={!hasPermission('camera:view') ? t('printers.permission.noCamera') : cameraButtonLabel}
+                className={inlineCameraOpen ? '!border-bambu-green !text-bambu-green hover:!bg-bambu-green/20' : ''}
               >
                 <Video className="w-4 h-4" />
               </Button>
@@ -7261,6 +7304,7 @@ export function PrintersPage() {
   const { hasPermission } = useAuth();
   // Embedded camera viewer state - supports multiple simultaneous viewers
   // Persisted to localStorage so cameras reopen after navigation
+  const [inlineCameraPrinterIds, setInlineCameraPrinterIds] = useState<Set<number>>(new Set());
   const [embeddedCameraPrinters, setEmbeddedCameraPrinters] = useState<Map<number, { id: number; name: string }>>(() => {
     // Initialize from localStorage if camera_view_mode is embedded
     const saved = localStorage.getItem('openEmbeddedCameras');
@@ -7317,12 +7361,15 @@ export function PrintersPage() {
     return DRYING_PRESETS;
   }, [settings?.drying_presets]);
 
-  // Close embedded cameras if mode changes to 'window'
+  // Keep camera surfaces aligned with the selected view mode.
   useEffect(() => {
-    if (settings?.camera_view_mode === 'window' && embeddedCameraPrinters.size > 0) {
+    if (settings?.camera_view_mode !== 'embedded' && embeddedCameraPrinters.size > 0) {
       setEmbeddedCameraPrinters(new Map());
     }
-  }, [settings?.camera_view_mode, embeddedCameraPrinters.size]);
+    if (settings?.camera_view_mode !== 'card' && inlineCameraPrinterIds.size > 0) {
+      setInlineCameraPrinterIds(new Set());
+    }
+  }, [settings?.camera_view_mode, embeddedCameraPrinters.size, inlineCameraPrinterIds.size]);
 
   // Fetch all smart plugs to know which printers have them
   const { data: smartPlugs } = useQuery({
@@ -7708,6 +7755,37 @@ export function PrintersPage() {
     return sorted;
   }, [filteredPrinters, sortBy, sortAsc, queryClient]);
 
+
+  const cameraCapableVisiblePrinters = useMemo(() => (
+    sortedPrinters.filter(printer => {
+      const status = queryClient.getQueryData<{ connected?: boolean }>(['printerStatus', printer.id]);
+      return canOpenPrinterCamera(printer, status?.connected, hasPermission('camera:view'));
+    })
+  ), [sortedPrinters, queryClient, hasPermission, statusCacheVersion]);
+
+  const allVisibleInlineCamerasOpen = cameraCapableVisiblePrinters.length > 0
+    && cameraCapableVisiblePrinters.every(printer => inlineCameraPrinterIds.has(printer.id));
+
+  const toggleAllVisibleInlineCameras = useCallback(() => {
+    setInlineCameraPrinterIds(prev => {
+      if (allVisibleInlineCamerasOpen) {
+        const next = new Set(prev);
+        cameraCapableVisiblePrinters.forEach(printer => next.delete(printer.id));
+        return next;
+      }
+      return new Set([...prev, ...cameraCapableVisiblePrinters.map(printer => printer.id)]);
+    });
+  }, [allVisibleInlineCamerasOpen, cameraCapableVisiblePrinters]);
+
+  const toggleInlineCamera = useCallback((printerId: number) => {
+    setInlineCameraPrinterIds(prev => {
+      const next = new Set(prev);
+      if (next.has(printerId)) next.delete(printerId);
+      else next.add(printerId);
+      return next;
+    });
+  }, []);
+
   const selectAll = useCallback(() => {
     setSelectedPrinterIds(new Set(sortedPrinters.map(p => p.id)));
     setIsSelectionMode(true);
@@ -7939,6 +8017,23 @@ export function PrintersPage() {
 
   const renderActionControls = (inMenu = false) => (
     <>
+      {settings?.camera_view_mode === 'card' && cameraCapableVisiblePrinters.length > 0 && (
+        <button
+          type="button"
+          onClick={toggleAllVisibleInlineCameras}
+          aria-pressed={allVisibleInlineCamerasOpen}
+          className={`h-8 px-2 rounded-lg border transition-colors ${inMenu ? 'w-full justify-center gap-1.5 text-sm font-medium flex items-center' : ''} ${
+            allVisibleInlineCamerasOpen
+              ? 'bg-bambu-green border-bambu-green text-white'
+              : 'bg-bambu-dark border-bambu-dark-tertiary text-white hover:bg-bambu-dark-tertiary'
+          }`}
+          title={allVisibleInlineCamerasOpen ? t('printers.hideAllCameras') : t('printers.showAllCameras')}
+        >
+          <Video className="w-4 h-4" />
+          {inMenu && <span>{allVisibleInlineCamerasOpen ? t('printers.hideAllCameras') : t('printers.showAllCameras')}</span>}
+        </button>
+      )}
+
       {/* Bulk select toggle */}
       <button
         onClick={() => {
@@ -8188,6 +8283,8 @@ export function PrintersPage() {
                       onUnassignSpoolmanSpool={(id) => unassignSpoolmanMutation.mutate(id)}
                       timeFormat={settings?.time_format || 'system'}
                       cameraViewMode={settings?.camera_view_mode || 'window'}
+                      inlineCameraOpen={inlineCameraPrinterIds.has(printer.id)}
+                      onToggleInlineCamera={toggleInlineCamera}
                       onOpenEmbeddedCamera={(id, name) => setEmbeddedCameraPrinters(prev => new Map(prev).set(id, { id, name }))}
                       checkPrinterFirmware={settings?.check_printer_firmware !== false}
                       dryingPresets={effectiveDryingPresets}
@@ -8233,6 +8330,8 @@ export function PrintersPage() {
               } : undefined}
               timeFormat={settings?.time_format || 'system'}
               cameraViewMode={settings?.camera_view_mode || 'window'}
+              inlineCameraOpen={inlineCameraPrinterIds.has(printer.id)}
+              onToggleInlineCamera={toggleInlineCamera}
               onOpenEmbeddedCamera={(id, name) => setEmbeddedCameraPrinters(prev => new Map(prev).set(id, { id, name }))}
               checkPrinterFirmware={settings?.check_printer_firmware !== false}
               dryingPresets={effectiveDryingPresets}

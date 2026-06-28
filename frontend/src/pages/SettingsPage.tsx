@@ -2029,16 +2029,19 @@ export function SettingsPage() {
                 </label>
                 <select
                   value={localSettings.camera_view_mode ?? 'window'}
-                  onChange={(e) => updateSetting('camera_view_mode', e.target.value as 'window' | 'embedded')}
+                  onChange={(e) => updateSetting('camera_view_mode', e.target.value as 'window' | 'embedded' | 'card')}
                   className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                 >
                   <option value="window">{t('settings.newWindow')}</option>
                   <option value="embedded">{t('settings.embeddedOverlay')}</option>
+                  <option value="card">{t('settings.insidePrinterCard')}</option>
                 </select>
                 <p className="text-xs text-bambu-gray mt-1">
                   {localSettings.camera_view_mode === 'embedded'
                     ? t('settings.cameraOverlayDescription')
-                    : t('settings.cameraWindowDescription')}
+                    : localSettings.camera_view_mode === 'card'
+                      ? t('settings.cameraCardDescription')
+                      : t('settings.cameraWindowDescription')}
                 </p>
               </div>
 

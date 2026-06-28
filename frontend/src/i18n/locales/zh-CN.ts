@@ -518,6 +518,10 @@ export default {
     filaments: '耗材',
     // Camera
     openCameraOverlay: '打开摄像头叠加层',
+    showCameraInCard: '在打印机卡片中显示摄像头',
+    hideCameraInCard: '隐藏打印机卡片中的摄像头',
+    showAllCameras: '显示摄像头',
+    hideAllCameras: '隐藏摄像头',
     openCameraWindow: '在新窗口中打开摄像头',
     // Firmware
     firmwareUpdateAvailable: '固件更新可用：{{current}} → {{latest}}',
@@ -1876,6 +1880,7 @@ export default {
     systemDefault: '系统默认',
     archiveSettings: '归档设置',
     newWindow: '新窗口',
+    insidePrinterCard: '打印机卡片内',
     embeddedOverlay: '嵌入式叠加层',
     preferredSlicer: '首选切片软件',
     preferredSlicerDescription: '选择要用于打开文件的切片软件',
@@ -2109,6 +2114,7 @@ export default {
     camera: '摄像头',
     cameraViewMode: '摄像头查看模式',
     cameraOverlayDescription: '摄像头在主屏幕上以可调大小的覆盖层打开',
+    cameraCardDescription: '摄像头会在对应的打印机卡片内展开',
     cameraWindowDescription: '摄像头在单独的浏览器窗口中打开',
     externalCamerasDescription: '配置外部摄像头以替换内置打印机摄像头。支持MJPEG流、RTSP、HTTP快照和USB摄像头（V4L2）。启用后，外部摄像头将用于实时查看和完成照片。',
     cameraPlaceholderUsb: '设备路径 (/dev/video0)',

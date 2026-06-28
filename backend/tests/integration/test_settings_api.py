@@ -391,10 +391,10 @@ class TestSettingsAPI:
     @pytest.mark.integration
     async def test_update_camera_view_mode(self, async_client: AsyncClient):
         """Verify camera view mode can be updated."""
-        response = await async_client.put("/api/v1/settings/", json={"camera_view_mode": "embedded"})
+        response = await async_client.put("/api/v1/settings/", json={"camera_view_mode": "card"})
 
         assert response.status_code == 200
-        assert response.json()["camera_view_mode"] == "embedded"
+        assert response.json()["camera_view_mode"] == "card"
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -424,7 +424,7 @@ class TestSettingsAPI:
 
         assert "camera_view_mode" in result
         # Default is 'window' as defined in schema
-        assert result["camera_view_mode"] in ["window", "embedded"]
+        assert result["camera_view_mode"] in ["window", "embedded", "card"]
 
     # ========================================================================
     # Per-printer mapping settings tests

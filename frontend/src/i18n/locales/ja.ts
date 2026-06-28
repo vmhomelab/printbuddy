@@ -517,6 +517,10 @@ export default {
     filaments: 'フィラメント',
     // Camera
     openCameraOverlay: 'カメラオーバーレイを開く',
+    showCameraInCard: 'プリンターカード内にカメラを表示',
+    hideCameraInCard: 'プリンターカード内のカメラを非表示',
+    showAllCameras: 'カメラを表示',
+    hideAllCameras: 'カメラを非表示',
     openCameraWindow: 'カメラを新しいウィンドウで開く',
     // Firmware
     firmwareUpdateAvailable: 'ファームウェアアップデートあり: {{current}} → {{latest}}',
@@ -1875,6 +1879,7 @@ export default {
     systemDefault: 'システムデフォルト',
     archiveSettings: 'アーカイブ設定',
     newWindow: '新しいウィンドウ',
+    insidePrinterCard: 'プリンターカード内',
     embeddedOverlay: '埋め込みオーバーレイ',
     preferredSlicer: '優先スライサー',
     preferredSlicerDescription: 'ファイルを開くスライサーアプリケーションを選択',
@@ -2112,6 +2117,7 @@ export default {
     camera: 'カメラ',
     cameraViewMode: 'カメラ表示モード',
     cameraOverlayDescription: 'メイン画面上にリサイズ可能なオーバーレイでカメラを表示',
+    cameraCardDescription: 'カメラは各プリンターカード内で展開されます',
     cameraWindowDescription: '別のブラウザウィンドウでカメラを表示',
     externalCamerasDescription: '内蔵プリンターカメラの代わりに外部カメラを設定。MJPEGストリーム、RTSP、HTTPスナップショット、USBカメラ（V4L2）をサポート。有効にすると、ライブビューと完了写真に外部カメラが使用されます。',
     cameraPlaceholderUsb: 'デバイスパス (/dev/video0)',

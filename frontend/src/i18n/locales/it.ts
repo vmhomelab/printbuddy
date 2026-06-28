@@ -518,6 +518,10 @@ export default {
     filaments: 'Filamenti',
     // Camera
     openCameraOverlay: 'Apri overlay camera',
+    showCameraInCard: 'Mostra la fotocamera nella scheda della stampante',
+    hideCameraInCard: 'Nascondi la fotocamera nella scheda della stampante',
+    showAllCameras: 'Mostra fotocamere',
+    hideAllCameras: 'Nascondi fotocamere',
     openCameraWindow: 'Apri camera in nuova finestra',
     // Firmware
     firmwareUpdateAvailable: 'Aggiornamento firmware disponibile: {{current}} → {{latest}}',
@@ -1876,6 +1880,7 @@ export default {
     systemDefault: 'Predefinito di sistema',
     archiveSettings: 'Impostazioni archivio',
     newWindow: 'Nuova finestra',
+    insidePrinterCard: 'Dentro la scheda della stampante',
     embeddedOverlay: 'Overlay incorporato',
     preferredSlicer: 'Slicer preferito',
     preferredSlicerDescription: 'Scegli quale applicazione slicer usare per aprire i file',
@@ -2109,6 +2114,7 @@ export default {
     camera: 'Fotocamera',
     cameraViewMode: 'Modalità visualizzazione fotocamera',
     cameraOverlayDescription: 'La fotocamera si apre in un overlay ridimensionabile sulla schermata principale',
+    cameraCardDescription: 'La fotocamera si espande dentro ogni scheda stampante',
     cameraWindowDescription: 'La fotocamera si apre in una finestra separata del browser',
     externalCamerasDescription: 'Configura fotocamere esterne per sostituire la fotocamera integrata della stampante. Supporta stream MJPEG, RTSP, snapshot HTTP e fotocamere USB (V4L2). Quando abilitata, la fotocamera esterna viene usata per la vista in diretta e le foto di completamento.',
     cameraPlaceholderUsb: 'Percorso dispositivo (/dev/video0)',

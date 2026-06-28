@@ -416,6 +416,48 @@ describe('PrintersPage', () => {
       openSpy.mockRestore();
     });
 
+    it('opens the camera inline inside the printer card when camera view mode is card', async () => {
+      const user = userEvent.setup();
+      const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+      server.use(
+        http.get('/api/v1/settings/ui-preferences', () => HttpResponse.json({
+          ams_humidity_good: 40,
+          ams_humidity_fair: 60,
+          ams_temp_good: 30,
+          ams_temp_fair: 35,
+          require_plate_clear: true,
+          camera_view_mode: 'card',
+          panda_breath_printer_assignments: '{}',
+        })),
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          ...mockPrinters[0],
+          provider: 'fluidd',
+          name: 'Neptune 4 Pro',
+          external_camera_url: 'http://neptune.local/webcam/?action=stream',
+          external_camera_type: 'mjpeg',
+          external_camera_enabled: true,
+        }])),
+        http.get('/api/v1/printers/:id/status', () => HttpResponse.json({
+          ...mockPrinterStatus,
+          connected: false,
+        })),
+        http.post('/api/v1/printers/:id/camera/stop', () => HttpResponse.json({ success: true })),
+        http.get('/api/v1/printers/:id/camera/status', () => HttpResponse.json({ active: true, stalled: false })),
+      );
+
+      render(<PrintersPage />);
+
+      const cameraButton = await screen.findByRole('button', { name: /show camera in printer card/i });
+      expect(cameraButton).not.toBeDisabled();
+      await user.click(cameraButton);
+
+      expect(openSpy).not.toHaveBeenCalled();
+      expect(await screen.findByTestId('inline-camera-viewer-1')).toBeInTheDocument();
+      const stream = screen.getByAltText('Camera stream') as HTMLImageElement;
+      expect(stream.getAttribute('src')).toContain('/api/v1/printers/1/camera/stream');
+      openSpy.mockRestore();
+    });
+
     it('does not open a Fluidd/Moonraker API URL as a camera target', async () => {
       const user = userEvent.setup();
       const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);

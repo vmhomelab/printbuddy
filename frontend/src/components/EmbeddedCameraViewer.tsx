@@ -14,6 +14,7 @@ interface EmbeddedCameraViewerProps {
   printerName: string;
   viewerIndex?: number;  // Used to offset multiple viewers
   onClose: () => void;
+  mode?: 'floating' | 'inline';
 }
 
 const STORAGE_KEY_PREFIX = 'embeddedCameraState_';
@@ -36,12 +37,13 @@ const DEFAULT_STATE: CameraState = {
   height: 300,
 };
 
-export function EmbeddedCameraViewer({ printerId, printerName, viewerIndex = 0, onClose }: EmbeddedCameraViewerProps) {
+export function EmbeddedCameraViewer({ printerId, printerName, viewerIndex = 0, onClose, mode = 'floating' }: EmbeddedCameraViewerProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
   const { hasPermission } = useAuth();
 
+  const isInline = mode === 'inline';
   // Printer-specific storage key
   const storageKey = `${STORAGE_KEY_PREFIX}${printerId}`;
 
@@ -557,26 +559,33 @@ export function EmbeddedCameraViewer({ printerId, printerName, viewerIndex = 0, 
 
   const streamUrl = withStreamToken(`/api/v1/printers/${printerId}/camera/stream?fps=15&t=${imageKey}`);
 
+  const containerClassName = isInline
+    ? `${isFullscreen ? 'fixed inset-0 z-[100]' : 'relative w-full rounded-lg border border-bambu-dark-tertiary'} bg-bambu-dark-secondary overflow-hidden`
+    : `${isFullscreen ? 'fixed inset-0 z-[100]' : 'fixed z-40 rounded-lg shadow-2xl border border-bambu-dark-tertiary'} bg-bambu-dark-secondary overflow-hidden`;
+
+  const containerStyle = isFullscreen || isInline ? undefined : {
+    left: state.x,
+    top: state.y,
+    width: isMinimized ? 200 : state.width,
+    height: isMinimized ? 40 : state.height,
+    cursor: isDragging ? 'grabbing' : 'default',
+  };
+
   return (
     <div
       ref={containerRef}
-      className={`${isFullscreen ? 'fixed inset-0 z-[100]' : 'fixed z-40 rounded-lg shadow-2xl border border-bambu-dark-tertiary'} bg-bambu-dark-secondary overflow-hidden`}
-      style={isFullscreen ? undefined : {
-        left: state.x,
-        top: state.y,
-        width: isMinimized ? 200 : state.width,
-        height: isMinimized ? 40 : state.height,
-        cursor: isDragging ? 'grabbing' : 'default',
-      }}
+      data-testid={isInline ? `inline-camera-viewer-${printerId}` : undefined}
+      className={containerClassName}
+      style={containerStyle}
     >
       {/* Header */}
       <div
-        className="flex items-center justify-between px-3 py-2 bg-bambu-dark border-b border-bambu-dark-tertiary cursor-grab active:cursor-grabbing"
-        onMouseDown={handleMouseDown}
-        onTouchStart={handleDragTouchStart}
+        className={`flex items-center justify-between px-3 py-2 bg-bambu-dark border-b border-bambu-dark-tertiary ${isInline ? '' : 'cursor-grab active:cursor-grabbing'}`}
+        onMouseDown={isInline ? undefined : handleMouseDown}
+        onTouchStart={isInline ? undefined : handleDragTouchStart}
       >
         <div className="flex items-center gap-2 text-sm text-white truncate">
-          <GripVertical className="w-4 h-4 text-bambu-gray flex-shrink-0" />
+          {!isInline && <GripVertical className="w-4 h-4 text-bambu-gray flex-shrink-0" />}
           <span className="truncate">{printer?.name || printerName}</span>
         </div>
         <div className="flex items-center gap-1 no-drag">
@@ -628,6 +637,7 @@ export function EmbeddedCameraViewer({ printerId, printerName, viewerIndex = 0, 
               <Fullscreen className="w-3.5 h-3.5 text-bambu-gray" />
             )}
           </button>
+          {!isInline && (
           <button
             onClick={() => setIsMinimized(!isMinimized)}
             className="p-1 hover:bg-bambu-dark-tertiary rounded"
@@ -639,6 +649,7 @@ export function EmbeddedCameraViewer({ printerId, printerName, viewerIndex = 0, 
               <Minimize2 className="w-3.5 h-3.5 text-bambu-gray" />
             )}
           </button>
+          )}
           <button
             onClick={onClose}
             className="p-1 hover:bg-red-500/20 rounded"
@@ -652,7 +663,7 @@ export function EmbeddedCameraViewer({ printerId, printerName, viewerIndex = 0, 
       {/* Video area */}
       {!isMinimized && (
         <div
-          className={`relative w-full bg-black flex items-center justify-center overflow-hidden ${isFullscreen ? 'h-[calc(100%-40px)]' : 'h-[calc(100%-40px)]'}`}
+          className={`relative w-full bg-black flex items-center justify-center overflow-hidden ${isFullscreen ? 'h-[calc(100%-40px)]' : isInline ? 'aspect-video min-h-[180px]' : 'h-[calc(100%-40px)]'}`}
           onWheel={handleWheel}
           onMouseMove={handleImageMouseMove}
           onMouseUp={handleImageMouseUp}
@@ -744,7 +755,7 @@ export function EmbeddedCameraViewer({ printerId, printerName, viewerIndex = 0, 
           </div>
 
           {/* Resize handle - hide in fullscreen */}
-          {!isFullscreen && (
+          {!isFullscreen && !isInline && (
             <div
               className="absolute bottom-0 right-0 w-6 h-6 cursor-se-resize no-drag hover:bg-white/10 rounded-tl transition-colors"
               onMouseDown={handleResizeMouseDown}

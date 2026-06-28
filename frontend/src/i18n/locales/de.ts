@@ -518,6 +518,10 @@ export default {
     filaments: 'Filamente',
     // Camera
     openCameraOverlay: 'Kamera-Overlay öffnen',
+    showCameraInCard: 'Kamera in Druckerkarte anzeigen',
+    hideCameraInCard: 'Kamera in Druckerkarte ausblenden',
+    showAllCameras: 'Kameras anzeigen',
+    hideAllCameras: 'Kameras ausblenden',
     openCameraWindow: 'Kamera in neuem Fenster öffnen',
     // Firmware
     firmwareUpdateAvailable: 'Firmware-Update verfügbar: {{current}} → {{latest}}',
@@ -1876,6 +1880,7 @@ export default {
     systemDefault: 'Systemstandard',
     archiveSettings: 'Archiv-Einstellungen',
     newWindow: 'Neues Fenster',
+    insidePrinterCard: 'In Druckerkarte',
     embeddedOverlay: 'Eingebettetes Overlay',
     preferredSlicer: 'Bevorzugter Slicer',
     preferredSlicerDescription: 'Wähle die Slicer-Anwendung zum Öffnen von Dateien',
@@ -2113,6 +2118,7 @@ export default {
     camera: 'Kamera',
     cameraViewMode: 'Kamera-Ansichtsmodus',
     cameraOverlayDescription: 'Kamera öffnet sich als größenveränderbares Overlay auf dem Hauptbildschirm',
+    cameraCardDescription: 'Die Kamera wird direkt in der jeweiligen Druckerkarte aufgeklappt',
     cameraWindowDescription: 'Kamera öffnet sich in einem separaten Browserfenster',
     externalCamerasDescription: 'Externe Kameras konfigurieren, um die eingebaute Druckerkamera zu ersetzen. Unterstützt MJPEG-Streams, RTSP, HTTP-Snapshots und USB-Kameras (V4L2). Wenn aktiviert, wird die externe Kamera für Live-Ansicht und Abschlussfotos verwendet.',
     cameraPlaceholderUsb: 'Gerätepfad (/dev/video0)',

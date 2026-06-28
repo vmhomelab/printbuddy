@@ -189,7 +189,7 @@ class AppSettings(BaseModel):
     # Camera view settings
     camera_view_mode: str = Field(
         default="window",
-        description="Camera view mode: 'window' opens in new browser window, 'embedded' shows overlay on main screen",
+        description="Camera view mode: 'window' opens in new browser window, 'embedded' shows overlay on main screen, 'card' expands inside each printer card",
     )
 
     # Preferred slicer application
