@@ -46,6 +46,8 @@
 > Printbuddy is not ready for public production use yet. Features may be incomplete, unstable, or subject to breaking changes without notice.
 >
 > Use it for testing, development, and tinkering only.
+>
+> You can check the current status of different features in the [projects tab](https://github.com/users/vmhomelab/projects/4/views/1)
 
 ---
 
