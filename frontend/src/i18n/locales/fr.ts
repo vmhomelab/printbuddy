@@ -518,6 +518,10 @@ export default {
     filaments: 'Filaments',
     // Camera
     openCameraOverlay: 'Ouvrir la caméra en superposition',
+    showCameraInCard: 'Afficher la caméra dans la carte de l’imprimante',
+    hideCameraInCard: 'Masquer la caméra dans la carte de l’imprimante',
+    showAllCameras: 'Afficher les caméras',
+    hideAllCameras: 'Masquer les caméras',
     openCameraWindow: 'Ouvrir la caméra dans une fenêtre',
     // Firmware
     firmwareUpdateAvailable: 'Mise à jour firmware : {{current}} → {{latest}}',
@@ -572,6 +576,8 @@ export default {
     },
     // HMS errors
     clickToViewHmsErrors: 'Cliquez pour voir les erreurs HMS',
+    openPrusaLink: 'Ouvrir PrusaLink',
+    openPrusaLinkNewTab: 'Ouvrir PrusaLink dans un nouvel onglet',
     estimatedCompletion: 'Fin estimée',
     plateNumber: 'Plaque {{number}}',
     slotOptions: 'Options du slot',
@@ -1874,6 +1880,7 @@ export default {
     systemDefault: 'Défaut système',
     archiveSettings: 'Réglages Archives',
     newWindow: 'Nouvelle fenêtre',
+    insidePrinterCard: 'Dans la carte de l’imprimante',
     embeddedOverlay: 'Superposition intégrée',
     preferredSlicer: 'Slicer préféré',
     preferredSlicerDescription: 'Application pour ouvrir les fichiers',
@@ -2108,6 +2115,7 @@ export default {
     camera: 'Caméra',
     cameraViewMode: 'Mode d\'affichage caméra',
     cameraOverlayDescription: 'La caméra s\'ouvre dans un overlay redimensionnable sur l\'écran principal',
+    cameraCardDescription: 'La caméra se déplie dans chaque carte d’imprimante',
     cameraWindowDescription: 'La caméra s\'ouvre dans une fenêtre de navigateur séparée',
     externalCamerasDescription: 'Configurer des caméras externes pour remplacer la caméra intégrée. Supporte les flux MJPEG, RTSP, snapshots HTTP et caméras USB (V4L2). Lorsqu\'activée, la caméra externe est utilisée pour la vue en direct et les photos de fin.',
     cameraPlaceholderUsb: 'Chemin du périphérique (/dev/video0)',

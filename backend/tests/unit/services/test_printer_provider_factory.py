@@ -79,6 +79,109 @@ def test_moonraker_start_print_treats_verified_timeout_as_success(monkeypatch):
     ]
 
 
+def test_moonraker_status_edges_emit_print_start_and_complete(monkeypatch):
+    start_payloads: list[dict[str, object]] = []
+    complete_payloads: list[dict[str, object]] = []
+    state_payloads: list[object] = []
+    client = MoonrakerPrinterClient(
+        "http://elegoo.local:7125",
+        on_state_change=state_payloads.append,
+        on_print_start=start_payloads.append,
+        on_print_complete=complete_payloads.append,
+    )
+    statuses = iter(
+        [
+            {
+                "print_stats": {"state": "standby", "filename": ""},
+                "virtual_sdcard": {"progress": 0.0},
+                "display_status": {},
+                "extruder": {},
+                "heater_bed": {"temperature": 25},
+            },
+            {
+                "print_stats": {"state": "printing", "filename": "benchy.gcode", "print_duration": 30},
+                "virtual_sdcard": {"progress": 0.2},
+                "display_status": {},
+                "extruder": {},
+                "heater_bed": {"temperature": 60},
+            },
+            {
+                "print_stats": {"state": "complete", "filename": ""},
+                "virtual_sdcard": {"progress": 1.0},
+                "display_status": {},
+                "extruder": {},
+                "heater_bed": {"temperature": 55},
+            },
+        ]
+    )
+
+    monkeypatch.setattr(client, "_query_objects", lambda names: next(statuses))  # noqa: ARG005
+    monkeypatch.setattr(client, "_query_fan_status", lambda: {})
+    monkeypatch.setattr("backend.app.services.printer_providers.moonraker.time.monotonic", iter([100.0, 160.0]).__next__)
+
+    assert client.request_status_update() is True
+    assert start_payloads == []
+    assert complete_payloads == []
+
+    assert client.request_status_update() is True
+    assert start_payloads == [
+        {
+            "filename": "benchy.gcode",
+            "subtask_name": "benchy.gcode",
+            "progress": 20.0,
+            "remaining_time": 120,
+            "status": "RUNNING",
+            "raw_data": {
+                "print_stats": {"state": "printing", "filename": "benchy.gcode", "print_duration": 30},
+                "virtual_sdcard": {"progress": 0.2},
+                "display_status": {},
+                "extruder": {},
+                "heater_bed": {"temperature": 60},
+            },
+        }
+    ]
+
+    assert client.request_status_update() is True
+    assert complete_payloads == [
+        {
+            "filename": "benchy.gcode",
+            "subtask_name": "benchy.gcode",
+            "progress": 100.0,
+            "remaining_time": None,
+            "status": "completed",
+            "raw_data": {
+                "print_stats": {"state": "complete", "filename": ""},
+                "virtual_sdcard": {"progress": 1.0},
+                "display_status": {},
+                "extruder": {},
+                "heater_bed": {"temperature": 55},
+            },
+            "actual_time_seconds": 60,
+        }
+    ]
+    assert len(state_payloads) == 3
+
+
+def test_moonraker_factory_wires_lifecycle_callbacks():
+    start_payloads: list[dict[str, object]] = []
+    complete_payloads: list[dict[str, object]] = []
+    printer = SimpleNamespace(
+        provider="klipper", api_url="http://printer.local:7125", auth_token=None, ip_address="printer.local", model="Elegoo"
+    )
+
+    client = create_printer_client(
+        printer,
+        on_print_start=start_payloads.append,
+        on_print_complete=complete_payloads.append,
+    )
+
+    assert isinstance(client, MoonrakerPrinterClient)
+    assert client.on_print_start is not None
+    assert client.on_print_complete is not None
+    assert client.on_print_start.__self__ is start_payloads
+    assert client.on_print_complete.__self__ is complete_payloads
+
+
 def test_prusalink_provider_creates_prusalink_client_with_default_url_and_username():
     printer = SimpleNamespace(
         provider="prusalink",

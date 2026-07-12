@@ -57,7 +57,15 @@ def fake_static_index(monkeypatch, tmp_path):
 
     static_dir = tmp_path / "static"
     static_dir.mkdir()
-    (static_dir / "index.html").write_text("<!doctype html><title>stub</title>")
+    (static_dir / "index.html").write_text(
+        "<!doctype html>"
+        '<link rel="manifest" href="/manifest.json" />'
+        '<link rel="icon" href="/img/favicon-32x32.png" />'
+        '<script type="module" crossorigin src="/assets/index-test.js"></script>'
+        '<link rel="stylesheet" crossorigin href="/assets/index-test.css">'
+        '<script src="/sw-register.js"></script>',
+        encoding="utf-8",
+    )
 
     monkeypatch.setattr(config_mod.settings, "static_dir", static_dir)
     # main.py imports `settings as app_settings`, so the route handlers
@@ -93,6 +101,43 @@ async def test_index_html_emits_no_cache_directive(async_client: AsyncClient, fa
         f"This belt-and-braces directive prevents stale-while-revalidate-style "
         f"intermediaries from serving cached HTML even when it's expired."
     )
+
+
+@pytest.mark.asyncio
+async def test_index_html_rewrites_static_bootstrap_paths_for_home_assistant_ingress(
+    async_client: AsyncClient, fake_static_index
+):
+    """When HA serves the app under /api/hassio_ingress/<token>, the SPA
+    shell must load JS/CSS/PWA bootstrap files from that dynamic prefix.
+
+    Without this server-side rewrite the camera window can open at the correct
+    ingress URL but the browser asks Home Assistant root for /assets/... (or,
+    with older relative builds, /camera/assets/...), leaving the page blank
+    before React can call appAssetPath().
+    """
+    ingress_base = "/api/hassio_ingress/printbuddy123"
+
+    response = await async_client.get("/camera/1", headers={"x-ingress-path": ingress_base})
+
+    assert response.status_code == 200
+    assert f'src="{ingress_base}/assets/index-test.js"' in response.text
+    assert f'href="{ingress_base}/assets/index-test.css"' in response.text
+    assert f'href="{ingress_base}/manifest.json"' in response.text
+    assert f'href="{ingress_base}/img/favicon-32x32.png"' in response.text
+    assert f'src="{ingress_base}/sw-register.js"' in response.text
+    assert 'src="/assets/' not in response.text
+    assert 'href="/assets/' not in response.text
+
+
+@pytest.mark.asyncio
+async def test_index_html_keeps_static_bootstrap_paths_unchanged_without_ingress(
+    async_client: AsyncClient, fake_static_index
+):
+    response = await async_client.get("/camera/1")
+
+    assert response.status_code == 200
+    assert 'src="/assets/index-test.js"' in response.text
+    assert 'href="/assets/index-test.css"' in response.text
 
 
 @pytest.mark.asyncio

@@ -518,6 +518,10 @@ export default {
     filaments: 'Filamentos',
     // Camera
     openCameraOverlay: 'Abrir la cámara superpuesta',
+    showCameraInCard: 'Mostrar cámara en la tarjeta de la impresora',
+    hideCameraInCard: 'Ocultar cámara en la tarjeta de la impresora',
+    showAllCameras: 'Mostrar cámaras',
+    hideAllCameras: 'Ocultar cámaras',
     openCameraWindow: 'Abrir la cámara en una ventana nueva',
     // Firmware
     firmwareUpdateAvailable: 'Actualización de firmware disponible: {{current}} → {{latest}}',
@@ -572,6 +576,8 @@ export default {
     },
     // HMS errors
     clickToViewHmsErrors: 'Haga clic para ver los errores HMS',
+    openPrusaLink: 'Abrir PrusaLink',
+    openPrusaLinkNewTab: 'Abrir PrusaLink en una nueva pestaña',
     estimatedCompletion: 'Hora estimada de finalización',
     plateNumber: 'Cama {{number}}',
     slotOptions: 'Opciones de la ranura',
@@ -1876,6 +1882,7 @@ export default {
     systemDefault: 'Predeterminado del sistema',
     archiveSettings: 'Ajustes de archivado',
     newWindow: 'Ventana nueva',
+    insidePrinterCard: 'Dentro de la tarjeta de la impresora',
     embeddedOverlay: 'Superposición integrada',
     preferredSlicer: 'Laminador preferido',
     preferredSlicerDescription: 'Elija con qué aplicación de laminado abrir los archivos',
@@ -2113,6 +2120,7 @@ export default {
     camera: 'Cámara',
     cameraViewMode: 'Modo de vista de la cámara',
     cameraOverlayDescription: 'La cámara se abre en una superposición redimensionable en la pantalla principal',
+    cameraCardDescription: 'La cámara se despliega dentro de cada tarjeta de impresora',
     cameraWindowDescription: 'La cámara se abre en una ventana de navegador independiente',
     externalCamerasDescription: 'Configure cámaras externas para sustituir la cámara integrada de la impresora. Admite transmisiones MJPEG, RTSP, capturas HTTP y cámaras USB (V4L2). Cuando está activada, la cámara externa se usa para la vista en directo y las fotos de finalización.',
     cameraPlaceholderUsb: 'Ruta del dispositivo (/dev/video0)',

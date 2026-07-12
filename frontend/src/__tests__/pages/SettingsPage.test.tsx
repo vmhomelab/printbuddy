@@ -158,6 +158,22 @@ describe('SettingsPage', () => {
       });
     });
 
+    it('offers the printer-card camera view mode in the Camera settings', async () => {
+      const user = userEvent.setup();
+      render(<SettingsPage />);
+
+      const option = await screen.findByRole('option', { name: 'Inside Printer Card' });
+      expect(option).toBeInTheDocument();
+
+      const cameraModeSelect = option.closest('select');
+      expect(cameraModeSelect).not.toBeNull();
+      await user.selectOptions(cameraModeSelect as HTMLSelectElement, 'card');
+
+      await waitFor(() => {
+        expect(screen.getByText('Camera expands inside each printer card')).toBeInTheDocument();
+      });
+    });
+
     it('shows preferred slicer setting on Workflow tab', async () => {
       const user = userEvent.setup();
       render(<SettingsPage />);

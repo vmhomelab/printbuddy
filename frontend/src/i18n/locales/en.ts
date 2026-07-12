@@ -519,6 +519,10 @@ export default {
     // Camera
     openCameraOverlay: 'Open camera overlay',
     openCameraWindow: 'Open camera in new window',
+    showCameraInCard: 'Show camera in printer card',
+    hideCameraInCard: 'Hide camera in printer card',
+    showAllCameras: 'Show cameras',
+    hideAllCameras: 'Hide cameras',
     // Firmware
     firmwareUpdateAvailable: 'Firmware update available: {{current}} → {{latest}}',
     firmwareUpToDate: 'Firmware {{version}} — Up to date',
@@ -572,6 +576,8 @@ export default {
     },
     // HMS errors
     clickToViewHmsErrors: 'Click to view HMS errors',
+    openPrusaLink: 'Open PrusaLink',
+    openPrusaLinkNewTab: 'Open PrusaLink in a new tab',
     estimatedCompletion: 'Estimated completion time',
     plateNumber: 'Plate {{number}}',
     slotOptions: 'Slot options',
@@ -1877,6 +1883,7 @@ export default {
     archiveSettings: 'Archive Settings',
     newWindow: 'New Window',
     embeddedOverlay: 'Embedded Overlay',
+    insidePrinterCard: 'Inside Printer Card',
     preferredSlicer: 'Preferred Slicer',
     preferredSlicerDescription: 'Choose which slicer application to open files with',
     orcaslicerKnownIssuesWarning: 'OrcaSlicer 2.3.2 / 2.4.0-dev have known CLI bugs that block slicing many Bambu-authored 3MFs — see upstream issues #12426 (segfault on painted multi-extruder files) and #13386 (parameter-range strict-validation reject). Bambu Studio is recommended until the upstream fixes land.',
@@ -2114,6 +2121,7 @@ export default {
     cameraViewMode: 'Camera View Mode',
     cameraOverlayDescription: 'Camera opens in a resizable overlay on the main screen',
     cameraWindowDescription: 'Camera opens in a separate browser window',
+    cameraCardDescription: 'Camera expands inside each printer card',
     externalCamerasDescription: 'Configure external cameras to replace the built-in printer camera. Supports MJPEG streams, RTSP, HTTP snapshots, and USB cameras (V4L2). When enabled, the external camera is used for live view and finish photos.',
     cameraPlaceholderUsb: 'Device path (/dev/video0)',
     cameraPlaceholderUrl: 'Camera URL (rtsp://... or http://...)',

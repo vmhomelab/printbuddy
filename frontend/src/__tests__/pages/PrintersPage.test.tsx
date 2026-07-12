@@ -157,6 +157,48 @@ describe('PrintersPage', () => {
       expect(screen.queryByRole('button', { name: 'Print' })).not.toBeInTheDocument();
     });
 
+    it('shows a PrusaLink badge that opens the printer UI in a new tab', async () => {
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          ...mockPrinters[0],
+          id: 7,
+          name: 'Prusa CORE One',
+          provider: 'prusalink',
+          model: 'Prusa CORE One',
+          ip_address: '10.17.10.42',
+          api_url: 'http://core-one.local:8087',
+        }])),
+      );
+
+      render(<PrintersPage />);
+
+      expect((await screen.findAllByText('Prusa CORE One')).length).toBeGreaterThan(0);
+      const prusaLinkBadge = await screen.findByRole('link', { name: 'Open PrusaLink' });
+      expect(prusaLinkBadge).toHaveAttribute('href', 'http://core-one.local:8087');
+      expect(prusaLinkBadge).toHaveAttribute('target', '_blank');
+      expect(prusaLinkBadge).toHaveAttribute('rel', expect.stringContaining('noopener'));
+      expect(prusaLinkBadge).toHaveTextContent('PrusaLink');
+    });
+
+    it('uses the printer IP address for the PrusaLink badge when no API URL is saved', async () => {
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          ...mockPrinters[0],
+          id: 7,
+          name: 'Prusa CORE One',
+          provider: 'prusalink',
+          model: 'Prusa CORE One',
+          ip_address: '10.17.10.42',
+          api_url: null,
+        }])),
+      );
+
+      render(<PrintersPage />);
+
+      expect((await screen.findAllByText('Prusa CORE One')).length).toBeGreaterThan(0);
+      expect(await screen.findByRole('link', { name: 'Open PrusaLink' })).toHaveAttribute('href', 'http://10.17.10.42');
+    });
+
     it('shows the updated Prusa USB write notice from the direct Upload action', async () => {
       const user = userEvent.setup();
       server.use(
@@ -372,6 +414,118 @@ describe('PrintersPage', () => {
 
       expect(openSpy).toHaveBeenCalledWith('/camera/1', 'camera-1', expect.any(String));
       openSpy.mockRestore();
+    });
+
+    it('opens the camera inline inside the printer card when camera view mode is card', async () => {
+      const user = userEvent.setup();
+      const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+      server.use(
+        http.get('/api/v1/settings/ui-preferences', () => HttpResponse.json({
+          ams_humidity_good: 40,
+          ams_humidity_fair: 60,
+          ams_temp_good: 30,
+          ams_temp_fair: 35,
+          require_plate_clear: true,
+          camera_view_mode: 'card',
+          panda_breath_printer_assignments: '{}',
+        })),
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          ...mockPrinters[0],
+          provider: 'fluidd',
+          name: 'Neptune 4 Pro',
+          external_camera_url: 'http://neptune.local/webcam/?action=stream',
+          external_camera_type: 'mjpeg',
+          external_camera_enabled: true,
+        }])),
+        http.get('/api/v1/printers/:id/status', () => HttpResponse.json({
+          ...mockPrinterStatus,
+          connected: false,
+        })),
+        http.post('/api/v1/printers/:id/camera/stop', () => HttpResponse.json({ success: true })),
+        http.get('/api/v1/printers/:id/camera/status', () => HttpResponse.json({ active: true, stalled: false })),
+      );
+
+      render(<PrintersPage />);
+
+      const cameraButton = await screen.findByRole('button', { name: /show camera in printer card/i });
+      expect(cameraButton).not.toBeDisabled();
+      await user.click(cameraButton);
+
+      expect(openSpy).not.toHaveBeenCalled();
+      expect(await screen.findByTestId('inline-camera-viewer-1')).toBeInTheDocument();
+      const stream = screen.getByAltText('Camera stream') as HTMLImageElement;
+      expect(stream.getAttribute('src')).toContain('/api/v1/printers/1/camera/stream');
+      openSpy.mockRestore();
+    });
+
+    it('keeps printer cards aligned to the top so an expanded camera does not stretch sibling cards', async () => {
+      render(<PrintersPage />);
+
+      const firstCard = await screen.findByTestId('printer-card-1');
+      expect(firstCard.parentElement).toHaveClass('grid');
+      expect(firstCard.parentElement).toHaveClass('items-start');
+    });
+
+    it('resizes the inline camera while enforcing minimum card-friendly dimensions', async () => {
+      const user = userEvent.setup();
+      server.use(
+        http.get('/api/v1/settings/ui-preferences', () => HttpResponse.json({
+          ams_humidity_good: 40,
+          ams_humidity_fair: 60,
+          ams_temp_good: 30,
+          ams_temp_fair: 35,
+          require_plate_clear: true,
+          camera_view_mode: 'card',
+          panda_breath_printer_assignments: '{}',
+        })),
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          ...mockPrinters[0],
+          provider: 'fluidd',
+          name: 'Neptune 4 Pro',
+          external_camera_url: 'http://neptune.local/webcam/?action=stream',
+          external_camera_type: 'mjpeg',
+          external_camera_enabled: true,
+        }])),
+        http.get('/api/v1/printers/:id/status', () => HttpResponse.json({
+          ...mockPrinterStatus,
+          connected: false,
+        })),
+        http.post('/api/v1/printers/:id/camera/stop', () => HttpResponse.json({ success: true })),
+        http.get('/api/v1/printers/:id/camera/status', () => HttpResponse.json({ active: true, stalled: false })),
+      );
+
+      render(<PrintersPage />);
+      await user.click(await screen.findByRole('button', { name: /show camera in printer card/i }));
+
+      const viewer = await screen.findByTestId('inline-camera-viewer-1');
+      vi.spyOn(viewer, 'getBoundingClientRect').mockReturnValue({
+        x: 100,
+        y: 50,
+        left: 100,
+        top: 50,
+        right: 580,
+        bottom: 350,
+        width: 480,
+        height: 300,
+        toJSON: () => ({}),
+      } as DOMRect);
+      const resizeHandle = screen.getByTitle('Drag to resize');
+
+      fireEvent.mouseDown(resizeHandle, { clientX: 580, clientY: 350 });
+      fireEvent.mouseMove(document, { clientX: 860, clientY: 520 });
+      fireEvent.mouseUp(document);
+
+      await waitFor(() => {
+        expect(viewer).toHaveStyle({ width: '760px', height: '470px' });
+      });
+
+      fireEvent.mouseDown(resizeHandle, { clientX: 860, clientY: 520 });
+      fireEvent.mouseMove(document, { clientX: 120, clientY: 80 });
+      fireEvent.mouseUp(document);
+
+      await waitFor(() => {
+        expect(viewer).toHaveStyle({ width: '320px', height: '220px' });
+      });
     });
 
     it('does not open a Fluidd/Moonraker API URL as a camera target', async () => {

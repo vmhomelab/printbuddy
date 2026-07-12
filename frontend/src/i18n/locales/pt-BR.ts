@@ -518,6 +518,10 @@ export default {
     filaments: 'Filamentos',
     // Camera
     openCameraOverlay: 'Abrir sobreposição da câmera',
+    showCameraInCard: 'Mostrar câmera no cartão da impressora',
+    hideCameraInCard: 'Ocultar câmera no cartão da impressora',
+    showAllCameras: 'Mostrar câmeras',
+    hideAllCameras: 'Ocultar câmeras',
     openCameraWindow: 'Abrir câmera em nova janela',
     // Firmware
     firmwareUpdateAvailable: 'Atualização de firmware disponível: {{current}} → {{latest}}',
@@ -572,6 +576,8 @@ export default {
     },
     // HMS errors
     clickToViewHmsErrors: 'Clique para ver erros do HMS',
+    openPrusaLink: 'Abrir PrusaLink',
+    openPrusaLinkNewTab: 'Abrir PrusaLink em uma nova aba',
     estimatedCompletion: 'Tempo estimado de conclusão',
     plateNumber: 'Placa {{number}}',
     slotOptions: 'Opções de slot',
@@ -1874,6 +1880,7 @@ export default {
     systemDefault: 'Padrão do Sistema',
     archiveSettings: 'Configurações de Arquivo',
     newWindow: 'Nova Janela',
+    insidePrinterCard: 'Dentro do cartão da impressora',
     embeddedOverlay: 'Sobreposição Incorporada',
     preferredSlicer: 'Fatiador Preferido',
     preferredSlicerDescription: 'Escolha qual aplicativo de fatiamento abrirá os arquivos',
@@ -2107,6 +2114,7 @@ export default {
     camera: 'Câmera',
     cameraViewMode: 'Modo de visualização da câmera',
     cameraOverlayDescription: 'A câmera abre em uma sobreposição redimensionável na tela principal',
+    cameraCardDescription: 'A câmera se expande dentro de cada cartão de impressora',
     cameraWindowDescription: 'A câmera abre em uma janela separada do navegador',
     externalCamerasDescription: 'Configure câmeras externas para substituir a câmera integrada da impressora. Suporta streams MJPEG, RTSP, snapshots HTTP e câmeras USB (V4L2). Quando habilitada, a câmera externa é usada para visualização ao vivo e fotos de conclusão.',
     cameraPlaceholderUsb: 'Caminho do dispositivo (/dev/video0)',

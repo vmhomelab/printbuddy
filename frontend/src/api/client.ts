@@ -1034,6 +1034,8 @@ export interface APIKeyUpdate {
 }
 
 // Settings types
+export type CameraViewMode = 'window' | 'embedded' | 'card';
+
 export interface AppSettings {
   auto_archive: boolean;
   save_thumbnails: boolean;
@@ -1112,7 +1114,7 @@ export interface AppSettings {
   library_archive_mode: 'always' | 'never' | 'ask';
   library_disk_warning_gb: number;
   // Camera view settings
-  camera_view_mode: 'window' | 'embedded';
+  camera_view_mode: CameraViewMode;
   // Preferred slicer
   preferred_slicer: 'bambu_studio' | 'orcaslicer';
   // Use the slicer-API sidecar for slicing (in-app modal) vs desktop URI scheme
@@ -4423,7 +4425,7 @@ export const api = {
     request<{
       require_plate_clear?: boolean;
       check_printer_firmware?: boolean;
-      camera_view_mode?: 'window' | 'embedded';
+      camera_view_mode?: CameraViewMode;
       time_format?: 'system' | '12h' | '24h';
       date_format?: string;
       drying_presets?: string;

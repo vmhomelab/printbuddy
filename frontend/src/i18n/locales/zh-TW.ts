@@ -518,6 +518,10 @@ export default {
     filaments: '耗材',
     // Camera
     openCameraOverlay: '開啟攝影機疊加層',
+    showCameraInCard: '在印表機卡片中顯示攝影機',
+    hideCameraInCard: '隱藏印表機卡片中的攝影機',
+    showAllCameras: '顯示攝影機',
+    hideAllCameras: '隱藏攝影機',
     openCameraWindow: '在新視窗中開啟攝影機',
     // Firmware
     firmwareUpdateAvailable: '韌體更新可用：{{current}} → {{latest}}',
@@ -572,6 +576,8 @@ export default {
     },
     // HMS errors
     clickToViewHmsErrors: '點選檢視 HMS 錯誤',
+    openPrusaLink: '開啟 PrusaLink',
+    openPrusaLinkNewTab: '在新分頁中開啟 PrusaLink',
     estimatedCompletion: '預計完成時間',
     plateNumber: '板 {{number}}',
     slotOptions: '槽位選項',
@@ -1874,6 +1880,7 @@ export default {
     systemDefault: '系統預設',
     archiveSettings: '歸檔設定',
     newWindow: '新視窗',
+    insidePrinterCard: '印表機卡片內',
     embeddedOverlay: '嵌入式疊加層',
     preferredSlicer: '首選切片軟體',
     preferredSlicerDescription: '選擇要用於開啟檔案的切片軟體',
@@ -2107,6 +2114,7 @@ export default {
     camera: '攝影機',
     cameraViewMode: '攝影機檢視模式',
     cameraOverlayDescription: '攝影機在主螢幕上以可調大小的覆蓋層開啟',
+    cameraCardDescription: '攝影機會在對應的印表機卡片內展開',
     cameraWindowDescription: '攝影機在單獨的瀏覽器視窗中開啟',
     externalCamerasDescription: '設定外部攝影機以替換內建印表機攝影機。支援MJPEG流、RTSP、HTTP快照和USB攝影機（V4L2）。啟用後，外部攝影機將用於即時檢視和完成照片。',
     cameraPlaceholderUsb: '裝置路徑 (/dev/video0)',
