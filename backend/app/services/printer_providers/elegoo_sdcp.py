@@ -78,6 +78,8 @@ def _first_present(data: dict[str, Any], *keys: str) -> Any:
 
 
 def _as_float(value: Any, default: float = 0.0) -> float:
+    if isinstance(value, list | tuple):
+        value = value[0] if value else default
     try:
         return float(value)
     except (TypeError, ValueError):
@@ -85,6 +87,8 @@ def _as_float(value: Any, default: float = 0.0) -> float:
 
 
 def _as_int(value: Any, default: int = 0) -> int:
+    if isinstance(value, list | tuple):
+        value = value[0] if value else default
     try:
         return int(float(value))
     except (TypeError, ValueError):
@@ -149,17 +153,25 @@ def _extract_status_payload(message: Any) -> dict[str, Any]:
 def _temp_from(data: Any, *keys: str) -> float:
     if isinstance(data, dict):
         return _as_float(_first_present(data, *keys))
+    if isinstance(data, int | float):
+        return float(data)
     return 0.0
 
 
 def _sdcp_temperatures(status: dict[str, Any]) -> dict[str, Any]:
-    nozzle = status.get("TempOfNozzle") if isinstance(status.get("TempOfNozzle"), dict) else status
-    bed = status.get("TempOfHotbed") if isinstance(status.get("TempOfHotbed"), dict) else status
+    nozzle = status.get("TempOfNozzle") if "TempOfNozzle" in status else status
+    bed = status.get("TempOfHotbed") if "TempOfHotbed" in status else status
+    nozzle_target_source = nozzle if isinstance(nozzle, dict) else status
+    bed_target_source = bed if isinstance(bed, dict) else status
     return {
-        "nozzle": _temp_from(nozzle, "Temp", "ActualTemp", "NozzleTemp", "nozzle"),
-        "nozzle_target": _temp_from(nozzle, "TargetTemp", "Target", "NozzleTargetTemp", "nozzle_target"),
-        "bed": _temp_from(bed, "Temp", "ActualTemp", "BedTemp", "bed"),
-        "bed_target": _temp_from(bed, "TargetTemp", "Target", "BedTargetTemp", "bed_target"),
+        "nozzle": _temp_from(nozzle, "Temp", "ActualTemp", "NozzleTemp", "nozzle", "TempOfNozzle"),
+        "nozzle_target": _temp_from(
+            nozzle_target_source, "TargetTemp", "Target", "NozzleTargetTemp", "TempTargetNozzle", "nozzle_target"
+        ),
+        "bed": _temp_from(bed, "Temp", "ActualTemp", "BedTemp", "bed", "TempOfHotbed"),
+        "bed_target": _temp_from(
+            bed_target_source, "TargetTemp", "Target", "BedTargetTemp", "TempTargetHotbed", "bed_target"
+        ),
     }
 
 
@@ -349,8 +361,13 @@ class ElegooSDCPPrinterClient:
         self.state.connected = True
         self.state.raw_status = status
         self.state.raw_data = {"sdcp": message, "discovery": self.discovery_info}
+        status_code = _first_present(status, "Status", "CurrentStatus", "PrintStatus", "MachineStatus", "status")
+        if status_code is None and isinstance(print_info, dict):
+            status_code = _first_present(
+                print_info, "Status", "CurrentStatus", "PrintStatus", "MachineStatus", "status"
+            )
         self.state.state = _map_sdcp_status(
-            _first_present(status, "Status", "CurrentStatus", "PrintStatus", "MachineStatus", "status"),
+            status_code,
             print_info if isinstance(print_info, dict) else {},
         )
         filename = _first_present(

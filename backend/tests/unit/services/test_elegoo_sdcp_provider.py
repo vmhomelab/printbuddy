@@ -59,6 +59,53 @@ def test_elegoo_sdcp_client_normalizes_status_payload(monkeypatch):
     }
 
 
+def test_elegoo_sdcp_client_normalizes_real_centauri_carbon_status_payload(monkeypatch):
+    client = ElegooSDCPPrinterClient("192.168.1.181")
+
+    monkeypatch.setattr(
+        client,
+        "_query_status",
+        lambda: {
+            "Status": {
+                "CurrentStatus": [0],
+                "TimeLapseStatus": 0,
+                "TempOfHotbed": 33.0421938295653,
+                "TempOfNozzle": 34.69525525186664,
+                "TempOfBox": 31.48965520230296,
+                "TempTargetHotbed": 0,
+                "TempTargetNozzle": 0,
+                "TempTargetBox": 0,
+                "PrintInfo": {
+                    "Status": 0,
+                    "CurrentLayer": 0,
+                    "TotalLayer": 0,
+                    "CurrentTicks": 0,
+                    "TotalTicks": 0,
+                    "Filename": "",
+                    "TaskId": "",
+                    "PrintSpeedPct": 100,
+                    "Progress": 0,
+                },
+            },
+            "MainboardID": "4c8918d80103d46c00004c0000000000",
+            "Topic": "sdcp/status/4c8918d80103d46c0000000000000",
+        },
+    )
+
+    assert client.request_status_update() is True
+    assert client.state.connected is True
+    assert client.state.state == "IDLE"
+    assert client.state.progress == 0.0
+    assert client.state.layer_num == 0
+    assert client.state.total_layers == 0
+    assert client.state.temperatures == {
+        "nozzle": 34.69525525186664,
+        "nozzle_target": 0.0,
+        "bed": 33.0421938295653,
+        "bed_target": 0.0,
+    }
+
+
 def test_elegoo_sdcp_client_connect_works_without_udp_discovery(monkeypatch):
     client = ElegooSDCPPrinterClient("10.17.10.50")
     monkeypatch.setattr(client, "discover", lambda: (_ for _ in ()).throw(TimeoutError("udp timeout")))
