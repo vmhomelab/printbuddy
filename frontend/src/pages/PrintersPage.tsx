@@ -6072,7 +6072,8 @@ function AddPrinterModal({
   const isPrusaLinkProvider = form.provider === 'prusalink';
   const isPrusaConnectProvider = form.provider === 'prusaconnect';
   const isPrusaProvider = isPrusaLinkProvider || isPrusaConnectProvider;
-  const isHttpProvider = isMoonrakerProvider || isPrusaProvider;
+  const isElegooSDCPProvider = form.provider === 'elegoo_sdcp';
+  const isHttpProvider = isMoonrakerProvider || isPrusaProvider || isElegooSDCPProvider;
 
   const buildSubmitPayload = (): PrinterCreate => {
     const ipAddress = form.ip_address.trim();
@@ -6269,6 +6270,7 @@ function AddPrinterModal({
               <option value="mainsail">Mainsail / Moonraker</option>
               <option value="fluidd">Fluidd / Moonraker</option>
               <option value="prusalink">Prusa</option>
+              <option value="elegoo_sdcp">Elegoo SDCP (Centauri Carbon)</option>
             </select>
             {isPrusaProvider && (
               <div className="mt-3">
@@ -6309,6 +6311,11 @@ function AddPrinterModal({
             {isPrusaConnectProvider && (
               <p className="text-xs text-bambu-gray mt-1">
                 Prusa Connect Mobile uses Prusa's cloud mobile API at connect-mobile-api.prusa3d.com. Enter the printer UUID and a Connect Mobile API authorization token.
+              </p>
+            )}
+            {isElegooSDCPProvider && (
+              <p className="text-xs text-bambu-gray mt-1">
+                Elegoo SDCP uses the printer's local LAN WebSocket at ws://printer-host:3030/websocket. No API key is required. Initial support is status/test only for Centauri Carbon-class SDCP firmware.
               </p>
             )}
           </div>
@@ -6960,6 +6967,8 @@ function EditPrinterModal({
   const queryClient = useQueryClient();
   const { showToast } = useToast();
   const isPrusaLinkProvider = printer.provider === 'prusalink';
+  const isElegooSDCPProvider = printer.provider === 'elegoo_sdcp';
+  const isBambuProvider = printer.provider === 'bambu';
   const [form, setForm] = useState({
     name: printer.name,
     ip_address: printer.ip_address,
@@ -7015,7 +7024,7 @@ function EditPrinterModal({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (isPrusaLinkProvider) {
+    if (!isBambuProvider || isPrusaLinkProvider || isElegooSDCPProvider) {
       doSave();
       return;
     }
@@ -7080,6 +7089,7 @@ function EditPrinterModal({
               />
               <p className="text-xs text-bambu-gray mt-1">{t('printers.serialCannotBeChanged')}</p>
             </div>
+            {!isElegooSDCPProvider && (
             <div>
               <label htmlFor="edit_printer_secret" className="block text-sm text-bambu-gray mb-1">
                 {isPrusaLinkProvider ? 'PrusaLink password / API key' : t('printers.accessCode')}
@@ -7096,6 +7106,12 @@ function EditPrinterModal({
                 <p className="text-xs text-bambu-gray mt-1">Leave empty to keep the current PrusaLink secret.</p>
               ) : null}
             </div>
+            )}
+            {isElegooSDCPProvider ? (
+              <p className="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary/40 p-3 text-xs text-bambu-gray">
+                Elegoo SDCP uses local LAN status over ws://printer-host:3030/websocket and does not use an API key. Change the IP/hostname above if the printer moved.
+              </p>
+            ) : null}
             {isPrusaLinkProvider ? (
               <div>
                 <label htmlFor="edit_prusalink_api_auth_mode" className="block text-sm text-bambu-gray mb-1">

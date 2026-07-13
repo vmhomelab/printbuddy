@@ -3,11 +3,12 @@ from __future__ import annotations
 from typing import Any
 
 from backend.app.services.printer_providers.bambu import create_bambu_client
+from backend.app.services.printer_providers.elegoo_sdcp import create_elegoo_sdcp_client
 from backend.app.services.printer_providers.moonraker import create_moonraker_client
 from backend.app.services.printer_providers.prusaconnect import create_prusa_connect_mobile_client
 from backend.app.services.printer_providers.prusalink import create_prusalink_client
 
-SUPPORTED_PROVIDERS = {"bambu", "klipper", "mainsail", "fluidd", "prusalink", "prusaconnect"}
+SUPPORTED_PROVIDERS = {"bambu", "klipper", "mainsail", "fluidd", "prusalink", "prusaconnect", "elegoo_sdcp"}
 MOONRAKER_PROVIDERS = {"klipper", "mainsail", "fluidd"}
 
 
@@ -39,4 +40,6 @@ def create_printer_client(printer: Any, **callbacks: Any) -> Any:
         return create_prusalink_client(printer, **callbacks)
     if provider == "prusaconnect":
         return create_prusa_connect_mobile_client(printer, **callbacks)
+    if provider == "elegoo_sdcp":
+        return create_elegoo_sdcp_client(printer, **callbacks)
     raise ValueError(f"Unsupported printer provider: {provider!r}")

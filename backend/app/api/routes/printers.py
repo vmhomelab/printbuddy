@@ -269,6 +269,11 @@ async def create_printer(
                 "and access code, and confirm LAN-only mode is enabled. "
                 "The printer was not added."
             )
+        elif printer_data.provider == "elegoo_sdcp":
+            failure_message = (
+                "Could not connect to Elegoo SDCP. Verify the IP/hostname, confirm the printer is reachable on "
+                "the local network, and check that SDCP WebSocket port 3030 is accessible. The printer was not added."
+            )
         else:
             failure_message = (
                 "Could not connect to Moonraker. Verify the IP/hostname, Moonraker URL "

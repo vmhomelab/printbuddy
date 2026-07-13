@@ -272,7 +272,7 @@ export interface LongLivedCameraToken {
 }
 
 // Printer types
-export type PrinterProvider = 'bambu' | 'klipper' | 'mainsail' | 'fluidd' | 'prusalink' | 'prusaconnect';
+export type PrinterProvider = 'bambu' | 'klipper' | 'mainsail' | 'fluidd' | 'prusalink' | 'prusaconnect' | 'elegoo_sdcp';
 
 export interface Printer {
   id: number;

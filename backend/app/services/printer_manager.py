@@ -694,6 +694,7 @@ class PrinterManager:
                 model_label = {
                     "prusalink": "PrusaLink",
                     "prusaconnect": "Prusa Connect Mobile",
+                    "elegoo_sdcp": "Elegoo SDCP",
                 }.get(provider_name, "Klipper/Moonraker")
                 result = {
                     "success": True,
@@ -707,6 +708,7 @@ class PrinterManager:
                 model_label = {
                     "prusalink": "PrusaLink",
                     "prusaconnect": "Prusa Connect Mobile",
+                    "elegoo_sdcp": "Elegoo SDCP",
                 }.get(provider_name, "Klipper/Moonraker")
                 return {"success": False, "state": None, "model": model_label, "error": type(exc).__name__}
             finally:
