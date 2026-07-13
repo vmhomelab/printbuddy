@@ -37,6 +37,9 @@ def test_remote_filename_preserves_gcode_for_prusalink_and_moonraker():
         background_dispatch._remote_filename_for_provider("Cable Holder.bgcode", "prusalink") == "Cable_Holder.bgcode"
     )
     assert background_dispatch._remote_filename_for_provider("Cable Holder.gcode", "fluidd") == "Cable_Holder.gcode"
+    assert (
+        background_dispatch._remote_filename_for_provider("Cable Holder.gcode", "elegoo_sdcp") == "Cable_Holder.gcode"
+    )
 
 
 def test_remote_filename_keeps_bambu_3mf_rewrite():
@@ -45,7 +48,8 @@ def test_remote_filename_keeps_bambu_3mf_rewrite():
 
 
 @pytest.mark.asyncio
-async def test_prusalink_provider_upload_uses_client_not_bambu_ftp(monkeypatch, tmp_path):
+@pytest.mark.parametrize("provider", ["prusalink", "elegoo_sdcp"])
+async def test_provider_upload_uses_client_not_bambu_ftp(monkeypatch, tmp_path, provider: str):
     local_file = tmp_path / "Cable Holder.gcode"
     local_file.write_text("G28\n", encoding="utf-8")
     client = FakeProviderClient()
@@ -53,14 +57,14 @@ async def test_prusalink_provider_upload_uses_client_not_bambu_ftp(monkeypatch, 
     monkeypatch.setattr(bg.printer_manager, "get_client", lambda printer_id: client)
 
     async def fail_bambu_upload(*args, **kwargs):  # pragma: no cover - failure path assertion
-        raise AssertionError("Bambu FTP upload must not be used for PrusaLink dispatch")
+        raise AssertionError("Bambu FTP upload must not be used for provider dispatch")
 
     monkeypatch.setattr(bg, "upload_file_async", fail_bambu_upload)
 
     uploaded = await background_dispatch._upload_file_for_provider(
         job=_job(),
-        provider="prusalink",
-        printer_name="Core One",
+        provider=provider,
+        printer_name="Provider Printer",
         printer_ip="192.0.2.10",
         printer_access_code="unused",
         file_path=local_file,
@@ -70,7 +74,7 @@ async def test_prusalink_provider_upload_uses_client_not_bambu_ftp(monkeypatch, 
         ftp_retry_count=3,
         ftp_retry_delay=0,
         ftp_timeout=1,
-        operation_name="Upload for print to Core One",
+        operation_name="Upload for print to Provider Printer",
         progress_callback=lambda uploaded, total: None,
     )
 

@@ -1,3 +1,5 @@
+import hashlib
+
 from backend.app.services.printer_providers.elegoo_sdcp import (
     ElegooSDCPPrinterClient,
     _map_sdcp_status,
@@ -122,3 +124,78 @@ def test_elegoo_sdcp_client_normalizes_url_host():
 
     assert client.host == "10.17.10.50"
     assert client.websocket_url == "ws://10.17.10.50:3030/websocket"
+
+
+def test_elegoo_sdcp_upload_posts_sdcp_multipart_chunks(monkeypatch, tmp_path):
+    payload = b"G28\n" + b"G1 X1 Y1\n" * 128
+    local_file = tmp_path / "calibration.gcode"
+    local_file.write_bytes(payload)
+    calls = []
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {"success": True}
+
+        def raise_for_status(self):
+            return None
+
+    class FakeHTTPClient:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def post(self, url, *, data, files):
+            calls.append({"url": url, "data": data, "files": files})
+            return FakeResponse()
+
+    monkeypatch.setattr("backend.app.services.printer_providers.elegoo_sdcp.httpx.Client", FakeHTTPClient)
+    client = ElegooSDCPPrinterClient("192.168.1.181")
+
+    assert client.upload_file(local_file, "/Remote_Name.gcode") is True
+
+    assert len(calls) == 1
+    call = calls[0]
+    assert call["url"] == "http://192.168.1.181:3030/uploadFile/upload"
+    assert call["data"]["Offset"] == "0"
+    assert call["data"]["TotalSize"] == str(len(payload))
+    assert call["data"]["Check"] == "1"
+    assert call["data"]["S-File-MD5"] == hashlib.md5(payload).hexdigest()
+    assert call["files"]["File"][0] == "Remote_Name.gcode"
+    assert call["files"]["File"][1] == payload
+
+
+def test_elegoo_sdcp_start_print_sends_full_cmd_128_payload(monkeypatch):
+    sent_commands = []
+    client = ElegooSDCPPrinterClient("192.168.1.181")
+    client.printer_id = "printer-id"
+    client.mainboard_id = "mainboard-id"
+    monkeypatch.setattr(
+        client,
+        "_send_command",
+        lambda command: sent_commands.append(command) or {"Data": {"Data": {"Ack": 0}}},
+    )
+
+    assert client.start_print("calibration.gcode") is True
+
+    assert len(sent_commands) == 1
+    command = sent_commands[0]
+    assert command["Topic"] == "sdcp/request/mainboard-id"
+    assert command["Id"] == "printer-id"
+    assert command["Data"]["Cmd"] == 128
+    assert command["Data"]["From"] == 1
+    assert command["Data"]["MainboardID"] == "mainboard-id"
+    assert command["Data"]["Data"] == {
+        "Filename": "calibration.gcode",
+        "StartLayer": 0,
+        "Calibration_switch": 0,
+        "PrintPlatformType": 1,
+        "Tlp_Switch": 0,
+        "slot_map": [],
+    }

@@ -21,6 +21,7 @@ const RULES_BY_PROVIDER: Partial<Record<PrinterProvider, PrinterFileRuleSet>> = 
   klipper: DEFAULT_RULES,
   mainsail: DEFAULT_RULES,
   fluidd: DEFAULT_RULES,
+  elegoo_sdcp: DEFAULT_RULES,
   prusalink: {
     accept: '.bgcode,.gcode,.gco,.g',
     extensions: ['.bgcode', '.gcode', '.gco', '.g'],

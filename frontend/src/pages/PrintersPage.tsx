@@ -1882,6 +1882,7 @@ function PrinterCard({
 
   const isPrusaModelPrinter = isPrusaPrinter(printer);
   const isBambuProvider = !printer.provider || printer.provider === 'bambu';
+  const isElegooSDCPProvider = printer.provider === 'elegoo_sdcp';
   const prusaLinkWebUrl = getPrusaLinkWebUrl(printer);
   const loadedSpoolAssignment = isPrusaModelPrinter ? undefined : onGetAssignment?.(printer.id, -1, 0);
 
@@ -5250,7 +5251,7 @@ function PrinterCard({
                       {t('common.upload', 'Upload')}
                     </Button>
                   )}
-                  {isBambuProvider && !isPrusaModelPrinter && (
+                  {(isBambuProvider || isElegooSDCPProvider) && !isPrusaModelPrinter && (
                     <Button
                       size="sm"
                       onClick={() => setShowUploadForPrint(true)}

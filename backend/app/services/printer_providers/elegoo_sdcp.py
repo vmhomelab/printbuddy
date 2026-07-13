@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
+import secrets
 import socket
 import threading
 import time
@@ -10,6 +12,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+
+import httpx
 
 from backend.app.services.bambu_mqtt import FilaSwitchState, NozzleInfo, PrintOptions
 
@@ -19,6 +23,8 @@ SDCP_WS_PORT = 3030
 SDCP_DISCOVERY_PORT = 3000
 SDCP_DISCOVERY_MESSAGE = b"M99999"
 SDCP_STATUS_COMMAND = 0
+SDCP_START_PRINT_COMMAND = 128
+SDCP_UPLOAD_CHUNK_SIZE = 1024 * 1024
 
 
 @dataclass
@@ -274,6 +280,53 @@ class ElegooSDCPPrinterClient:
                         return message
             return last_message
 
+    async def _send_command_async(self, command: dict[str, Any]) -> dict[str, Any]:
+        import websockets
+
+        request_id = str(command.get("Data", {}).get("RequestID") or int(time.time() * 1000))
+        async with websockets.connect(self.websocket_url, open_timeout=self.timeout, close_timeout=1) as websocket:
+            await websocket.send(json.dumps(command, separators=(",", ":")))
+            deadline = time.monotonic() + self.timeout
+            last_message: dict[str, Any] = {}
+            while time.monotonic() < deadline:
+                raw = await asyncio.wait_for(websocket.recv(), timeout=max(0.1, deadline - time.monotonic()))
+                try:
+                    message = json.loads(raw)
+                except (TypeError, ValueError):
+                    continue
+                if not isinstance(message, dict):
+                    continue
+                last_message = message
+                data = message.get("Data") if isinstance(message.get("Data"), dict) else {}
+                if data.get("RequestID") == request_id:
+                    return message
+            return last_message
+
+    def _send_command(self, command: dict[str, Any]) -> dict[str, Any]:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(self._send_command_async(command))
+
+        result: dict[str, Any] = {}
+        error: BaseException | None = None
+
+        def runner() -> None:
+            nonlocal result, error
+            try:
+                result = asyncio.run(self._send_command_async(command))
+            except BaseException as exc:  # noqa: BLE001 - re-raised in caller thread
+                error = exc
+
+        thread = threading.Thread(target=runner, name="elegoo-sdcp-command", daemon=True)
+        thread.start()
+        thread.join(timeout=self.timeout + 2)
+        if thread.is_alive():
+            raise TimeoutError("Elegoo SDCP command timed out")
+        if error is not None:
+            raise error
+        return result
+
     def _query_status(self) -> dict[str, Any]:
         try:
             asyncio.get_running_loop()
@@ -408,8 +461,36 @@ class ElegooSDCPPrinterClient:
         return True
 
     def start_print(self, filename: str, plate_id: int = 1, **kwargs: Any) -> bool:  # noqa: ARG002
-        logger.warning("Elegoo SDCP start_print is not implemented yet; status/test integration only")
-        return False
+        if not self.mainboard_id:
+            self.discover()
+        request_id = str(int(time.time() * 1000))
+        command = {
+            "Id": self.printer_id or "",
+            "Topic": f"sdcp/request/{self.mainboard_id}",
+            "Data": {
+                "Cmd": SDCP_START_PRINT_COMMAND,
+                "Data": {
+                    "Filename": Path(filename).name,
+                    "StartLayer": 0,
+                    "Calibration_switch": 0,
+                    "PrintPlatformType": 1,
+                    "Tlp_Switch": 0,
+                    "slot_map": [],
+                },
+                "From": 1,
+                "MainboardID": self.mainboard_id,
+                "RequestID": request_id,
+                "Timestamp": int(time.time()),
+            },
+        }
+        response = self._send_command(command)
+        data = response.get("Data") if isinstance(response.get("Data"), dict) else {}
+        response_data = data.get("Data") if isinstance(data.get("Data"), dict) else {}
+        ack = response_data.get("Ack")
+        if ack != 0:
+            logger.warning("Elegoo SDCP start_print rejected for %s: Ack=%s", filename, ack)
+            return False
+        return True
 
     def stop_print(self) -> bool:
         logger.warning("Elegoo SDCP stop_print is not implemented yet; status/test integration only")
@@ -419,7 +500,34 @@ class ElegooSDCPPrinterClient:
         return []
 
     def upload_file(self, local_path: Path, remote_path: str, *, overwrite: bool = False) -> bool:  # noqa: ARG002
-        return False
+        path = Path(local_path)
+        payload = path.read_bytes()
+        total_size = len(payload)
+        file_md5 = hashlib.md5(payload).hexdigest()
+        upload_uuid = secrets.token_hex(32)
+        filename = Path(remote_path).name or path.name
+        url = f"http://{self.host}:3030/uploadFile/upload"
+        result: dict[str, Any] | None = None
+        with httpx.Client(timeout=self.timeout) as client:
+            for offset in range(0, total_size, SDCP_UPLOAD_CHUNK_SIZE):
+                chunk = payload[offset : offset + SDCP_UPLOAD_CHUNK_SIZE]
+                response = client.post(
+                    url,
+                    data={
+                        "Uuid": upload_uuid,
+                        "Offset": str(offset),
+                        "TotalSize": str(total_size),
+                        "Check": "1",
+                        "S-File-MD5": file_md5,
+                    },
+                    files={"File": (filename, chunk, "application/octet-stream")},
+                )
+                response.raise_for_status()
+                try:
+                    result = response.json()
+                except ValueError:
+                    result = None
+        return bool(result and result.get("success"))
 
     def download_file(self, remote_path: str) -> bytes | None:  # noqa: ARG002
         return None
