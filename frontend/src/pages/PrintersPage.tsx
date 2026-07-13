@@ -1881,6 +1881,7 @@ function PrinterCard({
   }, [status?.ams, status?.vt_tray, status?.nozzle_rack]);
 
   const isPrusaModelPrinter = isPrusaPrinter(printer);
+  const isBambuProvider = !printer.provider || printer.provider === 'bambu';
   const prusaLinkWebUrl = getPrusaLinkWebUrl(printer);
   const loadedSpoolAssignment = isPrusaModelPrinter ? undefined : onGetAssignment?.(printer.id, -1, 0);
 
@@ -5163,7 +5164,7 @@ function PrinterCard({
         {/* Connection Info & Actions - hidden in compact mode */}
         {viewMode === 'expanded' && (
           <div className="mt-4 pt-4 border-t border-bambu-dark-tertiary flex items-center justify-end gap-2 flex-wrap">
-              {!isPrusaModelPrinter && (
+              {isBambuProvider && !isPrusaModelPrinter && (
                 <>
                   {/* Chamber Light */}
                   <Button
@@ -5190,7 +5191,7 @@ function PrinterCard({
               >
                 <Video className="w-4 h-4" />
               </Button>
-              {!isPrusaModelPrinter && (
+              {isBambuProvider && !isPrusaModelPrinter && (
                 /* Split button: main part toggles detection, chevron opens modal */
                 <div className={`inline-flex rounded-md ${printer.plate_detection_enabled ? 'ring-1 ring-green-500' : ''}`}>
                   <Button
@@ -5223,16 +5224,18 @@ function PrinterCard({
                   </Button>
                 </div>
               )}
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={() => setShowFileManager(true)}
-                disabled={!isConnected || !hasPermission('printers:files')}
-                title={!hasPermission('printers:files') ? t('printers.permission.noFiles') : t('printers.browseFiles')}
-              >
-                <HardDrive className="w-4 h-4" />
-                {t('printers.files')}
-              </Button>
+              {isBambuProvider && (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => setShowFileManager(true)}
+                  disabled={!isConnected || !hasPermission('printers:files')}
+                  title={!hasPermission('printers:files') ? t('printers.permission.noFiles') : t('printers.browseFiles')}
+                >
+                  <HardDrive className="w-4 h-4" />
+                  {t('printers.files')}
+                </Button>
+              )}
               {isConnected && status?.state !== 'RUNNING' && status?.state !== 'PAUSE' && (
                 <>
                   {isPrusaModelPrinter && (
@@ -5247,7 +5250,7 @@ function PrinterCard({
                       {t('common.upload', 'Upload')}
                     </Button>
                   )}
-                  {!isPrusaModelPrinter && (
+                  {isBambuProvider && !isPrusaModelPrinter && (
                     <Button
                       size="sm"
                       onClick={() => setShowUploadForPrint(true)}

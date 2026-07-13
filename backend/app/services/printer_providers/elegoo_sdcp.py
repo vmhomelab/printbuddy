@@ -98,6 +98,17 @@ def _progress_percent(value: Any) -> float:
     return max(0.0, min(100.0, progress))
 
 
+def _progress_from_print_info(print_info: dict[str, Any]) -> float:
+    explicit = _first_present(print_info, "Progress", "PrintProgress", "progress", "printProgress")
+    if explicit is not None:
+        return _progress_percent(explicit)
+    current_ticks = _as_float(_first_present(print_info, "CurrentTicks", "currentTicks"), 0.0)
+    total_ticks = _as_float(_first_present(print_info, "TotalTicks", "totalTicks"), 0.0)
+    if total_ticks > 0:
+        return max(0.0, min(100.0, (current_ticks / total_ticks) * 100.0))
+    return 0.0
+
+
 def _map_sdcp_status(status_code: Any, print_info: dict[str, Any]) -> str:
     """Map Elegoo SDCP status codes to Printbuddy states.
 
@@ -106,18 +117,16 @@ def _map_sdcp_status(status_code: Any, print_info: dict[str, Any]) -> str:
     trigger Printbuddy queue and plate-clear side effects.
     """
     code = _as_int(status_code, -1)
-    if code in {1, 5, 6}:
+    if code in {1, 13, 16, 18, 21}:
         return "RUNNING"
-    if code == 7:
+    if code == 2:
         return "PAUSE"
     if code in {4, 9}:
         return "FINISH"
-    if code in {2, 8}:
+    if code == 8:
         return "FAILED"
     if code == 3:
-        progress = _progress_percent(
-            _first_present(print_info, "Progress", "progress", "PrintProgress", "printProgress")
-        )
+        progress = _progress_from_print_info(print_info)
         return "FAILED" if 0 < progress < 99 else "IDLE"
     if code == 0:
         return "IDLE"
@@ -351,17 +360,14 @@ class ElegooSDCPPrinterClient:
             self.state.gcode_file = str(filename)
             self.state.current_print = self.state.gcode_file
             self.state.subtask_name = self.state.gcode_file
-        self.state.progress = _progress_percent(
-            _first_present(
-                print_info if isinstance(print_info, dict) else status, "Progress", "PrintProgress", "progress"
-            )
-        )
+        self.state.progress = _progress_from_print_info(print_info if isinstance(print_info, dict) else status)
         self.state.remaining_time = _as_int(
             _first_present(
                 print_info if isinstance(print_info, dict) else status,
                 "RemainingTime",
                 "LeftTime",
                 "RemainTime",
+                "remainTime",
                 "remaining_time",
             ),
             0,

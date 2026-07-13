@@ -6,12 +6,15 @@ from backend.app.services.printer_providers.elegoo_sdcp import (
 
 def test_sdcp_status_mapping_keeps_code_3_conservative():
     assert _map_sdcp_status(1, {}) == "RUNNING"
-    assert _map_sdcp_status(5, {}) == "RUNNING"
-    assert _map_sdcp_status(7, {}) == "PAUSE"
+    assert _map_sdcp_status(13, {}) == "RUNNING"
+    assert _map_sdcp_status(16, {}) == "RUNNING"
+    assert _map_sdcp_status(18, {}) == "RUNNING"
+    assert _map_sdcp_status(21, {}) == "RUNNING"
+    assert _map_sdcp_status(2, {}) == "PAUSE"
     assert _map_sdcp_status(4, {}) == "FINISH"
     assert _map_sdcp_status(9, {}) == "FINISH"
-    assert _map_sdcp_status(3, {"Progress": 42}) == "FAILED"
-    assert _map_sdcp_status(3, {"Progress": 0}) == "IDLE"
+    assert _map_sdcp_status(3, {"CurrentTicks": 420, "TotalTicks": 1000}) == "FAILED"
+    assert _map_sdcp_status(3, {"CurrentTicks": 0, "TotalTicks": 1000}) == "IDLE"
 
 
 def test_elegoo_sdcp_client_normalizes_status_payload(monkeypatch):
@@ -24,11 +27,12 @@ def test_elegoo_sdcp_client_normalizes_status_payload(monkeypatch):
             "Topic": "sdcp/status/MAINBOARD123",
             "Data": {
                 "Status": {
-                    "Status": 5,
+                    "Status": 13,
                     "PrintInfo": {
                         "Filename": "benchy.gcode",
-                        "Progress": 0.375,
-                        "RemainingTime": 14,
+                        "CurrentTicks": 375,
+                        "TotalTicks": 1000,
+                        "RemainTime": 14,
                         "CurrentLayer": 23,
                         "TotalLayer": 120,
                     },
