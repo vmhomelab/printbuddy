@@ -24,6 +24,9 @@ SDCP_DISCOVERY_PORT = 3000
 SDCP_DISCOVERY_MESSAGE = b"M99999"
 SDCP_STATUS_COMMAND = 0
 SDCP_START_PRINT_COMMAND = 128
+SDCP_PAUSE_PRINT_COMMAND = 129
+SDCP_STOP_PRINT_COMMAND = 130
+SDCP_RESUME_PRINT_COMMAND = 131
 SDCP_UPLOAD_CHUNK_SIZE = 1024 * 1024
 
 
@@ -492,9 +495,39 @@ class ElegooSDCPPrinterClient:
             return False
         return True
 
+    def _send_job_control_command(self, command_id: int, action: str) -> bool:
+        if not self.mainboard_id:
+            self.discover()
+        request_id = str(int(time.time() * 1000))
+        command = {
+            "Id": self.printer_id or "",
+            "Topic": f"sdcp/request/{self.mainboard_id}",
+            "Data": {
+                "Cmd": command_id,
+                "Data": {},
+                "From": 1,
+                "MainboardID": self.mainboard_id,
+                "RequestID": request_id,
+                "Timestamp": int(time.time()),
+            },
+        }
+        response = self._send_command(command)
+        data = response.get("Data") if isinstance(response.get("Data"), dict) else {}
+        response_data = data.get("Data") if isinstance(data.get("Data"), dict) else {}
+        ack = response_data.get("Ack")
+        if ack != 0:
+            logger.warning("Elegoo SDCP %s rejected: Ack=%s", action, ack)
+            return False
+        return True
+
+    def pause_print(self) -> bool:
+        return self._send_job_control_command(SDCP_PAUSE_PRINT_COMMAND, "pause_print")
+
+    def resume_print(self) -> bool:
+        return self._send_job_control_command(SDCP_RESUME_PRINT_COMMAND, "resume_print")
+
     def stop_print(self) -> bool:
-        logger.warning("Elegoo SDCP stop_print is not implemented yet; status/test integration only")
-        return False
+        return self._send_job_control_command(SDCP_STOP_PRINT_COMMAND, "stop_print")
 
     def list_files(self, path: str = "/") -> list[dict[str, Any]]:  # noqa: ARG002
         return []
