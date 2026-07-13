@@ -118,7 +118,9 @@ def test_moonraker_status_edges_emit_print_start_and_complete(monkeypatch):
 
     monkeypatch.setattr(client, "_query_objects", lambda names: next(statuses))  # noqa: ARG005
     monkeypatch.setattr(client, "_query_fan_status", lambda: {})
-    monkeypatch.setattr("backend.app.services.printer_providers.moonraker.time.monotonic", iter([100.0, 160.0]).__next__)
+    monkeypatch.setattr(
+        "backend.app.services.printer_providers.moonraker.time.monotonic", iter([100.0, 160.0]).__next__
+    )
 
     assert client.request_status_update() is True
     assert start_payloads == []
@@ -167,7 +169,11 @@ def test_moonraker_factory_wires_lifecycle_callbacks():
     start_payloads: list[dict[str, object]] = []
     complete_payloads: list[dict[str, object]] = []
     printer = SimpleNamespace(
-        provider="klipper", api_url="http://printer.local:7125", auth_token=None, ip_address="printer.local", model="Elegoo"
+        provider="klipper",
+        api_url="http://printer.local:7125",
+        auth_token=None,
+        ip_address="printer.local",
+        model="Elegoo",
     )
 
     client = create_printer_client(

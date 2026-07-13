@@ -6968,7 +6968,7 @@ function EditPrinterModal({
   const { showToast } = useToast();
   const isPrusaLinkProvider = printer.provider === 'prusalink';
   const isElegooSDCPProvider = printer.provider === 'elegoo_sdcp';
-  const isBambuProvider = printer.provider === 'bambu';
+  const isBambuProvider = !printer.provider || printer.provider === 'bambu';
   const [form, setForm] = useState({
     name: printer.name,
     ip_address: printer.ip_address,

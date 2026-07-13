@@ -115,7 +115,9 @@ def _map_sdcp_status(status_code: Any, print_info: dict[str, Any]) -> str:
     if code in {2, 8}:
         return "FAILED"
     if code == 3:
-        progress = _progress_percent(_first_present(print_info, "Progress", "progress", "PrintProgress", "printProgress"))
+        progress = _progress_percent(
+            _first_present(print_info, "Progress", "progress", "PrintProgress", "printProgress")
+        )
         return "FAILED" if 0 < progress < 99 else "IDLE"
     if code == 0:
         return "IDLE"
@@ -342,24 +344,38 @@ class ElegooSDCPPrinterClient:
             _first_present(status, "Status", "CurrentStatus", "PrintStatus", "MachineStatus", "status"),
             print_info if isinstance(print_info, dict) else {},
         )
-        filename = _first_present(print_info if isinstance(print_info, dict) else status, "Filename", "FileName", "filename", "Name")
+        filename = _first_present(
+            print_info if isinstance(print_info, dict) else status, "Filename", "FileName", "filename", "Name"
+        )
         if filename:
             self.state.gcode_file = str(filename)
             self.state.current_print = self.state.gcode_file
             self.state.subtask_name = self.state.gcode_file
         self.state.progress = _progress_percent(
-            _first_present(print_info if isinstance(print_info, dict) else status, "Progress", "PrintProgress", "progress")
+            _first_present(
+                print_info if isinstance(print_info, dict) else status, "Progress", "PrintProgress", "progress"
+            )
         )
         self.state.remaining_time = _as_int(
-            _first_present(print_info if isinstance(print_info, dict) else status, "RemainingTime", "LeftTime", "RemainTime", "remaining_time"),
+            _first_present(
+                print_info if isinstance(print_info, dict) else status,
+                "RemainingTime",
+                "LeftTime",
+                "RemainTime",
+                "remaining_time",
+            ),
             0,
         )
         self.state.layer_num = _as_int(
-            _first_present(print_info if isinstance(print_info, dict) else status, "CurrentLayer", "Layer", "layer_num"),
+            _first_present(
+                print_info if isinstance(print_info, dict) else status, "CurrentLayer", "Layer", "layer_num"
+            ),
             0,
         )
         self.state.total_layers = _as_int(
-            _first_present(print_info if isinstance(print_info, dict) else status, "TotalLayer", "TotalLayers", "total_layers"),
+            _first_present(
+                print_info if isinstance(print_info, dict) else status, "TotalLayer", "TotalLayers", "total_layers"
+            ),
             0,
         )
         self.state.temperatures = _sdcp_temperatures(status)
