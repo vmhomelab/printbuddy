@@ -653,16 +653,19 @@ def _maybe_start_layer_timelapse(printer, printer_id: int, archive_id: int) -> b
     on the first pass). Centralising the conditional + call here makes the
     contract testable in isolation and keeps the three sites locked in step.
     """
-    if not (printer.external_camera_enabled and printer.external_camera_url):
+    from backend.app.services.elegoo_camera import get_effective_camera_source
+
+    effective_camera = get_effective_camera_source(printer)
+    if not (effective_camera.enabled and effective_camera.url):
         return False
     from backend.app.services.layer_timelapse import start_session
 
     start_session(
         printer_id,
         archive_id,
-        printer.external_camera_url,
-        printer.external_camera_type or "mjpeg",
-        snapshot_url=printer.external_camera_snapshot_url,
+        effective_camera.url,
+        effective_camera.camera_type or "mjpeg",
+        snapshot_url=effective_camera.snapshot_url,
     )
     logging.getLogger(__name__).info("Started layer timelapse for printer %s, archive %s", printer_id, archive_id)
     return True
@@ -1640,15 +1643,19 @@ async def _capture_snapshot_for_notification(printer_id: int, printer, logger) -
         if capture_enabled is not None and capture_enabled.lower() != "true":
             return None
 
-        # Try external camera first
-        if printer.external_camera_enabled and printer.external_camera_url:
-            logger.info("[SNAPSHOT] Capturing from external camera for printer %s", printer_id)
+        from backend.app.services.elegoo_camera import get_effective_camera_source
+
+        effective_camera = get_effective_camera_source(printer)
+
+        # Try external/provider-derived camera first
+        if effective_camera.enabled and effective_camera.url:
+            logger.info("[SNAPSHOT] Capturing from external/provider camera for printer %s", printer_id)
             from backend.app.services.external_camera import capture_frame
 
             frame_data = await capture_frame(
-                printer.external_camera_url,
-                printer.external_camera_type or "mjpeg",
-                snapshot_url=printer.external_camera_snapshot_url,
+                effective_camera.url,
+                effective_camera.camera_type or "mjpeg",
+                snapshot_url=effective_camera.snapshot_url,
             )
             if frame_data and len(frame_data) <= 2_500_000:
                 logger.info("[SNAPSHOT] External camera frame: %s bytes", len(frame_data))
@@ -3916,15 +3923,19 @@ async def on_print_complete(printer_id: int, data: dict):
                                 archive_dir = app_settings.archive_dir / str(archive.id)
                             photo_filename = None
 
-                            # Check for external camera first
-                            if printer.external_camera_enabled and printer.external_camera_url:
-                                logger.info("[PHOTO-BG] Using external camera")
+                            from backend.app.services.elegoo_camera import get_effective_camera_source
+
+                            effective_camera = get_effective_camera_source(printer)
+
+                            # Check for external/provider-derived camera first
+                            if effective_camera.enabled and effective_camera.url:
+                                logger.info("[PHOTO-BG] Using external/provider camera")
                                 from backend.app.services.external_camera import capture_frame
 
                                 frame_data = await capture_frame(
-                                    printer.external_camera_url,
-                                    printer.external_camera_type or "mjpeg",
-                                    snapshot_url=printer.external_camera_snapshot_url,
+                                    effective_camera.url,
+                                    effective_camera.camera_type or "mjpeg",
+                                    snapshot_url=effective_camera.snapshot_url,
                                 )
                                 if frame_data:
                                     photos_dir = archive_dir / "photos"

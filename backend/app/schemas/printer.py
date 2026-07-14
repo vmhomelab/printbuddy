@@ -3,6 +3,11 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from backend.app.services.elegoo_camera import (
+    build_elegoo_sdcp_camera_url,
+    get_effective_camera_source,
+)
+
 PrinterProvider = Literal["bambu", "klipper", "mainsail", "fluidd", "prusalink", "prusaconnect", "elegoo_sdcp"]
 MOONRAKER_PROVIDERS = {"klipper", "mainsail", "fluidd"}
 HTTP_PROVIDERS = MOONRAKER_PROVIDERS | {"prusalink", "prusaconnect", "elegoo_sdcp"}
@@ -109,6 +114,11 @@ class PrinterBase(BaseModel):
                 data["serial_number"] = _synthetic_elegoo_sdcp_serial(data.get("ip_address"))
             if not str(data.get("access_code") or "").strip():
                 data["access_code"] = "elegoo-sdcp"
+            if not str(data.get("external_camera_url") or "").strip():
+                data["external_camera_url"] = build_elegoo_sdcp_camera_url(data.get("ip_address"))
+                data["external_camera_type"] = "mjpeg"
+                data["external_camera_enabled"] = bool(data["external_camera_url"])
+                return data
         if provider in HTTP_PROVIDERS:
             camera_url = str(data.get("external_camera_url") or "").strip()
             if not camera_url:
@@ -221,6 +231,7 @@ class PrinterResponse(PrinterBase):
     @classmethod
     def from_orm_with_roi(cls, printer) -> "PrinterResponse":
         """Create response from ORM model, converting ROI fields to nested object."""
+        effective_camera = get_effective_camera_source(printer)
         data = {
             "id": printer.id,
             "name": printer.name,
@@ -234,10 +245,10 @@ class PrinterResponse(PrinterBase):
             "model": printer.model,
             "location": printer.location,
             "auto_archive": printer.auto_archive,
-            "external_camera_url": printer.external_camera_url,
-            "external_camera_type": printer.external_camera_type,
-            "external_camera_enabled": printer.external_camera_enabled,
-            "external_camera_snapshot_url": printer.external_camera_snapshot_url,
+            "external_camera_url": effective_camera.url,
+            "external_camera_type": effective_camera.camera_type,
+            "external_camera_enabled": effective_camera.enabled,
+            "external_camera_snapshot_url": effective_camera.snapshot_url,
             "camera_rotation": printer.camera_rotation,
             "is_active": printer.is_active,
             "nozzle_count": printer.nozzle_count,

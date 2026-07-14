@@ -39,6 +39,7 @@ from backend.app.services.camera_fanout import (
     shutdown_broadcaster,
 )
 from backend.app.services.camera_profiles import get_camera_profile
+from backend.app.services.elegoo_camera import get_effective_camera_source
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/printers", tags=["camera"])
@@ -628,9 +629,12 @@ async def camera_stream(
         fps: Target frames per second (default: 10, max: 30)
     """
     printer = await get_printer_or_404(printer_id, db)
+    effective_camera = get_effective_camera_source(printer)
 
-    # Check for external camera first
-    if printer.external_camera_enabled and printer.external_camera_url:
+    # Check for external/provider-derived camera first
+    if effective_camera.enabled and effective_camera.url:
+        camera_url = effective_camera.url
+        camera_type = effective_camera.camera_type or "mjpeg"
         import time
 
         from backend.app.services.external_camera import generate_mjpeg_stream
@@ -638,7 +642,10 @@ async def camera_stream(
         # Limit external camera FPS to reduce browser load
         fps = min(max(fps, 1), 15)
         logger.info(
-            "Using external camera (%s) for printer %s at %s fps", printer.external_camera_type, printer_id, fps
+            "Using external/provider camera (%s) for printer %s at %s fps",
+            effective_camera.camera_type,
+            printer_id,
+            fps,
         )
 
         # Track stream start
@@ -648,9 +655,7 @@ async def camera_stream(
         async def external_stream_wrapper():
             """Wrap external stream to track start/stop and update frame times."""
             try:
-                async for frame in generate_mjpeg_stream(
-                    printer.external_camera_url, printer.external_camera_type, fps
-                ):
+                async for frame in generate_mjpeg_stream(camera_url, camera_type, fps):
                     # generate_mjpeg_stream already handles rate limiting;
                     # just track frame times for stall detection
                     _last_frame_times[printer_id] = time.time()
@@ -856,16 +861,17 @@ async def camera_snapshot(
     from pathlib import Path
 
     printer = await get_printer_or_404(printer_id, db)
+    effective_camera = get_effective_camera_source(printer)
 
-    # Check for external camera first
-    if printer.external_camera_enabled and printer.external_camera_url:
+    # Check for external/provider-derived camera first
+    if effective_camera.enabled and effective_camera.url:
         from backend.app.services.external_camera import capture_frame
 
         frame_data = await capture_frame(
-            printer.external_camera_url,
-            printer.external_camera_type,
+            effective_camera.url,
+            effective_camera.camera_type or "mjpeg",
             timeout=15,
-            snapshot_url=printer.external_camera_snapshot_url,
+            snapshot_url=effective_camera.snapshot_url,
         )
         if not frame_data:
             raise HTTPException(
@@ -946,6 +952,12 @@ async def test_camera(
     Returns success status and any error message.
     """
     printer = await get_printer_or_404(printer_id, db)
+    effective_camera = get_effective_camera_source(printer)
+
+    if effective_camera.enabled and effective_camera.url:
+        from backend.app.services.external_camera import test_connection
+
+        return await test_connection(effective_camera.url, effective_camera.camera_type or "mjpeg")
 
     result = await test_camera_connection(
         ip_address=printer.ip_address,
@@ -973,13 +985,14 @@ async def diagnose_camera_route(
     from backend.app.services.camera_diagnose import diagnose_camera, diagnose_external_camera
 
     printer = await get_printer_or_404(printer_id, db)
+    effective_camera = get_effective_camera_source(printer)
 
-    if printer.external_camera_enabled and printer.external_camera_url:
+    if effective_camera.enabled and effective_camera.url:
         result = await diagnose_external_camera(
-            camera_url=printer.external_camera_url,
-            camera_type=printer.external_camera_type,
+            camera_url=effective_camera.url,
+            camera_type=effective_camera.camera_type,
             printer_id=printer_id,
-            snapshot_url=printer.external_camera_snapshot_url,
+            snapshot_url=effective_camera.snapshot_url,
         )
         return result.to_dict()
 
