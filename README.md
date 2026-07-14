@@ -201,9 +201,10 @@ Planned providers:
 
 | Provider | Description | Status |
 |---|---|---|
-| `bambu` | Existing Printbuddy / Bambu Lab MQTT + FTP support | Inherited |
-| `klipper` | Moonraker-backed Klipper printer status and control | In progress |
-| `prusa` | Future Prusa / PrusaLink support | Planned |
+| `bambu` | Existing Printbuddy / Bambu Lab MQTT + FTP support | Inherited ✅ |
+| `klipper` | Moonraker-backed Klipper printer status and control | In progress ⌛ |
+| `prusa` | PrusaLink support | Implemented ✅ |
+| `elegoo` | CC1 support | In progress ⌛ |
 
 The first implementation step adds the provider and printer metadata to allow printers to be added.
 
