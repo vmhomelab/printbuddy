@@ -175,6 +175,7 @@ def _sdcp_temperatures(status: dict[str, Any]) -> dict[str, Any]:
     nozzle = status.get("TempOfNozzle") if "TempOfNozzle" in status else status
     bed = status.get("TempOfHotbed") if "TempOfHotbed" in status else status
     chamber = status.get("TempOfBox") if "TempOfBox" in status else status.get("TempOfChamber")
+    chamber_target_value = _first_present(status, "TempTargetBox", "TempTargetChamber", "chamber_target")
     nozzle_target_source = nozzle if isinstance(nozzle, dict) else status
     bed_target_source = bed if isinstance(bed, dict) else status
     temperatures = {
@@ -187,12 +188,9 @@ def _sdcp_temperatures(status: dict[str, Any]) -> dict[str, Any]:
             bed_target_source, "TargetTemp", "Target", "BedTargetTemp", "TempTargetHotbed", "bed_target"
         ),
     }
-    if chamber is not None:
+    if chamber is not None or chamber_target_value is not None:
         chamber_target_source = chamber if isinstance(chamber, dict) else status
-        temperatures["chamber"] = _temp_from(
-            chamber, "Temp", "ActualTemp", "BoxTemp", "ChamberTemp", "TempOfBox", "TempOfChamber", "chamber"
-        )
-        temperatures["chamber_target"] = _temp_from(
+        chamber_target = _temp_from(
             chamber_target_source,
             "TargetTemp",
             "Target",
@@ -202,6 +200,11 @@ def _sdcp_temperatures(status: dict[str, Any]) -> dict[str, Any]:
             "TempTargetChamber",
             "chamber_target",
         )
+        chamber_actual = _temp_from(
+            chamber, "Temp", "ActualTemp", "BoxTemp", "ChamberTemp", "TempOfBox", "TempOfChamber", "chamber"
+        )
+        temperatures["chamber"] = chamber_actual if chamber is not None else chamber_target
+        temperatures["chamber_target"] = chamber_target
     return temperatures
 
 

@@ -116,6 +116,31 @@ def test_elegoo_sdcp_client_normalizes_real_centauri_carbon_status_payload(monke
     assert client.state.chamber_light is True
 
 
+def test_elegoo_sdcp_chamber_displays_temp_target_box_when_actual_box_temp_missing(monkeypatch):
+    client = ElegooSDCPPrinterClient("192.168.1.181")
+
+    monkeypatch.setattr(
+        client,
+        "_query_status",
+        lambda: {
+            "Status": {
+                "CurrentStatus": [13],
+                "TempOfHotbed": 70,
+                "TempOfNozzle": 250,
+                "TempTargetHotbed": 70,
+                "TempTargetNozzle": 250,
+                "TempTargetBox": 45,
+                "PrintInfo": {"Status": 13, "Filename": "test.gcode", "Progress": 25},
+            }
+        },
+    )
+
+    assert client.request_status_update() is True
+    assert client.state.state == "RUNNING"
+    assert client.state.temperatures["chamber"] == 45.0
+    assert client.state.temperatures["chamber_target"] == 45.0
+
+
 def test_elegoo_sdcp_client_connect_works_without_udp_discovery(monkeypatch):
     client = ElegooSDCPPrinterClient("10.17.10.50")
     monkeypatch.setattr(client, "discover", lambda: (_ for _ in ()).throw(TimeoutError("udp timeout")))
