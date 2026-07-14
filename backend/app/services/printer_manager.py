@@ -30,6 +30,10 @@ CHAMBER_TEMP_SUPPORTED_MODELS = frozenset(
         "H2D",
         "H2DPRO",
         "H2S",  # H2 series
+        "CENTAURI CARBON",  # Elegoo SDCP / CC1
+        "ELEGOO CENTAURI CARBON",
+        "CENTAURI-CARBON",
+        "CENTAURI_CARBON",
         # Internal codes (from MQTT/SSDP)
         "BL-P001",  # X1/X1C
         "C13",  # X1E
