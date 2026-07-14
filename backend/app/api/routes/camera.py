@@ -39,7 +39,11 @@ from backend.app.services.camera_fanout import (
     shutdown_broadcaster,
 )
 from backend.app.services.camera_profiles import get_camera_profile
-from backend.app.services.elegoo_camera import get_effective_camera_source
+from backend.app.services.elegoo_camera import (
+    get_effective_camera_source,
+    is_elegoo_sdcp_provider,
+    keep_elegoo_sdcp_camera_session,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/printers", tags=["camera"])
@@ -662,7 +666,23 @@ async def camera_stream(
         async def external_upstream(disconnect_event: asyncio.Event):
             """Single upstream external/provider MJPEG connection shared by all viewers."""
             _active_external_streams.add(printer_id)
+            activation_task: asyncio.Task[None] | None = None
+            should_activate_elegoo = effective_camera.derived and is_elegoo_sdcp_provider(
+                getattr(printer, "provider", None)
+            )
             try:
+                if should_activate_elegoo:
+                    activation_task = asyncio.create_task(
+                        keep_elegoo_sdcp_camera_session(getattr(printer, "ip_address", None), disconnect_event)
+                    )
+                    # The CC1 starts producing JPEGs only after the web UI's
+                    # SDCP WebSocket session is established. Give our
+                    # activation session a brief head start before opening
+                    # :3031/video so the first MJPEG read sees real frames.
+                    try:
+                        await asyncio.wait_for(disconnect_event.wait(), timeout=1.0)
+                    except TimeoutError:
+                        pass
                 async for chunk in generate_mjpeg_stream(camera_url, camera_type, fps):
                     if disconnect_event.is_set():
                         break
@@ -675,6 +695,12 @@ async def camera_stream(
                     _stream_last_frame_times[upstream_stream_id] = now
                     yield chunk
             finally:
+                if activation_task is not None:
+                    activation_task.cancel()
+                    try:
+                        await activation_task
+                    except asyncio.CancelledError:
+                        pass
                 _active_external_streams.discard(printer_id)
                 _stream_last_frame_times.pop(upstream_stream_id, None)
                 logger.info("External/provider camera upstream ended for printer %s", printer_id)

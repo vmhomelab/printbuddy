@@ -1,7 +1,12 @@
 from types import SimpleNamespace
 
 from backend.app.schemas.printer import PrinterCreate, PrinterResponse
-from backend.app.services.elegoo_camera import build_elegoo_sdcp_camera_url, get_effective_camera_source
+from backend.app.services.elegoo_camera import (
+    ElegooCameraActivationInfo,
+    build_elegoo_sdcp_camera_url,
+    build_elegoo_sdcp_status_command,
+    get_effective_camera_source,
+)
 
 
 def test_elegoo_sdcp_camera_url_uses_verified_mjpeg_endpoint():
@@ -76,3 +81,27 @@ def test_printer_response_exposes_effective_elegoo_camera_for_existing_rows():
     assert response.external_camera_enabled is True
     assert response.external_camera_type == "mjpeg"
     assert response.external_camera_url == "http://192.168.1.181:3031/video"
+
+
+def test_elegoo_sdcp_camera_activation_status_command_includes_mainboard_topic():
+    command = build_elegoo_sdcp_status_command(
+        ElegooCameraActivationInfo(printer_id="printer-123", mainboard_id="board-456")
+    )
+
+    assert command["Id"] == "printer-123"
+    assert command["Topic"] == "sdcp/request/board-456"
+    assert command["Data"]["Cmd"] == 0
+    assert command["Data"]["Data"] == {}
+    assert command["Data"]["From"] == 0
+    assert command["Data"]["MainboardID"] == "board-456"
+    assert command["Data"]["RequestID"]
+    assert command["Data"]["Timestamp"]
+
+
+def test_elegoo_sdcp_camera_activation_status_command_allows_unknown_ids():
+    command = build_elegoo_sdcp_status_command()
+
+    assert command["Id"] == ""
+    assert "Topic" not in command
+    assert command["Data"]["Cmd"] == 0
+    assert command["Data"]["MainboardID"] == ""
