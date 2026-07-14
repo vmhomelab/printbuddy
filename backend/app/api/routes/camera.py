@@ -643,29 +643,69 @@ async def camera_stream(
         fps = min(max(fps, 1), 15)
         logger.info(
             "Using external/provider camera (%s) for printer %s at %s fps",
-            effective_camera.camera_type,
+            camera_type,
             printer_id,
             fps,
         )
 
-        # Track stream start
-        _stream_start_times[printer_id] = time.time()
-        _active_external_streams.add(printer_id)
+        # Track stream start. Use the same fan-out key as built-in camera streams
+        # so /camera/stop and status reporting stay provider-neutral.
+        _stream_start_times.setdefault(printer_id, time.time())
+        fanout_key = f"printer-{printer_id}"
+        upstream_stream_id = f"{printer_id}-external-fanout"
 
-        async def external_stream_wrapper():
-            """Wrap external stream to track start/stop and update frame times."""
+        async def external_upstream(disconnect_event: asyncio.Event):
+            """Single upstream external/provider MJPEG connection shared by all viewers."""
+            _active_external_streams.add(printer_id)
             try:
-                async for frame in generate_mjpeg_stream(camera_url, camera_type, fps):
-                    # generate_mjpeg_stream already handles rate limiting;
-                    # just track frame times for stall detection
-                    _last_frame_times[printer_id] = time.time()
-                    yield frame
+                async for chunk in generate_mjpeg_stream(camera_url, camera_type, fps):
+                    if disconnect_event.is_set():
+                        break
+                    frame_start = chunk.find(b"\xff\xd8")
+                    frame_end = chunk.find(b"\xff\xd9", frame_start + 2) if frame_start != -1 else -1
+                    if frame_start != -1 and frame_end != -1:
+                        _last_frames[printer_id] = chunk[frame_start : frame_end + 2]
+                    now = time.time()
+                    _last_frame_times[printer_id] = now
+                    _stream_last_frame_times[upstream_stream_id] = now
+                    yield chunk
             finally:
                 _active_external_streams.discard(printer_id)
-                logger.info("External camera stream ended for printer %s", printer_id)
+                _stream_last_frame_times.pop(upstream_stream_id, None)
+                logger.info("External/provider camera upstream ended for printer %s", printer_id)
+
+        broadcaster: MjpegBroadcaster = await get_or_create_broadcaster(fanout_key, external_upstream)
+        try:
+            queue = await broadcaster.subscribe()
+        except RuntimeError:
+            broadcaster = await get_or_create_broadcaster(fanout_key, external_upstream)
+            queue = await broadcaster.subscribe()
+        logger.info(
+            "External/provider camera viewer attached to %s (subscribers=%d)",
+            fanout_key,
+            broadcaster.subscriber_count,
+        )
+
+        async def _is_disconnected() -> bool:
+            try:
+                return await request.is_disconnected()
+            except Exception:
+                return True
+
+        def _log_detach(remaining: int) -> None:
+            logger.info("External/provider camera viewer detached from %s (subscribers=%d)", fanout_key, remaining)
+
+        async def _generate():
+            async for chunk in iter_subscriber(
+                broadcaster,
+                queue,
+                is_disconnected=_is_disconnected,
+                on_unsubscribe=_log_detach,
+            ):
+                yield chunk
 
         return StreamingResponse(
-            external_stream_wrapper(),
+            _generate(),
             media_type="multipart/x-mixed-replace; boundary=frame",
             headers={
                 "Cache-Control": "no-cache, no-store, must-revalidate",
@@ -865,6 +905,21 @@ async def camera_snapshot(
 
     # Check for external/provider-derived camera first
     if effective_camera.enabled and effective_camera.url:
+        buffered = try_get_active_buffered_frame(printer_id)
+        if buffered:
+            return Response(
+                content=buffered,
+                media_type="image/jpeg",
+                headers={
+                    "Cache-Control": "no-cache, no-store, must-revalidate",
+                    "Content-Disposition": f'inline; filename="snapshot_{printer_id}.jpg"',
+                },
+            )
+        if effective_camera.derived and is_stream_active(printer_id):
+            raise HTTPException(
+                status_code=503,
+                detail="Camera stream is active but no buffered frame is available yet.",
+            )
         from backend.app.services.external_camera import capture_frame
 
         frame_data = await capture_frame(

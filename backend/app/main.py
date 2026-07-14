@@ -1649,6 +1649,19 @@ async def _capture_snapshot_for_notification(printer_id: int, printer, logger) -
 
         # Try external/provider-derived camera first
         if effective_camera.enabled and effective_camera.url:
+            from backend.app.api.routes.camera import is_stream_active, try_get_active_buffered_frame
+
+            buffered = try_get_active_buffered_frame(printer_id)
+            if buffered:
+                logger.info("[SNAPSHOT] Using active external/provider camera frame for printer %s", printer_id)
+                return _apply_camera_rotation(buffered, printer, logger)
+            if effective_camera.derived and is_stream_active(printer_id):
+                logger.info(
+                    "[SNAPSHOT] Provider camera stream active for printer %s but no frame buffered yet; skipping competing capture",
+                    printer_id,
+                )
+                return None
+
             logger.info("[SNAPSHOT] Capturing from external/provider camera for printer %s", printer_id)
             from backend.app.services.external_camera import capture_frame
 
@@ -1660,6 +1673,12 @@ async def _capture_snapshot_for_notification(printer_id: int, printer, logger) -
             if frame_data and len(frame_data) <= 2_500_000:
                 logger.info("[SNAPSHOT] External camera frame: %s bytes", len(frame_data))
                 return _apply_camera_rotation(frame_data, printer, logger)
+            if effective_camera.derived:
+                logger.warning(
+                    "[SNAPSHOT] Derived provider camera failed for printer %s; not falling back to built-in camera path",
+                    printer_id,
+                )
+                return None
 
         # Try buffered frame from active stream
         from backend.app.api.routes.camera import _active_chamber_streams, _active_streams, get_buffered_frame
@@ -3929,14 +3948,28 @@ async def on_print_complete(printer_id: int, data: dict):
 
                             # Check for external/provider-derived camera first
                             if effective_camera.enabled and effective_camera.url:
-                                logger.info("[PHOTO-BG] Using external/provider camera")
-                                from backend.app.services.external_camera import capture_frame
-
-                                frame_data = await capture_frame(
-                                    effective_camera.url,
-                                    effective_camera.camera_type or "mjpeg",
-                                    snapshot_url=effective_camera.snapshot_url,
+                                from backend.app.api.routes.camera import (
+                                    is_stream_active,
+                                    try_get_active_buffered_frame,
                                 )
+
+                                frame_data = try_get_active_buffered_frame(printer_id)
+                                if frame_data:
+                                    logger.info("[PHOTO-BG] Using active external/provider camera frame")
+                                elif effective_camera.derived and is_stream_active(printer_id):
+                                    logger.info(
+                                        "[PHOTO-BG] Provider camera stream active but no frame buffered yet; skipping competing capture"
+                                    )
+                                    frame_data = None
+                                else:
+                                    logger.info("[PHOTO-BG] Using external/provider camera")
+                                    from backend.app.services.external_camera import capture_frame
+
+                                    frame_data = await capture_frame(
+                                        effective_camera.url,
+                                        effective_camera.camera_type or "mjpeg",
+                                        snapshot_url=effective_camera.snapshot_url,
+                                    )
                                 if frame_data:
                                     photos_dir = archive_dir / "photos"
                                     photos_dir.mkdir(parents=True, exist_ok=True)
