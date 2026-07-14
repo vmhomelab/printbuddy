@@ -3691,7 +3691,19 @@ function PrinterCard({
                         );
                       })}
 
-                      {fanItems.length > 0 && <div className="w-px h-5 bg-bambu-gray/30" />}
+                      {isElegooSDCPProvider && (
+                        <div
+                          className={`flex items-center gap-1 px-1.5 py-1 rounded ${status.chamber_light ? 'bg-yellow-500/10' : 'bg-bambu-dark'}`}
+                          title={t('printers.chamberLight', 'Chamber Light')}
+                        >
+                          <ChamberLight on={status.chamber_light} className={`w-3.5 h-3.5 ${status.chamber_light ? 'text-yellow-400' : 'text-bambu-gray/50'}`} />
+                          <span className={`text-[10px] ${status.chamber_light ? 'text-yellow-400' : 'text-bambu-gray/50'}`}>
+                            {status.chamber_light ? t('common.on', 'On') : t('common.off', 'Off')}
+                          </span>
+                        </div>
+                      )}
+
+                      {(fanItems.length > 0 || isElegooSDCPProvider) && <div className="w-px h-5 bg-bambu-gray/30" />}
 
                       {/* Airduct Mode (P2S / X2D / H2*) */}
                       {(['P2S', 'X2D', 'H2D', 'H2C', 'H2S'].includes(printer.model ?? '')) && (() => {

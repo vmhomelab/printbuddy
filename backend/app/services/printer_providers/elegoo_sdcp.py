@@ -174,9 +174,10 @@ def _temp_from(data: Any, *keys: str) -> float:
 def _sdcp_temperatures(status: dict[str, Any]) -> dict[str, Any]:
     nozzle = status.get("TempOfNozzle") if "TempOfNozzle" in status else status
     bed = status.get("TempOfHotbed") if "TempOfHotbed" in status else status
+    chamber = status.get("TempOfBox") if "TempOfBox" in status else status.get("TempOfChamber")
     nozzle_target_source = nozzle if isinstance(nozzle, dict) else status
     bed_target_source = bed if isinstance(bed, dict) else status
-    return {
+    temperatures = {
         "nozzle": _temp_from(nozzle, "Temp", "ActualTemp", "NozzleTemp", "nozzle", "TempOfNozzle"),
         "nozzle_target": _temp_from(
             nozzle_target_source, "TargetTemp", "Target", "NozzleTargetTemp", "TempTargetNozzle", "nozzle_target"
@@ -186,6 +187,39 @@ def _sdcp_temperatures(status: dict[str, Any]) -> dict[str, Any]:
             bed_target_source, "TargetTemp", "Target", "BedTargetTemp", "TempTargetHotbed", "bed_target"
         ),
     }
+    if chamber is not None:
+        chamber_target_source = chamber if isinstance(chamber, dict) else status
+        temperatures["chamber"] = _temp_from(
+            chamber, "Temp", "ActualTemp", "BoxTemp", "ChamberTemp", "TempOfBox", "TempOfChamber", "chamber"
+        )
+        temperatures["chamber_target"] = _temp_from(
+            chamber_target_source,
+            "TargetTemp",
+            "Target",
+            "BoxTargetTemp",
+            "ChamberTargetTemp",
+            "TempTargetBox",
+            "TempTargetChamber",
+            "chamber_target",
+        )
+    return temperatures
+
+
+def _fan_speed(value: Any) -> int | None:
+    if value is None:
+        return None
+    return max(0, min(100, _as_int(value)))
+
+
+def _sdcp_light_enabled(value: Any) -> bool:
+    if isinstance(value, dict):
+        second_light = value.get("SecondLight")
+        if second_light is not None:
+            return bool(_as_int(second_light))
+        rgb = value.get("RgbLight")
+        if isinstance(rgb, list | tuple):
+            return any(_as_int(channel) > 0 for channel in rgb)
+    return bool(_as_int(value))
 
 
 class ElegooSDCPPrinterClient:
@@ -487,6 +521,20 @@ class ElegooSDCPPrinterClient:
             0,
         )
         self.state.temperatures = _sdcp_temperatures(status)
+        fan_speed_raw = status.get("CurrentFanSpeed")
+        fan_speed: dict[str, Any] = fan_speed_raw if isinstance(fan_speed_raw, dict) else {}
+        self.state.cooling_fan_speed = _fan_speed(
+            _first_present(fan_speed, "ModelFan", "modelFan", "PartFan", "part_fan")
+        )
+        self.state.big_fan1_speed = _fan_speed(
+            _first_present(fan_speed, "AuxiliaryFan", "auxiliaryFan", "AuxFan", "aux_fan")
+        )
+        self.state.big_fan2_speed = _fan_speed(
+            _first_present(fan_speed, "BoxFan", "boxFan", "ChamberFan", "chamber_fan")
+        )
+        light_status = status.get("LightStatus")
+        if light_status is not None:
+            self.state.chamber_light = _sdcp_light_enabled(light_status)
         self._emit_status_callbacks(previous_state)
         self._last_state = self.state.state
         self._has_status_sample = True

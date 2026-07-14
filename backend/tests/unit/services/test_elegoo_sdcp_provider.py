@@ -77,6 +77,8 @@ def test_elegoo_sdcp_client_normalizes_real_centauri_carbon_status_payload(monke
                 "TempTargetHotbed": 0,
                 "TempTargetNozzle": 0,
                 "TempTargetBox": 0,
+                "CurrentFanSpeed": {"ModelFan": 42, "AuxiliaryFan": 17, "BoxFan": 5},
+                "LightStatus": {"SecondLight": 1, "RgbLight": [0, 0, 0]},
                 "PrintInfo": {
                     "Status": 0,
                     "CurrentLayer": 0,
@@ -105,7 +107,13 @@ def test_elegoo_sdcp_client_normalizes_real_centauri_carbon_status_payload(monke
         "nozzle_target": 0.0,
         "bed": 33.0421938295653,
         "bed_target": 0.0,
+        "chamber": 31.48965520230296,
+        "chamber_target": 0.0,
     }
+    assert client.state.cooling_fan_speed == 42
+    assert client.state.big_fan1_speed == 17
+    assert client.state.big_fan2_speed == 5
+    assert client.state.chamber_light is True
 
 
 def test_elegoo_sdcp_client_connect_works_without_udp_discovery(monkeypatch):
