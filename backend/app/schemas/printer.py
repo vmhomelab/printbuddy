@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -438,6 +438,8 @@ class PrinterStatus(BaseModel):
     heatbreak_fan_speed: int | None = None  # Hotend heatbreak fan
     # Firmware version (from info.module[name="ota"].sw_ver)
     firmware_version: str | None = None
+    # Provider-specific connection/diagnostic details safe for display in the UI.
+    connection_details: dict[str, Any] | None = None
     # Developer LAN mode: True = enabled, False = disabled (MQTT encryption), None = unknown
     developer_mode: bool | None = None
     # Queue: printer is awaiting the user to acknowledge the build plate is cleared

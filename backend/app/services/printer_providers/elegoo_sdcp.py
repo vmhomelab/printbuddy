@@ -28,6 +28,9 @@ SDCP_PAUSE_PRINT_COMMAND = 129
 SDCP_STOP_PRINT_COMMAND = 130
 SDCP_RESUME_PRINT_COMMAND = 131
 SDCP_UPLOAD_CHUNK_SIZE = 1024 * 1024
+SDCP_START_SETTLE_SECONDS = 1.0
+SDCP_START_VERIFY_TIMEOUT = 12.0
+SDCP_START_VERIFY_INTERVAL = 1.0
 
 
 @dataclass
@@ -77,6 +80,7 @@ class ElegooSDCPPrinterState:
     heatbreak_fan_speed: int | None = None
     firmware_version: str | None = None
     developer_mode: bool | None = None
+    sdcp_connection: dict[str, Any] = field(default_factory=dict)
 
 
 def _first_present(data: dict[str, Any], *keys: str) -> Any:
@@ -243,8 +247,23 @@ class ElegooSDCPPrinterClient:
             self.discovery_info = data
             self.printer_id = str(_first_present(data, "Id", "id") or "") or None
             self.mainboard_id = str(_first_present(data, "MainboardID", "MainboardId", "Id", "id") or "") or None
+            self.state.firmware_version = (
+                str(_first_present(data, "FirmwareVersion", "Firmware", "firmware_version") or "") or None
+            )
+            self.state.sdcp_connection = self.connection_details
             return data
         return {"value": data}
+
+    @property
+    def connection_details(self) -> dict[str, Any]:
+        return {
+            "printer_id": self.printer_id,
+            "mainboard_id": self.mainboard_id,
+            "protocol_version": _first_present(self.discovery_info, "ProtocolVersion", "protocol_version"),
+            "firmware_version": _first_present(self.discovery_info, "FirmwareVersion", "Firmware", "firmware_version"),
+            "machine_name": _first_present(self.discovery_info, "MachineName", "Name", "machine_name"),
+            "brand_name": _first_present(self.discovery_info, "BrandName", "brand_name"),
+        }
 
     async def _query_status_async(self) -> dict[str, Any]:
         import websockets
@@ -416,7 +435,17 @@ class ElegooSDCPPrinterClient:
         print_info = status.get("PrintInfo") if isinstance(status.get("PrintInfo"), dict) else status
         self.state.connected = True
         self.state.raw_status = status
-        self.state.raw_data = {"sdcp": message, "discovery": self.discovery_info}
+        self.state.raw_data = {
+            "sdcp": message,
+            "discovery": self.discovery_info,
+            "sdcp_connection": self.connection_details,
+        }
+        self.state.sdcp_connection = self.connection_details
+        self.state.firmware_version = (
+            self.state.firmware_version
+            or str(_first_present(self.discovery_info, "FirmwareVersion", "Firmware", "firmware_version") or "")
+            or None
+        )
         status_code = _first_present(status, "Status", "CurrentStatus", "PrintStatus", "MachineStatus", "status")
         if status_code is None and isinstance(print_info, dict):
             status_code = _first_present(
@@ -463,6 +492,24 @@ class ElegooSDCPPrinterClient:
         self._has_status_sample = True
         return True
 
+    def _is_expected_print_active(self, filename: str) -> bool:
+        if self.state.state not in {"RUNNING", "PAUSE"}:
+            return False
+        expected = Path(filename).name.lower()
+        observed_names = [self.state.gcode_file, self.state.current_print, self.state.subtask_name]
+        normalized = [Path(str(value)).name.lower() for value in observed_names if value]
+        if not normalized:
+            return True
+        return any(expected == value or expected in value or value in expected for value in normalized)
+
+    def _confirm_print_started(self, filename: str) -> bool:
+        deadline = time.monotonic() + SDCP_START_VERIFY_TIMEOUT
+        while time.monotonic() < deadline:
+            if self.request_status_update() and self._is_expected_print_active(filename):
+                return True
+            time.sleep(SDCP_START_VERIFY_INTERVAL)
+        return False
+
     def start_print(self, filename: str, plate_id: int = 1, **kwargs: Any) -> bool:  # noqa: ARG002
         if not self.mainboard_id:
             self.discover()
@@ -486,12 +533,20 @@ class ElegooSDCPPrinterClient:
                 "Timestamp": int(time.time()),
             },
         }
-        response = self._send_command(command)
+        time.sleep(SDCP_START_SETTLE_SECONDS)
+        try:
+            response = self._send_command(command)
+        except TimeoutError:
+            logger.warning("Elegoo SDCP start_print ACK timed out for %s; polling status for reconciliation", filename)
+            return self._confirm_print_started(filename)
         data = response.get("Data") if isinstance(response.get("Data"), dict) else {}
         response_data = data.get("Data") if isinstance(data.get("Data"), dict) else {}
         ack = response_data.get("Ack")
         if ack != 0:
             logger.warning("Elegoo SDCP start_print rejected for %s: Ack=%s", filename, ack)
+            return False
+        if not self._confirm_print_started(filename):
+            logger.warning("Elegoo SDCP start_print ACKed for %s but printer did not report active print", filename)
             return False
         return True
 

@@ -873,6 +873,7 @@ async def get_printer_status(
         big_fan2_speed=state.big_fan2_speed,
         heatbreak_fan_speed=state.heatbreak_fan_speed,
         firmware_version=state.firmware_version,
+        connection_details=getattr(state, "sdcp_connection", None) or (state.raw_data or {}).get("sdcp_connection"),
         developer_mode=state.developer_mode if state else None,
         awaiting_plate_clear=printer_manager.is_awaiting_plate_clear(printer_id),
         supports_drying=supports_drying(printer.model, state.firmware_version),

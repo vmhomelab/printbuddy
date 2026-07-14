@@ -176,6 +176,8 @@ def test_elegoo_sdcp_start_print_sends_full_cmd_128_payload(monkeypatch):
     client = ElegooSDCPPrinterClient("192.168.1.181")
     client.printer_id = "printer-id"
     client.mainboard_id = "mainboard-id"
+    monkeypatch.setattr("backend.app.services.printer_providers.elegoo_sdcp.time.sleep", lambda seconds: None)
+    monkeypatch.setattr(client, "_confirm_print_started", lambda filename: True)
     monkeypatch.setattr(
         client,
         "_send_command",
@@ -198,4 +200,46 @@ def test_elegoo_sdcp_start_print_sends_full_cmd_128_payload(monkeypatch):
         "PrintPlatformType": 1,
         "Tlp_Switch": 0,
         "slot_map": [],
+    }
+
+
+def test_elegoo_sdcp_start_print_reconciles_command_timeout_with_active_status(monkeypatch):
+    client = ElegooSDCPPrinterClient("192.168.1.181")
+    client.printer_id = "printer-id"
+    client.mainboard_id = "mainboard-id"
+    client.state.state = "IDLE"
+    monkeypatch.setattr("backend.app.services.printer_providers.elegoo_sdcp.time.sleep", lambda seconds: None)
+    monkeypatch.setattr(client, "_send_command", lambda command: (_ for _ in ()).throw(TimeoutError("slow ack")))
+
+    def fake_status_update():
+        client.state.state = "RUNNING"
+        client.state.gcode_file = "calibration.gcode"
+        client.state.current_print = "calibration.gcode"
+        return True
+
+    monkeypatch.setattr(client, "request_status_update", fake_status_update)
+
+    assert client.start_print("calibration.gcode") is True
+
+
+def test_elegoo_sdcp_status_populates_connection_details():
+    client = ElegooSDCPPrinterClient("192.168.1.181")
+    client.printer_id = "979d4C788A4a78bC777A870F1A02867A"
+    client.mainboard_id = "4c8918d80103d46c00004c0000000000"
+    client.discovery_info = {
+        "Id": client.printer_id,
+        "MainboardID": client.mainboard_id,
+        "ProtocolVersion": "V3.0.0",
+        "FirmwareVersion": "V0.3.0-o",
+        "MachineName": "Centauri Carbon",
+        "BrandName": "ELEGOO",
+    }
+
+    assert client.connection_details == {
+        "printer_id": "979d4C788A4a78bC777A870F1A02867A",
+        "mainboard_id": "4c8918d80103d46c00004c0000000000",
+        "protocol_version": "V3.0.0",
+        "firmware_version": "V0.3.0-o",
+        "machine_name": "Centauri Carbon",
+        "brand_name": "ELEGOO",
     }

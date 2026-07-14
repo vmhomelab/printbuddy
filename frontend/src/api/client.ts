@@ -471,7 +471,8 @@ export interface PrinterStatus {
   big_fan1_speed: number | null;     // Auxiliary fan
   big_fan2_speed: number | null;     // Chamber/exhaust fan
   heatbreak_fan_speed: number | null; // Hotend heatbreak fan
-  firmware_version: string | null;   // Firmware version from MQTT
+  firmware_version: string | null;   // Firmware version from MQTT / provider metadata
+  connection_details: Record<string, string | number | boolean | null> | null; // Provider-specific connection details
   // Developer LAN mode: true = enabled, false = disabled, null = unknown
   developer_mode: boolean | null;
   // Queue: printer is awaiting user ack that the build plate was cleared after a
