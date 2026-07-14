@@ -96,8 +96,13 @@ def is_stream_active(printer_id: int) -> bool:
     returns None (the stream may be running but the first frame hasn't landed
     in the buffer yet, or the upstream is mid-reconnect).
     """
-    return any(k.startswith(f"{printer_id}-") for k in _active_streams) or any(
-        k.startswith(f"{printer_id}-") for k in _active_chamber_streams
+    from backend.app.services.camera_fanout import active_broadcaster_keys
+
+    return (
+        printer_id in _active_external_streams
+        or f"printer-{printer_id}" in active_broadcaster_keys()
+        or any(k.startswith(f"{printer_id}-") for k in _active_streams)
+        or any(k.startswith(f"{printer_id}-") for k in _active_chamber_streams)
     )
 
 

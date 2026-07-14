@@ -339,3 +339,19 @@ async def test_force_shutdown_then_subscribe_via_registry_works():
     chunk = await asyncio.wait_for(queue.get(), timeout=1.0)
     assert chunk == b"hello"
     await shutdown_broadcaster("p1")
+
+
+async def test_camera_route_treats_printer_fanout_as_active_stream():
+    """Regression for provider-derived MJPEG cameras.
+
+    Elegoo SDCP live-view uses fan-out key ``printer-<id>``. Snapshot callers
+    must treat that broadcaster as an active stream even before a frame has
+    been buffered; otherwise they open a competing direct MJPEG connection to
+    the printer and the CC1 camera server starts timing out.
+    """
+    from backend.app.api.routes.camera import is_stream_active
+
+    bc = await get_or_create_broadcaster("printer-42", _make_factory([], delay=0.05))
+    await bc.subscribe()
+
+    assert is_stream_active(42) is True
