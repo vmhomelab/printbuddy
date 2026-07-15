@@ -3763,15 +3763,20 @@ function PrinterCard({
                       })}
 
                       {isElegooSDCPProvider && (
-                        <div
-                          className={`flex items-center gap-1 px-1.5 py-1 rounded ${status.chamber_light ? 'bg-yellow-500/10' : 'bg-bambu-dark'}`}
-                          title={t('printers.chamberLight', 'Chamber Light')}
+                        <button
+                          type="button"
+                          onClick={() => chamberLightMutation.mutate(!status.chamber_light)}
+                          disabled={chamberLightMutation.isPending || !hasPermission('printers:control')}
+                          className={`flex items-center gap-1 px-1.5 py-1 rounded transition-colors ${
+                            status.chamber_light ? 'bg-yellow-500/10 hover:bg-yellow-500/20' : 'bg-bambu-dark hover:bg-bambu-dark-tertiary'
+                          } disabled:opacity-50 disabled:cursor-not-allowed`}
+                          title={!hasPermission('printers:control') ? t('printers.permission.noControl') : (status.chamber_light ? t('printers.chamberLightOff') : t('printers.chamberLightOn'))}
                         >
                           <ChamberLight on={status.chamber_light} className={`w-3.5 h-3.5 ${status.chamber_light ? 'text-yellow-400' : 'text-bambu-gray/50'}`} />
                           <span className={`text-[10px] ${status.chamber_light ? 'text-yellow-400' : 'text-bambu-gray/50'}`}>
                             {status.chamber_light ? t('common.on', 'On') : t('common.off', 'Off')}
                           </span>
-                        </div>
+                        </button>
                       )}
 
                       {(fanItems.length > 0 || isElegooSDCPProvider) && <div className="w-px h-5 bg-bambu-gray/30" />}
