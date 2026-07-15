@@ -661,6 +661,29 @@ describe('PrintersPage', () => {
       expect(screen.queryByTitle('Move build plate')).not.toBeInTheDocument();
     });
 
+    it('hides loaded-spool assignment controls for Elegoo SDCP printers', async () => {
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          ...mockPrinters[0],
+          name: 'Centauri Carbon',
+          provider: 'elegoo_sdcp',
+          model: 'Elegoo Centauri Carbon',
+        }])),
+        http.get('/api/v1/printers/:id/status', () => HttpResponse.json({
+          ...mockPrinterStatus,
+          ams: [],
+          vt_tray: [],
+        })),
+      );
+
+      render(<PrintersPage />);
+
+      await waitFor(() => expect(screen.getByText('Centauri Carbon')).toBeInTheDocument());
+
+      expect(screen.queryByText('Loaded spool')).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /^Assign$/i })).not.toBeInTheDocument();
+    });
+
     it('groups add-printer model choices by vendor and includes common Klipper machines', async () => {
       const user = userEvent.setup();
 

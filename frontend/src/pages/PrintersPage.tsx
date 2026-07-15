@@ -1884,8 +1884,9 @@ function PrinterCard({
   const isPrusaModelPrinter = isPrusaPrinter(printer);
   const isBambuProvider = !printer.provider || printer.provider === 'bambu';
   const isElegooSDCPProvider = printer.provider === 'elegoo_sdcp';
+  const supportsSpoolAssignment = !isPrusaModelPrinter && !isElegooSDCPProvider;
   const prusaLinkWebUrl = getPrusaLinkWebUrl(printer);
-  const loadedSpoolAssignment = isPrusaModelPrinter ? undefined : onGetAssignment?.(printer.id, -1, 0);
+  const loadedSpoolAssignment = supportsSpoolAssignment ? onGetAssignment?.(printer.id, -1, 0) : undefined;
 
   // Collect loaded filament types for queue widget filtering
   const loadedFilamentTypes = useMemo(() => {
@@ -2064,7 +2065,7 @@ function PrinterCard({
     ? currentTrayNow
     : cachedTrayNow.current;
 
-  const showLoadedSpoolPicker = !isPrusaModelPrinter && (amsData.length === 0) && ((status?.vt_tray?.length ?? 0) === 0);
+  const showLoadedSpoolPicker = supportsSpoolAssignment && (amsData.length === 0) && ((status?.vt_tray?.length ?? 0) === 0);
 
   // Fetch smart plug for this printer
   const { data: smartPlug } = useQuery({
@@ -4311,7 +4312,7 @@ function PrinterCard({
                                                   ? Math.max(0, Math.round(spoolmanSpool.label_weight - spoolmanSpool.weight_used))
                                                   : undefined,
                                               } : null,
-                                              onAssignSpool: () => setAssignSpoolModal({
+                                              onAssignSpool: supportsSpoolAssignment ? () => setAssignSpoolModal({
                                                 printerId: printer.id,
                                                 amsId: ams.id,
                                                 trayId: slotIdx,
@@ -4322,7 +4323,7 @@ function PrinterCard({
                                                   color: filamentData.colorHex || '',
                                                   location: `${getAmsLabel(ams.id, ams.tray.length)} Slot ${slotIdx + 1}`,
                                                 },
-                                              }),
+                                              }) : undefined,
                                               onUnassignSpool: (spoolmanSpool && !isBambuLabSpool(tray)) ? () => onUnassignSpoolmanSpool?.(spoolmanSpool.id) : undefined,
                                               isAssigned: !!slotAssignment || isBambuLabSpool(tray),
                                             };
@@ -4336,7 +4337,7 @@ function PrinterCard({
                                               color_name: assignment.spool.color_name,
                                               remainingWeightGrams: Math.max(0, Math.round(assignment.spool.label_weight - assignment.spool.weight_used)),
                                             } : null,
-                                            onAssignSpool: () => setAssignSpoolModal({
+                                            onAssignSpool: supportsSpoolAssignment ? () => setAssignSpoolModal({
                                               printerId: printer.id,
                                               amsId: ams.id,
                                               trayId: slotIdx,
@@ -4347,7 +4348,7 @@ function PrinterCard({
                                                 color: filamentData.colorHex || '',
                                                 location: `${getAmsLabel(ams.id, ams.tray.length)} Slot ${slotIdx + 1}`,
                                               },
-                                            }),
+                                            }) : undefined,
                                             onUnassignSpool: (assignment && !isBambuLabSpool(tray)) ? () => onUnassignSpool?.(printer.id, ams.id, slotIdx) : undefined,
                                             isAssigned: !!assignment || isBambuLabSpool(tray),
                                           };
@@ -4382,7 +4383,7 @@ function PrinterCard({
                                             extruderId: mappedExtruderId,
                                           }),
                                         }}
-                                        onAssignSpool={() => setAssignSpoolModal({
+                                        onAssignSpool={supportsSpoolAssignment ? () => setAssignSpoolModal({
                                           printerId: printer.id,
                                           amsId: ams.id,
                                           trayId: slotIdx,
@@ -4393,7 +4394,7 @@ function PrinterCard({
                                             color: '',
                                             location: `${getAmsLabel(ams.id, ams.tray.length)} Slot ${slotIdx + 1}`,
                                           },
-                                        })}
+                                        }) : undefined}
                                       >
                                         {slotVisual}
                                       </EmptySlotHoverCard>
@@ -4710,7 +4711,7 @@ function PrinterCard({
                                               ? Math.max(0, Math.round(spoolmanSpool.label_weight - spoolmanSpool.weight_used))
                                               : undefined,
                                           } : null,
-                                          onAssignSpool: () => setAssignSpoolModal({
+                                          onAssignSpool: supportsSpoolAssignment ? () => setAssignSpoolModal({
                                             printerId: printer.id,
                                             amsId: ams.id,
                                             trayId: htSlotId,
@@ -4721,7 +4722,7 @@ function PrinterCard({
                                               color: filamentData.colorHex || '',
                                               location: getAmsLabel(ams.id, ams.tray.length),
                                             },
-                                          }),
+                                          }) : undefined,
                                           onUnassignSpool: (spoolmanSpool && !isBambuLabSpool(tray)) ? () => onUnassignSpoolmanSpool?.(spoolmanSpool.id) : undefined,
                                           isAssigned: !!slotAssignment || isBambuLabSpool(tray),
                                         };
@@ -4735,7 +4736,7 @@ function PrinterCard({
                                           color_name: assignment.spool.color_name,
                                           remainingWeightGrams: Math.max(0, Math.round(assignment.spool.label_weight - assignment.spool.weight_used)),
                                         } : null,
-                                        onAssignSpool: () => setAssignSpoolModal({
+                                        onAssignSpool: supportsSpoolAssignment ? () => setAssignSpoolModal({
                                           printerId: printer.id,
                                           amsId: ams.id,
                                           trayId: htSlotId,
@@ -4746,7 +4747,7 @@ function PrinterCard({
                                             color: filamentData.colorHex || '',
                                             location: getAmsLabel(ams.id, ams.tray.length),
                                           },
-                                        }),
+                                        }) : undefined,
                                         onUnassignSpool: (assignment && !isBambuLabSpool(tray)) ? () => onUnassignSpool?.(printer.id, ams.id, htSlotId) : undefined,
                                         isAssigned: !!assignment || isBambuLabSpool(tray),
                                       };
@@ -4781,7 +4782,7 @@ function PrinterCard({
                                         extruderId: mappedExtruderId,
                                       }),
                                     }}
-                                    onAssignSpool={() => setAssignSpoolModal({
+                                    onAssignSpool={supportsSpoolAssignment ? () => setAssignSpoolModal({
                                       printerId: printer.id,
                                       amsId: ams.id,
                                       trayId: htSlotId,
@@ -4792,7 +4793,7 @@ function PrinterCard({
                                         color: '',
                                         location: getAmsLabel(ams.id, ams.tray.length),
                                       },
-                                    })}
+                                    }) : undefined}
                                   >
                                     {slotVisual}
                                   </EmptySlotHoverCard>
