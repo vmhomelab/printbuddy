@@ -165,6 +165,7 @@ Printbuddy is a modified fork of an upstream AGPL-3.0 project. The upstream hist
 - `frontend/public/img/printers/creality-ender-3.png` — added by Printbuddy; latest modification date: 2026-06-06.
 - `frontend/public/img/printers/creality-ender-5-plus.png` — added by Printbuddy; latest modification date: 2026-06-06.
 - `frontend/public/img/printers/default.png` — modified by Printbuddy; latest modification date: 2026-06-06.
+- `frontend/public/img/printers/elegoo-centauri-carbon.png` — added by Printbuddy; latest modification date: 2026-07-15.
 - `frontend/public/img/printers/elegoo-neptune-3-max.png` — added by Printbuddy; latest modification date: 2026-06-06.
 - `frontend/public/img/printers/elegoo-neptune-3-plus.png` — added by Printbuddy; latest modification date: 2026-06-06.
 - `frontend/public/img/printers/elegoo-neptune-3-pro.png` — added by Printbuddy; latest modification date: 2026-06-06.
@@ -391,6 +392,7 @@ Printbuddy is a modified fork of an upstream AGPL-3.0 project. The upstream hist
 - `static/img/printers/creality-ender-3.png` — added by Printbuddy; latest modification date: 2026-06-06.
 - `static/img/printers/creality-ender-5-plus.png` — added by Printbuddy; latest modification date: 2026-06-06.
 - `static/img/printers/default.png` — modified by Printbuddy; latest modification date: 2026-06-06.
+- `static/img/printers/elegoo-centauri-carbon.png` — added by Printbuddy; latest modification date: 2026-07-15.
 - `static/img/printers/elegoo-neptune-3-max.png` — added by Printbuddy; latest modification date: 2026-06-06.
 - `static/img/printers/elegoo-neptune-3-plus.png` — added by Printbuddy; latest modification date: 2026-06-06.
 - `static/img/printers/elegoo-neptune-3-pro.png` — added by Printbuddy; latest modification date: 2026-06-06.

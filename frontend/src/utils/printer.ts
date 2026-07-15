@@ -30,6 +30,7 @@ const MODEL_IMAGE_ALIASES: Array<[RegExp, string]> = [
   [/^elegooneptune4pro$/, 'elegoo-neptune-4-pro'],
   [/^elegooneptune4plus$/, 'elegoo-neptune-4-plus'],
   [/^elegooneptune4max$/, 'elegoo-neptune-4-max'],
+  [/^elegoocentauricarbon$/, 'elegoo-centauri-carbon'],
   [/^prusacoreone$/, 'prusa-core-one'],
   [/^prusamk4s$/, 'prusa-mk4s'],
   [/^prusamk4$/, 'prusa-mk4'],
