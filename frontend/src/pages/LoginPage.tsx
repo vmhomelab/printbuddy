@@ -627,8 +627,8 @@ export function LoginPage() {
               <div className="text-2xl font-extrabold tracking-tight text-white">
                 Print<span className="text-bambu-green-light">buddy</span>
               </div>
-              <div className="mt-1 text-[0.55rem] font-semibold uppercase tracking-[0.22em] text-bambu-gray">
-                Bambu Lab · Klipper · Mainsail
+              <div className="mt-1 max-w-[18rem] text-xs font-semibold leading-snug tracking-[0.02em] text-bambu-gray">
+                One modern self-hosted dashboard for your 3D printer fleet.
               </div>
             </div>
           </div>

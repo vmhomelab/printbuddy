@@ -48,6 +48,13 @@ describe('LoginPage', () => {
       expect(icon).not.toHaveAttribute('src', expect.stringContaining('printbuddy_logo.svg'));
     });
 
+    it('shows the fleet dashboard tagline in the login header', async () => {
+      render(<LoginPage />);
+
+      expect(await screen.findByText('One modern self-hosted dashboard for your 3D printer fleet.')).toBeInTheDocument();
+      expect(screen.queryByText(/Bambu Lab · Klipper · Mainsail/i)).not.toBeInTheDocument();
+    });
+
     it('offers the public source code link before authentication', async () => {
       render(<LoginPage />);
 
