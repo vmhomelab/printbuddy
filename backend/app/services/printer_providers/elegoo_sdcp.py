@@ -27,6 +27,7 @@ SDCP_START_PRINT_COMMAND = 128
 SDCP_PAUSE_PRINT_COMMAND = 129
 SDCP_STOP_PRINT_COMMAND = 130
 SDCP_RESUME_PRINT_COMMAND = 131
+SDCP_EDIT_STATUS_DATA_COMMAND = 403
 SDCP_UPLOAD_CHUNK_SIZE = 1024 * 1024
 SDCP_START_SETTLE_SECONDS = 1.0
 SDCP_START_VERIFY_TIMEOUT = 12.0
@@ -634,6 +635,38 @@ class ElegooSDCPPrinterClient:
 
     def stop_print(self) -> bool:
         return self._send_job_control_command(SDCP_STOP_PRINT_COMMAND, "stop_print")
+
+    def set_chamber_light(self, on: bool) -> bool:
+        """Turn the Centauri Carbon chamber light on/off via SDCP Cmd 403."""
+        if not self.mainboard_id:
+            self.discover()
+        request_id = str(int(time.time() * 1000))
+        command = {
+            "Id": self.printer_id or "",
+            "Topic": f"sdcp/request/{self.mainboard_id}",
+            "Data": {
+                "Cmd": SDCP_EDIT_STATUS_DATA_COMMAND,
+                "Data": {
+                    "LightStatus": {
+                        "SecondLight": bool(on),
+                        "RgbLight": [0, 0, 0],
+                    }
+                },
+                "From": 1,
+                "MainboardID": self.mainboard_id,
+                "RequestID": request_id,
+                "TimeStamp": int(time.time() * 1000),
+            },
+        }
+        response = self._send_command(command)
+        data = response.get("Data") if isinstance(response.get("Data"), dict) else {}
+        response_data = data.get("Data") if isinstance(data.get("Data"), dict) else {}
+        ack = response_data.get("Ack")
+        if ack not in (0, None):
+            logger.warning("Elegoo SDCP set_chamber_light rejected: Ack=%s", ack)
+            return False
+        self.state.chamber_light = bool(on)
+        return True
 
     def list_files(self, path: str = "/") -> list[dict[str, Any]]:  # noqa: ARG002
         return []
