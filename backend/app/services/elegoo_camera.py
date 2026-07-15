@@ -14,6 +14,7 @@ import socket
 import time
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,30 @@ class EffectiveCameraSource:
 
 def is_elegoo_sdcp_provider(provider: object) -> bool:
     return str(provider or "").strip().lower() == ELEGOO_SDCP_PROVIDER
+
+
+def is_elegoo_sdcp_camera_source(provider: object, camera_url: object) -> bool:
+    """Return True when a camera URL should use CC1 SDCP activation.
+
+    Existing printers may have the validated ``http://<ip>:3031/video`` URL
+    persisted as a manual external camera. Manual config is not marked as
+    ``derived``, but the Centauri Carbon endpoint still requires the SDCP
+    WebSocket activation session before JPEG frames are produced.
+    """
+    if not is_elegoo_sdcp_provider(provider):
+        return False
+    raw = str(camera_url or "").strip()
+    if not raw:
+        return False
+    try:
+        parsed = urlparse(raw)
+    except Exception:
+        return False
+    return (
+        parsed.scheme in {"http", "https"}
+        and parsed.port == ELEGOO_SDCP_CAMERA_PORT
+        and parsed.path.rstrip("/") == ELEGOO_SDCP_CAMERA_PATH
+    )
 
 
 def build_elegoo_sdcp_camera_url(ip_address: object) -> str | None:

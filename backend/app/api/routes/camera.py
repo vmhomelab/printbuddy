@@ -41,7 +41,7 @@ from backend.app.services.camera_fanout import (
 from backend.app.services.camera_profiles import get_camera_profile
 from backend.app.services.elegoo_camera import (
     get_effective_camera_source,
-    is_elegoo_sdcp_provider,
+    is_elegoo_sdcp_camera_source,
     keep_elegoo_sdcp_camera_session,
 )
 
@@ -667,9 +667,7 @@ async def camera_stream(
             """Single upstream external/provider MJPEG connection shared by all viewers."""
             _active_external_streams.add(printer_id)
             activation_task: asyncio.Task[None] | None = None
-            should_activate_elegoo = effective_camera.derived and is_elegoo_sdcp_provider(
-                getattr(printer, "provider", None)
-            )
+            should_activate_elegoo = is_elegoo_sdcp_camera_source(getattr(printer, "provider", None), camera_url)
             try:
                 if should_activate_elegoo:
                     activation_task = asyncio.create_task(
@@ -951,7 +949,7 @@ async def camera_snapshot(
                 status_code=503,
                 detail="Camera stream is active but no buffered frame is available yet.",
             )
-        if effective_camera.derived:
+        if is_elegoo_sdcp_camera_source(getattr(printer, "provider", None), effective_camera.url):
             from backend.app.services.elegoo_camera import capture_elegoo_sdcp_activated_frame
 
             frame_data = await capture_elegoo_sdcp_activated_frame(

@@ -10,6 +10,7 @@ from backend.app.services.elegoo_camera import (
     build_elegoo_sdcp_status_command,
     capture_elegoo_sdcp_activated_frame,
     get_effective_camera_source,
+    is_elegoo_sdcp_camera_source,
 )
 
 
@@ -47,6 +48,14 @@ def test_elegoo_sdcp_existing_row_gets_effective_camera_source():
     assert camera.derived is True
     assert camera.camera_type == "mjpeg"
     assert camera.url == "http://192.168.1.181:3031/video"
+
+
+def test_elegoo_sdcp_camera_source_detects_manual_cc1_mjpeg_url():
+    assert is_elegoo_sdcp_camera_source("elegoo_sdcp", "http://192.168.1.234:3031/video") is True
+    assert is_elegoo_sdcp_camera_source("elegoo_sdcp", "http://192.168.1.234:3031/video/") is True
+    assert is_elegoo_sdcp_camera_source("elegoo_sdcp", "http://192.168.1.234:3031/stream") is False
+    assert is_elegoo_sdcp_camera_source("elegoo_sdcp", "http://192.168.1.234:8080/video") is False
+    assert is_elegoo_sdcp_camera_source("bambu", "http://192.168.1.234:3031/video") is False
 
 
 def test_printer_response_exposes_effective_elegoo_camera_for_existing_rows():

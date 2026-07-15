@@ -1643,7 +1643,7 @@ async def _capture_snapshot_for_notification(printer_id: int, printer, logger) -
         if capture_enabled is not None and capture_enabled.lower() != "true":
             return None
 
-        from backend.app.services.elegoo_camera import get_effective_camera_source
+        from backend.app.services.elegoo_camera import get_effective_camera_source, is_elegoo_sdcp_camera_source
 
         effective_camera = get_effective_camera_source(printer)
 
@@ -1662,8 +1662,11 @@ async def _capture_snapshot_for_notification(printer_id: int, printer, logger) -
                 )
                 return None
 
+            should_activate_elegoo = is_elegoo_sdcp_camera_source(
+                getattr(printer, "provider", None), effective_camera.url
+            )
             logger.info("[SNAPSHOT] Capturing from external/provider camera for printer %s", printer_id)
-            if effective_camera.derived:
+            if should_activate_elegoo:
                 from backend.app.services.elegoo_camera import capture_elegoo_sdcp_activated_frame
 
                 frame_data = await capture_elegoo_sdcp_activated_frame(
@@ -1683,6 +1686,12 @@ async def _capture_snapshot_for_notification(printer_id: int, printer, logger) -
             if frame_data and len(frame_data) <= 2_500_000:
                 logger.info("[SNAPSHOT] External camera frame: %s bytes", len(frame_data))
                 return _apply_camera_rotation(frame_data, printer, logger)
+            if should_activate_elegoo:
+                logger.warning(
+                    "[SNAPSHOT] Elegoo SDCP camera failed for printer %s; not falling back to built-in camera path",
+                    printer_id,
+                )
+                return None
             if effective_camera.derived:
                 logger.warning(
                     "[SNAPSHOT] Derived provider camera failed for printer %s; not falling back to built-in camera path",
@@ -3952,7 +3961,10 @@ async def on_print_complete(printer_id: int, data: dict):
                                 archive_dir = app_settings.archive_dir / str(archive.id)
                             photo_filename = None
 
-                            from backend.app.services.elegoo_camera import get_effective_camera_source
+                            from backend.app.services.elegoo_camera import (
+                                get_effective_camera_source,
+                                is_elegoo_sdcp_camera_source,
+                            )
 
                             effective_camera = get_effective_camera_source(printer)
 
@@ -3973,7 +3985,10 @@ async def on_print_complete(printer_id: int, data: dict):
                                     frame_data = None
                                 else:
                                     logger.info("[PHOTO-BG] Using external/provider camera")
-                                    if effective_camera.derived:
+                                    should_activate_elegoo = is_elegoo_sdcp_camera_source(
+                                        getattr(printer, "provider", None), effective_camera.url
+                                    )
+                                    if should_activate_elegoo:
                                         from backend.app.services.elegoo_camera import (
                                             capture_elegoo_sdcp_activated_frame,
                                         )
