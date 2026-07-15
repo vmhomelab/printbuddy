@@ -3738,7 +3738,7 @@ function PrinterCard({
                               <>
                                 <div className="fixed inset-0 z-40" onClick={() => setShowFanMenu(null)} />
                                 <div className="absolute bottom-full left-0 mb-1 z-50 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-lg py-1 min-w-[92px]">
-                                  {([0, 25, 50, 75, 100] as const).map((speed) => (
+                                  {(key === 'chamber' ? ([0, 100] as const) : ([0, 25, 50, 75, 100] as const)).map((speed) => (
                                     <button
                                       key={speed}
                                       type="button"

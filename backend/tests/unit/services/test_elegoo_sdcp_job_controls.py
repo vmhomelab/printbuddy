@@ -116,8 +116,12 @@ def test_elegoo_sdcp_set_fan_speed_clamps_speed_and_rejects_unknown_fan(monkeypa
         lambda command: sent_commands.append(command) or {"Data": {"Data": {"Ack": 0}}},
     )
 
-    assert client.set_fan_speed("box-fan", 150) is True
+    assert client.set_fan_speed("box-fan", 50) is True
     assert sent_commands[0]["Data"]["Data"] == {"TargetFanSpeed": {"ModelFan": 0, "AuxiliaryFan": 0, "BoxFan": 100}}
+    assert client.set_fan_speed("chamber", 0) is True
+    assert sent_commands[1]["Data"]["Data"] == {"TargetFanSpeed": {"ModelFan": 0, "AuxiliaryFan": 0, "BoxFan": 0}}
+    assert client.set_fan_speed("part", 150) is True
+    assert sent_commands[2]["Data"]["Data"] == {"TargetFanSpeed": {"ModelFan": 100, "AuxiliaryFan": 0, "BoxFan": 0}}
 
     try:
         client.set_fan_speed("heatbreak", 50)

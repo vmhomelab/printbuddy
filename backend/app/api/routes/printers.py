@@ -3216,14 +3216,15 @@ async def set_fan_speed(
     if not callable(set_fan_speed_method):
         raise HTTPException(400, "Fan speed control is not supported by this printer provider")
 
+    effective_speed = 100 if normalized_fan in {"chamber", "box", "box_fan"} and speed > 0 else speed
     try:
-        success = set_fan_speed_method(normalized_fan, speed)
+        success = set_fan_speed_method(normalized_fan, effective_speed)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     if not success:
         raise HTTPException(500, "Failed to control fan speed")
 
-    return {"success": True, "message": f"{fan} fan speed set to {speed}%"}
+    return {"success": True, "message": f"{fan} fan speed set to {effective_speed}%"}
 
 
 @router.post("/{printer_id}/bed-jog")

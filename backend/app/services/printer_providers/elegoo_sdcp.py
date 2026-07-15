@@ -694,6 +694,10 @@ class ElegooSDCPPrinterClient:
         if fan_field is None:
             raise ValueError("Fan must be one of: part, aux, chamber")
         target_speed = max(0, min(100, int(speed)))
+        if fan_field == "BoxFan":
+            # The CC1 chamber/box fan is exposed by the printer UI as an on/off
+            # control. Normalize any non-zero direct API value to fully on.
+            target_speed = 100 if target_speed > 0 else 0
         payload = {
             "TargetFanSpeed": {
                 "ModelFan": self.state.cooling_fan_speed or 0,
