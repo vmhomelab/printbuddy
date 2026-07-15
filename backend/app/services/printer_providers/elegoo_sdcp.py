@@ -636,8 +636,7 @@ class ElegooSDCPPrinterClient:
     def stop_print(self) -> bool:
         return self._send_job_control_command(SDCP_STOP_PRINT_COMMAND, "stop_print")
 
-    def set_chamber_light(self, on: bool) -> bool:
-        """Turn the Centauri Carbon chamber light on/off via SDCP Cmd 403."""
+    def _send_edit_status_data_command(self, payload: dict[str, Any], action: str) -> bool:
         if not self.mainboard_id:
             self.discover()
         request_id = str(int(time.time() * 1000))
@@ -646,12 +645,7 @@ class ElegooSDCPPrinterClient:
             "Topic": f"sdcp/request/{self.mainboard_id}",
             "Data": {
                 "Cmd": SDCP_EDIT_STATUS_DATA_COMMAND,
-                "Data": {
-                    "LightStatus": {
-                        "SecondLight": bool(on),
-                        "RgbLight": [0, 0, 0],
-                    }
-                },
+                "Data": payload,
                 "From": 1,
                 "MainboardID": self.mainboard_id,
                 "RequestID": request_id,
@@ -663,10 +657,60 @@ class ElegooSDCPPrinterClient:
         response_data = data.get("Data") if isinstance(data.get("Data"), dict) else {}
         ack = response_data.get("Ack")
         if ack not in (0, None):
-            logger.warning("Elegoo SDCP set_chamber_light rejected: Ack=%s", ack)
+            logger.warning("Elegoo SDCP %s rejected: Ack=%s", action, ack)
             return False
-        self.state.chamber_light = bool(on)
         return True
+
+    def set_chamber_light(self, on: bool) -> bool:
+        """Turn the Centauri Carbon chamber light on/off via SDCP Cmd 403."""
+        success = self._send_edit_status_data_command(
+            {
+                "LightStatus": {
+                    "SecondLight": bool(on),
+                    "RgbLight": [0, 0, 0],
+                }
+            },
+            "set_chamber_light",
+        )
+        if success:
+            self.state.chamber_light = bool(on)
+        return success
+
+    def set_fan_speed(self, fan: str, speed: int) -> bool:
+        """Set Centauri Carbon fan speed via SDCP Cmd 403 TargetFanSpeed."""
+        normalized_fan = fan.strip().lower().replace("-", "_")
+        fan_field = {
+            "part": "ModelFan",
+            "model": "ModelFan",
+            "model_fan": "ModelFan",
+            "cooling": "ModelFan",
+            "aux": "AuxiliaryFan",
+            "auxiliary": "AuxiliaryFan",
+            "auxiliary_fan": "AuxiliaryFan",
+            "chamber": "BoxFan",
+            "box": "BoxFan",
+            "box_fan": "BoxFan",
+        }.get(normalized_fan)
+        if fan_field is None:
+            raise ValueError("Fan must be one of: part, aux, chamber")
+        target_speed = max(0, min(100, int(speed)))
+        payload = {
+            "TargetFanSpeed": {
+                "ModelFan": self.state.cooling_fan_speed or 0,
+                "AuxiliaryFan": self.state.big_fan1_speed or 0,
+                "BoxFan": self.state.big_fan2_speed or 0,
+            }
+        }
+        payload["TargetFanSpeed"][fan_field] = target_speed
+        success = self._send_edit_status_data_command(payload, "set_fan_speed")
+        if success:
+            if fan_field == "ModelFan":
+                self.state.cooling_fan_speed = target_speed
+            elif fan_field == "AuxiliaryFan":
+                self.state.big_fan1_speed = target_speed
+            else:
+                self.state.big_fan2_speed = target_speed
+        return success
 
     def list_files(self, path: str = "/") -> list[dict[str, Any]]:  # noqa: ARG002
         return []

@@ -1764,6 +1764,7 @@ function PrinterCard({
   const [showStopConfirm, setShowStopConfirm] = useState(false);
   const [showPauseConfirm, setShowPauseConfirm] = useState(false);
   const [showSpeedMenu, setShowSpeedMenu] = useState<number | null>(null);
+  const [showFanMenu, setShowFanMenu] = useState<string | null>(null);
   const [showAirductMenu, setShowAirductMenu] = useState<number | null>(null);
   const [showResumeConfirm, setShowResumeConfirm] = useState(false);
   const [showSkipObjectsModal, setShowSkipObjectsModal] = useState(false);
@@ -2315,6 +2316,30 @@ function PrinterCard({
         queryClient.setQueryData(['printerStatus', printer.id], context.previousStatus);
       }
       showToast(error.message || t('printers.toast.failedToControlChamberLight'), 'error');
+    },
+  });
+
+  const fanSpeedMutation = useMutation({
+    mutationFn: ({ fan, speed }: { fan: 'part' | 'aux' | 'chamber'; speed: number }) => api.setFanSpeed(printer.id, fan, speed),
+    onMutate: async ({ fan, speed }) => {
+      await queryClient.cancelQueries({ queryKey: ['printerStatus', printer.id] });
+      const previousStatus = queryClient.getQueryData(['printerStatus', printer.id]);
+      queryClient.setQueryData(['printerStatus', printer.id], (old: typeof status) => ({
+        ...old,
+        cooling_fan_speed: fan === 'part' ? speed : old?.cooling_fan_speed,
+        big_fan1_speed: fan === 'aux' ? speed : old?.big_fan1_speed,
+        big_fan2_speed: fan === 'chamber' ? speed : old?.big_fan2_speed,
+      }));
+      return { previousStatus };
+    },
+    onSuccess: (_, { fan, speed }) => {
+      showToast(`${fan} fan set to ${speed}%`);
+    },
+    onError: (error: Error, _, context) => {
+      if (context?.previousStatus) {
+        queryClient.setQueryData(['printerStatus', printer.id], context.previousStatus);
+      }
+      showToast(error.message || t('printers.toast.failedToSendCommand'), 'error');
     },
   });
 
@@ -3677,16 +3702,62 @@ function PrinterCard({
                     <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 min-w-0">
                       {fanItems.map(({ key, value, title, Icon, active, bg }) => {
                         const running = (value ?? 0) > 0;
-                        return (
-                          <div
-                            key={key}
-                            className={`flex items-center gap-1 px-1.5 py-1 rounded ${running ? bg : 'bg-bambu-dark'}`}
-                            title={title}
-                          >
+                        const controllableFan = isElegooSDCPProvider && ['part', 'aux', 'chamber'].includes(key);
+                        const menuKey = `${printer.id}-${key}`;
+                        const indicator = (
+                          <>
                             <Icon className={`w-3.5 h-3.5 ${running ? active : 'text-bambu-gray/50'}`} />
                             <span className={`text-[10px] ${running ? active : 'text-bambu-gray/50'}`}>
                               {value}%
                             </span>
+                          </>
+                        );
+                        if (!controllableFan) {
+                          return (
+                            <div
+                              key={key}
+                              className={`flex items-center gap-1 px-1.5 py-1 rounded ${running ? bg : 'bg-bambu-dark'}`}
+                              title={title}
+                            >
+                              {indicator}
+                            </div>
+                          );
+                        }
+                        return (
+                          <div key={key} className="relative">
+                            <button
+                              type="button"
+                              onClick={() => setShowFanMenu(showFanMenu === menuKey ? null : menuKey)}
+                              disabled={fanSpeedMutation.isPending || !hasPermission('printers:control')}
+                              className={`flex items-center gap-1 px-1.5 py-1 rounded transition-colors ${running ? bg : 'bg-bambu-dark'} hover:bg-bambu-dark-tertiary disabled:opacity-50 disabled:cursor-not-allowed`}
+                              title={!hasPermission('printers:control') ? t('printers.permission.noControl') : `${title} control`}
+                            >
+                              {indicator}
+                            </button>
+                            {showFanMenu === menuKey && (
+                              <>
+                                <div className="fixed inset-0 z-40" onClick={() => setShowFanMenu(null)} />
+                                <div className="absolute bottom-full left-0 mb-1 z-50 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-lg py-1 min-w-[92px]">
+                                  {([0, 25, 50, 75, 100] as const).map((speed) => (
+                                    <button
+                                      key={speed}
+                                      type="button"
+                                      onClick={() => {
+                                        fanSpeedMutation.mutate({ fan: key as 'part' | 'aux' | 'chamber', speed });
+                                        setShowFanMenu(null);
+                                      }}
+                                      className={`w-full text-left px-3 py-1.5 text-xs transition-colors ${
+                                        value === speed
+                                          ? 'text-bambu-green bg-bambu-green/10'
+                                          : 'text-white hover:bg-bambu-dark-tertiary'
+                                      }`}
+                                    >
+                                      {speed}%
+                                    </button>
+                                  ))}
+                                </div>
+                              </>
+                            )}
                           </div>
                         );
                       })}

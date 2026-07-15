@@ -3179,6 +3179,53 @@ async def set_chamber_light(
     return {"success": True, "message": f"Chamber light {'on' if on else 'off'}"}
 
 
+@router.post("/{printer_id}/fan-speed")
+async def set_fan_speed(
+    printer_id: int,
+    fan: str = Query(..., description="Fan to control: part, aux, or chamber"),
+    speed: int = Query(..., ge=0, le=100, description="Fan speed percentage from 0 to 100"),
+    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_CONTROL),
+    db: AsyncSession = Depends(get_db),
+):
+    """Set a controllable fan speed."""
+    normalized_fan = fan.strip().lower().replace("-", "_")
+    if normalized_fan not in {
+        "part",
+        "model",
+        "model_fan",
+        "cooling",
+        "aux",
+        "auxiliary",
+        "auxiliary_fan",
+        "chamber",
+        "box",
+        "box_fan",
+    }:
+        raise HTTPException(400, "Fan must be one of: part, aux, chamber")
+
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+
+    client = printer_manager.get_client(printer_id)
+    if not client:
+        raise HTTPException(400, "Printer not connected")
+
+    set_fan_speed_method = getattr(client, "set_fan_speed", None)
+    if not callable(set_fan_speed_method):
+        raise HTTPException(400, "Fan speed control is not supported by this printer provider")
+
+    try:
+        success = set_fan_speed_method(normalized_fan, speed)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if not success:
+        raise HTTPException(500, "Failed to control fan speed")
+
+    return {"success": True, "message": f"{fan} fan speed set to {speed}%"}
+
+
 @router.post("/{printer_id}/bed-jog")
 async def bed_jog(
     printer_id: int,
