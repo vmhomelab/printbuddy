@@ -1,10 +1,14 @@
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+
+import pytest
 
 from backend.app.schemas.printer import PrinterCreate, PrinterResponse
 from backend.app.services.elegoo_camera import (
     ElegooCameraActivationInfo,
     build_elegoo_sdcp_camera_url,
     build_elegoo_sdcp_status_command,
+    capture_elegoo_sdcp_activated_frame,
     get_effective_camera_source,
 )
 
@@ -105,3 +109,41 @@ def test_elegoo_sdcp_camera_activation_status_command_allows_unknown_ids():
     assert "Topic" not in command
     assert command["Data"]["Cmd"] == 0
     assert command["Data"]["MainboardID"] == ""
+
+
+@pytest.mark.asyncio
+async def test_activated_elegoo_frame_capture_wraps_capture_with_sdcp_session():
+    session_events = []
+
+    async def fake_activation(host, disconnect_event, **_kwargs):
+        session_events.append((host, disconnect_event.is_set()))
+        await disconnect_event.wait()
+        session_events.append((host, disconnect_event.is_set()))
+
+    with (
+        patch(
+            "backend.app.services.elegoo_camera.keep_elegoo_sdcp_camera_session",
+            new=AsyncMock(side_effect=fake_activation),
+        ) as mocked_activation,
+        patch(
+            "backend.app.services.external_camera.capture_frame",
+            new=AsyncMock(return_value=b"jpeg-frame"),
+        ) as mocked_capture,
+    ):
+        frame = await capture_elegoo_sdcp_activated_frame(
+            "192.168.1.234",
+            "http://192.168.1.234:3031/video",
+            "mjpeg",
+            timeout=12,
+            activation_warmup=0.01,
+        )
+
+    assert frame == b"jpeg-frame"
+    mocked_activation.assert_awaited_once()
+    mocked_capture.assert_awaited_once_with(
+        "http://192.168.1.234:3031/video",
+        "mjpeg",
+        timeout=12,
+        snapshot_url=None,
+    )
+    assert session_events == [("192.168.1.234", False), ("192.168.1.234", True)]

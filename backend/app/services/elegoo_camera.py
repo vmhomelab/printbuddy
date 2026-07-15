@@ -151,6 +151,49 @@ def build_elegoo_sdcp_status_command(info: ElegooCameraActivationInfo | None = N
     return command
 
 
+async def capture_elegoo_sdcp_activated_frame(
+    host: object,
+    camera_url: str,
+    camera_type: str = ELEGOO_SDCP_CAMERA_TYPE,
+    *,
+    timeout: float = 15.0,
+    snapshot_url: str | None = None,
+    activation_warmup: float = 0.75,
+) -> bytes | None:
+    """Capture one CC1 MJPEG frame while holding the SDCP activation session open.
+
+    The Centauri Carbon may expose ``:3031/video`` headers but withhold JPEG
+    frames until a WebSocket status session is active. Fresh snapshot callers do
+    not have the route-level fan-out activation task, so wrap the one-shot
+    capture with the same lightweight activation used by live view.
+    """
+    disconnect_event = asyncio.Event()
+    activation_task = asyncio.create_task(keep_elegoo_sdcp_camera_session(host, disconnect_event))
+    try:
+        if activation_warmup > 0:
+            await asyncio.sleep(activation_warmup)
+        from backend.app.services.external_camera import capture_frame
+
+        return await capture_frame(
+            camera_url,
+            camera_type or ELEGOO_SDCP_CAMERA_TYPE,
+            timeout=timeout,
+            snapshot_url=snapshot_url,
+        )
+    finally:
+        disconnect_event.set()
+        try:
+            await asyncio.wait_for(activation_task, timeout=2.0)
+        except TimeoutError:
+            activation_task.cancel()
+            try:
+                await activation_task
+            except asyncio.CancelledError:
+                pass
+        except asyncio.CancelledError:
+            pass
+
+
 async def keep_elegoo_sdcp_camera_session(
     host: object,
     disconnect_event: asyncio.Event,

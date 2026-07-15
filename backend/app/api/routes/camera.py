@@ -951,14 +951,25 @@ async def camera_snapshot(
                 status_code=503,
                 detail="Camera stream is active but no buffered frame is available yet.",
             )
-        from backend.app.services.external_camera import capture_frame
+        if effective_camera.derived:
+            from backend.app.services.elegoo_camera import capture_elegoo_sdcp_activated_frame
 
-        frame_data = await capture_frame(
-            effective_camera.url,
-            effective_camera.camera_type or "mjpeg",
-            timeout=15,
-            snapshot_url=effective_camera.snapshot_url,
-        )
+            frame_data = await capture_elegoo_sdcp_activated_frame(
+                printer.ip_address,
+                effective_camera.url,
+                effective_camera.camera_type or "mjpeg",
+                timeout=15,
+                snapshot_url=effective_camera.snapshot_url,
+            )
+        else:
+            from backend.app.services.external_camera import capture_frame
+
+            frame_data = await capture_frame(
+                effective_camera.url,
+                effective_camera.camera_type or "mjpeg",
+                timeout=15,
+                snapshot_url=effective_camera.snapshot_url,
+            )
         if not frame_data:
             raise HTTPException(
                 status_code=503,

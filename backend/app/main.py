@@ -1663,13 +1663,23 @@ async def _capture_snapshot_for_notification(printer_id: int, printer, logger) -
                 return None
 
             logger.info("[SNAPSHOT] Capturing from external/provider camera for printer %s", printer_id)
-            from backend.app.services.external_camera import capture_frame
+            if effective_camera.derived:
+                from backend.app.services.elegoo_camera import capture_elegoo_sdcp_activated_frame
 
-            frame_data = await capture_frame(
-                effective_camera.url,
-                effective_camera.camera_type or "mjpeg",
-                snapshot_url=effective_camera.snapshot_url,
-            )
+                frame_data = await capture_elegoo_sdcp_activated_frame(
+                    printer.ip_address,
+                    effective_camera.url,
+                    effective_camera.camera_type or "mjpeg",
+                    snapshot_url=effective_camera.snapshot_url,
+                )
+            else:
+                from backend.app.services.external_camera import capture_frame
+
+                frame_data = await capture_frame(
+                    effective_camera.url,
+                    effective_camera.camera_type or "mjpeg",
+                    snapshot_url=effective_camera.snapshot_url,
+                )
             if frame_data and len(frame_data) <= 2_500_000:
                 logger.info("[SNAPSHOT] External camera frame: %s bytes", len(frame_data))
                 return _apply_camera_rotation(frame_data, printer, logger)
@@ -3963,13 +3973,25 @@ async def on_print_complete(printer_id: int, data: dict):
                                     frame_data = None
                                 else:
                                     logger.info("[PHOTO-BG] Using external/provider camera")
-                                    from backend.app.services.external_camera import capture_frame
+                                    if effective_camera.derived:
+                                        from backend.app.services.elegoo_camera import (
+                                            capture_elegoo_sdcp_activated_frame,
+                                        )
 
-                                    frame_data = await capture_frame(
-                                        effective_camera.url,
-                                        effective_camera.camera_type or "mjpeg",
-                                        snapshot_url=effective_camera.snapshot_url,
-                                    )
+                                        frame_data = await capture_elegoo_sdcp_activated_frame(
+                                            printer.ip_address,
+                                            effective_camera.url,
+                                            effective_camera.camera_type or "mjpeg",
+                                            snapshot_url=effective_camera.snapshot_url,
+                                        )
+                                    else:
+                                        from backend.app.services.external_camera import capture_frame
+
+                                        frame_data = await capture_frame(
+                                            effective_camera.url,
+                                            effective_camera.camera_type or "mjpeg",
+                                            snapshot_url=effective_camera.snapshot_url,
+                                        )
                                 if frame_data:
                                     photos_dir = archive_dir / "photos"
                                     photos_dir.mkdir(parents=True, exist_ok=True)
