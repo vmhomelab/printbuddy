@@ -1,6 +1,8 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
 import { Search, Loader2, ChevronDown, Cloud, CloudOff } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { api, ApiError } from '../../api/client';
+import type { OpenFilamentDatabaseFilamentSummary, OpenFilamentDatabaseVariantSummary } from '../../api/client';
 import type { FilamentSectionProps, FilamentOption } from './types';
 import { KNOWN_VARIANTS } from './constants';
 import { parsePresetName } from './utils';
@@ -20,6 +22,7 @@ export function FilamentSection({
   quantity,
   onQuantityChange,
   errors,
+  openFilamentDatabaseEnabled,
 }: FilamentSectionProps) {
   const { t } = useTranslation();
   const [presetDropdownOpen, setPresetDropdownOpen] = useState(false);
@@ -31,6 +34,13 @@ export function FilamentSection({
   const [materialSearch, setMaterialSearch] = useState('');
   const [labelInput, setLabelInput] = useState(String(formData.label_weight));
   const [isLabelFocused, setIsLabelFocused] = useState(false);
+  const [ofdbEnabled, setOfdbEnabled] = useState(false);
+  const [ofdbQuery, setOfdbQuery] = useState('');
+  const [ofdbFilaments, setOfdbFilaments] = useState<OpenFilamentDatabaseFilamentSummary[]>([]);
+  const [ofdbVariants, setOfdbVariants] = useState<OpenFilamentDatabaseVariantSummary[]>([]);
+  const [ofdbSelectedFilament, setOfdbSelectedFilament] = useState<OpenFilamentDatabaseFilamentSummary | null>(null);
+  const [ofdbLoading, setOfdbLoading] = useState(false);
+  const [ofdbError, setOfdbError] = useState<string | null>(null);
   const presetRef = useRef<HTMLDivElement>(null);
   const brandRef = useRef<HTMLDivElement>(null);
   const subtypeRef = useRef<HTMLDivElement>(null);
@@ -120,6 +130,94 @@ export function FilamentSection({
     if (parsed.variant) updateField('subtype', parsed.variant);
   };
 
+  const ofdbBrandSlug = useMemo(() => {
+    return formData.brand.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  }, [formData.brand]);
+
+  const ofdbMaterial = useMemo(() => formData.material.trim().toUpperCase(), [formData.material]);
+  const canSearchOfdb = Boolean(ofdbBrandSlug && ofdbMaterial);
+
+  const handleOfdbSearch = async () => {
+    if (!canSearchOfdb) {
+      setOfdbError(t('inventory.openFilamentDatabase.missingBrandMaterial'));
+      return;
+    }
+    setOfdbLoading(true);
+    setOfdbError(null);
+    setOfdbSelectedFilament(null);
+    setOfdbVariants([]);
+    try {
+      const response = await api.searchOpenFilamentDatabase(ofdbBrandSlug, ofdbMaterial, ofdbQuery);
+      setOfdbFilaments(response.filaments);
+      if (response.filaments.length === 0) {
+        setOfdbError(t('inventory.openFilamentDatabase.noFilaments'));
+      }
+    } catch (error) {
+      const message = error instanceof ApiError ? error.message : t('inventory.openFilamentDatabase.searchFailed');
+      setOfdbError(message);
+      setOfdbFilaments([]);
+    } finally {
+      setOfdbLoading(false);
+    }
+  };
+
+  const handleOfdbFilamentSelect = async (filament: OpenFilamentDatabaseFilamentSummary) => {
+    setOfdbLoading(true);
+    setOfdbError(null);
+    setOfdbSelectedFilament(filament);
+    setOfdbVariants([]);
+    try {
+      const response = await api.getOpenFilamentDatabaseFilament(ofdbBrandSlug, ofdbMaterial, filament.slug);
+      setOfdbVariants(response.variants);
+      const prefill = response.spool_prefill;
+      if (typeof prefill.material === 'string') updateField('material', prefill.material);
+      if (typeof prefill.subtype === 'string') updateField('subtype', prefill.subtype);
+      if (typeof prefill.slicer_filament === 'string') updateField('slicer_filament', prefill.slicer_filament);
+      if (typeof prefill.slicer_filament_name === 'string') setPresetInputValue(prefill.slicer_filament_name);
+      if (typeof prefill.nozzle_temp_min === 'number') updateField('nozzle_temp_min', prefill.nozzle_temp_min);
+      if (typeof prefill.nozzle_temp_max === 'number') updateField('nozzle_temp_max', prefill.nozzle_temp_max);
+      if (response.variants.length === 0) {
+        setOfdbError(t('inventory.openFilamentDatabase.noVariants'));
+      }
+    } catch (error) {
+      const message = error instanceof ApiError ? error.message : t('inventory.openFilamentDatabase.filamentLoadFailed');
+      setOfdbError(message);
+    } finally {
+      setOfdbLoading(false);
+    }
+  };
+
+  const handleOfdbVariantSelect = async (variant: OpenFilamentDatabaseVariantSummary) => {
+    if (!ofdbSelectedFilament) return;
+    setOfdbLoading(true);
+    setOfdbError(null);
+    try {
+      const response = await api.getOpenFilamentDatabaseVariant(
+        ofdbBrandSlug,
+        ofdbMaterial,
+        ofdbSelectedFilament.slug,
+        variant.slug,
+      );
+      const prefill = response.spool_prefill;
+      if (typeof prefill.brand === 'string') updateField('brand', prefill.brand);
+      if (typeof prefill.material === 'string') updateField('material', prefill.material);
+      if (typeof prefill.subtype === 'string') updateField('subtype', prefill.subtype);
+      if (typeof prefill.color_name === 'string') updateField('color_name', prefill.color_name);
+      if (typeof prefill.rgba === 'string') updateField('rgba', prefill.rgba);
+      if (typeof prefill.label_weight === 'number') updateField('label_weight', prefill.label_weight);
+      if (typeof prefill.slicer_filament === 'string') updateField('slicer_filament', prefill.slicer_filament);
+      if (typeof prefill.slicer_filament_name === 'string') setPresetInputValue(prefill.slicer_filament_name);
+      if (typeof prefill.nozzle_temp_min === 'number') updateField('nozzle_temp_min', prefill.nozzle_temp_min);
+      if (typeof prefill.nozzle_temp_max === 'number') updateField('nozzle_temp_max', prefill.nozzle_temp_max);
+      if (typeof prefill.data_origin === 'string') updateField('data_origin', prefill.data_origin);
+    } catch (error) {
+      const message = error instanceof ApiError ? error.message : t('inventory.openFilamentDatabase.variantLoadFailed');
+      setOfdbError(message);
+    } finally {
+      setOfdbLoading(false);
+    }
+  };
+
   return (
     <div className="space-y-4">
       {/* Cloud status indicator */}
@@ -131,6 +229,110 @@ export function FilamentSection({
             <><Cloud className="w-3 h-3 text-bambu-green" /> {t('inventory.cloudConnected')}</>
           ) : (
             <><CloudOff className="w-3 h-3" /> {t('inventory.cloudNotConnected')}</>
+          )}
+        </div>
+      )}
+
+      {openFilamentDatabaseEnabled && !quickAdd && (
+        <div className="p-3 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary/60 space-y-3">
+          <label className="flex items-start gap-3 text-sm text-white cursor-pointer">
+            <input
+              type="checkbox"
+              className="mt-0.5 w-4 h-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+              checked={ofdbEnabled}
+              onChange={(event) => setOfdbEnabled(event.target.checked)}
+            />
+            <span>
+              <span className="block font-medium">{t('inventory.openFilamentDatabase.searchToggle')}</span>
+              <span className="block text-xs text-bambu-gray mt-0.5">
+                {t('inventory.openFilamentDatabase.searchHint')}
+              </span>
+            </span>
+          </label>
+
+          {ofdbEnabled && (
+            <div className="space-y-2">
+              <div className="flex gap-2">
+                <div className="relative flex-1">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray/50 pointer-events-none" />
+                  <input
+                    type="text"
+                    className="w-full pl-9 pr-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm placeholder:text-bambu-gray/50 focus:outline-none focus:border-bambu-green"
+                    placeholder={t('inventory.openFilamentDatabase.searchPlaceholder')}
+                    value={ofdbQuery}
+                    onChange={(event) => setOfdbQuery(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') {
+                        event.preventDefault();
+                        void handleOfdbSearch();
+                      }
+                    }}
+                  />
+                </div>
+                <button
+                  type="button"
+                  className="px-3 py-2 rounded-lg bg-bambu-green text-white text-sm font-medium disabled:opacity-50"
+                  disabled={ofdbLoading || !canSearchOfdb}
+                  onClick={() => void handleOfdbSearch()}
+                >
+                  {ofdbLoading ? t('common.loading') : t('common.search')}
+                </button>
+              </div>
+              {!canSearchOfdb && (
+                <p className="text-xs text-bambu-gray">{t('inventory.openFilamentDatabase.brandMaterialHint')}</p>
+              )}
+              {ofdbError && <p className="text-xs text-red-400">{ofdbError}</p>}
+
+              {ofdbFilaments.length > 0 && (
+                <div className="space-y-1">
+                  <p className="text-xs font-medium text-bambu-gray">{t('inventory.openFilamentDatabase.filamentResults')}</p>
+                  <div className="max-h-40 overflow-y-auto rounded-lg border border-bambu-dark-tertiary">
+                    {ofdbFilaments.map((filament) => (
+                      <button
+                        key={filament.id}
+                        type="button"
+                        className={`w-full px-3 py-2 text-left text-sm hover:bg-bambu-dark-tertiary ${
+                          ofdbSelectedFilament?.id === filament.id ? 'bg-bambu-green/10 text-bambu-green' : 'text-white'
+                        }`}
+                        onClick={() => void handleOfdbFilamentSelect(filament)}
+                      >
+                        <span className="block">{filament.name}</span>
+                        <span className="block text-xs text-bambu-gray">
+                          {t('inventory.openFilamentDatabase.variantCount', { count: filament.variant_count })}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {ofdbVariants.length > 0 && (
+                <div className="space-y-1">
+                  <p className="text-xs font-medium text-bambu-gray">{t('inventory.openFilamentDatabase.variantResults')}</p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-1 max-h-48 overflow-y-auto">
+                    {ofdbVariants.map((variant) => (
+                      <button
+                        key={variant.id}
+                        type="button"
+                        className="flex items-center gap-2 px-3 py-2 rounded-lg border border-bambu-dark-tertiary text-left text-sm text-white hover:bg-bambu-dark-tertiary"
+                        onClick={() => void handleOfdbVariantSelect(variant)}
+                      >
+                        <span
+                          className="w-4 h-4 rounded-full border border-white/20 flex-shrink-0"
+                          style={{ backgroundColor: variant.color_hex || '#808080' }}
+                        />
+                        <span>
+                          <span className="block">{variant.name}</span>
+                          <span className="block text-xs text-bambu-gray">
+                            {t('inventory.openFilamentDatabase.sizeCount', { count: variant.size_count })}
+                          </span>
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
           )}
         </div>
       )}

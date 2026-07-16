@@ -2562,6 +2562,62 @@ export interface SpoolmanFilamentEntry {
   vendor: SpoolmanVendor | null;
 }
 
+export interface OpenFilamentDatabaseFilamentSummary {
+  id: string;
+  name: string;
+  slug: string;
+  variant_count: number;
+  path: string;
+}
+
+export interface OpenFilamentDatabaseVariantSummary {
+  id: string;
+  name: string;
+  slug: string;
+  color_hex: string | null;
+  size_count: number;
+  path: string;
+}
+
+export interface OpenFilamentDatabaseSearchResponse {
+  source: 'openfilamentdatabase';
+  brand_slug: string;
+  material: string;
+  query: string;
+  count: number;
+  filaments: OpenFilamentDatabaseFilamentSummary[];
+}
+
+export interface OpenFilamentDatabaseFilamentResponse {
+  source: 'openfilamentdatabase';
+  brand_slug: string;
+  material: string;
+  id: string;
+  name: string;
+  slug: string;
+  density: number | null;
+  diameter_tolerance: number | null;
+  min_print_temperature: number | null;
+  max_print_temperature: number | null;
+  min_bed_temperature: number | null;
+  max_bed_temperature: number | null;
+  discontinued: boolean;
+  preferred_slicer_setting: Record<string, unknown>;
+  variants: OpenFilamentDatabaseVariantSummary[];
+  spool_prefill: Partial<InventorySpool>;
+}
+
+export interface OpenFilamentDatabaseVariantResponse {
+  source: 'openfilamentdatabase';
+  brand: { id: string | null; slug: string; name: string };
+  material: string;
+  filament: Record<string, unknown>;
+  variant: { id: string | null; name: string | null; slug: string; color_hex: string | null; traits?: Record<string, unknown>; discontinued?: boolean };
+  sizes: Array<Record<string, unknown>>;
+  selected_size: Record<string, unknown> | null;
+  spool_prefill: Partial<InventorySpool>;
+}
+
 // Inventory types
 // Label printing (#809). Mirror of backend.app.services.label_renderer.TemplateName.
 export type SpoolLabelTemplate =
@@ -4926,6 +4982,14 @@ export const api = {
     request<{ filaments: unknown[] }>('/spoolman/filaments'),
   getSpoolmanInventoryFilaments: () =>
     request<SpoolmanFilamentEntry[]>('/spoolman/inventory/filaments'),
+
+  // Open Filament Database catalog proxy
+  searchOpenFilamentDatabase: (brand: string, material: string, q = '') =>
+    request<OpenFilamentDatabaseSearchResponse>(`/open-filament-database/search?brand=${encodeURIComponent(brand)}&material=${encodeURIComponent(material)}&q=${encodeURIComponent(q)}`),
+  getOpenFilamentDatabaseFilament: (brand: string, material: string, filament: string) =>
+    request<OpenFilamentDatabaseFilamentResponse>(`/open-filament-database/brands/${encodeURIComponent(brand)}/materials/${encodeURIComponent(material)}/filaments/${encodeURIComponent(filament)}`),
+  getOpenFilamentDatabaseVariant: (brand: string, material: string, filament: string, variant: string) =>
+    request<OpenFilamentDatabaseVariantResponse>(`/open-filament-database/brands/${encodeURIComponent(brand)}/materials/${encodeURIComponent(material)}/filaments/${encodeURIComponent(filament)}/variants/${encodeURIComponent(variant)}`),
   patchSpoolmanFilament: (
     filamentId: number,
     data: { name?: string; spool_weight?: number | null; keep_existing_spools?: boolean },
