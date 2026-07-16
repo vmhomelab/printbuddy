@@ -294,6 +294,28 @@ PrintBuddy should not expose the raw OFDB hierarchy directly to the modal. Norma
 }
 ```
 
+## PrintBuddy backend proxy endpoints
+
+Phase 2 adds these PrintBuddy endpoints under `/api/v1/open-filament-database`:
+
+```text
+GET /brands
+GET /brands/{brand_slug}
+GET /brands/{brand_slug}/materials/{MATERIAL}/filaments
+GET /brands/{brand_slug}/materials/{MATERIAL}/filaments/{filament_slug}
+GET /brands/{brand_slug}/materials/{MATERIAL}/filaments/{filament_slug}/variants/{variant_slug}
+GET /search?brand={brand_slug}&material={MATERIAL}&q={query}
+```
+
+All endpoints are read-only and gated with `inventory:read` when auth is enabled. The `/search` endpoint mirrors OFDB's hierarchy: it searches within a selected brand + material, not globally across the entire database.
+
+Useful smoke tests:
+
+```bash
+curl 'http://localhost:8000/api/v1/open-filament-database/search?brand=elegoo&material=PLA&q=matte'
+curl 'http://localhost:8000/api/v1/open-filament-database/brands/elegoo/materials/PLA/filaments/pla/variants/black'
+```
+
 ## Implementation notes
 
 - Add a persisted app setting such as `open_filament_database_enabled: bool = False`.
