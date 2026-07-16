@@ -38,6 +38,8 @@ vi.mock('../../api/client', () => ({
       failed_count: 0,
     }),
     getSpoolmanInventoryFilaments: vi.fn().mockResolvedValue([]),
+    getOpenFilamentDatabaseBrands: vi.fn().mockResolvedValue({ count: 0, brands: [] }),
+    getOpenFilamentDatabaseBrand: vi.fn().mockResolvedValue({ materials: [] }),
     searchOpenFilamentDatabase: vi.fn().mockResolvedValue({ count: 0, filaments: [] }),
     getOpenFilamentDatabaseFilament: vi.fn().mockResolvedValue({ variants: [], spool_prefill: {} }),
     getOpenFilamentDatabaseVariant: vi.fn().mockResolvedValue({ spool_prefill: {} }),
@@ -1187,6 +1189,37 @@ describe('SpoolFormModal header spool ID (#1385)', () => {
 
   it('prefills a new local spool from Open Filament Database search', async () => {
     vi.mocked(api.getSettings).mockResolvedValue({ open_filament_database_enabled: true });
+    vi.mocked(api.getOpenFilamentDatabaseBrands).mockResolvedValue({
+      source: 'openfilamentdatabase',
+      count: 1,
+      brands: [
+        {
+          id: 'brand-id',
+          name: 'ELEGOO',
+          slug: 'elegoo',
+          origin: 'CN',
+          material_count: 7,
+          path: 'elegoo/index.json',
+        },
+      ],
+    });
+    vi.mocked(api.getOpenFilamentDatabaseBrand).mockResolvedValue({
+      source: 'openfilamentdatabase',
+      id: 'brand-id',
+      name: 'ELEGOO',
+      slug: 'elegoo',
+      origin: 'CN',
+      website: 'https://elegoo.com/',
+      materials: [
+        {
+          id: 'material-id',
+          material: 'PLA',
+          slug: 'PLA',
+          filament_count: 11,
+          path: 'materials/PLA/index.json',
+        },
+      ],
+    });
     vi.mocked(api.searchOpenFilamentDatabase).mockResolvedValue({
       source: 'openfilamentdatabase',
       brand_slug: 'elegoo',
@@ -1273,18 +1306,19 @@ describe('SpoolFormModal header spool ID (#1385)', () => {
       expect(screen.getByRole('heading', { name: 'Add Spool' })).toBeInTheDocument();
     });
 
-    const materialInput = screen.getByPlaceholderText('Select material...');
-    fireEvent.focus(materialInput);
-    fireEvent.change(materialInput, { target: { value: 'PLA' } });
-    fireEvent.click(await screen.findByRole('button', { name: 'PLA' }));
-
-    const brandInput = screen.getByPlaceholderText('Search brand...');
-    fireEvent.focus(brandInput);
-    fireEvent.change(brandInput, { target: { value: 'ELEGOO' } });
-    fireEvent.click(await screen.findByText('Use "ELEGOO"'));
-
     fireEvent.click(await screen.findByText('Search via Open Filament Database'));
-    const ofdbInput = screen.getByPlaceholderText('Search Open Filament Database...');
+
+    const ofdbBrandInput = await screen.findByPlaceholderText('Search OFDB brands...');
+    fireEvent.change(ofdbBrandInput, { target: { value: 'ele' } });
+    fireEvent.click(await screen.findByRole('button', { name: /ELEGOO.*7 material/i }));
+
+    await waitFor(() => {
+      expect(api.getOpenFilamentDatabaseBrand).toHaveBeenCalledWith('elegoo');
+    });
+
+    fireEvent.click(await screen.findByRole('button', { name: /PLA.*11 filament/i }));
+
+    const ofdbInput = screen.getByPlaceholderText('Search filaments for selected brand/material...');
     fireEvent.change(ofdbInput, { target: { value: 'pla' } });
     fireEvent.click(screen.getByRole('button', { name: 'Search' }));
 
@@ -1292,7 +1326,7 @@ describe('SpoolFormModal header spool ID (#1385)', () => {
       expect(api.searchOpenFilamentDatabase).toHaveBeenCalledWith('elegoo', 'PLA', 'pla');
     });
 
-    fireEvent.click(await screen.findByText('PLA'));
+    fireEvent.click(await screen.findByRole('button', { name: /PLA.*1 variant/i }));
     await waitFor(() => {
       expect(api.getOpenFilamentDatabaseFilament).toHaveBeenCalledWith('elegoo', 'PLA', 'pla');
     });

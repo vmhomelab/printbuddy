@@ -2562,6 +2562,42 @@ export interface SpoolmanFilamentEntry {
   vendor: SpoolmanVendor | null;
 }
 
+export interface OpenFilamentDatabaseBrandSummary {
+  id: string;
+  name: string;
+  slug: string;
+  origin: string | null;
+  material_count: number;
+  path: string;
+  logo_slug?: string | null;
+}
+
+export interface OpenFilamentDatabaseMaterialSummary {
+  id: string;
+  material: string;
+  slug: string;
+  filament_count: number;
+  path: string;
+}
+
+export interface OpenFilamentDatabaseBrandsResponse {
+  source: 'openfilamentdatabase';
+  version?: string | null;
+  generated_at?: string | null;
+  count: number;
+  brands: OpenFilamentDatabaseBrandSummary[];
+}
+
+export interface OpenFilamentDatabaseBrandResponse {
+  source: 'openfilamentdatabase';
+  id: string | null;
+  name: string | null;
+  slug: string;
+  origin: string | null;
+  website: string | null;
+  materials: OpenFilamentDatabaseMaterialSummary[];
+}
+
 export interface OpenFilamentDatabaseFilamentSummary {
   id: string;
   name: string;
@@ -4984,6 +5020,10 @@ export const api = {
     request<SpoolmanFilamentEntry[]>('/spoolman/inventory/filaments'),
 
   // Open Filament Database catalog proxy
+  getOpenFilamentDatabaseBrands: () =>
+    request<OpenFilamentDatabaseBrandsResponse>('/open-filament-database/brands'),
+  getOpenFilamentDatabaseBrand: (brand: string) =>
+    request<OpenFilamentDatabaseBrandResponse>(`/open-filament-database/brands/${encodeURIComponent(brand)}`),
   searchOpenFilamentDatabase: (brand: string, material: string, q = '') =>
     request<OpenFilamentDatabaseSearchResponse>(`/open-filament-database/search?brand=${encodeURIComponent(brand)}&material=${encodeURIComponent(material)}&q=${encodeURIComponent(q)}`),
   getOpenFilamentDatabaseFilament: (brand: string, material: string, filament: string) =>
