@@ -1,11 +1,13 @@
+import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
 from backend.app.schemas.printer import PrinterCreate, PrinterResponse
 from backend.app.services.elegoo_camera import (
     ElegooCameraActivationInfo,
+    _discover_elegoo_camera_activation_info,
     build_elegoo_sdcp_camera_url,
     build_elegoo_sdcp_status_command,
     capture_elegoo_sdcp_activated_frame,
@@ -118,6 +120,32 @@ def test_elegoo_sdcp_camera_activation_status_command_allows_unknown_ids():
     assert "Topic" not in command
     assert command["Data"]["Cmd"] == 0
     assert command["Data"]["MainboardID"] == ""
+
+
+def test_elegoo_camera_discovery_reads_nested_mainboard_id_from_real_probe_shape():
+    payload = {
+        "Id": "979d4C788A4a78bC777A870F1A02867A",
+        "Data": {
+            "Name": "Centauri Carbon",
+            "MainboardIP": "192.168.1.181",
+            "MainboardID": "4c8918d80103d46c00004c0000000000",
+            "ProtocolVersion": "V3.0.0",
+            "FirmwareVersion": "V0.3.0-o",
+        },
+    }
+    sock = Mock()
+    sock.__enter__ = Mock(return_value=sock)
+    sock.__exit__ = Mock(return_value=False)
+    sock.recvfrom.return_value = (json.dumps(payload).encode(), ("192.168.1.181", 3000))
+
+    with patch("backend.app.services.elegoo_camera.socket.socket", return_value=sock):
+        info = _discover_elegoo_camera_activation_info("192.168.1.181")
+
+    assert info.printer_id == "979d4C788A4a78bC777A870F1A02867A"
+    assert info.mainboard_id == "4c8918d80103d46c00004c0000000000"
+    command = build_elegoo_sdcp_status_command(info)
+    assert command["Topic"] == "sdcp/request/4c8918d80103d46c00004c0000000000"
+    assert command["Data"]["MainboardID"] == "4c8918d80103d46c00004c0000000000"
 
 
 @pytest.mark.asyncio

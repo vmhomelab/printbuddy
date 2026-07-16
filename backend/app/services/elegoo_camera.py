@@ -145,9 +145,23 @@ def _discover_elegoo_camera_activation_info(host: str, timeout: float = 2.0) -> 
         data = json.loads(payload.decode("utf-8", errors="replace").strip("\x00\r\n "))
         if not isinstance(data, dict):
             return ElegooCameraActivationInfo()
-        printer_id = str(data.get("Id") or data.get("id") or "").strip() or None
+        nested_data = data.get("Data") if isinstance(data.get("Data"), dict) else {}
+        printer_id = (
+            str(data.get("Id") or data.get("id") or nested_data.get("Id") or nested_data.get("id") or "").strip()
+            or None
+        )
         mainboard_id = (
-            str(data.get("MainboardID") or data.get("MainboardId") or data.get("Id") or data.get("id") or "").strip()
+            str(
+                nested_data.get("MainboardID")
+                or nested_data.get("MainboardId")
+                or data.get("MainboardID")
+                or data.get("MainboardId")
+                or nested_data.get("Id")
+                or nested_data.get("id")
+                or data.get("Id")
+                or data.get("id")
+                or ""
+            ).strip()
             or None
         )
         return ElegooCameraActivationInfo(printer_id=printer_id, mainboard_id=mainboard_id)
