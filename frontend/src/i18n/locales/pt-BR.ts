@@ -4340,6 +4340,10 @@ export default {
       description: 'O recurso de impressora virtual requer configuração adicional do sistema antes de funcionar. Isso inclui encaminhamento de portas, regras de firewall e configurações específicas da plataforma.',
       readGuide: 'Leia o guia de configuração antes de ativar',
     },
+    bambuOnly: {
+      badge: 'Somente Bambu Lab',
+      description: 'As impressoras virtuais emulam o protocolo LAN da Bambu para Bambu Studio e OrcaSlicer. Elas não são uma camada genérica de impressora virtual para Prusa, Klipper/Moonraker ou Elegoo SDCP.',
+    },
     howItWorks: {
       title: 'Como funciona',
       step1: 'Complete o guia de configuração para sua plataforma',

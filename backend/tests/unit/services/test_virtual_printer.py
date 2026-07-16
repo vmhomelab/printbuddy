@@ -1833,6 +1833,48 @@ class TestBindServer:
         )
         assert server.version == "02.03.04.05"
 
+    def test_bind_server_tls_context_enables_orcaslicer_rsa_aes_gcm_ciphers(self, tmp_path, monkeypatch):
+        """Keep Bambu-network bind TLS compatible with OrcaSlicer (#11)."""
+        from backend.app.services.virtual_printer import bind_server as bind_server_module
+        from backend.app.services.virtual_printer.bind_server import BindServer
+
+        cert_path = tmp_path / "cert.pem"
+        key_path = tmp_path / "key.pem"
+        cert_path.write_text("dummy cert")
+        key_path.write_text("dummy key")
+
+        class FakeSSLContext:
+            def __init__(self, protocol):
+                self.protocol = protocol
+                self.cert_chain = None
+                self.cipher_string = None
+                self.minimum_version = None
+                self.verify_mode = None
+
+            def load_cert_chain(self, certfile, keyfile):
+                self.cert_chain = (certfile, keyfile)
+
+            def set_ciphers(self, cipher_string):
+                self.cipher_string = cipher_string
+
+        monkeypatch.setattr(bind_server_module.ssl, "SSLContext", FakeSSLContext)
+
+        server = BindServer(
+            serial="TEST123",
+            model="C13",
+            name="Printbuddy",
+            cert_path=cert_path,
+            key_path=key_path,
+        )
+
+        ctx = server._create_tls_context()
+
+        assert ctx is not None
+        assert ctx.cert_chain == (str(cert_path), str(key_path))
+        assert ctx.cipher_string == "DEFAULT:AES256-GCM-SHA384:AES128-GCM-SHA256"
+        assert ctx.minimum_version == bind_server_module.ssl.TLSVersion.TLSv1_2
+        assert ctx.verify_mode == bind_server_module.ssl.CERT_NONE
+
     def test_bind_ports_constant(self):
         """Verify BIND_PORTS includes both 3000 and 3002 for slicer compatibility."""
         from backend.app.services.virtual_printer.bind_server import BIND_PORTS

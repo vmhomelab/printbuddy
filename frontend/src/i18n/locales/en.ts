@@ -4363,6 +4363,10 @@ export default {
       description: 'The virtual printer feature requires additional system configuration before it will work. This includes port forwarding, firewall rules, and platform-specific settings.',
       readGuide: 'Read the setup guide before enabling',
     },
+    bambuOnly: {
+      badge: 'Bambu Lab only',
+      description: 'Virtual printers emulate the Bambu LAN protocol for Bambu Studio and OrcaSlicer. They are not a generic virtual-printer layer for Prusa, Klipper/Moonraker, or Elegoo SDCP printers.',
+    },
     archiveNameSource: {
       title: 'Archive name source',
       description: 'Choose how new archives are named when files arrive via the virtual printer. "Metadata" uses the slicer-embedded title from the 3MF (default). "Filename" uses the filename Bambu Studio sent over FTP — handy if you renamed the job in the "send to printer" dialog.',

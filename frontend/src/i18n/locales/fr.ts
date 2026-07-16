@@ -4341,6 +4341,10 @@ export default {
       description: 'Nécessite des réglages système (ports, pare-feu).',
       readGuide: 'Lire le guide de configuration',
     },
+    bambuOnly: {
+      badge: 'Bambu Lab uniquement',
+      description: 'Les imprimantes virtuelles émulent le protocole LAN Bambu pour Bambu Studio et OrcaSlicer. Elles ne constituent pas une couche d’imprimante virtuelle générique pour Prusa, Klipper/Moonraker ou Elegoo SDCP.',
+    },
     howItWorks: {
       title: 'Fonctionnement',
       step1: 'Sur le même LAN, les imprimantes virtuelles apparaissent automatiquement dans votre slicer (Bambu Studio / OrcaSlicer). Depuis d\'autres réseaux, ajoutez-les manuellement par adresse IP et code d\'accès.',

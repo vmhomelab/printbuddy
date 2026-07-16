@@ -4351,6 +4351,10 @@ export default {
       description: 'Die virtuelle Druckerfunktion erfordert zusätzliche Systemkonfiguration, bevor sie funktioniert. Dies beinhaltet Portweiterleitung, Firewall-Regeln und plattformspezifische Einstellungen.',
       readGuide: 'Lese die Einrichtungsanleitung vor dem Aktivieren',
     },
+    bambuOnly: {
+      badge: 'Nur Bambu Lab',
+      description: 'Virtuelle Drucker emulieren das Bambu-LAN-Protokoll für Bambu Studio und OrcaSlicer. Sie sind keine generische virtuelle Druckerschicht für Prusa, Klipper/Moonraker oder Elegoo SDCP.',
+    },
     archiveNameSource: {
       title: 'Quelle des Archivnamens',
       description: 'Lege fest, wie neue Archive benannt werden, wenn Dateien über den virtuellen Drucker eintreffen. "Metadaten" verwendet den im 3MF eingebetteten Titel des Slicers (Standard). "Dateiname" nutzt den Dateinamen, den Bambu Studio per FTP gesendet hat — praktisch, wenn der Job im Dialog "Zum Drucker senden" umbenannt wurde.',

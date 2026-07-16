@@ -4339,6 +4339,10 @@ export default {
       description: '虛擬印表機功能需要額外的系統設定才能工作。包括埠轉發、防火牆規則和平臺特定設定。',
       readGuide: '啟用前請閱讀設定指南',
     },
+    bambuOnly: {
+      badge: '僅限 Bambu Lab',
+      description: '虛擬印表機會模擬 Bambu Studio 和 OrcaSlicer 使用的 Bambu LAN 通訊協定。它不是適用於 Prusa、Klipper/Moonraker 或 Elegoo SDCP 的通用虛擬印表機層。',
+    },
     archiveNameSource: {
       title: '存檔名稱來源',
       description: '選擇透過虛擬印表機接收檔案時新存檔的命名方式。"元資料"使用 3MF 中嵌入的切片標題（預設）。"檔名"使用 Bambu Studio 透過 FTP 傳送的檔案名稱 — 當您在"傳送到印表機"對話方塊中重新命名工作時非常有用。',

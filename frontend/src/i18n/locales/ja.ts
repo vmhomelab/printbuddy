@@ -4352,6 +4352,10 @@ export default {
       description: '仮想プリンター機能を使用するには追加のシステム設定が必要です。ポートフォワーディング、ファイアウォールルール、プラットフォーム固有の設定が含まれます。',
       readGuide: '有効にする前にセットアップガイドをお読みください',
     },
+    bambuOnly: {
+      badge: 'Bambu Lab専用',
+      description: '仮想プリンターはBambu StudioとOrcaSlicer向けのBambu LANプロトコルをエミュレートします。Prusa、Klipper/Moonraker、Elegoo SDCP向けの汎用仮想プリンター層ではありません。',
+    },
     howItWorks: {
       title: '仕組み',
       step1: '同じLAN上では、仮想プリンターはスライサー（Bambu Studio / OrcaSlicer）に自動的に表示されます。他のネットワークからは、IPアドレスとアクセスコードで手動で追加してください。',

@@ -4339,6 +4339,10 @@ export default {
       description: '虚拟打印机功能需要额外的系统配置才能工作。包括端口转发、防火墙规则和平台特定设置。',
       readGuide: '启用前请阅读设置指南',
     },
+    bambuOnly: {
+      badge: '仅限 Bambu Lab',
+      description: '虚拟打印机模拟 Bambu Studio 和 OrcaSlicer 使用的 Bambu LAN 协议。它不是适用于 Prusa、Klipper/Moonraker 或 Elegoo SDCP 的通用虚拟打印机层。',
+    },
     archiveNameSource: {
       title: '存档名称来源',
       description: '选择通过虚拟打印机接收文件时新存档的命名方式。"元数据"使用 3MF 中嵌入的切片标题（默认）。"文件名"使用 Bambu Studio 通过 FTP 发送的文件名 — 当您在"发送到打印机"对话框中重命名作业时非常有用。',

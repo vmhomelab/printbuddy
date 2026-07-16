@@ -4359,6 +4359,10 @@ export default {
       description: 'La función de impresora virtual requiere configuración adicional del sistema antes de funcionar. Esto incluye el reenvío de puertos, las reglas del cortafuegos y los ajustes específicos de la plataforma.',
       readGuide: 'Lea la guía de configuración antes de activarla',
     },
+    bambuOnly: {
+      badge: 'Solo Bambu Lab',
+      description: 'Las impresoras virtuales emulan el protocolo LAN de Bambu para Bambu Studio y OrcaSlicer. No son una capa genérica de impresora virtual para Prusa, Klipper/Moonraker ni Elegoo SDCP.',
+    },
     archiveNameSource: {
       title: 'Origen del nombre del archivo',
       description: 'Elija cómo se nombran los archivos nuevos cuando llegan a través de la impresora virtual. «Metadatos» usa el título incrustado por el laminador del 3MF (predeterminado). «Nombre de archivo» usa el nombre de archivo que Bambu Studio envió por FTP — útil si renombró el trabajo en el diálogo de «enviar a la impresora».',
