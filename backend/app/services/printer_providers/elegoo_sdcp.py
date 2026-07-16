@@ -565,6 +565,7 @@ class ElegooSDCPPrinterClient:
     def start_print(self, filename: str, plate_id: int = 1, **kwargs: Any) -> bool:  # noqa: ARG002
         if not self.mainboard_id:
             self.discover()
+        bed_levelling = bool(kwargs.get("bed_levelling", True))
         request_id = str(int(time.time() * 1000))
         command = {
             "Id": self.printer_id or "",
@@ -574,7 +575,7 @@ class ElegooSDCPPrinterClient:
                 "Data": {
                     "Filename": Path(filename).name,
                     "StartLayer": 0,
-                    "Calibration_switch": 0,
+                    "Calibration_switch": 1 if bed_levelling else 0,
                     "PrintPlatformType": 1,
                     "Tlp_Switch": 0,
                     "slot_map": [],

@@ -217,7 +217,7 @@ def test_elegoo_sdcp_start_print_sends_full_cmd_128_payload(monkeypatch):
         lambda command: sent_commands.append(command) or {"Data": {"Data": {"Ack": 0}}},
     )
 
-    assert client.start_print("calibration.gcode") is True
+    assert client.start_print("calibration.gcode", bed_levelling=True) is True
 
     assert len(sent_commands) == 1
     command = sent_commands[0]
@@ -229,11 +229,29 @@ def test_elegoo_sdcp_start_print_sends_full_cmd_128_payload(monkeypatch):
     assert command["Data"]["Data"] == {
         "Filename": "calibration.gcode",
         "StartLayer": 0,
-        "Calibration_switch": 0,
+        "Calibration_switch": 1,
         "PrintPlatformType": 1,
         "Tlp_Switch": 0,
         "slot_map": [],
     }
+
+
+def test_elegoo_sdcp_start_print_can_disable_bed_levelling(monkeypatch):
+    sent_commands = []
+    client = ElegooSDCPPrinterClient("192.168.1.181")
+    client.printer_id = "printer-id"
+    client.mainboard_id = "mainboard-id"
+    monkeypatch.setattr("backend.app.services.printer_providers.elegoo_sdcp.time.sleep", lambda seconds: None)
+    monkeypatch.setattr(client, "_confirm_print_started", lambda filename: True)
+    monkeypatch.setattr(
+        client,
+        "_send_command",
+        lambda command: sent_commands.append(command) or {"Data": {"Data": {"Ack": 0}}},
+    )
+
+    assert client.start_print("calibration.gcode", bed_levelling=False) is True
+
+    assert sent_commands[0]["Data"]["Data"]["Calibration_switch"] == 0
 
 
 def test_elegoo_sdcp_start_print_reconciles_command_timeout_with_active_status(monkeypatch):
