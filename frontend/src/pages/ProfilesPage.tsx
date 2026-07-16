@@ -41,10 +41,11 @@ import {
   Minus as MinusIcon,
   Plus as PlusIcon,
   HardDrive,
+  Database,
 } from 'lucide-react';
 import { api } from '../api/client';
 import { formatRelativeTime } from '../utils/date';
-import type { SlicerSetting, SlicerSettingsResponse, SlicerSettingDetail, SlicerSettingCreate, Printer, FieldDefinition, Permission } from '../api/client';
+import type { AppSettings, SlicerSetting, SlicerSettingsResponse, SlicerSettingDetail, SlicerSettingCreate, Printer, FieldDefinition, Permission } from '../api/client';
 import { Card, CardContent } from '../components/Card';
 import { Button } from '../components/Button';
 import { useToast } from '../contexts/ToastContext';
@@ -53,7 +54,7 @@ import { KProfilesView } from '../components/KProfilesView';
 import { LocalProfilesView } from '../components/LocalProfilesView';
 
 type TFunction = (key: string, options?: Record<string, unknown>) => string;
-type ProfileTab = 'cloud' | 'local' | 'kprofiles';
+type ProfileTab = 'cloud' | 'local' | 'kprofiles' | 'openfilamentdatabase';
 type LoginStep = 'email' | 'code' | 'token';
 type PresetType = 'all' | 'filament' | 'printer' | 'process';
 
@@ -2811,6 +2812,88 @@ function CloudProfilesView({
 }
 
 // ============================================================================
+// OPEN FILAMENT DATABASE SETTINGS
+// ============================================================================
+
+function OpenFilamentDatabaseView({ hasPermission }: { hasPermission: (permission: Permission) => boolean }) {
+  const { t } = useTranslation();
+  const queryClient = useQueryClient();
+  const { showToast } = useToast();
+  const canUpdateSettings = hasPermission('settings:update');
+
+  const { data: settings, isLoading, isError, refetch } = useQuery<AppSettings>({
+    queryKey: ['settings'],
+    queryFn: api.getSettings,
+    staleTime: 1000 * 60,
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: (enabled: boolean) => api.updateSettings({ open_filament_database_enabled: enabled }),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(['settings'], updated);
+      showToast(t('profiles.openFilamentDatabase.toast.updated'));
+    },
+    onError: (error: Error) => showToast(error.message, 'error'),
+  });
+
+  const enabled = settings?.open_filament_database_enabled ?? false;
+  const disabled = isLoading || updateMutation.isPending || !canUpdateSettings;
+
+  return (
+    <div className="flex justify-center">
+      <Card className="max-w-2xl w-full">
+        <CardContent>
+          <div className="text-center mb-6">
+            <div className="inline-flex items-center justify-center w-14 h-14 rounded-xl bg-bambu-green/20 mb-4">
+              <Database className="w-7 h-7 text-bambu-green" />
+            </div>
+            <h2 className="text-xl font-semibold text-white">{t('profiles.openFilamentDatabase.title')}</h2>
+            <p className="text-sm text-bambu-gray mt-2">
+              {t('profiles.openFilamentDatabase.subtitle')}
+            </p>
+          </div>
+
+          <div className="border-t border-bambu-dark-tertiary pt-6">
+            {isError ? (
+              <div className="text-center py-4">
+                <p className="text-sm text-bambu-gray mb-3">{t('profiles.openFilamentDatabase.failedToLoad')}</p>
+                <Button variant="secondary" onClick={() => refetch()}>
+                  {t('profiles.retry')}
+                </Button>
+              </div>
+            ) : (
+              <label className={`flex items-start gap-4 ${disabled ? 'opacity-60' : 'cursor-pointer'}`}>
+                <input
+                  type="checkbox"
+                  className="mt-1 w-5 h-5 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+                  checked={enabled}
+                  disabled={disabled}
+                  onChange={(event) => updateMutation.mutate(event.target.checked)}
+                  aria-label={t('profiles.openFilamentDatabase.enableLabel')}
+                />
+                <span>
+                  <span className="block text-sm font-semibold text-white">
+                    {t('profiles.openFilamentDatabase.enableLabel')}
+                  </span>
+                  <span className="block text-xs text-bambu-gray mt-1">
+                    {t('profiles.openFilamentDatabase.enableDescription')}
+                  </span>
+                  {!canUpdateSettings && (
+                    <span className="block text-xs text-amber-300 mt-2">
+                      {t('profiles.openFilamentDatabase.noPermission')}
+                    </span>
+                  )}
+                </span>
+              </label>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+// ============================================================================
 // MAIN PAGE
 // ============================================================================
 
@@ -2913,6 +2996,17 @@ export function ProfilesPage() {
           <Gauge className="w-4 h-4" />
           {t('profiles.tabs.kprofiles')}
         </button>
+        <button
+          onClick={() => setActiveTab('openfilamentdatabase')}
+          className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors border-b-2 -mb-px ${
+            activeTab === 'openfilamentdatabase'
+              ? 'text-bambu-green border-bambu-green'
+              : 'text-bambu-gray hover:text-white border-transparent'
+          }`}
+        >
+          <Database className="w-4 h-4" />
+          {t('profiles.tabs.openFilamentDatabase')}
+        </button>
       </div>
 
       {/* Cloud Profiles Tab */}
@@ -2977,6 +3071,9 @@ export function ProfilesPage() {
 
       {/* K-Profiles Tab */}
       {activeTab === 'kprofiles' && <KProfilesView />}
+
+      {/* Open Filament Database Tab */}
+      {activeTab === 'openfilamentdatabase' && <OpenFilamentDatabaseView hasPermission={hasPermission} />}
 
       {/* Scroll to Top Button */}
       <ScrollToTop />

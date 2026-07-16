@@ -2797,6 +2797,7 @@ export default {
       cloud: '云端配置文件',
       local: '本地配置文件',
       kprofiles: 'K 值配置',
+      openFilamentDatabase: 'Open Filament Database API',
     },
     localProfiles: {
       title: '本地配置文件',
@@ -2831,6 +2832,17 @@ export default {
         importError: '导入时出现 {{count}} 个错误',
         deleted: '预设已删除',
         updated: '预设已更新',
+      },
+    },
+    openFilamentDatabase: {
+      title: 'Open Filament Database API',
+      subtitle: 'Choose whether PrintBuddy should search for filament data via Open Filament Database.',
+      enableLabel: 'Search spools via Open Filament Database',
+      enableDescription: 'Enable this option to search filament data from Open Filament Database when creating local inventory spools.',
+      failedToLoad: 'Failed to load Open Filament Database settings',
+      noPermission: 'You do not have permission to update this setting.',
+      toast: {
+        updated: 'Open Filament Database setting updated',
       },
     },
     connectedAs: '已连接为',

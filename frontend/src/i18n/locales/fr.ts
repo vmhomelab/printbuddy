@@ -2799,6 +2799,7 @@ export default {
       cloud: 'Profils Cloud',
       local: 'Profils Locaux',
       kprofiles: 'Profils K',
+      openFilamentDatabase: 'Open Filament Database API',
     },
     localProfiles: {
       title: 'Profils Locaux',
@@ -2833,6 +2834,17 @@ export default {
         importError: '{{count}} erreur(s) d\'import',
         deleted: 'Preset supprimé',
         updated: 'Preset mis à jour',
+      },
+    },
+    openFilamentDatabase: {
+      title: 'Open Filament Database API',
+      subtitle: 'Choose whether PrintBuddy should search for filament data via Open Filament Database.',
+      enableLabel: 'Search spools via Open Filament Database',
+      enableDescription: 'Enable this option to search filament data from Open Filament Database when creating local inventory spools.',
+      failedToLoad: 'Failed to load Open Filament Database settings',
+      noPermission: 'You do not have permission to update this setting.',
+      toast: {
+        updated: 'Open Filament Database setting updated',
       },
     },
     connectedAs: 'Connecté en tant que',

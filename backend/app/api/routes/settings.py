@@ -149,6 +149,7 @@ async def _build_settings_response(db: AsyncSession, is_api_key: bool = False) -
             "spoolman_report_partial_usage",
             "disable_filament_warnings",
             "prefer_lowest_filament",
+            "open_filament_database_enabled",
             "check_updates",
             "check_printer_firmware",
             "include_beta_updates",

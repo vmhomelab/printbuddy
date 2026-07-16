@@ -1076,6 +1076,8 @@ export interface AppSettings {
   // Filament tracking
   disable_filament_warnings: boolean;  // Disable filament warnings (print insufficiency and assignment mismatch)
   prefer_lowest_filament: boolean;  // When multiple spools match, prefer lowest remaining filament
+  // Open Filament Database catalog lookup for local inventory spool creation
+  open_filament_database_enabled: boolean;
   // Default printer
   default_printer_id: number | null;
   // Dark mode theme settings
