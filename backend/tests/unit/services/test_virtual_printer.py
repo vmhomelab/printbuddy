@@ -11,6 +11,42 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+BAMBU_RSA_AES_GCM_CIPHERS = "DEFAULT:AES256-GCM-SHA384:AES128-GCM-SHA256"
+BAMBU_FTPS_CIPHERS = "HIGH:AES256-GCM-SHA384:AES128-GCM-SHA256:!aNULL:!MD5:!RC4"
+
+
+class FakeSSLContext:
+    def __init__(self, protocol):
+        self.protocol = protocol
+        self.cert_chain = None
+        self.cipher_string = None
+        self.minimum_version = None
+        self.maximum_version = None
+        self.verify_mode = None
+        self.check_hostname = None
+
+    def load_cert_chain(self, certfile, keyfile):
+        self.cert_chain = (str(certfile), str(keyfile))
+
+    def set_ciphers(self, cipher_string):
+        self.cipher_string = cipher_string
+
+
+def _write_dummy_cert_pair(tmp_path: Path) -> tuple[Path, Path]:
+    cert_path = tmp_path / "cert.pem"
+    key_path = tmp_path / "key.pem"
+    cert_path.write_text("dummy cert")
+    key_path.write_text("dummy key")
+    return cert_path, key_path
+
+
+def _raise_cancelled_start_server(captured: dict):
+    async def fake_start_server(*args, **kwargs):
+        captured["ssl"] = kwargs.get("ssl")
+        raise asyncio.CancelledError
+
+    return fake_start_server
+
 
 def _write_3mf_with_filaments(file_path: Path, filaments: list[dict], plate_index: int = 1) -> None:
     """Build a minimal 3MF zip with `Metadata/slice_info.config` carrying the
@@ -1838,24 +1874,7 @@ class TestBindServer:
         from backend.app.services.virtual_printer import bind_server as bind_server_module
         from backend.app.services.virtual_printer.bind_server import BindServer
 
-        cert_path = tmp_path / "cert.pem"
-        key_path = tmp_path / "key.pem"
-        cert_path.write_text("dummy cert")
-        key_path.write_text("dummy key")
-
-        class FakeSSLContext:
-            def __init__(self, protocol):
-                self.protocol = protocol
-                self.cert_chain = None
-                self.cipher_string = None
-                self.minimum_version = None
-                self.verify_mode = None
-
-            def load_cert_chain(self, certfile, keyfile):
-                self.cert_chain = (certfile, keyfile)
-
-            def set_ciphers(self, cipher_string):
-                self.cipher_string = cipher_string
+        cert_path, key_path = _write_dummy_cert_pair(tmp_path)
 
         monkeypatch.setattr(bind_server_module.ssl, "SSLContext", FakeSSLContext)
 
@@ -1871,9 +1890,85 @@ class TestBindServer:
 
         assert ctx is not None
         assert ctx.cert_chain == (str(cert_path), str(key_path))
-        assert ctx.cipher_string == "DEFAULT:AES256-GCM-SHA384:AES128-GCM-SHA256"
+        assert ctx.cipher_string == BAMBU_RSA_AES_GCM_CIPHERS
         assert ctx.minimum_version == bind_server_module.ssl.TLSVersion.TLSv1_2
         assert ctx.verify_mode == bind_server_module.ssl.CERT_NONE
+
+    @pytest.mark.asyncio
+    async def test_simple_mqtt_tls_context_enables_orcaslicer_rsa_aes_gcm_ciphers(self, tmp_path, monkeypatch):
+        """Keep Bambu-network MQTT TLS compatible with hardened OpenSSL policies."""
+        from backend.app.services.virtual_printer import mqtt_server as mqtt_server_module
+        from backend.app.services.virtual_printer.mqtt_server import SimpleMQTTServer
+
+        cert_path, key_path = _write_dummy_cert_pair(tmp_path)
+        captured: dict = {}
+        monkeypatch.setattr(mqtt_server_module.ssl, "SSLContext", FakeSSLContext)
+        monkeypatch.setattr(mqtt_server_module.asyncio, "start_server", _raise_cancelled_start_server(captured))
+
+        server = SimpleMQTTServer(
+            serial="TEST123",
+            access_code="12345678",
+            cert_path=cert_path,
+            key_path=key_path,
+        )
+
+        await server.start()
+
+        ctx = captured["ssl"]
+        assert ctx.cert_chain == (str(cert_path), str(key_path))
+        assert ctx.cipher_string == BAMBU_RSA_AES_GCM_CIPHERS
+        assert ctx.minimum_version == mqtt_server_module.ssl.TLSVersion.TLSv1_2
+        assert ctx.verify_mode == mqtt_server_module.ssl.CERT_NONE
+
+    @pytest.mark.asyncio
+    async def test_ftps_tls_context_keeps_high_baseline_and_adds_bambu_rsa_aes_gcm_ciphers(self, tmp_path, monkeypatch):
+        """Keep FTPS HIGH baseline while explicitly adding Bambu plain-RSA AES-GCM suites."""
+        from backend.app.services.virtual_printer import ftp_server as ftp_server_module
+        from backend.app.services.virtual_printer.ftp_server import VirtualPrinterFTPServer
+
+        cert_path, key_path = _write_dummy_cert_pair(tmp_path)
+        captured: dict = {}
+        monkeypatch.setattr(ftp_server_module.ssl, "SSLContext", FakeSSLContext)
+        monkeypatch.setattr(ftp_server_module.asyncio, "start_server", _raise_cancelled_start_server(captured))
+
+        server = VirtualPrinterFTPServer(
+            upload_dir=tmp_path / "uploads",
+            access_code="12345678",
+            cert_path=cert_path,
+            key_path=key_path,
+        )
+
+        await server.start()
+
+        ctx = captured["ssl"]
+        assert ctx.cert_chain == (str(cert_path), str(key_path))
+        assert ctx.cipher_string == BAMBU_FTPS_CIPHERS
+        assert ctx.minimum_version == ftp_server_module.ssl.TLSVersion.TLSv1_2
+        assert ctx.maximum_version == ftp_server_module.ssl.TLSVersion.TLSv1_2
+
+    def test_tls_proxy_server_context_enables_orcaslicer_rsa_aes_gcm_ciphers(self, tmp_path, monkeypatch):
+        """Keep slicer-facing proxy TLS compatible with hardened OpenSSL policies."""
+        from backend.app.services.virtual_printer import tcp_proxy as tcp_proxy_module
+        from backend.app.services.virtual_printer.tcp_proxy import TLSProxy
+
+        cert_path, key_path = _write_dummy_cert_pair(tmp_path)
+        monkeypatch.setattr(tcp_proxy_module.ssl, "SSLContext", FakeSSLContext)
+
+        proxy = TLSProxy(
+            name="MQTT",
+            listen_port=8883,
+            target_host="192.168.1.50",
+            target_port=8883,
+            server_cert_path=cert_path,
+            server_key_path=key_path,
+        )
+
+        ctx = proxy._create_server_ssl_context()
+
+        assert ctx.cert_chain == (str(cert_path), str(key_path))
+        assert ctx.cipher_string == BAMBU_RSA_AES_GCM_CIPHERS
+        assert ctx.minimum_version == tcp_proxy_module.ssl.TLSVersion.TLSv1_2
+        assert ctx.verify_mode == tcp_proxy_module.ssl.CERT_NONE
 
     def test_bind_ports_constant(self):
         """Verify BIND_PORTS includes both 3000 and 3002 for slicer compatibility."""
