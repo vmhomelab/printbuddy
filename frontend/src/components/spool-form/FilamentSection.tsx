@@ -503,7 +503,7 @@ export function FilamentSection({
       {!quickAdd && (
         <div>
           <label className="block text-sm font-medium text-bambu-gray mb-1">
-            {t('inventory.slicerPreset')} *
+            {t('inventory.slicerPreset')}{formData.data_origin !== 'openfilamentdatabase' && ' *'}
           </label>
           <div className="relative" ref={presetRef}>
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray/50 pointer-events-none" />

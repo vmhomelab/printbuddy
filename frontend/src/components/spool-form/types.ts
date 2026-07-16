@@ -200,7 +200,13 @@ export function validateForm(
     };
   }
 
-  if (!formData.slicer_filament) {
+  const isOpenFilamentDatabaseSpool = formData.data_origin === 'openfilamentdatabase';
+
+  // OFDB is a catalog source and not every upstream entry has a matching
+  // slicer preset/profile. Let those spools save with material/brand/subtype
+  // metadata and optional nozzle temperatures; users can still attach a slicer
+  // preset manually when they have one.
+  if (!isOpenFilamentDatabaseSpool && !formData.slicer_filament) {
     errors.slicer_filament = 'Slicer preset is required';
   }
 
