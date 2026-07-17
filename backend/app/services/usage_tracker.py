@@ -331,8 +331,10 @@ async def on_print_start(printer_id: int, data: dict, printer_manager, db: Async
         )
 
     if not ams_data and not vt_tray_raw:
-        logger.debug("[UsageTracker] No AMS or VT tray data for printer %d, skipping", printer_id)
-        return
+        logger.debug(
+            "[UsageTracker] No AMS or VT tray data for printer %d; creating session for loaded-spool/3MF fallback",
+            printer_id,
+        )
 
     print_name = data.get("subtask_name", "") or data.get("filename", "unknown")
 
@@ -1212,6 +1214,7 @@ async def _track_from_3mf(
             continue  # Skip normal single-tray processing for this slot
 
         # Map 3MF slot_id to physical (ams_id, tray_id) using resolved mapping
+        pre_resolved_spool_id: int | None = None
         if tray_now_override is not None:
             # Single-filament non-queue print: use actual tray from printer state
             global_tray_id = tray_now_override
@@ -1233,43 +1236,68 @@ async def _track_from_3mf(
                     available_trays = sorted(build_ams_tray_lookup(_raw).keys())
                     if slot_id <= len(available_trays):
                         global_tray_id = available_trays[slot_id - 1]
+            # Provider-neutral loaded-spool fallback: single-filament non-AMS printers
+            # such as PrusaLink/Core One, Klipper/Moonraker, and Elegoo may have no
+            # AMS/VT tray metadata. In that case charge the explicit virtual loaded
+            # spool assignment instead of inventing AMS0-T0.
+            if global_tray_id is None and len(nonzero_slots) == 1:
+                pre_resolved_spool_id = await _resolve_spool_id_for_tray(
+                    printer_id=printer_id,
+                    ams_id=-1,
+                    tray_id=0,
+                    db=db,
+                    spool_assignments_snapshot=spool_assignments,
+                    print_started_at=print_started_at,
+                )
+                if pre_resolved_spool_id is not None:
+                    ams_id = -1
+                    tray_id = 0
+                    global_tray_id = -1
+                    logger.info(
+                        "[UsageTracker] 3MF: slot_id=%d -> Loaded spool assignment (used_g=%.1f)",
+                        slot_id,
+                        used_g,
+                    )
             # Final fallback: slot_id - 1 (legacy, works for pure AMS without external spools)
             if global_tray_id is None:
                 global_tray_id = slot_id - 1
 
-        if global_tray_id >= 254:
-            # External spool: ams_id=255 (sentinel), tray_id=slot index (0 or 1)
-            ams_id = 255
-            tray_id = global_tray_id - 254
-        elif global_tray_id >= 128:
-            ams_id = global_tray_id
-            tray_id = 0
-        else:
-            ams_id = global_tray_id // 4
-            tray_id = global_tray_id % 4
+        if pre_resolved_spool_id is None:
+            if global_tray_id >= 254:
+                # External spool: ams_id=255 (sentinel), tray_id=slot index (0 or 1)
+                ams_id = 255
+                tray_id = global_tray_id - 254
+            elif global_tray_id >= 128:
+                ams_id = global_tray_id
+                tray_id = 0
+            else:
+                ams_id = global_tray_id // 4
+                tray_id = global_tray_id % 4
 
-        logger.info(
-            "[UsageTracker] 3MF: slot_id=%d -> global_tray=%d -> AMS%d-T%d (used_g=%.1f, tray_now_override=%s)",
-            slot_id,
-            global_tray_id,
-            ams_id,
-            tray_id,
-            used_g,
-            tray_now_override,
-        )
+            logger.info(
+                "[UsageTracker] 3MF: slot_id=%d -> global_tray=%d -> AMS%d-T%d (used_g=%.1f, tray_now_override=%s)",
+                slot_id,
+                global_tray_id,
+                ams_id,
+                tray_id,
+                used_g,
+                tray_now_override,
+            )
 
         key = (ams_id, tray_id)
         if key in handled_trays:
             continue
 
-        spool_id = await _resolve_spool_id_for_tray(
-            printer_id=printer_id,
-            ams_id=ams_id,
-            tray_id=tray_id,
-            db=db,
-            spool_assignments_snapshot=spool_assignments,
-            print_started_at=print_started_at,
-        )
+        spool_id = pre_resolved_spool_id
+        if spool_id is None:
+            spool_id = await _resolve_spool_id_for_tray(
+                printer_id=printer_id,
+                ams_id=ams_id,
+                tray_id=tray_id,
+                db=db,
+                spool_assignments_snapshot=spool_assignments,
+                print_started_at=print_started_at,
+            )
         if spool_id is None:
             logger.info("[UsageTracker] 3MF: no spool assignment at printer %d AMS%d-T%d", printer_id, ams_id, tray_id)
             continue

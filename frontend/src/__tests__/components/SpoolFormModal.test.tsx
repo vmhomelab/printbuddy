@@ -38,6 +38,11 @@ vi.mock('../../api/client', () => ({
       failed_count: 0,
     }),
     getSpoolmanInventoryFilaments: vi.fn().mockResolvedValue([]),
+    getOpenFilamentDatabaseBrands: vi.fn().mockResolvedValue({ count: 0, brands: [] }),
+    getOpenFilamentDatabaseBrand: vi.fn().mockResolvedValue({ materials: [] }),
+    searchOpenFilamentDatabase: vi.fn().mockResolvedValue({ count: 0, filaments: [] }),
+    getOpenFilamentDatabaseFilament: vi.fn().mockResolvedValue({ variants: [], spool_prefill: {} }),
+    getOpenFilamentDatabaseVariant: vi.fn().mockResolvedValue({ spool_prefill: {} }),
     getAssignments: vi.fn().mockResolvedValue([]),
     getSpoolmanSlotAssignments: vi.fn().mockResolvedValue([]),
     unassignSpool: vi.fn().mockResolvedValue({}),
@@ -1180,4 +1185,180 @@ describe('SpoolFormModal header spool ID (#1385)', () => {
     });
     expect(screen.queryByText(/^#\d+$/)).not.toBeInTheDocument();
   });
+
+
+  it('prefills a new local spool from Open Filament Database search', async () => {
+    vi.mocked(api.getSettings).mockResolvedValue({ open_filament_database_enabled: true });
+    vi.mocked(api.getOpenFilamentDatabaseBrands).mockResolvedValue({
+      source: 'openfilamentdatabase',
+      count: 1,
+      brands: [
+        {
+          id: 'brand-id',
+          name: 'ELEGOO',
+          slug: 'elegoo',
+          origin: 'CN',
+          material_count: 7,
+          path: 'elegoo/index.json',
+        },
+      ],
+    });
+    vi.mocked(api.getOpenFilamentDatabaseBrand).mockResolvedValue({
+      source: 'openfilamentdatabase',
+      id: 'brand-id',
+      name: 'ELEGOO',
+      slug: 'elegoo',
+      origin: 'CN',
+      website: 'https://elegoo.com/',
+      materials: [
+        {
+          id: 'material-id',
+          material: 'PLA',
+          slug: 'PLA',
+          filament_count: 11,
+          path: 'materials/PLA/index.json',
+        },
+      ],
+    });
+    vi.mocked(api.searchOpenFilamentDatabase).mockResolvedValue({
+      source: 'openfilamentdatabase',
+      brand_slug: 'elegoo',
+      material: 'PLA',
+      query: 'pla',
+      count: 1,
+      filaments: [
+        {
+          id: 'filament-id',
+          name: 'PLA',
+          slug: 'pla',
+          variant_count: 1,
+          path: 'filaments/pla/index.json',
+        },
+      ],
+    });
+    vi.mocked(api.getOpenFilamentDatabaseFilament).mockResolvedValue({
+      source: 'openfilamentdatabase',
+      brand_slug: 'elegoo',
+      material: 'PLA',
+      id: 'filament-id',
+      name: 'PLA',
+      slug: 'pla',
+      density: 1.26,
+      diameter_tolerance: 0.02,
+      min_print_temperature: 190,
+      max_print_temperature: 230,
+      min_bed_temperature: 50,
+      max_bed_temperature: 70,
+      discontinued: false,
+      preferred_slicer_setting: { id: 'OGFE04', generic_id: 'GFL99', profile_name: 'Elegoo PLA' },
+      variants: [
+        {
+          id: 'variant-id',
+          name: 'Black',
+          slug: 'black',
+          color_hex: '#000000',
+          size_count: 1,
+          path: 'variants/black.json',
+        },
+      ],
+      spool_prefill: {
+        material: 'PLA',
+        subtype: 'PLA',
+        slicer_filament: 'OGFE04',
+        slicer_filament_name: 'Elegoo PLA',
+        nozzle_temp_min: 190,
+        nozzle_temp_max: 230,
+        data_origin: 'openfilamentdatabase',
+      },
+    });
+    vi.mocked(api.getOpenFilamentDatabaseVariant).mockResolvedValue({
+      source: 'openfilamentdatabase',
+      brand: { id: 'brand-id', slug: 'elegoo', name: 'ELEGOO' },
+      material: 'PLA',
+      filament: {},
+      variant: { id: 'variant-id', name: 'Black', slug: 'black', color_hex: '#000000' },
+      sizes: [],
+      selected_size: { id: 'size-id', filament_weight: 1000, diameter: 1.75 },
+      spool_prefill: {
+        brand: 'ELEGOO',
+        material: 'PLA',
+        subtype: 'PLA',
+        color_name: 'Black',
+        rgba: '000000FF',
+        label_weight: 1000,
+        nozzle_temp_min: 190,
+        nozzle_temp_max: 230,
+        slicer_filament: 'OGFE04',
+        slicer_filament_name: 'Elegoo PLA',
+        data_origin: 'openfilamentdatabase',
+      },
+    });
+
+    render(
+      <SpoolFormModal
+        isOpen={true}
+        onClose={vi.fn()}
+        currencySymbol="$"
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Add Spool' })).toBeInTheDocument();
+    });
+
+    fireEvent.click(await screen.findByText('Search via Open Filament Database'));
+
+    const ofdbBrandInput = await screen.findByPlaceholderText('Search OFDB brands...');
+    fireEvent.change(ofdbBrandInput, { target: { value: 'ele' } });
+    fireEvent.click(await screen.findByRole('button', { name: /ELEGOO.*7 material/i }));
+
+    await waitFor(() => {
+      expect(api.getOpenFilamentDatabaseBrand).toHaveBeenCalledWith('elegoo');
+    });
+
+    fireEvent.click(await screen.findByRole('button', { name: /PLA.*11 filament/i }));
+
+    const ofdbInput = screen.getByPlaceholderText('Search filaments for selected brand/material...');
+    fireEvent.change(ofdbInput, { target: { value: 'pla' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+
+    await waitFor(() => {
+      expect(api.searchOpenFilamentDatabase).toHaveBeenCalledWith('elegoo', 'PLA', 'pla');
+    });
+
+    fireEvent.click(await screen.findByRole('button', { name: /PLA.*1 variant/i }));
+    await waitFor(() => {
+      expect(api.getOpenFilamentDatabaseFilament).toHaveBeenCalledWith('elegoo', 'PLA', 'pla');
+    });
+
+    fireEvent.click(await screen.findByRole('button', { name: /Black.*1 size/i }));
+    await waitFor(() => {
+      expect(api.getOpenFilamentDatabaseVariant).toHaveBeenCalledWith('elegoo', 'PLA', 'pla', 'black');
+    });
+
+    const addButtons = screen.getAllByRole('button', { name: /add spool/i });
+    const submitButton = addButtons.find(btn => btn.tagName === 'BUTTON' && btn.querySelector('svg.lucide-save'));
+    expect(submitButton).toBeTruthy();
+    fireEvent.click(submitButton!);
+
+    await waitFor(() => {
+      expect(api.createSpool).toHaveBeenCalledTimes(1);
+    });
+
+    const [payload] = vi.mocked(api.createSpool).mock.calls[0];
+    expect(payload).toMatchObject({
+      brand: 'ELEGOO',
+      material: 'PLA',
+      subtype: 'PLA',
+      color_name: 'Black',
+      rgba: '000000FF',
+      label_weight: 1000,
+      slicer_filament: 'OGFE04',
+      slicer_filament_name: 'Elegoo PLA',
+      nozzle_temp_min: 190,
+      nozzle_temp_max: 230,
+      data_origin: 'openfilamentdatabase',
+    });
+  });
+
 });

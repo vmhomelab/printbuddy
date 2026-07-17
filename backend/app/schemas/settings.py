@@ -42,6 +42,12 @@ class AppSettings(BaseModel):
         description="When multiple AMS spools match, prefer the one with lowest remaining filament",
     )
 
+    # Open Filament Database catalog integration
+    open_filament_database_enabled: bool = Field(
+        default=False,
+        description="Enable Open Filament Database lookup when creating local inventory spools",
+    )
+
     # Updates
     check_updates: bool = Field(default=True, description="Automatically check for updates on startup")
     check_printer_firmware: bool = Field(default=True, description="Check for printer firmware updates from Bambu Lab")
@@ -349,6 +355,7 @@ class AppSettingsUpdate(BaseModel):
     spoolman_report_partial_usage: bool | None = None
     disable_filament_warnings: bool | None = None
     prefer_lowest_filament: bool | None = None
+    open_filament_database_enabled: bool | None = None
     check_updates: bool | None = None
     check_printer_firmware: bool | None = None
     include_beta_updates: bool | None = None

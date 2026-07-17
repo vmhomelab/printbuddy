@@ -98,15 +98,18 @@ class TestOnPrintStart:
         assert session.tray_remain_start == {}  # Empty, no valid remain
 
     @pytest.mark.asyncio
-    async def test_skips_without_ams_data(self):
-        """No session created when no AMS data available."""
+    async def test_creates_session_without_ams_data_for_loaded_spool_fallback(self):
+        """Non-AMS providers still need a session for loaded-spool/3MF usage tracking."""
         state = MagicMock()
         state.raw_data = {"ams": []}
+        state.tray_now = 255
         pm = _make_printer_manager(state)
 
         await on_print_start(1, {"subtask_name": "test"}, pm)
 
-        assert 1 not in _active_sessions
+        assert 1 in _active_sessions
+        assert _active_sessions[1].tray_remain_start == {}
+        assert _active_sessions[1].print_name == "test"
 
 
 class TestOnPrintCompleteAMSDelta:
@@ -303,6 +306,61 @@ class TestTrackFrom3MF:
         assert results[0]["weight_used"] == 25.5
         # weight_used = old (100) + 3MF (25.5)
         assert spool.weight_used == 125.5
+
+    @pytest.mark.asyncio
+    async def test_updates_virtual_loaded_spool_from_single_filament_3mf(self):
+        """Single-spool non-AMS prints charge the virtual Loaded spool assignment."""
+        spool = _make_spool(id=50, label_weight=1000, weight_used=10)
+        assignment = _make_assignment(spool_id=50, ams_id=-1, tray_id=0)
+        archive = MagicMock()
+        archive.file_path = "archives/test.3mf"
+        archive.filament_color = None
+
+        db = AsyncMock()
+        # archive, queue_item(None), loaded-spool assignment lookup, spool lookup
+        db.execute = AsyncMock(
+            side_effect=[
+                MagicMock(scalar_one_or_none=MagicMock(return_value=archive)),
+                MagicMock(scalar_one_or_none=MagicMock(return_value=None)),
+                MagicMock(scalar_one_or_none=MagicMock(return_value=assignment)),
+                MagicMock(scalar_one_or_none=MagicMock(return_value=spool)),
+            ]
+        )
+
+        state = MagicMock()
+        state.raw_data = {"ams": []}
+        state.progress = 100
+        state.layer_num = 0
+        state.tray_now = 255
+        state.last_loaded_tray = -1
+        pm = _make_printer_manager(state)
+        filament_usage = [{"slot_id": 1, "used_g": 42.5, "type": "PETG", "color": "#FF00FF"}]
+
+        with (
+            patch("backend.app.core.config.settings") as mock_settings,
+            patch("backend.app.utils.threemf_tools.extract_filament_usage_from_3mf", return_value=filament_usage),
+        ):
+            mock_path = MagicMock()
+            mock_path.exists.return_value = True
+            mock_settings.base_dir.__truediv__ = MagicMock(return_value=mock_path)
+
+            results = await _track_from_3mf(
+                printer_id=1,
+                archive_id=10,
+                status="completed",
+                print_name="core-one-print",
+                handled_trays=set(),
+                printer_manager=pm,
+                db=db,
+            )
+
+        assert len(results) == 1
+        assert results[0]["spool_id"] == 50
+        assert results[0]["weight_used"] == 42.5
+        assert results[0]["ams_id"] == -1
+        assert results[0]["tray_id"] == 0
+        assert spool.weight_used == 52.5
+        db.add.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_scales_by_progress_for_failed_print(self):

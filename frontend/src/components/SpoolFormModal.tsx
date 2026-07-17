@@ -325,11 +325,14 @@ export function SpoolFormModal({
           core_weight_catalog_id: spool.core_weight_catalog_id ?? null,
           weight_used: isCopying ? 0 : spool.weight_used || 0,
           slicer_filament: spool.slicer_filament || '',
+          nozzle_temp_min: spool.nozzle_temp_min ?? null,
+          nozzle_temp_max: spool.nozzle_temp_max ?? null,
           note: spool.note || '',
           cost_per_kg: spool.cost_per_kg ?? null,
           category: spool.category || '',
           low_stock_threshold_pct: spool.low_stock_threshold_pct ?? null,
           storage_location: spool.storage_location || '',
+          data_origin: spool.data_origin || '',
           spoolman_filament_id: null,
         });
         setPresetInputValue(spool.slicer_filament_name || spool.slicer_filament || '');
@@ -702,12 +705,13 @@ export function SpoolFormModal({
       ...(spoolmanMode ? {} : { core_weight: formData.core_weight, core_weight_catalog_id: formData.core_weight_catalog_id }),
       slicer_filament: formData.slicer_filament || null,
       slicer_filament_name: presetName,
-      nozzle_temp_min: null,
-      nozzle_temp_max: null,
+      nozzle_temp_min: formData.nozzle_temp_min,
+      nozzle_temp_max: formData.nozzle_temp_max,
       note: formData.note || null,
       cost_per_kg: formData.cost_per_kg,
       category: formData.category.trim() || null,
       low_stock_threshold_pct: formData.low_stock_threshold_pct,
+      data_origin: formData.data_origin || null,
       ...(spoolmanMode ? { spoolman_filament_id: formData.spoolman_filament_id } : {}),
     };
 
@@ -862,6 +866,7 @@ export function SpoolFormModal({
                   quantity={quantity}
                   onQuantityChange={setQuantity}
                   errors={errors}
+                  openFilamentDatabaseEnabled={!isEditing && !isCopying && !spoolmanMode && Boolean(settingsForForm?.open_filament_database_enabled)}
                 />
               </div>
 

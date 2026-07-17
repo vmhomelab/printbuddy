@@ -147,6 +147,26 @@ class TestSettingsAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_update_open_filament_database_enabled(self, async_client: AsyncClient):
+        """Verify Open Filament Database lookup can be enabled and persists."""
+        response = await async_client.get("/api/v1/settings/")
+        assert response.status_code == 200
+        assert response.json()["open_filament_database_enabled"] is False
+
+        response = await async_client.put(
+            "/api/v1/settings/",
+            json={"open_filament_database_enabled": True},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["open_filament_database_enabled"] is True
+
+        response = await async_client.get("/api/v1/settings/")
+        assert response.status_code == 200
+        assert response.json()["open_filament_database_enabled"] is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_update_ams_thresholds(self, async_client: AsyncClient):
         """Verify AMS threshold settings can be updated."""
         response = await async_client.put(

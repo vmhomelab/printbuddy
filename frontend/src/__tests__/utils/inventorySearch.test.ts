@@ -80,6 +80,13 @@ describe('spoolMatchesQuery', () => {
     expect(spoolMatchesQuery(spool, '4')).toBe(true);
     expect(spoolMatchesQuery(spool, '99')).toBe(false);
   });
+
+  it('matches Open Filament Database provenance aliases', () => {
+    const spool = makeSpool({ data_origin: 'openfilamentdatabase', brand: 'ELEGOO', material: 'ABS' });
+    expect(spoolMatchesQuery(spool, 'ofdb')).toBe(true);
+    expect(spoolMatchesQuery(spool, 'open filament')).toBe(true);
+    expect(spoolMatchesQuery(spool, 'openfilamentdatabase')).toBe(true);
+  });
 });
 
 describe('filterSpoolsByQuery', () => {
