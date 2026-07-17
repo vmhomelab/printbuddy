@@ -74,6 +74,8 @@ def mock_client():
     # Default to empty so the cleanup is a no-op for tests that don't exercise it.
     client.get_spools = AsyncMock(return_value=[])
     client.merge_spool_extra = AsyncMock(return_value={"id": 0, "extra": {}})
+    client.ams_set_filament_setting = MagicMock()
+    client.extrusion_cali_sel = MagicMock()
 
     with patch(
         "backend.app.api.routes.spoolman_inventory._get_client",
@@ -137,6 +139,51 @@ class TestAssignSpoolmanSlot:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_assign_accepts_loaded_spool_virtual_slot(
+        self, async_client: AsyncClient, slot_settings, test_printer, mock_client
+    ):
+        """Non-AMS loaded-spool Spoolman bindings use the external virtual slot 255/0."""
+        response = await async_client.post(
+            "/api/v1/spoolman/inventory/slot-assignments",
+            json={
+                "spoolman_spool_id": 10,
+                "printer_id": test_printer.id,
+                "ams_id": 255,
+                "tray_id": 0,
+            },
+        )
+
+        assert response.status_code == 200, response.text
+        all_resp = await async_client.get(
+            "/api/v1/spoolman/inventory/slot-assignments/all",
+            params={"printer_id": test_printer.id},
+        )
+        rows = all_resp.json()
+        assert len(rows) == 1
+        assert rows[0]["ams_id"] == 255
+        assert rows[0]["tray_id"] == 0
+        assert rows[0]["spoolman_spool_id"] == 10
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_rejects_unsupported_external_virtual_tray(
+        self, async_client: AsyncClient, slot_settings, test_printer, mock_client
+    ):
+        """The API only exposes meaningful external/loaded Spoolman trays: 255/0 and 255/1."""
+        response = await async_client.post(
+            "/api/v1/spoolman/inventory/slot-assignments",
+            json={
+                "spoolman_spool_id": 10,
+                "printer_id": test_printer.id,
+                "ams_id": 255,
+                "tray_id": 2,
+            },
+        )
+
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_assign_does_not_call_update_spool(
         self, async_client: AsyncClient, slot_settings, test_printer, mock_client
     ):
@@ -153,6 +200,44 @@ class TestAssignSpoolmanSlot:
 
         assert response.status_code == 200
         mock_client.update_spool.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_loaded_spool_assignment_for_elegoo_sdcp_does_not_call_bambu_mqtt(
+        self, async_client: AsyncClient, slot_settings, db_session, mock_client
+    ):
+        """Loaded-spool Spoolman assignment is accounting state for CC1, not a Bambu AMS command."""
+        from backend.app.models.printer import Printer
+
+        printer = Printer(
+            name="Centauri Carbon",
+            serial_number="CC1SPOOLMAN001",
+            ip_address="192.168.1.150",
+            access_code="12345678",
+            provider="elegoo_sdcp",
+        )
+        db_session.add(printer)
+        await db_session.commit()
+        await db_session.refresh(printer)
+
+        with patch(
+            "backend.app.api.routes.spoolman_inventory.printer_manager.get_client",
+            return_value=mock_client,
+        ) as get_client:
+            response = await async_client.post(
+                "/api/v1/spoolman/inventory/slot-assignments",
+                json={
+                    "spoolman_spool_id": 10,
+                    "printer_id": printer.id,
+                    "ams_id": 255,
+                    "tray_id": 0,
+                },
+            )
+
+        assert response.status_code == 200, response.text
+        get_client.assert_not_called()
+        mock_client.ams_set_filament_setting.assert_not_called()
+        mock_client.extrusion_cali_sel.assert_not_called()
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -413,6 +498,18 @@ class TestGetSpoolmanSlotAssignment:
         assert response.status_code == 200
         assert response.json()["id"] == 10
         mock_client.get_spool.assert_awaited_once_with(10)
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_get_rejects_unsupported_external_virtual_tray(
+        self, async_client: AsyncClient, slot_settings, test_printer, mock_client
+    ):
+        response = await async_client.get(
+            "/api/v1/spoolman/inventory/slot-assignments",
+            params={"printer_id": test_printer.id, "ams_id": 255, "tray_id": 2},
+        )
+
+        assert response.status_code == 422
 
     @pytest.mark.asyncio
     @pytest.mark.integration
