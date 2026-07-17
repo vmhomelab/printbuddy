@@ -15,7 +15,13 @@ export function spoolMatchesQuery(spool: InventorySpool, query: string): boolean
     (spool.subtype?.toLowerCase().includes(q) ?? false) ||
     (spool.note?.toLowerCase().includes(q) ?? false) ||
     (spool.slicer_filament_name?.toLowerCase().includes(q) ?? false) ||
-    (spool.storage_location?.toLowerCase().includes(q) ?? false)
+    (spool.storage_location?.toLowerCase().includes(q) ?? false) ||
+    (spool.data_origin?.toLowerCase().includes(q) ?? false) ||
+    (spool.data_origin === 'openfilamentdatabase' && (
+      'ofdb'.includes(q) ||
+      'open filament database'.includes(q) ||
+      'openfilamentdatabase'.includes(q)
+    ))
   );
 }
 

@@ -69,6 +69,22 @@ const anotherManualSpool = {
   slicer_filament_name: 'PLA',
 };
 
+const ofdbSpool = {
+  id: 4,
+  material: 'ABS',
+  subtype: 'ABS',
+  brand: 'ELEGOO',
+  color_name: 'Black',
+  rgba: '000000FF',
+  label_weight: 1000,
+  weight_used: 0,
+  tag_uid: null,
+  tray_uuid: null,
+  slicer_filament: null,
+  slicer_filament_name: null,
+  data_origin: 'openfilamentdatabase',
+};
+
 describe('AssignSpoolModal', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -181,6 +197,58 @@ describe('AssignSpoolModal', () => {
       expect(screen.getByText(/Overture/)).toBeInTheDocument();
     });
     expect(screen.getByText(/Polymaker/)).toBeInTheDocument();
+  });
+
+  it('shows and searches OFDB-created local spools in the assignment picker', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const user = userEvent.setup();
+
+    (api.getSpools as ReturnType<typeof vi.fn>).mockResolvedValue([ofdbSpool]);
+
+    render(
+      <AssignSpoolModal
+        {...defaultProps}
+        trayInfo={{ type: 'ABS', material: 'ABS', color: '000000', location: 'AMS 1 - Slot 1' }}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/ELEGOO/)).toBeInTheDocument();
+    });
+    expect(screen.getByText('OFDB')).toBeInTheDocument();
+
+    await user.clear(screen.getByPlaceholderText(/search spools/i));
+    await user.type(screen.getByPlaceholderText(/search spools/i), 'ofdb');
+
+    expect(screen.getByText(/ELEGOO/)).toBeInTheDocument();
+  });
+
+  it('assigns an OFDB spool without slicer profile when the material matches', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const user = userEvent.setup();
+
+    (api.getSpools as ReturnType<typeof vi.fn>).mockResolvedValue([ofdbSpool]);
+    (api.assignSpool as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: 4, spool_id: 4, printer_id: 1, ams_id: 0, tray_id: 0,
+    });
+
+    render(
+      <AssignSpoolModal
+        {...defaultProps}
+        trayInfo={{ type: 'ABS', material: 'ABS', profile: 'Generic ABS', color: '000000', location: 'AMS 1 - Slot 1' }}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/ELEGOO/)).toBeInTheDocument();
+    });
+    await user.click(screen.getByText(/ELEGOO/));
+    await user.click(screen.getByRole('button', { name: /assign spool/i }));
+
+    await waitFor(() => {
+      expect(api.assignSpool).toHaveBeenCalledWith({ spool_id: 4, printer_id: 1, ams_id: 0, tray_id: 0 });
+    });
+    expect(screen.queryByText(/mismatch/i)).not.toBeInTheDocument();
   });
 
   it('lists spool with no slicer profile when material matches the tray (#1047)', async () => {

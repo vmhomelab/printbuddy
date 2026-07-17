@@ -324,6 +324,8 @@ curl 'http://localhost:8000/api/v1/open-filament-database/brands/elegoo/material
 - Backend route should be read-only and require normal auth/read access consistent with inventory/profile settings.
 - Do not block manual spool creation if OFDB is disabled or unavailable.
 - Selecting OFDB data should pre-fill fields only; users must be able to edit before saving.
+- OFDB-created spools are normal local inventory spools. They can be assigned through the existing Assign Spool modal and are tracked by the existing local inventory usage path via `spool_assignment.spool_id`.
+- OFDB entries do not always include a slicer preset. Treat `slicer_filament` as optional when `data_origin == "openfilamentdatabase"`; material/brand/subtype/color/weight/nozzle metadata is still valid for local inventory and assignment.
 - Keep initial scope local inventory. Spoolman import can be a later extension.
 
 ## Open implementation decisions
