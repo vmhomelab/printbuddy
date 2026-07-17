@@ -1805,7 +1805,7 @@ describe('PrintersPage', () => {
       expect(screen.queryByText('Assign Spool')).not.toBeInTheDocument();
     });
 
-    it('hides loaded-spool assignment controls for Prusa printers only', async () => {
+    it('shows loaded-spool assignment controls for Prusa printers but keeps unsupported providers hidden', async () => {
       const assignment = {
         id: 99,
         printer_id: 1,
@@ -1829,22 +1829,25 @@ describe('PrintersPage', () => {
         http.get('/api/v1/printers/', () => HttpResponse.json([{ ...mockPrinters[0], provider: 'prusalink', model: 'Prusa CORE One' }])),
       );
 
+      const { unmount } = render(<PrintersPage />);
+
+      await screen.findByText('X1 Carbon');
+      await screen.findByText('Loaded spool');
+      expect(screen.getByText(/Prusament PLA Galaxy Black/i)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Change' })).toBeInTheDocument();
+
+      unmount();
+
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{ ...mockPrinters[0], provider: 'elegoo_sdcp', model: 'Elegoo Centauri Carbon' }])),
+      );
+
       render(<PrintersPage />);
 
       await screen.findByText('X1 Carbon');
       await waitFor(() => expect(screen.getAllByText(/25/).length).toBeGreaterThan(0));
       expect(screen.queryByText('Loaded spool')).not.toBeInTheDocument();
       expect(screen.queryByRole('button', { name: 'Change' })).not.toBeInTheDocument();
-
-      server.use(
-        http.get('/api/v1/printers/', () => HttpResponse.json([{ ...mockPrinters[0], provider: 'fluidd', model: 'Elegoo Neptune 4 Pro' }])),
-      );
-
-      render(<PrintersPage />);
-
-      await screen.findByText('Loaded spool');
-      expect(screen.getByText(/Prusament PLA Galaxy Black/i)).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: 'Change' })).toBeInTheDocument();
     });
   });
 

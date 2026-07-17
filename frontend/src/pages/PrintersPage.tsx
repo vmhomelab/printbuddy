@@ -1884,7 +1884,10 @@ function PrinterCard({
   const isPrusaModelPrinter = isPrusaPrinter(printer);
   const isBambuProvider = !printer.provider || printer.provider === 'bambu';
   const isElegooSDCPProvider = printer.provider === 'elegoo_sdcp';
-  const supportsSpoolAssignment = !isPrusaModelPrinter && !isElegooSDCPProvider;
+  // Loaded-spool assignment is local inventory state, not a provider control.
+  // Keep unsupported Prusa toolhead/manual controls hidden, but allow PrusaLink
+  // printers to select a loaded inventory spool for local usage tracking.
+  const supportsSpoolAssignment = !isElegooSDCPProvider;
   const prusaLinkWebUrl = getPrusaLinkWebUrl(printer);
   const loadedSpoolAssignment = supportsSpoolAssignment ? onGetAssignment?.(printer.id, -1, 0) : undefined;
 
