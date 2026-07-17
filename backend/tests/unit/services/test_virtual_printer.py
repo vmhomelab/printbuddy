@@ -143,6 +143,88 @@ class TestVirtualPrinterInstance:
         )
         assert inst.is_proxy is True
 
+    @pytest.mark.asyncio
+    async def test_proxy_mode_suspends_existing_target_mqtt_client(self, tmp_path):
+        """Proxy mode must free the target Bambu printer's single MQTT slot.
+
+        A normal saved Bambu printer keeps a status MQTT connection open. P1/P1S
+        firmware can then timeout a second upstream MQTT connection from the VP
+        proxy. Starting proxy mode should disconnect the internal status client
+        first, then restore it when proxy mode stops.
+        """
+        from backend.app.services.virtual_printer.manager import VirtualPrinterInstance
+
+        printer_manager = MagicMock()
+        printer_manager.get_client.return_value = object()
+        printer_manager.disconnect_printer = MagicMock()
+
+        inst = VirtualPrinterInstance(
+            vp_id=33,
+            name="Proxy",
+            mode="proxy",
+            model="C12",
+            access_code="",
+            serial_suffix="391800033",
+            target_printer_ip="10.17.200.19",
+            target_printer_id=42,
+            base_dir=tmp_path,
+            printer_manager=printer_manager,
+        )
+
+        await inst._suspend_target_printer_connection_for_proxy()
+
+        printer_manager.get_client.assert_called_once_with(42)
+        printer_manager.disconnect_printer.assert_called_once_with(42, timeout=1)
+        assert inst._target_printer_connection_suspended is True
+
+    @pytest.mark.asyncio
+    async def test_proxy_mode_restores_suspended_target_mqtt_client(self, tmp_path):
+        """Stopping proxy mode should reconnect the target printer status client."""
+        from backend.app.services.virtual_printer.manager import VirtualPrinterInstance
+
+        printer = MagicMock()
+        printer.id = 42
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = printer
+        db = AsyncMock()
+        db.execute.return_value = result
+        session_ctx = AsyncMock()
+        session_ctx.__aenter__.return_value = db
+        session_ctx.__aexit__.return_value = False
+        session_factory = MagicMock(return_value=session_ctx)
+        printer_manager = MagicMock()
+        printer_manager.connect_printer = AsyncMock(return_value=True)
+
+        inst = VirtualPrinterInstance(
+            vp_id=34,
+            name="Proxy",
+            mode="proxy",
+            model="C12",
+            access_code="",
+            serial_suffix="391800034",
+            target_printer_ip="10.17.200.19",
+            target_printer_id=42,
+            base_dir=tmp_path,
+            session_factory=session_factory,
+            printer_manager=printer_manager,
+        )
+        inst._target_printer_connection_suspended = True
+
+        await inst._restore_target_printer_connection_after_proxy()
+
+        printer_manager.connect_printer.assert_awaited_once_with(printer)
+        assert inst._target_printer_connection_suspended is False
+
+    @pytest.mark.asyncio
+    async def test_stop_proxy_attempts_target_restore(self, instance):
+        """The restore hook is part of proxy lifecycle cleanup, not caller-dependent."""
+        with patch.object(
+            instance, "_restore_target_printer_connection_after_proxy", new_callable=AsyncMock
+        ) as restore:
+            await instance.stop_proxy()
+
+        restore.assert_awaited_once()
+
     def test_instance_is_running_with_active_tasks(self, instance):
         """Verify is_running is True when tasks are active."""
         mock_task = MagicMock()
