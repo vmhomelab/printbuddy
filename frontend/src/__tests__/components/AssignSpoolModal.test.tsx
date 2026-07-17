@@ -356,6 +356,51 @@ describe('AssignSpoolModal', () => {
     });
   });
 
+  it('assigns to virtual Loaded spool without mismatch warning when target material is unknown', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const user = userEvent.setup();
+    const petgSpool = {
+      id: 50,
+      material: 'PETG',
+      subtype: 'Matte',
+      brand: 'Polymaker',
+      color_name: 'Magenta',
+      rgba: 'FF00FFFF',
+      label_weight: 1000,
+      weight_used: 0,
+      tag_uid: null,
+      tray_uuid: null,
+      slicer_filament_name: null,
+      slicer_filament: null,
+    };
+
+    (api.getSpools as ReturnType<typeof vi.fn>).mockResolvedValue([petgSpool]);
+    (api.assignSpool as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: 50, spool_id: 50, printer_id: 7, ams_id: -1, tray_id: 0,
+    });
+
+    render(
+      <AssignSpoolModal
+        {...defaultProps}
+        printerId={7}
+        amsId={-1}
+        trayId={0}
+        trayInfo={{ type: '', material: undefined, profile: '', color: '', location: 'Loaded spool' }}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/Polymaker/)).toBeInTheDocument();
+    });
+    await user.click(screen.getByText(/Polymaker/));
+    await user.click(screen.getByRole('button', { name: /assign spool/i }));
+
+    await waitFor(() => {
+      expect(api.assignSpool).toHaveBeenCalledWith({ spool_id: 50, printer_id: 7, ams_id: -1, tray_id: 0 });
+    });
+    expect(screen.queryByText(/Material mismatch/i)).not.toBeInTheDocument();
+  });
+
   it('nudges the printer to republish after successful assignment (#1414)', async () => {
     // The backend's assign-spool path issues an MQTT command, but firmware
     // (esp. A1 mini external slots and any non-RFID assignment) doesn't

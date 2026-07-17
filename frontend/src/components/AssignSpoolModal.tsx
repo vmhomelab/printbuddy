@@ -290,15 +290,18 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
 
     if (!settings?.disable_filament_warnings && trayInfo) {
       const trayMaterial = trayInfo.material || trayInfo.type;
-      const materialMatchResult = checkMaterialMatch(selectedSpool.material, trayMaterial);
+      const materialIsComparable = Boolean(normalizeValue(selectedSpool.material) && normalizeValue(trayMaterial));
+      const materialMatchResult = materialIsComparable
+        ? checkMaterialMatch(selectedSpool.material, trayMaterial)
+        : 'exact';
       const spoolProfile = selectedSpool.slicer_filament_name || selectedSpool.slicer_filament;
       const trayProfile = trayInfo.profile || trayInfo.type;
       const profileIsComparable = hasComparableProfile(spoolProfile, trayProfile);
       const profileMismatch = profileIsComparable && !checkProfileMatch(spoolProfile, trayProfile);
 
       // Always evaluate both meaningful checks; if both fail, show a combined warning.
-      // Missing profile metadata is common for manual and OFDB-created spools, so do
-      // not treat an absent slicer profile as a mismatch when material matches.
+      // Missing profile/material metadata is common for virtual Loaded spool targets
+      // and OFDB/manual spools, so do not treat absent comparison data as a mismatch.
       if (materialMatchResult !== 'exact' || profileMismatch) {
         let mismatchType: 'material' | 'partial' | 'profile' | 'material_profile' | 'partial_profile' = 'profile';
 
