@@ -661,7 +661,7 @@ describe('PrintersPage', () => {
       expect(screen.queryByTitle('Move build plate')).not.toBeInTheDocument();
     });
 
-    it('hides loaded-spool assignment controls for Elegoo SDCP printers', async () => {
+    it('shows loaded-spool assignment controls for Elegoo SDCP printers', async () => {
       server.use(
         http.get('/api/v1/printers/', () => HttpResponse.json([{
           ...mockPrinters[0],
@@ -680,8 +680,8 @@ describe('PrintersPage', () => {
 
       await waitFor(() => expect(screen.getByText('Centauri Carbon')).toBeInTheDocument());
 
-      expect(screen.queryByText('Loaded spool')).not.toBeInTheDocument();
-      expect(screen.queryByRole('button', { name: /^Assign$/i })).not.toBeInTheDocument();
+      expect(await screen.findByText('Loaded spool')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /^Assign$/i })).toBeInTheDocument();
     });
 
     it('groups add-printer model choices by vendor and includes common Klipper machines', async () => {
@@ -1805,7 +1805,7 @@ describe('PrintersPage', () => {
       expect(screen.queryByText('Assign Spool')).not.toBeInTheDocument();
     });
 
-    it('shows loaded-spool assignment controls for Prusa printers but keeps unsupported providers hidden', async () => {
+    it('shows loaded-spool assignment controls for Prusa and Elegoo SDCP printers', async () => {
       const assignment = {
         id: 99,
         printer_id: 1,
@@ -1846,8 +1846,9 @@ describe('PrintersPage', () => {
 
       await screen.findByText('X1 Carbon');
       await waitFor(() => expect(screen.getAllByText(/25/).length).toBeGreaterThan(0));
-      expect(screen.queryByText('Loaded spool')).not.toBeInTheDocument();
-      expect(screen.queryByRole('button', { name: 'Change' })).not.toBeInTheDocument();
+      await screen.findByText('Loaded spool');
+      expect(screen.getByText(/Prusament PLA Galaxy Black/i)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Change' })).toBeInTheDocument();
     });
   });
 
