@@ -82,6 +82,7 @@ describe('getPrinterImage', () => {
         ['Elegoo Neptune 4 Pro', 'elegoo-neptune-4-pro.png'],
         ['Elegoo Neptune 4 Plus', 'elegoo-neptune-4-plus.png'],
         ['Elegoo Neptune 4 Max', 'elegoo-neptune-4-max.png'],
+        ['Elegoo Centauri Carbon', 'elegoo-centauri-carbon.png'],
         ['Prusa CORE One', 'prusa-core-one.png'],
         ['Prusa MK4S', 'prusa-mk4s.png'],
         ['Prusa MK4', 'prusa-mk4.png'],
@@ -102,6 +103,8 @@ describe('getPrinterImage', () => {
     it('keeps adjacent non-Bambu models distinct', () => {
       expect(getPrinterImage('Elegoo Neptune 4')).toBe('/img/printers/elegoo-neptune-4.png');
       expect(getPrinterImage('Elegoo Neptune 4 Pro')).toBe('/img/printers/elegoo-neptune-4-pro.png');
+      expect(getPrinterImage('Elegoo Centauri Carbon')).toBe('/img/printers/elegoo-centauri-carbon.png');
+      expect(getPrinterImage('Elegoo Centauri')).toBe('/img/printers/default.png');
       expect(getPrinterImage('Prusa MK4')).toBe('/img/printers/prusa-mk4.png');
       expect(getPrinterImage('Prusa MK4S')).toBe('/img/printers/prusa-mk4s.png');
     });

@@ -16,6 +16,9 @@ RUN npm run build
 # Production image
 FROM python:3.13-slim-trixie
 
+ARG PRINTBUDDY_REF=""
+ENV PRINTBUDDY_REF=${PRINTBUDDY_REF}
+
 LABEL org.opencontainers.image.title="Printbuddy" \
       org.opencontainers.image.description="Self-hosted printer management for Bambu Lab, Klipper, and Mainsail/Moonraker printers" \
       org.opencontainers.image.source="https://github.com/vmhomelab/Printbuddy" \

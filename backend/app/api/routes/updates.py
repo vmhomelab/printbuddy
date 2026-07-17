@@ -9,7 +9,7 @@ import sys
 import time
 
 import httpx
-from fastapi import APIRouter, BackgroundTasks, Depends
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -835,6 +835,96 @@ async def _perform_update(target_ref: str):
             "message": "Update failed",
             "error": "Update failed unexpectedly",
         }
+
+
+@router.post("/self-update")
+async def start_self_update(
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_UPDATE),
+):
+    """Trigger the optional Docker updater sidecar."""
+    if not settings.self_update_enabled:
+        raise HTTPException(status_code=400, detail="Self-update is not enabled")
+    if not settings.updater_url or not settings.updater_token:
+        raise HTTPException(status_code=503, detail="Updater sidecar is not configured")
+
+    headers = {"Authorization": f"Bearer {settings.updater_token}"}
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(f"{settings.updater_url.rstrip('/')}/update", headers=headers, timeout=5.0)
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPStatusError as exc:
+        detail = exc.response.text or "Updater sidecar rejected the update request"
+        raise HTTPException(status_code=exc.response.status_code, detail=detail)
+    except httpx.HTTPError as exc:
+        logger.warning("Updater sidecar trigger failed: %s", exc)
+        raise HTTPException(status_code=503, detail="Updater sidecar is not reachable")
+
+
+@router.get("/self-update/status")
+async def get_self_update_status(
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.SYSTEM_READ),
+):
+    """Report whether the optional updater sidecar is configured and healthy."""
+    if not settings.self_update_enabled:
+        return {"enabled": False, "available": False, "reason": "Self-update is not enabled", "mode": "updater-sidecar"}
+    if not settings.updater_url or not settings.updater_token:
+        return {
+            "enabled": True,
+            "available": False,
+            "reason": "Updater sidecar is not configured",
+            "mode": "updater-sidecar",
+        }
+
+    headers = {"Authorization": f"Bearer {settings.updater_token}"}
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"{settings.updater_url.rstrip('/')}/health", headers=headers, timeout=3.0)
+            response.raise_for_status()
+            health = response.json()
+    except httpx.HTTPError as exc:
+        logger.info("Updater sidecar health check failed: %s", exc)
+        return {
+            "enabled": True,
+            "available": False,
+            "reason": "Updater sidecar is not reachable",
+            "mode": "updater-sidecar",
+        }
+
+    return {
+        "enabled": True,
+        "available": bool(health.get("ok")),
+        "reason": None if health.get("ok") else "Updater sidecar is not healthy",
+        "mode": "updater-sidecar",
+        "health": health,
+    }
+
+
+@router.get("/self-update/jobs/{job_id}")
+async def get_self_update_job_status(
+    job_id: str,
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.SYSTEM_READ),
+):
+    """Proxy safe updater-sidecar job state to the frontend."""
+    if not settings.self_update_enabled:
+        raise HTTPException(status_code=400, detail="Self-update is not enabled")
+    if not settings.updater_url or not settings.updater_token:
+        raise HTTPException(status_code=503, detail="Updater sidecar is not configured")
+
+    headers = {"Authorization": f"Bearer {settings.updater_token}"}
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{settings.updater_url.rstrip('/')}/jobs/{job_id}", headers=headers, timeout=3.0
+            )
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPStatusError as exc:
+        detail = exc.response.text or "Updater sidecar returned an error"
+        raise HTTPException(status_code=exc.response.status_code, detail=detail)
+    except httpx.HTTPError as exc:
+        logger.info("Updater sidecar job status failed: %s", exc)
+        raise HTTPException(status_code=503, detail="Updater sidecar is not reachable")
 
 
 @router.post("/apply")

@@ -147,6 +147,26 @@ class TestSettingsAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_update_open_filament_database_enabled(self, async_client: AsyncClient):
+        """Verify Open Filament Database lookup can be enabled and persists."""
+        response = await async_client.get("/api/v1/settings/")
+        assert response.status_code == 200
+        assert response.json()["open_filament_database_enabled"] is False
+
+        response = await async_client.put(
+            "/api/v1/settings/",
+            json={"open_filament_database_enabled": True},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["open_filament_database_enabled"] is True
+
+        response = await async_client.get("/api/v1/settings/")
+        assert response.status_code == 200
+        assert response.json()["open_filament_database_enabled"] is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_update_ams_thresholds(self, async_client: AsyncClient):
         """Verify AMS threshold settings can be updated."""
         response = await async_client.put(
@@ -306,6 +326,45 @@ class TestSettingsAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_update_panda_breath_settings(self, async_client: AsyncClient):
+        """Verify Panda Breath MQTT settings can be updated."""
+        response = await async_client.put(
+            "/api/v1/settings/",
+            json={
+                "panda_breath_enabled": True,
+                "panda_breath_topic_prefix": "panda_breath_mod",
+                "panda_breath_printer_assignments": '{"DEVICE_A":1}',
+            },
+        )
+
+        assert response.status_code == 200
+        result = response.json()
+        assert result["panda_breath_enabled"] is True
+        assert result["panda_breath_topic_prefix"] == "panda_breath_mod"
+        assert result["panda_breath_printer_assignments"] == '{"DEVICE_A":1}'
+
+        ui_response = await async_client.get("/api/v1/settings/ui-preferences")
+        assert ui_response.status_code == 200
+        assert ui_response.json()["panda_breath_printer_assignments"] == '{"DEVICE_A":1}'
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_panda_breath_status_endpoint(self, async_client: AsyncClient):
+        """Verify Panda Breath status endpoint returns connection and state fields."""
+        response = await async_client.get("/api/v1/settings/panda-breath/status")
+
+        assert response.status_code == 200
+        result = response.json()
+        assert "enabled" in result
+        assert "connected" in result
+        assert "broker" in result
+        assert "port" in result
+        assert "topic_prefix" in result
+        assert "state" in result
+        assert "devices" in result
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_mqtt_status_endpoint(self, async_client: AsyncClient):
         """Verify MQTT status endpoint returns expected fields."""
         response = await async_client.get("/api/v1/settings/mqtt/status")
@@ -352,10 +411,10 @@ class TestSettingsAPI:
     @pytest.mark.integration
     async def test_update_camera_view_mode(self, async_client: AsyncClient):
         """Verify camera view mode can be updated."""
-        response = await async_client.put("/api/v1/settings/", json={"camera_view_mode": "embedded"})
+        response = await async_client.put("/api/v1/settings/", json={"camera_view_mode": "card"})
 
         assert response.status_code == 200
-        assert response.json()["camera_view_mode"] == "embedded"
+        assert response.json()["camera_view_mode"] == "card"
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -385,7 +444,7 @@ class TestSettingsAPI:
 
         assert "camera_view_mode" in result
         # Default is 'window' as defined in schema
-        assert result["camera_view_mode"] in ["window", "embedded"]
+        assert result["camera_view_mode"] in ["window", "embedded", "card"]
 
     # ========================================================================
     # Per-printer mapping settings tests

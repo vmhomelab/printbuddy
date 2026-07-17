@@ -48,6 +48,7 @@ const mockNotificationProviders = [
     on_print_failed: true,
     on_print_stopped: false,
     on_print_progress: false,
+  on_print_almost_done: false,
     on_printer_offline: false,
     on_printer_error: false,
     on_filament_low: false,
@@ -261,7 +262,13 @@ export const handlers = [
       ams_humidity_fair: 60,
       ams_temp_good: 30,
       ams_temp_fair: 35,
+      open_filament_database_enabled: false,
     });
+  }),
+
+  http.put('/api/v1/settings/', async ({ request }) => {
+    const body = (await request.json()) as Record<string, unknown>;
+    return HttpResponse.json(body);
   }),
 
   http.patch('/api/v1/settings/', async ({ request }) => {

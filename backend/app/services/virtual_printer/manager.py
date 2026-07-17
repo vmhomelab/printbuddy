@@ -182,6 +182,7 @@ class VirtualPrinterInstance:
         self._ssdp: VirtualPrinterSSDPServer | None = None
         self._ssdp_proxy: SSDPProxy | None = None
         self._tasks: list[asyncio.Task] = []
+        self._target_printer_connection_suspended = False
 
     @property
     def serial(self) -> str:
@@ -730,9 +731,67 @@ class VirtualPrinterInstance:
             self._ssdp = None
         await self._cancel_tasks()
 
+    async def _suspend_target_printer_connection_for_proxy(self) -> None:
+        """Free the real Bambu printer MQTT slot before starting proxy mode.
+
+        Proxy mode opens a slicer-facing MQTT proxy that needs its own upstream
+        connection to the target printer's port 8883. Bambu printers can stall
+        or timeout when Printbuddy's normal status MQTT client is already
+        connected to that same printer. Suspend the internal client while the
+        VP proxy is active and restore it on stop.
+        """
+        if self.target_printer_id is None or self._printer_manager is None:
+            return
+        if not self._printer_manager.get_client(self.target_printer_id):
+            return
+        logger.info(
+            "[VP %s] Suspending target printer %s MQTT client while proxy mode is active",
+            self.name,
+            self.target_printer_id,
+        )
+        self._printer_manager.disconnect_printer(self.target_printer_id, timeout=1)
+        self._target_printer_connection_suspended = True
+
+    async def _restore_target_printer_connection_after_proxy(self) -> None:
+        """Reconnect a target printer MQTT client suspended for proxy mode."""
+        if not self._target_printer_connection_suspended:
+            return
+        self._target_printer_connection_suspended = False
+        if self.target_printer_id is None or self._printer_manager is None or self._session_factory is None:
+            return
+        try:
+            from sqlalchemy import select
+
+            from backend.app.models.printer import Printer
+
+            async with self._session_factory() as db:
+                result = await db.execute(select(Printer).where(Printer.id == self.target_printer_id))
+                printer = result.scalar_one_or_none()
+            if printer is None:
+                logger.warning(
+                    "[VP %s] Could not restore target printer %s after proxy stop: printer not found",
+                    self.name,
+                    self.target_printer_id,
+                )
+                return
+            logger.info(
+                "[VP %s] Restoring target printer %s MQTT client after proxy stop",
+                self.name,
+                self.target_printer_id,
+            )
+            await self._printer_manager.connect_printer(printer)
+        except Exception:
+            logger.exception(
+                "[VP %s] Failed to restore target printer %s after proxy stop",
+                self.name,
+                self.target_printer_id,
+            )
+
     async def start_proxy(self) -> None:
         """Start proxy mode services for this instance."""
         logger.info("[VP %s] Starting proxy mode to %s", self.name, self.target_printer_ip)
+
+        await self._suspend_target_printer_connection_for_proxy()
 
         cert_path, key_path, _ = self._resolve_cert_and_advertise()
 
@@ -817,6 +876,7 @@ class VirtualPrinterInstance:
             await self._ssdp_proxy.stop()
             self._ssdp_proxy = None
         await self._cancel_tasks()
+        await self._restore_target_printer_connection_after_proxy()
 
     async def _cancel_tasks(self) -> None:
         """Cancel all running tasks and wait for cleanup."""

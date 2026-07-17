@@ -91,7 +91,13 @@ export function VirtualPrinterList() {
             <div className="flex items-start gap-2">
               <AlertTriangle className="w-4 h-4 text-yellow-500 flex-shrink-0 mt-0.5" />
               <div className="text-xs">
-                <p className="text-white font-medium">{t('virtualPrinter.setupRequired.title')}</p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="text-white font-medium">{t('virtualPrinter.setupRequired.title')}</p>
+                  <span className="inline-flex items-center rounded-full border border-bambu-green/40 bg-bambu-green/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-bambu-green">
+                    {t('virtualPrinter.bambuOnly.badge')}
+                  </span>
+                </div>
+                <p className="text-bambu-gray mt-1">{t('virtualPrinter.bambuOnly.description')}</p>
                 <p className="text-bambu-gray mt-1">{t('virtualPrinter.setupRequired.description')}</p>
                 <a
                   href={VIRTUAL_PRINTER_SETUP_GUIDE_URL}

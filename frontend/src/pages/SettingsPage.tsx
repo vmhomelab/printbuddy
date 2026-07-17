@@ -7,7 +7,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { formatDateOnly } from '../utils/date';
 import { getCurrencySymbol, SUPPORTED_CURRENCIES } from '../utils/currency';
 import { checkPasswordComplexity } from '../utils/password';
-import type { APIKey, AppSettings, AppSettingsUpdate, SmartPlug, SmartPlugStatus, NotificationProvider, NotificationTemplate, UpdateStatus, GitHubBackupStatus, CloudAuthStatus, UserCreate, UserUpdate, UserResponse, StorageUsageResponse } from '../api/client';
+import type { APIKey, AppSettings, AppSettingsUpdate, SmartPlug, SmartPlugStatus, NotificationProvider, NotificationTemplate, UpdateStatus, GitHubBackupStatus, CloudAuthStatus, UserCreate, UserUpdate, UserResponse, StorageUsageResponse, SelfUpdateJob } from '../api/client';
 import { Card, CardContent, CardDensityProvider, CardHeader } from '../components/Card';
 import { SlicerBundlesPanel } from '../components/SlicerBundlesPanel';
 import { CameraTokensSection } from './CameraTokensPage';
@@ -45,6 +45,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { Palette } from 'lucide-react';
 import { registerSettingsSearch, getSettingsSearchEntries } from '../lib/settingsSearch';
 import type { UsersSubTab } from '../lib/settingsSearch';
+import { getPandaBreathDevices, parsePandaBreathAssignments, stringifyPandaBreathAssignments } from '../utils/pandaBreath';
 
 const validTabs = ['general', 'plugs', 'notifications', 'queue', 'filament', 'network', 'apikeys', 'virtual-printer', 'failure-detection', 'users', 'backup'] as const;
 type TabType = typeof validTabs[number];
@@ -98,6 +99,7 @@ registerSettingsSearch({ labelKey: 'settings.externalUrl', tab: 'network', keywo
 registerSettingsSearch({ labelKey: 'settings.ftpRetry', tab: 'network', keywords: 'ftp retry upload retries backoff', anchor: 'card-ftpretry' });
 registerSettingsSearch({ labelKey: 'settings.homeAssistant', tab: 'network', keywords: 'home assistant ha hass mqtt integration', anchor: 'card-ha' });
 registerSettingsSearch({ labelKey: 'settings.mqttPublishing', tab: 'network', keywords: 'mqtt publish broker topic', anchor: 'card-mqtt' });
+registerSettingsSearch({ labelKey: 'settings.pandaBreath.title', labelFallback: 'Panda Breath', tab: 'network', keywords: 'panda breath biqu chamber heater mqtt accessory', anchor: 'card-panda-breath' });
 registerSettingsSearch({ labelKey: 'settings.prometheusMetrics', tab: 'network', keywords: 'prometheus metrics grafana monitoring bearer token', anchor: 'card-prometheus' });
 registerSettingsSearch({ labelKey: 'settings.createNewApiKey', tab: 'apikeys', keywords: 'api key create permission scope', anchor: 'card-createapi' });
 registerSettingsSearch({ labelKey: 'settings.webhookEndpoints', tab: 'apikeys', keywords: 'webhook endpoint post http', anchor: 'card-webhooks' });
@@ -166,6 +168,12 @@ const STORAGE_FALLBACK_COLORS = [
   'bg-cyan-500',
   'bg-purple-500',
 ];
+
+const BambuScopeBadge = () => (
+  <span className="inline-flex items-center rounded-full border border-bambu-green/40 bg-bambu-green/10 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-bambu-green">
+    Bambu Lab only
+  </span>
+);
 
 const getStorageColor = (key: string, index: number) =>
   STORAGE_CATEGORY_COLORS[key] || STORAGE_FALLBACK_COLORS[index % STORAGE_FALLBACK_COLORS.length];
@@ -241,6 +249,7 @@ export function SettingsPage() {
   const [showClearStorageConfirm, setShowClearStorageConfirm] = useState(false);
   const [showBulkPlugConfirm, setShowBulkPlugConfirm] = useState<'on' | 'off' | null>(null);
   const [showReleaseNotes, setShowReleaseNotes] = useState(false);
+  const [selfUpdateJobId, setSelfUpdateJobId] = useState<string | null>(null);
   const [showDisableAuthConfirm, setShowDisableAuthConfirm] = useState(false);
   const [showChangePasswordModal, setShowChangePasswordModal] = useState(false);
   const [changePasswordData, setChangePasswordData] = useState({ currentPassword: '', newPassword: '', confirmPassword: '' });
@@ -577,12 +586,70 @@ export function SettingsPage() {
     },
   });
 
+  const { data: selfUpdateStatus, refetch: refetchSelfUpdateStatus } = useQuery({
+    queryKey: ['selfUpdateStatus'],
+    queryFn: api.getSelfUpdateStatus,
+    enabled: settings?.check_updates !== false,
+    staleTime: 60 * 1000,
+  });
+
+  const { data: selfUpdateJob } = useQuery<SelfUpdateJob>({
+    queryKey: ['selfUpdateJob', selfUpdateJobId],
+    queryFn: () => api.getSelfUpdateJob(selfUpdateJobId!),
+    enabled: !!selfUpdateJobId,
+    refetchInterval: (query) => {
+      const job = query.state.data as SelfUpdateJob | undefined;
+      if (!job || job.status === 'queued' || job.status === 'pulling' || job.status === 'recreating') {
+        return 1500;
+      }
+      return false;
+    },
+  });
+
+  useEffect(() => {
+    if (selfUpdateJob?.status === 'completed') {
+      showToast(t('settings.selfUpdateCompleted', 'Update command completed. Printbuddy is restarting...'), 'success');
+      queryClient.invalidateQueries({ queryKey: ['version'] });
+      queryClient.invalidateQueries({ queryKey: ['updateCheck'] });
+    } else if (selfUpdateJob?.status === 'failed') {
+      showToast(selfUpdateJob.message || t('settings.selfUpdateFailed', 'Self-update failed'), 'error');
+    }
+  }, [queryClient, selfUpdateJob?.message, selfUpdateJob?.status, showToast, t]);
+
   // MQTT status for Network tab
   const { data: mqttStatus } = useQuery({
     queryKey: ['mqtt-status'],
     queryFn: api.getMQTTStatus,
     refetchInterval: activeTab === 'network' ? 5000 : false, // Poll every 5s when on Network tab
   });
+
+  const { data: pandaBreathStatus } = useQuery({
+    queryKey: ['panda-breath-status'],
+    queryFn: api.getPandaBreathStatus,
+    refetchInterval: activeTab === 'network' ? 5000 : false,
+  });
+
+  const pandaBreathCommandMutation = useMutation({
+    mutationFn: (data: { command: string; value?: string | number | boolean | null }) => api.sendPandaBreathCommand(data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['panda-breath-status'] });
+    },
+    onError: (error: Error) => {
+      showToast(error.message, 'error');
+    },
+  });
+
+  const pandaBreathDevices = getPandaBreathDevices(pandaBreathStatus);
+  const pandaBreathAssignments = parsePandaBreathAssignments(localSettings?.panda_breath_printer_assignments);
+  const updatePandaBreathAssignment = (deviceId: string, printerId: number | null) => {
+    const next = { ...pandaBreathAssignments };
+    if (printerId) {
+      next[deviceId] = printerId;
+    } else {
+      delete next[deviceId];
+    }
+    updateSetting('panda_breath_printer_assignments', stringifyPandaBreathAssignments(next));
+  };
 
   // GitHub backup status for Backup tab indicator
   const { data: githubBackupStatus } = useQuery<GitHubBackupStatus>({
@@ -824,6 +891,30 @@ export function SettingsPage() {
     },
   });
 
+  const selfUpdateMutation = useMutation({
+    mutationFn: api.startSelfUpdate,
+    onSuccess: (data) => {
+      setSelfUpdateJobId(data.job_id);
+      showToast(data.message || t('settings.selfUpdateStarted', 'Update started'), 'success');
+    },
+    onError: (error: Error) => {
+      showToast(error.message || t('settings.selfUpdateFailed', 'Self-update failed'), 'error');
+      refetchSelfUpdateStatus();
+    },
+  });
+
+  const handleSelfUpdate = () => {
+    const confirmed = window.confirm(
+      t(
+        'settings.selfUpdateConfirm',
+        'Printbuddy will pull the newest Docker image and restart this container. The interface may disconnect for 30–90 seconds. Continue?'
+      )
+    );
+    if (confirmed) {
+      selfUpdateMutation.mutate();
+    }
+  };
+
   // Test all notification providers
   const [testAllResult, setTestAllResult] = useState<{
     tested: number;
@@ -1005,6 +1096,9 @@ export function SettingsPage() {
       settings.mqtt_password !== localSettings.mqtt_password ||
       settings.mqtt_topic_prefix !== localSettings.mqtt_topic_prefix ||
       settings.mqtt_use_tls !== localSettings.mqtt_use_tls ||
+      (settings.panda_breath_enabled ?? false) !== (localSettings.panda_breath_enabled ?? false) ||
+      (settings.panda_breath_topic_prefix ?? 'panda_breath') !== (localSettings.panda_breath_topic_prefix ?? 'panda_breath') ||
+      (settings.panda_breath_printer_assignments ?? '{}') !== (localSettings.panda_breath_printer_assignments ?? '{}') ||
       settings.external_url !== localSettings.external_url ||
       settings.ha_enabled !== localSettings.ha_enabled ||
       settings.ha_url !== localSettings.ha_url ||
@@ -1089,6 +1183,9 @@ export function SettingsPage() {
         mqtt_password: localSettings.mqtt_password,
         mqtt_topic_prefix: localSettings.mqtt_topic_prefix,
         mqtt_use_tls: localSettings.mqtt_use_tls,
+        panda_breath_enabled: localSettings.panda_breath_enabled,
+        panda_breath_topic_prefix: localSettings.panda_breath_topic_prefix,
+        panda_breath_printer_assignments: localSettings.panda_breath_printer_assignments,
         external_url: localSettings.external_url,
         ha_enabled: localSettings.ha_enabled,
         ha_url: localSettings.ha_url,
@@ -1932,16 +2029,19 @@ export function SettingsPage() {
                 </label>
                 <select
                   value={localSettings.camera_view_mode ?? 'window'}
-                  onChange={(e) => updateSetting('camera_view_mode', e.target.value as 'window' | 'embedded')}
+                  onChange={(e) => updateSetting('camera_view_mode', e.target.value as 'window' | 'embedded' | 'card')}
                   className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                 >
                   <option value="window">{t('settings.newWindow')}</option>
                   <option value="embedded">{t('settings.embeddedOverlay')}</option>
+                  <option value="card">{t('settings.insidePrinterCard')}</option>
                 </select>
                 <p className="text-xs text-bambu-gray mt-1">
                   {localSettings.camera_view_mode === 'embedded'
                     ? t('settings.cameraOverlayDescription')
-                    : t('settings.cameraWindowDescription')}
+                    : localSettings.camera_view_mode === 'card'
+                      ? t('settings.cameraCardDescription')
+                      : t('settings.cameraWindowDescription')}
                 </p>
               </div>
 
@@ -2277,9 +2377,12 @@ export function SettingsPage() {
               <p className="text-xs font-medium text-bambu-gray uppercase tracking-wider">{t('settings.printerFirmware')}</p>
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-white">{t('settings.checkPrinterFirmware')}</p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="text-white">{t('settings.checkPrinterFirmware')}</p>
+                    <BambuScopeBadge />
+                  </div>
                   <p className="text-sm text-bambu-gray">
-                    {t('settings.checkFirmwareDescription')}
+                    {t('settings.checkFirmwareDescription')} Bambu firmware metadata only; other printer providers are ignored.
                   </p>
                 </div>
                 <label className="relative inline-flex items-center cursor-pointer">
@@ -2414,12 +2517,58 @@ export function SettingsPage() {
                       </div>
                     ) : updateCheck?.is_docker ? (
                       <div className="mt-3 p-3 bg-bambu-dark-tertiary rounded-lg">
-                        <p className="text-sm text-bambu-gray mb-2">
-                          {t('settings.updateViaDocker')}
-                        </p>
-                        <code className="block text-xs bg-bambu-dark p-2 rounded text-bambu-green font-mono">
-                          docker compose pull && docker compose up -d
-                        </code>
+                        {selfUpdateJob && selfUpdateJob.status !== 'completed' && selfUpdateJob.status !== 'failed' ? (
+                          <div>
+                            <div className="flex items-center gap-2 text-sm text-bambu-gray">
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                              <span>{selfUpdateJob.message}</span>
+                            </div>
+                            <div className="mt-2 space-y-1">
+                              {selfUpdateJob.steps?.map((step) => (
+                                <div key={step.name} className="text-xs text-bambu-gray flex items-center gap-2">
+                                  {step.status === 'completed' ? <CheckCircle className="w-3 h-3 text-bambu-green" /> : <Loader2 className="w-3 h-3 animate-spin" />}
+                                  <span>{step.name}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ) : selfUpdateJob?.status === 'failed' ? (
+                          <div className="text-sm text-red-400">
+                            <p>{selfUpdateJob.message}</p>
+                            {selfUpdateJob.safe_log_tail && (
+                              <pre className="mt-2 max-h-32 overflow-auto rounded bg-bambu-dark p-2 text-xs text-red-300 whitespace-pre-wrap">
+                                {selfUpdateJob.safe_log_tail}
+                              </pre>
+                            )}
+                          </div>
+                        ) : selfUpdateStatus?.available ? (
+                          <div>
+                            <p className="text-sm text-bambu-gray mb-3">
+                              {t('settings.selfUpdateAvailable', 'Self-update is enabled. Printbuddy will pull the newest Docker image and restart this container.')}
+                            </p>
+                            <Button
+                              className="mt-1"
+                              onClick={handleSelfUpdate}
+                              disabled={selfUpdateMutation.isPending}
+                            >
+                              {selfUpdateMutation.isPending ? (
+                                <Loader2 className="w-4 h-4 animate-spin" />
+                              ) : (
+                                <Download className="w-4 h-4" />
+                              )}
+                              {t('settings.updateNow', 'Update now')}
+                            </Button>
+                          </div>
+                        ) : (
+                          <div>
+                            <p className="text-sm text-bambu-gray mb-2">
+                              {selfUpdateStatus?.reason || t('settings.updateViaDocker', 'Update this Docker installation manually:')}
+                            </p>
+                            <code className="block text-xs bg-bambu-dark p-2 rounded text-bambu-green font-mono">
+                              docker compose pull && docker compose up -d
+                            </code>
+                          </div>
+                        )}
                       </div>
                     ) : (
                       <Button
@@ -3039,6 +3188,191 @@ export function SettingsPage() {
                       </div>
                     </div>
                   )}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Panda Breath MQTT */}
+          <Card id="card-panda-breath">
+            <CardHeader>
+              <div className="flex items-center justify-between gap-3">
+                <h2 className="text-lg font-semibold text-white flex items-center gap-2">
+                  <Flame className="w-5 h-5 text-orange-400" />
+                  Panda Breath
+                </h2>
+                {pandaBreathStatus?.enabled && (
+                  <div className="flex items-center gap-2">
+                    <span className={`w-2.5 h-2.5 rounded-full ${pandaBreathStatus.connected ? 'bg-green-400' : 'bg-red-400'}`} />
+                    <span className={`text-sm ${pandaBreathStatus.connected ? 'text-green-400' : 'text-red-400'}`}>
+                      {pandaBreathStatus.connected ? t('settings.connected') : t('settings.disconnected')}
+                    </span>
+                  </div>
+                )}
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <p className="text-sm text-bambu-gray">
+                Connect to the BIQU Panda Breath through the same MQTT broker above. Printbuddy subscribes to <code className="text-orange-300">{localSettings.panda_breath_topic_prefix || 'panda_breath'}/#</code> and reads the native <code className="text-orange-300">state</code>/<code className="text-orange-300">availability</code> topics.
+              </p>
+
+              {!localSettings.mqtt_broker && (
+                <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-3 text-sm text-yellow-200">
+                  Configure the MQTT broker first. Panda Breath uses the shared broker, port, username, password and TLS settings from MQTT Publishing.
+                </div>
+              )}
+
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-white">Enable Panda Breath control</p>
+                  <p className="text-sm text-bambu-gray">Monitor chamber temperature and send heater mode commands via MQTT.</p>
+                </div>
+                <Toggle
+                  checked={localSettings.panda_breath_enabled ?? false}
+                  onChange={(checked) => updateSetting('panda_breath_enabled', checked)}
+                />
+              </div>
+
+              {localSettings.panda_breath_enabled && (
+                <div className="space-y-3 pt-2 border-t border-bambu-dark-tertiary">
+                  <div>
+                    <label htmlFor="panda-breath-topic-prefix" className="block text-sm text-bambu-gray mb-1">Panda Breath topic prefix</label>
+                    <input
+                      id="panda-breath-topic-prefix"
+                      type="text"
+                      value={localSettings.panda_breath_topic_prefix ?? 'panda_breath'}
+                      onChange={(e) => updateSetting('panda_breath_topic_prefix', e.target.value)}
+                      placeholder="panda_breath"
+                      className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                    />
+                    <p className="text-xs text-bambu-gray mt-1">
+                      Use <code>panda_breath</code> to auto-detect the device id from <code>panda_breath/&lt;device_id&gt;/state</code>, or set the full prefix such as <code>panda_breath/9C139E456884</code>.
+                    </p>
+                    <p className="mt-2 rounded-lg border border-orange-500/30 bg-orange-500/10 px-3 py-2 text-xs text-orange-100">
+                      Tip: keep the topic prefix set to <code>panda_breath</code> when the Panda Breath connects
+                      directly to an MQTT broker such as Home Assistant. Use <code>panda_breath_mod</code> only for
+                      the community bridge used by the{' '}
+                      <a
+                        href="https://github.com/mikigua/ha-panda-breath"
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-orange-200 underline hover:text-orange-100"
+                      >
+                        ha-panda-breath integration by mikigua
+                      </a>.
+                    </p>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2 text-sm">
+                    <div className="rounded-lg bg-bambu-dark p-3">
+                      <p className="text-bambu-gray">Mode</p>
+                      <p className="text-white font-medium">{pandaBreathStatus?.state.mode || '—'}</p>
+                    </div>
+                    <div className="rounded-lg bg-bambu-dark p-3">
+                      <p className="text-bambu-gray">Status</p>
+                      <p className="text-white font-medium">{pandaBreathStatus?.state.status || pandaBreathStatus?.state.lock_status || '—'}</p>
+                    </div>
+                    <div className="rounded-lg bg-bambu-dark p-3">
+                      <p className="text-bambu-gray">Chamber</p>
+                      <p className="text-white font-medium">{pandaBreathStatus?.state.chamber_actual ?? '—'} °C</p>
+                    </div>
+                    <div className="rounded-lg bg-bambu-dark p-3">
+                      <p className="text-bambu-gray">Target</p>
+                      <p className="text-white font-medium">{pandaBreathStatus?.state.chamber_target ?? '—'} °C</p>
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark/60 p-3 space-y-3">
+                    <div>
+                      <p className="text-sm font-medium text-white">Assign Panda Breath devices to printers</p>
+                      <p className="text-xs text-bambu-gray">Each detected device id can be assigned to one Printbuddy printer so its chamber data appears on the correct printer card.</p>
+                    </div>
+                    {Object.keys(pandaBreathDevices).length === 0 ? (
+                      <p className="text-xs text-bambu-gray">No Panda Breath device ids have been received yet. Keep the device online until a state or availability topic arrives.</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {Object.entries(pandaBreathDevices).map(([deviceId, deviceState]) => (
+                          <div key={deviceId} className="grid gap-2 rounded-md bg-bambu-dark p-2 sm:grid-cols-[minmax(0,1fr)_minmax(160px,220px)] sm:items-center">
+                            <div className="min-w-0">
+                              <p className="truncate text-sm text-white">{deviceState.printer_name || deviceId}</p>
+                              <p className="truncate text-xs text-bambu-gray">{deviceId} · Chamber {deviceState.chamber_actual ?? '—'} °C · Target {deviceState.chamber_target ?? '—'} °C</p>
+                            </div>
+                            <select
+                              aria-label={`Assign Panda Breath ${deviceId} to printer`}
+                              value={pandaBreathAssignments[deviceId] ?? ''}
+                              onChange={(e) => updatePandaBreathAssignment(deviceId, e.target.value ? Number(e.target.value) : null)}
+                              className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                            >
+                              <option value="">Unassigned</option>
+                              {(printers || []).map((printer) => (
+                                <option key={printer.id} value={printer.id}>{printer.name}</option>
+                              ))}
+                            </select>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    {[
+                      ['manual', 'Manual'],
+                      ['auto', 'Auto'],
+                      ['drying', 'Drying'],
+                      ['unlock', 'Unlock'],
+                    ].map(([command, label]) => (
+                      <Button
+                        key={command}
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => pandaBreathCommandMutation.mutate({ command })}
+                        disabled={!pandaBreathStatus?.connected || pandaBreathCommandMutation.isPending}
+                      >
+                        {label}
+                      </Button>
+                    ))}
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => pandaBreathCommandMutation.mutate({ command: 'power', value: !(pandaBreathStatus?.state.power_on ?? false) })}
+                      disabled={!pandaBreathStatus?.connected || pandaBreathCommandMutation.isPending}
+                    >
+                      {pandaBreathStatus?.state.power_on ? 'Power off' : 'Power on'}
+                    </Button>
+                    <Button
+                      variant="danger"
+                      size="sm"
+                      onClick={() => pandaBreathCommandMutation.mutate({ command: 'stop' })}
+                      disabled={!pandaBreathStatus?.connected || pandaBreathCommandMutation.isPending}
+                    >
+                      Heater stop
+                    </Button>
+                  </div>
+
+                  <div className="flex gap-2">
+                    <input
+                      type="number"
+                      min="1"
+                      max="80"
+                      defaultValue={pandaBreathStatus?.state.chamber_target ?? 45}
+                      className="w-28 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                      id="panda-breath-target-temp"
+                    />
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      disabled={!pandaBreathStatus?.connected || pandaBreathCommandMutation.isPending}
+                      onClick={() => {
+                        const input = document.getElementById('panda-breath-target-temp') as HTMLInputElement | null;
+                        pandaBreathCommandMutation.mutate({ command: 'chamber_target', value: Number(input?.value || 45) });
+                      }}
+                    >
+                      Set chamber target
+                    </Button>
+                  </div>
                 </div>
               )}
             </CardContent>
@@ -4020,25 +4354,42 @@ export function SettingsPage() {
           {/* Default Print Options */}
           <Card id="card-print-options">
             <CardHeader>
-              <h3 className="text-base font-semibold text-white flex items-center gap-2">
-                <ListOrdered className="w-4 h-4 text-bambu-green" />
-                {t('settings.defaultPrintOptions', 'Default Print Options')}
-              </h3>
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between w-full">
+                <div>
+                  <h3 className="text-base font-semibold text-white flex items-center gap-2">
+                    <ListOrdered className="w-4 h-4 text-bambu-green" />
+                    {t('settings.defaultPrintOptions', 'Default Print Options')}
+                  </h3>
+                  <p className="mt-1 text-xs text-bambu-gray">
+                    {t('settings.defaultPrintOptionsDescription', 'Set default values for print options when starting new prints. These can be overridden per print in the print dialog.')}
+                  </p>
+                </div>
+                <BambuScopeBadge />
+              </div>
             </CardHeader>
             <CardContent className="space-y-3">
-              <p className="text-xs text-bambu-gray">
-                {t('settings.defaultPrintOptionsDescription', 'Set default values for print options when starting new prints. These can be overridden per print in the print dialog.')}
-              </p>
+              <div className="rounded-lg border border-bambu-green/30 bg-bambu-green/10 p-3">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <p className="text-sm font-semibold text-white">Bambu Lab print-start options</p>
+                  <BambuScopeBadge />
+                </div>
+                <p className="mt-1 text-xs text-bambu-gray">
+                  These options map to Bambu LAN/MQTT print-start flags. They stay visible here for transparency, but non-Bambu queue and print payloads are sanitized to false before dispatch.
+                </p>
+              </div>
               {[
                 { key: 'default_bed_levelling' as const, label: t('settings.defaultBedLevelling', 'Bed Levelling'), desc: t('settings.defaultBedLevellingDesc', 'Auto-level bed before print'), fallback: true },
                 { key: 'default_flow_cali' as const, label: t('settings.defaultFlowCali', 'Flow Calibration'), desc: t('settings.defaultFlowCaliDesc', 'Calibrate extrusion flow'), fallback: false },
                 { key: 'default_vibration_cali' as const, label: t('settings.defaultVibrationCali', 'Vibration Calibration'), desc: t('settings.defaultVibrationCaliDesc', 'Reduce ringing artifacts'), fallback: true },
                 { key: 'default_layer_inspect' as const, label: t('settings.defaultLayerInspect', 'First Layer Inspection'), desc: t('settings.defaultLayerInspectDesc', 'AI inspection of first layer'), fallback: false },
-                { key: 'default_timelapse' as const, label: t('settings.defaultTimelapse', 'Timelapse'), desc: t('settings.defaultTimelapseDesc', 'Record timelapse video'), fallback: false },
+                { key: 'default_timelapse' as const, label: t('settings.defaultTimelapse', 'Timelapse'), desc: t('settings.defaultTimelapseDesc', 'Record Bambu printer-side timelapse video'), fallback: false },
               ].map(({ key, label, desc, fallback }) => (
-                <div key={key} className="flex items-center justify-between">
+                <div key={key} className="flex items-center justify-between rounded-lg border border-bambu-dark-tertiary/70 bg-bambu-dark/35 px-3 py-2">
                   <div className="flex-1 mr-4">
-                    <p className="text-sm text-white">{label}</p>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="text-sm text-white">{label}</p>
+                      <BambuScopeBadge />
+                    </div>
                     <p className="text-xs text-bambu-gray mt-0.5">{desc}</p>
                   </div>
                   <label className="relative inline-flex items-center cursor-pointer">
@@ -4595,11 +4946,14 @@ export function SettingsPage() {
 
             <Card id="card-amsthresholds">
               <CardHeader>
-                <h2 className="text-lg font-semibold text-white">{t('settings.amsDisplayThresholds')}</h2>
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between w-full">
+                  <h2 className="text-lg font-semibold text-white">{t('settings.amsDisplayThresholds')}</h2>
+                  <BambuScopeBadge />
+                </div>
               </CardHeader>
               <CardContent className="space-y-3">
                 <p className="text-sm text-bambu-gray">
-                  {t('settings.amsThresholdsDescription')}
+                  {t('settings.amsThresholdsDescription')} AMS sensor thresholds are Bambu Lab only and do not apply to Klipper/Moonraker or Prusa printers.
                 </p>
 
                 {/* Humidity Thresholds */}

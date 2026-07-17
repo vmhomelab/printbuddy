@@ -71,6 +71,11 @@ class BindServer:
             return None
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ctx.load_cert_chain(str(self.cert_path), str(self.key_path))
+        # OrcaSlicer/BambuStudio's Bambu network path can require plain-RSA
+        # AES-GCM suites during the bind/detect handshake. OpenSSL 3's default
+        # server context may omit them, which makes the slicer fail with
+        # ``code=-1`` even though the port is reachable and the CA is trusted.
+        ctx.set_ciphers("DEFAULT:AES256-GCM-SHA384:AES128-GCM-SHA256")
         ctx.minimum_version = ssl.TLSVersion.TLSv1_2
         ctx.verify_mode = ssl.CERT_NONE
         return ctx

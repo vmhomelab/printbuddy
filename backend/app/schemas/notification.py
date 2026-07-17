@@ -35,6 +35,7 @@ class NotificationProviderBase(BaseModel):
     on_print_failed: bool = Field(default=True, description="Notify on print failed")
     on_print_stopped: bool = Field(default=True, description="Notify when print is stopped/cancelled")
     on_print_progress: bool = Field(default=False, description="Notify at 25%, 50%, 75% progress")
+    on_print_almost_done: bool = Field(default=False, description="Notify at 99% progress with a camera snapshot")
     on_print_missing_spool_assignment: bool = Field(
         default=False,
         description="Notify when a print starts with required trays missing spool assignments",
@@ -123,6 +124,7 @@ class NotificationProviderUpdate(BaseModel):
     on_print_failed: bool | None = None
     on_print_stopped: bool | None = None
     on_print_progress: bool | None = None
+    on_print_almost_done: bool | None = None
     on_print_missing_spool_assignment: bool | None = None
 
     # Event triggers - printer status

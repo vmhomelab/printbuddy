@@ -23,8 +23,12 @@ const mockSettings = {
   time_format: 'system',
   date_format: 'system',
   mqtt_enabled: false,
+  mqtt_broker: '',
   mqtt_host: '',
   mqtt_port: 1883,
+  panda_breath_enabled: false,
+  panda_breath_topic_prefix: 'panda_breath',
+  panda_breath_printer_assignments: '{}',
   spoolman_enabled: false,
   spoolman_url: '',
   ha_enabled: false,
@@ -65,6 +69,14 @@ describe('SettingsPage', () => {
       http.get('/api/v1/mqtt/status', () => {
         return HttpResponse.json({ enabled: false });
       }),
+      http.get('/api/v1/settings/panda-breath/status', () => {
+        return HttpResponse.json({
+          enabled: false,
+          connected: false,
+          topic_prefix: 'panda_breath',
+          state: {},
+        });
+      }),
       http.get('/api/v1/virtual-printer/status', () => {
         return HttpResponse.json({ running: false });
       }),
@@ -73,8 +85,8 @@ describe('SettingsPage', () => {
       }),
       http.get('/api/v1/updates/version', () => {
         return HttpResponse.json({
-          version: '0.2.4.3',
-          display_version: '0.2.4.3 (abc1234)',
+          version: '0.2.4.7',
+          display_version: '0.2.4.7 (abc1234)',
           source_ref: 'abc1234567890abc1234567890abc1234567890ab',
           source_ref_short: 'abc1234',
           repo: 'vmhomelab/Printbuddy',
@@ -146,6 +158,22 @@ describe('SettingsPage', () => {
       });
     });
 
+    it('offers the printer-card camera view mode in the Camera settings', async () => {
+      const user = userEvent.setup();
+      render(<SettingsPage />);
+
+      const option = await screen.findByRole('option', { name: 'Inside Printer Card' });
+      expect(option).toBeInTheDocument();
+
+      const cameraModeSelect = option.closest('select');
+      expect(cameraModeSelect).not.toBeNull();
+      await user.selectOptions(cameraModeSelect as HTMLSelectElement, 'card');
+
+      await waitFor(() => {
+        expect(screen.getByText('Camera expands inside each printer card')).toBeInTheDocument();
+      });
+    });
+
     it('shows preferred slicer setting on Workflow tab', async () => {
       const user = userEvent.setup();
       render(<SettingsPage />);
@@ -177,6 +205,25 @@ describe('SettingsPage', () => {
       });
     });
 
+    it('marks default print options as Bambu Lab only with a provider warning', async () => {
+      const user = userEvent.setup();
+      render(<SettingsPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Workflow')).toBeInTheDocument();
+      });
+
+      await user.click(screen.getByText('Workflow'));
+
+      await waitFor(() => {
+        expect(screen.getByText('Bambu Lab print-start options')).toBeInTheDocument();
+      });
+
+      expect(screen.getAllByText('Bambu Lab only')).toHaveLength(7);
+      expect(screen.getByText(/These options map to Bambu LAN\/MQTT print-start flags/i)).toBeInTheDocument();
+      expect(screen.getByText(/non-Bambu queue and print payloads are sanitized to false/i)).toBeInTheDocument();
+    });
+
     it('shows appearance section', async () => {
       render(<SettingsPage />);
 
@@ -195,11 +242,24 @@ describe('SettingsPage', () => {
       });
     });
 
+    it('marks Bambu firmware checks as Bambu Lab only', async () => {
+      render(<SettingsPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Check printer firmware')).toBeInTheDocument();
+      });
+
+      const firmwareRow = screen.getByText('Check printer firmware').closest('.flex.items-center.justify-between');
+      expect(firmwareRow).not.toBeNull();
+      expect(firmwareRow!.textContent).toContain('Bambu Lab only');
+      expect(firmwareRow!.textContent).toContain('Bambu firmware metadata');
+    });
+
     it('shows the source revision in the current version field', async () => {
       render(<SettingsPage />);
 
       await waitFor(() => {
-        expect(screen.getByText('v0.2.4.3 (abc1234)')).toBeInTheDocument();
+        expect(screen.getByText('v0.2.4.7 (abc1234)')).toBeInTheDocument();
       });
     });
   });
@@ -286,6 +346,109 @@ describe('SettingsPage', () => {
       await waitFor(() => {
         // Network tab contains MQTT Publishing section
         expect(screen.getByText('MQTT Publishing')).toBeInTheDocument();
+      });
+    });
+
+    it('shows native Panda Breath as the default topic with bridge guidance', async () => {
+      const user = userEvent.setup();
+      server.use(
+        http.get('/api/v1/settings/', () => {
+          return HttpResponse.json({
+            ...mockSettings,
+            mqtt_broker: 'homeassistant.local',
+            panda_breath_enabled: true,
+            panda_breath_topic_prefix: 'panda_breath',
+          });
+        }),
+        http.get('/api/v1/settings/panda-breath/status', () => {
+          return HttpResponse.json({
+            enabled: true,
+            connected: false,
+            topic_prefix: 'panda_breath',
+            state: {},
+          });
+        })
+      );
+
+      render(<SettingsPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Network')).toBeInTheDocument();
+      });
+
+      await user.click(screen.getByText('Network'));
+
+      await waitFor(() => {
+        expect(screen.getByLabelText('Panda Breath topic prefix')).toHaveValue('panda_breath');
+      });
+      expect(screen.getByText(/connects directly to an MQTT broker such as Home Assistant/i)).toBeInTheDocument();
+      const pandaBreathCard = document.querySelector('#card-panda-breath');
+      expect(pandaBreathCard?.textContent).not.toContain('Bambu Lab only');
+      expect(screen.getByText('panda_breath_mod')).toBeInTheDocument();
+      expect(screen.getByText(/community bridge used by the/i)).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: /ha-panda-breath integration by mikigua/i })).toHaveAttribute(
+        'href',
+        'https://github.com/mikigua/ha-panda-breath'
+      );
+    });
+
+    it('lets users assign detected Panda Breath device ids to Printbuddy printers', async () => {
+      const user = userEvent.setup();
+      const savedBodies: unknown[] = [];
+      server.use(
+        http.get('/api/v1/settings/', () => {
+          return HttpResponse.json({
+            ...mockSettings,
+            mqtt_broker: 'homeassistant.local',
+            panda_breath_enabled: true,
+            panda_breath_topic_prefix: 'panda_breath',
+            panda_breath_printer_assignments: '{}',
+          });
+        }),
+        http.patch('/api/v1/settings/', async ({ request }) => {
+          const body = await request.json();
+          savedBodies.push(body);
+          return HttpResponse.json({ ...mockSettings, ...(body as Record<string, unknown>) });
+        }),
+        http.put('/api/v1/settings/', async ({ request }) => {
+          const body = await request.json();
+          savedBodies.push(body);
+          return HttpResponse.json({ ...mockSettings, ...(body as Record<string, unknown>) });
+        }),
+        http.get('/api/v1/printers/', () => {
+          return HttpResponse.json([
+            { id: 1, name: 'X1 Carbon' },
+            { id: 2, name: 'P1S Backup' },
+          ]);
+        }),
+        http.get('/api/v1/settings/panda-breath/status', () => {
+          return HttpResponse.json({
+            enabled: true,
+            connected: true,
+            topic_prefix: 'panda_breath',
+            state: {},
+            devices: {
+              DEVICE_A: { device_id: 'DEVICE_A', chamber_actual: 31.2, chamber_target: 45, printer_name: 'Breath A' },
+              DEVICE_B: { device_id: 'DEVICE_B', chamber_actual: 42.8, chamber_target: 55, printer_name: 'Breath B' },
+            },
+          });
+        })
+      );
+
+      render(<SettingsPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Network')).toBeInTheDocument();
+      });
+      await user.click(screen.getByText('Network'));
+
+      const assignmentSelect = await screen.findByLabelText('Assign Panda Breath DEVICE_B to printer');
+      await user.selectOptions(assignmentSelect, '2');
+
+      await waitFor(() => {
+        expect(savedBodies.some((body) => (
+          body as { panda_breath_printer_assignments?: string }
+        ).panda_breath_printer_assignments === '{"DEVICE_B":2}')).toBe(true);
       });
     });
 

@@ -6,7 +6,6 @@ import {
   Folder,
   File,
   ChevronLeft,
-  Download,
   Trash2,
   Loader2,
   HardDrive,
@@ -23,8 +22,9 @@ import {
   Box,
   Upload,
   ListPlus,
+  Play,
 } from 'lucide-react';
-import { api } from '../api/client';
+import { api, type PrinterProvider } from '../api/client';
 import { parseUTCDate } from '../utils/date';
 import { Button } from './Button';
 import { PrintModal } from './PrintModal';
@@ -33,11 +33,11 @@ import { ModelViewer } from './ModelViewer';
 import { GcodeViewer } from './GcodeViewer';
 import type { PlateMetadata } from '../types/plates';
 import { useToast } from '../contexts/ToastContext';
-import { formatFileSize } from '../utils/file';
 
 interface FileManagerModalProps {
   printerId: number;
   printerName: string;
+  printerProvider?: PrinterProvider;
   onClose: () => void;
 }
 
@@ -282,7 +282,7 @@ const SORT_OPTIONS: { value: SortOption; label: string }[] = [
   { value: 'date-desc', label: 'Date (newest)' },
 ];
 
-export function FileManagerModal({ printerId, printerName, onClose }: FileManagerModalProps) {
+export function FileManagerModal({ printerId, printerName, printerProvider, onClose }: FileManagerModalProps) {
   const { t } = useTranslation();
   const { showToast } = useToast();
   const queryClient = useQueryClient();
@@ -290,12 +290,14 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
   const [uploadingFile, setUploadingFile] = useState(false);
   const [queueingFile, setQueueingFile] = useState(false);
+  const [startingFile, setStartingFile] = useState(false);
   const [queuedLibraryFile, setQueuedLibraryFile] = useState<{ id: number; filename: string } | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [filesToDelete, setFilesToDelete] = useState<string[]>([]);
   const [sortBy, setSortBy] = useState<SortOption>('name-asc');
   const [downloadProgress, setDownloadProgress] = useState<{ current: number; total: number } | null>(null);
   const [viewerFile, setViewerFile] = useState<{ path: string; name: string } | null>(null);
+  const isPrusaPrinter = printerProvider === 'prusalink' || printerProvider === 'prusaconnect';
 
   // Close on Escape key
   useEffect(() => {
@@ -458,6 +460,21 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
       showToast(`Could not prepare queue item: ${error instanceof Error ? error.message : 'Unknown error'}`, 'error');
     } finally {
       setQueueingFile(false);
+    }
+  };
+
+  const handlePrintSelectedFile = async () => {
+    const file = selectedPrintableFile();
+    if (!file) return;
+    setStartingFile(true);
+    try {
+      await api.startPrinterFile(printerId, file.path);
+      showToast(`Started ${file.name} on printer`);
+      setSelectedFiles(new Set());
+    } catch (error) {
+      showToast(`Print start failed: ${error instanceof Error ? error.message : 'Unknown error'}`, 'error');
+    } finally {
+      setStartingFile(false);
     }
   };
 
@@ -650,6 +667,12 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
                   .map((file) => {
                     const FileIcon = getFileIcon(file.name, file.is_directory);
                     const isSelected = selectedFiles.has(file.path);
+                    const lowerName = file.name.toLowerCase();
+                    const canPreview =
+                      !file.is_directory &&
+                      (lowerName.endsWith('.3mf') ||
+                        lowerName.endsWith('.gcode') ||
+                        lowerName.endsWith('.stl'));
 
                     return (
                       <div
@@ -684,24 +707,17 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
                           }`}
                         />
                         <span className="flex-1 text-white truncate">{file.name}</span>
-                        {!file.is_directory && (
-                          <div className="flex items-center gap-3">
-                            <span className="text-sm text-bambu-gray">
-                              {formatFileSize(file.size)}
-                            </span>
-                            {(file.name.toLowerCase().endsWith('.3mf') || file.name.toLowerCase().endsWith('.gcode') || file.name.toLowerCase().endsWith('.stl')) && (
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setViewerFile({ path: file.path, name: file.name });
-                                }}
-                                className="p-1 rounded hover:bg-bambu-dark text-bambu-gray hover:text-bambu-green"
-                                title="3D View"
-                              >
-                                <Box className="w-4 h-4" />
-                              </button>
-                            )}
-                          </div>
+                        {canPreview && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setViewerFile({ path: file.path, name: file.name });
+                            }}
+                            className="p-1 rounded hover:bg-bambu-dark text-bambu-gray hover:text-bambu-green"
+                            title="3D View"
+                          >
+                            <Box className="w-4 h-4" />
+                          </button>
                         )}
                         {file.is_directory && (
                           <ChevronLeft className="w-4 h-4 text-bambu-gray rotate-180" />
@@ -750,29 +766,38 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
           <div className="flex gap-2">
             <Button
               variant="secondary"
-              disabled={!selectedPrintableFile() || queueingFile}
-              onClick={handleQueueSelectedFile}
+              disabled={!selectedPrintableFile() || startingFile}
+              onClick={handlePrintSelectedFile}
             >
-              {queueingFile ? <Loader2 className="w-4 h-4 animate-spin" /> : <ListPlus className="w-4 h-4" />}
-              Add to Queue
+              {startingFile ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+              Print
             </Button>
-            <Button
-              variant="secondary"
-              disabled={selectedFiles.size === 0 || downloadProgress !== null}
-              onClick={handleDownload}
-            >
-              {downloadProgress ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  {downloadProgress.current}/{downloadProgress.total}
-                </>
-              ) : (
-                <>
-                  <Download className="w-4 h-4" />
-                  Download{selectedFiles.size > 1 ? ` (${selectedFiles.size})` : ''}
-                </>
-              )}
-            </Button>
+            {!isPrusaPrinter && (
+              <Button
+                variant="secondary"
+                disabled={!selectedPrintableFile() || queueingFile}
+                onClick={handleQueueSelectedFile}
+              >
+                {queueingFile ? <Loader2 className="w-4 h-4 animate-spin" /> : <ListPlus className="w-4 h-4" />}
+                Add to Queue
+              </Button>
+            )}
+            {!isPrusaPrinter && (
+              <Button
+                variant="secondary"
+                disabled={selectedFiles.size === 0 || downloadProgress !== null}
+                onClick={handleDownload}
+              >
+                {downloadProgress ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    {downloadProgress.current}/{downloadProgress.total}
+                  </>
+                ) : (
+                  <span>Download{selectedFiles.size > 1 ? ` (${selectedFiles.size})` : ''}</span>
+                )}
+              </Button>
+            )}
             <Button
               variant="secondary"
               disabled={selectedFiles.size === 0 || deleteMutation.isPending}

@@ -348,6 +348,26 @@ async def list_queue(
     return [_enrich_response(item) for item in items]
 
 
+def _sanitize_bambu_print_options_for_provider(
+    provider: str | None,
+    *,
+    bed_levelling: bool,
+    flow_cali: bool,
+    vibration_cali: bool,
+    layer_inspect: bool,
+    timelapse: bool,
+) -> tuple[bool, bool, bool, bool, bool]:
+    """Return safe Bambu print-start flags for the selected provider.
+
+    These flags map to Bambu LAN/MQTT start-print behavior. Moonraker,
+    Fluidd/Mainsail, PrusaLink, and Prusa Connect do not consume them; keeping
+    stale truthy values around can make the UI/API imply unsupported behavior.
+    """
+    if (provider or "bambu").lower() == "bambu":
+        return bed_levelling, flow_cali, vibration_cali, layer_inspect, timelapse
+    return False, False, False, False, False
+
+
 @router.post("/", response_model=PrintQueueItemResponse)
 async def add_to_queue(
     data: PrintQueueItemCreate,
@@ -372,11 +392,28 @@ async def add_to_queue(
     if data.printer_id and target_model_norm:
         raise HTTPException(400, "Cannot specify both printer_id and target_model")
 
-    # Validate printer exists (if assigned)
+    # Validate printer exists (if assigned) and keep its provider for option sanitization.
+    assigned_printer: Printer | None = None
     if data.printer_id is not None:
         result = await db.execute(select(Printer).where(Printer.id == data.printer_id))
-        if not result.scalar_one_or_none():
+        assigned_printer = result.scalar_one_or_none()
+        if not assigned_printer:
             raise HTTPException(400, "Printer not found")
+
+    (
+        bed_levelling,
+        flow_cali,
+        vibration_cali,
+        layer_inspect,
+        timelapse,
+    ) = _sanitize_bambu_print_options_for_provider(
+        assigned_printer.provider if assigned_printer else None,
+        bed_levelling=data.bed_levelling,
+        flow_cali=data.flow_cali,
+        vibration_cali=data.vibration_cali,
+        layer_inspect=data.layer_inspect,
+        timelapse=data.timelapse,
+    )
 
     # Validate target_model has active printers
     if target_model_norm:
@@ -522,11 +559,11 @@ async def add_to_queue(
             manual_start=data.manual_start,
             ams_mapping=ams_mapping_json,
             plate_id=data.plate_id,
-            bed_levelling=data.bed_levelling,
-            flow_cali=data.flow_cali,
-            vibration_cali=data.vibration_cali,
-            layer_inspect=data.layer_inspect,
-            timelapse=data.timelapse,
+            bed_levelling=bed_levelling,
+            flow_cali=flow_cali,
+            vibration_cali=vibration_cali,
+            layer_inspect=layer_inspect,
+            timelapse=timelapse,
             use_ams=data.use_ams,
             gcode_injection=data.gcode_injection,
             project_id=data.project_id,

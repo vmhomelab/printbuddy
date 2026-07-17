@@ -24,6 +24,20 @@ describe('validateForm', () => {
       expect(result.isValid).toBe(true);
       expect(Object.keys(result.errors)).toHaveLength(0);
     });
+
+    it('does not require slicer_filament for OFDB catalog-created spools', () => {
+      const data = {
+        ...defaultFormData,
+        data_origin: 'openfilamentdatabase',
+        slicer_filament: '',
+        material: 'ABS',
+        brand: 'ELEGOO',
+        subtype: 'ABS',
+      };
+      const result = validateForm(data);
+      expect(result.isValid).toBe(true);
+      expect(result.errors.slicer_filament).toBeUndefined();
+    });
   });
 
   describe('quickAdd mode', () => {

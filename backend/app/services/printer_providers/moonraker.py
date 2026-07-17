@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -208,6 +209,10 @@ class MoonrakerPrinterClient:
         auth_token: str | None = None,
         timeout: float = 5.0,
         printer_model: str | None = None,
+        on_state_change: Any | None = None,
+        on_print_start: Any | None = None,
+        on_print_complete: Any | None = None,
+        on_bed_temp_update: Any | None = None,
     ) -> None:
         if not base_url:
             raise ValueError("Moonraker base URL is required for Klipper/Mainsail printers")
@@ -218,6 +223,14 @@ class MoonrakerPrinterClient:
         self.printer_model = printer_model or ""
         self._gcodes_path_prefixes: list[str] | None = None
         self.state = MoonrakerPrinterState()
+        self.on_state_change = on_state_change
+        self.on_print_start = on_print_start
+        self.on_print_complete = on_print_complete
+        self.on_bed_temp_update = on_bed_temp_update
+        self._last_state: str | None = None
+        self._has_status_sample = False
+        self._last_bed_temp: float | None = None
+        self._current_print_started_at: float | None = None
 
     @property
     def _headers(self) -> dict[str, str]:
@@ -360,7 +373,7 @@ class MoonrakerPrinterClient:
             )
         return files
 
-    def upload_file(self, local_path: Path, remote_path: str) -> bool:
+    def upload_file(self, local_path: Path, remote_path: str, *, overwrite: bool = False) -> bool:  # noqa: ARG002
         target = self._normalize_gcodes_path(remote_path) or local_path.name
         with open(local_path, "rb") as fh:
             response = httpx.post(
@@ -407,7 +420,56 @@ class MoonrakerPrinterClient:
             self.state.connected = False
         return self.state.connected
 
+    def _build_lifecycle_payload(self) -> dict[str, Any]:
+        filename = self.state.subtask_name or self.state.current_print or self.state.gcode_file or "Unknown"
+        return {
+            "filename": filename,
+            "subtask_name": filename,
+            "progress": self.state.progress,
+            "remaining_time": self.state.remaining_time * 60 if self.state.remaining_time else None,
+            "status": self.state.state,
+            "raw_data": self.state.raw_data,
+        }
+
+    def _emit_status_callbacks(self, previous_state: str | None) -> None:
+        if self.on_state_change:
+            self.on_state_change(self.state)
+
+        bed_temp = self.state.temperatures.get("bed") if self.state.temperatures else None
+        if isinstance(bed_temp, (int, float)) and bed_temp != self._last_bed_temp:
+            self._last_bed_temp = float(bed_temp)
+            if self.on_bed_temp_update:
+                self.on_bed_temp_update(float(bed_temp))
+
+        current_state = self.state.state
+        previous_running = previous_state in {"RUNNING", "PAUSE"}
+        current_running = current_state in {"RUNNING", "PAUSE"}
+
+        # Do not fire a synthetic start on the very first poll. If Printbuddy
+        # starts while a printer is already running, the restart-recovery path
+        # owns that case; this edge detector is for new Moonraker transitions.
+        if previous_state is not None and not previous_running and current_running:
+            self._current_print_started_at = time.monotonic()
+            if self.on_print_start:
+                self.on_print_start(self._build_lifecycle_payload())
+        elif previous_running and not current_running:
+            payload = self._build_lifecycle_payload()
+            if self._current_print_started_at is not None:
+                payload["actual_time_seconds"] = max(1, int(time.monotonic() - self._current_print_started_at))
+                self._current_print_started_at = None
+            if current_state == "FAILED":
+                payload["status"] = "failed"
+            elif current_state == "FINISH":
+                payload["status"] = "completed"
+            elif current_state == "IDLE":
+                payload["status"] = "completed" if self.state.progress >= 99 else "stopped"
+            else:
+                payload["status"] = "stopped"
+            if self.on_print_complete:
+                self.on_print_complete(payload)
+
     def request_status_update(self) -> bool:
+        previous_state = self._last_state if self._has_status_sample else None
         status = self._query_objects(
             ["webhooks", "print_stats", "virtual_sdcard", "display_status", "extruder", "heater_bed"]
         )
@@ -424,9 +486,11 @@ class MoonrakerPrinterClient:
 
         raw_state = print_stats.get("state") or self.state.state
         self.state.state = _map_moonraker_state(raw_state)
-        self.state.gcode_file = print_stats.get("filename") or virtual_sdcard.get("file_path") or None
-        self.state.current_print = self.state.gcode_file
-        self.state.subtask_name = self.state.gcode_file
+        reported_file = print_stats.get("filename") or virtual_sdcard.get("file_path")
+        if reported_file:
+            self.state.gcode_file = str(reported_file)
+            self.state.current_print = self.state.gcode_file
+            self.state.subtask_name = self.state.gcode_file
 
         progress = virtual_sdcard.get("progress")
         if progress is None:
@@ -435,6 +499,9 @@ class MoonrakerPrinterClient:
         self.state.remaining_time = _remaining_minutes(print_stats, self.state.progress)
         self.state.temperatures = _moonraker_temperatures(status)
         _apply_moonraker_fans(self.state, status)
+        self._emit_status_callbacks(previous_state)
+        self._last_state = self.state.state
+        self._has_status_sample = True
         return True
 
     def download_file(self, remote_path: str) -> bytes | None:
@@ -481,11 +548,26 @@ class MoonrakerPrinterClient:
 
     def start_print(self, filename: str, plate_id: int = 1, **kwargs: Any) -> bool:  # noqa: ARG002
         normalized = self._normalize_gcodes_path(filename)
-        self._post("printer/print/start", {"filename": normalized})
+        try:
+            self._post("printer/print/start", {"filename": normalized})
+        except httpx.ReadTimeout:
+            # Some Moonraker/Elegoo stacks accept the start command and begin
+            # printing, but do not return headers before the short control
+            # timeout expires. Verify printer state before surfacing a false
+            # background-dispatch failure.
+            try:
+                self.request_status_update()
+            except Exception:
+                raise
+            current = self.state.current_print or self.state.gcode_file or ""
+            if self.state.state == "RUNNING" or current.endswith(normalized):
+                return True
+            raise
         return True
 
     def stop_print(self) -> bool:
-        return False
+        self._post("printer/print/cancel", {})
+        return True
 
 
 def create_moonraker_client(printer: Any, **callbacks: Any) -> MoonrakerPrinterClient:  # noqa: ARG001
@@ -494,4 +576,8 @@ def create_moonraker_client(printer: Any, **callbacks: Any) -> MoonrakerPrinterC
         base_url=base_url,
         auth_token=getattr(printer, "auth_token", None),
         printer_model=getattr(printer, "model", None),
+        on_state_change=callbacks.get("on_state_change"),
+        on_print_start=callbacks.get("on_print_start"),
+        on_print_complete=callbacks.get("on_print_complete"),
+        on_bed_temp_update=callbacks.get("on_bed_temp_update"),
     )

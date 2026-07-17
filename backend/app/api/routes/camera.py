@@ -39,6 +39,11 @@ from backend.app.services.camera_fanout import (
     shutdown_broadcaster,
 )
 from backend.app.services.camera_profiles import get_camera_profile
+from backend.app.services.elegoo_camera import (
+    get_effective_camera_source,
+    is_elegoo_sdcp_camera_source,
+    keep_elegoo_sdcp_camera_session,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/printers", tags=["camera"])
@@ -95,8 +100,13 @@ def is_stream_active(printer_id: int) -> bool:
     returns None (the stream may be running but the first frame hasn't landed
     in the buffer yet, or the upstream is mid-reconnect).
     """
-    return any(k.startswith(f"{printer_id}-") for k in _active_streams) or any(
-        k.startswith(f"{printer_id}-") for k in _active_chamber_streams
+    from backend.app.services.camera_fanout import active_broadcaster_keys
+
+    return (
+        printer_id in _active_external_streams
+        or f"printer-{printer_id}" in active_broadcaster_keys()
+        or any(k.startswith(f"{printer_id}-") for k in _active_streams)
+        or any(k.startswith(f"{printer_id}-") for k in _active_chamber_streams)
     )
 
 
@@ -628,9 +638,12 @@ async def camera_stream(
         fps: Target frames per second (default: 10, max: 30)
     """
     printer = await get_printer_or_404(printer_id, db)
+    effective_camera = get_effective_camera_source(printer)
 
-    # Check for external camera first
-    if printer.external_camera_enabled and printer.external_camera_url:
+    # Check for external/provider-derived camera first
+    if effective_camera.enabled and effective_camera.url:
+        camera_url = effective_camera.url
+        camera_type = effective_camera.camera_type or "mjpeg"
         import time
 
         from backend.app.services.external_camera import generate_mjpeg_stream
@@ -638,29 +651,90 @@ async def camera_stream(
         # Limit external camera FPS to reduce browser load
         fps = min(max(fps, 1), 15)
         logger.info(
-            "Using external camera (%s) for printer %s at %s fps", printer.external_camera_type, printer_id, fps
+            "Using external/provider camera (%s) for printer %s at %s fps",
+            camera_type,
+            printer_id,
+            fps,
         )
 
-        # Track stream start
-        _stream_start_times[printer_id] = time.time()
-        _active_external_streams.add(printer_id)
+        # Track stream start. Use the same fan-out key as built-in camera streams
+        # so /camera/stop and status reporting stay provider-neutral.
+        _stream_start_times.setdefault(printer_id, time.time())
+        fanout_key = f"printer-{printer_id}"
+        upstream_stream_id = f"{printer_id}-external-fanout"
 
-        async def external_stream_wrapper():
-            """Wrap external stream to track start/stop and update frame times."""
+        async def external_upstream(disconnect_event: asyncio.Event):
+            """Single upstream external/provider MJPEG connection shared by all viewers."""
+            _active_external_streams.add(printer_id)
+            activation_task: asyncio.Task[None] | None = None
+            should_activate_elegoo = is_elegoo_sdcp_camera_source(getattr(printer, "provider", None), camera_url)
             try:
-                async for frame in generate_mjpeg_stream(
-                    printer.external_camera_url, printer.external_camera_type, fps
-                ):
-                    # generate_mjpeg_stream already handles rate limiting;
-                    # just track frame times for stall detection
-                    _last_frame_times[printer_id] = time.time()
-                    yield frame
+                if should_activate_elegoo:
+                    activation_task = asyncio.create_task(
+                        keep_elegoo_sdcp_camera_session(getattr(printer, "ip_address", None), disconnect_event)
+                    )
+                    # The CC1 starts producing JPEGs only after the web UI's
+                    # SDCP WebSocket session is established. Give our
+                    # activation session a brief head start before opening
+                    # :3031/video so the first MJPEG read sees real frames.
+                    try:
+                        await asyncio.wait_for(disconnect_event.wait(), timeout=1.0)
+                    except TimeoutError:
+                        pass
+                async for chunk in generate_mjpeg_stream(camera_url, camera_type, fps):
+                    if disconnect_event.is_set():
+                        break
+                    frame_start = chunk.find(b"\xff\xd8")
+                    frame_end = chunk.find(b"\xff\xd9", frame_start + 2) if frame_start != -1 else -1
+                    if frame_start != -1 and frame_end != -1:
+                        _last_frames[printer_id] = chunk[frame_start : frame_end + 2]
+                    now = time.time()
+                    _last_frame_times[printer_id] = now
+                    _stream_last_frame_times[upstream_stream_id] = now
+                    yield chunk
             finally:
+                if activation_task is not None:
+                    activation_task.cancel()
+                    try:
+                        await activation_task
+                    except asyncio.CancelledError:
+                        pass
                 _active_external_streams.discard(printer_id)
-                logger.info("External camera stream ended for printer %s", printer_id)
+                _stream_last_frame_times.pop(upstream_stream_id, None)
+                logger.info("External/provider camera upstream ended for printer %s", printer_id)
+
+        broadcaster: MjpegBroadcaster = await get_or_create_broadcaster(fanout_key, external_upstream)
+        try:
+            queue = await broadcaster.subscribe()
+        except RuntimeError:
+            broadcaster = await get_or_create_broadcaster(fanout_key, external_upstream)
+            queue = await broadcaster.subscribe()
+        logger.info(
+            "External/provider camera viewer attached to %s (subscribers=%d)",
+            fanout_key,
+            broadcaster.subscriber_count,
+        )
+
+        async def _is_disconnected() -> bool:
+            try:
+                return await request.is_disconnected()
+            except Exception:
+                return True
+
+        def _log_detach(remaining: int) -> None:
+            logger.info("External/provider camera viewer detached from %s (subscribers=%d)", fanout_key, remaining)
+
+        async def _generate():
+            async for chunk in iter_subscriber(
+                broadcaster,
+                queue,
+                is_disconnected=_is_disconnected,
+                on_unsubscribe=_log_detach,
+            ):
+                yield chunk
 
         return StreamingResponse(
-            external_stream_wrapper(),
+            _generate(),
             media_type="multipart/x-mixed-replace; boundary=frame",
             headers={
                 "Cache-Control": "no-cache, no-store, must-revalidate",
@@ -856,17 +930,44 @@ async def camera_snapshot(
     from pathlib import Path
 
     printer = await get_printer_or_404(printer_id, db)
+    effective_camera = get_effective_camera_source(printer)
 
-    # Check for external camera first
-    if printer.external_camera_enabled and printer.external_camera_url:
-        from backend.app.services.external_camera import capture_frame
+    # Check for external/provider-derived camera first
+    if effective_camera.enabled and effective_camera.url:
+        buffered = try_get_active_buffered_frame(printer_id)
+        if buffered:
+            return Response(
+                content=buffered,
+                media_type="image/jpeg",
+                headers={
+                    "Cache-Control": "no-cache, no-store, must-revalidate",
+                    "Content-Disposition": f'inline; filename="snapshot_{printer_id}.jpg"',
+                },
+            )
+        if effective_camera.derived and is_stream_active(printer_id):
+            raise HTTPException(
+                status_code=503,
+                detail="Camera stream is active but no buffered frame is available yet.",
+            )
+        if is_elegoo_sdcp_camera_source(getattr(printer, "provider", None), effective_camera.url):
+            from backend.app.services.elegoo_camera import capture_elegoo_sdcp_activated_frame
 
-        frame_data = await capture_frame(
-            printer.external_camera_url,
-            printer.external_camera_type,
-            timeout=15,
-            snapshot_url=printer.external_camera_snapshot_url,
-        )
+            frame_data = await capture_elegoo_sdcp_activated_frame(
+                printer.ip_address,
+                effective_camera.url,
+                effective_camera.camera_type or "mjpeg",
+                timeout=15,
+                snapshot_url=effective_camera.snapshot_url,
+            )
+        else:
+            from backend.app.services.external_camera import capture_frame
+
+            frame_data = await capture_frame(
+                effective_camera.url,
+                effective_camera.camera_type or "mjpeg",
+                timeout=15,
+                snapshot_url=effective_camera.snapshot_url,
+            )
         if not frame_data:
             raise HTTPException(
                 status_code=503,
@@ -946,6 +1047,12 @@ async def test_camera(
     Returns success status and any error message.
     """
     printer = await get_printer_or_404(printer_id, db)
+    effective_camera = get_effective_camera_source(printer)
+
+    if effective_camera.enabled and effective_camera.url:
+        from backend.app.services.external_camera import test_connection
+
+        return await test_connection(effective_camera.url, effective_camera.camera_type or "mjpeg")
 
     result = await test_camera_connection(
         ip_address=printer.ip_address,
@@ -973,13 +1080,14 @@ async def diagnose_camera_route(
     from backend.app.services.camera_diagnose import diagnose_camera, diagnose_external_camera
 
     printer = await get_printer_or_404(printer_id, db)
+    effective_camera = get_effective_camera_source(printer)
 
-    if printer.external_camera_enabled and printer.external_camera_url:
+    if effective_camera.enabled and effective_camera.url:
         result = await diagnose_external_camera(
-            camera_url=printer.external_camera_url,
-            camera_type=printer.external_camera_type,
+            camera_url=effective_camera.url,
+            camera_type=effective_camera.camera_type,
             printer_id=printer_id,
-            snapshot_url=printer.external_camera_snapshot_url,
+            snapshot_url=effective_camera.snapshot_url,
         )
         return result.to_dict()
 

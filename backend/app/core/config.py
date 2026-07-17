@@ -6,7 +6,7 @@ from pathlib import Path
 from pydantic_settings import BaseSettings
 
 # Application version - single source of truth
-APP_VERSION = "0.2.4.3"
+APP_VERSION = "0.2.4.9"
 GITHUB_REPO = "vmhomelab/Printbuddy"
 
 # App directory - where the application is installed (for static files)
@@ -78,6 +78,12 @@ class Settings(BaseSettings):
 
     # API
     api_prefix: str = "/api/v1"
+
+    # Optional Docker self-update sidecar. Disabled by default because the
+    # updater sidecar requires Docker socket access on the host.
+    self_update_enabled: bool = False
+    updater_url: str | None = None
+    updater_token: str | None = None
 
     # Slicer API sidecars. Defaults match the docker-compose.yml ports in the
     # slicer sidecar build context:

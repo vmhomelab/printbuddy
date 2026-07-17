@@ -1,11 +1,16 @@
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-PrinterProvider = Literal["bambu", "klipper", "mainsail", "fluidd", "prusalink", "prusaconnect"]
+from backend.app.services.elegoo_camera import (
+    build_elegoo_sdcp_camera_url,
+    get_effective_camera_source,
+)
+
+PrinterProvider = Literal["bambu", "klipper", "mainsail", "fluidd", "prusalink", "prusaconnect", "elegoo_sdcp"]
 MOONRAKER_PROVIDERS = {"klipper", "mainsail", "fluidd"}
-HTTP_PROVIDERS = MOONRAKER_PROVIDERS | {"prusalink", "prusaconnect"}
+HTTP_PROVIDERS = MOONRAKER_PROVIDERS | {"prusalink", "prusaconnect", "elegoo_sdcp"}
 PRUSA_CONNECT_MOBILE_BASE_URL = "https://connect-mobile-api.prusa3d.com"
 
 
@@ -28,6 +33,12 @@ def _synthetic_prusa_connect_serial(value: object) -> str:
     raw = str(value or "prusaconnect").strip().upper()
     normalized = "".join(ch if ch.isalnum() else "-" for ch in raw).strip("-") or "PRUSACONNECT"
     return f"PRUSACONNECT-{normalized}"[:50]
+
+
+def _synthetic_elegoo_sdcp_serial(value: object) -> str:
+    raw = str(value or "elegoo-sdcp").strip().upper()
+    normalized = "".join(ch if ch.isalnum() else "-" for ch in raw).strip("-") or "ELEGOO-SDCP"
+    return f"ELEGOO-SDCP-{normalized}"[:50]
 
 
 def infer_external_camera_type(camera_url: str) -> str:
@@ -98,6 +109,16 @@ class PrinterBase(BaseModel):
                 data["access_code"] = "prusaconnect"
             if not data.get("api_url"):
                 data["api_url"] = PRUSA_CONNECT_MOBILE_BASE_URL
+        elif provider == "elegoo_sdcp":
+            if not str(data.get("serial_number") or "").strip():
+                data["serial_number"] = _synthetic_elegoo_sdcp_serial(data.get("ip_address"))
+            if not str(data.get("access_code") or "").strip():
+                data["access_code"] = "elegoo-sdcp"
+            if not str(data.get("external_camera_url") or "").strip():
+                data["external_camera_url"] = build_elegoo_sdcp_camera_url(data.get("ip_address"))
+                data["external_camera_type"] = "mjpeg"
+                data["external_camera_enabled"] = bool(data["external_camera_url"])
+                return data
         if provider in HTTP_PROVIDERS:
             camera_url = str(data.get("external_camera_url") or "").strip()
             if not camera_url:
@@ -210,6 +231,7 @@ class PrinterResponse(PrinterBase):
     @classmethod
     def from_orm_with_roi(cls, printer) -> "PrinterResponse":
         """Create response from ORM model, converting ROI fields to nested object."""
+        effective_camera = get_effective_camera_source(printer)
         data = {
             "id": printer.id,
             "name": printer.name,
@@ -223,10 +245,10 @@ class PrinterResponse(PrinterBase):
             "model": printer.model,
             "location": printer.location,
             "auto_archive": printer.auto_archive,
-            "external_camera_url": printer.external_camera_url,
-            "external_camera_type": printer.external_camera_type,
-            "external_camera_enabled": printer.external_camera_enabled,
-            "external_camera_snapshot_url": printer.external_camera_snapshot_url,
+            "external_camera_url": effective_camera.url,
+            "external_camera_type": effective_camera.camera_type,
+            "external_camera_enabled": effective_camera.enabled,
+            "external_camera_snapshot_url": effective_camera.snapshot_url,
             "camera_rotation": printer.camera_rotation,
             "is_active": printer.is_active,
             "nozzle_count": printer.nozzle_count,
@@ -427,6 +449,8 @@ class PrinterStatus(BaseModel):
     heatbreak_fan_speed: int | None = None  # Hotend heatbreak fan
     # Firmware version (from info.module[name="ota"].sw_ver)
     firmware_version: str | None = None
+    # Provider-specific connection/diagnostic details safe for display in the UI.
+    connection_details: dict[str, Any] | None = None
     # Developer LAN mode: True = enabled, False = disabled (MQTT encryption), None = unknown
     developer_mode: bool | None = None
     # Queue: printer is awaiting the user to acknowledge the build plate is cleared

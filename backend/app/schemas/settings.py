@@ -42,6 +42,12 @@ class AppSettings(BaseModel):
         description="When multiple AMS spools match, prefer the one with lowest remaining filament",
     )
 
+    # Open Filament Database catalog integration
+    open_filament_database_enabled: bool = Field(
+        default=False,
+        description="Enable Open Filament Database lookup when creating local inventory spools",
+    )
+
     # Updates
     check_updates: bool = Field(default=True, description="Automatically check for updates on startup")
     check_printer_firmware: bool = Field(default=True, description="Check for printer firmware updates from Bambu Lab")
@@ -148,6 +154,17 @@ class AppSettings(BaseModel):
     mqtt_topic_prefix: str = Field(default="printbuddy", description="Topic prefix for all published messages")
     mqtt_use_tls: bool = Field(default=False, description="Use TLS/SSL encryption for MQTT connection")
 
+    # BIQU Panda Breath Mod integration (uses the shared MQTT broker settings)
+    panda_breath_enabled: bool = Field(default=False, description="Enable BIQU Panda Breath Mod MQTT control")
+    panda_breath_topic_prefix: str = Field(
+        default="panda_breath",
+        description="MQTT topic prefix exposed by Panda Breath; use panda_breath or panda_breath/<device_id>",
+    )
+    panda_breath_printer_assignments: str = Field(
+        default="{}",
+        description="JSON object mapping Panda Breath device IDs to Printbuddy printer IDs",
+    )
+
     # External URL for notifications
     external_url: str = Field(
         default="", description="External URL where Printbuddy is accessible (for notification images)"
@@ -178,7 +195,7 @@ class AppSettings(BaseModel):
     # Camera view settings
     camera_view_mode: str = Field(
         default="window",
-        description="Camera view mode: 'window' opens in new browser window, 'embedded' shows overlay on main screen",
+        description="Camera view mode: 'window' opens in new browser window, 'embedded' shows overlay on main screen, 'card' expands inside each printer card",
     )
 
     # Preferred slicer application
@@ -338,6 +355,7 @@ class AppSettingsUpdate(BaseModel):
     spoolman_report_partial_usage: bool | None = None
     disable_filament_warnings: bool | None = None
     prefer_lowest_filament: bool | None = None
+    open_filament_database_enabled: bool | None = None
     check_updates: bool | None = None
     check_printer_firmware: bool | None = None
     include_beta_updates: bool | None = None
@@ -378,6 +396,9 @@ class AppSettingsUpdate(BaseModel):
     mqtt_password: str | None = None
     mqtt_topic_prefix: str | None = None
     mqtt_use_tls: bool | None = None
+    panda_breath_enabled: bool | None = None
+    panda_breath_topic_prefix: str | None = None
+    panda_breath_printer_assignments: str | None = None
     external_url: str | None = None
     ha_enabled: bool | None = None
     ha_url: str | None = None

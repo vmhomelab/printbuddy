@@ -1,6 +1,6 @@
 services:
   printbuddy:
-    image: docker.io/vmhomelabde/printbuddy:dev
+    image: docker.io/vmhomelabde/printbuddy:latest
     build: .
     # Usage:
     #   docker compose up -d          → pulls pre-built image from Docker Hub
@@ -103,7 +103,34 @@ services:
       # Enable System Trust Store for certificate validation (e.g. for local Home Assistant)
       # You also need to mount your certificates to the container (see volumes section above).
       # - USE_SYSTEM_TRUST_STORE=true
+      #
+      # Optional self-update button via printbuddy-updater sidecar. This is
+      # disabled by default because the sidecar needs Docker socket access.
+      # See docs/self-update-sidecar.md before enabling.
+      #- SELF_UPDATE_ENABLED=true
+      #- UPDATER_URL=http://127.0.0.1:8787
+      #- UPDATER_TOKEN=${PRINTBUDDY_UPDATER_TOKEN}
     restart: unless-stopped
+
+  # Optional self-update sidecar. Uncomment together with the SELF_UPDATE_*
+  # environment variables above. The sidecar is the only container that gets
+  # Docker socket access; Printbuddy talks to it over localhost with a shared
+  # bearer token.
+  #printbuddy-updater:
+  #  image: docker.io/vmhomelabde/printbuddy-updater:latest
+  #  container_name: printbuddy-updater
+  #  network_mode: host
+  #  volumes:
+  #    - /var/run/docker.sock:/var/run/docker.sock
+  #    - ./docker-compose.yml:/host/docker-compose.yml:ro
+  #  environment:
+  #    - PRINTBUDDY_UPDATER_TOKEN=${PRINTBUDDY_UPDATER_TOKEN}
+  #    - PRINTBUDDY_COMPOSE_FILE=/host/docker-compose.yml
+  #    - PRINTBUDDY_COMPOSE_PROJECT=${COMPOSE_PROJECT_NAME:-printbuddy}
+  #    - PRINTBUDDY_SERVICE_NAME=printbuddy
+  #    - PRINTBUDDY_ALLOWED_IMAGE=docker.io/vmhomelabde/printbuddy
+  #    - PRINTBUDDY_UPDATER_PORT=8787
+  #  restart: unless-stopped
 
   # Optional: External PostgreSQL database
   # Uncomment to run Postgres alongside Printbuddy (or use an external Postgres host)

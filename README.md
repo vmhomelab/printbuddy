@@ -54,14 +54,16 @@
 **Printbuddy** is a modern, self-hosted dashboard with a broader goal:
 
 > A single, modern, self-hosted dashboard for managing different 3D printer ecosystems.
+
 Printbuddy uses a provider-based architecture for multiple printer platforms.
 
 Current state:
 
 - Initial fork setup on `dev`
-- Bambu Lab support from the original foundation
-- Klipper and Prusa support being added
-- Provider architecture in progress
+- Bambu Lab support from the original foundation ✅
+- Prusa support added via PrusaLink ✅(Prusa Connect not tested)
+- Klipper (open fimrware) support being added ⌛ (not officially supported yet)
+- Provider architecture in progress ⌛
 
 ---
 
@@ -81,15 +83,40 @@ Current and planned goals include:
 
 ## Screenshots
 
-> Add your screenshots here once the UI is ready.
-
 <p align="center">
   <img src="docs/screenshots/dashboard.png" alt="Printbuddy Dashboard Screenshot" width="800">
 </p>
+<img width="3230" height="1335" alt="grafik" src="https://github.com/user-attachments/assets/d0aea010-5449-4a47-a860-fd26f5a7b6d9" />
+
+<p align="center">
+  <img src="docs/screenshots/printer-detail.png" alt="File Manager of different printers" width="800">
+</p>
+<img width="708" height="525" alt="grafik" src="https://github.com/user-attachments/assets/a435ea7a-dac7-4c57-98ec-c65eec4467f5" />
+<img width="706" height="652" alt="grafik" src="https://github.com/user-attachments/assets/584f786d-7d71-416d-9878-86d45cf8f389" />
+
 
 <p align="center">
   <img src="docs/screenshots/printer-detail.png" alt="Printer Detail Screenshot" width="800">
 </p>
+<img width="420" height="576" alt="grafik" align="center" src="https://github.com/user-attachments/assets/730a2060-1032-46cb-bc3f-a341e8a730cb" />
+
+
+<p align="center">
+  <img src="docs/screenshots/printer-detail.png" alt="Klipper-based printer with control options" width="800">
+</p>
+<img width="960" height="874" alt="grafik" src="https://github.com/user-attachments/assets/c402bcbf-3797-4ad7-b14e-f0ade3bb92d1" />
+
+
+<p align="center">
+  <img src="docs/screenshots/printer-detail.png" alt="Panda Breath Support" width="800">
+</p>
+<img width="532" height="811" alt="grafik" align="center" src="https://github.com/user-attachments/assets/7c827ed8-cc55-4dcf-acbd-e860bfb60844" />
+
+<p align="center">
+  <img src="docs/screenshots/printer-detail.png" alt="Update via the UI" width="800">
+</p>
+<img width="360" height="663" alt="grafik" src="https://github.com/user-attachments/assets/7bb731b4-c1f3-46c4-a161-56ce976a66ba" />
+
 
 ---
 
@@ -161,17 +188,6 @@ network_mode: host
 ```
 
 Then enable the commented `ports:` block in the compose file instead.
-
----
-
-## Planned Docker images
-
-Once GHCR publishing is enabled, the planned image tags are:
-
-```text
-docker.io/vmhomelabde/printbuddy
-docker.io/vmhomelabde/printbuddy:latest
-```
 
 ---
 

@@ -29,6 +29,20 @@ const mockPrinter = {
   updated_at: '2024-01-01T00:00:00Z',
 };
 
+const mockPrusaPrinter = {
+  ...mockPrinter,
+  id: 2,
+  name: 'Prusa Mock Server',
+  ip_address: '10.17.1.96',
+  serial_number: 'PRUSALINK-10-17-1-96',
+  access_code: '',
+  auth_token: null,
+  provider: 'prusalink',
+  api_url: 'http://10.17.1.96:8087',
+  provider_options: JSON.stringify({ prusalink_api_mode: 'modern', prusalink_auth_mode: 'digest' }),
+  model: 'MK4S',
+};
+
 const mockStatus = {
   connected: true,
   state: 'IDLE',
@@ -105,5 +119,44 @@ describe('EditPrinterModal pre-flight', () => {
 
     await waitFor(() => expect(updated).toBe(true));
     expect(screen.queryByText(/Some connection checks failed/i)).not.toBeInTheDocument();
+  });
+
+  it('lets PrusaLink printers update secret and auth mode without Bambu access-code wording', async () => {
+    let updatePayload: Record<string, unknown> | null = null;
+    server.use(
+      http.get('/api/v1/printers/', () => HttpResponse.json([mockPrusaPrinter])),
+      http.patch('/api/v1/printers/:id', async ({ request }) => {
+        updatePayload = await request.json() as Record<string, unknown>;
+        return HttpResponse.json({ ...mockPrusaPrinter, ...updatePayload });
+      }),
+    );
+
+    render(<PrintersPage />);
+    await waitFor(() => expect(screen.getByText('Prusa Mock Server')).toBeInTheDocument());
+
+    const menuBtn = [...document.querySelectorAll('button')].find((b) =>
+      b.querySelector('.lucide-ellipsis-vertical'),
+    )!;
+    await userEvent.click(menuBtn);
+    await userEvent.click(await screen.findByRole('button', { name: /^edit$/i }));
+
+    expect(await screen.findByText('PrusaLink password / API key')).toBeInTheDocument();
+    expect(screen.queryByText(/^Access Code$/)).not.toBeInTheDocument();
+    expect(screen.getByText('PrusaLink API / authentication mode')).toBeInTheDocument();
+
+    await userEvent.type(screen.getByLabelText('PrusaLink password / API key'), 'new-secret');
+    await userEvent.selectOptions(
+      screen.getByLabelText('PrusaLink API / authentication mode'),
+      'legacy_x_api_key',
+    );
+    await userEvent.click(screen.getByRole('button', { name: /save changes/i }));
+
+    await waitFor(() => expect(updatePayload).not.toBeNull());
+    expect(updatePayload?.auth_token).toBe('new-secret');
+    expect(updatePayload?.access_code).toBeUndefined();
+    expect(JSON.parse(updatePayload?.provider_options as string)).toEqual({
+      prusalink_api_mode: 'legacy',
+      prusalink_auth_mode: 'x_api_key',
+    });
   });
 });

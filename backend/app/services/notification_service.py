@@ -129,6 +129,8 @@ class NotificationService:
             return filename[:-10]
         elif filename.endswith(".gcode"):
             return filename[:-6]
+        elif filename.endswith(".bgcode"):
+            return filename[:-7]
         elif filename.endswith(".3mf"):
             return filename[:-4]
         return filename
@@ -941,8 +943,15 @@ class NotificationService:
                 variables["reason"] = archive_data["failure_reason"]
             if archive_data.get("finish_photo_url"):
                 variables["finish_photo_url"] = archive_data["finish_photo_url"]
+        else:
+            # Polling providers such as PrusaLink may synthesize lifecycle events
+            # without an archive row. Preserve elapsed time from the provider
+            # payload instead of rendering "Unknown" at completion.
+            duration_seconds = data.get("actual_time_seconds") or data.get("duration_seconds")
+            if duration_seconds:
+                variables["duration"] = self._format_duration(int(duration_seconds))
 
-            # Build per-slot breakdown string with AMS info when available
+        if archive_data:
             if archive_data.get("usage_results"):
                 parts = []
                 for u in archive_data["usage_results"]:
@@ -1019,6 +1028,43 @@ class NotificationService:
             message,
             db,
             "print_progress",
+            printer_id,
+            printer_name,
+            image_data=image_data,
+            variables=variables,
+        )
+
+    async def on_print_almost_done(
+        self,
+        printer_id: int,
+        printer_name: str,
+        filename: str,
+        db: AsyncSession,
+        remaining_time: int | None = None,
+        image_data: bytes | None = None,
+        finish_photo_url: str | None = None,
+    ):
+        """Handle 99% print almost-done milestone with a camera snapshot."""
+        providers = await self._get_providers_for_event(db, "on_print_almost_done", printer_id)
+        if not providers:
+            return
+
+        eta_str = await self._format_eta(remaining_time, db)
+        variables = {
+            "printer": printer_name,
+            "filename": self._clean_filename(filename),
+            "remaining_time": self._format_duration(remaining_time) if remaining_time else "Unknown",
+            "finish_photo_url": finish_photo_url or "",
+            "eta": eta_str,
+        }
+
+        title, message = await self._build_message_from_template(db, "print_almost_done", variables)
+        await self._send_to_providers(
+            providers,
+            title,
+            message,
+            db,
+            "print_almost_done",
             printer_id,
             printer_name,
             image_data=image_data,

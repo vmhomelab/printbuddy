@@ -108,7 +108,11 @@ describe('PrintersPage', () => {
           ams_temp_good: 30,
           ams_temp_fair: 35,
           require_plate_clear: true,
+          panda_breath_printer_assignments: '{}',
         });
+      }),
+      http.get('/api/v1/settings/panda-breath/status', () => {
+        return HttpResponse.json({ enabled: false, connected: false, state: {} });
       }),
       http.get('/api/v1/queue/', () => {
         return HttpResponse.json([]);
@@ -131,6 +135,256 @@ describe('PrintersPage', () => {
       await waitFor(() => {
         expect(screen.getByText('X1 Carbon')).toBeInTheDocument();
         expect(screen.getByText('P1S Backup')).toBeInTheDocument();
+      });
+    });
+
+    it('shows one Upload action for Prusa printers', async () => {
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          ...mockPrinters[0],
+          id: 7,
+          name: 'Prusa CORE One',
+          provider: 'prusalink',
+          model: 'Prusa CORE One',
+        }])),
+      );
+
+      render(<PrintersPage />);
+
+      expect((await screen.findAllByText('Prusa CORE One')).length).toBeGreaterThan(0);
+      const uploadButton = await screen.findByRole('button', { name: 'Upload' });
+      expect(uploadButton).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Print' })).not.toBeInTheDocument();
+    });
+
+    it('shows a PrusaLink badge that opens the printer UI in a new tab', async () => {
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          ...mockPrinters[0],
+          id: 7,
+          name: 'Prusa CORE One',
+          provider: 'prusalink',
+          model: 'Prusa CORE One',
+          ip_address: '10.17.10.42',
+          api_url: 'http://core-one.local:8087',
+        }])),
+      );
+
+      render(<PrintersPage />);
+
+      expect((await screen.findAllByText('Prusa CORE One')).length).toBeGreaterThan(0);
+      const prusaLinkBadge = await screen.findByRole('link', { name: 'Open PrusaLink' });
+      expect(prusaLinkBadge).toHaveAttribute('href', 'http://core-one.local:8087');
+      expect(prusaLinkBadge).toHaveAttribute('target', '_blank');
+      expect(prusaLinkBadge).toHaveAttribute('rel', expect.stringContaining('noopener'));
+      expect(prusaLinkBadge).toHaveTextContent('PrusaLink');
+    });
+
+    it('uses the printer IP address for the PrusaLink badge when no API URL is saved', async () => {
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          ...mockPrinters[0],
+          id: 7,
+          name: 'Prusa CORE One',
+          provider: 'prusalink',
+          model: 'Prusa CORE One',
+          ip_address: '10.17.10.42',
+          api_url: null,
+        }])),
+      );
+
+      render(<PrintersPage />);
+
+      expect((await screen.findAllByText('Prusa CORE One')).length).toBeGreaterThan(0);
+      expect(await screen.findByRole('link', { name: 'Open PrusaLink' })).toHaveAttribute('href', 'http://10.17.10.42');
+    });
+
+    it('shows the updated Prusa USB write notice from the direct Upload action', async () => {
+      const user = userEvent.setup();
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          ...mockPrinters[0],
+          id: 7,
+          name: 'Prusa CORE One',
+          provider: 'prusalink',
+          model: 'Prusa CORE One',
+        }])),
+      );
+
+      render(<PrintersPage />);
+
+      expect((await screen.findAllByText('Prusa CORE One')).length).toBeGreaterThan(0);
+      await user.click(await screen.findByRole('button', { name: 'Upload' }));
+
+      expect(screen.getByText('Prusa uploads can take a few seconds to a few minutes depending upon file size while the printer writes the file to USB storage.')).toBeInTheDocument();
+    });
+
+    it('uploads Prusa files without opening the legacy Print modal when auto-start is unchecked', async () => {
+      const user = userEvent.setup();
+      let uploadCalled = false;
+      let uploadRequestUrl = '';
+      let startCalled = false;
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          ...mockPrinters[0],
+          id: 7,
+          name: 'Prusa CORE One',
+          provider: 'prusalink',
+          model: 'Prusa CORE One',
+        }])),
+        http.get('/api/v1/printers/7/files', () => HttpResponse.json({ files: [] })),
+        http.post('/api/v1/printers/7/files/upload', ({ request }) => {
+          uploadCalled = true;
+          uploadRequestUrl = request.url;
+          return HttpResponse.json({ status: 'uploaded', path: '/Shoe_horn_thicker.gcode', filename: 'Shoe_horn_thicker.gcode' });
+        }),
+        http.post('/api/v1/printers/7/files/start', () => {
+          startCalled = true;
+          return HttpResponse.json({ status: 'started', path: '/Shoe_horn_thicker.gcode' });
+        }),
+      );
+
+      render(<PrintersPage />);
+
+      await user.click(await screen.findByRole('button', { name: 'Upload' }));
+      const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+      expect(input).toBeInTheDocument();
+
+      await user.upload(input, new File(['G28\n'], 'Shoe_horn_thicker.gcode', { type: 'text/plain' }));
+      expect(screen.getByLabelText('Start print after upload')).not.toBeChecked();
+      await user.click(await screen.findByRole('button', { name: 'Upload (1)' }));
+
+      await waitFor(() => expect(uploadCalled).toBe(true));
+      expect(new URL(uploadRequestUrl).searchParams.get('overwrite')).toBe('true');
+      expect(startCalled).toBe(false);
+      expect(await screen.findByText('Upload complete: 1 succeeded')).toBeInTheDocument();
+      expect(screen.queryByText(/\{\{succeeded\}\}/)).not.toBeInTheDocument();
+      expect(screen.queryByRole('dialog', { name: 'Print' })).not.toBeInTheDocument();
+      expect(screen.queryByText('Print Options')).not.toBeInTheDocument();
+    });
+
+    it('asks whether to print or upload when dropping a file on a Prusa printer card', async () => {
+      const user = userEvent.setup();
+      let directUploadCalled = false;
+      let directUploadRequestUrl = '';
+      let libraryUploadCalled = false;
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          ...mockPrinters[0],
+          id: 7,
+          name: 'Prusa CORE One',
+          provider: 'prusalink',
+          model: 'Prusa CORE One',
+        }])),
+        http.post('/api/v1/printers/7/files/upload', ({ request }) => {
+          directUploadCalled = true;
+          directUploadRequestUrl = request.url;
+          return HttpResponse.json({ status: 'uploaded', path: '/Shoe_horn_thicker.gcode', filename: 'Shoe_horn_thicker.gcode' });
+        }),
+        http.post('/api/v1/library/files', () => {
+          libraryUploadCalled = true;
+          return HttpResponse.json({
+            id: 42,
+            filename: 'Shoe_horn_thicker.gcode',
+            original_filename: 'Shoe_horn_thicker.gcode',
+            file_size: 4,
+            file_type: 'gcode',
+            metadata: {},
+          });
+        }),
+      );
+
+      render(<PrintersPage />);
+
+      await screen.findAllByText('Prusa CORE One');
+      await screen.findByRole('button', { name: 'Upload' });
+      const card = screen.getByTestId('printer-card-7');
+
+      fireEvent.drop(card, {
+        dataTransfer: {
+          files: [new File(['G28\n'], 'Shoe_horn_thicker.gcode', { type: 'text/plain' })],
+        },
+      });
+
+      expect(await screen.findByText('Choose file action')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Print' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Upload only' })).toBeInTheDocument();
+
+      await user.click(screen.getByRole('button', { name: 'Upload only' }));
+
+      await waitFor(() => expect(directUploadCalled).toBe(true));
+      expect(new URL(directUploadRequestUrl).searchParams.get('overwrite')).toBe('true');
+      expect(libraryUploadCalled).toBe(false);
+      expect(screen.queryByText('Choose file action')).not.toBeInTheDocument();
+    });
+
+    it('shows assigned Panda Breath data only on the matching printer card', async () => {
+      server.use(
+        http.get('/api/v1/settings/ui-preferences', () => HttpResponse.json({
+          ams_humidity_good: 40,
+          ams_humidity_fair: 60,
+          ams_temp_good: 30,
+          ams_temp_fair: 35,
+          require_plate_clear: true,
+          panda_breath_printer_assignments: '{"DEVICE_B":2}',
+        })),
+        http.get('/api/v1/settings/panda-breath/status', () => HttpResponse.json({
+          enabled: true,
+          connected: true,
+          state: {},
+          devices: {
+            DEVICE_A: { device_id: 'DEVICE_A', chamber_actual: 31.2, chamber_target: 45 },
+            DEVICE_B: { device_id: 'DEVICE_B', chamber_actual: 42.8, chamber_target: 55 },
+          },
+        }))
+      );
+
+      render(<PrintersPage />);
+
+      await screen.findByText('P1S Backup');
+      const pandaBreathLabels = await screen.findAllByText('Panda Breath');
+      const pandaBreathLabel = pandaBreathLabels[0];
+      const card = pandaBreathLabel.closest('[class*="relative"]') || document.body;
+      expect(pandaBreathLabels.length).toBeGreaterThan(0);
+      expect(card.textContent).toContain('P1S Backup');
+      expect(card.textContent).toContain('Panda Breath');
+      expect(card.textContent).toContain('43°C / 55°');
+    });
+
+    it('sends Panda Breath commands to the assigned device from the printer card', async () => {
+      const user = userEvent.setup();
+      let postedBody: unknown = null;
+
+      server.use(
+        http.get('/api/v1/settings/ui-preferences', () => HttpResponse.json({
+          ams_humidity_good: 40,
+          ams_humidity_fair: 60,
+          ams_temp_good: 30,
+          ams_temp_fair: 35,
+          require_plate_clear: true,
+          panda_breath_printer_assignments: '{"DEVICE_B":2}',
+        })),
+        http.get('/api/v1/settings/panda-breath/status', () => HttpResponse.json({
+          enabled: true,
+          connected: true,
+          state: {},
+          devices: {
+            DEVICE_B: { device_id: 'DEVICE_B', chamber_actual: 42.8, chamber_target: 55, work_on: false },
+          },
+        })),
+        http.post('/api/v1/settings/panda-breath/command', async ({ request }) => {
+          postedBody = await request.json();
+          return HttpResponse.json({ ok: true });
+        })
+      );
+
+      render(<PrintersPage />);
+
+      await screen.findByText('P1S Backup');
+      await user.click(await screen.findByRole('button', { name: 'Turn on' }));
+
+      await waitFor(() => {
+        expect(postedBody).toEqual({ command: 'work_on', value: 'ON', device_id: 'DEVICE_B' });
       });
     });
 
@@ -160,6 +414,118 @@ describe('PrintersPage', () => {
 
       expect(openSpy).toHaveBeenCalledWith('/camera/1', 'camera-1', expect.any(String));
       openSpy.mockRestore();
+    });
+
+    it('opens the camera inline inside the printer card when camera view mode is card', async () => {
+      const user = userEvent.setup();
+      const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+      server.use(
+        http.get('/api/v1/settings/ui-preferences', () => HttpResponse.json({
+          ams_humidity_good: 40,
+          ams_humidity_fair: 60,
+          ams_temp_good: 30,
+          ams_temp_fair: 35,
+          require_plate_clear: true,
+          camera_view_mode: 'card',
+          panda_breath_printer_assignments: '{}',
+        })),
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          ...mockPrinters[0],
+          provider: 'fluidd',
+          name: 'Neptune 4 Pro',
+          external_camera_url: 'http://neptune.local/webcam/?action=stream',
+          external_camera_type: 'mjpeg',
+          external_camera_enabled: true,
+        }])),
+        http.get('/api/v1/printers/:id/status', () => HttpResponse.json({
+          ...mockPrinterStatus,
+          connected: false,
+        })),
+        http.post('/api/v1/printers/:id/camera/stop', () => HttpResponse.json({ success: true })),
+        http.get('/api/v1/printers/:id/camera/status', () => HttpResponse.json({ active: true, stalled: false })),
+      );
+
+      render(<PrintersPage />);
+
+      const cameraButton = await screen.findByRole('button', { name: /show camera in printer card/i });
+      expect(cameraButton).not.toBeDisabled();
+      await user.click(cameraButton);
+
+      expect(openSpy).not.toHaveBeenCalled();
+      expect(await screen.findByTestId('inline-camera-viewer-1')).toBeInTheDocument();
+      const stream = screen.getByAltText('Camera stream') as HTMLImageElement;
+      expect(stream.getAttribute('src')).toContain('/api/v1/printers/1/camera/stream');
+      openSpy.mockRestore();
+    });
+
+    it('keeps printer cards aligned to the top so an expanded camera does not stretch sibling cards', async () => {
+      render(<PrintersPage />);
+
+      const firstCard = await screen.findByTestId('printer-card-1');
+      expect(firstCard.parentElement).toHaveClass('grid');
+      expect(firstCard.parentElement).toHaveClass('items-start');
+    });
+
+    it('resizes the inline camera while enforcing minimum card-friendly dimensions', async () => {
+      const user = userEvent.setup();
+      server.use(
+        http.get('/api/v1/settings/ui-preferences', () => HttpResponse.json({
+          ams_humidity_good: 40,
+          ams_humidity_fair: 60,
+          ams_temp_good: 30,
+          ams_temp_fair: 35,
+          require_plate_clear: true,
+          camera_view_mode: 'card',
+          panda_breath_printer_assignments: '{}',
+        })),
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          ...mockPrinters[0],
+          provider: 'fluidd',
+          name: 'Neptune 4 Pro',
+          external_camera_url: 'http://neptune.local/webcam/?action=stream',
+          external_camera_type: 'mjpeg',
+          external_camera_enabled: true,
+        }])),
+        http.get('/api/v1/printers/:id/status', () => HttpResponse.json({
+          ...mockPrinterStatus,
+          connected: false,
+        })),
+        http.post('/api/v1/printers/:id/camera/stop', () => HttpResponse.json({ success: true })),
+        http.get('/api/v1/printers/:id/camera/status', () => HttpResponse.json({ active: true, stalled: false })),
+      );
+
+      render(<PrintersPage />);
+      await user.click(await screen.findByRole('button', { name: /show camera in printer card/i }));
+
+      const viewer = await screen.findByTestId('inline-camera-viewer-1');
+      vi.spyOn(viewer, 'getBoundingClientRect').mockReturnValue({
+        x: 100,
+        y: 50,
+        left: 100,
+        top: 50,
+        right: 580,
+        bottom: 350,
+        width: 480,
+        height: 300,
+        toJSON: () => ({}),
+      } as DOMRect);
+      const resizeHandle = screen.getByTitle('Drag to resize');
+
+      fireEvent.mouseDown(resizeHandle, { clientX: 580, clientY: 350 });
+      fireEvent.mouseMove(document, { clientX: 860, clientY: 520 });
+      fireEvent.mouseUp(document);
+
+      await waitFor(() => {
+        expect(viewer).toHaveStyle({ width: '760px', height: '470px' });
+      });
+
+      fireEvent.mouseDown(resizeHandle, { clientX: 860, clientY: 520 });
+      fireEvent.mouseMove(document, { clientX: 120, clientY: 80 });
+      fireEvent.mouseUp(document);
+
+      await waitFor(() => {
+        expect(viewer).toHaveStyle({ width: '320px', height: '220px' });
+      });
     });
 
     it('does not open a Fluidd/Moonraker API URL as a camera target', async () => {
@@ -293,6 +659,29 @@ describe('PrintersPage', () => {
       expect(screen.queryByTitle('Chamber Fan')).not.toBeInTheDocument();
       expect(screen.queryByTitle('Heatbreak Fan')).not.toBeInTheDocument();
       expect(screen.queryByTitle('Move build plate')).not.toBeInTheDocument();
+    });
+
+    it('shows loaded-spool assignment controls for Elegoo SDCP printers', async () => {
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          ...mockPrinters[0],
+          name: 'Centauri Carbon',
+          provider: 'elegoo_sdcp',
+          model: 'Elegoo Centauri Carbon',
+        }])),
+        http.get('/api/v1/printers/:id/status', () => HttpResponse.json({
+          ...mockPrinterStatus,
+          ams: [],
+          vt_tray: [],
+        })),
+      );
+
+      render(<PrintersPage />);
+
+      await waitFor(() => expect(screen.getByText('Centauri Carbon')).toBeInTheDocument());
+
+      expect(await screen.findByText('Loaded spool')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /^Assign$/i })).toBeInTheDocument();
     });
 
     it('groups add-printer model choices by vendor and includes common Klipper machines', async () => {
@@ -505,11 +894,7 @@ describe('PrintersPage', () => {
   });
 
   describe('manual controls', () => {
-    it('renders the PrusaLink controls with the Klipper-style layout and sends jog requests', async () => {
-      const user = userEvent.setup();
-      const jogRequests: string[] = [];
-      const disableRequests: string[] = [];
-
+    it('hides manual controls for Prusa printers because PrusaLink model controls are unsupported', async () => {
       server.use(
         http.get('/api/v1/printers/', () => HttpResponse.json([{ ...mockPrinters[0], name: 'Boženka', provider: 'prusalink', model: 'Prusa MK4S' }])),
         http.get('/api/v1/printers/:id/status', () => HttpResponse.json({
@@ -517,37 +902,31 @@ describe('PrintersPage', () => {
           temperatures: { nozzle: 25, nozzle_target: 0, bed: 25, bed_target: 0 },
           position: { x: 10.2, y: 0, z: 54.2 },
         })),
-        http.post('/api/v1/printers/:id/axis-jog', ({ request }) => {
-          jogRequests.push(new URL(request.url).search);
-          return HttpResponse.json({ success: true, message: 'Jog sent' });
-        }),
-        http.post('/api/v1/printers/:id/disable-steppers', ({ request }) => {
-          disableRequests.push(new URL(request.url).pathname);
-          return HttpResponse.json({ success: true, message: 'Steppers disabled' });
-        })
       );
 
       render(<PrintersPage />);
 
-      const controlsToggle = await screen.findByRole('button', { name: /manual controls/i });
-      expect(controlsToggle).toHaveAttribute('aria-expanded', 'false');
-      expect(screen.queryByRole('heading', { name: /Boženka printer control/i })).not.toBeInTheDocument();
+      await screen.findByText('Boženka');
+      expect(screen.queryByRole('button', { name: /manual controls/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'X+' })).not.toBeInTheDocument();
+    });
 
-      await user.click(controlsToggle);
+    it('hides unsupported light and plate-check controls for Prusa printers', async () => {
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{ ...mockPrinters[0], name: 'CORE One', provider: 'prusalink', model: 'Prusa CORE One' }])),
+        http.get('/api/v1/printers/:id/status', () => HttpResponse.json({
+          ...mockPrinterStatus,
+          connected: true,
+          chamber_light: false,
+        })),
+      );
 
-      const xPlusButton = await screen.findByRole('button', { name: 'X+' });
-      expect(screen.queryByRole('heading', { name: /Boženka printer control/i })).not.toBeInTheDocument();
-      expect(screen.queryByText(/heated bed X and Y move/i)).not.toBeInTheDocument();
-      expect(xPlusButton).toHaveClass('bg-[var(--accent)]');
-      expect(xPlusButton).not.toHaveClass('bg-red-700');
-      expect(screen.getByText(/extrusion length/i)).toBeInTheDocument();
-      await user.click(xPlusButton);
-      await user.click(screen.getByRole('button', { name: /disable steppers/i }));
+      render(<PrintersPage />);
 
-      await waitFor(() => {
-        expect(jogRequests).toContain('?axis=x&distance=10');
-        expect(disableRequests).toContain('/api/v1/printers/1/disable-steppers');
-      });
+      await screen.findByText('CORE One');
+      expect(screen.queryByTitle('Turn on chamber light')).toBeNull();
+      expect(screen.queryByTitle('Plate check disabled - Click to enable')).toBeNull();
+      expect(screen.queryByTitle('Manage plate detection calibration')).toBeNull();
     });
 
     it('sends XYZ jog requests from the printer card controls', async () => {
@@ -1424,6 +1803,52 @@ describe('PrintersPage', () => {
       // While Spoolman queries are still loading, the "Assign Spool" button must
       // not appear (inventory prop is undefined → {inventory && ...} guard fires)
       expect(screen.queryByText('Assign Spool')).not.toBeInTheDocument();
+    });
+
+    it('shows loaded-spool assignment controls for Prusa and Elegoo SDCP printers', async () => {
+      const assignment = {
+        id: 99,
+        printer_id: 1,
+        ams_id: -1,
+        tray_id: 0,
+        spool_id: 123,
+        spool: {
+          id: 123,
+          brand: 'Prusament',
+          material: 'PLA',
+          subtype: 'Galaxy Black',
+          color_name: 'Black',
+          rgba: '#111111',
+          slicer_filament: 'Prusament PLA',
+          slicer_filament_name: 'Prusament PLA',
+        },
+      };
+
+      server.use(
+        http.get('/api/v1/inventory/assignments', () => HttpResponse.json([assignment])),
+        http.get('/api/v1/printers/', () => HttpResponse.json([{ ...mockPrinters[0], provider: 'prusalink', model: 'Prusa CORE One' }])),
+      );
+
+      const { unmount } = render(<PrintersPage />);
+
+      await screen.findByText('X1 Carbon');
+      await screen.findByText('Loaded spool');
+      expect(screen.getByText(/Prusament PLA Galaxy Black/i)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Change' })).toBeInTheDocument();
+
+      unmount();
+
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{ ...mockPrinters[0], provider: 'elegoo_sdcp', model: 'Elegoo Centauri Carbon' }])),
+      );
+
+      render(<PrintersPage />);
+
+      await screen.findByText('X1 Carbon');
+      await waitFor(() => expect(screen.getAllByText(/25/).length).toBeGreaterThan(0));
+      await screen.findByText('Loaded spool');
+      expect(screen.getByText(/Prusament PLA Galaxy Black/i)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Change' })).toBeInTheDocument();
     });
   });
 

@@ -4,6 +4,7 @@ import httpx
 import pytest
 
 from backend.app.services.printer_manager import PrinterManager
+from backend.app.services.printer_providers.elegoo_sdcp import ElegooSDCPPrinterClient
 from backend.app.services.printer_providers.factory import (
     SUPPORTED_PROVIDERS,
     create_printer_client,
@@ -15,7 +16,7 @@ from backend.app.services.printer_providers.prusalink import PrusaLinkPrinterCli
 
 
 def test_supported_printbuddy_providers_are_registered():
-    assert {"bambu", "klipper", "mainsail", "fluidd", "prusalink", "prusaconnect"} == SUPPORTED_PROVIDERS
+    assert {"bambu", "klipper", "mainsail", "fluidd", "prusalink", "prusaconnect", "elegoo_sdcp"} == SUPPORTED_PROVIDERS
 
 
 @pytest.mark.parametrize("provider", ["klipper", "mainsail", "fluidd"])
@@ -37,6 +38,155 @@ def test_moonraker_provider_falls_back_to_default_port():
 
     assert isinstance(client, MoonrakerPrinterClient)
     assert client.base_url == "http://192.168.1.50:7125/"
+
+
+def test_moonraker_stop_print_posts_cancel_endpoint(monkeypatch):
+    posted: list[tuple[str, dict[str, object]]] = []
+
+    def fake_post(url, *, json, headers, timeout):  # noqa: ARG001
+        posted.append((str(url), json))
+        return httpx.Response(200, json={"result": "ok"}, request=httpx.Request("POST", str(url)))
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    client = MoonrakerPrinterClient("http://elegoo.local:7125")
+
+    assert client.stop_print() is True
+    assert posted == [("http://elegoo.local:7125/printer/print/cancel", {})]
+
+
+def test_moonraker_start_print_treats_verified_timeout_as_success(monkeypatch):
+    posts: list[tuple[str, dict[str, object]]] = []
+
+    def fake_post(url, *, json, headers, timeout):  # noqa: ARG001
+        posts.append((str(url), json))
+        raise httpx.ReadTimeout("timed out", request=httpx.Request("POST", str(url)))
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    client = MoonrakerPrinterClient("http://elegoo.local:7125")
+
+    def fake_status_update():
+        client.state.state = "RUNNING"
+        client.state.current_print = "firstlayer60x60mm_PLA_2m25s.gcode"
+        return True
+
+    monkeypatch.setattr(client, "request_status_update", fake_status_update)
+
+    assert client.start_print("/firstlayer60x60mm_PLA_2m25s.gcode") is True
+    assert posts == [
+        (
+            "http://elegoo.local:7125/printer/print/start",
+            {"filename": "firstlayer60x60mm_PLA_2m25s.gcode"},
+        )
+    ]
+
+
+def test_moonraker_status_edges_emit_print_start_and_complete(monkeypatch):
+    start_payloads: list[dict[str, object]] = []
+    complete_payloads: list[dict[str, object]] = []
+    state_payloads: list[object] = []
+    client = MoonrakerPrinterClient(
+        "http://elegoo.local:7125",
+        on_state_change=state_payloads.append,
+        on_print_start=start_payloads.append,
+        on_print_complete=complete_payloads.append,
+    )
+    statuses = iter(
+        [
+            {
+                "print_stats": {"state": "standby", "filename": ""},
+                "virtual_sdcard": {"progress": 0.0},
+                "display_status": {},
+                "extruder": {},
+                "heater_bed": {"temperature": 25},
+            },
+            {
+                "print_stats": {"state": "printing", "filename": "benchy.gcode", "print_duration": 30},
+                "virtual_sdcard": {"progress": 0.2},
+                "display_status": {},
+                "extruder": {},
+                "heater_bed": {"temperature": 60},
+            },
+            {
+                "print_stats": {"state": "complete", "filename": ""},
+                "virtual_sdcard": {"progress": 1.0},
+                "display_status": {},
+                "extruder": {},
+                "heater_bed": {"temperature": 55},
+            },
+        ]
+    )
+
+    monkeypatch.setattr(client, "_query_objects", lambda names: next(statuses))  # noqa: ARG005
+    monkeypatch.setattr(client, "_query_fan_status", lambda: {})
+    monkeypatch.setattr(
+        "backend.app.services.printer_providers.moonraker.time.monotonic", iter([100.0, 160.0]).__next__
+    )
+
+    assert client.request_status_update() is True
+    assert start_payloads == []
+    assert complete_payloads == []
+
+    assert client.request_status_update() is True
+    assert start_payloads == [
+        {
+            "filename": "benchy.gcode",
+            "subtask_name": "benchy.gcode",
+            "progress": 20.0,
+            "remaining_time": 120,
+            "status": "RUNNING",
+            "raw_data": {
+                "print_stats": {"state": "printing", "filename": "benchy.gcode", "print_duration": 30},
+                "virtual_sdcard": {"progress": 0.2},
+                "display_status": {},
+                "extruder": {},
+                "heater_bed": {"temperature": 60},
+            },
+        }
+    ]
+
+    assert client.request_status_update() is True
+    assert complete_payloads == [
+        {
+            "filename": "benchy.gcode",
+            "subtask_name": "benchy.gcode",
+            "progress": 100.0,
+            "remaining_time": None,
+            "status": "completed",
+            "raw_data": {
+                "print_stats": {"state": "complete", "filename": ""},
+                "virtual_sdcard": {"progress": 1.0},
+                "display_status": {},
+                "extruder": {},
+                "heater_bed": {"temperature": 55},
+            },
+            "actual_time_seconds": 60,
+        }
+    ]
+    assert len(state_payloads) == 3
+
+
+def test_moonraker_factory_wires_lifecycle_callbacks():
+    start_payloads: list[dict[str, object]] = []
+    complete_payloads: list[dict[str, object]] = []
+    printer = SimpleNamespace(
+        provider="klipper",
+        api_url="http://printer.local:7125",
+        auth_token=None,
+        ip_address="printer.local",
+        model="Elegoo",
+    )
+
+    client = create_printer_client(
+        printer,
+        on_print_start=start_payloads.append,
+        on_print_complete=complete_payloads.append,
+    )
+
+    assert isinstance(client, MoonrakerPrinterClient)
+    assert client.on_print_start is not None
+    assert client.on_print_complete is not None
+    assert client.on_print_start.__self__ is start_payloads
+    assert client.on_print_complete.__self__ is complete_payloads
 
 
 def test_prusalink_provider_creates_prusalink_client_with_default_url_and_username():
@@ -71,6 +221,88 @@ def test_prusalink_provider_preserves_custom_port_url():
     assert client.base_url == "http://10.17.1.96:8087/"
 
 
+def test_prusalink_provider_reads_detected_api_and_auth_mode_from_options():
+    printer = SimpleNamespace(
+        provider="prusalink",
+        api_url="http://prusa.local",
+        auth_token="dummy-prusalink-password",
+        ip_address="prusa.local",
+        provider_options='{"username":"maker","prusalink_api_mode":"modern","prusalink_auth_mode":"digest"}',
+    )
+
+    client = create_printer_client(printer)
+
+    assert isinstance(client, PrusaLinkPrinterClient)
+    assert client.api_mode == "modern"
+    assert client.auth_mode == "digest"
+
+
+def test_prusalink_auto_detect_prefers_modern_digest(monkeypatch):
+    attempts: list[tuple[str, type, dict[str, str]]] = []
+
+    def fake_get(url, *, auth, headers, timeout):  # noqa: ARG001
+        attempts.append((str(url), type(auth), headers))
+        if str(url).endswith("/api/v1/info") and isinstance(auth, httpx.DigestAuth):
+            return httpx.Response(200, json={"api": "modern"}, request=httpx.Request("GET", str(url)))
+        return httpx.Response(401, request=httpx.Request("GET", str(url)))
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    client = PrusaLinkPrinterClient("http://prusa.local", password="dummy-prusalink-password")
+
+    detected = client.detect_api_auth_mode()
+
+    assert detected == {"prusalink_api_mode": "modern", "prusalink_auth_mode": "digest"}
+    assert attempts == [("http://prusa.local/api/v1/info", httpx.DigestAuth, {})]
+
+
+def test_prusalink_auto_detect_falls_back_to_legacy_x_api_key(monkeypatch):
+    attempts: list[tuple[str, object, dict[str, str]]] = []
+
+    def fake_get(url, *, auth=None, headers=None, timeout=None):  # noqa: ARG001
+        headers = headers or {}
+        attempts.append((str(url), type(auth) if auth is not None else None, headers))
+        if str(url).endswith("/api/version") and headers == {"X-Api-Key": "legacy-key"}:
+            return httpx.Response(200, json={"api": "legacy"}, request=httpx.Request("GET", str(url)))
+        return httpx.Response(403, request=httpx.Request("GET", str(url)))
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    client = PrusaLinkPrinterClient("http://prusa.local", password="legacy-key")
+
+    detected = client.detect_api_auth_mode()
+
+    assert detected == {"prusalink_api_mode": "legacy", "prusalink_auth_mode": "x_api_key"}
+    assert attempts == [
+        ("http://prusa.local/api/v1/info", httpx.DigestAuth, {}),
+        ("http://prusa.local/api/v1/info", httpx.BasicAuth, {"X-Api-Key": "legacy-key"}),
+        ("http://prusa.local/api/version", None, {"X-Api-Key": "legacy-key"}),
+    ]
+
+
+def test_prusalink_legacy_connect_uses_x_api_key_endpoints(monkeypatch):
+    requested: list[tuple[str, object, dict[str, str]]] = []
+
+    def fake_get(url, *, auth=None, headers=None, timeout=None):  # noqa: ARG001
+        headers = headers or {}
+        requested.append((str(url), type(auth) if auth is not None else None, headers))
+        if str(url).endswith("/api/version"):
+            return httpx.Response(200, json={"api": "0.1"}, request=httpx.Request("GET", str(url)))
+        return httpx.Response(204, request=httpx.Request("GET", str(url)))
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    client = PrusaLinkPrinterClient(
+        "http://prusa.local", password="legacy-key", api_mode="legacy", auth_mode="x_api_key"
+    )
+
+    client.connect()
+
+    assert client.state.connected is True
+    assert client.state.state == "IDLE"
+    assert requested == [
+        ("http://prusa.local/api/version", None, {"X-Api-Key": "legacy-key"}),
+        ("http://prusa.local/api/job", None, {"X-Api-Key": "legacy-key"}),
+    ]
+
+
 def test_prusa_connect_mobile_provider_creates_cloud_client_with_default_api_url():
     printer = SimpleNamespace(
         provider="prusaconnect",
@@ -86,6 +318,22 @@ def test_prusa_connect_mobile_provider_creates_cloud_client_with_default_api_url
     assert client.base_url == "https://connect-mobile-api.prusa3d.com/"
     assert client.printer_uuid == "13b5af3d-7b44-42b1-9327-cf8a6fbf3f3c"
     assert client.auth_token == "dummy-connect-token"
+
+
+def test_elegoo_sdcp_provider_creates_sdcp_client():
+    printer = SimpleNamespace(
+        provider="elegoo_sdcp",
+        ip_address="centauri.local",
+        api_url=None,
+        auth_token=None,
+        provider_options=None,
+    )
+
+    client = create_printer_client(printer)
+
+    assert isinstance(client, ElegooSDCPPrinterClient)
+    assert client.host == "centauri.local"
+    assert client.websocket_url == "ws://centauri.local:3030/websocket"
 
 
 def test_prusa_connect_mobile_status_update_maps_prusa_connect_payload(monkeypatch):
@@ -553,6 +801,57 @@ async def test_klipper_connection_probe_uses_moonraker_client(monkeypatch):
     assert calls == [("klipper", "http://voron.local:7125", "token", "voron.local"), "connect", "disconnect"]
 
 
+@pytest.mark.asyncio
+async def test_prusalink_connection_probe_returns_detected_provider_options(monkeypatch):
+    calls = []
+
+    class FakePrusaLinkClient:
+        state = SimpleNamespace(state="IDLE")
+
+        def detect_api_auth_mode(self):
+            calls.append("detect")
+            return {"prusalink_api_mode": "modern", "prusalink_auth_mode": "digest"}
+
+        def connect(self):
+            calls.append("connect")
+
+        def disconnect(self):
+            calls.append("disconnect")
+
+    def fake_create_printer_client(printer):
+        calls.append(
+            (printer.provider, printer.api_url, printer.auth_token, printer.ip_address, printer.provider_options)
+        )
+        return FakePrusaLinkClient()
+
+    monkeypatch.setattr(
+        "backend.app.services.printer_manager.create_printer_client",
+        fake_create_printer_client,
+    )
+
+    result = await PrinterManager().test_connection(
+        ip_address="prusa.local",
+        serial_number="PRUSALINK-PRUSA-LOCAL",
+        access_code="prusalink",
+        provider="prusalink",
+        api_url="http://prusa.local",
+        auth_token="secret",
+    )
+
+    assert result == {
+        "success": True,
+        "state": "IDLE",
+        "model": "PrusaLink",
+        "provider_options": '{"prusalink_api_mode":"modern","prusalink_auth_mode":"digest"}',
+    }
+    assert calls == [
+        ("prusalink", "http://prusa.local", "secret", "prusa.local", None),
+        "detect",
+        "connect",
+        "disconnect",
+    ]
+
+
 def test_unknown_provider_is_rejected():
     with pytest.raises(ValueError, match="Unsupported printer provider"):
         normalize_provider("octoprint")
@@ -705,5 +1004,144 @@ def test_prusalink_lists_uploads_and_starts_print(monkeypatch, tmp_path):
     ]
     assert client.upload_file(gcode, "/cube.bgcode") is True
     assert client.start_print("/cube.bgcode") is True
-    assert ("put", "http://prusa.local/api/v1/files/local/cube.bgcode") in calls
-    assert ("post", "http://prusa.local/api/v1/files/local/cube.bgcode/print") in calls
+    assert ("put", "http://prusa.local/api/v1/files/usb/cube.bgcode") in calls
+    assert ("post", "http://prusa.local/api/v1/files/usb/cube.bgcode") in calls
+
+
+def test_prusalink_upload_uses_digest_when_detected(monkeypatch, tmp_path):
+    uploaded: list[tuple[str, type, dict[str, str]]] = []
+    gcode = tmp_path / "cube.gcode"
+    gcode.write_text("G28\n", encoding="utf-8")
+
+    def fake_put(url, *, auth, headers, timeout, content):  # noqa: ARG001
+        uploaded.append((str(url), type(auth), headers))
+        return httpx.Response(204, request=httpx.Request("PUT", str(url)))
+
+    monkeypatch.setattr(httpx, "put", fake_put)
+    client = PrusaLinkPrinterClient("http://prusa.local", password="secret", api_mode="modern", auth_mode="digest")
+
+    assert client.upload_file(gcode, "/cube.gcode") is True
+    assert uploaded == [
+        (
+            "http://prusa.local/api/v1/files/usb/cube.gcode",
+            httpx.DigestAuth,
+            {"Content-Type": "application/octet-stream"},
+        )
+    ]
+
+
+def test_prusalink_lifecycle_callbacks_fire_on_status_transitions(monkeypatch):
+    statuses = [
+        {
+            "printer": {"state": "READY", "temp_nozzle": 25, "target_nozzle": 0, "temp_bed": 24, "target_bed": 0},
+            "job": {},
+        },
+        {
+            "printer": {
+                "state": "PRINTING",
+                "temp_nozzle": 210,
+                "target_nozzle": 215,
+                "temp_bed": 60,
+                "target_bed": 60,
+            },
+            "job": {"id": 42, "progress": 12.5, "time_remaining": 1200},
+        },
+        {
+            "printer": {"state": "FINISHED", "temp_nozzle": 180, "target_nozzle": 0, "temp_bed": 45, "target_bed": 0},
+            "job": {"id": 42, "progress": 100, "time_remaining": 0},
+        },
+    ]
+    job_details = [
+        {},
+        {
+            "id": 42,
+            "state": "PRINTING",
+            "progress": 12.5,
+            "time_remaining": 1200,
+            "file": {"display_name": "mk4s_benchy.gcode"},
+        },
+        {
+            "id": 42,
+            "state": "FINISHED",
+            "progress": 100,
+            "time_remaining": 0,
+            "file": {"display_name": "mk4s_benchy.gcode"},
+        },
+    ]
+
+    def fake_get(url, *, auth, headers, timeout):  # noqa: ARG001
+        if str(url).endswith("/api/v1/status"):
+            payload = statuses.pop(0)
+        else:
+            payload = job_details.pop(0)
+        return httpx.Response(200, json=payload, request=httpx.Request("GET", str(url)))
+
+    starts: list[dict] = []
+    completes: list[dict] = []
+    states: list[str] = []
+    bed_temps: list[float] = []
+    monkeypatch.setattr(httpx, "get", fake_get)
+    client = PrusaLinkPrinterClient(
+        "http://prusa.local",
+        password="dummy-prusalink-password",
+        on_state_change=lambda state: states.append(state.state),
+        on_print_start=starts.append,
+        on_print_complete=completes.append,
+        on_bed_temp_update=bed_temps.append,
+    )
+
+    assert client.request_status_update() is True
+    assert starts == []
+    assert completes == []
+
+    assert client.request_status_update() is True
+    assert starts == [
+        {
+            "filename": "mk4s_benchy.gcode",
+            "subtask_name": "mk4s_benchy.gcode",
+            "progress": 12.5,
+            "remaining_time": 1200,
+            "status": "RUNNING",
+        }
+    ]
+
+    assert client.request_status_update() is True
+    assert len(completes) == 1
+    actual_time_seconds = completes[0].pop("actual_time_seconds")
+    assert isinstance(actual_time_seconds, int)
+    assert actual_time_seconds >= 0
+    assert completes == [
+        {
+            "filename": "mk4s_benchy.gcode",
+            "subtask_name": "mk4s_benchy.gcode",
+            "progress": 100.0,
+            "remaining_time": None,
+            "status": "completed",
+        }
+    ]
+    assert states == ["IDLE", "RUNNING", "FINISH"]
+    assert bed_temps == [24.0, 60.0, 45.0]
+
+
+def test_prusalink_factory_wires_lifecycle_callbacks():
+    printer = SimpleNamespace(
+        provider="prusalink",
+        api_url="http://prusa.local",
+        auth_token="dummy-prusalink-password",
+        ip_address="prusa.local",
+        provider_options=None,
+    )
+    callbacks = {
+        "on_state_change": object(),
+        "on_print_start": object(),
+        "on_print_complete": object(),
+        "on_bed_temp_update": object(),
+    }
+
+    client = create_printer_client(printer, **callbacks)
+
+    assert isinstance(client, PrusaLinkPrinterClient)
+    assert client.on_state_change is callbacks["on_state_change"]
+    assert client.on_print_start is callbacks["on_print_start"]
+    assert client.on_print_complete is callbacks["on_print_complete"]
+    assert client.on_bed_temp_update is callbacks["on_bed_temp_update"]

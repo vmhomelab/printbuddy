@@ -10,8 +10,8 @@ from datetime import datetime, timedelta, timezone
 from logging.handlers import RotatingFileHandler
 from urllib.parse import urlparse
 
-from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import delete, or_, select, text
 
@@ -45,6 +45,7 @@ from backend.app.api.routes import (
     notification_templates,
     notifications,
     obico,
+    open_filament_database,
     pending_uploads,
     print_log,
     print_queue,
@@ -341,6 +342,9 @@ _print_ams_mappings: dict[int, list[int]] = {}
 # Milestones are 25, 50, 75. Value of 0 means no milestone notified yet for current print.
 _last_progress_milestone: dict[int, int] = {}
 
+# Track whether the 99% almost-done notification has been sent for current print
+_print_almost_done_notified: dict[int, bool] = {}
+
 # Track whether first layer complete notification has been sent for current print
 _first_layer_notified: dict[int, bool] = {}
 
@@ -365,6 +369,19 @@ _bed_cool_waiters: dict[int, dict] = {}
 # When on_print_complete fires with status "failed" for these printers we treat it
 # as "cancelled" (stopped by user) so the correct notification email is sent.
 _user_stopped_printers: set[int] = set()
+
+
+def _should_attempt_bambu_ftp_archive(printer) -> bool:
+    """Return True when print-start archiving should use Bambu FTP.
+
+    Legacy printer rows may have a null provider and historically represented
+    Bambu printers, so keep those on the existing Bambu FTP path. Explicit
+    non-Bambu providers such as PrusaLink must not hit services.bambu_ftp.
+    """
+    provider_value = getattr(printer, "provider", None)
+    if not isinstance(provider_value, str) or not provider_value.strip():
+        provider_value = "bambu"
+    return provider_value.lower() == "bambu"
 
 
 # HMS short-code → human-readable failure reason. Used by _dispatch_archive_update
@@ -637,16 +654,19 @@ def _maybe_start_layer_timelapse(printer, printer_id: int, archive_id: int) -> b
     on the first pass). Centralising the conditional + call here makes the
     contract testable in isolation and keeps the three sites locked in step.
     """
-    if not (printer.external_camera_enabled and printer.external_camera_url):
+    from backend.app.services.elegoo_camera import get_effective_camera_source
+
+    effective_camera = get_effective_camera_source(printer)
+    if not (effective_camera.enabled and effective_camera.url):
         return False
     from backend.app.services.layer_timelapse import start_session
 
     start_session(
         printer_id,
         archive_id,
-        printer.external_camera_url,
-        printer.external_camera_type or "mjpeg",
-        snapshot_url=printer.external_camera_snapshot_url,
+        effective_camera.url,
+        effective_camera.camera_type or "mjpeg",
+        snapshot_url=effective_camera.snapshot_url,
     )
     logging.getLogger(__name__).info("Started layer timelapse for printer %s, archive %s", printer_id, archive_id)
     return True
@@ -824,9 +844,37 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
                     )
             except Exception as e:
                 logging.getLogger(__name__).warning(f"Progress milestone notification failed: {e}")
+
+        if progress >= 99 and not _print_almost_done_notified.get(printer_id, False):
+            _print_almost_done_notified[printer_id] = True
+            try:
+                async with async_session() as db:
+                    from backend.app.models.printer import Printer
+
+                    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+                    printer = result.scalar_one_or_none()
+                    printer_name = printer.name if printer else f"Printer {printer_id}"
+                    filename = state.subtask_name or state.gcode_file or "Unknown"
+                    remaining_time_seconds = state.remaining_time * 60 if state.remaining_time else None
+
+                    image_data = await _capture_snapshot_for_notification(
+                        printer_id, printer, logging.getLogger(__name__)
+                    )
+
+                    await notification_service.on_print_almost_done(
+                        printer_id,
+                        printer_name,
+                        filename,
+                        db,
+                        remaining_time_seconds,
+                        image_data=image_data,
+                    )
+            except Exception as e:
+                logging.getLogger(__name__).warning(f"Print almost-done notification failed: {e}")
     elif progress < 5:
         # Reset milestone tracking when print restarts or new print begins
         _last_progress_milestone[printer_id] = 0
+        _print_almost_done_notified[printer_id] = False
         _first_layer_notified[printer_id] = False
 
     # HMS error codes that should not trigger notifications even though they
@@ -1596,19 +1644,61 @@ async def _capture_snapshot_for_notification(printer_id: int, printer, logger) -
         if capture_enabled is not None and capture_enabled.lower() != "true":
             return None
 
-        # Try external camera first
-        if printer.external_camera_enabled and printer.external_camera_url:
-            logger.info("[SNAPSHOT] Capturing from external camera for printer %s", printer_id)
-            from backend.app.services.external_camera import capture_frame
+        from backend.app.services.elegoo_camera import get_effective_camera_source, is_elegoo_sdcp_camera_source
 
-            frame_data = await capture_frame(
-                printer.external_camera_url,
-                printer.external_camera_type or "mjpeg",
-                snapshot_url=printer.external_camera_snapshot_url,
+        effective_camera = get_effective_camera_source(printer)
+
+        # Try external/provider-derived camera first
+        if effective_camera.enabled and effective_camera.url:
+            from backend.app.api.routes.camera import is_stream_active, try_get_active_buffered_frame
+
+            buffered = try_get_active_buffered_frame(printer_id)
+            if buffered:
+                logger.info("[SNAPSHOT] Using active external/provider camera frame for printer %s", printer_id)
+                return _apply_camera_rotation(buffered, printer, logger)
+            if effective_camera.derived and is_stream_active(printer_id):
+                logger.info(
+                    "[SNAPSHOT] Provider camera stream active for printer %s but no frame buffered yet; skipping competing capture",
+                    printer_id,
+                )
+                return None
+
+            should_activate_elegoo = is_elegoo_sdcp_camera_source(
+                getattr(printer, "provider", None), effective_camera.url
             )
+            logger.info("[SNAPSHOT] Capturing from external/provider camera for printer %s", printer_id)
+            if should_activate_elegoo:
+                from backend.app.services.elegoo_camera import capture_elegoo_sdcp_activated_frame
+
+                frame_data = await capture_elegoo_sdcp_activated_frame(
+                    printer.ip_address,
+                    effective_camera.url,
+                    effective_camera.camera_type or "mjpeg",
+                    snapshot_url=effective_camera.snapshot_url,
+                )
+            else:
+                from backend.app.services.external_camera import capture_frame
+
+                frame_data = await capture_frame(
+                    effective_camera.url,
+                    effective_camera.camera_type or "mjpeg",
+                    snapshot_url=effective_camera.snapshot_url,
+                )
             if frame_data and len(frame_data) <= 2_500_000:
                 logger.info("[SNAPSHOT] External camera frame: %s bytes", len(frame_data))
                 return _apply_camera_rotation(frame_data, printer, logger)
+            if should_activate_elegoo:
+                logger.warning(
+                    "[SNAPSHOT] Elegoo SDCP camera failed for printer %s; not falling back to built-in camera path",
+                    printer_id,
+                )
+                return None
+            if effective_camera.derived:
+                logger.warning(
+                    "[SNAPSHOT] Derived provider camera failed for printer %s; not falling back to built-in camera path",
+                    printer_id,
+                )
+                return None
 
         # Try buffered frame from active stream
         from backend.app.api.routes.camera import _active_chamber_streams, _active_streams, get_buffered_frame
@@ -2312,13 +2402,19 @@ async def on_print_start(printer_id: int, data: dict):
         # Try to find and download the 3MF file
         temp_path = None
         downloaded_filename = None
+        attempt_bambu_ftp_archive = _should_attempt_bambu_ftp_archive(printer)
+        if not attempt_bambu_ftp_archive:
+            logger.info(
+                "[CALLBACK] Skipping Bambu FTP archive lookup for non-Bambu provider %s",
+                getattr(printer, "provider", None),
+            )
 
         # Cache check: cover endpoint may have already pulled this 3MF during
         # the print (frontend opens the card and shows the thumbnail) — reuse
         # that file instead of re-downloading 36MB over the same FTP link that
         # just served it (#972). The cache keys on a normalized filename so
         # variants like "X", "X.3mf", "X.gcode.3mf" all collapse to one entry.
-        for try_filename in possible_names:
+        for try_filename in possible_names if attempt_bambu_ftp_archive else []:
             if not try_filename.endswith(".3mf"):
                 continue
             cached = get_cached_3mf(printer_id, try_filename)
@@ -2331,7 +2427,7 @@ async def on_print_start(printer_id: int, data: dict):
         # Get FTP retry settings
         ftp_retry_enabled, ftp_retry_count, ftp_retry_delay, ftp_timeout = await get_ftp_retry_settings()
 
-        for try_filename in possible_names if not downloaded_filename else []:
+        for try_filename in possible_names if attempt_bambu_ftp_archive and not downloaded_filename else []:
             if not try_filename.endswith(".3mf"):
                 continue
 
@@ -2397,7 +2493,7 @@ async def on_print_start(printer_id: int, data: dict):
 
         # If still not found, try listing directories to find matching file
         # Different printer models use different directory structures
-        if not downloaded_filename and (filename or subtask_name):
+        if attempt_bambu_ftp_archive and not downloaded_filename and (filename or subtask_name):
             search_term = (subtask_name or filename).lower().replace(".gcode", "").replace(".3mf", "")
             logger.info("Direct FTP download failed, searching directories for '%s'", search_term)
             search_dirs = ["/cache", "/model", "/data", "/data/Metadata", "/"]
@@ -3571,6 +3667,25 @@ async def on_print_complete(printer_id: int, data: dict):
                             no_archive_data["actual_filament_grams"] = round(total_from_usage, 1)
                         no_archive_data["usage_results"] = usage_results
 
+                    # Capture a notification attachment even when there is no
+                    # archive row to save a finish photo into. This is common
+                    # for provider-synthesized PrusaLink/Core One lifecycle
+                    # events and keeps Pushover/Telegram/Discord completion
+                    # notifications visually consistent with progress alerts.
+                    image_data = await _capture_snapshot_for_notification(printer_id, printer_obj, logger)
+                    if image_data:
+                        if no_archive_data is None:
+                            no_archive_data = {}
+                        no_archive_data["image_data"] = image_data
+
+                    # Try provider-synthesized elapsed time first, then MQTT remaining_time
+                    if data.get("actual_time_seconds") or data.get("duration_seconds"):
+                        if no_archive_data is None:
+                            no_archive_data = {}
+                        no_archive_data["actual_time_seconds"] = data.get("actual_time_seconds") or data.get(
+                            "duration_seconds"
+                        )
+
                     # Try MQTT remaining_time for print duration when no queue/library data
                     if no_archive_data and not no_archive_data.get("print_time_seconds"):
                         mqtt_remaining = data.get("remaining_time")
@@ -3847,16 +3962,52 @@ async def on_print_complete(printer_id: int, data: dict):
                                 archive_dir = app_settings.archive_dir / str(archive.id)
                             photo_filename = None
 
-                            # Check for external camera first
-                            if printer.external_camera_enabled and printer.external_camera_url:
-                                logger.info("[PHOTO-BG] Using external camera")
-                                from backend.app.services.external_camera import capture_frame
+                            from backend.app.services.elegoo_camera import (
+                                get_effective_camera_source,
+                                is_elegoo_sdcp_camera_source,
+                            )
 
-                                frame_data = await capture_frame(
-                                    printer.external_camera_url,
-                                    printer.external_camera_type or "mjpeg",
-                                    snapshot_url=printer.external_camera_snapshot_url,
+                            effective_camera = get_effective_camera_source(printer)
+
+                            # Check for external/provider-derived camera first
+                            if effective_camera.enabled and effective_camera.url:
+                                from backend.app.api.routes.camera import (
+                                    is_stream_active,
+                                    try_get_active_buffered_frame,
                                 )
+
+                                frame_data = try_get_active_buffered_frame(printer_id)
+                                if frame_data:
+                                    logger.info("[PHOTO-BG] Using active external/provider camera frame")
+                                elif effective_camera.derived and is_stream_active(printer_id):
+                                    logger.info(
+                                        "[PHOTO-BG] Provider camera stream active but no frame buffered yet; skipping competing capture"
+                                    )
+                                    frame_data = None
+                                else:
+                                    logger.info("[PHOTO-BG] Using external/provider camera")
+                                    should_activate_elegoo = is_elegoo_sdcp_camera_source(
+                                        getattr(printer, "provider", None), effective_camera.url
+                                    )
+                                    if should_activate_elegoo:
+                                        from backend.app.services.elegoo_camera import (
+                                            capture_elegoo_sdcp_activated_frame,
+                                        )
+
+                                        frame_data = await capture_elegoo_sdcp_activated_frame(
+                                            printer.ip_address,
+                                            effective_camera.url,
+                                            effective_camera.camera_type or "mjpeg",
+                                            snapshot_url=effective_camera.snapshot_url,
+                                        )
+                                    else:
+                                        from backend.app.services.external_camera import capture_frame
+
+                                        frame_data = await capture_frame(
+                                            effective_camera.url,
+                                            effective_camera.camera_type or "mjpeg",
+                                            snapshot_url=effective_camera.snapshot_url,
+                                        )
                                 if frame_data:
                                     photos_dir = archive_dir / "photos"
                                     photos_dir.mkdir(parents=True, exist_ok=True)
@@ -4847,6 +4998,14 @@ async def lifespan(app: FastAPI):
             "mqtt_use_tls": (await get_setting(db, "mqtt_use_tls") or "false") == "true",
         }
         await mqtt_relay.configure(mqtt_settings)
+        from backend.app.services.panda_breath_mqtt import panda_breath_mqtt
+
+        panda_settings = {
+            **mqtt_settings,
+            "panda_breath_enabled": (await get_setting(db, "panda_breath_enabled") or "false") == "true",
+            "panda_breath_topic_prefix": await get_setting(db, "panda_breath_topic_prefix") or "panda_breath",
+        }
+        await panda_breath_mqtt.configure(panda_settings)
 
         # Restore MQTT smart plug subscriptions
         if mqtt_settings.get("mqtt_enabled"):
@@ -5451,6 +5610,7 @@ app.include_router(firmware.router, prefix=app_settings.api_prefix)
 app.include_router(github_backup.router, prefix=app_settings.api_prefix)
 app.include_router(local_backup.router, prefix=app_settings.api_prefix)
 app.include_router(obico.router, prefix=app_settings.api_prefix)
+app.include_router(open_filament_database.router, prefix=app_settings.api_prefix)
 app.include_router(metrics.router, prefix=app_settings.api_prefix)
 app.include_router(virtual_printers.router, prefix=app_settings.api_prefix)
 
@@ -5486,12 +5646,57 @@ if app_settings.static_dir.exists() and any(app_settings.static_dir.iterdir()):
         )
 
 
-@app.get("/")
-async def serve_frontend():
-    """Serve the React frontend."""
+def _ingress_base_from_request(request: Request) -> str:
+    """Return Home Assistant's dynamic ingress prefix, if present.
+
+    HA Supervisor forwards add-on requests with an ``X-Ingress-Path`` header
+    such as ``/api/hassio_ingress/<token>``. Vite's built index.html cannot
+    know that token at build time, so the backend rewrites only the SPA shell's
+    root-relative bootstrap URLs while serving through ingress.
+    """
+    candidates = (
+        request.headers.get("x-ingress-path"),
+        request.headers.get("x-hassio-ingress-path"),
+        request.scope.get("root_path"),
+    )
+    for raw in candidates:
+        if not raw:
+            continue
+        base = str(raw).rstrip("/")
+        if base.startswith("/api/hassio_ingress/") and all(char not in base for char in '<>"'):
+            return base
+    return ""
+
+
+def _serve_index_html(request: Request):
     index_file = app_settings.static_dir / "index.html"
-    if index_file.exists():
+    if not index_file.exists():
+        return None
+
+    ingress_base = _ingress_base_from_request(request)
+    if not ingress_base:
         return FileResponse(index_file, headers=_HTML_CACHE_HEADERS)
+
+    html = index_file.read_text(encoding="utf-8")
+    replacements = {
+        'src="/assets/': f'src="{ingress_base}/assets/',
+        'href="/assets/': f'href="{ingress_base}/assets/',
+        'href="/manifest.json"': f'href="{ingress_base}/manifest.json"',
+        'href="/img/': f'href="{ingress_base}/img/',
+        'href="/icons/': f'href="{ingress_base}/icons/',
+        'src="/sw-register.js"': f'src="{ingress_base}/sw-register.js"',
+    }
+    for old, new in replacements.items():
+        html = html.replace(old, new)
+    return HTMLResponse(html, headers=_HTML_CACHE_HEADERS)
+
+
+@app.get("/")
+async def serve_frontend(request: Request):
+    """Serve the React frontend."""
+    html_response = _serve_index_html(request)
+    if html_response is not None:
+        return html_response
     return {
         "message": "Printbuddy API",
         "docs": "/docs",
@@ -5604,7 +5809,7 @@ async def serve_gcode_viewer_file(file_path: str) -> FileResponse:
 
 # Catch-all route for React Router (must be last)
 @app.get("/{full_path:path}")
-async def serve_spa(full_path: str):
+async def serve_spa(full_path: str, request: Request):
     """Serve React app for client-side routing."""
     # Don't intercept API routes - raise proper 404 so FastAPI can handle redirects
     if full_path.startswith("api/"):
@@ -5612,8 +5817,8 @@ async def serve_spa(full_path: str):
 
         raise HTTPException(status_code=404, detail="Not found")
 
-    index_file = app_settings.static_dir / "index.html"
-    if index_file.exists():
-        return FileResponse(index_file, headers=_HTML_CACHE_HEADERS)
+    html_response = _serve_index_html(request)
+    if html_response is not None:
+        return html_response
 
     return {"error": "Frontend not built"}

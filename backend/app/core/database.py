@@ -656,6 +656,7 @@ async def run_migrations(conn):
 
     # Migration: Add on_print_stopped column to notification_providers
     await _safe_execute(conn, "ALTER TABLE notification_providers ADD COLUMN on_print_stopped BOOLEAN DEFAULT 1")
+    await _safe_execute(conn, "ALTER TABLE notification_providers ADD COLUMN on_print_almost_done BOOLEAN DEFAULT 0")
 
     # Migration: Add source_3mf_path column to print_archives
     await _safe_execute(conn, "ALTER TABLE print_archives ADD COLUMN source_3mf_path VARCHAR(500)")
@@ -2670,7 +2671,29 @@ async def seed_notification_templates():
                 )
                 session.add(template)
         else:
-            # Templates exist - only add missing ones
+            # Templates exist - only add missing ones and repair legacy default
+            # templates from the pre-rename era. Only rows still marked as
+            # defaults are migrated; user-customized templates are left alone.
+            default_by_event = {template_data["event_type"]: template_data for template_data in DEFAULT_TEMPLATES}
+            legacy_brand = "Bam" + "buddy"
+            stale_result = await session.execute(
+                select(NotificationTemplate).where(
+                    NotificationTemplate.is_default.is_(True),
+                    NotificationTemplate.event_type.in_(list(default_by_event.keys())),
+                )
+            )
+            for existing_template in stale_result.scalars().all():
+                template_data = default_by_event[existing_template.event_type]
+                if legacy_brand in existing_template.title_template or legacy_brand in existing_template.body_template:
+                    existing_template.title_template = template_data["title_template"]
+                    existing_template.body_template = template_data["body_template"]
+                elif (
+                    existing_template.event_type == "print_complete"
+                    and existing_template.body_template
+                    == "{printer}: {filename}\nTime: {duration}\nFilament: {filament_grams}g"
+                ):
+                    existing_template.body_template = template_data["body_template"]
+
             for template_data in DEFAULT_TEMPLATES:
                 if template_data["event_type"] not in existing_types:
                     template = NotificationTemplate(

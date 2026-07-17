@@ -254,7 +254,7 @@ class PrusaConnectMobilePrinterClient:
     def list_files(self, path: str = "/") -> list[dict[str, Any]]:  # noqa: ARG002
         return []
 
-    def upload_file(self, local_path: Path, remote_path: str) -> bool:  # noqa: ARG002
+    def upload_file(self, local_path: Path, remote_path: str, *, overwrite: bool = False) -> bool:  # noqa: ARG002
         return False
 
     def download_file(self, remote_path: str) -> bytes | None:  # noqa: ARG002

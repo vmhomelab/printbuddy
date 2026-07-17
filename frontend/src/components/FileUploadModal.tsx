@@ -10,6 +10,7 @@ import {
   Archive as ArchiveIcon,
   Printer,
   Image,
+  Info,
 } from 'lucide-react';
 import { api } from '../api/client';
 import type { LibraryFileUploadResponse } from '../api/client';
@@ -24,10 +25,18 @@ interface UploadFile {
   extractedCount?: number;
 }
 
+type DirectUploadConflictStrategy = 'error' | 'rename' | 'delete_replace';
+
+interface DirectUploadConflict {
+  file: File;
+  existingPath: string;
+  existingSize?: number | null;
+}
+
 interface FileUploadModalProps {
   folderId: number | null;
   onClose: () => void;
-  onUploadComplete: () => void;
+  onUploadComplete: (succeededCount?: number) => void;
   /** Called after each file is successfully uploaded with its response data. Return a string to show an error and prevent modal from closing. */
   onFileUploaded?: (file: LibraryFileUploadResponse) => string | void;
   /** When true, automatically uploads the file as soon as it's added and closes the modal */
@@ -40,9 +49,19 @@ interface FileUploadModalProps {
   acceptedFileDescription?: string;
   /** Optional printer context for backend provider-specific print-file validation. */
   uploadTargetPrinterId?: number;
+  /** Upload files directly to this printer storage instead of the library. */
+  directPrinterUploadId?: number;
+  /** Remote printer folder used for direct printer uploads. */
+  directPrinterUploadPath?: string;
+  /** Overwrite an existing same-name file on direct printer uploads. */
+  directPrinterUploadOverwrite?: boolean;
+  /** Optional notice shown in the modal before upload starts, e.g. provider-specific upload timing. */
+  uploadNotice?: string;
+  /** Show a direct-upload option to start printing immediately after the file lands on printer storage. */
+  allowStartPrintAfterUpload?: boolean;
 }
 
-export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUploaded, autoUpload, validateFile, accept, acceptedFileDescription, uploadTargetPrinterId }: FileUploadModalProps) {
+export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUploaded, autoUpload, validateFile, accept, acceptedFileDescription, uploadTargetPrinterId, directPrinterUploadId, directPrinterUploadPath = '/', directPrinterUploadOverwrite = false, uploadNotice, allowStartPrintAfterUpload = false }: FileUploadModalProps) {
   const { t } = useTranslation();
   const [files, setFiles] = useState<UploadFile[]>([]);
   const [isDragging, setIsDragging] = useState(false);
@@ -50,7 +69,9 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
   const [preserveZipStructure, setPreserveZipStructure] = useState(true);
   const [createFolderFromZip, setCreateFolderFromZip] = useState(false);
   const [generateStlThumbnails, setGenerateStlThumbnails] = useState(true);
+  const [startPrintAfterUpload, setStartPrintAfterUpload] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [directUploadConflict, setDirectUploadConflict] = useState<DirectUploadConflict | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleDragOver = (e: DragEvent<HTMLDivElement>) => {
@@ -79,8 +100,22 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
     setFiles((prev) => prev.map((f) => (f.file === file ? { ...f, ...update } : f)));
   };
 
-  const uploadFiles = async (filesToUpload: UploadFile[]) => {
+  const findExistingDirectPrinterFile = async (file: File): Promise<DirectUploadConflict | null> => {
+    if (directPrinterUploadId == null) return null;
+    const response = await api.getPrinterFiles(directPrinterUploadId, directPrinterUploadPath);
+    const existing = response.files.find((entry) => !entry.is_directory && entry.name === file.name);
+    if (!existing) return null;
+    return {
+      file,
+      existingPath: existing.path,
+      existingSize: existing.size,
+    };
+  };
+
+  const uploadFiles = async (filesToUpload: UploadFile[], conflictStrategy: DirectUploadConflictStrategy = 'error') => {
     setIsUploading(true);
+    setDirectUploadConflict(null);
+    let succeededCount = 0;
 
     for (const uf of filesToUpload) {
       if (uf.status !== 'pending') continue;
@@ -95,9 +130,35 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
             extractedCount: result.extracted,
             error: result.errors.length > 0 ? t('fileManager.zipFilesFailed', '{{count}} files failed', { count: result.errors.length }) : undefined,
           });
+          if (result.extracted > 0 || result.errors.length === 0) {
+            succeededCount += 1;
+          }
+        } else if (directPrinterUploadId != null) {
+          if (conflictStrategy === 'error') {
+            const conflict = await findExistingDirectPrinterFile(uf.file);
+            if (conflict) {
+              updateFileStatus(uf.file, { status: 'pending' });
+              setDirectUploadConflict(conflict);
+              setIsUploading(false);
+              return;
+            }
+          }
+          const uploaded = await api.uploadPrinterFile(
+            directPrinterUploadId,
+            uf.file,
+            directPrinterUploadPath,
+            directPrinterUploadOverwrite,
+            conflictStrategy
+          );
+          if (allowStartPrintAfterUpload && startPrintAfterUpload) {
+            await api.startPrinterFile(directPrinterUploadId, uploaded.path);
+          }
+          updateFileStatus(uf.file, { status: 'success' });
+          succeededCount += 1;
         } else {
           const result = await api.uploadLibraryFile(uf.file, folderId, generateStlThumbnails, uploadTargetPrinterId);
           updateFileStatus(uf.file, { status: 'success' });
+          succeededCount += 1;
           const error = onFileUploaded?.(result);
           if (error) {
             setUploadError(error);
@@ -115,7 +176,7 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
     }
 
     setIsUploading(false);
-    onUploadComplete();
+    onUploadComplete(succeededCount);
     // #1401: don't auto-close if any file ended with an error — the user
     // needs to see the rejection message (e.g. "raw .gcode upload"), not
     // have the modal vanish before they can read it. Closing happens via
@@ -162,6 +223,16 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
   const has3mfFiles = files.some((f) => f.is3mf && f.status === 'pending');
   const pendingCount = files.filter((f) => f.status === 'pending').length;
   const allDone = files.length > 0 && pendingCount === 0 && !isUploading;
+  const uploadButtonLabel = allowStartPrintAfterUpload && startPrintAfterUpload
+    ? t('common.uploadAndPrint', 'Upload & Print')
+    : t('common.upload');
+  const conflictingUploadFile = directUploadConflict
+    ? files.find((f) => f.file === directUploadConflict.file)
+    : undefined;
+  const continueDirectConflictUpload = (strategy: Exclude<DirectUploadConflictStrategy, 'error'>) => {
+    if (!conflictingUploadFile) return;
+    uploadFiles([conflictingUploadFile], strategy);
+  };
 
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
@@ -202,6 +273,74 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
             className="hidden"
             onChange={handleFileSelect}
           />
+
+          {allowStartPrintAfterUpload && directPrinterUploadId != null && (
+            <label className="flex items-center gap-2 cursor-pointer rounded-lg border border-bambu-dark-tertiary bg-bambu-dark/40 p-3">
+              <input
+                type="checkbox"
+                checked={startPrintAfterUpload}
+                onChange={(e) => setStartPrintAfterUpload(e.target.checked)}
+                className="w-4 h-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+              />
+              <span className="text-sm text-white">Start print after upload</span>
+            </label>
+          )}
+
+          {uploadNotice && (
+            <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg">
+              <div className="flex items-start gap-3">
+                <Info className="w-5 h-5 text-amber-400 mt-0.5 flex-shrink-0" />
+                <p className="text-sm text-amber-200">{uploadNotice}</p>
+              </div>
+            </div>
+          )}
+
+          {directUploadConflict && (
+            <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg">
+              <div className="flex items-start gap-3">
+                <Info className="w-5 h-5 text-amber-400 mt-0.5 flex-shrink-0" />
+                <div className="flex-1 space-y-3">
+                  <div>
+                    <p className="text-sm text-amber-100 font-medium">
+                      {directUploadConflict.file.name} already exists on the printer USB.
+                    </p>
+                    <p className="text-xs text-amber-200/80 mt-1">
+                      Choose whether to upload it as a renamed copy, delete the existing file first, or cancel.
+                    </p>
+                  </div>
+                  <div className="flex flex-col sm:flex-row gap-2">
+                    <Button
+                      type="button"
+                      variant="primary"
+                      size="sm"
+                      onClick={() => continueDirectConflictUpload('rename')}
+                      disabled={isUploading}
+                    >
+                      Upload as copy
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="danger"
+                      size="sm"
+                      onClick={() => continueDirectConflictUpload('delete_replace')}
+                      disabled={isUploading}
+                    >
+                      Delete existing and upload
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => setDirectUploadConflict(null)}
+                      disabled={isUploading}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* ZIP Options */}
           {hasZipFiles && (
@@ -361,7 +500,7 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
               ) : (
                 <>
                   <Upload className="w-4 h-4 mr-2" />
-                  {t('common.upload')} {pendingCount > 0 ? `(${pendingCount})` : ''}
+                  {uploadButtonLabel} {pendingCount > 0 ? `(${pendingCount})` : ''}
                 </>
               )}
             </Button>

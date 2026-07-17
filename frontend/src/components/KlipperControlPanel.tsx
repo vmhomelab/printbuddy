@@ -51,13 +51,26 @@ export function KlipperControlPanel({ printer, status, showToast }: Props) {
   });
 
   const homeMut = useMutation({
-    mutationFn: (axes?: string[]) => api.klipperHome(printer.id, axes),
+    mutationFn: (axes?: string[]) => {
+      if (printer.provider === 'prusalink') {
+        const normalized = axes?.join('').toLowerCase() || 'all';
+        const prusaAxes = normalized === 'xy' || normalized === 'x' || normalized === 'y' || normalized === 'z'
+          ? normalized
+          : 'all';
+        return api.homeAxes(printer.id, prusaAxes);
+      }
+      return api.klipperHome(printer.id, axes);
+    },
     onError,
   });
 
   const extrudeMut = useMutation({
-    mutationFn: (length: number) =>
-      api.klipperExtrude(printer.id, length, extrudeSpeed * 60),
+    mutationFn: (length: number) => {
+      const speed = extrudeSpeed * 60;
+      return printer.provider === 'prusalink'
+        ? api.extrude(printer.id, length, speed)
+        : api.klipperExtrude(printer.id, length, speed);
+    },
     onError,
   });
 

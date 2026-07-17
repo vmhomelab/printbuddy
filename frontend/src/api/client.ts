@@ -272,7 +272,7 @@ export interface LongLivedCameraToken {
 }
 
 // Printer types
-export type PrinterProvider = 'bambu' | 'klipper' | 'mainsail' | 'fluidd' | 'prusalink' | 'prusaconnect';
+export type PrinterProvider = 'bambu' | 'klipper' | 'mainsail' | 'fluidd' | 'prusalink' | 'prusaconnect' | 'elegoo_sdcp';
 
 export interface Printer {
   id: number;
@@ -471,7 +471,8 @@ export interface PrinterStatus {
   big_fan1_speed: number | null;     // Auxiliary fan
   big_fan2_speed: number | null;     // Chamber/exhaust fan
   heatbreak_fan_speed: number | null; // Hotend heatbreak fan
-  firmware_version: string | null;   // Firmware version from MQTT
+  firmware_version: string | null;   // Firmware version from MQTT / provider metadata
+  connection_details: Record<string, string | number | boolean | null> | null; // Provider-specific connection details
   // Developer LAN mode: true = enabled, false = disabled, null = unknown
   developer_mode: boolean | null;
   // Queue: printer is awaiting user ack that the build plate was cleared after a
@@ -1034,6 +1035,8 @@ export interface APIKeyUpdate {
 }
 
 // Settings types
+export type CameraViewMode = 'window' | 'embedded' | 'card';
+
 export interface AppSettings {
   auto_archive: boolean;
   save_thumbnails: boolean;
@@ -1073,6 +1076,8 @@ export interface AppSettings {
   // Filament tracking
   disable_filament_warnings: boolean;  // Disable filament warnings (print insufficiency and assignment mismatch)
   prefer_lowest_filament: boolean;  // When multiple spools match, prefer lowest remaining filament
+  // Open Filament Database catalog lookup for local inventory spool creation
+  open_filament_database_enabled: boolean;
   // Default printer
   default_printer_id: number | null;
   // Dark mode theme settings
@@ -1096,6 +1101,9 @@ export interface AppSettings {
   mqtt_password: string;
   mqtt_topic_prefix: string;
   mqtt_use_tls: boolean;
+  panda_breath_enabled: boolean;
+  panda_breath_topic_prefix: string;
+  panda_breath_printer_assignments: string;
   // External URL for notifications
   external_url: string;
   // Home Assistant integration
@@ -1109,7 +1117,7 @@ export interface AppSettings {
   library_archive_mode: 'always' | 'never' | 'ask';
   library_disk_warning_gb: number;
   // Camera view settings
-  camera_view_mode: 'window' | 'embedded';
+  camera_view_mode: CameraViewMode;
   // Preferred slicer
   preferred_slicer: 'bambu_studio' | 'orcaslicer';
   // Use the slicer-API sidecar for slicing (in-app modal) vs desktop URI scheme
@@ -1171,6 +1179,49 @@ export interface MQTTStatus {
   broker: string;
   port: number;
   topic_prefix: string;
+}
+
+export interface PandaBreathStatus {
+  enabled: boolean;
+  connected: boolean;
+  broker: string;
+  port: number;
+  topic_prefix: string;
+  device_id?: string | null;
+  availability?: string | null;
+  state: {
+    chamber_target?: number | null;
+    chamber_actual?: number | null;
+    bed_temperature?: number | null;
+    bed_limit?: number | null;
+    filter_activation_temp?: number | null;
+    heater_trigger_temp?: number | null;
+    custom_temp?: number | null;
+    custom_timer_hours?: number | null;
+    drying_temperature?: number | null;
+    drying_time_hours?: number | null;
+    drying_remaining_min?: number | null;
+    slicer_target?: number | null;
+    mode?: string | null;
+    filament_drying_mode?: string | null;
+    status?: string | null;
+    lock_status?: string | null;
+    fan_on?: boolean | null;
+    power_on?: boolean | null;
+    work_on?: boolean | null;
+    drying_running?: boolean | null;
+    slicer_priority_mode?: boolean | null;
+    printer_sn?: string | null;
+    printer_bind?: string | null;
+    printer_ip?: string | null;
+    printer_name?: string | null;
+    version?: string | null;
+    availability?: string | null;
+    device_id?: string | null;
+    last_seen?: string | null;
+    raw?: Record<string, unknown>;
+  };
+  devices?: Record<string, PandaBreathStatus['state']>;
 }
 
 // Cloud types
@@ -2055,6 +2106,7 @@ export interface NotificationProvider {
   on_print_failed: boolean;
   on_print_stopped: boolean;
   on_print_progress: boolean;
+  on_print_almost_done: boolean;
   on_print_missing_spool_assignment: boolean;
   // Printer status events
   on_printer_offline: boolean;
@@ -2113,6 +2165,7 @@ export interface NotificationProviderCreate {
   on_print_failed?: boolean;
   on_print_stopped?: boolean;
   on_print_progress?: boolean;
+  on_print_almost_done?: boolean;
   on_print_missing_spool_assignment?: boolean;
   // Printer status events
   on_printer_offline?: boolean;
@@ -2164,6 +2217,7 @@ export interface NotificationProviderUpdate {
   on_print_failed?: boolean;
   on_print_stopped?: boolean;
   on_print_progress?: boolean;
+  on_print_almost_done?: boolean;
   on_print_missing_spool_assignment?: boolean;
   // Printer status events
   on_printer_offline?: boolean;
@@ -2508,6 +2562,98 @@ export interface SpoolmanFilamentEntry {
   vendor: SpoolmanVendor | null;
 }
 
+export interface OpenFilamentDatabaseBrandSummary {
+  id: string;
+  name: string;
+  slug: string;
+  origin: string | null;
+  material_count: number;
+  path: string;
+  logo_slug?: string | null;
+}
+
+export interface OpenFilamentDatabaseMaterialSummary {
+  id: string;
+  material: string;
+  slug: string;
+  filament_count: number;
+  path: string;
+}
+
+export interface OpenFilamentDatabaseBrandsResponse {
+  source: 'openfilamentdatabase';
+  version?: string | null;
+  generated_at?: string | null;
+  count: number;
+  brands: OpenFilamentDatabaseBrandSummary[];
+}
+
+export interface OpenFilamentDatabaseBrandResponse {
+  source: 'openfilamentdatabase';
+  id: string | null;
+  name: string | null;
+  slug: string;
+  origin: string | null;
+  website: string | null;
+  materials: OpenFilamentDatabaseMaterialSummary[];
+}
+
+export interface OpenFilamentDatabaseFilamentSummary {
+  id: string;
+  name: string;
+  slug: string;
+  variant_count: number;
+  path: string;
+}
+
+export interface OpenFilamentDatabaseVariantSummary {
+  id: string;
+  name: string;
+  slug: string;
+  color_hex: string | null;
+  size_count: number;
+  path: string;
+}
+
+export interface OpenFilamentDatabaseSearchResponse {
+  source: 'openfilamentdatabase';
+  brand_slug: string;
+  material: string;
+  query: string;
+  count: number;
+  filaments: OpenFilamentDatabaseFilamentSummary[];
+}
+
+export interface OpenFilamentDatabaseFilamentResponse {
+  source: 'openfilamentdatabase';
+  brand_slug: string;
+  material: string;
+  id: string;
+  name: string;
+  slug: string;
+  density: number | null;
+  diameter_tolerance: number | null;
+  min_print_temperature: number | null;
+  max_print_temperature: number | null;
+  min_bed_temperature: number | null;
+  max_bed_temperature: number | null;
+  discontinued: boolean;
+  preferred_slicer_setting: Record<string, unknown>;
+  variants: OpenFilamentDatabaseVariantSummary[];
+  spool_prefill: Partial<InventorySpool>;
+}
+
+export interface OpenFilamentDatabaseVariantResponse {
+  source: 'openfilamentdatabase';
+  brand: { id: string | null; slug: string; name: string };
+  material: string;
+  filament: Record<string, unknown>;
+  variant: { id: string | null; name: string | null; slug: string; color_hex: string | null; traits?: Record<string, unknown>; discontinued?: boolean };
+  sizes: Array<Record<string, unknown>>;
+  selected_size: Record<string, unknown> | null;
+  spool_prefill: Partial<InventorySpool>;
+}
+
 // Inventory types
 // Label printing (#809). Mirror of backend.app.services.label_renderer.TemplateName.
 export type SpoolLabelTemplate =
@@ -2688,6 +2834,36 @@ export interface UpdateStatus {
   progress: number;
   message: string;
   error: string | null;
+}
+
+export interface SelfUpdateStatus {
+  enabled: boolean;
+  available: boolean;
+  reason?: string | null;
+  mode: 'updater-sidecar';
+  health?: {
+    ok: boolean;
+    service: string;
+    docker_available: boolean;
+    compose_file_available: boolean;
+  };
+}
+
+export interface SelfUpdateJob {
+  job_id: string;
+  status: 'queued' | 'pulling' | 'recreating' | 'completed' | 'failed';
+  started_at?: string;
+  finished_at?: string | null;
+  exit_code?: number | null;
+  message: string;
+  safe_log_tail?: string;
+  steps?: Array<{ name: string; status: string }>;
+}
+
+export interface SelfUpdateStartResult {
+  accepted: boolean;
+  job_id: string;
+  message: string;
 }
 
 // Maintenance types
@@ -3445,9 +3621,14 @@ export const api = {
       `/printers/${printerId}/temperature/bed?target=${target}`,
       { method: 'POST' }
     ),
-  homeAxes: (printerId: number, axes: 'z' | 'xy' | 'all' = 'z') =>
+  homeAxes: (printerId: number, axes: 'x' | 'y' | 'z' | 'xy' | 'all' = 'all') =>
     request<{ success: boolean; message: string }>(
       `/printers/${printerId}/home-axes?axes=${axes}`,
+      { method: 'POST' }
+    ),
+  extrude: (printerId: number, length: number, speed = 300) =>
+    request<{ success: boolean; message: string }>(
+      `/printers/${printerId}/extrude?length=${length}&speed=${speed}`,
       { method: 'POST' }
     ),
   disableSteppers: (printerId: number) =>
@@ -3474,6 +3655,12 @@ export const api = {
   // Chamber Light Control
   setChamberLight: (printerId: number, on: boolean) =>
     request<{ success: boolean; message: string }>(`/printers/${printerId}/chamber-light?on=${on}`, {
+      method: 'POST',
+    }),
+
+  // Fan Speed Control
+  setFanSpeed: (printerId: number, fan: 'part' | 'aux' | 'chamber', speed: number) =>
+    request<{ success: boolean; message: string }>(`/printers/${printerId}/fan-speed?fan=${fan}&speed=${speed}`, {
       method: 'POST',
     }),
 
@@ -3646,14 +3833,21 @@ export const api = {
     }
     return response.blob();
   },
-  uploadPrinterFile: async (printerId: number, file: File, path = '/'): Promise<{ status: string; path: string; filename: string }> => {
+  uploadPrinterFile: async (
+    printerId: number,
+    file: File,
+    path = '/',
+    overwrite = false,
+    conflictStrategy: 'error' | 'rename' | 'delete_replace' = 'error'
+  ): Promise<{ status: string; path: string; filename: string; renamed?: boolean; replaced?: boolean; original_filename?: string }> => {
     const headers: Record<string, string> = {};
     if (authToken) {
       headers['Authorization'] = `Bearer ${authToken}`;
     }
     const formData = new FormData();
     formData.append('file', file);
-    const response = await fetch(`${API_BASE}/printers/${printerId}/files/upload?path=${encodeURIComponent(path)}`, {
+    const params = new URLSearchParams({ path, overwrite: String(overwrite), conflict_strategy: conflictStrategy });
+    const response = await fetch(`${API_BASE}/printers/${printerId}/files/upload?${params.toString()}`, {
       method: 'POST',
       headers,
       body: formData,
@@ -3664,6 +3858,10 @@ export const api = {
     }
     return response.json();
   },
+  startPrinterFile: (printerId: number, path: string) =>
+    request<{ status: string; path: string }>(`/printers/${printerId}/files/start?path=${encodeURIComponent(path)}`, {
+      method: 'POST',
+    }),
   deletePrinterFile: (printerId: number, path: string) =>
     request<{ status: string; path: string }>(`/printers/${printerId}/files?path=${encodeURIComponent(path)}`, {
       method: 'DELETE',
@@ -4328,7 +4526,7 @@ export const api = {
     request<{
       require_plate_clear?: boolean;
       check_printer_firmware?: boolean;
-      camera_view_mode?: 'window' | 'embedded';
+      camera_view_mode?: CameraViewMode;
       time_format?: 'system' | '12h' | '24h';
       date_format?: string;
       drying_presets?: string;
@@ -4337,6 +4535,7 @@ export const api = {
       ams_temp_good?: number;
       ams_temp_fair?: number;
       bed_cooled_threshold?: number;
+      panda_breath_printer_assignments?: string;
     }>('/settings/ui-preferences'),
   updateSettings: (data: AppSettingsUpdate) =>
     request<AppSettings>('/settings/', {
@@ -4344,6 +4543,12 @@ export const api = {
       body: JSON.stringify(data),
     }),
   getMQTTStatus: () => request<MQTTStatus>('/settings/mqtt/status'),
+  getPandaBreathStatus: () => request<PandaBreathStatus>('/settings/panda-breath/status'),
+  sendPandaBreathCommand: (data: { command: string; value?: string | number | boolean | null; device_id?: string | null }) =>
+    request<{ ok: boolean }>('/settings/panda-breath/command', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
   resetSettings: () =>
     request<AppSettings>('/settings/reset', { method: 'POST' }),
   exportBackup: async (): Promise<{ blob: Blob; filename: string }> => {
@@ -4813,6 +5018,18 @@ export const api = {
     request<{ filaments: unknown[] }>('/spoolman/filaments'),
   getSpoolmanInventoryFilaments: () =>
     request<SpoolmanFilamentEntry[]>('/spoolman/inventory/filaments'),
+
+  // Open Filament Database catalog proxy
+  getOpenFilamentDatabaseBrands: () =>
+    request<OpenFilamentDatabaseBrandsResponse>('/open-filament-database/brands'),
+  getOpenFilamentDatabaseBrand: (brand: string) =>
+    request<OpenFilamentDatabaseBrandResponse>(`/open-filament-database/brands/${encodeURIComponent(brand)}`),
+  searchOpenFilamentDatabase: (brand: string, material: string, q = '') =>
+    request<OpenFilamentDatabaseSearchResponse>(`/open-filament-database/search?brand=${encodeURIComponent(brand)}&material=${encodeURIComponent(material)}&q=${encodeURIComponent(q)}`),
+  getOpenFilamentDatabaseFilament: (brand: string, material: string, filament: string) =>
+    request<OpenFilamentDatabaseFilamentResponse>(`/open-filament-database/brands/${encodeURIComponent(brand)}/materials/${encodeURIComponent(material)}/filaments/${encodeURIComponent(filament)}`),
+  getOpenFilamentDatabaseVariant: (brand: string, material: string, filament: string, variant: string) =>
+    request<OpenFilamentDatabaseVariantResponse>(`/open-filament-database/brands/${encodeURIComponent(brand)}/materials/${encodeURIComponent(material)}/filaments/${encodeURIComponent(filament)}/variants/${encodeURIComponent(variant)}`),
   patchSpoolmanFilament: (
     filamentId: number,
     data: { name?: string; spool_weight?: number | null; keep_existing_spools?: boolean },
@@ -5119,6 +5336,9 @@ export const api = {
       method: 'POST',
     }),
   getUpdateStatus: () => request<UpdateStatus>('/updates/status'),
+  getSelfUpdateStatus: () => request<SelfUpdateStatus>('/updates/self-update/status'),
+  startSelfUpdate: () => request<SelfUpdateStartResult>('/updates/self-update', { method: 'POST' }),
+  getSelfUpdateJob: (jobId: string) => request<SelfUpdateJob>(`/updates/self-update/jobs/${jobId}`),
 
   // Maintenance
   getMaintenanceTypes: () => request<MaintenanceType[]>('/maintenance/types'),

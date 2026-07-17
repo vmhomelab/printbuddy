@@ -88,6 +88,7 @@ class TestUiPreferencesEndpoint:
             "ams_temp_good",
             "ams_temp_fair",
             "bed_cooled_threshold",
+            "panda_breath_printer_assignments",
         }
         assert set(data.keys()) == expected
 
