@@ -404,12 +404,28 @@ async def _report_spool_usage_for_slots(
     Returns number of spools successfully updated.
     """
     spools_updated = 0
+    positive_usage_items = [(slot_id, grams_used) for slot_id, grams_used in filament_usage_items if grams_used > 0]
+    allow_loaded_spool_fallback = (
+        printer_id is not None
+        and not ams_trays
+        and not slot_to_tray
+        and len(positive_usage_items) == 1
+    )
+
     for slot_id, grams_used in filament_usage_items:
         if grams_used <= 0:
             continue
 
         global_tray_id = _resolve_global_tray_id(slot_id, slot_to_tray, ams_trays)
         tray_info = ams_trays.get(global_tray_id)
+        if not tray_info and allow_loaded_spool_fallback and slot_id == positive_usage_items[0][0]:
+            # Non-AMS single-spool providers (PrusaLink, Klipper/Moonraker,
+            # Elegoo SDCP) often report no live ``ams``/``vt_tray`` state at
+            # all. When the print has exactly one used filament slot, resolve it
+            # through Printbuddy's Spoolman loaded-spool binding:
+            # slot 1 -> global tray 254 -> ams_id=255,tray_id=0.
+            global_tray_id = 254
+            tray_info = {"tray_uuid": "", "tag_uid": "", "tray_type": ""}
         if not tray_info:
             logger.debug("[SPOOLMAN] Slot %s: no tray at global_tray_id %s", slot_id, global_tray_id)
             continue
