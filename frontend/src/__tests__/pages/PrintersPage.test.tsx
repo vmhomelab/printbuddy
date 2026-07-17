@@ -1850,6 +1850,64 @@ describe('PrintersPage', () => {
       expect(screen.getByText(/Prusament PLA Galaxy Black/i)).toBeInTheDocument();
       expect(screen.getByRole('button', { name: 'Change' })).toBeInTheDocument();
     });
+
+    it('assigns a Spoolman spool to the loaded-spool virtual slot in Spoolman mode', async () => {
+      const user = userEvent.setup();
+      let postedBody: Record<string, unknown> | null = null;
+
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          ...mockPrinters[0],
+          provider: 'elegoo_sdcp',
+          model: 'Elegoo Centauri Carbon',
+        }])),
+        http.get('/api/v1/spoolman/status', () => HttpResponse.json({
+          enabled: true,
+          connected: true,
+          url: 'http://spoolman.local',
+        })),
+        http.get('/api/v1/settings/spoolman', () => HttpResponse.json({
+          spoolman_enabled: 'true',
+          spoolman_url: 'http://spoolman.local',
+          spoolman_sync_mode: 'read_only',
+        })),
+        http.get('/api/v1/spoolman/inventory/spools', () => HttpResponse.json([
+          {
+            id: 321,
+            brand: 'Polymaker',
+            material: 'PETG',
+            subtype: 'Matte',
+            color_name: 'Black',
+            rgba: '222222',
+            label_weight: 1000,
+            weight_used: 100,
+            archived_at: null,
+            data_origin: 'spoolman',
+          },
+        ])),
+        http.get('/api/v1/spoolman/inventory/slot-assignments/all', () => HttpResponse.json([])),
+        http.post('/api/v1/spoolman/inventory/slot-assignments', async ({ request }) => {
+          postedBody = await request.json() as Record<string, unknown>;
+          return HttpResponse.json({ id: 321, data_origin: 'spoolman' });
+        }),
+        http.post('/api/v1/printers/:id/refresh-status', () => HttpResponse.json({ success: true })),
+      );
+
+      render(<PrintersPage />);
+
+      await screen.findByText('Loaded spool');
+      await user.click(screen.getByRole('button', { name: 'Assign' }));
+      await screen.findByText('Polymaker PETG Matte');
+      await user.click(screen.getByRole('button', { name: /Polymaker PETG Matte/i }));
+      await user.click(screen.getByRole('button', { name: 'Assign Spool' }));
+
+      await waitFor(() => expect(postedBody).toEqual({
+        spoolman_spool_id: 321,
+        printer_id: 1,
+        ams_id: 255,
+        tray_id: 0,
+      }));
+    });
   });
 
 });

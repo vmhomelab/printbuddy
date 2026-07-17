@@ -1890,7 +1890,17 @@ function PrinterCard({
   // inventory spool for local usage tracking.
   const supportsSpoolAssignment = true;
   const prusaLinkWebUrl = getPrusaLinkWebUrl(printer);
-  const loadedSpoolAssignment = supportsSpoolAssignment ? onGetAssignment?.(printer.id, -1, 0) : undefined;
+  const loadedSpoolmanSlotAssignment = supportsSpoolAssignment && spoolmanEnabled && !spoolmanLoading
+    ? spoolmanSlotAssignments?.find(a => a.printer_id === printer.id && a.ams_id === 255 && a.tray_id === 0)
+    : undefined;
+  const loadedSpoolmanSpool = loadedSpoolmanSlotAssignment
+    ? spoolmanSpools?.find(s => s.id === loadedSpoolmanSlotAssignment.spoolman_spool_id)
+    : undefined;
+  const loadedLocalSpoolAssignment = supportsSpoolAssignment && !spoolmanEnabled
+    ? onGetAssignment?.(printer.id, -1, 0)
+    : undefined;
+  const loadedSpool = spoolmanEnabled ? loadedSpoolmanSpool : loadedLocalSpoolAssignment?.spool;
+  const hasLoadedSpoolAssignment = spoolmanEnabled ? !!loadedSpoolmanSlotAssignment : !!loadedLocalSpoolAssignment;
 
   // Collect loaded filament types for queue widget filtering
   const loadedFilamentTypes = useMemo(() => {
@@ -1905,11 +1915,11 @@ function PrinterCard({
     for (const vt of status?.vt_tray ?? []) {
       if (vt.tray_type) types.add(vt.tray_type.toUpperCase());
     }
-    if (loadedSpoolAssignment?.spool?.material) {
-      types.add(loadedSpoolAssignment.spool.material.toUpperCase());
+    if (loadedSpool?.material) {
+      types.add(loadedSpool.material.toUpperCase());
     }
     return types;
-  }, [status?.ams, status?.vt_tray, loadedSpoolAssignment?.spool?.material]);
+  }, [status?.ams, status?.vt_tray, loadedSpool?.material]);
 
   // Collect loaded filament type+color pairs for queue widget override matching
   // Format: "TYPE:rrggbb" (e.g., "PETG:ffffff") — mirrors backend _count_override_color_matches()
@@ -1931,13 +1941,13 @@ function PrinterCard({
         filaments.add(`${vt.tray_type.toUpperCase()}:${color}`);
       }
     }
-    const loaded = loadedSpoolAssignment?.spool;
+    const loaded = loadedSpool;
     if (loaded?.material && loaded.rgba) {
       const color = loaded.rgba.replace('#', '').toLowerCase().slice(0, 6);
       filaments.add(`${loaded.material.toUpperCase()}:${color}`);
     }
     return filaments;
-  }, [status?.ams, status?.vt_tray, loadedSpoolAssignment?.spool]);
+  }, [status?.ams, status?.vt_tray, loadedSpool]);
 
   // Fetch cloud filament info for tooltips (name includes color, also has K value)
   const { data: filamentInfo } = useQuery({
@@ -2069,7 +2079,7 @@ function PrinterCard({
     ? currentTrayNow
     : cachedTrayNow.current;
 
-  const showLoadedSpoolPicker = supportsSpoolAssignment && (amsData.length === 0) && ((status?.vt_tray?.length ?? 0) === 0);
+  const showLoadedSpoolPicker = supportsSpoolAssignment && !spoolmanLoading && (amsData.length === 0) && ((status?.vt_tray?.length ?? 0) === 0);
 
   // Fetch smart plug for this printer
   const { data: smartPlug } = useQuery({
@@ -3462,23 +3472,26 @@ function PrinterCard({
                   <div className="flex items-center justify-between gap-3 rounded-lg bg-bambu-dark/70 border border-bambu-dark-tertiary px-3 py-2">
                     <div className="min-w-0">
                       <p className="text-[10px] uppercase tracking-wide text-bambu-gray">Loaded spool</p>
-                      {loadedSpoolAssignment?.spool ? (
+                      {loadedSpool ? (
                         <p className="text-xs text-white truncate">
-                          {loadedSpoolAssignment.spool.brand ? `${loadedSpoolAssignment.spool.brand} ` : ''}
-                          {loadedSpoolAssignment.spool.material}
-                          {loadedSpoolAssignment.spool.subtype ? ` ${loadedSpoolAssignment.spool.subtype}` : ''}
-                          {loadedSpoolAssignment.spool.color_name ? ` · ${loadedSpoolAssignment.spool.color_name}` : ''}
+                          {loadedSpool.brand ? `${loadedSpool.brand} ` : ''}
+                          {loadedSpool.material}
+                          {loadedSpool.subtype ? ` ${loadedSpool.subtype}` : ''}
+                          {loadedSpool.color_name ? ` · ${loadedSpool.color_name}` : ''}
                         </p>
                       ) : (
                         <p className="text-xs text-bambu-gray">No inventory spool selected</p>
                       )}
                     </div>
                     <div className="flex items-center gap-2 flex-shrink-0">
-                      {loadedSpoolAssignment && (
+                      {hasLoadedSpoolAssignment && (
                         <Button
                           variant="secondary"
                           size="sm"
-                          onClick={() => onUnassignSpool?.(printer.id, -1, 0)}
+                          onClick={() => spoolmanEnabled && loadedSpoolmanSlotAssignment
+                            ? onUnassignSpoolmanSpool?.(loadedSpoolmanSlotAssignment.spoolman_spool_id)
+                            : onUnassignSpool?.(printer.id, -1, 0)
+                          }
                         >
                           Clear
                         </Button>
@@ -3488,18 +3501,18 @@ function PrinterCard({
                         size="sm"
                         onClick={() => setAssignSpoolModal({
                           printerId: printer.id,
-                          amsId: -1,
+                          amsId: spoolmanEnabled ? 255 : -1,
                           trayId: 0,
                           trayInfo: {
-                            type: loadedSpoolAssignment?.spool?.material || '',
-                            material: loadedSpoolAssignment?.spool?.material || undefined,
-                            profile: loadedSpoolAssignment?.spool?.slicer_filament_name || loadedSpoolAssignment?.spool?.slicer_filament || '',
-                            color: loadedSpoolAssignment?.spool?.rgba?.slice(0, 6) || '',
+                            type: loadedSpool?.material || '',
+                            material: loadedSpool?.material || undefined,
+                            profile: loadedSpool?.slicer_filament_name || loadedSpool?.slicer_filament || '',
+                            color: loadedSpool?.rgba?.slice(0, 6) || '',
                             location: 'Loaded spool',
                           },
                         })}
                       >
-                        {loadedSpoolAssignment ? 'Change' : 'Assign'}
+                        {hasLoadedSpoolAssignment ? 'Change' : 'Assign'}
                       </Button>
                     </div>
                   </div>
