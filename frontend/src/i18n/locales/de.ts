@@ -2810,7 +2810,7 @@ export default {
       cloud: 'Cloud-Profile',
       local: 'Lokale Profile',
       kprofiles: 'K-Profile',
-      openFilamentDatabase: 'Open Filament Database API',
+      openFilamentDatabase: 'Open-Filament-Database-API',
     },
     localProfiles: {
       title: 'Lokale Profile',
@@ -2848,7 +2848,7 @@ export default {
       },
     },
     openFilamentDatabase: {
-      title: 'Open Filament Database API',
+      title: 'Open-Filament-Database-API',
       subtitle: 'Legen Sie fest, ob PrintBuddy Filamentdaten über die Open Filament Database suchen soll.',
       enableLabel: 'Spulen über Open Filament Database suchen',
       enableDescription: 'Aktivieren Sie diese Option, um beim Erstellen lokaler Inventarspulen Filamentdaten aus der Open Filament Database zu suchen.',
