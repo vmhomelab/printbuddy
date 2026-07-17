@@ -217,22 +217,24 @@ def test_elegoo_sdcp_start_print_sends_full_cmd_128_payload(monkeypatch):
         lambda command: sent_commands.append(command) or {"Data": {"Data": {"Ack": 0}}},
     )
 
-    assert client.start_print("calibration.gcode", bed_levelling=True) is True
+    assert client.start_print("/local/calibration.gcode", bed_levelling=True) is True
 
     assert len(sent_commands) == 1
     command = sent_commands[0]
-    assert command["Topic"] == "sdcp/request/mainboard-id"
-    assert command["Id"] == "printer-id"
+    assert "Topic" not in command
+    assert command["Id"] == ""
     assert command["Data"]["Cmd"] == 128
     assert command["Data"]["From"] == 1
-    assert command["Data"]["MainboardID"] == "mainboard-id"
+    assert command["Data"]["MainboardID"] == ""
+    assert len(command["Data"]["RequestID"]) == 32
+    assert "TimeStamp" in command["Data"]
+    assert "Timestamp" not in command["Data"]
     assert command["Data"]["Data"] == {
-        "Filename": "calibration.gcode",
+        "Filename": "/local/calibration.gcode",
         "StartLayer": 0,
         "Calibration_switch": 1,
-        "PrintPlatformType": 1,
+        "PrintPlatformType": 0,
         "Tlp_Switch": 0,
-        "slot_map": [],
     }
 
 

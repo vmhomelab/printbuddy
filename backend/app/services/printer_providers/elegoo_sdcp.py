@@ -566,24 +566,25 @@ class ElegooSDCPPrinterClient:
         if not self.mainboard_id:
             self.discover()
         bed_levelling = bool(kwargs.get("bed_levelling", True))
-        request_id = str(int(time.time() * 1000))
+        request_id = secrets.token_hex(16)
+        # Match the CC1 WebUI's hardware-captured start command shape. The
+        # firmware accepts the older/minimal SDCP command, but can skip the
+        # start-time calibration path unless these fields match the WebUI form.
         command = {
-            "Id": self.printer_id or "",
-            "Topic": f"sdcp/request/{self.mainboard_id}",
+            "Id": "",
             "Data": {
                 "Cmd": SDCP_START_PRINT_COMMAND,
                 "Data": {
-                    "Filename": Path(filename).name,
+                    "Filename": filename,
                     "StartLayer": 0,
                     "Calibration_switch": 1 if bed_levelling else 0,
-                    "PrintPlatformType": 1,
+                    "PrintPlatformType": 0,
                     "Tlp_Switch": 0,
-                    "slot_map": [],
                 },
                 "From": 1,
-                "MainboardID": self.mainboard_id,
+                "MainboardID": "",
                 "RequestID": request_id,
-                "Timestamp": int(time.time()),
+                "TimeStamp": int(time.time() * 1000),
             },
         }
         time.sleep(SDCP_START_SETTLE_SECONDS)
