@@ -330,3 +330,89 @@ def test_prusalink_completion_payload_includes_elapsed_time(monkeypatch):
             "actual_time_seconds": 60,
         }
     ]
+
+
+def test_prusalink_list_storages_normalizes_usb_local_and_unavailable_sdcard(monkeypatch):
+    client = PrusaLinkPrinterClient(base_url="http://prusa.local", password="secret")
+
+    def fake_get(path):
+        assert path == "api/v1/storage"
+        return {
+            "storage_list": [
+                {"path": "/local", "name": "Internal", "type": "LOCAL", "available": True},
+                {"path": "/usb", "name": "Mock USB", "type": "USB", "available": True, "free_space": 1234},
+                {"path": "/sdcard", "name": "SD Card", "type": "SDCARD", "available": False},
+            ]
+        }
+
+    monkeypatch.setattr(client, "_get", fake_get)
+
+    assert client.list_storages() == [
+        {
+            "id": "local",
+            "type": "LOCAL",
+            "name": "Internal",
+            "path": "/local",
+            "available": True,
+            "read_only": False,
+            "used_bytes": None,
+            "free_bytes": None,
+        },
+        {
+            "id": "usb",
+            "type": "USB",
+            "name": "Mock USB",
+            "path": "/usb",
+            "available": True,
+            "read_only": False,
+            "used_bytes": None,
+            "free_bytes": 1234,
+        },
+        {
+            "id": "sdcard",
+            "type": "SDCARD",
+            "name": "SD Card",
+            "path": "/sdcard",
+            "available": False,
+            "read_only": False,
+            "used_bytes": None,
+            "free_bytes": None,
+        },
+    ]
+
+
+def test_prusalink_list_files_uses_explicit_storage_without_default_discovery(monkeypatch):
+    client = PrusaLinkPrinterClient(base_url="http://prusa.local", password="secret")
+    requested_paths: list[str] = []
+
+    def fake_get(path):
+        requested_paths.append(path)
+        return {
+            "children": [
+                {"display_name": "Jobs", "type": "FOLDER"},
+                {"display_name": "Part A.bgcode", "type": "PRINT_FILE", "size": 42},
+            ]
+        }
+
+    monkeypatch.setattr(client, "_get", fake_get)
+
+    assert client.list_files("/queued jobs", storage="local") == [
+        {"name": "Jobs", "type": "directory", "size": None, "modified": None, "path": "/queued jobs/Jobs"},
+        {"name": "Part A.bgcode", "type": "file", "size": 42, "modified": None, "path": "/queued jobs/Part A.bgcode"},
+    ]
+    assert requested_paths == ["api/v1/files/local/queued%20jobs"]
+
+
+def test_prusalink_start_print_uses_explicit_storage_namespace(monkeypatch):
+    client = PrusaLinkPrinterClient(base_url="http://prusa.local", password="secret")
+    posted_paths: list[str] = []
+
+    def fake_request(method, path, *, json_payload=None):  # noqa: ARG001
+        posted_paths.append(f"{method.upper()} {path}")
+        return httpx.Response(204, request=httpx.Request(method.upper(), f"http://prusa.local/{path}"))
+
+    monkeypatch.setattr(client, "_request", fake_request)
+
+    assert client.start_print("nested/Part A.bgcode", storage="local") is True
+
+    assert posted_paths == ["POST api/v1/files/local/nested/Part%20A.bgcode"]

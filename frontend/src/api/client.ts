@@ -3741,9 +3741,12 @@ export const api = {
     }),
 
   // Printer File Manager
-  getPrinterFiles: (printerId: number, path = '/') =>
-    request<{
+  getPrinterFiles: (printerId: number, path = '/', storage?: string | null) => {
+    const params = new URLSearchParams({ path });
+    if (storage) params.set('storage', storage);
+    return request<{
       path: string;
+      storage?: string | null;
       files: Array<{
         name: string;
         is_directory: boolean;
@@ -3751,7 +3754,8 @@ export const api = {
         path: string;
         mtime?: string;
       }>;
-    }>(`/printers/${printerId}/files?path=${encodeURIComponent(path)}`),
+    }>(`/printers/${printerId}/files?${params.toString()}`);
+  },
   getPrinterFileDownloadUrl: (printerId: number, path: string) =>
     `${API_BASE}/printers/${printerId}/files/download?path=${encodeURIComponent(path)}`,
   getPrinterFileGcodeUrl: (printerId: number, path: string) =>
@@ -3842,7 +3846,8 @@ export const api = {
     file: File,
     path = '/',
     overwrite = false,
-    conflictStrategy: 'error' | 'rename' | 'delete_replace' = 'error'
+    conflictStrategy: 'error' | 'rename' | 'delete_replace' = 'error',
+    storage?: string | null
   ): Promise<{ status: string; path: string; filename: string; renamed?: boolean; replaced?: boolean; original_filename?: string }> => {
     const headers: Record<string, string> = {};
     if (authToken) {
@@ -3851,6 +3856,7 @@ export const api = {
     const formData = new FormData();
     formData.append('file', file);
     const params = new URLSearchParams({ path, overwrite: String(overwrite), conflict_strategy: conflictStrategy });
+    if (storage) params.set('storage', storage);
     const response = await fetch(`${API_BASE}/printers/${printerId}/files/upload?${params.toString()}`, {
       method: 'POST',
       headers,
@@ -3865,21 +3871,38 @@ export const api = {
   startPrinterFile: (
     printerId: number,
     path: string,
-    options?: { bed_levelling?: boolean; print_platform_type?: 0 | 1 }
+    options?: { bed_levelling?: boolean; print_platform_type?: 0 | 1; storage?: string | null }
   ) => {
     const params = new URLSearchParams({ path });
+    if (options?.storage) params.set('storage', options.storage);
     if (options?.bed_levelling !== undefined) params.set('bed_levelling', String(options.bed_levelling));
     if (options?.print_platform_type !== undefined) params.set('print_platform_type', String(options.print_platform_type));
     return request<{ status: string; path: string }>(`/printers/${printerId}/files/start?${params.toString()}`, {
       method: 'POST',
     });
   },
-  deletePrinterFile: (printerId: number, path: string) =>
-    request<{ status: string; path: string }>(`/printers/${printerId}/files?path=${encodeURIComponent(path)}`, {
+  deletePrinterFile: (printerId: number, path: string, storage?: string | null) => {
+    const params = new URLSearchParams({ path });
+    if (storage) params.set('storage', storage);
+    return request<{ status: string; path: string }>(`/printers/${printerId}/files?${params.toString()}`, {
       method: 'DELETE',
-    }),
+    });
+  },
   getPrinterStorage: (printerId: number) =>
-    request<{ used_bytes: number | null; free_bytes: number | null }>(`/printers/${printerId}/storage`),
+    request<{
+      used_bytes: number | null;
+      free_bytes: number | null;
+      storages?: Array<{
+        id: string;
+        type: string;
+        name?: string | null;
+        path: string;
+        available: boolean;
+        read_only?: boolean;
+        used_bytes?: number | null;
+        free_bytes?: number | null;
+      }>;
+    }>(`/printers/${printerId}/storage`),
 
   // Archives
   getArchives: (printerId?: number, projectId?: number, limit = 10000, offset = 0, dateFrom?: string, dateTo?: string) => {

@@ -289,6 +289,7 @@ export function FileManagerModal({ printerId, printerName, printerProvider, prin
   const { showToast } = useToast();
   const queryClient = useQueryClient();
   const [currentPath, setCurrentPath] = useState('/');
+  const [selectedStorage, setSelectedStorage] = useState<string | null>(null);
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
   const [uploadingFile, setUploadingFile] = useState(false);
   const [queueingFile, setQueueingFile] = useState(false);
@@ -303,6 +304,7 @@ export function FileManagerModal({ printerId, printerName, printerProvider, prin
   const [elegooHeatedBedLevelling, setElegooHeatedBedLevelling] = useState(true);
   const [elegooPrintPlatformType, setElegooPrintPlatformType] = useState<ElegooPrintPlatformType>(0);
   const isPrusaPrinter = printerProvider === 'prusalink' || printerProvider === 'prusaconnect';
+  const isPrusaLinkPrinter = printerProvider === 'prusalink';
   const isElegooSDCPPrinter = isElegooCc1Printer(printerProvider, printerModel);
 
   // Close on Escape key
@@ -320,22 +322,32 @@ export function FileManagerModal({ printerId, printerName, printerProvider, prin
   // together while this modal sat open (#1480). A printer's file list only
   // changes on upload / delete (the mutations below invalidate the query)
   // or when a print finishes; the manual Refresh button covers the rest.
-  const { data, isLoading, refetch } = useQuery({
-    queryKey: ['printerFiles', printerId, currentPath],
-    queryFn: () => api.getPrinterFiles(printerId, currentPath),
-  });
-
   const { data: storageData } = useQuery({
     queryKey: ['printerStorage', printerId],
     queryFn: () => api.getPrinterStorage(printerId),
     staleTime: 30000, // Cache for 30 seconds
   });
 
+  const availableStorages = storageData?.storages?.filter((storage) => storage.available) || [];
+  const activeStorage = isPrusaLinkPrinter ? selectedStorage : null;
+
+  useEffect(() => {
+    if (!isPrusaLinkPrinter || selectedStorage || availableStorages.length === 0) return;
+    const preferred = availableStorages.find((storage) => storage.id.toLowerCase() === 'usb') || availableStorages[0];
+    setSelectedStorage(preferred.id);
+  }, [availableStorages, isPrusaLinkPrinter, selectedStorage]);
+
+  const { data, isLoading, refetch } = useQuery({
+    queryKey: ['printerFiles', printerId, currentPath, activeStorage],
+    queryFn: () => api.getPrinterFiles(printerId, currentPath, activeStorage),
+    enabled: !isPrusaLinkPrinter || availableStorages.length === 0 || Boolean(activeStorage),
+  });
+
   const deleteMutation = useMutation({
     mutationFn: async (paths: string[]) => {
       // Delete files one by one
       for (const path of paths) {
-        await api.deletePrinterFile(printerId, path);
+        await api.deletePrinterFile(printerId, path, activeStorage);
       }
     },
     onSuccess: () => {
@@ -443,7 +455,7 @@ export function FileManagerModal({ printerId, printerName, printerProvider, prin
     }
     setUploadingFile(true);
     try {
-      await api.uploadPrinterFile(printerId, file, currentPath);
+      await api.uploadPrinterFile(printerId, file, currentPath, false, 'error', activeStorage);
       showToast(`Uploaded ${file.name} to printer`);
       queryClient.invalidateQueries({ queryKey: ['printerFiles', printerId] });
       refetch();
@@ -475,7 +487,7 @@ export function FileManagerModal({ printerId, printerName, printerProvider, prin
   ) => {
     setStartingFile(true);
     try {
-      await api.startPrinterFile(printerId, file.path, options);
+      await api.startPrinterFile(printerId, file.path, { ...options, storage: activeStorage });
       showToast(`Started ${file.name} on printer`);
       setSelectedFiles(new Set());
       setElegooStartFile(null);
@@ -563,22 +575,45 @@ export function FileManagerModal({ printerId, printerName, printerProvider, prin
 
         {/* Quick Navigation */}
         <div className="flex items-center gap-2 p-3 border-b border-bambu-dark-tertiary bg-bambu-dark/50 flex-shrink-0">
-          {quickDirs.map((dir) => (
-            <button
-              key={dir.path}
-              onClick={() => {
-                navigateToFolder(dir.path);
-                setSearchQuery('');
-              }}
-              className={`px-3 py-1 text-sm rounded-full transition-colors ${
-                currentPath === dir.path
-                  ? 'bg-bambu-green text-white'
-                  : 'bg-bambu-dark-tertiary text-bambu-gray hover:text-white'
-              }`}
-            >
-              {dir.label}
-            </button>
-          ))}
+          {isPrusaLinkPrinter && storageData?.storages?.length ? (
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-bambu-gray">Storage</span>
+              <select
+                value={selectedStorage || ''}
+                onChange={(event) => {
+                  setSelectedStorage(event.target.value || null);
+                  setCurrentPath('/');
+                  setSelectedFiles(new Set());
+                  setSearchQuery('');
+                }}
+                className="appearance-none bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm py-1.5 pl-2 pr-6 focus:border-bambu-green focus:outline-none cursor-pointer"
+                aria-label="Storage"
+              >
+                {storageData.storages.map((storage) => (
+                  <option key={storage.id} value={storage.id} disabled={!storage.available}>
+                    {storage.type || storage.name || storage.id}{!storage.available ? ' — not connected' : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+          ) : (
+            quickDirs.map((dir) => (
+              <button
+                key={dir.path}
+                onClick={() => {
+                  navigateToFolder(dir.path);
+                  setSearchQuery('');
+                }}
+                className={`px-3 py-1 text-sm rounded-full transition-colors ${
+                  currentPath === dir.path
+                    ? 'bg-bambu-green text-white'
+                    : 'bg-bambu-dark-tertiary text-bambu-gray hover:text-white'
+                }`}
+              >
+                {dir.label}
+              </button>
+            ))
+          )}
           <div className="flex-1" />
           <div className="relative">
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray" />
@@ -624,7 +659,7 @@ export function FileManagerModal({ printerId, printerName, printerProvider, prin
             variant="secondary"
             size="sm"
             onClick={() => refetch()}
-            disabled={isLoading}
+            disabled={isLoading || (isPrusaLinkPrinter && availableStorages.length > 0 && !activeStorage)}
           >
             <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
           </Button>
@@ -641,7 +676,7 @@ export function FileManagerModal({ printerId, printerName, printerProvider, prin
             >
               <ChevronLeft className="w-4 h-4" />
             </button>
-            <span className="text-bambu-gray font-mono">{currentPath}</span>
+            <span className="text-bambu-gray font-mono">{activeStorage ? `/${activeStorage}${currentPath}` : currentPath}</span>
           </div>
 
         {/* File list */}
@@ -649,6 +684,10 @@ export function FileManagerModal({ printerId, printerName, printerProvider, prin
             {isLoading ? (
               <div className="flex items-center justify-center py-12">
                 <Loader2 className="w-8 h-8 text-bambu-green animate-spin" />
+              </div>
+            ) : isPrusaLinkPrinter && storageData?.storages?.length && availableStorages.length === 0 ? (
+              <div className="text-center py-12 text-bambu-gray">
+                No PrusaLink storage is currently available. Insert USB storage and refresh.
               </div>
             ) : !data?.files?.length ? (
               <div className="text-center py-12 text-bambu-gray">

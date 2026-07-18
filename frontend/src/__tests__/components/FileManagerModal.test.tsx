@@ -349,6 +349,71 @@ describe('FileManagerModal', () => {
       });
     });
 
+
+    it('passes the selected PrusaLink storage when listing and starting a file', async () => {
+      const seenListStorages: Array<string | null> = [];
+      let startedStorage: string | null = null;
+      let startedPath: string | null = null;
+      server.use(
+        http.get('/api/v1/printers/:id/storage', () => {
+          return HttpResponse.json({
+            used_bytes: null,
+            free_bytes: 1234,
+            storages: [
+              { id: 'local', type: 'LOCAL', name: 'Internal', path: '/local', available: true },
+              { id: 'usb', type: 'USB', name: 'USB', path: '/usb', available: true },
+              { id: 'sdcard', type: 'SDCARD', name: 'SD Card', path: '/sdcard', available: false },
+            ],
+          });
+        }),
+        http.get('/api/v1/printers/:id/files', ({ request }) => {
+          const url = new URL(request.url);
+          seenListStorages.push(url.searchParams.get('storage'));
+          return HttpResponse.json({
+            path: url.searchParams.get('path') || '/',
+            storage: url.searchParams.get('storage'),
+            files: [
+              { name: 'core-one.bgcode', path: '/core-one.bgcode', size: 2048, is_directory: false },
+            ],
+          });
+        }),
+        http.post('/api/v1/printers/:id/files/start', ({ request }) => {
+          const url = new URL(request.url);
+          startedPath = url.searchParams.get('path');
+          startedStorage = url.searchParams.get('storage');
+          return HttpResponse.json({ status: 'started', path: startedPath });
+        })
+      );
+
+      render(
+        <FileManagerModal
+          printerId={1}
+          printerName="Prusa CORE One"
+          printerProvider="prusalink"
+          onClose={mockOnClose}
+        />
+      );
+
+      expect(await screen.findByRole('combobox', { name: /Storage/i })).toHaveValue('usb');
+      expect(await screen.findByText('core-one.bgcode')).toBeInTheDocument();
+
+      const printButton = screen.getByRole('button', { name: /^Print$/i });
+      const checkbox = screen.getAllByRole('button').find(btn =>
+        btn.querySelector('svg')?.classList.contains('lucide-square')
+      );
+      expect(checkbox).toBeTruthy();
+      fireEvent.click(checkbox!);
+
+      await waitFor(() => expect(printButton).not.toBeDisabled());
+      fireEvent.click(printButton);
+
+      await waitFor(() => {
+        expect(seenListStorages).toContain('usb');
+        expect(startedPath).toBe('/core-one.bgcode');
+        expect(startedStorage).toBe('usb');
+      });
+    });
+
     it('shows Elegoo CC1 start options and sends heated bed levelling plus print plate', async () => {
       let params: URLSearchParams | null = null;
       server.use(
@@ -364,6 +429,7 @@ describe('FileManagerModal', () => {
           printerId={1}
           printerName="Centauri Carbon"
           printerProvider="elegoo_sdcp"
+          printerModel="Elegoo Centauri Carbon"
           onClose={mockOnClose}
         />
       );
@@ -376,7 +442,7 @@ describe('FileManagerModal', () => {
       const checkboxes = screen.getAllByRole('button').filter(btn =>
         btn.querySelector('svg')?.classList.contains('lucide-square')
       );
-      fireEvent.click(checkboxes[1]);
+      fireEvent.click(checkboxes[checkboxes.length - 1]);
       await waitFor(() => expect(printButton).not.toBeDisabled());
       fireEvent.click(printButton);
 
