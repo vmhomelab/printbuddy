@@ -27,6 +27,7 @@ vi.mock('../../api/client', () => ({
     getPrinters: vi.fn().mockResolvedValue([]),
     getSpoolUsageHistory: vi.fn().mockResolvedValue([]),
     createSpool: vi.fn().mockResolvedValue({ id: 99 }),
+    bulkCreateSpools: vi.fn().mockResolvedValue([{ id: 99 }, { id: 100 }, { id: 101 }]),
     createSpoolmanInventorySpool: vi.fn().mockResolvedValue({ id: 88 }),
     updateSpool: vi.fn().mockResolvedValue({ id: 1 }),
     saveSpoolKProfiles: vi.fn().mockResolvedValue([]),
@@ -217,6 +218,38 @@ describe('SpoolFormModal weightTouched', () => {
 
     const [payload] = vi.mocked(api.createSpool).mock.calls[0];
     // weight_used MUST be included for new spools (default value 0)
+    expect(payload).toHaveProperty('weight_used', 0);
+  });
+
+  it('uses bulk create when creating multiple spools from the quantity field', async () => {
+    render(
+      <SpoolFormModal
+        isOpen={true}
+        onClose={vi.fn()}
+        currencySymbol="$"
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Add Spool' })).toBeInTheDocument();
+    });
+
+    const quantityInput = screen.getByRole('spinbutton', { name: 'Quantity' });
+    expect(quantityInput).toBeInTheDocument();
+    fireEvent.change(quantityInput, { target: { value: '3' } });
+
+    const addButtons = screen.getAllByRole('button', { name: /add spool/i });
+    const submitButton = addButtons.find(btn => btn.tagName === 'BUTTON' && btn.querySelector('svg.lucide-save'));
+    expect(submitButton).toBeTruthy();
+    fireEvent.click(submitButton!);
+
+    await waitFor(() => {
+      expect(api.bulkCreateSpools).toHaveBeenCalledTimes(1);
+    });
+
+    expect(api.createSpool).not.toHaveBeenCalled();
+    const [payload, qty] = vi.mocked(api.bulkCreateSpools).mock.calls[0];
+    expect(qty).toBe(3);
     expect(payload).toHaveProperty('weight_used', 0);
   });
 

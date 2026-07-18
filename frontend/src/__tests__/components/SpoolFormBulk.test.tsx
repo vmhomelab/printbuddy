@@ -218,7 +218,7 @@ describe('SpoolFormModal quick-add toggle', () => {
     });
   });
 
-  it('hides quantity field by default (non-quick-add)', async () => {
+  it('shows quantity field by default in create mode', async () => {
     render(
       <SpoolFormModal
         isOpen={true}
@@ -232,11 +232,11 @@ describe('SpoolFormModal quick-add toggle', () => {
       expect(screen.getByRole('heading', { name: 'Add Spool' })).toBeInTheDocument();
     });
 
-    // Quantity field should NOT be visible in normal create mode
-    expect(screen.queryByText('Quantity')).not.toBeInTheDocument();
+    // Quantity field should be visible in normal create mode so users can add multiple spools at once.
+    expect(screen.getByRole('spinbutton', { name: 'Quantity' })).toBeInTheDocument();
   });
 
-  it('shows quantity field only in quick-add mode', async () => {
+  it('keeps quantity field visible after enabling quick-add', async () => {
     render(
       <SpoolFormModal
         isOpen={true}

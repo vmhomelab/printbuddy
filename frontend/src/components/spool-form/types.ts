@@ -121,6 +121,7 @@ export interface FilamentSectionProps extends SectionProps {
   quickAdd: boolean;
   quantity: number;
   onQuantityChange: (value: number) => void;
+  showQuantity?: boolean;
   errors?: Partial<Record<keyof SpoolFormData, string>>;
   openFilamentDatabaseEnabled?: boolean;
 }

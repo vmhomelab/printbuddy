@@ -21,6 +21,7 @@ export function FilamentSection({
   quickAdd,
   quantity,
   onQuantityChange,
+  showQuantity = false,
   errors,
   openFilamentDatabaseEnabled,
 }: FilamentSectionProps) {
@@ -756,12 +757,13 @@ export function FilamentSection({
         </div>
       </div>
 
-      {/* Quantity — only in quick-add mode */}
-      {quickAdd && (
+      {/* Quantity — only when creating new spools */}
+      {showQuantity && (
         <div>
           <label className="block text-sm font-medium text-bambu-gray mb-1">{t('inventory.quantity')}</label>
           <input
             type="number"
+            aria-label={t('inventory.quantity')}
             className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green"
             value={quantity}
             min={1}

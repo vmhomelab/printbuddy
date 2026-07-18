@@ -870,6 +870,7 @@ export function SpoolFormModal({
                   quickAdd={quickAdd}
                   quantity={quantity}
                   onQuantityChange={setQuantity}
+                  showQuantity={!isEditing && !isCopying}
                   errors={errors}
                   openFilamentDatabaseEnabled={!isEditing && !isCopying && Boolean(settingsForForm?.open_filament_database_enabled)}
                 />
