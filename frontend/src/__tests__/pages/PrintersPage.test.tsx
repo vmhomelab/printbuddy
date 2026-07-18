@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { screen, waitFor, fireEvent } from '@testing-library/react';
+import { screen, waitFor, fireEvent, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { render } from '../utils';
 import { PrintersPage } from '../../pages/PrintersPage';
@@ -75,6 +75,8 @@ describe('PrintersPage', () => {
     localStorage.removeItem('printerCardSize');
     localStorage.removeItem('embeddedCameraState_1');
     localStorage.removeItem('embeddedCameraInlineState_1');
+    localStorage.removeItem('printerCardSectionOrder_1');
+    localStorage.removeItem('printerCardSectionOrder_2');
     setAuthToken(null);
 
     server.use(
@@ -344,10 +346,8 @@ describe('PrintersPage', () => {
       render(<PrintersPage />);
 
       await screen.findByText('P1S Backup');
-      const pandaBreathLabels = await screen.findAllByText('Panda Breath');
-      const pandaBreathLabel = pandaBreathLabels[0];
-      const card = pandaBreathLabel.closest('[class*="relative"]') || document.body;
-      expect(pandaBreathLabels.length).toBeGreaterThan(0);
+      const card = await screen.findByTestId('printer-card-2');
+      expect(within(card).getAllByText('Panda Breath').length).toBeGreaterThan(0);
       expect(card.textContent).toContain('P1S Backup');
       expect(card.textContent).toContain('Panda Breath');
       expect(card.textContent).toContain('43°C / 55°');
@@ -468,6 +468,38 @@ describe('PrintersPage', () => {
       const firstCard = await screen.findByTestId('printer-card-1');
       expect(firstCard.parentElement).toHaveClass('grid');
       expect(firstCard.parentElement).toHaveClass('items-start');
+    });
+
+    it('applies the saved draggable printer-card section order and exposes drag handles', async () => {
+      const savedSectionOrder = JSON.stringify([
+        'temperatures',
+        'status',
+        'indicators',
+        'filaments',
+        'actions',
+        'camera',
+        'panda-breath',
+        'smart-plug',
+        'manual-controls',
+      ]);
+      vi.mocked(localStorage.getItem).mockImplementation((key: string) =>
+        key === 'printerCardSectionOrder_1' ? savedSectionOrder : null
+      );
+
+      render(<PrintersPage />);
+
+      const card = await screen.findByTestId('printer-card-1');
+      let temperatureSection!: HTMLElement;
+      let statusSection!: HTMLElement;
+      await waitFor(() => {
+        temperatureSection = within(card).getByTestId('printer-card-section-temperatures');
+        statusSection = within(card).getByTestId('printer-card-section-status');
+      });
+
+      expect(temperatureSection).toHaveStyle({ order: '0' });
+      expect(statusSection).toHaveStyle({ order: '1' });
+      expect(within(card).getByTestId('printer-card-section-drag-status')).toBeInTheDocument();
+      expect(within(card).getByTestId('printer-card-section-drag-temperatures')).toBeInTheDocument();
     });
 
     it('resizes the inline camera while enforcing minimum card-friendly dimensions', async () => {
