@@ -373,13 +373,17 @@ export function SpoolFormModal({
   // Update field helper
   const updateField = <K extends keyof SpoolFormData>(key: K, value: SpoolFormData[K]) => {
     const isLinkedField = SPOOLMAN_LINKED_FIELDS.has(key);
-    if (spoolmanMode && isLinkedField && formData.spoolman_filament_id !== null) {
+    const shouldClearSpoolmanCatalogLink = spoolmanMode && (
+      (isLinkedField && formData.spoolman_filament_id !== null)
+      || key === 'data_origin'
+    );
+    if (shouldClearSpoolmanCatalogLink && formData.spoolman_filament_id !== null) {
       showToast(t('inventory.spoolmanFilamentUnlinked'), 'info');
     }
     setFormData(prev => ({
       ...prev,
       [key]: value,
-      ...(spoolmanMode && isLinkedField && prev.spoolman_filament_id !== null
+      ...(shouldClearSpoolmanCatalogLink
         ? { spoolman_filament_id: null }
         : {}),
     }));
@@ -408,6 +412,7 @@ export function SpoolFormModal({
       rgba: `${colorHex}FF`,
       color_name: filament.color_name || '',
       label_weight: filament.weight ?? prev.label_weight,
+      data_origin: '',
     }));
     showToast(t('inventory.spoolmanFilamentSelected'), 'success');
   };
@@ -866,7 +871,7 @@ export function SpoolFormModal({
                   quantity={quantity}
                   onQuantityChange={setQuantity}
                   errors={errors}
-                  openFilamentDatabaseEnabled={!isEditing && !isCopying && !spoolmanMode && Boolean(settingsForForm?.open_filament_database_enabled)}
+                  openFilamentDatabaseEnabled={!isEditing && !isCopying && Boolean(settingsForForm?.open_filament_database_enabled)}
                 />
               </div>
 

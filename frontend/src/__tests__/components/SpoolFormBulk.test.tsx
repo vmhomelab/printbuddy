@@ -16,6 +16,7 @@
 import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor, fireEvent } from '@testing-library/react';
+import { api } from '../../api/client';
 import { render } from '../utils';
 import { SpoolFormModal } from '../../components/SpoolFormModal';
 import { validateForm, defaultFormData } from '../../components/spool-form/types';
@@ -34,6 +35,16 @@ vi.mock('../../api/client', () => ({
     getBuiltinFilaments: vi.fn().mockResolvedValue([]),
     getPrinters: vi.fn().mockResolvedValue([]),
     getSpoolUsageHistory: vi.fn().mockResolvedValue([]),
+    getSpoolmanInventoryFilaments: vi.fn().mockResolvedValue([]),
+    getSpoolmanSlotAssignments: vi.fn().mockResolvedValue([]),
+    createSpoolmanInventorySpool: vi.fn().mockResolvedValue({ id: 199, k_profiles: [] }),
+    bulkCreateSpoolmanInventorySpools: vi.fn().mockResolvedValue({ created: [], requested_count: 0, failed_count: 0, failures: [] }),
+    updateSpoolmanInventorySpool: vi.fn().mockResolvedValue({ id: 1 }),
+    getOpenFilamentDatabaseBrands: vi.fn().mockResolvedValue({ brands: [] }),
+    getOpenFilamentDatabaseBrand: vi.fn().mockResolvedValue({ materials: [] }),
+    searchOpenFilamentDatabase: vi.fn().mockResolvedValue({ filaments: [] }),
+    getOpenFilamentDatabaseFilament: vi.fn().mockResolvedValue({ variants: [], spool_prefill: {} }),
+    getOpenFilamentDatabaseVariant: vi.fn().mockResolvedValue({ spool_prefill: {} }),
     createSpool: vi.fn().mockResolvedValue({ id: 99 }),
     bulkCreateSpools: vi.fn().mockResolvedValue([
       { id: 100, k_profiles: [] },
@@ -307,5 +318,87 @@ describe('SpoolFormModal quick-add toggle', () => {
       expect(subtypeLabel).toBeInTheDocument();
       expect(subtypeLabel.textContent).not.toContain('*');
     });
+  });
+});
+
+describe('SpoolFormModal Spoolman OFDB creation', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api.getSettings).mockResolvedValue({ open_filament_database_enabled: true });
+    vi.mocked(api.getSpoolmanInventoryFilaments).mockResolvedValue([
+      { id: 44, name: 'PETG Matte', material: 'PETG', color_hex: '123456', color_name: 'Blue', weight: 1000, vendor: { id: 1, name: 'SpoolmanBrand' } },
+    ] as never);
+    vi.mocked(api.getOpenFilamentDatabaseBrands).mockResolvedValue({
+      brands: [{ id: 'brand-polymaker', slug: 'polymaker', name: 'Polymaker', material_count: 1 }],
+    } as never);
+    vi.mocked(api.getOpenFilamentDatabaseBrand).mockResolvedValue({
+      brand: { id: 'brand-polymaker', slug: 'polymaker', name: 'Polymaker' },
+      materials: [{ id: 'mat-petg', material: 'PETG', filament_count: 1 }],
+    } as never);
+    vi.mocked(api.searchOpenFilamentDatabase).mockResolvedValue({
+      filaments: [{ id: 'fil-polyterra', slug: 'polyterra-petg', name: 'PolyTerra PETG', variant_count: 1 }],
+    } as never);
+    vi.mocked(api.getOpenFilamentDatabaseFilament).mockResolvedValue({
+      filament: { id: 'fil-polyterra', slug: 'polyterra-petg', name: 'PolyTerra PETG' },
+      variants: [{ id: 'var-teal', slug: 'teal', name: 'Teal', color_hex: '#008080', size_count: 1 }],
+      spool_prefill: { brand: 'Polymaker', material: 'PETG', subtype: 'PolyTerra' },
+    } as never);
+    vi.mocked(api.getOpenFilamentDatabaseVariant).mockResolvedValue({
+      variant: { id: 'var-teal', slug: 'teal', name: 'Teal', color_hex: '#008080' },
+      spool_prefill: {
+        brand: 'Polymaker',
+        material: 'PETG',
+        subtype: 'PolyTerra',
+        color_name: 'Teal',
+        rgba: '008080FF',
+        label_weight: 1000,
+        data_origin: 'openfilamentdatabase',
+      },
+    } as never);
+  });
+
+  it('allows OFDB prefill when creating a Spoolman spool and posts without a catalog filament id', async () => {
+    render(
+      <SpoolFormModal
+        isOpen={true}
+        onClose={vi.fn()}
+        mode="create"
+        currencySymbol="$"
+        spoolmanMode={true}
+        spoolsQueryKey={['spoolman-inventory-spools']}
+      />,
+    );
+
+    await screen.findByText('Spoolman Filament Catalog');
+    const ofdbToggle = await screen.findByRole('checkbox', { name: /search via open filament database/i });
+    fireEvent.click(ofdbToggle);
+
+    await screen.findByText('Polymaker');
+    fireEvent.click(screen.getByText('Polymaker'));
+
+    await screen.findByText('PETG');
+    fireEvent.click(screen.getByText('PETG'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await screen.findByText('PolyTerra PETG');
+    fireEvent.click(screen.getByText('PolyTerra PETG'));
+
+    await screen.findByText('Teal');
+    fireEvent.click(screen.getByText('Teal'));
+
+    await waitFor(() => expect(screen.getByDisplayValue('PETG')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Add Spool' }));
+
+    await waitFor(() => expect(api.createSpoolmanInventorySpool).toHaveBeenCalled());
+    expect(api.createSpoolmanInventorySpool).toHaveBeenCalledWith(expect.objectContaining({
+      spoolman_filament_id: null,
+      brand: 'Polymaker',
+      material: 'PETG',
+      subtype: 'PolyTerra',
+      color_name: 'Teal',
+      rgba: '008080FF',
+      label_weight: 1000,
+      data_origin: 'openfilamentdatabase',
+    }));
   });
 });
