@@ -3626,6 +3626,9 @@ export default {
     pickColor: 'Pick custom color',
     labelWeight: 'Label Weight',
     coreWeight: 'Empty Spool Weight',
+    spoolmanSpoolWeight: 'Empty Spool Weight',
+    spoolmanSpoolWeightPlaceholder: 'Leave blank',
+    spoolmanSpoolWeightHelp: 'Optional. Written to Spoolman as this spool’s Empty Weight. Leave blank to use the filament or manufacturer default.',
     searchSpoolWeight: 'Search spool weight...',
     weightUsed: 'Used',
     currentWeight: 'Remaining Weight',
@@ -3853,7 +3856,7 @@ export default {
     spoolmanFilamentUnlinked: 'Filament catalog link cleared',
     noSpoolmanFilaments: 'No filaments found in Spoolman catalog',
     spoolmanFilamentColorSwatch: 'Filament color',
-    spoolWeightManagedBySpoolman: 'Empty spool weight is managed per filament type in Spoolman',
+    spoolWeightManagedBySpoolman: 'The empty spool weight is managed in Spoolman.',
     spoolmanCatalogLoadFailed: 'Failed to load Spoolman filament catalog',
   },
 

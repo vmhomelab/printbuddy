@@ -176,6 +176,7 @@ export function AdditionalSection({
   availableCategories,
   globalLowStockThreshold,
   spoolmanMode = false,
+  showSpoolmanSpoolWeight = false,
 }: AdditionalSectionProps) {
   const { t } = useTranslation();
   const { showToast } = useToast();
@@ -201,9 +202,46 @@ export function AdditionalSection({
 
   return (
     <div className="space-y-4">
-      {/* Empty Spool Weight — hidden in Spoolman mode (managed per filament type in Spoolman) */}
+      {/* Empty Spool Weight */}
       {spoolmanMode ? (
-        <p className="text-xs text-bambu-gray px-1">{t('inventory.spoolWeightManagedBySpoolman')}</p>
+        showSpoolmanSpoolWeight ? (
+          <div>
+            <label className="block text-sm font-medium text-bambu-gray mb-1">{t('inventory.spoolmanSpoolWeight')}</label>
+            <div className="relative">
+              <input
+                type="number"
+                value={formData.spoolman_spool_weight ?? ''}
+                min={0}
+                max={10000}
+                placeholder={t('inventory.spoolmanSpoolWeightPlaceholder')}
+                onChange={(e) => {
+                  const raw = e.target.value.trim();
+                  if (raw === '') {
+                    updateField('spoolman_spool_weight', null);
+                    return;
+                  }
+                  const weight = Number(raw);
+                  if (Number.isFinite(weight)) {
+                    updateField('spoolman_spool_weight', weight);
+                    updateField('core_weight', weight);
+                  }
+                }}
+                onBlur={() => {
+                  const weight = formData.spoolman_spool_weight;
+                  if (weight === null) return;
+                  const clamped = Math.max(0, Math.min(10000, Math.round(weight)));
+                  updateField('spoolman_spool_weight', clamped);
+                  updateField('core_weight', clamped);
+                }}
+                className="w-full px-3 py-2 pr-7 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green"
+              />
+              <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-bambu-gray">g</span>
+            </div>
+            <p className="mt-1 text-xs text-bambu-gray">{t('inventory.spoolmanSpoolWeightHelp')}</p>
+          </div>
+        ) : (
+          <p className="text-xs text-bambu-gray px-1">{t('inventory.spoolWeightManagedBySpoolman')}</p>
+        )
       ) : (
         <SpoolWeightPicker
           catalog={spoolCatalog}

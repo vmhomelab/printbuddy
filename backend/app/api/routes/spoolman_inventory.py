@@ -304,7 +304,10 @@ class SpoolmanInventoryCreate(BaseModel):
     label_weight: int = Field(1000, ge=1, le=100_000)
     core_weight: int = Field(
         250, ge=0, le=10_000
-    )  # Accepted for schema parity but not persisted to Spoolman (stored on filament type, not spool)
+    )  # Accepted for schema parity; Spoolman-native writes use spool_weight below.
+    # Optional Spoolman-native per-spool empty weight. When omitted, Spoolman
+    # falls back to the filament/manufacturer empty weight.
+    spool_weight: float | None = Field(None, ge=0.0, le=10_000.0)
     weight_used: float = Field(0.0, ge=0.0, le=100_000.0)
     note: str | None = Field(None, max_length=1000)
     cost_per_kg: float | None = Field(None, ge=0.0, le=1_000_000.0)
@@ -546,6 +549,7 @@ async def create_spool(
             spool = await client.create_spool(
                 filament_id=filament_id,
                 remaining_weight=remaining,
+                spool_weight=data.spool_weight,
                 comment=data.note or None,
                 location=data.storage_location or None,
             )
@@ -622,6 +626,7 @@ async def bulk_create_spools(
             spool = await client.create_spool(
                 filament_id=filament_id,
                 remaining_weight=remaining,
+                spool_weight=data.spool_weight,
                 comment=data.note or None,
                 location=data.storage_location or None,
             )

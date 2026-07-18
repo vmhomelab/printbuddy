@@ -40,6 +40,7 @@ vi.mock('../../api/client', () => ({
     createSpoolmanInventorySpool: vi.fn().mockResolvedValue({ id: 199, k_profiles: [] }),
     bulkCreateSpoolmanInventorySpools: vi.fn().mockResolvedValue({ created: [], requested_count: 0, failed_count: 0, failures: [] }),
     updateSpoolmanInventorySpool: vi.fn().mockResolvedValue({ id: 1 }),
+    saveSpoolmanKProfiles: vi.fn().mockResolvedValue([]),
     getOpenFilamentDatabaseBrands: vi.fn().mockResolvedValue({ brands: [] }),
     getOpenFilamentDatabaseBrand: vi.fn().mockResolvedValue({ materials: [] }),
     searchOpenFilamentDatabase: vi.fn().mockResolvedValue({ filaments: [] }),
@@ -355,6 +356,37 @@ describe('SpoolFormModal Spoolman OFDB creation', () => {
         data_origin: 'openfilamentdatabase',
       },
     } as never);
+  });
+
+  it('posts optional Spoolman empty spool weight as spool_weight during create', async () => {
+    render(
+      <SpoolFormModal
+        isOpen={true}
+        onClose={vi.fn()}
+        mode="create"
+        currencySymbol="$"
+        spoolmanMode={true}
+        spoolsQueryKey={['spoolman-inventory-spools']}
+      />,
+    );
+
+    const materialInput = await screen.findByPlaceholderText('Select material...');
+    fireEvent.focus(materialInput);
+    fireEvent.change(materialInput, { target: { value: 'TESTMAT' } });
+    fireEvent.click(await screen.findByText('Use custom material: TESTMAT'));
+
+    const emptyWeightInput = await screen.findByPlaceholderText('Leave blank');
+    fireEvent.change(emptyWeightInput, { target: { value: '250' } });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add Spool' }));
+
+    await waitFor(() => expect(api.createSpoolmanInventorySpool).toHaveBeenCalled());
+    expect(api.createSpoolmanInventorySpool).toHaveBeenCalledWith(expect.objectContaining({
+      spoolman_filament_id: null,
+      material: 'TESTMAT',
+      label_weight: 1000,
+      spool_weight: 250,
+    }));
   });
 
   it('allows OFDB prefill when creating a Spoolman spool and posts without a catalog filament id', async () => {

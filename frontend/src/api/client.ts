@@ -5284,13 +5284,15 @@ export const api = {
     request<InventorySpool[]>(`/spoolman/inventory/spools?include_archived=${includeArchived}`),
   getSpoolmanInventorySpool: (id: number) =>
     request<InventorySpool>(`/spoolman/inventory/spools/${id}`),
-  createSpoolmanInventorySpool: (data: Omit<InventorySpool, 'id' | 'archived_at' | 'created_at' | 'updated_at' | 'k_profiles'>) =>
+  createSpoolmanInventorySpool: (
+    data: Omit<InventorySpool, 'id' | 'archived_at' | 'created_at' | 'updated_at' | 'k_profiles'> & { spool_weight?: number | null; spoolman_filament_id?: number | null },
+  ) =>
     request<InventorySpool>('/spoolman/inventory/spools', {
       method: 'POST',
       body: JSON.stringify(data),
     }),
   bulkCreateSpoolmanInventorySpools: (
-    data: Omit<InventorySpool, 'id' | 'archived_at' | 'created_at' | 'updated_at' | 'k_profiles'>,
+    data: Omit<InventorySpool, 'id' | 'archived_at' | 'created_at' | 'updated_at' | 'k_profiles'> & { spool_weight?: number | null; spoolman_filament_id?: number | null },
     quantity: number,
   ) =>
     request<SpoolmanBulkCreateResult | InventorySpool[]>('/spoolman/inventory/spools/bulk', {

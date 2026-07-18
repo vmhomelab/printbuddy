@@ -323,6 +323,7 @@ export function SpoolFormModal({
           label_weight: spool.label_weight || 1000,
           core_weight: spool.core_weight || 250,
           core_weight_catalog_id: spool.core_weight_catalog_id ?? null,
+          spoolman_spool_weight: spoolmanMode && isCopying ? (spool.core_weight ?? null) : null,
           weight_used: isCopying ? 0 : spool.weight_used || 0,
           slicer_filament: spool.slicer_filament || '',
           nozzle_temp_min: spool.nozzle_temp_min ?? null,
@@ -708,6 +709,7 @@ export function SpoolFormModal({
       effect_type: formData.effect_type || null,
       label_weight: formData.label_weight,
       ...(spoolmanMode ? {} : { core_weight: formData.core_weight, core_weight_catalog_id: formData.core_weight_catalog_id }),
+      ...(spoolmanMode && formData.spoolman_spool_weight !== null ? { spool_weight: formData.spoolman_spool_weight } : {}),
       slicer_filament: formData.slicer_filament || null,
       slicer_filament_name: presetName,
       nozzle_temp_min: formData.nozzle_temp_min,
@@ -903,6 +905,7 @@ export function SpoolFormModal({
                   availableCategories={availableCategories}
                   globalLowStockThreshold={globalLowStockThreshold}
                   spoolmanMode={spoolmanMode}
+                  showSpoolmanSpoolWeight={!isEditing}
                 />
               </div>
 

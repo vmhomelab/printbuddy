@@ -3624,6 +3624,9 @@ export default {
     pickColor: 'カスタムカラーを選択',
     labelWeight: '表示重量',
     coreWeight: '空スプール重量',
+    spoolmanSpoolWeight: '空スプール重量',
+    spoolmanSpoolWeightPlaceholder: '空欄のまま',
+    spoolmanSpoolWeightHelp: '任意。Spoolman にこのスプール固有の空重量として保存します。空欄の場合はフィラメントまたはメーカーの既定値を使います。',
     searchSpoolWeight: 'スプール重量を検索...',
     weightUsed: '使用量',
     currentWeight: '残量',
@@ -3842,7 +3845,7 @@ export default {
     spoolmanFilamentUnlinked: 'フィラメントカタログのリンクを解除しました',
     noSpoolmanFilaments: 'Spoolmanカタログにフィラメントが見つかりません',
     spoolmanFilamentColorSwatch: 'フィラメントの色',
-    spoolWeightManagedBySpoolman: '空スプールの重量はSpoolmanでフィラメントタイプごとに管理されています',
+    spoolWeightManagedBySpoolman: '空スプール重量はSpoolmanで管理されます。',
     spoolmanCatalogLoadFailed: 'Spoolmanのフィラメントカタログを読み込めませんでした',
   },
 

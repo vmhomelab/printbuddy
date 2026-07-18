@@ -3612,6 +3612,9 @@ export default {
     pickColor: 'Scegli colore personalizzato',
     labelWeight: 'Peso da Etichetta',
     coreWeight: 'Peso Bobina Vuota',
+    spoolmanSpoolWeight: 'Peso bobina vuota',
+    spoolmanSpoolWeightPlaceholder: 'Lascia vuoto',
+    spoolmanSpoolWeightHelp: 'Facoltativo. Salvato in Spoolman come peso a vuoto di questa bobina. Lascia vuoto per usare il valore del filamento o del produttore.',
     searchSpoolWeight: 'Cerca peso bobina...',
     weightUsed: 'Utilizzato',
     currentWeight: 'Peso Rimanente',
@@ -3830,7 +3833,7 @@ export default {
     spoolmanFilamentUnlinked: 'Collegamento al catalogo filamenti rimosso',
     noSpoolmanFilaments: 'Nessun filamento trovato nel catalogo Spoolman',
     spoolmanFilamentColorSwatch: 'Colore del filamento',
-    spoolWeightManagedBySpoolman: 'Il peso della bobina vuota è gestito per tipo di filamento in Spoolman',
+    spoolWeightManagedBySpoolman: 'Il peso della bobina vuota è gestito in Spoolman.',
     spoolmanCatalogLoadFailed: 'Impossibile caricare il catalogo Spoolman',
   },
 

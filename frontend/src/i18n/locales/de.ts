@@ -3624,6 +3624,9 @@ export default {
     pickColor: 'Benutzerdefinierte Farbe wählen',
     labelWeight: 'Nenngewicht',
     coreWeight: 'Leergewicht der Spule',
+    spoolmanSpoolWeight: 'Leergewicht der Spule',
+    spoolmanSpoolWeightPlaceholder: 'Leer lassen',
+    spoolmanSpoolWeightHelp: 'Optional. Wird in Spoolman als Leergewicht dieser Spule gespeichert. Leer lassen, um den Filament- oder Herstellerstandard zu verwenden.',
     searchSpoolWeight: 'Spulengewicht suchen...',
     weightUsed: 'Verbraucht',
     currentWeight: 'Restgewicht',
@@ -3842,7 +3845,7 @@ export default {
     spoolmanFilamentUnlinked: 'Verknüpfung mit Filamentkatalog aufgehoben',
     noSpoolmanFilaments: 'Keine Filamente im Spoolman-Katalog gefunden',
     spoolmanFilamentColorSwatch: 'Filamentfarbe',
-    spoolWeightManagedBySpoolman: 'Das Leerspulengewicht wird pro Filamenttyp in Spoolman verwaltet',
+    spoolWeightManagedBySpoolman: 'Das Leerspulengewicht wird in Spoolman verwaltet.',
     spoolmanCatalogLoadFailed: 'Spoolman-Filamentkatalog konnte nicht geladen werden',
   },
 

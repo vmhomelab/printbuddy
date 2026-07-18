@@ -3611,6 +3611,9 @@ export default {
     pickColor: '选择自定义颜色',
     labelWeight: '标签重量',
     coreWeight: '空盘重量',
+    spoolmanSpoolWeight: '空线轴重量',
+    spoolmanSpoolWeightPlaceholder: '留空',
+    spoolmanSpoolWeightHelp: '可选。作为该线轴的空线轴重量写入 Spoolman。留空则使用耗材或制造商默认值。',
     searchSpoolWeight: '搜索耗材重量...',
     weightUsed: '已使用',
     currentWeight: '剩余重量',
@@ -3829,7 +3832,7 @@ export default {
     spoolmanFilamentUnlinked: '已解除耗材目录关联',
     noSpoolmanFilaments: 'Spoolman 目录中未找到耗材',
     spoolmanFilamentColorSwatch: '耗材颜色',
-    spoolWeightManagedBySpoolman: '空线轴重量在 Spoolman 中按耗材类型管理',
+    spoolWeightManagedBySpoolman: '空线轴重量由 Spoolman 管理。',
     spoolmanCatalogLoadFailed: '无法加载 Spoolman 耗材目录',
   },
 

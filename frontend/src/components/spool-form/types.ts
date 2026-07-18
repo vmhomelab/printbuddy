@@ -29,6 +29,9 @@ export interface SpoolFormData {
   label_weight: number;
   core_weight: number;
   core_weight_catalog_id: number | null;
+  // Spoolman-native per-spool empty weight. Null means leave Spoolman's
+  // spool_weight empty and let it fall back to the filament/manufacturer value.
+  spoolman_spool_weight: number | null;
   weight_used: number;
   slicer_filament: string;
   nozzle_temp_min: number | null;
@@ -56,6 +59,7 @@ export const defaultFormData: SpoolFormData = {
   label_weight: 1000,
   core_weight: 250,
   core_weight_catalog_id: null,
+  spoolman_spool_weight: null,
   weight_used: 0,
   slicer_filament: '',
   nozzle_temp_min: null,
@@ -151,9 +155,10 @@ export interface AdditionalSectionProps extends SectionProps {
   // Global low-stock threshold (%); shown as placeholder on the per-spool
   // override input so users see what they're overriding. #729
   globalLowStockThreshold: number;
-  // When true the empty-spool weight is managed by Spoolman on the filament
-  // object, so SpoolWeightPicker is hidden and an info notice is shown instead.
+  // When true the empty-spool weight is managed by Spoolman.
   spoolmanMode?: boolean;
+  // Show the optional Spoolman spool-specific empty-weight input during create/copy.
+  showSpoolmanSpoolWeight?: boolean;
 }
 
 // PA Profile section props

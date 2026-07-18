@@ -3612,6 +3612,9 @@ export default {
     pickColor: 'Escolher cor personalizada',
     labelWeight: 'Peso da Etiqueta',
     coreWeight: 'Peso do Carretel Vazio',
+    spoolmanSpoolWeight: 'Peso do carretel vazio',
+    spoolmanSpoolWeightPlaceholder: 'Deixe em branco',
+    spoolmanSpoolWeightHelp: 'Opcional. Gravado no Spoolman como o peso vazio deste carretel. Deixe em branco para usar o padrão do filamento ou fabricante.',
     searchSpoolWeight: 'Pesquisar peso do carretel...',
     weightUsed: 'Usado',
     currentWeight: 'Peso Restante',
@@ -3830,7 +3833,7 @@ export default {
     spoolmanFilamentUnlinked: 'Vínculo com o catálogo de filamentos removido',
     noSpoolmanFilaments: 'Nenhum filamento encontrado no catálogo Spoolman',
     spoolmanFilamentColorSwatch: 'Cor do filamento',
-    spoolWeightManagedBySpoolman: 'O peso do carretel vazio é gerenciado por tipo de filamento no Spoolman',
+    spoolWeightManagedBySpoolman: 'O peso do carretel vazio é gerenciado no Spoolman.',
     spoolmanCatalogLoadFailed: 'Falha ao carregar catálogo de filamentos do Spoolman',
   },
 

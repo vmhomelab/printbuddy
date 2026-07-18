@@ -3611,6 +3611,9 @@ export default {
     pickColor: '選擇自訂顏色',
     labelWeight: '標籤重量',
     coreWeight: '空盤重量',
+    spoolmanSpoolWeight: '空線軸重量',
+    spoolmanSpoolWeightPlaceholder: '留空',
+    spoolmanSpoolWeightHelp: '選填。會寫入 Spoolman 作為此線軸的空線軸重量。留空則使用耗材或製造商預設值。',
     searchSpoolWeight: '搜尋耗材重量...',
     weightUsed: '已使用',
     currentWeight: '剩餘重量',
@@ -3829,7 +3832,7 @@ export default {
     spoolmanFilamentUnlinked: '已解除耗材目錄關聯',
     noSpoolmanFilaments: 'Spoolman 目錄中未找到耗材',
     spoolmanFilamentColorSwatch: '耗材顏色',
-    spoolWeightManagedBySpoolman: '空線軸重量在 Spoolman 中按耗材類型管理',
+    spoolWeightManagedBySpoolman: '空線軸重量由 Spoolman 管理。',
     spoolmanCatalogLoadFailed: '無法載入 Spoolman 耗材目錄',
   },
 

@@ -261,8 +261,33 @@ class TestSpoolmanInventoryCRUD:
         assert response.status_code == 200
         mock_spoolman_client.find_or_create_filament.assert_called_once()
         mock_spoolman_client.create_spool.assert_called_once()
+        assert mock_spoolman_client.create_spool.call_args.kwargs["spool_weight"] is None
         data = response.json()
         assert data["material"] == "PLA"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_create_spool_sends_optional_spool_weight(
+        self,
+        async_client: AsyncClient,
+        spoolman_settings,
+        mock_spoolman_client,
+    ):
+        """Optional Spoolman spool_weight is forwarded as per-spool empty weight."""
+        payload = {
+            "material": "PLA",
+            "subtype": "Basic",
+            "brand": "Bambu Lab",
+            "rgba": "FF0000FF",
+            "label_weight": 1000,
+            "weight_used": 0,
+            "spool_weight": 250,
+        }
+        response = await async_client.post("/api/v1/spoolman/inventory/spools", json=payload)
+
+        assert response.status_code == 200
+        mock_spoolman_client.create_spool.assert_called_once()
+        assert mock_spoolman_client.create_spool.call_args.kwargs["spool_weight"] == 250
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -274,13 +299,15 @@ class TestSpoolmanInventoryCRUD:
     ):
         """POST /spoolman/inventory/spools/bulk creates multiple spools."""
         payload = {
-            "spool": {"material": "PETG", "label_weight": 1000, "weight_used": 0},
+            "spool": {"material": "PETG", "label_weight": 1000, "weight_used": 0, "spool_weight": 196},
             "quantity": 3,
         }
         response = await async_client.post("/api/v1/spoolman/inventory/spools/bulk", json=payload)
 
         assert response.status_code == 200
         assert mock_spoolman_client.create_spool.call_count == 3
+        for call in mock_spoolman_client.create_spool.call_args_list:
+            assert call.kwargs["spool_weight"] == 196
 
     @pytest.mark.asyncio
     @pytest.mark.integration
