@@ -3434,15 +3434,6 @@ function PrinterCard({
                 <Video className="w-4 h-4 text-bambu-green" />
                 <span>{t('printers.camera')}</span>
               </div>
-              <button
-                type="button"
-                onClick={() => onToggleInlineCamera?.(printer.id)}
-                className="p-1 rounded text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary"
-                aria-label={t('printers.hideCameraInCard')}
-                title={t('printers.hideCameraInCard')}
-              >
-                <X className="w-4 h-4" />
-              </button>
             </div>
             <EmbeddedCameraViewer
               printerId={printer.id}

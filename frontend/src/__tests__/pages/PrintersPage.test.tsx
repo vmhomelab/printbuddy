@@ -497,6 +497,9 @@ describe('PrintersPage', () => {
       const viewer = await screen.findByTestId('inline-camera-viewer-1');
       expect(viewer).toBeInTheDocument();
       expect(viewer).toHaveStyle({ width: '100%', maxWidth: '100%' });
+      const cameraSection = await screen.findByTestId('printer-card-section-camera');
+      expect(within(cameraSection).queryByTitle('Hide camera in printer card')).not.toBeInTheDocument();
+      expect(within(cameraSection).getByTitle('Close')).toBeInTheDocument();
       const stream = screen.getByAltText('Camera stream') as HTMLImageElement;
       expect(stream.getAttribute('src')).toContain('/api/v1/printers/1/camera/stream');
       openSpy.mockRestore();
