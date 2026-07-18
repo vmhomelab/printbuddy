@@ -106,6 +106,17 @@ describe('Layout', () => {
       });
     });
 
+    it('links the Printbuddy logo back to the printers page', async () => {
+      window.history.replaceState({}, '', '/settings');
+
+      render(<Layout />);
+
+      const logo = await waitFor(() => document.querySelector('aside img[alt="Printbuddy"]')) as HTMLImageElement;
+      const logoLink = logo.closest('a');
+      expect(logoLink).toBeInTheDocument();
+      expect(logoLink).toHaveAttribute('href', '/');
+    });
+
     it('includes settings link', async () => {
       render(<Layout />);
 
