@@ -17,6 +17,6 @@ def test_default_print_complete_template_uses_grams_wording():
 def test_default_print_almost_done_template_exists():
     template = _template("print_almost_done")
 
-    assert template["name"] == "Print almost done"
-    assert template["title_template"] == "Print almost done."
+    assert template["name"] == "Print Almost Done"
+    assert template["title_template"] == "Print Almost Done"
     assert template["body_template"] == "{printer}: {filename}\nRemaining: {remaining_time}\n{finish_photo_url}"

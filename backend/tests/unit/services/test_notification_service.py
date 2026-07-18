@@ -225,7 +225,7 @@ class TestNotificationService:
             patch.object(service, "_format_eta", new_callable=AsyncMock) as mock_eta,
         ):
             mock_get.return_value = [mock_provider]
-            mock_build.return_value = ("Print almost done.", "Core One: Almost Finished")
+            mock_build.return_value = ("Print Almost Done", "Core One: Almost Finished")
             mock_eta.return_value = "12:34"
 
             await service.on_print_almost_done(

@@ -65,6 +65,50 @@ def test_prusalink_finished_job_state_emits_completed_even_without_full_progress
     ]
 
 
+def test_prusalink_fractional_progress_is_normalized_for_notifications_and_cards(monkeypatch):
+    """CORE One / PrusaLink can report job progress as 0..1; Printbuddy expects 0..100 percent."""
+    observed_states = []
+    client = PrusaLinkPrinterClient(
+        base_url="http://prusa.local",
+        password="secret",
+        on_state_change=lambda state: observed_states.append(state.progress),
+    )
+
+    statuses = iter(
+        [
+            {
+                "printer": {"state": "PRINTING"},
+                "job": {"id": 42, "progress": 0.995, "time_remaining": 120},
+            },
+        ]
+    )
+    job_details = iter(
+        [
+            {
+                "id": 42,
+                "state": "PRINTING",
+                "progress": 0.995,
+                "time_remaining": 120,
+                "file": {"display_name": "almost-done.bgcode"},
+            },
+        ]
+    )
+
+    def fake_get(path):
+        if path == "api/v1/status":
+            return next(statuses)
+        if path == "api/v1/job":
+            return next(job_details)
+        raise AssertionError(f"unexpected path: {path}")
+
+    monkeypatch.setattr(client, "_get", fake_get)
+
+    assert client.request_status_update() is True
+
+    assert client.state.progress == 99.5
+    assert observed_states == [99.5]
+
+
 def test_prusalink_upload_uses_discovered_usb_storage(monkeypatch, tmp_path):
     client = PrusaLinkPrinterClient(base_url="http://prusa.local", password="secret")
     local_file = tmp_path / "Love Paw Print.gcode"

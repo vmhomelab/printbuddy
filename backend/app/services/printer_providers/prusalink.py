@@ -89,9 +89,12 @@ def _minutes_from_seconds(value: Any) -> int:
 
 def _progress_percent(value: Any) -> float:
     try:
-        return float(value or 0.0)
+        progress = float(value or 0.0)
     except (TypeError, ValueError):
         return 0.0
+    if 0.0 <= progress <= 1.0:
+        progress *= 100.0
+    return max(0.0, min(progress, 100.0))
 
 
 def _prusalink_basic_auth(username: str | None, password: str | None) -> httpx.BasicAuth | None:
