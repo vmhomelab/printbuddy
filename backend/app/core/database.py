@@ -2648,6 +2648,34 @@ async def run_migrations(conn):
     await _migrate_drop_library_print_name(conn)
 
 
+def _repair_default_notification_template(existing_template, template_data: dict) -> bool:
+    """Repair app-owned default notification wording without clobbering custom templates."""
+    updated = False
+    legacy_brand = "Bam" + "buddy"
+
+    if legacy_brand in existing_template.title_template or legacy_brand in existing_template.body_template:
+        existing_template.title_template = template_data["title_template"]
+        existing_template.body_template = template_data["body_template"]
+        updated = True
+    elif (
+        existing_template.event_type == "print_complete"
+        and existing_template.body_template == "{printer}: {filename}\nTime: {duration}\nFilament: {filament_grams}g"
+    ):
+        existing_template.body_template = template_data["body_template"]
+        updated = True
+    elif (
+        existing_template.event_type == "print_almost_done"
+        and existing_template.name == "Print almost done"
+        and existing_template.title_template == "Print almost done."
+        and existing_template.body_template == template_data["body_template"]
+    ):
+        existing_template.name = template_data["name"]
+        existing_template.title_template = template_data["title_template"]
+        updated = True
+
+    return updated
+
+
 async def seed_notification_templates():
     """Seed default notification templates if they don't exist."""
     from sqlalchemy import select
@@ -2675,7 +2703,6 @@ async def seed_notification_templates():
             # templates from the pre-rename era. Only rows still marked as
             # defaults are migrated; user-customized templates are left alone.
             default_by_event = {template_data["event_type"]: template_data for template_data in DEFAULT_TEMPLATES}
-            legacy_brand = "Bam" + "buddy"
             stale_result = await session.execute(
                 select(NotificationTemplate).where(
                     NotificationTemplate.is_default.is_(True),
@@ -2684,15 +2711,7 @@ async def seed_notification_templates():
             )
             for existing_template in stale_result.scalars().all():
                 template_data = default_by_event[existing_template.event_type]
-                if legacy_brand in existing_template.title_template or legacy_brand in existing_template.body_template:
-                    existing_template.title_template = template_data["title_template"]
-                    existing_template.body_template = template_data["body_template"]
-                elif (
-                    existing_template.event_type == "print_complete"
-                    and existing_template.body_template
-                    == "{printer}: {filename}\nTime: {duration}\nFilament: {filament_grams}g"
-                ):
-                    existing_template.body_template = template_data["body_template"]
+                _repair_default_notification_template(existing_template, template_data)
 
             for template_data in DEFAULT_TEMPLATES:
                 if template_data["event_type"] not in existing_types:
