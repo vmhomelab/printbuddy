@@ -31,7 +31,7 @@ class _FakeProviderClient:
         self.start_options.append(kwargs)
         return True
 
-    def upload_file(self, local_path, remote_path: str, *, overwrite: bool = False) -> bool:
+    def upload_file(self, local_path, remote_path: str, *, overwrite: bool = False, storage: str | None = None) -> bool:  # noqa: ARG002
         self.uploaded_paths.append(remote_path)
         self.upload_overwrite_flags.append(overwrite)
         if self.upload_exception is not None:
@@ -48,7 +48,7 @@ class _FakeProviderClient:
         )
         return True
 
-    def list_files(self, _path: str = "/") -> list[dict[str, object]]:
+    def list_files(self, _path: str = "/", *, storage: str | None = None) -> list[dict[str, object]]:  # noqa: ARG002
         self.list_files_calls += 1
         if (
             self.reveal_file_after_list_calls is not None
@@ -58,7 +58,7 @@ class _FakeProviderClient:
             self.files = [self.revealed_file]
         return self.files
 
-    def delete_file(self, remote_path: str) -> bool:
+    def delete_file(self, remote_path: str, *, storage: str | None = None) -> bool:  # noqa: ARG002
         self.deleted_paths.append(remote_path)
         normalized = "/" + remote_path.strip("/")
         self.files = [

@@ -774,10 +774,15 @@ async def on_print_complete(
                     status,
                 )
 
-    if not archive_id and not results:
+    if not results:
         from backend.app.services import direct_print_tracking
 
-        direct_results = await direct_print_tracking.report_inventory_usage(printer_id, data, db)
+        direct_results = await direct_print_tracking.report_inventory_usage(
+            printer_id,
+            data,
+            db,
+            archive_id=archive_id,
+        )
         results.extend(direct_results)
 
     if results:

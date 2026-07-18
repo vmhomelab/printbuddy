@@ -3813,8 +3813,31 @@ async def on_print_complete(printer_id: int, data: dict):
     if archive_id:
         if data.get("status") == "completed":
             try:
-                await _report_spoolman_usage(printer_id, archive_id)
-                log_timing("Spoolman usage report")
+                direct_spoolman_results = []
+                from backend.app.services import direct_print_tracking
+
+                async with async_session() as db:
+                    direct_spoolman_results = await direct_print_tracking.report_spoolman_usage(
+                        printer_id,
+                        data,
+                        db,
+                        archive_id=archive_id,
+                    )
+                    if direct_spoolman_results:
+                        await db.commit()
+                if direct_spoolman_results:
+                    usage_results.extend(direct_spoolman_results)
+                    await ws_manager.broadcast(
+                        {
+                            "type": "spool_usage_logged",
+                            "printer_id": printer_id,
+                            "usage": direct_spoolman_results,
+                        }
+                    )
+                    log_timing("Spoolman direct-file usage report")
+                else:
+                    await _report_spoolman_usage(printer_id, archive_id)
+                    log_timing("Spoolman usage report")
             except Exception as e:
                 logger.warning("Spoolman usage reporting failed: %s", e)
         else:

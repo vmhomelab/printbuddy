@@ -4,8 +4,8 @@ Some providers, notably Elegoo SDCP / Centauri Carbon, can start a G-code file
 that already lives on the printer without a Printbuddy archive/3MF. In that
 workflow the normal 3MF usage tracker has no archive metadata to read, but the
 printer WebUI exposes a preflight file-info estimate (Cmd 260 / EstWeight).
-This module stores that short-lived estimate and applies it to the loaded
-single-spool assignment when the print completes.
+This module stores that short-lived estimate and applies it to the fallback
+archive plus the loaded single-spool assignment when the print completes.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ from pathlib import PurePosixPath
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.models.archive import PrintArchive
 from backend.app.models.spool import Spool
 from backend.app.models.spool_assignment import SpoolAssignment
 from backend.app.models.spool_usage_history import SpoolUsageHistory
@@ -106,13 +107,53 @@ def pop_direct_print_metadata(printer_id: int, filename: str | None = None) -> D
     return _direct_prints.pop(printer_id, None)
 
 
+async def _apply_metadata_to_archive(
+    metadata: DirectPrintMetadata,
+    archive_id: int | None,
+    db: AsyncSession,
+) -> None:
+    if not archive_id:
+        return
+    archive = await db.get(PrintArchive, archive_id)
+    if archive is None:
+        return
+
+    if not archive.filament_used_grams:
+        archive.filament_used_grams = metadata.estimated_weight_grams
+    if metadata.estimated_time_seconds and not archive.print_time_seconds:
+        archive.print_time_seconds = metadata.estimated_time_seconds
+
+    extra_data = dict(archive.extra_data or {}) if isinstance(archive.extra_data, dict) else {}
+    extra_data["file_metadata"] = {
+        **(extra_data.get("file_metadata") if isinstance(extra_data.get("file_metadata"), dict) else {}),
+        "source": "elegoo_sdcp_file_info",
+        "filename": metadata.filename,
+        "filament_used_grams": metadata.estimated_weight_grams,
+        "print_time_seconds": metadata.estimated_time_seconds,
+    }
+    archive.extra_data = extra_data
+    await db.commit()
+    logger.info(
+        "Direct print %s: applied %.2fg estimate to archive %s",
+        metadata.filename,
+        metadata.estimated_weight_grams,
+        archive_id,
+    )
+
+
 async def _get_spoolman_client_with_fallback():
     from backend.app.services.spoolman_tracking import _get_spoolman_client_with_fallback as _get_client
 
     return await _get_client()
 
 
-async def report_spoolman_usage(printer_id: int, data: dict, db: AsyncSession) -> list[dict]:
+async def report_spoolman_usage(
+    printer_id: int,
+    data: dict,
+    db: AsyncSession,
+    *,
+    archive_id: int | None = None,
+) -> list[dict]:
     """Report direct print EstWeight to the loaded Spoolman spool assignment."""
     filename = data.get("filename") or data.get("subtask_name")
     metadata = pop_direct_print_metadata(printer_id, filename)
@@ -128,6 +169,8 @@ async def report_spoolman_usage(printer_id: int, data: dict, db: AsyncSession) -
             status,
         )
         return []
+
+    await _apply_metadata_to_archive(metadata, archive_id, db)
 
     weight_used = metadata.estimated_weight_grams
     if weight_used <= 0:
@@ -160,18 +203,25 @@ async def report_spoolman_usage(printer_id: int, data: dict, db: AsyncSession) -
         assignment.spoolman_spool_id,
         printer_id,
     )
-    return [
-        {
-            "spoolman_spool_id": assignment.spoolman_spool_id,
-            "ams_id": _LOADED_SPOOL_AMS_ID,
-            "tray_id": _LOADED_SPOOL_TRAY_ID,
-            "weight_used": weight_used,
-            "source": "direct_file_estimate",
-        }
-    ]
+    result = {
+        "spoolman_spool_id": assignment.spoolman_spool_id,
+        "ams_id": _LOADED_SPOOL_AMS_ID,
+        "tray_id": _LOADED_SPOOL_TRAY_ID,
+        "weight_used": weight_used,
+        "source": "direct_file_estimate",
+    }
+    if archive_id:
+        result["archive_id"] = archive_id
+    return [result]
 
 
-async def report_inventory_usage(printer_id: int, data: dict, db: AsyncSession) -> list[dict]:
+async def report_inventory_usage(
+    printer_id: int,
+    data: dict,
+    db: AsyncSession,
+    *,
+    archive_id: int | None = None,
+) -> list[dict]:
     """Debit the loaded internal-inventory spool from a direct print estimate."""
     filename = data.get("filename") or data.get("subtask_name")
     metadata = pop_direct_print_metadata(printer_id, filename)
@@ -187,6 +237,8 @@ async def report_inventory_usage(printer_id: int, data: dict, db: AsyncSession) 
             status,
         )
         return []
+
+    await _apply_metadata_to_archive(metadata, archive_id, db)
 
     weight_used = metadata.estimated_weight_grams
     if weight_used <= 0:
@@ -222,7 +274,7 @@ async def report_inventory_usage(printer_id: int, data: dict, db: AsyncSession) 
         percent_used=percent_used,
         status=status,
         cost=cost,
-        archive_id=None,
+        archive_id=archive_id,
     )
     db.add(history)
     await db.commit()
@@ -234,13 +286,15 @@ async def report_inventory_usage(printer_id: int, data: dict, db: AsyncSession) 
         spool.id,
         printer_id,
     )
-    return [
-        {
-            "spool_id": spool.id,
-            "ams_id": _LOADED_SPOOL_AMS_ID,
-            "tray_id": _LOADED_SPOOL_TRAY_ID,
-            "weight_used": weight_used,
-            "percent_used": percent_used,
-            "source": "direct_file_estimate",
-        }
-    ]
+    result = {
+        "spool_id": spool.id,
+        "ams_id": _LOADED_SPOOL_AMS_ID,
+        "tray_id": _LOADED_SPOOL_TRAY_ID,
+        "weight_used": weight_used,
+        "percent_used": percent_used,
+        "source": "direct_file_estimate",
+        "cost": cost,
+    }
+    if archive_id:
+        result["archive_id"] = archive_id
+    return [result]
