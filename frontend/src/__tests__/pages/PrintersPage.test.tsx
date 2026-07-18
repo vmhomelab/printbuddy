@@ -73,6 +73,8 @@ describe('PrintersPage', () => {
   beforeEach(() => {
     window.history.pushState({}, '', '/');
     localStorage.removeItem('printerCardSize');
+    localStorage.removeItem('embeddedCameraState_1');
+    localStorage.removeItem('embeddedCameraInlineState_1');
     setAuthToken(null);
 
     server.use(
@@ -452,7 +454,9 @@ describe('PrintersPage', () => {
       await user.click(cameraButton);
 
       expect(openSpy).not.toHaveBeenCalled();
-      expect(await screen.findByTestId('inline-camera-viewer-1')).toBeInTheDocument();
+      const viewer = await screen.findByTestId('inline-camera-viewer-1');
+      expect(viewer).toBeInTheDocument();
+      expect(viewer).toHaveStyle({ width: '100%', maxWidth: '100%' });
       const stream = screen.getByAltText('Camera stream') as HTMLImageElement;
       expect(stream.getAttribute('src')).toContain('/api/v1/printers/1/camera/stream');
       openSpy.mockRestore();
