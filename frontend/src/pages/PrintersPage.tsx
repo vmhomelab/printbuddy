@@ -1901,6 +1901,9 @@ function PrinterCard({
     : undefined;
   const loadedSpool = spoolmanEnabled ? loadedSpoolmanSpool : loadedLocalSpoolAssignment?.spool;
   const hasLoadedSpoolAssignment = spoolmanEnabled ? !!loadedSpoolmanSlotAssignment : !!loadedLocalSpoolAssignment;
+  const loadedSpoolColor = loadedSpool?.rgba
+    ? `#${loadedSpool.rgba.replace(/^#/, '').slice(0, 6)}`
+    : undefined;
 
   // Collect loaded filament types for queue widget filtering
   const loadedFilamentTypes = useMemo(() => {
@@ -3473,12 +3476,21 @@ function PrinterCard({
                     <div className="min-w-0">
                       <p className="text-[10px] uppercase tracking-wide text-bambu-gray">Loaded spool</p>
                       {loadedSpool ? (
-                        <p className="text-xs text-white truncate">
-                          {loadedSpool.brand ? `${loadedSpool.brand} ` : ''}
-                          {loadedSpool.material}
-                          {loadedSpool.subtype ? ` ${loadedSpool.subtype}` : ''}
-                          {loadedSpool.color_name ? ` · ${loadedSpool.color_name}` : ''}
-                        </p>
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          {loadedSpoolColor && (
+                            <span
+                              aria-label="Loaded spool color"
+                              className="w-2.5 h-2.5 rounded-full border border-black/30 flex-shrink-0"
+                              style={{ backgroundColor: loadedSpoolColor }}
+                            />
+                          )}
+                          <p className="text-xs text-white truncate">
+                            {loadedSpool.brand ? `${loadedSpool.brand} ` : ''}
+                            {loadedSpool.material}
+                            {loadedSpool.subtype ? ` ${loadedSpool.subtype}` : ''}
+                            {loadedSpool.color_name ? ` · ${loadedSpool.color_name}` : ''}
+                          </p>
+                        </div>
                       ) : (
                         <p className="text-xs text-bambu-gray">No inventory spool selected</p>
                       )}

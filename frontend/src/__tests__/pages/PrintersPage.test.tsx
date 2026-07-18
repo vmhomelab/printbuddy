@@ -1834,6 +1834,7 @@ describe('PrintersPage', () => {
       await screen.findByText('X1 Carbon');
       await screen.findByText('Loaded spool');
       expect(screen.getByText(/Prusament PLA Galaxy Black/i)).toBeInTheDocument();
+      expect(screen.getByLabelText('Loaded spool color')).toHaveStyle({ backgroundColor: '#111111' });
       expect(screen.getByRole('button', { name: 'Change' })).toBeInTheDocument();
 
       unmount();
@@ -1848,10 +1849,11 @@ describe('PrintersPage', () => {
       await waitFor(() => expect(screen.getAllByText(/25/).length).toBeGreaterThan(0));
       await screen.findByText('Loaded spool');
       expect(screen.getByText(/Prusament PLA Galaxy Black/i)).toBeInTheDocument();
+      expect(screen.getByLabelText('Loaded spool color')).toHaveStyle({ backgroundColor: '#111111' });
       expect(screen.getByRole('button', { name: 'Change' })).toBeInTheDocument();
     });
 
-    it('assigns a Spoolman spool to the loaded-spool virtual slot in Spoolman mode', async () => {
+    it('shows the Spoolman loaded-spool color dot and assigns through the virtual slot', async () => {
       const user = userEvent.setup();
       let postedBody: Record<string, unknown> | null = null;
 
@@ -1885,7 +1887,9 @@ describe('PrintersPage', () => {
             data_origin: 'spoolman',
           },
         ])),
-        http.get('/api/v1/spoolman/inventory/slot-assignments/all', () => HttpResponse.json([])),
+        http.get('/api/v1/spoolman/inventory/slot-assignments/all', () => HttpResponse.json([
+          { printer_id: 1, printer_name: 'X1 Carbon', ams_id: 255, tray_id: 0, spoolman_spool_id: 321, ams_label: null },
+        ])),
         http.post('/api/v1/spoolman/inventory/slot-assignments', async ({ request }) => {
           postedBody = await request.json() as Record<string, unknown>;
           return HttpResponse.json({ id: 321, data_origin: 'spoolman' });
@@ -1896,7 +1900,9 @@ describe('PrintersPage', () => {
       render(<PrintersPage />);
 
       await screen.findByText('Loaded spool');
-      await user.click(screen.getByRole('button', { name: 'Assign' }));
+      expect(screen.getByText(/Polymaker PETG Matte/i)).toBeInTheDocument();
+      expect(screen.getByLabelText('Loaded spool color')).toHaveStyle({ backgroundColor: '#222222' });
+      await user.click(screen.getByRole('button', { name: 'Change' }));
       await screen.findByText('Polymaker PETG Matte');
       await user.click(screen.getByRole('button', { name: /Polymaker PETG Matte/i }));
       await user.click(screen.getByRole('button', { name: 'Assign Spool' }));
