@@ -566,6 +566,12 @@ class ElegooSDCPPrinterClient:
         if not self.mainboard_id:
             self.discover()
         bed_levelling = bool(kwargs.get("bed_levelling", True))
+        print_platform_type = int(kwargs.get("print_platform_type", 0))
+        if print_platform_type not in (0, 1):
+            logger.warning(
+                "Invalid Elegoo SDCP PrintPlatformType %s; falling back to textured plate", print_platform_type
+            )
+            print_platform_type = 0
         request_id = secrets.token_hex(16)
         # Match the CC1 WebUI's hardware-captured start command shape. The
         # firmware accepts the older/minimal SDCP command, but can skip the
@@ -578,7 +584,7 @@ class ElegooSDCPPrinterClient:
                     "Filename": filename,
                     "StartLayer": 0,
                     "Calibration_switch": 1 if bed_levelling else 0,
-                    "PrintPlatformType": 0,
+                    "PrintPlatformType": print_platform_type,
                     "Tlp_Switch": 0,
                 },
                 "From": 1,

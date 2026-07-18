@@ -256,6 +256,24 @@ def test_elegoo_sdcp_start_print_can_disable_bed_levelling(monkeypatch):
     assert sent_commands[0]["Data"]["Data"]["Calibration_switch"] == 0
 
 
+def test_elegoo_sdcp_start_print_uses_requested_print_platform_type(monkeypatch):
+    sent_commands = []
+    client = ElegooSDCPPrinterClient("192.168.1.181")
+    client.printer_id = "printer-id"
+    client.mainboard_id = "mainboard-id"
+    monkeypatch.setattr("backend.app.services.printer_providers.elegoo_sdcp.time.sleep", lambda seconds: None)
+    monkeypatch.setattr(client, "_confirm_print_started", lambda filename: True)
+    monkeypatch.setattr(
+        client,
+        "_send_command",
+        lambda command: sent_commands.append(command) or {"Data": {"Data": {"Ack": 0}}},
+    )
+
+    assert client.start_print("/local/calibration.gcode", print_platform_type=1) is True
+
+    assert sent_commands[0]["Data"]["Data"]["PrintPlatformType"] == 1
+
+
 def test_elegoo_sdcp_start_print_reconciles_command_timeout_with_active_status(monkeypatch):
     client = ElegooSDCPPrinterClient("192.168.1.181")
     client.printer_id = "printer-id"

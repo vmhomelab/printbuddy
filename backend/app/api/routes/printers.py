@@ -1441,6 +1441,8 @@ async def upload_printer_file(
 async def start_printer_file(
     printer_id: int,
     path: str,
+    bed_levelling: bool | None = Query(default=None),
+    print_platform_type: int | None = Query(default=None, ge=0, le=1),
     _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_CONTROL),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1452,7 +1454,12 @@ async def start_printer_file(
 
     provider_client = _provider_for_printer(printer)
     if provider_client is not None:
-        success = provider_client.start_print(path)
+        start_options = {}
+        if bed_levelling is not None:
+            start_options["bed_levelling"] = bed_levelling
+        if print_platform_type is not None:
+            start_options["print_platform_type"] = print_platform_type
+        success = provider_client.start_print(path, **start_options)
     else:
         success = printer_manager.start_print(printer_id, path)
 

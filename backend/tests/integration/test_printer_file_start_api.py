@@ -18,9 +18,11 @@ class _FakeProviderClient:
         self.revealed_file: dict[str, object] | None = None
         self.preserve_files_on_upload = False
         self.deleted_paths: list[str] = []
+        self.start_options: list[dict[str, object]] = []
 
-    def start_print(self, path: str) -> bool:
+    def start_print(self, path: str, **kwargs) -> bool:
         self.started_paths.append(path)
+        self.start_options.append(kwargs)
         return True
 
     def upload_file(self, local_path, remote_path: str, *, overwrite: bool = False) -> bool:
@@ -83,6 +85,49 @@ async def test_start_printer_file_delegates_to_provider_client(
     assert response.status_code == 200
     assert response.json() == {"status": "started", "path": "/Love Paw Print.gcode"}
     assert fake_client.started_paths == ["/Love Paw Print.gcode"]
+    assert fake_client.start_options == [{}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_start_printer_file_passes_elegoo_cc1_start_options_to_provider(
+    async_client: AsyncClient,
+    printer_factory,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    printer = await printer_factory(provider="elegoo_sdcp", model="Elegoo Centauri Carbon")
+    fake_client = _FakeProviderClient()
+
+    from backend.app.api.routes import printers as printer_routes
+
+    monkeypatch.setattr(printer_routes, "_provider_for_printer", lambda _printer: fake_client)
+
+    response = await async_client.post(
+        f"/api/v1/printers/{printer.id}/files/start",
+        params={
+            "path": "/local/Love Paw Print.gcode",
+            "bed_levelling": "true",
+            "print_platform_type": "1",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "started", "path": "/local/Love Paw Print.gcode"}
+    assert fake_client.started_paths == ["/local/Love Paw Print.gcode"]
+    assert fake_client.start_options == [{"bed_levelling": True, "print_platform_type": 1}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_start_printer_file_rejects_invalid_print_platform_type(async_client: AsyncClient, printer_factory):
+    printer = await printer_factory(provider="elegoo_sdcp", model="Elegoo Centauri Carbon")
+
+    response = await async_client.post(
+        f"/api/v1/printers/{printer.id}/files/start",
+        params={"path": "/local/Love Paw Print.gcode", "print_platform_type": "2"},
+    )
+
+    assert response.status_code == 422
 
 
 @pytest.mark.asyncio
