@@ -161,6 +161,46 @@ describe('PrintersPage', () => {
       expect(screen.queryByRole('button', { name: 'Print' })).not.toBeInTheDocument();
     });
 
+
+    it('shows the Files button on PrusaLink printer cards and opens the file manager', async () => {
+      const user = userEvent.setup();
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          ...mockPrinters[0],
+          id: 7,
+          name: 'Prusa CORE One',
+          provider: 'prusalink',
+          model: 'Prusa CORE One',
+        }])),
+        http.get('/api/v1/printers/7/storage', () => HttpResponse.json({
+          used_bytes: null,
+          free_bytes: null,
+          storages: [
+            { id: 'usb', type: 'USB', name: 'USB', path: '/usb', available: true },
+          ],
+        })),
+        http.get('/api/v1/printers/7/files', ({ request }) => {
+          const url = new URL(request.url);
+          return HttpResponse.json({
+            path: url.searchParams.get('path') || '/',
+            storage: url.searchParams.get('storage'),
+            files: [],
+          });
+        }),
+      );
+
+      render(<PrintersPage />);
+
+      await screen.findAllByText('Prusa CORE One');
+      expect(await screen.findByRole('button', { name: 'Files' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Upload' })).toBeInTheDocument();
+
+      await user.click(screen.getByRole('button', { name: 'Files' }));
+
+      expect(await screen.findByText('File Manager')).toBeInTheDocument();
+      expect(await screen.findByRole('combobox', { name: /Storage/i })).toHaveValue('usb');
+    });
+
     it('shows a PrusaLink badge that opens the printer UI in a new tab', async () => {
       server.use(
         http.get('/api/v1/printers/', () => HttpResponse.json([{

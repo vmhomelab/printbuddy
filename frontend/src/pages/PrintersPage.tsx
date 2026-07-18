@@ -5530,7 +5530,7 @@ function PrinterCard({
                   </Button>
                 </div>
               )}
-              {isBambuProvider && (
+              {(isBambuProvider || printer.provider === 'prusalink') && (
                 <Button
                   variant="secondary"
                   size="sm"
