@@ -3,6 +3,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import userEvent from '@testing-library/user-event';
 import { screen, waitFor } from '@testing-library/react';
 import { render } from '../utils';
 import { Layout } from '../../components/Layout';
@@ -107,6 +108,7 @@ describe('Layout', () => {
     });
 
     it('links the Printbuddy logo back to the printers page', async () => {
+      const user = userEvent.setup();
       window.history.replaceState({}, '', '/settings');
 
       render(<Layout />);
@@ -115,6 +117,10 @@ describe('Layout', () => {
       const logoLink = logo.closest('a');
       expect(logoLink).toBeInTheDocument();
       expect(logoLink).toHaveAttribute('href', '/');
+
+      await user.click(logoLink!);
+
+      expect(window.location.pathname).toBe('/');
     });
 
     it('includes settings link', async () => {

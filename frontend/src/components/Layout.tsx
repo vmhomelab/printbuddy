@@ -507,7 +507,8 @@ export function Layout() {
           <NavLink
             to="/"
             aria-label={t('nav.printers')}
-            className="ml-3 rounded focus:outline-none focus:ring-2 focus:ring-bambu-green"
+            title={t('nav.printers')}
+            className="ml-3 flex h-full items-center rounded px-1 cursor-pointer focus:outline-none focus:ring-2 focus:ring-bambu-green"
           >
             <img
               src={appAssetPath(mode === 'dark' ? '/img/printbuddy_logo_dark.png' : '/img/printbuddy_logo_light.png')}
@@ -539,8 +540,11 @@ export function Layout() {
           <NavLink
             to="/"
             aria-label={t('nav.printers')}
+            title={t('nav.printers')}
             onClick={() => setMobileDrawerOpen(false)}
-            className="rounded focus:outline-none focus:ring-2 focus:ring-bambu-green"
+            className={`flex items-center justify-center rounded cursor-pointer focus:outline-none focus:ring-2 focus:ring-bambu-green ${
+              isSidebarCompact || sidebarExpanded ? 'h-24 w-full' : 'h-12 w-12'
+            }`}
           >
             <img
               src={appAssetPath(sidebarBrandImagePath)}
