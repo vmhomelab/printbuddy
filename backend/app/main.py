@@ -604,6 +604,52 @@ def register_expected_print(
     )
 
 
+def _metadata_float(value) -> float | None:
+    try:
+        if value is None or value == "":
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+async def _calculate_loaded_spool_cost(db, printer_id: int, grams: float | None) -> float | None:
+    if grams is None or grams <= 0:
+        return None
+
+    from backend.app.api.routes.settings import get_setting
+    from backend.app.models.spool import Spool
+    from backend.app.models.spool_assignment import SpoolAssignment
+
+    cost_per_kg = None
+    result = await db.execute(
+        select(SpoolAssignment).where(
+            SpoolAssignment.printer_id == printer_id,
+            SpoolAssignment.ams_id == -1,
+            SpoolAssignment.tray_id == 0,
+        )
+    )
+    assignment = result.scalar_one_or_none()
+    if assignment:
+        spool = await db.get(Spool, assignment.spool_id)
+        if spool and spool.cost_per_kg is not None:
+            cost_per_kg = spool.cost_per_kg
+
+    if cost_per_kg is None:
+        default_cost_setting = await get_setting(db, "default_filament_cost")
+        cost_per_kg = float(default_cost_setting) if default_cost_setting else 25.0
+
+    return round((grams / 1000.0) * cost_per_kg, 2) if cost_per_kg > 0 else None
+
+
+def _prusalink_file_metadata_for_archive(printer, data: dict) -> dict:
+    """Return normalized PrusaLink file metadata only for PrusaLink fallback archives."""
+    if getattr(printer, "provider", None) != "prusalink":
+        return {}
+    metadata = data.get("file_metadata")
+    return metadata if isinstance(metadata, dict) else {}
+
+
 def _compute_run_filament_grams(
     status: str,
     archive_filament_used_grams: float | None,
@@ -2687,6 +2733,18 @@ async def on_print_start(printer_id: int, data: dict):
                     if mc_remaining and isinstance(mc_remaining, (int, float)) and mc_remaining > 0:
                         fallback_print_time = int(mc_remaining * 60)
 
+                file_metadata = _prusalink_file_metadata_for_archive(printer, data)
+                metadata_filament_grams = _metadata_float(file_metadata.get("filament_used_grams"))
+                metadata_cost = _metadata_float(file_metadata.get("filament_cost"))
+                if metadata_cost is None and metadata_filament_grams is not None:
+                    metadata_cost = await _calculate_loaded_spool_cost(db, printer_id, metadata_filament_grams)
+                metadata_print_time_raw = _metadata_float(file_metadata.get("print_time_seconds"))
+                metadata_print_time = int(metadata_print_time_raw) if metadata_print_time_raw is not None else None
+
+                extra_data = {"no_3mf_available": True, "original_subtask": subtask_name, "_print_data": data}
+                if file_metadata:
+                    extra_data["file_metadata"] = file_metadata
+
                 # Create minimal archive entry
                 fallback_archive = PrintArchive(
                     printer_id=printer_id,
@@ -2694,11 +2752,14 @@ async def on_print_start(printer_id: int, data: dict):
                     file_path="",  # Empty - no 3MF file available
                     file_size=0,
                     print_name=print_name,
-                    print_time_seconds=fallback_print_time,
+                    print_time_seconds=metadata_print_time or fallback_print_time,
+                    filament_used_grams=metadata_filament_grams,
+                    filament_type=file_metadata.get("filament_type"),
                     status="printing",
                     started_at=datetime.now(timezone.utc),
                     subtask_id=subtask_id,
-                    extra_data={"no_3mf_available": True, "original_subtask": subtask_name, "_print_data": data},
+                    cost=metadata_cost,
+                    extra_data=extra_data,
                 )
 
                 db.add(fallback_archive)

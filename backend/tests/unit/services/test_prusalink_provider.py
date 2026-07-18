@@ -1,7 +1,47 @@
 import httpx
 
 from backend.app.services.printer_providers import prusalink
-from backend.app.services.printer_providers.prusalink import PrusaLinkPrinterClient
+from backend.app.services.printer_providers.prusalink import PrusaLinkPrinterClient, _normalize_prusalink_file_meta
+
+
+def test_prusalink_job_file_meta_is_normalized_into_lifecycle_payload():
+    client = PrusaLinkPrinterClient(base_url="http://prusa.local", password="secret")
+
+    client._apply_job_detail(
+        {
+            "id": 42,
+            "state": "PRINTING",
+            "progress": 12.5,
+            "file": {
+                "display_name": "book_stand.bgcode",
+                "meta": {
+                    "filament_type": "PETG",
+                    "filament used [g]": 96,
+                    "filament used [mm]": 31470,
+                    "filament cost": 2.4,
+                    "estimated_print_time": 18171,
+                    "filament used [g] per tool": [96, 0],
+                    "filament_type per tool": ["PETG", "PLA"],
+                },
+            },
+        }
+    )
+
+    payload = client._build_lifecycle_payload()
+
+    assert payload["filename"] == "book_stand.bgcode"
+    assert payload["file_metadata"]["source"] == "prusalink_file_meta"
+    assert payload["file_metadata"]["filament_used_grams"] == 96.0
+    assert payload["file_metadata"]["filament_used_mm"] == 31470.0
+    assert payload["file_metadata"]["filament_type"] == "PETG"
+    assert payload["file_metadata"]["filament_cost"] == 2.4
+    assert payload["file_metadata"]["print_time_seconds"] == 18171
+    assert payload["file_metadata"]["filament_slots"] == [{"slot_id": 1, "used_g": 96.0, "type": "PETG"}]
+
+
+def test_prusalink_file_meta_normalizer_handles_empty_meta():
+    assert _normalize_prusalink_file_meta(None) == {}
+    assert _normalize_prusalink_file_meta({}) == {}
 
 
 def test_prusalink_send_gcode_returns_false_when_control_endpoint_is_missing(monkeypatch):

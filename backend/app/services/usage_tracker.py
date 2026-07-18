@@ -406,6 +406,104 @@ async def on_print_start(printer_id: int, data: dict, printer_manager, db: Async
         logger.debug("[UsageTracker] No valid remain%% for printer %d, 3MF fallback available", printer_id)
 
 
+async def _track_from_archive_estimate(
+    printer_id: int,
+    archive_id: int,
+    status: str,
+    print_name: str,
+    db: AsyncSession,
+    *,
+    progress: float = 0.0,
+    default_filament_cost: float = 0.0,
+    spool_assignments: dict[tuple[int, int], int] | None = None,
+    print_started_at: datetime | None = None,
+) -> list[dict]:
+    """Track PrusaLink no-3MF prints from archive-level slicer estimates.
+
+    This is deliberately narrower than the 3MF path: it only runs for fallback
+    archives carrying normalized PrusaLink file metadata. Other providers keep
+    their existing 3MF/AMS/Spoolman paths.
+    """
+    from backend.app.models.archive import PrintArchive
+
+    archive = await db.get(PrintArchive, archive_id)
+    if not archive or archive.file_path:
+        return []
+    metadata = archive.extra_data.get("file_metadata") if isinstance(archive.extra_data, dict) else None
+    if not isinstance(metadata, dict) or metadata.get("source") != "prusalink_file_meta":
+        return []
+    if not archive.filament_used_grams or archive.filament_used_grams <= 0:
+        return []
+
+    scale = 1.0 if status == "completed" else max(0.0, min((progress or 0.0) / 100.0, 1.0))
+    weight_grams = archive.filament_used_grams * scale
+    if weight_grams <= 0:
+        return []
+
+    spool_id = await _resolve_spool_id_for_tray(
+        printer_id=printer_id,
+        ams_id=-1,
+        tray_id=0,
+        db=db,
+        spool_assignments_snapshot=spool_assignments,
+        print_started_at=print_started_at,
+    )
+    if spool_id is None:
+        logger.info(
+            "[UsageTracker] Archive estimate: no loaded spool assignment for printer %d, skipping %.1fg",
+            printer_id,
+            weight_grams,
+        )
+        return []
+
+    spool = await db.get(Spool, spool_id)
+    if not spool:
+        return []
+
+    spool.weight_used = (spool.weight_used or 0) + weight_grams
+    spool.last_used = datetime.now(timezone.utc)
+
+    cost = None
+    cost_per_kg = spool.cost_per_kg if spool.cost_per_kg is not None else default_filament_cost
+    if cost_per_kg > 0:
+        cost = round((weight_grams / 1000.0) * cost_per_kg, 2)
+
+    percent = round(weight_grams / (spool.label_weight or 1000) * 100)
+    history = SpoolUsageHistory(
+        spool_id=spool.id,
+        printer_id=printer_id,
+        print_name=print_name,
+        weight_used=round(weight_grams, 1),
+        percent_used=percent,
+        status=status,
+        cost=cost,
+        archive_id=archive_id,
+    )
+    db.add(history)
+
+    logger.info(
+        "[UsageTracker] Archive estimate: spool %d consumed %.1fg on printer %d (PrusaLink fallback, %s)",
+        spool.id,
+        weight_grams,
+        printer_id,
+        status,
+    )
+    return [
+        {
+            "spool_id": spool.id,
+            "weight_used": round(weight_grams, 1),
+            "percent_used": percent,
+            "ams_id": -1,
+            "tray_id": 0,
+            "material": spool.material,
+            "cost": cost,
+            "slot_id": None,
+            "color": _spool_color_to_hex(spool.rgba),
+            "source": "archive_estimate",
+        }
+    ]
+
+
 async def on_print_complete(
     printer_id: int,
     data: dict,
@@ -494,6 +592,20 @@ async def on_print_complete(
             threemf_path=threemf_path,
         )
         results.extend(threemf_results)
+
+    if archive_id and not results:
+        archive_estimate_results = await _track_from_archive_estimate(
+            printer_id,
+            archive_id,
+            status,
+            print_name,
+            db,
+            progress=data.get("progress") or data.get("last_progress") or 0.0,
+            default_filament_cost=default_filament_cost,
+            spool_assignments=session.spool_assignments if session else None,
+            print_started_at=session.started_at if session else None,
+        )
+        results.extend(archive_estimate_results)
 
     # --- Path 2 (FALLBACK): AMS remain% delta (only for trays not handled by 3MF) ---
     if session and session.tray_remain_start:

@@ -97,6 +97,64 @@ def _progress_percent(value: Any) -> float:
     return max(0.0, min(progress, 100.0))
 
 
+def _float_or_none(value: Any) -> float | None:
+    try:
+        if value is None or value == "":
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_prusalink_file_meta(meta: dict[str, Any] | None) -> dict[str, Any]:
+    """Map PrusaLink's G-code metadata keys to Printbuddy's canonical fields."""
+    if not isinstance(meta, dict) or not meta:
+        return {}
+
+    normalized: dict[str, Any] = {"source": "prusalink_file_meta", "raw_prusalink_meta": meta}
+
+    grams = _float_or_none(meta.get("filament used [g]"))
+    if grams is not None:
+        normalized["filament_used_grams"] = grams
+
+    millimeters = _float_or_none(meta.get("filament used [mm]"))
+    if millimeters is not None:
+        normalized["filament_used_mm"] = millimeters
+
+    cubic_cm = _float_or_none(meta.get("filament used [cm3]"))
+    if cubic_cm is not None:
+        normalized["filament_used_cm3"] = cubic_cm
+
+    filament_cost = _float_or_none(meta.get("filament cost"))
+    if filament_cost is not None:
+        normalized["filament_cost"] = filament_cost
+
+    filament_type = meta.get("filament_type") or meta.get("material_name")
+    if filament_type:
+        normalized["filament_type"] = str(filament_type)
+
+    estimated_time = _float_or_none(meta.get("estimated_print_time") or meta.get("print_time"))
+    if estimated_time is not None:
+        normalized["print_time_seconds"] = int(estimated_time)
+
+    per_tool_grams = meta.get("filament used [g] per tool")
+    per_tool_types = meta.get("filament_type per tool")
+    if isinstance(per_tool_grams, list):
+        slots: list[dict[str, Any]] = []
+        for idx, raw_grams in enumerate(per_tool_grams):
+            tool_grams = _float_or_none(raw_grams)
+            if tool_grams is None or tool_grams <= 0:
+                continue
+            slot: dict[str, Any] = {"slot_id": idx + 1, "used_g": round(tool_grams, 2)}
+            if isinstance(per_tool_types, list) and idx < len(per_tool_types) and per_tool_types[idx]:
+                slot["type"] = str(per_tool_types[idx])
+            slots.append(slot)
+        if slots:
+            normalized["filament_slots"] = slots
+
+    return normalized
+
+
 def _prusalink_basic_auth(username: str | None, password: str | None) -> httpx.BasicAuth | None:
     if not password:
         return None
@@ -407,13 +465,17 @@ class PrusaLinkPrinterClient:
 
     def _build_lifecycle_payload(self) -> dict[str, Any]:
         filename = self.state.subtask_name or self.state.current_print or self.state.gcode_file or "Unknown"
-        return {
+        payload = {
             "filename": filename,
             "subtask_name": filename,
             "progress": self.state.progress,
             "remaining_time": self.state.remaining_time * 60 if self.state.remaining_time else None,
             "status": self.state.state,
         }
+        file_metadata = self.state.raw_data.get("file_metadata") if isinstance(self.state.raw_data, dict) else None
+        if file_metadata:
+            payload["file_metadata"] = file_metadata
+        return payload
 
     def _emit_status_callbacks(self, previous_state: str | None) -> None:
         if self.on_state_change:
@@ -519,6 +581,10 @@ class PrusaLinkPrinterClient:
             self.state.gcode_file = str(filename)
             self.state.current_print = str(filename)
             self.state.subtask_name = str(filename)
+        normalized_meta = _normalize_prusalink_file_meta(file_info.get("meta"))
+        if normalized_meta:
+            self.state.raw_data["file_metadata"] = normalized_meta
+            self.state.raw_data["prusalink_file_meta"] = normalized_meta.get("raw_prusalink_meta")
 
     def send_gcode(self, script: str) -> bool:
         """Map Printbuddy's limited control G-code scripts to PrusaLink control endpoints.
