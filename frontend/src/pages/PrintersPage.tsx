@@ -1,13 +1,14 @@
 import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback, type ReactNode } from 'react';
 import {
   DndContext,
+  DragOverlay,
   KeyboardSensor,
   PointerSensor,
   closestCenter,
   useSensor,
   useSensors,
 } from '@dnd-kit/core';
-import type { DragEndEvent } from '@dnd-kit/core';
+import type { DragEndEvent, DragStartEvent } from '@dnd-kit/core';
 import {
   SortableContext,
   arrayMove,
@@ -204,12 +205,12 @@ function SortablePrinterCardSection({
       ref={setNodeRef}
       data-testid={`printer-card-section-${id}`}
       style={{
-        transform: CSS.Transform.toString(transform),
-        transition,
-        opacity: isDragging ? 0.65 : 1,
+        transform: isDragging ? undefined : CSS.Transform.toString(transform),
+        transition: isDragging ? 'none' : (transition || 'transform 180ms ease-out'),
+        opacity: isDragging ? 0.18 : 1,
         order,
       }}
-      className={`group relative rounded-lg ${isDragging ? 'z-20 ring-2 ring-bambu-green shadow-xl' : ''}`}
+      className={`group relative rounded-lg ${isDragging ? 'pointer-events-none border border-dashed border-bambu-green/50 bg-bambu-green/5' : ''}`}
     >
       <button
         type="button"
@@ -223,6 +224,17 @@ function SortablePrinterCardSection({
         <GripVertical className="h-4 w-4" />
       </button>
       {children}
+    </div>
+  );
+}
+
+function PrinterCardSectionDragPreview({ title }: { title: string }) {
+  return (
+    <div className="flex min-w-[220px] items-center gap-3 rounded-lg border border-bambu-green/60 bg-bambu-dark-secondary/95 px-3 py-2 text-sm font-medium text-white shadow-2xl ring-1 ring-bambu-green/25 backdrop-blur-sm">
+      <span className="flex h-8 w-8 items-center justify-center rounded-md bg-bambu-dark-tertiary text-bambu-green">
+        <GripVertical className="h-4 w-4" />
+      </span>
+      <span className="truncate">{title}</span>
     </div>
   );
 }
@@ -2786,6 +2798,7 @@ function PrinterCard({
   const [printerCardSectionOrder, setPrinterCardSectionOrder] = useState<PrinterCardSectionId[]>(() =>
     readPrinterCardSectionOrder(printerCardSectionStorageKey)
   );
+  const [activePrinterCardSection, setActivePrinterCardSection] = useState<PrinterCardSectionId | null>(null);
 
   useLayoutEffect(() => {
     const savedOrder = readPrinterCardSectionOrder(printerCardSectionStorageKey);
@@ -2813,8 +2826,13 @@ function PrinterCard({
     })
   );
 
+  const handleCardSectionDragStart = (event: DragStartEvent) => {
+    setActivePrinterCardSection(event.active.id as PrinterCardSectionId);
+  };
+
   const handleCardSectionDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
+    setActivePrinterCardSection(null);
     if (!over || active.id === over.id) return;
 
     setPrinterCardSectionOrder((currentOrder) => {
@@ -2826,6 +2844,17 @@ function PrinterCard({
   };
 
   const getCardSectionOrder = (sectionId: PrinterCardSectionId) => printerCardSectionOrder.indexOf(sectionId);
+  const printerCardSectionTitles: Record<PrinterCardSectionId, string> = {
+    camera: t('printers.camera'),
+    status: t('printers.sort.status'),
+    temperatures: t('printers.temperatures.nozzle'),
+    'panda-breath': 'Panda Breath',
+    indicators: t('printers.indicators'),
+    filaments: t('printers.filaments'),
+    'smart-plug': 'Smart plug',
+    actions: 'Actions',
+    'manual-controls': t('printers.controls', 'Controls'),
+  };
   const visiblePrinterCardSectionIds: PrinterCardSectionId[] = [
     viewMode === 'expanded' && inlineCameraOpen && inlineCameraSupported && canOpenCamera ? 'camera' : null,
     status?.connected ? 'status' : null,
@@ -3392,7 +3421,9 @@ function PrinterCard({
         <DndContext
           sensors={cardSectionSensors}
           collisionDetection={closestCenter}
+          onDragStart={handleCardSectionDragStart}
           onDragEnd={handleCardSectionDragEnd}
+          onDragCancel={() => setActivePrinterCardSection(null)}
         >
           <SortableContext items={visiblePrinterCardSectionIds} strategy={verticalListSortingStrategy}>
             {viewMode === 'expanded' && inlineCameraOpen && inlineCameraSupported && canOpenCamera && (
@@ -5607,6 +5638,11 @@ function PrinterCard({
           </SortablePrinterCardSection>
         )}
           </SortableContext>
+          <DragOverlay dropAnimation={{ duration: 180, easing: 'ease-out' }}>
+            {activePrinterCardSection ? (
+              <PrinterCardSectionDragPreview title={printerCardSectionTitles[activePrinterCardSection]} />
+            ) : null}
+          </DragOverlay>
         </DndContext>
       </CardContent>
 
