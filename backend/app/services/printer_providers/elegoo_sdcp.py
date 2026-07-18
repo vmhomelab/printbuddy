@@ -583,6 +583,7 @@ class ElegooSDCPPrinterClient:
         response_data = data.get("Data") if isinstance(data.get("Data"), dict) else data
         if not isinstance(response_data, dict):
             return None
+        file_info = response_data.get("FileInfo") if isinstance(response_data.get("FileInfo"), dict) else response_data
 
         def _float_or_none(value: Any) -> float | None:
             try:
@@ -597,10 +598,10 @@ class ElegooSDCPPrinterClient:
                 return None
 
         return {
-            "path": response_data.get("Url") or filename,
-            "thumbnail": response_data.get("Thumbnail"),
-            "estimated_time_seconds": _int_or_none(response_data.get("EstTime")),
-            "estimated_weight_grams": _float_or_none(response_data.get("EstWeight")),
+            "path": response_data.get("Url") or file_info.get("Url") or filename,
+            "thumbnail": file_info.get("Thumbnail"),
+            "estimated_time_seconds": _int_or_none(file_info.get("EstTime")),
+            "estimated_weight_grams": _float_or_none(file_info.get("EstWeight")),
         }
 
     def start_print(self, filename: str, plate_id: int = 1, **kwargs: Any) -> bool:  # noqa: ARG002

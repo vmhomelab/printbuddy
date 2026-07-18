@@ -249,10 +249,12 @@ def test_elegoo_sdcp_get_file_info_fetches_estimated_weight_and_time(monkeypatch
         return {
             "Data": {
                 "Data": {
-                    "Url": "/local/bracket.gcode",
-                    "Thumbnail": "base64-thumbnail",
-                    "EstTime": 2608,
-                    "EstWeight": 9.79,
+                    "Ack": 0,
+                    "FileInfo": {
+                        "Thumbnail": "http://192.168.1.181:80/thumbnail/bracket.gcode.png",
+                        "EstTime": 2608,
+                        "EstWeight": 9.79,
+                    },
                 }
             }
         }
@@ -263,7 +265,7 @@ def test_elegoo_sdcp_get_file_info_fetches_estimated_weight_and_time(monkeypatch
 
     assert info == {
         "path": "/local/bracket.gcode",
-        "thumbnail": "base64-thumbnail",
+        "thumbnail": "http://192.168.1.181:80/thumbnail/bracket.gcode.png",
         "estimated_time_seconds": 2608,
         "estimated_weight_grams": 9.79,
     }
