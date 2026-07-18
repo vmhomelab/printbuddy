@@ -1317,7 +1317,9 @@ async def assign_spoolman_slot(
     # Non-Bambu loaded-spool assignments (PrusaLink/Klipper/Elegoo SDCP) are local/Spoolman
     # accounting state only; never route them into Bambu-only AMS commands.
     try:
-        mqtt_client = printer_manager.get_client(body.printer_id) if _is_bambu_slot_configuration_provider(printer) else None
+        mqtt_client = (
+            printer_manager.get_client(body.printer_id) if _is_bambu_slot_configuration_provider(printer) else None
+        )
         if mqtt_client:
             tray_type = mapped.get("material") or ""
             brand = mapped.get("brand") or ""

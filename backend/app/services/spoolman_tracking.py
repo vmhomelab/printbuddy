@@ -406,10 +406,7 @@ async def _report_spool_usage_for_slots(
     spools_updated = 0
     positive_usage_items = [(slot_id, grams_used) for slot_id, grams_used in filament_usage_items if grams_used > 0]
     allow_loaded_spool_fallback = (
-        printer_id is not None
-        and not ams_trays
-        and not slot_to_tray
-        and len(positive_usage_items) == 1
+        printer_id is not None and not ams_trays and not slot_to_tray and len(positive_usage_items) == 1
     )
 
     for slot_id, grams_used in filament_usage_items:

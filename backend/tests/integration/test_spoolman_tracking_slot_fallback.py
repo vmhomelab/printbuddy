@@ -222,7 +222,9 @@ class TestSlotAssignmentFallback:
         through the virtual loaded-spool binding 255/0 and call /use for that
         assigned Spoolman spool.
         """
-        db_session.add(SpoolmanSlotAssignment(printer_id=test_printer.id, ams_id=255, tray_id=0, spoolman_spool_id=1234))
+        db_session.add(
+            SpoolmanSlotAssignment(printer_id=test_printer.id, ams_id=255, tray_id=0, spoolman_spool_id=1234)
+        )
         await db_session.commit()
 
         spools_updated = await _report_spool_usage_for_slots(
@@ -247,7 +249,9 @@ class TestSlotAssignmentFallback:
         Without AMS/VT state or an explicit mapping, two used slicer slots are
         ambiguous. The fallback is intentionally single-filament only.
         """
-        db_session.add(SpoolmanSlotAssignment(printer_id=test_printer.id, ams_id=255, tray_id=0, spoolman_spool_id=1234))
+        db_session.add(
+            SpoolmanSlotAssignment(printer_id=test_printer.id, ams_id=255, tray_id=0, spoolman_spool_id=1234)
+        )
         await db_session.commit()
 
         spools_updated = await _report_spool_usage_for_slots(
