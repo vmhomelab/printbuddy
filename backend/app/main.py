@@ -721,6 +721,54 @@ async def _apply_prusalink_metadata_to_archive(db, printer_id: int, printer, arc
     return True
 
 
+async def _refresh_prusalink_archive_metadata_later(
+    printer_id: int,
+    archive_id: int,
+    data: dict,
+    *,
+    delays: tuple[float, ...] = (60.0, 180.0),
+) -> None:
+    """Retry PrusaLink metadata enrichment while a direct-upload print is running.
+
+    Some CORE One/PrusaLink jobs expose ``file.meta`` only after the print has
+    been running for a short time. The start path and completion path still do
+    immediate/terminal refreshes; this middle retry fills the archive early so
+    the UI can show weight/cost during the active print.
+    """
+    logger = logging.getLogger(__name__)
+    for delay in delays:
+        if delay > 0:
+            await asyncio.sleep(delay)
+        try:
+            async with async_session() as db:
+                from backend.app.models.archive import PrintArchive
+                from backend.app.models.printer import Printer
+
+                result = await db.execute(select(PrintArchive).where(PrintArchive.id == archive_id))
+                archive = result.scalar_one_or_none()
+                if not archive or archive.filament_used_grams or archive.status != "printing":
+                    return
+
+                printer_result = await db.execute(select(Printer).where(Printer.id == printer_id))
+                printer = printer_result.scalar_one_or_none()
+                if not printer or getattr(printer, "provider", None) != "prusalink":
+                    return
+
+                updated = await _apply_prusalink_metadata_to_archive(db, printer_id, printer, archive, data, logger)
+                if updated:
+                    await db.commit()
+                    return
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.debug(
+                "[PRUSALINK] Delayed archive metadata refresh failed for printer %s archive %s: %s",
+                printer_id,
+                archive_id,
+                exc,
+            )
+
+
 def _compute_run_filament_grams(
     status: str,
     archive_filament_used_grams: float | None,
@@ -2838,6 +2886,15 @@ async def on_print_start(printer_id: int, data: dict):
                 await db.refresh(fallback_archive)
 
                 logger.info("Created fallback archive %s for %s (no 3MF available)", fallback_archive.id, print_name)
+
+                if printer.provider == "prusalink" and not fallback_archive.filament_used_grams:
+                    asyncio.create_task(
+                        _refresh_prusalink_archive_metadata_later(printer_id, fallback_archive.id, dict(data))
+                    )
+                    logger.info(
+                        "[PRUSALINK] Scheduled delayed file metadata refresh for archive %s",
+                        fallback_archive.id,
+                    )
 
                 _maybe_start_layer_timelapse(printer, printer_id, fallback_archive.id)
 
