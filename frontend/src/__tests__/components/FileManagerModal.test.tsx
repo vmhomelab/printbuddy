@@ -348,6 +348,51 @@ describe('FileManagerModal', () => {
         expect(screen.getByText('Started print_job.gcode on printer')).toBeInTheDocument();
       });
     });
+
+    it('shows Elegoo CC1 start options and sends heated bed levelling plus print plate', async () => {
+      let params: URLSearchParams | null = null;
+      server.use(
+        http.post('/api/v1/printers/:id/files/start', ({ request }) => {
+          const url = new URL(request.url);
+          params = url.searchParams;
+          return HttpResponse.json({ status: 'started', path: params.get('path') });
+        })
+      );
+
+      render(
+        <FileManagerModal
+          printerId={1}
+          printerName="Centauri Carbon"
+          printerProvider="elegoo_sdcp"
+          onClose={mockOnClose}
+        />
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText('print_job.gcode')).toBeInTheDocument();
+      });
+
+      const printButton = screen.getByRole('button', { name: /^Print$/i });
+      const checkboxes = screen.getAllByRole('button').filter(btn =>
+        btn.querySelector('svg')?.classList.contains('lucide-square')
+      );
+      fireEvent.click(checkboxes[1]);
+      await waitFor(() => expect(printButton).not.toBeDisabled());
+      fireEvent.click(printButton);
+
+      expect(await screen.findByText('Send Print Task')).toBeInTheDocument();
+      expect(screen.getByText('Heated Bed Leveling')).toBeInTheDocument();
+      expect(screen.queryByText(/Time-lapse/i)).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: /Smooth Build Plate/i }));
+      fireEvent.click(screen.getByRole('button', { name: /^Send$/i }));
+
+      await waitFor(() => {
+        expect(params?.get('path')).toBe('/print_job.gcode');
+        expect(params?.get('bed_levelling')).toBe('true');
+        expect(params?.get('print_platform_type')).toBe('1');
+      });
+    });
   });
 
   describe('search and filter', () => {

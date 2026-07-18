@@ -272,6 +272,7 @@ function getFileIcon(filename: string, isDirectory: boolean) {
 }
 
 type SortOption = 'name-asc' | 'name-desc' | 'size-asc' | 'size-desc' | 'date-asc' | 'date-desc';
+type ElegooPrintPlatformType = 0 | 1;
 
 const SORT_OPTIONS: { value: SortOption; label: string }[] = [
   { value: 'name-asc', label: 'Name (A-Z)' },
@@ -297,7 +298,11 @@ export function FileManagerModal({ printerId, printerName, printerProvider, onCl
   const [sortBy, setSortBy] = useState<SortOption>('name-asc');
   const [downloadProgress, setDownloadProgress] = useState<{ current: number; total: number } | null>(null);
   const [viewerFile, setViewerFile] = useState<{ path: string; name: string } | null>(null);
+  const [elegooStartFile, setElegooStartFile] = useState<{ path: string; name: string } | null>(null);
+  const [elegooHeatedBedLevelling, setElegooHeatedBedLevelling] = useState(true);
+  const [elegooPrintPlatformType, setElegooPrintPlatformType] = useState<ElegooPrintPlatformType>(0);
   const isPrusaPrinter = printerProvider === 'prusalink' || printerProvider === 'prusaconnect';
+  const isElegooSDCPPrinter = printerProvider === 'elegoo_sdcp';
 
   // Close on Escape key
   useEffect(() => {
@@ -463,19 +468,39 @@ export function FileManagerModal({ printerId, printerName, printerProvider, onCl
     }
   };
 
-  const handlePrintSelectedFile = async () => {
-    const file = selectedPrintableFile();
-    if (!file) return;
+  const startPrinterFile = async (
+    file: { path: string; name: string },
+    options?: { bed_levelling?: boolean; print_platform_type?: ElegooPrintPlatformType }
+  ) => {
     setStartingFile(true);
     try {
-      await api.startPrinterFile(printerId, file.path);
+      await api.startPrinterFile(printerId, file.path, options);
       showToast(`Started ${file.name} on printer`);
       setSelectedFiles(new Set());
+      setElegooStartFile(null);
     } catch (error) {
       showToast(`Print start failed: ${error instanceof Error ? error.message : 'Unknown error'}`, 'error');
     } finally {
       setStartingFile(false);
     }
+  };
+
+  const handlePrintSelectedFile = async () => {
+    const file = selectedPrintableFile();
+    if (!file) return;
+    if (isElegooSDCPPrinter) {
+      setElegooStartFile(file);
+      return;
+    }
+    await startPrinterFile(file);
+  };
+
+  const handleConfirmElegooStart = async () => {
+    if (!elegooStartFile) return;
+    await startPrinterFile(elegooStartFile, {
+      bed_levelling: elegooHeatedBedLevelling,
+      print_platform_type: elegooPrintPlatformType,
+    });
   };
 
   const handleDelete = () => {
@@ -840,6 +865,82 @@ export function FileManagerModal({ printerId, printerName, printerProvider, onCl
           filename={viewerFile.name}
           onClose={() => setViewerFile(null)}
         />
+      )}
+
+      {elegooStartFile && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-[60] p-4" onClick={() => setElegooStartFile(null)}>
+          <div
+            className="w-full max-w-md bg-bambu-dark-secondary rounded-xl border border-bambu-dark-tertiary shadow-2xl overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-5 py-4 border-b border-bambu-dark-tertiary">
+              <div>
+                <h3 className="text-lg font-semibold text-white">Send Print Task</h3>
+                <p className="text-sm text-bambu-gray truncate max-w-xs mt-1">{elegooStartFile.name}</p>
+              </div>
+              <button
+                onClick={() => setElegooStartFile(null)}
+                className="text-bambu-gray hover:text-white transition-colors"
+                title="Close Elegoo print options"
+                aria-label="Close Elegoo print options"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-5">
+              <label className="flex items-center gap-3 text-sm text-white cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={elegooHeatedBedLevelling}
+                  onChange={(event) => setElegooHeatedBedLevelling(event.target.checked)}
+                  className="h-4 w-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+                />
+                <span>Heated Bed Leveling</span>
+              </label>
+
+              <div>
+                <p className="text-sm font-medium text-white mb-2">Print plate</p>
+                <div className="grid grid-cols-2 gap-2 rounded-lg bg-bambu-dark p-1">
+                  <button
+                    type="button"
+                    onClick={() => setElegooPrintPlatformType(0)}
+                    className={`rounded-md px-3 py-3 text-left text-sm transition-colors ${
+                      elegooPrintPlatformType === 0
+                        ? 'bg-bambu-green text-white'
+                        : 'text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary'
+                    }`}
+                  >
+                    <span className="block font-medium">Textured Build Plate</span>
+                    <span className="block text-xs opacity-80">Side A</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setElegooPrintPlatformType(1)}
+                    className={`rounded-md px-3 py-3 text-left text-sm transition-colors ${
+                      elegooPrintPlatformType === 1
+                        ? 'bg-bambu-green text-white'
+                        : 'text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary'
+                    }`}
+                  >
+                    <span className="block font-medium">Smooth Build Plate</span>
+                    <span className="block text-xs opacity-80">Side B</span>
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <Button variant="secondary" onClick={() => setElegooStartFile(null)} disabled={startingFile}>
+                  Cancel
+                </Button>
+                <Button variant="primary" onClick={handleConfirmElegooStart} disabled={startingFile}>
+                  {startingFile ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+                  Send
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
 
       {queuedLibraryFile && (

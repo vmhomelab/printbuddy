@@ -3858,10 +3858,18 @@ export const api = {
     }
     return response.json();
   },
-  startPrinterFile: (printerId: number, path: string) =>
-    request<{ status: string; path: string }>(`/printers/${printerId}/files/start?path=${encodeURIComponent(path)}`, {
+  startPrinterFile: (
+    printerId: number,
+    path: string,
+    options?: { bed_levelling?: boolean; print_platform_type?: 0 | 1 }
+  ) => {
+    const params = new URLSearchParams({ path });
+    if (options?.bed_levelling !== undefined) params.set('bed_levelling', String(options.bed_levelling));
+    if (options?.print_platform_type !== undefined) params.set('print_platform_type', String(options.print_platform_type));
+    return request<{ status: string; path: string }>(`/printers/${printerId}/files/start?${params.toString()}`, {
       method: 'POST',
-    }),
+    });
+  },
   deletePrinterFile: (printerId: number, path: string) =>
     request<{ status: string; path: string }>(`/printers/${printerId}/files?path=${encodeURIComponent(path)}`, {
       method: 'DELETE',
