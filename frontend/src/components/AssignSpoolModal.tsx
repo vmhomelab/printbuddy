@@ -158,6 +158,7 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['spoolman-inventory-spools'] });
       queryClient.invalidateQueries({ queryKey: ['spoolman-slot-assignments'] });
+      queryClient.invalidateQueries({ queryKey: ['spoolman-slot-assignments-all'] });
       nudgePrinterRepublish();
       showToast(t('inventory.assignSuccess'), 'success');
       onClose();

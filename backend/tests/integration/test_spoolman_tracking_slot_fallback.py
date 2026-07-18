@@ -180,3 +180,85 @@ class TestSlotAssignmentFallback:
 
         assert spools_updated == 1
         mock_spoolman_client.use_spool.assert_awaited_once_with(88, 25.0)
+
+    async def test_external_slot_assignment_wins_over_stale_fallback_tag(
+        self, test_printer, mock_spoolman_client, db_session
+    ):
+        """External/non-AMS slots are intentionally slot-assignment based.
+
+        A deterministic fallback tag can remain attached to an old Spoolman spool
+        from earlier versions or manual edits. For external slots, the local
+        (printer, 255, tray) assignment must be authoritative so usage is
+        deducted from the spool the user currently selected in Printbuddy.
+        """
+        db_session.add(SpoolmanSlotAssignment(printer_id=test_printer.id, ams_id=255, tray_id=0, spoolman_spool_id=88))
+        await db_session.commit()
+
+        # Simulate a stale fallback-tag match pointing at an old spool.
+        mock_spoolman_client.find_spool_by_tag = AsyncMock(return_value={"id": 7})
+
+        ams_trays = {254: {"tray_uuid": "", "tag_uid": "", "tray_type": "TPU"}}
+        usage_items = [(1, 12.5)]
+
+        spools_updated = await _report_spool_usage_for_slots(
+            mock_spoolman_client,
+            usage_items,
+            ams_trays,
+            slot_to_tray=None,
+            method_label="Test",
+            printer_serial=test_printer.serial_number,
+            printer_id=test_printer.id,
+        )
+
+        assert spools_updated == 1
+        mock_spoolman_client.use_spool.assert_awaited_once_with(88, 12.5)
+
+    async def test_non_ams_single_filament_print_uses_loaded_spool_assignment(
+        self, test_printer, mock_spoolman_client, db_session
+    ):
+        """Non-AMS providers may have no live AMS/VT tray data at all.
+
+        For a single-filament print, the Spoolman tracker should resolve slot 1
+        through the virtual loaded-spool binding 255/0 and call /use for that
+        assigned Spoolman spool.
+        """
+        db_session.add(SpoolmanSlotAssignment(printer_id=test_printer.id, ams_id=255, tray_id=0, spoolman_spool_id=1234))
+        await db_session.commit()
+
+        spools_updated = await _report_spool_usage_for_slots(
+            mock_spoolman_client,
+            [(1, 42.5)],
+            ams_trays={},
+            slot_to_tray=None,
+            method_label="Non-AMS",
+            printer_serial=test_printer.serial_number,
+            printer_id=test_printer.id,
+        )
+
+        assert spools_updated == 1
+        mock_spoolman_client.find_spool_by_tag.assert_not_called()
+        mock_spoolman_client.use_spool.assert_awaited_once_with(1234, 42.5)
+
+    async def test_non_ams_loaded_spool_fallback_skips_multi_filament_without_mapping(
+        self, test_printer, mock_spoolman_client, db_session
+    ):
+        """Do not blindly charge a loaded Spoolman spool for multi-filament jobs.
+
+        Without AMS/VT state or an explicit mapping, two used slicer slots are
+        ambiguous. The fallback is intentionally single-filament only.
+        """
+        db_session.add(SpoolmanSlotAssignment(printer_id=test_printer.id, ams_id=255, tray_id=0, spoolman_spool_id=1234))
+        await db_session.commit()
+
+        spools_updated = await _report_spool_usage_for_slots(
+            mock_spoolman_client,
+            [(1, 10.0), (2, 12.0)],
+            ams_trays={},
+            slot_to_tray=None,
+            method_label="Non-AMS",
+            printer_serial=test_printer.serial_number,
+            printer_id=test_printer.id,
+        )
+
+        assert spools_updated == 0
+        mock_spoolman_client.use_spool.assert_not_called()

@@ -1834,6 +1834,7 @@ describe('PrintersPage', () => {
       await screen.findByText('X1 Carbon');
       await screen.findByText('Loaded spool');
       expect(screen.getByText(/Prusament PLA Galaxy Black/i)).toBeInTheDocument();
+      expect(screen.getByLabelText('Loaded spool color')).toHaveStyle({ backgroundColor: '#111111' });
       expect(screen.getByRole('button', { name: 'Change' })).toBeInTheDocument();
 
       unmount();
@@ -1848,7 +1849,70 @@ describe('PrintersPage', () => {
       await waitFor(() => expect(screen.getAllByText(/25/).length).toBeGreaterThan(0));
       await screen.findByText('Loaded spool');
       expect(screen.getByText(/Prusament PLA Galaxy Black/i)).toBeInTheDocument();
+      expect(screen.getByLabelText('Loaded spool color')).toHaveStyle({ backgroundColor: '#111111' });
       expect(screen.getByRole('button', { name: 'Change' })).toBeInTheDocument();
+    });
+
+    it('shows the Spoolman loaded-spool color dot and assigns through the virtual slot', async () => {
+      const user = userEvent.setup();
+      let postedBody: Record<string, unknown> | null = null;
+
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          ...mockPrinters[0],
+          provider: 'elegoo_sdcp',
+          model: 'Elegoo Centauri Carbon',
+        }])),
+        http.get('/api/v1/spoolman/status', () => HttpResponse.json({
+          enabled: true,
+          connected: true,
+          url: 'http://spoolman.local',
+        })),
+        http.get('/api/v1/settings/spoolman', () => HttpResponse.json({
+          spoolman_enabled: 'true',
+          spoolman_url: 'http://spoolman.local',
+          spoolman_sync_mode: 'read_only',
+        })),
+        http.get('/api/v1/spoolman/inventory/spools', () => HttpResponse.json([
+          {
+            id: 321,
+            brand: 'Polymaker',
+            material: 'PETG',
+            subtype: 'Matte',
+            color_name: 'Black',
+            rgba: '222222',
+            label_weight: 1000,
+            weight_used: 100,
+            archived_at: null,
+            data_origin: 'spoolman',
+          },
+        ])),
+        http.get('/api/v1/spoolman/inventory/slot-assignments/all', () => HttpResponse.json([
+          { printer_id: 1, printer_name: 'X1 Carbon', ams_id: 255, tray_id: 0, spoolman_spool_id: 321, ams_label: null },
+        ])),
+        http.post('/api/v1/spoolman/inventory/slot-assignments', async ({ request }) => {
+          postedBody = await request.json() as Record<string, unknown>;
+          return HttpResponse.json({ id: 321, data_origin: 'spoolman' });
+        }),
+        http.post('/api/v1/printers/:id/refresh-status', () => HttpResponse.json({ success: true })),
+      );
+
+      render(<PrintersPage />);
+
+      await screen.findByText('Loaded spool');
+      expect(screen.getByText(/Polymaker PETG Matte/i)).toBeInTheDocument();
+      expect(screen.getByLabelText('Loaded spool color')).toHaveStyle({ backgroundColor: '#222222' });
+      await user.click(screen.getByRole('button', { name: 'Change' }));
+      await screen.findByText('Polymaker PETG Matte');
+      await user.click(screen.getByRole('button', { name: /Polymaker PETG Matte/i }));
+      await user.click(screen.getByRole('button', { name: 'Assign Spool' }));
+
+      await waitFor(() => expect(postedBody).toEqual({
+        spoolman_spool_id: 321,
+        printer_id: 1,
+        ams_id: 255,
+        tray_id: 0,
+      }));
     });
   });
 
