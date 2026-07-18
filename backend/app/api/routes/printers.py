@@ -36,6 +36,7 @@ from backend.app.schemas.printer import (
     PrintOptionsResponse,
     normalize_external_camera_update,
 )
+from backend.app.services import direct_print_tracking
 from backend.app.services.bambu_ftp import (
     cache_3mf_download,
     delete_file_async,
@@ -1453,7 +1454,15 @@ async def start_printer_file(
         raise HTTPException(404, "Printer not found")
 
     provider_client = _provider_for_printer(printer)
+    direct_file_info = None
     if provider_client is not None:
+        get_file_info = getattr(provider_client, "get_file_info", None)
+        if callable(get_file_info):
+            try:
+                direct_file_info = get_file_info(path)
+            except Exception as exc:  # noqa: BLE001 — print start can continue without usage estimate
+                logger.debug("Could not fetch printer file metadata for %s on printer %s: %s", path, printer_id, exc)
+
         start_options = {}
         if bed_levelling is not None:
             start_options["bed_levelling"] = bed_levelling
@@ -1465,6 +1474,16 @@ async def start_printer_file(
 
     if not success:
         raise HTTPException(500, f"Failed to start print: {path}")
+
+    if direct_file_info:
+        estimated_weight = direct_file_info.get("estimated_weight_grams")
+        if estimated_weight:
+            direct_print_tracking.register_direct_print_metadata(
+                printer_id,
+                path,
+                estimated_weight,
+                direct_file_info.get("estimated_time_seconds"),
+            )
     return {"status": "started", "path": path}
 
 

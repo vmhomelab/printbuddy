@@ -238,6 +238,41 @@ def test_elegoo_sdcp_start_print_sends_full_cmd_128_payload(monkeypatch):
     }
 
 
+def test_elegoo_sdcp_get_file_info_fetches_estimated_weight_and_time(monkeypatch):
+    sent_commands = []
+    client = ElegooSDCPPrinterClient("192.168.1.181")
+    client.printer_id = "printer-id"
+    client.mainboard_id = "mainboard-id"
+
+    def fake_send(command):
+        sent_commands.append(command)
+        return {
+            "Data": {
+                "Data": {
+                    "Url": "/local/bracket.gcode",
+                    "Thumbnail": "base64-thumbnail",
+                    "EstTime": 2608,
+                    "EstWeight": 9.79,
+                }
+            }
+        }
+
+    monkeypatch.setattr(client, "_send_command", fake_send)
+
+    info = client.get_file_info("/local/bracket.gcode")
+
+    assert info == {
+        "path": "/local/bracket.gcode",
+        "thumbnail": "base64-thumbnail",
+        "estimated_time_seconds": 2608,
+        "estimated_weight_grams": 9.79,
+    }
+    command = sent_commands[0]
+    assert command["Data"]["Cmd"] == 260
+    assert command["Data"]["Data"] == {"Url": "/local/bracket.gcode"}
+    assert command["Data"]["From"] == 1
+
+
 def test_elegoo_sdcp_start_print_can_disable_bed_levelling(monkeypatch):
     sent_commands = []
     client = ElegooSDCPPrinterClient("192.168.1.181")

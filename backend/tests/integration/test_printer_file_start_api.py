@@ -19,6 +19,12 @@ class _FakeProviderClient:
         self.preserve_files_on_upload = False
         self.deleted_paths: list[str] = []
         self.start_options: list[dict[str, object]] = []
+        self.file_info: dict[str, object] | None = None
+        self.file_info_paths: list[str] = []
+
+    def get_file_info(self, path: str) -> dict[str, object] | None:
+        self.file_info_paths.append(path)
+        return self.file_info
 
     def start_print(self, path: str, **kwargs) -> bool:
         self.started_paths.append(path)
@@ -115,6 +121,74 @@ async def test_start_printer_file_passes_elegoo_cc1_start_options_to_provider(
     assert response.json() == {"status": "started", "path": "/local/Love Paw Print.gcode"}
     assert fake_client.started_paths == ["/local/Love Paw Print.gcode"]
     assert fake_client.start_options == [{"bed_levelling": True, "print_platform_type": 1}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_start_printer_file_registers_elegoo_direct_print_estimated_weight(
+    async_client: AsyncClient,
+    printer_factory,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    printer = await printer_factory(provider="elegoo_sdcp", model="Elegoo Centauri Carbon")
+    fake_client = _FakeProviderClient()
+    fake_client.file_info = {
+        "path": "/local/Love Paw Print.gcode",
+        "estimated_weight_grams": 9.79,
+        "estimated_time_seconds": 2608,
+    }
+    registered: list[tuple[int, str, float, int | None]] = []
+
+    from backend.app.api.routes import printers as printer_routes
+
+    monkeypatch.setattr(printer_routes, "_provider_for_printer", lambda _printer: fake_client)
+    monkeypatch.setattr(
+        printer_routes.direct_print_tracking,
+        "register_direct_print_metadata",
+        lambda printer_id, filename, estimated_weight_grams, estimated_time_seconds=None: registered.append(
+            (printer_id, filename, estimated_weight_grams, estimated_time_seconds)
+        ),
+    )
+
+    response = await async_client.post(
+        f"/api/v1/printers/{printer.id}/files/start",
+        params={"path": "/local/Love Paw Print.gcode"},
+    )
+
+    assert response.status_code == 200
+    assert fake_client.file_info_paths == ["/local/Love Paw Print.gcode"]
+    assert registered == [(printer.id, "/local/Love Paw Print.gcode", 9.79, 2608)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_start_printer_file_does_not_register_metadata_when_start_fails(
+    async_client: AsyncClient,
+    printer_factory,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    printer = await printer_factory(provider="elegoo_sdcp", model="Elegoo Centauri Carbon")
+    fake_client = _FakeProviderClient()
+    fake_client.file_info = {"estimated_weight_grams": 9.79}
+    fake_client.start_print = lambda path, **kwargs: False
+    registered: list[object] = []
+
+    from backend.app.api.routes import printers as printer_routes
+
+    monkeypatch.setattr(printer_routes, "_provider_for_printer", lambda _printer: fake_client)
+    monkeypatch.setattr(
+        printer_routes.direct_print_tracking,
+        "register_direct_print_metadata",
+        lambda *args, **kwargs: registered.append((args, kwargs)),
+    )
+
+    response = await async_client.post(
+        f"/api/v1/printers/{printer.id}/files/start",
+        params={"path": "/local/Love Paw Print.gcode"},
+    )
+
+    assert response.status_code == 500
+    assert registered == []
 
 
 @pytest.mark.asyncio

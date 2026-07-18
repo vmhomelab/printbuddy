@@ -23,6 +23,7 @@ SDCP_WS_PORT = 3030
 SDCP_DISCOVERY_PORT = 3000
 SDCP_DISCOVERY_MESSAGE = b"M99999"
 SDCP_STATUS_COMMAND = 0
+SDCP_FILE_INFO_COMMAND = 260
 SDCP_START_PRINT_COMMAND = 128
 SDCP_PAUSE_PRINT_COMMAND = 129
 SDCP_STOP_PRINT_COMMAND = 130
@@ -561,6 +562,46 @@ class ElegooSDCPPrinterClient:
                 return True
             time.sleep(SDCP_START_VERIFY_INTERVAL)
         return False
+
+    def get_file_info(self, filename: str) -> dict[str, Any] | None:
+        """Fetch CC1 printer-storage file metadata via SDCP Cmd 260."""
+        if not self.mainboard_id:
+            self.discover()
+        command = {
+            "Id": "",
+            "Data": {
+                "Cmd": SDCP_FILE_INFO_COMMAND,
+                "Data": {"Url": filename},
+                "From": 1,
+                "MainboardID": "",
+                "RequestID": secrets.token_hex(16),
+                "TimeStamp": int(time.time() * 1000),
+            },
+        }
+        response = self._send_command(command)
+        data = response.get("Data") if isinstance(response.get("Data"), dict) else {}
+        response_data = data.get("Data") if isinstance(data.get("Data"), dict) else data
+        if not isinstance(response_data, dict):
+            return None
+
+        def _float_or_none(value: Any) -> float | None:
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return None
+
+        def _int_or_none(value: Any) -> int | None:
+            try:
+                return int(float(value))
+            except (TypeError, ValueError):
+                return None
+
+        return {
+            "path": response_data.get("Url") or filename,
+            "thumbnail": response_data.get("Thumbnail"),
+            "estimated_time_seconds": _int_or_none(response_data.get("EstTime")),
+            "estimated_weight_grams": _float_or_none(response_data.get("EstWeight")),
+        }
 
     def start_print(self, filename: str, plate_id: int = 1, **kwargs: Any) -> bool:  # noqa: ARG002
         if not self.mainboard_id:

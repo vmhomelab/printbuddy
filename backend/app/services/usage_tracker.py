@@ -662,6 +662,12 @@ async def on_print_complete(
                     status,
                 )
 
+    if not archive_id and not results:
+        from backend.app.services import direct_print_tracking
+
+        direct_results = await direct_print_tracking.report_inventory_usage(printer_id, data, db)
+        results.extend(direct_results)
+
     if results:
         await db.commit()
 

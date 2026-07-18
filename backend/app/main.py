@@ -3582,6 +3582,20 @@ async def on_print_complete(printer_id: int, data: dict):
                         }
                     )
                     log_timing("Usage tracker")
+        elif not archive_id:
+            from backend.app.services import direct_print_tracking
+
+            async with async_session() as db:
+                usage_results = await direct_print_tracking.report_spoolman_usage(printer_id, data, db)
+                if usage_results:
+                    await ws_manager.broadcast(
+                        {
+                            "type": "spool_usage_logged",
+                            "printer_id": printer_id,
+                            "usage": usage_results,
+                        }
+                    )
+                    log_timing("Spoolman direct-file usage tracker")
 
     except Exception as e:
         logger.warning("Usage tracker on_print_complete failed: %s", e)
