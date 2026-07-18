@@ -342,7 +342,10 @@ _print_ams_mappings: dict[int, list[int]] = {}
 # Milestones are 25, 50, 75. Value of 0 means no milestone notified yet for current print.
 _last_progress_milestone: dict[int, int] = {}
 
-# Track whether the 99% almost-done notification has been sent for current print
+# Progress percentage that triggers the almost-done notification.
+PRINT_ALMOST_DONE_PROGRESS_THRESHOLD = 97
+
+# Track whether the almost-done notification has been sent for current print
 _print_almost_done_notified: dict[int, bool] = {}
 
 # Track whether first layer complete notification has been sent for current print
@@ -1010,7 +1013,7 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
             except Exception as e:
                 logging.getLogger(__name__).warning(f"Progress milestone notification failed: {e}")
 
-        if progress >= 99 and not _print_almost_done_notified.get(printer_id, False):
+        if progress >= PRINT_ALMOST_DONE_PROGRESS_THRESHOLD and not _print_almost_done_notified.get(printer_id, False):
             _print_almost_done_notified[printer_id] = True
             try:
                 async with async_session() as db:
