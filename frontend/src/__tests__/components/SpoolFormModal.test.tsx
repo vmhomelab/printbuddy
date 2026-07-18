@@ -1306,9 +1306,8 @@ describe('SpoolFormModal header spool ID (#1385)', () => {
       expect(screen.getByRole('heading', { name: 'Add Spool' })).toBeInTheDocument();
     });
 
-    fireEvent.click(await screen.findByText('Search via Open Filament Database'));
-
     const ofdbBrandInput = await screen.findByPlaceholderText('Search OFDB brands...');
+    fireEvent.focus(ofdbBrandInput);
     fireEvent.change(ofdbBrandInput, { target: { value: 'ele' } });
     fireEvent.click(await screen.findByRole('button', { name: /ELEGOO.*7 material/i }));
 

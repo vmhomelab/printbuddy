@@ -34,7 +34,6 @@ export function FilamentSection({
   const [materialSearch, setMaterialSearch] = useState('');
   const [labelInput, setLabelInput] = useState(String(formData.label_weight));
   const [isLabelFocused, setIsLabelFocused] = useState(false);
-  const [ofdbEnabled, setOfdbEnabled] = useState(false);
   const [ofdbBrandQuery, setOfdbBrandQuery] = useState('');
   const [ofdbBrands, setOfdbBrands] = useState<OpenFilamentDatabaseBrandSummary[]>([]);
   const [ofdbMaterials, setOfdbMaterials] = useState<OpenFilamentDatabaseMaterialSummary[]>([]);
@@ -182,14 +181,6 @@ export function FilamentSection({
     }
   };
 
-  const handleOfdbToggle = (enabled: boolean) => {
-    setOfdbEnabled(enabled);
-    setOfdbError(null);
-    if (enabled) {
-      void loadOfdbBrands();
-    }
-  };
-
   const handleOfdbBrandSelect = async (brand: OpenFilamentDatabaseBrandSummary) => {
     setOfdbSelectedBrand(brand);
     setOfdbBrandQuery(brand.name);
@@ -322,24 +313,15 @@ export function FilamentSection({
 
       {openFilamentDatabaseEnabled && !quickAdd && (
         <div className="p-3 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary/60 space-y-3">
-          <label className="flex items-start gap-3 text-sm text-white cursor-pointer">
-            <input
-              type="checkbox"
-              className="mt-0.5 w-4 h-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
-              checked={ofdbEnabled}
-              onChange={(event) => handleOfdbToggle(event.target.checked)}
-            />
-            <span>
-              <span className="block font-medium">{t('inventory.openFilamentDatabase.searchToggle')}</span>
-              <span className="block text-xs text-bambu-gray mt-0.5">
-                {t('inventory.openFilamentDatabase.searchHint')}
-              </span>
+          <div className="text-sm text-white">
+            <span className="block font-medium">{t('inventory.openFilamentDatabase.searchToggle')}</span>
+            <span className="block text-xs text-bambu-gray mt-0.5">
+              {t('inventory.openFilamentDatabase.searchHint')}
             </span>
-          </label>
+          </div>
 
-          {ofdbEnabled && (
-            <div className="space-y-3">
-              <div className="space-y-1">
+          <div className="space-y-3">
+            <div className="space-y-1">
                 <label className="block text-xs font-medium text-bambu-gray">
                   {t('inventory.openFilamentDatabase.brandLabel')}
                 </label>
@@ -494,8 +476,7 @@ export function FilamentSection({
                   </div>
                 </div>
               )}
-            </div>
-          )}
+          </div>
         </div>
       )}
 

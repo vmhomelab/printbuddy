@@ -370,8 +370,8 @@ describe('SpoolFormModal Spoolman OFDB creation', () => {
     );
 
     await screen.findByText('Spoolman Filament Catalog');
-    const ofdbToggle = await screen.findByRole('checkbox', { name: /search via open filament database/i });
-    fireEvent.click(ofdbToggle);
+    const ofdbBrandInput = await screen.findByPlaceholderText('Search OFDB brands...');
+    fireEvent.focus(ofdbBrandInput);
 
     await screen.findByText('Polymaker');
     fireEvent.click(screen.getByText('Polymaker'));
