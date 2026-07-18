@@ -586,6 +586,29 @@ class PrusaLinkPrinterClient:
             self.state.raw_data["file_metadata"] = normalized_meta
             self.state.raw_data["prusalink_file_meta"] = normalized_meta.get("raw_prusalink_meta")
 
+    def refresh_current_file_metadata(self) -> dict[str, Any]:
+        """Fetch current job metadata without emitting lifecycle callbacks.
+
+        PrusaLink sometimes exposes ``job.file.meta`` a little later than the
+        RUNNING transition that triggers Printbuddy's archive creation. This
+        method lets archive/usage code ask for one fresh job-detail sample
+        without calling ``request_status_update()``, which would risk duplicate
+        print-start/complete callbacks.
+        """
+        if self.api_mode == "legacy":
+            return {}
+        try:
+            job_detail = self._get("api/v1/job")
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 204:
+                raise
+            return {}
+        if not isinstance(job_detail, dict) or not job_detail:
+            return {}
+        self._apply_job_detail(job_detail)
+        metadata = self.state.raw_data.get("file_metadata") if isinstance(self.state.raw_data, dict) else None
+        return metadata if isinstance(metadata, dict) else {}
+
     def send_gcode(self, script: str) -> bool:
         """Map Printbuddy's limited control G-code scripts to PrusaLink control endpoints.
 

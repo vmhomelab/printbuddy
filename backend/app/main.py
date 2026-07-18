@@ -650,6 +650,77 @@ def _prusalink_file_metadata_for_archive(printer, data: dict) -> dict:
     return metadata if isinstance(metadata, dict) else {}
 
 
+def _refresh_prusalink_file_metadata_for_archive(printer_id: int, printer, data: dict, logger) -> dict:
+    """Best-effort late fetch of PrusaLink job file metadata.
+
+    Direct slicer uploads can race: the state transition to PRINTING may reach
+    Printbuddy before ``/api/v1/job`` includes ``file.meta``. Ask the connected
+    provider for one fresh job-detail sample without emitting lifecycle
+    callbacks, then copy the metadata into the active event payload for archive
+    and completion processing.
+    """
+    metadata = _prusalink_file_metadata_for_archive(printer, data)
+    if metadata:
+        return metadata
+    if getattr(printer, "provider", None) != "prusalink":
+        return {}
+
+    client = printer_manager.get_client(printer_id)
+    refresh = getattr(client, "refresh_current_file_metadata", None)
+    if not callable(refresh):
+        return {}
+    try:
+        metadata = refresh()
+    except Exception as exc:
+        logger.debug("[PRUSALINK] Could not refresh current file metadata for printer %s: %s", printer_id, exc)
+        return {}
+    if isinstance(metadata, dict) and metadata:
+        data["file_metadata"] = metadata
+        logger.info(
+            "[PRUSALINK] Refreshed file metadata for printer %s: %.1fg %s",
+            printer_id,
+            _metadata_float(metadata.get("filament_used_grams")) or 0.0,
+            metadata.get("filament_type") or "unknown material",
+        )
+        return metadata
+    return {}
+
+
+async def _apply_prusalink_metadata_to_archive(db, printer_id: int, printer, archive, data: dict, logger) -> bool:
+    """Populate a no-3MF PrusaLink archive from late job metadata when needed."""
+    if not archive or archive.file_path or archive.filament_used_grams:
+        return False
+    metadata = _refresh_prusalink_file_metadata_for_archive(printer_id, printer, data, logger)
+    if not metadata:
+        return False
+
+    grams = _metadata_float(metadata.get("filament_used_grams"))
+    if grams is None or grams <= 0:
+        return False
+
+    archive.filament_used_grams = grams
+    archive.filament_type = metadata.get("filament_type") or archive.filament_type
+    metadata_cost = _metadata_float(metadata.get("filament_cost"))
+    if metadata_cost is None:
+        metadata_cost = await _calculate_loaded_spool_cost(db, printer_id, grams)
+    archive.cost = metadata_cost if metadata_cost is not None else archive.cost
+    metadata_print_time_raw = _metadata_float(metadata.get("print_time_seconds"))
+    if metadata_print_time_raw is not None and not archive.print_time_seconds:
+        archive.print_time_seconds = int(metadata_print_time_raw)
+
+    extra_data = archive.extra_data if isinstance(archive.extra_data, dict) else {}
+    extra_data["file_metadata"] = metadata
+    archive.extra_data = extra_data
+    try:
+        from sqlalchemy.orm.attributes import flag_modified
+
+        flag_modified(archive, "extra_data")
+    except Exception:
+        pass
+    logger.info("[PRUSALINK] Applied late file metadata to archive %s (%.1fg)", archive.id, grams)
+    return True
+
+
 def _compute_run_filament_grams(
     status: str,
     archive_filament_used_grams: float | None,
@@ -2733,7 +2804,7 @@ async def on_print_start(printer_id: int, data: dict):
                     if mc_remaining and isinstance(mc_remaining, (int, float)) and mc_remaining > 0:
                         fallback_print_time = int(mc_remaining * 60)
 
-                file_metadata = _prusalink_file_metadata_for_archive(printer, data)
+                file_metadata = _refresh_prusalink_file_metadata_for_archive(printer_id, printer, data, logger)
                 metadata_filament_grams = _metadata_float(file_metadata.get("filament_used_grams"))
                 metadata_cost = _metadata_float(file_metadata.get("filament_cost"))
                 if metadata_cost is None and metadata_filament_grams is not None:
@@ -3401,6 +3472,23 @@ async def on_print_complete(printer_id: int, data: dict):
                 archive = result.scalar_one_or_none()
                 if archive:
                     archive_id = archive.id
+
+    if archive_id:
+        try:
+            async with async_session() as db:
+                from backend.app.models.archive import PrintArchive
+                from backend.app.models.printer import Printer
+
+                result = await db.execute(select(PrintArchive).where(PrintArchive.id == archive_id))
+                archive = result.scalar_one_or_none()
+                printer_result = await db.execute(select(Printer).where(Printer.id == printer_id))
+                printer = printer_result.scalar_one_or_none()
+                if archive and printer:
+                    updated = await _apply_prusalink_metadata_to_archive(db, printer_id, printer, archive, data, logger)
+                    if updated:
+                        await db.commit()
+        except Exception as e:
+            logger.debug("[PRUSALINK] Late archive metadata enrichment failed for printer %s: %s", printer_id, e)
 
     # Cleanup: delete uploaded file from printer SD card to prevent phantom prints (Issue #374)
     # The print scheduler uploads files to the SD card root (/). Some printers (e.g. P1S)

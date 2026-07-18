@@ -1114,3 +1114,80 @@ class TestPrusaLinkArchiveEstimateTracking:
         await db_session.refresh(spool)
         assert results == []
         assert spool.weight_used == 0
+
+
+@pytest.mark.asyncio
+async def test_late_prusalink_metadata_enriches_no_3mf_archive_then_updates_loaded_spool(
+    db_session, printer_factory, archive_factory, monkeypatch
+):
+    from sqlalchemy import select
+
+    from backend.app.main import _apply_prusalink_metadata_to_archive
+    from backend.app.models.spool import Spool
+    from backend.app.models.spool_assignment import SpoolAssignment
+    from backend.app.models.spool_usage_history import SpoolUsageHistory
+
+    printer = await printer_factory(provider="prusalink", model="Prusa CORE One")
+    spool = Spool(material="PETG", label_weight=1000, weight_used=10, cost_per_kg=30.0, rgba="00AAFFFF")
+    db_session.add(spool)
+    await db_session.commit()
+    await db_session.refresh(spool)
+    db_session.add(SpoolAssignment(printer_id=printer.id, spool_id=spool.id, ams_id=-1, tray_id=0))
+    archive = await archive_factory(
+        printer.id,
+        with_run=False,
+        filename="buddy-direct.bgcode",
+        file_path="",
+        file_size=0,
+        filament_used_grams=None,
+        filament_type=None,
+        cost=None,
+        extra_data={"no_3mf_available": True},
+    )
+
+    class FakePrusaLinkClient:
+        def refresh_current_file_metadata(self):
+            return {
+                "source": "prusalink_file_meta",
+                "filament_used_grams": 96.0,
+                "filament_type": "PETG",
+                "filament_cost": 2.88,
+                "filament_used_mm": 31470.0,
+            }
+
+    monkeypatch.setattr("backend.app.main.printer_manager.get_client", lambda printer_id: FakePrusaLinkClient())
+
+    updated = await _apply_prusalink_metadata_to_archive(
+        db_session,
+        printer.id,
+        printer,
+        archive,
+        {},
+        MagicMock(),
+    )
+    await db_session.commit()
+
+    assert updated is True
+    await db_session.refresh(archive)
+    assert archive.filament_used_grams == 96.0
+    assert archive.filament_type == "PETG"
+    assert archive.cost == 2.88
+    assert archive.extra_data["file_metadata"]["source"] == "prusalink_file_meta"
+
+    results = await _track_from_archive_estimate(
+        printer.id,
+        archive.id,
+        "completed",
+        "buddy-direct.bgcode",
+        db_session,
+        default_filament_cost=30.0,
+    )
+    await db_session.flush()
+    await db_session.refresh(spool)
+
+    assert results[0]["weight_used"] == 96.0
+    assert results[0]["spool_id"] == spool.id
+    assert spool.weight_used == 106.0
+    history = (await db_session.execute(select(SpoolUsageHistory))).scalar_one()
+    assert history.archive_id == archive.id
+    assert history.weight_used == 96.0

@@ -39,6 +39,41 @@ def test_prusalink_job_file_meta_is_normalized_into_lifecycle_payload():
     assert payload["file_metadata"]["filament_slots"] == [{"slot_id": 1, "used_g": 96.0, "type": "PETG"}]
 
 
+def test_prusalink_refresh_current_file_metadata_fetches_job_without_lifecycle_callbacks(monkeypatch):
+    start_payloads = []
+    client = PrusaLinkPrinterClient(
+        base_url="http://prusa.local",
+        password="secret",
+        on_print_start=start_payloads.append,
+    )
+
+    def fake_get(path):
+        assert path == "api/v1/job"
+        return {
+            "id": 42,
+            "state": "PRINTING",
+            "file": {
+                "display_name": "late-meta.bgcode",
+                "meta": {
+                    "filament_type": "PETG",
+                    "filament used [g]": 96,
+                    "filament cost": 2.4,
+                },
+            },
+        }
+
+    monkeypatch.setattr(client, "_get", fake_get)
+
+    metadata = client.refresh_current_file_metadata()
+
+    assert start_payloads == []
+    assert client.state.subtask_name == "late-meta.bgcode"
+    assert metadata["source"] == "prusalink_file_meta"
+    assert metadata["filament_used_grams"] == 96.0
+    assert metadata["filament_type"] == "PETG"
+    assert metadata["filament_cost"] == 2.4
+
+
 def test_prusalink_file_meta_normalizer_handles_empty_meta():
     assert _normalize_prusalink_file_meta(None) == {}
     assert _normalize_prusalink_file_meta({}) == {}
