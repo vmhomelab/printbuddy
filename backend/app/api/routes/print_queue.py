@@ -201,6 +201,7 @@ def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
         "ams_mapping": ams_mapping_parsed,
         "plate_id": item.plate_id,
         "bed_levelling": item.bed_levelling,
+        "print_platform_type": item.print_platform_type,
         "flow_cali": item.flow_cali,
         "vibration_cali": item.vibration_cali,
         "layer_inspect": item.layer_inspect,
@@ -348,15 +349,21 @@ async def list_queue(
     return [_enrich_response(item) for item in items]
 
 
-def _sanitize_bambu_print_options_for_provider(
+def _is_elegoo_cc1(provider: str | None, model: str | None) -> bool:
+    return (provider or "").lower() == "elegoo_sdcp" and "centauri" in (model or "").lower()
+
+
+def _sanitize_print_options_for_provider(
     provider: str | None,
+    model: str | None,
     *,
     bed_levelling: bool,
+    print_platform_type: int | None,
     flow_cali: bool,
     vibration_cali: bool,
     layer_inspect: bool,
     timelapse: bool,
-) -> tuple[bool, bool, bool, bool, bool]:
+) -> tuple[bool, int | None, bool, bool, bool, bool]:
     """Return safe Bambu print-start flags for the selected provider.
 
     These flags map to Bambu LAN/MQTT start-print behavior. Moonraker,
@@ -364,8 +371,10 @@ def _sanitize_bambu_print_options_for_provider(
     stale truthy values around can make the UI/API imply unsupported behavior.
     """
     if (provider or "bambu").lower() == "bambu":
-        return bed_levelling, flow_cali, vibration_cali, layer_inspect, timelapse
-    return False, False, False, False, False
+        return bed_levelling, None, flow_cali, vibration_cali, layer_inspect, timelapse
+    if _is_elegoo_cc1(provider, model):
+        return bed_levelling, print_platform_type if print_platform_type in (0, 1) else 0, False, False, False, False
+    return False, None, False, False, False, False
 
 
 @router.post("/", response_model=PrintQueueItemResponse)
@@ -402,13 +411,16 @@ async def add_to_queue(
 
     (
         bed_levelling,
+        print_platform_type,
         flow_cali,
         vibration_cali,
         layer_inspect,
         timelapse,
-    ) = _sanitize_bambu_print_options_for_provider(
+    ) = _sanitize_print_options_for_provider(
         assigned_printer.provider if assigned_printer else None,
+        assigned_printer.model if assigned_printer else target_model_norm,
         bed_levelling=data.bed_levelling,
+        print_platform_type=data.print_platform_type,
         flow_cali=data.flow_cali,
         vibration_cali=data.vibration_cali,
         layer_inspect=data.layer_inspect,
@@ -560,6 +572,7 @@ async def add_to_queue(
             ams_mapping=ams_mapping_json,
             plate_id=data.plate_id,
             bed_levelling=bed_levelling,
+            print_platform_type=print_platform_type,
             flow_cali=flow_cali,
             vibration_cali=vibration_cali,
             layer_inspect=layer_inspect,

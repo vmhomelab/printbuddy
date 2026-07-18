@@ -3282,6 +3282,7 @@ class BambuMQTTClient:
         plate_id: int = 1,
         ams_mapping: list[int] | None = None,
         bed_levelling: bool = True,
+        print_platform_type: int | None = None,  # noqa: ARG002 - provider-specific Elegoo option
         flow_cali: bool = False,
         vibration_cali: bool = True,
         layer_inspect: bool = False,

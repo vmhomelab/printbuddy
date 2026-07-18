@@ -33,11 +33,14 @@ import { ModelViewer } from './ModelViewer';
 import { GcodeViewer } from './GcodeViewer';
 import type { PlateMetadata } from '../types/plates';
 import { useToast } from '../contexts/ToastContext';
+import { ElegooCc1StartOptions } from './ElegooCc1StartOptions';
+import { isElegooCc1Printer, type ElegooPrintPlatformType } from '../utils/elegooCc1';
 
 interface FileManagerModalProps {
   printerId: number;
   printerName: string;
   printerProvider?: PrinterProvider;
+  printerModel?: string | null;
   onClose: () => void;
 }
 
@@ -272,8 +275,6 @@ function getFileIcon(filename: string, isDirectory: boolean) {
 }
 
 type SortOption = 'name-asc' | 'name-desc' | 'size-asc' | 'size-desc' | 'date-asc' | 'date-desc';
-type ElegooPrintPlatformType = 0 | 1;
-
 const SORT_OPTIONS: { value: SortOption; label: string }[] = [
   { value: 'name-asc', label: 'Name (A-Z)' },
   { value: 'name-desc', label: 'Name (Z-A)' },
@@ -283,7 +284,7 @@ const SORT_OPTIONS: { value: SortOption; label: string }[] = [
   { value: 'date-desc', label: 'Date (newest)' },
 ];
 
-export function FileManagerModal({ printerId, printerName, printerProvider, onClose }: FileManagerModalProps) {
+export function FileManagerModal({ printerId, printerName, printerProvider, printerModel, onClose }: FileManagerModalProps) {
   const { t } = useTranslation();
   const { showToast } = useToast();
   const queryClient = useQueryClient();
@@ -302,7 +303,7 @@ export function FileManagerModal({ printerId, printerName, printerProvider, onCl
   const [elegooHeatedBedLevelling, setElegooHeatedBedLevelling] = useState(true);
   const [elegooPrintPlatformType, setElegooPrintPlatformType] = useState<ElegooPrintPlatformType>(0);
   const isPrusaPrinter = printerProvider === 'prusalink' || printerProvider === 'prusaconnect';
-  const isElegooSDCPPrinter = printerProvider === 'elegoo_sdcp';
+  const isElegooSDCPPrinter = isElegooCc1Printer(printerProvider, printerModel);
 
   // Close on Escape key
   useEffect(() => {
@@ -889,45 +890,14 @@ export function FileManagerModal({ printerId, printerName, printerProvider, onCl
             </div>
 
             <div className="p-5 space-y-5">
-              <label className="flex items-center gap-3 text-sm text-white cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={elegooHeatedBedLevelling}
-                  onChange={(event) => setElegooHeatedBedLevelling(event.target.checked)}
-                  className="h-4 w-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
-                />
-                <span>Heated Bed Leveling</span>
-              </label>
-
-              <div>
-                <p className="text-sm font-medium text-white mb-2">Print plate</p>
-                <div className="grid grid-cols-2 gap-2 rounded-lg bg-bambu-dark p-1">
-                  <button
-                    type="button"
-                    onClick={() => setElegooPrintPlatformType(0)}
-                    className={`rounded-md px-3 py-3 text-left text-sm transition-colors ${
-                      elegooPrintPlatformType === 0
-                        ? 'bg-bambu-green text-white'
-                        : 'text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary'
-                    }`}
-                  >
-                    <span className="block font-medium">Textured Build Plate</span>
-                    <span className="block text-xs opacity-80">Side A</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setElegooPrintPlatformType(1)}
-                    className={`rounded-md px-3 py-3 text-left text-sm transition-colors ${
-                      elegooPrintPlatformType === 1
-                        ? 'bg-bambu-green text-white'
-                        : 'text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary'
-                    }`}
-                  >
-                    <span className="block font-medium">Smooth Build Plate</span>
-                    <span className="block text-xs opacity-80">Side B</span>
-                  </button>
-                </div>
-              </div>
+              <ElegooCc1StartOptions
+                compact
+                value={{ bed_levelling: elegooHeatedBedLevelling, print_platform_type: elegooPrintPlatformType }}
+                onChange={(value) => {
+                  setElegooHeatedBedLevelling(value.bed_levelling);
+                  setElegooPrintPlatformType(value.print_platform_type);
+                }}
+              />
 
               <div className="flex justify-end gap-2 pt-2">
                 <Button variant="secondary" onClick={() => setElegooStartFile(null)} disabled={startingFile}>

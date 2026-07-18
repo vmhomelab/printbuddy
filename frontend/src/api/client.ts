@@ -1873,6 +1873,7 @@ export interface PrintQueueItem {
   plate_id: number | null;  // Plate ID for multi-plate 3MF files
   // Print options
   bed_levelling: boolean;
+  print_platform_type?: 0 | 1 | null;
   flow_cali: boolean;
   vibration_cali: boolean;
   layer_inspect: boolean;
@@ -1938,6 +1939,7 @@ export interface PrintQueueItemCreate {
   plate_id?: number | null;  // Plate ID for multi-plate 3MF files
   // Print options
   bed_levelling?: boolean;
+  print_platform_type?: 0 | 1 | null;
   flow_cali?: boolean;
   vibration_cali?: boolean;
   layer_inspect?: boolean;
@@ -1965,6 +1967,7 @@ export interface PrintQueueItemUpdate {
   plate_id?: number | null;  // Plate ID for multi-plate 3MF files
   // Print options
   bed_levelling?: boolean;
+  print_platform_type?: 0 | 1 | null;
   flow_cali?: boolean;
   vibration_cali?: boolean;
   layer_inspect?: boolean;
@@ -1983,6 +1986,7 @@ export interface PrintQueueBulkUpdate {
   manual_start?: boolean;
   // Print options
   bed_levelling?: boolean;
+  print_platform_type?: 0 | 1 | null;
   flow_cali?: boolean;
   vibration_cali?: boolean;
   layer_inspect?: boolean;
@@ -4440,6 +4444,7 @@ export const api = {
       ams_mapping?: number[];
       timelapse?: boolean;
       bed_levelling?: boolean;
+      print_platform_type?: 0 | 1 | null;
       flow_cali?: boolean;
       vibration_cali?: boolean;
       layer_inspect?: boolean;
@@ -5931,6 +5936,7 @@ export const api = {
       plate_name?: string;
       ams_mapping?: number[];
       bed_levelling?: boolean;
+      print_platform_type?: 0 | 1 | null;
       flow_cali?: boolean;
       vibration_cali?: boolean;
       layer_inspect?: boolean;

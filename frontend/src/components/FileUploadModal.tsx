@@ -13,8 +13,10 @@ import {
   Info,
 } from 'lucide-react';
 import { api } from '../api/client';
-import type { LibraryFileUploadResponse } from '../api/client';
+import type { LibraryFileUploadResponse, PrinterProvider } from '../api/client';
 import { Button } from './Button';
+import { ElegooCc1StartOptions } from './ElegooCc1StartOptions';
+import { isElegooCc1Printer, type ElegooCc1StartOptionsValue } from '../utils/elegooCc1';
 
 interface UploadFile {
   file: File;
@@ -51,6 +53,8 @@ interface FileUploadModalProps {
   uploadTargetPrinterId?: number;
   /** Upload files directly to this printer storage instead of the library. */
   directPrinterUploadId?: number;
+  directPrinterProvider?: PrinterProvider;
+  directPrinterModel?: string | null;
   /** Remote printer folder used for direct printer uploads. */
   directPrinterUploadPath?: string;
   /** Overwrite an existing same-name file on direct printer uploads. */
@@ -61,7 +65,7 @@ interface FileUploadModalProps {
   allowStartPrintAfterUpload?: boolean;
 }
 
-export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUploaded, autoUpload, validateFile, accept, acceptedFileDescription, uploadTargetPrinterId, directPrinterUploadId, directPrinterUploadPath = '/', directPrinterUploadOverwrite = false, uploadNotice, allowStartPrintAfterUpload = false }: FileUploadModalProps) {
+export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUploaded, autoUpload, validateFile, accept, acceptedFileDescription, uploadTargetPrinterId, directPrinterUploadId, directPrinterProvider, directPrinterModel, directPrinterUploadPath = '/', directPrinterUploadOverwrite = false, uploadNotice, allowStartPrintAfterUpload = false }: FileUploadModalProps) {
   const { t } = useTranslation();
   const [files, setFiles] = useState<UploadFile[]>([]);
   const [isDragging, setIsDragging] = useState(false);
@@ -70,6 +74,7 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
   const [createFolderFromZip, setCreateFolderFromZip] = useState(false);
   const [generateStlThumbnails, setGenerateStlThumbnails] = useState(true);
   const [startPrintAfterUpload, setStartPrintAfterUpload] = useState(false);
+  const [elegooCc1StartOptions, setElegooCc1StartOptions] = useState<ElegooCc1StartOptionsValue>({ bed_levelling: true, print_platform_type: 0 });
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [directUploadConflict, setDirectUploadConflict] = useState<DirectUploadConflict | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -151,7 +156,11 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
             conflictStrategy
           );
           if (allowStartPrintAfterUpload && startPrintAfterUpload) {
-            await api.startPrinterFile(directPrinterUploadId, uploaded.path);
+            await api.startPrinterFile(
+              directPrinterUploadId,
+              uploaded.path,
+              isElegooCc1Printer(directPrinterProvider, directPrinterModel) ? elegooCc1StartOptions : undefined
+            );
           }
           updateFileStatus(uf.file, { status: 'success' });
           succeededCount += 1;
@@ -285,6 +294,12 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
               <span className="text-sm text-white">Start print after upload</span>
             </label>
           )}
+
+          {allowStartPrintAfterUpload &&
+            startPrintAfterUpload &&
+            isElegooCc1Printer(directPrinterProvider, directPrinterModel) && (
+              <ElegooCc1StartOptions value={elegooCc1StartOptions} onChange={setElegooCc1StartOptions} />
+            )}
 
           {uploadNotice && (
             <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg">

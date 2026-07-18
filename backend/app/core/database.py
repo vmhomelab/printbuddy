@@ -1090,6 +1090,7 @@ async def run_migrations(conn):
 
     # Migration: Add print options columns to print_queue
     await _safe_execute(conn, "ALTER TABLE print_queue ADD COLUMN bed_levelling BOOLEAN DEFAULT 1")
+    await _safe_execute(conn, "ALTER TABLE print_queue ADD COLUMN print_platform_type INTEGER")
     await _safe_execute(conn, "ALTER TABLE print_queue ADD COLUMN flow_cali BOOLEAN DEFAULT 0")
     await _safe_execute(conn, "ALTER TABLE print_queue ADD COLUMN vibration_cali BOOLEAN DEFAULT 1")
     await _safe_execute(conn, "ALTER TABLE print_queue ADD COLUMN layer_inspect BOOLEAN DEFAULT 0")
@@ -1131,6 +1132,7 @@ async def run_migrations(conn):
                         ams_mapping TEXT,
                         plate_id INTEGER,
                         bed_levelling BOOLEAN DEFAULT 1,
+                        print_platform_type INTEGER,
                         flow_cali BOOLEAN DEFAULT 0,
                         vibration_cali BOOLEAN DEFAULT 1,
                         layer_inspect BOOLEAN DEFAULT 0,
@@ -1149,7 +1151,7 @@ async def run_migrations(conn):
                     INSERT INTO print_queue_new2
                     SELECT id, printer_id, archive_id, NULL, project_id, position, scheduled_time,
                            manual_start, require_previous_success, auto_off_after, ams_mapping, plate_id,
-                           COALESCE(bed_levelling, 1), COALESCE(flow_cali, 0), COALESCE(vibration_cali, 1),
+                           COALESCE(bed_levelling, 1), NULL, COALESCE(flow_cali, 0), COALESCE(vibration_cali, 1),
                            COALESCE(layer_inspect, 0), COALESCE(timelapse, 0), COALESCE(use_ams, 1),
                            status, started_at, completed_at, error_message, created_at
                     FROM print_queue

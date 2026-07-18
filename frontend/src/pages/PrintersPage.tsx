@@ -5424,6 +5424,7 @@ function PrinterCard({
           printerId={printer.id}
           printerName={printer.name}
           printerProvider={printer.provider}
+          printerModel={printer.model}
           onClose={() => setShowFileManager(false)}
         />
       )}
@@ -5468,6 +5469,8 @@ function PrinterCard({
           accept={printableFileRules.accept}
           acceptedFileDescription={printableFileDescription}
           directPrinterUploadId={printer.id}
+          directPrinterProvider={printer.provider}
+          directPrinterModel={printer.model}
           directPrinterUploadOverwrite
           allowStartPrintAfterUpload
           onUploadComplete={(succeededCount = 1) => {

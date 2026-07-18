@@ -21,6 +21,8 @@ import { PlateSelector } from './PlateSelector';
 import { PrinterSelector } from './PrinterSelector';
 import { PrintOptionsPanel } from './PrintOptions';
 import { ScheduleOptionsPanel } from './ScheduleOptions';
+import { ElegooCc1StartOptions } from '../ElegooCc1StartOptions';
+import { isElegooCc1Printer, type ElegooCc1StartOptionsValue } from '../../utils/elegooCc1';
 import {
   getSharedSupportedPrintOptionKeys,
   sanitizePrintOptionsForPrinter,
@@ -108,6 +110,10 @@ export function PrintModal({
     }
     return DEFAULT_PRINT_OPTIONS;
   });
+  const [elegooCc1StartOptions, setElegooCc1StartOptions] = useState<ElegooCc1StartOptionsValue>(() => ({
+    bed_levelling: mode === 'edit-queue-item' && queueItem ? (queueItem.bed_levelling ?? true) : true,
+    print_platform_type: mode === 'edit-queue-item' && queueItem?.print_platform_type === 1 ? 1 : 0,
+  }));
 
   const [scheduleOptions, setScheduleOptions] = useState<ScheduleOptions>(() => {
     if (mode === 'edit-queue-item' && queueItem) {
@@ -266,6 +272,12 @@ export function PrintModal({
   const selectedPrinterRecords = useMemo(
     () => printers?.filter((printer) => selectedPrinters.includes(printer.id)) ?? [],
     [printers, selectedPrinters]
+  );
+  const hasSelectedElegooCc1 = useMemo(
+    () =>
+      selectedPrinterRecords.some((printer) => isElegooCc1Printer(printer.provider, printer.model)) ||
+      (assignmentMode === 'model' && (targetModel || '').toLowerCase().includes('centauri')),
+    [assignmentMode, selectedPrinterRecords, targetModel]
   );
   const supportedPrintOptions = useMemo(
     () => getSharedSupportedPrintOptionKeys(selectedPrinterRecords),
@@ -659,6 +671,14 @@ export function PrintModal({
     const getPrinterById = (printerId: number | null) => printers?.find((printer) => printer.id === printerId);
     const getPrintOptionsForPrinter = (printerId: number | null) =>
       sanitizePrintOptionsForPrinter(printOptions, getPrinterById(printerId));
+    const getElegooCc1OptionsForPrinter = (printerId: number | null) => {
+      const printer = getPrinterById(printerId);
+      if (isElegooCc1Printer(printer?.provider, printer?.model)) return elegooCc1StartOptions;
+      if (printerId === null && assignmentMode === 'model' && (targetModel || '').toLowerCase().includes('centauri')) {
+        return elegooCc1StartOptions;
+      }
+      return {};
+    };
 
     // Common queue data for add-to-queue and edit modes
     const getQueueData = (printerId: number | null, plateOverride?: number | null): PrintQueueItemCreate => ({
@@ -679,6 +699,7 @@ export function PrintModal({
         ? new Date(scheduleOptions.scheduledTime).toISOString()
         : undefined,
       ...getPrintOptionsForPrinter(printerId),
+      ...getElegooCc1OptionsForPrinter(printerId),
       project_id: projectId ?? undefined,
     });
 
@@ -714,6 +735,7 @@ export function PrintModal({
                 ? new Date(scheduleOptions.scheduledTime).toISOString()
                 : null,
               ...getPrintOptionsForPrinter(null),
+              ...getElegooCc1OptionsForPrinter(null),
             };
             await updateQueueMutation.mutateAsync(updateData);
           } else {
@@ -760,6 +782,7 @@ export function PrintModal({
                   plate_name: selectedPlateName,
                   ams_mapping: printerMapping,
                   ...getPrintOptionsForPrinter(printerId),
+                  ...getElegooCc1OptionsForPrinter(printerId),
                   project_id: projectId,
                   cleanup_library_after_dispatch: cleanupLibraryAfterDispatch,
                 });
@@ -771,6 +794,7 @@ export function PrintModal({
                   plate_name: selectedPlateName,
                   ams_mapping: printerMapping,
                   ...getPrintOptionsForPrinter(printerId),
+                  ...getElegooCc1OptionsForPrinter(printerId),
                 });
               }
               // Queue remaining copies if quantity > 1
@@ -796,6 +820,7 @@ export function PrintModal({
                   ? new Date(scheduleOptions.scheduledTime).toISOString()
                   : null,
                 ...getPrintOptionsForPrinter(printerId),
+                ...getElegooCc1OptionsForPrinter(printerId),
               };
               await updateQueueMutation.mutateAsync(updateData);
             } else {
@@ -1086,6 +1111,10 @@ export function PrintModal({
                 currencySymbol={currencySymbol}
                 defaultCostPerKg={defaultCostPerKg}
               />
+            )}
+
+            {hasSelectedElegooCc1 && (
+              <ElegooCc1StartOptions value={elegooCc1StartOptions} onChange={setElegooCc1StartOptions} />
             )}
 
             {/* Print options */}
