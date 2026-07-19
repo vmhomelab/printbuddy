@@ -607,6 +607,83 @@ def register_expected_print(
     )
 
 
+async def _register_elegoo_observed_file_estimate(printer_id: int, data: dict) -> None:
+    """Query CC1 file-info (Cmd 260) for prints observed after they start.
+
+    Printbuddy-started CC1 dispatch paths already preflight Cmd 260 before
+    Cmd 128. Prints started externally from the printer panel, printer WebUI,
+    slicer, or another SDCP client only become visible once status reports the
+    current file. At that point we can still ask the printer for FileInfo and
+    cache EstWeight for the normal completion/archive/spool accounting path.
+    """
+    logger = logging.getLogger(__name__)
+    printer = printer_manager.get_printer(printer_id)
+    if getattr(printer, "provider", None) != "elegoo_sdcp":
+        return
+
+    client = printer_manager.get_client(printer_id)
+    get_file_info = getattr(client, "get_file_info", None) if client else None
+    if not callable(get_file_info):
+        return
+
+    raw_data = data.get("raw_data") if isinstance(data.get("raw_data"), dict) else {}
+    raw_status = raw_data.get("Status") if isinstance(raw_data.get("Status"), dict) else {}
+    raw_print_info = raw_status.get("PrintInfo") if isinstance(raw_status.get("PrintInfo"), dict) else {}
+
+    raw_names = [
+        data.get("filename"),
+        data.get("gcode_file"),
+        data.get("subtask_name"),
+        raw_print_info.get("Filename"),
+        raw_print_info.get("FileName"),
+        raw_data.get("filename") if isinstance(raw_data, dict) else None,
+        raw_data.get("gcode_file") if isinstance(raw_data, dict) else None,
+    ]
+
+    candidates: list[str] = []
+    for raw_name in raw_names:
+        if not raw_name:
+            continue
+        name = str(raw_name).strip()
+        if not name:
+            continue
+        base = name.rsplit("/", 1)[-1]
+        for candidate in (name, f"/{base}", f"/local/{base}", f"/usb/{base}"):
+            if candidate and candidate not in candidates:
+                candidates.append(candidate)
+
+    for candidate in candidates:
+        try:
+            info = await asyncio.to_thread(get_file_info, candidate)
+        except Exception as exc:
+            logger.debug("Ignoring Elegoo SDCP observed file-info lookup failure for %s: %s", candidate, exc)
+            continue
+        if not isinstance(info, dict):
+            continue
+        estimated_weight = info.get("estimated_weight_grams")
+        if not estimated_weight:
+            continue
+
+        from backend.app.services import direct_print_tracking
+
+        direct_print_tracking.register_direct_print_metadata(
+            printer_id,
+            str(info.get("path") or candidate),
+            estimated_weight,
+            estimated_time_seconds=info.get("estimated_time_seconds"),
+        )
+        logger.info(
+            "Registered Elegoo SDCP observed print estimate: printer=%s file=%s weight=%s",
+            printer_id,
+            candidate,
+            estimated_weight,
+        )
+        return
+
+    if candidates:
+        logger.debug("Elegoo SDCP observed print had no EstWeight from file-info candidates: %s", candidates)
+
+
 def _metadata_float(value) -> float | None:
     try:
         if value is None or value == "":
@@ -2036,6 +2113,11 @@ async def on_print_start(printer_id: int, data: dict):
 
     clear_cover_cache(printer_id)
 
+    try:
+        await _register_elegoo_observed_file_estimate(printer_id, data)
+    except Exception as e:
+        logger.warning("Elegoo SDCP observed file-info lookup failed on print start: %s", e)
+
     await ws_manager.send_print_start(printer_id, data)
 
     # Notify when the print-start AMS mapping references tray slots without spool assignments.
@@ -3329,6 +3411,14 @@ async def on_print_running_observed(printer_id: int, data: dict):
     pre-upload.
     """
     logger = logging.getLogger(__name__)
+
+    # Query CC1 FileInfo as soon as an active print is observed. This covers
+    # prints started while Printbuddy was down as well as external starts whose
+    # on_print_start event was suppressed during reconnect/restart recovery.
+    try:
+        await _register_elegoo_observed_file_estimate(printer_id, data)
+    except Exception as e:
+        logger.warning("Elegoo SDCP observed file-info lookup failed on running observation: %s", e)
 
     # Avoid double-capture: on_print_start may have run earlier in this
     # Printbuddy process if the print started AFTER startup and we crashed
