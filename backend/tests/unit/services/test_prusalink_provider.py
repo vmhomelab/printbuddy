@@ -74,6 +74,46 @@ def test_prusalink_refresh_current_file_metadata_fetches_job_without_lifecycle_c
     assert metadata["filament_cost"] == 2.4
 
 
+def test_prusalink_refresh_current_file_metadata_falls_back_to_file_endpoint(monkeypatch):
+    client = PrusaLinkPrinterClient(base_url="http://prusa.local", password="secret")
+    calls = []
+
+    def fake_get(path):
+        calls.append(path)
+        if path == "api/v1/job":
+            return {
+                "id": 104,
+                "state": "PRINTING",
+                "file": {
+                    "refs": {"download": "/usb/2LAYER~1.GCO"},
+                    "name": "2LAYER~1.GCO",
+                    "display_name": "2 layer cube.gcode",
+                    "path": "/usb",
+                },
+            }
+        if path == "api/v1/files/usb/2LAYER~1.GCO":
+            return {
+                "name": "2LAYER~1.GCO",
+                "meta": {
+                    "filament_type": "PETG",
+                    "filament used [g]": 12.5,
+                    "filament cost": 0.38,
+                },
+            }
+        raise AssertionError(f"unexpected path: {path}")
+
+    monkeypatch.setattr(client, "_get", fake_get)
+
+    metadata = client.refresh_current_file_metadata()
+
+    assert calls == ["api/v1/job", "api/v1/files/usb/2LAYER~1.GCO"]
+    assert client.state.subtask_name == "2 layer cube.gcode"
+    assert metadata["source"] == "prusalink_file_meta"
+    assert metadata["filament_used_grams"] == 12.5
+    assert metadata["filament_type"] == "PETG"
+    assert metadata["filament_cost"] == 0.38
+
+
 def test_prusalink_file_meta_normalizer_handles_empty_meta():
     assert _normalize_prusalink_file_meta(None) == {}
     assert _normalize_prusalink_file_meta({}) == {}

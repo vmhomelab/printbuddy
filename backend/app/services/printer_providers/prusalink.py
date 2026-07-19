@@ -155,6 +155,27 @@ def _normalize_prusalink_file_meta(meta: dict[str, Any] | None) -> dict[str, Any
     return normalized
 
 
+def _job_file_storage_path(file_info: dict[str, Any]) -> tuple[str | None, str | None]:
+    """Resolve PrusaLink job file info to a files API storage/path pair."""
+    refs = file_info.get("refs") if isinstance(file_info.get("refs"), dict) else {}
+    download_ref = refs.get("download")
+    if isinstance(download_ref, str) and download_ref.strip("/"):
+        parts = download_ref.strip("/").split("/", 1)
+        if len(parts) == 2:
+            return parts[0], parts[1]
+
+    path = str(file_info.get("path") or "").strip("/")
+    name = str(file_info.get("name") or file_info.get("display_name") or "").strip("/")
+    if not name:
+        return None, None
+    if path:
+        parts = path.split("/", 1)
+        storage = parts[0]
+        directory = parts[1] if len(parts) == 2 else ""
+        return storage, f"{directory}/{name}".strip("/")
+    return None, name
+
+
 def _prusalink_basic_auth(username: str | None, password: str | None) -> httpx.BasicAuth | None:
     if not password:
         return None
@@ -612,8 +633,29 @@ class PrusaLinkPrinterClient:
             self.state.subtask_name = str(filename)
         normalized_meta = _normalize_prusalink_file_meta(file_info.get("meta"))
         if normalized_meta:
-            self.state.raw_data["file_metadata"] = normalized_meta
-            self.state.raw_data["prusalink_file_meta"] = normalized_meta.get("raw_prusalink_meta")
+            self._store_file_metadata(normalized_meta)
+
+    def _store_file_metadata(self, metadata: dict[str, Any]) -> None:
+        self.state.raw_data["file_metadata"] = metadata
+        self.state.raw_data["prusalink_file_meta"] = metadata.get("raw_prusalink_meta")
+
+    def _refresh_metadata_from_job_file(self, file_info: dict[str, Any]) -> dict[str, Any]:
+        storage, remote_path = _job_file_storage_path(file_info)
+        if not remote_path:
+            return {}
+        try:
+            file_detail = self._get(self._file_api_path(remote_path, storage=storage))
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 404:
+                raise
+            return {}
+        if not isinstance(file_detail, dict):
+            return {}
+        metadata = _normalize_prusalink_file_meta(file_detail.get("meta"))
+        if metadata:
+            self._store_file_metadata(metadata)
+            logger.info("PrusaLink file metadata loaded from file endpoint: storage=%s path=%s", storage, remote_path)
+        return metadata
 
     def refresh_current_file_metadata(self) -> dict[str, Any]:
         """Fetch current job metadata without emitting lifecycle callbacks.
@@ -636,7 +678,10 @@ class PrusaLinkPrinterClient:
             return {}
         self._apply_job_detail(job_detail)
         metadata = self.state.raw_data.get("file_metadata") if isinstance(self.state.raw_data, dict) else None
-        return metadata if isinstance(metadata, dict) else {}
+        if isinstance(metadata, dict) and metadata:
+            return metadata
+        file_info = job_detail.get("file") if isinstance(job_detail.get("file"), dict) else {}
+        return self._refresh_metadata_from_job_file(file_info)
 
     def send_gcode(self, script: str) -> bool:
         """Map Printbuddy's limited control G-code scripts to PrusaLink control endpoints.
