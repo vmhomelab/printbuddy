@@ -35,6 +35,8 @@ export function FilamentSection({
   const [materialSearch, setMaterialSearch] = useState('');
   const [labelInput, setLabelInput] = useState(String(formData.label_weight));
   const [isLabelFocused, setIsLabelFocused] = useState(false);
+  const [quantityInput, setQuantityInput] = useState(String(quantity));
+  const [isQuantityFocused, setIsQuantityFocused] = useState(false);
   const [ofdbBrandQuery, setOfdbBrandQuery] = useState('');
   const [ofdbBrands, setOfdbBrands] = useState<OpenFilamentDatabaseBrandSummary[]>([]);
   const [ofdbMaterials, setOfdbMaterials] = useState<OpenFilamentDatabaseMaterialSummary[]>([]);
@@ -44,6 +46,7 @@ export function FilamentSection({
   const [ofdbFilaments, setOfdbFilaments] = useState<OpenFilamentDatabaseFilamentSummary[]>([]);
   const [ofdbVariants, setOfdbVariants] = useState<OpenFilamentDatabaseVariantSummary[]>([]);
   const [ofdbSelectedFilament, setOfdbSelectedFilament] = useState<OpenFilamentDatabaseFilamentSummary | null>(null);
+  const [ofdbSelectedVariant, setOfdbSelectedVariant] = useState<OpenFilamentDatabaseVariantSummary | null>(null);
   const [ofdbLoading, setOfdbLoading] = useState(false);
   const [ofdbBrandLoading, setOfdbBrandLoading] = useState(false);
   const [ofdbError, setOfdbError] = useState<string | null>(null);
@@ -123,6 +126,12 @@ export function FilamentSection({
     }
   }, [formData.label_weight, isLabelFocused]);
 
+  useEffect(() => {
+    if (!isQuantityFocused) {
+      setQuantityInput(String(quantity));
+    }
+  }, [quantity, isQuantityFocused]);
+
   // Handle preset selection
   const handlePresetSelect = (option: FilamentOption) => {
     updateField('slicer_filament', option.code);
@@ -161,6 +170,7 @@ export function FilamentSection({
     setOfdbFilaments([]);
     setOfdbVariants([]);
     setOfdbSelectedFilament(null);
+    setOfdbSelectedVariant(null);
     setOfdbQuery('');
   };
 
@@ -210,6 +220,7 @@ export function FilamentSection({
     setOfdbFilaments([]);
     setOfdbVariants([]);
     setOfdbSelectedFilament(null);
+    setOfdbSelectedVariant(null);
     setOfdbQuery('');
     setOfdbError(null);
   };
@@ -243,6 +254,7 @@ export function FilamentSection({
     setOfdbLoading(true);
     setOfdbError(null);
     setOfdbSelectedFilament(filament);
+    setOfdbSelectedVariant(null);
     setOfdbVariants([]);
     try {
       const response = await api.getOpenFilamentDatabaseFilament(ofdbBrandSlug, ofdbMaterial, filament.slug);
@@ -270,6 +282,7 @@ export function FilamentSection({
     if (!ofdbSelectedFilament || !canSearchOfdb) return;
     setOfdbLoading(true);
     setOfdbError(null);
+    setOfdbSelectedVariant(variant);
     try {
       const response = await api.getOpenFilamentDatabaseVariant(
         ofdbBrandSlug,
@@ -455,11 +468,18 @@ export function FilamentSection({
                 <div className="space-y-1">
                   <p className="text-xs font-medium text-bambu-gray">{t('inventory.openFilamentDatabase.variantResults')}</p>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-1 max-h-48 overflow-y-auto">
-                    {ofdbVariants.map((variant) => (
+                    {ofdbVariants.map((variant) => {
+                      const selected = ofdbSelectedVariant?.id === variant.id || ofdbSelectedVariant?.slug === variant.slug;
+                      return (
                       <button
                         key={variant.id}
                         type="button"
-                        className="flex items-center gap-2 px-3 py-2 rounded-lg border border-bambu-dark-tertiary text-left text-sm text-white hover:bg-bambu-dark-tertiary"
+                        className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-left text-sm transition-colors ${
+                          selected
+                            ? 'border-bambu-green bg-bambu-green/15 text-bambu-green ring-1 ring-bambu-green/30'
+                            : 'border-bambu-dark-tertiary text-white hover:bg-bambu-dark-tertiary'
+                        }`}
+                        aria-pressed={selected}
                         onClick={() => void handleOfdbVariantSelect(variant)}
                       >
                         <span
@@ -473,7 +493,8 @@ export function FilamentSection({
                           </span>
                         </span>
                       </button>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               )}
@@ -765,12 +786,28 @@ export function FilamentSection({
             type="number"
             aria-label={t('inventory.quantity')}
             className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green"
-            value={quantity}
+            value={quantityInput}
             min={1}
             max={100}
+            onFocus={() => setIsQuantityFocused(true)}
             onChange={(e) => {
-              const val = Math.max(1, Math.min(100, parseInt(e.target.value) || 1));
-              onQuantityChange(val);
+              const raw = e.target.value;
+              if (!/^\d*$/.test(raw)) return;
+              setQuantityInput(raw);
+              if (raw === '') return;
+              const parsed = Number(raw);
+              if (Number.isFinite(parsed)) {
+                onQuantityChange(Math.max(1, Math.min(100, parsed)));
+              }
+            }}
+            onBlur={() => {
+              setIsQuantityFocused(false);
+              const parsed = Number(quantityInput);
+              const next = Number.isFinite(parsed) && quantityInput.trim() !== ''
+                ? Math.max(1, Math.min(100, parsed))
+                : 1;
+              onQuantityChange(next);
+              setQuantityInput(String(next));
             }}
           />
         </div>

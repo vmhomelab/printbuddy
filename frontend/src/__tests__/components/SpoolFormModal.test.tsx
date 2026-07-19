@@ -253,6 +253,30 @@ describe('SpoolFormModal weightTouched', () => {
     expect(payload).toHaveProperty('weight_used', 0);
   });
 
+  it('allows clearing the quantity field with backspace before normalizing on blur', async () => {
+    render(
+      <SpoolFormModal
+        isOpen={true}
+        onClose={vi.fn()}
+        currencySymbol="$"
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Add Spool' })).toBeInTheDocument();
+    });
+
+    const quantityInput = screen.getByRole('spinbutton', { name: 'Quantity' }) as HTMLInputElement;
+    expect(quantityInput.value).toBe('1');
+
+    fireEvent.focus(quantityInput);
+    fireEvent.change(quantityInput, { target: { value: '' } });
+    expect(quantityInput.value).toBe('');
+
+    fireEvent.blur(quantityInput);
+    expect(quantityInput.value).toBe('1');
+  });
+
   it('preserves core_weight_catalog_id when editing other fields', async () => {
     const spoolWithCatalogId: InventorySpool = {
       ...existingSpool,
@@ -1363,10 +1387,13 @@ describe('SpoolFormModal header spool ID (#1385)', () => {
       expect(api.getOpenFilamentDatabaseFilament).toHaveBeenCalledWith('elegoo', 'PLA', 'pla');
     });
 
-    fireEvent.click(await screen.findByRole('button', { name: /Black.*1 size/i }));
+    const blackVariantButton = await screen.findByRole('button', { name: /Black.*1 size/i });
+    expect(blackVariantButton).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(blackVariantButton);
     await waitFor(() => {
       expect(api.getOpenFilamentDatabaseVariant).toHaveBeenCalledWith('elegoo', 'PLA', 'pla', 'black');
     });
+    expect(blackVariantButton).toHaveAttribute('aria-pressed', 'true');
 
     const addButtons = screen.getAllByRole('button', { name: /add spool/i });
     const submitButton = addButtons.find(btn => btn.tagName === 'BUTTON' && btn.querySelector('svg.lucide-save'));

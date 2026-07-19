@@ -10,7 +10,7 @@
  * exercises end-to-end.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { screen, waitFor, fireEvent } from '@testing-library/react';
 import { render } from '../utils';
 import InventoryPageRouter from '../../pages/InventoryPage';
@@ -193,17 +193,87 @@ describe('InventoryPage — copy button', () => {
       expect(screen.getAllByText('PETG').length).toBeGreaterThan(0);
     });
 
-    // Switch to cards view
     fireEvent.click(screen.getByRole('button', { name: /^Cards$/ }));
 
-    // The card-view copy button has the same title; wait for the card render
-    // to settle, then click it.
     const copyButtons = await screen.findAllByTitle('Copy Spool');
     expect(copyButtons.length).toBeGreaterThan(0);
     fireEvent.click(copyButtons[0]);
 
     await waitFor(() => {
       expect(screen.getByRole('heading', { name: 'Copy Spool' })).toBeInTheDocument();
+    });
+  });
+
+  it('assigns a spool to a printer from the inventory table', async () => {
+    const assignmentSpy = vi.fn();
+    server.use(
+      http.get('/api/v1/printers/', () => HttpResponse.json([
+        {
+          id: 7,
+          name: 'Prusa CORE One',
+          serial_number: 'PRUSA-CORE-ONE',
+          ip_address: '10.17.10.50',
+          access_code: '',
+          provider: 'prusalink',
+          api_url: null,
+          auth_token: null,
+          provider_options: null,
+          model: 'Prusa CORE One',
+          location: null,
+          nozzle_count: 1,
+          is_active: true,
+          auto_archive: true,
+          external_camera_url: null,
+          external_camera_type: null,
+          external_camera_enabled: false,
+          external_camera_snapshot_url: null,
+          camera_rotation: 0,
+          plate_detection_enabled: false,
+          created_at: '2025-01-01T00:00:00Z',
+          updated_at: '2025-01-01T00:00:00Z',
+        },
+      ])),
+      http.post('/api/v1/inventory/assignments', async ({ request }) => {
+        const body = await request.json();
+        assignmentSpy(body);
+        return HttpResponse.json({
+          id: 123,
+          spool_id: 5,
+          printer_id: 7,
+          printer_name: 'Prusa CORE One',
+          ams_id: -1,
+          tray_id: 0,
+          ams_label: null,
+          fingerprint_color: null,
+          fingerprint_type: null,
+          configured: true,
+          created_at: '2025-01-01T00:00:00Z',
+        });
+      })
+    );
+
+    render(<InventoryPageRouter />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText('PETG').length).toBeGreaterThan(0);
+    });
+
+    const assignButtons = await screen.findAllByTitle('Assign to printer');
+    fireEvent.click(assignButtons[0]);
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Assign to printer' })).toBeInTheDocument();
+    });
+
+    fireEvent.change(screen.getByLabelText('Printer'), { target: { value: '7' } });
+    const submitAssignButton = screen
+      .getAllByRole('button', { name: 'Assign to printer' })
+      .find((button) => button.textContent?.trim() === 'Assign to printer');
+    expect(submitAssignButton).toBeTruthy();
+    fireEvent.click(submitAssignButton!);
+
+    await waitFor(() => {
+      expect(assignmentSpy).toHaveBeenCalledWith({ spool_id: 5, printer_id: 7, ams_id: -1, tray_id: 0 });
     });
   });
 
