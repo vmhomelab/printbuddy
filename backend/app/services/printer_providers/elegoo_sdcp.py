@@ -23,6 +23,7 @@ SDCP_WS_PORT = 3030
 SDCP_DISCOVERY_PORT = 3000
 SDCP_DISCOVERY_MESSAGE = b"M99999"
 SDCP_STATUS_COMMAND = 0
+SDCP_LIST_FILES_COMMAND = 258
 SDCP_FILE_INFO_COMMAND = 260
 SDCP_START_PRINT_COMMAND = 128
 SDCP_PAUSE_PRINT_COMMAND = 129
@@ -766,8 +767,84 @@ class ElegooSDCPPrinterClient:
                 self.state.big_fan2_speed = target_speed
         return success
 
-    def list_files(self, path: str = "/") -> list[dict[str, Any]]:  # noqa: ARG002
-        return []
+    @staticmethod
+    def _normalize_file_list_path(path: str) -> str:
+        raw = str(path or "").strip() or "/"
+        if not raw.startswith("/"):
+            raw = f"/usb/{raw}"
+        elif raw in {"/", "/usb"}:
+            raw = "/usb/"
+        elif raw.startswith("/usb/") or raw == "/local" or raw.startswith("/local/"):
+            raw = raw
+        else:
+            raw = f"/usb/{raw.lstrip('/')}"
+        if raw == "/local":
+            return "/local/"
+        return raw
+
+    @staticmethod
+    def _normalize_file_list_entry(entry: dict[str, Any]) -> dict[str, Any] | None:
+        raw_path = str(entry.get("name") or entry.get("path") or entry.get("Filename") or "").strip()
+        if not raw_path:
+            return None
+        if not raw_path.startswith("/"):
+            storage_prefix = "/usb" if entry.get("storageType") == 1 else "/local"
+            raw_path = f"{storage_prefix}/{raw_path.lstrip('/')}"
+        normalized_path = raw_path.rstrip("/") or raw_path
+        name = Path(normalized_path).name or normalized_path.strip("/")
+        raw_type = entry.get("type")
+        file_type = "directory" if raw_type in (0, "0", "folder", "directory", "dir") else "file"
+        storage_type = "external" if entry.get("storageType") == 1 else "internal"
+        return {
+            "name": name,
+            "type": file_type,
+            "size": entry.get("usedSize", entry.get("size")),
+            "modified": entry.get("modified") or entry.get("m_timestamp"),
+            "path": normalized_path,
+            "storage_type": storage_type,
+        }
+
+    def list_files(self, path: str = "/", *, storage: str | None = None) -> list[dict[str, Any]]:  # noqa: ARG002
+        if not self.mainboard_id:
+            try:
+                self.discover()
+            except Exception as exc:  # noqa: BLE001 - direct WebSocket command may still work on some firmware
+                logger.debug(
+                    "Elegoo SDCP UDP discovery failed before list_files for %s: %s", self.host, type(exc).__name__
+                )
+        sdcp_path = self._normalize_file_list_path(path)
+        request_id = secrets.token_hex(16)
+        command = {
+            "Id": self.printer_id or "",
+            "Data": {
+                "Cmd": SDCP_LIST_FILES_COMMAND,
+                "Data": {"Url": sdcp_path},
+                "From": 1,
+                "MainboardID": self.mainboard_id or "",
+                "RequestID": request_id,
+                "TimeStamp": int(time.time() * 1000),
+            },
+        }
+        if self.mainboard_id:
+            command["Topic"] = f"sdcp/request/{self.mainboard_id}"
+        response = self._send_command(command)
+        data = response.get("Data") if isinstance(response.get("Data"), dict) else {}
+        response_data = data.get("Data") if isinstance(data.get("Data"), dict) else data
+        if not isinstance(response_data, dict):
+            return []
+        ack = response_data.get("Ack")
+        if ack not in (0, None):
+            logger.warning("Elegoo SDCP list_files rejected for %s: Ack=%s", sdcp_path, ack)
+            return []
+        raw_entries = response_data.get("FileList") or response_data.get("files") or []
+        files: list[dict[str, Any]] = []
+        for entry in raw_entries if isinstance(raw_entries, list) else []:
+            if not isinstance(entry, dict):
+                continue
+            normalized = self._normalize_file_list_entry(entry)
+            if normalized is not None:
+                files.append(normalized)
+        return files
 
     def upload_file(self, local_path: Path, remote_path: str, *, overwrite: bool = False) -> bool:  # noqa: ARG002
         path = Path(local_path)

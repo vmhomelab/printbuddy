@@ -275,6 +275,89 @@ def test_elegoo_sdcp_get_file_info_fetches_estimated_weight_and_time(monkeypatch
     assert command["Data"]["From"] == 1
 
 
+def test_elegoo_sdcp_list_files_defaults_to_usb_and_normalizes_entries(monkeypatch):
+    sent_commands = []
+    client = ElegooSDCPPrinterClient("192.168.1.181")
+    client.printer_id = "printer-id"
+    client.mainboard_id = "mainboard-id"
+
+    def fake_send(command):
+        sent_commands.append(command)
+        return {
+            "Data": {
+                "Data": {
+                    "Ack": 0,
+                    "FileList": [
+                        {
+                            "name": "/usb/Calibration Cube",
+                            "usedSize": 0,
+                            "totalSize": 0,
+                            "storageType": 1,
+                            "type": 0,
+                        },
+                        {
+                            "name": "/usb/benchy.gcode",
+                            "usedSize": 123456,
+                            "totalSize": 987654,
+                            "storageType": 1,
+                            "type": 1,
+                        },
+                    ],
+                }
+            }
+        }
+
+    monkeypatch.setattr(client, "_send_command", fake_send)
+
+    assert client.list_files("/") == [
+        {
+            "name": "Calibration Cube",
+            "type": "directory",
+            "size": 0,
+            "modified": None,
+            "path": "/usb/Calibration Cube",
+            "storage_type": "external",
+        },
+        {
+            "name": "benchy.gcode",
+            "type": "file",
+            "size": 123456,
+            "modified": None,
+            "path": "/usb/benchy.gcode",
+            "storage_type": "external",
+        },
+    ]
+    command = sent_commands[0]
+    assert command["Topic"] == "sdcp/request/mainboard-id"
+    assert command["Data"]["Cmd"] == 258
+    assert command["Data"]["Data"] == {"Url": "/usb/"}
+    assert command["Data"]["From"] == 1
+    assert command["Data"]["MainboardID"] == "mainboard-id"
+
+
+def test_elegoo_sdcp_list_files_preserves_explicit_local_path(monkeypatch):
+    sent_commands = []
+    client = ElegooSDCPPrinterClient("192.168.1.181")
+    client.mainboard_id = "mainboard-id"
+    monkeypatch.setattr(
+        client,
+        "_send_command",
+        lambda command: sent_commands.append(command) or {"Data": {"Data": {"Ack": 0, "FileList": []}}},
+    )
+
+    assert client.list_files("/local/cache") == []
+
+    assert sent_commands[0]["Data"]["Data"] == {"Url": "/local/cache"}
+
+
+def test_elegoo_sdcp_list_files_returns_empty_for_rejected_ack(monkeypatch):
+    client = ElegooSDCPPrinterClient("192.168.1.181")
+    client.mainboard_id = "mainboard-id"
+    monkeypatch.setattr(client, "_send_command", lambda command: {"Data": {"Data": {"Ack": 123, "FileList": []}}})
+
+    assert client.list_files("/usb/") == []
+
+
 def test_elegoo_sdcp_start_print_can_disable_bed_levelling(monkeypatch):
     sent_commands = []
     client = ElegooSDCPPrinterClient("192.168.1.181")

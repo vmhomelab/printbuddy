@@ -71,6 +71,64 @@ class _FakeProviderClient:
 
 @pytest.mark.asyncio
 @pytest.mark.integration
+async def test_list_printer_files_delegates_elegoo_cc1_to_provider_client(
+    async_client: AsyncClient,
+    printer_factory,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    printer = await printer_factory(provider="elegoo_sdcp", model="Elegoo Centauri Carbon")
+    fake_client = _FakeProviderClient()
+    fake_client.files = [
+        {
+            "name": "USB Folder",
+            "path": "/usb/USB Folder",
+            "type": "directory",
+            "size": 0,
+            "modified": None,
+        },
+        {
+            "name": "benchy.gcode",
+            "path": "/usb/benchy.gcode",
+            "type": "file",
+            "size": 123456,
+            "modified": None,
+        },
+    ]
+
+    from backend.app.api.routes import printers as printer_routes
+
+    monkeypatch.setattr(printer_routes, "_provider_for_printer", lambda _printer: fake_client)
+
+    response = await async_client.get(f"/api/v1/printers/{printer.id}/files", params={"path": "/"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["path"] == "/"
+    assert payload["files"] == [
+        {
+            "name": "USB Folder",
+            "path": "/usb/USB Folder",
+            "type": "directory",
+            "size": 0,
+            "modified": None,
+            "is_directory": True,
+            "mtime": None,
+        },
+        {
+            "name": "benchy.gcode",
+            "path": "/usb/benchy.gcode",
+            "type": "file",
+            "size": 123456,
+            "modified": None,
+            "is_directory": False,
+            "mtime": None,
+        },
+    ]
+    assert fake_client.list_files_calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
 async def test_start_printer_file_delegates_to_provider_client(
     async_client: AsyncClient,
     printer_factory,
