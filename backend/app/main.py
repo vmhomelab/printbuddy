@@ -745,18 +745,19 @@ async def _calculate_loaded_spool_cost(db, printer_id: int, grams: float | None)
 
 
 def _filename_filament_metadata(filename: str | None) -> dict:
-    """Extract Printbuddy slicer filename metadata: ..._fw12.34_tc0.56.gcode."""
+    """Extract Printbuddy slicer filename metadata: ..._fw12.34[_tc0.56].gcode."""
     if not filename:
         return {}
     match = re.search(
-        r"(?:^|[_-])fw(?P<grams>\d+(?:[.,]\d+)?)_tc(?P<cost>\d+(?:[.,]\d+)?)\.(?:bgcode|gcode)$",
+        r"(?:^|[_-])fw(?P<grams>\d+(?:[.,]\d+)?)(?:_tc(?P<cost>\d+(?:[.,]\d+)?))?\.(?:bgcode|gcode)$",
         str(filename).strip(),
         re.IGNORECASE,
     )
     if not match:
         return {}
     grams = _metadata_float(match.group("grams").replace(",", "."))
-    cost = _metadata_float(match.group("cost").replace(",", "."))
+    raw_cost = match.group("cost")
+    cost = _metadata_float(raw_cost.replace(",", ".")) if raw_cost is not None else None
     if grams is None or grams <= 0:
         return {}
     metadata = {
