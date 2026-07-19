@@ -681,6 +681,62 @@ class BackgroundDispatchService:
         )
         return bool(await asyncio.to_thread(client.upload_file, file_path, remote_path))  # type: ignore[attr-defined]
 
+    async def _register_provider_file_info_estimate(
+        self,
+        *,
+        printer_id: int,
+        provider: str,
+        remote_filename: str,
+        remote_path: str,
+    ) -> None:
+        """Fetch printer-side file metadata after upload and register EstWeight.
+
+        Elegoo CC1 only exposes `EstWeight` for a printer-side file when asked
+        via SDCP Cmd 260. Upload/Queue/Library dispatch uploads the G-code first
+        and then starts it through `printer_manager.start_print()`, so the File
+        Manager `/files/start` preflight does not run here.
+        """
+        if provider != "elegoo_sdcp":
+            return
+
+        client = printer_manager.get_client(printer_id)
+        get_file_info = getattr(client, "get_file_info", None)
+        if not callable(get_file_info):
+            return
+
+        candidates: list[str] = []
+        for candidate in (remote_filename, remote_path, f"/local/{remote_filename.lstrip('/')}"):
+            if candidate and candidate not in candidates:
+                candidates.append(candidate)
+
+        for candidate in candidates:
+            try:
+                info = await asyncio.to_thread(get_file_info, candidate)
+            except Exception as exc:
+                logger.debug("Ignoring %s file-info lookup failure for %s: %s", provider, candidate, exc)
+                continue
+            if not isinstance(info, dict):
+                continue
+            estimated_weight = info.get("estimated_weight_grams")
+            if not estimated_weight:
+                continue
+            from backend.app.services import direct_print_tracking
+
+            direct_print_tracking.register_direct_print_metadata(
+                printer_id,
+                str(info.get("path") or candidate),
+                estimated_weight,
+                estimated_time_seconds=info.get("estimated_time_seconds"),
+            )
+            logger.info(
+                "Registered %s printer file estimate before dispatch start: printer=%s file=%s weight=%s",
+                provider,
+                printer_id,
+                candidate,
+                estimated_weight,
+            )
+            return
+
     async def _run_reprint_archive(self, job: PrintDispatchJob):
         from backend.app.main import register_expected_print
 
@@ -780,6 +836,12 @@ class BackgroundDispatchService:
                     remote_filename,
                     job.source_id,
                     ams_mapping=job.options.get("ams_mapping"),
+                )
+                await self._register_provider_file_info_estimate(
+                    printer_id=job.printer_id,
+                    provider=printer_provider,
+                    remote_filename=remote_filename,
+                    remote_path=remote_path,
                 )
 
                 plate_id = self._resolve_plate_id(file_path, job.options.get("plate_id"))
@@ -976,6 +1038,12 @@ class BackgroundDispatchService:
                     remote_filename,
                     archive.id,
                     ams_mapping=job.options.get("ams_mapping"),
+                )
+                await self._register_provider_file_info_estimate(
+                    printer_id=job.printer_id,
+                    provider=printer_provider,
+                    remote_filename=remote_filename,
+                    remote_path=remote_path,
                 )
 
                 plate_id = self._resolve_plate_id(file_path, job.options.get("plate_id"))

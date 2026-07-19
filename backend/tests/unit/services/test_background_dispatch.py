@@ -123,6 +123,42 @@ async def test_dispatch_library_file_propagates_cleanup_flag_true():
 
 
 @pytest.mark.asyncio
+async def test_register_provider_file_info_estimate_registers_elegoo_est_weight():
+    """CC1 background upload/start must preflight Cmd 260 after upload."""
+    from backend.app.services import direct_print_tracking
+
+    service = BackgroundDispatchService()
+    calls: list[str] = []
+
+    def get_file_info(path: str):
+        calls.append(path)
+        if path == "/local/cube.gcode":
+            return {
+                "path": "/local/cube.gcode",
+                "estimated_weight_grams": 12.34,
+                "estimated_time_seconds": 456,
+            }
+        return None
+
+    client = SimpleNamespace(get_file_info=get_file_info)
+
+    with patch("backend.app.services.background_dispatch.printer_manager.get_client", return_value=client):
+        await service._register_provider_file_info_estimate(
+            printer_id=77,
+            provider="elegoo_sdcp",
+            remote_filename="cube.gcode",
+            remote_path="/cube.gcode",
+        )
+
+    assert calls == ["cube.gcode", "/cube.gcode", "/local/cube.gcode"]
+    metadata = direct_print_tracking.pop_direct_print_metadata(77, "cube.gcode")
+    assert metadata is not None
+    assert metadata.filename == "/local/cube.gcode"
+    assert metadata.estimated_weight_grams == pytest.approx(12.34)
+    assert metadata.estimated_time_seconds == 456
+
+
+@pytest.mark.asyncio
 async def test_cancel_queued_job_removes_it_and_broadcasts():
     """Cancelling queued job removes it immediately."""
     service = BackgroundDispatchService()
