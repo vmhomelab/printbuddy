@@ -37,6 +37,7 @@ class DirectPrintMetadata:
     filename: str
     estimated_weight_grams: float
     estimated_time_seconds: int | None = None
+    estimated_cost: float | None = None
     registered_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -68,6 +69,7 @@ def register_direct_print_metadata(
     filename: str,
     estimated_weight_grams: float | int | None,
     estimated_time_seconds: int | None = None,
+    estimated_cost: float | int | None = None,
 ) -> None:
     """Register one active direct printer-storage print estimate."""
     try:
@@ -77,11 +79,18 @@ def register_direct_print_metadata(
     if weight <= 0:
         logger.debug("Direct print metadata for printer %s has no positive EstWeight; skipping", printer_id)
         return
+    try:
+        cost = float(estimated_cost) if estimated_cost is not None else None
+    except (TypeError, ValueError):
+        cost = None
+    if cost is not None and cost < 0:
+        cost = None
     _direct_prints[printer_id] = DirectPrintMetadata(
         printer_id=printer_id,
         filename=filename,
         estimated_weight_grams=weight,
         estimated_time_seconds=estimated_time_seconds,
+        estimated_cost=cost,
         registered_at=datetime.now(timezone.utc),
     )
     logger.info(
@@ -122,6 +131,8 @@ async def _apply_metadata_to_archive(
         archive.filament_used_grams = metadata.estimated_weight_grams
     if metadata.estimated_time_seconds and not archive.print_time_seconds:
         archive.print_time_seconds = metadata.estimated_time_seconds
+    if metadata.estimated_cost is not None and archive.cost is None:
+        archive.cost = metadata.estimated_cost
 
     extra_data = dict(archive.extra_data or {}) if isinstance(archive.extra_data, dict) else {}
     extra_data["file_metadata"] = {
@@ -129,6 +140,7 @@ async def _apply_metadata_to_archive(
         "source": "elegoo_sdcp_file_info",
         "filename": metadata.filename,
         "filament_used_grams": metadata.estimated_weight_grams,
+        "filament_cost": metadata.estimated_cost,
         "print_time_seconds": metadata.estimated_time_seconds,
     }
     archive.extra_data = extra_data
@@ -264,7 +276,9 @@ async def report_inventory_usage(
     spool.weight_used = (spool.weight_used or 0) + weight_used
     spool.last_used = datetime.now(timezone.utc)
     percent_used = int(round((weight_used / spool.label_weight) * 100)) if spool.label_weight else 0
-    cost = (weight_used / 1000.0) * spool.cost_per_kg if spool.cost_per_kg else None
+    cost = metadata.estimated_cost if metadata.estimated_cost is not None else None
+    if cost is None:
+        cost = (weight_used / 1000.0) * spool.cost_per_kg if spool.cost_per_kg else None
 
     history = SpoolUsageHistory(
         spool_id=spool.id,

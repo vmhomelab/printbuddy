@@ -199,6 +199,41 @@ async def test_completed_direct_file_print_updates_archive_even_without_loaded_i
 
 
 @pytest.mark.asyncio
+async def test_direct_file_print_applies_estimated_cost_to_archive(db_session, printer_factory, archive_factory):
+    printer = await printer_factory(provider="elegoo_sdcp", model="Elegoo Centauri Carbon")
+    archive = await archive_factory(
+        printer.id,
+        filename="cc1-filename-meta.gcode",
+        file_path="",
+        filament_used_grams=None,
+        print_time_seconds=None,
+        cost=None,
+        status="printing",
+        extra_data={"no_3mf_available": True},
+    )
+
+    direct_print_tracking.register_direct_print_metadata(
+        printer.id,
+        "cc1-filename-meta_fw15.5_tc0.42.gcode",
+        estimated_weight_grams=15.5,
+        estimated_cost=0.42,
+    )
+    results = await direct_print_tracking.report_inventory_usage(
+        printer.id,
+        {"status": "completed", "filename": "cc1-filename-meta_fw15.5_tc0.42.gcode"},
+        db_session,
+        archive_id=archive.id,
+    )
+
+    await db_session.refresh(archive)
+
+    assert results == []
+    assert archive.filament_used_grams == pytest.approx(15.5)
+    assert archive.cost == pytest.approx(0.42)
+    assert archive.extra_data["file_metadata"]["filament_cost"] == pytest.approx(0.42)
+
+
+@pytest.mark.asyncio
 async def test_direct_file_spoolman_usage_updates_archive(db_session, printer_factory, archive_factory, monkeypatch):
     printer = await printer_factory(provider="elegoo_sdcp", model="Elegoo Centauri Carbon")
     archive = await archive_factory(

@@ -3,6 +3,7 @@ import logging
 import mimetypes as _mimetypes
 import os
 import posixpath
+import re
 import secrets
 import time
 from contextlib import asynccontextmanager
@@ -623,8 +624,6 @@ async def _register_elegoo_observed_file_estimate(printer_id: int, data: dict) -
 
     client = printer_manager.get_client(printer_id)
     get_file_info = getattr(client, "get_file_info", None) if client else None
-    if not callable(get_file_info):
-        return
 
     raw_data = data.get("raw_data") if isinstance(data.get("raw_data"), dict) else {}
     raw_status = raw_data.get("Status") if isinstance(raw_data.get("Status"), dict) else {}
@@ -652,31 +651,54 @@ async def _register_elegoo_observed_file_estimate(printer_id: int, data: dict) -
             if candidate and candidate not in candidates:
                 candidates.append(candidate)
 
-    for candidate in candidates:
-        try:
-            info = await asyncio.to_thread(get_file_info, candidate)
-        except Exception as exc:
-            logger.debug("Ignoring Elegoo SDCP observed file-info lookup failure for %s: %s", candidate, exc)
-            continue
-        if not isinstance(info, dict):
-            continue
-        estimated_weight = info.get("estimated_weight_grams")
-        if not estimated_weight:
-            continue
+    if callable(get_file_info):
+        for candidate in candidates:
+            try:
+                info = await asyncio.to_thread(get_file_info, candidate)
+            except Exception as exc:
+                logger.debug("Ignoring Elegoo SDCP observed file-info lookup failure for %s: %s", candidate, exc)
+                continue
+            if not isinstance(info, dict):
+                continue
+            estimated_weight = info.get("estimated_weight_grams")
+            if not estimated_weight:
+                continue
 
+            from backend.app.services import direct_print_tracking
+
+            direct_print_tracking.register_direct_print_metadata(
+                printer_id,
+                str(info.get("path") or candidate),
+                estimated_weight,
+                estimated_time_seconds=info.get("estimated_time_seconds"),
+            )
+            logger.info(
+                "Registered Elegoo SDCP observed print estimate: printer=%s file=%s weight=%s",
+                printer_id,
+                candidate,
+                estimated_weight,
+            )
+            return
+
+    for raw_name in raw_names:
+        filename_metadata = _filename_filament_metadata(str(raw_name) if raw_name else None)
+        if not filename_metadata:
+            continue
         from backend.app.services import direct_print_tracking
 
         direct_print_tracking.register_direct_print_metadata(
             printer_id,
-            str(info.get("path") or candidate),
-            estimated_weight,
-            estimated_time_seconds=info.get("estimated_time_seconds"),
+            str(raw_name),
+            filename_metadata.get("filament_used_grams"),
+            estimated_cost=filename_metadata.get("filament_cost"),
         )
+        data["file_metadata"] = filename_metadata
         logger.info(
-            "Registered Elegoo SDCP observed print estimate: printer=%s file=%s weight=%s",
+            "Registered Elegoo SDCP observed print estimate from filename metadata: printer=%s file=%s weight=%s cost=%s",
             printer_id,
-            candidate,
-            estimated_weight,
+            raw_name,
+            filename_metadata.get("filament_used_grams"),
+            filename_metadata.get("filament_cost"),
         )
         return
 
@@ -720,6 +742,31 @@ async def _calculate_loaded_spool_cost(db, printer_id: int, grams: float | None)
         cost_per_kg = float(default_cost_setting) if default_cost_setting else 25.0
 
     return round((grams / 1000.0) * cost_per_kg, 2) if cost_per_kg > 0 else None
+
+
+def _filename_filament_metadata(filename: str | None) -> dict:
+    """Extract Printbuddy slicer filename metadata: ..._fw12.34_tc0.56.gcode."""
+    if not filename:
+        return {}
+    match = re.search(
+        r"(?:^|[_-])fw(?P<grams>\d+(?:[.,]\d+)?)_tc(?P<cost>\d+(?:[.,]\d+)?)\.(?:bgcode|gcode)$",
+        str(filename).strip(),
+        re.IGNORECASE,
+    )
+    if not match:
+        return {}
+    grams = _metadata_float(match.group("grams").replace(",", "."))
+    cost = _metadata_float(match.group("cost").replace(",", "."))
+    if grams is None or grams <= 0:
+        return {}
+    metadata = {
+        "source": "filename_filament_meta",
+        "raw_filename": str(filename),
+        "filament_used_grams": grams,
+    }
+    if cost is not None and cost >= 0:
+        metadata["filament_cost"] = cost
+    return metadata
 
 
 def _prusalink_file_metadata_for_archive(printer, data: dict) -> dict:
