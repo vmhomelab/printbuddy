@@ -114,6 +114,36 @@ def test_prusalink_refresh_current_file_metadata_falls_back_to_file_endpoint(mon
     assert metadata["filament_cost"] == 0.38
 
 
+def test_prusalink_refresh_current_file_metadata_falls_back_to_filename_weight_and_cost(monkeypatch):
+    client = PrusaLinkPrinterClient(base_url="http://prusa.local", password="secret")
+
+    def fake_get(path):
+        if path == "api/v1/job":
+            return {
+                "id": 105,
+                "state": "PRINTING",
+                "file": {
+                    "refs": {"download": "/usb/HEISSL~1.BGC"},
+                    "name": "HEISSL~1.BGC",
+                    "display_name": "Heissluftfriteuse-Knopf_0.4n_0.2mm_PLA_COREONE_fw12.7325_tc0.323407.bgcode",
+                    "path": "/usb",
+                },
+            }
+        if path == "api/v1/files/usb/HEISSL~1.BGC":
+            return {"name": "HEISSL~1.BGC"}
+        raise AssertionError(f"unexpected path: {path}")
+
+    monkeypatch.setattr(client, "_get", fake_get)
+
+    metadata = client.refresh_current_file_metadata()
+
+    assert client.state.subtask_name == "Heissluftfriteuse-Knopf_0.4n_0.2mm_PLA_COREONE_fw12.7325_tc0.323407.bgcode"
+    assert metadata["source"] == "prusalink_filename_meta"
+    assert metadata["filament_used_grams"] == 12.7325
+    assert metadata["filament_cost"] == 0.323407
+    assert metadata["raw_filename"] == client.state.subtask_name
+
+
 def test_prusalink_file_meta_normalizer_handles_empty_meta():
     assert _normalize_prusalink_file_meta(None) == {}
     assert _normalize_prusalink_file_meta({}) == {}

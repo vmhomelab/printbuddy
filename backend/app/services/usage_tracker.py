@@ -430,7 +430,10 @@ async def _track_from_archive_estimate(
     if not archive or archive.file_path:
         return []
     metadata = archive.extra_data.get("file_metadata") if isinstance(archive.extra_data, dict) else None
-    if not isinstance(metadata, dict) or metadata.get("source") != "prusalink_file_meta":
+    if not isinstance(metadata, dict) or metadata.get("source") not in {
+        "prusalink_file_meta",
+        "prusalink_filename_meta",
+    }:
         return []
     if not archive.filament_used_grams or archive.filament_used_grams <= 0:
         return []

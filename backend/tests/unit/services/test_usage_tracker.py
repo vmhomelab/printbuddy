@@ -1083,6 +1083,42 @@ class TestPrusaLinkArchiveEstimateTracking:
         assert history.cost == 2.4
 
     @pytest.mark.asyncio
+    async def test_filename_archive_estimate_updates_loaded_spool(self, db_session, printer_factory, archive_factory):
+        from backend.app.models.spool import Spool
+        from backend.app.models.spool_assignment import SpoolAssignment
+
+        printer = await printer_factory(provider="prusalink", model="Prusa CORE One")
+        spool = Spool(material="PLA", label_weight=1000, weight_used=100, cost_per_kg=20.0)
+        db_session.add(spool)
+        await db_session.commit()
+        await db_session.refresh(spool)
+        db_session.add(SpoolAssignment(printer_id=printer.id, spool_id=spool.id, ams_id=-1, tray_id=0))
+        archive = await archive_factory(
+            printer.id,
+            with_run=False,
+            filename="Heissluftfriteuse-Knopf_0.4n_0.2mm_PLA_COREONE_fw12.7325_tc0.323407.bgcode",
+            file_path="",
+            file_size=0,
+            filament_used_grams=12.7325,
+            extra_data={"file_metadata": {"source": "prusalink_filename_meta", "filament_cost": 0.323407}},
+        )
+
+        results = await _track_from_archive_estimate(
+            printer.id,
+            archive.id,
+            "completed",
+            archive.filename,
+            db_session,
+            default_filament_cost=20.0,
+        )
+
+        assert results[0]["spool_id"] == spool.id
+        assert results[0]["weight_used"] == 12.7
+        await db_session.flush()
+        await db_session.refresh(spool)
+        assert spool.weight_used == 112.7325
+
+    @pytest.mark.asyncio
     async def test_archive_estimate_skips_non_prusalink_metadata(self, db_session, printer_factory, archive_factory):
         from backend.app.models.spool import Spool
         from backend.app.models.spool_assignment import SpoolAssignment

@@ -176,6 +176,35 @@ def _job_file_storage_path(file_info: dict[str, Any]) -> tuple[str | None, str |
     return None, name
 
 
+def _prusalink_filename_meta(filename: str | None) -> dict[str, Any]:
+    """Extract slicer-estimated weight/cost from Printbuddy's recommended filename suffix.
+
+    Expected format at the end of the display filename:
+    ``..._fw12.7325_tc0.323407.bgcode``.
+    """
+    if not filename:
+        return {}
+    match = re.search(
+        r"(?:^|[_-])fw(?P<grams>\d+(?:[.,]\d+)?)_tc(?P<cost>\d+(?:[.,]\d+)?)\.(?:bgcode|gcode)$",
+        str(filename).strip(),
+        re.IGNORECASE,
+    )
+    if not match:
+        return {}
+    grams = _float_or_none(match.group("grams").replace(",", "."))
+    cost = _float_or_none(match.group("cost").replace(",", "."))
+    if grams is None or grams <= 0:
+        return {}
+    metadata: dict[str, Any] = {
+        "source": "prusalink_filename_meta",
+        "raw_filename": str(filename),
+        "filament_used_grams": grams,
+    }
+    if cost is not None and cost >= 0:
+        metadata["filament_cost"] = cost
+    return metadata
+
+
 def _prusalink_basic_auth(username: str | None, password: str | None) -> httpx.BasicAuth | None:
     if not password:
         return None
@@ -681,7 +710,15 @@ class PrusaLinkPrinterClient:
         if isinstance(metadata, dict) and metadata:
             return metadata
         file_info = job_detail.get("file") if isinstance(job_detail.get("file"), dict) else {}
-        return self._refresh_metadata_from_job_file(file_info)
+        metadata = self._refresh_metadata_from_job_file(file_info)
+        if metadata:
+            return metadata
+        filename = file_info.get("display_name") or file_info.get("name") or self.state.subtask_name
+        metadata = _prusalink_filename_meta(str(filename) if filename else None)
+        if metadata:
+            self._store_file_metadata(metadata)
+            logger.info("PrusaLink file metadata parsed from filename: %s", filename)
+        return metadata
 
     def send_gcode(self, script: str) -> bool:
         """Map Printbuddy's limited control G-code scripts to PrusaLink control endpoints.
