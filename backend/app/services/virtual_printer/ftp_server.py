@@ -585,10 +585,12 @@ class VirtualPrinterFTPServer:
         self._ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
         self._ssl_context.maximum_version = ssl.TLSVersion.TLSv1_2
 
-        # Use standard TLS settings for compatibility
-        self._ssl_context.set_ciphers("HIGH:!aNULL:!MD5:!RC4")
+        # Keep the historical HIGH baseline and add the Bambu plain-RSA AES-GCM
+        # suites explicitly for hardened OpenSSL policies. This widens the set
+        # without dropping existing FTPS compatibility exclusions.
+        self._ssl_context.set_ciphers("HIGH:AES256-GCM-SHA384:AES128-GCM-SHA256:!aNULL:!MD5:!RC4")
 
-        logger.info("FTP SSL context created with standard settings")
+        logger.info("FTP SSL context created with Bambu-compatible cipher settings")
 
         try:
             # Create server with SSL - TLS handshake happens before any FTP data

@@ -13,7 +13,7 @@ def test_raw_gcode_allowed_for_provider_neutral_library_upload():
     validate_print_file_upload("core-one-test.gcode", b"G28\nM104 S215\n", printer_provider=None)
 
 
-@pytest.mark.parametrize("provider", ["prusalink", "klipper", "moonraker"])
+@pytest.mark.parametrize("provider", ["prusalink", "klipper", "moonraker", "elegoo_sdcp"])
 def test_raw_gcode_allowed_for_non_bambu_provider(provider: str):
     validate_print_file_upload("job.gcode", b"G28\n", printer_provider=provider)
 

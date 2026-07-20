@@ -4,6 +4,7 @@ import httpx
 import pytest
 
 from backend.app.services.printer_manager import PrinterManager
+from backend.app.services.printer_providers.elegoo_sdcp import ElegooSDCPPrinterClient
 from backend.app.services.printer_providers.factory import (
     SUPPORTED_PROVIDERS,
     create_printer_client,
@@ -15,7 +16,7 @@ from backend.app.services.printer_providers.prusalink import PrusaLinkPrinterCli
 
 
 def test_supported_printbuddy_providers_are_registered():
-    assert {"bambu", "klipper", "mainsail", "fluidd", "prusalink", "prusaconnect"} == SUPPORTED_PROVIDERS
+    assert {"bambu", "klipper", "mainsail", "fluidd", "prusalink", "prusaconnect", "elegoo_sdcp"} == SUPPORTED_PROVIDERS
 
 
 @pytest.mark.parametrize("provider", ["klipper", "mainsail", "fluidd"])
@@ -117,7 +118,9 @@ def test_moonraker_status_edges_emit_print_start_and_complete(monkeypatch):
 
     monkeypatch.setattr(client, "_query_objects", lambda names: next(statuses))  # noqa: ARG005
     monkeypatch.setattr(client, "_query_fan_status", lambda: {})
-    monkeypatch.setattr("backend.app.services.printer_providers.moonraker.time.monotonic", iter([100.0, 160.0]).__next__)
+    monkeypatch.setattr(
+        "backend.app.services.printer_providers.moonraker.time.monotonic", iter([100.0, 160.0]).__next__
+    )
 
     assert client.request_status_update() is True
     assert start_payloads == []
@@ -166,7 +169,11 @@ def test_moonraker_factory_wires_lifecycle_callbacks():
     start_payloads: list[dict[str, object]] = []
     complete_payloads: list[dict[str, object]] = []
     printer = SimpleNamespace(
-        provider="klipper", api_url="http://printer.local:7125", auth_token=None, ip_address="printer.local", model="Elegoo"
+        provider="klipper",
+        api_url="http://printer.local:7125",
+        auth_token=None,
+        ip_address="printer.local",
+        model="Elegoo",
     )
 
     client = create_printer_client(
@@ -311,6 +318,22 @@ def test_prusa_connect_mobile_provider_creates_cloud_client_with_default_api_url
     assert client.base_url == "https://connect-mobile-api.prusa3d.com/"
     assert client.printer_uuid == "13b5af3d-7b44-42b1-9327-cf8a6fbf3f3c"
     assert client.auth_token == "dummy-connect-token"
+
+
+def test_elegoo_sdcp_provider_creates_sdcp_client():
+    printer = SimpleNamespace(
+        provider="elegoo_sdcp",
+        ip_address="centauri.local",
+        api_url=None,
+        auth_token=None,
+        provider_options=None,
+    )
+
+    client = create_printer_client(printer)
+
+    assert isinstance(client, ElegooSDCPPrinterClient)
+    assert client.host == "centauri.local"
+    assert client.websocket_url == "ws://centauri.local:3030/websocket"
 
 
 def test_prusa_connect_mobile_status_update_maps_prusa_connect_payload(monkeypatch):

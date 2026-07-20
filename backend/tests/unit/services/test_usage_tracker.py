@@ -15,6 +15,7 @@ from backend.app.services.usage_tracker import (
     _archive_colors_from_spools,
     _spool_color_to_hex,
     _track_from_3mf,
+    _track_from_archive_estimate,
     on_print_complete,
     on_print_start,
 )
@@ -98,15 +99,18 @@ class TestOnPrintStart:
         assert session.tray_remain_start == {}  # Empty, no valid remain
 
     @pytest.mark.asyncio
-    async def test_skips_without_ams_data(self):
-        """No session created when no AMS data available."""
+    async def test_creates_session_without_ams_data_for_loaded_spool_fallback(self):
+        """Non-AMS providers still need a session for loaded-spool/3MF usage tracking."""
         state = MagicMock()
         state.raw_data = {"ams": []}
+        state.tray_now = 255
         pm = _make_printer_manager(state)
 
         await on_print_start(1, {"subtask_name": "test"}, pm)
 
-        assert 1 not in _active_sessions
+        assert 1 in _active_sessions
+        assert _active_sessions[1].tray_remain_start == {}
+        assert _active_sessions[1].print_name == "test"
 
 
 class TestOnPrintCompleteAMSDelta:
@@ -303,6 +307,61 @@ class TestTrackFrom3MF:
         assert results[0]["weight_used"] == 25.5
         # weight_used = old (100) + 3MF (25.5)
         assert spool.weight_used == 125.5
+
+    @pytest.mark.asyncio
+    async def test_updates_virtual_loaded_spool_from_single_filament_3mf(self):
+        """Single-spool non-AMS prints charge the virtual Loaded spool assignment."""
+        spool = _make_spool(id=50, label_weight=1000, weight_used=10)
+        assignment = _make_assignment(spool_id=50, ams_id=-1, tray_id=0)
+        archive = MagicMock()
+        archive.file_path = "archives/test.3mf"
+        archive.filament_color = None
+
+        db = AsyncMock()
+        # archive, queue_item(None), loaded-spool assignment lookup, spool lookup
+        db.execute = AsyncMock(
+            side_effect=[
+                MagicMock(scalar_one_or_none=MagicMock(return_value=archive)),
+                MagicMock(scalar_one_or_none=MagicMock(return_value=None)),
+                MagicMock(scalar_one_or_none=MagicMock(return_value=assignment)),
+                MagicMock(scalar_one_or_none=MagicMock(return_value=spool)),
+            ]
+        )
+
+        state = MagicMock()
+        state.raw_data = {"ams": []}
+        state.progress = 100
+        state.layer_num = 0
+        state.tray_now = 255
+        state.last_loaded_tray = -1
+        pm = _make_printer_manager(state)
+        filament_usage = [{"slot_id": 1, "used_g": 42.5, "type": "PETG", "color": "#FF00FF"}]
+
+        with (
+            patch("backend.app.core.config.settings") as mock_settings,
+            patch("backend.app.utils.threemf_tools.extract_filament_usage_from_3mf", return_value=filament_usage),
+        ):
+            mock_path = MagicMock()
+            mock_path.exists.return_value = True
+            mock_settings.base_dir.__truediv__ = MagicMock(return_value=mock_path)
+
+            results = await _track_from_3mf(
+                printer_id=1,
+                archive_id=10,
+                status="completed",
+                print_name="core-one-print",
+                handled_trays=set(),
+                printer_manager=pm,
+                db=db,
+            )
+
+        assert len(results) == 1
+        assert results[0]["spool_id"] == 50
+        assert results[0]["weight_used"] == 42.5
+        assert results[0]["ams_id"] == -1
+        assert results[0]["tray_id"] == 0
+        assert spool.weight_used == 52.5
+        db.add.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_scales_by_progress_for_failed_print(self):
@@ -960,3 +1019,259 @@ class TestArchiveFilamentColorRewrite:
             )
 
         assert archive.filament_color == "#161616"
+
+
+class TestPrusaLinkArchiveEstimateTracking:
+    """PrusaLink no-3MF fallback archives update only the loaded spool assignment."""
+
+    @pytest.mark.asyncio
+    async def test_completed_prusalink_archive_estimate_updates_loaded_spool(
+        self, db_session, printer_factory, archive_factory
+    ):
+        from sqlalchemy import select
+
+        from backend.app.models.spool import Spool
+        from backend.app.models.spool_assignment import SpoolAssignment
+        from backend.app.models.spool_usage_history import SpoolUsageHistory
+
+        printer = await printer_factory(provider="prusalink", model="Prusa CORE One")
+        spool = Spool(material="PETG", label_weight=1000, weight_used=220, cost_per_kg=25.0, rgba="FF6600FF")
+        db_session.add(spool)
+        await db_session.commit()
+        await db_session.refresh(spool)
+        db_session.add(SpoolAssignment(printer_id=printer.id, spool_id=spool.id, ams_id=-1, tray_id=0))
+        archive = await archive_factory(
+            printer.id,
+            with_run=False,
+            filename="book_stand.bgcode",
+            file_path="",
+            file_size=0,
+            status="printing",
+            filament_type="PETG",
+            filament_used_grams=96.0,
+            extra_data={"file_metadata": {"source": "prusalink_file_meta", "filament_used_mm": 31470.0}},
+        )
+
+        results = await _track_from_archive_estimate(
+            printer.id,
+            archive.id,
+            "completed",
+            "book_stand.bgcode",
+            db_session,
+            default_filament_cost=25.0,
+        )
+
+        assert results == [
+            {
+                "spool_id": spool.id,
+                "weight_used": 96.0,
+                "percent_used": 10,
+                "ams_id": -1,
+                "tray_id": 0,
+                "material": "PETG",
+                "cost": 2.4,
+                "slot_id": None,
+                "color": "#FF6600",
+                "source": "archive_estimate",
+            }
+        ]
+        assert spool.weight_used == 316.0
+        await db_session.flush()
+        history = (await db_session.execute(select(SpoolUsageHistory))).scalar_one()
+        assert history.archive_id == archive.id
+        assert history.weight_used == 96.0
+        assert history.cost == 2.4
+
+    @pytest.mark.asyncio
+    async def test_filename_archive_estimate_updates_loaded_spool(self, db_session, printer_factory, archive_factory):
+        from backend.app.models.spool import Spool
+        from backend.app.models.spool_assignment import SpoolAssignment
+
+        printer = await printer_factory(provider="prusalink", model="Prusa CORE One")
+        spool = Spool(material="PLA", label_weight=1000, weight_used=100, cost_per_kg=20.0)
+        db_session.add(spool)
+        await db_session.commit()
+        await db_session.refresh(spool)
+        db_session.add(SpoolAssignment(printer_id=printer.id, spool_id=spool.id, ams_id=-1, tray_id=0))
+        archive = await archive_factory(
+            printer.id,
+            with_run=False,
+            filename="Heissluftfriteuse-Knopf_0.4n_0.2mm_PLA_COREONE_fw12.7325_tc0.323407.bgcode",
+            file_path="",
+            file_size=0,
+            filament_used_grams=12.7325,
+            extra_data={"file_metadata": {"source": "prusalink_filename_meta", "filament_cost": 0.323407}},
+        )
+
+        results = await _track_from_archive_estimate(
+            printer.id,
+            archive.id,
+            "completed",
+            archive.filename,
+            db_session,
+            default_filament_cost=20.0,
+        )
+
+        assert results[0]["spool_id"] == spool.id
+        assert results[0]["weight_used"] == 12.7
+        await db_session.flush()
+        await db_session.refresh(spool)
+        assert spool.weight_used == 112.7325
+
+    @pytest.mark.asyncio
+    async def test_archive_estimate_skips_non_prusalink_metadata(self, db_session, printer_factory, archive_factory):
+        from backend.app.models.spool import Spool
+        from backend.app.models.spool_assignment import SpoolAssignment
+
+        printer = await printer_factory(provider="bambu")
+        spool = Spool(material="PLA", label_weight=1000, weight_used=0, cost_per_kg=20.0)
+        db_session.add(spool)
+        await db_session.commit()
+        await db_session.refresh(spool)
+        db_session.add(SpoolAssignment(printer_id=printer.id, spool_id=spool.id, ams_id=-1, tray_id=0))
+        archive = await archive_factory(
+            printer.id,
+            with_run=False,
+            file_path="",
+            file_size=0,
+            filament_used_grams=96.0,
+            extra_data={"file_metadata": {"source": "some_other_provider"}},
+        )
+
+        results = await _track_from_archive_estimate(
+            printer.id,
+            archive.id,
+            "completed",
+            "ignored",
+            db_session,
+            default_filament_cost=20.0,
+        )
+
+        await db_session.refresh(spool)
+        assert results == []
+        assert spool.weight_used == 0
+
+
+@pytest.mark.asyncio
+async def test_late_prusalink_metadata_enriches_no_3mf_archive_then_updates_loaded_spool(
+    db_session, printer_factory, archive_factory, monkeypatch
+):
+    from sqlalchemy import select
+
+    from backend.app.main import _apply_prusalink_metadata_to_archive
+    from backend.app.models.spool import Spool
+    from backend.app.models.spool_assignment import SpoolAssignment
+    from backend.app.models.spool_usage_history import SpoolUsageHistory
+
+    printer = await printer_factory(provider="prusalink", model="Prusa CORE One")
+    spool = Spool(material="PETG", label_weight=1000, weight_used=10, cost_per_kg=30.0, rgba="00AAFFFF")
+    db_session.add(spool)
+    await db_session.commit()
+    await db_session.refresh(spool)
+    db_session.add(SpoolAssignment(printer_id=printer.id, spool_id=spool.id, ams_id=-1, tray_id=0))
+    archive = await archive_factory(
+        printer.id,
+        with_run=False,
+        filename="buddy-direct.bgcode",
+        file_path="",
+        file_size=0,
+        filament_used_grams=None,
+        filament_type=None,
+        cost=None,
+        extra_data={"no_3mf_available": True},
+    )
+
+    class FakePrusaLinkClient:
+        def refresh_current_file_metadata(self):
+            return {
+                "source": "prusalink_file_meta",
+                "filament_used_grams": 96.0,
+                "filament_type": "PETG",
+                "filament_cost": 2.88,
+                "filament_used_mm": 31470.0,
+            }
+
+    monkeypatch.setattr("backend.app.main.printer_manager.get_client", lambda printer_id: FakePrusaLinkClient())
+
+    updated = await _apply_prusalink_metadata_to_archive(
+        db_session,
+        printer.id,
+        printer,
+        archive,
+        {},
+        MagicMock(),
+    )
+    await db_session.commit()
+
+    assert updated is True
+    await db_session.refresh(archive)
+    assert archive.filament_used_grams == 96.0
+    assert archive.filament_type == "PETG"
+    assert archive.cost == 2.88
+    assert archive.extra_data["file_metadata"]["source"] == "prusalink_file_meta"
+
+    results = await _track_from_archive_estimate(
+        printer.id,
+        archive.id,
+        "completed",
+        "buddy-direct.bgcode",
+        db_session,
+        default_filament_cost=30.0,
+    )
+    await db_session.flush()
+    await db_session.refresh(spool)
+
+    assert results[0]["weight_used"] == 96.0
+    assert results[0]["spool_id"] == spool.id
+    assert spool.weight_used == 106.0
+    history = (await db_session.execute(select(SpoolUsageHistory))).scalar_one()
+    assert history.archive_id == archive.id
+    assert history.weight_used == 96.0
+
+
+@pytest.mark.asyncio
+async def test_delayed_prusalink_metadata_refresh_updates_printing_archive(
+    db_session, printer_factory, archive_factory, monkeypatch
+):
+    from backend.app import main as app_main
+
+    printer = await printer_factory(provider="prusalink", model="Prusa CORE One")
+    archive = await archive_factory(
+        printer.id,
+        with_run=False,
+        filename="delayed-meta.bgcode",
+        file_path="",
+        file_size=0,
+        filament_used_grams=None,
+        filament_type=None,
+        cost=None,
+        status="printing",
+        extra_data={"no_3mf_available": True},
+    )
+
+    class ReuseSession:
+        async def __aenter__(self):
+            return db_session
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class FakePrusaLinkClient:
+        def refresh_current_file_metadata(self):
+            return {
+                "source": "prusalink_file_meta",
+                "filament_used_grams": 42.0,
+                "filament_type": "PETG",
+                "filament_cost": 1.26,
+            }
+
+    monkeypatch.setattr(app_main, "async_session", lambda: ReuseSession())
+    monkeypatch.setattr(app_main.printer_manager, "get_client", lambda printer_id: FakePrusaLinkClient())
+
+    await app_main._refresh_prusalink_archive_metadata_later(printer.id, archive.id, {}, delays=(0,))
+    await db_session.refresh(archive)
+
+    assert archive.filament_used_grams == 42.0
+    assert archive.filament_type == "PETG"
+    assert archive.cost == 1.26
+    assert archive.extra_data["file_metadata"]["source"] == "prusalink_file_meta"

@@ -373,6 +373,7 @@ class TestPrinterManager:
             ams_mapping=None,
             timelapse=False,
             bed_levelling=True,
+            print_platform_type=None,
             flow_cali=False,
             vibration_cali=True,
             layer_inspect=False,

@@ -634,7 +634,14 @@ async def _stream_mjpeg(url: str) -> AsyncGenerator[bytes, None]:
         return
 
     try:
-        timeout = aiohttp.ClientTimeout(total=None, sock_read=30)
+        # Long-lived MJPEG streams may legally pause between frames. The Elegoo
+        # Centauri Carbon camera returns MJPEG headers immediately on :3031/video
+        # but can go quiet long enough to trip aiohttp's sock_read timeout,
+        # tearing down an otherwise valid live-view connection. Keep connection
+        # establishment bounded via sock_connect but do not impose a per-read
+        # timeout on the stream body; client disconnect/route cleanup owns
+        # lifecycle termination.
+        timeout = aiohttp.ClientTimeout(total=None, sock_connect=10, sock_read=None)
         async with aiohttp.ClientSession(timeout=timeout) as session, session.get(safe_url) as response:
             if response.status != 200:
                 logger.error("MJPEG stream returned status %s", response.status)

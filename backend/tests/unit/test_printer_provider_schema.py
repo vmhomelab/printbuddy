@@ -106,6 +106,22 @@ def test_prusa_connect_mobile_printer_can_be_created_with_uuid_and_token_only():
     assert printer.auth_token == "dummy-connect-jwt"
 
 
+def test_elegoo_sdcp_printer_can_be_created_with_ip_only():
+    printer = PrinterCreate.model_validate(
+        {
+            "name": "Centauri Carbon",
+            "provider": "elegoo_sdcp",
+            "ip_address": "centauri.local",
+        }
+    )
+
+    assert printer.provider == "elegoo_sdcp"
+    assert printer.serial_number == "ELEGOO-SDCP-CENTAURI-LOCAL"
+    assert printer.access_code == "elegoo-sdcp"
+    assert printer.api_url is None
+    assert printer.auth_token is None
+
+
 def test_non_bambu_printer_can_be_created_without_external_camera_url():
     printer = PrinterCreate(
         name="Voron 2.4",

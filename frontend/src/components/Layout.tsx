@@ -504,11 +504,18 @@ export function Layout() {
           >
             <Menu className="w-6 h-6 text-white" />
           </button>
-          <img
-            src={appAssetPath(mode === 'dark' ? '/img/printbuddy_logo_dark.png' : '/img/printbuddy_logo_light.png')}
-            alt="Printbuddy"
-            className="h-8 ml-3"
-          />
+          <NavLink
+            to="/"
+            aria-label={t('nav.printers')}
+            title={t('nav.printers')}
+            className="ml-3 flex h-full items-center rounded px-1 cursor-pointer focus:outline-none focus:ring-2 focus:ring-bambu-green"
+          >
+            <img
+              src={appAssetPath(mode === 'dark' ? '/img/printbuddy_logo_dark.png' : '/img/printbuddy_logo_light.png')}
+              alt="Printbuddy"
+              className="h-8"
+            />
+          </NavLink>
         </header>
       )}
 
@@ -530,11 +537,21 @@ export function Layout() {
       >
         {/* Logo */}
         <div className={`border-b border-bambu-dark-tertiary flex items-center justify-center ${isSidebarCompact || sidebarExpanded ? 'p-4' : 'p-2'}`}>
-          <img
-            src={appAssetPath(sidebarBrandImagePath)}
-            alt="Printbuddy"
-            className={isSidebarCompact || sidebarExpanded ? 'h-16 w-auto' : 'h-8 w-8'}
-          />
+          <NavLink
+            to="/"
+            aria-label={t('nav.printers')}
+            title={t('nav.printers')}
+            onClick={() => setMobileDrawerOpen(false)}
+            className={`flex items-center justify-center rounded cursor-pointer focus:outline-none focus:ring-2 focus:ring-bambu-green ${
+              isSidebarCompact || sidebarExpanded ? 'h-24 w-full' : 'h-12 w-12'
+            }`}
+          >
+            <img
+              src={appAssetPath(sidebarBrandImagePath)}
+              alt="Printbuddy"
+              className={isSidebarCompact || sidebarExpanded ? 'h-16 w-auto' : 'h-8 w-8'}
+            />
+          </NavLink>
         </div>
 
         {/* Navigation */}

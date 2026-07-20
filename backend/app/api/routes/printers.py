@@ -36,6 +36,7 @@ from backend.app.schemas.printer import (
     PrintOptionsResponse,
     normalize_external_camera_update,
 )
+from backend.app.services import direct_print_tracking
 from backend.app.services.bambu_ftp import (
     cache_3mf_download,
     delete_file_async,
@@ -96,27 +97,27 @@ def _split_numbered_copy_filename(filename: str) -> tuple[str, str]:
     return stem, suffix
 
 
-def _provider_file_exists(provider_client, remote_path: str) -> bool:
-    return _provider_file_entry(provider_client, remote_path) is not None
+def _provider_file_exists(provider_client, remote_path: str, *, storage: str | None = None) -> bool:
+    return _provider_file_entry(provider_client, remote_path, storage=storage) is not None
 
 
-def _provider_renamed_upload_path(provider_client, remote_path: str) -> str:
+def _provider_renamed_upload_path(provider_client, remote_path: str, *, storage: str | None = None) -> str:
     filename = Path(remote_path).name
     stem, suffix = _split_numbered_copy_filename(filename)
     for index in range(1, 1000):
         candidate_name = f"{stem}({index}){suffix}"
         candidate_path = _remote_path_with_filename(remote_path, candidate_name)
-        if not _provider_file_exists(provider_client, candidate_path):
+        if not _provider_file_exists(provider_client, candidate_path, storage=storage):
             return candidate_path
     raise HTTPException(409, f"Could not find a free copy filename for {filename}")
 
 
-def _delete_existing_provider_file(provider_client, remote_path: str) -> None:
+def _delete_existing_provider_file(provider_client, remote_path: str, *, storage: str | None = None) -> None:
     delete_file = getattr(provider_client, "delete_file", None)
     if not callable(delete_file):
         raise HTTPException(409, f"File already exists and this printer provider cannot delete it: {remote_path}")
     try:
-        deleted = delete_file(remote_path)
+        deleted = delete_file(remote_path, storage=storage)
     except httpx.HTTPStatusError as exc:
         status_code = exc.response.status_code
         raise HTTPException(
@@ -133,7 +134,7 @@ def _delete_existing_provider_file(provider_client, remote_path: str) -> None:
         ) from exc
     if not deleted:
         raise HTTPException(409, f"File already exists but could not be deleted: {remote_path}")
-    if _provider_file_exists(provider_client, remote_path):
+    if _provider_file_exists(provider_client, remote_path, storage=storage):
         raise HTTPException(409, f"File still exists after delete and may be selected or locked: {remote_path}")
 
 
@@ -159,9 +160,9 @@ def _provider_file_matches_path(entry: dict, remote_path: str) -> bool:
     return bool(entry_name) and entry_name == expected_name
 
 
-def _provider_file_entry(provider_client, remote_path: str) -> dict | None:
+def _provider_file_entry(provider_client, remote_path: str, *, storage: str | None = None) -> dict | None:
     try:
-        files = provider_client.list_files(str(Path(remote_path).parent).replace(".", "/"))
+        files = provider_client.list_files(str(Path(remote_path).parent).replace(".", "/"), storage=storage)
     except Exception as exc:  # noqa: BLE001 - reconciliation is best-effort after a side-effecting upload timeout
         logger.warning(
             "Could not reconcile printer upload state after provider exception: %s",
@@ -186,13 +187,15 @@ def _provider_file_reported_size(entry: dict | None) -> int | None:
         return None
 
 
-def _provider_file_is_zero_placeholder(provider_client, remote_path: str) -> bool:
-    entry = _provider_file_entry(provider_client, remote_path)
+def _provider_file_is_zero_placeholder(provider_client, remote_path: str, *, storage: str | None = None) -> bool:
+    entry = _provider_file_entry(provider_client, remote_path, storage=storage)
     return _provider_file_reported_size(entry) == 0
 
 
-def _provider_file_upload_verified(provider_client, remote_path: str, expected_size: int) -> bool:
-    entry = _provider_file_entry(provider_client, remote_path)
+def _provider_file_upload_verified(
+    provider_client, remote_path: str, expected_size: int, *, storage: str | None = None
+) -> bool:
+    entry = _provider_file_entry(provider_client, remote_path, storage=storage)
     if entry is None:
         return False
     reported_size = _provider_file_reported_size(entry)
@@ -209,9 +212,11 @@ def _provider_file_upload_verified(provider_client, remote_path: str, expected_s
     return True
 
 
-async def _wait_for_provider_file(provider_client, remote_path: str, expected_size: int = 0) -> bool:
+async def _wait_for_provider_file(
+    provider_client, remote_path: str, expected_size: int = 0, *, storage: str | None = None
+) -> bool:
     for attempt in range(PROVIDER_UPLOAD_RECONCILE_ATTEMPTS):
-        if _provider_file_upload_verified(provider_client, remote_path, expected_size):
+        if _provider_file_upload_verified(provider_client, remote_path, expected_size, storage=storage):
             return True
         if attempt < PROVIDER_UPLOAD_RECONCILE_ATTEMPTS - 1:
             await asyncio.sleep(PROVIDER_UPLOAD_RECONCILE_INTERVAL_SECONDS)
@@ -268,6 +273,11 @@ async def create_printer(
                 "Could not connect to the printer. Verify IP address, serial number, "
                 "and access code, and confirm LAN-only mode is enabled. "
                 "The printer was not added."
+            )
+        elif printer_data.provider == "elegoo_sdcp":
+            failure_message = (
+                "Could not connect to Elegoo SDCP. Verify the IP/hostname, confirm the printer is reachable on "
+                "the local network, and check that SDCP WebSocket port 3030 is accessible. The printer was not added."
             )
         else:
             failure_message = (
@@ -868,6 +878,7 @@ async def get_printer_status(
         big_fan2_speed=state.big_fan2_speed,
         heatbreak_fan_speed=state.heatbreak_fan_speed,
         firmware_version=state.firmware_version,
+        connection_details=getattr(state, "sdcp_connection", None) or (state.raw_data or {}).get("sdcp_connection"),
         developer_mode=state.developer_mode if state else None,
         awaiting_plate_clear=printer_manager.is_awaiting_plate_clear(printer_id),
         supports_drying=supports_drying(printer.model, state.firmware_version),
@@ -1279,6 +1290,7 @@ async def get_printer_cover(
 async def list_printer_files(
     printer_id: int,
     path: str = "/",
+    storage: str | None = Query(default=None),
     _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_FILES),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1290,7 +1302,7 @@ async def list_printer_files(
 
     provider_client = _provider_for_printer(printer)
     if provider_client is not None:
-        files = [_normalize_provider_file_entry(f) for f in provider_client.list_files(path)]
+        files = [_normalize_provider_file_entry(f) for f in provider_client.list_files(path, storage=storage)]
     else:
         files = await list_files_async(printer.ip_address, printer.access_code, path, printer_model=printer.model)
         # Add full path to each file
@@ -1299,6 +1311,7 @@ async def list_printer_files(
 
     return {
         "path": path,
+        "storage": storage,
         "files": files,
         "supported_print_extensions": sorted(PRINTABLE_PRINTER_FILE_EXTENSIONS),
     }
@@ -1309,6 +1322,7 @@ async def upload_printer_file(
     printer_id: int,
     file: UploadFile = File(...),
     path: str = "/",
+    storage: str | None = Query(default=None),
     overwrite: bool = Query(default=False),
     conflict_strategy: str = Query(default="error", pattern="^(error|rename|delete_replace)$"),
     _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_FILES),
@@ -1335,8 +1349,8 @@ async def upload_printer_file(
             original_remote_path = remote_path
             renamed = False
             replaced = False
-            if _provider_file_exists(provider_client, remote_path):
-                if _provider_file_is_zero_placeholder(provider_client, remote_path):
+            if _provider_file_exists(provider_client, remote_path, storage=storage):
+                if _provider_file_is_zero_placeholder(provider_client, remote_path, storage=storage):
                     raise HTTPException(
                         409,
                         (
@@ -1345,10 +1359,10 @@ async def upload_printer_file(
                         ),
                     )
                 if conflict_strategy == "rename":
-                    remote_path = _provider_renamed_upload_path(provider_client, remote_path)
+                    remote_path = _provider_renamed_upload_path(provider_client, remote_path, storage=storage)
                     renamed = True
                 elif conflict_strategy == "delete_replace":
-                    _delete_existing_provider_file(provider_client, remote_path)
+                    _delete_existing_provider_file(provider_client, remote_path, storage=storage)
                     replaced = True
                 else:
                     raise HTTPException(
@@ -1359,10 +1373,14 @@ async def upload_printer_file(
                         ),
                     )
             try:
-                success = provider_client.upload_file(tmp_path, remote_path, overwrite=overwrite)
+                success = provider_client.upload_file(tmp_path, remote_path, overwrite=overwrite, storage=storage)
                 if success:
-                    success = await _wait_for_provider_file(provider_client, remote_path, expected_size)
-                    if not success and _provider_file_is_zero_placeholder(provider_client, remote_path):
+                    success = await _wait_for_provider_file(
+                        provider_client, remote_path, expected_size, storage=storage
+                    )
+                    if not success and _provider_file_is_zero_placeholder(
+                        provider_client, remote_path, storage=storage
+                    ):
                         raise HTTPException(
                             502,
                             (
@@ -1376,9 +1394,9 @@ async def upload_printer_file(
                     remote_path,
                     type(exc).__name__,
                 )
-                success = await _wait_for_provider_file(provider_client, remote_path, expected_size)
+                success = await _wait_for_provider_file(provider_client, remote_path, expected_size, storage=storage)
                 reconciled = success
-                if not success and _provider_file_is_zero_placeholder(provider_client, remote_path):
+                if not success and _provider_file_is_zero_placeholder(provider_client, remote_path, storage=storage):
                     raise HTTPException(
                         502,
                         (
@@ -1388,7 +1406,9 @@ async def upload_printer_file(
                     ) from exc
             except httpx.HTTPStatusError as exc:
                 status_code = exc.response.status_code
-                if status_code == 409 and _provider_file_is_zero_placeholder(provider_client, remote_path):
+                if status_code == 409 and _provider_file_is_zero_placeholder(
+                    provider_client, remote_path, storage=storage
+                ):
                     raise HTTPException(
                         409,
                         (
@@ -1435,6 +1455,9 @@ async def upload_printer_file(
 async def start_printer_file(
     printer_id: int,
     path: str,
+    storage: str | None = Query(default=None),
+    bed_levelling: bool | None = Query(default=None),
+    print_platform_type: int | None = Query(default=None, ge=0, le=1),
     _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_CONTROL),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1445,13 +1468,38 @@ async def start_printer_file(
         raise HTTPException(404, "Printer not found")
 
     provider_client = _provider_for_printer(printer)
+    direct_file_info = None
     if provider_client is not None:
-        success = provider_client.start_print(path)
+        get_file_info = getattr(provider_client, "get_file_info", None)
+        if callable(get_file_info):
+            try:
+                direct_file_info = get_file_info(path)
+            except Exception as exc:  # noqa: BLE001 — print start can continue without usage estimate
+                logger.debug("Could not fetch printer file metadata for %s on printer %s: %s", path, printer_id, exc)
+
+        start_options = {}
+        if bed_levelling is not None:
+            start_options["bed_levelling"] = bed_levelling
+        if print_platform_type is not None:
+            start_options["print_platform_type"] = print_platform_type
+        if storage:
+            start_options["storage"] = storage
+        success = provider_client.start_print(path, **start_options)
     else:
         success = printer_manager.start_print(printer_id, path)
 
     if not success:
         raise HTTPException(500, f"Failed to start print: {path}")
+
+    if direct_file_info:
+        estimated_weight = direct_file_info.get("estimated_weight_grams")
+        if estimated_weight:
+            direct_print_tracking.register_direct_print_metadata(
+                printer_id,
+                path,
+                estimated_weight,
+                direct_file_info.get("estimated_time_seconds"),
+            )
     return {"status": "started", "path": path}
 
 
@@ -1886,6 +1934,7 @@ async def download_printer_files_as_zip(
 async def delete_printer_file(
     printer_id: int,
     path: str,
+    storage: str | None = Query(default=None),
     _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_FILES),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1897,7 +1946,7 @@ async def delete_printer_file(
 
     provider_client = _provider_for_printer(printer)
     if provider_client is not None:
-        success = provider_client.delete_file(path)
+        success = provider_client.delete_file(path, storage=storage)
     else:
         success = await delete_file_async(printer.ip_address, printer.access_code, path, printer_model=printer.model)
     if not success:
@@ -1917,6 +1966,25 @@ async def get_printer_storage(
     printer = result.scalar_one_or_none()
     if not printer:
         raise HTTPException(404, "Printer not found")
+
+    provider_client = _provider_for_printer(printer)
+    if provider_client is not None:
+        list_storages = getattr(provider_client, "list_storages", None)
+        if callable(list_storages):
+            try:
+                storages = list_storages()
+            except Exception as exc:  # noqa: BLE001 - present a clean storage-unavailable response
+                logger.warning("Could not query provider storage for printer %s: %s", printer_id, type(exc).__name__)
+                storages = []
+            preferred = next(
+                (item for item in storages if item.get("available") and str(item.get("id", "")).lower() == "usb"),
+                next((item for item in storages if item.get("available")), None),
+            )
+            return {
+                "used_bytes": preferred.get("used_bytes") if preferred else None,
+                "free_bytes": preferred.get("free_bytes") if preferred else None,
+                "storages": storages,
+            }
 
     storage_info = await get_storage_info_async(printer.ip_address, printer.access_code, printer_model=printer.model)
 
@@ -3162,11 +3230,63 @@ async def set_chamber_light(
     if not client:
         raise HTTPException(400, "Printer not connected")
 
-    success = client.set_chamber_light(on)
+    set_chamber_light_method = getattr(client, "set_chamber_light", None)
+    if not callable(set_chamber_light_method):
+        raise HTTPException(400, "Chamber light control is not supported by this printer provider")
+
+    success = set_chamber_light_method(on)
     if not success:
         raise HTTPException(500, "Failed to control chamber light")
 
     return {"success": True, "message": f"Chamber light {'on' if on else 'off'}"}
+
+
+@router.post("/{printer_id}/fan-speed")
+async def set_fan_speed(
+    printer_id: int,
+    fan: str = Query(..., description="Fan to control: part, aux, or chamber"),
+    speed: int = Query(..., ge=0, le=100, description="Fan speed percentage from 0 to 100"),
+    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_CONTROL),
+    db: AsyncSession = Depends(get_db),
+):
+    """Set a controllable fan speed."""
+    normalized_fan = fan.strip().lower().replace("-", "_")
+    if normalized_fan not in {
+        "part",
+        "model",
+        "model_fan",
+        "cooling",
+        "aux",
+        "auxiliary",
+        "auxiliary_fan",
+        "chamber",
+        "box",
+        "box_fan",
+    }:
+        raise HTTPException(400, "Fan must be one of: part, aux, chamber")
+
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+
+    client = printer_manager.get_client(printer_id)
+    if not client:
+        raise HTTPException(400, "Printer not connected")
+
+    set_fan_speed_method = getattr(client, "set_fan_speed", None)
+    if not callable(set_fan_speed_method):
+        raise HTTPException(400, "Fan speed control is not supported by this printer provider")
+
+    effective_speed = 100 if normalized_fan in {"chamber", "box", "box_fan"} and speed > 0 else speed
+    try:
+        success = set_fan_speed_method(normalized_fan, effective_speed)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if not success:
+        raise HTTPException(500, "Failed to control fan speed")
+
+    return {"success": True, "message": f"{fan} fan speed set to {effective_speed}%"}
 
 
 @router.post("/{printer_id}/bed-jog")

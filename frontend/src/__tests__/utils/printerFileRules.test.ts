@@ -22,7 +22,7 @@ describe('printerFileRules', () => {
     expect(isPrintableForProvider('bambu_project.3mf', 'prusalink')).toBe(false);
   });
 
-  it.each(['klipper', 'mainsail', 'fluidd'] as const)('uses G-code print files for %s printers', (provider) => {
+  it.each(['klipper', 'mainsail', 'fluidd', 'elegoo_sdcp'] as const)('uses G-code print files for %s printers', (provider) => {
     const rules = getPrinterFileRuleSet(provider);
 
     expect(rules.accept).toBe('.gcode,.gco,.g');

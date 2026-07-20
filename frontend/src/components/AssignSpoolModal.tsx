@@ -158,6 +158,7 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['spoolman-inventory-spools'] });
       queryClient.invalidateQueries({ queryKey: ['spoolman-slot-assignments'] });
+      queryClient.invalidateQueries({ queryKey: ['spoolman-slot-assignments-all'] });
       nudgePrinterRepublish();
       showToast(t('inventory.assignSuccess'), 'success');
       onClose();
@@ -204,6 +205,17 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
 
     return normalizedSpoolProfile === normalizedTrayProfile;
   };
+
+  const hasComparableProfile = (
+    spoolProfile: string | undefined | null,
+    trayProfile: string | undefined | null
+  ): boolean => Boolean(
+    stripProfileQualifier(normalizeValue(spoolProfile)) &&
+    stripProfileQualifier(normalizeValue(trayProfile))
+  );
+
+  const isOpenFilamentDatabaseSpool = (spool: InventorySpool): boolean =>
+    spool.data_origin === 'openfilamentdatabase';
 
   if (!isOpen) return null;
 
@@ -279,18 +291,24 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
 
     if (!settings?.disable_filament_warnings && trayInfo) {
       const trayMaterial = trayInfo.material || trayInfo.type;
-      const materialMatchResult = checkMaterialMatch(selectedSpool.material, trayMaterial);
+      const materialIsComparable = Boolean(normalizeValue(selectedSpool.material) && normalizeValue(trayMaterial));
+      const materialMatchResult = materialIsComparable
+        ? checkMaterialMatch(selectedSpool.material, trayMaterial)
+        : 'exact';
       const spoolProfile = selectedSpool.slicer_filament_name || selectedSpool.slicer_filament;
       const trayProfile = trayInfo.profile || trayInfo.type;
-      const profileMatches = checkProfileMatch(spoolProfile, trayProfile);
+      const profileIsComparable = hasComparableProfile(spoolProfile, trayProfile);
+      const profileMismatch = profileIsComparable && !checkProfileMatch(spoolProfile, trayProfile);
 
-      // Always evaluate both checks; if both fail, show a combined warning.
-      if (materialMatchResult !== 'exact' || !profileMatches) {
+      // Always evaluate both meaningful checks; if both fail, show a combined warning.
+      // Missing profile/material metadata is common for virtual Loaded spool targets
+      // and OFDB/manual spools, so do not treat absent comparison data as a mismatch.
+      if (materialMatchResult !== 'exact' || profileMismatch) {
         let mismatchType: 'material' | 'partial' | 'profile' | 'material_profile' | 'partial_profile' = 'profile';
 
-        if (materialMatchResult === 'none' && !profileMatches) {
+        if (materialMatchResult === 'none' && profileMismatch) {
           mismatchType = 'material_profile';
-        } else if (materialMatchResult === 'partial' && !profileMatches) {
+        } else if (materialMatchResult === 'partial' && profileMismatch) {
           mismatchType = 'partial_profile';
         } else if (materialMatchResult === 'none') {
           mismatchType = 'material';
@@ -393,9 +411,16 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
                         : 'bg-bambu-dark border-bambu-dark-tertiary hover:border-bambu-gray'
                     }`}
                   >
-                    <p className="text-white text-sm font-medium truncate">
-                      {spool.brand ? `${spool.brand} ` : ''}{spool.material}{spool.subtype ? ` ${spool.subtype}` : ''}
-                    </p>
+                    <div className="flex items-start gap-1.5">
+                      <p className="text-white text-sm font-medium truncate flex-1">
+                        {spool.brand ? `${spool.brand} ` : ''}{spool.material}{spool.subtype ? ` ${spool.subtype}` : ''}
+                      </p>
+                      {isOpenFilamentDatabaseSpool(spool) && (
+                        <span className="text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-bambu-green/15 text-bambu-green border border-bambu-green/30">
+                          OFDB
+                        </span>
+                      )}
+                    </div>
                     <div className="flex items-center gap-1.5 mt-1">
                       {spool.rgba && (
                         <span

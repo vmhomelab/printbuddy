@@ -331,8 +331,10 @@ async def on_print_start(printer_id: int, data: dict, printer_manager, db: Async
         )
 
     if not ams_data and not vt_tray_raw:
-        logger.debug("[UsageTracker] No AMS or VT tray data for printer %d, skipping", printer_id)
-        return
+        logger.debug(
+            "[UsageTracker] No AMS or VT tray data for printer %d; creating session for loaded-spool/3MF fallback",
+            printer_id,
+        )
 
     print_name = data.get("subtask_name", "") or data.get("filename", "unknown")
 
@@ -402,6 +404,107 @@ async def on_print_start(printer_id: int, data: dict, printer_manager, db: Async
         )
     else:
         logger.debug("[UsageTracker] No valid remain%% for printer %d, 3MF fallback available", printer_id)
+
+
+async def _track_from_archive_estimate(
+    printer_id: int,
+    archive_id: int,
+    status: str,
+    print_name: str,
+    db: AsyncSession,
+    *,
+    progress: float = 0.0,
+    default_filament_cost: float = 0.0,
+    spool_assignments: dict[tuple[int, int], int] | None = None,
+    print_started_at: datetime | None = None,
+) -> list[dict]:
+    """Track PrusaLink no-3MF prints from archive-level slicer estimates.
+
+    This is deliberately narrower than the 3MF path: it only runs for fallback
+    archives carrying normalized PrusaLink file metadata. Other providers keep
+    their existing 3MF/AMS/Spoolman paths.
+    """
+    from backend.app.models.archive import PrintArchive
+
+    archive = await db.get(PrintArchive, archive_id)
+    if not archive or archive.file_path:
+        return []
+    metadata = archive.extra_data.get("file_metadata") if isinstance(archive.extra_data, dict) else None
+    if not isinstance(metadata, dict) or metadata.get("source") not in {
+        "prusalink_file_meta",
+        "prusalink_filename_meta",
+    }:
+        return []
+    if not archive.filament_used_grams or archive.filament_used_grams <= 0:
+        return []
+
+    scale = 1.0 if status == "completed" else max(0.0, min((progress or 0.0) / 100.0, 1.0))
+    weight_grams = archive.filament_used_grams * scale
+    if weight_grams <= 0:
+        return []
+
+    spool_id = await _resolve_spool_id_for_tray(
+        printer_id=printer_id,
+        ams_id=-1,
+        tray_id=0,
+        db=db,
+        spool_assignments_snapshot=spool_assignments,
+        print_started_at=print_started_at,
+    )
+    if spool_id is None:
+        logger.info(
+            "[UsageTracker] Archive estimate: no loaded spool assignment for printer %d, skipping %.1fg",
+            printer_id,
+            weight_grams,
+        )
+        return []
+
+    spool = await db.get(Spool, spool_id)
+    if not spool:
+        return []
+
+    spool.weight_used = (spool.weight_used or 0) + weight_grams
+    spool.last_used = datetime.now(timezone.utc)
+
+    cost = None
+    cost_per_kg = spool.cost_per_kg if spool.cost_per_kg is not None else default_filament_cost
+    if cost_per_kg > 0:
+        cost = round((weight_grams / 1000.0) * cost_per_kg, 2)
+
+    percent = round(weight_grams / (spool.label_weight or 1000) * 100)
+    history = SpoolUsageHistory(
+        spool_id=spool.id,
+        printer_id=printer_id,
+        print_name=print_name,
+        weight_used=round(weight_grams, 1),
+        percent_used=percent,
+        status=status,
+        cost=cost,
+        archive_id=archive_id,
+    )
+    db.add(history)
+
+    logger.info(
+        "[UsageTracker] Archive estimate: spool %d consumed %.1fg on printer %d (PrusaLink fallback, %s)",
+        spool.id,
+        weight_grams,
+        printer_id,
+        status,
+    )
+    return [
+        {
+            "spool_id": spool.id,
+            "weight_used": round(weight_grams, 1),
+            "percent_used": percent,
+            "ams_id": -1,
+            "tray_id": 0,
+            "material": spool.material,
+            "cost": cost,
+            "slot_id": None,
+            "color": _spool_color_to_hex(spool.rgba),
+            "source": "archive_estimate",
+        }
+    ]
 
 
 async def on_print_complete(
@@ -492,6 +595,20 @@ async def on_print_complete(
             threemf_path=threemf_path,
         )
         results.extend(threemf_results)
+
+    if archive_id and not results:
+        archive_estimate_results = await _track_from_archive_estimate(
+            printer_id,
+            archive_id,
+            status,
+            print_name,
+            db,
+            progress=data.get("progress") or data.get("last_progress") or 0.0,
+            default_filament_cost=default_filament_cost,
+            spool_assignments=session.spool_assignments if session else None,
+            print_started_at=session.started_at if session else None,
+        )
+        results.extend(archive_estimate_results)
 
     # --- Path 2 (FALLBACK): AMS remain% delta (only for trays not handled by 3MF) ---
     if session and session.tray_remain_start:
@@ -659,6 +776,17 @@ async def on_print_complete(
                     tray_label,
                     status,
                 )
+
+    if not results:
+        from backend.app.services import direct_print_tracking
+
+        direct_results = await direct_print_tracking.report_inventory_usage(
+            printer_id,
+            data,
+            db,
+            archive_id=archive_id,
+        )
+        results.extend(direct_results)
 
     if results:
         await db.commit()
@@ -1212,6 +1340,7 @@ async def _track_from_3mf(
             continue  # Skip normal single-tray processing for this slot
 
         # Map 3MF slot_id to physical (ams_id, tray_id) using resolved mapping
+        pre_resolved_spool_id: int | None = None
         if tray_now_override is not None:
             # Single-filament non-queue print: use actual tray from printer state
             global_tray_id = tray_now_override
@@ -1233,43 +1362,68 @@ async def _track_from_3mf(
                     available_trays = sorted(build_ams_tray_lookup(_raw).keys())
                     if slot_id <= len(available_trays):
                         global_tray_id = available_trays[slot_id - 1]
+            # Provider-neutral loaded-spool fallback: single-filament non-AMS printers
+            # such as PrusaLink/Core One, Klipper/Moonraker, and Elegoo may have no
+            # AMS/VT tray metadata. In that case charge the explicit virtual loaded
+            # spool assignment instead of inventing AMS0-T0.
+            if global_tray_id is None and len(nonzero_slots) == 1:
+                pre_resolved_spool_id = await _resolve_spool_id_for_tray(
+                    printer_id=printer_id,
+                    ams_id=-1,
+                    tray_id=0,
+                    db=db,
+                    spool_assignments_snapshot=spool_assignments,
+                    print_started_at=print_started_at,
+                )
+                if pre_resolved_spool_id is not None:
+                    ams_id = -1
+                    tray_id = 0
+                    global_tray_id = -1
+                    logger.info(
+                        "[UsageTracker] 3MF: slot_id=%d -> Loaded spool assignment (used_g=%.1f)",
+                        slot_id,
+                        used_g,
+                    )
             # Final fallback: slot_id - 1 (legacy, works for pure AMS without external spools)
             if global_tray_id is None:
                 global_tray_id = slot_id - 1
 
-        if global_tray_id >= 254:
-            # External spool: ams_id=255 (sentinel), tray_id=slot index (0 or 1)
-            ams_id = 255
-            tray_id = global_tray_id - 254
-        elif global_tray_id >= 128:
-            ams_id = global_tray_id
-            tray_id = 0
-        else:
-            ams_id = global_tray_id // 4
-            tray_id = global_tray_id % 4
+        if pre_resolved_spool_id is None:
+            if global_tray_id >= 254:
+                # External spool: ams_id=255 (sentinel), tray_id=slot index (0 or 1)
+                ams_id = 255
+                tray_id = global_tray_id - 254
+            elif global_tray_id >= 128:
+                ams_id = global_tray_id
+                tray_id = 0
+            else:
+                ams_id = global_tray_id // 4
+                tray_id = global_tray_id % 4
 
-        logger.info(
-            "[UsageTracker] 3MF: slot_id=%d -> global_tray=%d -> AMS%d-T%d (used_g=%.1f, tray_now_override=%s)",
-            slot_id,
-            global_tray_id,
-            ams_id,
-            tray_id,
-            used_g,
-            tray_now_override,
-        )
+            logger.info(
+                "[UsageTracker] 3MF: slot_id=%d -> global_tray=%d -> AMS%d-T%d (used_g=%.1f, tray_now_override=%s)",
+                slot_id,
+                global_tray_id,
+                ams_id,
+                tray_id,
+                used_g,
+                tray_now_override,
+            )
 
         key = (ams_id, tray_id)
         if key in handled_trays:
             continue
 
-        spool_id = await _resolve_spool_id_for_tray(
-            printer_id=printer_id,
-            ams_id=ams_id,
-            tray_id=tray_id,
-            db=db,
-            spool_assignments_snapshot=spool_assignments,
-            print_started_at=print_started_at,
-        )
+        spool_id = pre_resolved_spool_id
+        if spool_id is None:
+            spool_id = await _resolve_spool_id_for_tray(
+                printer_id=printer_id,
+                ams_id=ams_id,
+                tray_id=tray_id,
+                db=db,
+                spool_assignments_snapshot=spool_assignments,
+                print_started_at=print_started_at,
+            )
         if spool_id is None:
             logger.info("[UsageTracker] 3MF: no spool assignment at printer %d AMS%d-T%d", printer_id, ams_id, tray_id)
             continue

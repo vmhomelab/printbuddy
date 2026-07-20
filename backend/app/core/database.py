@@ -1090,6 +1090,7 @@ async def run_migrations(conn):
 
     # Migration: Add print options columns to print_queue
     await _safe_execute(conn, "ALTER TABLE print_queue ADD COLUMN bed_levelling BOOLEAN DEFAULT 1")
+    await _safe_execute(conn, "ALTER TABLE print_queue ADD COLUMN print_platform_type INTEGER")
     await _safe_execute(conn, "ALTER TABLE print_queue ADD COLUMN flow_cali BOOLEAN DEFAULT 0")
     await _safe_execute(conn, "ALTER TABLE print_queue ADD COLUMN vibration_cali BOOLEAN DEFAULT 1")
     await _safe_execute(conn, "ALTER TABLE print_queue ADD COLUMN layer_inspect BOOLEAN DEFAULT 0")
@@ -1131,6 +1132,7 @@ async def run_migrations(conn):
                         ams_mapping TEXT,
                         plate_id INTEGER,
                         bed_levelling BOOLEAN DEFAULT 1,
+                        print_platform_type INTEGER,
                         flow_cali BOOLEAN DEFAULT 0,
                         vibration_cali BOOLEAN DEFAULT 1,
                         layer_inspect BOOLEAN DEFAULT 0,
@@ -1149,7 +1151,7 @@ async def run_migrations(conn):
                     INSERT INTO print_queue_new2
                     SELECT id, printer_id, archive_id, NULL, project_id, position, scheduled_time,
                            manual_start, require_previous_success, auto_off_after, ams_mapping, plate_id,
-                           COALESCE(bed_levelling, 1), COALESCE(flow_cali, 0), COALESCE(vibration_cali, 1),
+                           COALESCE(bed_levelling, 1), NULL, COALESCE(flow_cali, 0), COALESCE(vibration_cali, 1),
                            COALESCE(layer_inspect, 0), COALESCE(timelapse, 0), COALESCE(use_ams, 1),
                            status, started_at, completed_at, error_message, created_at
                     FROM print_queue
@@ -2648,6 +2650,34 @@ async def run_migrations(conn):
     await _migrate_drop_library_print_name(conn)
 
 
+def _repair_default_notification_template(existing_template, template_data: dict) -> bool:
+    """Repair app-owned default notification wording without clobbering custom templates."""
+    updated = False
+    legacy_brand = "Bam" + "buddy"
+
+    if legacy_brand in existing_template.title_template or legacy_brand in existing_template.body_template:
+        existing_template.title_template = template_data["title_template"]
+        existing_template.body_template = template_data["body_template"]
+        updated = True
+    elif (
+        existing_template.event_type == "print_complete"
+        and existing_template.body_template == "{printer}: {filename}\nTime: {duration}\nFilament: {filament_grams}g"
+    ):
+        existing_template.body_template = template_data["body_template"]
+        updated = True
+    elif (
+        existing_template.event_type == "print_almost_done"
+        and existing_template.name == "Print almost done"
+        and existing_template.title_template == "Print almost done."
+        and existing_template.body_template == template_data["body_template"]
+    ):
+        existing_template.name = template_data["name"]
+        existing_template.title_template = template_data["title_template"]
+        updated = True
+
+    return updated
+
+
 async def seed_notification_templates():
     """Seed default notification templates if they don't exist."""
     from sqlalchemy import select
@@ -2675,7 +2705,6 @@ async def seed_notification_templates():
             # templates from the pre-rename era. Only rows still marked as
             # defaults are migrated; user-customized templates are left alone.
             default_by_event = {template_data["event_type"]: template_data for template_data in DEFAULT_TEMPLATES}
-            legacy_brand = "Bam" + "buddy"
             stale_result = await session.execute(
                 select(NotificationTemplate).where(
                     NotificationTemplate.is_default.is_(True),
@@ -2684,15 +2713,7 @@ async def seed_notification_templates():
             )
             for existing_template in stale_result.scalars().all():
                 template_data = default_by_event[existing_template.event_type]
-                if legacy_brand in existing_template.title_template or legacy_brand in existing_template.body_template:
-                    existing_template.title_template = template_data["title_template"]
-                    existing_template.body_template = template_data["body_template"]
-                elif (
-                    existing_template.event_type == "print_complete"
-                    and existing_template.body_template
-                    == "{printer}: {filename}\nTime: {duration}\nFilament: {filament_grams}g"
-                ):
-                    existing_template.body_template = template_data["body_template"]
+                _repair_default_notification_template(existing_template, template_data)
 
             for template_data in DEFAULT_TEMPLATES:
                 if template_data["event_type"] not in existing_types:

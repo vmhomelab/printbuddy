@@ -69,6 +69,22 @@ const anotherManualSpool = {
   slicer_filament_name: 'PLA',
 };
 
+const ofdbSpool = {
+  id: 4,
+  material: 'ABS',
+  subtype: 'ABS',
+  brand: 'ELEGOO',
+  color_name: 'Black',
+  rgba: '000000FF',
+  label_weight: 1000,
+  weight_used: 0,
+  tag_uid: null,
+  tray_uuid: null,
+  slicer_filament: null,
+  slicer_filament_name: null,
+  data_origin: 'openfilamentdatabase',
+};
+
 describe('AssignSpoolModal', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -183,6 +199,58 @@ describe('AssignSpoolModal', () => {
     expect(screen.getByText(/Polymaker/)).toBeInTheDocument();
   });
 
+  it('shows and searches OFDB-created local spools in the assignment picker', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const user = userEvent.setup();
+
+    (api.getSpools as ReturnType<typeof vi.fn>).mockResolvedValue([ofdbSpool]);
+
+    render(
+      <AssignSpoolModal
+        {...defaultProps}
+        trayInfo={{ type: 'ABS', material: 'ABS', color: '000000', location: 'AMS 1 - Slot 1' }}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/ELEGOO/)).toBeInTheDocument();
+    });
+    expect(screen.getByText('OFDB')).toBeInTheDocument();
+
+    await user.clear(screen.getByPlaceholderText(/search spools/i));
+    await user.type(screen.getByPlaceholderText(/search spools/i), 'ofdb');
+
+    expect(screen.getByText(/ELEGOO/)).toBeInTheDocument();
+  });
+
+  it('assigns an OFDB spool without slicer profile when the material matches', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const user = userEvent.setup();
+
+    (api.getSpools as ReturnType<typeof vi.fn>).mockResolvedValue([ofdbSpool]);
+    (api.assignSpool as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: 4, spool_id: 4, printer_id: 1, ams_id: 0, tray_id: 0,
+    });
+
+    render(
+      <AssignSpoolModal
+        {...defaultProps}
+        trayInfo={{ type: 'ABS', material: 'ABS', profile: 'Generic ABS', color: '000000', location: 'AMS 1 - Slot 1' }}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/ELEGOO/)).toBeInTheDocument();
+    });
+    await user.click(screen.getByText(/ELEGOO/));
+    await user.click(screen.getByRole('button', { name: /assign spool/i }));
+
+    await waitFor(() => {
+      expect(api.assignSpool).toHaveBeenCalledWith({ spool_id: 4, printer_id: 1, ams_id: 0, tray_id: 0 });
+    });
+    expect(screen.queryByText(/mismatch/i)).not.toBeInTheDocument();
+  });
+
   it('lists spool with no slicer profile when material matches the tray (#1047)', async () => {
     const spoolWithoutSlicerProfile = {
       id: 10,
@@ -288,6 +356,51 @@ describe('AssignSpoolModal', () => {
     });
   });
 
+  it('assigns to virtual Loaded spool without mismatch warning when target material is unknown', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const user = userEvent.setup();
+    const petgSpool = {
+      id: 50,
+      material: 'PETG',
+      subtype: 'Matte',
+      brand: 'Polymaker',
+      color_name: 'Magenta',
+      rgba: 'FF00FFFF',
+      label_weight: 1000,
+      weight_used: 0,
+      tag_uid: null,
+      tray_uuid: null,
+      slicer_filament_name: null,
+      slicer_filament: null,
+    };
+
+    (api.getSpools as ReturnType<typeof vi.fn>).mockResolvedValue([petgSpool]);
+    (api.assignSpool as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: 50, spool_id: 50, printer_id: 7, ams_id: -1, tray_id: 0,
+    });
+
+    render(
+      <AssignSpoolModal
+        {...defaultProps}
+        printerId={7}
+        amsId={-1}
+        trayId={0}
+        trayInfo={{ type: '', material: undefined, profile: '', color: '', location: 'Loaded spool' }}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/Polymaker/)).toBeInTheDocument();
+    });
+    await user.click(screen.getByText(/Polymaker/));
+    await user.click(screen.getByRole('button', { name: /assign spool/i }));
+
+    await waitFor(() => {
+      expect(api.assignSpool).toHaveBeenCalledWith({ spool_id: 50, printer_id: 7, ams_id: -1, tray_id: 0 });
+    });
+    expect(screen.queryByText(/Material mismatch/i)).not.toBeInTheDocument();
+  });
+
   it('nudges the printer to republish after successful assignment (#1414)', async () => {
     // The backend's assign-spool path issues an MQTT command, but firmware
     // (esp. A1 mini external slots and any non-RFID assignment) doesn't
@@ -344,6 +457,70 @@ describe('AssignSpoolModal — Spoolman enabled (T-Gap 7)', () => {
     (api.getSpools as ReturnType<typeof vi.fn>).mockResolvedValue([]);
     (api.getAssignments as ReturnType<typeof vi.fn>).mockResolvedValue([]);
     (api.getSpoolmanInventorySpools as ReturnType<typeof vi.fn>).mockResolvedValue([spoolmanSpool]);
+    (api.assignSpoolmanSlot as ReturnType<typeof vi.fn>).mockResolvedValue({ id: spoolmanSpool.id });
+  });
+
+  it('assigns an external/non-AMS Spoolman spool through slot assignment', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const user = userEvent.setup();
+
+    render(
+      <AssignSpoolModal
+        {...defaultProps}
+        spoolmanEnabled
+        amsId={255}
+        trayId={0}
+        trayInfo={{ type: 'TPU', color: '000000', location: 'External Spool' }}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/Bambu Lab/)).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByText(/Bambu Lab/));
+    await user.click(screen.getByRole('button', { name: /assign spool/i }));
+
+    await waitFor(() => {
+      expect(api.assignSpoolmanSlot).toHaveBeenCalledWith({
+        spoolman_spool_id: 200,
+        printer_id: 1,
+        ams_id: 255,
+        tray_id: 0,
+      });
+    });
+    expect(api.assignSpool).not.toHaveBeenCalled();
+  });
+
+  it('assigns the dual-external right Spoolman slot as tray_id=1', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const user = userEvent.setup();
+
+    render(
+      <AssignSpoolModal
+        {...defaultProps}
+        spoolmanEnabled
+        amsId={255}
+        trayId={1}
+        trayInfo={{ type: 'PETG', color: '0000FF', location: 'External Spool Right' }}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/Bambu Lab/)).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByText(/Bambu Lab/));
+    await user.click(screen.getByRole('button', { name: /assign spool/i }));
+
+    await waitFor(() => {
+      expect(api.assignSpoolmanSlot).toHaveBeenCalledWith({
+        spoolman_spool_id: 200,
+        printer_id: 1,
+        ams_id: 255,
+        tray_id: 1,
+      });
+    });
   });
 
   it('shows Spoolman spool section when spoolmanEnabled=true', async () => {

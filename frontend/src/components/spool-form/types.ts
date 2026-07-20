@@ -29,14 +29,20 @@ export interface SpoolFormData {
   label_weight: number;
   core_weight: number;
   core_weight_catalog_id: number | null;
+  // Spoolman-native per-spool empty weight. Null means leave Spoolman's
+  // spool_weight empty and let it fall back to the filament/manufacturer value.
+  spoolman_spool_weight: number | null;
   weight_used: number;
   slicer_filament: string;
+  nozzle_temp_min: number | null;
+  nozzle_temp_max: number | null;
   note: string;
   cost_per_kg: number | null;
   // User-defined category + per-spool low-stock threshold override (#729).
   category: string;
   low_stock_threshold_pct: number | null;
   storage_location: string;
+  data_origin: string;
   // When set the spool is linked to a specific Spoolman filament catalog entry;
   // the backend skips find_or_create_filament() and uses this ID directly.
   spoolman_filament_id: number | null;
@@ -53,13 +59,17 @@ export const defaultFormData: SpoolFormData = {
   label_weight: 1000,
   core_weight: 250,
   core_weight_catalog_id: null,
+  spoolman_spool_weight: null,
   weight_used: 0,
   slicer_filament: '',
+  nozzle_temp_min: null,
+  nozzle_temp_max: null,
   note: '',
   cost_per_kg: null,
   category: '',
   low_stock_threshold_pct: null,
   storage_location: '',
+  data_origin: '',
   spoolman_filament_id: null,
 };
 
@@ -115,7 +125,9 @@ export interface FilamentSectionProps extends SectionProps {
   quickAdd: boolean;
   quantity: number;
   onQuantityChange: (value: number) => void;
+  showQuantity?: boolean;
   errors?: Partial<Record<keyof SpoolFormData, string>>;
+  openFilamentDatabaseEnabled?: boolean;
 }
 
 // Color section props
@@ -143,9 +155,10 @@ export interface AdditionalSectionProps extends SectionProps {
   // Global low-stock threshold (%); shown as placeholder on the per-spool
   // override input so users see what they're overriding. #729
   globalLowStockThreshold: number;
-  // When true the empty-spool weight is managed by Spoolman on the filament
-  // object, so SpoolWeightPicker is hidden and an info notice is shown instead.
+  // When true the empty-spool weight is managed by Spoolman.
   spoolmanMode?: boolean;
+  // Show the optional Spoolman spool-specific empty-weight input during create/copy.
+  showSpoolmanSpoolWeight?: boolean;
 }
 
 // PA Profile section props
@@ -193,7 +206,13 @@ export function validateForm(
     };
   }
 
-  if (!formData.slicer_filament) {
+  const isOpenFilamentDatabaseSpool = formData.data_origin === 'openfilamentdatabase';
+
+  // OFDB is a catalog source and not every upstream entry has a matching
+  // slicer preset/profile. Let those spools save with material/brand/subtype
+  // metadata and optional nozzle temperatures; users can still attach a slicer
+  // preset manually when they have one.
+  if (!isOpenFilamentDatabaseSpool && !formData.slicer_filament) {
     errors.slicer_filament = 'Slicer preset is required';
   }
 

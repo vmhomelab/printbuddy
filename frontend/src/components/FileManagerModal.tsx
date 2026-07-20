@@ -33,11 +33,14 @@ import { ModelViewer } from './ModelViewer';
 import { GcodeViewer } from './GcodeViewer';
 import type { PlateMetadata } from '../types/plates';
 import { useToast } from '../contexts/ToastContext';
+import { ElegooCc1StartOptions } from './ElegooCc1StartOptions';
+import { isElegooCc1Printer, type ElegooPrintPlatformType } from '../utils/elegooCc1';
 
 interface FileManagerModalProps {
   printerId: number;
   printerName: string;
   printerProvider?: PrinterProvider;
+  printerModel?: string | null;
   onClose: () => void;
 }
 
@@ -272,7 +275,6 @@ function getFileIcon(filename: string, isDirectory: boolean) {
 }
 
 type SortOption = 'name-asc' | 'name-desc' | 'size-asc' | 'size-desc' | 'date-asc' | 'date-desc';
-
 const SORT_OPTIONS: { value: SortOption; label: string }[] = [
   { value: 'name-asc', label: 'Name (A-Z)' },
   { value: 'name-desc', label: 'Name (Z-A)' },
@@ -282,11 +284,12 @@ const SORT_OPTIONS: { value: SortOption; label: string }[] = [
   { value: 'date-desc', label: 'Date (newest)' },
 ];
 
-export function FileManagerModal({ printerId, printerName, printerProvider, onClose }: FileManagerModalProps) {
+export function FileManagerModal({ printerId, printerName, printerProvider, printerModel, onClose }: FileManagerModalProps) {
   const { t } = useTranslation();
   const { showToast } = useToast();
   const queryClient = useQueryClient();
   const [currentPath, setCurrentPath] = useState('/');
+  const [selectedStorage, setSelectedStorage] = useState<string | null>(null);
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
   const [uploadingFile, setUploadingFile] = useState(false);
   const [queueingFile, setQueueingFile] = useState(false);
@@ -297,7 +300,12 @@ export function FileManagerModal({ printerId, printerName, printerProvider, onCl
   const [sortBy, setSortBy] = useState<SortOption>('name-asc');
   const [downloadProgress, setDownloadProgress] = useState<{ current: number; total: number } | null>(null);
   const [viewerFile, setViewerFile] = useState<{ path: string; name: string } | null>(null);
+  const [elegooStartFile, setElegooStartFile] = useState<{ path: string; name: string } | null>(null);
+  const [elegooHeatedBedLevelling, setElegooHeatedBedLevelling] = useState(true);
+  const [elegooPrintPlatformType, setElegooPrintPlatformType] = useState<ElegooPrintPlatformType>(0);
   const isPrusaPrinter = printerProvider === 'prusalink' || printerProvider === 'prusaconnect';
+  const isPrusaLinkPrinter = printerProvider === 'prusalink';
+  const isElegooSDCPPrinter = isElegooCc1Printer(printerProvider, printerModel);
 
   // Close on Escape key
   useEffect(() => {
@@ -314,22 +322,32 @@ export function FileManagerModal({ printerId, printerName, printerProvider, onCl
   // together while this modal sat open (#1480). A printer's file list only
   // changes on upload / delete (the mutations below invalidate the query)
   // or when a print finishes; the manual Refresh button covers the rest.
-  const { data, isLoading, refetch } = useQuery({
-    queryKey: ['printerFiles', printerId, currentPath],
-    queryFn: () => api.getPrinterFiles(printerId, currentPath),
-  });
-
   const { data: storageData } = useQuery({
     queryKey: ['printerStorage', printerId],
     queryFn: () => api.getPrinterStorage(printerId),
     staleTime: 30000, // Cache for 30 seconds
   });
 
+  const availableStorages = storageData?.storages?.filter((storage) => storage.available) || [];
+  const activeStorage = isPrusaLinkPrinter ? selectedStorage : null;
+
+  useEffect(() => {
+    if (!isPrusaLinkPrinter || selectedStorage || availableStorages.length === 0) return;
+    const preferred = availableStorages.find((storage) => storage.id.toLowerCase() === 'usb') || availableStorages[0];
+    setSelectedStorage(preferred.id);
+  }, [availableStorages, isPrusaLinkPrinter, selectedStorage]);
+
+  const { data, isLoading, refetch } = useQuery({
+    queryKey: ['printerFiles', printerId, currentPath, activeStorage],
+    queryFn: () => api.getPrinterFiles(printerId, currentPath, activeStorage),
+    enabled: !isPrusaLinkPrinter || availableStorages.length === 0 || Boolean(activeStorage),
+  });
+
   const deleteMutation = useMutation({
     mutationFn: async (paths: string[]) => {
       // Delete files one by one
       for (const path of paths) {
-        await api.deletePrinterFile(printerId, path);
+        await api.deletePrinterFile(printerId, path, activeStorage);
       }
     },
     onSuccess: () => {
@@ -437,7 +455,7 @@ export function FileManagerModal({ printerId, printerName, printerProvider, onCl
     }
     setUploadingFile(true);
     try {
-      await api.uploadPrinterFile(printerId, file, currentPath);
+      await api.uploadPrinterFile(printerId, file, currentPath, false, 'error', activeStorage);
       showToast(`Uploaded ${file.name} to printer`);
       queryClient.invalidateQueries({ queryKey: ['printerFiles', printerId] });
       refetch();
@@ -463,19 +481,39 @@ export function FileManagerModal({ printerId, printerName, printerProvider, onCl
     }
   };
 
-  const handlePrintSelectedFile = async () => {
-    const file = selectedPrintableFile();
-    if (!file) return;
+  const startPrinterFile = async (
+    file: { path: string; name: string },
+    options?: { bed_levelling?: boolean; print_platform_type?: ElegooPrintPlatformType }
+  ) => {
     setStartingFile(true);
     try {
-      await api.startPrinterFile(printerId, file.path);
+      await api.startPrinterFile(printerId, file.path, { ...options, storage: activeStorage });
       showToast(`Started ${file.name} on printer`);
       setSelectedFiles(new Set());
+      setElegooStartFile(null);
     } catch (error) {
       showToast(`Print start failed: ${error instanceof Error ? error.message : 'Unknown error'}`, 'error');
     } finally {
       setStartingFile(false);
     }
+  };
+
+  const handlePrintSelectedFile = async () => {
+    const file = selectedPrintableFile();
+    if (!file) return;
+    if (isElegooSDCPPrinter) {
+      setElegooStartFile(file);
+      return;
+    }
+    await startPrinterFile(file);
+  };
+
+  const handleConfirmElegooStart = async () => {
+    if (!elegooStartFile) return;
+    await startPrinterFile(elegooStartFile, {
+      bed_levelling: elegooHeatedBedLevelling,
+      print_platform_type: elegooPrintPlatformType,
+    });
   };
 
   const handleDelete = () => {
@@ -537,22 +575,45 @@ export function FileManagerModal({ printerId, printerName, printerProvider, onCl
 
         {/* Quick Navigation */}
         <div className="flex items-center gap-2 p-3 border-b border-bambu-dark-tertiary bg-bambu-dark/50 flex-shrink-0">
-          {quickDirs.map((dir) => (
-            <button
-              key={dir.path}
-              onClick={() => {
-                navigateToFolder(dir.path);
-                setSearchQuery('');
-              }}
-              className={`px-3 py-1 text-sm rounded-full transition-colors ${
-                currentPath === dir.path
-                  ? 'bg-bambu-green text-white'
-                  : 'bg-bambu-dark-tertiary text-bambu-gray hover:text-white'
-              }`}
-            >
-              {dir.label}
-            </button>
-          ))}
+          {isPrusaLinkPrinter && storageData?.storages?.length ? (
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-bambu-gray">Storage</span>
+              <select
+                value={selectedStorage || ''}
+                onChange={(event) => {
+                  setSelectedStorage(event.target.value || null);
+                  setCurrentPath('/');
+                  setSelectedFiles(new Set());
+                  setSearchQuery('');
+                }}
+                className="appearance-none bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm py-1.5 pl-2 pr-6 focus:border-bambu-green focus:outline-none cursor-pointer"
+                aria-label="Storage"
+              >
+                {storageData.storages.map((storage) => (
+                  <option key={storage.id} value={storage.id} disabled={!storage.available}>
+                    {storage.type || storage.name || storage.id}{!storage.available ? ' — not connected' : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+          ) : (
+            quickDirs.map((dir) => (
+              <button
+                key={dir.path}
+                onClick={() => {
+                  navigateToFolder(dir.path);
+                  setSearchQuery('');
+                }}
+                className={`px-3 py-1 text-sm rounded-full transition-colors ${
+                  currentPath === dir.path
+                    ? 'bg-bambu-green text-white'
+                    : 'bg-bambu-dark-tertiary text-bambu-gray hover:text-white'
+                }`}
+              >
+                {dir.label}
+              </button>
+            ))
+          )}
           <div className="flex-1" />
           <div className="relative">
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray" />
@@ -598,7 +659,7 @@ export function FileManagerModal({ printerId, printerName, printerProvider, onCl
             variant="secondary"
             size="sm"
             onClick={() => refetch()}
-            disabled={isLoading}
+            disabled={isLoading || (isPrusaLinkPrinter && availableStorages.length > 0 && !activeStorage)}
           >
             <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
           </Button>
@@ -615,7 +676,7 @@ export function FileManagerModal({ printerId, printerName, printerProvider, onCl
             >
               <ChevronLeft className="w-4 h-4" />
             </button>
-            <span className="text-bambu-gray font-mono">{currentPath}</span>
+            <span className="text-bambu-gray font-mono">{activeStorage ? `/${activeStorage}${currentPath}` : currentPath}</span>
           </div>
 
         {/* File list */}
@@ -623,6 +684,10 @@ export function FileManagerModal({ printerId, printerName, printerProvider, onCl
             {isLoading ? (
               <div className="flex items-center justify-center py-12">
                 <Loader2 className="w-8 h-8 text-bambu-green animate-spin" />
+              </div>
+            ) : isPrusaLinkPrinter && storageData?.storages?.length && availableStorages.length === 0 ? (
+              <div className="text-center py-12 text-bambu-gray">
+                No PrusaLink storage is currently available. Insert USB storage and refresh.
               </div>
             ) : !data?.files?.length ? (
               <div className="text-center py-12 text-bambu-gray">
@@ -840,6 +905,51 @@ export function FileManagerModal({ printerId, printerName, printerProvider, onCl
           filename={viewerFile.name}
           onClose={() => setViewerFile(null)}
         />
+      )}
+
+      {elegooStartFile && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-[60] p-4" onClick={() => setElegooStartFile(null)}>
+          <div
+            className="w-full max-w-md bg-bambu-dark-secondary rounded-xl border border-bambu-dark-tertiary shadow-2xl overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-5 py-4 border-b border-bambu-dark-tertiary">
+              <div>
+                <h3 className="text-lg font-semibold text-white">Send Print Task</h3>
+                <p className="text-sm text-bambu-gray truncate max-w-xs mt-1">{elegooStartFile.name}</p>
+              </div>
+              <button
+                onClick={() => setElegooStartFile(null)}
+                className="text-bambu-gray hover:text-white transition-colors"
+                title="Close Elegoo print options"
+                aria-label="Close Elegoo print options"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-5">
+              <ElegooCc1StartOptions
+                compact
+                value={{ bed_levelling: elegooHeatedBedLevelling, print_platform_type: elegooPrintPlatformType }}
+                onChange={(value) => {
+                  setElegooHeatedBedLevelling(value.bed_levelling);
+                  setElegooPrintPlatformType(value.print_platform_type);
+                }}
+              />
+
+              <div className="flex justify-end gap-2 pt-2">
+                <Button variant="secondary" onClick={() => setElegooStartFile(null)} disabled={startingFile}>
+                  Cancel
+                </Button>
+                <Button variant="primary" onClick={handleConfirmElegooStart} disabled={startingFile}>
+                  {startingFile ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+                  Send
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
 
       {queuedLibraryFile && (

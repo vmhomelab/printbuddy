@@ -272,7 +272,7 @@ export interface LongLivedCameraToken {
 }
 
 // Printer types
-export type PrinterProvider = 'bambu' | 'klipper' | 'mainsail' | 'fluidd' | 'prusalink' | 'prusaconnect';
+export type PrinterProvider = 'bambu' | 'klipper' | 'mainsail' | 'fluidd' | 'prusalink' | 'prusaconnect' | 'elegoo_sdcp';
 
 export interface Printer {
   id: number;
@@ -471,7 +471,8 @@ export interface PrinterStatus {
   big_fan1_speed: number | null;     // Auxiliary fan
   big_fan2_speed: number | null;     // Chamber/exhaust fan
   heatbreak_fan_speed: number | null; // Hotend heatbreak fan
-  firmware_version: string | null;   // Firmware version from MQTT
+  firmware_version: string | null;   // Firmware version from MQTT / provider metadata
+  connection_details: Record<string, string | number | boolean | null> | null; // Provider-specific connection details
   // Developer LAN mode: true = enabled, false = disabled, null = unknown
   developer_mode: boolean | null;
   // Queue: printer is awaiting user ack that the build plate was cleared after a
@@ -1075,6 +1076,8 @@ export interface AppSettings {
   // Filament tracking
   disable_filament_warnings: boolean;  // Disable filament warnings (print insufficiency and assignment mismatch)
   prefer_lowest_filament: boolean;  // When multiple spools match, prefer lowest remaining filament
+  // Open Filament Database catalog lookup for local inventory spool creation
+  open_filament_database_enabled: boolean;
   // Default printer
   default_printer_id: number | null;
   // Dark mode theme settings
@@ -1870,6 +1873,7 @@ export interface PrintQueueItem {
   plate_id: number | null;  // Plate ID for multi-plate 3MF files
   // Print options
   bed_levelling: boolean;
+  print_platform_type?: 0 | 1 | null;
   flow_cali: boolean;
   vibration_cali: boolean;
   layer_inspect: boolean;
@@ -1935,6 +1939,7 @@ export interface PrintQueueItemCreate {
   plate_id?: number | null;  // Plate ID for multi-plate 3MF files
   // Print options
   bed_levelling?: boolean;
+  print_platform_type?: 0 | 1 | null;
   flow_cali?: boolean;
   vibration_cali?: boolean;
   layer_inspect?: boolean;
@@ -1962,6 +1967,7 @@ export interface PrintQueueItemUpdate {
   plate_id?: number | null;  // Plate ID for multi-plate 3MF files
   // Print options
   bed_levelling?: boolean;
+  print_platform_type?: 0 | 1 | null;
   flow_cali?: boolean;
   vibration_cali?: boolean;
   layer_inspect?: boolean;
@@ -1980,6 +1986,7 @@ export interface PrintQueueBulkUpdate {
   manual_start?: boolean;
   // Print options
   bed_levelling?: boolean;
+  print_platform_type?: 0 | 1 | null;
   flow_cali?: boolean;
   vibration_cali?: boolean;
   layer_inspect?: boolean;
@@ -2557,6 +2564,98 @@ export interface SpoolmanFilamentEntry {
   weight: number | null;
   spool_weight: number | null;
   vendor: SpoolmanVendor | null;
+}
+
+export interface OpenFilamentDatabaseBrandSummary {
+  id: string;
+  name: string;
+  slug: string;
+  origin: string | null;
+  material_count: number;
+  path: string;
+  logo_slug?: string | null;
+}
+
+export interface OpenFilamentDatabaseMaterialSummary {
+  id: string;
+  material: string;
+  slug: string;
+  filament_count: number;
+  path: string;
+}
+
+export interface OpenFilamentDatabaseBrandsResponse {
+  source: 'openfilamentdatabase';
+  version?: string | null;
+  generated_at?: string | null;
+  count: number;
+  brands: OpenFilamentDatabaseBrandSummary[];
+}
+
+export interface OpenFilamentDatabaseBrandResponse {
+  source: 'openfilamentdatabase';
+  id: string | null;
+  name: string | null;
+  slug: string;
+  origin: string | null;
+  website: string | null;
+  materials: OpenFilamentDatabaseMaterialSummary[];
+}
+
+export interface OpenFilamentDatabaseFilamentSummary {
+  id: string;
+  name: string;
+  slug: string;
+  variant_count: number;
+  path: string;
+}
+
+export interface OpenFilamentDatabaseVariantSummary {
+  id: string;
+  name: string;
+  slug: string;
+  color_hex: string | null;
+  size_count: number;
+  path: string;
+}
+
+export interface OpenFilamentDatabaseSearchResponse {
+  source: 'openfilamentdatabase';
+  brand_slug: string;
+  material: string;
+  query: string;
+  count: number;
+  filaments: OpenFilamentDatabaseFilamentSummary[];
+}
+
+export interface OpenFilamentDatabaseFilamentResponse {
+  source: 'openfilamentdatabase';
+  brand_slug: string;
+  material: string;
+  id: string;
+  name: string;
+  slug: string;
+  density: number | null;
+  diameter_tolerance: number | null;
+  min_print_temperature: number | null;
+  max_print_temperature: number | null;
+  min_bed_temperature: number | null;
+  max_bed_temperature: number | null;
+  discontinued: boolean;
+  preferred_slicer_setting: Record<string, unknown>;
+  variants: OpenFilamentDatabaseVariantSummary[];
+  spool_prefill: Partial<InventorySpool>;
+}
+
+export interface OpenFilamentDatabaseVariantResponse {
+  source: 'openfilamentdatabase';
+  brand: { id: string | null; slug: string; name: string };
+  material: string;
+  filament: Record<string, unknown>;
+  variant: { id: string | null; name: string | null; slug: string; color_hex: string | null; traits?: Record<string, unknown>; discontinued?: boolean };
+  sizes: Array<Record<string, unknown>>;
+  selected_size: Record<string, unknown> | null;
+  spool_prefill: Partial<InventorySpool>;
 }
 
 // Inventory types
@@ -3563,6 +3662,12 @@ export const api = {
       method: 'POST',
     }),
 
+  // Fan Speed Control
+  setFanSpeed: (printerId: number, fan: 'part' | 'aux' | 'chamber', speed: number) =>
+    request<{ success: boolean; message: string }>(`/printers/${printerId}/fan-speed?fan=${fan}&speed=${speed}`, {
+      method: 'POST',
+    }),
+
   // AMS Drying Control
   startDrying: (printerId: number, amsId: number, temp: number, duration: number, filament: string = '', rotateTray: boolean = false) =>
     request<{ status: string; ams_id: number; temp: number; duration: number }>(
@@ -3636,9 +3741,12 @@ export const api = {
     }),
 
   // Printer File Manager
-  getPrinterFiles: (printerId: number, path = '/') =>
-    request<{
+  getPrinterFiles: (printerId: number, path = '/', storage?: string | null) => {
+    const params = new URLSearchParams({ path });
+    if (storage) params.set('storage', storage);
+    return request<{
       path: string;
+      storage?: string | null;
       files: Array<{
         name: string;
         is_directory: boolean;
@@ -3646,7 +3754,8 @@ export const api = {
         path: string;
         mtime?: string;
       }>;
-    }>(`/printers/${printerId}/files?path=${encodeURIComponent(path)}`),
+    }>(`/printers/${printerId}/files?${params.toString()}`);
+  },
   getPrinterFileDownloadUrl: (printerId: number, path: string) =>
     `${API_BASE}/printers/${printerId}/files/download?path=${encodeURIComponent(path)}`,
   getPrinterFileGcodeUrl: (printerId: number, path: string) =>
@@ -3737,7 +3846,8 @@ export const api = {
     file: File,
     path = '/',
     overwrite = false,
-    conflictStrategy: 'error' | 'rename' | 'delete_replace' = 'error'
+    conflictStrategy: 'error' | 'rename' | 'delete_replace' = 'error',
+    storage?: string | null
   ): Promise<{ status: string; path: string; filename: string; renamed?: boolean; replaced?: boolean; original_filename?: string }> => {
     const headers: Record<string, string> = {};
     if (authToken) {
@@ -3746,6 +3856,7 @@ export const api = {
     const formData = new FormData();
     formData.append('file', file);
     const params = new URLSearchParams({ path, overwrite: String(overwrite), conflict_strategy: conflictStrategy });
+    if (storage) params.set('storage', storage);
     const response = await fetch(`${API_BASE}/printers/${printerId}/files/upload?${params.toString()}`, {
       method: 'POST',
       headers,
@@ -3757,16 +3868,41 @@ export const api = {
     }
     return response.json();
   },
-  startPrinterFile: (printerId: number, path: string) =>
-    request<{ status: string; path: string }>(`/printers/${printerId}/files/start?path=${encodeURIComponent(path)}`, {
+  startPrinterFile: (
+    printerId: number,
+    path: string,
+    options?: { bed_levelling?: boolean; print_platform_type?: 0 | 1; storage?: string | null }
+  ) => {
+    const params = new URLSearchParams({ path });
+    if (options?.storage) params.set('storage', options.storage);
+    if (options?.bed_levelling !== undefined) params.set('bed_levelling', String(options.bed_levelling));
+    if (options?.print_platform_type !== undefined) params.set('print_platform_type', String(options.print_platform_type));
+    return request<{ status: string; path: string }>(`/printers/${printerId}/files/start?${params.toString()}`, {
       method: 'POST',
-    }),
-  deletePrinterFile: (printerId: number, path: string) =>
-    request<{ status: string; path: string }>(`/printers/${printerId}/files?path=${encodeURIComponent(path)}`, {
+    });
+  },
+  deletePrinterFile: (printerId: number, path: string, storage?: string | null) => {
+    const params = new URLSearchParams({ path });
+    if (storage) params.set('storage', storage);
+    return request<{ status: string; path: string }>(`/printers/${printerId}/files?${params.toString()}`, {
       method: 'DELETE',
-    }),
+    });
+  },
   getPrinterStorage: (printerId: number) =>
-    request<{ used_bytes: number | null; free_bytes: number | null }>(`/printers/${printerId}/storage`),
+    request<{
+      used_bytes: number | null;
+      free_bytes: number | null;
+      storages?: Array<{
+        id: string;
+        type: string;
+        name?: string | null;
+        path: string;
+        available: boolean;
+        read_only?: boolean;
+        used_bytes?: number | null;
+        free_bytes?: number | null;
+      }>;
+    }>(`/printers/${printerId}/storage`),
 
   // Archives
   getArchives: (printerId?: number, projectId?: number, limit = 10000, offset = 0, dateFrom?: string, dateTo?: string) => {
@@ -4331,6 +4467,7 @@ export const api = {
       ams_mapping?: number[];
       timelapse?: boolean;
       bed_levelling?: boolean;
+      print_platform_type?: 0 | 1 | null;
       flow_cali?: boolean;
       vibration_cali?: boolean;
       layer_inspect?: boolean;
@@ -4917,6 +5054,18 @@ export const api = {
     request<{ filaments: unknown[] }>('/spoolman/filaments'),
   getSpoolmanInventoryFilaments: () =>
     request<SpoolmanFilamentEntry[]>('/spoolman/inventory/filaments'),
+
+  // Open Filament Database catalog proxy
+  getOpenFilamentDatabaseBrands: () =>
+    request<OpenFilamentDatabaseBrandsResponse>('/open-filament-database/brands'),
+  getOpenFilamentDatabaseBrand: (brand: string) =>
+    request<OpenFilamentDatabaseBrandResponse>(`/open-filament-database/brands/${encodeURIComponent(brand)}`),
+  searchOpenFilamentDatabase: (brand: string, material: string, q = '') =>
+    request<OpenFilamentDatabaseSearchResponse>(`/open-filament-database/search?brand=${encodeURIComponent(brand)}&material=${encodeURIComponent(material)}&q=${encodeURIComponent(q)}`),
+  getOpenFilamentDatabaseFilament: (brand: string, material: string, filament: string) =>
+    request<OpenFilamentDatabaseFilamentResponse>(`/open-filament-database/brands/${encodeURIComponent(brand)}/materials/${encodeURIComponent(material)}/filaments/${encodeURIComponent(filament)}`),
+  getOpenFilamentDatabaseVariant: (brand: string, material: string, filament: string, variant: string) =>
+    request<OpenFilamentDatabaseVariantResponse>(`/open-filament-database/brands/${encodeURIComponent(brand)}/materials/${encodeURIComponent(material)}/filaments/${encodeURIComponent(filament)}/variants/${encodeURIComponent(variant)}`),
   patchSpoolmanFilament: (
     filamentId: number,
     data: { name?: string; spool_weight?: number | null; keep_existing_spools?: boolean },
@@ -5135,13 +5284,15 @@ export const api = {
     request<InventorySpool[]>(`/spoolman/inventory/spools?include_archived=${includeArchived}`),
   getSpoolmanInventorySpool: (id: number) =>
     request<InventorySpool>(`/spoolman/inventory/spools/${id}`),
-  createSpoolmanInventorySpool: (data: Omit<InventorySpool, 'id' | 'archived_at' | 'created_at' | 'updated_at' | 'k_profiles'>) =>
+  createSpoolmanInventorySpool: (
+    data: Omit<InventorySpool, 'id' | 'archived_at' | 'created_at' | 'updated_at' | 'k_profiles'> & { spool_weight?: number | null; spoolman_filament_id?: number | null },
+  ) =>
     request<InventorySpool>('/spoolman/inventory/spools', {
       method: 'POST',
       body: JSON.stringify(data),
     }),
   bulkCreateSpoolmanInventorySpools: (
-    data: Omit<InventorySpool, 'id' | 'archived_at' | 'created_at' | 'updated_at' | 'k_profiles'>,
+    data: Omit<InventorySpool, 'id' | 'archived_at' | 'created_at' | 'updated_at' | 'k_profiles'> & { spool_weight?: number | null; spoolman_filament_id?: number | null },
     quantity: number,
   ) =>
     request<SpoolmanBulkCreateResult | InventorySpool[]>('/spoolman/inventory/spools/bulk', {
@@ -5810,6 +5961,7 @@ export const api = {
       plate_name?: string;
       ams_mapping?: number[];
       bed_levelling?: boolean;
+      print_platform_type?: 0 | 1 | null;
       flow_cali?: boolean;
       vibration_cali?: boolean;
       layer_inspect?: boolean;

@@ -684,9 +684,11 @@ describe('FileUploadModal', () => {
       expect(defaultProps.onClose).toHaveBeenCalled();
     });
 
-    it('starts printing the direct printer upload when requested', async () => {
+    it('starts printing the direct printer upload with Elegoo CC1 start options when requested', async () => {
       const user = userEvent.setup();
       let seenStartPath: string | null = null;
+      let seenBedLevelling: string | null = null;
+      let seenPrintPlatformType: string | null = null;
 
       server.use(
         http.get('/api/v1/printers/:id/files', () => HttpResponse.json({ path: '/', files: [] })),
@@ -697,20 +699,36 @@ describe('FileUploadModal', () => {
         })),
         http.post('/api/v1/printers/:id/files/start', ({ request, params }) => {
           expect(params.id).toBe('7');
-          seenStartPath = new URL(request.url).searchParams.get('path');
+          const searchParams = new URL(request.url).searchParams;
+          seenStartPath = searchParams.get('path');
+          seenBedLevelling = searchParams.get('bed_levelling');
+          seenPrintPlatformType = searchParams.get('print_platform_type');
           return HttpResponse.json({ status: 'started', path: '/Love Paw Print.gcode' });
         })
       );
 
-      render(<FileUploadModal {...defaultProps} directPrinterUploadId={7} allowStartPrintAfterUpload />);
+      render(
+        <FileUploadModal
+          {...defaultProps}
+          directPrinterUploadId={7}
+          directPrinterProvider="elegoo_sdcp"
+          directPrinterModel="Centauri Carbon"
+          allowStartPrintAfterUpload
+        />
+      );
       expect(screen.getByLabelText('Start print after upload')).toBeInTheDocument();
       await user.click(screen.getByLabelText('Start print after upload'));
+      expect(screen.getByText('Heated Bed Leveling')).toBeInTheDocument();
+      await user.click(screen.getByLabelText('Heated Bed Leveling'));
+      await user.click(screen.getByText('Smooth Build Plate'));
 
       const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
       await user.upload(fileInput, new File(['G28'], 'Love Paw Print.gcode', { type: 'application/octet-stream' }));
       await user.click(screen.getByRole('button', { name: /Upload & Print \(1\)/i }));
 
       await waitFor(() => expect(seenStartPath).toBe('/Love Paw Print.gcode'));
+      expect(seenBedLevelling).toBe('false');
+      expect(seenPrintPlatformType).toBe('1');
       expect(defaultProps.onClose).toHaveBeenCalled();
     });
 

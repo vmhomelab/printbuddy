@@ -60,6 +60,10 @@ from backend.app.utils.filament_ids import (
 
 logger = logging.getLogger(__name__)
 
+SPOOLMAN_EXTERNAL_AMS_ID = 255
+SPOOLMAN_LOADED_SPOOL_TRAY_ID = 0
+SPOOLMAN_DUAL_EXTERNAL_TRAY_IDS = {0, 1}
+
 router = APIRouter(prefix="/spoolman/inventory", tags=["spoolman-inventory"])
 
 
@@ -300,7 +304,10 @@ class SpoolmanInventoryCreate(BaseModel):
     label_weight: int = Field(1000, ge=1, le=100_000)
     core_weight: int = Field(
         250, ge=0, le=10_000
-    )  # Accepted for schema parity but not persisted to Spoolman (stored on filament type, not spool)
+    )  # Accepted for schema parity; Spoolman-native writes use spool_weight below.
+    # Optional Spoolman-native per-spool empty weight. When omitted, Spoolman
+    # falls back to the filament/manufacturer empty weight.
+    spool_weight: float | None = Field(None, ge=0.0, le=10_000.0)
     weight_used: float = Field(0.0, ge=0.0, le=100_000.0)
     note: str | None = Field(None, max_length=1000)
     cost_per_kg: float | None = Field(None, ge=0.0, le=1_000_000.0)
@@ -407,12 +414,43 @@ class SpoolTagLinkRequest(BaseModel):
         return self
 
 
+def _validate_spoolman_slot_shape(ams_id: int, tray_id: int) -> None:
+    """Validate slot IDs accepted by Spoolman slot-assignment APIs.
+
+    0-7 are standard AMS units. 128-191 are AMS-HT ids. 255 is the
+    virtual external/loaded-spool namespace; only tray 0/1 are meaningful
+    today (left/loaded spool and right external feed). The DB constraint is
+    intentionally broader for backwards compatibility, but public API writes
+    and exact reads should reject impossible virtual trays.
+    """
+    if (0 <= ams_id <= 7) or (128 <= ams_id <= 191):
+        if 0 <= tray_id <= 3:
+            return
+        raise HTTPException(status_code=422, detail="Invalid tray ID")
+    if ams_id == SPOOLMAN_EXTERNAL_AMS_ID:
+        if tray_id in SPOOLMAN_DUAL_EXTERNAL_TRAY_IDS:
+            return
+        raise HTTPException(status_code=422, detail="External/loaded Spoolman assignments support tray_id 0 or 1")
+    raise HTTPException(status_code=422, detail="Invalid AMS ID")
+
+
+def _is_bambu_slot_configuration_provider(printer: Printer) -> bool:
+    """Return True only for providers where assignment may configure printer-side AMS state."""
+    return printer.provider in (None, "", "bambu")
+
+
 class SpoolSlotAssignmentRequest(BaseModel):
     spoolman_spool_id: int = Field(..., gt=0)
     printer_id: int = Field(..., gt=0)
-    # ams_id 0–7 for physical AMS units; 255 = external/virtual spool extruder slot
+    # ams_id 0–7 for physical AMS units, 128–191 for AMS-HT,
+    # 255 = external/virtual loaded-spool namespace.
     ams_id: int = Field(..., ge=0, le=255)
     tray_id: int = Field(..., ge=0, le=3)
+
+    @model_validator(mode="after")
+    def validate_slot_shape(self) -> SpoolSlotAssignmentRequest:
+        _validate_spoolman_slot_shape(self.ams_id, self.tray_id)
+        return self
 
 
 # ---------------------------------------------------------------------------
@@ -511,6 +549,7 @@ async def create_spool(
             spool = await client.create_spool(
                 filament_id=filament_id,
                 remaining_weight=remaining,
+                spool_weight=data.spool_weight,
                 comment=data.note or None,
                 location=data.storage_location or None,
             )
@@ -587,6 +626,7 @@ async def bulk_create_spools(
             spool = await client.create_spool(
                 filament_id=filament_id,
                 remaining_weight=remaining,
+                spool_weight=data.spool_weight,
                 comment=data.note or None,
                 location=data.storage_location or None,
             )
@@ -1278,9 +1318,13 @@ async def assign_spoolman_slot(
     )
     kp_rows = kp_rows_result.scalars().all()
 
-    # Auto-configure AMS slot via MQTT (best-effort; slot assignment is already persisted)
+    # Auto-configure Bambu AMS/external slots via MQTT (best-effort; slot assignment is already persisted).
+    # Non-Bambu loaded-spool assignments (PrusaLink/Klipper/Elegoo SDCP) are local/Spoolman
+    # accounting state only; never route them into Bambu-only AMS commands.
     try:
-        mqtt_client = printer_manager.get_client(body.printer_id)
+        mqtt_client = (
+            printer_manager.get_client(body.printer_id) if _is_bambu_slot_configuration_provider(printer) else None
+        )
         if mqtt_client:
             tray_type = mapped.get("material") or ""
             brand = mapped.get("brand") or ""
@@ -1501,12 +1545,14 @@ async def unassign_spoolman_slot(
 @router.get("/slot-assignments")
 async def get_spoolman_slot_assignment(
     printer_id: int = Query(..., gt=0),
-    ams_id: int = Query(..., ge=0, le=7),
+    ams_id: int = Query(..., ge=0, le=255),
     tray_id: int = Query(..., ge=0, le=3),
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_READ),
 ) -> dict | None:
     """Return the Spoolman spool assigned to a specific printer slot, or null if unassigned."""
+    _validate_spoolman_slot_shape(ams_id, tray_id)
+
     client = await _get_client(db)
     result = await db.execute(select(Printer).where(Printer.id == printer_id))
     printer = result.scalar_one_or_none()

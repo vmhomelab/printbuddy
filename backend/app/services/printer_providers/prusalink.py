@@ -89,9 +89,120 @@ def _minutes_from_seconds(value: Any) -> int:
 
 def _progress_percent(value: Any) -> float:
     try:
-        return float(value or 0.0)
+        progress = float(value or 0.0)
     except (TypeError, ValueError):
         return 0.0
+    if 0.0 <= progress <= 1.0:
+        progress *= 100.0
+    return max(0.0, min(progress, 100.0))
+
+
+def _float_or_none(value: Any) -> float | None:
+    try:
+        if value is None or value == "":
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_prusalink_file_meta(meta: dict[str, Any] | None) -> dict[str, Any]:
+    """Map PrusaLink's G-code metadata keys to Printbuddy's canonical fields."""
+    if not isinstance(meta, dict) or not meta:
+        return {}
+
+    normalized: dict[str, Any] = {"source": "prusalink_file_meta", "raw_prusalink_meta": meta}
+
+    grams = _float_or_none(meta.get("filament used [g]"))
+    if grams is not None:
+        normalized["filament_used_grams"] = grams
+
+    millimeters = _float_or_none(meta.get("filament used [mm]"))
+    if millimeters is not None:
+        normalized["filament_used_mm"] = millimeters
+
+    cubic_cm = _float_or_none(meta.get("filament used [cm3]"))
+    if cubic_cm is not None:
+        normalized["filament_used_cm3"] = cubic_cm
+
+    filament_cost = _float_or_none(meta.get("filament cost"))
+    if filament_cost is not None:
+        normalized["filament_cost"] = filament_cost
+
+    filament_type = meta.get("filament_type") or meta.get("material_name")
+    if filament_type:
+        normalized["filament_type"] = str(filament_type)
+
+    estimated_time = _float_or_none(meta.get("estimated_print_time") or meta.get("print_time"))
+    if estimated_time is not None:
+        normalized["print_time_seconds"] = int(estimated_time)
+
+    per_tool_grams = meta.get("filament used [g] per tool")
+    per_tool_types = meta.get("filament_type per tool")
+    if isinstance(per_tool_grams, list):
+        slots: list[dict[str, Any]] = []
+        for idx, raw_grams in enumerate(per_tool_grams):
+            tool_grams = _float_or_none(raw_grams)
+            if tool_grams is None or tool_grams <= 0:
+                continue
+            slot: dict[str, Any] = {"slot_id": idx + 1, "used_g": round(tool_grams, 2)}
+            if isinstance(per_tool_types, list) and idx < len(per_tool_types) and per_tool_types[idx]:
+                slot["type"] = str(per_tool_types[idx])
+            slots.append(slot)
+        if slots:
+            normalized["filament_slots"] = slots
+
+    return normalized
+
+
+def _job_file_storage_path(file_info: dict[str, Any]) -> tuple[str | None, str | None]:
+    """Resolve PrusaLink job file info to a files API storage/path pair."""
+    refs = file_info.get("refs") if isinstance(file_info.get("refs"), dict) else {}
+    download_ref = refs.get("download")
+    if isinstance(download_ref, str) and download_ref.strip("/"):
+        parts = download_ref.strip("/").split("/", 1)
+        if len(parts) == 2:
+            return parts[0], parts[1]
+
+    path = str(file_info.get("path") or "").strip("/")
+    name = str(file_info.get("name") or file_info.get("display_name") or "").strip("/")
+    if not name:
+        return None, None
+    if path:
+        parts = path.split("/", 1)
+        storage = parts[0]
+        directory = parts[1] if len(parts) == 2 else ""
+        return storage, f"{directory}/{name}".strip("/")
+    return None, name
+
+
+def _prusalink_filename_meta(filename: str | None) -> dict[str, Any]:
+    """Extract slicer-estimated weight/cost from Printbuddy's recommended filename suffix.
+
+    Expected format at the end of the display filename:
+    ``..._fw12.7325_tc0.323407.bgcode``.
+    """
+    if not filename:
+        return {}
+    match = re.search(
+        r"(?:^|[_-])fw(?P<grams>\d+(?:[.,]\d+)?)_tc(?P<cost>\d+(?:[.,]\d+)?)\.(?:bgcode|gcode)$",
+        str(filename).strip(),
+        re.IGNORECASE,
+    )
+    if not match:
+        return {}
+    grams = _float_or_none(match.group("grams").replace(",", "."))
+    cost = _float_or_none(match.group("cost").replace(",", "."))
+    if grams is None or grams <= 0:
+        return {}
+    metadata: dict[str, Any] = {
+        "source": "prusalink_filename_meta",
+        "raw_filename": str(filename),
+        "filament_used_grams": grams,
+    }
+    if cost is not None and cost >= 0:
+        metadata["filament_cost"] = cost
+    return metadata
 
 
 def _prusalink_basic_auth(username: str | None, password: str | None) -> httpx.BasicAuth | None:
@@ -250,56 +361,83 @@ class PrusaLinkPrinterClient:
         response.raise_for_status()
         return True
 
+    def _storage_key(self, storage: dict[str, Any]) -> str | None:
+        raw_key = str(storage.get("path") or storage.get("name") or storage.get("type") or "").strip().strip("/")
+        if not raw_key:
+            return None
+        return raw_key.split("/", 1)[0].lower()
+
     def _available_storage_key(self, storage: dict[str, Any]) -> str | None:
         if storage.get("available") is False or storage.get("read_only") is True:
             return None
-        raw_key = str(storage.get("path") or storage.get("name") or "").strip().strip("/")
-        if not raw_key:
-            return None
-        return raw_key.split("/", 1)[0]
+        return self._storage_key(storage)
+
+    def list_storages(self) -> list[dict[str, Any]]:
+        """Return PrusaLink storage devices normalized for Printbuddy's File Manager."""
+        data = self._get("api/v1/storage")
+        storages = data.get("storage_list") or data.get("storages") or data.get("storage") or []
+        if isinstance(storages, dict):
+            storages = [storages]
+
+        normalized: list[dict[str, Any]] = []
+        for item in storages if isinstance(storages, list) else []:
+            if not isinstance(item, dict):
+                continue
+            key = self._storage_key(item)
+            if not key:
+                continue
+            storage_type = str(item.get("type") or key).upper()
+            normalized.append(
+                {
+                    "id": key,
+                    "type": storage_type,
+                    "name": item.get("name") or storage_type,
+                    "path": item.get("path") or f"/{key}",
+                    "available": item.get("available") is not False,
+                    "read_only": bool(item.get("read_only", False)),
+                    "used_bytes": item.get("used_space") or item.get("used_bytes"),
+                    "free_bytes": item.get("free_space") or item.get("free_bytes"),
+                }
+            )
+        return normalized
 
     @property
     def file_storage(self) -> str:
-        """Return the PrusaLink storage key used for file operations.
+        """Return the PrusaLink storage key used for default file operations.
 
         Older PrusaLink examples used ``local``, but CORE One exposes printable
-        files on a USB storage namespace. Discover the writable storage first
-        and default to ``usb`` when discovery is unavailable so direct uploads
-        and starts hit the path exposed by current CORE firmware.
+        files on a USB storage namespace. Discover storage first and prefer the
+        available USB namespace.
         """
         if self._file_storage:
             return self._file_storage
         try:
-            data = self._get("api/v1/storage")
+            storages = self.list_storages()
         except Exception as exc:  # noqa: BLE001 - storage discovery is optional on older firmware/mock servers
             logger.debug("PrusaLink storage discovery failed; falling back to USB storage: %s", type(exc).__name__)
             self._file_storage = "usb"
             return self._file_storage
 
-        storages = data.get("storage_list") or data.get("storages") or data.get("storage") or []
-        if isinstance(storages, dict):
-            storages = [storages]
-        candidates = [self._available_storage_key(item) for item in storages if isinstance(item, dict)]
-        candidates = [candidate for candidate in candidates if candidate]
+        candidates = [item["id"] for item in storages if item.get("available") and not item.get("read_only")]
         preferred = next((candidate for candidate in candidates if candidate.lower() == "usb"), None)
         self._file_storage = preferred or (candidates[0] if candidates else "usb")
         return self._file_storage
 
-    def _file_api_path(self, remote_path: str, *, suffix: str = "") -> str:
+    def _file_api_path(self, remote_path: str, *, suffix: str = "", storage: str | None = None) -> str:
         normalized = remote_path.strip("/")
-        storage = self.file_storage
-        if normalized == storage:
+        storage_key = (storage or self.file_storage).strip("/").lower()
+        if normalized == storage_key:
             normalized = ""
-        elif normalized.startswith(f"{storage}/"):
-            normalized = normalized[len(storage) + 1 :]
+        elif normalized.startswith(f"{storage_key}/"):
+            normalized = normalized[len(storage_key) + 1 :]
         quoted_path = quote(normalized, safe="/")
-        base = f"api/v1/files/{quote(storage, safe='')}"
+        base = f"api/v1/files/{quote(storage_key, safe='')}"
         if quoted_path:
             base += f"/{quoted_path}"
         return base + suffix
 
-    def list_files(self, path: str = "/") -> list[dict[str, Any]]:
-        api_path = self._file_api_path(path)
+    def list_files(self, path: str = "/", *, storage: str | None = None) -> list[dict[str, Any]]:
+        api_path = self._file_api_path(path, storage=storage)
         normalized = path.strip("/")
         data = self._get(api_path)
         children = data.get("children") or data.get("files") or []
@@ -323,9 +461,11 @@ class PrusaLinkPrinterClient:
             )
         return files
 
-    def upload_file(self, local_path: Path, remote_path: str, *, overwrite: bool = False) -> bool:  # noqa: ARG002
+    def upload_file(
+        self, local_path: Path, remote_path: str, *, overwrite: bool = False, storage: str | None = None
+    ) -> bool:  # noqa: ARG002
         normalized = remote_path.strip("/") or local_path.name
-        url = urljoin(self.base_url, self._file_api_path(normalized))
+        url = urljoin(self.base_url, self._file_api_path(normalized, storage=storage))
         with open(local_path, "rb") as fh:
             kwargs: dict[str, Any] = {
                 "timeout": max(self.timeout, 60.0),
@@ -358,9 +498,9 @@ class PrusaLinkPrinterClient:
         response.raise_for_status()
         return True
 
-    def download_file(self, remote_path: str) -> bytes | None:
+    def download_file(self, remote_path: str, *, storage: str | None = None) -> bytes | None:
         normalized = remote_path.strip("/")
-        url = urljoin(self.base_url, self._file_api_path(normalized, suffix="/raw"))
+        url = urljoin(self.base_url, self._file_api_path(normalized, suffix="/raw", storage=storage))
         response = httpx.get(url, auth=self._basic_auth, headers=self._headers, timeout=max(self.timeout, 60.0))
         authenticate = response.headers.get("www-authenticate", "").lower()
         if response.status_code == 401 and "digest" in authenticate and self._digest_auth is not None:
@@ -370,9 +510,9 @@ class PrusaLinkPrinterClient:
         response.raise_for_status()
         return response.content
 
-    def delete_file(self, remote_path: str) -> bool:
+    def delete_file(self, remote_path: str, *, storage: str | None = None) -> bool:
         normalized = remote_path.strip("/")
-        return self._delete(self._file_api_path(normalized))
+        return self._delete(self._file_api_path(normalized, storage=storage))
 
     def connect(self) -> None:
         if self.api_mode == "legacy":
@@ -404,13 +544,17 @@ class PrusaLinkPrinterClient:
 
     def _build_lifecycle_payload(self) -> dict[str, Any]:
         filename = self.state.subtask_name or self.state.current_print or self.state.gcode_file or "Unknown"
-        return {
+        payload = {
             "filename": filename,
             "subtask_name": filename,
             "progress": self.state.progress,
             "remaining_time": self.state.remaining_time * 60 if self.state.remaining_time else None,
             "status": self.state.state,
         }
+        file_metadata = self.state.raw_data.get("file_metadata") if isinstance(self.state.raw_data, dict) else None
+        if file_metadata:
+            payload["file_metadata"] = file_metadata
+        return payload
 
     def _emit_status_callbacks(self, previous_state: str | None) -> None:
         if self.on_state_change:
@@ -516,6 +660,65 @@ class PrusaLinkPrinterClient:
             self.state.gcode_file = str(filename)
             self.state.current_print = str(filename)
             self.state.subtask_name = str(filename)
+        normalized_meta = _normalize_prusalink_file_meta(file_info.get("meta"))
+        if normalized_meta:
+            self._store_file_metadata(normalized_meta)
+
+    def _store_file_metadata(self, metadata: dict[str, Any]) -> None:
+        self.state.raw_data["file_metadata"] = metadata
+        self.state.raw_data["prusalink_file_meta"] = metadata.get("raw_prusalink_meta")
+
+    def _refresh_metadata_from_job_file(self, file_info: dict[str, Any]) -> dict[str, Any]:
+        storage, remote_path = _job_file_storage_path(file_info)
+        if not remote_path:
+            return {}
+        try:
+            file_detail = self._get(self._file_api_path(remote_path, storage=storage))
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 404:
+                raise
+            return {}
+        if not isinstance(file_detail, dict):
+            return {}
+        metadata = _normalize_prusalink_file_meta(file_detail.get("meta"))
+        if metadata:
+            self._store_file_metadata(metadata)
+            logger.info("PrusaLink file metadata loaded from file endpoint: storage=%s path=%s", storage, remote_path)
+        return metadata
+
+    def refresh_current_file_metadata(self) -> dict[str, Any]:
+        """Fetch current job metadata without emitting lifecycle callbacks.
+
+        PrusaLink sometimes exposes ``job.file.meta`` a little later than the
+        RUNNING transition that triggers Printbuddy's archive creation. This
+        method lets archive/usage code ask for one fresh job-detail sample
+        without calling ``request_status_update()``, which would risk duplicate
+        print-start/complete callbacks.
+        """
+        if self.api_mode == "legacy":
+            return {}
+        try:
+            job_detail = self._get("api/v1/job")
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 204:
+                raise
+            return {}
+        if not isinstance(job_detail, dict) or not job_detail:
+            return {}
+        self._apply_job_detail(job_detail)
+        metadata = self.state.raw_data.get("file_metadata") if isinstance(self.state.raw_data, dict) else None
+        if isinstance(metadata, dict) and metadata:
+            return metadata
+        file_info = job_detail.get("file") if isinstance(job_detail.get("file"), dict) else {}
+        metadata = self._refresh_metadata_from_job_file(file_info)
+        if metadata:
+            return metadata
+        filename = file_info.get("display_name") or file_info.get("name") or self.state.subtask_name
+        metadata = _prusalink_filename_meta(str(filename) if filename else None)
+        if metadata:
+            self._store_file_metadata(metadata)
+            logger.info("PrusaLink file metadata parsed from filename: %s", filename)
+        return metadata
 
     def send_gcode(self, script: str) -> bool:
         """Map Printbuddy's limited control G-code scripts to PrusaLink control endpoints.
@@ -566,7 +769,7 @@ class PrusaLinkPrinterClient:
 
     def start_print(self, filename: str, plate_id: int = 1, **kwargs: Any) -> bool:  # noqa: ARG002
         normalized = filename.strip("/")
-        response = self._request("post", self._file_api_path(normalized))
+        response = self._request("post", self._file_api_path(normalized, storage=kwargs.get("storage")))
         response.raise_for_status()
         return True
 

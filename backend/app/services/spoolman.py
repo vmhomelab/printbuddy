@@ -386,6 +386,7 @@ class SpoolmanClient:
         self,
         filament_id: int,
         remaining_weight: float | None = None,
+        spool_weight: float | None = None,
         location: str | None = None,
         lot_nr: str | None = None,
         comment: str | None = None,
@@ -395,6 +396,8 @@ class SpoolmanClient:
         data: dict = {"filament_id": filament_id}
         if remaining_weight is not None:
             data["remaining_weight"] = remaining_weight
+        if spool_weight is not None:
+            data["spool_weight"] = spool_weight
         if location:
             data["location"] = location
         if lot_nr:

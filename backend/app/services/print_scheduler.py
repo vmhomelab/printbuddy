@@ -2157,6 +2157,7 @@ class PrintScheduler:
             plate_id=item.plate_id or 1,
             ams_mapping=ams_mapping,
             bed_levelling=item.bed_levelling,
+            print_platform_type=item.print_platform_type,
             flow_cali=item.flow_cali,
             vibration_cali=item.vibration_cali,
             layer_inspect=item.layer_inspect,

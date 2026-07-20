@@ -35,6 +35,7 @@ class PrintQueueItemCreate(BaseModel):
     plate_id: int | None = None
     # Print options
     bed_levelling: bool = True
+    print_platform_type: int | None = None
     flow_cali: bool = False
     vibration_cali: bool = True
     layer_inspect: bool = False
@@ -62,6 +63,7 @@ class PrintQueueItemUpdate(BaseModel):
     plate_id: int | None = None
     # Print options
     bed_levelling: bool | None = None
+    print_platform_type: int | None = None
     flow_cali: bool | None = None
     vibration_cali: bool | None = None
     layer_inspect: bool | None = None
@@ -95,6 +97,7 @@ class PrintQueueItemResponse(BaseModel):
     plate_id: int | None = None  # Plate ID for multi-plate 3MF files
     # Print options
     bed_levelling: bool = True
+    print_platform_type: int | None = None
     flow_cali: bool = False
     vibration_cali: bool = True
     layer_inspect: bool = False
@@ -166,6 +169,7 @@ class PrintQueueBulkUpdate(BaseModel):
     manual_start: bool | None = None
     # Print options
     bed_levelling: bool | None = None
+    print_platform_type: int | None = None
     flow_cali: bool | None = None
     vibration_cali: bool | None = None
     layer_inspect: bool | None = None

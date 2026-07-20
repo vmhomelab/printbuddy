@@ -30,6 +30,10 @@ CHAMBER_TEMP_SUPPORTED_MODELS = frozenset(
         "H2D",
         "H2DPRO",
         "H2S",  # H2 series
+        "CENTAURI CARBON",  # Elegoo SDCP / CC1
+        "ELEGOO CENTAURI CARBON",
+        "CENTAURI-CARBON",
+        "CENTAURI_CARBON",
         # Internal codes (from MQTT/SSDP)
         "BL-P001",  # X1/X1C
         "C13",  # X1E
@@ -516,6 +520,7 @@ class PrinterManager:
         plate_id: int = 1,
         ams_mapping: list[int] | None = None,
         bed_levelling: bool = True,
+        print_platform_type: int | None = None,
         flow_cali: bool = False,
         vibration_cali: bool = True,
         layer_inspect: bool = False,
@@ -539,6 +544,7 @@ class PrinterManager:
                 ams_mapping=ams_mapping,
                 timelapse=timelapse,
                 bed_levelling=bed_levelling,
+                print_platform_type=print_platform_type,
                 flow_cali=flow_cali,
                 vibration_cali=vibration_cali,
                 layer_inspect=layer_inspect,
@@ -694,6 +700,7 @@ class PrinterManager:
                 model_label = {
                     "prusalink": "PrusaLink",
                     "prusaconnect": "Prusa Connect Mobile",
+                    "elegoo_sdcp": "Elegoo SDCP",
                 }.get(provider_name, "Klipper/Moonraker")
                 result = {
                     "success": True,
@@ -707,6 +714,7 @@ class PrinterManager:
                 model_label = {
                     "prusalink": "PrusaLink",
                     "prusaconnect": "Prusa Connect Mobile",
+                    "elegoo_sdcp": "Elegoo SDCP",
                 }.get(provider_name, "Klipper/Moonraker")
                 return {"success": False, "state": None, "model": model_label, "error": type(exc).__name__}
             finally:

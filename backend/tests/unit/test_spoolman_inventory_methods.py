@@ -216,6 +216,35 @@ class TestSetSpoolArchived:
 
 
 # ---------------------------------------------------------------------------
+# create_spool
+# ---------------------------------------------------------------------------
+
+
+class TestCreateSpool:
+    @pytest.mark.asyncio
+    async def test_sends_spool_weight_when_provided(self, client):
+        mock_http = AsyncMock()
+        mock_http.post = AsyncMock(return_value=_make_response(SAMPLE_SPOOL))
+        with patch.object(client, "_get_client", AsyncMock(return_value=mock_http)):
+            await client.create_spool(7, remaining_weight=900.0, spool_weight=250)
+        mock_http.post.assert_called_once_with(
+            "http://localhost:7912/api/v1/spool",
+            json={"filament_id": 7, "remaining_weight": 900.0, "spool_weight": 250},
+        )
+
+    @pytest.mark.asyncio
+    async def test_omits_spool_weight_when_none(self, client):
+        mock_http = AsyncMock()
+        mock_http.post = AsyncMock(return_value=_make_response(SAMPLE_SPOOL))
+        with patch.object(client, "_get_client", AsyncMock(return_value=mock_http)):
+            await client.create_spool(7, remaining_weight=900.0)
+        mock_http.post.assert_called_once_with(
+            "http://localhost:7912/api/v1/spool",
+            json={"filament_id": 7, "remaining_weight": 900.0},
+        )
+
+
+# ---------------------------------------------------------------------------
 # update_spool_full
 # ---------------------------------------------------------------------------
 

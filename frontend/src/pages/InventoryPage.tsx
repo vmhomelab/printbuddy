@@ -10,7 +10,7 @@ import {
 } from 'lucide-react';
 import { ForecastPanel } from '../components/ForecastPanel';
 import { api, ApiError } from '../api/client';
-import type { InventorySpool, SpoolCatalogEntry } from '../api/client';
+import type { InventorySpool, Printer as PrinterType, SpoolCatalogEntry } from '../api/client';
 import { Button } from '../components/Button';
 import { FilamentSwatch } from '../components/FilamentSwatch';
 import { buildFilamentBackground } from '../components/filamentSwatchHelpers';
@@ -465,6 +465,8 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   const canViewForecast = !authLoading && hasPermission('inventory:forecast_read');
   const [searchParams, setSearchParams] = useSearchParams();
   const [formModal, setFormModal] = useState<{ spool?: InventorySpool | null; mode: SpoolFormMode } | null>(null);
+  const [assignModalSpool, setAssignModalSpool] = useState<InventorySpool | null>(null);
+  const [assignPrinterId, setAssignPrinterId] = useState('');
   const deepLinkHandled = useRef(false);
   const [confirmAction, setConfirmAction] = useState<
     | { type: 'delete' | 'archive' | 'reset-usage'; spoolId: number }
@@ -525,6 +527,11 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     queryFn: () =>
       spoolmanMode ? api.getSpoolmanInventorySpools(true) : api.getSpools(true),
     refetchInterval: 30000,
+  });
+
+  const { data: printers = [] } = useQuery({
+    queryKey: ['printers'],
+    queryFn: api.getPrinters,
   });
 
   // Deep-link: open edit modal for ?spool=<id>
@@ -708,6 +715,24 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     },
     onError: () => {
       showToast(t('inventory.resetUsageFailed'), 'error');
+    },
+  });
+
+  const assignToPrinterMutation = useMutation<unknown, Error, { spool: InventorySpool; printerId: number }>({
+    mutationFn: ({ spool, printerId }: { spool: InventorySpool; printerId: number }) =>
+      spoolmanMode
+        ? api.assignSpoolmanSlot({ spoolman_spool_id: spool.id, printer_id: printerId, ams_id: 255, tray_id: 0 })
+        : api.assignLoadedSpool(printerId, spool.id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['spool-assignments'] });
+      queryClient.invalidateQueries({ queryKey: ['spoolman-slot-assignments-all'] });
+      queryClient.invalidateQueries({ queryKey: spoolsQueryKey });
+      setAssignModalSpool(null);
+      setAssignPrinterId('');
+      showToast(t('inventory.assignToPrinterSuccess', 'Spool assigned to printer'), 'success');
+    },
+    onError: () => {
+      showToast(t('inventory.assignToPrinterFailed', 'Failed to assign spool to printer'), 'error');
     },
   });
 
@@ -1639,6 +1664,10 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
                                 pct={pct}
                                 onClick={() => setFormModal({ spool, mode: 'edit' })}
                                 onPrintLabel={() => setLabelPickerSpoolIds([spool.id])}
+                                onAssignToPrinter={() => {
+                                  setAssignModalSpool(spool);
+                                  setAssignPrinterId('');
+                                }}
                                 onCopy={() => setFormModal({ spool: spool, mode: 'copy' })}
                                 t={t}
                               />
@@ -1660,6 +1689,10 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
                     pct={pct}
                     onClick={() => setFormModal({ spool, mode: 'edit' })}
                     onPrintLabel={() => setLabelPickerSpoolIds([spool.id])}
+                    onAssignToPrinter={() => {
+                      setAssignModalSpool(spool);
+                      setAssignPrinterId('');
+                    }}
                     onCopy={() => setFormModal({ spool: spool, mode: 'copy' })}
                     t={t}
                   />
@@ -1743,6 +1776,10 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
                           onArchive={(id) => setConfirmAction({ type: 'archive', spoolId: id })}
                           onDelete={(id) => setConfirmAction({ type: 'delete', spoolId: id })}
                           onPrintLabel={(id) => setLabelPickerSpoolIds([id])}
+                          onAssignToPrinter={(spool) => {
+                            setAssignModalSpool(spool);
+                            setAssignPrinterId('');
+                          }}
                           onResetUsage={(id) => setConfirmAction({ type: 'reset-usage', spoolId: id })}
                           visibleColumns={visibleColumns}
                           assignmentMap={assignmentMap}
@@ -1769,6 +1806,10 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
                         onArchive={() => setConfirmAction({ type: 'archive', spoolId: spool.id })}
                         onDelete={() => setConfirmAction({ type: 'delete', spoolId: spool.id })}
                         onPrintLabel={() => setLabelPickerSpoolIds([spool.id])}
+                        onAssignToPrinter={() => {
+                          setAssignModalSpool(spool);
+                          setAssignPrinterId('');
+                        }}
                         onResetUsage={() => setConfirmAction({ type: 'reset-usage', spoolId: spool.id })}
                         visibleColumns={visibleColumns}
                         assignmentMap={assignmentMap}
@@ -1855,6 +1896,71 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
             t={t}
           />
         )
+      )}
+
+      {/* Assign Spool to Printer Modal */}
+      {assignModalSpool && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => { setAssignModalSpool(null); setAssignPrinterId(''); }} />
+          <div className="relative w-full max-w-md mx-4 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-xl shadow-2xl p-5 space-y-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-semibold text-white">{t('inventory.assignToPrinter', 'Assign to printer')}</h2>
+                <p className="text-sm text-bambu-gray mt-1">
+                  {[assignModalSpool.brand, assignModalSpool.material, assignModalSpool.color_name].filter(Boolean).join(' ') || `#${assignModalSpool.id}`}
+                </p>
+              </div>
+              <button
+                type="button"
+                className="p-1 text-bambu-gray hover:text-white rounded transition-colors"
+                onClick={() => { setAssignModalSpool(null); setAssignPrinterId(''); }}
+                aria-label={t('common.close')}
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <label className="block text-sm font-medium text-bambu-gray">
+              {t('printers.printer', 'Printer')}
+              <select
+                className="mt-1 w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green"
+                value={assignPrinterId}
+                onChange={(event) => setAssignPrinterId(event.target.value)}
+              >
+                <option value="">{t('inventory.selectPrinter', 'Select printer...')}</option>
+                {(printers as PrinterType[]).map((printer) => (
+                  <option key={printer.id} value={printer.id}>{printer.name}</option>
+                ))}
+              </select>
+            </label>
+
+            {printers.length === 0 && (
+              <p className="text-xs text-bambu-gray">{t('inventory.noPrintersAvailable', 'No printers available.')}</p>
+            )}
+
+            <div className="flex justify-end gap-2 pt-2">
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => { setAssignModalSpool(null); setAssignPrinterId(''); }}
+                disabled={assignToPrinterMutation.isPending}
+              >
+                {t('common.cancel')}
+              </Button>
+              <Button
+                type="button"
+                disabled={!assignPrinterId || assignToPrinterMutation.isPending}
+                onClick={() => {
+                  const printerId = Number(assignPrinterId);
+                  if (!printerId || !assignModalSpool) return;
+                  assignToPrinterMutation.mutate({ spool: assignModalSpool, printerId });
+                }}
+              >
+                {assignToPrinterMutation.isPending ? t('common.saving') : t('inventory.assignToPrinter', 'Assign to printer')}
+              </Button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Spool Form Modal */}
@@ -2006,15 +2112,16 @@ function PaginationBar({
 
 /* Spool card for cards view */
 function SpoolCard({
-  spool, remaining, pct, onClick, onPrintLabel, onCopy, t,
+  spool, remaining, pct, onClick, onPrintLabel, onAssignToPrinter, onCopy, t,
 }: {
   spool: InventorySpool;
   remaining: number;
   pct: number;
   onClick: () => void;
   onPrintLabel?: () => void;
+  onAssignToPrinter?: () => void;
   onCopy?: () => void;
-  t: (key: string, opts?: Record<string, unknown>) => string;
+  t: TFn;
 }) {
   const bannerStyle = buildFilamentBackground({
     rgba: spool.rgba,
@@ -2058,6 +2165,16 @@ function SpoolCard({
                 className="p-1 text-bambu-gray hover:text-white rounded transition-colors"
                 title={t('inventory.labels.printOne')}
                 aria-label={t('inventory.labels.printOne')}
+              >
+                <Printer className="w-4 h-4" />
+              </button>
+            )}
+            {onAssignToPrinter && !spool.archived_at && (
+              <button
+                onClick={(e) => { e.stopPropagation(); onAssignToPrinter(); }}
+                className="p-1 text-bambu-gray hover:text-bambu-green rounded transition-colors"
+                title="Assign to printer"
+                aria-label="Assign to printer"
               >
                 <Printer className="w-4 h-4" />
               </button>
@@ -2111,7 +2228,7 @@ function SpoolCard({
 
 /* Single spool row for table view */
 function SpoolTableRow({
-  spool, remaining, pct, onEdit, onCopy, onRestore, onArchive, onDelete, onPrintLabel, onResetUsage,
+  spool, remaining, pct, onEdit, onCopy, onRestore, onArchive, onDelete, onPrintLabel, onAssignToPrinter, onResetUsage,
   visibleColumns, assignmentMap, catalogMap, currencySymbol, dateFormat, t, onSyncWeight,
 }: {
   spool: InventorySpool;
@@ -2123,6 +2240,7 @@ function SpoolTableRow({
   onArchive: () => void;
   onDelete: () => void;
   onPrintLabel?: () => void;
+  onAssignToPrinter?: () => void;
   onResetUsage?: () => void;
   visibleColumns: string[];
   assignmentMap: Record<number, LocationDisplay>;
@@ -2159,6 +2277,11 @@ function SpoolTableRow({
               <Printer className="w-4 h-4" />
             </button>
           )}
+          {onAssignToPrinter && !spool.archived_at && (
+            <button onClick={onAssignToPrinter} className="p-1.5 text-bambu-gray hover:text-bambu-green rounded transition-colors" title="Assign to printer" aria-label="Assign to printer">
+              <Printer className="w-4 h-4" />
+            </button>
+          )}
           {onResetUsage && spool.weight_used > 0 && (
             // Eraser also shows on archived spools (#1390 follow-up):
             // archived consumed weight now counts in "Total Consumed", so
@@ -2189,7 +2312,7 @@ function SpoolTableRow({
 /* Grouped spool rows for table view */
 function SpoolTableGroup({
   spools, headerSpool, remaining, pct, isExpanded, onToggle,
-  onEdit, onCopy, onArchive, onDelete, onPrintLabel, onResetUsage,
+  onEdit, onCopy, onArchive, onDelete, onPrintLabel, onAssignToPrinter, onResetUsage,
   visibleColumns, assignmentMap, catalogMap, currencySymbol, dateFormat, t, onSyncWeight,
 }: {
   spools: InventorySpool[];
@@ -2205,6 +2328,7 @@ function SpoolTableGroup({
   onArchive: (id: number) => void;
   onDelete: (id: number) => void;
   onPrintLabel?: (spoolId: number) => void;
+  onAssignToPrinter?: (spool: InventorySpool) => void;
   onResetUsage?: (id: number) => void;
   visibleColumns: string[];
   assignmentMap: Record<number, LocationDisplay>;
@@ -2259,6 +2383,7 @@ function SpoolTableGroup({
             onArchive={() => onArchive(spool.id)}
             onDelete={() => onDelete(spool.id)}
             onPrintLabel={onPrintLabel ? () => onPrintLabel(spool.id) : undefined}
+            onAssignToPrinter={onAssignToPrinter ? () => onAssignToPrinter(spool) : undefined}
             onResetUsage={onResetUsage ? () => onResetUsage(spool.id) : undefined}
             visibleColumns={visibleColumns}
             assignmentMap={assignmentMap}

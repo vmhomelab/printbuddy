@@ -242,6 +242,9 @@ class SimpleMQTTServer:
         ssl_context.verify_mode = ssl.CERT_NONE
         # Allow TLS 1.2 for broader compatibility (some slicers may not support 1.3)
         ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
+        # Keep OrcaSlicer/BambuStudio compatible on hardened OpenSSL policies
+        # where DEFAULT may drop the plain-RSA AES-GCM suites Bambu paths use.
+        ssl_context.set_ciphers("DEFAULT:AES256-GCM-SHA384:AES128-GCM-SHA256")
         # Disable hostname checking
         ssl_context.check_hostname = False
 

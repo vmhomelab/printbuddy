@@ -3,6 +3,7 @@ import logging
 import mimetypes as _mimetypes
 import os
 import posixpath
+import re
 import secrets
 import time
 from contextlib import asynccontextmanager
@@ -45,6 +46,7 @@ from backend.app.api.routes import (
     notification_templates,
     notifications,
     obico,
+    open_filament_database,
     pending_uploads,
     print_log,
     print_queue,
@@ -341,7 +343,10 @@ _print_ams_mappings: dict[int, list[int]] = {}
 # Milestones are 25, 50, 75. Value of 0 means no milestone notified yet for current print.
 _last_progress_milestone: dict[int, int] = {}
 
-# Track whether the 99% almost-done notification has been sent for current print
+# Progress percentage that triggers the almost-done notification.
+PRINT_ALMOST_DONE_PROGRESS_THRESHOLD = 97
+
+# Track whether the almost-done notification has been sent for current print
 _print_almost_done_notified: dict[int, bool] = {}
 
 # Track whether first layer complete notification has been sent for current print
@@ -603,6 +608,295 @@ def register_expected_print(
     )
 
 
+async def _register_elegoo_observed_file_estimate(printer_id: int, data: dict) -> None:
+    """Query CC1 file-info (Cmd 260) for prints observed after they start.
+
+    Printbuddy-started CC1 dispatch paths already preflight Cmd 260 before
+    Cmd 128. Prints started externally from the printer panel, printer WebUI,
+    slicer, or another SDCP client only become visible once status reports the
+    current file. At that point we can still ask the printer for FileInfo and
+    cache EstWeight for the normal completion/archive/spool accounting path.
+    """
+    logger = logging.getLogger(__name__)
+    printer = printer_manager.get_printer(printer_id)
+    if getattr(printer, "provider", None) != "elegoo_sdcp":
+        return
+
+    client = printer_manager.get_client(printer_id)
+    get_file_info = getattr(client, "get_file_info", None) if client else None
+
+    raw_data = data.get("raw_data") if isinstance(data.get("raw_data"), dict) else {}
+    raw_status = raw_data.get("Status") if isinstance(raw_data.get("Status"), dict) else {}
+    raw_print_info = raw_status.get("PrintInfo") if isinstance(raw_status.get("PrintInfo"), dict) else {}
+
+    raw_names = [
+        data.get("filename"),
+        data.get("gcode_file"),
+        data.get("subtask_name"),
+        raw_print_info.get("Filename"),
+        raw_print_info.get("FileName"),
+        raw_data.get("filename") if isinstance(raw_data, dict) else None,
+        raw_data.get("gcode_file") if isinstance(raw_data, dict) else None,
+    ]
+
+    candidates: list[str] = []
+    for raw_name in raw_names:
+        if not raw_name:
+            continue
+        name = str(raw_name).strip()
+        if not name:
+            continue
+        base = name.rsplit("/", 1)[-1]
+        for candidate in (name, f"/{base}", f"/local/{base}", f"/usb/{base}"):
+            if candidate and candidate not in candidates:
+                candidates.append(candidate)
+
+    if callable(get_file_info):
+        for candidate in candidates:
+            try:
+                info = await asyncio.to_thread(get_file_info, candidate)
+            except Exception as exc:
+                logger.debug("Ignoring Elegoo SDCP observed file-info lookup failure for %s: %s", candidate, exc)
+                continue
+            if not isinstance(info, dict):
+                continue
+            estimated_weight = info.get("estimated_weight_grams")
+            if not estimated_weight:
+                continue
+
+            from backend.app.services import direct_print_tracking
+
+            direct_print_tracking.register_direct_print_metadata(
+                printer_id,
+                str(info.get("path") or candidate),
+                estimated_weight,
+                estimated_time_seconds=info.get("estimated_time_seconds"),
+            )
+            logger.info(
+                "Registered Elegoo SDCP observed print estimate: printer=%s file=%s weight=%s",
+                printer_id,
+                candidate,
+                estimated_weight,
+            )
+            return
+
+    for raw_name in raw_names:
+        filename_metadata = _filename_filament_metadata(str(raw_name) if raw_name else None)
+        if not filename_metadata:
+            continue
+        from backend.app.services import direct_print_tracking
+
+        direct_print_tracking.register_direct_print_metadata(
+            printer_id,
+            str(raw_name),
+            filename_metadata.get("filament_used_grams"),
+            estimated_cost=filename_metadata.get("filament_cost"),
+        )
+        data["file_metadata"] = filename_metadata
+        logger.info(
+            "Registered Elegoo SDCP observed print estimate from filename metadata: printer=%s file=%s weight=%s cost=%s",
+            printer_id,
+            raw_name,
+            filename_metadata.get("filament_used_grams"),
+            filename_metadata.get("filament_cost"),
+        )
+        return
+
+    if candidates:
+        logger.debug("Elegoo SDCP observed print had no EstWeight from file-info candidates: %s", candidates)
+
+
+def _metadata_float(value) -> float | None:
+    try:
+        if value is None or value == "":
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+async def _calculate_loaded_spool_cost(db, printer_id: int, grams: float | None) -> float | None:
+    if grams is None or grams <= 0:
+        return None
+
+    from backend.app.api.routes.settings import get_setting
+    from backend.app.models.spool import Spool
+    from backend.app.models.spool_assignment import SpoolAssignment
+
+    cost_per_kg = None
+    result = await db.execute(
+        select(SpoolAssignment).where(
+            SpoolAssignment.printer_id == printer_id,
+            SpoolAssignment.ams_id == -1,
+            SpoolAssignment.tray_id == 0,
+        )
+    )
+    assignment = result.scalar_one_or_none()
+    if assignment:
+        spool = await db.get(Spool, assignment.spool_id)
+        if spool and spool.cost_per_kg is not None:
+            cost_per_kg = spool.cost_per_kg
+
+    if cost_per_kg is None:
+        default_cost_setting = await get_setting(db, "default_filament_cost")
+        cost_per_kg = float(default_cost_setting) if default_cost_setting else 25.0
+
+    return round((grams / 1000.0) * cost_per_kg, 2) if cost_per_kg > 0 else None
+
+
+def _filename_filament_metadata(filename: str | None) -> dict:
+    """Extract Printbuddy slicer filename metadata: ..._fw12.34[_tc0.56].gcode."""
+    if not filename:
+        return {}
+    match = re.search(
+        r"(?:^|[_-])fw(?P<grams>\d+(?:[.,]\d+)?)(?:_tc(?P<cost>\d+(?:[.,]\d+)?))?\.(?:bgcode|gcode)$",
+        str(filename).strip(),
+        re.IGNORECASE,
+    )
+    if not match:
+        return {}
+    grams = _metadata_float(match.group("grams").replace(",", "."))
+    raw_cost = match.group("cost")
+    cost = _metadata_float(raw_cost.replace(",", ".")) if raw_cost is not None else None
+    if grams is None or grams <= 0:
+        return {}
+    metadata = {
+        "source": "filename_filament_meta",
+        "raw_filename": str(filename),
+        "filament_used_grams": grams,
+    }
+    if cost is not None and cost >= 0:
+        metadata["filament_cost"] = cost
+    return metadata
+
+
+def _prusalink_file_metadata_for_archive(printer, data: dict) -> dict:
+    """Return normalized PrusaLink file metadata only for PrusaLink fallback archives."""
+    if getattr(printer, "provider", None) != "prusalink":
+        return {}
+    metadata = data.get("file_metadata")
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _refresh_prusalink_file_metadata_for_archive(printer_id: int, printer, data: dict, logger) -> dict:
+    """Best-effort late fetch of PrusaLink job file metadata.
+
+    Direct slicer uploads can race: the state transition to PRINTING may reach
+    Printbuddy before ``/api/v1/job`` includes ``file.meta``. Ask the connected
+    provider for one fresh job-detail sample without emitting lifecycle
+    callbacks, then copy the metadata into the active event payload for archive
+    and completion processing.
+    """
+    metadata = _prusalink_file_metadata_for_archive(printer, data)
+    if metadata:
+        return metadata
+    if getattr(printer, "provider", None) != "prusalink":
+        return {}
+
+    client = printer_manager.get_client(printer_id)
+    refresh = getattr(client, "refresh_current_file_metadata", None)
+    if not callable(refresh):
+        return {}
+    try:
+        metadata = refresh()
+    except Exception as exc:
+        logger.debug("[PRUSALINK] Could not refresh current file metadata for printer %s: %s", printer_id, exc)
+        return {}
+    if isinstance(metadata, dict) and metadata:
+        data["file_metadata"] = metadata
+        logger.info(
+            "[PRUSALINK] Refreshed file metadata for printer %s: %.1fg %s",
+            printer_id,
+            _metadata_float(metadata.get("filament_used_grams")) or 0.0,
+            metadata.get("filament_type") or "unknown material",
+        )
+        return metadata
+    return {}
+
+
+async def _apply_prusalink_metadata_to_archive(db, printer_id: int, printer, archive, data: dict, logger) -> bool:
+    """Populate a no-3MF PrusaLink archive from late job metadata when needed."""
+    if not archive or archive.file_path or archive.filament_used_grams:
+        return False
+    metadata = _refresh_prusalink_file_metadata_for_archive(printer_id, printer, data, logger)
+    if not metadata:
+        return False
+
+    grams = _metadata_float(metadata.get("filament_used_grams"))
+    if grams is None or grams <= 0:
+        return False
+
+    archive.filament_used_grams = grams
+    archive.filament_type = metadata.get("filament_type") or archive.filament_type
+    metadata_cost = _metadata_float(metadata.get("filament_cost"))
+    if metadata_cost is None:
+        metadata_cost = await _calculate_loaded_spool_cost(db, printer_id, grams)
+    archive.cost = metadata_cost if metadata_cost is not None else archive.cost
+    metadata_print_time_raw = _metadata_float(metadata.get("print_time_seconds"))
+    if metadata_print_time_raw is not None and not archive.print_time_seconds:
+        archive.print_time_seconds = int(metadata_print_time_raw)
+
+    extra_data = archive.extra_data if isinstance(archive.extra_data, dict) else {}
+    extra_data["file_metadata"] = metadata
+    archive.extra_data = extra_data
+    try:
+        from sqlalchemy.orm.attributes import flag_modified
+
+        flag_modified(archive, "extra_data")
+    except Exception:
+        pass
+    logger.info("[PRUSALINK] Applied late file metadata to archive %s (%.1fg)", archive.id, grams)
+    return True
+
+
+async def _refresh_prusalink_archive_metadata_later(
+    printer_id: int,
+    archive_id: int,
+    data: dict,
+    *,
+    delays: tuple[float, ...] = (60.0, 180.0),
+) -> None:
+    """Retry PrusaLink metadata enrichment while a direct-upload print is running.
+
+    Some CORE One/PrusaLink jobs expose ``file.meta`` only after the print has
+    been running for a short time. The start path and completion path still do
+    immediate/terminal refreshes; this middle retry fills the archive early so
+    the UI can show weight/cost during the active print.
+    """
+    logger = logging.getLogger(__name__)
+    for delay in delays:
+        if delay > 0:
+            await asyncio.sleep(delay)
+        try:
+            async with async_session() as db:
+                from backend.app.models.archive import PrintArchive
+                from backend.app.models.printer import Printer
+
+                result = await db.execute(select(PrintArchive).where(PrintArchive.id == archive_id))
+                archive = result.scalar_one_or_none()
+                if not archive or archive.filament_used_grams or archive.status != "printing":
+                    return
+
+                printer_result = await db.execute(select(Printer).where(Printer.id == printer_id))
+                printer = printer_result.scalar_one_or_none()
+                if not printer or getattr(printer, "provider", None) != "prusalink":
+                    return
+
+                updated = await _apply_prusalink_metadata_to_archive(db, printer_id, printer, archive, data, logger)
+                if updated:
+                    await db.commit()
+                    return
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.debug(
+                "[PRUSALINK] Delayed archive metadata refresh failed for printer %s archive %s: %s",
+                printer_id,
+                archive_id,
+                exc,
+            )
+
+
 def _compute_run_filament_grams(
     status: str,
     archive_filament_used_grams: float | None,
@@ -653,16 +947,19 @@ def _maybe_start_layer_timelapse(printer, printer_id: int, archive_id: int) -> b
     on the first pass). Centralising the conditional + call here makes the
     contract testable in isolation and keeps the three sites locked in step.
     """
-    if not (printer.external_camera_enabled and printer.external_camera_url):
+    from backend.app.services.elegoo_camera import get_effective_camera_source
+
+    effective_camera = get_effective_camera_source(printer)
+    if not (effective_camera.enabled and effective_camera.url):
         return False
     from backend.app.services.layer_timelapse import start_session
 
     start_session(
         printer_id,
         archive_id,
-        printer.external_camera_url,
-        printer.external_camera_type or "mjpeg",
-        snapshot_url=printer.external_camera_snapshot_url,
+        effective_camera.url,
+        effective_camera.camera_type or "mjpeg",
+        snapshot_url=effective_camera.snapshot_url,
     )
     logging.getLogger(__name__).info("Started layer timelapse for printer %s, archive %s", printer_id, archive_id)
     return True
@@ -841,7 +1138,7 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
             except Exception as e:
                 logging.getLogger(__name__).warning(f"Progress milestone notification failed: {e}")
 
-        if progress >= 99 and not _print_almost_done_notified.get(printer_id, False):
+        if progress >= PRINT_ALMOST_DONE_PROGRESS_THRESHOLD and not _print_almost_done_notified.get(printer_id, False):
             _print_almost_done_notified[printer_id] = True
             try:
                 async with async_session() as db:
@@ -1640,19 +1937,61 @@ async def _capture_snapshot_for_notification(printer_id: int, printer, logger) -
         if capture_enabled is not None and capture_enabled.lower() != "true":
             return None
 
-        # Try external camera first
-        if printer.external_camera_enabled and printer.external_camera_url:
-            logger.info("[SNAPSHOT] Capturing from external camera for printer %s", printer_id)
-            from backend.app.services.external_camera import capture_frame
+        from backend.app.services.elegoo_camera import get_effective_camera_source, is_elegoo_sdcp_camera_source
 
-            frame_data = await capture_frame(
-                printer.external_camera_url,
-                printer.external_camera_type or "mjpeg",
-                snapshot_url=printer.external_camera_snapshot_url,
+        effective_camera = get_effective_camera_source(printer)
+
+        # Try external/provider-derived camera first
+        if effective_camera.enabled and effective_camera.url:
+            from backend.app.api.routes.camera import is_stream_active, try_get_active_buffered_frame
+
+            buffered = try_get_active_buffered_frame(printer_id)
+            if buffered:
+                logger.info("[SNAPSHOT] Using active external/provider camera frame for printer %s", printer_id)
+                return _apply_camera_rotation(buffered, printer, logger)
+            if effective_camera.derived and is_stream_active(printer_id):
+                logger.info(
+                    "[SNAPSHOT] Provider camera stream active for printer %s but no frame buffered yet; skipping competing capture",
+                    printer_id,
+                )
+                return None
+
+            should_activate_elegoo = is_elegoo_sdcp_camera_source(
+                getattr(printer, "provider", None), effective_camera.url
             )
+            logger.info("[SNAPSHOT] Capturing from external/provider camera for printer %s", printer_id)
+            if should_activate_elegoo:
+                from backend.app.services.elegoo_camera import capture_elegoo_sdcp_activated_frame
+
+                frame_data = await capture_elegoo_sdcp_activated_frame(
+                    printer.ip_address,
+                    effective_camera.url,
+                    effective_camera.camera_type or "mjpeg",
+                    snapshot_url=effective_camera.snapshot_url,
+                )
+            else:
+                from backend.app.services.external_camera import capture_frame
+
+                frame_data = await capture_frame(
+                    effective_camera.url,
+                    effective_camera.camera_type or "mjpeg",
+                    snapshot_url=effective_camera.snapshot_url,
+                )
             if frame_data and len(frame_data) <= 2_500_000:
                 logger.info("[SNAPSHOT] External camera frame: %s bytes", len(frame_data))
                 return _apply_camera_rotation(frame_data, printer, logger)
+            if should_activate_elegoo:
+                logger.warning(
+                    "[SNAPSHOT] Elegoo SDCP camera failed for printer %s; not falling back to built-in camera path",
+                    printer_id,
+                )
+                return None
+            if effective_camera.derived:
+                logger.warning(
+                    "[SNAPSHOT] Derived provider camera failed for printer %s; not falling back to built-in camera path",
+                    printer_id,
+                )
+                return None
 
         # Try buffered frame from active stream
         from backend.app.api.routes.camera import _active_chamber_streams, _active_streams, get_buffered_frame
@@ -1821,6 +2160,11 @@ async def on_print_start(printer_id: int, data: dict):
     from backend.app.api.routes.printers import clear_cover_cache
 
     clear_cover_cache(printer_id)
+
+    try:
+        await _register_elegoo_observed_file_estimate(printer_id, data)
+    except Exception as e:
+        logger.warning("Elegoo SDCP observed file-info lookup failed on print start: %s", e)
 
     await ws_manager.send_print_start(printer_id, data)
 
@@ -2641,6 +2985,18 @@ async def on_print_start(printer_id: int, data: dict):
                     if mc_remaining and isinstance(mc_remaining, (int, float)) and mc_remaining > 0:
                         fallback_print_time = int(mc_remaining * 60)
 
+                file_metadata = _refresh_prusalink_file_metadata_for_archive(printer_id, printer, data, logger)
+                metadata_filament_grams = _metadata_float(file_metadata.get("filament_used_grams"))
+                metadata_cost = _metadata_float(file_metadata.get("filament_cost"))
+                if metadata_cost is None and metadata_filament_grams is not None:
+                    metadata_cost = await _calculate_loaded_spool_cost(db, printer_id, metadata_filament_grams)
+                metadata_print_time_raw = _metadata_float(file_metadata.get("print_time_seconds"))
+                metadata_print_time = int(metadata_print_time_raw) if metadata_print_time_raw is not None else None
+
+                extra_data = {"no_3mf_available": True, "original_subtask": subtask_name, "_print_data": data}
+                if file_metadata:
+                    extra_data["file_metadata"] = file_metadata
+
                 # Create minimal archive entry
                 fallback_archive = PrintArchive(
                     printer_id=printer_id,
@@ -2648,11 +3004,14 @@ async def on_print_start(printer_id: int, data: dict):
                     file_path="",  # Empty - no 3MF file available
                     file_size=0,
                     print_name=print_name,
-                    print_time_seconds=fallback_print_time,
+                    print_time_seconds=metadata_print_time or fallback_print_time,
+                    filament_used_grams=metadata_filament_grams,
+                    filament_type=file_metadata.get("filament_type"),
                     status="printing",
                     started_at=datetime.now(timezone.utc),
                     subtask_id=subtask_id,
-                    extra_data={"no_3mf_available": True, "original_subtask": subtask_name, "_print_data": data},
+                    cost=metadata_cost,
+                    extra_data=extra_data,
                 )
 
                 db.add(fallback_archive)
@@ -2660,6 +3019,15 @@ async def on_print_start(printer_id: int, data: dict):
                 await db.refresh(fallback_archive)
 
                 logger.info("Created fallback archive %s for %s (no 3MF available)", fallback_archive.id, print_name)
+
+                if printer.provider == "prusalink" and not fallback_archive.filament_used_grams:
+                    asyncio.create_task(
+                        _refresh_prusalink_archive_metadata_later(printer_id, fallback_archive.id, dict(data))
+                    )
+                    logger.info(
+                        "[PRUSALINK] Scheduled delayed file metadata refresh for archive %s",
+                        fallback_archive.id,
+                    )
 
                 _maybe_start_layer_timelapse(printer, printer_id, fallback_archive.id)
 
@@ -3092,6 +3460,14 @@ async def on_print_running_observed(printer_id: int, data: dict):
     """
     logger = logging.getLogger(__name__)
 
+    # Query CC1 FileInfo as soon as an active print is observed. This covers
+    # prints started while Printbuddy was down as well as external starts whose
+    # on_print_start event was suppressed during reconnect/restart recovery.
+    try:
+        await _register_elegoo_observed_file_estimate(printer_id, data)
+    except Exception as e:
+        logger.warning("Elegoo SDCP observed file-info lookup failed on running observation: %s", e)
+
     # Avoid double-capture: on_print_start may have run earlier in this
     # Printbuddy process if the print started AFTER startup and we crashed
     # later in the same session. (Realistically this can't happen — the
@@ -3294,6 +3670,23 @@ async def on_print_complete(printer_id: int, data: dict):
                 archive = result.scalar_one_or_none()
                 if archive:
                     archive_id = archive.id
+
+    if archive_id:
+        try:
+            async with async_session() as db:
+                from backend.app.models.archive import PrintArchive
+                from backend.app.models.printer import Printer
+
+                result = await db.execute(select(PrintArchive).where(PrintArchive.id == archive_id))
+                archive = result.scalar_one_or_none()
+                printer_result = await db.execute(select(Printer).where(Printer.id == printer_id))
+                printer = printer_result.scalar_one_or_none()
+                if archive and printer:
+                    updated = await _apply_prusalink_metadata_to_archive(db, printer_id, printer, archive, data, logger)
+                    if updated:
+                        await db.commit()
+        except Exception as e:
+            logger.debug("[PRUSALINK] Late archive metadata enrichment failed for printer %s: %s", printer_id, e)
 
     # Cleanup: delete uploaded file from printer SD card to prevent phantom prints (Issue #374)
     # The print scheduler uploads files to the SD card root (/). Some printers (e.g. P1S)
@@ -3536,6 +3929,20 @@ async def on_print_complete(printer_id: int, data: dict):
                         }
                     )
                     log_timing("Usage tracker")
+        elif not archive_id:
+            from backend.app.services import direct_print_tracking
+
+            async with async_session() as db:
+                usage_results = await direct_print_tracking.report_spoolman_usage(printer_id, data, db)
+                if usage_results:
+                    await ws_manager.broadcast(
+                        {
+                            "type": "spool_usage_logged",
+                            "printer_id": printer_id,
+                            "usage": usage_results,
+                        }
+                    )
+                    log_timing("Spoolman direct-file usage tracker")
 
     except Exception as e:
         logger.warning("Usage tracker on_print_complete failed: %s", e)
@@ -3544,8 +3951,31 @@ async def on_print_complete(printer_id: int, data: dict):
     if archive_id:
         if data.get("status") == "completed":
             try:
-                await _report_spoolman_usage(printer_id, archive_id)
-                log_timing("Spoolman usage report")
+                direct_spoolman_results = []
+                from backend.app.services import direct_print_tracking
+
+                async with async_session() as db:
+                    direct_spoolman_results = await direct_print_tracking.report_spoolman_usage(
+                        printer_id,
+                        data,
+                        db,
+                        archive_id=archive_id,
+                    )
+                    if direct_spoolman_results:
+                        await db.commit()
+                if direct_spoolman_results:
+                    usage_results.extend(direct_spoolman_results)
+                    await ws_manager.broadcast(
+                        {
+                            "type": "spool_usage_logged",
+                            "printer_id": printer_id,
+                            "usage": direct_spoolman_results,
+                        }
+                    )
+                    log_timing("Spoolman direct-file usage report")
+                else:
+                    await _report_spoolman_usage(printer_id, archive_id)
+                    log_timing("Spoolman usage report")
             except Exception as e:
                 logger.warning("Spoolman usage reporting failed: %s", e)
         else:
@@ -3916,16 +4346,52 @@ async def on_print_complete(printer_id: int, data: dict):
                                 archive_dir = app_settings.archive_dir / str(archive.id)
                             photo_filename = None
 
-                            # Check for external camera first
-                            if printer.external_camera_enabled and printer.external_camera_url:
-                                logger.info("[PHOTO-BG] Using external camera")
-                                from backend.app.services.external_camera import capture_frame
+                            from backend.app.services.elegoo_camera import (
+                                get_effective_camera_source,
+                                is_elegoo_sdcp_camera_source,
+                            )
 
-                                frame_data = await capture_frame(
-                                    printer.external_camera_url,
-                                    printer.external_camera_type or "mjpeg",
-                                    snapshot_url=printer.external_camera_snapshot_url,
+                            effective_camera = get_effective_camera_source(printer)
+
+                            # Check for external/provider-derived camera first
+                            if effective_camera.enabled and effective_camera.url:
+                                from backend.app.api.routes.camera import (
+                                    is_stream_active,
+                                    try_get_active_buffered_frame,
                                 )
+
+                                frame_data = try_get_active_buffered_frame(printer_id)
+                                if frame_data:
+                                    logger.info("[PHOTO-BG] Using active external/provider camera frame")
+                                elif effective_camera.derived and is_stream_active(printer_id):
+                                    logger.info(
+                                        "[PHOTO-BG] Provider camera stream active but no frame buffered yet; skipping competing capture"
+                                    )
+                                    frame_data = None
+                                else:
+                                    logger.info("[PHOTO-BG] Using external/provider camera")
+                                    should_activate_elegoo = is_elegoo_sdcp_camera_source(
+                                        getattr(printer, "provider", None), effective_camera.url
+                                    )
+                                    if should_activate_elegoo:
+                                        from backend.app.services.elegoo_camera import (
+                                            capture_elegoo_sdcp_activated_frame,
+                                        )
+
+                                        frame_data = await capture_elegoo_sdcp_activated_frame(
+                                            printer.ip_address,
+                                            effective_camera.url,
+                                            effective_camera.camera_type or "mjpeg",
+                                            snapshot_url=effective_camera.snapshot_url,
+                                        )
+                                    else:
+                                        from backend.app.services.external_camera import capture_frame
+
+                                        frame_data = await capture_frame(
+                                            effective_camera.url,
+                                            effective_camera.camera_type or "mjpeg",
+                                            snapshot_url=effective_camera.snapshot_url,
+                                        )
                                 if frame_data:
                                     photos_dir = archive_dir / "photos"
                                     photos_dir.mkdir(parents=True, exist_ok=True)
@@ -5528,6 +5994,7 @@ app.include_router(firmware.router, prefix=app_settings.api_prefix)
 app.include_router(github_backup.router, prefix=app_settings.api_prefix)
 app.include_router(local_backup.router, prefix=app_settings.api_prefix)
 app.include_router(obico.router, prefix=app_settings.api_prefix)
+app.include_router(open_filament_database.router, prefix=app_settings.api_prefix)
 app.include_router(metrics.router, prefix=app_settings.api_prefix)
 app.include_router(virtual_printers.router, prefix=app_settings.api_prefix)
 

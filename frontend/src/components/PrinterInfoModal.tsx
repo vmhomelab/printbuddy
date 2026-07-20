@@ -162,6 +162,31 @@ export function PrinterInfoModal({ printer, status, totalPrintHours, onClose }: 
     value: status?.firmware_version ?? '—',
   });
 
+  const connectionDetails = status?.connection_details ?? null;
+  const connectionRows: { key: string; label: string; copy?: boolean }[] = [
+    { key: 'machine_name', label: t('printers.sdcp.machineName', 'Machine Name') },
+    { key: 'brand_name', label: t('printers.sdcp.brandName', 'Brand') },
+    { key: 'protocol_version', label: t('printers.sdcp.protocolVersion', 'SDCP Protocol') },
+    { key: 'printer_id', label: t('printers.sdcp.printerId', 'SDCP Printer ID'), copy: true },
+    { key: 'mainboard_id', label: t('printers.sdcp.mainboardId', 'Mainboard ID'), copy: true },
+  ];
+  if (connectionDetails) {
+    connectionRows.forEach(({ key, label, copy }) => {
+      const value = connectionDetails[key];
+      if (value === null || value === undefined || value === '') return;
+      const text = String(value);
+      rows.push({
+        label,
+        value: copy ? (
+          <span className="flex items-center min-w-0">
+            <span className="font-mono truncate max-w-[13rem]">{text}</span>
+            <CopyButton value={text} />
+          </span>
+        ) : text,
+      });
+    });
+  }
+
   // Developer Mode
   if (status?.developer_mode != null) {
     rows.push({

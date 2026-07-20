@@ -203,6 +203,7 @@ class FilePrintRequest(BaseModel):
     plate_name: str | None = None
     ams_mapping: list[int] | None = None
     bed_levelling: bool = True
+    print_platform_type: int | None = None
     flow_cali: bool = False
     vibration_cali: bool = True
     layer_inspect: bool = False

@@ -18,6 +18,7 @@ interface EmbeddedCameraViewerProps {
 }
 
 const STORAGE_KEY_PREFIX = 'embeddedCameraState_';
+const INLINE_STORAGE_KEY_PREFIX = 'embeddedCameraInlineState_';
 const MAX_RECONNECT_ATTEMPTS = 5;
 const INITIAL_RECONNECT_DELAY = 2000;
 const MAX_RECONNECT_DELAY = 30000;
@@ -50,26 +51,33 @@ export function EmbeddedCameraViewer({ printerId, printerName, viewerIndex = 0, 
   const isInline = mode === 'inline';
   const minWidth = isInline ? INLINE_MIN_WIDTH : FLOATING_MIN_WIDTH;
   const minHeight = isInline ? INLINE_MIN_HEIGHT : FLOATING_MIN_HEIGHT;
-  // Printer-specific storage key
-  const storageKey = `${STORAGE_KEY_PREFIX}${printerId}`;
+  // Printer-specific storage key. Inline/card viewers keep their own size so
+  // floating overlay dimensions (usually 400px wide) do not make the camera
+  // open narrower than the rest of the printer card.
+  const storageKey = `${isInline ? INLINE_STORAGE_KEY_PREFIX : STORAGE_KEY_PREFIX}${printerId}`;
+
+  const getSavedState = (): CameraState | null => {
+    try {
+      const saved = localStorage.getItem(storageKey);
+      if (!saved) return null;
+      const state = JSON.parse(saved);
+      // Validate state is on screen
+      return {
+        x: Math.min(Math.max(0, state.x), window.innerWidth - 100),
+        y: Math.min(Math.max(0, state.y), window.innerHeight - 100),
+        width: Math.max(minWidth, Math.min(state.width, window.innerWidth - 20)),
+        height: Math.max(minHeight, Math.min(state.height, window.innerHeight - 20)),
+      };
+    } catch {
+      return null;
+    }
+  };
 
   // Load saved state or use defaults (offset for new viewers without saved state)
   const loadState = (): CameraState => {
-    try {
-      const saved = localStorage.getItem(storageKey);
-      if (saved) {
-        const state = JSON.parse(saved);
-        // Validate state is on screen
-        return {
-          x: Math.min(Math.max(0, state.x), window.innerWidth - 100),
-          y: Math.min(Math.max(0, state.y), window.innerHeight - 100),
-          width: Math.max(minWidth, Math.min(state.width, window.innerWidth - 20)),
-          height: Math.max(minHeight, Math.min(state.height, window.innerHeight - 20)),
-        };
-      }
-    } catch {
-      // Ignore parse errors
-    }
+    const savedState = getSavedState();
+    if (savedState) return savedState;
+
     // Offset new viewers so they don't stack exactly on top of each other
     const offset = viewerIndex * 30;
     return {
@@ -80,6 +88,7 @@ export function EmbeddedCameraViewer({ printerId, printerName, viewerIndex = 0, 
   };
 
   const [state, setState] = useState<CameraState>(loadState);
+  const [hasCustomInlineSize, setHasCustomInlineSize] = useState(() => isInline && getSavedState() !== null);
   const [isDragging, setIsDragging] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
@@ -152,13 +161,16 @@ export function EmbeddedCameraViewer({ printerId, printerName, viewerIndex = 0, 
 
   const isPrintingWithObjects = (status?.state === 'RUNNING' || status?.state === 'PAUSE') && (status?.printable_objects_count ?? 0) >= 2;
 
-  // Save state to localStorage (printer-specific)
+  // Save state to localStorage (printer-specific). Card/inline mode starts at
+  // full card width by default; only persist inline width after the user resizes.
   useEffect(() => {
+    if (isInline && !hasCustomInlineSize) return;
+
     const saveTimeout = setTimeout(() => {
       localStorage.setItem(storageKey, JSON.stringify(state));
     }, 500);
     return () => clearTimeout(saveTimeout);
-  }, [state, storageKey]);
+  }, [hasCustomInlineSize, isInline, state, storageKey]);
 
   // Cleanup on unmount
   const stopSentRef = useRef(false);
@@ -496,11 +508,13 @@ export function EmbeddedCameraViewer({ printerId, printerName, viewerIndex = 0, 
   // Resize handlers
   const handleResizeMouseDown = (e: React.MouseEvent) => {
     e.stopPropagation();
+    if (isInline) setHasCustomInlineSize(true);
     setIsResizing(true);
   };
 
   const handleResizeTouchStart = (e: React.TouchEvent) => {
     e.stopPropagation();
+    if (isInline) setHasCustomInlineSize(true);
     setIsResizing(true);
   };
 
@@ -570,11 +584,11 @@ export function EmbeddedCameraViewer({ printerId, printerName, viewerIndex = 0, 
     : `${isFullscreen ? 'fixed inset-0 z-[100]' : 'fixed z-40 rounded-lg shadow-2xl border border-bambu-dark-tertiary'} bg-bambu-dark-secondary overflow-hidden`;
 
   const containerStyle: CSSProperties | undefined = isFullscreen ? undefined : isInline ? {
-    width: state.width,
+    width: hasCustomInlineSize ? state.width : '100%',
     height: isMinimized ? 40 : state.height,
     minWidth,
     minHeight: isMinimized ? 40 : minHeight,
-    maxWidth: 'calc(100vw - 2rem)',
+    maxWidth: '100%',
     cursor: isResizing ? 'se-resize' : 'default',
   } : {
     left: state.x,

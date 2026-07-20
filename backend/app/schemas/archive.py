@@ -231,6 +231,7 @@ class ReprintRequest(BaseModel):
 
     # Print options
     bed_levelling: bool = True
+    print_platform_type: int | None = None
     flow_cali: bool = False
     vibration_cali: bool = True
     layer_inspect: bool = False

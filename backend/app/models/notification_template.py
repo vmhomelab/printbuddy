@@ -57,8 +57,8 @@ DEFAULT_TEMPLATES = [
     },
     {
         "event_type": "print_almost_done",
-        "name": "Print almost done",
-        "title_template": "Print almost done.",
+        "name": "Print Almost Done",
+        "title_template": "Print Almost Done",
         "body_template": "{printer}: {filename}\nRemaining: {remaining_time}\n{finish_photo_url}",
     },
     {

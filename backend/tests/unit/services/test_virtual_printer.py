@@ -11,6 +11,42 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+BAMBU_RSA_AES_GCM_CIPHERS = "DEFAULT:AES256-GCM-SHA384:AES128-GCM-SHA256"
+BAMBU_FTPS_CIPHERS = "HIGH:AES256-GCM-SHA384:AES128-GCM-SHA256:!aNULL:!MD5:!RC4"
+
+
+class FakeSSLContext:
+    def __init__(self, protocol):
+        self.protocol = protocol
+        self.cert_chain = None
+        self.cipher_string = None
+        self.minimum_version = None
+        self.maximum_version = None
+        self.verify_mode = None
+        self.check_hostname = None
+
+    def load_cert_chain(self, certfile, keyfile):
+        self.cert_chain = (str(certfile), str(keyfile))
+
+    def set_ciphers(self, cipher_string):
+        self.cipher_string = cipher_string
+
+
+def _write_dummy_cert_pair(tmp_path: Path) -> tuple[Path, Path]:
+    cert_path = tmp_path / "cert.pem"
+    key_path = tmp_path / "key.pem"
+    cert_path.write_text("dummy cert")
+    key_path.write_text("dummy key")
+    return cert_path, key_path
+
+
+def _raise_cancelled_start_server(captured: dict):
+    async def fake_start_server(*args, **kwargs):
+        captured["ssl"] = kwargs.get("ssl")
+        raise asyncio.CancelledError
+
+    return fake_start_server
+
 
 def _write_3mf_with_filaments(file_path: Path, filaments: list[dict], plate_index: int = 1) -> None:
     """Build a minimal 3MF zip with `Metadata/slice_info.config` carrying the
@@ -106,6 +142,88 @@ class TestVirtualPrinterInstance:
             base_dir=tmp_path,
         )
         assert inst.is_proxy is True
+
+    @pytest.mark.asyncio
+    async def test_proxy_mode_suspends_existing_target_mqtt_client(self, tmp_path):
+        """Proxy mode must free the target Bambu printer's single MQTT slot.
+
+        A normal saved Bambu printer keeps a status MQTT connection open. P1/P1S
+        firmware can then timeout a second upstream MQTT connection from the VP
+        proxy. Starting proxy mode should disconnect the internal status client
+        first, then restore it when proxy mode stops.
+        """
+        from backend.app.services.virtual_printer.manager import VirtualPrinterInstance
+
+        printer_manager = MagicMock()
+        printer_manager.get_client.return_value = object()
+        printer_manager.disconnect_printer = MagicMock()
+
+        inst = VirtualPrinterInstance(
+            vp_id=33,
+            name="Proxy",
+            mode="proxy",
+            model="C12",
+            access_code="",
+            serial_suffix="391800033",
+            target_printer_ip="10.17.200.19",
+            target_printer_id=42,
+            base_dir=tmp_path,
+            printer_manager=printer_manager,
+        )
+
+        await inst._suspend_target_printer_connection_for_proxy()
+
+        printer_manager.get_client.assert_called_once_with(42)
+        printer_manager.disconnect_printer.assert_called_once_with(42, timeout=1)
+        assert inst._target_printer_connection_suspended is True
+
+    @pytest.mark.asyncio
+    async def test_proxy_mode_restores_suspended_target_mqtt_client(self, tmp_path):
+        """Stopping proxy mode should reconnect the target printer status client."""
+        from backend.app.services.virtual_printer.manager import VirtualPrinterInstance
+
+        printer = MagicMock()
+        printer.id = 42
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = printer
+        db = AsyncMock()
+        db.execute.return_value = result
+        session_ctx = AsyncMock()
+        session_ctx.__aenter__.return_value = db
+        session_ctx.__aexit__.return_value = False
+        session_factory = MagicMock(return_value=session_ctx)
+        printer_manager = MagicMock()
+        printer_manager.connect_printer = AsyncMock(return_value=True)
+
+        inst = VirtualPrinterInstance(
+            vp_id=34,
+            name="Proxy",
+            mode="proxy",
+            model="C12",
+            access_code="",
+            serial_suffix="391800034",
+            target_printer_ip="10.17.200.19",
+            target_printer_id=42,
+            base_dir=tmp_path,
+            session_factory=session_factory,
+            printer_manager=printer_manager,
+        )
+        inst._target_printer_connection_suspended = True
+
+        await inst._restore_target_printer_connection_after_proxy()
+
+        printer_manager.connect_printer.assert_awaited_once_with(printer)
+        assert inst._target_printer_connection_suspended is False
+
+    @pytest.mark.asyncio
+    async def test_stop_proxy_attempts_target_restore(self, instance):
+        """The restore hook is part of proxy lifecycle cleanup, not caller-dependent."""
+        with patch.object(
+            instance, "_restore_target_printer_connection_after_proxy", new_callable=AsyncMock
+        ) as restore:
+            await instance.stop_proxy()
+
+        restore.assert_awaited_once()
 
     def test_instance_is_running_with_active_tasks(self, instance):
         """Verify is_running is True when tasks are active."""
@@ -1832,6 +1950,107 @@ class TestBindServer:
             version="02.03.04.05",
         )
         assert server.version == "02.03.04.05"
+
+    def test_bind_server_tls_context_enables_orcaslicer_rsa_aes_gcm_ciphers(self, tmp_path, monkeypatch):
+        """Keep Bambu-network bind TLS compatible with OrcaSlicer (#11)."""
+        from backend.app.services.virtual_printer import bind_server as bind_server_module
+        from backend.app.services.virtual_printer.bind_server import BindServer
+
+        cert_path, key_path = _write_dummy_cert_pair(tmp_path)
+
+        monkeypatch.setattr(bind_server_module.ssl, "SSLContext", FakeSSLContext)
+
+        server = BindServer(
+            serial="TEST123",
+            model="C13",
+            name="Printbuddy",
+            cert_path=cert_path,
+            key_path=key_path,
+        )
+
+        ctx = server._create_tls_context()
+
+        assert ctx is not None
+        assert ctx.cert_chain == (str(cert_path), str(key_path))
+        assert ctx.cipher_string == BAMBU_RSA_AES_GCM_CIPHERS
+        assert ctx.minimum_version == bind_server_module.ssl.TLSVersion.TLSv1_2
+        assert ctx.verify_mode == bind_server_module.ssl.CERT_NONE
+
+    @pytest.mark.asyncio
+    async def test_simple_mqtt_tls_context_enables_orcaslicer_rsa_aes_gcm_ciphers(self, tmp_path, monkeypatch):
+        """Keep Bambu-network MQTT TLS compatible with hardened OpenSSL policies."""
+        from backend.app.services.virtual_printer import mqtt_server as mqtt_server_module
+        from backend.app.services.virtual_printer.mqtt_server import SimpleMQTTServer
+
+        cert_path, key_path = _write_dummy_cert_pair(tmp_path)
+        captured: dict = {}
+        monkeypatch.setattr(mqtt_server_module.ssl, "SSLContext", FakeSSLContext)
+        monkeypatch.setattr(mqtt_server_module.asyncio, "start_server", _raise_cancelled_start_server(captured))
+
+        server = SimpleMQTTServer(
+            serial="TEST123",
+            access_code="12345678",
+            cert_path=cert_path,
+            key_path=key_path,
+        )
+
+        await server.start()
+
+        ctx = captured["ssl"]
+        assert ctx.cert_chain == (str(cert_path), str(key_path))
+        assert ctx.cipher_string == BAMBU_RSA_AES_GCM_CIPHERS
+        assert ctx.minimum_version == mqtt_server_module.ssl.TLSVersion.TLSv1_2
+        assert ctx.verify_mode == mqtt_server_module.ssl.CERT_NONE
+
+    @pytest.mark.asyncio
+    async def test_ftps_tls_context_keeps_high_baseline_and_adds_bambu_rsa_aes_gcm_ciphers(self, tmp_path, monkeypatch):
+        """Keep FTPS HIGH baseline while explicitly adding Bambu plain-RSA AES-GCM suites."""
+        from backend.app.services.virtual_printer import ftp_server as ftp_server_module
+        from backend.app.services.virtual_printer.ftp_server import VirtualPrinterFTPServer
+
+        cert_path, key_path = _write_dummy_cert_pair(tmp_path)
+        captured: dict = {}
+        monkeypatch.setattr(ftp_server_module.ssl, "SSLContext", FakeSSLContext)
+        monkeypatch.setattr(ftp_server_module.asyncio, "start_server", _raise_cancelled_start_server(captured))
+
+        server = VirtualPrinterFTPServer(
+            upload_dir=tmp_path / "uploads",
+            access_code="12345678",
+            cert_path=cert_path,
+            key_path=key_path,
+        )
+
+        await server.start()
+
+        ctx = captured["ssl"]
+        assert ctx.cert_chain == (str(cert_path), str(key_path))
+        assert ctx.cipher_string == BAMBU_FTPS_CIPHERS
+        assert ctx.minimum_version == ftp_server_module.ssl.TLSVersion.TLSv1_2
+        assert ctx.maximum_version == ftp_server_module.ssl.TLSVersion.TLSv1_2
+
+    def test_tls_proxy_server_context_enables_orcaslicer_rsa_aes_gcm_ciphers(self, tmp_path, monkeypatch):
+        """Keep slicer-facing proxy TLS compatible with hardened OpenSSL policies."""
+        from backend.app.services.virtual_printer import tcp_proxy as tcp_proxy_module
+        from backend.app.services.virtual_printer.tcp_proxy import TLSProxy
+
+        cert_path, key_path = _write_dummy_cert_pair(tmp_path)
+        monkeypatch.setattr(tcp_proxy_module.ssl, "SSLContext", FakeSSLContext)
+
+        proxy = TLSProxy(
+            name="MQTT",
+            listen_port=8883,
+            target_host="192.168.1.50",
+            target_port=8883,
+            server_cert_path=cert_path,
+            server_key_path=key_path,
+        )
+
+        ctx = proxy._create_server_ssl_context()
+
+        assert ctx.cert_chain == (str(cert_path), str(key_path))
+        assert ctx.cipher_string == BAMBU_RSA_AES_GCM_CIPHERS
+        assert ctx.minimum_version == tcp_proxy_module.ssl.TLSVersion.TLSv1_2
+        assert ctx.verify_mode == tcp_proxy_module.ssl.CERT_NONE
 
     def test_bind_ports_constant(self):
         """Verify BIND_PORTS includes both 3000 and 3002 for slicer compatibility."""
