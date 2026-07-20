@@ -46,6 +46,8 @@
 > Printbuddy is not ready for public production use yet. Features may be incomplete, unstable, or subject to breaking changes without notice.
 >
 > Use it for testing, development, and tinkering only.
+>
+> You can check the current status of different features in the [projects tab](https://github.com/users/vmhomelab/projects/4/views/1)
 
 ---
 
@@ -199,9 +201,10 @@ Planned providers:
 
 | Provider | Description | Status |
 |---|---|---|
-| `bambu` | Existing Printbuddy / Bambu Lab MQTT + FTP support | Inherited |
-| `klipper` | Moonraker-backed Klipper printer status and control | In progress |
-| `prusa` | Future Prusa / PrusaLink support | Planned |
+| `bambu` | Existing Printbuddy / Bambu Lab MQTT + FTP support | Inherited ✅ |
+| `klipper` | Moonraker-backed Klipper printer status and control | In progress ⌛ |
+| `prusa` | PrusaLink support | Implemented ✅ |
+| `elegoo` | CC1 support | In progress ⌛ |
 
 The first implementation step adds the provider and printer metadata to allow printers to be added.
 
