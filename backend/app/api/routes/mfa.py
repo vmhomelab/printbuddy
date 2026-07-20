@@ -431,10 +431,10 @@ def _assert_totp_not_replayed(totp_obj: pyotp.TOTP, totp_record: UserTOTP, code:
     # Determine which time-step the accepted code belongs to.
     now = datetime.now(timezone.utc)
     accepted_counter: int | None = None
-    for offset in (0, -1):  # current window first, then previous
+    for offset in (0, -1, 1):  # same ±1 window accepted by verify(valid_window=1)
         candidate_time = now.timestamp() + offset * totp_obj.interval
         candidate_counter = totp_obj.timecode(datetime.fromtimestamp(candidate_time, tz=timezone.utc))
-        if totp_obj.at(candidate_counter) == code:
+        if totp_obj.generate_otp(candidate_counter) == code:
             accepted_counter = candidate_counter
             break
     if accepted_counter is None:

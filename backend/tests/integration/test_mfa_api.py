@@ -25,12 +25,15 @@ from unittest.mock import patch
 import jwt as pyjwt
 import pyotp
 import pytest
+from fastapi import HTTPException
 from httpx import AsyncClient
 from passlib.context import CryptContext
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.api.routes import mfa as mfa_routes
 from backend.app.models.auth_ephemeral import AuthEphemeralToken
 from backend.app.models.user import User
+from backend.app.models.user_totp import UserTOTP
 
 _pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
@@ -1301,6 +1304,33 @@ async def _setup_totp_user(client: AsyncClient, username: str, password: str) ->
 
 class TestTOTPReplay:
     """The same TOTP code must not be accepted twice within one 30-second window."""
+
+    def test_totp_replay_records_future_window_counter(self, monkeypatch: pytest.MonkeyPatch):
+        """A +1-window code accepted by valid_window=1 must store its real counter.
+
+        CI can hit this path near a TOTP boundary: pyotp.verify(..., valid_window=1)
+        accepts a code from the next window, so replay protection must record the
+        next-window counter rather than falling back to the current counter.
+        """
+        frozen_now = datetime(2026, 1, 1, 0, 0, 29, tzinfo=timezone.utc)
+
+        class FrozenDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):  # noqa: ANN001, ANN206 - test double matches datetime API
+                return frozen_now if tz else frozen_now.replace(tzinfo=None)
+
+        monkeypatch.setattr(mfa_routes, "datetime", FrozenDateTime)
+
+        totp = pyotp.TOTP(pyotp.random_base32())
+        future_counter = totp.timecode(frozen_now) + 1
+        future_code = totp.generate_otp(future_counter)
+        record = UserTOTP(user_id=1, secret=totp.secret, is_enabled=True)
+
+        mfa_routes._assert_totp_not_replayed(totp, record, future_code)
+
+        assert record.last_totp_counter == future_counter
+        with pytest.raises(HTTPException):
+            mfa_routes._assert_totp_not_replayed(totp, record, future_code)
 
     @pytest.mark.asyncio
     @pytest.mark.integration
