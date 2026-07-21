@@ -143,14 +143,6 @@ Bambu remains the default provider for older printer records so existing install
 ## Screenshots
 
 <p align="center">
-  <img src="static/img/screenshot-desktop.png" alt="Printbuddy desktop dashboard" width="800">
-</p>
-
-<p align="center">
-  <img src="static/img/screenshot-mobile.png" alt="Printbuddy mobile dashboard" width="360">
-</p>
-
-<p align="center">
   <img width="3230" height="1335" alt="Printbuddy dashboard overview" src="https://github.com/user-attachments/assets/d0aea010-5449-4a47-a860-fd26f5a7b6d9" />
 </p>
 
