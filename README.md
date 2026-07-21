@@ -49,7 +49,7 @@ Printbuddy is a self-hosted 3D-printer management application for users who want
 
 The app is built around provider-specific printer integrations. Bambu Lab, Moonraker/Klipper-style printers, PrusaLink, Prusa Connect, and Elegoo SDCP devices do not behave the same way, so Printbuddy keeps those transports separated behind a provider boundary instead of forcing everything through one Bambu-shaped workflow.
 
-Current app version in `main`: **0.2.4.9**.
+Current app version in `main`: **0.2.5.0**.
 
 ---
 
