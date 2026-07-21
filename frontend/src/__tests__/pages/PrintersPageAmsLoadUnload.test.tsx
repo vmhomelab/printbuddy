@@ -217,4 +217,50 @@ describe('PrintersPage - AMS load/unload (#891)', () => {
       expect(captured).toBe('254');
     });
   });
+
+  it('shows loaded-spool assignment controls when a single-spool printer is offline', async () => {
+    const user = userEvent.setup();
+
+    server.use(
+      http.get('/api/v1/printers/:id/status', () => HttpResponse.json({
+        ...mockIdleStatusWithAms,
+        connected: false,
+        ams: [],
+        vt_tray: [],
+        temperatures: null,
+      })),
+      http.get('/api/v1/inventory/spools', () => HttpResponse.json([{
+        id: 77,
+        material: 'PETG',
+        subtype: 'Matte',
+        brand: 'Polymaker',
+        color_name: 'Black',
+        rgba: '000000FF',
+        label_weight: 1000,
+        weight_used: 120,
+        tag_uid: null,
+        tray_uuid: null,
+        slicer_filament: null,
+        slicer_filament_name: null,
+        archived_at: null,
+      }])),
+      http.get('/api/v1/inventory/assignments', () => HttpResponse.json([])),
+      http.get('/api/v1/settings/spoolman', () => HttpResponse.json({ spoolman_enabled: 'false', spoolman_url: '' })),
+      http.get('/api/v1/settings/', () => HttpResponse.json({})),
+    );
+
+    render(<PrintersPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('X1 Carbon')).toBeInTheDocument();
+      expect(screen.getByText('Offline')).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole('button', { name: 'Assign' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Assign Spool' })).toBeInTheDocument();
+    });
+    expect(screen.getByText(/Polymaker/)).toBeInTheDocument();
+  });
 });

@@ -141,6 +141,7 @@ export interface SpoolmanSlotAssignmentRow {
 type PrinterCardSectionId =
   | 'camera'
   | 'status'
+  | 'loaded-spool'
   | 'temperatures'
   | 'panda-breath'
   | 'indicators'
@@ -152,6 +153,7 @@ type PrinterCardSectionId =
 const DEFAULT_PRINTER_CARD_SECTION_ORDER: PrinterCardSectionId[] = [
   'camera',
   'status',
+  'loaded-spool',
   'temperatures',
   'panda-breath',
   'indicators',
@@ -2306,6 +2308,64 @@ function PrinterCard({
     : cachedTrayNow.current;
 
   const showLoadedSpoolPicker = supportsSpoolAssignment && !spoolmanLoading && (amsData.length === 0) && ((status?.vt_tray?.length ?? 0) === 0);
+  const loadedSpoolPicker = showLoadedSpoolPicker ? (
+    <div className="flex items-center justify-between gap-3 rounded-lg bg-bambu-dark/70 border border-bambu-dark-tertiary px-3 py-2">
+      <div className="min-w-0">
+        <p className="text-[10px] uppercase tracking-wide text-bambu-gray">Loaded spool</p>
+        {loadedSpool ? (
+          <div className="flex items-center gap-1.5 min-w-0">
+            {loadedSpoolColor && (
+              <span
+                aria-label="Loaded spool color"
+                className="w-2.5 h-2.5 rounded-full border border-black/30 flex-shrink-0"
+                style={{ backgroundColor: loadedSpoolColor }}
+              />
+            )}
+            <p className="text-xs text-white truncate">
+              {loadedSpool.brand ? `${loadedSpool.brand} ` : ''}
+              {loadedSpool.material}
+              {loadedSpool.subtype ? ` ${loadedSpool.subtype}` : ''}
+              {loadedSpool.color_name ? ` · ${loadedSpool.color_name}` : ''}
+            </p>
+          </div>
+        ) : (
+          <p className="text-xs text-bambu-gray">No inventory spool selected</p>
+        )}
+      </div>
+      <div className="flex items-center gap-2 flex-shrink-0">
+        {hasLoadedSpoolAssignment && (
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => spoolmanEnabled && loadedSpoolmanSlotAssignment
+              ? onUnassignSpoolmanSpool?.(loadedSpoolmanSlotAssignment.spoolman_spool_id)
+              : onUnassignSpool?.(printer.id, -1, 0)
+            }
+          >
+            Clear
+          </Button>
+        )}
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={() => setAssignSpoolModal({
+            printerId: printer.id,
+            amsId: spoolmanEnabled ? 255 : -1,
+            trayId: 0,
+            trayInfo: {
+              type: loadedSpool?.material || '',
+              material: loadedSpool?.material || undefined,
+              profile: loadedSpool?.slicer_filament_name || loadedSpool?.slicer_filament || '',
+              color: loadedSpool?.rgba?.slice(0, 6) || '',
+              location: 'Loaded spool',
+            },
+          })}
+        >
+          {hasLoadedSpoolAssignment ? 'Change' : 'Assign'}
+        </Button>
+      </div>
+    </div>
+  ) : null;
 
   // Fetch smart plug for this printer
   const { data: smartPlug } = useQuery({
@@ -2949,6 +3009,7 @@ function PrinterCard({
   const printerCardSectionTitles: Record<PrinterCardSectionId, string> = {
     camera: t('printers.camera'),
     status: t('printers.sort.status'),
+    'loaded-spool': 'Loaded spool',
     temperatures: t('printers.temperatures.nozzle'),
     'panda-breath': 'Panda Breath',
     indicators: t('printers.indicators'),
@@ -3608,6 +3669,14 @@ function PrinterCard({
           </div>
         )}
 
+        {loadedSpoolPicker && (
+          <SortablePrinterCardSection id="loaded-spool" title="Loaded spool" order={getCardSectionOrder('loaded-spool')}>
+            <div className="mt-2">
+              {loadedSpoolPicker}
+            </div>
+          </SortablePrinterCardSection>
+        )}
+
         {/* Status */}
         {status?.connected && (
           <>
@@ -3769,65 +3838,6 @@ function PrinterCard({
                     </div>
                   </div>
                 </div>
-
-                {showLoadedSpoolPicker && (
-                  <div className="flex items-center justify-between gap-3 rounded-lg bg-bambu-dark/70 border border-bambu-dark-tertiary px-3 py-2">
-                    <div className="min-w-0">
-                      <p className="text-[10px] uppercase tracking-wide text-bambu-gray">Loaded spool</p>
-                      {loadedSpool ? (
-                        <div className="flex items-center gap-1.5 min-w-0">
-                          {loadedSpoolColor && (
-                            <span
-                              aria-label="Loaded spool color"
-                              className="w-2.5 h-2.5 rounded-full border border-black/30 flex-shrink-0"
-                              style={{ backgroundColor: loadedSpoolColor }}
-                            />
-                          )}
-                          <p className="text-xs text-white truncate">
-                            {loadedSpool.brand ? `${loadedSpool.brand} ` : ''}
-                            {loadedSpool.material}
-                            {loadedSpool.subtype ? ` ${loadedSpool.subtype}` : ''}
-                            {loadedSpool.color_name ? ` · ${loadedSpool.color_name}` : ''}
-                          </p>
-                        </div>
-                      ) : (
-                        <p className="text-xs text-bambu-gray">No inventory spool selected</p>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-2 flex-shrink-0">
-                      {hasLoadedSpoolAssignment && (
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          onClick={() => spoolmanEnabled && loadedSpoolmanSlotAssignment
-                            ? onUnassignSpoolmanSpool?.(loadedSpoolmanSlotAssignment.spoolman_spool_id)
-                            : onUnassignSpool?.(printer.id, -1, 0)
-                          }
-                        >
-                          Clear
-                        </Button>
-                      )}
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        onClick={() => setAssignSpoolModal({
-                          printerId: printer.id,
-                          amsId: spoolmanEnabled ? 255 : -1,
-                          trayId: 0,
-                          trayInfo: {
-                            type: loadedSpool?.material || '',
-                            material: loadedSpool?.material || undefined,
-                            profile: loadedSpool?.slicer_filament_name || loadedSpool?.slicer_filament || '',
-                            color: loadedSpool?.rgba?.slice(0, 6) || '',
-                            location: 'Loaded spool',
-                          },
-                        })}
-                      >
-                        {hasLoadedSpoolAssignment ? 'Change' : 'Assign'}
-                      </Button>
-                    </div>
-                  </div>
-                )}
 
                 {/* Queue Widget - always visible when there are pending items */}
                 <PrinterQueueWidget printerId={printer.id} printerModel={printer.model} loadedFilamentTypes={loadedFilamentTypes} loadedFilaments={loadedFilaments} />
