@@ -77,6 +77,8 @@ describe('PrintersPage', () => {
     localStorage.removeItem('embeddedCameraInlineState_1');
     localStorage.removeItem('printerCardSectionOrder_1');
     localStorage.removeItem('printerCardSectionOrder_2');
+    localStorage.removeItem('printerCardOrder');
+    vi.mocked(localStorage.getItem).mockReturnValue(null);
     setAuthToken(null);
 
     server.use(
@@ -509,8 +511,9 @@ describe('PrintersPage', () => {
       render(<PrintersPage />);
 
       const firstCard = await screen.findByTestId('printer-card-1');
-      expect(firstCard.parentElement).toHaveClass('grid');
-      expect(firstCard.parentElement).toHaveClass('items-start');
+      const sortableCard = firstCard.closest('[data-testid^="sortable-printer-card-"]');
+      expect(sortableCard?.parentElement).toHaveClass('grid');
+      expect(sortableCard?.parentElement).toHaveClass('items-start');
     });
 
     it('applies the saved draggable printer-card section order and exposes drag handles', async () => {
@@ -543,6 +546,38 @@ describe('PrintersPage', () => {
       expect(statusSection).toHaveStyle({ order: '1' });
       expect(within(card).getByTestId('printer-card-section-drag-status')).toBeInTheDocument();
       expect(within(card).getByTestId('printer-card-section-drag-temperatures')).toBeInTheDocument();
+    });
+
+    it('applies the saved whole-printer-card order in the regular grid and exposes drag handles', async () => {
+      vi.mocked(localStorage.getItem).mockImplementation((key: string) =>
+        key === 'printerCardOrder' ? JSON.stringify([1, 2]) : null
+      );
+
+      render(<PrintersPage />);
+
+      const cards = await screen.findAllByTestId(/^sortable-printer-card-/);
+      expect(cards.map(card => card.getAttribute('data-testid'))).toEqual([
+        'sortable-printer-card-1',
+        'sortable-printer-card-2',
+      ]);
+      expect(screen.getByTestId('printer-card-drag-1')).toBeInTheDocument();
+      expect(screen.getByTestId('printer-card-drag-2')).toBeInTheDocument();
+    });
+
+    it('applies the saved whole-printer-card order inside grouped views', async () => {
+      vi.mocked(localStorage.getItem).mockImplementation((key: string) => {
+        if (key === 'printerSortBy') return 'status';
+        if (key === 'printerCardOrder') return JSON.stringify([2, 1]);
+        return null;
+      });
+
+      render(<PrintersPage />);
+
+      const cards = await screen.findAllByTestId(/^sortable-printer-card-/);
+      expect(cards.map(card => card.getAttribute('data-testid'))).toEqual([
+        'sortable-printer-card-2',
+        'sortable-printer-card-1',
+      ]);
     });
 
     it('resizes the inline camera while enforcing minimum card-friendly dimensions', async () => {

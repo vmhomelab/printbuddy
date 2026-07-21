@@ -14,6 +14,7 @@ import {
   arrayMove,
   sortableKeyboardCoordinates,
   verticalListSortingStrategy,
+  rectSortingStrategy,
   useSortable,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
@@ -235,6 +236,107 @@ function PrinterCardSectionDragPreview({ title }: { title: string }) {
         <GripVertical className="h-4 w-4" />
       </span>
       <span className="truncate">{title}</span>
+    </div>
+  );
+}
+
+const PRINTER_CARD_ORDER_STORAGE_KEY = 'printerCardOrder';
+
+function normalizePrinterCardOrder(savedOrder: unknown, printerIds: number[]): number[] {
+  const valid = new Set(printerIds);
+  const parsed = Array.isArray(savedOrder) ? savedOrder : [];
+  const known = parsed
+    .map((id) => Number(id))
+    .filter((id): id is number => Number.isInteger(id) && valid.has(id));
+  const uniqueKnown = known.filter((id, index) => known.indexOf(id) === index);
+  const missing = printerIds.filter(id => !uniqueKnown.includes(id));
+  return [...uniqueKnown, ...missing];
+}
+
+function readPrinterCardOrder(printerIds: number[]): number[] {
+  try {
+    return normalizePrinterCardOrder(JSON.parse(localStorage.getItem(PRINTER_CARD_ORDER_STORAGE_KEY) || 'null'), printerIds);
+  } catch {
+    return printerIds;
+  }
+}
+
+function applyPrinterCardOrder<T extends { id: number }>(printers: T[], printerCardOrder: number[]): T[] {
+  if (printers.length <= 1) return printers;
+  const orderIndex = new Map(printerCardOrder.map((id, index) => [id, index]));
+  return [...printers].sort((a, b) => {
+    const aIndex = orderIndex.get(a.id) ?? Number.MAX_SAFE_INTEGER;
+    const bIndex = orderIndex.get(b.id) ?? Number.MAX_SAFE_INTEGER;
+    if (aIndex !== bIndex) return aIndex - bIndex;
+    return printers.indexOf(a) - printers.indexOf(b);
+  });
+}
+
+function updatePrinterCardOrderForSubset(currentOrder: number[], allPrinterIds: number[], subsetIds: number[], nextSubsetOrder: number[]) {
+  const normalized = normalizePrinterCardOrder(currentOrder, allPrinterIds);
+  const subset = new Set(subsetIds);
+  const firstSubsetIndex = normalized.findIndex(id => subset.has(id));
+  const remaining = normalized.filter(id => !subset.has(id));
+  const insertAt = firstSubsetIndex === -1 ? remaining.length : firstSubsetIndex;
+  return [
+    ...remaining.slice(0, insertAt),
+    ...nextSubsetOrder,
+    ...remaining.slice(insertAt),
+  ];
+}
+
+function SortablePrinterCard({
+  id,
+  printerName,
+  children,
+}: {
+  id: number;
+  printerName: string;
+  children: ReactNode;
+}) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id });
+
+  return (
+    <div
+      ref={setNodeRef}
+      data-testid={`sortable-printer-card-${id}`}
+      style={{
+        transform: isDragging ? undefined : CSS.Transform.toString(transform),
+        transition: isDragging ? 'none' : (transition || 'transform 180ms ease-out'),
+        opacity: isDragging ? 0.2 : 1,
+      }}
+      className={`group/card relative rounded-xl ${isDragging ? 'pointer-events-none border border-dashed border-bambu-green/50 bg-bambu-green/5' : ''}`}
+    >
+      <button
+        type="button"
+        {...attributes}
+        {...listeners}
+        aria-label={`Drag ${printerName} printer card`}
+        data-testid={`printer-card-drag-${id}`}
+        title={`Drag ${printerName} printer card`}
+        className="absolute -left-2 top-2 z-20 hidden h-8 w-8 items-center justify-center rounded-md border border-bambu-dark-tertiary bg-bambu-dark-secondary text-bambu-gray shadow-lg transition-colors hover:text-white hover:bg-bambu-dark-tertiary group-hover/card:flex focus:flex cursor-grab active:cursor-grabbing"
+      >
+        <GripVertical className="h-4 w-4" />
+      </button>
+      {children}
+    </div>
+  );
+}
+
+function PrinterCardDragPreview({ name }: { name: string }) {
+  return (
+    <div className="flex min-w-[240px] items-center gap-3 rounded-xl border border-bambu-green/60 bg-bambu-dark-secondary/95 px-4 py-3 text-sm font-semibold text-white shadow-2xl ring-1 ring-bambu-green/25 backdrop-blur-sm">
+      <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-bambu-dark-tertiary text-bambu-green">
+        <GripVertical className="h-4 w-4" />
+      </span>
+      <span className="truncate">{name}</span>
     </div>
   );
 }
@@ -7694,6 +7796,62 @@ export function PrintersPage() {
     queryFn: api.getPrinters,
   });
 
+  const allPrinterIds = useMemo(() => printers?.map(printer => printer.id) ?? [], [printers]);
+  const hasLoadedPrinterCardOrder = useRef(false);
+  const [printerCardOrder, setPrinterCardOrder] = useState<number[]>(() => readPrinterCardOrder([]));
+  const [activePrinterCardId, setActivePrinterCardId] = useState<number | null>(null);
+
+  useLayoutEffect(() => {
+    const savedOrder = readPrinterCardOrder(allPrinterIds);
+    hasLoadedPrinterCardOrder.current = true;
+    setPrinterCardOrder(currentOrder => {
+      const normalizedCurrent = normalizePrinterCardOrder(currentOrder, allPrinterIds);
+      if (normalizedCurrent.length === savedOrder.length && normalizedCurrent.every((id, index) => id === savedOrder[index])) {
+        return normalizedCurrent;
+      }
+      return savedOrder;
+    });
+  }, [allPrinterIds]);
+
+  useEffect(() => {
+    if (!hasLoadedPrinterCardOrder.current || allPrinterIds.length === 0) return;
+    try {
+      localStorage.setItem(PRINTER_CARD_ORDER_STORAGE_KEY, JSON.stringify(normalizePrinterCardOrder(printerCardOrder, allPrinterIds)));
+    } catch {
+      // Ignore quota/private-mode failures; card order just won't persist.
+    }
+  }, [allPrinterIds, printerCardOrder]);
+
+  const printerCardSensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: { distance: 8 },
+    }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    })
+  );
+
+  const handlePrinterCardDragEnd = useCallback((event: DragEndEvent, visiblePrinters: Printer[]) => {
+    const { active, over } = event;
+    setActivePrinterCardId(null);
+    if (!over || active.id === over.id || allPrinterIds.length === 0) return;
+
+    const visibleIds = visiblePrinters.map(printer => printer.id);
+    const oldIndex = visibleIds.indexOf(Number(active.id));
+    const newIndex = visibleIds.indexOf(Number(over.id));
+    if (oldIndex === -1 || newIndex === -1) return;
+
+    const nextVisibleOrder = arrayMove(visibleIds, oldIndex, newIndex);
+    setPrinterCardOrder(currentOrder =>
+      updatePrinterCardOrderForSubset(currentOrder, allPrinterIds, visibleIds, nextVisibleOrder)
+    );
+  }, [allPrinterIds]);
+
+  const activePrinterCardName = useMemo(
+    () => printers?.find(printer => printer.id === activePrinterCardId)?.name ?? '',
+    [activePrinterCardId, printers]
+  );
+
   // Fetch the UI-rendering subset of settings. Uses /ui-preferences (not /settings)
   // so users with printers:read but no settings:read still get the values needed
   // to render the clear-plate button, drying presets, AMS thresholds, etc. (#1293).
@@ -8115,6 +8273,11 @@ export function PrintersPage() {
     return sorted;
   }, [filteredPrinters, sortBy, sortAsc, queryClient]);
 
+  const orderedSortedPrinters = useMemo(
+    () => applyPrinterCardOrder(sortedPrinters, printerCardOrder),
+    [sortedPrinters, printerCardOrder]
+  );
+
 
   const cameraCapableVisiblePrinters = useMemo(() => (
     sortedPrinters.filter(printer => {
@@ -8474,6 +8637,47 @@ export function PrintersPage() {
     </>
   );
 
+  const renderSortablePrinterCard = (printer: Printer) => (
+    <SortablePrinterCard key={printer.id} id={printer.id} printerName={printer.name}>
+      <PrinterCard
+        printer={printer}
+        hideIfDisconnected={hideDisconnected}
+        maintenanceInfo={maintenanceByPrinter[printer.id]}
+        viewMode={viewMode}
+        cardSize={cardSize}
+        spoolmanEnabled={spoolmanEnabled}
+        hasUnlinkedSpools={hasUnlinkedSpools}
+        linkedSpools={linkedSpools}
+        spoolmanUrl={spoolmanStatus?.url}
+        spoolmanSyncMode={spoolmanSyncMode}
+        onGetAssignment={getAssignment}
+        onUnassignSpool={(pid, aid, tid) => unassignMutation.mutate({ printerId: pid, amsId: aid, trayId: tid })}
+        spoolmanSpools={spoolmanSpools}
+        spoolmanSlotAssignments={spoolmanSlotAssignments}
+        spoolmanLoading={spoolmanSpoolsLoading || spoolmanAssignmentsLoading}
+        onUnassignSpoolmanSpool={(id) => unassignSpoolmanMutation.mutate(id)}
+        amsThresholds={settings ? {
+          humidityGood: Number(settings.ams_humidity_good) || 40,
+          humidityFair: Number(settings.ams_humidity_fair) || 60,
+          tempGood: Number(settings.ams_temp_good) || 28,
+          tempFair: Number(settings.ams_temp_fair) || 35,
+        } : undefined}
+        timeFormat={settings?.time_format || 'system'}
+        cameraViewMode={settings?.camera_view_mode || 'window'}
+        inlineCameraOpen={inlineCameraPrinterIds.has(printer.id)}
+        onToggleInlineCamera={toggleInlineCamera}
+        onOpenEmbeddedCamera={(id, name) => setEmbeddedCameraPrinters(prev => new Map(prev).set(id, { id, name }))}
+        checkPrinterFirmware={settings?.check_printer_firmware !== false}
+        dryingPresets={effectiveDryingPresets}
+        requirePlateClear={settings?.require_plate_clear === true}
+        pandaBreathState={getAssignedPandaBreathState(printer.id, settings?.panda_breath_printer_assignments, pandaBreathStatus)}
+        selectionMode={selectionMode}
+        isSelected={selectedPrinterIds.has(printer.id)}
+        onToggleSelect={toggleSelect}
+      />
+    </SortablePrinterCard>
+  );
+
   return (
     <div className="p-4 md:p-8">
       <div className="space-y-3 mb-6">
@@ -8578,6 +8782,7 @@ export function PrintersPage() {
             return (sortAsc ? keys : [...keys].reverse());
           })().map((groupKey) => {
             const groupPrinters = groupedPrinters[groupKey];
+            const orderedGroupPrinters = applyPrinterCardOrder(groupPrinters, printerCardOrder);
             const collapseKey = `${sortBy}:${groupKey}`;
             const isOpen = !collapsedSections[collapseKey];
 
@@ -8615,94 +8820,44 @@ export function PrintersPage() {
                   </h2>
                 }
               >
-                <div className={`grid items-start gap-4 ${cardSize >= 3 ? 'gap-6' : ''} ${getGridClasses()}`}>
-                  {groupPrinters.map((printer) => (
-                    <PrinterCard
-                      key={printer.id}
-                      printer={printer}
-                      hideIfDisconnected={hideDisconnected}
-                      maintenanceInfo={maintenanceByPrinter[printer.id]}
-                      viewMode={viewMode}
-                      cardSize={cardSize}
-                      amsThresholds={settings ? {
-                        humidityGood: Number(settings.ams_humidity_good) || 40,
-                        humidityFair: Number(settings.ams_humidity_fair) || 60,
-                        tempGood: Number(settings.ams_temp_good) || 28,
-                        tempFair: Number(settings.ams_temp_fair) || 35,
-                      } : undefined}
-                      spoolmanEnabled={spoolmanEnabled}
-                      hasUnlinkedSpools={hasUnlinkedSpools}
-                      linkedSpools={linkedSpools}
-                      spoolmanUrl={spoolmanStatus?.url}
-                      spoolmanSyncMode={spoolmanSyncMode}
-                      onGetAssignment={getAssignment}
-                      onUnassignSpool={(pid, aid, tid) => unassignMutation.mutate({ printerId: pid, amsId: aid, trayId: tid })}
-                      spoolmanSpools={spoolmanSpools}
-                      spoolmanSlotAssignments={spoolmanSlotAssignments}
-                      spoolmanLoading={spoolmanSpoolsLoading || spoolmanAssignmentsLoading}
-                      onUnassignSpoolmanSpool={(id) => unassignSpoolmanMutation.mutate(id)}
-                      timeFormat={settings?.time_format || 'system'}
-                      cameraViewMode={settings?.camera_view_mode || 'window'}
-                      inlineCameraOpen={inlineCameraPrinterIds.has(printer.id)}
-                      onToggleInlineCamera={toggleInlineCamera}
-                      onOpenEmbeddedCamera={(id, name) => setEmbeddedCameraPrinters(prev => new Map(prev).set(id, { id, name }))}
-                      checkPrinterFirmware={settings?.check_printer_firmware !== false}
-                      dryingPresets={effectiveDryingPresets}
-                      requirePlateClear={settings?.require_plate_clear === true}
-                      pandaBreathState={getAssignedPandaBreathState(printer.id, settings?.panda_breath_printer_assignments, pandaBreathStatus)}
-                      selectionMode={selectionMode}
-                      isSelected={selectedPrinterIds.has(printer.id)}
-                      onToggleSelect={toggleSelect}
-                    />
-                  ))}
-                </div>
+                <DndContext
+                  sensors={printerCardSensors}
+                  collisionDetection={closestCenter}
+                  onDragStart={(event) => setActivePrinterCardId(Number(event.active.id))}
+                  onDragEnd={(event) => handlePrinterCardDragEnd(event, orderedGroupPrinters)}
+                  onDragCancel={() => setActivePrinterCardId(null)}
+                >
+                  <SortableContext items={orderedGroupPrinters.map(printer => printer.id)} strategy={rectSortingStrategy}>
+                    <div className={`grid items-start gap-4 ${cardSize >= 3 ? 'gap-6' : ''} ${getGridClasses()}`}>
+                      {orderedGroupPrinters.map(renderSortablePrinterCard)}
+                    </div>
+                  </SortableContext>
+                  <DragOverlay dropAnimation={{ duration: 180, easing: 'ease-out' }}>
+                    {activePrinterCardId ? <PrinterCardDragPreview name={activePrinterCardName} /> : null}
+                  </DragOverlay>
+                </DndContext>
               </Collapsible>
             );
           })}
         </div>
       ) : (
         /* Regular grid view */
-        <div className={`grid items-start gap-4 ${cardSize >= 3 ? 'gap-6' : ''} ${getGridClasses()}`}>
-          {sortedPrinters.map((printer) => (
-            <PrinterCard
-              key={printer.id}
-              printer={printer}
-              hideIfDisconnected={hideDisconnected}
-              maintenanceInfo={maintenanceByPrinter[printer.id]}
-              viewMode={viewMode}
-              cardSize={cardSize}
-              spoolmanEnabled={spoolmanEnabled}
-              hasUnlinkedSpools={hasUnlinkedSpools}
-              linkedSpools={linkedSpools}
-              spoolmanUrl={spoolmanStatus?.url}
-              spoolmanSyncMode={spoolmanSyncMode}
-              onGetAssignment={getAssignment}
-              onUnassignSpool={(pid, aid, tid) => unassignMutation.mutate({ printerId: pid, amsId: aid, trayId: tid })}
-              spoolmanSpools={spoolmanSpools}
-              spoolmanSlotAssignments={spoolmanSlotAssignments}
-              spoolmanLoading={spoolmanSpoolsLoading || spoolmanAssignmentsLoading}
-              onUnassignSpoolmanSpool={(id) => unassignSpoolmanMutation.mutate(id)}
-              amsThresholds={settings ? {
-                humidityGood: Number(settings.ams_humidity_good) || 40,
-                humidityFair: Number(settings.ams_humidity_fair) || 60,
-                tempGood: Number(settings.ams_temp_good) || 28,
-                tempFair: Number(settings.ams_temp_fair) || 35,
-              } : undefined}
-              timeFormat={settings?.time_format || 'system'}
-              cameraViewMode={settings?.camera_view_mode || 'window'}
-              inlineCameraOpen={inlineCameraPrinterIds.has(printer.id)}
-              onToggleInlineCamera={toggleInlineCamera}
-              onOpenEmbeddedCamera={(id, name) => setEmbeddedCameraPrinters(prev => new Map(prev).set(id, { id, name }))}
-              checkPrinterFirmware={settings?.check_printer_firmware !== false}
-              dryingPresets={effectiveDryingPresets}
-              requirePlateClear={settings?.require_plate_clear === true}
-              pandaBreathState={getAssignedPandaBreathState(printer.id, settings?.panda_breath_printer_assignments, pandaBreathStatus)}
-              selectionMode={selectionMode}
-              isSelected={selectedPrinterIds.has(printer.id)}
-              onToggleSelect={toggleSelect}
-            />
-          ))}
-        </div>
+        <DndContext
+          sensors={printerCardSensors}
+          collisionDetection={closestCenter}
+          onDragStart={(event) => setActivePrinterCardId(Number(event.active.id))}
+          onDragEnd={(event) => handlePrinterCardDragEnd(event, orderedSortedPrinters)}
+          onDragCancel={() => setActivePrinterCardId(null)}
+        >
+          <SortableContext items={orderedSortedPrinters.map(printer => printer.id)} strategy={rectSortingStrategy}>
+            <div className={`grid items-start gap-4 ${cardSize >= 3 ? 'gap-6' : ''} ${getGridClasses()}`}>
+              {orderedSortedPrinters.map(renderSortablePrinterCard)}
+            </div>
+          </SortableContext>
+          <DragOverlay dropAnimation={{ duration: 180, easing: 'ease-out' }}>
+            {activePrinterCardId ? <PrinterCardDragPreview name={activePrinterCardName} /> : null}
+          </DragOverlay>
+        </DndContext>
       )}
 
       {showAddModal && (
