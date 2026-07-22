@@ -1343,6 +1343,54 @@ class TestVirtualPrinterManager:
         manager._base_dir = tmp_path
 
     @pytest.mark.asyncio
+    async def test_sync_from_db_proxy_instance_receives_target_context(self, manager, tmp_path):
+        """Proxy VPs need target context so startup can suspend the real printer MQTT client.
+
+        Without target_printer_id and printer_manager on the instance,
+        _suspend_target_printer_connection_for_proxy() returns before disconnecting
+        Printbuddy's normal status MQTT client. P1/P1S firmware can then timeout
+        the proxy's upstream MQTT connection, surfacing in Bambu Studio as code=-1.
+        """
+        from backend.app.services.virtual_printer import manager as manager_module
+
+        db_vp = self._make_db_vp(
+            mode="proxy",
+            bind_ip="10.17.1.54",
+            target_printer_id=42,
+            access_code="",
+        )
+        enabled_result = MagicMock()
+        enabled_result.scalars.return_value.all.return_value = [db_vp]
+
+        target_printer = MagicMock()
+        target_printer.ip_address = "10.17.200.19"
+        target_printer.serial_number = "01P00C552201169"
+        printer_result = MagicMock()
+        printer_result.scalar_one_or_none.return_value = target_printer
+
+        mock_db = AsyncMock()
+        mock_db.execute = AsyncMock(side_effect=[enabled_result, printer_result])
+        mock_db.__aenter__ = AsyncMock(return_value=mock_db)
+        mock_db.__aexit__ = AsyncMock(return_value=False)
+        manager._session_factory = MagicMock(return_value=mock_db)
+        manager._base_dir = tmp_path
+        printer_manager = MagicMock()
+        manager.set_printer_manager(printer_manager)
+
+        with patch.object(manager_module, "VirtualPrinterInstance") as MockInst:
+            mock_instance = MagicMock()
+            mock_instance.start_proxy = AsyncMock()
+            MockInst.return_value = mock_instance
+
+            await manager.sync_from_db()
+
+        MockInst.assert_called_once()
+        kwargs = MockInst.call_args.kwargs
+        assert kwargs["target_printer_id"] == 42
+        assert kwargs["printer_manager"] is printer_manager
+        mock_instance.start_proxy.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_sync_from_db_restarts_on_mode_change(self, manager, tmp_path):
         """Verify sync_from_db restarts VP when mode changes."""
         from backend.app.services.virtual_printer.manager import VirtualPrinterInstance

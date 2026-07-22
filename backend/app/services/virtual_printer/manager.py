@@ -1034,12 +1034,14 @@ class VirtualPrinterManager:
                     serial_suffix=vp.serial_suffix,
                     target_printer_ip=target_ip,
                     target_printer_serial=target_serial,
+                    target_printer_id=vp.target_printer_id,
                     auto_dispatch=vp.auto_dispatch,
                     bind_ip=vp.bind_ip or "",
                     remote_interface_ip=vp.remote_interface_ip or "",
                     tailscale_disabled=vp.tailscale_disabled,
                     base_dir=self._base_dir,
                     session_factory=self._session_factory,
+                    printer_manager=self._printer_manager,
                 )
                 self._instances[vp.id] = instance
                 await instance.start_proxy()
