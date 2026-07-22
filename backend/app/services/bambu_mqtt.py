@@ -3692,9 +3692,22 @@ class BambuMQTTClient:
         """Disconnect from the printer."""
         if self._client:
             self._disconnection_event = threading.Event()
-            self._client.disconnect()
-            self._disconnection_event.wait(timeout=timeout)
-            self._client.loop_stop()
+            client = self._client
+            client.disconnect()
+            disconnected = self._disconnection_event.wait(timeout=timeout)
+            if timeout and not disconnected:
+                logger.warning(
+                    "[%s] MQTT disconnect did not complete within %.1fs; closing socket before loop_stop",
+                    self.serial_number,
+                    timeout,
+                )
+                try:
+                    sock = client.socket()
+                    if sock:
+                        sock.close()
+                except Exception:
+                    pass
+            client.loop_stop()
             self._client = None
             self.state.connected = False
 
