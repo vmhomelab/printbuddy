@@ -516,7 +516,8 @@ describe('PrintersPage', () => {
       expect(sortableCard?.parentElement).toHaveClass('items-start');
     });
 
-    it('applies the saved draggable printer-card section order and exposes drag handles', async () => {
+    it('applies the saved draggable printer-card section order and exposes drag handles only in layout editing mode', async () => {
+      const user = userEvent.setup();
       const savedSectionOrder = JSON.stringify([
         'temperatures',
         'status',
@@ -544,11 +545,17 @@ describe('PrintersPage', () => {
 
       expect(temperatureSection).toHaveStyle({ order: '0' });
       expect(statusSection).toHaveStyle({ order: '1' });
+      expect(within(card).queryByTestId('printer-card-section-drag-status')).not.toBeInTheDocument();
+      expect(within(card).queryByTestId('printer-card-section-drag-temperatures')).not.toBeInTheDocument();
+
+      await user.click(screen.getByRole('button', { name: 'Show layout controls' }));
+
       expect(within(card).getByTestId('printer-card-section-drag-status')).toBeInTheDocument();
       expect(within(card).getByTestId('printer-card-section-drag-temperatures')).toBeInTheDocument();
     });
 
-    it('applies the saved whole-printer-card order in the regular grid and exposes drag handles', async () => {
+    it('applies the saved whole-printer-card order in the regular grid and exposes drag handles only in layout editing mode', async () => {
+      const user = userEvent.setup();
       vi.mocked(localStorage.getItem).mockImplementation((key: string) =>
         key === 'printerCardOrder' ? JSON.stringify([1, 2]) : null
       );
@@ -560,6 +567,11 @@ describe('PrintersPage', () => {
         'sortable-printer-card-1',
         'sortable-printer-card-2',
       ]);
+      expect(screen.queryByTestId('printer-card-drag-1')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('printer-card-drag-2')).not.toBeInTheDocument();
+
+      await user.click(screen.getByRole('button', { name: 'Show layout controls' }));
+
       expect(screen.getByTestId('printer-card-drag-1')).toBeInTheDocument();
       expect(screen.getByTestId('printer-card-drag-2')).toBeInTheDocument();
     });

@@ -187,11 +187,13 @@ function readPrinterCardSectionOrder(storageKey: string): PrinterCardSectionId[]
 function SortablePrinterCardSection({
   id,
   title,
+  layoutEditing,
   order,
   children,
 }: {
   id: PrinterCardSectionId;
   title: string;
+  layoutEditing: boolean;
   order: number;
   children: ReactNode;
 }) {
@@ -202,7 +204,7 @@ function SortablePrinterCardSection({
     transform,
     transition,
     isDragging,
-  } = useSortable({ id });
+  } = useSortable({ id, disabled: !layoutEditing });
 
   return (
     <div
@@ -216,17 +218,19 @@ function SortablePrinterCardSection({
       }}
       className={`group relative rounded-lg ${isDragging ? 'pointer-events-none border border-dashed border-bambu-green/50 bg-bambu-green/5' : ''}`}
     >
-      <button
-        type="button"
-        {...attributes}
-        {...listeners}
-        aria-label="Drag printer card section"
-        data-testid={`printer-card-section-drag-${id}`}
-        title={`Drag ${title} section`}
-        className="absolute -left-2 top-2 z-10 hidden h-7 w-7 items-center justify-center rounded-md border border-bambu-dark-tertiary bg-bambu-dark-secondary text-bambu-gray shadow-lg transition-colors hover:text-white hover:bg-bambu-dark-tertiary group-hover:flex focus:flex cursor-grab active:cursor-grabbing"
-      >
-        <GripVertical className="h-4 w-4" />
-      </button>
+      {layoutEditing && (
+        <button
+          type="button"
+          {...attributes}
+          {...listeners}
+          aria-label="Drag printer card section"
+          data-testid={`printer-card-section-drag-${id}`}
+          title={`Drag ${title} section`}
+          className="absolute -left-2 top-2 z-10 flex h-7 w-7 items-center justify-center rounded-md border border-bambu-dark-tertiary bg-bambu-dark-secondary text-bambu-gray shadow-lg transition-colors hover:text-white hover:bg-bambu-dark-tertiary focus:outline-none focus:ring-2 focus:ring-bambu-green cursor-grab active:cursor-grabbing"
+        >
+          <GripVertical className="h-4 w-4" />
+        </button>
+      )}
       {children}
     </div>
   );
@@ -291,10 +295,12 @@ function updatePrinterCardOrderForSubset(currentOrder: number[], allPrinterIds: 
 function SortablePrinterCard({
   id,
   printerName,
+  layoutEditing,
   children,
 }: {
   id: number;
   printerName: string;
+  layoutEditing: boolean;
   children: ReactNode;
 }) {
   const {
@@ -304,7 +310,7 @@ function SortablePrinterCard({
     transform,
     transition,
     isDragging,
-  } = useSortable({ id });
+  } = useSortable({ id, disabled: !layoutEditing });
 
   return (
     <div
@@ -317,17 +323,19 @@ function SortablePrinterCard({
       }}
       className={`group/card relative rounded-xl ${isDragging ? 'pointer-events-none border border-dashed border-bambu-green/50 bg-bambu-green/5' : ''}`}
     >
-      <button
-        type="button"
-        {...attributes}
-        {...listeners}
-        aria-label={`Drag ${printerName} printer card`}
-        data-testid={`printer-card-drag-${id}`}
-        title={`Drag ${printerName} printer card`}
-        className="absolute -left-2 top-2 z-20 hidden h-8 w-8 items-center justify-center rounded-md border border-bambu-dark-tertiary bg-bambu-dark-secondary text-bambu-gray shadow-lg transition-colors hover:text-white hover:bg-bambu-dark-tertiary group-hover/card:flex focus:flex cursor-grab active:cursor-grabbing"
-      >
-        <GripVertical className="h-4 w-4" />
-      </button>
+      {layoutEditing && (
+        <button
+          type="button"
+          {...attributes}
+          {...listeners}
+          aria-label={`Drag ${printerName} printer card`}
+          data-testid={`printer-card-drag-${id}`}
+          title={`Drag ${printerName} printer card`}
+          className="absolute -left-2 top-2 z-20 flex h-8 w-8 items-center justify-center rounded-md border border-bambu-dark-tertiary bg-bambu-dark-secondary text-bambu-gray shadow-lg transition-colors hover:text-white hover:bg-bambu-dark-tertiary focus:outline-none focus:ring-2 focus:ring-bambu-green cursor-grab active:cursor-grabbing"
+        >
+          <GripVertical className="h-4 w-4" />
+        </button>
+      )}
       {children}
     </div>
   );
@@ -1932,6 +1940,7 @@ function PrinterCard({
   dryingPresets = DRYING_PRESETS,
   requirePlateClear = false,
   pandaBreathState,
+  layoutEditing = false,
   selectionMode = false,
   isSelected = false,
   onToggleSelect,
@@ -1968,6 +1977,7 @@ function PrinterCard({
   dryingPresets?: Record<string, { n3f: number; n3s: number; n3f_hours: number; n3s_hours: number }>;
   requirePlateClear?: boolean;
   pandaBreathState?: PandaBreathStatus['state'] | null;
+  layoutEditing?: boolean;
   selectionMode?: boolean;
   isSelected?: boolean;
   onToggleSelect?: (id: number) => void;
@@ -2991,13 +3001,14 @@ function PrinterCard({
   );
 
   const handleCardSectionDragStart = (event: DragStartEvent) => {
+    if (!layoutEditing) return;
     setActivePrinterCardSection(event.active.id as PrinterCardSectionId);
   };
 
   const handleCardSectionDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
     setActivePrinterCardSection(null);
-    if (!over || active.id === over.id) return;
+    if (!layoutEditing || !over || active.id === over.id) return;
 
     setPrinterCardSectionOrder((currentOrder) => {
       const oldIndex = currentOrder.indexOf(active.id as PrinterCardSectionId);
@@ -3592,7 +3603,7 @@ function PrinterCard({
         >
           <SortableContext items={visiblePrinterCardSectionIds} strategy={verticalListSortingStrategy}>
             {viewMode === 'expanded' && inlineCameraOpen && inlineCameraSupported && canOpenCamera && (
-          <SortablePrinterCardSection id="camera" title={t('printers.camera')} order={getCardSectionOrder('camera')}>
+          <SortablePrinterCardSection layoutEditing={layoutEditing} id="camera" title={t('printers.camera')} order={getCardSectionOrder('camera')}>
           <div className="mt-4 pt-4 border-t border-bambu-dark-tertiary">
             <div className="mb-2 flex items-center justify-between gap-2">
               <div className="flex items-center gap-2 text-sm font-medium text-white">
@@ -3672,7 +3683,7 @@ function PrinterCard({
         )}
 
         {loadedSpoolPicker && (
-          <SortablePrinterCardSection id="loaded-spool" title="Loaded spool" order={getCardSectionOrder('loaded-spool')}>
+          <SortablePrinterCardSection layoutEditing={layoutEditing} id="loaded-spool" title="Loaded spool" order={getCardSectionOrder('loaded-spool')}>
             <div className="mt-2">
               {loadedSpoolPicker}
             </div>
@@ -3682,7 +3693,7 @@ function PrinterCard({
         {/* Status */}
         {status?.connected && (
           <>
-            <SortablePrinterCardSection id="status" title={t('printers.sort.status')} order={getCardSectionOrder('status')}>
+            <SortablePrinterCardSection layoutEditing={layoutEditing} id="status" title={t('printers.sort.status')} order={getCardSectionOrder('status')}>
             {/* Compact: Simple status bar */}
             {viewMode === 'compact' ? (
               <div className="mt-2">
@@ -3848,7 +3859,7 @@ function PrinterCard({
             </SortablePrinterCardSection>
 
             {/* Temperatures */}
-            <SortablePrinterCardSection id="temperatures" title={t('printers.temperatures.nozzle')} order={getCardSectionOrder('temperatures')}>
+            <SortablePrinterCardSection layoutEditing={layoutEditing} id="temperatures" title={t('printers.temperatures.nozzle')} order={getCardSectionOrder('temperatures')}>
             {status.temperatures && viewMode === 'expanded' && (() => {
               // Use actual heater states from MQTT stream
               const nozzleHeating = status.temperatures.nozzle_heating || status.temperatures.nozzle_2_heating || false;
@@ -3966,7 +3977,7 @@ function PrinterCard({
             </SortablePrinterCardSection>
 
             {viewMode === 'expanded' && pandaBreathState && (
-              <SortablePrinterCardSection id="panda-breath" title="Panda Breath" order={getCardSectionOrder('panda-breath')}>
+              <SortablePrinterCardSection layoutEditing={layoutEditing} id="panda-breath" title="Panda Breath" order={getCardSectionOrder('panda-breath')}>
               <div className="mt-3">
                 <div className="flex items-center gap-2 mb-2">
                   <span className="text-[10px] uppercase tracking-wider text-bambu-gray font-medium">
@@ -4001,7 +4012,7 @@ function PrinterCard({
               </SortablePrinterCardSection>
             )}
 
-            <SortablePrinterCardSection id="indicators" title={t('printers.indicators')} order={getCardSectionOrder('indicators')}>
+            <SortablePrinterCardSection layoutEditing={layoutEditing} id="indicators" title={t('printers.indicators')} order={getCardSectionOrder('indicators')}>
             {viewMode === 'expanded' && showClearPlateButton && (
               <button
                 type="button"
@@ -4284,7 +4295,7 @@ function PrinterCard({
             </SortablePrinterCardSection>
 
             {/* AMS Units - 2-Column Grid Layout */}
-            <SortablePrinterCardSection id="filaments" title={t('printers.filaments')} order={getCardSectionOrder('filaments')}>
+            <SortablePrinterCardSection layoutEditing={layoutEditing} id="filaments" title={t('printers.filaments')} order={getCardSectionOrder('filaments')}>
             {(amsData?.length > 0 || status.vt_tray.length > 0) && viewMode === 'expanded' && (() => {
               // Separate regular AMS (4-tray) from HT AMS (1-tray)
               const regularAms = amsData.filter(ams => ams.tray.length > 1);
@@ -5480,7 +5491,7 @@ function PrinterCard({
 
         {/* Smart Plug Controls - hidden in compact mode */}
         {smartPlug && viewMode === 'expanded' && (
-          <SortablePrinterCardSection id="smart-plug" title="Smart plug" order={getCardSectionOrder('smart-plug')}>
+          <SortablePrinterCardSection layoutEditing={layoutEditing} id="smart-plug" title="Smart plug" order={getCardSectionOrder('smart-plug')}>
           <div className="mt-4 pt-4 border-t border-bambu-dark-tertiary">
             <div className="flex items-center gap-3">
               {/* Plug name and status */}
@@ -5604,7 +5615,7 @@ function PrinterCard({
 
         {/* Connection Info & Actions - hidden in compact mode */}
         {viewMode === 'expanded' && (
-          <SortablePrinterCardSection id="actions" title="Actions" order={getCardSectionOrder('actions')}>
+          <SortablePrinterCardSection layoutEditing={layoutEditing} id="actions" title="Actions" order={getCardSectionOrder('actions')}>
           <div className="mt-4 pt-4 border-t border-bambu-dark-tertiary flex items-center justify-end gap-2 flex-wrap">
               {isBambuProvider && !isPrusaModelPrinter && (
                 <>
@@ -5712,7 +5723,7 @@ function PrinterCard({
 
         {/* Moonraker toolhead control panels */}
         {(printer.provider === 'klipper' || printer.provider === 'mainsail' || printer.provider === 'fluidd') && !isPrusaModelPrinter && viewMode === 'expanded' && (
-          <SortablePrinterCardSection id="manual-controls" title="Manual controls" order={getCardSectionOrder('manual-controls')}>
+          <SortablePrinterCardSection layoutEditing={layoutEditing} id="manual-controls" title="Manual controls" order={getCardSectionOrder('manual-controls')}>
           <Collapsible
             defaultOpen={false}
             className="mt-4 pt-3 border-t border-bambu-dark-tertiary"
@@ -7761,6 +7772,7 @@ export function PrintersPage() {
     const saved = localStorage.getItem('printerCardSize');
     return saved ? parseInt(saved, 10) : 2; // Default to medium
   });
+  const [layoutEditing, setLayoutEditing] = useState(false);
   // Derive viewMode from cardSize: S=compact, M/L/XL=expanded
   const viewMode: ViewMode = cardSize === 1 ? 'compact' : 'expanded';
   const [search, setSearch] = useState('');
@@ -7846,7 +7858,7 @@ export function PrintersPage() {
   const handlePrinterCardDragEnd = useCallback((event: DragEndEvent, visiblePrinters: Printer[]) => {
     const { active, over } = event;
     setActivePrinterCardId(null);
-    if (!over || active.id === over.id || allPrinterIds.length === 0) return;
+    if (!layoutEditing || !over || active.id === over.id || allPrinterIds.length === 0) return;
 
     const visibleIds = visiblePrinters.map(printer => printer.id);
     const oldIndex = visibleIds.indexOf(Number(active.id));
@@ -7857,7 +7869,7 @@ export function PrintersPage() {
     setPrinterCardOrder(currentOrder =>
       updatePrinterCardOrderForSubset(currentOrder, allPrinterIds, visibleIds, nextVisibleOrder)
     );
-  }, [allPrinterIds]);
+  }, [allPrinterIds, layoutEditing]);
 
   const activePrinterCardName = useMemo(
     () => printers?.find(printer => printer.id === activePrinterCardId)?.name ?? '',
@@ -8547,6 +8559,22 @@ export function PrintersPage() {
           );
         })}
       </div>
+
+      <button
+        type="button"
+        onClick={() => setLayoutEditing((enabled) => !enabled)}
+        aria-label={layoutEditing ? t('printers.layoutEditing.disable', 'Hide layout controls') : t('printers.layoutEditing.enable', 'Show layout controls')}
+        aria-pressed={layoutEditing}
+        className={`h-8 px-2 rounded-lg border transition-colors ${inMenu ? 'w-full justify-center gap-1.5 text-sm font-medium flex items-center' : 'flex items-center justify-center'} ${
+          layoutEditing
+            ? 'bg-bambu-green border-bambu-green text-white'
+            : 'bg-bambu-dark border-bambu-dark-tertiary text-white hover:bg-bambu-dark-tertiary'
+        }`}
+        title={layoutEditing ? t('printers.layoutEditing.disable', 'Hide layout controls') : t('printers.layoutEditing.enable', 'Show layout controls')}
+      >
+        <GripVertical className="w-4 h-4" />
+        {inMenu && <span>{layoutEditing ? t('printers.layoutEditing.on', 'Layout editing on') : t('printers.layoutEditing.off', 'Layout editing')}</span>}
+      </button>
     </>
   );
 
@@ -8650,7 +8678,7 @@ export function PrintersPage() {
   );
 
   const renderSortablePrinterCard = (printer: Printer) => (
-    <SortablePrinterCard key={printer.id} id={printer.id} printerName={printer.name}>
+    <SortablePrinterCard key={printer.id} id={printer.id} printerName={printer.name} layoutEditing={layoutEditing}>
       <PrinterCard
         printer={printer}
         hideIfDisconnected={hideDisconnected}
@@ -8683,6 +8711,7 @@ export function PrintersPage() {
         dryingPresets={effectiveDryingPresets}
         requirePlateClear={settings?.require_plate_clear === true}
         pandaBreathState={getAssignedPandaBreathState(printer.id, settings?.panda_breath_printer_assignments, pandaBreathStatus)}
+        layoutEditing={layoutEditing}
         selectionMode={selectionMode}
         isSelected={selectedPrinterIds.has(printer.id)}
         onToggleSelect={toggleSelect}
@@ -8835,7 +8864,7 @@ export function PrintersPage() {
                 <DndContext
                   sensors={printerCardSensors}
                   collisionDetection={closestCenter}
-                  onDragStart={(event) => setActivePrinterCardId(Number(event.active.id))}
+                  onDragStart={(event) => layoutEditing && setActivePrinterCardId(Number(event.active.id))}
                   onDragEnd={(event) => handlePrinterCardDragEnd(event, orderedGroupPrinters)}
                   onDragCancel={() => setActivePrinterCardId(null)}
                 >
@@ -8857,7 +8886,7 @@ export function PrintersPage() {
         <DndContext
           sensors={printerCardSensors}
           collisionDetection={closestCenter}
-          onDragStart={(event) => setActivePrinterCardId(Number(event.active.id))}
+          onDragStart={(event) => layoutEditing && setActivePrinterCardId(Number(event.active.id))}
           onDragEnd={(event) => handlePrinterCardDragEnd(event, orderedSortedPrinters)}
           onDragCancel={() => setActivePrinterCardId(null)}
         >
