@@ -1,11 +1,5 @@
-# Printbuddy
-
 <p align="center">
-  <img src="static/img/printbuddy_logo_dark_transparent.png" alt="Printbuddy Logo" width="420">
-</p>
-
-<p align="center">
-  <strong>One modern, self-hosted dashboard for keeping 3D-printer fleets under control.</strong>
+  <img width="2172" height="724" alt="ChatGPT Image 22  Juli 2026, 11_21_37" src="https://github.com/user-attachments/assets/559f049b-b5c6-43c6-8d98-2322a21e83b8" />
 </p>
 
 <p align="center">
@@ -32,6 +26,8 @@
   <a href="#home-assistant">Home Assistant</a>
   ·
   <a href="#development">Development</a>
+  ·
+  <a href="#printbuddy">Printbuddy Mascot</a>
 </p>
 
 ---
@@ -294,7 +290,7 @@ git status --short --branch
 
 ---
 
-## Printbuddy mascot / STL
+## Printbuddy
 
 Printbuddy has its own printable mascot.
 
