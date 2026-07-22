@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Droplets, Copy, Check, Settings2, Package, Unlink } from 'lucide-react';
+import { AssignSpoolIcon } from './icons/AssignSpoolIcon';
 import { isLightColor } from '../utils/colors';
 
 interface FilamentData {
@@ -410,7 +411,7 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
                         inventory.isAssigned ? 'opacity-50 cursor-not-allowed' : 'hover:bg-bambu-blue/30'
                       }`}
                     >
-                      <Package className="w-3.5 h-3.5" />
+                      <AssignSpoolIcon className="w-3.5 h-3.5" />
                       {t('inventory.assignSpool')}
                     </button>
                   ) : null}
@@ -606,7 +607,7 @@ export function EmptySlotHoverCard({ children, className = '', configureSlot, on
                     onClick={(e) => { e.stopPropagation(); onAssignSpool(); }}
                     className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs font-medium rounded transition-colors bg-bambu-blue/20 hover:bg-bambu-blue/30 text-bambu-blue"
                   >
-                    <Package className="w-3.5 h-3.5" />
+                    <AssignSpoolIcon className="w-3.5 h-3.5" />
                     {t('inventory.assignSpool')}
                   </button>
                 )}

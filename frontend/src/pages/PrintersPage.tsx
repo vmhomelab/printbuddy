@@ -114,6 +114,7 @@ import { ConfigureAmsSlotModal } from '../components/ConfigureAmsSlotModal';
 import { useToast } from '../contexts/ToastContext';
 import { ChamberLight } from '../components/icons/ChamberLight';
 import { PlateClearedIcon } from '../components/icons/PlateClearedIcon';
+import { AssignSpoolIcon } from '../components/icons/AssignSpoolIcon';
 import { SkipObjectsModal, SkipObjectsIcon } from '../components/SkipObjectsModal';
 import { FileUploadModal } from '../components/FileUploadModal';
 import { PrintModal } from '../components/PrintModal';
@@ -2361,6 +2362,7 @@ function PrinterCard({
             },
           })}
         >
+          <AssignSpoolIcon className="w-4 h-4" />
           {hasLoadedSpoolAssignment ? 'Change' : 'Assign'}
         </Button>
       </div>
