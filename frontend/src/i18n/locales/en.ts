@@ -2454,7 +2454,7 @@ export default {
 
   // Login page
   login: {
-    title: 'Printbuddy Login',
+    title: 'Login',
     subtitle: 'Sign in to your account',
     username: 'Username',
     usernamePlaceholder: 'Enter your username',
