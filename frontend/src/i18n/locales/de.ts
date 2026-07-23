@@ -3967,6 +3967,7 @@ export default {
     repoIsPublicWarning: 'Das Repository ist ÖFFENTLICH. Printbuddy-Backups enthalten MQTT-Zugangsdaten, Home-Assistant-Tokens, Prometheus-Tokens, Ihre Bambu-Cloud-E-Mail-Adresse und über K-Profile auch Drucker-Zugangscodes. Speichern ist blockiert, bis Sie das Repository in den Einstellungen Ihres Anbieters auf privat stellen.',
     repoVisibilityUnknown: 'Die Sichtbarkeit des Repositories konnte nicht bestimmt werden. Printbuddy sichert nur in Repositories, die nachweislich privat sind; Speichern wird blockiert.',
     repositoryUrl: 'Repository-URL',
+    repositoryUrlInitialCommitHint: 'Hinweis: Nach dem Erstellen des Repositories muss ein erster Commit vorhanden sein (z. B. eine README-Datei), bevor Sie das Backup aktivieren. Printbuddy kann nur in einen Branch schreiben, der bereits existiert.',
     repoUrlPlaceholderGitHub: 'https://github.com/username/repo-name',
 	repoUrlPlaceholderGitea: 'https://gitea.example.com/username/repo-name',
     repoUrlPlaceholderForgejo: 'https://forgejo.example.com/username/repo-name',

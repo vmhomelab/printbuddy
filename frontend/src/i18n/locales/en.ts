@@ -3978,6 +3978,7 @@ export default {
     repoIsPublicWarning: 'Repository is PUBLIC. Printbuddy backups include MQTT credentials, Home Assistant tokens, Prometheus tokens, your Bambu Cloud email, and printer access codes via K-profiles. Saving is blocked until you make the repository private in your provider\'s settings.',
     repoVisibilityUnknown: 'Could not determine repository visibility. Printbuddy refuses to back up to anything not confirmed private; saving will be blocked.',
     repositoryUrl: 'Repository URL',
+    repositoryUrlInitialCommitHint: 'Note: after creating the repository, make one initial commit (for example by adding a README file) before enabling backup. Printbuddy can only write to a branch that already exists.',
     repoUrlPlaceholderGitHub: 'https://github.com/username/repo-name',
 	repoUrlPlaceholderGitea: 'https://gitea.example.com/username/repo-name',
     repoUrlPlaceholderForgejo: 'https://forgejo.example.com/username/repo-name',

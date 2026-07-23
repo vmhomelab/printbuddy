@@ -3956,6 +3956,7 @@ export default {
     repoIsPublicWarning: 'Le dépôt est PUBLIC. Les sauvegardes Printbuddy contiennent les identifiants MQTT, les jetons Home Assistant, les jetons Prometheus, votre adresse Bambu Cloud, et les codes d\'accès des imprimantes via les K-profils. L\'enregistrement est bloqué tant que le dépôt n\'est pas passé en privé dans les paramètres de votre hébergeur.',
     repoVisibilityUnknown: 'Impossible de déterminer la visibilité du dépôt. Printbuddy refuse toute sauvegarde vers un dépôt non confirmé privé ; l\'enregistrement sera bloqué.',
     repositoryUrl: 'URL du dépôt',
+    repositoryUrlInitialCommitHint: 'Remarque : après avoir créé le dépôt, effectuez un premier commit (par exemple en ajoutant un fichier README) avant d’activer la sauvegarde. Printbuddy ne peut écrire que dans une branche qui existe déjà.',
     repoUrlPlaceholderGitHub: 'https://github.com/username/repo-name',
 	repoUrlPlaceholderGitea: 'https://gitea.example.com/username/repo-name',
     repoUrlPlaceholderForgejo: 'https://forgejo.example.com/username/repo-name',

@@ -641,6 +641,9 @@ export function GitHubBackupSettings() {
                     placeholder={t(PROVIDER_REPO_URL_I18N_KEY[provider])}
                     className="w-full h-10 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                   />
+                  <p className="text-xs text-bambu-gray mt-1">
+                    {t('backup.repositoryUrlInitialCommitHint')}
+                  </p>
                   <label className="flex items-start gap-2 mt-2 cursor-pointer">
                     <input
                       type="checkbox"

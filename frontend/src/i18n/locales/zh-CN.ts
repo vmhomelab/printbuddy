@@ -3954,6 +3954,7 @@ export default {
     repoIsPublicWarning: '仓库为公开（PUBLIC）。Printbuddy 备份包含 MQTT 凭据、Home Assistant 令牌、Prometheus 令牌、您的 Bambu Cloud 邮箱以及通过 K-profile 暴露的打印机访问代码。在您于提供商设置中将仓库改为私有之前，保存将被阻止。',
     repoVisibilityUnknown: '无法确定仓库的可见性。Printbuddy 拒绝向任何未确认为私有的目标进行备份；保存将被阻止。',
     repositoryUrl: '仓库 URL',
+    repositoryUrlInitialCommitHint: '注意：创建仓库后，请先进行一次初始提交（例如添加 README 文件），再启用备份。Printbuddy 只能写入已经存在的分支。',
     repoUrlPlaceholderGitHub: 'https://github.com/username/repo-name',
 	repoUrlPlaceholderGitea: 'https://gitea.example.com/username/repo-name',
     repoUrlPlaceholderForgejo: 'https://forgejo.example.com/username/repo-name',

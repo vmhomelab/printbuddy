@@ -55,6 +55,7 @@ describe('GitHubBackupSettings - Provider Selection', () => {
     await waitFor(() => {
       expect(screen.getByText('Git Provider')).toBeInTheDocument();
     });
+    expect(screen.getByText(/make one initial commit/i)).toBeInTheDocument();
     const select = screen.getByRole('combobox', { name: /git provider/i });
     expect(select).toHaveValue('github');
   });

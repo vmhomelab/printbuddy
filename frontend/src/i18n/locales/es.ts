@@ -3974,6 +3974,7 @@ export default {
     repoIsPublicWarning: 'El repositorio es PÚBLICO. Las copias de seguridad de Printbuddy incluyen credenciales de MQTT, tokens de Home Assistant, tokens de Prometheus, su correo de Bambu Cloud y los códigos de acceso de las impresoras mediante los perfiles K. El guardado está bloqueado hasta que haga el repositorio privado en los ajustes de su proveedor.',
     repoVisibilityUnknown: 'No se pudo determinar la visibilidad del repositorio. Printbuddy se niega a hacer copias de seguridad en cualquier cosa que no se confirme como privada; el guardado se bloqueará.',
     repositoryUrl: 'URL del repositorio',
+    repositoryUrlInitialCommitHint: 'Nota: después de crear el repositorio, realiza un commit inicial (por ejemplo, añadiendo un archivo README) antes de activar la copia de seguridad. Printbuddy solo puede escribir en una rama que ya existe.',
     repoUrlPlaceholderGitHub: 'https://github.com/username/repo-name',
 	repoUrlPlaceholderGitea: 'https://gitea.example.com/username/repo-name',
     repoUrlPlaceholderForgejo: 'https://forgejo.example.com/username/repo-name',

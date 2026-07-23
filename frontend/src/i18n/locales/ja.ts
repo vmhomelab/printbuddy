@@ -3967,6 +3967,7 @@ export default {
     repoIsPublicWarning: 'リポジトリが公開（PUBLIC）です。Printbuddyのバックアップには MQTT 認証情報、Home Assistant トークン、Prometheus トークン、Bambu Cloud のメールアドレス、K-プロファイル経由のプリンタアクセスコードが含まれます。プロバイダー側でリポジトリをプライベートに変更するまで保存はブロックされます。',
     repoVisibilityUnknown: 'リポジトリの公開設定を確認できませんでした。Printbuddy はプライベートと確認できないリポジトリへのバックアップを拒否します。保存はブロックされます。',
     repositoryUrl: 'リポジトリURL',
+    repositoryUrlInitialCommitHint: '注意: リポジトリを作成したら、バックアップを有効にする前に README ファイルを追加するなどして初回コミットを作成してください。Printbuddy は既に存在するブランチにのみ書き込めます。',
     repoUrlPlaceholderGitHub: 'https://github.com/username/repo-name',
 	repoUrlPlaceholderGitea: 'https://gitea.example.com/username/repo-name',
     repoUrlPlaceholderForgejo: 'https://forgejo.example.com/username/repo-name',
