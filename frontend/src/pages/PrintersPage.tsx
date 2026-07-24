@@ -499,6 +499,11 @@ const PRINTER_MODEL_GROUPS: PrinterModelOptionGroup[] = [
       { value: 'Creality Ender-5 Plus', label: 'Ender-5 Plus' },
       { value: 'Creality CR-10S Pro', label: 'CR-10S Pro' },
       { value: 'Creality CR-10S Pro V2', label: 'CR-10S Pro V2' },
+      { value: 'Creality K1', label: 'K1' },
+      { value: 'Creality K1C', label: 'K1C' },
+      { value: 'Creality K2', label: 'K2' },
+      { value: 'Creality K2 Pro', label: 'K2 Pro' },
+      { value: 'Creality K2 Plus', label: 'K2 Plus' },
     ],
   },
   {
@@ -4323,6 +4328,7 @@ function PrinterCard({
                         const extruderId = mappedExtruderId !== undefined ? mappedExtruderId : normalizedId;
                         const isLeftNozzle = extruderId === 1;
                         const isRightNozzle = extruderId === 0;
+                        const amsDisplayLabel = ams.name || getAmsLabel(ams.id, ams.tray.length);
 
                         return (
                           <div key={ams.id} className="p-2.5 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary/30">
@@ -4333,13 +4339,13 @@ function PrinterCard({
                                 <AmsNameHoverCard
                                   ams={ams}
                                   printerId={printer.id}
-                                  label={getAmsLabel(ams.id, ams.tray.length)}
+                                  label={amsDisplayLabel}
                                   amsLabels={amsLabels}
                                   canEdit={hasPermission('printers:update')}
                                   onSaved={refetchAmsLabels}
                                 >
                                   <span className="text-[10px] text-white font-medium cursor-default select-none">
-                                    {amsLabels?.[ams.id] || getAmsLabel(ams.id, ams.tray.length)}
+                                    {amsLabels?.[ams.id] || amsDisplayLabel}
                                   </span>
                                 </AmsNameHoverCard>
                                 {isDualNozzle && (isLeftNozzle || isRightNozzle) && (
@@ -4355,7 +4361,7 @@ function PrinterCard({
                                       fairThreshold={amsThresholds?.humidityFair}
                                       onClick={() => setAmsHistoryModal({
                                         amsId: ams.id,
-                                        amsLabel: getAmsLabel(ams.id, ams.tray.length),
+                                        amsLabel: amsDisplayLabel,
                                         mode: 'humidity',
                                       })}
                                       compact
@@ -4368,7 +4374,7 @@ function PrinterCard({
                                       fairThreshold={amsThresholds?.tempFair}
                                       onClick={() => setAmsHistoryModal({
                                         amsId: ams.id,
-                                        amsLabel: getAmsLabel(ams.id, ams.tray.length),
+                                        amsLabel: amsDisplayLabel,
                                         mode: 'temperature',
                                       })}
                                       compact
@@ -4778,6 +4784,7 @@ function PrinterCard({
                         const extruderId = mappedExtruderId !== undefined ? mappedExtruderId : normalizedId;
                         const isLeftNozzle = extruderId === 1;
                         const isRightNozzle = extruderId === 0;
+                        const amsDisplayLabel = ams.name || getAmsLabel(ams.id, ams.tray.length);
                         const tray = ams.tray[0];
                         const hasFillLevel = tray?.tray_type && tray.remain >= 0;
                         const isEmpty = !tray?.tray_type;
@@ -4878,13 +4885,13 @@ function PrinterCard({
                               <AmsNameHoverCard
                                 ams={ams}
                                 printerId={printer.id}
-                                label={getAmsLabel(ams.id, ams.tray.length)}
+                                label={amsDisplayLabel}
                                 amsLabels={amsLabels}
                                 canEdit={hasPermission('printers:update')}
                                 onSaved={refetchAmsLabels}
                               >
                                 <span className="text-[10px] text-white font-medium cursor-default select-none">
-                                  {amsLabels?.[ams.id] || getAmsLabel(ams.id, ams.tray.length)}
+                                  {amsLabels?.[ams.id] || amsDisplayLabel}
                                 </span>
                               </AmsNameHoverCard>
                               {isDualNozzle && (isLeftNozzle || isRightNozzle) && (
@@ -5168,7 +5175,7 @@ function PrinterCard({
                                       fairThreshold={amsThresholds?.tempFair}
                                       onClick={() => setAmsHistoryModal({
                                         amsId: ams.id,
-                                        amsLabel: getAmsLabel(ams.id, ams.tray.length),
+                                        amsLabel: amsDisplayLabel,
                                         mode: 'temperature',
                                       })}
                                       compact
@@ -5181,7 +5188,7 @@ function PrinterCard({
                                       fairThreshold={amsThresholds?.humidityFair}
                                       onClick={() => setAmsHistoryModal({
                                         amsId: ams.id,
-                                        amsLabel: getAmsLabel(ams.id, ams.tray.length),
+                                        amsLabel: amsDisplayLabel,
                                         mode: 'humidity',
                                       })}
                                       compact

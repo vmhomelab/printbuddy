@@ -83,6 +83,9 @@ describe('getPrinterImage', () => {
         ['Elegoo Neptune 4 Plus', 'elegoo-neptune-4-plus.png'],
         ['Elegoo Neptune 4 Max', 'elegoo-neptune-4-max.png'],
         ['Elegoo Centauri Carbon', 'elegoo-centauri-carbon.png'],
+        ['Creality K1', 'creality-k1.png'],
+        ['Creality K1C', 'creality-k1c.png'],
+        ['Creality K2 Plus', 'creality-k2-plus.png'],
         ['Prusa CORE One', 'prusa-core-one.png'],
         ['Prusa MK4S', 'prusa-mk4s.png'],
         ['Prusa MK4', 'prusa-mk4.png'],
@@ -107,6 +110,10 @@ describe('getPrinterImage', () => {
       expect(getPrinterImage('Elegoo Centauri')).toBe('/img/printers/default.png');
       expect(getPrinterImage('Prusa MK4')).toBe('/img/printers/prusa-mk4.png');
       expect(getPrinterImage('Prusa MK4S')).toBe('/img/printers/prusa-mk4s.png');
+      expect(getPrinterImage('Creality K1')).toBe('/img/printers/creality-k1.png');
+      expect(getPrinterImage('Creality K1C')).toBe('/img/printers/creality-k1c.png');
+      expect(getPrinterImage('Creality K2 Plus')).toBe('/img/printers/creality-k2-plus.png');
+      expect(getPrinterImage('Creality K10')).toBe('/img/printers/default.png');
     });
 
     it('uses the Home Assistant ingress base for static printer images', () => {

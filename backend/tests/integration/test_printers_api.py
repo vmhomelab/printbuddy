@@ -458,6 +458,71 @@ class TestPrintersAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_get_moonraker_printer_status_returns_creality_cfs_units(
+        self, async_client: AsyncClient, printer_factory
+    ):
+        """Creality K2 CFS units should survive status serialization as AMS-compatible units."""
+        from unittest.mock import MagicMock, patch
+
+        from backend.app.services.printer_providers.moonraker import MoonrakerPrinterState
+
+        printer = await printer_factory(
+            provider="fluidd",
+            model="Creality K2 Plus",
+            api_url="http://k2-plus.local:7125",
+            serial_number="KLIPPER-K2PLUS-LOCAL",
+        )
+        state = MoonrakerPrinterState(
+            connected=True,
+            state="RUNNING",
+            current_print="cube.gcode",
+            gcode_file="cube.gcode",
+            progress=25.0,
+            tray_now=1,
+            temperatures={"nozzle": 211.0, "nozzle_target": 215.0, "bed": 59.0, "bed_target": 60.0},
+            raw_data={
+                "ams": [
+                    {
+                        "id": 0,
+                        "name": "CFS T1",
+                        "humidity": 48,
+                        "temp": 25,
+                        "sn": "10000949645L325LWVB",
+                        "sw_ver": "1.4.2",
+                        "module_type": "cfs",
+                        "tray": [
+                            {
+                                "id": 1,
+                                "tray_type": "PLA",
+                                "tray_color": "#fff014",
+                                "remain": 100,
+                                "state": 11,
+                                "tray_uuid": "T1B",
+                            }
+                        ],
+                    }
+                ],
+                "cfs": {"type": "creality_cfs", "active_slots": ["T1B"]},
+            },
+        )
+
+        with patch("backend.app.api.routes.printers.printer_manager") as mock_pm:
+            mock_pm.get_status = MagicMock(return_value=state)
+            mock_pm.is_awaiting_plate_clear = MagicMock(return_value=False)
+            response = await async_client.get(f"/api/v1/printers/{printer.id}/status")
+
+        assert response.status_code == 200
+        result = response.json()
+        assert result["tray_now"] == 1
+        assert result["ams"][0]["name"] == "CFS T1"
+        assert result["ams"][0]["module_type"] == "cfs"
+        assert result["ams"][0]["serial_number"] == "10000949645L325LWVB"
+        assert result["ams"][0]["sw_ver"] == "1.4.2"
+        assert result["ams"][0]["tray"][0]["tray_uuid"] == "T1B"
+        assert result["ams"][0]["tray"][0]["tray_color"] == "#fff014"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_get_printer_status_not_found(self, async_client: AsyncClient):
         """Verify 404 for status of non-existent printer."""
         response = await async_client.get("/api/v1/printers/9999/status")

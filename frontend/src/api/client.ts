@@ -328,6 +328,7 @@ export interface AMSTray {
 
 export interface AMSUnit {
   id: number;
+  name?: string | null;
   humidity: number | null;
   temp: number | null;
   is_ams_ht: boolean;  // True for AMS-HT (single spool), False for regular AMS (4 spools)

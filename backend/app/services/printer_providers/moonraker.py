@@ -120,6 +120,63 @@ def _moonraker_fan_percent(values: Any) -> int | None:
     return max(0, min(100, round(percent)))
 
 
+def _safe_int(value: Any) -> int | None:
+    try:
+        return int(float(str(value).strip()))
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_float(value: Any) -> float | None:
+    try:
+        return float(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _list_value(values: Any, index: int, default: Any = None) -> Any:
+    if isinstance(values, list) and 0 <= index < len(values):
+        return values[index]
+    return default
+
+
+def _normalize_creality_cfs_color(value: Any) -> str | None:
+    raw = str(value or "").strip()
+    if raw in {"", "-1", "none", "None"}:
+        return None
+    normalized = raw.lstrip("#")
+    if len(normalized) == 7 and normalized.startswith("0"):
+        normalized = normalized[1:]
+    if len(normalized) == 6 and all(char in "0123456789abcdefABCDEF" for char in normalized):
+        return f"#{normalized}"
+    return raw
+
+
+def _creality_cfs_material_lookup(same_material: Any) -> dict[str, str]:
+    lookup: dict[str, str] = {}
+    if not isinstance(same_material, list):
+        return lookup
+    for entry in same_material:
+        if not isinstance(entry, list) or len(entry) < 4:
+            continue
+        material_name = str(entry[3] or "").strip()
+        slots = entry[2]
+        if not material_name or not isinstance(slots, list):
+            continue
+        for slot in slots:
+            slot_name = str(slot or "").strip()
+            if slot_name:
+                lookup[slot_name] = material_name
+    return lookup
+
+
+def _normalize_creality_active_letter(value: Any) -> str | None:
+    raw = str(value or "").strip().upper()
+    if raw in {"", "NONE", "-1", "NULL"}:
+        return None
+    return raw if raw in {"A", "B", "C", "D"} else None
+
+
 def _apply_moonraker_fans(state: MoonrakerPrinterState, status: dict[str, Any]) -> None:
     """Map reported Klipper/Moonraker fan objects onto Printbuddy fan badges.
 
@@ -332,6 +389,100 @@ class MoonrakerPrinterClient:
         except Exception:  # noqa: BLE001 - fans are optional; keep core status healthy if discovery fails
             return {}
 
+    def _available_cfs_objects(self) -> list[str]:
+        objects = self._get("printer/objects/list")
+        available = objects.get("objects", []) if isinstance(objects, dict) else []
+        wanted = ["box", "filament_rack", "filament_switch_sensor filament_sensor"]
+        return [name for name in wanted if name in available]
+
+    def _query_cfs_status(self) -> dict[str, Any]:
+        try:
+            cfs_objects = self._available_cfs_objects()
+            if not cfs_objects:
+                return {}
+            return self._query_objects(cfs_objects)
+        except Exception:  # noqa: BLE001 - CFS is optional; keep core Moonraker status healthy
+            return {}
+
+    def _apply_creality_cfs_box(self, status: dict[str, Any]) -> None:
+        box = status.get("box") if isinstance(status, dict) else None
+        if not isinstance(box, dict):
+            return
+
+        filament_rack = status.get("filament_rack") if isinstance(status, dict) else None
+        sensor = status.get("filament_switch_sensor filament_sensor") if isinstance(status, dict) else None
+        material_by_slot = _creality_cfs_material_lookup(box.get("same_material"))
+        ams_units: list[dict[str, Any]] = []
+        active_slots: list[str] = []
+        self.state.tray_now = 255
+
+        for ams_id, unit_name in enumerate(("T1", "T2", "T3", "T4")):
+            unit = box.get(unit_name)
+            if not isinstance(unit, dict) or str(unit.get("state") or "").lower() != "connect":
+                continue
+
+            active_letter = _normalize_creality_active_letter(unit.get("filament"))
+            humidity = _safe_int(unit.get("dry_and_humidity"))
+            temperature = _safe_int(unit.get("temperature"))
+            trays: list[dict[str, Any]] = []
+
+            for tray_id, letter in enumerate(("A", "B", "C", "D")):
+                slot = f"{unit_name}{letter}"
+                remain = _safe_int(_list_value(unit.get("remain_len"), tray_id))
+                material_code = str(_list_value(unit.get("material_type"), tray_id, "") or "").strip()
+                color = _normalize_creality_cfs_color(_list_value(unit.get("color_value"), tray_id))
+                vendor = _list_value(unit.get("vender"), tray_id, "")
+                material_name = material_by_slot.get(slot) or (material_code if material_code not in {"", "-1"} else "")
+                is_active = active_letter == letter
+                if is_active:
+                    active_slots.append(slot)
+                    self.state.tray_now = ams_id * 4 + tray_id
+                trays.append(
+                    {
+                        "id": tray_id,
+                        "slot": slot,
+                        "tray_type": material_name,
+                        "material_code": material_code,
+                        "tray_color": color,
+                        "remain": remain,
+                        "active": is_active,
+                        "state": 11,
+                        "tray_uuid": slot,
+                        "tag_uid": "",
+                        "vendor": vendor,
+                    }
+                )
+
+            ams_units.append(
+                {
+                    "id": ams_id,
+                    "name": f"CFS {unit_name}",
+                    "humidity": humidity,
+                    "temp": temperature,
+                    "state": unit.get("state"),
+                    "mode": unit.get("mode"),
+                    "version": unit.get("version"),
+                    "sn": unit.get("sn"),
+                    "tray": trays,
+                }
+            )
+
+        if not ams_units:
+            return
+
+        self.state.raw_data["ams"] = ams_units
+        self.state.raw_data["cfs"] = {
+            "type": "creality_cfs",
+            "state": box.get("state"),
+            "enabled": box.get("enable"),
+            "auto_refill": box.get("auto_refill"),
+            "active_slots": active_slots,
+            "filament_detected": sensor.get("filament_detected") if isinstance(sensor, dict) else None,
+        }
+        self.state.raw_data["box"] = box
+        if isinstance(filament_rack, dict):
+            self.state.raw_data["filament_rack"] = filament_rack
+
     def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         response = httpx.post(
             urljoin(self.base_url, path.lstrip("/")), json=payload, headers=self._headers, timeout=self.timeout
@@ -476,9 +627,13 @@ class MoonrakerPrinterClient:
         fan_status = self._query_fan_status()
         if fan_status:
             status.update(fan_status)
+        cfs_status = self._query_cfs_status()
+        if cfs_status:
+            status.update(cfs_status)
         self.state.connected = True
         self.state.raw_status = status
         self.state.raw_data = status
+        self._apply_creality_cfs_box(status)
 
         print_stats = status.get("print_stats", {}) if isinstance(status, dict) else {}
         virtual_sdcard = status.get("virtual_sdcard", {}) if isinstance(status, dict) else {}

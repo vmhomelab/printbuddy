@@ -694,6 +694,7 @@ async def get_printer_status(
             ams_units.append(
                 AMSUnit(
                     id=ams_data.get("id", 0),
+                    name=ams_data.get("name"),
                     humidity=humidity_value,
                     temp=ams_data.get("temp"),
                     is_ams_ht=is_ams_ht,

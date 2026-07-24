@@ -826,8 +826,53 @@ describe('PrintersPage', () => {
       expect(optionValues).toContain('Elegoo Centauri Carbon');
       expect(optionValues).toContain('Voron 2.4');
       expect(optionValues).toContain('Creality Ender-3 V2');
+      expect(optionValues).toContain('Creality K1');
+      expect(optionValues).toContain('Creality K1C');
+      expect(optionValues).toContain('Creality K2');
+      expect(optionValues).toContain('Creality K2 Plus');
       expect(optionValues).toContain('Prusa MK4S');
       expect(optionValues).toContain('Generic Klipper Printer');
+    });
+
+    it('shows Creality CFS units with CFS labels', async () => {
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          ...mockPrinters[0],
+          name: 'K2 Plus',
+          provider: 'fluidd',
+          model: 'Creality K2 Plus',
+        }])),
+        http.get('/api/v1/printers/:id/status', () => HttpResponse.json({
+          ...mockPrinterStatus,
+          ams_exists: true,
+          tray_now: 1,
+          ams: [{
+            id: 0,
+            name: 'CFS T1',
+            humidity: null,
+            temp: null,
+            is_ams_ht: false,
+            serial_number: '10000949645L325LWVB',
+            sw_ver: '1.4.2',
+            dry_time: 0,
+            dry_status: 0,
+            dry_sub_status: 0,
+            dry_sf_reason: [],
+            module_type: 'cfs',
+            tray: [
+              { id: 0, tray_type: 'PLA', tray_color: '#0A2989', remain: 41, state: 11, tray_uuid: 'T1A' },
+              { id: 1, tray_type: 'PLA', tray_color: '#fff014', remain: 100, state: 11, tray_uuid: 'T1B' },
+              { id: 2, tray_type: 'PLA', tray_color: '#ffffff', remain: 100, state: 11, tray_uuid: 'T1C' },
+              { id: 3, tray_type: 'PLA', tray_color: '#9ea7ae', remain: 100, state: 11, tray_uuid: 'T1D' },
+            ],
+          }],
+        })),
+      );
+
+      render(<PrintersPage />);
+
+      expect(await screen.findByText('K2 Plus')).toBeInTheDocument();
+      expect(await screen.findByText('CFS T1')).toBeInTheDocument();
     });
 
     it('shows Prusa models when Prusa is selected as printer type', async () => {
