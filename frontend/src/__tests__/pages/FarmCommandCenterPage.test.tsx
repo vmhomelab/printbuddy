@@ -1,5 +1,6 @@
 import { describe, expect, it, beforeEach, vi } from 'vitest';
-import { screen, waitFor } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { render } from '../utils';
 import { server } from '../mocks/server';
@@ -105,6 +106,7 @@ describe('FarmCommandCenterPage', () => {
   beforeEach(() => {
     vi.setSystemTime(new Date('2026-07-02T16:42:17Z'));
     vi.mocked(localStorage.getItem).mockReset();
+    vi.mocked(localStorage.setItem).mockReset();
     server.use(
       http.get('/api/v1/printers/', () => HttpResponse.json(printers)),
       http.get('/api/v1/printers/:id/status', ({ params }) => HttpResponse.json(statusFor(Number(params.id)))),
@@ -177,10 +179,39 @@ describe('FarmCommandCenterPage', () => {
     expect(screen.getByText('Filament Stock')).toBeInTheDocument();
     expect(screen.getByText('Maintenance')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /tv mode/i })).toHaveAttribute('href', '/farm-monitor');
-    expect(screen.getByRole('link', { name: /create group/i })).toHaveAttribute('href', '/groups/new');
-    expect(screen.getAllByRole('link').some((link) => link.getAttribute('href') === '/notifications')).toBe(true);
+    expect(screen.getByRole('button', { name: /create group/i })).toBeInTheDocument();
     expect(screen.getAllByRole('link').some((link) => link.getAttribute('href') === '/inventory')).toBe(true);
     expect(screen.getAllByRole('link').some((link) => link.getAttribute('href') === '/maintenance')).toBe(true);
     expect(screen.getAllByRole('link').some((link) => link.getAttribute('href') === '/projects/42')).toBe(true);
+  });
+
+  it('opens an alerts pop-up from the alerts stat card', async () => {
+    const user = userEvent.setup();
+    render(<FarmCommandCenterPage />);
+
+    await screen.findByRole('heading', { name: 'Farm Command Center' });
+    await user.click(screen.getByRole('button', { name: /alerts/i }));
+
+    const dialog = await screen.findByRole('dialog', { name: /command center alerts/i });
+    expect(within(dialog).getAllByText('PRB-04').length).toBeGreaterThan(0);
+    expect(within(dialog).getByText(/Paused/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/White PLA/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/Nozzle check/)).toBeInTheDocument();
+  });
+
+  it('creates printer groups and assigns printers inside the command center', async () => {
+    const user = userEvent.setup();
+    render(<FarmCommandCenterPage />);
+
+    await screen.findByRole('heading', { name: 'Farm Command Center' });
+    await user.click(screen.getByRole('button', { name: /create group/i }));
+
+    const dialog = await screen.findByRole('dialog', { name: /printer groups/i });
+    await user.type(within(dialog).getByLabelText(/group name/i), 'Prototype Lab');
+    await user.click(within(dialog).getByRole('checkbox', { name: /PRA-01/i }));
+    await user.click(within(dialog).getByRole('button', { name: /save group/i }));
+
+    await waitFor(() => expect(screen.getAllByText('Prototype Lab').length).toBeGreaterThan(0));
+    expect(localStorage.setItem).toHaveBeenCalledWith('printbuddy.commandCenterPrinterGroups', expect.stringContaining('Prototype Lab'));
   });
 });

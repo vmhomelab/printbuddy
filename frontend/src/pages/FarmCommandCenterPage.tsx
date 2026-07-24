@@ -16,6 +16,7 @@ import {
   Search,
   Server,
   Wrench,
+  X,
 } from 'lucide-react';
 import {
   api,
@@ -36,6 +37,40 @@ interface FleetPrinter {
 type FleetState = 'printing' | 'paused' | 'idle' | 'alert' | 'offline';
 
 const REFRESH_MS = 15_000;
+const PRINTER_GROUPS_STORAGE_KEY = 'printbuddy.commandCenterPrinterGroups';
+
+interface CommandCenterPrinterGroup {
+  id: string;
+  name: string;
+  printerIds: number[];
+}
+
+interface CommandCenterAlert {
+  id: string;
+  title: string;
+  detail: string;
+  tone: 'red' | 'amber' | 'blue';
+}
+
+function loadStoredPrinterGroups(): CommandCenterPrinterGroup[] {
+  try {
+    const raw = localStorage.getItem(PRINTER_GROUPS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((group): group is CommandCenterPrinterGroup => (
+      typeof group?.id === 'string' && typeof group?.name === 'string' && Array.isArray(group?.printerIds)
+    ));
+  } catch {
+    return [];
+  }
+}
+
+function buildPrinterGroupMap(groups: CommandCenterPrinterGroup[]): Map<number, string> {
+  const map = new Map<number, string>();
+  groups.forEach((group) => group.printerIds.forEach((printerId) => map.set(printerId, group.name)));
+  return map;
+}
 
 function normalizeState(status?: PrinterStatus): FleetState {
   if (!status || !status.connected) return 'offline';
@@ -86,6 +121,48 @@ function maintenanceAttentionCount(overview: PrinterMaintenanceOverview[]): numb
   ), 0);
 }
 
+function buildCommandCenterAlerts(fleet: FleetPrinter[], spools: InventorySpool[], maintenanceOverview: PrinterMaintenanceOverview[], defaultThreshold: number): CommandCenterAlert[] {
+  const printerAlerts = fleet.flatMap((item) => {
+    const state = normalizeState(item.status);
+    const notices: CommandCenterAlert[] = [];
+    if (state === 'alert') {
+      notices.push({
+        id: `printer-alert-${item.printer.id}`,
+        title: item.printer.name,
+        detail: item.status?.hms_errors?.length ? `${item.status.hms_errors.length} printer error${item.status.hms_errors.length === 1 ? '' : 's'} reported` : 'Printer reported an alert state',
+        tone: 'red',
+      });
+    }
+    if (state === 'paused') {
+      notices.push({ id: `printer-paused-${item.printer.id}`, title: item.printer.name, detail: 'Paused - operator attention may be required', tone: 'amber' });
+    }
+    if (state === 'offline') {
+      notices.push({ id: `printer-offline-${item.printer.id}`, title: item.printer.name, detail: 'Offline or unreachable', tone: 'red' });
+    }
+    return notices;
+  });
+
+  const stockAlerts = spools
+    .filter((spool) => !spool.archived_at && spoolRemainingPct(spool) !== null && spoolRemainingPct(spool)! <= (spool.low_stock_threshold_pct ?? defaultThreshold))
+    .map((spool) => ({
+      id: `spool-${spool.id}`,
+      title: `${spool.color_name ? `${spool.color_name} ` : ''}${spool.material}`,
+      detail: `${spoolRemainingPct(spool)}% filament remaining`,
+      tone: 'amber' as const,
+    }));
+
+  const maintenanceAlerts = maintenanceOverview.flatMap((printer) => printer.maintenance_items
+    .filter((item: MaintenanceStatus) => item.enabled && (item.is_due || item.is_warning))
+    .map((item: MaintenanceStatus, index: number) => ({
+      id: `maintenance-${printer.printer_id}-${index}`,
+      title: printer.printer_name,
+      detail: item.maintenance_type_name || 'Maintenance item requires attention',
+      tone: item.is_due ? 'red' as const : 'amber' as const,
+    })));
+
+  return [...printerAlerts, ...stockAlerts, ...maintenanceAlerts];
+}
+
 function formatTime(date: Date): string {
   return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
@@ -99,7 +176,7 @@ function completedToday(queue: PrintQueueItem[], now: Date): number {
   return queue.filter((item) => item.status === 'completed' && item.completed_at && new Date(item.completed_at).toDateString() === today).length;
 }
 
-function StatCard({ icon: Icon, value, label, sub, tone, to }: { icon: typeof PrinterIcon; value: number | string; label: string; sub: string; tone: 'blue' | 'green' | 'gray' | 'amber' | 'purple'; to?: string }) {
+function StatCard({ icon: Icon, value, label, sub, tone, to, onClick }: { icon: typeof PrinterIcon; value: number | string; label: string; sub: string; tone: 'blue' | 'green' | 'gray' | 'amber' | 'purple'; to?: string; onClick?: () => void }) {
   const tones = {
     blue: 'bg-blue-500/15 text-blue-300 shadow-blue-500/10',
     green: 'bg-emerald-500/15 text-emerald-300 shadow-emerald-500/10',
@@ -121,7 +198,7 @@ function StatCard({ icon: Icon, value, label, sub, tone, to }: { icon: typeof Pr
           <div className="mt-1 text-sm font-semibold text-bambu-gray-light">{sub}</div>
         </div>
       </div>
-      {to && <ChevronRight className="absolute right-4 top-4 h-4 w-4 text-bambu-gray transition-transform group-hover:translate-x-0.5 group-hover:text-white" />}
+      {(to || onClick) && <ChevronRight className="absolute right-4 top-4 h-4 w-4 text-bambu-gray transition-transform group-hover:translate-x-0.5 group-hover:text-white" />}
     </>
   );
 
@@ -130,6 +207,14 @@ function StatCard({ icon: Icon, value, label, sub, tone, to }: { icon: typeof Pr
       <Link to={to} className="group relative block rounded-2xl border border-bambu-dark-tertiary bg-bambu-dark-secondary/80 p-4 shadow-[var(--card-shadow)] transition hover:border-blue-500 hover:bg-bambu-dark-secondary focus:outline-none focus:ring-2 focus:ring-blue-500">
         {content}
       </Link>
+    );
+  }
+
+  if (onClick) {
+    return (
+      <button type="button" onClick={onClick} className="group relative block w-full rounded-2xl border border-bambu-dark-tertiary bg-bambu-dark-secondary/80 p-4 text-left shadow-[var(--card-shadow)] transition hover:border-blue-500 hover:bg-bambu-dark-secondary focus:outline-none focus:ring-2 focus:ring-blue-500">
+        {content}
+      </button>
     );
   }
 
@@ -194,7 +279,7 @@ function ActiveProjectCard({ project }: { project: ProjectListItem }) {
           </div>
         </div>
         <div className="w-20 shrink-0 text-right">
-          <div className="text-2xl font-bold text-blue-400">{progress !== null ? `${progress}%` : '—'}</div>
+          <div className="text-2xl font-bold text-blue-400">{progress !== null ? `${progress}%` : '-'}</div>
           <div className="text-xs text-bambu-gray-light">Complete</div>
         </div>
       </div>
@@ -205,10 +290,101 @@ function ActiveProjectCard({ project }: { project: ProjectListItem }) {
   );
 }
 
+function AlertsDialog({ alerts, onClose }: { alerts: CommandCenterAlert[]; onClose: () => void }) {
+  const toneClasses = {
+    red: 'border-red-500/40 bg-red-500/10 text-red-200',
+    amber: 'border-amber-500/40 bg-amber-500/10 text-amber-200',
+    blue: 'border-blue-500/40 bg-blue-500/10 text-blue-200',
+  };
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" role="dialog" aria-modal="true" aria-labelledby="command-center-alerts-title">
+      <div className="w-full max-w-2xl rounded-2xl border border-bambu-dark-tertiary bg-bambu-dark-secondary p-5 shadow-2xl">
+        <div className="mb-4 flex items-start justify-between gap-4">
+          <div>
+            <h2 id="command-center-alerts-title" className="text-xl font-bold text-white">Command Center Alerts</h2>
+            <p className="text-sm text-bambu-gray-light">Printer, filament, and maintenance items that need attention.</p>
+          </div>
+          <button type="button" onClick={onClose} aria-label="Close alerts" className="rounded-lg p-2 text-bambu-gray-light hover:bg-bambu-dark hover:text-white"><X className="h-5 w-5" /></button>
+        </div>
+        <div className="max-h-[60vh] space-y-3 overflow-y-auto">
+          {alerts.length === 0 ? (
+            <div className="rounded-xl border border-bambu-dark-tertiary bg-bambu-dark p-6 text-center text-bambu-gray-light">No active command center alerts.</div>
+          ) : alerts.map((alert) => (
+            <div key={alert.id} className={`rounded-xl border p-4 ${toneClasses[alert.tone]}`}>
+              <div className="font-bold text-white">{alert.title}</div>
+              <div className="mt-1 text-sm">{alert.detail}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PrinterGroupsDialog({ printers, groups, onSave, onClose }: { printers: Printer[]; groups: CommandCenterPrinterGroup[]; onSave: (groups: CommandCenterPrinterGroup[]) => void; onClose: () => void }) {
+  const [name, setName] = useState('');
+  const [selectedPrinterIds, setSelectedPrinterIds] = useState<number[]>([]);
+
+  const togglePrinter = (printerId: number) => {
+    setSelectedPrinterIds((current) => current.includes(printerId) ? current.filter((id) => id !== printerId) : [...current, printerId]);
+  };
+
+  const saveGroup = () => {
+    const trimmed = name.trim();
+    if (!trimmed || selectedPrinterIds.length === 0) return;
+    const withoutAssigned = groups.map((group) => ({ ...group, printerIds: group.printerIds.filter((printerId) => !selectedPrinterIds.includes(printerId)) })).filter((group) => group.printerIds.length > 0 || group.name !== trimmed);
+    const nextGroups = [...withoutAssigned, { id: `${Date.now()}`, name: trimmed, printerIds: selectedPrinterIds }];
+    onSave(nextGroups);
+    setName('');
+    setSelectedPrinterIds([]);
+    onClose();
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" role="dialog" aria-modal="true" aria-labelledby="printer-groups-title">
+      <div className="w-full max-w-2xl rounded-2xl border border-bambu-dark-tertiary bg-bambu-dark-secondary p-5 shadow-2xl">
+        <div className="mb-4 flex items-start justify-between gap-4">
+          <div>
+            <h2 id="printer-groups-title" className="text-xl font-bold text-white">Printer Groups</h2>
+            <p className="text-sm text-bambu-gray-light">Create a fleet group and assign printers inside the command center.</p>
+          </div>
+          <button type="button" onClick={onClose} aria-label="Close printer groups" className="rounded-lg p-2 text-bambu-gray-light hover:bg-bambu-dark hover:text-white"><X className="h-5 w-5" /></button>
+        </div>
+        <label className="mb-4 block text-sm font-semibold text-bambu-gray-light">
+          Group name
+          <input value={name} onChange={(event) => setName(event.target.value)} className="mt-2 w-full rounded-lg border border-bambu-dark-tertiary bg-bambu-dark px-3 py-2 text-white focus:border-blue-500 focus:outline-none" />
+        </label>
+        <div className="mb-4 grid gap-2 sm:grid-cols-2">
+          {printers.map((printer) => (
+            <label key={printer.id} className="flex items-center gap-3 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark p-3 text-sm text-white">
+              <input type="checkbox" checked={selectedPrinterIds.includes(printer.id)} onChange={() => togglePrinter(printer.id)} />
+              <span>{printer.name}</span>
+              <span className="ml-auto text-xs text-bambu-gray-light">{printer.location || 'Ungrouped'}</span>
+            </label>
+          ))}
+        </div>
+        {groups.length > 0 && (
+          <div className="mb-4 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark p-3 text-sm text-bambu-gray-light">
+            <div className="mb-2 font-semibold text-white">Current command center groups</div>
+            {groups.map((group) => <div key={group.id}>{group.name}: {group.printerIds.length} printer{group.printerIds.length === 1 ? '' : 's'}</div>)}
+          </div>
+        )}
+        <div className="flex justify-end gap-2">
+          <button type="button" onClick={onClose} className="rounded-lg border border-bambu-dark-tertiary px-4 py-2 text-sm font-semibold text-bambu-gray-light hover:text-white">Cancel</button>
+          <button type="button" onClick={saveGroup} disabled={!name.trim() || selectedPrinterIds.length === 0} className="rounded-lg bg-blue-500 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50">Save Group</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function FarmCommandCenterPage() {
   const [now, setNow] = useState(() => new Date());
   const [search, setSearch] = useState('');
   const [groupFilter, setGroupFilter] = useState('all');
+  const [showAlerts, setShowAlerts] = useState(false);
+  const [showGroups, setShowGroups] = useState(false);
+  const [printerGroups, setPrinterGroups] = useState<CommandCenterPrinterGroup[]>(() => loadStoredPrinterGroups());
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(new Date()), 1000);
@@ -231,15 +407,16 @@ export function FarmCommandCenterPage() {
   });
 
   const fleet = useMemo<FleetPrinter[]>(() => printers.map((printer, index) => ({ printer, status: statusQueries[index]?.data })), [printers, statusQueries]);
+  const printerGroupMap = useMemo(() => buildPrinterGroupMap(printerGroups), [printerGroups]);
   const groupedFleet = useMemo(() => {
     const groups = new Map<string, FleetPrinter[]>();
     fleet.forEach((item) => {
-      const name = item.printer.location?.trim() || 'Ungrouped';
+      const name = printerGroupMap.get(item.printer.id) || item.printer.location?.trim() || 'Ungrouped';
       if (!groups.has(name)) groups.set(name, []);
       groups.get(name)!.push(item);
     });
     return Array.from(groups.entries()).map(([name, items]) => ({ name, items }));
-  }, [fleet]);
+  }, [fleet, printerGroupMap]);
 
   const visibleGroups = groupedFleet
     .filter((group) => groupFilter === 'all' || group.name === groupFilter)
@@ -261,6 +438,11 @@ export function FarmCommandCenterPage() {
   const visibleProjects = activeProjects.slice(0, 2);
   const lowStock = lowSpoolCount(spools, settings?.low_stock_threshold ?? 20);
   const maintenanceDue = maintenanceAttentionCount(maintenanceOverview);
+  const commandCenterAlerts = useMemo(() => buildCommandCenterAlerts(fleet, spools, maintenanceOverview, settings?.low_stock_threshold ?? 20), [fleet, spools, maintenanceOverview, settings?.low_stock_threshold]);
+  const savePrinterGroups = (nextGroups: CommandCenterPrinterGroup[]) => {
+    setPrinterGroups(nextGroups);
+    localStorage.setItem(PRINTER_GROUPS_STORAGE_KEY, JSON.stringify(nextGroups));
+  };
 
   return (
     <div className="min-h-full bg-bambu-dark p-4 text-white xl:p-6">
@@ -298,7 +480,7 @@ export function FarmCommandCenterPage() {
           <StatCard icon={Boxes} value={stateCounts.printing} label="Printing" sub={`${utilization}% of fleet`} tone="blue" />
           <StatCard icon={PrinterIcon} value={stateCounts.idle} label="Idle" sub={`${fleet.length ? Math.round((stateCounts.idle / fleet.length) * 100) : 0}% of fleet`} tone="gray" />
           <StatCard icon={Pause} value={stateCounts.paused} label="Paused" sub={`${fleet.length ? Math.round((stateCounts.paused / fleet.length) * 100) : 0}% of fleet`} tone="green" />
-          <StatCard icon={AlertTriangle} value={alertCount} label="Alerts" sub="Printers, stock, maintenance" tone="amber" to="/notifications" />
+          <StatCard icon={AlertTriangle} value={alertCount} label="Alerts" sub="Printers, stock, maintenance" tone="amber" onClick={() => setShowAlerts(true)} />
           <StatCard icon={Layers} value={todayParts} label="Parts today" sub={`${queue.length} queue items tracked`} tone="purple" />
         </section>
 
@@ -323,9 +505,9 @@ export function FarmCommandCenterPage() {
                 <option value="all">All Groups</option>
                 {groupedFleet.map((group) => <option key={group.name} value={group.name}>{group.name}</option>)}
               </select>
-              <Link to="/groups/new" className="inline-flex items-center justify-center gap-2 rounded-lg border border-blue-500/60 bg-blue-500/10 px-3 py-2 text-sm font-semibold text-blue-300 transition hover:bg-blue-500/20 hover:text-white">
+              <button type="button" onClick={() => setShowGroups(true)} className="inline-flex items-center justify-center gap-2 rounded-lg border border-blue-500/60 bg-blue-500/10 px-3 py-2 text-sm font-semibold text-blue-300 transition hover:bg-blue-500/20 hover:text-white">
                 <Plus className="h-4 w-4" /> Create Group
-              </Link>
+              </button>
               <div className="flex rounded-lg border border-bambu-dark-tertiary bg-bambu-dark p-1 text-bambu-gray-light">
                 <span className="rounded bg-blue-500 px-3 py-1 text-white"><Grid3X3 className="h-4 w-4" /></span>
                 <span className="px-3 py-1"><Server className="h-4 w-4" /></span>
@@ -403,6 +585,8 @@ export function FarmCommandCenterPage() {
           </Link>
         </section>
       </div>
+      {showAlerts && <AlertsDialog alerts={commandCenterAlerts} onClose={() => setShowAlerts(false)} />}
+      {showGroups && <PrinterGroupsDialog printers={printers} groups={printerGroups} onSave={savePrinterGroups} onClose={() => setShowGroups(false)} />}
     </div>
   );
 }

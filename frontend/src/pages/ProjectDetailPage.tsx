@@ -239,7 +239,7 @@ function formatProductionFilament(grams: number | null | undefined): string | nu
   return formatFilament(grams);
 }
 
-function ProductionPlan({ bomItems, archives, files }: { bomItems: BOMItem[]; archives: Archive[]; files: LibraryFileListItem[] }) {
+function ProductionPlan({ bomItems, archives, files, onStageFile }: { bomItems: BOMItem[]; archives: Archive[]; files: LibraryFileListItem[]; onStageFile: (file: LibraryFileListItem) => void }) {
   if (bomItems.length === 0 && archives.length === 0 && files.length === 0) return null;
 
   const unmatchedArchives = archives.filter((archive) => !bomItems.some((item) => fileMatchesPart(item, archive.print_name || archive.filename)));
@@ -307,6 +307,7 @@ function ProductionPlan({ bomItems, archives, files }: { bomItems: BOMItem[]; ar
                       <th className="px-3 py-2 text-left font-medium">Model</th>
                       <th className="px-3 py-2 text-left font-medium">Plate</th>
                       <th className="px-3 py-2 text-left font-medium">Estimate</th>
+                      <th className="px-3 py-2 text-right font-medium">Action</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-bambu-dark-tertiary">
@@ -318,6 +319,7 @@ function ProductionPlan({ bomItems, archives, files }: { bomItems: BOMItem[]; ar
                         <td className="px-3 py-2 text-bambu-gray-light">{archive.sliced_for_model || '-'}</td>
                         <td className="px-3 py-2 text-bambu-gray-light">{archive.bed_type || '-'}</td>
                         <td className="px-3 py-2 text-bambu-gray-light">{[formatProductionFilament(archive.filament_used_grams), formatProductionDuration(archive.print_time_seconds)].filter(Boolean).join(' · ') || '-'}</td>
+                        <td className="px-3 py-2 text-right text-bambu-gray-light">Archived</td>
                       </tr>
                     ))}
                     {row.files.map((file) => (
@@ -328,6 +330,18 @@ function ProductionPlan({ bomItems, archives, files }: { bomItems: BOMItem[]; ar
                         <td className="px-3 py-2 text-bambu-gray-light">-</td>
                         <td className="px-3 py-2 text-bambu-gray-light">-</td>
                         <td className="px-3 py-2 text-bambu-gray-light">-</td>
+                        <td className="px-3 py-2 text-right">
+                          {isSlicedFilename(file.filename) ? (
+                            <button
+                              type="button"
+                              onClick={() => onStageFile(file)}
+                              className="inline-flex items-center gap-1 rounded bg-blue-500/15 px-2 py-1 text-xs font-semibold text-blue-300 transition hover:bg-blue-500/25 hover:text-white"
+                              aria-label={`Stage ${file.print_name || file.filename} to queue`}
+                            >
+                              <CalendarPlus className="h-3.5 w-3.5" /> Stage to queue
+                            </button>
+                          ) : '-'}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -781,7 +795,7 @@ export function ProjectDetailPage() {
         </div>
       )}
 
-      <ProductionPlan bomItems={bomItems || []} archives={archives || []} files={allProjectFiles || []} />
+      <ProductionPlan bomItems={bomItems || []} archives={archives || []} files={allProjectFiles || []} onStageFile={setScheduleFile} />
 
       {/* Cost tracking */}
       {stats && (() => {

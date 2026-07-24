@@ -355,5 +355,28 @@ describe('ProjectDetailPage', () => {
       expect(screen.getByText(/1h 30m/)).toBeInTheDocument();
       expect(screen.getByText('Needs staging')).toBeInTheDocument();
     });
+
+    it('opens add-to-queue modal from a production plan project file', async () => {
+      const user = userEvent.setup();
+      server.use(
+        http.get('/api/v1/projects/:id', () => HttpResponse.json(productionProject)),
+        http.get('/api/v1/projects/:id/archives', () => HttpResponse.json([gridfinityArchive])),
+        http.get('/api/v1/projects/:id/bom', () => HttpResponse.json([gridfinityBinBom])),
+        http.get('/api/v1/library/files', () => HttpResponse.json([
+          makeFile({ id: 41, filename: 'gridfinity-bin-plate-02.gcode.3mf', file_type: '3mf' }),
+        ])),
+        http.get('/api/v1/printers/', () => HttpResponse.json([])),
+        http.get('/api/v1/library/files/:id', () => HttpResponse.json(makeFile({ id: 41, filename: 'gridfinity-bin-plate-02.gcode.3mf', file_type: '3mf' }))),
+        http.get('/api/v1/library/files/:id/plates', () => HttpResponse.json({ is_multi_plate: false, plates: [] })),
+        http.get('/api/v1/library/files/:id/filament-requirements', () => HttpResponse.json({ file_id: 41, filename: 'gridfinity-bin-plate-02.gcode.3mf', filaments: [] })),
+      );
+
+      render(<ProjectDetailPage />);
+
+      expect(await screen.findByRole('heading', { name: 'Production Plan' })).toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: /stage gridfinity-bin-plate-02\.gcode\.3mf to queue/i }));
+
+      expect(await screen.findByRole('heading', { name: 'Schedule Print' })).toBeInTheDocument();
+    });
   });
 });
