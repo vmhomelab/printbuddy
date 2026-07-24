@@ -24,6 +24,7 @@ import { LoginPage } from './pages/LoginPage';
 import { SetupPage } from './pages/SetupPage';
 import { NotificationsPage } from './pages/NotificationsPage';
 import { GCodeViewerPage } from './pages/GCodeViewerPage';
+import { PrintFarmMonitorPage } from './pages/PrintFarmMonitorPage';
 import { appBasePath } from './utils/assetPaths';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useStreamTokenSync } from './hooks/useCameraStreamToken';
@@ -174,6 +175,7 @@ function App() {
                   <Route path="archives" element={<ArchivesPage />} />
                   <Route path="queue" element={<QueuePage />} />
                   <Route path="stats" element={<StatsPage />} />
+                  <Route path="farm-monitor" element={<PrintFarmMonitorPage />} />
                   <Route path="profiles" element={<ProfilesPage />} />
                   <Route path="maintenance" element={<MaintenancePage />} />
                   <Route path="projects" element={<ProjectsPage />} />

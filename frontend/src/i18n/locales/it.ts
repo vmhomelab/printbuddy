@@ -5,6 +5,7 @@ export default {
     archives: 'Archivi',
     queue: 'Coda di stampa',
     stats: 'Statistiche',
+    farmMonitor: 'Monitor farm',
     profiles: 'Profili',
     maintenance: 'Manutenzione',
     projects: 'Progetti',

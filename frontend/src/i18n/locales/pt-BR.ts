@@ -5,6 +5,7 @@ export default {
     archives: 'Arquivos',
     queue: 'Fila de impressão',
     stats: 'Estatísticas',
+    farmMonitor: 'Monitor da fazenda',
     profiles: 'Perfis',
     maintenance: 'Manutenção',
     projects: 'Projetos',

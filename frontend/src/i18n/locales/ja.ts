@@ -5,6 +5,7 @@ export default {
     archives: 'アーカイブ',
     queue: '印刷キュー',
     stats: '統計',
+    farmMonitor: 'ファームモニター',
     profiles: 'プロファイル',
     maintenance: 'メンテナンス',
     projects: 'プロジェクト',
