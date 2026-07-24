@@ -84,39 +84,21 @@ interface MonitorThemeClasses {
 const DEFAULT_REFRESH_SECONDS = 15;
 
 function getMonitorTheme(mode: 'dark' | 'light'): MonitorThemeClasses {
-  if (mode === 'light') {
-    return {
-      page: 'bg-slate-100 text-slate-950',
-      backdrop: 'bg-[radial-gradient(circle_at_20%_0%,rgba(14,165,233,0.16),transparent_30%),radial-gradient(circle_at_85%_15%,rgba(59,130,246,0.13),transparent_26%),linear-gradient(180deg,#f8fafc_0%,#e2e8f0_100%)]',
-      panel: 'border-slate-300/80 bg-white/80 shadow-[0_20px_45px_rgba(15,23,42,0.10)]',
-      panelSoft: 'border-slate-300/80 bg-slate-50/85',
-      card: 'border-slate-300/80 bg-white/85 shadow-[inset_0_1px_0_rgba(255,255,255,0.85),0_20px_45px_rgba(15,23,42,0.12)]',
-      text: 'text-slate-950',
-      muted: 'text-slate-600',
-      subtle: 'text-slate-500',
-      border: 'border-slate-300/80',
-      divider: 'border-slate-300/70',
-      imageBox: 'border-slate-300 bg-slate-100/80',
-      footer: 'border-slate-300/80 bg-white/80 text-slate-600',
-      ringInner: 'bg-slate-50',
-      logoPath: '/img/printbuddy_logo_light.png',
-    };
-  }
   return {
-    page: 'bg-[#050a11] text-slate-100',
-    backdrop: 'bg-[radial-gradient(circle_at_20%_0%,rgba(14,165,233,0.14),transparent_28%),radial-gradient(circle_at_85%_15%,rgba(37,99,235,0.13),transparent_25%),linear-gradient(180deg,#050a11_0%,#07111b_100%)]',
-    panel: 'border-white/10 bg-slate-950/70 shadow-[0_20px_45px_rgba(0,0,0,0.25)]',
-    panelSoft: 'border-white/10 bg-slate-950/60',
-    card: 'border-white/10 bg-slate-950/70 shadow-[inset_0_1px_0_rgba(255,255,255,0.04),0_20px_45px_rgba(0,0,0,0.25)]',
+    page: 'bg-bambu-dark text-white',
+    backdrop: 'bg-bambu-dark',
+    panel: 'border-bambu-dark-tertiary bg-bambu-dark-secondary shadow-[var(--card-shadow)]',
+    panelSoft: 'border-bambu-dark-tertiary bg-bambu-dark-secondary',
+    card: 'border-bambu-dark-tertiary bg-bambu-dark-secondary shadow-[var(--card-shadow)]',
     text: 'text-white',
-    muted: 'text-slate-400',
-    subtle: 'text-slate-500',
-    border: 'border-white/10',
-    divider: 'border-white/10',
-    imageBox: 'border-white/10 bg-black/30',
-    footer: 'border-white/10 bg-slate-950/60 text-slate-400',
-    ringInner: 'bg-[#07111b]',
-    logoPath: '/img/printbuddy_logo_dark.png',
+    muted: 'text-bambu-gray-light',
+    subtle: 'text-bambu-gray',
+    border: 'border-bambu-dark-tertiary',
+    divider: 'border-bambu-dark-tertiary',
+    imageBox: 'border-bambu-dark-tertiary bg-bambu-dark',
+    footer: 'border-bambu-dark-tertiary bg-bambu-dark-secondary text-bambu-gray-light',
+    ringInner: 'bg-bambu-dark',
+    logoPath: mode === 'light' ? '/img/printbuddy_logo_light.png' : '/img/printbuddy_logo_dark.png',
   };
 }
 
@@ -294,7 +276,7 @@ function getPrinterAlerts(items: MonitorPrinter[]): MonitorAlert[] {
         detail: item.printer.name,
         sub: 'Connection lost',
         meta: 'now',
-        tone: 'text-slate-300',
+        tone: 'text-bambu-gray-light',
       }];
     }
     if (state === 'paused') {
@@ -333,10 +315,10 @@ function getPrinterAlerts(items: MonitorPrinter[]): MonitorAlert[] {
 
 function StatTile({ icon: Icon, label, value, theme, tone = 'blue', suffix }: { icon: typeof PrinterIcon; label: string; value: string | number; theme: MonitorThemeClasses; tone?: 'blue' | 'green' | 'gray' | 'purple' | 'amber'; suffix?: string }) {
   const toneClasses = {
-    blue: 'bg-blue-500/15 text-blue-400',
-    green: 'bg-emerald-500/15 text-emerald-400',
-    gray: 'bg-slate-500/20 text-slate-300',
-    purple: 'bg-purple-500/15 text-purple-300',
+    blue: 'bg-bambu-green/15 text-bambu-green-light',
+    green: 'bg-status-ok/15 text-status-ok',
+    gray: 'bg-bambu-dark-tertiary text-bambu-gray-light',
+    purple: 'bg-bambu-green/15 text-bambu-green-light',
     amber: 'bg-amber-500/15 text-amber-300',
   };
 
@@ -366,11 +348,11 @@ function PrinterCard({ item, loadedFilament, theme }: { item: MonitorPrinter; lo
   const jobName = getJobName(item);
 
   const stateClasses = {
-    printing: 'bg-emerald-500/15 text-emerald-300 shadow-emerald-500/20',
-    idle: 'bg-blue-500/15 text-blue-300 shadow-blue-500/20',
+    printing: 'bg-status-ok/15 text-status-ok shadow-status-ok/20',
+    idle: 'bg-bambu-green/15 text-bambu-green-light shadow-bambu-green/20',
     paused: 'bg-amber-500/15 text-amber-300 shadow-amber-500/20',
     stopped: 'bg-orange-500/15 text-orange-300 shadow-orange-500/20',
-    offline: 'bg-slate-500/15 text-slate-300 shadow-slate-500/20',
+    offline: 'bg-bambu-dark-tertiary text-bambu-gray-light shadow-bambu-dark-tertiary',
     error: 'bg-red-500/15 text-red-300 shadow-red-500/20',
   };
   const stateLabel = state === 'printing' ? 'PRINTING' : state === 'paused' ? 'PAUSED' : state === 'stopped' ? 'STOPPED' : state === 'offline' ? 'OFFLINE' : state === 'error' ? 'ERROR' : 'IDLE';
@@ -383,7 +365,7 @@ function PrinterCard({ item, loadedFilament, theme }: { item: MonitorPrinter; lo
         </div>
         <div className="min-w-0 flex-1">
           <div className={`mb-3 inline-flex items-center gap-2 rounded-lg px-3 py-1 text-xs font-bold shadow-lg ${stateClasses[state]}`}>
-            <span className={`h-2 w-2 rounded-full ${state === 'printing' ? 'bg-emerald-400' : state === 'paused' ? 'bg-amber-400' : state === 'stopped' ? 'bg-orange-400' : state === 'offline' ? 'bg-slate-400' : state === 'error' ? 'bg-red-400' : 'bg-blue-400'}`} />
+            <span className={`h-2 w-2 rounded-full ${state === 'printing' ? 'bg-emerald-400' : state === 'paused' ? 'bg-amber-400' : state === 'stopped' ? 'bg-orange-400' : state === 'offline' ? 'bg-bambu-gray-light' : state === 'error' ? 'bg-red-400' : 'bg-bambu-green'}`} />
             {stateLabel}
           </div>
           <h2 className={`truncate text-lg font-bold ${theme.text}`}>{printer.name}</h2>
@@ -401,19 +383,19 @@ function PrinterCard({ item, loadedFilament, theme }: { item: MonitorPrinter; lo
               <div className={`text-2xl font-bold ${theme.text}`}>{progress !== null ? `${progress}%` : '—'}</div>
             </div>
           </div>
-          <div className="h-2.5 overflow-hidden rounded-full bg-slate-800">
-            <div className="h-full rounded-full bg-gradient-to-r from-sky-400 to-blue-600 shadow-[0_0_14px_rgba(59,130,246,0.55)]" style={{ width: `${progress ?? 0}%` }} />
+          <div className="h-2.5 overflow-hidden rounded-full bg-bambu-dark-tertiary">
+            <div className="h-full rounded-full bg-gradient-to-r from-bambu-green-light to-bambu-green shadow-[0_0_14px_color-mix(in_srgb,var(--accent)_45%,transparent)]" style={{ width: `${progress ?? 0}%` }} />
           </div>
-          <div className="grid grid-cols-2 gap-2 text-sm text-slate-300">
-            <div className="flex items-center gap-2"><Clock3 className="h-4 w-4 text-slate-400" /> ETA <span className="font-semibold text-sky-400">{formatEta(status?.remaining_time)}</span></div>
-            <div className="flex items-center justify-end gap-2"><Bell className="h-4 w-4 text-slate-400" /> {formatDuration(status?.remaining_time)}</div>
-            {(layer !== null || totalLayers !== null) && <div className="col-span-2 flex items-center gap-2"><Layers className="h-4 w-4 text-slate-400" /> {layer ?? '—'} / {totalLayers ?? '—'} layers</div>}
+          <div className={`grid grid-cols-2 gap-2 text-sm ${theme.muted}`}>
+            <div className="flex items-center gap-2"><Clock3 className={`h-4 w-4 ${theme.muted}`} /> ETA <span className="font-semibold text-bambu-green-light">{formatEta(status?.remaining_time)}</span></div>
+            <div className="flex items-center justify-end gap-2"><Bell className={`h-4 w-4 ${theme.muted}`} /> {formatDuration(status?.remaining_time)}</div>
+            {(layer !== null || totalLayers !== null) && <div className="col-span-2 flex items-center gap-2"><Layers className={`h-4 w-4 ${theme.muted}`} /> {layer ?? '—'} / {totalLayers ?? '—'} layers</div>}
           </div>
         </div>
       ) : (
         <div className={`mt-7 min-h-[5.6rem] border-b pb-5 ${theme.divider}`}>
-          <div className={`text-xl font-bold ${state === 'paused' ? 'text-amber-400' : state === 'stopped' ? 'text-orange-400' : state === 'offline' || state === 'error' ? 'text-red-400' : 'text-slate-200'}`}>{stateLabel}</div>
-          <p className="mt-1 text-sm text-slate-400">{state === 'paused' ? 'Print paused' : state === 'stopped' ? 'Print stopped' : state === 'offline' ? 'No connection' : state === 'error' ? 'Needs attention' : 'Ready to print'}</p>
+          <div className={`text-xl font-bold ${state === 'paused' ? 'text-amber-400' : state === 'stopped' ? 'text-orange-400' : state === 'offline' || state === 'error' ? 'text-red-400' : theme.text}`}>{stateLabel}</div>
+          <p className={`mt-1 text-sm ${theme.muted}`}>{state === 'paused' ? 'Print paused' : state === 'stopped' ? 'Print stopped' : state === 'offline' ? 'No connection' : state === 'error' ? 'Needs attention' : 'Ready to print'}</p>
         </div>
       )}
 
@@ -433,7 +415,7 @@ function PrinterCard({ item, loadedFilament, theme }: { item: MonitorPrinter; lo
       {loadedFilament && (
         <div className={`mt-2 grid grid-cols-[1fr_auto] overflow-hidden rounded-xl border ${theme.divider} ${theme.panelSoft}`}>
           <div className="flex items-center gap-3 px-4 py-3">
-            <span className="h-9 w-9 rounded-xl border border-white/25 shadow-[inset_0_0_0_1px_rgba(0,0,0,0.25)]" style={{ backgroundColor: normalizeSpoolColor(loadedFilament.color) || '#64748b' }} />
+            <span className={`h-9 w-9 rounded-xl border ${theme.divider} shadow-[inset_0_0_0_1px_rgba(0,0,0,0.25)]`} style={{ backgroundColor: normalizeSpoolColor(loadedFilament.color) || 'var(--bg-tertiary)' }} />
             <div>
               <div className={`text-sm font-medium ${theme.text}`}>{loadedFilament.material}</div>
               <div className={`text-xs ${theme.muted}`}>{loadedFilament.detail}{displaySpoolColor(loadedFilament.color) ? ` · ${displaySpoolColor(loadedFilament.color)}` : ''}</div>
@@ -458,7 +440,7 @@ function AlertsPanel({ alerts, theme }: { alerts: MonitorAlert[]; theme: Monitor
         <span className={`text-sm ${theme.muted}`}>{alerts.length} active</span>
       </div>
       {alerts.length > 0 ? (
-        <div className="divide-y divide-white/10">
+        <div className={`divide-y ${theme.divider}`}>
           {alerts.slice(0, 5).map((alert) => (
             <div key={`${alert.title}-${alert.detail}-${alert.sub}`} className="flex gap-4 py-4 first:pt-0 last:pb-0">
               <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-amber-500/15"><alert.icon className={`h-5 w-5 ${alert.tone}`} /></div>
@@ -498,7 +480,7 @@ function ActivityPanel({ items, theme }: { items: MonitorPrinter[]; theme: Monit
         <div className="space-y-4">
           {activity.map((entry) => (
             <div key={`${entry.name}-${entry.detail}`} className="flex gap-3">
-              <div className={`mt-0.5 flex h-5 w-5 items-center justify-center rounded-full ${entry.state === 'paused' || entry.state === 'stopped' ? 'text-amber-400' : entry.state === 'offline' ? 'text-slate-400' : entry.state === 'error' ? 'text-red-400' : 'text-emerald-400'}`}>
+              <div className={`mt-0.5 flex h-5 w-5 items-center justify-center rounded-full ${entry.state === 'paused' || entry.state === 'stopped' ? 'text-amber-400' : entry.state === 'offline' ? 'text-bambu-gray-light' : entry.state === 'error' ? 'text-red-400' : 'text-emerald-400'}`}>
                 {entry.state === 'paused' || entry.state === 'stopped' ? <CirclePause className="h-5 w-5" /> : entry.state === 'offline' ? <Power className="h-5 w-5" /> : <CheckCircle2 className="h-5 w-5" />}
               </div>
               <div className="min-w-0 flex-1">
@@ -560,7 +542,7 @@ export function PrintFarmMonitorPage() {
     .filter((item) => item.status?.remaining_time !== null && item.status?.remaining_time !== undefined)
     .sort((a, b) => (a.status?.remaining_time ?? 99999) - (b.status?.remaining_time ?? 99999))[0];
   const visiblePrinters = monitorPrinters.slice(0, 8);
-  const utilizationStyle = { background: `conic-gradient(#3b82f6 ${utilization * 3.6}deg, rgba(30,41,59,0.95) 0deg)` };
+  const utilizationStyle = { background: `conic-gradient(var(--accent) ${utilization * 3.6}deg, var(--bg-tertiary) 0deg)` };
 
   return (
     <main className={`min-h-screen ${theme.page}`} data-monitor-theme={mode}>
@@ -584,14 +566,14 @@ export function PrintFarmMonitorPage() {
 
         <section className={`mb-4 rounded-2xl border px-5 py-4 ${theme.panelSoft}`}>
           <div className="flex flex-wrap items-center gap-4 text-lg">
-            <div className="inline-flex items-center gap-3 rounded-xl bg-emerald-500/15 px-4 py-2 font-bold text-emerald-300 shadow-[0_0_22px_rgba(34,197,94,0.15)]">
-              <span className="h-4 w-4 rounded-full bg-emerald-400 shadow-[0_0_16px_rgba(52,211,153,0.8)]" />
+            <div className="inline-flex items-center gap-3 rounded-xl bg-status-ok/15 px-4 py-2 font-bold text-status-ok shadow-[0_0_22px_color-mix(in_srgb,var(--status-ok)_18%,transparent)]">
+              <span className="h-4 w-4 rounded-full bg-status-ok shadow-[0_0_16px_color-mix(in_srgb,var(--status-ok)_60%,transparent)]" />
               {printing.length} PRINTERS ACTIVE
             </div>
-            <span className={`hidden h-5 w-px md:block ${mode === 'light' ? 'bg-slate-300' : 'bg-white/10'}`} />
+            <span className="hidden h-5 w-px bg-bambu-dark-tertiary md:block" />
             <div className={theme.muted}>
-              Next completion: <span className="font-bold text-blue-400">{nextCompletion?.printer.name ?? 'No active print'}</span>
-              {nextCompletion?.status?.remaining_time !== null && nextCompletion?.status?.remaining_time !== undefined && <span> in <span className="text-blue-300">{formatDuration(nextCompletion.status.remaining_time)}</span></span>}
+              Next completion: <span className="font-bold text-bambu-green-light">{nextCompletion?.printer.name ?? 'No active print'}</span>
+              {nextCompletion?.status?.remaining_time !== null && nextCompletion?.status?.remaining_time !== undefined && <span> in <span className="text-bambu-green-light">{formatDuration(nextCompletion.status.remaining_time)}</span></span>}
             </div>
             <div className={`ml-auto flex items-center gap-3 text-sm ${theme.muted}`}>
               <div className="relative h-12 w-12 rounded-full p-1" style={utilizationStyle} aria-label={`Farm utilization ${utilization}%`}>

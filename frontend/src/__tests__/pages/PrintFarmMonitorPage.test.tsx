@@ -239,6 +239,7 @@ describe('PrintFarmMonitorPage', () => {
     const heading = await screen.findByRole('heading', { name: 'Print Farm Monitor' });
     const monitor = heading.closest('main');
     expect(monitor).toHaveAttribute('data-monitor-theme', 'light');
+    expect(monitor).toHaveClass('bg-bambu-dark');
     expect(screen.getByAltText('Printbuddy')).toHaveAttribute('src', '/img/printbuddy_logo_light.png');
   });
 });
