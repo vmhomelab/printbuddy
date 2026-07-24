@@ -1145,6 +1145,8 @@ export interface AppSettings {
   stagger_interval_minutes: number;
   // Plate-clear confirmation
   require_plate_clear: boolean;
+  // Print farm monitor kiosk refresh interval, seconds
+  print_farm_monitor_refresh_interval: number;
   // Shortest job first scheduling
   queue_shortest_first: boolean;
   // Default sidebar order (admin-set for all users)
@@ -4572,6 +4574,7 @@ export const api = {
       ams_temp_fair?: number;
       bed_cooled_threshold?: number;
       panda_breath_printer_assignments?: string;
+      print_farm_monitor_refresh_interval?: number;
     }>('/settings/ui-preferences'),
   updateSettings: (data: AppSettingsUpdate) =>
     request<AppSettings>('/settings/', {

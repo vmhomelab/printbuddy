@@ -1120,7 +1120,8 @@ export function SettingsPage() {
       (settings.default_timelapse ?? false) !== (localSettings.default_timelapse ?? false) ||
       (settings.stagger_group_size ?? 2) !== (localSettings.stagger_group_size ?? 2) ||
       (settings.stagger_interval_minutes ?? 5) !== (localSettings.stagger_interval_minutes ?? 5) ||
-      (settings.require_plate_clear ?? false) !== (localSettings.require_plate_clear ?? false);
+      (settings.require_plate_clear ?? false) !== (localSettings.require_plate_clear ?? false) ||
+      (settings.print_farm_monitor_refresh_interval ?? 15) !== (localSettings.print_farm_monitor_refresh_interval ?? 15);
 
     if (!hasChanges) {
       return;
@@ -1208,6 +1209,7 @@ export function SettingsPage() {
         stagger_group_size: localSettings.stagger_group_size,
         stagger_interval_minutes: localSettings.stagger_interval_minutes,
         require_plate_clear: localSettings.require_plate_clear,
+        print_farm_monitor_refresh_interval: localSettings.print_farm_monitor_refresh_interval,
       };
       updateMutation.mutate(settingsToSave);
     }, 500);
@@ -1704,6 +1706,23 @@ export function SettingsPage() {
                     <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
                   </div>
                 </div>
+              </div>
+              <div>
+                <label className="block text-sm text-bambu-gray mb-1">
+                  Print Farm Monitor refresh interval
+                </label>
+                <input
+                  type="number"
+                  min="5"
+                  max="300"
+                  step="1"
+                  value={localSettings.print_farm_monitor_refresh_interval ?? 15}
+                  onChange={(e) => updateSetting('print_farm_monitor_refresh_interval', Math.min(300, Math.max(5, Number(e.target.value) || 15)))}
+                  className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                />
+                <p className="text-xs text-bambu-gray mt-1">
+                  Refresh cadence in seconds for the TV/kiosk farm monitor page. Default is 15 seconds.
+                </p>
               </div>
               <div>
                 <label className="block text-sm text-bambu-gray mb-1">

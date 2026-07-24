@@ -18,7 +18,16 @@ import {
   TriangleAlert,
   Wrench,
 } from 'lucide-react';
-import { api, type PrintQueueItem, type Printer, type PrinterStatus } from '../api/client';
+import {
+  api,
+  type InventorySpool,
+  type MaintenanceStatus,
+  type PrintQueueItem,
+  type Printer,
+  type PrinterMaintenanceOverview,
+  type PrinterStatus,
+  type SpoolAssignment,
+} from '../api/client';
 import { getPrinterImage } from '../utils/printer';
 import { appAssetPath } from '../utils/assetPaths';
 
@@ -27,21 +36,45 @@ interface MonitorPrinter {
   status?: PrinterStatus;
 }
 
-type NormalizedState = 'printing' | 'idle' | 'paused' | 'offline' | 'error';
+type NormalizedState = 'printing' | 'idle' | 'paused' | 'stopped' | 'offline' | 'error';
 
-const DEMO_SPOOLS = [
-  { material: 'PLA Matte Black', spool: 'Spool A1', color: 'bg-zinc-500' },
-  { material: 'PETG Orange', spool: 'Spool A1', color: 'bg-orange-500' },
-  { material: 'PLA White', spool: 'Spool B1', color: 'bg-zinc-100' },
-  { material: 'ABS Gray', spool: 'Spool B2', color: 'bg-zinc-400' },
-  { material: 'PLA Blue', spool: 'Spool C1', color: 'bg-sky-500' },
-  { material: 'PETG Black', spool: 'Spool D1', color: 'bg-zinc-700' },
-];
+type SpoolmanSlotAssignmentRow = {
+  printer_id: number;
+  printer_name: string | null;
+  ams_id: number;
+  tray_id: number;
+  spoolman_spool_id: number;
+  ams_label: string | null;
+};
+
+interface LoadedFilamentInfo {
+  material: string;
+  detail: string;
+  color?: string | null;
+  remainingPct?: number | null;
+}
+
+interface MonitorAlert {
+  icon: typeof AlertTriangle;
+  title: string;
+  detail: string;
+  sub: string;
+  meta: string;
+  tone: string;
+}
+
+const DEFAULT_REFRESH_SECONDS = 15;
+
+function normalizeRefreshSeconds(value: number | null | undefined): number {
+  if (!Number.isFinite(value ?? NaN)) return DEFAULT_REFRESH_SECONDS;
+  return Math.min(300, Math.max(5, Math.round(value!)));
+}
 
 function normalizeState(status?: PrinterStatus): NormalizedState {
   if (!status || !status.connected) return 'offline';
   const state = (status.state ?? '').toLowerCase();
   if (state.includes('pause')) return 'paused';
+  if (state.includes('stop') || state.includes('cancel')) return 'stopped';
   if (state.includes('error') || state.includes('fail')) return 'error';
   if (state.includes('print') || state.includes('run') || status.progress !== null || status.current_print) return 'printing';
   return 'idle';
@@ -66,21 +99,166 @@ function formatEta(minutes: number | null | undefined): string {
   return eta.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-function getJobName(item: MonitorPrinter, index: number): string {
-  return item.status?.current_print || item.status?.subtask_name || item.status?.gcode_file || [
-    'Gridfinity Calibration Tray',
-    'Honeycomb Desk Organizer',
-    'Cable Pass-Through Plates',
-    'Voron Test Cube',
-  ][index % 4];
+function getJobName(item: MonitorPrinter): string | null {
+  return item.status?.current_print || item.status?.subtask_name || item.status?.gcode_file || null;
 }
 
-function getLocation(printer: Printer, index: number): string {
-  return printer.location || [`Rack A-01`, `Rack A-02`, `Rack B-01`, `Rack B-02`, `Rack C-01`, `Rack C-02`, `Rack D-01`, `Rack D-02`][index % 8];
+function spoolLabel(spool: InventorySpool): string {
+  return [spool.brand, spool.material, spool.subtype, spool.color_name].filter(Boolean).join(' ');
 }
 
-function getSpool(index: number) {
-  return DEMO_SPOOLS[index % DEMO_SPOOLS.length];
+function spoolRemainingPct(spool: InventorySpool): number | null {
+  if (!spool.label_weight || spool.label_weight <= 0) return null;
+  const remaining = Math.max(0, spool.label_weight - (spool.weight_used ?? 0));
+  return Math.round((remaining / spool.label_weight) * 100);
+}
+
+function getLoadedFilamentInfo(
+  item: MonitorPrinter,
+  localAssignments: SpoolAssignment[],
+  spoolmanSpools: InventorySpool[],
+  spoolmanSlotAssignments: SpoolmanSlotAssignmentRow[],
+): LoadedFilamentInfo | null {
+  const { printer, status } = item;
+
+  const loadedLocal = localAssignments.find((assignment) => assignment.printer_id === printer.id && assignment.ams_id === -1 && assignment.tray_id === 0)?.spool;
+  if (loadedLocal) {
+    return {
+      material: spoolLabel(loadedLocal),
+      detail: 'Loaded spool',
+      color: loadedLocal.rgba,
+      remainingPct: spoolRemainingPct(loadedLocal),
+    };
+  }
+
+  const loadedSpoolmanAssignment = spoolmanSlotAssignments.find((assignment) => assignment.printer_id === printer.id && assignment.ams_id === 255 && assignment.tray_id === 0);
+  const loadedSpoolman = loadedSpoolmanAssignment ? spoolmanSpools.find((spool) => spool.id === loadedSpoolmanAssignment.spoolman_spool_id) : undefined;
+  if (loadedSpoolman) {
+    return {
+      material: spoolLabel(loadedSpoolman),
+      detail: 'Loaded spool',
+      color: loadedSpoolman.rgba,
+      remainingPct: spoolRemainingPct(loadedSpoolman),
+    };
+  }
+
+  const virtualTray = status?.vt_tray?.find((tray) => tray.tray_type || tray.tray_sub_brands || tray.tray_color);
+  if (virtualTray) {
+    return {
+      material: [virtualTray.tray_type, virtualTray.tray_sub_brands].filter(Boolean).join(' ') || 'External filament',
+      detail: 'External spool',
+      color: virtualTray.tray_color,
+      remainingPct: typeof virtualTray.remain === 'number' ? virtualTray.remain : null,
+    };
+  }
+
+  const amsTray = status?.ams
+    ?.flatMap((ams) => ams.tray.map((tray) => ({ amsId: ams.id, tray })))
+    .find(({ tray }) => tray.tray_type || tray.tray_sub_brands || tray.tray_color);
+  if (amsTray) {
+    return {
+      material: [amsTray.tray.tray_type, amsTray.tray.tray_sub_brands].filter(Boolean).join(' ') || `AMS ${amsTray.amsId} tray ${amsTray.tray.id}`,
+      detail: `AMS ${amsTray.amsId} tray ${amsTray.tray.id}`,
+      color: amsTray.tray.tray_color,
+      remainingPct: typeof amsTray.tray.remain === 'number' ? amsTray.tray.remain : null,
+    };
+  }
+
+  return null;
+}
+
+function getLowSpoolAlerts(spools: InventorySpool[], defaultThreshold: number): MonitorAlert[] {
+  return spools
+    .filter((spool) => !spool.archived_at)
+    .map((spool) => {
+      const remainingPct = spoolRemainingPct(spool);
+      const threshold = spool.low_stock_threshold_pct ?? defaultThreshold;
+      return { spool, remainingPct, threshold };
+    })
+    .filter((entry): entry is { spool: InventorySpool; remainingPct: number; threshold: number } => entry.remainingPct !== null && entry.remainingPct <= entry.threshold)
+    .sort((a, b) => a.remainingPct - b.remainingPct)
+    .slice(0, 4)
+    .map(({ spool, remainingPct }) => ({
+      icon: PackageOpen,
+      title: 'LOW FILAMENT',
+      detail: spoolLabel(spool),
+      sub: spool.storage_location || spool.category || 'Inventory spool',
+      meta: `${remainingPct}%`,
+      tone: 'text-orange-400',
+    }));
+}
+
+function getMaintenanceAlerts(overview: PrinterMaintenanceOverview[]): MonitorAlert[] {
+  return overview
+    .flatMap((printer) => printer.maintenance_items.map((item) => ({ printer, item })))
+    .filter(({ item }) => item.enabled && (item.is_due || item.is_warning))
+    .sort((a, b) => Number(b.item.is_due) - Number(a.item.is_due) || a.item.hours_until_due - b.item.hours_until_due)
+    .slice(0, 4)
+    .map(({ printer, item }) => ({
+      icon: Wrench,
+      title: item.is_due ? 'MAINTENANCE DUE' : 'MAINTENANCE SOON',
+      detail: printer.printer_name,
+      sub: item.maintenance_type_name,
+      meta: formatMaintenanceMeta(item),
+      tone: item.is_due ? 'text-yellow-300' : 'text-amber-300',
+    }));
+}
+
+function formatMaintenanceMeta(item: MaintenanceStatus): string {
+  if (item.interval_type === 'days') {
+    if (item.days_until_due === null || item.days_until_due === undefined) return item.is_due ? 'due' : 'soon';
+    if (item.days_until_due <= 0) return 'due';
+    return `${Math.round(item.days_until_due)}d`;
+  }
+  if (item.hours_until_due <= 0) return 'due';
+  return `${Math.round(item.hours_until_due)}h`;
+}
+
+function getPrinterAlerts(items: MonitorPrinter[]): MonitorAlert[] {
+  return items.flatMap((item) => {
+    const state = normalizeState(item.status);
+    if (state === 'offline') {
+      return [{
+        icon: Power,
+        title: 'PRINTER OFFLINE',
+        detail: item.printer.name,
+        sub: 'Connection lost',
+        meta: 'now',
+        tone: 'text-slate-300',
+      }];
+    }
+    if (state === 'paused') {
+      return [{
+        icon: PauseCircle,
+        title: 'PRINT PAUSED',
+        detail: item.printer.name,
+        sub: getJobName(item) || 'Paused by printer state',
+        meta: formatDuration(item.status?.remaining_time),
+        tone: 'text-amber-300',
+      }];
+    }
+    if (state === 'stopped') {
+      return [{
+        icon: CirclePause,
+        title: 'PRINT STOPPED',
+        detail: item.printer.name,
+        sub: getJobName(item) || 'Stopped by printer state',
+        meta: 'stopped',
+        tone: 'text-orange-300',
+      }];
+    }
+    if (state === 'error' || (item.status?.hms_errors?.length ?? 0) > 0) {
+      return [{
+        icon: AlertTriangle,
+        title: 'PRINTER ERROR',
+        detail: item.printer.name,
+        sub: `${item.status?.hms_errors?.length ?? 0} active printer error${(item.status?.hms_errors?.length ?? 0) === 1 ? '' : 's'}`,
+        meta: 'error',
+        tone: 'text-red-300',
+      }];
+    }
+    return [];
+  });
 }
 
 function StatTile({ icon: Icon, label, value, tone = 'blue', suffix }: { icon: typeof PrinterIcon; label: string; value: string | number; tone?: 'blue' | 'green' | 'gray' | 'purple' | 'amber'; suffix?: string }) {
@@ -107,24 +285,25 @@ function StatTile({ icon: Icon, label, value, tone = 'blue', suffix }: { icon: t
   );
 }
 
-function PrinterCard({ item, index }: { item: MonitorPrinter; index: number }) {
+function PrinterCard({ item, loadedFilament }: { item: MonitorPrinter; loadedFilament: LoadedFilamentInfo | null }) {
   const { printer, status } = item;
   const state = normalizeState(status);
-  const progress = Math.min(100, Math.max(0, Math.round(status?.progress ?? (state === 'printing' ? [42, 29, 67, 81][index % 4] : 0))));
-  const spool = getSpool(index);
-  const nozzle = Math.round(status?.temperatures?.nozzle ?? (state === 'printing' ? 205 + (index % 4) * 3 : 27 + index));
-  const bed = Math.round(status?.temperatures?.bed ?? (state === 'printing' ? 58 + (index % 3) : 26 + (index % 3)));
-  const layer = status?.layer_num ?? (state === 'printing' ? 58 + index * 26 : null);
-  const totalLayers = status?.total_layers ?? (state === 'printing' ? 198 + index * 2 : null);
+  const progress = status?.progress === null || status?.progress === undefined ? null : Math.min(100, Math.max(0, Math.round(status.progress)));
+  const nozzle = status?.temperatures?.nozzle === null || status?.temperatures?.nozzle === undefined ? null : Math.round(status.temperatures.nozzle);
+  const bed = status?.temperatures?.bed === null || status?.temperatures?.bed === undefined ? null : Math.round(status.temperatures.bed);
+  const layer = status?.layer_num ?? null;
+  const totalLayers = status?.total_layers ?? null;
+  const jobName = getJobName(item);
 
   const stateClasses = {
     printing: 'bg-emerald-500/15 text-emerald-300 shadow-emerald-500/20',
     idle: 'bg-blue-500/15 text-blue-300 shadow-blue-500/20',
     paused: 'bg-amber-500/15 text-amber-300 shadow-amber-500/20',
+    stopped: 'bg-orange-500/15 text-orange-300 shadow-orange-500/20',
     offline: 'bg-slate-500/15 text-slate-300 shadow-slate-500/20',
     error: 'bg-red-500/15 text-red-300 shadow-red-500/20',
   };
-  const stateLabel = state === 'printing' ? 'PRINTING' : state === 'paused' ? 'PAUSED' : state === 'offline' ? 'OFFLINE' : state === 'error' ? 'ERROR' : 'IDLE';
+  const stateLabel = state === 'printing' ? 'PRINTING' : state === 'paused' ? 'PAUSED' : state === 'stopped' ? 'STOPPED' : state === 'offline' ? 'OFFLINE' : state === 'error' ? 'ERROR' : 'IDLE';
 
   return (
     <article className="rounded-2xl border border-white/10 bg-slate-950/70 p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.04),0_20px_45px_rgba(0,0,0,0.25)]">
@@ -134,12 +313,12 @@ function PrinterCard({ item, index }: { item: MonitorPrinter; index: number }) {
         </div>
         <div className="min-w-0 flex-1">
           <div className={`mb-3 inline-flex items-center gap-2 rounded-lg px-3 py-1 text-xs font-bold shadow-lg ${stateClasses[state]}`}>
-            <span className={`h-2 w-2 rounded-full ${state === 'printing' ? 'bg-emerald-400' : state === 'paused' ? 'bg-amber-400' : state === 'offline' ? 'bg-slate-400' : state === 'error' ? 'bg-red-400' : 'bg-blue-400'}`} />
+            <span className={`h-2 w-2 rounded-full ${state === 'printing' ? 'bg-emerald-400' : state === 'paused' ? 'bg-amber-400' : state === 'stopped' ? 'bg-orange-400' : state === 'offline' ? 'bg-slate-400' : state === 'error' ? 'bg-red-400' : 'bg-blue-400'}`} />
             {stateLabel}
           </div>
           <h2 className="truncate text-lg font-bold text-white">{printer.name}</h2>
           <p className="truncate text-sm text-slate-400">{printer.model || printer.provider || 'Printer'}</p>
-          <p className="truncate text-sm text-slate-400">{getLocation(printer, index)}</p>
+          {printer.location && <p className="truncate text-sm text-slate-400">{printer.location}</p>}
         </div>
       </div>
 
@@ -148,142 +327,165 @@ function PrinterCard({ item, index }: { item: MonitorPrinter; index: number }) {
           <div>
             <div className="mb-1 text-[0.68rem] font-semibold uppercase text-slate-500">Current job</div>
             <div className="flex items-end justify-between gap-3">
-              <div className="truncate font-semibold text-white">{getJobName(item, index)}</div>
-              <div className="text-2xl font-bold text-white">{progress}%</div>
+              <div className="truncate font-semibold text-white">{jobName ?? 'Active print'}</div>
+              <div className="text-2xl font-bold text-white">{progress !== null ? `${progress}%` : '—'}</div>
             </div>
           </div>
           <div className="h-2.5 overflow-hidden rounded-full bg-slate-800">
-            <div className="h-full rounded-full bg-gradient-to-r from-sky-400 to-blue-600 shadow-[0_0_14px_rgba(59,130,246,0.55)]" style={{ width: `${progress}%` }} />
+            <div className="h-full rounded-full bg-gradient-to-r from-sky-400 to-blue-600 shadow-[0_0_14px_rgba(59,130,246,0.55)]" style={{ width: `${progress ?? 0}%` }} />
           </div>
           <div className="grid grid-cols-2 gap-2 text-sm text-slate-300">
             <div className="flex items-center gap-2"><Clock3 className="h-4 w-4 text-slate-400" /> ETA <span className="font-semibold text-sky-400">{formatEta(status?.remaining_time)}</span></div>
             <div className="flex items-center justify-end gap-2"><Bell className="h-4 w-4 text-slate-400" /> {formatDuration(status?.remaining_time)}</div>
-            <div className="col-span-2 flex items-center gap-2"><Layers className="h-4 w-4 text-slate-400" /> {layer ?? '—'} / {totalLayers ?? '—'} layers</div>
+            {(layer !== null || totalLayers !== null) && <div className="col-span-2 flex items-center gap-2"><Layers className="h-4 w-4 text-slate-400" /> {layer ?? '—'} / {totalLayers ?? '—'} layers</div>}
           </div>
         </div>
       ) : (
         <div className="mt-7 min-h-[5.6rem] border-b border-white/10 pb-5">
-          <div className={`text-xl font-bold ${state === 'paused' ? 'text-amber-400' : state === 'offline' || state === 'error' ? 'text-red-400' : 'text-slate-200'}`}>{stateLabel}</div>
-          <p className="mt-1 text-sm text-slate-400">{state === 'paused' ? 'User paused' : state === 'offline' ? 'No connection' : state === 'error' ? 'Needs attention' : 'Ready to print'}</p>
-          {state === 'offline' && <p className="mt-5 text-sm text-slate-400">Last seen 1h ago</p>}
+          <div className={`text-xl font-bold ${state === 'paused' ? 'text-amber-400' : state === 'stopped' ? 'text-orange-400' : state === 'offline' || state === 'error' ? 'text-red-400' : 'text-slate-200'}`}>{stateLabel}</div>
+          <p className="mt-1 text-sm text-slate-400">{state === 'paused' ? 'Print paused' : state === 'stopped' ? 'Print stopped' : state === 'offline' ? 'No connection' : state === 'error' ? 'Needs attention' : 'Ready to print'}</p>
         </div>
       )}
 
-      <div className="mt-4 grid grid-cols-2 overflow-hidden rounded-xl border border-white/10 bg-black/20">
-        <div className="flex items-center gap-3 border-r border-white/10 px-4 py-3">
-          <Thermometer className="h-6 w-6 text-red-400" />
-          <div><div className="font-bold text-white">{nozzle}°C</div><div className="text-xs text-slate-400">Nozzle</div></div>
+      {(nozzle !== null || bed !== null) && (
+        <div className="mt-4 grid grid-cols-2 overflow-hidden rounded-xl border border-white/10 bg-black/20">
+          <div className="flex items-center gap-3 border-r border-white/10 px-4 py-3">
+            <Thermometer className="h-6 w-6 text-red-400" />
+            <div><div className="font-bold text-white">{nozzle !== null ? `${nozzle}°C` : '—'}</div><div className="text-xs text-slate-400">Nozzle</div></div>
+          </div>
+          <div className="flex items-center justify-end gap-3 px-4 py-3">
+            <Thermometer className="h-6 w-6 text-blue-400" />
+            <div><div className="font-bold text-white">{bed !== null ? `${bed}°C` : '—'}</div><div className="text-xs text-slate-400">Bed</div></div>
+          </div>
         </div>
-        <div className="flex items-center justify-end gap-3 px-4 py-3">
-          <Thermometer className="h-6 w-6 text-blue-400" />
-          <div><div className="font-bold text-white">{bed}°C</div><div className="text-xs text-slate-400">Bed</div></div>
-        </div>
-      </div>
+      )}
 
-      <div className="mt-2 grid grid-cols-[1fr_auto] overflow-hidden rounded-xl border border-white/10 bg-black/20">
-        <div className="flex items-center gap-3 px-4 py-3">
-          <span className={`h-6 w-6 rounded-full border border-white/20 ${spool.color}`} />
-          <div><div className="text-sm font-medium text-slate-200">{spool.material}</div><div className="text-xs text-slate-400">{spool.spool}</div></div>
+      {loadedFilament && (
+        <div className="mt-2 grid grid-cols-[1fr_auto] overflow-hidden rounded-xl border border-white/10 bg-black/20">
+          <div className="flex items-center gap-3 px-4 py-3">
+            <span className="h-6 w-6 rounded-full border border-white/20" style={{ backgroundColor: loadedFilament.color || '#64748b' }} />
+            <div><div className="text-sm font-medium text-slate-200">{loadedFilament.material}</div><div className="text-xs text-slate-400">{loadedFilament.detail}</div></div>
+          </div>
+          {loadedFilament.remainingPct !== null && loadedFilament.remainingPct !== undefined && (
+            <div className="flex min-w-24 items-center justify-center border-l border-white/10 px-4 py-3 text-center text-xs font-bold text-slate-300">
+              {loadedFilament.remainingPct}%<br />LEFT
+            </div>
+          )}
         </div>
-        <div className={`flex min-w-24 items-center justify-center gap-2 border-l border-white/10 px-4 py-3 ${state === 'paused' ? 'bg-amber-500/15 text-amber-300' : state === 'offline' ? 'bg-slate-600/20 text-slate-400' : 'bg-emerald-500/15 text-emerald-300'}`}>
-          <CheckCircle2 className="h-4 w-4" />
-          <div className="text-center text-xs font-bold">HEALTH<br />{state === 'offline' ? 'N/A' : state === 'paused' ? 'WARN' : 'OK'}</div>
-        </div>
-      </div>
+      )}
     </article>
   );
 }
 
-function AlertsPanel({ activeAlerts, paused, offline }: { activeAlerts: number; paused: MonitorPrinter[]; offline: MonitorPrinter[] }) {
-  const alerts = [
-    { icon: PackageOpen, title: 'LOW FILAMENT', detail: 'Rack B-03', sub: 'PLA White', meta: '18%', tone: 'text-orange-400' },
-    ...(paused[0] ? [{ icon: PauseCircle, title: 'PRINTER PAUSED', detail: paused[0].printer.name, sub: 'Paused by user', meta: '15m ago', tone: 'text-amber-300' }] : []),
-    { icon: Wrench, title: 'MAINTENANCE DUE', detail: 'Demo Creality Ender 3 S1', sub: 'Maintenance due in 2h', meta: '2h remaining', tone: 'text-yellow-300' },
-    ...(offline[0] ? [{ icon: Power, title: 'OFFLINE', detail: offline[0].printer.name, sub: 'Connection lost', meta: '1h ago', tone: 'text-slate-300' }] : []),
-  ].slice(0, 3);
-
+function AlertsPanel({ alerts }: { alerts: MonitorAlert[] }) {
   return (
     <section className="rounded-2xl border border-white/10 bg-slate-950/70 p-5">
       <div className="mb-4 flex items-center justify-between border-b border-white/10 pb-4">
         <div className="flex items-center gap-3 text-xl font-bold text-white"><Bell className="h-6 w-6 text-orange-400" /> ALERTS</div>
-        <span className="text-sm text-slate-400">{activeAlerts} active</span>
+        <span className="text-sm text-slate-400">{alerts.length} active</span>
       </div>
-      <div className="divide-y divide-white/10">
-        {alerts.map((alert) => (
-          <div key={`${alert.title}-${alert.detail}`} className="flex gap-4 py-4 first:pt-0 last:pb-0">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-amber-500/15"><alert.icon className={`h-5 w-5 ${alert.tone}`} /></div>
-            <div className="min-w-0 flex-1">
-              <div className={`text-sm font-bold ${alert.tone}`}>{alert.title}</div>
-              <div className="truncate text-sm text-slate-300">{alert.detail}</div>
-              <div className="truncate text-sm text-slate-400">{alert.sub}</div>
+      {alerts.length > 0 ? (
+        <div className="divide-y divide-white/10">
+          {alerts.slice(0, 5).map((alert) => (
+            <div key={`${alert.title}-${alert.detail}-${alert.sub}`} className="flex gap-4 py-4 first:pt-0 last:pb-0">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-amber-500/15"><alert.icon className={`h-5 w-5 ${alert.tone}`} /></div>
+              <div className="min-w-0 flex-1">
+                <div className={`text-sm font-bold ${alert.tone}`}>{alert.title}</div>
+                <div className="truncate text-sm text-slate-300">{alert.detail}</div>
+                <div className="truncate text-sm text-slate-400">{alert.sub}</div>
+              </div>
+              <div className="text-right text-lg font-bold text-white">{alert.meta}</div>
             </div>
-            <div className="text-right text-lg font-bold text-white">{alert.meta}</div>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      ) : (
+        <div className="py-8 text-center text-sm text-slate-400">No active alerts from printer, inventory, or maintenance data.</div>
+      )}
     </section>
   );
 }
 
 function ActivityPanel({ items }: { items: MonitorPrinter[] }) {
-  const activity = items.slice(0, 4).map((item, index) => {
-    const state = normalizeState(item.status);
-    return {
-      name: item.printer.name,
-      detail: state === 'printing' ? (index % 2 === 0 ? 'Print started' : 'Print completed') : state === 'paused' ? 'Print paused' : state === 'offline' ? 'Connection lost' : 'Ready to print',
-      ago: ['10m ago', '22m ago', '15m ago', '1h ago'][index] ?? 'now',
-      state,
-    };
-  });
+  const activity = items
+    .filter((item) => ['printing', 'paused', 'stopped', 'offline', 'error'].includes(normalizeState(item.status)))
+    .slice(0, 4)
+    .map((item) => {
+      const state = normalizeState(item.status);
+      return {
+        name: item.printer.name,
+        detail: state === 'printing' ? 'Printing' : state === 'paused' ? 'Print paused' : state === 'stopped' ? 'Print stopped' : state === 'offline' ? 'Connection lost' : 'Printer error',
+        state,
+      };
+    });
 
   return (
     <section className="rounded-2xl border border-white/10 bg-slate-950/70 p-5">
       <h2 className="mb-4 text-base font-semibold uppercase tracking-wide text-slate-300">Recent Activity</h2>
-      <div className="space-y-4">
-        {activity.map((entry) => (
-          <div key={`${entry.name}-${entry.detail}`} className="flex gap-3">
-            <div className={`mt-0.5 flex h-5 w-5 items-center justify-center rounded-full ${entry.state === 'paused' ? 'text-amber-400' : entry.state === 'offline' ? 'text-slate-400' : 'text-emerald-400'}`}>
-              {entry.state === 'paused' ? <CirclePause className="h-5 w-5" /> : entry.state === 'offline' ? <Power className="h-5 w-5" /> : <CheckCircle2 className="h-5 w-5" />}
+      {activity.length > 0 ? (
+        <div className="space-y-4">
+          {activity.map((entry) => (
+            <div key={`${entry.name}-${entry.detail}`} className="flex gap-3">
+              <div className={`mt-0.5 flex h-5 w-5 items-center justify-center rounded-full ${entry.state === 'paused' || entry.state === 'stopped' ? 'text-amber-400' : entry.state === 'offline' ? 'text-slate-400' : entry.state === 'error' ? 'text-red-400' : 'text-emerald-400'}`}>
+                {entry.state === 'paused' || entry.state === 'stopped' ? <CirclePause className="h-5 w-5" /> : entry.state === 'offline' ? <Power className="h-5 w-5" /> : <CheckCircle2 className="h-5 w-5" />}
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm font-medium text-white">{entry.name}</div>
+                <div className="truncate text-sm text-slate-400">{entry.detail}</div>
+              </div>
             </div>
-            <div className="min-w-0 flex-1">
-              <div className="truncate text-sm font-medium text-white">{entry.name}</div>
-              <div className="truncate text-sm text-slate-400">{entry.detail}</div>
-            </div>
-            <div className="text-sm text-slate-400">{entry.ago}</div>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      ) : (
+        <div className="py-8 text-center text-sm text-slate-400">No active printer events.</div>
+      )}
     </section>
   );
 }
 
 export function PrintFarmMonitorPage() {
   const now = new Date();
-  const { data: printers = [] } = useQuery({ queryKey: ['printers'], queryFn: api.getPrinters, refetchInterval: 30_000 });
-  const { data: queue = [] } = useQuery({ queryKey: ['queue', 'monitor'], queryFn: () => api.getQueue(), refetchInterval: 30_000 });
+  const { data: uiPreferences } = useQuery({ queryKey: ['ui-preferences'], queryFn: api.getUiPreferences, staleTime: 30_000 });
+  const refreshSeconds = normalizeRefreshSeconds(uiPreferences?.print_farm_monitor_refresh_interval);
+  const refreshMs = refreshSeconds * 1000;
+  const { data: printers = [] } = useQuery({ queryKey: ['printers'], queryFn: api.getPrinters, refetchInterval: refreshMs });
+  const { data: queue = [] } = useQuery({ queryKey: ['queue', 'monitor'], queryFn: () => api.getQueue(), refetchInterval: refreshMs });
   const { data: version } = useQuery({ queryKey: ['version'], queryFn: api.getVersion, staleTime: Infinity });
+  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
+  const { data: spoolmanSettings } = useQuery({ queryKey: ['settings', 'spoolman', 'monitor'], queryFn: api.getSpoolmanSettings, staleTime: 60_000, retry: false });
+  const { data: localAssignments = [] } = useQuery({ queryKey: ['inventory-assignments', 'monitor'], queryFn: () => api.getAssignments(), refetchInterval: refreshMs, retry: false });
+  const { data: localSpools = [] } = useQuery({ queryKey: ['inventory-spools', 'monitor'], queryFn: () => api.getSpools(false), refetchInterval: refreshMs, retry: false });
+  const spoolmanEnabled = spoolmanSettings?.spoolman_enabled === 'true';
+  const { data: spoolmanSpools = [] } = useQuery({ queryKey: ['spoolman-inventory-spools', 'monitor'], queryFn: () => api.getSpoolmanInventorySpools(false), enabled: spoolmanEnabled, refetchInterval: refreshMs, retry: false });
+  const { data: spoolmanSlotAssignments = [] } = useQuery({ queryKey: ['spoolman-slot-assignments', 'monitor'], queryFn: () => api.getSpoolmanSlotAssignments(), enabled: spoolmanEnabled, refetchInterval: refreshMs, retry: false });
+  const { data: maintenanceOverview = [] } = useQuery({ queryKey: ['maintenance-overview', 'monitor'], queryFn: api.getMaintenanceOverview, refetchInterval: refreshMs, retry: false });
   const statusQueries = useQueries({
     queries: printers.map((printer) => ({
       queryKey: ['printerStatus', printer.id],
       queryFn: () => api.getPrinterStatus(printer.id),
-      refetchInterval: 15_000,
+      refetchInterval: refreshMs,
       enabled: printer.is_active !== false,
     })),
   });
 
   const monitorPrinters = useMemo<MonitorPrinter[]>(() => printers.map((printer, index) => ({ printer, status: statusQueries[index]?.data })), [printers, statusQueries]);
+  const loadedFilaments = useMemo(() => new Map(monitorPrinters.map((item) => [item.printer.id, getLoadedFilamentInfo(item, localAssignments, spoolmanSpools, spoolmanSlotAssignments)])), [localAssignments, monitorPrinters, spoolmanSlotAssignments, spoolmanSpools]);
   const printing = monitorPrinters.filter((item) => normalizeState(item.status) === 'printing');
   const paused = monitorPrinters.filter((item) => normalizeState(item.status) === 'paused');
+  const stopped = monitorPrinters.filter((item) => normalizeState(item.status) === 'stopped');
   const offline = monitorPrinters.filter((item) => normalizeState(item.status) === 'offline');
   const idle = monitorPrinters.filter((item) => normalizeState(item.status) === 'idle');
   const errors = monitorPrinters.filter((item) => normalizeState(item.status) === 'error' || (item.status?.hms_errors?.length ?? 0) > 0);
-  const activePrinters = printing.length;
   const utilization = printers.length > 0 ? Math.round((printing.length / printers.length) * 100) : 0;
-  const activeAlerts = Math.max(errors.length + paused.length + offline.length, printers.length ? 1 : 0);
+  const activeAlerts = useMemo(() => [
+    ...getPrinterAlerts(monitorPrinters),
+    ...getLowSpoolAlerts(spoolmanEnabled ? spoolmanSpools : localSpools, settings?.low_stock_threshold ?? 20),
+    ...getMaintenanceAlerts(maintenanceOverview),
+  ], [localSpools, maintenanceOverview, monitorPrinters, settings?.low_stock_threshold, spoolmanEnabled, spoolmanSpools]);
   const nextCompletion = printing
     .filter((item) => item.status?.remaining_time !== null && item.status?.remaining_time !== undefined)
     .sort((a, b) => (a.status?.remaining_time ?? 99999) - (b.status?.remaining_time ?? 99999))[0];
   const visiblePrinters = monitorPrinters.slice(0, 8);
+  const utilizationStyle = { background: `conic-gradient(#3b82f6 ${utilization * 3.6}deg, rgba(30,41,59,0.95) 0deg)` };
 
   return (
     <main className="min-h-screen bg-[#050a11] text-slate-100">
@@ -301,7 +503,7 @@ export function PrintFarmMonitorPage() {
             <StatTile icon={PauseCircle} label="Idle" value={idle.length} tone="blue" />
             <StatTile icon={Power} label="Offline" value={offline.length} tone="gray" />
             <StatTile icon={Layers} label="Queue Size" value={(queue as PrintQueueItem[]).length} tone="purple" />
-            <StatTile icon={AlertTriangle} label="Active Alerts" value={activeAlerts} tone="amber" />
+            <StatTile icon={AlertTriangle} label="Active Alerts" value={activeAlerts.length} tone="amber" />
           </div>
         </header>
 
@@ -309,7 +511,7 @@ export function PrintFarmMonitorPage() {
           <div className="flex flex-wrap items-center gap-4 text-lg">
             <div className="inline-flex items-center gap-3 rounded-xl bg-emerald-500/15 px-4 py-2 font-bold text-emerald-300 shadow-[0_0_22px_rgba(34,197,94,0.15)]">
               <span className="h-4 w-4 rounded-full bg-emerald-400 shadow-[0_0_16px_rgba(52,211,153,0.8)]" />
-              {activePrinters} PRINTERS ACTIVE
+              {printing.length} PRINTERS ACTIVE
             </div>
             <span className="hidden h-5 w-px bg-white/10 md:block" />
             <div className="text-slate-400">
@@ -317,18 +519,17 @@ export function PrintFarmMonitorPage() {
               {nextCompletion?.status?.remaining_time !== null && nextCompletion?.status?.remaining_time !== undefined && <span> in <span className="text-blue-300">{formatDuration(nextCompletion.status.remaining_time)}</span></span>}
             </div>
             <div className="ml-auto flex items-center gap-3 text-sm text-slate-400">
-              <div className="relative h-12 w-12 rounded-full bg-blue-500/20">
-                <div className="absolute inset-1 rounded-full border-4 border-blue-500" />
-                <div className="absolute inset-0 flex items-center justify-center text-xs font-bold text-slate-300">{utilization}%</div>
+              <div className="relative h-12 w-12 rounded-full p-1" style={utilizationStyle} aria-label={`Farm utilization ${utilization}%`}>
+                <div className="h-full w-full rounded-full bg-[#07111b]" />
               </div>
-              <div><div className="text-xs uppercase">Farm Utilization</div><div className="text-lg font-bold text-white">{utilization}%</div></div>
+              <div><div className="text-xs uppercase">Farm Utilization</div><div className="text-2xl font-bold text-white">{utilization}%</div></div>
             </div>
           </div>
         </section>
 
         <div className="grid gap-4 xl:grid-cols-[1fr_360px] 2xl:grid-cols-[1fr_390px]">
           <section className="grid auto-rows-fr gap-4 md:grid-cols-2 2xl:grid-cols-4">
-            {visiblePrinters.map((item, index) => <PrinterCard key={item.printer.id} item={item} index={index} />)}
+            {visiblePrinters.map((item) => <PrinterCard key={item.printer.id} item={item} loadedFilament={loadedFilaments.get(item.printer.id) ?? null} />)}
             {visiblePrinters.length === 0 && (
               <div className="col-span-full rounded-2xl border border-dashed border-white/15 bg-slate-950/60 p-12 text-center">
                 <PrinterIcon className="mx-auto mb-4 h-14 w-14 text-slate-500" />
@@ -339,14 +540,14 @@ export function PrintFarmMonitorPage() {
           </section>
 
           <aside className="grid gap-4 content-start">
-            <AlertsPanel activeAlerts={activeAlerts} paused={paused} offline={offline} />
-            <ActivityPanel items={monitorPrinters} />
+            <AlertsPanel alerts={activeAlerts} />
+            <ActivityPanel items={[...printing, ...paused, ...stopped, ...offline, ...errors]} />
           </aside>
         </div>
 
         <footer className="mt-4 flex flex-col gap-3 rounded-xl border border-white/10 bg-slate-950/60 px-6 py-4 text-slate-400 md:flex-row md:items-center md:justify-between">
-          <div className="flex items-center gap-3"><RefreshCw className="h-5 w-5" /> Last refreshed: {formatClock(now)}</div>
-          <div className="flex items-center gap-3 text-emerald-300"><CheckCircle2 className="h-6 w-6" /> All systems operational</div>
+          <div className="flex items-center gap-3"><RefreshCw className="h-5 w-5" /> Last refreshed: {formatClock(now)} · every {refreshSeconds}s</div>
+          <div className="flex items-center gap-3 text-emerald-300"><CheckCircle2 className="h-6 w-6" /> PrintBuddy is operational</div>
           <div className="flex flex-wrap items-center gap-6"><span className="flex items-center gap-2"><Server className="h-5 w-5" /> Printbuddy&nbsp; {version?.display_version ?? version?.version ? `v${version?.display_version ?? version?.version}` : ''}</span><span>{now.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })} • {formatClock(now)}</span></div>
         </footer>
       </div>

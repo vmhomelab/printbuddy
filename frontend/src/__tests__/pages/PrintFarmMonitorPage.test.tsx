@@ -108,7 +108,97 @@ describe('PrintFarmMonitorPage', () => {
       http.get('/api/v1/printers/', () => HttpResponse.json(printers)),
       http.get('/api/v1/printers/:id/status', ({ params }) => HttpResponse.json(statusFor(Number(params.id)))),
       http.get('/api/v1/queue/', () => HttpResponse.json([{ id: 1 }, { id: 2 }, { id: 3 }])),
-      http.get('/api/v1/updates/version', () => HttpResponse.json({ version: '2.5.1', display_version: '2.5.1' }))
+      http.get('/api/v1/updates/version', () => HttpResponse.json({ version: '2.5.1', display_version: '2.5.1' })),
+      http.get('/api/v1/settings/ui-preferences', () => HttpResponse.json({ print_farm_monitor_refresh_interval: 15 })),
+      http.get('/api/v1/settings/', () => HttpResponse.json({ low_stock_threshold: 20 })),
+      http.get('/api/v1/settings/spoolman', () => HttpResponse.json({ spoolman_enabled: 'false', spoolman_url: '', spoolman_sync_mode: 'read_only', spoolman_disable_weight_sync: 'false', spoolman_report_partial_usage: 'false' })),
+      http.get('/api/v1/inventory/spools', () => HttpResponse.json([
+        {
+          id: 10,
+          material: 'PLA',
+          subtype: null,
+          color_name: 'White',
+          rgba: 'ffffff',
+          extra_colors: null,
+          effect_type: null,
+          brand: 'RealFilament',
+          label_weight: 1000,
+          core_weight: 250,
+          core_weight_catalog_id: null,
+          weight_used: 910,
+          slicer_filament: null,
+          slicer_filament_name: null,
+          nozzle_temp_min: null,
+          nozzle_temp_max: null,
+          note: null,
+          added_full: true,
+          last_used: null,
+          encode_time: null,
+          tag_uid: null,
+          tray_uuid: null,
+          data_origin: null,
+          tag_type: null,
+          archived_at: null,
+          created_at: '2024-01-01T00:00:00Z',
+          updated_at: '2024-01-01T00:00:00Z',
+          cost_per_kg: null,
+          last_scale_weight: null,
+          last_weighed_at: null,
+          category: 'Production shelf',
+          low_stock_threshold_pct: 15,
+          storage_location: 'Shelf A',
+        },
+      ])),
+      http.get('/api/v1/inventory/assignments', () => HttpResponse.json([
+        {
+          id: 1,
+          spool_id: 10,
+          printer_id: 1,
+          printer_name: 'Demo Bambu Lab P1S',
+          ams_id: -1,
+          tray_id: 0,
+          fingerprint_color: null,
+          fingerprint_type: null,
+          configured: true,
+          created_at: '2024-01-01T00:00:00Z',
+          spool: {
+            id: 10,
+            material: 'PLA',
+            subtype: null,
+            color_name: 'White',
+            rgba: 'ffffff',
+            extra_colors: null,
+            effect_type: null,
+            brand: 'RealFilament',
+            label_weight: 1000,
+            core_weight: 250,
+            core_weight_catalog_id: null,
+            weight_used: 910,
+            slicer_filament: null,
+            slicer_filament_name: null,
+            nozzle_temp_min: null,
+            nozzle_temp_max: null,
+            note: null,
+            added_full: true,
+            last_used: null,
+            encode_time: null,
+            tag_uid: null,
+            tray_uuid: null,
+            data_origin: null,
+            tag_type: null,
+            archived_at: null,
+            created_at: '2024-01-01T00:00:00Z',
+            updated_at: '2024-01-01T00:00:00Z',
+            cost_per_kg: null,
+            last_scale_weight: null,
+            last_weighed_at: null,
+            category: 'Production shelf',
+            low_stock_threshold_pct: 15,
+            storage_location: 'Shelf A',
+          },
+        },
+      ])),
+      http.get('/api/v1/maintenance/overview', () => HttpResponse.json([]))
     );
   });
 
@@ -126,7 +216,13 @@ describe('PrintFarmMonitorPage', () => {
     expect(screen.getAllByText('PAUSED').length).toBeGreaterThan(0);
     expect(screen.getAllByText('Demo Anycubic Kobra 2').length).toBeGreaterThan(0);
     expect(screen.getByText('ALERTS')).toBeInTheDocument();
+    expect(screen.getByText('LOW FILAMENT')).toBeInTheDocument();
+    expect(screen.getAllByText(/RealFilament PLA White/).length).toBeGreaterThan(0);
+    expect(document.body.textContent).not.toContain('Spool A1');
+    expect(document.body.textContent).not.toContain('HEALTH OK');
     expect(screen.getByText('Recent Activity')).toBeInTheDocument();
+    expect(document.body.textContent).toContain('PrintBuddy is operational');
+    expect(document.body.textContent).toContain('every 15s');
     expect(document.body.textContent).toContain('Printbuddy');
     expect(document.body.textContent).toContain('v2.5.1');
   });
