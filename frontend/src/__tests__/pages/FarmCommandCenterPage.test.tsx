@@ -177,5 +177,9 @@ describe('FarmCommandCenterPage', () => {
     expect(screen.getByText('Filament Stock')).toBeInTheDocument();
     expect(screen.getByText('Maintenance')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /tv mode/i })).toHaveAttribute('href', '/farm-monitor');
+    expect(screen.getByRole('link', { name: /create group/i })).toHaveAttribute('href', '/groups/new');
+    expect(screen.getAllByRole('link').some((link) => link.getAttribute('href') === '/notifications')).toBe(true);
+    expect(screen.getAllByRole('link').some((link) => link.getAttribute('href') === '/inventory')).toBe(true);
+    expect(screen.getAllByRole('link').some((link) => link.getAttribute('href') === '/maintenance')).toBe(true);
   });
 });

@@ -11,6 +11,7 @@ import {
   Monitor,
   Pause,
   PackageOpen,
+  Plus,
   Printer as PrinterIcon,
   Search,
   Server,
@@ -98,7 +99,7 @@ function completedToday(queue: PrintQueueItem[], now: Date): number {
   return queue.filter((item) => item.status === 'completed' && item.completed_at && new Date(item.completed_at).toDateString() === today).length;
 }
 
-function StatCard({ icon: Icon, value, label, sub, tone }: { icon: typeof PrinterIcon; value: number | string; label: string; sub: string; tone: 'blue' | 'green' | 'gray' | 'amber' | 'purple' }) {
+function StatCard({ icon: Icon, value, label, sub, tone, to }: { icon: typeof PrinterIcon; value: number | string; label: string; sub: string; tone: 'blue' | 'green' | 'gray' | 'amber' | 'purple'; to?: string }) {
   const tones = {
     blue: 'bg-blue-500/15 text-blue-300 shadow-blue-500/10',
     green: 'bg-emerald-500/15 text-emerald-300 shadow-emerald-500/10',
@@ -106,8 +107,8 @@ function StatCard({ icon: Icon, value, label, sub, tone }: { icon: typeof Printe
     amber: 'bg-amber-500/15 text-amber-300 shadow-amber-500/10',
     purple: 'bg-purple-500/15 text-purple-300 shadow-purple-500/10',
   };
-  return (
-    <div className="rounded-2xl border border-bambu-dark-tertiary bg-bambu-dark-secondary/80 p-4 shadow-[var(--card-shadow)]">
+  const content = (
+    <>
       <div className="flex items-center gap-4">
         <div className={`flex h-14 w-14 items-center justify-center rounded-full shadow-lg ${tones[tone]}`}>
           <Icon className="h-7 w-7" />
@@ -120,6 +121,21 @@ function StatCard({ icon: Icon, value, label, sub, tone }: { icon: typeof Printe
           <div className="mt-1 text-sm font-semibold text-bambu-gray-light">{sub}</div>
         </div>
       </div>
+      {to && <ChevronRight className="absolute right-4 top-4 h-4 w-4 text-bambu-gray transition-transform group-hover:translate-x-0.5 group-hover:text-white" />}
+    </>
+  );
+
+  if (to) {
+    return (
+      <Link to={to} className="group relative block rounded-2xl border border-bambu-dark-tertiary bg-bambu-dark-secondary/80 p-4 shadow-[var(--card-shadow)] transition hover:border-blue-500 hover:bg-bambu-dark-secondary focus:outline-none focus:ring-2 focus:ring-blue-500">
+        {content}
+      </Link>
+    );
+  }
+
+  return (
+    <div className="relative rounded-2xl border border-bambu-dark-tertiary bg-bambu-dark-secondary/80 p-4 shadow-[var(--card-shadow)]">
+      {content}
     </div>
   );
 }
@@ -282,7 +298,7 @@ export function FarmCommandCenterPage() {
           <StatCard icon={Boxes} value={stateCounts.printing} label="Printing" sub={`${utilization}% of fleet`} tone="blue" />
           <StatCard icon={PrinterIcon} value={stateCounts.idle} label="Idle" sub={`${fleet.length ? Math.round((stateCounts.idle / fleet.length) * 100) : 0}% of fleet`} tone="gray" />
           <StatCard icon={Pause} value={stateCounts.paused} label="Paused" sub={`${fleet.length ? Math.round((stateCounts.paused / fleet.length) * 100) : 0}% of fleet`} tone="green" />
-          <StatCard icon={AlertTriangle} value={alertCount} label="Alerts" sub="Printers, stock, maintenance" tone="amber" />
+          <StatCard icon={AlertTriangle} value={alertCount} label="Alerts" sub="Printers, stock, maintenance" tone="amber" to="/notifications" />
           <StatCard icon={Layers} value={todayParts} label="Parts today" sub={`${queue.length} queue items tracked`} tone="purple" />
         </section>
 
@@ -307,6 +323,9 @@ export function FarmCommandCenterPage() {
                 <option value="all">All Groups</option>
                 {groupedFleet.map((group) => <option key={group.name} value={group.name}>{group.name}</option>)}
               </select>
+              <Link to="/groups/new" className="inline-flex items-center justify-center gap-2 rounded-lg border border-blue-500/60 bg-blue-500/10 px-3 py-2 text-sm font-semibold text-blue-300 transition hover:bg-blue-500/20 hover:text-white">
+                <Plus className="h-4 w-4" /> Create Group
+              </Link>
               <div className="flex rounded-lg border border-bambu-dark-tertiary bg-bambu-dark p-1 text-bambu-gray-light">
                 <span className="rounded bg-blue-500 px-3 py-1 text-white"><Grid3X3 className="h-4 w-4" /></span>
                 <span className="px-3 py-1"><Server className="h-4 w-4" /></span>
@@ -367,18 +386,21 @@ export function FarmCommandCenterPage() {
         </section>
 
         <section className="grid gap-4 xl:grid-cols-3">
-          <div className="flex items-center gap-4 rounded-2xl border border-bambu-dark-tertiary bg-bambu-dark-secondary/80 p-4">
+          <Link to="/notifications" className="group flex items-center gap-4 rounded-2xl border border-bambu-dark-tertiary bg-bambu-dark-secondary/80 p-4 transition hover:border-blue-500 hover:bg-bambu-dark-secondary focus:outline-none focus:ring-2 focus:ring-blue-500">
             <div className="flex h-12 w-12 items-center justify-center rounded-full bg-emerald-500/15 text-emerald-300"><CheckCircle2 className="h-7 w-7" /></div>
-            <div><div className="font-bold text-white">{alertCount === 0 ? 'All Systems Operational' : `${alertCount} item${alertCount === 1 ? '' : 's'} need attention`}</div><div className="text-sm text-bambu-gray-light">{alertCount === 0 ? 'No active system issues' : 'Review printer, stock, and maintenance panels'}</div></div>
-          </div>
-          <div className="flex items-center gap-4 rounded-2xl border border-bambu-dark-tertiary bg-bambu-dark-secondary/80 p-4">
+            <div className="min-w-0 flex-1"><div className="font-bold text-white">{alertCount === 0 ? 'All Systems Operational' : `${alertCount} item${alertCount === 1 ? '' : 's'} need attention`}</div><div className="text-sm text-bambu-gray-light">{alertCount === 0 ? 'No active system issues' : 'Open alerts and notification settings'}</div></div>
+            <ChevronRight className="h-5 w-5 text-bambu-gray transition-transform group-hover:translate-x-0.5 group-hover:text-white" />
+          </Link>
+          <Link to="/inventory" className="group flex items-center gap-4 rounded-2xl border border-bambu-dark-tertiary bg-bambu-dark-secondary/80 p-4 transition hover:border-blue-500 hover:bg-bambu-dark-secondary focus:outline-none focus:ring-2 focus:ring-blue-500">
             <div className="flex h-12 w-12 items-center justify-center rounded-full bg-bambu-dark-tertiary text-bambu-gray-light"><PackageOpen className="h-7 w-7" /></div>
-            <div><div className="font-bold text-white">Filament Stock</div><div className="text-sm text-bambu-gray-light">{lowStock} spool{lowStock === 1 ? '' : 's'} low in stock</div></div>
-          </div>
-          <div className="flex items-center gap-4 rounded-2xl border border-bambu-dark-tertiary bg-bambu-dark-secondary/80 p-4">
+            <div className="min-w-0 flex-1"><div className="font-bold text-white">Filament Stock</div><div className="text-sm text-bambu-gray-light">{lowStock} spool{lowStock === 1 ? '' : 's'} low in stock</div></div>
+            <ChevronRight className="h-5 w-5 text-bambu-gray transition-transform group-hover:translate-x-0.5 group-hover:text-white" />
+          </Link>
+          <Link to="/maintenance" className="group flex items-center gap-4 rounded-2xl border border-bambu-dark-tertiary bg-bambu-dark-secondary/80 p-4 transition hover:border-blue-500 hover:bg-bambu-dark-secondary focus:outline-none focus:ring-2 focus:ring-blue-500">
             <div className="flex h-12 w-12 items-center justify-center rounded-full bg-red-500/15 text-red-300"><Wrench className="h-7 w-7" /></div>
-            <div><div className="font-bold text-white">Maintenance</div><div className="text-sm text-bambu-gray-light">{maintenanceDue} maintenance item{maintenanceDue === 1 ? '' : 's'} require attention</div></div>
-          </div>
+            <div className="min-w-0 flex-1"><div className="font-bold text-white">Maintenance</div><div className="text-sm text-bambu-gray-light">{maintenanceDue} maintenance item{maintenanceDue === 1 ? '' : 's'} require attention</div></div>
+            <ChevronRight className="h-5 w-5 text-bambu-gray transition-transform group-hover:translate-x-0.5 group-hover:text-white" />
+          </Link>
         </section>
       </div>
     </div>
