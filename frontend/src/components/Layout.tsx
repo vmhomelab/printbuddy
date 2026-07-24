@@ -508,7 +508,7 @@ export function Layout() {
         <button
           type="button"
           onClick={() => setSidebarHidden(false)}
-          className="fixed left-3 top-3 z-[70] flex h-11 w-11 items-center justify-center rounded-xl border border-bambu-dark-tertiary bg-bambu-dark-secondary/95 text-white shadow-xl backdrop-blur transition-colors hover:bg-bambu-dark-tertiary focus:outline-none focus:ring-2 focus:ring-bambu-green"
+          className="fixed left-4 top-20 z-[70] flex h-11 w-11 items-center justify-center rounded-xl border border-bambu-dark-tertiary bg-bambu-dark-secondary/95 text-white shadow-xl backdrop-blur transition-colors hover:bg-bambu-dark-tertiary focus:outline-none focus:ring-2 focus:ring-bambu-green"
           title={t('nav.showSidebar', { defaultValue: 'Show sidebar' })}
           aria-label={t('nav.showSidebar', { defaultValue: 'Show sidebar' })}
         >
@@ -1219,7 +1219,7 @@ export function Layout() {
           </Card>
         </div>
       )}
-      <BugReportBubble />
+      {location.pathname !== '/farm-monitor' && <BugReportBubble />}
     </div>
   );
 }

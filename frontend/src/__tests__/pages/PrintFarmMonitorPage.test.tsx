@@ -104,6 +104,7 @@ function statusFor(id: number) {
 describe('PrintFarmMonitorPage', () => {
   beforeEach(() => {
     vi.setSystemTime(new Date('2025-05-23T10:42:00Z'));
+    vi.mocked(localStorage.getItem).mockReset();
     server.use(
       http.get('/api/v1/printers/', () => HttpResponse.json(printers)),
       http.get('/api/v1/printers/:id/status', ({ params }) => HttpResponse.json(statusFor(Number(params.id)))),
@@ -226,5 +227,18 @@ describe('PrintFarmMonitorPage', () => {
     expect(document.body.textContent).toContain('every 15s');
     expect(document.body.textContent).toContain('Printbuddy');
     expect(document.body.textContent).toContain('v2.5.1');
+  });
+
+  it('follows the selected PrintBuddy light theme', async () => {
+    vi.mocked(localStorage.getItem).mockImplementation((key: string) => (
+      key === 'theme-mode' ? 'light' : null
+    ));
+
+    render(<PrintFarmMonitorPage />);
+
+    const heading = await screen.findByRole('heading', { name: 'Print Farm Monitor' });
+    const monitor = heading.closest('main');
+    expect(monitor).toHaveAttribute('data-monitor-theme', 'light');
+    expect(screen.getByAltText('Printbuddy')).toHaveAttribute('src', '/img/printbuddy_logo_light.png');
   });
 });

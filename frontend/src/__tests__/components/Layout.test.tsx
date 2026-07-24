@@ -116,6 +116,7 @@ describe('Layout', () => {
       await user.click(screen.getByRole('button', { name: /hide sidebar/i }));
       expect(document.querySelector('aside')).not.toBeInTheDocument();
       expect(localStorage.setItem).toHaveBeenCalledWith('sidebarHidden', 'true');
+      expect(screen.getByRole('button', { name: /show sidebar/i })).toHaveClass('top-20');
 
       await user.click(screen.getByRole('button', { name: /show sidebar/i }));
       await waitFor(() => expect(document.querySelector('aside')).toBeInTheDocument());
@@ -146,6 +147,15 @@ describe('Layout', () => {
         const settingsLink = document.querySelector('a[href="/settings"]');
         expect(settingsLink).toBeInTheDocument();
       });
+    });
+
+    it('hides the bug report bubble on the print farm monitor route', async () => {
+      window.history.replaceState({}, '', '/farm-monitor');
+
+      render(<Layout />);
+
+      await waitFor(() => expect(document.querySelector('aside')).toBeInTheDocument());
+      expect(screen.queryByRole('button', { name: /report a bug/i })).not.toBeInTheDocument();
     });
   });
 
