@@ -199,7 +199,29 @@ describe('PrintFarmMonitorPage', () => {
           },
         },
       ])),
-      http.get('/api/v1/maintenance/overview', () => HttpResponse.json([]))
+      http.get('/api/v1/maintenance/overview', () => HttpResponse.json([])),
+      http.get('/api/v1/projects/', () => HttpResponse.json([
+        {
+          id: 42,
+          name: 'Gridfinity Organizer Set',
+          description: 'Modular storage system for workstations',
+          color: '#3b82f6',
+          status: 'active',
+          target_count: 8,
+          target_parts_count: 64,
+          budget: null,
+          created_at: '2024-01-01T00:00:00Z',
+          archive_count: 4,
+          total_items: 48,
+          completed_count: 42,
+          failed_count: 1,
+          queue_count: 3,
+          progress_percent: 50,
+          archives: [],
+          url: null,
+          cover_image_filename: null,
+        },
+      ]))
     );
   });
 
@@ -217,6 +239,11 @@ describe('PrintFarmMonitorPage', () => {
     expect(screen.getAllByText('PAUSED').length).toBeGreaterThan(0);
     expect(screen.getAllByText('Demo Anycubic Kobra 2').length).toBeGreaterThan(0);
     expect(screen.getByText('ALERTS')).toBeInTheDocument();
+    expect(screen.getByText('ACTIVE PROJECTS')).toBeInTheDocument();
+    expect(screen.getByText('Gridfinity Organizer Set')).toBeInTheDocument();
+    expect(screen.getByText('42 / 64 parts')).toBeInTheDocument();
+    expect(screen.getByText('3 queued')).toBeInTheDocument();
+    expect(screen.getByText('1 failed')).toBeInTheDocument();
     expect(screen.getByText('LOW FILAMENT')).toBeInTheDocument();
     expect(screen.getAllByText(/RealFilament PLA White/).length).toBeGreaterThan(0);
     expect(document.body.textContent).toContain('#FFFFFF');

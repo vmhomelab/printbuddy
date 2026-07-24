@@ -23,6 +23,7 @@ import {
   type InventorySpool,
   type MaintenanceStatus,
   type PrintQueueItem,
+  type ProjectListItem,
   type Printer,
   type PrinterMaintenanceOverview,
   type PrinterStatus,
@@ -135,6 +136,29 @@ function formatEta(minutes: number | null | undefined): string {
   if (minutes === null || minutes === undefined || Number.isNaN(minutes)) return 'Ready';
   const eta = new Date(Date.now() + Math.max(0, minutes) * 60_000);
   return eta.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function projectProgress(project: ProjectListItem): number | null {
+  if (project.progress_percent !== null && project.progress_percent !== undefined) {
+    return Math.min(100, Math.max(0, Math.round(project.progress_percent)));
+  }
+  if (project.target_parts_count && project.target_parts_count > 0) {
+    return Math.min(100, Math.round((project.completed_count / project.target_parts_count) * 100));
+  }
+  if (project.target_count && project.target_count > 0) {
+    return Math.min(100, Math.round((project.archive_count / project.target_count) * 100));
+  }
+  return null;
+}
+
+function projectTargetSummary(project: ProjectListItem): string {
+  if (project.target_parts_count) {
+    return `${project.completed_count} / ${project.target_parts_count} parts`;
+  }
+  if (project.target_count) {
+    return `${project.archive_count} / ${project.target_count} plates`;
+  }
+  return `${project.archive_count} plates · ${project.completed_count} parts`;
 }
 
 function getJobName(item: MonitorPrinter): string | null {
@@ -497,6 +521,51 @@ function ActivityPanel({ items, theme }: { items: MonitorPrinter[]; theme: Monit
   );
 }
 
+function ActiveProjectsPanel({ projects, theme }: { projects: ProjectListItem[]; theme: MonitorThemeClasses }) {
+  const visibleProjects = projects
+    .slice()
+    .sort((a, b) => (projectProgress(b) ?? -1) - (projectProgress(a) ?? -1))
+    .slice(0, 3);
+
+  return (
+    <section className={`rounded-2xl border p-5 ${theme.card}`}>
+      <div className={`mb-4 flex items-center justify-between border-b pb-4 ${theme.divider}`}>
+        <div className={`flex items-center gap-3 text-xl font-bold ${theme.text}`}><PackageOpen className="h-6 w-6 text-bambu-green-light" /> ACTIVE PROJECTS</div>
+        <span className={`text-sm ${theme.muted}`}>{projects.length} active</span>
+      </div>
+      {visibleProjects.length > 0 ? (
+        <div className="space-y-4">
+          {visibleProjects.map((project) => {
+            const progress = projectProgress(project);
+            return (
+              <article key={project.id} className={`rounded-xl border p-4 ${theme.panelSoft}`}>
+                <div className="flex items-start gap-3">
+                  <span className="mt-1 h-3 w-3 shrink-0 rounded-full" style={{ backgroundColor: project.color || 'var(--accent)' }} />
+                  <div className="min-w-0 flex-1">
+                    <div className={`truncate text-base font-bold ${theme.text}`}>{project.name}</div>
+                    {project.description && <div className={`truncate text-sm ${theme.muted}`}>{project.description}</div>}
+                  </div>
+                  <div className={`text-right text-lg font-bold ${theme.text}`}>{progress !== null ? `${progress}%` : '—'}</div>
+                </div>
+                <div className="mt-4 h-2 overflow-hidden rounded-full bg-bambu-dark-tertiary">
+                  <div className="h-full rounded-full bg-gradient-to-r from-bambu-green-light to-bambu-green" style={{ width: `${progress ?? 0}%` }} />
+                </div>
+                <div className={`mt-3 flex flex-wrap items-center gap-3 text-xs font-semibold uppercase tracking-wide ${theme.muted}`}>
+                  <span>{projectTargetSummary(project)}</span>
+                  {project.queue_count > 0 && <span>{project.queue_count} queued</span>}
+                  {project.failed_count > 0 && <span className="text-red-300">{project.failed_count} failed</span>}
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      ) : (
+        <div className={`py-8 text-center text-sm ${theme.muted}`}>No active projects are currently tracked.</div>
+      )}
+    </section>
+  );
+}
+
 export function PrintFarmMonitorPage() {
   const now = new Date();
   const { mode } = useTheme();
@@ -506,6 +575,7 @@ export function PrintFarmMonitorPage() {
   const refreshMs = refreshSeconds * 1000;
   const { data: printers = [] } = useQuery({ queryKey: ['printers'], queryFn: api.getPrinters, refetchInterval: refreshMs });
   const { data: queue = [] } = useQuery({ queryKey: ['queue', 'monitor'], queryFn: () => api.getQueue(), refetchInterval: refreshMs });
+  const { data: activeProjects = [] } = useQuery({ queryKey: ['projects', 'active', 'monitor'], queryFn: () => api.getProjects('active'), refetchInterval: refreshMs, retry: false });
   const { data: version } = useQuery({ queryKey: ['version'], queryFn: api.getVersion, staleTime: Infinity });
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
   const { data: spoolmanSettings } = useQuery({ queryKey: ['settings', 'spoolman', 'monitor'], queryFn: api.getSpoolmanSettings, staleTime: 60_000, retry: false });
@@ -597,6 +667,7 @@ export function PrintFarmMonitorPage() {
           </section>
 
           <aside className="grid gap-4 content-start">
+            <ActiveProjectsPanel projects={activeProjects} theme={theme} />
             <AlertsPanel alerts={activeAlerts} theme={theme} />
             <ActivityPanel items={[...printing, ...paused, ...stopped, ...offline, ...errors]} theme={theme} />
           </aside>
