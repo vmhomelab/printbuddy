@@ -212,8 +212,15 @@ def _apply_moonraker_fans(state: MoonrakerPrinterState, status: dict[str, Any]) 
 
 
 def _remaining_minutes(print_stats: dict[str, Any], progress: float) -> int:
-    """Estimate remaining print time from Moonraker print duration and progress."""
+    """Estimate remaining print time from Moonraker duration fields.
+
+    Prefer Moonraker's slicer estimate when available. Fall back to elapsed
+    duration/progress for older or sparse firmware payloads.
+    """
     print_duration = float(print_stats.get("print_duration") or 0.0)
+    estimated_time = _safe_float(print_stats.get("estimated_time"))
+    if estimated_time and estimated_time > 0:
+        return int(max(estimated_time - print_duration, 0.0) // 60)
     if progress <= 0 or print_duration <= 0:
         return 0
     total_seconds = print_duration / min(progress / 100.0, 1.0)
@@ -249,6 +256,47 @@ def _moonraker_url_candidates(base_url: str) -> list[str]:
         if fallback not in candidates:
             candidates.append(fallback)
     return candidates
+
+
+def _absolute_moonraker_camera_url(base_url: str, value: Any) -> str | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    parsed = urlparse(raw)
+    if parsed.scheme and parsed.netloc:
+        return raw
+    return urljoin(base_url.rstrip("/") + "/", raw.lstrip("/"))
+
+
+def _normalize_moonraker_webcam(base_url: str, webcam: dict[str, Any]) -> dict[str, Any] | None:
+    stream_url = _absolute_moonraker_camera_url(
+        base_url,
+        webcam.get("stream_url")
+        or webcam.get("streamUrl")
+        or webcam.get("urlStream")
+        or webcam.get("url_stream")
+        or webcam.get("url"),
+    )
+    snapshot_url = _absolute_moonraker_camera_url(
+        base_url,
+        webcam.get("snapshot_url")
+        or webcam.get("snapshotUrl")
+        or webcam.get("urlSnapshot")
+        or webcam.get("url_snapshot"),
+    )
+    if not stream_url and snapshot_url:
+        stream_url = snapshot_url
+    if not stream_url:
+        return None
+    camera_type = "snapshot" if snapshot_url and stream_url == snapshot_url else "mjpeg"
+    return {
+        "name": str(webcam.get("name") or webcam.get("id") or "Moonraker camera"),
+        "stream_url": stream_url,
+        "snapshot_url": snapshot_url,
+        "camera_type": camera_type,
+        "enabled": bool(webcam.get("enabled", True)),
+        "raw": webcam,
+    }
 
 
 class MoonrakerPrinterClient:
@@ -403,6 +451,21 @@ class MoonrakerPrinterClient:
             return self._query_objects(cfs_objects)
         except Exception:  # noqa: BLE001 - CFS is optional; keep core Moonraker status healthy
             return {}
+
+    def discover_webcams(self) -> list[dict[str, Any]]:
+        """Return normalized Moonraker webcam entries, if the server exposes any."""
+        result = self._get("server/webcams/list")
+        webcams = result.get("webcams") if isinstance(result, dict) else None
+        if webcams is None and isinstance(result, dict):
+            webcams = result.get("result")
+        normalized: list[dict[str, Any]] = []
+        for webcam in webcams if isinstance(webcams, list) else []:
+            if not isinstance(webcam, dict):
+                continue
+            candidate = _normalize_moonraker_webcam(self.base_url, webcam)
+            if candidate:
+                normalized.append(candidate)
+        return normalized
 
     def _apply_creality_cfs_box(self, status: dict[str, Any]) -> None:
         box = status.get("box") if isinstance(status, dict) else None
@@ -650,8 +713,16 @@ class MoonrakerPrinterClient:
         progress = virtual_sdcard.get("progress")
         if progress is None:
             progress = display_status.get("progress")
-        self.state.progress = float(progress or 0.0) * 100
-        self.state.remaining_time = _remaining_minutes(print_stats, self.state.progress)
+        raw_progress = float(progress or 0.0) * 100
+        if self.state.state == "FINISH":
+            self.state.progress = 100.0
+            self.state.remaining_time = 0
+        elif self.state.state in {"IDLE", "FAILED"}:
+            self.state.progress = 0.0
+            self.state.remaining_time = 0
+        else:
+            self.state.progress = raw_progress
+            self.state.remaining_time = _remaining_minutes(print_stats, self.state.progress)
         self.state.temperatures = _moonraker_temperatures(status)
         _apply_moonraker_fans(self.state, status)
         self._emit_status_callbacks(previous_state)

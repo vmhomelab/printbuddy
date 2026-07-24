@@ -1062,6 +1062,40 @@ describe('PrintersPage', () => {
       expect(createdPayload).not.toHaveProperty('external_camera_url');
       expect(createdPayload).not.toHaveProperty('external_camera_type');
     }, 10000);
+    it('detects Moonraker webcams and fills the camera URL field', async () => {
+      const user = userEvent.setup();
+
+      server.use(
+        http.get('/api/v1/discovery/info', () => HttpResponse.json({ is_docker: false, subnets: [] })),
+        http.get('/api/v1/printers/moonraker-webcams/discover', ({ request }) => {
+          const url = new URL(request.url);
+          expect(url.searchParams.get('api_url')).toBe('http://k2-plus.local:7125');
+          return HttpResponse.json({
+            webcams: [{
+              name: 'Moonraker Cam',
+              stream_url: 'http://k2-plus.local/webcam/?action=stream',
+              snapshot_url: 'http://k2-plus.local/webcam/?action=snapshot',
+              camera_type: 'mjpeg',
+              enabled: true,
+            }],
+          });
+        }),
+      );
+
+      render(<PrintersPage />);
+
+      await user.click((await screen.findAllByRole('button', { name: /add printer/i })).at(-1)!);
+      await user.selectOptions(screen.getByLabelText(/printer type/i), 'fluidd');
+      await user.type(screen.getByPlaceholderText('192.168.1.100 or printer.local'), 'k2-plus.local');
+      await user.click(screen.getByRole('button', { name: /detect moonraker camera/i }));
+
+      await waitFor(() => {
+        expect(screen.getByPlaceholderText('http://printer.local/webcam/?action=stream')).toHaveValue(
+          'http://k2-plus.local/webcam/?action=stream'
+        );
+      });
+      expect(screen.getByText('Using Moonraker Cam from Moonraker.')).toBeInTheDocument();
+    }, 10000);
   });
 
   describe('manual controls', () => {

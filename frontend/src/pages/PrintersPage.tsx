@@ -6520,6 +6520,8 @@ function AddPrinterModal({
   const [scanProgress, setScanProgress] = useState({ scanned: 0, total: 0 });
   const [showDiagnostic, setShowDiagnostic] = useState(false);
   const [prusaLinkApiAuthMode, setPrusaLinkApiAuthMode] = useState<PrusaLinkApiAuthMode>('auto');
+  const [detectingMoonrakerCamera, setDetectingMoonrakerCamera] = useState(false);
+  const [moonrakerCameraMessage, setMoonrakerCameraMessage] = useState('');
 
   // Setup-time pre-flight: run the connection diagnostic on save and warn
   // (not block) when checks fail, so the user doesn't add a printer that
@@ -6576,6 +6578,44 @@ function AddPrinterModal({
       external_camera_snapshot_url: undefined,
       provider_options: isPrusaLinkProvider ? buildPrusaLinkProviderOptions(prusaLinkApiAuthMode) : form.provider_options,
     };
+  };
+
+  const handleDetectMoonrakerCamera = async () => {
+    const ipAddress = form.ip_address.trim();
+    const apiUrl = (form.api_url || '').trim() || (ipAddress ? `http://${ipAddress}:7125` : '');
+    if (!apiUrl) {
+      setMoonrakerCameraMessage('Enter the printer IP or Moonraker API URL first.');
+      return;
+    }
+    setDetectingMoonrakerCamera(true);
+    setMoonrakerCameraMessage('');
+    try {
+      const result = await api.discoverMoonrakerWebcams({
+        api_url: apiUrl,
+        ip_address: ipAddress || undefined,
+        provider: form.provider,
+        auth_token: (form.auth_token || '').trim() || undefined,
+        model: form.model || undefined,
+      });
+      const webcam = result.webcams.find((candidate) => candidate.enabled) || result.webcams[0];
+      if (!webcam) {
+        setMoonrakerCameraMessage('Moonraker did not report any webcams. For K2 Plus built-in cameras this may mean the camera uses Creality’s proprietary HTTPS/WSS protocol, not Moonraker webcams.');
+        return;
+      }
+      setForm({
+        ...form,
+        api_url: apiUrl,
+        external_camera_url: webcam.stream_url,
+        external_camera_type: webcam.camera_type,
+        external_camera_enabled: true,
+        external_camera_snapshot_url: webcam.snapshot_url || undefined,
+      });
+      setMoonrakerCameraMessage(`Using ${webcam.name} from Moonraker.`);
+    } catch (error) {
+      setMoonrakerCameraMessage(error instanceof Error ? error.message : 'Moonraker camera discovery failed.');
+    } finally {
+      setDetectingMoonrakerCamera(false);
+    }
   };
 
   const handleAddSubmit = async (e: React.FormEvent) => {
@@ -7055,6 +7095,22 @@ function AddPrinterModal({
                   <p className="text-xs text-bambu-gray mt-1">
                     Optional for non-Bambu printers. Add a camera stream or snapshot URL if available; Printbuddy will detect MJPEG, RTSP, snapshot, or USB camera type automatically.
                   </p>
+                  {isMoonrakerProvider && (
+                    <div className="mt-3 flex flex-col gap-2">
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="sm"
+                        onClick={handleDetectMoonrakerCamera}
+                        disabled={detectingMoonrakerCamera}
+                      >
+                        {detectingMoonrakerCamera ? 'Detecting Moonraker camera…' : 'Detect Moonraker camera'}
+                      </Button>
+                      {moonrakerCameraMessage && (
+                        <p className="text-xs text-bambu-gray">{moonrakerCameraMessage}</p>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
             )}

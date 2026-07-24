@@ -5,6 +5,7 @@ import re
 import tempfile
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
@@ -56,6 +57,7 @@ from backend.app.services.printer_manager import (
     supports_drying,
 )
 from backend.app.services.printer_providers.factory import create_printer_client, normalize_provider
+from backend.app.services.printer_providers.moonraker import create_moonraker_client
 from backend.app.utils.http import build_content_disposition
 
 logger = logging.getLogger(__name__)
@@ -317,6 +319,34 @@ async def create_printer(
         await printer_manager.connect_printer(printer)
 
     return printer
+
+
+@router.get("/moonraker-webcams/discover")
+async def discover_moonraker_webcams(
+    api_url: str = Query(..., min_length=1, max_length=500),
+    ip_address: str | None = Query(None, max_length=253),
+    provider: str = Query("fluidd"),
+    auth_token: str | None = Query(None, max_length=500),
+    model: str | None = Query(None, max_length=200),
+    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_CREATE),
+):
+    """Discover webcam entries exposed by Moonraker's /server/webcams/list endpoint."""
+    normalized_provider = normalize_provider(provider)
+    if normalized_provider not in {"klipper", "mainsail", "fluidd"}:
+        raise HTTPException(400, "Moonraker webcam discovery only supports Klipper/Mainsail/Fluidd providers")
+    printer_stub = SimpleNamespace(
+        api_url=api_url,
+        ip_address=ip_address or api_url,
+        auth_token=auth_token,
+        model=model,
+    )
+    client = create_moonraker_client(printer_stub)
+    try:
+        webcams = await asyncio.to_thread(client.discover_webcams)
+    except Exception as exc:  # noqa: BLE001 - surface sanitized discovery failure to UI
+        logger.warning("Moonraker webcam discovery failed for %s: %s", api_url, type(exc).__name__)
+        raise HTTPException(502, f"Could not query Moonraker webcams: {type(exc).__name__}") from exc
+    return {"webcams": webcams}
 
 
 @router.get("/usb-cameras")

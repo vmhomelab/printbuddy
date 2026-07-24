@@ -504,6 +504,14 @@ export interface PrinterCreate {
   plate_detection_roi?: PlateDetectionROI;
 }
 
+export interface MoonrakerWebcamCandidate {
+  name: string;
+  stream_url: string;
+  snapshot_url?: string | null;
+  camera_type: 'mjpeg' | 'snapshot';
+  enabled: boolean;
+}
+
 // Plate Detection
 export interface PlateDetectionROI {
   x: number;  // X start % (0.0-1.0)
@@ -3542,6 +3550,20 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(data),
     }),
+  discoverMoonrakerWebcams: (params: {
+    api_url: string;
+    ip_address?: string;
+    provider?: PrinterProvider;
+    auth_token?: string;
+    model?: string;
+  }) => {
+    const search = new URLSearchParams({ api_url: params.api_url });
+    if (params.ip_address) search.set('ip_address', params.ip_address);
+    if (params.provider) search.set('provider', params.provider);
+    if (params.auth_token) search.set('auth_token', params.auth_token);
+    if (params.model) search.set('model', params.model);
+    return request<{ webcams: MoonrakerWebcamCandidate[] }>(`/printers/moonraker-webcams/discover?${search}`);
+  },
   deletePrinter: (id: number, deleteArchives: boolean = true) =>
     request<{ status: string; archives_deleted: boolean }>(
       `/printers/${id}?delete_archives=${deleteArchives}`,

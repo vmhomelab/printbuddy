@@ -157,3 +157,72 @@ def test_moonraker_keeps_cfs_trays_when_active_filament_is_none(monkeypatch):
     assert [tray["slot"] for tray in trays] == ["T1A", "T1B", "T1C", "T1D"]
     assert all(tray["active"] is False for tray in trays)
     assert all(tray["state"] == 11 for tray in trays)
+
+
+def test_moonraker_complete_state_clamps_progress_and_remaining_time(monkeypatch):
+    client = MoonrakerPrinterClient("http://k2-plus.local:7125", printer_model="Creality K2 Plus")
+    status = _moonraker_status_with_cfs("None")
+    status["print_stats"] = {
+        "state": "complete",
+        "filename": "short-test.gcode",
+        "print_duration": 90.0,
+        "total_duration": 95.0,
+    }
+    # K2 firmware can leave display/virtual_sdcard progress behind on very short
+    # jobs after print_stats has already moved to complete. Terminal states must
+    # win over stale fractional progress so the dashboard and archive lifecycle
+    # don't keep showing an in-progress ETA.
+    status["virtual_sdcard"] = {"progress": 0.18, "file_position": 1234}
+    status["display_status"] = {"progress": 0.18}
+    base_status = {
+        key: status[key] for key in ("print_stats", "virtual_sdcard", "display_status", "extruder", "heater_bed")
+    }
+    cfs_status = {key: status[key] for key in ("box", "filament_rack", "filament_switch_sensor filament_sensor")}
+    monkeypatch.setattr(client, "_query_objects", lambda object_names: base_status)
+    monkeypatch.setattr(client, "_query_cfs_status", lambda: cfs_status)
+    monkeypatch.setattr(client, "_query_fan_status", lambda: {})
+
+    assert client.request_status_update() is True
+
+    assert client.state.state == "FINISH"
+    assert client.state.progress == 100.0
+    assert client.state.remaining_time == 0
+
+
+def test_moonraker_discovers_and_normalizes_webcams(monkeypatch):
+    client = MoonrakerPrinterClient("http://k2-plus.local:7125", printer_model="Creality K2 Plus")
+    monkeypatch.setattr(
+        client,
+        "_get",
+        lambda path: {
+            "webcams": [
+                {
+                    "name": "Nozzle Cam",
+                    "stream_url": "/webcam/?action=stream",
+                    "snapshot_url": "http://camera.local/snapshot.jpg",
+                }
+            ]
+        },
+    )
+
+    assert client.discover_webcams() == [
+        {
+            "name": "Nozzle Cam",
+            "stream_url": "http://k2-plus.local:7125/webcam/?action=stream",
+            "snapshot_url": "http://camera.local/snapshot.jpg",
+            "camera_type": "mjpeg",
+            "enabled": True,
+            "raw": {
+                "name": "Nozzle Cam",
+                "stream_url": "/webcam/?action=stream",
+                "snapshot_url": "http://camera.local/snapshot.jpg",
+            },
+        }
+    ]
+
+
+def test_moonraker_webcam_discovery_returns_empty_for_k2_without_moonraker_webcams(monkeypatch):
+    client = MoonrakerPrinterClient("http://k2-plus.local:7125", printer_model="Creality K2 Plus")
+    monkeypatch.setattr(client, "_get", lambda path: {"webcams": []})
+
+    assert client.discover_webcams() == []
