@@ -201,6 +201,146 @@ function getDueDateStatus(dateString: string | null, t: TFunction): { color: str
   return { color: 'text-bambu-gray', label: t('projectDetail.dueDate.daysLeft', { count: diffDays }) };
 }
 
+function normalizeProductionName(value: string | null | undefined): string {
+  return (value || '')
+    .toLowerCase()
+    .replace(/\.(gcode\.3mf|gcode|bgcode|3mf|stl)$/i, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function productionTokens(value: string | null | undefined): string[] {
+  return normalizeProductionName(value).split(' ').filter((token) => token.length >= 3 && !['plate', 'part', 'print'].includes(token));
+}
+
+function fileMatchesPart(part: BOMItem, filename: string | null | undefined): boolean {
+  const file = normalizeProductionName(filename);
+  if (!file) return false;
+  const partSources = [part.name, part.stl_filename].filter(Boolean) as string[];
+  return partSources.some((source) => {
+    const normalized = normalizeProductionName(source);
+    if (normalized && file.includes(normalized)) return true;
+    const tokens = productionTokens(source);
+    return tokens.length > 0 && tokens.every((token) => file.includes(token));
+  });
+}
+
+function formatProductionDuration(seconds: number | null | undefined): string | null {
+  if (!seconds || seconds <= 0) return null;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+  return remainder ? `${hours}h ${remainder}m` : `${hours}h`;
+}
+
+function formatProductionFilament(grams: number | null | undefined): string | null {
+  if (grams === null || grams === undefined || Number.isNaN(grams)) return null;
+  return formatFilament(grams);
+}
+
+function ProductionPlan({ bomItems, archives, files }: { bomItems: BOMItem[]; archives: Archive[]; files: LibraryFileListItem[] }) {
+  if (bomItems.length === 0 && archives.length === 0 && files.length === 0) return null;
+
+  const unmatchedArchives = archives.filter((archive) => !bomItems.some((item) => fileMatchesPart(item, archive.print_name || archive.filename)));
+  const unmatchedFiles = files.filter((file) => !bomItems.some((item) => fileMatchesPart(item, file.filename)));
+  const rows = [
+    ...bomItems.map((item) => ({
+      id: `bom-${item.id}`,
+      name: item.name,
+      completed: item.quantity_acquired,
+      target: item.quantity_needed,
+      archives: archives.filter((archive) => fileMatchesPart(item, archive.print_name || archive.filename)),
+      files: files.filter((file) => fileMatchesPart(item, file.filename)),
+    })),
+    ...unmatchedArchives.map((archive) => ({
+      id: `archive-${archive.id}`,
+      name: archive.print_name || archive.filename,
+      completed: archive.status === 'completed' ? archive.quantity : 0,
+      target: archive.quantity,
+      archives: [archive],
+      files: [] as LibraryFileListItem[],
+    })),
+    ...unmatchedFiles.map((file) => ({
+      id: `file-${file.id}`,
+      name: file.print_name || file.filename,
+      completed: 0,
+      target: 0,
+      archives: [] as Archive[],
+      files: [file],
+    })),
+  ];
+
+  return (
+    <Card>
+      <CardContent className="p-4">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h2 className="text-lg font-semibold text-white flex items-center gap-2">
+              <FileBox className="w-5 h-5" />
+              Production Plan
+            </h2>
+            <p className="text-xs text-bambu-gray mt-1">Parts, build plates, files, and current production state.</p>
+          </div>
+          <Link to="/files" className="text-sm text-bambu-green hover:underline">Add files</Link>
+        </div>
+        <div className="space-y-3">
+          {rows.map((row) => (
+            <div key={row.id} className="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark/60 p-4">
+              <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                <div>
+                  <h3 className="font-semibold text-white">{row.name}</h3>
+                  <p className="text-sm text-bambu-gray">{row.target > 0 ? `${row.completed} / ${row.target} complete` : 'No quantity target set'}</p>
+                </div>
+                <div className="flex flex-wrap gap-2 text-xs">
+                  <span className="rounded bg-bambu-dark-tertiary px-2 py-1 text-bambu-gray-light">{row.archives.length} archived plate{row.archives.length === 1 ? '' : 's'}</span>
+                  <span className="rounded bg-bambu-dark-tertiary px-2 py-1 text-bambu-gray-light">{row.files.length} project file{row.files.length === 1 ? '' : 's'}</span>
+                </div>
+              </div>
+              <div className="mt-3 overflow-hidden rounded-lg border border-bambu-dark-tertiary">
+                <table className="w-full text-sm">
+                  <thead className="bg-bambu-dark-tertiary text-xs uppercase text-bambu-gray">
+                    <tr>
+                      <th className="px-3 py-2 text-left font-medium">Build plate / file</th>
+                      <th className="px-3 py-2 text-left font-medium">State</th>
+                      <th className="px-3 py-2 text-left font-medium">Material</th>
+                      <th className="px-3 py-2 text-left font-medium">Model</th>
+                      <th className="px-3 py-2 text-left font-medium">Plate</th>
+                      <th className="px-3 py-2 text-left font-medium">Estimate</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-bambu-dark-tertiary">
+                    {row.archives.map((archive) => (
+                      <tr key={`archive-${archive.id}`}>
+                        <td className="px-3 py-2 text-white">{archive.print_name || archive.filename}</td>
+                        <td className="px-3 py-2 text-bambu-green">{archive.status}</td>
+                        <td className="px-3 py-2 text-bambu-gray-light">{archive.filament_type || '-'}</td>
+                        <td className="px-3 py-2 text-bambu-gray-light">{archive.sliced_for_model || '-'}</td>
+                        <td className="px-3 py-2 text-bambu-gray-light">{archive.bed_type || '-'}</td>
+                        <td className="px-3 py-2 text-bambu-gray-light">{[formatProductionFilament(archive.filament_used_grams), formatProductionDuration(archive.print_time_seconds)].filter(Boolean).join(' · ') || '-'}</td>
+                      </tr>
+                    ))}
+                    {row.files.map((file) => (
+                      <tr key={`file-${file.id}`}>
+                        <td className="px-3 py-2 text-white">{file.print_name || file.filename}</td>
+                        <td className="px-3 py-2 text-yellow-400">Needs staging</td>
+                        <td className="px-3 py-2 text-bambu-gray-light">-</td>
+                        <td className="px-3 py-2 text-bambu-gray-light">-</td>
+                        <td className="px-3 py-2 text-bambu-gray-light">-</td>
+                        <td className="px-3 py-2 text-bambu-gray-light">-</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 export function ProjectDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -640,6 +780,8 @@ export function ProjectDetailPage() {
           />
         </div>
       )}
+
+      <ProductionPlan bomItems={bomItems || []} archives={archives || []} files={allProjectFiles || []} />
 
       {/* Cost tracking */}
       {stats && (() => {

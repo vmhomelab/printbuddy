@@ -33,6 +33,9 @@ const mockProject = {
   priority: 'normal',
   due_date: null,
   notes: null,
+  budget: null,
+  target_count: null,
+  target_parts_count: null,
   parent_id: null,
   archive_count: 0,
   total_print_time_seconds: 0,
@@ -50,6 +53,110 @@ const mockFolder = {
   file_count: 3,
   created_at: '2024-01-01T00:00:00Z',
   updated_at: '2024-01-01T00:00:00Z',
+};
+
+const mockStats = {
+  total_archives: 2,
+  total_items: 7,
+  completed_prints: 6,
+  failed_prints: 1,
+  queued_prints: 1,
+  in_progress_prints: 0,
+  total_print_time_hours: 2.5,
+  total_filament_grams: 114,
+  progress_percent: 50,
+  parts_progress_percent: 60,
+  estimated_cost: 0,
+  total_energy_kwh: 0,
+  total_energy_cost: 0,
+  remaining_prints: 2,
+  remaining_parts: 4,
+  bom_total_items: 10,
+  bom_completed_items: 6,
+  bom_cost: 0,
+};
+
+const productionProject = {
+  ...mockProject,
+  target_count: 4,
+  target_parts_count: 10,
+  stats: mockStats,
+};
+
+const gridfinityBinBom = {
+  id: 21,
+  project_id: 1,
+  name: 'Gridfinity Bin',
+  quantity_needed: 10,
+  quantity_acquired: 6,
+  unit_price: null,
+  sourcing_url: null,
+  archive_id: null,
+  archive_name: null,
+  stl_filename: 'gridfinity-bin.stl',
+  remarks: null,
+  sort_order: 0,
+  is_complete: false,
+  created_at: '2024-01-01T00:00:00Z',
+  updated_at: '2024-01-01T00:00:00Z',
+};
+
+const gridfinityArchive = {
+  id: 31,
+  printer_id: 1,
+  project_id: 1,
+  project_name: 'Test Project',
+  filename: 'gridfinity-bin-plate-01.gcode.3mf',
+  file_path: '/archives/gridfinity-bin-plate-01.gcode.3mf',
+  file_size: 1024,
+  content_hash: null,
+  thumbnail_path: null,
+  timelapse_path: null,
+  source_3mf_path: null,
+  f3d_path: null,
+  duplicates: null,
+  duplicate_count: 0,
+  duplicate_sequence: 0,
+  original_archive_id: null,
+  object_count: 4,
+  print_name: 'Gridfinity Bin Plate 01',
+  print_time_seconds: 5400,
+  actual_time_seconds: null,
+  time_accuracy: null,
+  filament_used_grams: 84,
+  filament_type: 'PLA',
+  filament_color: 'Blue',
+  layer_height: null,
+  total_layers: null,
+  nozzle_diameter: null,
+  bed_temperature: null,
+  bed_type: 'Textured PEI Plate',
+  nozzle_temperature: null,
+  sliced_for_model: 'P1S',
+  status: 'completed',
+  started_at: null,
+  completed_at: null,
+  extra_data: null,
+  makerworld_url: null,
+  designer: null,
+  external_url: null,
+  is_favorite: false,
+  tags: null,
+  notes: null,
+  cost: null,
+  photos: null,
+  failure_reason: null,
+  quantity: 4,
+  energy_kwh: null,
+  energy_cost: null,
+  created_at: '2024-01-01T00:00:00Z',
+  created_by_id: null,
+  created_by_username: null,
+  run_count: 1,
+  last_run_at: null,
+  total_filament_actual_grams: null,
+  successful_run_count: 1,
+  failed_run_count: 0,
 };
 
 function makeFile(overrides: { id: number; filename: string; file_type?: string }) {
@@ -129,7 +236,7 @@ describe('ProjectDetailPage', () => {
       render(<ProjectDetailPage />);
 
       await waitFor(() => {
-        expect(screen.getByText('benchy.gcode.bak')).toBeInTheDocument();
+        expect(screen.getAllByText('benchy.gcode.bak').length).toBeGreaterThan(0);
       });
 
       expect(screen.queryByTitle('Print Now')).not.toBeInTheDocument();
@@ -145,7 +252,7 @@ describe('ProjectDetailPage', () => {
       render(<ProjectDetailPage />);
 
       await waitFor(() => {
-        expect(screen.getByText('model.stl')).toBeInTheDocument();
+        expect(screen.getAllByText('model.stl').length).toBeGreaterThan(0);
       });
 
       expect(screen.queryByTitle('Print Now')).not.toBeInTheDocument();
@@ -166,8 +273,8 @@ describe('ProjectDetailPage', () => {
       render(<ProjectDetailPage />);
 
       await waitFor(() => {
-        expect(screen.getByText('part_a.gcode.3mf')).toBeInTheDocument();
-        expect(screen.getByText('design.stl')).toBeInTheDocument();
+        expect(screen.getAllByText('part_a.gcode.3mf').length).toBeGreaterThan(0);
+        expect(screen.getAllByText('design.stl').length).toBeGreaterThan(0);
       });
     });
 
@@ -220,6 +327,33 @@ describe('ProjectDetailPage', () => {
       await waitFor(() => {
         expect(screen.getByRole('heading', { name: 'Print' })).toBeInTheDocument();
       });
+    });
+  });
+
+  describe('production plan overview', () => {
+    it('summarizes project parts, build plates, quantities, material, and queue/archive states', async () => {
+      server.use(
+        http.get('/api/v1/projects/:id', () => HttpResponse.json(productionProject)),
+        http.get('/api/v1/projects/:id/archives', () => HttpResponse.json([gridfinityArchive])),
+        http.get('/api/v1/projects/:id/bom', () => HttpResponse.json([gridfinityBinBom])),
+        http.get('/api/v1/library/files', () => HttpResponse.json([
+          makeFile({ id: 41, filename: 'gridfinity-bin-plate-02.gcode.3mf', file_type: '3mf' }),
+        ])),
+      );
+
+      render(<ProjectDetailPage />);
+
+      expect(await screen.findByRole('heading', { name: 'Production Plan' })).toBeInTheDocument();
+      expect(screen.getAllByText('Gridfinity Bin').length).toBeGreaterThan(0);
+      expect(screen.getByText('6 / 10 complete')).toBeInTheDocument();
+      expect(screen.getAllByText('Gridfinity Bin Plate 01').length).toBeGreaterThan(0);
+      expect(screen.getAllByText('gridfinity-bin-plate-02.gcode.3mf').length).toBeGreaterThan(0);
+      expect(screen.getByText('PLA')).toBeInTheDocument();
+      expect(screen.getByText('P1S')).toBeInTheDocument();
+      expect(screen.getByText('Textured PEI Plate')).toBeInTheDocument();
+      expect(screen.getByText(/84g/)).toBeInTheDocument();
+      expect(screen.getByText(/1h 30m/)).toBeInTheDocument();
+      expect(screen.getByText('Needs staging')).toBeInTheDocument();
     });
   });
 });

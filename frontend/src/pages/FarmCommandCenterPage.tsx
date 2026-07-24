@@ -172,7 +172,7 @@ function FleetTile({ item }: { item: FleetPrinter }) {
 function ActiveProjectCard({ project }: { project: ProjectListItem }) {
   const progress = projectProgress(project);
   return (
-    <article className="rounded-2xl border border-bambu-dark-tertiary bg-bambu-dark-secondary/80 p-4 shadow-[var(--card-shadow)]">
+    <Link to={`/projects/${project.id}`} className="block rounded-2xl border border-bambu-dark-tertiary bg-bambu-dark-secondary/80 p-4 shadow-[var(--card-shadow)] transition hover:border-blue-500 hover:bg-bambu-dark-secondary focus:outline-none focus:ring-2 focus:ring-blue-500">
       <div className="flex gap-4">
         <div className="flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-bambu-dark-tertiary bg-bambu-dark">
           {project.cover_image_filename ? (
@@ -201,7 +201,7 @@ function ActiveProjectCard({ project }: { project: ProjectListItem }) {
       <div className="mt-4 h-2 overflow-hidden rounded-full bg-bambu-dark-tertiary">
         <div className="h-full rounded-full bg-blue-500" style={{ width: `${progress ?? 0}%` }} />
       </div>
-    </article>
+    </Link>
   );
 }
 

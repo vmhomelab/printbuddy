@@ -181,5 +181,6 @@ describe('FarmCommandCenterPage', () => {
     expect(screen.getAllByRole('link').some((link) => link.getAttribute('href') === '/notifications')).toBe(true);
     expect(screen.getAllByRole('link').some((link) => link.getAttribute('href') === '/inventory')).toBe(true);
     expect(screen.getAllByRole('link').some((link) => link.getAttribute('href') === '/maintenance')).toBe(true);
+    expect(screen.getAllByRole('link').some((link) => link.getAttribute('href') === '/projects/42')).toBe(true);
   });
 });
