@@ -149,6 +149,14 @@ describe('Layout', () => {
       });
     });
 
+    it('links the sidebar to Farm Command Center instead of the TV monitor route', async () => {
+      render(<Layout />);
+
+      const commandCenterLink = await screen.findByRole('link', { name: /farm command center/i });
+      expect(commandCenterLink).toHaveAttribute('href', '/farm-command-center');
+      expect(document.querySelector('aside a[href="/farm-monitor"]')).not.toBeInTheDocument();
+    });
+
     it('hides the bug report bubble on the print farm monitor route', async () => {
       window.history.replaceState({}, '', '/farm-monitor');
 

@@ -39,7 +39,7 @@ export const defaultNavItems: NavItem[] = [
   { id: 'profiles', to: '/profiles', icon: Cloud, labelKey: 'nav.profiles' },
   { id: 'maintenance', to: '/maintenance', icon: Wrench, labelKey: 'nav.maintenance' },
   { id: 'stats', to: '/stats', icon: BarChart3, labelKey: 'nav.stats' },
-  { id: 'farm-monitor', to: '/farm-monitor', icon: Monitor, labelKey: 'nav.farmMonitor' },
+  { id: 'farm-command-center', to: '/farm-command-center', icon: Monitor, labelKey: 'nav.farmCommandCenter' },
   // User-account features: kept adjacent to Settings intentionally
   { id: 'notifications', to: '/notifications', icon: Bell, labelKey: 'nav.notifications' },
   { id: 'settings', to: '/settings', icon: Settings, labelKey: 'nav.settings' },

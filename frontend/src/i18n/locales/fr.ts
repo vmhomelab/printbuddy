@@ -6,6 +6,7 @@ export default {
     queue: 'File d\'attente d\'impression',
     stats: 'Statistiques',
     farmMonitor: 'Moniteur de ferme',
+    farmCommandCenter: 'Centre de commande de ferme',
     profiles: 'Profils',
     maintenance: 'Maintenance',
     projects: 'Projets',

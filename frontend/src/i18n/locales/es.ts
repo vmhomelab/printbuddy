@@ -6,6 +6,7 @@ export default {
     queue: 'Cola de impresión',
     stats: 'Estadísticas',
     farmMonitor: 'Monitor de granja',
+    farmCommandCenter: 'Centro de mando de granja',
     profiles: 'Perfiles',
     maintenance: 'Mantenimiento',
     projects: 'Proyectos',
