@@ -41,6 +41,14 @@ const prusaPrinter = {
   updated_at: '2026-01-01T00:00:00Z',
 } as Printer;
 
+const fluiddPrinter = {
+  ...prusaPrinter,
+  id: 7,
+  name: 'Creality K2 Plus',
+  model: 'Creality K2 Plus',
+  provider: 'fluidd',
+} as Printer;
+
 describe('KlipperControlPanel PrusaLink controls', () => {
   beforeEach(() => {
     vi.mocked(api.axisJog).mockResolvedValue({ success: true, message: 'ok' });
@@ -72,5 +80,15 @@ describe('KlipperControlPanel PrusaLink controls', () => {
 
     await waitFor(() => expect(api.extrude).toHaveBeenCalledWith(3, 10, 300));
     expect(api.klipperExtrude).not.toHaveBeenCalled();
+  });
+
+  it('shows generic Klipper manual controls and disables steppers for Fluidd printers', async () => {
+    const user = userEvent.setup();
+
+    render(<KlipperControlPanel printer={fluiddPrinter} status={{ connected: true }} showToast={vi.fn()} />);
+
+    await user.click(screen.getByRole('button', { name: /disable steppers/i }));
+
+    await waitFor(() => expect(api.disableSteppers).toHaveBeenCalledWith(7));
   });
 });

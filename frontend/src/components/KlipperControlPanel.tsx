@@ -558,6 +558,17 @@ export function KlipperControlPanel({ printer, status, showToast }: Props) {
             </div>
           </div>
         </div>
+
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-[var(--text-muted)] flex-1">Stepper motors</span>
+          <button
+            className={`flex items-center justify-center gap-1 px-3 py-1.5 rounded text-sm font-medium ${secondaryControlBtn}`}
+            disabled={disableSteppersMut.isPending}
+            onClick={() => disableSteppersMut.mutate()}
+          >
+            Disable steppers
+          </button>
+        </div>
       </div>
     </div>
   );

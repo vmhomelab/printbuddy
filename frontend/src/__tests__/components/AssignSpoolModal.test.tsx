@@ -9,6 +9,7 @@ vi.mock('../../api/client', () => ({
     getSpools: vi.fn(),
     getAssignments: vi.fn(),
     assignSpool: vi.fn(),
+    createSpool: vi.fn(),
     assignSpoolmanSlot: vi.fn(),
     getSpoolmanInventorySpools: vi.fn(),
     getSpoolmanSlotAssignments: vi.fn().mockResolvedValue([]),
@@ -249,6 +250,50 @@ describe('AssignSpoolModal', () => {
       expect(api.assignSpool).toHaveBeenCalledWith({ spool_id: 4, printer_id: 1, ams_id: 0, tray_id: 0 });
     });
     expect(screen.queryByText(/mismatch/i)).not.toBeInTheDocument();
+  });
+
+  it('creates a local spool from slot metadata and assigns it after user confirmation', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const user = userEvent.setup();
+    (api.getSpools as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    (api.createSpool as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 42, material: 'PLA' });
+    (api.assignSpool as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: 99, spool_id: 42, printer_id: 1, ams_id: 0, tray_id: 1,
+    });
+
+    render(
+      <AssignSpoolModal
+        {...defaultProps}
+        trayId={1}
+        trayInfo={{
+          type: 'PLA',
+          material: 'PLA',
+          profile: 'PLA Basic',
+          color: 'FFF014',
+          location: 'CFS T1 - Slot B',
+        }}
+      />
+    );
+
+    await user.click(await screen.findByRole('button', { name: /create spool from slot/i }));
+
+    await waitFor(() => {
+      expect(api.createSpool).toHaveBeenCalledWith(expect.objectContaining({
+        material: 'PLA',
+        subtype: 'PLA Basic',
+        rgba: 'FFF014FF',
+        storage_location: 'CFS T1 - Slot B',
+        data_origin: 'printer-slot',
+      }));
+    });
+    expect(api.assignSpool).toHaveBeenCalledWith({ spool_id: 42, printer_id: 1, ams_id: 0, tray_id: 1 });
+  });
+
+  it('does not show quick-create for Spoolman slot assignment mode', async () => {
+    render(<AssignSpoolModal {...defaultProps} spoolmanEnabled />);
+
+    expect(screen.getByRole('heading', { name: 'Assign Spool' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /create spool from slot/i })).not.toBeInTheDocument();
   });
 
   it('lists spool with no slicer profile when material matches the tray (#1047)', async () => {

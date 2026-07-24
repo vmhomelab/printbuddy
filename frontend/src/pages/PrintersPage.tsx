@@ -4686,7 +4686,7 @@ function PrinterCard({
                                                   material: tray?.tray_type ?? undefined,
                                                   profile: filamentData.profile,
                                                   color: filamentData.colorHex || '',
-                                                  location: `${getAmsLabel(ams.id, ams.tray.length)} Slot ${slotIdx + 1}`,
+                                                  location: `${amsDisplayLabel} - Slot ${slotIdx + 1}`,
                                                 },
                                               }) : undefined,
                                               onUnassignSpool: (spoolmanSpool && !isBambuLabSpool(tray)) ? () => onUnassignSpoolmanSpool?.(spoolmanSpool.id) : undefined,
@@ -4711,7 +4711,7 @@ function PrinterCard({
                                                 material: tray?.tray_type ?? undefined,
                                                 profile: filamentData.profile,
                                                 color: filamentData.colorHex || '',
-                                                location: `${getAmsLabel(ams.id, ams.tray.length)} Slot ${slotIdx + 1}`,
+                                                location: `${amsDisplayLabel} - Slot ${slotIdx + 1}`,
                                               },
                                             }) : undefined,
                                             onUnassignSpool: (assignment && !isBambuLabSpool(tray)) ? () => onUnassignSpool?.(printer.id, ams.id, slotIdx) : undefined,
@@ -4757,7 +4757,7 @@ function PrinterCard({
                                             material: undefined,
                                             profile: '',
                                             color: '',
-                                            location: `${getAmsLabel(ams.id, ams.tray.length)} Slot ${slotIdx + 1}`,
+                                            location: `${amsDisplayLabel} - Slot ${slotIdx + 1}`,
                                           },
                                         }) : undefined}
                                       >

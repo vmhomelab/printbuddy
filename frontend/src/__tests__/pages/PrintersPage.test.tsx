@@ -1100,6 +1100,28 @@ describe('PrintersPage', () => {
       expect(screen.queryByTitle('Manage plate detection calibration')).toBeNull();
     });
 
+    it('shows manual controls for Creality K2 Plus Fluidd printers', async () => {
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          ...mockPrinters[0],
+          name: 'K2 Plus',
+          provider: 'fluidd',
+          model: 'Creality K2 Plus',
+        }])),
+        http.get('/api/v1/printers/:id/status', () => HttpResponse.json({
+          ...mockPrinterStatus,
+          connected: true,
+          position: { x: 0, y: 0, z: 0 },
+        })),
+      );
+
+      render(<PrintersPage />);
+
+      await screen.findByText('K2 Plus');
+      const controlsToggle = await screen.findByRole('button', { name: /manual controls/i });
+      expect(controlsToggle).toBeInTheDocument();
+    });
+
     it('sends XYZ jog requests from the printer card controls', async () => {
       const user = userEvent.setup();
       const jogRequests: string[] = [];
