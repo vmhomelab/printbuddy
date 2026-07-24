@@ -218,6 +218,7 @@ describe('PrintFarmMonitorPage', () => {
     expect(screen.getByText('ALERTS')).toBeInTheDocument();
     expect(screen.getByText('LOW FILAMENT')).toBeInTheDocument();
     expect(screen.getAllByText(/RealFilament PLA White/).length).toBeGreaterThan(0);
+    expect(document.body.textContent).toContain('#FFFFFF');
     expect(document.body.textContent).not.toContain('Spool A1');
     expect(document.body.textContent).not.toContain('HEALTH OK');
     expect(screen.getByText('Recent Activity')).toBeInTheDocument();

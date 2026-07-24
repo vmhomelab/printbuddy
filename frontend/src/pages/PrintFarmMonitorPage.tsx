@@ -113,6 +113,20 @@ function spoolRemainingPct(spool: InventorySpool): number | null {
   return Math.round((remaining / spool.label_weight) * 100);
 }
 
+function normalizeSpoolColor(color: string | null | undefined): string | null {
+  if (!color) return null;
+  const trimmed = color.trim();
+  if (!trimmed) return null;
+  if (trimmed.startsWith('#') || trimmed.startsWith('rgb') || trimmed.startsWith('hsl')) return trimmed;
+  if (/^[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$/.test(trimmed)) return `#${trimmed.slice(0, 6)}`;
+  return trimmed;
+}
+
+function displaySpoolColor(color: string | null | undefined): string | null {
+  const normalized = normalizeSpoolColor(color);
+  return normalized?.startsWith('#') ? normalized.toUpperCase() : normalized;
+}
+
 function getLoadedFilamentInfo(
   item: MonitorPrinter,
   localAssignments: SpoolAssignment[],
@@ -308,8 +322,8 @@ function PrinterCard({ item, loadedFilament }: { item: MonitorPrinter; loadedFil
   return (
     <article className="rounded-2xl border border-white/10 bg-slate-950/70 p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.04),0_20px_45px_rgba(0,0,0,0.25)]">
       <div className="flex gap-4">
-        <div className="flex h-20 w-24 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-white/10 bg-black/30 p-1.5">
-          {state === 'offline' ? <TriangleAlert className="h-9 w-9 text-red-400" /> : <img src={getPrinterImage(printer.model)} alt="" className="max-h-full max-w-full object-contain" />}
+        <div className="flex h-28 w-32 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-white/10 bg-black/30 p-2">
+          {state === 'offline' ? <TriangleAlert className="h-12 w-12 text-red-400" /> : <img src={getPrinterImage(printer.model)} alt="" className="max-h-full max-w-full object-contain" />}
         </div>
         <div className="min-w-0 flex-1">
           <div className={`mb-3 inline-flex items-center gap-2 rounded-lg px-3 py-1 text-xs font-bold shadow-lg ${stateClasses[state]}`}>
@@ -363,8 +377,11 @@ function PrinterCard({ item, loadedFilament }: { item: MonitorPrinter; loadedFil
       {loadedFilament && (
         <div className="mt-2 grid grid-cols-[1fr_auto] overflow-hidden rounded-xl border border-white/10 bg-black/20">
           <div className="flex items-center gap-3 px-4 py-3">
-            <span className="h-6 w-6 rounded-full border border-white/20" style={{ backgroundColor: loadedFilament.color || '#64748b' }} />
-            <div><div className="text-sm font-medium text-slate-200">{loadedFilament.material}</div><div className="text-xs text-slate-400">{loadedFilament.detail}</div></div>
+            <span className="h-9 w-9 rounded-xl border border-white/25 shadow-[inset_0_0_0_1px_rgba(0,0,0,0.25)]" style={{ backgroundColor: normalizeSpoolColor(loadedFilament.color) || '#64748b' }} />
+            <div>
+              <div className="text-sm font-medium text-slate-200">{loadedFilament.material}</div>
+              <div className="text-xs text-slate-400">{loadedFilament.detail}{displaySpoolColor(loadedFilament.color) ? ` · ${displaySpoolColor(loadedFilament.color)}` : ''}</div>
+            </div>
           </div>
           {loadedFilament.remainingPct !== null && loadedFilament.remainingPct !== undefined && (
             <div className="flex min-w-24 items-center justify-center border-l border-white/10 px-4 py-3 text-center text-xs font-bold text-slate-300">

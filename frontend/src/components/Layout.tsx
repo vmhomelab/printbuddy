@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
-import { Printer, Archive, ListOrdered, BarChart3, Cloud, Settings, Sun, Moon, ChevronLeft, ChevronRight, Keyboard, Github, GripVertical, ArrowUpCircle, Wrench, FolderKanban, FolderOpen, X, Menu, Info, Plug, Bug, LogOut, Key, Loader2, Disc3, ShieldAlert, Bell, Globe, Monitor, type LucideIcon } from 'lucide-react';
+import { Printer, Archive, ListOrdered, BarChart3, Cloud, Settings, Sun, Moon, ChevronLeft, ChevronRight, Keyboard, Github, GripVertical, ArrowUpCircle, Wrench, FolderKanban, FolderOpen, X, Menu, Info, Plug, Bug, LogOut, Key, Loader2, Disc3, ShieldAlert, Bell, Globe, Monitor, PanelLeftClose, type LucideIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useTheme } from '../contexts/ThemeContext';
 import { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
@@ -98,6 +98,7 @@ export function Layout() {
     const stored = localStorage.getItem('sidebarExpanded');
     return stored !== 'false';
   });
+  const [sidebarHidden, setSidebarHidden] = useState(() => localStorage.getItem('sidebarHidden') === 'true');
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [showSwitchbar, setShowSwitchbar] = useState(false);
@@ -250,6 +251,13 @@ export function Layout() {
     if (!status) return false;
     return !!status.awaiting_plate_clear;
   });
+
+  useEffect(() => {
+    localStorage.setItem('sidebarHidden', sidebarHidden ? 'true' : 'false');
+    if (sidebarHidden) {
+      setMobileDrawerOpen(false);
+    }
+  }, [sidebarHidden]);
 
   // Calculate debug duration client-side for real-time updates
   const [debugDuration, setDebugDuration] = useState<number | null>(null);
@@ -495,8 +503,21 @@ export function Layout() {
 
   return (
     <div className="flex min-h-screen">
+      {/* Hidden sidebar restore control */}
+      {sidebarHidden && (
+        <button
+          type="button"
+          onClick={() => setSidebarHidden(false)}
+          className="fixed left-3 top-3 z-[70] flex h-11 w-11 items-center justify-center rounded-xl border border-bambu-dark-tertiary bg-bambu-dark-secondary/95 text-white shadow-xl backdrop-blur transition-colors hover:bg-bambu-dark-tertiary focus:outline-none focus:ring-2 focus:ring-bambu-green"
+          title={t('nav.showSidebar', { defaultValue: 'Show sidebar' })}
+          aria-label={t('nav.showSidebar', { defaultValue: 'Show sidebar' })}
+        >
+          <Menu className="h-5 w-5" />
+        </button>
+      )}
+
       {/* Compact Header */}
-      {isSidebarCompact && (
+      {isSidebarCompact && !sidebarHidden && (
         <header className="fixed top-0 left-0 right-0 z-40 h-14 bg-bambu-dark-secondary border-b border-bambu-dark-tertiary flex items-center px-4">
           <button
             onClick={() => setMobileDrawerOpen(true)}
@@ -521,7 +542,7 @@ export function Layout() {
       )}
 
       {/* Compact Drawer Backdrop */}
-      {isSidebarCompact && mobileDrawerOpen && (
+      {isSidebarCompact && !sidebarHidden && mobileDrawerOpen && (
         <div
           className="fixed inset-0 bg-black/60 z-40 transition-opacity"
           onClick={() => setMobileDrawerOpen(false)}
@@ -529,6 +550,7 @@ export function Layout() {
       )}
 
       {/* Sidebar / Mobile Drawer */}
+      {!sidebarHidden && (
       <aside
         className={`bg-bambu-dark-secondary border-r border-bambu-dark-tertiary flex flex-col transition-all duration-300 ${
           isSidebarCompact
@@ -700,18 +722,39 @@ export function Layout() {
           </ul>
         </nav>
 
-        {/* Collapse toggle - hide on compact sidebar */}
+        {/* Collapse / hide toggles */}
         {!isSidebarCompact && (
+          <div className="mx-2 mb-2 grid grid-cols-2 gap-1">
+            <button
+              onClick={() => setSidebarExpanded(!sidebarExpanded)}
+              className="p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors text-bambu-gray-light hover:text-white flex items-center justify-center"
+              title={sidebarExpanded ? t('nav.collapseSidebar') : t('nav.expandSidebar')}
+              aria-label={sidebarExpanded ? t('nav.collapseSidebar') : t('nav.expandSidebar')}
+            >
+              {sidebarExpanded ? (
+                <ChevronLeft className="w-5 h-5" />
+              ) : (
+                <ChevronRight className="w-5 h-5" />
+              )}
+            </button>
+            <button
+              onClick={() => setSidebarHidden(true)}
+              className="p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors text-bambu-gray-light hover:text-white flex items-center justify-center"
+              title={t('nav.hideSidebar', { defaultValue: 'Hide sidebar' })}
+              aria-label={t('nav.hideSidebar', { defaultValue: 'Hide sidebar' })}
+            >
+              <PanelLeftClose className="w-5 h-5" />
+            </button>
+          </div>
+        )}
+        {isSidebarCompact && (
           <button
-            onClick={() => setSidebarExpanded(!sidebarExpanded)}
+            onClick={() => setSidebarHidden(true)}
             className="p-2 mx-2 mb-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors text-bambu-gray-light hover:text-white flex items-center justify-center"
-            title={sidebarExpanded ? t('nav.collapseSidebar') : t('nav.expandSidebar')}
+            title={t('nav.hideSidebar', { defaultValue: 'Hide sidebar' })}
+            aria-label={t('nav.hideSidebar', { defaultValue: 'Hide sidebar' })}
           >
-            {sidebarExpanded ? (
-              <ChevronLeft className="w-5 h-5" />
-            ) : (
-              <ChevronRight className="w-5 h-5" />
-            )}
+            <PanelLeftClose className="w-5 h-5" />
           </button>
         )}
 
@@ -910,10 +953,11 @@ export function Layout() {
           )}
         </div>
       </aside>
+      )}
 
       {/* Main content */}
       <main className={`flex-1 bg-bambu-dark overflow-auto transition-all duration-300 ${
-        isSidebarCompact ? 'mt-14' : sidebarExpanded ? 'ml-64' : 'ml-16'
+        sidebarHidden ? 'ml-0 mt-0' : isSidebarCompact ? 'mt-14' : sidebarExpanded ? 'ml-64' : 'ml-16'
       }`}>
         {/* Debug logging indicator */}
         {debugLoggingState?.enabled && (

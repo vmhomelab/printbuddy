@@ -107,6 +107,21 @@ describe('Layout', () => {
       });
     });
 
+    it('can hide the sidebar completely and restore it from the top-left control', async () => {
+      const user = userEvent.setup();
+      render(<Layout />);
+
+      await waitFor(() => expect(document.querySelector('aside')).toBeInTheDocument());
+
+      await user.click(screen.getByRole('button', { name: /hide sidebar/i }));
+      expect(document.querySelector('aside')).not.toBeInTheDocument();
+      expect(localStorage.setItem).toHaveBeenCalledWith('sidebarHidden', 'true');
+
+      await user.click(screen.getByRole('button', { name: /show sidebar/i }));
+      await waitFor(() => expect(document.querySelector('aside')).toBeInTheDocument());
+      expect(localStorage.setItem).toHaveBeenCalledWith('sidebarHidden', 'false');
+    });
+
     it('links the Printbuddy logo back to the printers page', async () => {
       const user = userEvent.setup();
       window.history.replaceState({}, '', '/settings');
