@@ -1,7 +1,9 @@
 import { useMemo } from 'react';
+import { Link } from 'react-router-dom';
 import { useQueries, useQuery } from '@tanstack/react-query';
 import {
   AlertTriangle,
+  ArrowLeft,
   Bell,
   CheckCircle2,
   CirclePause,
@@ -619,6 +621,13 @@ export function PrintFarmMonitorPage() {
       <div className={`min-h-screen p-4 xl:p-5 ${theme.backdrop}`}>
         <header className={`mb-4 flex flex-col gap-4 border-b pb-4 xl:flex-row xl:items-center xl:justify-between ${theme.divider}`}>
           <div className="flex items-center gap-5">
+            <Link
+              to="/farm-command-center"
+              aria-label="Back to Farm Command Center"
+              className={`flex h-11 w-11 items-center justify-center rounded-xl border ${theme.border} ${theme.panelSoft} ${theme.muted} transition hover:text-white`}
+            >
+              <ArrowLeft className="h-5 w-5" />
+            </Link>
             <div className={`flex items-center gap-3 border-r pr-8 ${theme.divider}`}>
               <img src={appAssetPath(theme.logoPath)} alt="Printbuddy" className="h-12 w-auto" />
             </div>

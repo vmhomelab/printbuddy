@@ -229,6 +229,7 @@ describe('PrintFarmMonitorPage', () => {
     render(<PrintFarmMonitorPage />);
 
     expect(await screen.findByRole('heading', { name: 'Print Farm Monitor' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /back to farm command center/i })).toHaveAttribute('href', '/farm-command-center');
     await waitFor(() => expect(screen.getByText('1 PRINTERS ACTIVE')).toBeInTheDocument());
 
     expect(screen.getByText(/total printers/i)).toBeInTheDocument();
