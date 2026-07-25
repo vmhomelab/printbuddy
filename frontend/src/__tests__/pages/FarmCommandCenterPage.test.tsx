@@ -103,12 +103,30 @@ function statusFor(id: number) {
 }
 
 describe('FarmCommandCenterPage', () => {
+  let printerFleetGroups: Array<{ id: number; name: string; color: null; sort_order: number; printer_ids: number[]; created_at: string; updated_at: string }>;
+
   beforeEach(() => {
     vi.setSystemTime(new Date('2026-07-02T16:42:17Z'));
     vi.mocked(localStorage.getItem).mockReset();
     vi.mocked(localStorage.setItem).mockReset();
+    printerFleetGroups = [];
     server.use(
       http.get('/api/v1/printers/', () => HttpResponse.json(printers)),
+      http.get('/api/v1/printer-fleet-groups/', () => HttpResponse.json(printerFleetGroups)),
+      http.post('/api/v1/printer-fleet-groups/', async ({ request }) => {
+        const body = await request.json() as { name: string; printer_ids: number[]; sort_order?: number };
+        const group = {
+          id: 101,
+          name: body.name,
+          color: null,
+          sort_order: body.sort_order ?? 0,
+          printer_ids: body.printer_ids,
+          created_at: '2026-07-02T16:42:17Z',
+          updated_at: '2026-07-02T16:42:17Z',
+        };
+        printerFleetGroups = [group];
+        return HttpResponse.json(group);
+      }),
       http.get('/api/v1/printers/:id/status', ({ params }) => HttpResponse.json(statusFor(Number(params.id)))),
       http.get('/api/v1/queue/', () => HttpResponse.json([
         { id: 1, status: 'completed', completed_at: '2026-07-02T12:00:00Z', project_id: 42, library_file_id: null, library_file_name: null, archive_name: 'completed-gridfinity.gcode.3mf', printer_name: 'PRA-01' },
@@ -219,6 +237,7 @@ describe('FarmCommandCenterPage', () => {
     await user.click(within(dialog).getByRole('button', { name: /save group/i }));
 
     await waitFor(() => expect(screen.getAllByText('Prototype Lab').length).toBeGreaterThan(0));
-    expect(localStorage.setItem).toHaveBeenCalledWith('printbuddy.commandCenterPrinterGroups', expect.stringContaining('Prototype Lab'));
+    expect(localStorage.setItem).not.toHaveBeenCalledWith('printbuddy.commandCenterPrinterGroups', expect.any(String));
+    expect(printerFleetGroups[0]).toMatchObject({ name: 'Prototype Lab', printer_ids: [1] });
   });
 });

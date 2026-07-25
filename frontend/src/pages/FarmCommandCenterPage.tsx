@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { useQueries, useQuery } from '@tanstack/react-query';
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   AlertTriangle,
   Boxes,
@@ -25,6 +25,7 @@ import {
   type PrintQueueItem,
   type ProjectListItem,
   type Printer,
+  type PrinterFleetGroup,
   type PrinterMaintenanceOverview,
   type PrinterStatus,
 } from '../api/client';
@@ -37,13 +38,6 @@ interface FleetPrinter {
 type FleetState = 'printing' | 'paused' | 'idle' | 'alert' | 'offline';
 
 const REFRESH_MS = 15_000;
-const PRINTER_GROUPS_STORAGE_KEY = 'printbuddy.commandCenterPrinterGroups';
-
-interface CommandCenterPrinterGroup {
-  id: string;
-  name: string;
-  printerIds: number[];
-}
 
 interface CommandCenterAlert {
   id: string;
@@ -60,23 +54,9 @@ interface ActiveProjectWorkItem {
 
 type ProjectQueueItem = PrintQueueItem & { project_id?: number | null };
 
-function loadStoredPrinterGroups(): CommandCenterPrinterGroup[] {
-  try {
-    const raw = localStorage.getItem(PRINTER_GROUPS_STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((group): group is CommandCenterPrinterGroup => (
-      typeof group?.id === 'string' && typeof group?.name === 'string' && Array.isArray(group?.printerIds)
-    ));
-  } catch {
-    return [];
-  }
-}
-
-function buildPrinterGroupMap(groups: CommandCenterPrinterGroup[]): Map<number, string> {
+function buildPrinterGroupMap(groups: PrinterFleetGroup[]): Map<number, string> {
   const map = new Map<number, string>();
-  groups.forEach((group) => group.printerIds.forEach((printerId) => map.set(printerId, group.name)));
+  groups.forEach((group) => group.printer_ids.forEach((printerId) => map.set(printerId, group.name)));
   return map;
 }
 
@@ -419,7 +399,7 @@ function AlertsDialog({ alerts, onClose }: { alerts: CommandCenterAlert[]; onClo
   );
 }
 
-function PrinterGroupsDialog({ printers, groups, onSave, onClose }: { printers: Printer[]; groups: CommandCenterPrinterGroup[]; onSave: (groups: CommandCenterPrinterGroup[]) => void; onClose: () => void }) {
+function PrinterGroupsDialog({ printers, groups, onSave, onClose }: { printers: Printer[]; groups: PrinterFleetGroup[]; onSave: (name: string, printerIds: number[]) => void; onClose: () => void }) {
   const [name, setName] = useState('');
   const [selectedPrinterIds, setSelectedPrinterIds] = useState<number[]>([]);
 
@@ -430,9 +410,7 @@ function PrinterGroupsDialog({ printers, groups, onSave, onClose }: { printers: 
   const saveGroup = () => {
     const trimmed = name.trim();
     if (!trimmed || selectedPrinterIds.length === 0) return;
-    const withoutAssigned = groups.map((group) => ({ ...group, printerIds: group.printerIds.filter((printerId) => !selectedPrinterIds.includes(printerId)) })).filter((group) => group.printerIds.length > 0 || group.name !== trimmed);
-    const nextGroups = [...withoutAssigned, { id: `${Date.now()}`, name: trimmed, printerIds: selectedPrinterIds }];
-    onSave(nextGroups);
+    onSave(trimmed, selectedPrinterIds);
     setName('');
     setSelectedPrinterIds([]);
     onClose();
@@ -464,7 +442,7 @@ function PrinterGroupsDialog({ printers, groups, onSave, onClose }: { printers: 
         {groups.length > 0 && (
           <div className="mb-4 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark p-3 text-sm text-bambu-gray-light">
             <div className="mb-2 font-semibold text-white">Current command center groups</div>
-            {groups.map((group) => <div key={group.id}>{group.name}: {group.printerIds.length} printer{group.printerIds.length === 1 ? '' : 's'}</div>)}
+            {groups.map((group) => <div key={group.id}>{group.name}: {group.printer_ids.length} printer{group.printer_ids.length === 1 ? '' : 's'}</div>)}
           </div>
         )}
         <div className="flex justify-end gap-2">
@@ -482,7 +460,7 @@ export function FarmCommandCenterPage() {
   const [groupFilter, setGroupFilter] = useState('all');
   const [showAlerts, setShowAlerts] = useState(false);
   const [showGroups, setShowGroups] = useState(false);
-  const [printerGroups, setPrinterGroups] = useState<CommandCenterPrinterGroup[]>(() => loadStoredPrinterGroups());
+  const queryClient = useQueryClient();
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(new Date()), 1000);
@@ -490,6 +468,11 @@ export function FarmCommandCenterPage() {
   }, []);
 
   const { data: printers = [] } = useQuery({ queryKey: ['printers'], queryFn: api.getPrinters, refetchInterval: REFRESH_MS });
+  const { data: printerGroups = [] } = useQuery({ queryKey: ['printer-fleet-groups'], queryFn: api.getPrinterFleetGroups, refetchInterval: REFRESH_MS, retry: false });
+  const createPrinterGroup = useMutation({
+    mutationFn: (payload: { name: string; printerIds: number[] }) => api.createPrinterFleetGroup({ name: payload.name, printer_ids: payload.printerIds, sort_order: printerGroups.length }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['printer-fleet-groups'] }),
+  });
   const { data: queue = [] } = useQuery({ queryKey: ['queue', 'command-center'], queryFn: () => api.getQueue(), refetchInterval: REFRESH_MS });
   const { data: activeProjects = [] } = useQuery({ queryKey: ['projects', 'active', 'command-center'], queryFn: () => api.getProjects('active'), refetchInterval: REFRESH_MS, retry: false });
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
@@ -538,9 +521,8 @@ export function FarmCommandCenterPage() {
   const lowStock = lowSpoolCount(spools, settings?.low_stock_threshold ?? 20);
   const maintenanceDue = maintenanceAttentionCount(maintenanceOverview);
   const commandCenterAlerts = useMemo(() => buildCommandCenterAlerts(fleet, spools, maintenanceOverview, settings?.low_stock_threshold ?? 20), [fleet, spools, maintenanceOverview, settings?.low_stock_threshold]);
-  const savePrinterGroups = (nextGroups: CommandCenterPrinterGroup[]) => {
-    setPrinterGroups(nextGroups);
-    localStorage.setItem(PRINTER_GROUPS_STORAGE_KEY, JSON.stringify(nextGroups));
+  const savePrinterGroups = (name: string, printerIds: number[]) => {
+    createPrinterGroup.mutate({ name, printerIds });
   };
 
   return (

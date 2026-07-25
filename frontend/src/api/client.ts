@@ -2789,6 +2789,23 @@ export interface SpoolAssignment {
   ams_label?: string | null;  // User-defined friendly name for the AMS unit
 }
 
+export interface PrinterFleetGroup {
+  id: number;
+  name: string;
+  color?: string | null;
+  sort_order: number;
+  printer_ids: number[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PrinterFleetGroupPayload {
+  name: string;
+  color?: string | null;
+  sort_order?: number;
+  printer_ids: number[];
+}
+
 export interface FilamentSkuSettings {
   id: number;
   material: string;
@@ -3539,6 +3556,17 @@ export const api = {
 
   // Printers
   getPrinters: () => request<Printer[]>('/printers/'),
+  getPrinterFleetGroups: () => request<PrinterFleetGroup[]>('/printer-fleet-groups/'),
+  createPrinterFleetGroup: (data: PrinterFleetGroupPayload) =>
+    request<PrinterFleetGroup>('/printer-fleet-groups/', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  updatePrinterFleetGroup: (id: number, data: PrinterFleetGroupPayload) =>
+    request<PrinterFleetGroup>(`/printer-fleet-groups/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
   getPrinter: (id: number) => request<Printer>(`/printers/${id}`),
   createPrinter: (data: PrinterCreate) =>
     request<Printer>('/printers/', {

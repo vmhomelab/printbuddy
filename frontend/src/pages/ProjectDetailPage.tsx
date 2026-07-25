@@ -37,7 +37,7 @@ import {
 } from 'lucide-react';
 import { api } from '../api/client';
 import { parseUTCDate, formatDateOnly, formatDateTime, formatDurationFromHours, type TimeFormat } from '../utils/date';
-import type { Archive, ProjectUpdate, BOMItem, BOMItemCreate, BOMItemUpdate, LibraryFileListItem, Printer as PrintbuddyPrinter, PrinterStatus, PrintQueueItem } from '../api/client';
+import type { Archive, ProjectUpdate, BOMItem, BOMItemCreate, BOMItemUpdate, LibraryFileListItem, Printer as PrintbuddyPrinter, PrinterStatus, PrintQueueItem, SpoolAssignment } from '../api/client';
 import { Card, CardContent } from '../components/Card';
 import { Button } from '../components/Button';
 import { useToast } from '../contexts/ToastContext';
@@ -418,6 +418,18 @@ function ProductionPlan({ bomItems, archives, files, fileStates, onStageFile }: 
 
 type DispatchState = 'ready' | 'blocked';
 
+type FilamentRequirement = {
+  slot_id: number;
+  type: string;
+  color: string;
+  used_grams: number;
+};
+
+interface FileFilamentRequirements {
+  file_id: number;
+  filaments: FilamentRequirement[];
+}
+
 interface DispatchSuggestion {
   file: LibraryFileListItem;
   state: DispatchState;
@@ -434,7 +446,38 @@ function isPrinterDispatchReady(status?: PrinterStatus): boolean {
   return true;
 }
 
-function buildDispatchSuggestions(files: LibraryFileListItem[], printers: PrintbuddyPrinter[], statuses: Array<PrinterStatus | undefined>, queue: PrintQueueItem[]): DispatchSuggestion[] {
+function spoolRemainingGrams(assignment: SpoolAssignment): number | null {
+  const spool = assignment.spool;
+  if (!spool?.label_weight) return null;
+  return Math.max(0, spool.label_weight - (spool.weight_used ?? 0));
+}
+
+function assignmentSlotLabel(assignment: SpoolAssignment): string {
+  if (assignment.ams_label) return `${assignment.ams_label} T${assignment.tray_id + 1}`;
+  if (assignment.ams_id < 0) return 'External spool';
+  return `AMS ${assignment.ams_id + 1} T${assignment.tray_id + 1}`;
+}
+
+function buildFilamentReadiness(printer: PrintbuddyPrinter, requirements: FileFilamentRequirements | undefined, assignments: SpoolAssignment[]): { state: DispatchState; reason: string | null } {
+  const filaments = requirements?.filaments?.filter((filament) => filament.used_grams > 0) || [];
+  if (filaments.length === 0) return { state: 'ready', reason: null };
+
+  const requirement = filaments[0];
+  const assignment = assignments.find((item) => item.printer_id === printer.id && item.spool?.material?.toLowerCase() === requirement.type.toLowerCase());
+  if (!assignment) {
+    return { state: 'blocked', reason: `Missing ${requirement.type} spool assignment.` };
+  }
+
+  const remaining = spoolRemainingGrams(assignment);
+  if (remaining !== null && remaining < requirement.used_grams) {
+    return { state: 'blocked', reason: `${requirement.type} in ${assignmentSlotLabel(assignment)} has ${Math.round(remaining)}g remaining, needs ${Math.round(requirement.used_grams)}g.` };
+  }
+
+  const remainingText = remaining === null ? 'remaining unknown' : `${Math.round(remaining)}g remaining`;
+  return { state: 'ready', reason: `${requirement.type} ready in ${assignmentSlotLabel(assignment)} (${remainingText}, ${Math.round(requirement.used_grams)}g required).` };
+}
+
+function buildDispatchSuggestions(files: LibraryFileListItem[], printers: PrintbuddyPrinter[], statuses: Array<PrinterStatus | undefined>, queue: PrintQueueItem[], assignments: SpoolAssignment[] = [], requirementsByFile = new Map<number, FileFilamentRequirements>()): DispatchSuggestion[] {
   const printableFiles = files.filter((file) => isSlicedFilename(file.filename));
   return printableFiles.map((file) => {
     const alreadyQueued = queue.some((item) => {
@@ -448,11 +491,16 @@ function buildDispatchSuggestions(files: LibraryFileListItem[], printers: Printb
 
     const readyIndex = printers.findIndex((printer, index) => printer.is_active !== false && isPrinterDispatchReady(statuses[index]));
     if (readyIndex >= 0) {
+      const printer = printers[readyIndex];
+      const filamentReadiness = buildFilamentReadiness(printer, requirementsByFile.get(file.id), assignments);
+      if (filamentReadiness.state === 'blocked') {
+        return { file, state: 'blocked', printer, reason: filamentReadiness.reason || 'Filament readiness blocked staging.' };
+      }
       return {
         file,
         state: 'ready',
-        printer: printers[readyIndex],
-        reason: `${printers[readyIndex].name} is an idle printer and can be reviewed for staging.`,
+        printer,
+        reason: `${printer.name} is idle${filamentReadiness.reason ? ` and ${filamentReadiness.reason}` : ' and can be reviewed for staging.'}`,
       };
     }
 
@@ -645,6 +693,22 @@ export function ProjectDetailPage() {
     enabled: projectId > 0,
   });
 
+  const { data: spoolAssignments = [] } = useQuery({
+    queryKey: ['spool-assignments', 'project-dispatch'],
+    queryFn: () => api.getAssignments(),
+    enabled: projectId > 0,
+    retry: false,
+  });
+
+  const filamentRequirementQueries = useQueries({
+    queries: (allProjectFiles || []).filter((file) => isSlicedFilename(file.filename)).map((file) => ({
+      queryKey: ['library-file-filament-requirements', file.id, 'project-dispatch'],
+      queryFn: () => api.getLibraryFileFilamentRequirements(file.id),
+      enabled: projectId > 0,
+      retry: false,
+    })),
+  });
+
   const printerStatusQueries = useQueries({
     queries: printers.map((printer) => ({
       queryKey: ['printerStatus', printer.id, 'project-dispatch'],
@@ -654,6 +718,13 @@ export function ProjectDetailPage() {
   });
 
   const printerStatuses = printerStatusQueries.map((query) => query.data);
+  const filamentRequirementsByFile = useMemo(() => {
+    const map = new Map<number, FileFilamentRequirements>();
+    filamentRequirementQueries.forEach((query) => {
+      if (query.data) map.set(query.data.file_id, query.data as FileFilamentRequirements);
+    });
+    return map;
+  }, [filamentRequirementQueries]);
   const productionFileStates = useMemo(() => buildProductionFileStates(
     allProjectFiles || [],
     queue as PrintQueueItem[],
@@ -666,7 +737,9 @@ export function ProjectDetailPage() {
     printers,
     printerStatuses,
     queue as PrintQueueItem[],
-  ), [allProjectFiles, printers, printerStatuses, queue]);
+    spoolAssignments as SpoolAssignment[],
+    filamentRequirementsByFile,
+  ), [allProjectFiles, printers, printerStatuses, queue, spoolAssignments, filamentRequirementsByFile]);
 
   // Group files by folder_id for the section-based render
   const filesByFolder = useMemo(() => {

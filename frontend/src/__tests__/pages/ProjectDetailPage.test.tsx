@@ -270,6 +270,8 @@ describe('ProjectDetailPage', () => {
       }),
       http.get('/api/v1/printers/', () => HttpResponse.json([])),
       http.get('/api/v1/queue/', () => HttpResponse.json([])),
+      http.get('/api/v1/inventory/assignments', () => HttpResponse.json([])),
+      http.get('/api/v1/library/files/:id/filament-requirements', ({ params }) => HttpResponse.json({ file_id: Number(params.id), filename: 'test.gcode.3mf', filaments: [] })),
     );
   });
 
@@ -479,7 +481,7 @@ describe('ProjectDetailPage', () => {
         http.get('/api/v1/printers/', () => HttpResponse.json([])),
         http.get('/api/v1/library/files/:id', () => HttpResponse.json(makeFile({ id: 41, filename: 'gridfinity-bin-plate-02.gcode.3mf', file_type: '3mf' }))),
         http.get('/api/v1/library/files/:id/plates', () => HttpResponse.json({ is_multi_plate: false, plates: [] })),
-        http.get('/api/v1/library/files/:id/filament-requirements', () => HttpResponse.json({ file_id: 41, filename: 'gridfinity-bin-plate-02.gcode.3mf', filaments: [] })),
+        http.get('/api/v1/library/files/:id/filament-requirements', () => HttpResponse.json({ file_id: 41, filename: 'gridfinity-bin-plate-02.gcode.3mf', filaments: [{ slot_id: 1, type: 'PLA', color: '#0000ff', used_grams: 84, used_meters: 28 }] })),
       );
 
       render(<ProjectDetailPage />);
@@ -539,9 +541,25 @@ describe('ProjectDetailPage', () => {
         http.get('/api/v1/printers/', () => HttpResponse.json(dispatchPrinters)),
         http.get('/api/v1/printers/:id/status', ({ params }) => HttpResponse.json(dispatchStatus(Number(params.id)))),
         http.get('/api/v1/queue/', () => HttpResponse.json([])),
+        http.get('/api/v1/inventory/assignments', () => HttpResponse.json([
+          {
+            id: 501,
+            spool_id: 301,
+            printer_id: 1,
+            printer_name: 'PRA-01',
+            ams_id: 0,
+            tray_id: 0,
+            fingerprint_color: null,
+            fingerprint_type: null,
+            configured: true,
+            created_at: '2024-01-01T00:00:00Z',
+            ams_label: 'CFS',
+            spool: { id: 301, material: 'PLA', color_name: 'Blue', label_weight: 1000, weight_used: 84, archived_at: null },
+          },
+        ])),
         http.get('/api/v1/library/files/:id', () => HttpResponse.json(makeFile({ id: 41, filename: 'gridfinity-bin-plate-02.gcode.3mf', file_type: '3mf' }))),
         http.get('/api/v1/library/files/:id/plates', () => HttpResponse.json({ is_multi_plate: false, plates: [] })),
-        http.get('/api/v1/library/files/:id/filament-requirements', () => HttpResponse.json({ file_id: 41, filename: 'gridfinity-bin-plate-02.gcode.3mf', filaments: [] })),
+        http.get('/api/v1/library/files/:id/filament-requirements', () => HttpResponse.json({ file_id: 41, filename: 'gridfinity-bin-plate-02.gcode.3mf', filaments: [{ slot_id: 1, type: 'PLA', color: '#0000ff', used_grams: 84, used_meters: 28 }] })),
       );
 
       render(<ProjectDetailPage />);
@@ -551,7 +569,8 @@ describe('ProjectDetailPage', () => {
       expect(within(dispatchSection).getByText('gridfinity-bin-plate-02.gcode.3mf')).toBeInTheDocument();
       await waitFor(() => expect(within(dispatchSection).getByText('Ready to stage')).toBeInTheDocument());
       expect(within(dispatchSection).getByText('Suggested printer: PRA-01')).toBeInTheDocument();
-      expect(within(dispatchSection).getByText(/idle printer/i)).toBeInTheDocument();
+      expect(within(dispatchSection).getByText(/PLA ready in CFS T1/)).toBeInTheDocument();
+      expect(within(dispatchSection).getByText(/916g remaining/)).toBeInTheDocument();
 
       await user.click(screen.getByRole('button', { name: /review staging for gridfinity-bin-plate-02\.gcode\.3mf on PRA-01/i }));
 

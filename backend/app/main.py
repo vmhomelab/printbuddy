@@ -50,6 +50,7 @@ from backend.app.api.routes import (
     pending_uploads,
     print_log,
     print_queue,
+    printer_fleet_groups,
     printers,
     projects,
     settings as settings_routes,
@@ -5964,6 +5965,7 @@ app.include_router(local_presets.router, prefix=app_settings.api_prefix)
 app.include_router(smart_plugs.router, prefix=app_settings.api_prefix)
 app.include_router(print_log.router, prefix=app_settings.api_prefix)
 app.include_router(print_queue.router, prefix=app_settings.api_prefix)
+app.include_router(printer_fleet_groups.router, prefix=app_settings.api_prefix)
 app.include_router(background_dispatch_routes.router, prefix=app_settings.api_prefix)
 app.include_router(kprofiles.router, prefix=app_settings.api_prefix)
 app.include_router(notifications.router, prefix=app_settings.api_prefix)

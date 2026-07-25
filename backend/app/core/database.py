@@ -192,6 +192,7 @@ async def init_db():
         print_log,
         print_queue,
         printer,
+        printer_fleet_group,
         project,
         project_bom,
         settings,
