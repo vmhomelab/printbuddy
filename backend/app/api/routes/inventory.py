@@ -1262,6 +1262,7 @@ async def assign_spool(
         raise HTTPException(400, "Cannot assign an archived spool")
 
     is_loaded_spool_marker = data.ams_id == -1 and data.tray_id == 0
+    is_cfs_slot = False
 
     # 2. Get current AMS tray state for fingerprint + existing filament ID.
     # tray_state: Bambu firmware reports 11=loaded, 9=empty, 10=spool present
@@ -1303,6 +1304,16 @@ async def assign_spool(
                 data.ams_id,
                 data.tray_id,
             )
+            for ams_unit in ams_list:
+                if not isinstance(ams_unit, dict):
+                    continue
+                try:
+                    unit_id = int(ams_unit.get("id", -999))
+                except (TypeError, ValueError):
+                    continue
+                if unit_id == data.ams_id and ams_unit.get("module_type") == "cfs":
+                    is_cfs_slot = True
+                    break
             if tray:
                 fingerprint_color = tray.get("tray_color", "")
                 fingerprint_type = tray.get("tray_type", "")
@@ -1336,7 +1347,7 @@ async def assign_spool(
     await db.commit()
     await db.refresh(assignment)
 
-    if is_loaded_spool_marker:
+    if is_loaded_spool_marker or is_cfs_slot:
         result = await db.execute(
             select(SpoolAssignment)
             .options(

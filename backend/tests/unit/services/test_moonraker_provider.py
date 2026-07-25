@@ -189,6 +189,52 @@ def test_moonraker_complete_state_clamps_progress_and_remaining_time(monkeypatch
     assert client.state.remaining_time == 0
 
 
+def test_moonraker_uses_file_position_progress_when_fractional_progress_is_stale(monkeypatch):
+    client = MoonrakerPrinterClient("http://k2-plus.local:7125", printer_model="Creality K2 Plus")
+    status = _moonraker_status_with_cfs("A")
+    status["print_stats"] = {
+        "state": "printing",
+        "filename": "tiny-cube.gcode",
+        "print_duration": 30.0,
+        "estimated_time": 90.0,
+    }
+    status["virtual_sdcard"] = {"progress": 0.21, "file_position": 6000, "file_size": 10000}
+    status["display_status"] = {"progress": 0.21}
+    base_status = {
+        key: status[key] for key in ("print_stats", "virtual_sdcard", "display_status", "extruder", "heater_bed")
+    }
+    cfs_status = {key: status[key] for key in ("box", "filament_rack", "filament_switch_sensor filament_sensor")}
+    monkeypatch.setattr(client, "_query_objects", lambda object_names: base_status)
+    monkeypatch.setattr(client, "_query_cfs_status", lambda: cfs_status)
+    monkeypatch.setattr(client, "_query_fan_status", lambda: {})
+
+    assert client.request_status_update() is True
+
+    assert client.state.state == "RUNNING"
+    assert client.state.progress == 60.0
+    assert client.state.remaining_time == 1
+
+
+def test_moonraker_send_gcode_treats_verified_read_timeout_as_accepted(monkeypatch):
+    client = MoonrakerPrinterClient("http://k2-plus.local:7125", printer_model="Creality K2 Plus")
+    refreshed = False
+
+    def timeout_post(path, data):
+        raise __import__("httpx").ReadTimeout("timed out")
+
+    def refresh_status():
+        nonlocal refreshed
+        refreshed = True
+        client.state.connected = True
+        return True
+
+    monkeypatch.setattr(client, "_post", timeout_post)
+    monkeypatch.setattr(client, "request_status_update", refresh_status)
+
+    assert client.send_gcode("G28") is True
+    assert refreshed is True
+
+
 def test_moonraker_discovers_and_normalizes_webcams(monkeypatch):
     client = MoonrakerPrinterClient("http://k2-plus.local:7125", printer_model="Creality K2 Plus")
     monkeypatch.setattr(

@@ -228,6 +228,27 @@ def _remaining_minutes(print_stats: dict[str, Any], progress: float) -> int:
     return int(remaining_seconds // 60)
 
 
+def _moonraker_progress_percent(virtual_sdcard: dict[str, Any], display_status: dict[str, Any]) -> float:
+    """Return the best available Moonraker print progress percentage.
+
+    Some K2 Plus firmware samples keep ``virtual_sdcard.progress`` / ``display_status.progress`` stale during short prints. When Moonraker also reports file byte position and size, prefer the furthest trustworthy value.
+    """
+    progress = virtual_sdcard.get("progress")
+    if progress is None:
+        progress = display_status.get("progress")
+    candidates: list[float] = []
+    fractional = _safe_float(progress)
+    if fractional is not None:
+        candidates.append(max(0.0, min(fractional * 100.0, 100.0)))
+
+    file_position = _safe_float(virtual_sdcard.get("file_position"))
+    file_size = _safe_float(virtual_sdcard.get("file_size") or virtual_sdcard.get("total_size"))
+    if file_position is not None and file_size and file_size > 0:
+        candidates.append(max(0.0, min((file_position / file_size) * 100.0, 100.0)))
+
+    return max(candidates) if candidates else 0.0
+
+
 def _moonraker_url_candidates(base_url: str) -> list[str]:
     """Return Moonraker probe URLs, including :7125 fallback for Fluidd UI URLs."""
     parsed = urlparse(base_url)
@@ -710,10 +731,7 @@ class MoonrakerPrinterClient:
             self.state.current_print = self.state.gcode_file
             self.state.subtask_name = self.state.gcode_file
 
-        progress = virtual_sdcard.get("progress")
-        if progress is None:
-            progress = display_status.get("progress")
-        raw_progress = float(progress or 0.0) * 100
+        raw_progress = _moonraker_progress_percent(virtual_sdcard, display_status)
         if self.state.state == "FINISH":
             self.state.progress = 100.0
             self.state.remaining_time = 0
@@ -750,7 +768,14 @@ class MoonrakerPrinterClient:
     def send_gcode(self, script: str) -> bool:
         if not script.strip():
             return False
-        self._post("printer/gcode/script", {"script": script})
+        try:
+            self._post("printer/gcode/script", {"script": script})
+        except httpx.ReadTimeout:
+            # K2 Plus / Creality Moonraker can execute long-running commands such
+            # as G28 and still miss the short HTTP response window. Refresh status
+            # once; if Moonraker is reachable afterwards, treat the command as
+            # accepted rather than surfacing a false UI failure.
+            self.request_status_update()
         return True
 
     def set_nozzle_temperature(self, target: int | float) -> bool:

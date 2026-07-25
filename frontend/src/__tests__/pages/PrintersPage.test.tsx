@@ -203,6 +203,44 @@ describe('PrintersPage', () => {
       expect(await screen.findByRole('combobox', { name: /Storage/i })).toHaveValue('usb');
     });
 
+    it('shows the Files button on Fluidd/Moonraker printer cards and opens the file manager', async () => {
+      const user = userEvent.setup();
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          ...mockPrinters[0],
+          id: 9,
+          name: 'K2 Plus',
+          provider: 'fluidd',
+          model: 'Creality K2 Plus',
+        }])),
+        http.get('/api/v1/printers/9/storage', () => HttpResponse.json({
+          used_bytes: null,
+          free_bytes: null,
+          storages: [
+            { id: 'gcodes', type: 'LOCAL', name: 'Moonraker gcodes', path: '/', available: true },
+          ],
+        })),
+        http.get('/api/v1/printers/9/files', ({ request }) => {
+          const url = new URL(request.url);
+          return HttpResponse.json({
+            path: url.searchParams.get('path') || '/',
+            storage: url.searchParams.get('storage'),
+            files: [],
+          });
+        }),
+      );
+
+      render(<PrintersPage />);
+
+      await screen.findAllByText('K2 Plus');
+      expect(await screen.findByRole('button', { name: 'Files' })).toBeInTheDocument();
+
+      await user.click(screen.getByRole('button', { name: 'Files' }));
+
+      expect(await screen.findByText('File Manager')).toBeInTheDocument();
+      expect(screen.getAllByText('K2 Plus').length).toBeGreaterThan(0);
+    });
+
     it('shows a PrusaLink badge that opens the printer UI in a new tab', async () => {
       server.use(
         http.get('/api/v1/printers/', () => HttpResponse.json([{

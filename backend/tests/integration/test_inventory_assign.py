@@ -1172,3 +1172,44 @@ class TestAssignSpoolEmptyDetection:
         assert body["spool"]["id"] == spool.id
         assert body["pending_config"] is False
         assert body["configured"] is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_cfs_slot_assignment_is_inventory_only_and_skips_bambu_mqtt(
+        self, async_client: AsyncClient, printer_factory, spool_factory
+    ):
+        """Creality CFS slots are normalized to AMS ids, but they are not Bambu MQTT slots."""
+        printer = await printer_factory(name="K2 Plus", provider="fluidd", model="Creality K2 Plus")
+        spool = await spool_factory(slicer_filament="Generic PLA", material="PLA")
+
+        mock_client = MagicMock()
+        status = _make_mock_status(
+            ams_data=[
+                {
+                    "id": 0,
+                    "name": "CFS T1",
+                    "module_type": "cfs",
+                    "tray": [{"id": 0, "state": 11, "tray_type": "PLA", "tray_color": "#0A2989", "tray_uuid": "T1A"}],
+                }
+            ]
+        )
+
+        with patch("backend.app.services.printer_manager.printer_manager") as mock_pm:
+            mock_pm.get_client.return_value = mock_client
+            mock_pm.get_status.return_value = status
+
+            response = await async_client.post(
+                "/api/v1/inventory/assignments",
+                json={"spool_id": spool.id, "printer_id": printer.id, "ams_id": 0, "tray_id": 0},
+            )
+
+        assert response.status_code == 200
+        mock_client.ams_set_filament_setting.assert_not_called()
+        mock_client.extrusion_cali_sel.assert_not_called()
+        body = response.json()
+        assert body["printer_id"] == printer.id
+        assert body["ams_id"] == 0
+        assert body["tray_id"] == 0
+        assert body["spool"]["id"] == spool.id
+        assert body["pending_config"] is False
+        assert body["configured"] is True

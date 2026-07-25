@@ -2124,6 +2124,7 @@ function PrinterCard({
 
   const isPrusaModelPrinter = isPrusaPrinter(printer);
   const isBambuProvider = !printer.provider || printer.provider === 'bambu';
+  const isMoonrakerProvider = printer.provider === 'klipper' || printer.provider === 'mainsail' || printer.provider === 'fluidd';
   const isElegooSDCPProvider = printer.provider === 'elegoo_sdcp';
   // Loaded-spool assignment is local inventory state, not a provider control.
   // Keep unsupported provider/manual controls hidden, but allow single-spool
@@ -4447,6 +4448,7 @@ function PrinterCard({
                                 // Find tray data for this slot (may be undefined if data incomplete)
                                 // Use array index if available, as tray.id may not always be set
                                 const tray = ams.tray[slotIdx] || ams.tray.find(t => t.id === slotIdx);
+                                const isCfsUnit = ams.module_type === 'cfs';
                                 const hasFillLevel = tray?.tray_type && tray.remain >= 0;
                                 const isEmpty = !tray?.tray_type;
                                 const emptyKind = getEmptySlotKind(tray);
@@ -4558,7 +4560,7 @@ function PrinterCard({
                                       </div>
                                     )}
                                     {/* Menu button - appears on hover, hidden when printer busy */}
-                                    {status?.state !== 'RUNNING' && (
+                                    {status?.state !== 'RUNNING' && !isCfsUnit && (
                                       <button
                                         onClick={(e) => {
                                           e.stopPropagation();
@@ -4575,7 +4577,7 @@ function PrinterCard({
                                       </button>
                                     )}
                                     {/* Dropdown menu */}
-                                    {status?.state !== 'RUNNING' && amsSlotMenu?.amsId === ams.id && amsSlotMenu?.slotId === slotIdx && (
+                                    {status?.state !== 'RUNNING' && !isCfsUnit && amsSlotMenu?.amsId === ams.id && amsSlotMenu?.slotId === slotIdx && (
                                       <div className="absolute top-full left-0 mt-1 z-50 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl py-1 min-w-[120px]">
                                         <button
                                           className={`w-full px-3 py-1.5 text-left text-xs flex items-center gap-2 ${
@@ -4719,7 +4721,7 @@ function PrinterCard({
                                           };
                                         })()}
                                         configureSlot={{
-                                          enabled: hasPermission('printers:control'),
+                                          enabled: hasPermission('printers:control') && !isCfsUnit,
                                           onConfigure: () => setConfigureSlotModal({
                                             amsId: ams.id,
                                             trayId: slotIdx,
@@ -4740,7 +4742,7 @@ function PrinterCard({
                                       <EmptySlotHoverCard
                                         kind={emptyKind ?? undefined}
                                         configureSlot={{
-                                          enabled: hasPermission('printers:control'),
+                                          enabled: hasPermission('printers:control') && !isCfsUnit,
                                           onConfigure: () => setConfigureSlotModal({
                                             amsId: ams.id,
                                             trayId: slotIdx,
@@ -5684,7 +5686,7 @@ function PrinterCard({
                   </Button>
                 </div>
               )}
-              {(isBambuProvider || printer.provider === 'prusalink') && (
+              {(isBambuProvider || printer.provider === 'prusalink' || isMoonrakerProvider) && (
                 <Button
                   variant="secondary"
                   size="sm"
@@ -5729,7 +5731,7 @@ function PrinterCard({
         )}
 
         {/* Moonraker toolhead control panels */}
-        {(printer.provider === 'klipper' || printer.provider === 'mainsail' || printer.provider === 'fluidd') && !isPrusaModelPrinter && viewMode === 'expanded' && (
+        {(isMoonrakerProvider) && !isPrusaModelPrinter && viewMode === 'expanded' && (
           <SortablePrinterCardSection layoutEditing={layoutEditing} id="manual-controls" title="Manual controls" order={getCardSectionOrder('manual-controls')}>
           <Collapsible
             defaultOpen={false}
