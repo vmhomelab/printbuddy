@@ -509,6 +509,68 @@ class MoonrakerPrinterClient:
             return False
         return self.send_gcode(macro)
 
+    def _normalize_file_entries(self, entries: Any, normalized: str) -> list[dict[str, Any]]:
+        files: list[dict[str, Any]] = []
+        seen_dirs: set[str] = set()
+        prefix = normalized.strip("/")
+        for entry in entries if isinstance(entries, list) else []:
+            if not isinstance(entry, dict):
+                continue
+            raw_path = str(entry.get("path") or entry.get("filename") or entry.get("name") or "").lstrip("/")
+            if not raw_path:
+                continue
+
+            if prefix:
+                if raw_path == prefix:
+                    continue
+                if raw_path.startswith(f"{prefix}/"):
+                    relative_path = raw_path[len(prefix) + 1 :]
+                    display_path = raw_path
+                else:
+                    continue
+            else:
+                relative_path = raw_path
+                display_path = raw_path
+
+            if not relative_path:
+                continue
+
+            if "/" in relative_path:
+                directory_name = relative_path.split("/", 1)[0]
+                directory_path = f"{prefix}/{directory_name}" if prefix else directory_name
+                if directory_path in seen_dirs:
+                    continue
+                seen_dirs.add(directory_path)
+                files.append(
+                    {
+                        "name": directory_name,
+                        "type": "directory",
+                        "size": None,
+                        "modified": None,
+                        "path": f"/{directory_path}",
+                    }
+                )
+                continue
+
+            name = relative_path
+            modified_raw = entry.get("modified")
+            modified = None
+            if isinstance(modified_raw, int | float):
+                modified = datetime.fromtimestamp(float(modified_raw), tz=timezone.utc).isoformat()
+            elif modified_raw is not None:
+                modified = str(modified_raw)
+            file_type = "directory" if entry.get("type") == "directory" or entry.get("dirname") else "file"
+            files.append(
+                {
+                    "name": name,
+                    "type": file_type,
+                    "size": entry.get("size"),
+                    "modified": modified,
+                    "path": f"/{display_path}",
+                }
+            )
+        return files
+
     def discover_webcams(self) -> list[dict[str, Any]]:
         """Return normalized Moonraker webcam entries, if the server exposes any."""
         result = self._get("server/webcams/list")
@@ -634,31 +696,7 @@ class MoonrakerPrinterClient:
             saw_successful_root = True
             if isinstance(entries, dict):
                 entries = entries.get("files") or entries.get("children") or []
-            files: list[dict[str, Any]] = []
-            for entry in entries if isinstance(entries, list) else []:
-                if not isinstance(entry, dict):
-                    continue
-                raw_path = str(entry.get("path") or entry.get("filename") or entry.get("name") or "").lstrip("/")
-                if not raw_path:
-                    continue
-                name = raw_path.rsplit("/", 1)[-1]
-                modified_raw = entry.get("modified")
-                modified = None
-                if isinstance(modified_raw, int | float):
-                    modified = datetime.fromtimestamp(float(modified_raw), tz=timezone.utc).isoformat()
-                elif modified_raw is not None:
-                    modified = str(modified_raw)
-                file_type = "directory" if entry.get("type") == "directory" or entry.get("dirname") else "file"
-                full_path = f"/{raw_path}" if not normalized else f"/{raw_path}"
-                files.append(
-                    {
-                        "name": name,
-                        "type": file_type,
-                        "size": entry.get("size"),
-                        "modified": modified,
-                        "path": full_path,
-                    }
-                )
+            files = self._normalize_file_entries(entries, normalized)
             if files or storage:
                 return files
         if last_error and not saw_successful_root:
@@ -866,10 +904,8 @@ class MoonrakerPrinterClient:
         return self._send_cfs_slot_macro("BOX_QUIT_MATERIAL", tray_id)
 
     def ams_refresh_tray(self, ams_id: int, slot_id: int) -> tuple[bool, str]:  # noqa: ARG002
-        """Refresh Creality CFS information through the discovered refresh macro."""
-        if self._send_macro_if_available("BOX_INFO_REFRESH"):
-            return True, "CFS information refresh sent"
-        return False, "CFS information refresh macro BOX_INFO_REFRESH is not available on this printer"
+        """CFS RFID refresh is disabled after real K2 firmware crash reports."""
+        return False, "CFS RFID refresh is disabled for Creality K2 printers"
 
     def adjust_z_offset(self, amount: float) -> bool:
         return self.send_gcode(f"SET_GCODE_OFFSET Z_ADJUST={amount} MOVE=1")

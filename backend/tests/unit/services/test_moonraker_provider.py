@@ -325,14 +325,14 @@ def test_moonraker_cfs_load_rejects_missing_slot_macro(monkeypatch):
     assert client.ams_load_filament(0) is False
 
 
-def test_moonraker_cfs_refresh_uses_box_info_refresh_when_available(monkeypatch):
+def test_moonraker_cfs_refresh_is_disabled_after_k2_firmware_crash_report(monkeypatch):
     client = MoonrakerPrinterClient("http://k2-plus.local:7125", printer_model="Creality K2 Plus")
     sent: list[str] = []
     monkeypatch.setattr(client, "_get", lambda path: {"objects": ["box", "gcode_macro BOX_INFO_REFRESH"]})
     monkeypatch.setattr(client, "send_gcode", lambda script: sent.append(script) or True)
 
-    assert client.ams_refresh_tray(0, 1) == (True, "CFS information refresh sent")
-    assert sent == ["BOX_INFO_REFRESH"]
+    assert client.ams_refresh_tray(0, 1) == (False, "CFS RFID refresh is disabled for Creality K2 printers")
+    assert sent == []
 
 
 def test_moonraker_list_files_accepts_storage_keyword_and_uses_it(monkeypatch):
@@ -382,3 +382,26 @@ def test_moonraker_list_files_returns_empty_when_valid_root_is_empty_and_fallbac
     monkeypatch.setattr(client, "_get", fake_get)
 
     assert client.list_files("/") == []
+
+
+def test_moonraker_list_files_filters_flat_root_listing_to_requested_folder(monkeypatch):
+    client = MoonrakerPrinterClient("http://k2-plus.local:7125", printer_model="Creality K2 Plus")
+
+    def fake_get(path):
+        assert path == "server/files/list?root=gcodes&path=cache"
+        return {
+            "result": [
+                {"path": "cube.gcode", "size": 42},
+                {"path": "cache/cached-cube.gcode", "size": 100},
+                {"path": "cache/nested/hidden.gcode", "size": 200},
+                {"path": "models/model.gcode", "size": 300},
+            ]
+        }
+
+    monkeypatch.setattr(client, "_get", fake_get)
+
+    files = client.list_files("/cache", storage="gcodes")
+
+    assert [file["name"] for file in files] == ["cached-cube.gcode", "nested"]
+    assert [file["type"] for file in files] == ["file", "directory"]
+    assert [file["path"] for file in files] == ["/cache/cached-cube.gcode", "/cache/nested"]

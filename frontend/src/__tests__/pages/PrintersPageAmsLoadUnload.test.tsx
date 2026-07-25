@@ -252,7 +252,7 @@ describe('PrintersPage - AMS load/unload (#891)', () => {
     });
   });
 
-  it('CFS slot exposes load and slot-specific unload controls', async () => {
+  it('CFS slot exposes load and slot-specific unload controls without unsafe RFID refresh', async () => {
     const user = userEvent.setup();
     let loadTrayId: string | null = null;
     let unloadTrayId: string | null = null;
@@ -283,6 +283,8 @@ describe('PrintersPage - AMS load/unload (#891)', () => {
     await waitFor(() => {
       expect(screen.getByText('Load')).toBeInTheDocument();
       expect(screen.getByText('Unload')).toBeInTheDocument();
+      expect(screen.getByText('Assign')).toBeInTheDocument();
+      expect(screen.queryByText(/Re-read/i)).not.toBeInTheDocument();
     });
 
     await user.click(screen.getByText('Load'));

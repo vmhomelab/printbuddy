@@ -4637,24 +4637,6 @@ function PrinterCard({
                                     )}
                                     {status?.state !== 'RUNNING' && isCfsUnit && amsSlotMenu?.amsId === ams.id && amsSlotMenu?.slotId === slotIdx && (
                                       <div className="absolute top-full left-0 mt-1 z-50 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl py-1 min-w-[120px]">
-                                        <button
-                                          className={`w-full px-3 py-1.5 text-left text-xs flex items-center gap-2 ${
-                                            hasPermission('printers:ams_rfid')
-                                              ? 'text-white hover:bg-bambu-dark-tertiary'
-                                              : 'text-bambu-gray/50 cursor-not-allowed'
-                                          }`}
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            if (!hasPermission('printers:ams_rfid')) return;
-                                            refreshAmsSlotMutation.mutate({ amsId: ams.id, slotId: slotIdx });
-                                            setAmsSlotMenu(null);
-                                          }}
-                                          disabled={isRefreshing || !hasPermission('printers:ams_rfid')}
-                                          title={!hasPermission('printers:ams_rfid') ? t('printers.permission.noAmsRfid') : undefined}
-                                        >
-                                          <RefreshCw className={`w-3 h-3 ${isRefreshing ? 'animate-spin' : ''}`} />
-                                          {t('printers.rfid.reread')}
-                                        </button>
                                         {supportsSpoolAssignment && (
                                           <button
                                             className="w-full px-3 py-1.5 text-left text-xs flex items-center gap-2 text-white hover:bg-bambu-dark-tertiary"
@@ -4774,7 +4756,7 @@ function PrinterCard({
                                                 },
                                               }) : undefined,
                                               onUnassignSpool: (spoolmanSpool && !isBambuLabSpool(tray)) ? () => onUnassignSpoolmanSpool?.(spoolmanSpool.id) : undefined,
-                                              isAssigned: !!slotAssignment || isBambuLabSpool(tray),
+                                              isAssigned: isCfsUnit ? !!slotAssignment : (!!slotAssignment || isBambuLabSpool(tray)),
                                             };
                                           }
                                           const assignment = onGetAssignment?.(printer.id, ams.id, slotIdx);
@@ -4799,7 +4781,7 @@ function PrinterCard({
                                               },
                                             }) : undefined,
                                             onUnassignSpool: (assignment && !isBambuLabSpool(tray)) ? () => onUnassignSpool?.(printer.id, ams.id, slotIdx) : undefined,
-                                            isAssigned: !!assignment || isBambuLabSpool(tray),
+                                            isAssigned: isCfsUnit ? !!assignment : (!!assignment || isBambuLabSpool(tray)),
                                           };
                                         })()}
                                         configureSlot={{
