@@ -279,6 +279,22 @@ def _moonraker_url_candidates(base_url: str) -> list[str]:
     return candidates
 
 
+def _creality_cfs_slot_name(tray_id: int) -> str | None:
+    if tray_id < 0 or tray_id > 15:
+        return None
+    unit = tray_id // 4 + 1
+    letter = "ABCD"[tray_id % 4]
+    return f"T{unit}{letter}"
+
+
+def _macro_object_to_command_name(object_name: str) -> str | None:
+    prefix = "gcode_macro "
+    if not object_name.startswith(prefix):
+        return None
+    macro = object_name[len(prefix) :].strip()
+    return macro or None
+
+
 def _absolute_moonraker_camera_url(base_url: str, value: Any) -> str | None:
     raw = str(value or "").strip()
     if not raw:
@@ -472,6 +488,21 @@ class MoonrakerPrinterClient:
             return self._query_objects(cfs_objects)
         except Exception:  # noqa: BLE001 - CFS is optional; keep core Moonraker status healthy
             return {}
+
+    def _available_macro_names(self) -> set[str]:
+        objects = self._get("printer/objects/list")
+        available = objects.get("objects", []) if isinstance(objects, dict) else []
+        return {macro for name in available if isinstance(name, str) and (macro := _macro_object_to_command_name(name))}
+
+    def _send_cfs_slot_macro(self, prefix: str, tray_id: int | None = None) -> bool:
+        effective_tray_id = tray_id if tray_id is not None else self.state.tray_now
+        slot = _creality_cfs_slot_name(int(effective_tray_id)) if effective_tray_id is not None else None
+        if slot is None:
+            return False
+        macro = f"{prefix}{slot}"
+        if macro not in self._available_macro_names():
+            return False
+        return self.send_gcode(macro)
 
     def discover_webcams(self) -> list[dict[str, Any]]:
         """Return normalized Moonraker webcam entries, if the server exposes any."""
@@ -790,6 +821,19 @@ class MoonrakerPrinterClient:
 
     def extrude(self, length: float, speed: int = 300) -> bool:
         return self.send_gcode(f"M83\nG1 E{length:.2f} F{speed}\nM82")
+
+    def ams_load_filament(self, tray_id: int, extruder_id: int | None = None) -> bool:  # noqa: ARG002
+        """Load a Creality CFS slot through its discovered slot macro.
+
+        K2 Plus firmware exposes slot-specific macros such as
+        ``BOX_LOAD_MATERIALT1A``. Do not invent parameterized commands; only send
+        a macro that Moonraker reports in ``/printer/objects/list``.
+        """
+        return self._send_cfs_slot_macro("BOX_LOAD_MATERIAL", tray_id)
+
+    def ams_unload_filament(self, tray_id: int | None = None) -> bool:
+        """Unload a Creality CFS slot through its discovered slot macro."""
+        return self._send_cfs_slot_macro("BOX_QUIT_MATERIAL", tray_id)
 
     def adjust_z_offset(self, amount: float) -> bool:
         return self.send_gcode(f"SET_GCODE_OFFSET Z_ADJUST={amount} MOVE=1")

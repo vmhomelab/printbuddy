@@ -2776,7 +2776,7 @@ function PrinterCard({
   });
 
   const unloadAmsMutation = useMutation({
-    mutationFn: () => api.unloadAms(printer.id),
+    mutationFn: ({ trayId }: { trayId?: number } = {}) => api.unloadAms(printer.id, trayId),
     onSuccess: (data) => {
       showToast(data.message || t('printers.toast.unloadInitiated'));
     },
@@ -4560,7 +4560,7 @@ function PrinterCard({
                                       </div>
                                     )}
                                     {/* Menu button - appears on hover, hidden when printer busy */}
-                                    {status?.state !== 'RUNNING' && !isCfsUnit && (
+                                    {status?.state !== 'RUNNING' && (
                                       <button
                                         onClick={(e) => {
                                           e.stopPropagation();
@@ -4624,7 +4624,47 @@ function PrinterCard({
                                           onClick={(e) => {
                                             e.stopPropagation();
                                             if (!hasPermission('printers:control')) return;
-                                            unloadAmsMutation.mutate();
+                                            unloadAmsMutation.mutate({});
+                                            setAmsSlotMenu(null);
+                                          }}
+                                          disabled={!hasPermission('printers:control')}
+                                          title={!hasPermission('printers:control') ? t('printers.permission.noControl') : undefined}
+                                        >
+                                          <LogOut className="w-3 h-3" />
+                                          {t('printers.ams.unload')}
+                                        </button>
+                                      </div>
+                                    )}
+                                    {status?.state !== 'RUNNING' && isCfsUnit && amsSlotMenu?.amsId === ams.id && amsSlotMenu?.slotId === slotIdx && (
+                                      <div className="absolute top-full left-0 mt-1 z-50 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl py-1 min-w-[120px]">
+                                        <button
+                                          className={`w-full px-3 py-1.5 text-left text-xs flex items-center gap-2 ${
+                                            hasPermission('printers:control')
+                                              ? 'text-white hover:bg-bambu-dark-tertiary'
+                                              : 'text-bambu-gray/50 cursor-not-allowed'
+                                          }`}
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            if (!hasPermission('printers:control')) return;
+                                            loadAmsTrayMutation.mutate({ trayId: ams.id * 4 + slotIdx });
+                                            setAmsSlotMenu(null);
+                                          }}
+                                          disabled={!hasPermission('printers:control')}
+                                          title={!hasPermission('printers:control') ? t('printers.permission.noControl') : undefined}
+                                        >
+                                          <LogIn className="w-3 h-3" />
+                                          {t('printers.ams.load')}
+                                        </button>
+                                        <button
+                                          className={`w-full px-3 py-1.5 text-left text-xs flex items-center gap-2 ${
+                                            hasPermission('printers:control')
+                                              ? 'text-white hover:bg-bambu-dark-tertiary'
+                                              : 'text-bambu-gray/50 cursor-not-allowed'
+                                          }`}
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            if (!hasPermission('printers:control')) return;
+                                            unloadAmsMutation.mutate({ trayId: ams.id * 4 + slotIdx });
                                             setAmsSlotMenu(null);
                                           }}
                                           disabled={!hasPermission('printers:control')}
@@ -5029,7 +5069,7 @@ function PrinterCard({
                                       onClick={(e) => {
                                         e.stopPropagation();
                                         if (!hasPermission('printers:control')) return;
-                                        unloadAmsMutation.mutate();
+                                        unloadAmsMutation.mutate({});
                                         setAmsSlotMenu(null);
                                       }}
                                       disabled={!hasPermission('printers:control')}
@@ -5346,7 +5386,7 @@ function PrinterCard({
                                         onClick={(e) => {
                                           e.stopPropagation();
                                           if (!hasPermission('printers:control')) return;
-                                          unloadAmsMutation.mutate();
+                                          unloadAmsMutation.mutate({});
                                           setAmsSlotMenu(null);
                                         }}
                                         disabled={!hasPermission('printers:control')}

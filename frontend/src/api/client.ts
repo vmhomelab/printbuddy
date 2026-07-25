@@ -3742,12 +3742,14 @@ export const api = {
       { method: 'POST' }
     ),
 
-  // Unload the currently loaded filament.
-  unloadAms: (printerId: number) =>
-    request<{ success: boolean; message: string }>(
-      `/printers/${printerId}/ams/unload`,
+  // Unload the currently loaded filament. Moonraker/CFS may pass a trayId for slot-specific unload.
+  unloadAms: (printerId: number, trayId?: number) => {
+    const suffix = trayId == null ? '' : `?tray_id=${trayId}`;
+    return request<{ success: boolean; message: string }>(
+      `/printers/${printerId}/ams/unload${suffix}`,
       { method: 'POST' }
-    ),
+    );
+  },
 
   // MQTT Debug Logging
   enableMQTTLogging: (printerId: number) =>

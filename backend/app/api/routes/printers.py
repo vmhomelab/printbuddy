@@ -4055,10 +4055,14 @@ async def ams_load(
 @router.post("/{printer_id}/ams/unload")
 async def ams_unload(
     printer_id: int,
+    tray_id: int | None = Query(None, description="Optional CFS tray ID for slot-specific unload"),
     _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_CONTROL),
     db: AsyncSession = Depends(get_db),
 ):
-    """Unload the currently loaded filament."""
+    """Unload the currently loaded filament, or a specific CFS slot when supported."""
+    if tray_id is not None and tray_id not in range(16) and tray_id not in (254, 255):
+        raise HTTPException(400, "tray_id must be 0..15 (AMS/CFS slot), 254 (external / Ext-L), or 255 (Ext-R)")
+
     result = await db.execute(select(Printer).where(Printer.id == printer_id))
     printer = result.scalar_one_or_none()
     if not printer:
@@ -4068,10 +4072,17 @@ async def ams_unload(
     if not client:
         raise HTTPException(400, "Printer not connected")
 
-    success = client.ams_unload_filament()
+    provider = str(getattr(printer, "provider", "") or "").lower()
+    if provider in {"klipper", "mainsail", "fluidd"}:
+        success = client.ams_unload_filament(tray_id)
+    else:
+        success = client.ams_unload_filament()
     if not success:
         raise HTTPException(500, "Failed to send unload command")
 
+    if tray_id is not None and provider in {"klipper", "mainsail", "fluidd"}:
+        target = f"CFS T{tray_id // 4 + 1} slot {tray_id % 4 + 1}"
+        return {"success": True, "message": f"Unloading filament from {target}"}
     return {"success": True, "message": "Unloading filament"}
 
 

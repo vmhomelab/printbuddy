@@ -88,6 +88,40 @@ const mockRunningStatus = {
   state: 'RUNNING',
 };
 
+const mockK2Printer = {
+  ...mockPrinter,
+  id: 2,
+  name: 'K2 Plus',
+  provider: 'fluidd',
+  model: 'Creality K2 Plus',
+};
+
+const mockIdleStatusWithCfs = {
+  ...mockIdleStatusWithAms,
+  ams: [
+    {
+      id: 0,
+      name: 'CFS T1',
+      humidity: 48,
+      temp: 25,
+      is_ams_ht: false,
+      serial_number: 'CFS001',
+      sw_ver: '1.4.2',
+      dry_time: 0,
+      dry_status: 0,
+      dry_sub_status: 0,
+      dry_sf_reason: [],
+      module_type: 'cfs',
+      tray: [
+        { id: 0, ...baseTray, tray_uuid: 'T1A', tray_color: '#0A2989' },
+        { id: 1, ...baseTray, tray_uuid: 'T1B', tray_color: '#fff014' },
+        { id: 2, ...baseTray, tray_uuid: 'T1C', tray_color: '#ffffff' },
+        { id: 3, ...baseTray, tray_uuid: 'T1D', tray_color: '#9ea7ae' },
+      ],
+    },
+  ],
+};
+
 describe('PrintersPage - AMS load/unload (#891)', () => {
   beforeEach(() => {
     server.use(
@@ -216,6 +250,48 @@ describe('PrintersPage - AMS load/unload (#891)', () => {
     await waitFor(() => {
       expect(captured).toBe('254');
     });
+  });
+
+  it('CFS slot exposes load and slot-specific unload controls', async () => {
+    const user = userEvent.setup();
+    let loadTrayId: string | null = null;
+    let unloadTrayId: string | null = null;
+
+    server.use(
+      http.get('/api/v1/printers/', () => HttpResponse.json([mockK2Printer])),
+      http.get('/api/v1/printers/:id/status', () => HttpResponse.json(mockIdleStatusWithCfs)),
+      http.post('/api/v1/printers/:id/ams/load', ({ request }) => {
+        loadTrayId = new URL(request.url).searchParams.get('tray_id');
+        return HttpResponse.json({ success: true, message: 'Loading filament from CFS T1 slot 2' });
+      }),
+      http.post('/api/v1/printers/:id/ams/unload', ({ request }) => {
+        unloadTrayId = new URL(request.url).searchParams.get('tray_id');
+        return HttpResponse.json({ success: true, message: 'Unloading filament from CFS T1 slot 2' });
+      }),
+    );
+
+    render(<PrintersPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('CFS T1')).toBeInTheDocument();
+      expect(document.querySelectorAll('[title="Slot options"]').length).toBeGreaterThan(0);
+    });
+
+    const menuButtons = document.querySelectorAll<HTMLButtonElement>('[title="Slot options"]');
+    await user.click(menuButtons[1]);
+
+    await waitFor(() => {
+      expect(screen.getByText('Load')).toBeInTheDocument();
+      expect(screen.getByText('Unload')).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByText('Load'));
+    await waitFor(() => expect(loadTrayId).toBe('1'));
+
+    await user.click(menuButtons[1]);
+    await waitFor(() => expect(screen.getByText('Unload')).toBeInTheDocument());
+    await user.click(screen.getByText('Unload'));
+    await waitFor(() => expect(unloadTrayId).toBe('1'));
   });
 
   it('shows loaded-spool assignment controls when a single-spool printer is offline', async () => {

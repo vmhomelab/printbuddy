@@ -272,3 +272,54 @@ def test_moonraker_webcam_discovery_returns_empty_for_k2_without_moonraker_webca
     monkeypatch.setattr(client, "_get", lambda path: {"webcams": []})
 
     assert client.discover_webcams() == []
+
+
+def test_moonraker_cfs_load_uses_slot_macro_when_available(monkeypatch):
+    client = MoonrakerPrinterClient("http://k2-plus.local:7125", printer_model="Creality K2 Plus")
+    sent: list[str] = []
+
+    monkeypatch.setattr(
+        client,
+        "_get",
+        lambda path: {
+            "objects": [
+                "box",
+                "gcode_macro BOX_LOAD_MATERIALT1C",
+                "gcode_macro BOX_QUIT_MATERIALT1C",
+            ]
+        },
+    )
+    monkeypatch.setattr(client, "send_gcode", lambda script: sent.append(script) or True)
+
+    assert client.ams_load_filament(2) is True
+
+    assert sent == ["BOX_LOAD_MATERIALT1C"]
+
+
+def test_moonraker_cfs_unload_uses_requested_slot_macro_when_available(monkeypatch):
+    client = MoonrakerPrinterClient("http://k2-plus.local:7125", printer_model="Creality K2 Plus")
+    sent: list[str] = []
+
+    monkeypatch.setattr(
+        client,
+        "_get",
+        lambda path: {
+            "objects": [
+                "box",
+                "gcode_macro BOX_LOAD_MATERIALT1B",
+                "gcode_macro BOX_QUIT_MATERIALT1B",
+            ]
+        },
+    )
+    monkeypatch.setattr(client, "send_gcode", lambda script: sent.append(script) or True)
+
+    assert client.ams_unload_filament(1) is True
+
+    assert sent == ["BOX_QUIT_MATERIALT1B"]
+
+
+def test_moonraker_cfs_load_rejects_missing_slot_macro(monkeypatch):
+    client = MoonrakerPrinterClient("http://k2-plus.local:7125", printer_model="Creality K2 Plus")
+    monkeypatch.setattr(client, "_get", lambda path: {"objects": ["box"]})
+
+    assert client.ams_load_filament(0) is False
