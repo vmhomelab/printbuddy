@@ -490,6 +490,43 @@ describe('ProjectDetailPage', () => {
       expect(await screen.findByRole('heading', { name: 'Schedule Print' })).toBeInTheDocument();
     });
 
+    it('reviews selected dispatch suggestions before opening the staging modal', async () => {
+      const user = userEvent.setup();
+      server.use(
+        http.get('/api/v1/projects/:id', () => HttpResponse.json(productionProject)),
+        http.get('/api/v1/projects/:id/archives', () => HttpResponse.json([gridfinityArchive])),
+        http.get('/api/v1/projects/:id/bom', () => HttpResponse.json([gridfinityBinBom])),
+        http.get('/api/v1/library/files', () => HttpResponse.json([
+          makeFile({ id: 41, filename: 'gridfinity-bin-plate-02.gcode.3mf', file_type: '3mf' }),
+          makeFile({ id: 42, filename: 'gridfinity-bin-plate-03.gcode.3mf', file_type: '3mf' }),
+        ])),
+        http.get('/api/v1/printers/', () => HttpResponse.json(dispatchPrinters)),
+        http.get('/api/v1/printers/:id/status', ({ params }) => HttpResponse.json(dispatchStatus(Number(params.id)))),
+        http.get('/api/v1/queue/', () => HttpResponse.json([])),
+        http.get('/api/v1/library/files/:id', ({ params }) => HttpResponse.json(makeFile({ id: Number(params.id), filename: Number(params.id) === 42 ? 'gridfinity-bin-plate-03.gcode.3mf' : 'gridfinity-bin-plate-02.gcode.3mf', file_type: '3mf' }))),
+        http.get('/api/v1/library/files/:id/plates', () => HttpResponse.json({ is_multi_plate: false, plates: [] })),
+        http.get('/api/v1/library/files/:id/filament-requirements', ({ params }) => HttpResponse.json({ file_id: Number(params.id), filename: 'gridfinity-bin-plate.gcode.3mf', filaments: [] })),
+      );
+
+      render(<ProjectDetailPage />);
+
+      const dispatchHeading = await screen.findByRole('heading', { name: 'Dispatch Suggestions' });
+      const dispatchSection = dispatchHeading.closest('.rounded-lg, .card, div')?.parentElement?.parentElement?.parentElement || document.body;
+      await waitFor(() => expect(within(dispatchSection).getAllByText('Ready to stage').length).toBeGreaterThanOrEqual(2));
+
+      await user.click(within(dispatchSection).getByRole('checkbox', { name: /select gridfinity-bin-plate-02\.gcode\.3mf/i }));
+      await user.click(within(dispatchSection).getByRole('checkbox', { name: /select gridfinity-bin-plate-03\.gcode\.3mf/i }));
+      await user.click(within(dispatchSection).getByRole('button', { name: /review selected dispatch jobs/i }));
+
+      const dialog = await screen.findByRole('dialog', { name: /batch dispatch review/i });
+      expect(within(dialog).getByText('2 jobs selected for staging review.')).toBeInTheDocument();
+      expect(within(dialog).getByText('gridfinity-bin-plate-02.gcode.3mf')).toBeInTheDocument();
+      expect(within(dialog).getByText('gridfinity-bin-plate-03.gcode.3mf')).toBeInTheDocument();
+
+      await user.click(within(dialog).getByRole('button', { name: /stage first selected job/i }));
+      expect(await screen.findByRole('heading', { name: 'Schedule Print' })).toBeInTheDocument();
+    });
+
     it('suggests safe dispatch targets and opens review staging for the suggested printer', async () => {
       const user = userEvent.setup();
       server.use(
