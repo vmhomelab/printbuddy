@@ -2126,6 +2126,7 @@ function PrinterCard({
   const isBambuProvider = !printer.provider || printer.provider === 'bambu';
   const isMoonrakerProvider = printer.provider === 'klipper' || printer.provider === 'mainsail' || printer.provider === 'fluidd';
   const isElegooSDCPProvider = printer.provider === 'elegoo_sdcp';
+  const isCrealityK2Moonraker = isMoonrakerProvider && /creality\s+k2/i.test(printer.model || '');
   // Loaded-spool assignment is local inventory state, not a provider control.
   // Keep unsupported provider/manual controls hidden, but allow single-spool
   // PrusaLink, Klipper/Moonraker, and Elegoo SDCP printers to select a loaded
@@ -4324,12 +4325,13 @@ function PrinterCard({
                     {regularAms.length > 0 && (
                       <div className="grid grid-cols-2 gap-3">
                         {regularAms.map((ams) => {
+                        const isK2CfsLikeUnit = isCrealityK2Moonraker && ams.tray.length === 4;
                         const mappedExtruderId = amsExtruderMap[String(ams.id)];
                         const normalizedId = ams.id >= 128 ? ams.id - 128 : ams.id;
                         const extruderId = mappedExtruderId !== undefined ? mappedExtruderId : normalizedId;
                         const isLeftNozzle = extruderId === 1;
                         const isRightNozzle = extruderId === 0;
-                        const amsDisplayLabel = ams.name || getAmsLabel(ams.id, ams.tray.length);
+                        const amsDisplayLabel = isK2CfsLikeUnit ? `CFS T${ams.id + 1}` : (ams.name || getAmsLabel(ams.id, ams.tray.length));
 
                         return (
                           <div key={ams.id} className="p-2.5 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary/30">
@@ -4448,7 +4450,7 @@ function PrinterCard({
                                 // Find tray data for this slot (may be undefined if data incomplete)
                                 // Use array index if available, as tray.id may not always be set
                                 const tray = ams.tray[slotIdx] || ams.tray.find(t => t.id === slotIdx);
-                                const isCfsUnit = ams.module_type === 'cfs';
+                                const isCfsUnit = ams.module_type === 'cfs' || isK2CfsLikeUnit;
                                 const hasFillLevel = tray?.tray_type && tray.remain >= 0;
                                 const isEmpty = !tray?.tray_type;
                                 const emptyKind = getEmptySlotKind(tray);
@@ -4495,7 +4497,7 @@ function PrinterCard({
 
                                 // Build filament data for hover card
                                 const filamentData = tray?.tray_type ? {
-                                  vendor: (isBambuLabSpool(tray) ? 'Bambu Lab' : 'Generic') as 'Bambu Lab' | 'Generic',
+                                  vendor: (!isCfsUnit && isBambuLabSpool(tray) ? 'Bambu Lab' : 'Generic') as 'Bambu Lab' | 'Generic',
                                   // Spoolman spool name wins over cloud lookup so a slot bound to
                                   // a Spoolman spool shows that spool's preset name (e.g. "Devil
                                   // Design PLA") instead of whatever the printer's filament_id
@@ -4661,42 +4663,6 @@ function PrinterCard({
                                             {t('common.assign', 'Assign')}
                                           </button>
                                         )}
-                                        <button
-                                          className={`w-full px-3 py-1.5 text-left text-xs flex items-center gap-2 ${
-                                            hasPermission('printers:control')
-                                              ? 'text-white hover:bg-bambu-dark-tertiary'
-                                              : 'text-bambu-gray/50 cursor-not-allowed'
-                                          }`}
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            if (!hasPermission('printers:control')) return;
-                                            loadAmsTrayMutation.mutate({ trayId: ams.id * 4 + slotIdx });
-                                            setAmsSlotMenu(null);
-                                          }}
-                                          disabled={!hasPermission('printers:control')}
-                                          title={!hasPermission('printers:control') ? t('printers.permission.noControl') : undefined}
-                                        >
-                                          <LogIn className="w-3 h-3" />
-                                          {t('printers.ams.load')}
-                                        </button>
-                                        <button
-                                          className={`w-full px-3 py-1.5 text-left text-xs flex items-center gap-2 ${
-                                            hasPermission('printers:control')
-                                              ? 'text-white hover:bg-bambu-dark-tertiary'
-                                              : 'text-bambu-gray/50 cursor-not-allowed'
-                                          }`}
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            if (!hasPermission('printers:control')) return;
-                                            unloadAmsMutation.mutate({ trayId: ams.id * 4 + slotIdx });
-                                            setAmsSlotMenu(null);
-                                          }}
-                                          disabled={!hasPermission('printers:control')}
-                                          title={!hasPermission('printers:control') ? t('printers.permission.noControl') : undefined}
-                                        >
-                                          <LogOut className="w-3 h-3" />
-                                          {t('printers.ams.unload')}
-                                        </button>
                                       </div>
                                     )}
                                     {/* Hover card wraps only the visual content */}
@@ -4755,7 +4721,7 @@ function PrinterCard({
                                                   location: `${amsDisplayLabel} - Slot ${slotIdx + 1}`,
                                                 },
                                               }) : undefined,
-                                              onUnassignSpool: (spoolmanSpool && !isBambuLabSpool(tray)) ? () => onUnassignSpoolmanSpool?.(spoolmanSpool.id) : undefined,
+                                              onUnassignSpool: (spoolmanSpool && !isCfsUnit && !isBambuLabSpool(tray)) ? () => onUnassignSpoolmanSpool?.(spoolmanSpool.id) : undefined,
                                               isAssigned: isCfsUnit ? !!slotAssignment : (!!slotAssignment || isBambuLabSpool(tray)),
                                             };
                                           }
@@ -4780,7 +4746,7 @@ function PrinterCard({
                                                 location: `${amsDisplayLabel} - Slot ${slotIdx + 1}`,
                                               },
                                             }) : undefined,
-                                            onUnassignSpool: (assignment && !isBambuLabSpool(tray)) ? () => onUnassignSpool?.(printer.id, ams.id, slotIdx) : undefined,
+                                            onUnassignSpool: (assignment && !isCfsUnit && !isBambuLabSpool(tray)) ? () => onUnassignSpool?.(printer.id, ams.id, slotIdx) : undefined,
                                             isAssigned: isCfsUnit ? !!assignment : (!!assignment || isBambuLabSpool(tray)),
                                           };
                                         })()}

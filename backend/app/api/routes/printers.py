@@ -4045,6 +4045,13 @@ async def ams_load(
 
     success = client.ams_load_filament(tray_id)
     if not success:
+        provider = str(getattr(printer, "provider", "") or "").lower()
+        model = str(getattr(printer, "model", "") or "").lower()
+        if provider in {"klipper", "mainsail", "fluidd"} and "creality k2" in model and tray_id in range(16):
+            raise HTTPException(
+                400,
+                "CFS load is disabled until the Creality K2 slot macro names are hardware-verified",
+            )
         raise HTTPException(500, "Failed to send load command")
 
     if tray_id == 254:
@@ -4082,6 +4089,17 @@ async def ams_unload(
     else:
         success = client.ams_unload_filament()
     if not success:
+        model = str(getattr(printer, "model", "") or "").lower()
+        if (
+            provider in {"klipper", "mainsail", "fluidd"}
+            and "creality k2" in model
+            and tray_id is not None
+            and tray_id in range(16)
+        ):
+            raise HTTPException(
+                400,
+                "CFS unload is disabled until the Creality K2 slot macro names are hardware-verified",
+            )
         raise HTTPException(500, "Failed to send unload command")
 
     if tray_id is not None and provider in {"klipper", "mainsail", "fluidd"}:
