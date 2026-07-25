@@ -111,8 +111,8 @@ describe('FarmCommandCenterPage', () => {
       http.get('/api/v1/printers/', () => HttpResponse.json(printers)),
       http.get('/api/v1/printers/:id/status', ({ params }) => HttpResponse.json(statusFor(Number(params.id)))),
       http.get('/api/v1/queue/', () => HttpResponse.json([
-        { id: 1, status: 'completed', completed_at: '2026-07-02T12:00:00Z' },
-        { id: 2, status: 'pending', completed_at: null },
+        { id: 1, status: 'completed', completed_at: '2026-07-02T12:00:00Z', project_id: 42, library_file_id: null, library_file_name: null, archive_name: 'completed-gridfinity.gcode.3mf', printer_name: 'PRA-01' },
+        { id: 2, status: 'pending', completed_at: null, project_id: 42, library_file_id: 41, library_file_name: 'gridfinity-bin-plate-03.gcode.3mf', archive_name: null, printer_name: null },
       ])),
       http.get('/api/v1/settings/', () => HttpResponse.json({ low_stock_threshold: 20 })),
       http.get('/api/v1/inventory/spools', () => HttpResponse.json([
@@ -186,6 +186,10 @@ describe('FarmCommandCenterPage', () => {
     expect(screen.getByRole('heading', { name: 'Dispatch Suggestions' })).toBeInTheDocument();
     expect(screen.getByText('Review 1 active project with 3 queued jobs and 1 failed job.')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /review gridfinity organizer set dispatch/i })).toHaveAttribute('href', '/projects/42');
+    expect(screen.getByText('Printing now')).toBeInTheDocument();
+    expect(screen.getByText('PRA-01 - Gridfinity Tray - 68%')).toBeInTheDocument();
+    expect(screen.getByText('Queued')).toBeInTheDocument();
+    expect(screen.getByText('gridfinity-bin-plate-03.gcode.3mf')).toBeInTheDocument();
   });
 
   it('opens an alerts pop-up from the alerts stat card', async () => {

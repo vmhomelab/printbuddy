@@ -239,7 +239,68 @@ function formatProductionFilament(grams: number | null | undefined): string | nu
   return formatFilament(grams);
 }
 
-function ProductionPlan({ bomItems, archives, files, onStageFile }: { bomItems: BOMItem[]; archives: Archive[]; files: LibraryFileListItem[]; onStageFile: (file: LibraryFileListItem) => void }) {
+interface ProductionFileState {
+  label: string;
+  detail?: string;
+  tone: 'blue' | 'amber' | 'green' | 'red';
+}
+
+function productionFileMatches(file: LibraryFileListItem, value: string | null | undefined): boolean {
+  if (!value) return false;
+  const lower = value.toLowerCase();
+  return lower.includes(file.filename.toLowerCase()) || (!!file.print_name && lower.includes(file.print_name.toLowerCase()));
+}
+
+function buildProductionFileStates(files: LibraryFileListItem[], queue: PrintQueueItem[], printers: PrintbuddyPrinter[], statuses: Array<PrinterStatus | undefined>): Map<number, ProductionFileState> {
+  const states = new Map<number, ProductionFileState>();
+  files.forEach((file) => {
+    const queueItem = queue.find((item) => item.library_file_id === file.id || productionFileMatches(file, `${item.library_file_name || ''} ${item.archive_name || ''}`));
+    const printerIndex = statuses.findIndex((status) => productionFileMatches(file, status?.current_print || status?.gcode_file));
+    const liveStatus = printerIndex >= 0 ? statuses[printerIndex] : undefined;
+    const livePrinter = printerIndex >= 0 ? printers[printerIndex] : undefined;
+
+    if (liveStatus && livePrinter) {
+      const progress = liveStatus.progress === null || liveStatus.progress === undefined ? undefined : `${Math.round(liveStatus.progress)}%`;
+      states.set(file.id, { label: `Printing on ${livePrinter.name}`, detail: progress, tone: 'blue' });
+      return;
+    }
+
+    if (queueItem) {
+      if (queueItem.status === 'printing') {
+        states.set(file.id, { label: `Printing on ${queueItem.printer_name || 'assigned printer'}`, tone: 'blue' });
+        return;
+      }
+      if (queueItem.status === 'failed' || queueItem.status === 'cancelled' || queueItem.status === 'skipped') {
+        states.set(file.id, { label: queueItem.status === 'failed' ? 'Failed' : 'Needs review', detail: queueItem.error_message || undefined, tone: 'red' });
+        return;
+      }
+      if (queueItem.status === 'completed') {
+        states.set(file.id, { label: 'Completed', tone: 'green' });
+        return;
+      }
+      states.set(file.id, { label: 'Queued', detail: queueItem.printer_name || queueItem.target_model || undefined, tone: 'amber' });
+    }
+  });
+  return states;
+}
+
+function ProductionStateBadge({ state }: { state?: ProductionFileState }) {
+  const effective = state || { label: 'Needs staging', tone: 'amber' as const };
+  const tones = {
+    blue: 'bg-blue-500/15 text-blue-300',
+    amber: 'bg-yellow-500/15 text-yellow-300',
+    green: 'bg-bambu-green/15 text-bambu-green',
+    red: 'bg-red-500/15 text-red-300',
+  };
+  return (
+    <div className="flex flex-col gap-1">
+      <span className={`inline-flex w-fit rounded px-2 py-1 text-xs font-semibold ${tones[effective.tone]}`}>{effective.label}</span>
+      {effective.detail && <span className="text-xs text-bambu-gray-light">{effective.detail}</span>}
+    </div>
+  );
+}
+
+function ProductionPlan({ bomItems, archives, files, fileStates, onStageFile }: { bomItems: BOMItem[]; archives: Archive[]; files: LibraryFileListItem[]; fileStates: Map<number, ProductionFileState>; onStageFile: (file: LibraryFileListItem) => void }) {
   if (bomItems.length === 0 && archives.length === 0 && files.length === 0) return null;
 
   const unmatchedArchives = archives.filter((archive) => !bomItems.some((item) => fileMatchesPart(item, archive.print_name || archive.filename)));
@@ -325,7 +386,7 @@ function ProductionPlan({ bomItems, archives, files, onStageFile }: { bomItems: 
                     {row.files.map((file) => (
                       <tr key={`file-${file.id}`}>
                         <td className="px-3 py-2 text-white">{file.print_name || file.filename}</td>
-                        <td className="px-3 py-2 text-yellow-400">Needs staging</td>
+                        <td className="px-3 py-2"><ProductionStateBadge state={fileStates.get(file.id)} /></td>
                         <td className="px-3 py-2 text-bambu-gray-light">-</td>
                         <td className="px-3 py-2 text-bambu-gray-light">-</td>
                         <td className="px-3 py-2 text-bambu-gray-light">-</td>
@@ -528,12 +589,20 @@ export function ProjectDetailPage() {
     })),
   });
 
+  const printerStatuses = printerStatusQueries.map((query) => query.data);
+  const productionFileStates = useMemo(() => buildProductionFileStates(
+    allProjectFiles || [],
+    queue as PrintQueueItem[],
+    printers,
+    printerStatuses,
+  ), [allProjectFiles, queue, printers, printerStatuses]);
+
   const dispatchSuggestions = useMemo(() => buildDispatchSuggestions(
     allProjectFiles || [],
     printers,
-    printerStatusQueries.map((query) => query.data),
+    printerStatuses,
     queue as PrintQueueItem[],
-  ), [allProjectFiles, printers, printerStatusQueries, queue]);
+  ), [allProjectFiles, printers, printerStatuses, queue]);
 
   // Group files by folder_id for the section-based render
   const filesByFolder = useMemo(() => {
@@ -918,7 +987,7 @@ export function ProjectDetailPage() {
         </div>
       )}
 
-      <ProductionPlan bomItems={bomItems || []} archives={archives || []} files={allProjectFiles || []} onStageFile={setScheduleFile} />
+      <ProductionPlan bomItems={bomItems || []} archives={archives || []} files={allProjectFiles || []} fileStates={productionFileStates} onStageFile={setScheduleFile} />
       <DispatchSuggestions suggestions={dispatchSuggestions} onReview={setScheduleFile} />
 
       {/* Cost tracking */}

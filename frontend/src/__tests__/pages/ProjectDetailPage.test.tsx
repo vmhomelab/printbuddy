@@ -432,6 +432,41 @@ describe('ProjectDetailPage', () => {
       expect(screen.getByText('Needs staging')).toBeInTheDocument();
     });
 
+    it('marks production plan files as printing from live printer status and queue links', async () => {
+      server.use(
+        http.get('/api/v1/projects/:id', () => HttpResponse.json(productionProject)),
+        http.get('/api/v1/projects/:id/archives', () => HttpResponse.json([gridfinityArchive])),
+        http.get('/api/v1/projects/:id/bom', () => HttpResponse.json([gridfinityBinBom])),
+        http.get('/api/v1/library/files', () => HttpResponse.json([
+          makeFile({ id: 41, filename: 'gridfinity-bin-plate-02.gcode.3mf', file_type: '3mf' }),
+        ])),
+        http.get('/api/v1/printers/', () => HttpResponse.json(dispatchPrinters)),
+        http.get('/api/v1/printers/:id/status', ({ params }) => HttpResponse.json(Number(params.id) === 1 ? {
+          ...dispatchStatus(1),
+          state: 'PRINTING',
+          current_print: 'gridfinity-bin-plate-02.gcode.3mf',
+          progress: 68,
+        } : dispatchStatus(Number(params.id)))),
+        http.get('/api/v1/queue/', () => HttpResponse.json([
+          {
+            id: 91,
+            status: 'printing',
+            project_id: 1,
+            library_file_id: 41,
+            library_file_name: 'gridfinity-bin-plate-02.gcode.3mf',
+            archive_name: null,
+            printer_name: 'PRA-01',
+          },
+        ])),
+      );
+
+      render(<ProjectDetailPage />);
+
+      expect(await screen.findByRole('heading', { name: 'Production Plan' })).toBeInTheDocument();
+      await waitFor(() => expect(screen.getByText('Printing on PRA-01')).toBeInTheDocument());
+      expect(screen.getByText('68%')).toBeInTheDocument();
+    });
+
     it('opens add-to-queue modal from a production plan project file', async () => {
       const user = userEvent.setup();
       server.use(

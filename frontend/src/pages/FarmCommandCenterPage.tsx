@@ -52,6 +52,14 @@ interface CommandCenterAlert {
   tone: 'red' | 'amber' | 'blue';
 }
 
+interface ActiveProjectWorkItem {
+  id: string;
+  state: 'printing' | 'queued';
+  label: string;
+}
+
+type ProjectQueueItem = PrintQueueItem & { project_id?: number | null };
+
 function loadStoredPrinterGroups(): CommandCenterPrinterGroup[] {
   try {
     const raw = localStorage.getItem(PRINTER_GROUPS_STORAGE_KEY);
@@ -99,6 +107,41 @@ function projectTargetSummary(project: ProjectListItem): string {
   if (project.target_parts_count) return `${project.completed_count} / ${project.target_parts_count} Parts`;
   if (project.target_count) return `${project.archive_count} / ${project.target_count} Plates`;
   return `${project.archive_count} plates · ${project.completed_count} parts`;
+}
+
+function projectNameTokens(project: ProjectListItem): string[] {
+  return project.name.toLowerCase().split(/[^a-z0-9]+/).filter((token) => token.length >= 4);
+}
+
+function looksLikeProjectPrint(project: ProjectListItem, printName: string | null | undefined): boolean {
+  if (!printName) return false;
+  const lower = printName.toLowerCase();
+  const tokens = projectNameTokens(project);
+  return tokens.length > 0 && tokens.some((token) => lower.includes(token));
+}
+
+function queueItemName(item: PrintQueueItem): string {
+  return item.library_file_name || item.archive_name || `Queue item #${item.id}`;
+}
+
+function buildActiveProjectWork(project: ProjectListItem, queue: ProjectQueueItem[], fleet: FleetPrinter[]): ActiveProjectWorkItem[] {
+  const queued = queue
+    .filter((item) => item.project_id === project.id && ['pending', 'printing'].includes(item.status))
+    .slice(0, 3)
+    .map((item) => ({ id: `queue-${item.id}`, state: item.status === 'printing' ? 'printing' as const : 'queued' as const, label: item.status === 'printing' && item.printer_name ? `${item.printer_name} - ${queueItemName(item)}` : queueItemName(item) }));
+
+  const queuedLabels = new Set(queued.map((item) => item.label.toLowerCase()));
+  const running = fleet
+    .filter((item) => normalizeState(item.status) === 'printing' && looksLikeProjectPrint(project, item.status?.current_print || item.status?.gcode_file))
+    .slice(0, 3)
+    .map((item) => {
+      const printName = item.status?.current_print || item.status?.gcode_file || 'Current print';
+      const progress = item.status?.progress === null || item.status?.progress === undefined ? null : Math.round(item.status.progress);
+      return { id: `printer-${item.printer.id}`, state: 'printing' as const, label: `${item.printer.name} - ${printName}${progress !== null ? ` - ${progress}%` : ''}` };
+    })
+    .filter((item) => !queuedLabels.has(item.label.toLowerCase()));
+
+  return [...running, ...queued].slice(0, 5);
 }
 
 function spoolRemainingPct(spool: InventorySpool): number | null {
@@ -254,8 +297,10 @@ function FleetTile({ item }: { item: FleetPrinter }) {
   );
 }
 
-function ActiveProjectCard({ project }: { project: ProjectListItem }) {
+function ActiveProjectCard({ project, workItems }: { project: ProjectListItem; workItems: ActiveProjectWorkItem[] }) {
   const progress = projectProgress(project);
+  const printingItems = workItems.filter((item) => item.state === 'printing');
+  const queuedItems = workItems.filter((item) => item.state === 'queued');
   return (
     <Link to={`/projects/${project.id}`} className="block rounded-2xl border border-bambu-dark-tertiary bg-bambu-dark-secondary/80 p-4 shadow-[var(--card-shadow)] transition hover:border-blue-500 hover:bg-bambu-dark-secondary focus:outline-none focus:ring-2 focus:ring-blue-500">
       <div className="flex gap-4">
@@ -286,6 +331,26 @@ function ActiveProjectCard({ project }: { project: ProjectListItem }) {
       <div className="mt-4 h-2 overflow-hidden rounded-full bg-bambu-dark-tertiary">
         <div className="h-full rounded-full bg-blue-500" style={{ width: `${progress ?? 0}%` }} />
       </div>
+      {workItems.length > 0 && (
+        <div className="mt-4 grid gap-3 text-xs md:grid-cols-2">
+          {printingItems.length > 0 && (
+            <div className="rounded-lg border border-blue-500/30 bg-blue-500/10 p-3">
+              <div className="mb-2 font-bold uppercase tracking-wide text-blue-300">Printing now</div>
+              <div className="space-y-1 text-bambu-gray-light">
+                {printingItems.map((item) => <div key={item.id}>{item.label}</div>)}
+              </div>
+            </div>
+          )}
+          {queuedItems.length > 0 && (
+            <div className="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark p-3">
+              <div className="mb-2 font-bold uppercase tracking-wide text-bambu-gray-light">Queued</div>
+              <div className="space-y-1 text-bambu-gray-light">
+                {queuedItems.map((item) => <div key={item.id}>{item.label}</div>)}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </Link>
   );
 }
@@ -469,6 +534,7 @@ export function FarmCommandCenterPage() {
   const alertCount = stateCounts.alert + lowSpoolCount(spools, settings?.low_stock_threshold ?? 20) + maintenanceAttentionCount(maintenanceOverview);
   const todayParts = completedToday(queue as PrintQueueItem[], now);
   const visibleProjects = activeProjects.slice(0, 2);
+  const activeProjectWork = useMemo(() => new Map(activeProjects.map((project) => [project.id, buildActiveProjectWork(project, queue as ProjectQueueItem[], fleet)])), [activeProjects, queue, fleet]);
   const lowStock = lowSpoolCount(spools, settings?.low_stock_threshold ?? 20);
   const maintenanceDue = maintenanceAttentionCount(maintenanceOverview);
   const commandCenterAlerts = useMemo(() => buildCommandCenterAlerts(fleet, spools, maintenanceOverview, settings?.low_stock_threshold ?? 20), [fleet, spools, maintenanceOverview, settings?.low_stock_threshold]);
@@ -595,7 +661,7 @@ export function FarmCommandCenterPage() {
             <Link to="/projects" className="inline-flex items-center gap-1 text-sm font-semibold text-blue-400 hover:text-blue-300">View all projects <ChevronRight className="h-4 w-4" /></Link>
           </div>
           <div className="grid gap-4 xl:grid-cols-2">
-            {visibleProjects.map((project) => <ActiveProjectCard key={project.id} project={project} />)}
+            {visibleProjects.map((project) => <ActiveProjectCard key={project.id} project={project} workItems={activeProjectWork.get(project.id) || []} />)}
             {visibleProjects.length === 0 && <div className="rounded-xl border border-dashed border-bambu-dark-tertiary p-8 text-center text-bambu-gray-light xl:col-span-2">No active projects are currently tracked.</div>}
           </div>
         </section>
