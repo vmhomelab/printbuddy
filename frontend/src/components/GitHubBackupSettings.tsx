@@ -807,10 +807,15 @@ export function GitHubBackupSettings() {
                 <div className="flex items-center justify-between text-sm">
                   <div className="flex items-center gap-2 text-bambu-gray">
                     {status.last_backup_at ? (
-                      <>
-                        <span>{t('backup.lastBackupAt')} {formatRelativeTime(status.last_backup_at, 'system', t)}</span>
-                        <StatusBadge status={status.last_backup_status} />
-                      </>
+                      <div className="flex flex-col gap-1">
+                        <div className="flex items-center gap-2">
+                          <span>{t('backup.lastBackupAt')} {formatRelativeTime(status.last_backup_at, 'system', t)}</span>
+                          <StatusBadge status={status.last_backup_status} />
+                        </div>
+                        {status.last_backup_status === 'skipped' && (
+                          <span className="text-xs text-bambu-gray">{t('backup.backupSkippedNoChangesNote')}</span>
+                        )}
+                      </div>
                     ) : (
                       <span>{t('backup.noBackupsYet')}</span>
                     )}

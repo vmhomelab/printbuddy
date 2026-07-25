@@ -4006,6 +4006,7 @@ export default {
     failedToSave: '保存失败：{{message}}',
     backupCompleteFiles: '备份完成 - {{count}} 个文件已更新',
     backupSkippedNoChanges: '备份已跳过 - 无更改',
+    backupSkippedNoChangesNote: '已跳过，因为没有需要保存的更改。',
     backupFailed2: '备份失败：{{message}}',
     clearedLogs: '已清除 {{count}} 条日志',
     failedToClearLogs: '清除日志失败：{{message}}',

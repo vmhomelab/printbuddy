@@ -4007,6 +4007,7 @@ export default {
     failedToSave: 'Falha ao salvar: {{message}}',
     backupCompleteFiles: 'Backup concluído - {{count}} arquivos atualizados',
     backupSkippedNoChanges: 'Backup ignorado - sem alterações',
+    backupSkippedNoChangesNote: 'Ignorado porque não havia alterações para salvar.',
     backupFailed2: 'Falha no backup: {{message}}',
     clearedLogs: '{{count}} logs removidos',
     failedToClearLogs: 'Falha ao limpar logs: {{message}}',

@@ -4026,6 +4026,7 @@ export default {
     failedToSave: 'Error al guardar: {{message}}',
     backupCompleteFiles: 'Copia de seguridad completada - {{count}} archivos actualizados',
     backupSkippedNoChanges: 'Copia de seguridad omitida - sin cambios',
+    backupSkippedNoChangesNote: 'Se omitió porque no había cambios que guardar.',
     backupFailed2: 'Error en la copia de seguridad: {{message}}',
     clearedLogs: 'Se borraron {{count}} registros',
     failedToClearLogs: 'Error al borrar los registros: {{message}}',

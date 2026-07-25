@@ -4007,6 +4007,7 @@ export default {
     failedToSave: 'Salvataggio fallito: {{message}}',
     backupCompleteFiles: 'Backup completato - {{count}} file aggiornati',
     backupSkippedNoChanges: 'Backup saltato - nessuna modifica',
+    backupSkippedNoChangesNote: 'Saltato perché non c’erano modifiche da salvare.',
     backupFailed2: 'Backup fallito: {{message}}',
     clearedLogs: '{{count}} log eliminati',
     failedToClearLogs: 'Eliminazione log fallita: {{message}}',

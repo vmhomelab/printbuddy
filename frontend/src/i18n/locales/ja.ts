@@ -4019,6 +4019,7 @@ export default {
     failedToSave: '保存に失敗しました: {{message}}',
     backupCompleteFiles: 'バックアップ完了 - {{count}}ファイルが更新されました',
     backupSkippedNoChanges: 'バックアップをスキップ - 変更なし',
+    backupSkippedNoChangesNote: '保存する変更がなかったためスキップされました。',
     backupFailed2: 'バックアップに失敗しました: {{message}}',
     clearedLogs: '{{count}}件のログを削除しました',
     failedToClearLogs: 'ログの削除に失敗しました: {{message}}',

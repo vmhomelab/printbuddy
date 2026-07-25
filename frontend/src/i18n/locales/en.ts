@@ -4030,6 +4030,7 @@ export default {
     failedToSave: 'Failed to save: {{message}}',
     backupCompleteFiles: 'Backup complete - {{count}} files updated',
     backupSkippedNoChanges: 'Backup skipped - no changes',
+    backupSkippedNoChangesNote: 'Skipped because there were no changes to save.',
     backupFailed2: 'Backup failed: {{message}}',
     clearedLogs: 'Cleared {{count}} logs',
     failedToClearLogs: 'Failed to clear logs: {{message}}',

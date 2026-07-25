@@ -4019,6 +4019,7 @@ export default {
     failedToSave: 'Speichern fehlgeschlagen: {{message}}',
     backupCompleteFiles: 'Sicherung abgeschlossen - {{count}} Dateien aktualisiert',
     backupSkippedNoChanges: 'Sicherung übersprungen - keine Änderungen',
+    backupSkippedNoChangesNote: 'Übersprungen, weil keine Änderungen zum Speichern vorhanden waren.',
     backupFailed2: 'Sicherung fehlgeschlagen: {{message}}',
     clearedLogs: '{{count}} Protokolle gelöscht',
     failedToClearLogs: 'Protokolle löschen fehlgeschlagen: {{message}}',

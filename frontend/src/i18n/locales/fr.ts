@@ -4008,6 +4008,7 @@ export default {
     failedToSave: 'Échec de l\'enregistrement : {{message}}',
     backupCompleteFiles: 'Sauvegarde terminée - {{count}} fichiers mis à jour',
     backupSkippedNoChanges: 'Sauvegarde ignorée - aucun changement',
+    backupSkippedNoChangesNote: 'Ignorée, car aucune modification n’était à enregistrer.',
     backupFailed2: 'Échec de la sauvegarde : {{message}}',
     clearedLogs: '{{count}} journaux supprimés',
     failedToClearLogs: 'Échec de la suppression des journaux : {{message}}',
