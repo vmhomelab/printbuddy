@@ -290,6 +290,39 @@ function ActiveProjectCard({ project }: { project: ProjectListItem }) {
   );
 }
 
+function DispatchSuggestionPanel({ projects }: { projects: ProjectListItem[] }) {
+  const reviewableProjects = projects.filter((project) => project.queue_count > 0 || project.failed_count > 0 || project.target_count || project.target_parts_count);
+  if (reviewableProjects.length === 0) return null;
+
+  const queued = reviewableProjects.reduce((total, project) => total + project.queue_count, 0);
+  const failed = reviewableProjects.reduce((total, project) => total + project.failed_count, 0);
+  const firstProject = reviewableProjects[0];
+
+  return (
+    <section className="mb-5 rounded-2xl border border-bambu-dark-tertiary bg-bambu-dark/50 p-4">
+      <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h2 className="text-sm font-semibold uppercase tracking-[0.22em] text-bambu-gray-light">Dispatch Suggestions</h2>
+          <p className="mt-1 text-sm text-bambu-gray-light">
+            Review {reviewableProjects.length} active project{reviewableProjects.length === 1 ? '' : 's'} with {queued} queued job{queued === 1 ? '' : 's'} and {failed} failed job{failed === 1 ? '' : 's'}.
+          </p>
+        </div>
+        <Link to={`/projects/${firstProject.id}`} aria-label={`Review ${firstProject.name} dispatch`} className="inline-flex items-center gap-2 rounded-lg border border-blue-500/60 bg-blue-500/10 px-3 py-2 text-sm font-semibold text-blue-300 transition hover:bg-blue-500/20 hover:text-white">
+          Review dispatch <ChevronRight className="h-4 w-4" />
+        </Link>
+      </div>
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+        {reviewableProjects.slice(0, 3).map((project) => (
+          <Link key={project.id} to={`/projects/${project.id}`} className="rounded-xl border border-bambu-dark-tertiary bg-bambu-dark-secondary/80 p-3 transition hover:border-blue-500">
+            <div className="font-semibold text-white">{project.name}</div>
+            <div className="mt-1 text-xs text-bambu-gray-light">{project.queue_count} queued · {project.failed_count} failed · {projectTargetSummary(project)}</div>
+          </Link>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function AlertsDialog({ alerts, onClose }: { alerts: CommandCenterAlert[]; onClose: () => void }) {
   const toneClasses = {
     red: 'border-red-500/40 bg-red-500/10 text-red-200',
@@ -566,6 +599,8 @@ export function FarmCommandCenterPage() {
             {visibleProjects.length === 0 && <div className="rounded-xl border border-dashed border-bambu-dark-tertiary p-8 text-center text-bambu-gray-light xl:col-span-2">No active projects are currently tracked.</div>}
           </div>
         </section>
+
+        <DispatchSuggestionPanel projects={activeProjects} />
 
         <section className="grid gap-4 xl:grid-cols-3">
           <Link to="/notifications" className="group flex items-center gap-4 rounded-2xl border border-bambu-dark-tertiary bg-bambu-dark-secondary/80 p-4 transition hover:border-blue-500 hover:bg-bambu-dark-secondary focus:outline-none focus:ring-2 focus:ring-blue-500">

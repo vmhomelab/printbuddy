@@ -1,7 +1,7 @@
 import { useState, useMemo } from 'react';
 import DOMPurify from 'dompurify';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient, useQueries } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
   ArrowLeft,
@@ -37,7 +37,7 @@ import {
 } from 'lucide-react';
 import { api } from '../api/client';
 import { parseUTCDate, formatDateOnly, formatDateTime, formatDurationFromHours, type TimeFormat } from '../utils/date';
-import type { Archive, ProjectUpdate, BOMItem, BOMItemCreate, BOMItemUpdate, LibraryFileListItem } from '../api/client';
+import type { Archive, ProjectUpdate, BOMItem, BOMItemCreate, BOMItemUpdate, LibraryFileListItem, Printer as PrintbuddyPrinter, PrinterStatus, PrintQueueItem } from '../api/client';
 import { Card, CardContent } from '../components/Card';
 import { Button } from '../components/Button';
 import { useToast } from '../contexts/ToastContext';
@@ -355,6 +355,102 @@ function ProductionPlan({ bomItems, archives, files, onStageFile }: { bomItems: 
   );
 }
 
+type DispatchState = 'ready' | 'blocked';
+
+interface DispatchSuggestion {
+  file: LibraryFileListItem;
+  state: DispatchState;
+  printer: PrintbuddyPrinter | null;
+  reason: string;
+}
+
+function isPrinterDispatchReady(status?: PrinterStatus): boolean {
+  if (!status || !status.connected) return false;
+  if ((status.hms_errors?.length ?? 0) > 0) return false;
+  const state = (status.state || '').toLowerCase();
+  if (state.includes('error') || state.includes('fail') || state.includes('pause')) return false;
+  if (state.includes('print') || state.includes('run') || status.current_print || status.progress !== null) return false;
+  return true;
+}
+
+function buildDispatchSuggestions(files: LibraryFileListItem[], printers: PrintbuddyPrinter[], statuses: Array<PrinterStatus | undefined>, queue: PrintQueueItem[]): DispatchSuggestion[] {
+  const printableFiles = files.filter((file) => isSlicedFilename(file.filename));
+  return printableFiles.map((file) => {
+    const alreadyQueued = queue.some((item) => {
+      if (item.library_file_id === file.id) return true;
+      const candidate = `${item.library_file_name || ''} ${item.archive_name || ''}`.toLowerCase();
+      return candidate.includes(file.filename.toLowerCase()) || (!!file.print_name && candidate.includes(file.print_name.toLowerCase()));
+    });
+    if (alreadyQueued) {
+      return { file, state: 'blocked', printer: null, reason: 'Already queued for this project or file name.' };
+    }
+
+    const readyIndex = printers.findIndex((printer, index) => printer.is_active !== false && isPrinterDispatchReady(statuses[index]));
+    if (readyIndex >= 0) {
+      return {
+        file,
+        state: 'ready',
+        printer: printers[readyIndex],
+        reason: `${printers[readyIndex].name} is an idle printer and can be reviewed for staging.`,
+      };
+    }
+
+    return { file, state: 'blocked', printer: null, reason: 'No idle printer is currently available for safe staging.' };
+  });
+}
+
+function DispatchSuggestions({ suggestions, onReview }: { suggestions: DispatchSuggestion[]; onReview: (file: LibraryFileListItem) => void }) {
+  if (suggestions.length === 0) return null;
+
+  return (
+    <Card>
+      <CardContent className="p-4">
+        <div className="mb-4 flex items-center justify-between">
+          <div>
+            <h2 className="flex items-center gap-2 text-lg font-semibold text-white">
+              <Printer className="h-5 w-5" />
+              Dispatch Suggestions
+            </h2>
+            <p className="mt-1 text-xs text-bambu-gray">Review suggested printer targets before staging. Nothing starts automatically.</p>
+          </div>
+        </div>
+        <div className="space-y-3">
+          {suggestions.map((suggestion) => {
+            const fileName = suggestion.file.print_name || suggestion.file.filename;
+            const isReady = suggestion.state === 'ready' && suggestion.printer;
+            return (
+              <div key={suggestion.file.id} className="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark/60 p-4">
+                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                  <div>
+                    <div className="font-semibold text-white">{fileName}</div>
+                    <div className="mt-1 text-sm text-bambu-gray-light">{isReady ? `Suggested printer: ${suggestion.printer!.name}` : 'No safe printer target'}</div>
+                    <div className="mt-1 text-xs text-bambu-gray">{suggestion.reason}</div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className={`rounded px-2 py-1 text-xs font-semibold ${isReady ? 'bg-emerald-500/15 text-emerald-300' : 'bg-amber-500/15 text-amber-300'}`}>
+                      {isReady ? 'Ready to stage' : 'Blocked'}
+                    </span>
+                    {isReady && (
+                      <button
+                        type="button"
+                        onClick={() => onReview(suggestion.file)}
+                        className="inline-flex items-center gap-1 rounded bg-blue-500/15 px-3 py-1.5 text-xs font-semibold text-blue-300 transition hover:bg-blue-500/25 hover:text-white"
+                        aria-label={`Review staging for ${fileName} on ${suggestion.printer!.name}`}
+                      >
+                        <CalendarPlus className="h-3.5 w-3.5" /> Review staging
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 export function ProjectDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -411,6 +507,33 @@ export function ProjectDetailPage() {
     queryFn: () => api.getLibraryFiles(null, false, projectId),
     enabled: projectId > 0,
   });
+
+  const { data: printers = [] } = useQuery({
+    queryKey: ['printers', 'project-dispatch'],
+    queryFn: api.getPrinters,
+    enabled: projectId > 0,
+  });
+
+  const { data: queue = [] } = useQuery({
+    queryKey: ['queue', 'project-dispatch', projectId],
+    queryFn: () => api.getQueue(),
+    enabled: projectId > 0,
+  });
+
+  const printerStatusQueries = useQueries({
+    queries: printers.map((printer) => ({
+      queryKey: ['printerStatus', printer.id, 'project-dispatch'],
+      queryFn: () => api.getPrinterStatus(printer.id),
+      enabled: projectId > 0 && printer.is_active !== false,
+    })),
+  });
+
+  const dispatchSuggestions = useMemo(() => buildDispatchSuggestions(
+    allProjectFiles || [],
+    printers,
+    printerStatusQueries.map((query) => query.data),
+    queue as PrintQueueItem[],
+  ), [allProjectFiles, printers, printerStatusQueries, queue]);
 
   // Group files by folder_id for the section-based render
   const filesByFolder = useMemo(() => {
@@ -796,6 +919,7 @@ export function ProjectDetailPage() {
       )}
 
       <ProductionPlan bomItems={bomItems || []} archives={archives || []} files={allProjectFiles || []} onStageFile={setScheduleFile} />
+      <DispatchSuggestions suggestions={dispatchSuggestions} onReview={setScheduleFile} />
 
       {/* Cost tracking */}
       {stats && (() => {

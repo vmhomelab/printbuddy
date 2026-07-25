@@ -7,7 +7,7 @@
 /// <reference types="@testing-library/jest-dom" />
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { screen, waitFor } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { render } from '../utils';
 import { ProjectDetailPage } from '../../pages/ProjectDetailPage';
@@ -100,6 +100,80 @@ const gridfinityBinBom = {
   created_at: '2024-01-01T00:00:00Z',
   updated_at: '2024-01-01T00:00:00Z',
 };
+
+const dispatchPrinters = [
+  {
+    id: 1,
+    name: 'PRA-01',
+    serial_number: 'PRA01',
+    ip_address: '10.0.0.11',
+    access_code: '',
+    provider: 'bambu',
+    api_url: null,
+    auth_token: null,
+    provider_options: null,
+    model: 'P1S',
+    location: 'Production Row A',
+    nozzle_count: 1,
+    is_active: true,
+    auto_archive: true,
+    external_camera_url: null,
+    external_camera_type: null,
+    external_camera_enabled: false,
+    external_camera_snapshot_url: null,
+    camera_rotation: 0,
+    plate_detection_enabled: false,
+    created_at: '2024-01-01T00:00:00Z',
+    updated_at: '2024-01-01T00:00:00Z',
+  },
+  {
+    id: 2,
+    name: 'PRB-04',
+    serial_number: 'PRB04',
+    ip_address: '10.0.0.12',
+    access_code: '',
+    provider: 'klipper',
+    api_url: null,
+    auth_token: null,
+    provider_options: null,
+    model: 'Generic FDM Printer',
+    location: 'Engineering Row B',
+    nozzle_count: 1,
+    is_active: true,
+    auto_archive: true,
+    external_camera_url: null,
+    external_camera_type: null,
+    external_camera_enabled: false,
+    external_camera_snapshot_url: null,
+    camera_rotation: 0,
+    plate_detection_enabled: false,
+    created_at: '2024-01-01T00:00:00Z',
+    updated_at: '2024-01-01T00:00:00Z',
+  },
+];
+
+function dispatchStatus(id: number) {
+  return {
+    id,
+    name: id === 1 ? 'PRA-01' : 'PRB-04',
+    connected: true,
+    state: id === 1 ? 'IDLE' : 'PRINTING',
+    current_print: id === 1 ? null : 'Busy print',
+    subtask_name: null,
+    gcode_file: null,
+    progress: id === 1 ? null : 42,
+    remaining_time: null,
+    layer_num: null,
+    total_layers: null,
+    temperatures: { nozzle: 28, bed: 27 },
+    hms_errors: [],
+    ams: [],
+    ams_exists: false,
+    vt_tray: [],
+    supports_drying: false,
+    awaiting_plate_clear: false,
+  };
+}
 
 const gridfinityArchive = {
   id: 31,
@@ -194,6 +268,8 @@ describe('ProjectDetailPage', () => {
       http.get('/api/v1/library/folders/by-project/:id', () => {
         return HttpResponse.json([mockFolder]);
       }),
+      http.get('/api/v1/printers/', () => HttpResponse.json([])),
+      http.get('/api/v1/queue/', () => HttpResponse.json([])),
     );
   });
 
@@ -375,6 +451,37 @@ describe('ProjectDetailPage', () => {
 
       expect(await screen.findByRole('heading', { name: 'Production Plan' })).toBeInTheDocument();
       await user.click(screen.getByRole('button', { name: /stage gridfinity-bin-plate-02\.gcode\.3mf to queue/i }));
+
+      expect(await screen.findByRole('heading', { name: 'Schedule Print' })).toBeInTheDocument();
+    });
+
+    it('suggests safe dispatch targets and opens review staging for the suggested printer', async () => {
+      const user = userEvent.setup();
+      server.use(
+        http.get('/api/v1/projects/:id', () => HttpResponse.json(productionProject)),
+        http.get('/api/v1/projects/:id/archives', () => HttpResponse.json([gridfinityArchive])),
+        http.get('/api/v1/projects/:id/bom', () => HttpResponse.json([gridfinityBinBom])),
+        http.get('/api/v1/library/files', () => HttpResponse.json([
+          makeFile({ id: 41, filename: 'gridfinity-bin-plate-02.gcode.3mf', file_type: '3mf' }),
+        ])),
+        http.get('/api/v1/printers/', () => HttpResponse.json(dispatchPrinters)),
+        http.get('/api/v1/printers/:id/status', ({ params }) => HttpResponse.json(dispatchStatus(Number(params.id)))),
+        http.get('/api/v1/queue/', () => HttpResponse.json([])),
+        http.get('/api/v1/library/files/:id', () => HttpResponse.json(makeFile({ id: 41, filename: 'gridfinity-bin-plate-02.gcode.3mf', file_type: '3mf' }))),
+        http.get('/api/v1/library/files/:id/plates', () => HttpResponse.json({ is_multi_plate: false, plates: [] })),
+        http.get('/api/v1/library/files/:id/filament-requirements', () => HttpResponse.json({ file_id: 41, filename: 'gridfinity-bin-plate-02.gcode.3mf', filaments: [] })),
+      );
+
+      render(<ProjectDetailPage />);
+
+      const dispatchHeading = await screen.findByRole('heading', { name: 'Dispatch Suggestions' });
+      const dispatchSection = dispatchHeading.closest('.rounded-lg, .card, div')?.parentElement?.parentElement?.parentElement || document.body;
+      expect(within(dispatchSection).getByText('gridfinity-bin-plate-02.gcode.3mf')).toBeInTheDocument();
+      await waitFor(() => expect(within(dispatchSection).getByText('Ready to stage')).toBeInTheDocument());
+      expect(within(dispatchSection).getByText('Suggested printer: PRA-01')).toBeInTheDocument();
+      expect(within(dispatchSection).getByText(/idle printer/i)).toBeInTheDocument();
+
+      await user.click(screen.getByRole('button', { name: /review staging for gridfinity-bin-plate-02\.gcode\.3mf on PRA-01/i }));
 
       expect(await screen.findByRole('heading', { name: 'Schedule Print' })).toBeInTheDocument();
     });

@@ -172,7 +172,7 @@ describe('FarmCommandCenterPage', () => {
     expect(screen.getByText('Fleet Status')).toBeInTheDocument();
     expect(screen.getByText('PRA-01')).toBeInTheDocument();
     expect(screen.getByText('PRB-04')).toBeInTheDocument();
-    expect(screen.getByText('Gridfinity Organizer Set')).toBeInTheDocument();
+    expect(screen.getAllByText('Gridfinity Organizer Set').length).toBeGreaterThan(0);
     expect(screen.getByText('42 / 64 Parts')).toBeInTheDocument();
     expect(screen.getByText('3 queued')).toBeInTheDocument();
     expect(screen.getByText('1 failed')).toBeInTheDocument();
@@ -183,6 +183,9 @@ describe('FarmCommandCenterPage', () => {
     expect(screen.getAllByRole('link').some((link) => link.getAttribute('href') === '/inventory')).toBe(true);
     expect(screen.getAllByRole('link').some((link) => link.getAttribute('href') === '/maintenance')).toBe(true);
     expect(screen.getAllByRole('link').some((link) => link.getAttribute('href') === '/projects/42')).toBe(true);
+    expect(screen.getByRole('heading', { name: 'Dispatch Suggestions' })).toBeInTheDocument();
+    expect(screen.getByText('Review 1 active project with 3 queued jobs and 1 failed job.')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /review gridfinity organizer set dispatch/i })).toHaveAttribute('href', '/projects/42');
   });
 
   it('opens an alerts pop-up from the alerts stat card', async () => {
