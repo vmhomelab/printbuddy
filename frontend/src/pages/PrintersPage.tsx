@@ -4639,6 +4639,48 @@ function PrinterCard({
                                       <div className="absolute top-full left-0 mt-1 z-50 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl py-1 min-w-[120px]">
                                         <button
                                           className={`w-full px-3 py-1.5 text-left text-xs flex items-center gap-2 ${
+                                            hasPermission('printers:ams_rfid')
+                                              ? 'text-white hover:bg-bambu-dark-tertiary'
+                                              : 'text-bambu-gray/50 cursor-not-allowed'
+                                          }`}
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            if (!hasPermission('printers:ams_rfid')) return;
+                                            refreshAmsSlotMutation.mutate({ amsId: ams.id, slotId: slotIdx });
+                                            setAmsSlotMenu(null);
+                                          }}
+                                          disabled={isRefreshing || !hasPermission('printers:ams_rfid')}
+                                          title={!hasPermission('printers:ams_rfid') ? t('printers.permission.noAmsRfid') : undefined}
+                                        >
+                                          <RefreshCw className={`w-3 h-3 ${isRefreshing ? 'animate-spin' : ''}`} />
+                                          {t('printers.rfid.reread')}
+                                        </button>
+                                        {supportsSpoolAssignment && (
+                                          <button
+                                            className="w-full px-3 py-1.5 text-left text-xs flex items-center gap-2 text-white hover:bg-bambu-dark-tertiary"
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              setAssignSpoolModal({
+                                                printerId: printer.id,
+                                                amsId: ams.id,
+                                                trayId: slotIdx,
+                                                trayInfo: {
+                                                  type: tray?.tray_type || filamentData?.profile || '',
+                                                  material: tray?.tray_type ?? undefined,
+                                                  profile: filamentData?.profile || tray?.tray_type || '',
+                                                  color: tray?.tray_color || filamentData?.colorHex || '',
+                                                  location: `${amsDisplayLabel} - Slot ${slotIdx + 1}`,
+                                                },
+                                              });
+                                              setAmsSlotMenu(null);
+                                            }}
+                                          >
+                                            <AssignSpoolIcon className="w-3 h-3" />
+                                            {t('common.assign', 'Assign')}
+                                          </button>
+                                        )}
+                                        <button
+                                          className={`w-full px-3 py-1.5 text-left text-xs flex items-center gap-2 ${
                                             hasPermission('printers:control')
                                               ? 'text-white hover:bg-bambu-dark-tertiary'
                                               : 'text-bambu-gray/50 cursor-not-allowed'

@@ -3789,8 +3789,12 @@ async def refresh_ams_slot(
     if not success:
         raise HTTPException(400, message)
 
-    # Apply PA profile after delay (RFID re-read takes a few seconds)
-    asyncio.create_task(_apply_pa_after_refresh(printer_id, ams_id, slot_id))
+    # Apply PA profile after delay (RFID re-read takes a few seconds). This is
+    # Bambu-specific; Moonraker/CFS refresh is just BOX_INFO_REFRESH and has no
+    # Bambu calibration selection endpoint to reapply.
+    provider = str(getattr(printer, "provider", "") or "").lower()
+    if provider not in {"klipper", "mainsail", "fluidd"}:
+        asyncio.create_task(_apply_pa_after_refresh(printer_id, ams_id, slot_id))
 
     return {"success": True, "message": message}
 

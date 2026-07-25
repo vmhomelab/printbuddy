@@ -294,6 +294,35 @@ describe('PrintersPage - AMS load/unload (#891)', () => {
     await waitFor(() => expect(unloadTrayId).toBe('1'));
   });
 
+  it('CFS slot menu exposes assign spool so local quick-create is reachable from the printer card', async () => {
+    const user = userEvent.setup();
+
+    server.use(
+      http.get('/api/v1/printers/', () => HttpResponse.json([mockK2Printer])),
+      http.get('/api/v1/printers/:id/status', () => HttpResponse.json(mockIdleStatusWithCfs)),
+      http.get('/api/v1/inventory/spools', () => HttpResponse.json([])),
+      http.get('/api/v1/inventory/assignments', () => HttpResponse.json([])),
+      http.get('/api/v1/settings/spoolman', () => HttpResponse.json({ spoolman_enabled: 'false', spoolman_url: '' })),
+      http.get('/api/v1/settings/', () => HttpResponse.json({})),
+    );
+
+    render(<PrintersPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('CFS T1')).toBeInTheDocument();
+      expect(document.querySelectorAll('[title="Slot options"]').length).toBeGreaterThan(0);
+    });
+
+    const menuButtons = document.querySelectorAll<HTMLButtonElement>('[title="Slot options"]');
+    await user.click(menuButtons[1]);
+
+    await waitFor(() => expect(screen.getByText('Assign')).toBeInTheDocument());
+    await user.click(screen.getByText('Assign'));
+
+    expect(await screen.findByRole('heading', { name: 'Assign Spool' })).toBeInTheDocument();
+    expect(await screen.findByText('Create spool from slot')).toBeInTheDocument();
+  });
+
   it('shows loaded-spool assignment controls when a single-spool printer is offline', async () => {
     const user = userEvent.setup();
 

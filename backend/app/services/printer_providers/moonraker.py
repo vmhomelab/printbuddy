@@ -504,6 +504,11 @@ class MoonrakerPrinterClient:
             return False
         return self.send_gcode(macro)
 
+    def _send_macro_if_available(self, macro: str) -> bool:
+        if macro not in self._available_macro_names():
+            return False
+        return self.send_gcode(macro)
+
     def discover_webcams(self) -> list[dict[str, Any]]:
         """Return normalized Moonraker webcam entries, if the server exposes any."""
         result = self._get("server/webcams/list")
@@ -608,43 +613,67 @@ class MoonrakerPrinterClient:
             return data["result"]
         return data if isinstance(data, dict) else {"value": data}
 
-    def list_files(self, path: str = "/") -> list[dict[str, Any]]:
-        root = "gcodes"
+    def list_files(self, path: str = "/", *, storage: str | None = None) -> list[dict[str, Any]]:
+        roots = [storage] if storage else ["gcodes", "local", "sdcard"]
         normalized = self._normalize_gcodes_path(path)
-        query = f"server/files/list?root={root}"
-        if normalized:
-            query += f"&path={normalized}"
-        result = self._get(query)
-        entries = result.get("result", result) if isinstance(result, dict) else result
-        if isinstance(entries, dict):
-            entries = entries.get("files") or entries.get("children") or []
-        files: list[dict[str, Any]] = []
-        for entry in entries if isinstance(entries, list) else []:
-            if not isinstance(entry, dict):
+        last_error: Exception | None = None
+        saw_successful_root = False
+        for root_candidate in roots:
+            if not root_candidate:
                 continue
-            raw_path = str(entry.get("path") or entry.get("filename") or entry.get("name") or "").lstrip("/")
-            if not raw_path:
+            root = str(root_candidate).strip().strip("/") or "gcodes"
+            query = f"server/files/list?root={quote(root)}"
+            if normalized:
+                query += f"&path={quote(normalized)}"
+            try:
+                result = self._get(query)
+            except Exception as exc:  # noqa: BLE001 - try alternate Moonraker roots below
+                last_error = exc
                 continue
-            name = raw_path.rsplit("/", 1)[-1]
-            modified_raw = entry.get("modified")
-            modified = None
-            if isinstance(modified_raw, int | float):
-                modified = datetime.fromtimestamp(float(modified_raw), tz=timezone.utc).isoformat()
-            elif modified_raw is not None:
-                modified = str(modified_raw)
-            file_type = "directory" if entry.get("type") == "directory" or entry.get("dirname") else "file"
-            full_path = f"/{raw_path}" if not normalized else f"/{raw_path}"
-            files.append(
-                {"name": name, "type": file_type, "size": entry.get("size"), "modified": modified, "path": full_path}
-            )
-        return files
+            entries = result.get("result", result) if isinstance(result, dict) else result
+            saw_successful_root = True
+            if isinstance(entries, dict):
+                entries = entries.get("files") or entries.get("children") or []
+            files: list[dict[str, Any]] = []
+            for entry in entries if isinstance(entries, list) else []:
+                if not isinstance(entry, dict):
+                    continue
+                raw_path = str(entry.get("path") or entry.get("filename") or entry.get("name") or "").lstrip("/")
+                if not raw_path:
+                    continue
+                name = raw_path.rsplit("/", 1)[-1]
+                modified_raw = entry.get("modified")
+                modified = None
+                if isinstance(modified_raw, int | float):
+                    modified = datetime.fromtimestamp(float(modified_raw), tz=timezone.utc).isoformat()
+                elif modified_raw is not None:
+                    modified = str(modified_raw)
+                file_type = "directory" if entry.get("type") == "directory" or entry.get("dirname") else "file"
+                full_path = f"/{raw_path}" if not normalized else f"/{raw_path}"
+                files.append(
+                    {
+                        "name": name,
+                        "type": file_type,
+                        "size": entry.get("size"),
+                        "modified": modified,
+                        "path": full_path,
+                    }
+                )
+            if files or storage:
+                return files
+        if last_error and not saw_successful_root:
+            raise last_error
+        return []
 
-    def upload_file(self, local_path: Path, remote_path: str, *, overwrite: bool = False) -> bool:  # noqa: ARG002
+    def upload_file(
+        self, local_path: Path, remote_path: str, *, overwrite: bool = False, storage: str | None = None
+    ) -> bool:  # noqa: ARG002
+        root = str(storage or "gcodes").strip().strip("/") or "gcodes"
         target = self._normalize_gcodes_path(remote_path) or local_path.name
         with open(local_path, "rb") as fh:
             response = httpx.post(
                 urljoin(self.base_url, "server/files/upload"),
-                data={"root": "gcodes", "path": target.rsplit("/", 1)[0] if "/" in target else ""},
+                data={"root": root, "path": target.rsplit("/", 1)[0] if "/" in target else ""},
                 files={"file": (target.rsplit("/", 1)[-1], fh, "application/octet-stream")},
                 headers=self._headers,
                 timeout=max(self.timeout, 60.0),
@@ -791,9 +820,10 @@ class MoonrakerPrinterClient:
         response.raise_for_status()
         return response.content
 
-    def delete_file(self, remote_path: str) -> bool:
+    def delete_file(self, remote_path: str, *, storage: str | None = None) -> bool:
+        root = str(storage or "gcodes").strip().strip("/") or "gcodes"
         normalized = self._normalize_gcodes_path(remote_path)
-        self._post("server/files/delete_file", {"path": f"gcodes/{normalized}"})
+        self._post("server/files/delete_file", {"path": f"{root}/{normalized}"})
         return True
 
     def send_gcode(self, script: str) -> bool:
@@ -834,6 +864,12 @@ class MoonrakerPrinterClient:
     def ams_unload_filament(self, tray_id: int | None = None) -> bool:
         """Unload a Creality CFS slot through its discovered slot macro."""
         return self._send_cfs_slot_macro("BOX_QUIT_MATERIAL", tray_id)
+
+    def ams_refresh_tray(self, ams_id: int, slot_id: int) -> tuple[bool, str]:  # noqa: ARG002
+        """Refresh Creality CFS information through the discovered refresh macro."""
+        if self._send_macro_if_available("BOX_INFO_REFRESH"):
+            return True, "CFS information refresh sent"
+        return False, "CFS information refresh macro BOX_INFO_REFRESH is not available on this printer"
 
     def adjust_z_offset(self, amount: float) -> bool:
         return self.send_gcode(f"SET_GCODE_OFFSET Z_ADJUST={amount} MOVE=1")

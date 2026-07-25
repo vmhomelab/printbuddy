@@ -323,3 +323,62 @@ def test_moonraker_cfs_load_rejects_missing_slot_macro(monkeypatch):
     monkeypatch.setattr(client, "_get", lambda path: {"objects": ["box"]})
 
     assert client.ams_load_filament(0) is False
+
+
+def test_moonraker_cfs_refresh_uses_box_info_refresh_when_available(monkeypatch):
+    client = MoonrakerPrinterClient("http://k2-plus.local:7125", printer_model="Creality K2 Plus")
+    sent: list[str] = []
+    monkeypatch.setattr(client, "_get", lambda path: {"objects": ["box", "gcode_macro BOX_INFO_REFRESH"]})
+    monkeypatch.setattr(client, "send_gcode", lambda script: sent.append(script) or True)
+
+    assert client.ams_refresh_tray(0, 1) == (True, "CFS information refresh sent")
+    assert sent == ["BOX_INFO_REFRESH"]
+
+
+def test_moonraker_list_files_accepts_storage_keyword_and_uses_it(monkeypatch):
+    client = MoonrakerPrinterClient("http://k2-plus.local:7125", printer_model="Creality K2 Plus")
+    requested: list[str] = []
+
+    def fake_get(path):
+        requested.append(path)
+        return {"result": [{"path": "cube.gcode", "size": 42, "modified": 1700000000}]}
+
+    monkeypatch.setattr(client, "_get", fake_get)
+
+    files = client.list_files("/", storage="gcodes")
+
+    assert requested == ["server/files/list?root=gcodes"]
+    assert files[0]["name"] == "cube.gcode"
+
+
+def test_moonraker_list_files_tries_common_k2_roots_when_default_root_is_empty(monkeypatch):
+    client = MoonrakerPrinterClient("http://k2-plus.local:7125", printer_model="Creality K2 Plus")
+    requested: list[str] = []
+
+    def fake_get(path):
+        requested.append(path)
+        if path == "server/files/list?root=gcodes":
+            return {"result": []}
+        if path == "server/files/list?root=local":
+            return {"result": [{"path": "benchy.gcode", "size": 100}]}
+        return {"result": []}
+
+    monkeypatch.setattr(client, "_get", fake_get)
+
+    files = client.list_files("/")
+
+    assert requested[:2] == ["server/files/list?root=gcodes", "server/files/list?root=local"]
+    assert files[0]["name"] == "benchy.gcode"
+
+
+def test_moonraker_list_files_returns_empty_when_valid_root_is_empty_and_fallback_roots_fail(monkeypatch):
+    client = MoonrakerPrinterClient("http://k2-plus.local:7125", printer_model="Creality K2 Plus")
+
+    def fake_get(path):
+        if path == "server/files/list?root=gcodes":
+            return {"result": []}
+        raise RuntimeError("root not found")
+
+    monkeypatch.setattr(client, "_get", fake_get)
+
+    assert client.list_files("/") == []
