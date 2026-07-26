@@ -125,6 +125,7 @@ class SpoolBase(BaseModel):
     # assignment). Column has lived on the ORM since the inventory rework
     # but was missing from this schema, so writes were silently dropped (#1291).
     storage_location: str | None = Field(default=None, max_length=255)
+    location_id: int | None = Field(default=None, gt=0)
 
 
 class SpoolCreate(SpoolBase):
@@ -174,6 +175,7 @@ class SpoolUpdate(BaseModel):
     category: str | None = Field(default=None, max_length=50)
     low_stock_threshold_pct: int | None = Field(default=None, ge=1, le=99)
     storage_location: str | None = Field(default=None, max_length=255)
+    location_id: int | None = Field(default=None, gt=0)
 
 
 class SpoolKProfileBase(BaseModel):
@@ -243,3 +245,55 @@ class SpoolAssignmentResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class PendingSlotAssignmentCreateRequest(BaseModel):
+    """Pending create response."""
+
+    spool_id: int | None = None
+    tray_uuid: str | None = None
+    tag_uid: str | None = None
+    printer_id: int | None = None
+    source: str
+    timeout: int
+
+
+class PendingSlotAssignmentResponse(BaseModel):
+    """Response body for pending assignment endpoints."""
+
+    assignment_id: int
+    tray_uuid: str | None = None
+    tag_uid: str | None = None
+    spool_id: int | None = None
+    printer_id: int | None = None
+    source: str
+    status: str  # pending, completed, timed_out, cancelled
+    timeout_seconds: int
+    assigned_printer_id: int | None = None
+    assigned_ams_id: int | None = None
+    assigned_tray_id: int | None = None
+    completed_at: str | None = None
+    time_to_placement: float | None = None
+    created_at: str
+
+    class Config:
+        from_attributes = True
+
+    @staticmethod
+    def from_model(pending_assignment) -> "PendingSlotAssignmentResponse":
+        return PendingSlotAssignmentResponse(
+            assignment_id=pending_assignment.id,
+            tray_uuid=pending_assignment.tray_uuid,
+            tag_uid=pending_assignment.tag_uid,
+            spool_id=pending_assignment.spool_id,
+            printer_id=pending_assignment.printer_id,
+            source=pending_assignment.source,
+            status=pending_assignment.status,
+            timeout_seconds=pending_assignment.timeout_seconds,
+            assigned_printer_id=pending_assignment.assigned_printer_id,
+            assigned_ams_id=pending_assignment.assigned_ams_id,
+            assigned_tray_id=pending_assignment.assigned_tray_id,
+            completed_at=pending_assignment.completed_at.isoformat() if pending_assignment.completed_at else None,
+            time_to_placement=pending_assignment.time_to_placement,
+            created_at=pending_assignment.created_at.isoformat() if pending_assignment.created_at else "",
+        )
