@@ -43,4 +43,14 @@ describe('PrintersPage camera action', () => {
     expect(canOpenPrinterCamera(elegooPrinter, true, true)).toBe(true);
     expect(canOpenPrinterCamera(elegooPrinter, false, true)).toBe(false);
   });
+
+  it('allows PrusaLink cameras when the API response exposes an effective camera URL', () => {
+    const prusaLinkPrinter = {
+      provider: 'prusalink' as const,
+      external_camera_enabled: true,
+      external_camera_url: 'http://10.17.10.50:8080/?action=stream',
+    };
+
+    expect(canOpenPrinterCamera(prusaLinkPrinter, false, true)).toBe(true);
+  });
 });

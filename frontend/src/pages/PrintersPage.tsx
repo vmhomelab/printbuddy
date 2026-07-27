@@ -382,17 +382,34 @@ function inferExternalCameraType(url: string): NonNullable<PrinterCreate['extern
 
 type PrusaLinkApiAuthMode = 'auto' | 'modern_digest' | 'modern_basic_x_api_key' | 'legacy_x_api_key';
 
-function buildPrusaLinkProviderOptions(mode: PrusaLinkApiAuthMode): string {
+function buildPrusaLinkProviderOptions(mode: PrusaLinkApiAuthMode, existingOptions?: string | null): string {
+  let options: Record<string, unknown> = {};
+  if (existingOptions) {
+    try {
+      const parsed = JSON.parse(existingOptions) as Record<string, unknown>;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        options = { ...parsed };
+      }
+    } catch {
+      // Malformed legacy options should not block saving the selected auth mode.
+    }
+  }
+
   if (mode === 'modern_digest') {
-    return JSON.stringify({ prusalink_api_mode: 'modern', prusalink_auth_mode: 'digest' });
+    options.prusalink_api_mode = 'modern';
+    options.prusalink_auth_mode = 'digest';
+  } else if (mode === 'modern_basic_x_api_key') {
+    options.prusalink_api_mode = 'modern';
+    options.prusalink_auth_mode = 'basic_x_api_key';
+  } else if (mode === 'legacy_x_api_key') {
+    options.prusalink_api_mode = 'legacy';
+    options.prusalink_auth_mode = 'x_api_key';
+  } else {
+    options.prusalink_api_mode = 'auto';
+    options.prusalink_auth_mode = 'auto';
   }
-  if (mode === 'modern_basic_x_api_key') {
-    return JSON.stringify({ prusalink_api_mode: 'modern', prusalink_auth_mode: 'basic_x_api_key' });
-  }
-  if (mode === 'legacy_x_api_key') {
-    return JSON.stringify({ prusalink_api_mode: 'legacy', prusalink_auth_mode: 'x_api_key' });
-  }
-  return JSON.stringify({ prusalink_api_mode: 'auto', prusalink_auth_mode: 'auto' });
+
+  return JSON.stringify(options);
 }
 
 function parsePrusaLinkApiAuthMode(providerOptions?: string | null): PrusaLinkApiAuthMode {
@@ -6608,7 +6625,9 @@ function AddPrinterModal({
       external_camera_type: externalCameraUrl ? inferExternalCameraType(externalCameraUrl) : undefined,
       external_camera_enabled: isHttpProvider && Boolean(externalCameraUrl),
       external_camera_snapshot_url: undefined,
-      provider_options: isPrusaLinkProvider ? buildPrusaLinkProviderOptions(prusaLinkApiAuthMode) : form.provider_options,
+      provider_options: isPrusaLinkProvider
+        ? buildPrusaLinkProviderOptions(prusaLinkApiAuthMode, form.provider_options)
+        : form.provider_options,
     };
   };
 
@@ -7576,7 +7595,7 @@ function EditPrinterModal({
       auto_archive: form.auto_archive,
     };
     if (isPrusaLinkProvider) {
-      data.provider_options = buildPrusaLinkProviderOptions(form.prusa_link_api_auth_mode);
+      data.provider_options = buildPrusaLinkProviderOptions(form.prusa_link_api_auth_mode, printer.provider_options);
       if (form.access_code) {
         data.auth_token = form.access_code;
       }

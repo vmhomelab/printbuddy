@@ -78,6 +78,66 @@ def build_elegoo_sdcp_camera_url(ip_address: object) -> str | None:
     return f"http://{host}:{ELEGOO_SDCP_CAMERA_PORT}{ELEGOO_SDCP_CAMERA_PATH}"
 
 
+def _provider_options_dict(printer: Any) -> dict[str, Any]:
+    raw = getattr(printer, "provider_options", None)
+    if isinstance(raw, dict):
+        return raw
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw) if isinstance(raw, str) else {}
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _prusalink_provider_camera_source(printer: Any) -> EffectiveCameraSource | None:
+    """Return a PrusaLink camera source declared in provider_options.
+
+    PrusaLink/Core One firmware variants do not expose one stable documented
+    snapshot URL that we can safely derive from ``api_url`` alone. However,
+    integrations and imports can already know the correct local camera endpoint.
+    Let them declare it beside the PrusaLink auth options so existing rows do not
+    need the manual external-camera toggle before finish/progress notifications
+    can attach images.
+    """
+
+    if str(getattr(printer, "provider", None) or "").strip().lower() != "prusalink":
+        return None
+
+    options = _provider_options_dict(printer)
+    camera_url = str(
+        options.get("camera_url")
+        or options.get("prusalink_camera_url")
+        or options.get("snapshot_url")
+        or options.get("prusalink_snapshot_url")
+        or ""
+    ).strip()
+    if not camera_url:
+        return None
+
+    snapshot_url = str(options.get("camera_snapshot_url") or options.get("prusalink_camera_snapshot_url") or "").strip()
+    camera_type = str(options.get("camera_type") or options.get("prusalink_camera_type") or "").strip().lower()
+    if camera_type not in {"mjpeg", "rtsp", "snapshot", "usb"}:
+        normalized = camera_url.lower().split("?", 1)[0]
+        if normalized.startswith(("rtsp://", "rtsps://")):
+            camera_type = "rtsp"
+        elif any(token in normalized for token in ("/snapshot", "/frame")) or normalized.endswith(
+            (".jpg", ".jpeg", ".png", ".webp")
+        ):
+            camera_type = "snapshot"
+        else:
+            camera_type = "mjpeg"
+
+    return EffectiveCameraSource(
+        enabled=True,
+        url=camera_url,
+        camera_type=camera_type,
+        snapshot_url=snapshot_url or None,
+        derived=True,
+    )
+
+
 def get_effective_camera_source(printer: Any) -> EffectiveCameraSource:
     """Return the camera source Printbuddy should use for a printer.
 
@@ -99,6 +159,10 @@ def get_effective_camera_source(printer: Any) -> EffectiveCameraSource:
             snapshot_url=configured_snapshot_url,
             derived=False,
         )
+
+    prusalink_camera = _prusalink_provider_camera_source(printer)
+    if prusalink_camera:
+        return prusalink_camera
 
     if is_elegoo_sdcp_provider(getattr(printer, "provider", None)):
         derived_url = build_elegoo_sdcp_camera_url(getattr(printer, "ip_address", None))

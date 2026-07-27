@@ -98,6 +98,67 @@ def test_printer_response_exposes_effective_elegoo_camera_for_existing_rows():
     assert response.external_camera_url == "http://192.168.1.181:3031/video"
 
 
+def test_prusalink_provider_options_can_supply_effective_camera_source():
+    row = SimpleNamespace(
+        provider="prusalink",
+        provider_options=json.dumps(
+            {
+                "prusalink_api_mode": "modern",
+                "prusalink_auth_mode": "digest",
+                "camera_url": "http://192.168.1.50:8080/?action=stream",
+                "camera_snapshot_url": "http://192.168.1.50:8080/?action=snapshot",
+            }
+        ),
+        external_camera_enabled=False,
+        external_camera_url=None,
+        external_camera_type=None,
+        external_camera_snapshot_url=None,
+    )
+
+    camera = get_effective_camera_source(row)
+
+    assert camera.enabled is True
+    assert camera.derived is True
+    assert camera.camera_type == "mjpeg"
+    assert camera.url == "http://192.168.1.50:8080/?action=stream"
+    assert camera.snapshot_url == "http://192.168.1.50:8080/?action=snapshot"
+
+
+def test_prusalink_provider_options_snapshot_url_infers_snapshot_camera_type():
+    row = SimpleNamespace(
+        provider="prusalink",
+        provider_options={"prusalink_snapshot_url": "http://192.168.1.50/camera/snapshot.jpg"},
+        external_camera_enabled=False,
+        external_camera_url=None,
+        external_camera_type=None,
+        external_camera_snapshot_url=None,
+    )
+
+    camera = get_effective_camera_source(row)
+
+    assert camera.enabled is True
+    assert camera.derived is True
+    assert camera.camera_type == "snapshot"
+    assert camera.url == "http://192.168.1.50/camera/snapshot.jpg"
+
+
+def test_manual_external_camera_still_wins_over_prusalink_provider_options():
+    row = SimpleNamespace(
+        provider="prusalink",
+        provider_options=json.dumps({"camera_url": "http://192.168.1.50/provider-stream"}),
+        external_camera_enabled=True,
+        external_camera_url="rtsp://camera.local/stream1",
+        external_camera_type="rtsp",
+        external_camera_snapshot_url=None,
+    )
+
+    camera = get_effective_camera_source(row)
+
+    assert camera.derived is False
+    assert camera.camera_type == "rtsp"
+    assert camera.url == "rtsp://camera.local/stream1"
+
+
 def test_elegoo_sdcp_camera_activation_status_command_includes_mainboard_topic():
     command = build_elegoo_sdcp_status_command(
         ElegooCameraActivationInfo(printer_id="printer-123", mainboard_id="board-456")
