@@ -47,6 +47,48 @@ def test_moonraker_fallback_archive_uses_k2_filename_metadata():
     assert data["file_metadata"] == metadata
 
 
+def test_moonraker_fallback_archive_prefers_k2_cur_print_data_filament_grams():
+    from backend.app import main
+
+    data = {
+        "filename": "Cube_PLA_1m26s.gcode",
+        "raw_data": {
+            "virtual_sdcard": {
+                "cur_print_data": {
+                    "filament_used": 0.0,
+                    "filename": "Cube_PLA_1m26s.gcode",
+                    "metadata": {
+                        "estimated_time": 86,
+                        "filament_type": "PLA",
+                        "default_filament_colour": ["#0a2989", "", "", ""],
+                        "filament_used_g": ["0.84", "0.00", "0.00", "0.00"],
+                    },
+                    "print_duration": 0.0,
+                    "status": "completed",
+                    "total_duration": 259.32381003999035,
+                }
+            }
+        },
+    }
+
+    metadata = main._file_metadata_for_archive(
+        SimpleNamespace(provider="fluidd", model="Creality K2 Plus"),
+        data,
+    )
+
+    assert metadata["source"] == "k2_cur_print_data"
+    assert metadata["filament_used_grams"] == pytest.approx(0.84)
+    assert metadata["filament_type"] == "PLA"
+    assert metadata["print_time_seconds"] == 86
+    assert metadata["filament_slots"] == [
+        {"slot": 0, "filament_used_grams": 0.84, "filament_type": "PLA", "color": "#0a2989"},
+        {"slot": 1, "filament_used_grams": 0.0, "filament_type": "PLA", "color": ""},
+        {"slot": 2, "filament_used_grams": 0.0, "filament_type": "PLA", "color": ""},
+        {"slot": 3, "filament_used_grams": 0.0, "filament_type": "PLA", "color": ""},
+    ]
+    assert data["file_metadata"] == metadata
+
+
 def test_non_metadata_filename_is_ignored_for_moonraker_archive():
     from backend.app import main
 
