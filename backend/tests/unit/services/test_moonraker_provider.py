@@ -55,6 +55,66 @@ def _moonraker_status_with_cfs(active_filament="A"):
     }
 
 
+def _moonraker_status_with_snapmaker_u1():
+    return {
+        "print_stats": {
+            "state": "printing",
+            "filename": "U1_four_nozzle_test.gcode",
+            "print_duration": 300.0,
+            "estimated_time": 900.0,
+        },
+        "virtual_sdcard": {"progress": 0.5},
+        "display_status": {"progress": 0.5},
+        "heater_bed": {"temperature": 60.0, "target": 65.0},
+        "toolhead": {"extruder": "extruder2"},
+        "temperature_sensor cavity": {"temperature": 34.5},
+        "extruder": {"temperature": 205.0, "target": 210.0, "nozzle_diameter": 0.4},
+        "extruder1": {"temperature": 35.0, "target": 0.0, "nozzle_diameter": 0.4},
+        "extruder2": {"temperature": 215.0, "target": 220.0, "nozzle_diameter": 0.6},
+        "extruder3": {"temperature": 31.0, "target": 0.0, "nozzle_diameter": 0.8},
+        "filament_feed left": {
+            "extruder1": {
+                "module_exist": True,
+                "filament_detected": True,
+                "channel_state": "load_finish",
+                "channel_error": "ok",
+            },
+            "extruder0": {
+                "module_exist": True,
+                "filament_detected": True,
+                "channel_state": "preload_finish",
+                "channel_error": "ok",
+                "filament_info": {
+                    "MAIN_TYPE": "PLA",
+                    "SUB_TYPE": "Matte",
+                    "VENDOR": "Snapmaker",
+                    "RGB_1": 0x3366CC,
+                    "WEIGHT": 1000,
+                    "remaining_weight": 640,
+                    "CARD_UID": "ABC123",
+                },
+            },
+        },
+        "filament_feed right": {
+            "extruder2": {
+                "module_exist": True,
+                "filament_detected": True,
+                "channel_state": "load_finish",
+                "channel_error": "ok",
+                "tray_type": "PETG",
+                "tray_color": "#ff8800",
+                "remain": 42,
+            },
+            "extruder3": {
+                "module_exist": True,
+                "filament_detected": False,
+                "channel_state": "wait_insert",
+                "channel_error": "ok",
+            },
+        },
+    }
+
+
 def test_moonraker_normalizes_creality_k2_cfs_box_to_ams_shape(monkeypatch):
     client = MoonrakerPrinterClient("http://k2-plus.local:7125", printer_model="Creality K2 Plus")
     status = _moonraker_status_with_cfs("A")
@@ -157,6 +217,57 @@ def test_moonraker_keeps_cfs_trays_when_active_filament_is_none(monkeypatch):
     assert [tray["slot"] for tray in trays] == ["T1A", "T1B", "T1C", "T1D"]
     assert all(tray["active"] is False for tray in trays)
     assert all(tray["state"] == 11 for tray in trays)
+
+
+def test_moonraker_normalizes_snapmaker_u1_nozzles_chamber_and_feed_slots(monkeypatch):
+    client = MoonrakerPrinterClient("http://snapmaker-u1.local:7125", printer_model="Snapmaker U1")
+    status = _moonraker_status_with_snapmaker_u1()
+    base_status = {
+        key: status[key] for key in ("print_stats", "virtual_sdcard", "display_status", "heater_bed", "toolhead")
+    }
+    u1_status = {
+        key: value
+        for key, value in status.items()
+        if key
+        in {
+            "temperature_sensor cavity",
+            "extruder",
+            "extruder1",
+            "extruder2",
+            "extruder3",
+            "filament_feed left",
+            "filament_feed right",
+        }
+    }
+    monkeypatch.setattr(client, "_query_objects", lambda object_names: base_status)
+    monkeypatch.setattr(client, "_query_cfs_status", lambda: {})
+    monkeypatch.setattr(client, "_query_snapmaker_u1_status", lambda: u1_status)
+    monkeypatch.setattr(client, "_query_fan_status", lambda: {})
+
+    assert client.request_status_update() is True
+
+    assert client.state.state == "RUNNING"
+    assert client.state.progress == 50.0
+    assert client.state.remaining_time == 10
+    assert client.state.active_extruder == 2
+    assert client.state.temperatures["chamber"] == 34.5
+    assert client.state.temperatures["nozzle"] == 205.0
+    assert client.state.temperatures["nozzle_3"] == 215.0
+    assert [nozzle.nozzle_diameter for nozzle in client.state.nozzles] == ["0.4", "0.4", "0.6", "0.8"]
+
+    ams = client.state.raw_data["ams"]
+    assert ams[0]["name"] == "Snapmaker U1 Feeders"
+    assert ams[0]["module_type"] == "snapmaker_u1"
+    assert [tray["slot"] for tray in ams[0]["tray"]] == ["U1-E0", "U1-E1", "U1-E2", "U1-E3"]
+    assert ams[0]["tray"][0]["tray_type"] == "PLA"
+    assert ams[0]["tray"][0]["tray_sub_brands"] == "Matte"
+    assert ams[0]["tray"][0]["tray_color"] == "#3366CC"
+    assert ams[0]["tray"][0]["remain"] == 64
+    assert ams[0]["tray"][0]["remaining_weight"] == 640
+    assert ams[0]["tray"][2]["tray_type"] == "PETG"
+    assert ams[0]["tray"][2]["tray_color"] == "#ff8800"
+    assert ams[0]["tray"][2]["active"] is True
+    assert ams[0]["tray"][3]["state"] == 9
 
 
 def test_moonraker_complete_state_clamps_progress_and_remaining_time(monkeypatch):

@@ -177,6 +177,101 @@ def _normalize_creality_active_letter(value: Any) -> str | None:
     return raw if raw in {"A", "B", "C", "D"} else None
 
 
+def _normalize_snapmaker_u1_color(value: Any) -> str | None:
+    """Normalize Snapmaker U1 filament colors from RGB integers/strings.
+
+    Public U1 Klipper code parses RFID/tag payloads into fields such as
+    ``RGB_1`` and ``ARGB_COLOR``. Device-local Moonraker status payloads may
+    expose either those names or frontend-style string colors; accept both.
+    """
+    if value is None:
+        return None
+    if isinstance(value, int):
+        rgb = value & 0xFFFFFF
+        return f"#{rgb:06X}"
+    raw = str(value).strip()
+    if not raw or raw.lower() in {"none", "null", "unknown", "-1"}:
+        return None
+    if raw.startswith("0x"):
+        try:
+            return f"#{int(raw, 16) & 0xFFFFFF:06X}"
+        except ValueError:
+            return None
+    normalized = raw.lstrip("#")
+    if len(normalized) == 8 and all(char in "0123456789abcdefABCDEF" for char in normalized):
+        normalized = normalized[-6:]
+    if len(normalized) == 6 and all(char in "0123456789abcdefABCDEF" for char in normalized):
+        return f"#{normalized}"
+    return raw
+
+
+def _snapmaker_first_value(values: dict[str, Any], keys: tuple[str, ...]) -> Any:
+    for key in keys:
+        if key in values and values.get(key) not in (None, ""):
+            return values.get(key)
+    return None
+
+
+def _snapmaker_u1_filament_metadata(values: dict[str, Any]) -> dict[str, Any]:
+    """Extract material/color/weight from known and anticipated U1 spool payloads."""
+    if not isinstance(values, dict):
+        return {}
+    source = values
+    for key in ("filament", "filament_info", "spool", "tray", "rfid", "tag"):
+        nested = values.get(key)
+        if isinstance(nested, dict):
+            source = {**values, **nested}
+            break
+
+    material = _snapmaker_first_value(
+        source,
+        (
+            "MAIN_TYPE",
+            "main_type",
+            "material",
+            "tray_type",
+            "type",
+            "filament_type",
+            "filament_material",
+        ),
+    )
+    subtype = _snapmaker_first_value(source, ("SUB_TYPE", "sub_type", "subtype", "tray_sub_brands"))
+    vendor = _snapmaker_first_value(source, ("VENDOR", "vendor", "MANUFACTURER", "manufacturer", "brand"))
+    color = _normalize_snapmaker_u1_color(
+        _snapmaker_first_value(
+            source,
+            ("RGB_1", "rgb_1", "ARGB_COLOR", "argb_color", "color", "tray_color", "rgba", "filament_color"),
+        )
+    )
+    weight = _safe_float(_snapmaker_first_value(source, ("WEIGHT", "weight", "label_weight", "initial_weight")))
+    remaining_weight = _safe_float(
+        _snapmaker_first_value(
+            source,
+            (
+                "remaining_weight",
+                "remain_weight",
+                "weight_remaining",
+                "remaining_weight_g",
+                "remain_weight_g",
+                "remaining_g",
+            ),
+        )
+    )
+    remain = _safe_int(_snapmaker_first_value(source, ("remain", "remaining", "remain_percent", "remaining_percent")))
+    if remain is None and remaining_weight is not None and weight and weight > 0:
+        remain = max(0, min(100, round((remaining_weight / weight) * 100)))
+    return {
+        "material": str(material).strip() if material not in (None, "") else "",
+        "subtype": str(subtype).strip() if subtype not in (None, "") else "",
+        "vendor": str(vendor).strip() if vendor not in (None, "") else "",
+        "color": color,
+        "weight": weight,
+        "remaining_weight": remaining_weight,
+        "remain": remain,
+        "raw": source,
+    }
+
+
 def _apply_moonraker_fans(state: MoonrakerPrinterState, status: dict[str, Any]) -> None:
     """Map reported Klipper/Moonraker fan objects onto Printbuddy fan badges.
 
@@ -489,6 +584,45 @@ class MoonrakerPrinterClient:
         except Exception:  # noqa: BLE001 - CFS is optional; keep core Moonraker status healthy
             return {}
 
+    def _available_snapmaker_u1_objects(self) -> list[str]:
+        """Return Snapmaker U1 specific objects plus discovered extruders/sensors.
+
+        U1's public Klipper config exposes four extruder objects, two
+        ``filament_feed`` modules, and ``temperature_sensor cavity`` for chamber
+        temperature. Object discovery keeps this harmless for normal Moonraker
+        printers and allows newer device-local spool metadata objects to be used
+        when present.
+        """
+        objects = self._get("printer/objects/list")
+        available = objects.get("objects", []) if isinstance(objects, dict) else []
+        if not isinstance(available, list):
+            return []
+        available_set = {name for name in available if isinstance(name, str)}
+        wanted = [
+            "temperature_sensor cavity",
+            "filament_feed left",
+            "filament_feed right",
+            "filament_parameters",
+            "print_task_config",
+            "toolhead",
+        ]
+        wanted.extend(["extruder", "extruder1", "extruder2", "extruder3"])
+        wanted.extend(
+            name
+            for name in available_set
+            if any(token in name.lower() for token in ("snapmaker", "spool", "rfid", "nfc"))
+        )
+        return [name for name in dict.fromkeys(wanted) if name in available_set]
+
+    def _query_snapmaker_u1_status(self) -> dict[str, Any]:
+        try:
+            u1_objects = self._available_snapmaker_u1_objects()
+            if not u1_objects:
+                return {}
+            return self._query_objects(u1_objects)
+        except Exception:  # noqa: BLE001 - U1 objects are optional; do not break generic Moonraker
+            return {}
+
     def _available_macro_names(self) -> set[str]:
         objects = self._get("printer/objects/list")
         available = objects.get("objects", []) if isinstance(objects, dict) else []
@@ -665,6 +799,132 @@ class MoonrakerPrinterClient:
         if isinstance(filament_rack, dict):
             self.state.raw_data["filament_rack"] = filament_rack
 
+    def _apply_snapmaker_u1_status(self, status: dict[str, Any]) -> None:
+        if not isinstance(status, dict):
+            return
+
+        cavity = status.get("temperature_sensor cavity")
+        if isinstance(cavity, dict):
+            self.state.temperatures["chamber"] = _heater_temperature(cavity)
+            self.state.temperatures["chamber_target"] = _heater_target(cavity)
+            self.state.temperatures["temperature_sensor cavity"] = cavity
+
+        extruder_names = ["extruder", "extruder1", "extruder2", "extruder3"]
+        nozzles: list[NozzleInfo] = []
+        for index, name in enumerate(extruder_names):
+            extruder = status.get(name)
+            if not isinstance(extruder, dict):
+                continue
+            nozzle = NozzleInfo(nozzle_diameter=str(extruder.get("nozzle_diameter") or ""))
+            nozzles.append(nozzle)
+            suffix = "" if index == 0 else f"_{index + 1}"
+            self.state.temperatures[f"nozzle{suffix}"] = _heater_temperature(extruder)
+            self.state.temperatures[f"nozzle{suffix}_target"] = _heater_target(extruder)
+            self.state.temperatures[f"nozzle{suffix}_heating"] = _is_heating(extruder)
+        if nozzles:
+            self.state.nozzles = nozzles
+
+        toolhead = status.get("toolhead")
+        active_extruder_name = toolhead.get("extruder") if isinstance(toolhead, dict) else None
+        if isinstance(active_extruder_name, str):
+            active_index = extruder_names.index(active_extruder_name) if active_extruder_name in extruder_names else 0
+            self.state.active_extruder = active_index
+
+        feed_slots: dict[int, dict[str, Any]] = {}
+        for module_name in ("filament_feed left", "filament_feed right"):
+            module = status.get(module_name)
+            if not isinstance(module, dict):
+                continue
+            for key, values in module.items():
+                if not isinstance(values, dict) or not key.startswith("extruder"):
+                    continue
+                raw_index = key.removeprefix("extruder")
+                extruder_index = _safe_int(raw_index) if raw_index else 0
+                if extruder_index is None:
+                    continue
+                metadata = _snapmaker_u1_filament_metadata(values)
+                detected = bool(values.get("filament_detected"))
+                material = metadata["material"] or ("Unknown" if detected else "")
+                feed_slots[extruder_index] = {
+                    "id": extruder_index,
+                    "slot": f"U1-E{extruder_index}",
+                    "tray_type": material,
+                    "tray_sub_brands": metadata["subtype"],
+                    "tray_color": metadata["color"],
+                    "remain": metadata["remain"],
+                    "remaining_weight": metadata["remaining_weight"],
+                    "weight": metadata["weight"],
+                    "active": extruder_index == self.state.active_extruder,
+                    "state": 11 if detected else 9,
+                    "tray_uuid": f"snapmaker-u1-e{extruder_index}",
+                    "tag_uid": str(values.get("CARD_UID") or values.get("card_uid") or ""),
+                    "vendor": metadata["vendor"],
+                    "filament_detected": detected,
+                    "module": module_name.removeprefix("filament_feed "),
+                    "channel_state": values.get("channel_state"),
+                    "channel_error": values.get("channel_error"),
+                    "raw": values,
+                }
+
+        for name, values in status.items():
+            if not isinstance(values, dict) or name in {"filament_feed left", "filament_feed right"}:
+                continue
+            lowered = name.lower()
+            if not any(token in lowered for token in ("snapmaker", "spool", "rfid", "nfc")):
+                continue
+            metadata = _snapmaker_u1_filament_metadata(values)
+            extruder_index = _safe_int(
+                _snapmaker_first_value(values, ("extruder", "extruder_index", "tool", "tool_index", "slot", "tray"))
+            )
+            if extruder_index is None:
+                continue
+            slot = feed_slots.setdefault(
+                extruder_index,
+                {
+                    "id": extruder_index,
+                    "slot": f"U1-E{extruder_index}",
+                    "active": extruder_index == self.state.active_extruder,
+                    "state": 11,
+                    "tray_uuid": f"snapmaker-u1-e{extruder_index}",
+                    "tag_uid": "",
+                },
+            )
+            if metadata["material"]:
+                slot["tray_type"] = metadata["material"]
+            if metadata["subtype"]:
+                slot["tray_sub_brands"] = metadata["subtype"]
+            if metadata["color"]:
+                slot["tray_color"] = metadata["color"]
+            if metadata["remain"] is not None:
+                slot["remain"] = metadata["remain"]
+            if metadata["remaining_weight"] is not None:
+                slot["remaining_weight"] = metadata["remaining_weight"]
+            if metadata["weight"] is not None:
+                slot["weight"] = metadata["weight"]
+            if metadata["vendor"]:
+                slot["vendor"] = metadata["vendor"]
+            slot["raw_spool"] = values
+
+        if feed_slots:
+            trays = [feed_slots[index] for index in sorted(feed_slots)]
+            self.state.raw_data["ams"] = [
+                {
+                    "id": 0,
+                    "name": "Snapmaker U1 Feeders",
+                    "tray": trays,
+                    "module_type": "snapmaker_u1",
+                }
+            ]
+            self.state.raw_data["snapmaker_u1"] = {
+                "type": "snapmaker_u1",
+                "active_extruder": self.state.active_extruder,
+                "feed_modules": {
+                    key: status.get(key)
+                    for key in ("filament_feed left", "filament_feed right")
+                    if isinstance(status.get(key), dict)
+                },
+            }
+
     def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         response = httpx.post(
             urljoin(self.base_url, path.lstrip("/")), json=payload, headers=self._headers, timeout=self.timeout
@@ -812,6 +1072,9 @@ class MoonrakerPrinterClient:
         cfs_status = self._query_cfs_status()
         if cfs_status:
             status.update(cfs_status)
+        snapmaker_u1_status = self._query_snapmaker_u1_status()
+        if snapmaker_u1_status:
+            status.update(snapmaker_u1_status)
         self.state.connected = True
         self.state.raw_status = status
         self.state.raw_data = status
@@ -840,6 +1103,7 @@ class MoonrakerPrinterClient:
             self.state.progress = raw_progress
             self.state.remaining_time = _remaining_minutes(print_stats, self.state.progress)
         self.state.temperatures = _moonraker_temperatures(status)
+        self._apply_snapmaker_u1_status(status)
         _apply_moonraker_fans(self.state, status)
         self._emit_status_callbacks(previous_state)
         self._last_state = self.state.state
