@@ -117,7 +117,8 @@ function normalizeState(status?: PrinterStatus): NormalizedState {
   if (state.includes('pause')) return 'paused';
   if (state.includes('stop') || state.includes('cancel')) return 'stopped';
   if (state.includes('error') || state.includes('fail')) return 'error';
-  if (state.includes('print') || state.includes('run') || status.progress !== null || status.current_print) return 'printing';
+  if (state.includes('idle') || state.includes('ready') || state.includes('standby') || state.includes('finish') || state.includes('complete')) return 'idle';
+  if (state.includes('print') || state.includes('run')) return 'printing';
   return 'idle';
 }
 

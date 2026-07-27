@@ -257,6 +257,46 @@ describe('PrintFarmMonitorPage', () => {
     expect(document.body.textContent).toContain('v2.5.1');
   });
 
+  it('does not mark idle printers as printing when stale completed job metadata remains', async () => {
+    server.use(
+      http.get('/api/v1/printers/:id/status', ({ params }) => {
+        const id = Number(params.id);
+        if (id === 1) {
+          return HttpResponse.json({
+            id,
+            name: 'Demo Bambu Lab P1S',
+            connected: true,
+            state: 'IDLE',
+            current_print: 'Finished Gridfinity Plate',
+            subtask_name: null,
+            gcode_file: 'finished-gridfinity-plate.gcode.3mf',
+            progress: 100,
+            remaining_time: 0,
+            layer_num: 1228,
+            total_layers: 1228,
+            temperatures: { nozzle: 33, bed: 32 },
+            hms_errors: [],
+            ams: [],
+            ams_exists: false,
+            vt_tray: [],
+            supports_drying: false,
+            awaiting_plate_clear: false,
+          });
+        }
+        return HttpResponse.json(statusFor(id));
+      }),
+    );
+
+    render(<PrintFarmMonitorPage />);
+
+    await screen.findAllByText('Demo Bambu Lab P1S');
+    await waitFor(() => expect(screen.getByText('0 PRINTERS ACTIVE')).toBeInTheDocument());
+    expect(screen.getAllByText('IDLE').length).toBeGreaterThan(0);
+    expect(screen.queryByText('Finished Gridfinity Plate')).not.toBeInTheDocument();
+    expect(screen.queryByText('100%')).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toContain('1228 / 1228 layers');
+  });
+
   it('follows the selected PrintBuddy light theme', async () => {
     vi.mocked(localStorage.getItem).mockImplementation((key: string) => (
       key === 'theme-mode' ? 'light' : null
