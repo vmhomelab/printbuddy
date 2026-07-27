@@ -745,6 +745,70 @@ async def _calculate_loaded_spool_cost(db, printer_id: int, grams: float | None)
     return round((grams / 1000.0) * cost_per_kg, 2) if cost_per_kg > 0 else None
 
 
+def _k2_cur_print_data_metadata(raw_data: dict | None) -> dict:
+    """Extract K2/Creality slicer grams from Moonraker virtual_sdcard.cur_print_data."""
+    if not isinstance(raw_data, dict):
+        return {}
+    virtual_sdcard = raw_data.get("virtual_sdcard")
+    if not isinstance(virtual_sdcard, dict):
+        return {}
+    cur_print_data = virtual_sdcard.get("cur_print_data")
+    if not isinstance(cur_print_data, dict):
+        return {}
+    metadata_raw = cur_print_data.get("metadata")
+    if not isinstance(metadata_raw, dict):
+        return {}
+
+    raw_grams = metadata_raw.get("filament_used_g")
+    if not isinstance(raw_grams, list):
+        return {}
+
+    slot_grams: list[float] = []
+    for value in raw_grams:
+        grams = _metadata_float(str(value).replace(",", "."))
+        slot_grams.append(float(grams or 0.0))
+    total_grams = sum(slot_grams)
+    if total_grams <= 0:
+        return {}
+
+    filament_type = str(
+        metadata_raw.get("filament_type") or metadata_raw.get("model_info", {}).get("MaterialType") or ""
+    ).strip()
+    colors = metadata_raw.get("default_filament_colour")
+    if not isinstance(colors, list):
+        colors = []
+
+    filament_slots: list[dict] = []
+    for idx, grams in enumerate(slot_grams):
+        slot = {"slot": idx, "filament_used_grams": grams}
+        if filament_type:
+            slot["filament_type"] = filament_type
+        if idx < len(colors):
+            slot["color"] = str(colors[idx] or "")
+        filament_slots.append(slot)
+
+    result = {
+        "source": "k2_cur_print_data",
+        "filament_used_grams": total_grams,
+        "filament_slots": filament_slots,
+    }
+    filename = cur_print_data.get("filename")
+    if filename:
+        result["raw_filename"] = str(filename)
+    if filament_type:
+        result["filament_type"] = filament_type
+    estimated_time = _metadata_float(metadata_raw.get("estimated_time"))
+    if estimated_time is not None and estimated_time > 0:
+        result["print_time_seconds"] = int(estimated_time)
+    actual_duration = _metadata_float(cur_print_data.get("print_duration"))
+    if actual_duration is not None and actual_duration > 0:
+        result["actual_print_duration_seconds"] = actual_duration
+    total_duration = _metadata_float(cur_print_data.get("total_duration"))
+    if total_duration is not None and total_duration > 0:
+        result["total_duration_seconds"] = total_duration
+    return result
+
+
 def _filename_filament_metadata(filename: str | None) -> dict:
     """Extract slicer estimates embedded in display filenames.
 
@@ -818,13 +882,19 @@ def _file_metadata_for_archive(printer, data: dict) -> dict:
     expose weight in `/server/files/metadata`, but Creality/Orca filenames often
     include material, duration, and grams.
     """
+    provider = getattr(printer, "provider", None)
+    raw_data = data.get("raw_data") if isinstance(data.get("raw_data"), dict) else {}
+    if provider in {"klipper", "mainsail", "fluidd"}:
+        k2_metadata = _k2_cur_print_data_metadata(raw_data)
+        if k2_metadata:
+            data["file_metadata"] = k2_metadata
+            return k2_metadata
+
     metadata = data.get("file_metadata")
     if isinstance(metadata, dict) and metadata:
         return metadata
 
-    provider = getattr(printer, "provider", None)
     if provider in {"klipper", "mainsail", "fluidd"}:
-        raw_data = data.get("raw_data") if isinstance(data.get("raw_data"), dict) else {}
         for raw_name in (
             data.get("filename"),
             data.get("gcode_file"),
