@@ -746,37 +746,105 @@ async def _calculate_loaded_spool_cost(db, printer_id: int, grams: float | None)
 
 
 def _filename_filament_metadata(filename: str | None) -> dict:
-    """Extract Printbuddy slicer filename metadata: ..._fw12.34[_tc0.56].gcode."""
+    """Extract slicer estimates embedded in display filenames.
+
+    Supported suffixes:
+    - Printbuddy/Prusa-style: ``..._fw12.34[_tc0.56].gcode``
+    - Creality/K2-style: ``..._PLA_30m41s_12g.gcode`` or
+      ``... - PLA- 30m41s - 12g.gcode``
+    """
     if not filename:
         return {}
+    raw_filename = str(filename)
+    stripped = raw_filename.strip()
+
     match = re.search(
         r"(?:^|[_-])fw(?P<grams>\d+(?:[.,]\d+)?)(?:_tc(?P<cost>\d+(?:[.,]\d+)?))?\.(?:bgcode|gcode)$",
-        str(filename).strip(),
+        stripped,
         re.IGNORECASE,
     )
-    if not match:
-        return {}
-    grams = _metadata_float(match.group("grams").replace(",", "."))
-    raw_cost = match.group("cost")
-    cost = _metadata_float(raw_cost.replace(",", ".")) if raw_cost is not None else None
+    source = "filename_filament_meta"
+    material: str | None = None
+    print_time_seconds: int | None = None
+    cost = None
+
+    if match:
+        grams = _metadata_float(match.group("grams").replace(",", "."))
+        raw_cost = match.group("cost")
+        cost = _metadata_float(raw_cost.replace(",", ".")) if raw_cost is not None else None
+    else:
+        # K2/Moonraker metadata omits weight, but Creality/Orca-generated names
+        # commonly carry material, time, and grams, e.g.
+        # ``3DBenchy_-_K2Plus_-_PLA-_30m41s_-_12g.gcode``.
+        k2_match = re.search(
+            r"(?:^|[\s_-])(?P<material>PLA|PETG|ABS|ASA|TPU|PA|PC|PVA|HIPS)(?:[\s_-]+)?[-_ ]*"
+            r"(?P<hours>\d+h)?(?P<minutes>\d+)m(?P<seconds>\d+s)?[-_ ]+"
+            r"(?P<grams>\d+(?:[.,]\d+)?)g\.(?:bgcode|gcode)$",
+            stripped,
+            re.IGNORECASE,
+        )
+        if not k2_match:
+            return {}
+        grams = _metadata_float(k2_match.group("grams").replace(",", "."))
+        material = k2_match.group("material").upper()
+        hours_raw = k2_match.group("hours")
+        seconds_raw = k2_match.group("seconds")
+        hours = int(hours_raw[:-1]) if hours_raw else 0
+        minutes = int(k2_match.group("minutes"))
+        seconds = int(seconds_raw[:-1]) if seconds_raw else 0
+        print_time_seconds = hours * 3600 + minutes * 60 + seconds
+        source = "creality_filename_meta"
+
     if grams is None or grams <= 0:
         return {}
     metadata = {
-        "source": "filename_filament_meta",
-        "raw_filename": str(filename),
+        "source": source,
+        "raw_filename": raw_filename,
         "filament_used_grams": grams,
     }
+    if material:
+        metadata["filament_type"] = material
+    if print_time_seconds is not None:
+        metadata["print_time_seconds"] = print_time_seconds
     if cost is not None and cost >= 0:
         metadata["filament_cost"] = cost
     return metadata
+
+
+def _file_metadata_for_archive(printer, data: dict) -> dict:
+    """Return normalized file metadata for provider fallback archives.
+
+    PrusaLink can expose real file metadata. K2/Moonraker currently does not
+    expose weight in `/server/files/metadata`, but Creality/Orca filenames often
+    include material, duration, and grams.
+    """
+    metadata = data.get("file_metadata")
+    if isinstance(metadata, dict) and metadata:
+        return metadata
+
+    provider = getattr(printer, "provider", None)
+    if provider in {"klipper", "mainsail", "fluidd"}:
+        raw_data = data.get("raw_data") if isinstance(data.get("raw_data"), dict) else {}
+        for raw_name in (
+            data.get("filename"),
+            data.get("gcode_file"),
+            data.get("subtask_name"),
+            raw_data.get("filename"),
+            raw_data.get("gcode_file"),
+        ):
+            metadata = _filename_filament_metadata(str(raw_name) if raw_name else None)
+            if metadata:
+                data["file_metadata"] = metadata
+                return metadata
+
+    return {}
 
 
 def _prusalink_file_metadata_for_archive(printer, data: dict) -> dict:
     """Return normalized PrusaLink file metadata only for PrusaLink fallback archives."""
     if getattr(printer, "provider", None) != "prusalink":
         return {}
-    metadata = data.get("file_metadata")
-    return metadata if isinstance(metadata, dict) else {}
+    return _file_metadata_for_archive(printer, data)
 
 
 def _refresh_prusalink_file_metadata_for_archive(printer_id: int, printer, data: dict, logger) -> dict:
@@ -788,7 +856,7 @@ def _refresh_prusalink_file_metadata_for_archive(printer_id: int, printer, data:
     callbacks, then copy the metadata into the active event payload for archive
     and completion processing.
     """
-    metadata = _prusalink_file_metadata_for_archive(printer, data)
+    metadata = _file_metadata_for_archive(printer, data)
     if metadata:
         return metadata
     if getattr(printer, "provider", None) != "prusalink":
