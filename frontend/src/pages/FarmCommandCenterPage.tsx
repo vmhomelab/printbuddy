@@ -29,6 +29,7 @@ import {
   type PrinterMaintenanceOverview,
   type PrinterStatus,
 } from '../api/client';
+import { classifyPrinterStatus } from '../utils/printerStatus';
 
 interface FleetPrinter {
   printer: Printer;
@@ -61,13 +62,10 @@ function buildPrinterGroupMap(groups: PrinterFleetGroup[]): Map<number, string> 
 }
 
 function normalizeState(status?: PrinterStatus): FleetState {
-  if (!status || !status.connected) return 'offline';
-  if ((status.hms_errors?.length ?? 0) > 0) return 'alert';
-  const state = (status.state ?? '').toLowerCase();
-  if (state.includes('error') || state.includes('fail')) return 'alert';
-  if (state.includes('pause')) return 'paused';
-  if (state.includes('print') || state.includes('run') || status.progress !== null || status.current_print) return 'printing';
-  return 'idle';
+  const classified = classifyPrinterStatus(status, (status?.hms_errors?.length ?? 0) > 0);
+  if (classified === 'error') return 'alert';
+  if (classified === 'finished') return 'idle';
+  return classified;
 }
 
 function projectProgress(project: ProjectListItem): number | null {

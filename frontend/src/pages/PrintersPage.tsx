@@ -131,6 +131,7 @@ import { getPrinterFileRuleSet, isPrintableForProvider } from '../utils/printerF
 import type { CameraViewMode } from '../api/client';
 import { canOpenPrinterCamera } from '../utils/printerCamera';
 import { getAssignedPandaBreathState } from '../utils/pandaBreath';
+import { classifyPrinterStatus as classifySharedPrinterStatus } from '../utils/printerStatus';
 
 export interface SpoolmanSlotAssignmentRow {
   printer_id: number;
@@ -1625,20 +1626,8 @@ const STATUS_GROUP_META: Record<string, { labelKey: string; dot: string }> = {
 function classifyPrinterStatus(
   status: { connected: boolean; state: string | null; hms_errors?: HMSError[] } | undefined,
 ): PrinterState {
-  if (!status?.connected) return 'offline';
-  const hmsErrors = status.hms_errors ? filterKnownHMSErrors(status.hms_errors) : [];
-  if (hmsErrors.length > 0) return 'error';
-  switch (status.state) {
-    case 'RUNNING': return 'printing';
-    case 'PAUSE':   return 'paused';
-    case 'FINISH':  return 'finished';
-    // FAILED without an active HMS error is the printer's terminal state after
-    // any unsuccessful end — including user-cancellations. Treat the same as
-    // FINISH for grouping/badging purposes; only escalate to "error" when an
-    // HMS code is actually attached (handled by the early-return above).
-    case 'FAILED':  return 'finished';
-    default:        return 'idle';
-  }
+  const hmsErrors = status?.hms_errors ? filterKnownHMSErrors(status.hms_errors) : [];
+  return classifySharedPrinterStatus(status, hmsErrors.length > 0);
 }
 
 /**

@@ -63,7 +63,7 @@ function statusFor(id: number) {
       id,
       name: 'PRA-01',
       connected: true,
-      state: 'PRINTING',
+      state: 'RUNNING',
       current_print: 'Gridfinity Tray',
       subtask_name: null,
       gcode_file: 'gridfinity.3mf',
@@ -84,7 +84,7 @@ function statusFor(id: number) {
     id,
     name: 'PRB-04',
     connected: true,
-    state: 'PAUSED',
+    state: 'PAUSE',
     current_print: null,
     subtask_name: null,
     gcode_file: null,
@@ -222,6 +222,35 @@ describe('FarmCommandCenterPage', () => {
     expect(within(dialog).getByText(/Paused/)).toBeInTheDocument();
     expect(within(dialog).getByText(/White PLA/)).toBeInTheDocument();
     expect(within(dialog).getByText(/Nozzle check/)).toBeInTheDocument();
+  });
+
+  it('does not show stale completed print metadata as active command center work', async () => {
+    server.use(
+      http.get('/api/v1/printers/:id/status', ({ params }) => {
+        const id = Number(params.id);
+        if (id === 1) {
+          return HttpResponse.json({
+            ...statusFor(id),
+            state: 'PRINTING',
+            current_print: 'Finished Gridfinity Tray',
+            gcode_file: 'finished-gridfinity-tray.gcode.3mf',
+            progress: 100,
+            remaining_time: 0,
+            layer_num: 1228,
+            total_layers: 1228,
+            temperatures: { nozzle: 33, bed: 32 },
+          });
+        }
+        return HttpResponse.json(statusFor(id));
+      }),
+    );
+
+    render(<FarmCommandCenterPage />);
+
+    expect(await screen.findByRole('heading', { name: 'Farm Command Center' })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getAllByText('Idle').length).toBeGreaterThan(0));
+    expect(screen.getByText('(0 / 2)')).toBeInTheDocument();
+    expect(screen.queryByText('PRA-01 - Finished Gridfinity Tray - 100%')).not.toBeInTheDocument();
   });
 
   it('creates printer groups and assigns printers inside the command center', async () => {

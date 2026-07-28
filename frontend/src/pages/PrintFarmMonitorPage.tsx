@@ -32,6 +32,7 @@ import {
   type SpoolAssignment,
 } from '../api/client';
 import { getPrinterImage } from '../utils/printer';
+import { classifyPrinterStatus } from '../utils/printerStatus';
 import { appAssetPath } from '../utils/assetPaths';
 import { useTheme } from '../contexts/ThemeContext';
 
@@ -112,14 +113,8 @@ function normalizeRefreshSeconds(value: number | null | undefined): number {
 }
 
 function normalizeState(status?: PrinterStatus): NormalizedState {
-  if (!status || !status.connected) return 'offline';
-  const state = (status.state ?? '').toLowerCase();
-  if (state.includes('pause')) return 'paused';
-  if (state.includes('stop') || state.includes('cancel')) return 'stopped';
-  if (state.includes('error') || state.includes('fail')) return 'error';
-  if (state.includes('idle') || state.includes('ready') || state.includes('standby') || state.includes('finish') || state.includes('complete')) return 'idle';
-  if (state.includes('print') || state.includes('run')) return 'printing';
-  return 'idle';
+  const classified = classifyPrinterStatus(status, (status?.hms_errors?.length ?? 0) > 0);
+  return classified === 'finished' ? 'idle' : classified;
 }
 
 function formatClock(date = new Date()): string {
