@@ -189,11 +189,14 @@ export function resolveTrayFillLevel({
   const resolvedInventoryFill = (!isCfsUnit && inventoryFill === 0 && hasPrinterFillLevel && (printerRemain ?? -1) > 0)
     ? null
     : inventoryFill;
+  const cfsPrinterRemainLooksStaleFull = isCfsUnit && printerRemain === 100;
+  const resolvedPrinterRemain = cfsPrinterRemainLooksStaleFull ? null : (printerRemain ?? null);
+  const resolvedHasPrinterFillLevel = hasPrinterFillLevel && resolvedPrinterRemain !== null;
 
-  const fillLevel = spoolmanFill ?? slotSpoolFill ?? resolvedInventoryFill ?? (hasPrinterFillLevel ? (printerRemain ?? null) : null);
+  const fillLevel = spoolmanFill ?? slotSpoolFill ?? resolvedInventoryFill ?? (resolvedHasPrinterFillLevel ? resolvedPrinterRemain : null);
   const fillSource = (spoolmanFill !== null || slotSpoolFill !== null) ? 'spoolman' as const
     : resolvedInventoryFill !== null ? 'inventory' as const
-    : hasPrinterFillLevel ? 'ams' as const
+    : resolvedHasPrinterFillLevel ? 'ams' as const
     : undefined;
 
   return { fillLevel, fillSource };

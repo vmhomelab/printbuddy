@@ -95,6 +95,32 @@ describe('resolveTrayFillLevel', () => {
     expect(result).toEqual({ fillLevel: 0, fillSource: 'inventory' });
   });
 
+  it('does not show unassigned CFS printer-reported 100% as authoritative fill', () => {
+    const result = resolveTrayFillLevel({
+      spoolmanFill: null,
+      slotSpoolFill: null,
+      inventoryFill: null,
+      printerRemain: 100,
+      hasPrinterFillLevel: true,
+      isCfsUnit: true,
+    });
+
+    expect(result).toEqual({ fillLevel: null, fillSource: undefined });
+  });
+
+  it('keeps lower CFS printer-reported values as a fallback when no assignment exists', () => {
+    const result = resolveTrayFillLevel({
+      spoolmanFill: null,
+      slotSpoolFill: null,
+      inventoryFill: null,
+      printerRemain: 41,
+      hasPrinterFillLevel: true,
+      isCfsUnit: true,
+    });
+
+    expect(result).toEqual({ fillLevel: 41, fillSource: 'ams' });
+  });
+
   it('keeps Bambu AMS fallback when inventory says 0% but printer reports positive remain', () => {
     const result = resolveTrayFillLevel({
       spoolmanFill: null,
