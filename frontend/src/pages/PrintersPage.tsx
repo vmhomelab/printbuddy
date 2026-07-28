@@ -119,7 +119,7 @@ import { SkipObjectsModal, SkipObjectsIcon } from '../components/SkipObjectsModa
 import { FileUploadModal } from '../components/FileUploadModal';
 import { PrintModal } from '../components/PrintModal';
 import { PrinterInfoModal } from '../components/PrinterInfoModal';
-import { getGlobalTrayId, getFillBarColor, getSpoolmanFillLevel, getFallbackSpoolTag, isBambuLabSpool } from '../utils/amsHelpers';
+import { getGlobalTrayId, getFillBarColor, getSpoolmanFillLevel, getFallbackSpoolTag, isBambuLabSpool, resolveTrayFillLevel } from '../utils/amsHelpers';
 import { getDefaultPrinterImage, getPrinterImage, getWifiStrength, filterCompatibleQueueItems } from '../utils/printer';
 import { appAssetPath } from '../utils/assetPaths';
 import { FilamentSlotCircle } from '../components/FilamentSlotCircle';
@@ -4502,15 +4502,14 @@ function PrinterCard({
                                   }
                                   return null;
                                 })();
-                                // If inventory says 0% but AMS reports positive remain, prefer AMS
-                                // (inventory weight_used may be stale or over-counted — #676)
-                                const resolvedInventoryFill = (inventoryFill === 0 && hasFillLevel && tray.remain > 0)
-                                  ? null : inventoryFill;
-                                const effectiveFill = spoolmanFill ?? slotSpoolFill ?? resolvedInventoryFill ?? (hasFillLevel ? tray.remain : null);
-                                const fillSource = (spoolmanFill !== null || slotSpoolFill !== null) ? 'spoolman' as const
-                                  : resolvedInventoryFill !== null ? 'inventory' as const
-                                  : hasFillLevel ? 'ams' as const
-                                  : undefined;
+                                const { fillLevel: effectiveFill, fillSource } = resolveTrayFillLevel({
+                                  spoolmanFill,
+                                  slotSpoolFill,
+                                  inventoryFill,
+                                  printerRemain: tray?.remain,
+                                  hasPrinterFillLevel: Boolean(hasFillLevel),
+                                  isCfsUnit,
+                                });
 
                                 // Build filament data for hover card
                                 const filamentData = tray?.tray_type ? {
@@ -4859,9 +4858,6 @@ function PrinterCard({
                           }
                           return null;
                         })();
-                        // If inventory says 0% but AMS reports positive remain, prefer AMS (#676)
-                        const htResolvedInventoryFill = (htInventoryFill === 0 && hasFillLevel && tray.remain > 0)
-                          ? null : htInventoryFill;
                         // Slot-assigned-only fill (when spool has no NFC tag but is slot-assigned)
                         const htSlotAssignmentForFill = spoolmanEnabled && !spoolmanLoading
                           ? spoolmanSlotAssignments?.find(a => a.printer_id === printer.id && a.ams_id === ams.id && a.tray_id === htSlotId)
@@ -4872,11 +4868,14 @@ function PrinterCard({
                         const htSlotSpoolFill = (htSlotSpoolForFill && (htSlotSpoolForFill.label_weight ?? 0) > 0)
                           ? Math.round(Math.max(0, (htSlotSpoolForFill.label_weight ?? 0) - htSlotSpoolForFill.weight_used) / (htSlotSpoolForFill.label_weight ?? 1) * 100)
                           : null;
-                        const htEffectiveFill = htSpoolmanFill ?? htSlotSpoolFill ?? htResolvedInventoryFill ?? (hasFillLevel ? tray.remain : null);
-                        const htFillSource = (htSpoolmanFill !== null || htSlotSpoolFill !== null) ? 'spoolman' as const
-                          : htResolvedInventoryFill !== null ? 'inventory' as const
-                          : hasFillLevel ? 'ams' as const
-                          : undefined;
+                        const { fillLevel: htEffectiveFill, fillSource: htFillSource } = resolveTrayFillLevel({
+                          spoolmanFill: htSpoolmanFill,
+                          slotSpoolFill: htSlotSpoolFill,
+                          inventoryFill: htInventoryFill,
+                          printerRemain: tray?.remain,
+                          hasPrinterFillLevel: Boolean(hasFillLevel),
+                          isCfsUnit: false,
+                        });
 
                         // Build filament data for hover card
                         const filamentData = tray?.tray_type ? {
