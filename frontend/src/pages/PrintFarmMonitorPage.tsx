@@ -131,8 +131,8 @@ function formatDuration(minutes: number | null | undefined): string {
 }
 
 function formatEta(minutes: number | null | undefined): string {
-  if (minutes === null || minutes === undefined || Number.isNaN(minutes)) return 'Ready';
-  const eta = new Date(Date.now() + Math.max(0, minutes) * 60_000);
+  if (minutes === null || minutes === undefined || Number.isNaN(minutes) || minutes <= 0) return '—';
+  const eta = new Date(Date.now() + minutes * 60_000);
   return eta.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 

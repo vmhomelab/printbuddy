@@ -264,6 +264,9 @@ class ElegooSDCPPrinterClient:
         self._has_status_sample = False
         self._last_bed_temp: float | None = None
         self._current_print_started_at: float | None = None
+        self._last_active_print_name: str | None = None
+        self._last_active_progress: float = 0.0
+        self._last_active_remaining_time: int = 0
 
     @staticmethod
     def _normalize_host(value: str) -> str:
@@ -432,15 +435,26 @@ class ElegooSDCPPrinterClient:
         return self.state.connected
 
     def _build_lifecycle_payload(self) -> dict[str, Any]:
-        filename = self.state.subtask_name or self.state.current_print or self.state.gcode_file or "Unknown"
+        filename = self.state.subtask_name or self.state.current_print or self.state.gcode_file or self._last_active_print_name or "Unknown"
+        progress = self.state.progress if self.state.state in {"RUNNING", "PAUSE"} else self._last_active_progress
+        remaining_time = self.state.remaining_time if self.state.state in {"RUNNING", "PAUSE"} else self._last_active_remaining_time
         return {
             "filename": filename,
             "subtask_name": filename,
-            "progress": self.state.progress,
-            "remaining_time": self.state.remaining_time * 60 if self.state.remaining_time else None,
+            "progress": progress,
+            "remaining_time": remaining_time * 60 if remaining_time else None,
             "status": self.state.state,
             "raw_data": self.state.raw_data,
         }
+
+    def _clear_active_print_metadata(self) -> None:
+        self.state.current_print = None
+        self.state.subtask_name = None
+        self.state.gcode_file = None
+        self.state.progress = 0.0
+        self.state.remaining_time = 0
+        self.state.layer_num = 0
+        self.state.total_layers = 0
 
     def _emit_status_callbacks(self, previous_state: str | None) -> None:
         if self.on_state_change:
@@ -498,7 +512,8 @@ class ElegooSDCPPrinterClient:
         filename = _first_present(
             print_info if isinstance(print_info, dict) else status, "Filename", "FileName", "filename", "Name"
         )
-        if filename:
+        active_state = self.state.state in {"RUNNING", "PAUSE"}
+        if active_state and filename:
             self.state.gcode_file = str(filename)
             self.state.current_print = self.state.gcode_file
             self.state.subtask_name = self.state.gcode_file
@@ -541,6 +556,14 @@ class ElegooSDCPPrinterClient:
         light_status = status.get("LightStatus")
         if light_status is not None:
             self.state.chamber_light = _sdcp_light_enabled(light_status)
+        if active_state:
+            active_name = self.state.subtask_name or self.state.current_print or self.state.gcode_file
+            if active_name:
+                self._last_active_print_name = active_name
+            self._last_active_progress = self.state.progress
+            self._last_active_remaining_time = self.state.remaining_time
+        else:
+            self._clear_active_print_metadata()
         self._emit_status_callbacks(previous_state)
         self._last_state = self.state.state
         self._has_status_sample = True

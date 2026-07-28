@@ -297,6 +297,27 @@ describe('PrintFarmMonitorPage', () => {
     expect(document.body.textContent).not.toContain('1228 / 1228 layers');
   });
 
+  it('does not render the current time as ETA when a running printer reports zero remaining time', async () => {
+    server.use(
+      http.get('/api/v1/printers/:id/status', ({ params }) => {
+        const id = Number(params.id);
+        if (id === 1) {
+          return HttpResponse.json({
+            ...statusFor(id),
+            remaining_time: 0,
+          });
+        }
+        return HttpResponse.json(statusFor(id));
+      }),
+    );
+
+    render(<PrintFarmMonitorPage />);
+
+    await waitFor(() => expect(screen.getByText('1 PRINTERS ACTIVE')).toBeInTheDocument());
+    expect(document.body.textContent).not.toContain('10:42 AM');
+    expect(document.body.textContent).toContain('ETA —');
+  });
+
   it('follows the selected PrintBuddy light theme', async () => {
     vi.mocked(localStorage.getItem).mockImplementation((key: string) => (
       key === 'theme-mode' ? 'light' : null
