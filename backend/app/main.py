@@ -1222,12 +1222,25 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
 
     # Include tray_now and vt_tray hash so external spool changes trigger broadcasts
     vt_tray_key = hash(str(state.raw_data.get("vt_tray", []))) if state.raw_data else 0
-    # Include AMS dry_time and tray state values so drying/slot changes trigger broadcasts
+    # Include AMS dry_time and tray metadata so drying/slot/fill changes trigger broadcasts.
+    # CFS updates can change only ``remain`` (for example 100 -> 34 after M8200 slot
+    # load/select) while material and tray state stay stable; include the display
+    # metadata used by the frontend so those updates are not de-duped away.
     ams_dry_key = tuple(a.get("dry_time", 0) for a in (state.raw_data.get("ams") or [])) if state.raw_data else ()
-    # Include tray states so load/unload transitions (state 11→10) trigger broadcasts (#784)
     ams_tray_key = (
         tuple(
-            (t.get("id"), t.get("tray_type", ""), t.get("state"))
+            (
+                a.get("id"),
+                t.get("id"),
+                t.get("tray_type", ""),
+                t.get("tray_color", ""),
+                t.get("remain"),
+                t.get("state"),
+                t.get("active"),
+                t.get("tray_uuid", ""),
+                t.get("tag_uid", ""),
+                t.get("vendor", ""),
+            )
             for a in (state.raw_data.get("ams") or [])
             for t in a.get("tray", [])
         )
