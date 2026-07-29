@@ -121,7 +121,7 @@ Bambu remains the default provider for older printer records so existing install
 ## Features
 
 - Multi-printer dashboard with provider-aware status normalization.
-- Real-time monitoring for supported printer families.
+- Real-time monitoring for supported printer families (including add-ons like the Panda Breath form Biqu).
 - Printer file manager with provider-specific upload, list, download, delete, and print actions.
 - Print archives, logs, metadata capture, usage tracking, and reprint workflows.
 - Local filament inventory with Spoolman integration and non-AMS loaded-spool assignment support.
@@ -211,6 +211,10 @@ Wiki pages:
 ---
 
 ## Updating
+
+> ## Updating via the UI
+>
+> To use the update feature over the UI, please make sure that you edited the docker-compose.yml file accordingly. See [here](https://github.com/vmhomelab/printbuddy/blob/main/docs/self-update-sidecar.md) on what to do.
 
 For Docker Compose deployments:
 
