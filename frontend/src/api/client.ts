@@ -3898,12 +3898,13 @@ export const api = {
   startPrinterFile: (
     printerId: number,
     path: string,
-    options?: { bed_levelling?: boolean; print_platform_type?: 0 | 1; storage?: string | null }
+    options?: { bed_levelling?: boolean; print_platform_type?: 0 | 1; storage?: string | null; ams_mapping?: number[] }
   ) => {
     const params = new URLSearchParams({ path });
     if (options?.storage) params.set('storage', options.storage);
     if (options?.bed_levelling !== undefined) params.set('bed_levelling', String(options.bed_levelling));
     if (options?.print_platform_type !== undefined) params.set('print_platform_type', String(options.print_platform_type));
+    options?.ams_mapping?.forEach((trayId) => params.append('ams_mapping', String(trayId)));
     return request<{ status: string; path: string }>(`/printers/${printerId}/files/start?${params.toString()}`, {
       method: 'POST',
     });

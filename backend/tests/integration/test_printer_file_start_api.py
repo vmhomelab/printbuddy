@@ -183,6 +183,30 @@ async def test_start_printer_file_passes_elegoo_cc1_start_options_to_provider(
 
 @pytest.mark.asyncio
 @pytest.mark.integration
+async def test_start_printer_file_passes_ams_mapping_to_provider(
+    async_client: AsyncClient,
+    printer_factory,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    printer = await printer_factory(provider="moonraker", model="Creality K2 Plus")
+    fake_client = _FakeProviderClient()
+
+    from backend.app.api.routes import printers as printer_routes
+
+    monkeypatch.setattr(printer_routes, "_provider_for_printer", lambda _printer: fake_client)
+
+    response = await async_client.post(
+        f"/api/v1/printers/{printer.id}/files/start",
+        params={"path": "/local/Love Paw Print.gcode", "ams_mapping": [1, -1, -1, -1]},
+    )
+
+    assert response.status_code == 200
+    assert fake_client.started_paths == ["/local/Love Paw Print.gcode"]
+    assert fake_client.start_options == [{"ams_mapping": [1, -1, -1, -1]}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
 async def test_start_printer_file_registers_elegoo_direct_print_estimated_weight(
     async_client: AsyncClient,
     printer_factory,

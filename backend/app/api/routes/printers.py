@@ -1487,6 +1487,7 @@ async def start_printer_file(
     printer_id: int,
     path: str,
     storage: str | None = Query(default=None),
+    ams_mapping: list[int] | None = Query(default=None),
     bed_levelling: bool | None = Query(default=None),
     print_platform_type: int | None = Query(default=None, ge=0, le=1),
     _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_CONTROL),
@@ -1515,6 +1516,8 @@ async def start_printer_file(
             start_options["print_platform_type"] = print_platform_type
         if storage:
             start_options["storage"] = storage
+        if ams_mapping is not None:
+            start_options["ams_mapping"] = ams_mapping
         success = provider_client.start_print(path, **start_options)
     else:
         success = printer_manager.start_print(printer_id, path)

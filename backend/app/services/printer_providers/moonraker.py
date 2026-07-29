@@ -382,6 +382,18 @@ def _creality_cfs_slot_name(tray_id: int) -> str | None:
     return f"T{unit}{letter}"
 
 
+def _creality_cfs_active_tray_id(value: Any) -> int | None:
+    raw = str(value or "").strip().upper()
+    if raw in {"", "NONE", "-1"}:
+        return None
+    if raw in "ABCD":
+        return "ABCD".index(raw)
+    if raw.startswith("T") and len(raw) >= 3 and raw[1].isdigit() and raw[2] in "ABCD":
+        unit = int(raw[1]) - 1
+        return unit * 4 + "ABCD".index(raw[2])
+    return None
+
+
 def _macro_object_to_command_name(object_name: str) -> str | None:
     prefix = "gcode_macro "
     if not object_name.startswith(prefix):
@@ -642,6 +654,93 @@ class MoonrakerPrinterClient:
         if macro not in self._available_macro_names():
             return False
         return self.send_gcode(macro)
+
+    def _has_creality_cfs(self) -> bool:
+        if isinstance(self.state.raw_data.get("cfs"), dict):
+            return True
+        for ams_unit in self.state.raw_data.get("ams") or []:
+            if isinstance(ams_unit, dict) and ams_unit.get("module_type") == "cfs":
+                return True
+        return False
+
+    def _creality_cfs_tray_ids(self) -> set[int]:
+        tray_ids: set[int] = set()
+        for ams_unit in self.state.raw_data.get("ams") or []:
+            if not isinstance(ams_unit, dict) or ams_unit.get("module_type") != "cfs":
+                continue
+            try:
+                ams_id = int(ams_unit.get("id", 0))
+            except (TypeError, ValueError):
+                continue
+            for tray in ams_unit.get("tray") or []:
+                if not isinstance(tray, dict):
+                    continue
+                try:
+                    tray_id = int(tray.get("id", 0))
+                except (TypeError, ValueError):
+                    continue
+                tray_ids.add(ams_id * 4 + tray_id)
+        return tray_ids
+
+    def _target_cfs_tray_from_mapping(self, ams_mapping: list[int] | None) -> int | None:
+        if not ams_mapping or not self._has_creality_cfs():
+            return None
+        cfs_tray_ids = self._creality_cfs_tray_ids()
+        for mapped in ams_mapping:
+            try:
+                tray_id = int(mapped)
+            except (TypeError, ValueError):
+                continue
+            if tray_id < 0:
+                continue
+            if not cfs_tray_ids or tray_id in cfs_tray_ids:
+                return tray_id
+        return None
+
+    def _current_cfs_tray_id(self) -> int | None:
+        if self.state.tray_now is not None and self.state.tray_now != 255:
+            try:
+                return int(self.state.tray_now)
+            except (TypeError, ValueError):
+                pass
+        box = self.state.raw_data.get("box")
+        if isinstance(box, dict):
+            for unit_index, unit_name in enumerate(("T1", "T2", "T3", "T4")):
+                unit = box.get(unit_name)
+                if not isinstance(unit, dict) or str(unit.get("state") or "").lower() != "connect":
+                    continue
+                active = _creality_cfs_active_tray_id(unit.get("filament"))
+                if active is not None:
+                    return unit_index * 4 + active
+        return None
+
+    def _refresh_and_verify_cfs_slot(self, tray_id: int) -> bool:
+        try:
+            self.request_status_update()
+        except Exception:
+            return False
+        return self._current_cfs_tray_id() == tray_id
+
+    def _prepare_creality_cfs_slot_for_print(self, ams_mapping: list[int] | None) -> bool:
+        target_tray_id = self._target_cfs_tray_from_mapping(ams_mapping)
+        if target_tray_id is None:
+            return True
+        if _creality_cfs_slot_name(target_tray_id) is None:
+            return False
+
+        current_tray_id = self._current_cfs_tray_id()
+        if current_tray_id == target_tray_id:
+            return True
+        if current_tray_id is not None and current_tray_id != 255:
+            if not self.ams_unload_filament(current_tray_id):
+                return False
+            try:
+                self.request_status_update()
+            except Exception:
+                return False
+        if not self.ams_load_filament(target_tray_id):
+            return False
+        return self._refresh_and_verify_cfs_slot(target_tray_id)
 
     def _normalize_file_entries(self, entries: Any, normalized: str) -> list[dict[str, Any]]:
         files: list[dict[str, Any]] = []
@@ -1155,17 +1254,16 @@ class MoonrakerPrinterClient:
         return self.send_gcode(f"M83\nG1 E{length:.2f} F{speed}\nM82")
 
     def ams_load_filament(self, tray_id: int, extruder_id: int | None = None) -> bool:  # noqa: ARG002
-        """Load a Creality CFS slot through its discovered slot macro.
-
-        K2 Plus firmware exposes slot-specific macros such as
-        ``BOX_LOAD_MATERIALT1A``. Do not invent parameterized commands; only send
-        a macro that Moonraker reports in ``/printer/objects/list``.
-        """
-        return self._send_cfs_slot_macro("BOX_LOAD_MATERIAL", tray_id)
+        """Load/select a Creality CFS slot using the hardware-verified M8200 path."""
+        if _creality_cfs_slot_name(tray_id) is None:
+            return False
+        return self.send_gcode(f"M8200 P\nM8200 L I={int(tray_id)}\nM8200 O")
 
     def ams_unload_filament(self, tray_id: int | None = None) -> bool:
-        """Unload a Creality CFS slot through its discovered slot macro."""
-        return self._send_cfs_slot_macro("BOX_QUIT_MATERIAL", tray_id)
+        """Unload the currently loaded Creality CFS filament using M8200."""
+        if tray_id is not None and _creality_cfs_slot_name(int(tray_id)) is None:
+            return False
+        return self.send_gcode("M8200 P\nM8200 C\nM8200 R\nM8200 O")
 
     def ams_refresh_tray(self, ams_id: int, slot_id: int) -> tuple[bool, str]:  # noqa: ARG002
         """CFS RFID refresh is disabled after real K2 firmware crash reports."""
@@ -1179,6 +1277,8 @@ class MoonrakerPrinterClient:
 
     def start_print(self, filename: str, plate_id: int = 1, **kwargs: Any) -> bool:  # noqa: ARG002
         normalized = self._normalize_gcodes_path(filename)
+        if not self._prepare_creality_cfs_slot_for_print(kwargs.get("ams_mapping")):
+            return False
         try:
             self._post("printer/print/start", {"filename": normalized})
         except httpx.ReadTimeout:

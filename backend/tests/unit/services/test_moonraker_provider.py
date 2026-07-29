@@ -385,55 +385,100 @@ def test_moonraker_webcam_discovery_returns_empty_for_k2_without_moonraker_webca
     assert client.discover_webcams() == []
 
 
-def test_moonraker_cfs_load_uses_slot_macro_when_available(monkeypatch):
+def test_moonraker_cfs_load_uses_verified_m8200_slot_select(monkeypatch):
     client = MoonrakerPrinterClient("http://k2-plus.local:7125", printer_model="Creality K2 Plus")
     sent: list[str] = []
 
-    monkeypatch.setattr(
-        client,
-        "_get",
-        lambda path: {
-            "objects": [
-                "box",
-                "gcode_macro BOX_LOAD_MATERIALT1C",
-                "gcode_macro BOX_QUIT_MATERIALT1C",
-            ]
-        },
-    )
     monkeypatch.setattr(client, "send_gcode", lambda script: sent.append(script) or True)
 
     assert client.ams_load_filament(2) is True
 
-    assert sent == ["BOX_LOAD_MATERIALT1C"]
+    assert sent == ["M8200 P\nM8200 L I=2\nM8200 O"]
 
 
-def test_moonraker_cfs_unload_uses_requested_slot_macro_when_available(monkeypatch):
+def test_moonraker_cfs_unload_uses_verified_m8200_sequence(monkeypatch):
     client = MoonrakerPrinterClient("http://k2-plus.local:7125", printer_model="Creality K2 Plus")
     sent: list[str] = []
 
-    monkeypatch.setattr(
-        client,
-        "_get",
-        lambda path: {
-            "objects": [
-                "box",
-                "gcode_macro BOX_LOAD_MATERIALT1B",
-                "gcode_macro BOX_QUIT_MATERIALT1B",
-            ]
-        },
-    )
     monkeypatch.setattr(client, "send_gcode", lambda script: sent.append(script) or True)
 
     assert client.ams_unload_filament(1) is True
 
-    assert sent == ["BOX_QUIT_MATERIALT1B"]
+    assert sent == ["M8200 P\nM8200 C\nM8200 R\nM8200 O"]
 
 
-def test_moonraker_cfs_load_rejects_missing_slot_macro(monkeypatch):
+def test_moonraker_cfs_load_rejects_invalid_slot():
     client = MoonrakerPrinterClient("http://k2-plus.local:7125", printer_model="Creality K2 Plus")
-    monkeypatch.setattr(client, "_get", lambda path: {"objects": ["box"]})
 
-    assert client.ams_load_filament(0) is False
+    assert client.ams_load_filament(16) is False
+
+
+def test_moonraker_start_print_selects_mapped_cfs_slot_before_print(monkeypatch):
+    client = MoonrakerPrinterClient("http://k2-plus.local:7125", printer_model="Creality K2 Plus")
+    client.state.raw_data["cfs"] = {"type": "creality_cfs"}
+    client.state.raw_data["ams"] = [{"id": 0, "module_type": "cfs", "tray": []}]
+    client.state.tray_now = 0
+    sent: list[str] = []
+    posts: list[tuple[str, dict]] = []
+
+    def send_gcode(script: str) -> bool:
+        sent.append(script)
+        if "M8200 L I=1" in script:
+            client.state.tray_now = 1
+        elif "M8200 R" in script:
+            client.state.tray_now = 255
+        return True
+
+    monkeypatch.setattr(client, "send_gcode", send_gcode)
+    monkeypatch.setattr(client, "request_status_update", lambda: True)
+    monkeypatch.setattr(client, "_post", lambda path, payload: posts.append((path, payload)) or {})
+
+    assert client.start_print("models/cube.gcode", ams_mapping=[1]) is True
+
+    assert sent == [
+        "M8200 P\nM8200 C\nM8200 R\nM8200 O",
+        "M8200 P\nM8200 L I=1\nM8200 O",
+    ]
+    assert posts == [("printer/print/start", {"filename": "models/cube.gcode"})]
+
+
+def test_moonraker_start_print_does_not_reload_already_selected_cfs_slot(monkeypatch):
+    client = MoonrakerPrinterClient("http://k2-plus.local:7125", printer_model="Creality K2 Plus")
+    client.state.raw_data["cfs"] = {"type": "creality_cfs"}
+    client.state.raw_data["ams"] = [{"id": 0, "module_type": "cfs", "tray": []}]
+    client.state.tray_now = 2
+    sent: list[str] = []
+    posts: list[tuple[str, dict]] = []
+
+    monkeypatch.setattr(client, "send_gcode", lambda script: sent.append(script) or True)
+    monkeypatch.setattr(client, "request_status_update", lambda: True)
+    monkeypatch.setattr(client, "_post", lambda path, payload: posts.append((path, payload)) or {})
+
+    assert client.start_print("models/cube.gcode", ams_mapping=[2]) is True
+
+    assert sent == []
+    assert posts == [("printer/print/start", {"filename": "models/cube.gcode"})]
+
+
+def test_moonraker_start_print_aborts_when_cfs_slot_selection_cannot_be_verified(monkeypatch):
+    client = MoonrakerPrinterClient("http://k2-plus.local:7125", printer_model="Creality K2 Plus")
+    client.state.raw_data["cfs"] = {"type": "creality_cfs"}
+    client.state.raw_data["ams"] = [{"id": 0, "module_type": "cfs", "tray": []}]
+    client.state.tray_now = 0
+    sent: list[str] = []
+    posts: list[tuple[str, dict]] = []
+
+    monkeypatch.setattr(client, "send_gcode", lambda script: sent.append(script) or True)
+    monkeypatch.setattr(client, "request_status_update", lambda: True)
+    monkeypatch.setattr(client, "_post", lambda path, payload: posts.append((path, payload)) or {})
+
+    assert client.start_print("models/cube.gcode", ams_mapping=[1]) is False
+
+    assert sent == [
+        "M8200 P\nM8200 C\nM8200 R\nM8200 O",
+        "M8200 P\nM8200 L I=1\nM8200 O",
+    ]
+    assert posts == []
 
 
 def test_moonraker_cfs_refresh_is_disabled_after_k2_firmware_crash_report(monkeypatch):
