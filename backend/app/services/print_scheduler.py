@@ -31,6 +31,7 @@ from backend.app.services.bambu_ftp import (
 from backend.app.services.filament_deficit import compute_deficit_for_queue_item
 from backend.app.services.notification_service import notification_service
 from backend.app.services.printer_manager import printer_manager, supports_drying
+from backend.app.services.printer_providers.factory import normalize_provider
 from backend.app.services.smart_plug_manager import smart_plug_manager
 from backend.app.utils.printer_models import normalize_printer_model
 
@@ -1873,6 +1874,122 @@ class PrintScheduler:
             await db.commit()
         return False
 
+    @staticmethod
+    def _remote_filename_for_provider(filename: str, provider: str) -> str:
+        """Build the printer-side filename using provider-specific rules.
+
+        Bambu queue dispatch historically uploads a 3MF object and starts it by
+        name, so ``*.gcode.3mf`` is rewritten to ``*.3mf``. Moonraker/Klipper
+        providers must keep raw G-code filenames intact; rewriting
+        ``Cube.gcode`` to ``Cube.gcode.3mf`` creates a bogus printer-side file
+        and makes queued K-series jobs fail while manual starts still work.
+        """
+        if provider == "bambu":
+            base_name = filename
+            if base_name.endswith(".gcode.3mf"):
+                base_name = base_name[:-10]
+            elif base_name.endswith(".3mf"):
+                base_name = base_name[:-4]
+            remote_filename = f"{base_name}.3mf"
+        else:
+            remote_filename = filename
+        return remote_filename.replace(" ", "_")
+
+    @staticmethod
+    def _provider_client_for_upload(printer_id: int, provider: str):
+        client = printer_manager.get_client(printer_id)
+        if not client:
+            raise RuntimeError(f"{provider} printer client is not connected")
+        if not hasattr(client, "upload_file"):
+            raise RuntimeError(f"{provider} printer does not support file upload")
+        return client
+
+    async def _delete_remote_file_for_provider(
+        self,
+        *,
+        printer_id: int,
+        provider: str,
+        printer_ip: str,
+        printer_access_code: str,
+        remote_path: str,
+        printer_model: str | None,
+        ftp_timeout: float | int,
+    ) -> None:
+        if provider == "bambu":
+            await delete_file_async(
+                printer_ip,
+                printer_access_code,
+                remote_path,
+                socket_timeout=ftp_timeout,
+                printer_model=printer_model,
+            )
+            return
+
+        client = self._provider_client_for_upload(printer_id, provider)
+        delete_file = getattr(client, "delete_file", None)
+        if not callable(delete_file):
+            return
+        try:
+            await asyncio.to_thread(delete_file, remote_path)
+        except Exception as exc:
+            logger.debug(
+                "Ignoring provider delete failure before scheduled upload (%s %s): %s", provider, remote_path, exc
+            )
+
+    async def _upload_file_for_provider(
+        self,
+        *,
+        printer_id: int,
+        provider: str,
+        printer_name: str,
+        printer_ip: str,
+        printer_access_code: str,
+        file_path: Path,
+        remote_path: str,
+        printer_model: str | None,
+        ftp_retry_enabled: bool,
+        ftp_retry_count: int,
+        ftp_retry_delay: float | int,
+        ftp_timeout: float | int,
+        operation_name: str,
+    ) -> bool:
+        if provider == "bambu":
+            if ftp_retry_enabled:
+                return bool(
+                    await with_ftp_retry(
+                        upload_file_async,
+                        printer_ip,
+                        printer_access_code,
+                        file_path,
+                        remote_path,
+                        socket_timeout=ftp_timeout,
+                        printer_model=printer_model,
+                        max_retries=ftp_retry_count,
+                        retry_delay=ftp_retry_delay,
+                        operation_name=operation_name,
+                    )
+                )
+            return bool(
+                await upload_file_async(
+                    printer_ip,
+                    printer_access_code,
+                    file_path,
+                    remote_path,
+                    socket_timeout=ftp_timeout,
+                    printer_model=printer_model,
+                )
+            )
+
+        client = self._provider_client_for_upload(printer_id, provider)
+        logger.info(
+            "Provider queue upload starting - printer=%s provider=%s file=%s local_path=%s",
+            printer_name,
+            provider,
+            remote_path,
+            file_path,
+        )
+        return bool(await asyncio.to_thread(client.upload_file, file_path, remote_path))  # type: ignore[attr-defined]
+
     async def _start_print(self, db: AsyncSession, item: PrintQueueItem):
         """Upload file and start print for a queue item.
 
@@ -2013,16 +2130,10 @@ class PrintScheduler:
             except Exception as e:
                 logger.warning("Queue item %s: G-code injection failed, using original: %s", item.id, e)
 
-        # Upload file to printer via FTP
-        # Use a clean filename to avoid issues with double extensions like .gcode.3mf
-        base_name = filename
-        if base_name.endswith(".gcode.3mf"):
-            base_name = base_name[:-10]  # Remove .gcode.3mf
-        elif base_name.endswith(".3mf"):
-            base_name = base_name[:-4]  # Remove .3mf
-        remote_filename = f"{base_name}.3mf"
-        # Sanitize: firmware parses ftp://{filename} as a URL, spaces break it
-        remote_filename = remote_filename.replace(" ", "_")
+        provider = normalize_provider(getattr(printer, "provider", None))
+        # Use a provider-correct printer-side name. Bambu keeps the historical
+        # 3MF rewrite, while Moonraker/K-series must keep .gcode/.3mf intact.
+        remote_filename = self._remote_filename_for_provider(filename, provider)
         # Upload to root directory (not /cache/) - the start_print command references
         # files by name only (ftp://{filename}), so they must be in the root
         remote_path = f"/{remote_filename}"
@@ -2031,19 +2142,21 @@ class PrintScheduler:
         ftp_retry_enabled, ftp_retry_count, ftp_retry_delay, ftp_timeout = await get_ftp_retry_settings()
 
         logger.info(
-            f"Queue item {item.id}: FTP upload starting - printer={printer.name} ({printer.model}), "
-            f"ip={printer.ip_address}, file={remote_filename}, local_path={file_path}, "
+            f"Queue item {item.id}: upload starting - printer={printer.name} ({printer.model}), "
+            f"provider={provider}, ip={printer.ip_address}, file={remote_filename}, local_path={file_path}, "
             f"retry_enabled={ftp_retry_enabled}, retry_count={ftp_retry_count}, timeout={ftp_timeout}"
         )
 
         # Delete existing file if present (avoids 553 error on overwrite)
         try:
             logger.debug("Queue item %s: Deleting existing file %s if present...", item.id, remote_path)
-            delete_result = await delete_file_async(
-                printer.ip_address,
-                printer.access_code,
-                remote_path,
-                socket_timeout=ftp_timeout,
+            delete_result = await self._delete_remote_file_for_provider(
+                printer_id=item.printer_id,
+                provider=provider,
+                printer_ip=printer.ip_address,
+                printer_access_code=printer.access_code,
+                remote_path=remote_path,
+                ftp_timeout=ftp_timeout,
                 printer_model=printer.model,
             )
             logger.debug("Queue item %s: Delete result: %s", item.id, delete_result)
@@ -2051,31 +2164,24 @@ class PrintScheduler:
             logger.debug("Queue item %s: Delete failed (may not exist): %s", item.id, e)
 
         try:
-            if ftp_retry_enabled:
-                uploaded = await with_ftp_retry(
-                    upload_file_async,
-                    printer.ip_address,
-                    printer.access_code,
-                    file_path,
-                    remote_path,
-                    socket_timeout=ftp_timeout,
-                    printer_model=printer.model,
-                    max_retries=ftp_retry_count,
-                    retry_delay=ftp_retry_delay,
-                    operation_name=f"Upload print to {printer.name}",
-                )
-            else:
-                uploaded = await upload_file_async(
-                    printer.ip_address,
-                    printer.access_code,
-                    file_path,
-                    remote_path,
-                    socket_timeout=ftp_timeout,
-                    printer_model=printer.model,
-                )
+            uploaded = await self._upload_file_for_provider(
+                printer_id=item.printer_id,
+                provider=provider,
+                printer_name=printer.name,
+                printer_ip=printer.ip_address,
+                printer_access_code=printer.access_code,
+                file_path=file_path,
+                remote_path=remote_path,
+                printer_model=printer.model,
+                ftp_retry_enabled=ftp_retry_enabled,
+                ftp_retry_count=ftp_retry_count,
+                ftp_retry_delay=ftp_retry_delay,
+                ftp_timeout=ftp_timeout,
+                operation_name=f"Upload print to {printer.name}",
+            )
         except Exception as e:
             uploaded = False
-            logger.error("Queue item %s: FTP error: %s (type: %s)", item.id, e, type(e).__name__)
+            logger.error("Queue item %s: upload error: %s (type: %s)", item.id, e, type(e).__name__)
 
         # Clean up injected temp file after upload attempt
         if injected_path and injected_path.exists():
