@@ -385,6 +385,79 @@ class TestUpdatesAPI:
 
         assert is_newer_version("0.1.5", "0.1.5b7") is True
 
+    def test_select_latest_release_sorts_by_version_not_github_order(self):
+        """GitHub can return older prereleases before newer ones; the updater
+        must choose the highest parsed Printbuddy version, not the first item.
+        """
+        from backend.app.api.routes.updates import _select_latest_release
+
+        releases = [
+            {"tag_name": "v0.2.5.1b9", "name": "b9"},
+            {"tag_name": "v0.2.5.1b11", "name": "b11"},
+            {"tag_name": "v0.2.5.1b10", "name": "b10"},
+        ]
+
+        selected = _select_latest_release(releases, include_beta=True)
+
+        assert selected is not None
+        assert selected["tag_name"] == "v0.2.5.1b11"
+
+    @pytest.mark.asyncio
+    async def test_check_for_updates_sorts_releases_by_version(self, async_client: AsyncClient, db_session):
+        import httpx as _httpx
+
+        from backend.app.models.settings import Settings
+
+        db_session.add(Settings(key="include_beta_updates", value="true"))
+        await db_session.commit()
+
+        releases = [
+            {
+                "tag_name": "v0.2.5.1b9",
+                "name": "b9",
+                "body": "older first",
+                "html_url": "https://example.invalid/b9",
+                "published_at": "2026-07-30T16:44:30Z",
+            },
+            {
+                "tag_name": "v0.2.5.1b11",
+                "name": "b11",
+                "body": "newer second",
+                "html_url": "https://example.invalid/b11",
+                "published_at": "2026-07-30T19:02:09Z",
+            },
+        ]
+
+        class _Resp:
+            status_code = 200
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return releases
+
+        class _FakeClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_):
+                return None
+
+            async def get(self, *_, **__):
+                return _Resp()
+
+        with (
+            patch.object(_httpx, "AsyncClient", _FakeClient),
+            patch("backend.app.api.routes.updates.APP_VERSION", "0.2.5.1b9"),
+        ):
+            response = await async_client.get("/api/v1/updates/check")
+
+        body = response.json()
+        assert body["update_available"] is True
+        assert body["latest_version"] == "0.2.5.1b11"
+        assert body["release_name"] == "b11"
+
     def test_parse_github_remote_recognises_ssh_https_and_dotgit(self):
         """`_parse_github_remote` must accept the four canonical forms `git
         remote -v` prints; anything else returns None so callers can treat
