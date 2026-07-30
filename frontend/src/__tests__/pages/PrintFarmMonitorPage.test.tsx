@@ -230,6 +230,8 @@ describe('PrintFarmMonitorPage', () => {
 
     expect(await screen.findByRole('heading', { name: 'Print Farm Monitor' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /back to farm command center/i })).toHaveAttribute('href', '/farm-command-center');
+    expect(screen.getByText(new Date('2025-05-23T10:42:00Z').toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }))).toBeInTheDocument();
+    expect(screen.getByText(new Date('2025-05-23T10:42:00Z').toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' }))).toBeInTheDocument();
     await waitFor(() => expect(screen.getByText('1 PRINTERS ACTIVE')).toBeInTheDocument());
 
     expect(screen.getByText(/total printers/i)).toBeInTheDocument();

@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useQueries, useQuery } from '@tanstack/react-query';
 import {
@@ -119,6 +119,14 @@ function normalizeState(status?: PrinterStatus): NormalizedState {
 
 function formatClock(date = new Date()): string {
   return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
+function formatHeaderTime(date: Date): string {
+  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+function formatHeaderDate(date: Date): string {
+  return date.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
 }
 
 function formatDuration(minutes: number | null | undefined): string {
@@ -565,9 +573,15 @@ function ActiveProjectsPanel({ projects, theme }: { projects: ProjectListItem[];
 }
 
 export function PrintFarmMonitorPage() {
-  const now = new Date();
+  const [now, setNow] = useState(() => new Date());
   const { mode } = useTheme();
   const theme = useMemo(() => getMonitorTheme(mode), [mode]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(new Date()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
   const { data: uiPreferences } = useQuery({ queryKey: ['ui-preferences'], queryFn: api.getUiPreferences, staleTime: 30_000 });
   const refreshSeconds = normalizeRefreshSeconds(uiPreferences?.print_farm_monitor_refresh_interval);
   const refreshMs = refreshSeconds * 1000;
@@ -629,13 +643,19 @@ export function PrintFarmMonitorPage() {
             </div>
             <h1 className={`text-3xl font-bold tracking-tight ${theme.text}`}>Print Farm Monitor</h1>
           </div>
-          <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-            <StatTile icon={PrinterIcon} label="Total Printers" value={printers.length} theme={theme} />
-            <StatTile icon={PlayCircle} label="Printing Now" value={printing.length} tone="green" theme={theme} />
-            <StatTile icon={PauseCircle} label="Idle" value={idle.length} tone="blue" theme={theme} />
-            <StatTile icon={Power} label="Offline" value={offline.length} tone="gray" theme={theme} />
-            <StatTile icon={Layers} label="Queue Size" value={(queue as PrintQueueItem[]).length} tone="purple" theme={theme} />
-            <StatTile icon={AlertTriangle} label="Active Alerts" value={activeAlerts.length} tone="amber" theme={theme} />
+          <div className="flex flex-col gap-3 xl:items-end">
+            <div className="text-right">
+              <div className="font-mono text-3xl font-bold tracking-wider text-blue-300">{formatHeaderTime(now)}</div>
+              <div className={`text-xs ${theme.muted}`}>{formatHeaderDate(now)}</div>
+            </div>
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+              <StatTile icon={PrinterIcon} label="Total Printers" value={printers.length} theme={theme} />
+              <StatTile icon={PlayCircle} label="Printing Now" value={printing.length} tone="green" theme={theme} />
+              <StatTile icon={PauseCircle} label="Idle" value={idle.length} tone="blue" theme={theme} />
+              <StatTile icon={Power} label="Offline" value={offline.length} tone="gray" theme={theme} />
+              <StatTile icon={Layers} label="Queue Size" value={(queue as PrintQueueItem[]).length} tone="purple" theme={theme} />
+              <StatTile icon={AlertTriangle} label="Active Alerts" value={activeAlerts.length} tone="amber" theme={theme} />
+            </div>
           </div>
         </header>
 
