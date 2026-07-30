@@ -86,15 +86,18 @@ export function buildLoadedFilaments(
   // Some non-Bambu / non-AMS printers (for example Moonraker/Elegoo) do not
   // report a `vt_tray` filament state. Printbuddy still has the user's explicit
   // spool assignment in inventory, so surface that assignment as a selectable
-  // external slot in the print modal. Do not overwrite live printer-reported
-  // tray data when it exists; the assignment is only a fallback source for the
-  // mapping UI and spool usage tracking.
+  // external slot in the print modal. Do not synthesize real AMS slots from
+  // inventory assignments: the Bambu firmware's live tray metadata is the
+  // authority for valid print-start AMS mappings, and mapping to a blank tray can
+  // make P2S/H-series firmware fail with "Failed to get AMS mapping table".
   for (const assignment of assignments ?? []) {
     if (printerId != null && assignment.printer_id !== printerId) continue;
     const spool = assignment.spool;
     if (!spool) continue;
 
     const isExternal = assignment.ams_id === 255;
+    if (!isExternal) continue;
+
     const globalTrayId = getGlobalTrayId(assignment.ams_id, assignment.tray_id, isExternal);
     if (filaments.some((f) => f.globalTrayId === globalTrayId)) continue;
 

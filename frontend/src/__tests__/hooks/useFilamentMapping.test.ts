@@ -222,6 +222,44 @@ describe('buildLoadedFilaments', () => {
     });
   });
 
+  it('does not synthesize regular AMS slots from inventory assignments when printer telemetry is blank', () => {
+    const assignments = [
+      {
+        id: 1,
+        spool_id: 10,
+        printer_id: 42,
+        ams_id: 0,
+        tray_id: 1,
+        fingerprint_color: 'FF0000FF',
+        fingerprint_type: 'PLA',
+        configured: true,
+        created_at: '2026-01-01T00:00:00Z',
+        spool: {
+          id: 10,
+          material: 'PLA',
+          subtype: 'PLA Basic',
+          color_name: 'Red',
+          rgba: '#FF0000',
+          label_weight: 1000,
+          weight_used: 250,
+          slicer_filament: 'Pcustom',
+          slicer_filament_name: 'Custom PLA',
+        },
+      } as SpoolAssignment,
+    ];
+
+    const status = createPrinterStatus([
+      {
+        id: 0,
+        tray: [{ id: 1, tray_type: '', tray_color: '00000000', tray_info_idx: '' } as any],
+      } as any,
+    ]);
+
+    const result = buildLoadedFilaments(status, assignments, 42);
+
+    expect(result).toEqual([]);
+  });
+
   it('keeps live vt_tray data over an inventory assignment for the same external slot', () => {
     const assignments = [
       {
