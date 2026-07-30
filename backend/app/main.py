@@ -1532,6 +1532,14 @@ async def on_ams_change(printer_id: int, ams_data: list):
                 else:
                     current_tray = _find_tray_in_ams_data(ams_data, assignment.ams_id, assignment.tray_id)
                 if not current_tray:
+                    if _print_active:
+                        logger.info(
+                            "Auto-unlink: keeping spool %d AMS%d-T%d — tray missing during active print",
+                            assignment.spool_id,
+                            assignment.ams_id,
+                            assignment.tray_id,
+                        )
+                        continue
                     logger.info(
                         "Auto-unlink: spool %d AMS%d-T%d — tray not found in AMS data (slot empty?)",
                         assignment.spool_id,
@@ -1572,7 +1580,18 @@ async def on_ams_change(printer_id: int, ams_data: list):
                                 assignment.tray_id,
                             )
                         continue
-                    # Different BL spool or unrecognized — unlink so auto-assign can match
+                    # Different BL spool or unrecognized — unlink so auto-assign can match.
+                    # Do not delete during an active print: print-start AMS telemetry can
+                    # be noisy, while the user's assignment is persistent inventory state.
+                    if _print_active:
+                        logger.info(
+                            "Auto-unlink: keeping spool %d AMS%d-T%d — different Bambu Lab UUID during active print (uuid=%s)",
+                            assignment.spool_id,
+                            assignment.ams_id,
+                            assignment.tray_id,
+                            tray_uuid,
+                        )
+                        continue
                     logger.info(
                         "Auto-unlink: spool %d AMS%d-T%d — different Bambu Lab spool detected (uuid=%s)",
                         assignment.spool_id,
@@ -1587,6 +1606,17 @@ async def on_ams_change(printer_id: int, ams_data: list):
                     cur_state = current_tray.get("state")
                     fp_color = assignment.fingerprint_color or ""
                     fp_type = assignment.fingerprint_type or ""
+                    cur_color_normalized = cur_color.strip().upper()
+                    metadata_blank = not cur_type.strip() and cur_color_normalized in ("", "00000000")
+
+                    if metadata_blank:
+                        logger.info(
+                            "Auto-unlink: keeping spool %d AMS%d-T%d — live tray metadata is blank/transient",
+                            assignment.spool_id,
+                            assignment.ams_id,
+                            assignment.tray_id,
+                        )
+                        continue
 
                     # Deferred AMS pre-config replay: fingerprint_type empty means
                     # the slot was empty when the user pre-assigned it
@@ -1669,6 +1699,14 @@ async def on_ams_change(printer_id: int, ams_data: list):
                             spool.rgba if spool else "?",
                             spool.material if spool else "?",
                         )
+                        if _print_active:
+                            logger.info(
+                                "Auto-unlink: keeping spool %d AMS%d-T%d — fingerprint mismatch during active print",
+                                assignment.spool_id,
+                                assignment.ams_id,
+                                assignment.tray_id,
+                            )
+                            continue
                         stale.append(assignment)  # Spool changed
             for a in stale:
                 await db.delete(a)
