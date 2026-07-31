@@ -854,6 +854,7 @@ async def _perform_update(target_ref: str):
 
 @router.post("/self-update")
 async def start_self_update(
+    db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_UPDATE),
 ):
     """Trigger the optional Docker updater sidecar."""
@@ -863,9 +864,13 @@ async def start_self_update(
         raise HTTPException(status_code=503, detail="Updater sidecar is not configured")
 
     headers = {"Authorization": f"Bearer {settings.updater_token}"}
+    target_ref = await _discover_target_release(db)
+    payload = None
+    if target_ref:
+        payload = {"target_image": f"docker.io/vmhomelabde/printbuddy:{target_ref}"}
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.post(f"{settings.updater_url.rstrip('/')}/update", headers=headers, timeout=5.0)
+            response = await client.post(f"{settings.updater_url.rstrip('/')}/update", headers=headers, json=payload, timeout=5.0)
             response.raise_for_status()
             return response.json()
     except httpx.HTTPStatusError as exc:

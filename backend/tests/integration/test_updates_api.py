@@ -108,6 +108,8 @@ class TestUpdatesAPI:
 
     @pytest.mark.asyncio
     async def test_self_update_trigger_calls_updater(self, async_client: AsyncClient):
+        posted_json = None
+
         class _Resp:
             status_code = 200
 
@@ -124,22 +126,26 @@ class TestUpdatesAPI:
             async def __aexit__(self, *_):
                 return None
 
-            async def post(self, url, *, headers=None, timeout=None):
+            async def post(self, url, *, headers=None, timeout=None, json=None):
+                nonlocal posted_json
                 assert url == "http://updater:8787/update"
                 assert headers == {"Authorization": "Bearer sidecar-token"}
                 assert timeout == 5.0
+                posted_json = json
                 return _Resp()
 
         with (
             patch("backend.app.api.routes.updates.settings.self_update_enabled", True, create=True),
             patch("backend.app.api.routes.updates.settings.updater_url", "http://updater:8787", create=True),
             patch("backend.app.api.routes.updates.settings.updater_token", "sidecar-token", create=True),
+            patch("backend.app.api.routes.updates._discover_target_release", new_callable=AsyncMock, return_value="v0.2.5.1b13"),
             patch("backend.app.api.routes.updates.httpx.AsyncClient", _FakeClient),
         ):
             response = await async_client.post("/api/v1/updates/self-update")
 
         assert response.status_code == 200
         assert response.json()["job_id"] == "upd_1"
+        assert posted_json == {"target_image": "docker.io/vmhomelabde/printbuddy:v0.2.5.1b13"}
 
     @pytest.mark.asyncio
     async def test_self_update_job_status_proxies_updater(self, async_client: AsyncClient):

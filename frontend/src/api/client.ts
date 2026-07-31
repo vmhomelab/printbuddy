@@ -2873,7 +2873,7 @@ export interface SelfUpdateStatus {
 
 export interface SelfUpdateJob {
   job_id: string;
-  status: 'queued' | 'pulling' | 'recreating' | 'completed' | 'failed';
+  status: 'queued' | 'checking' | 'pulling' | 'tagging' | 'recreating' | 'completed' | 'failed';
   started_at?: string;
   finished_at?: string | null;
   exit_code?: number | null;
