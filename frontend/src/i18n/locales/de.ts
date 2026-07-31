@@ -969,6 +969,7 @@ export default {
     savingProgress: 'Speichere {{current}}/{{total}}...',
     clearQueue: 'Warteschlange leeren',
     clearHistory: 'Verlauf löschen',
+    showMoreHistory: 'Mehr anzeigen',
     emptyQueue: 'Warteschlange ist leer',
     position: 'Position',
     scheduledTime: 'Geplante Zeit',

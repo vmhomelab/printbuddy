@@ -969,6 +969,7 @@ export default {
     savingProgress: 'Salvando {{current}}/{{total}}...',
     clearQueue: 'Limpar Fila',
     clearHistory: 'Limpar Histórico',
+    showMoreHistory: 'Mostrar mais',
     emptyQueue: 'Fila vazia',
     position: 'Posição',
     scheduledTime: 'Hora Agendada',

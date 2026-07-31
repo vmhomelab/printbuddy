@@ -969,6 +969,7 @@ export default {
     savingProgress: '保存中 {{current}}/{{total}}...',
     clearQueue: '清空队列',
     clearHistory: '清除历史',
+    showMoreHistory: '显示更多',
     emptyQueue: '队列为空',
     position: '位置',
     scheduledTime: '排程时间',

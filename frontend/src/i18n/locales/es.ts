@@ -969,6 +969,7 @@ export default {
     savingProgress: 'Guardando {{current}}/{{total}}...',
     clearQueue: 'Vaciar la cola',
     clearHistory: 'Borrar el historial',
+    showMoreHistory: 'Mostrar más',
     emptyQueue: 'La cola está vacía',
     position: 'Posición',
     scheduledTime: 'Hora programada',

@@ -969,6 +969,7 @@ export default {
     savingProgress: 'Enregistrement {{current}}/{{total}}...',
     clearQueue: 'Vider la file',
     clearHistory: 'Effacer l\'historique',
+    showMoreHistory: 'Afficher plus',
     emptyQueue: 'La file est vide',
     position: 'Position',
     scheduledTime: 'Heure prévue',

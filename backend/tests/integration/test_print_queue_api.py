@@ -106,7 +106,6 @@ class TestPrintQueueAPI:
         assert response.status_code == 200
         assert isinstance(response.json(), list)
 
-
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_list_queue_can_exclude_history_items(self, async_client: AsyncClient, queue_item_factory):
@@ -123,7 +122,9 @@ class TestPrintQueueAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_queue_history_endpoint_is_paginated_newest_first(self, async_client: AsyncClient, queue_item_factory):
+    async def test_queue_history_endpoint_is_paginated_newest_first(
+        self, async_client: AsyncClient, queue_item_factory
+    ):
         """History endpoint returns a page plus the total count instead of truncating in the UI."""
         from datetime import datetime, timedelta, timezone
 
@@ -171,6 +172,7 @@ class TestPrintQueueAPI:
         assert result["archive_id"] == archive.id
         assert result["status"] == "pending"
         assert result["manual_start"] is False
+
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_add_to_queue_with_manual_start(
@@ -192,6 +194,7 @@ class TestPrintQueueAPI:
         assert result["archive_id"] == archive.id
         assert result["status"] == "pending"
         assert result["manual_start"] is True
+
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_add_to_queue_sanitizes_bambu_print_options_for_non_bambu_printers(
@@ -221,6 +224,7 @@ class TestPrintQueueAPI:
         assert result["vibration_cali"] is False
         assert result["layer_inspect"] is False
         assert result["timelapse"] is False
+
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_add_to_queue_with_project_id(
@@ -252,6 +256,7 @@ class TestPrintQueueAPI:
 
         row = (await db_session.execute(select(PrintQueueItem).where(PrintQueueItem.id == result["id"]))).scalar_one()
         assert row.project_id == project.id
+
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_add_to_queue_invalid_project_id_returns_404(
@@ -275,6 +280,7 @@ class TestPrintQueueAPI:
         response = await async_client.post("/api/v1/queue/", json=data)
         assert response.status_code == 404
         assert "project" in response.json()["detail"].lower()
+
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_add_to_queue_with_ams_mapping(
@@ -295,6 +301,7 @@ class TestPrintQueueAPI:
         assert result["printer_id"] == printer.id
         assert result["archive_id"] == archive.id
         assert result["ams_mapping"] == [5, -1, 2, -1]
+
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_add_to_queue_with_plate_id(
@@ -313,6 +320,7 @@ class TestPrintQueueAPI:
         assert response.status_code == 200
         result = response.json()
         assert result["plate_id"] == 3
+
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_add_to_queue_with_print_options(
@@ -813,6 +821,7 @@ class TestQueueLibraryFileSupport:
             return lib_file
 
         return _create_library_file
+
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_add_to_queue_with_library_file(
@@ -835,6 +844,7 @@ class TestQueueLibraryFileSupport:
         assert result["status"] == "pending"
         assert result["library_file_name"] == "Library Print 1"
         assert result["print_time_seconds"] == 3600
+
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_add_to_queue_library_file_with_options(
@@ -862,6 +872,7 @@ class TestQueueLibraryFileSupport:
         assert result["bed_levelling"] is False
         assert result["timelapse"] is True
         assert result["manual_start"] is True
+
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_add_to_queue_requires_archive_or_library_file(
@@ -1267,6 +1278,7 @@ class TestTargetLocationFeature:
             return item
 
         return _create_queue_item
+
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_add_to_queue_with_target_location(
@@ -1288,6 +1300,7 @@ class TestTargetLocationFeature:
         assert result["target_model"] == "X1C"
         assert result["target_location"] == "Workbench"
         assert result["printer_id"] is None
+
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_add_to_queue_location_without_model_ignored(
@@ -1795,6 +1808,7 @@ class TestAbortedStatusNormalisation:
         result = response.json()
         assert result["batch_id"] is None
         assert result["batch_name"] is None
+
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_add_to_queue_quantity_one_explicit(
@@ -1814,6 +1828,7 @@ class TestAbortedStatusNormalisation:
         result = response.json()
         assert result["batch_id"] is None
         assert result["batch_name"] is None
+
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_add_to_queue_quantity_creates_batch(
@@ -1846,6 +1861,7 @@ class TestAbortedStatusNormalisation:
             assert item["printer_id"] == printer.id
             assert item["archive_id"] == archive.id
             assert item["status"] == "pending"
+
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_add_to_queue_quantity_sequential_positions(
@@ -1872,6 +1888,7 @@ class TestAbortedStatusNormalisation:
         )
         positions = [i["position"] for i in batch_items]
         assert positions == [positions[0], positions[0] + 1, positions[0] + 2]
+
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_add_to_queue_quantity_with_print_options(

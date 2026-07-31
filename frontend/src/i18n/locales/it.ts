@@ -969,6 +969,7 @@ export default {
     savingProgress: 'Salvataggio {{current}}/{{total}}...',
     clearQueue: 'Svuota coda',
     clearHistory: 'Svuota cronologia',
+    showMoreHistory: 'Mostra altro',
     emptyQueue: 'La coda è vuota',
     position: 'Posizione',
     scheduledTime: 'Ora programmata',

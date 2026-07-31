@@ -968,6 +968,7 @@ export default {
     savingProgress: '保存中 {{current}}/{{total}}...',
     clearQueue: 'キューをクリア',
     clearHistory: '履歴をクリア',
+    showMoreHistory: 'さらに表示',
     emptyQueue: 'キューは空です',
     position: '順番',
     scheduledTime: '予定時刻',
