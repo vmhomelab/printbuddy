@@ -870,7 +870,9 @@ async def start_self_update(
         payload = {"target_image": f"docker.io/vmhomelabde/printbuddy:{target_ref}"}
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.post(f"{settings.updater_url.rstrip('/')}/update", headers=headers, json=payload, timeout=5.0)
+            response = await client.post(
+                f"{settings.updater_url.rstrip('/')}/update", headers=headers, json=payload, timeout=5.0
+            )
             response.raise_for_status()
             return response.json()
     except httpx.HTTPStatusError as exc:

@@ -109,7 +109,18 @@ async def test_update_with_target_image_pulls_beta_and_retags_compose_service(mo
             "docker.io/vmhomelabde/printbuddy:v0.2.5.1b13",
             "docker.io/vmhomelabde/printbuddy:latest",
         ],
-        ["docker", "compose", "-p", "printbuddy", "-f", str(job.compose_file), "up", "-d", "--force-recreate", "printbuddy"],
+        [
+            "docker",
+            "compose",
+            "-p",
+            "printbuddy",
+            "-f",
+            str(job.compose_file),
+            "up",
+            "-d",
+            "--force-recreate",
+            "printbuddy",
+        ],
     ]
 
 

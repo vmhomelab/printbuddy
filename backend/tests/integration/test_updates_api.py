@@ -138,7 +138,11 @@ class TestUpdatesAPI:
             patch("backend.app.api.routes.updates.settings.self_update_enabled", True, create=True),
             patch("backend.app.api.routes.updates.settings.updater_url", "http://updater:8787", create=True),
             patch("backend.app.api.routes.updates.settings.updater_token", "sidecar-token", create=True),
-            patch("backend.app.api.routes.updates._discover_target_release", new_callable=AsyncMock, return_value="v0.2.5.1b13"),
+            patch(
+                "backend.app.api.routes.updates._discover_target_release",
+                new_callable=AsyncMock,
+                return_value="v0.2.5.1b13",
+            ),
             patch("backend.app.api.routes.updates.httpx.AsyncClient", _FakeClient),
         ):
             response = await async_client.post("/api/v1/updates/self-update")
