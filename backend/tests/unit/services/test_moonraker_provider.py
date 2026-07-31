@@ -123,8 +123,8 @@ def test_moonraker_normalizes_creality_k2_cfs_box_to_ams_shape(monkeypatch):
     }
     cfs_status = {key: status[key] for key in ("box", "filament_rack", "filament_switch_sensor filament_sensor")}
     monkeypatch.setattr(client, "_query_objects", lambda object_names: base_status)
-    monkeypatch.setattr(client, "_query_cfs_status", lambda: cfs_status)
-    monkeypatch.setattr(client, "_query_fan_status", lambda: {})
+    monkeypatch.setattr(client, "_query_cfs_status", lambda *args, **kwargs: cfs_status)
+    monkeypatch.setattr(client, "_query_fan_status", lambda *args, **kwargs: {})
 
     assert client.request_status_update() is True
 
@@ -206,8 +206,8 @@ def test_moonraker_keeps_cfs_trays_when_active_filament_is_none(monkeypatch):
     }
     cfs_status = {key: status[key] for key in ("box", "filament_rack", "filament_switch_sensor filament_sensor")}
     monkeypatch.setattr(client, "_query_objects", lambda object_names: base_status)
-    monkeypatch.setattr(client, "_query_cfs_status", lambda: cfs_status)
-    monkeypatch.setattr(client, "_query_fan_status", lambda: {})
+    monkeypatch.setattr(client, "_query_cfs_status", lambda *args, **kwargs: cfs_status)
+    monkeypatch.setattr(client, "_query_fan_status", lambda *args, **kwargs: {})
 
     assert client.request_status_update() is True
 
@@ -240,9 +240,9 @@ def test_moonraker_normalizes_snapmaker_u1_nozzles_chamber_and_feed_slots(monkey
         }
     }
     monkeypatch.setattr(client, "_query_objects", lambda object_names: base_status)
-    monkeypatch.setattr(client, "_query_cfs_status", lambda: {})
-    monkeypatch.setattr(client, "_query_snapmaker_u1_status", lambda: u1_status)
-    monkeypatch.setattr(client, "_query_fan_status", lambda: {})
+    monkeypatch.setattr(client, "_query_cfs_status", lambda *args, **kwargs: {})
+    monkeypatch.setattr(client, "_query_snapmaker_u1_status", lambda *args, **kwargs: u1_status)
+    monkeypatch.setattr(client, "_query_fan_status", lambda *args, **kwargs: {})
 
     assert client.request_status_update() is True
 
@@ -290,8 +290,8 @@ def test_moonraker_complete_state_clamps_progress_and_remaining_time(monkeypatch
     }
     cfs_status = {key: status[key] for key in ("box", "filament_rack", "filament_switch_sensor filament_sensor")}
     monkeypatch.setattr(client, "_query_objects", lambda object_names: base_status)
-    monkeypatch.setattr(client, "_query_cfs_status", lambda: cfs_status)
-    monkeypatch.setattr(client, "_query_fan_status", lambda: {})
+    monkeypatch.setattr(client, "_query_cfs_status", lambda *args, **kwargs: cfs_status)
+    monkeypatch.setattr(client, "_query_fan_status", lambda *args, **kwargs: {})
 
     assert client.request_status_update() is True
 
@@ -316,8 +316,8 @@ def test_moonraker_uses_file_position_progress_when_fractional_progress_is_stale
     }
     cfs_status = {key: status[key] for key in ("box", "filament_rack", "filament_switch_sensor filament_sensor")}
     monkeypatch.setattr(client, "_query_objects", lambda object_names: base_status)
-    monkeypatch.setattr(client, "_query_cfs_status", lambda: cfs_status)
-    monkeypatch.setattr(client, "_query_fan_status", lambda: {})
+    monkeypatch.setattr(client, "_query_cfs_status", lambda *args, **kwargs: cfs_status)
+    monkeypatch.setattr(client, "_query_fan_status", lambda *args, **kwargs: {})
 
     assert client.request_status_update() is True
 
