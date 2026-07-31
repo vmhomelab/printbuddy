@@ -41,11 +41,35 @@
 
 ## What is Printbuddy?
 
-Printbuddy is a self-hosted 3D-printer management application for users who want one place to monitor, organize, and automate their printers without depending on a vendor cloud dashboard.
+Printbuddy is a self-hosted 3D printer management and monitoring platform.
 
-The app is built around provider-specific printer integrations. Bambu Lab, Moonraker/Klipper-style printers, PrusaLink, Prusa Connect, and Elegoo SDCP devices do not behave the same way, so Printbuddy keeps those transports separated behind a provider boundary instead of forcing everything through one Bambu-shaped workflow.
+It gives you one central dashboard to monitor and manage your 3D printers across different ecosystems. Printbuddy fully supports Bambu Lab printers, including their printer state, active print progress, job information, AMS/filament data, and other Bambu-specific details where available.
 
-Current app version in `main`: **0.2.5.0**.
+Besides Bambu Lab printers, Printbuddy is also designed to support other printer platforms such as:
+
+- Klipper/Moonraker printers
+- PrusaLink / PrusaConnect printers
+- Elegoo and Creality Klipper-based printers
+- additional printer types in the future
+
+The goal is to make Printbuddy a proper multi-printer operations dashboard for homelabs, print farms, and maker spaces.
+
+## What is the difference?
+
+The main difference is scope.
+
+Bambuddy is Bambu-only. Printbuddy fully supports Bambu Lab printers too, but it does not stop there.
+
+Printbuddy takes the Bambu functionality and expands the idea into a vendor-neutral 3D printer management platform. That means you can manage Bambu printers alongside Klipper/Moonraker, PrusaLink, and other supported printer types from one interface.
+
+| Area | Printbuddy | Bambuddy |
+|---|---|---|
+| Bambu Lab support | Fully supported | Fully focused on Bambu |
+| Best use case | One dashboard for all your printers | Dedicated Bambu-only tool |
+| Long-term direction | Vendor-neutral control center | Bambu-focused utility |
+| Other printer brands | Supported / planned depending on backend | Not the goal |
+| Scope | Multi-vendor printer management platform | Bambu-specific companion tool |
+
 
 ---
 
