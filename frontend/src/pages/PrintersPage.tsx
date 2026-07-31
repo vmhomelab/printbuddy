@@ -71,6 +71,7 @@ import {
   Download,
   Upload,
   ScanSearch,
+  ScanEye,
   CheckCircle,
   CheckSquare,
   XCircle,
@@ -96,7 +97,7 @@ import {
 import { useNavigate } from 'react-router-dom';
 import { api, discoveryApi, firmwareApi, withStreamToken, ApiError, getAuthToken } from '../api/client';
 import { formatDateOnly, formatETA, formatDuration, parseUTCDate } from '../utils/date';
-import type { Printer, PrinterCreate, PrinterStatus, AMSUnit, DiscoveredPrinter, FirmwareUpdateInfo, FirmwareUploadStatus, LinkedSpoolInfo, SpoolAssignment, HMSError, InventorySpool, SmartPlug, PrinterDiagnosticResult, PandaBreathStatus } from '../api/client';
+import type { Printer, PrinterCreate, PrinterStatus, AMSUnit, DiscoveredPrinter, FirmwareUpdateInfo, FirmwareUploadStatus, LinkedSpoolInfo, SpoolAssignment, HMSError, InventorySpool, SmartPlug, PrinterDiagnosticResult, PandaBreathStatus, AppSettings } from '../api/client';
 import { Card, CardContent } from '../components/Card';
 import { Button } from '../components/Button';
 import { ConfirmModal } from '../components/ConfirmModal';
@@ -277,6 +278,23 @@ function applyPrinterCardOrder<T extends { id: number }>(printers: T[], printerC
     if (aIndex !== bIndex) return aIndex - bIndex;
     return printers.indexOf(a) - printers.indexOf(b);
   });
+}
+
+function parseObicoEnabledPrinterIds(raw: string | null | undefined): number[] | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed)
+      ? parsed.filter((id): id is number => Number.isInteger(id))
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function stringifyObicoEnabledPrinterIds(ids: number[], allPrinterIds: number[]): string {
+  const unique = Array.from(new Set(ids)).filter((id) => allPrinterIds.includes(id));
+  return unique.length === allPrinterIds.length ? '' : JSON.stringify(unique);
 }
 
 function updatePrinterCardOrderForSubset(currentOrder: number[], allPrinterIds: number[], subsetIds: number[], nextSubsetOrder: number[]) {
@@ -1962,6 +1980,8 @@ function PrinterCard({
   dryingPresets = DRYING_PRESETS,
   requirePlateClear = false,
   pandaBreathState,
+  obicoSettings,
+  allPrinterIds = [],
   layoutEditing = false,
   selectionMode = false,
   isSelected = false,
@@ -1999,6 +2019,8 @@ function PrinterCard({
   dryingPresets?: Record<string, { n3f: number; n3s: number; n3f_hours: number; n3s_hours: number }>;
   requirePlateClear?: boolean;
   pandaBreathState?: PandaBreathStatus['state'] | null;
+  obicoSettings?: Pick<AppSettings, 'obico_enabled' | 'obico_ml_url' | 'obico_enabled_printers' | 'external_url'>;
+  allPrinterIds?: number[];
   layoutEditing?: boolean;
   selectionMode?: boolean;
   isSelected?: boolean;
@@ -2113,6 +2135,49 @@ function PrinterCard({
     refetchInterval: 5 * 60 * 1000,
     enabled: checkPrinterFirmware && hasPermission('firmware:read'),
   });
+
+  const obicoEnabledPrinterIds = useMemo(
+    () => parseObicoEnabledPrinterIds(obicoSettings?.obico_enabled_printers),
+    [obicoSettings?.obico_enabled_printers]
+  );
+  const isObicoPrinterEnabled = obicoEnabledPrinterIds === null || obicoEnabledPrinterIds.includes(printer.id);
+  const isObicoGloballyEnabled = obicoSettings?.obico_enabled === true;
+  const isObicoConfigured = Boolean(obicoSettings?.obico_ml_url?.trim() && obicoSettings?.external_url?.trim());
+  const canUpdateObicoSettings = hasPermission('settings:update');
+
+  const obicoPrinterToggleMutation = useMutation({
+    mutationFn: (nextEnabled: boolean) => {
+      const currentIds = obicoEnabledPrinterIds === null ? allPrinterIds : obicoEnabledPrinterIds;
+      const nextIds = nextEnabled
+        ? [...currentIds, printer.id]
+        : currentIds.filter((id) => id !== printer.id);
+      return api.updateSettings({
+        obico_enabled_printers: stringifyObicoEnabledPrinterIds(nextIds, allPrinterIds),
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['settings'] });
+      queryClient.invalidateQueries({ queryKey: ['obico-status'] });
+      showToast(t('printers.aiMonitoring.saved', 'AI monitoring updated'), 'success');
+    },
+    onError: (error) => {
+      showToast(error instanceof Error ? error.message : t('printers.aiMonitoring.saveFailed', 'Failed to update AI monitoring'), 'error');
+    },
+  });
+
+  const handleToggleObicoPrinter = () => {
+    if (!obicoSettings) return;
+    if (!isObicoGloballyEnabled) {
+      navigate('/settings?tab=failure-detection');
+      return;
+    }
+    if (!isObicoConfigured && isObicoPrinterEnabled) {
+      navigate('/settings?tab=failure-detection');
+      return;
+    }
+    if (!canUpdateObicoSettings || obicoPrinterToggleMutation.isPending) return;
+    obicoPrinterToggleMutation.mutate(!isObicoPrinterEnabled);
+  };
 
   // Collect unique tray_info_idx values for cloud filament info lookup
   const trayInfoIds = useMemo(() => {
@@ -3329,6 +3394,55 @@ function PrinterCard({
                         className={`w-2 h-2 rounded-full flex-shrink-0 ${pipColor}`}
                         title={pipTitle}
                       />
+                    );
+                  })()}
+                  {obicoSettings && (() => {
+                    const unavailable = !isObicoGloballyEnabled;
+                    const misconfigured = isObicoGloballyEnabled && isObicoPrinterEnabled && !isObicoConfigured;
+                    const enabled = isObicoGloballyEnabled && isObicoConfigured && isObicoPrinterEnabled;
+                    const disabled = isObicoGloballyEnabled && !isObicoPrinterEnabled;
+                    const label = unavailable
+                      ? t('printers.aiMonitoring.unavailableShort', 'AI unavailable')
+                      : misconfigured
+                        ? t('printers.aiMonitoring.warningShort', 'AI warning')
+                        : enabled
+                          ? t('printers.aiMonitoring.onShort', 'AI On')
+                          : t('printers.aiMonitoring.offShort', 'AI Off');
+                    const title = unavailable
+                      ? t('printers.aiMonitoring.globalDisabledTooltip', 'Global failure detection is disabled. Enable it in Settings → Failure Detection.')
+                      : misconfigured
+                        ? t('printers.aiMonitoring.notConfiguredTooltip', 'AI failure detection needs an ML URL and External URL. Open Settings → Failure Detection.')
+                        : !canUpdateObicoSettings
+                          ? t('settings.toast.noPermissionUpdate', 'You do not have permission to update settings')
+                          : disabled
+                            ? t('printers.aiMonitoring.disabledTooltip', 'AI monitoring is disabled for this printer. Click to enable.')
+                            : t('printers.aiMonitoring.enabledTooltip', 'AI monitoring is enabled for this printer. Click to disable.');
+                    const classes = unavailable
+                      ? 'border-gray-600 bg-gray-800/60 text-bambu-gray hover:text-white'
+                      : misconfigured
+                        ? 'border-amber-500/60 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20'
+                        : enabled
+                          ? 'border-bambu-green/60 bg-bambu-green/10 text-bambu-green hover:bg-bambu-green/20'
+                          : 'border-gray-600 bg-gray-800/60 text-bambu-gray hover:text-white';
+                    return (
+                      <button
+                        type="button"
+                        onClick={handleToggleObicoPrinter}
+                        disabled={obicoPrinterToggleMutation.isPending || (!canUpdateObicoSettings && isObicoGloballyEnabled && isObicoConfigured)}
+                        title={title}
+                        aria-label={title}
+                        className={`inline-flex h-6 flex-shrink-0 items-center gap-1 rounded-full border px-2 text-[11px] font-semibold leading-none transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${classes}`}
+                      >
+                        {obicoPrinterToggleMutation.isPending ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : misconfigured ? (
+                          <AlertTriangle className="h-3 w-3" />
+                        ) : (
+                          <ScanEye className="h-3 w-3" />
+                        )}
+                        <span className="hidden sm:inline">{label}</span>
+                        <span className="sm:hidden">AI</span>
+                      </button>
                     );
                   })()}
                 </div>
@@ -7997,6 +8111,12 @@ export function PrintersPage() {
     queryFn: api.getUiPreferences,
   });
 
+  const { data: obicoSettings } = useQuery({
+    queryKey: ['settings'],
+    queryFn: api.getSettings,
+    enabled: hasPermission('settings:read'),
+  });
+
   const { data: pandaBreathStatus } = useQuery({
     queryKey: ['panda-breath-status'],
     queryFn: api.getPandaBreathStatus,
@@ -8824,6 +8944,8 @@ export function PrintersPage() {
         dryingPresets={effectiveDryingPresets}
         requirePlateClear={settings?.require_plate_clear === true}
         pandaBreathState={getAssignedPandaBreathState(printer.id, settings?.panda_breath_printer_assignments, pandaBreathStatus)}
+        obicoSettings={obicoSettings}
+        allPrinterIds={allPrinterIds}
         layoutEditing={layoutEditing}
         selectionMode={selectionMode}
         isSelected={selectedPrinterIds.has(printer.id)}
