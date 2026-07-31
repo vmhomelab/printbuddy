@@ -561,55 +561,56 @@ class MoonrakerPrinterClient:
             normalized = normalized[len("gcodes/") :]
         return normalized
 
-    def _available_fan_objects(self) -> list[str]:
+    def _available_objects(self) -> list[str]:
         objects = self._get("printer/objects/list")
         available = objects.get("objects", []) if isinstance(objects, dict) else []
-        fan_objects = [
+        return [name for name in available if isinstance(name, str)] if isinstance(available, list) else []
+
+    def _available_fan_objects(self, available: list[str] | None = None) -> list[str]:
+        if available is None:
+            available = self._available_objects()
+        return [
             str(name)
             for name in available
-            if isinstance(name, str)
-            and (name == "fan" or name.startswith("fan_generic ") or name.startswith("heater_fan "))
+            if name == "fan" or name.startswith("fan_generic ") or name.startswith("heater_fan ")
         ]
-        return fan_objects
 
-    def _query_fan_status(self) -> dict[str, Any]:
+    def _query_fan_status(self, available: list[str] | None = None) -> dict[str, Any]:
         try:
-            fan_objects = self._available_fan_objects()
+            fan_objects = self._available_fan_objects(available)
             if not fan_objects:
                 return {}
             return self._query_objects(fan_objects)
         except Exception:  # noqa: BLE001 - fans are optional; keep core status healthy if discovery fails
             return {}
 
-    def _available_cfs_objects(self) -> list[str]:
-        objects = self._get("printer/objects/list")
-        available = objects.get("objects", []) if isinstance(objects, dict) else []
+    def _available_cfs_objects(self, available: list[str] | None = None) -> list[str]:
+        if available is None:
+            available = self._available_objects()
         wanted = ["box", "filament_rack", "filament_switch_sensor filament_sensor"]
         return [name for name in wanted if name in available]
 
-    def _query_cfs_status(self) -> dict[str, Any]:
+    def _query_cfs_status(self, available: list[str] | None = None) -> dict[str, Any]:
         try:
-            cfs_objects = self._available_cfs_objects()
+            cfs_objects = self._available_cfs_objects(available)
             if not cfs_objects:
                 return {}
             return self._query_objects(cfs_objects)
         except Exception:  # noqa: BLE001 - CFS is optional; keep core Moonraker status healthy
             return {}
 
-    def _available_snapmaker_u1_objects(self) -> list[str]:
+    def _available_snapmaker_u1_objects(self, available: list[str] | None = None) -> list[str]:
         """Return Snapmaker U1 specific objects plus discovered extruders/sensors.
 
-        U1's public Klipper config exposes four extruder objects, two
+        U1's public Klipper code exposes four extruder objects, two
         ``filament_feed`` modules, and ``temperature_sensor cavity`` for chamber
         temperature. Object discovery keeps this harmless for normal Moonraker
         printers and allows newer device-local spool metadata objects to be used
         when present.
         """
-        objects = self._get("printer/objects/list")
-        available = objects.get("objects", []) if isinstance(objects, dict) else []
-        if not isinstance(available, list):
-            return []
-        available_set = {name for name in available if isinstance(name, str)}
+        if available is None:
+            available = self._available_objects()
+        available_set = set(available)
         wanted = [
             "temperature_sensor cavity",
             "filament_feed left",
@@ -626,9 +627,9 @@ class MoonrakerPrinterClient:
         )
         return [name for name in dict.fromkeys(wanted) if name in available_set]
 
-    def _query_snapmaker_u1_status(self) -> dict[str, Any]:
+    def _query_snapmaker_u1_status(self, available: list[str] | None = None) -> dict[str, Any]:
         try:
-            u1_objects = self._available_snapmaker_u1_objects()
+            u1_objects = self._available_snapmaker_u1_objects(available)
             if not u1_objects:
                 return {}
             return self._query_objects(u1_objects)
@@ -1165,13 +1166,17 @@ class MoonrakerPrinterClient:
         status = self._query_objects(
             ["webhooks", "print_stats", "virtual_sdcard", "display_status", "extruder", "heater_bed"]
         )
-        fan_status = self._query_fan_status()
+        try:
+            available_objects = self._available_objects()
+        except Exception:  # noqa: BLE001 - optional object discovery must not break core status polling
+            available_objects = []
+        fan_status = self._query_fan_status(available_objects)
         if fan_status:
             status.update(fan_status)
-        cfs_status = self._query_cfs_status()
+        cfs_status = self._query_cfs_status(available_objects)
         if cfs_status:
             status.update(cfs_status)
-        snapmaker_u1_status = self._query_snapmaker_u1_status()
+        snapmaker_u1_status = self._query_snapmaker_u1_status(available_objects)
         if snapmaker_u1_status:
             status.update(snapmaker_u1_status)
         self.state.connected = True
