@@ -191,6 +191,9 @@ export function useWebSocket() {
     switch (message.type) {
       case 'printer_status':
         if (message.printer_id !== undefined && message.data) {
+          window.dispatchEvent(new CustomEvent('printbuddy-printer-status', {
+            detail: { printer_id: message.printer_id, data: message.data },
+          }));
           throttledPrinterStatusUpdate(message.printer_id, message.data);
         }
         break;

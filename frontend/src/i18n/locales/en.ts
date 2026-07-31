@@ -969,6 +969,7 @@ export default {
     savingProgress: 'Saving {{current}}/{{total}}...',
     clearQueue: 'Clear Queue',
     clearHistory: 'Clear History',
+    showMoreHistory: 'Show more',
     emptyQueue: 'Queue is empty',
     position: 'Position',
     scheduledTime: 'Scheduled Time',

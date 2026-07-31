@@ -68,6 +68,9 @@ import { QueueStatsBar } from '../components/QueueStatsBar';
 import { CompactHistoryRow } from '../components/CompactHistoryRow';
 import { QueueTimelineView } from '../components/QueueTimelineView';
 
+const HISTORY_PAGE_SIZE = 50;
+const HISTORY_STATUSES = ['completed', 'failed', 'skipped', 'cancelled'];
+
 function formatWeight(g: number, useKg = false): string {
   if (useKg && g >= 1000) return `${(g / 1000).toFixed(1)}kg`;
   return `${Math.round(g)}g`;
@@ -755,6 +758,9 @@ export function QueuePage() {
   const [viewMode, setViewMode] = useState<'list' | 'timeline'>(() => {
     return (localStorage.getItem('queue.viewMode') as 'list' | 'timeline') || 'list';
   });
+  const [historyOffset, setHistoryOffset] = useState(0);
+  const [loadedHistoryItems, setLoadedHistoryItems] = useState<PrintQueueItem[]>([]);
+  const [historyTotal, setHistoryTotal] = useState(0);
 
   // Persist sort settings to localStorage
   useEffect(() => {
@@ -793,11 +799,43 @@ export function QueuePage() {
 
   const timeFormat: TimeFormat = settings?.time_format || 'system';
 
+  const isHistoryStatusFilter = HISTORY_STATUSES.includes(filterStatus);
+  const activeStatusFilter = filterStatus && !isHistoryStatusFilter ? filterStatus : undefined;
+  const historyStatusFilter = isHistoryStatusFilter ? filterStatus : undefined;
+  const apiFilterPrinter = filterPrinter === null ? undefined : filterPrinter;
+
   const { data: queue, isLoading } = useQuery({
-    queryKey: ['queue', filterPrinter, filterStatus],
-    queryFn: () => api.getQueue(filterPrinter || undefined, filterStatus || undefined),
+    queryKey: ['queue', filterPrinter, activeStatusFilter, 'active'],
+    queryFn: () => api.getQueue(apiFilterPrinter, activeStatusFilter, undefined, false),
     refetchInterval: 5000,
   });
+
+  const { data: historyPage, isFetching: isHistoryFetching } = useQuery({
+    queryKey: ['queueHistory', filterPrinter, historyStatusFilter, historyOffset],
+    queryFn: () => api.getQueueHistory({
+      printerId: apiFilterPrinter,
+      status: historyStatusFilter,
+      limit: HISTORY_PAGE_SIZE,
+      offset: historyOffset,
+    }),
+    refetchInterval: 5000,
+  });
+
+  useEffect(() => {
+    setHistoryOffset(0);
+    setLoadedHistoryItems([]);
+    setHistoryTotal(0);
+  }, [filterPrinter, historyStatusFilter]);
+
+  useEffect(() => {
+    if (!historyPage) return;
+    setHistoryTotal(historyPage.total);
+    setLoadedHistoryItems((current) => {
+      if (historyPage.offset === 0) return historyPage.items;
+      const seen = new Set(current.map((item) => item.id));
+      return [...current, ...historyPage.items.filter((item) => !seen.has(item.id))];
+    });
+  }, [historyPage]);
 
   const { data: printers } = useQuery({
     queryKey: ['printers'],
@@ -824,6 +862,8 @@ export function QueuePage() {
     mutationFn: (id: number) => api.removeFromQueue(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['queue'] });
+      queryClient.invalidateQueries({ queryKey: ['queueHistory'] });
+      setHistoryOffset(0);
       showToast(t('queue.toast.removed'));
     },
     onError: () => showToast(t('queue.toast.removeFailed'), 'error'),
@@ -885,16 +925,29 @@ export function QueuePage() {
 
   const clearHistoryMutation = useMutation({
     mutationFn: async () => {
-      const historyItems = queue?.filter(i =>
-        ['completed', 'failed', 'skipped', 'cancelled'].includes(i.status)
-      ) || [];
-      for (const item of historyItems) {
-        await api.removeFromQueue(item.id);
+      let deleted = 0;
+      while (true) {
+        const page = await api.getQueueHistory({
+          printerId: apiFilterPrinter,
+          status: historyStatusFilter,
+          limit: 200,
+          offset: 0,
+        });
+        if (page.items.length === 0) break;
+        for (const item of page.items) {
+          await api.removeFromQueue(item.id);
+          deleted += 1;
+        }
+        if (page.items.length >= page.total) break;
       }
-      return historyItems.length;
+      return deleted;
     },
     onSuccess: (count) => {
       queryClient.invalidateQueries({ queryKey: ['queue'] });
+      queryClient.invalidateQueries({ queryKey: ['queueHistory'] });
+      setHistoryOffset(0);
+      setLoadedHistoryItems([]);
+      setHistoryTotal(0);
       showToast(t('queue.toast.historyCleared', { count }));
     },
     onError: () => showToast(t('queue.toast.clearHistoryFailed'), 'error'),
@@ -1077,7 +1130,7 @@ export function QueuePage() {
   }, [activePrinterIds, printerStatusQueries]);
 
   const historyItems = useMemo(() => {
-    let items = queue?.filter(i => ['completed', 'failed', 'skipped', 'cancelled'].includes(i.status)) || [];
+    let items = loadedHistoryItems;
     if (filterLocation) {
       items = items.filter(matchesLocationFilter);
     }
@@ -1095,7 +1148,7 @@ export function QueuePage() {
       }
       return historySortAsc ? -cmp : cmp;
     });
-  }, [queue, historySortBy, historySortAsc, matchesLocationFilter, filterLocation]);
+  }, [loadedHistoryItems, historySortBy, historySortAsc, matchesLocationFilter, filterLocation]);
 
   // Calculate total queue time
   const totalQueueTime = useMemo(() => {
@@ -1143,7 +1196,7 @@ export function QueuePage() {
         pendingCount={pendingItems.length}
         totalTime={totalQueueTime}
         totalWeight={totalWeight}
-        historyCount={historyItems.length}
+        historyCount={historyTotal || historyItems.length}
         t={t}
       />
 
@@ -1248,7 +1301,7 @@ export function QueuePage() {
 
       {isLoading ? (
         <div className="text-center py-12 text-bambu-gray">{t('common.loading')}</div>
-      ) : queue?.length === 0 ? (
+      ) : (queue?.length || 0) === 0 && historyItems.length === 0 ? (
         <Card className="p-12 text-center border-dashed">
           <Calendar className="w-16 h-16 text-bambu-gray mx-auto mb-4 opacity-50" />
           <h3 className="text-xl font-medium text-white mb-2">{t('queue.empty.title')}</h3>
@@ -1432,7 +1485,7 @@ export function QueuePage() {
                   {historyCollapsed ? <ChevronRight className="w-4 h-4 sm:w-5 sm:h-5" /> : <ChevronDown className="w-4 h-4 sm:w-5 sm:h-5" />}
                   {t('queue.sections.history')}
                   <span className="text-xs sm:text-sm font-normal text-bambu-gray">
-                    ({t('queue.itemCount', { count: historyItems.length })})
+                    ({t('queue.itemCount', { count: historyTotal || historyItems.length })})
                   </span>
                 </button>
                 {!historyCollapsed && (
@@ -1460,7 +1513,7 @@ export function QueuePage() {
               </div>
               {!historyCollapsed && (
                 <div className="space-y-1.5 sm:space-y-2">
-                  {historyItems.slice(0, 50).map((item) => (
+                  {historyItems.map((item) => (
                     <CompactHistoryRow
                       key={item.id}
                       item={item}
@@ -1472,6 +1525,18 @@ export function QueuePage() {
                       t={t}
                     />
                   ))}
+                  {historyItems.length < historyTotal && (
+                    <div className="pt-3 text-center">
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => setHistoryOffset(historyItems.length)}
+                        disabled={isHistoryFetching}
+                      >
+                        {isHistoryFetching ? t('common.loading') : t('queue.showMoreHistory')}
+                      </Button>
+                    </div>
+                  )}
                 </div>
               )}
             </div>

@@ -1988,6 +1988,13 @@ export interface PrintQueueItemUpdate {
   gcode_injection?: boolean;
 }
 
+export interface PrintQueueHistoryResponse {
+  items: PrintQueueItem[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
 export interface PrintQueueBulkUpdate {
   item_ids: number[];
   printer_id?: number | null;
@@ -4805,12 +4812,21 @@ export const api = {
     }),
 
   // Print Queue
-  getQueue: (printerId?: number, status?: string, targetModel?: string) => {
+  getQueue: (printerId?: number, status?: string, targetModel?: string, includeHistory = true) => {
     const params = new URLSearchParams();
-    if (printerId) params.set('printer_id', String(printerId));
+    if (printerId !== undefined) params.set('printer_id', String(printerId));
     if (status) params.set('status', status);
     if (targetModel) params.set('target_model', targetModel);
+    if (!includeHistory) params.set('include_history', 'false');
     return request<PrintQueueItem[]>(`/queue/?${params}`);
+  },
+  getQueueHistory: (opts?: { printerId?: number; status?: string; limit?: number; offset?: number }) => {
+    const params = new URLSearchParams();
+    if (opts?.printerId !== undefined) params.set('printer_id', String(opts.printerId));
+    if (opts?.status) params.set('status', opts.status);
+    params.set('limit', String(opts?.limit ?? 50));
+    params.set('offset', String(opts?.offset ?? 0));
+    return request<PrintQueueHistoryResponse>(`/queue/history?${params}`);
   },
   getQueueItem: (id: number) => request<PrintQueueItem>(`/queue/${id}`),
   addToQueue: (data: PrintQueueItemCreate) =>
