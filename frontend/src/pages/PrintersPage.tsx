@@ -119,7 +119,7 @@ import { SkipObjectsModal, SkipObjectsIcon } from '../components/SkipObjectsModa
 import { FileUploadModal } from '../components/FileUploadModal';
 import { PrintModal } from '../components/PrintModal';
 import { PrinterInfoModal } from '../components/PrinterInfoModal';
-import { getGlobalTrayId, getFillBarColor, getSpoolmanFillLevel, getFallbackSpoolTag, isBambuLabSpool } from '../utils/amsHelpers';
+import { getGlobalTrayId, getFillBarColor, getSpoolmanFillLevel, getFallbackSpoolTag, isBambuLabSpool, resolveLoadedFilamentInfo } from '../utils/amsHelpers';
 import { getDefaultPrinterImage, getPrinterImage, getWifiStrength, filterCompatibleQueueItems } from '../utils/printer';
 import { appAssetPath } from '../utils/assetPaths';
 import { FilamentSlotCircle } from '../components/FilamentSlotCircle';
@@ -2120,17 +2120,18 @@ function PrinterCard({
   // inventory spool for local usage tracking.
   const supportsSpoolAssignment = true;
   const prusaLinkWebUrl = getPrusaLinkWebUrl(printer);
-  const loadedSpoolmanSlotAssignment = supportsSpoolAssignment && spoolmanEnabled && !spoolmanLoading
-    ? spoolmanSlotAssignments?.find(a => a.printer_id === printer.id && a.ams_id === 255 && a.tray_id === 0)
+  const resolvedLoadedFilament = useMemo(() => resolveLoadedFilamentInfo({
+    printer,
+    status,
+    getLocalAssignment: onGetAssignment,
+    spoolmanSpools: spoolmanSpools ?? [],
+    spoolmanSlotAssignments: spoolmanSlotAssignments ?? [],
+  }), [onGetAssignment, printer, spoolmanSlotAssignments, spoolmanSpools, status]);
+  const loadedSpoolmanSlotAssignment = resolvedLoadedFilament?.source === 'spoolman'
+    ? spoolmanSlotAssignments?.find(a => a.printer_id === printer.id && a.ams_id === resolvedLoadedFilament.amsId && a.tray_id === resolvedLoadedFilament.trayId)
     : undefined;
-  const loadedSpoolmanSpool = loadedSpoolmanSlotAssignment
-    ? spoolmanSpools?.find(s => s.id === loadedSpoolmanSlotAssignment.spoolman_spool_id)
-    : undefined;
-  const loadedLocalSpoolAssignment = supportsSpoolAssignment && !spoolmanEnabled
-    ? onGetAssignment?.(printer.id, -1, 0)
-    : undefined;
-  const loadedSpool = spoolmanEnabled ? loadedSpoolmanSpool : loadedLocalSpoolAssignment?.spool;
-  const hasLoadedSpoolAssignment = spoolmanEnabled ? !!loadedSpoolmanSlotAssignment : !!loadedLocalSpoolAssignment;
+  const loadedSpool = resolvedLoadedFilament?.spool ?? undefined;
+  const hasLoadedSpoolAssignment = !!resolvedLoadedFilament?.spool;
   const loadedSpoolColor = loadedSpool?.rgba
     ? `#${loadedSpool.rgba.replace(/^#/, '').slice(0, 6)}`
     : undefined;

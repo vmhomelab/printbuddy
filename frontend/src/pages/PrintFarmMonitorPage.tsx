@@ -29,11 +29,11 @@ import {
   type Printer,
   type PrinterMaintenanceOverview,
   type PrinterStatus,
-  type SpoolAssignment,
 } from '../api/client';
 import { getPrinterImage } from '../utils/printer';
 import { classifyPrinterStatus } from '../utils/printerStatus';
 import { appAssetPath } from '../utils/assetPaths';
+import { resolveLoadedFilamentInfo, type ResolvedLoadedFilamentInfo, type SpoolmanSlotAssignmentLike } from '../utils/amsHelpers';
 import { useTheme } from '../contexts/ThemeContext';
 
 interface MonitorPrinter {
@@ -42,22 +42,6 @@ interface MonitorPrinter {
 }
 
 type NormalizedState = 'printing' | 'idle' | 'paused' | 'stopped' | 'offline' | 'error';
-
-type SpoolmanSlotAssignmentRow = {
-  printer_id: number;
-  printer_name: string | null;
-  ams_id: number;
-  tray_id: number;
-  spoolman_spool_id: number;
-  ams_label: string | null;
-};
-
-interface LoadedFilamentInfo {
-  material: string;
-  detail: string;
-  color?: string | null;
-  remainingPct?: number | null;
-}
 
 interface MonitorAlert {
   icon: typeof AlertTriangle;
@@ -195,60 +179,6 @@ function displaySpoolColor(color: string | null | undefined): string | null {
   return normalized?.startsWith('#') ? normalized.toUpperCase() : normalized;
 }
 
-function getLoadedFilamentInfo(
-  item: MonitorPrinter,
-  localAssignments: SpoolAssignment[],
-  spoolmanSpools: InventorySpool[],
-  spoolmanSlotAssignments: SpoolmanSlotAssignmentRow[],
-): LoadedFilamentInfo | null {
-  const { printer, status } = item;
-
-  const loadedLocal = localAssignments.find((assignment) => assignment.printer_id === printer.id && assignment.ams_id === -1 && assignment.tray_id === 0)?.spool;
-  if (loadedLocal) {
-    return {
-      material: spoolLabel(loadedLocal),
-      detail: 'Loaded spool',
-      color: loadedLocal.rgba,
-      remainingPct: spoolRemainingPct(loadedLocal),
-    };
-  }
-
-  const loadedSpoolmanAssignment = spoolmanSlotAssignments.find((assignment) => assignment.printer_id === printer.id && assignment.ams_id === 255 && assignment.tray_id === 0);
-  const loadedSpoolman = loadedSpoolmanAssignment ? spoolmanSpools.find((spool) => spool.id === loadedSpoolmanAssignment.spoolman_spool_id) : undefined;
-  if (loadedSpoolman) {
-    return {
-      material: spoolLabel(loadedSpoolman),
-      detail: 'Loaded spool',
-      color: loadedSpoolman.rgba,
-      remainingPct: spoolRemainingPct(loadedSpoolman),
-    };
-  }
-
-  const virtualTray = status?.vt_tray?.find((tray) => tray.tray_type || tray.tray_sub_brands || tray.tray_color);
-  if (virtualTray) {
-    return {
-      material: [virtualTray.tray_type, virtualTray.tray_sub_brands].filter(Boolean).join(' ') || 'External filament',
-      detail: 'External spool',
-      color: virtualTray.tray_color,
-      remainingPct: typeof virtualTray.remain === 'number' ? virtualTray.remain : null,
-    };
-  }
-
-  const amsTray = status?.ams
-    ?.flatMap((ams) => ams.tray.map((tray) => ({ amsId: ams.id, tray })))
-    .find(({ tray }) => tray.tray_type || tray.tray_sub_brands || tray.tray_color);
-  if (amsTray) {
-    return {
-      material: [amsTray.tray.tray_type, amsTray.tray.tray_sub_brands].filter(Boolean).join(' ') || `AMS ${amsTray.amsId} tray ${amsTray.tray.id}`,
-      detail: `AMS ${amsTray.amsId} tray ${amsTray.tray.id}`,
-      color: amsTray.tray.tray_color,
-      remainingPct: typeof amsTray.tray.remain === 'number' ? amsTray.tray.remain : null,
-    };
-  }
-
-  return null;
-}
-
 function getLowSpoolAlerts(spools: InventorySpool[], defaultThreshold: number): MonitorAlert[] {
   return spools
     .filter((spool) => !spool.archived_at)
@@ -367,7 +297,7 @@ function StatTile({ icon: Icon, label, value, theme, tone = 'blue', suffix }: { 
   );
 }
 
-function PrinterCard({ item, loadedFilament, theme }: { item: MonitorPrinter; loadedFilament: LoadedFilamentInfo | null; theme: MonitorThemeClasses }) {
+function PrinterCard({ item, loadedFilament, theme }: { item: MonitorPrinter; loadedFilament: ResolvedLoadedFilamentInfo | null; theme: MonitorThemeClasses }) {
   const { printer, status } = item;
   const state = normalizeState(status);
   const progress = status?.progress === null || status?.progress === undefined ? null : Math.min(100, Math.max(0, Math.round(status.progress)));
@@ -607,7 +537,13 @@ export function PrintFarmMonitorPage() {
   });
 
   const monitorPrinters = useMemo<MonitorPrinter[]>(() => printers.map((printer, index) => ({ printer, status: statusQueries[index]?.data })), [printers, statusQueries]);
-  const loadedFilaments = useMemo(() => new Map(monitorPrinters.map((item) => [item.printer.id, getLoadedFilamentInfo(item, localAssignments, spoolmanSpools, spoolmanSlotAssignments)])), [localAssignments, monitorPrinters, spoolmanSlotAssignments, spoolmanSpools]);
+  const loadedFilaments = useMemo(() => new Map(monitorPrinters.map((item) => [item.printer.id, resolveLoadedFilamentInfo({
+    printer: item.printer,
+    status: item.status,
+    localAssignments,
+    spoolmanSpools,
+    spoolmanSlotAssignments: spoolmanSlotAssignments as SpoolmanSlotAssignmentLike[],
+  })])), [localAssignments, monitorPrinters, spoolmanSlotAssignments, spoolmanSpools]);
   const printing = monitorPrinters.filter((item) => normalizeState(item.status) === 'printing');
   const paused = monitorPrinters.filter((item) => normalizeState(item.status) === 'paused');
   const stopped = monitorPrinters.filter((item) => normalizeState(item.status) === 'stopped');

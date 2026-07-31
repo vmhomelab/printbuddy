@@ -3,6 +3,7 @@
  * These functions handle color normalization, slot labeling, and tray ID calculations
  * for AMS, AMS-HT, and external spool configurations.
  */
+import type { AMSTray, AMSUnit, InventorySpool, Printer, PrinterStatus, SpoolAssignment } from '../api/client';
 import { parseUTCDate } from './date';
 
 /**
@@ -269,4 +270,229 @@ export function isBambuLabSpool(tray: {
   if (tray.tray_uuid && tray.tray_uuid !== '00000000000000000000000000000000') return true;
   if (tray.tag_uid && tray.tag_uid !== '0000000000000000') return true;
   return false;
+}
+
+export interface SpoolmanSlotAssignmentLike {
+  printer_id: number;
+  printer_name?: string | null;
+  ams_id: number;
+  tray_id: number;
+  spoolman_spool_id: number;
+  ams_label?: string | null;
+}
+
+export interface ResolvedLoadedFilamentInfo {
+  material: string;
+  detail: string;
+  color?: string | null;
+  remainingPct?: number | null;
+  source: 'spoolman' | 'inventory' | 'telemetry';
+  amsId: number;
+  trayId: number;
+  globalTrayId: number;
+  tray?: AMSTray | null;
+  spool?: InventorySpool | null;
+}
+
+export interface ResolveLoadedFilamentInfoInput {
+  printer: Pick<Printer, 'id' | 'serial_number'>;
+  status?: PrinterStatus;
+  localAssignments?: SpoolAssignment[];
+  getLocalAssignment?: (printerId: number, amsId: number, trayId: number) => SpoolAssignment | undefined;
+  spoolmanSpools: InventorySpool[];
+  spoolmanSlotAssignments: SpoolmanSlotAssignmentLike[];
+}
+
+function spoolLabel(spool: InventorySpool): string {
+  return [spool.brand, spool.material, spool.subtype, spool.color_name].filter(Boolean).join(' ');
+}
+
+function spoolRemainingPct(spool: InventorySpool): number | null {
+  if (!spool.label_weight || spool.label_weight <= 0) return null;
+  return Math.round((Math.max(0, spool.label_weight - (spool.weight_used ?? 0)) / spool.label_weight) * 100);
+}
+
+function trayLabel(amsId: number, trayId: number, ams?: AMSUnit | null): string {
+  if (amsId === -1) return 'Loaded spool';
+  if (amsId === 255) return 'External spool';
+  return `${ams?.is_ams_ht ? 'AMS-HT' : 'AMS'} ${amsId} tray ${trayId}`;
+}
+
+function trayMaterial(tray: AMSTray | null | undefined, fallback: string): string {
+  if (!tray) return fallback;
+  return [tray.tray_type, tray.tray_sub_brands].filter(Boolean).join(' ') || fallback;
+}
+
+function findTrayBySlot(ams: AMSUnit, trayId: number): AMSTray | undefined {
+  return ams.tray.find((tray) => tray.id === trayId) ?? ams.tray[trayId];
+}
+
+function activeSlotCandidates(status?: PrinterStatus): Array<{ amsId: number; trayId: number; globalTrayId: number; ams?: AMSUnit; tray?: AMSTray }> {
+  if (!status) return [];
+  const trayNow = status.tray_now;
+  const candidates: Array<{ amsId: number; trayId: number; globalTrayId: number; ams?: AMSUnit; tray?: AMSTray }> = [];
+
+  for (const ams of status.ams ?? []) {
+    for (const tray of ams.tray ?? []) {
+      const trayId = tray.id ?? 0;
+      const globalTrayId = getGlobalTrayId(ams.id, trayId, false);
+      if (globalTrayId === trayNow) {
+        candidates.push({ amsId: ams.id, trayId, globalTrayId, ams, tray });
+      }
+    }
+    if (ams.id >= 128 && ams.id === trayNow && !candidates.some((candidate) => candidate.amsId === ams.id)) {
+      const tray = findTrayBySlot(ams, 0);
+      candidates.push({ amsId: ams.id, trayId: tray?.id ?? 0, globalTrayId: ams.id, ams, tray });
+    }
+  }
+
+  for (const vt of status.vt_tray ?? []) {
+    const globalTrayId = vt.id ?? 254;
+    const trayId = globalTrayId >= 254 ? globalTrayId - 254 : 0;
+    if (trayNow === globalTrayId || (trayNow === 254 && globalTrayId === 254)) {
+      candidates.push({ amsId: 255, trayId, globalTrayId, tray: vt });
+    }
+  }
+
+  return candidates;
+}
+
+function fallbackSlotCandidates(status?: PrinterStatus): Array<{ amsId: number; trayId: number; globalTrayId: number; ams?: AMSUnit; tray?: AMSTray }> {
+  if (!status) return [];
+  const candidates: Array<{ amsId: number; trayId: number; globalTrayId: number; ams?: AMSUnit; tray?: AMSTray }> = [];
+
+  for (const vt of status.vt_tray ?? []) {
+    if (vt.tray_type || vt.tray_sub_brands || vt.tray_color) {
+      const globalTrayId = vt.id ?? 254;
+      candidates.push({ amsId: 255, trayId: globalTrayId >= 254 ? globalTrayId - 254 : 0, globalTrayId, tray: vt });
+    }
+  }
+  for (const ams of status.ams ?? []) {
+    for (const tray of ams.tray ?? []) {
+      if (tray.tray_type || tray.tray_sub_brands || tray.tray_color) {
+        const trayId = tray.id ?? 0;
+        candidates.push({ amsId: ams.id, trayId, globalTrayId: getGlobalTrayId(ams.id, trayId, false), ams, tray });
+      }
+    }
+  }
+
+  return candidates;
+}
+
+/**
+ * Resolve the currently loaded/active filament for printer cards and TV mode.
+ *
+ * The regular printer card already derives the active slot from `tray_now` and
+ * then overlays local/Spoolman assignment data. This helper centralises that
+ * behaviour so compact surfaces such as Print Farm Monitor do not fall back to
+ * the first populated AMS tray when an active AMS/AMS-HT/CFS slot assignment is
+ * available.
+ */
+export function resolveLoadedFilamentInfo({
+  printer,
+  status,
+  localAssignments = [],
+  getLocalAssignment,
+  spoolmanSpools,
+  spoolmanSlotAssignments,
+}: ResolveLoadedFilamentInfoInput): ResolvedLoadedFilamentInfo | null {
+  const slotCandidates = [...activeSlotCandidates(status), ...fallbackSlotCandidates(status)];
+  const seen = new Set<string>();
+
+  for (const candidate of slotCandidates) {
+    const key = `${candidate.amsId}:${candidate.trayId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    const spoolmanAssignment = spoolmanSlotAssignments.find((assignment) => (
+      assignment.printer_id === printer.id && assignment.ams_id === candidate.amsId && assignment.tray_id === candidate.trayId
+    ));
+    const spoolmanSpool = spoolmanAssignment
+      ? spoolmanSpools.find((spool) => spool.id === spoolmanAssignment.spoolman_spool_id)
+      : undefined;
+    if (spoolmanSpool) {
+      return {
+        material: spoolLabel(spoolmanSpool),
+        detail: trayLabel(candidate.amsId, candidate.trayId, candidate.ams),
+        color: spoolmanSpool.rgba,
+        remainingPct: spoolRemainingPct(spoolmanSpool),
+        source: 'spoolman',
+        amsId: candidate.amsId,
+        trayId: candidate.trayId,
+        globalTrayId: candidate.globalTrayId,
+        tray: candidate.tray ?? null,
+        spool: spoolmanSpool,
+      };
+    }
+
+    const localAssignment = getLocalAssignment?.(printer.id, candidate.amsId, candidate.trayId)
+      ?? localAssignments.find((assignment) => (
+        assignment.printer_id === printer.id && assignment.ams_id === candidate.amsId && assignment.tray_id === candidate.trayId
+      ));
+    if (localAssignment?.spool) {
+      return {
+        material: spoolLabel(localAssignment.spool),
+        detail: trayLabel(candidate.amsId, candidate.trayId, candidate.ams),
+        color: localAssignment.spool.rgba,
+        remainingPct: spoolRemainingPct(localAssignment.spool),
+        source: 'inventory',
+        amsId: candidate.amsId,
+        trayId: candidate.trayId,
+        globalTrayId: candidate.globalTrayId,
+        tray: candidate.tray ?? null,
+        spool: localAssignment.spool,
+      };
+    }
+
+    if (candidate.tray?.tray_type || candidate.tray?.tray_sub_brands || candidate.tray?.tray_color) {
+      return {
+        material: trayMaterial(candidate.tray, candidate.amsId === 255 ? 'External filament' : trayLabel(candidate.amsId, candidate.trayId, candidate.ams)),
+        detail: trayLabel(candidate.amsId, candidate.trayId, candidate.ams),
+        color: candidate.tray.tray_color,
+        remainingPct: typeof candidate.tray.remain === 'number' && candidate.tray.remain >= 0 ? candidate.tray.remain : null,
+        source: 'telemetry',
+        amsId: candidate.amsId,
+        trayId: candidate.trayId,
+        globalTrayId: candidate.globalTrayId,
+        tray: candidate.tray,
+        spool: null,
+      };
+    }
+  }
+
+  const loadedLocalAssignment = getLocalAssignment?.(printer.id, -1, 0)
+    ?? localAssignments.find((assignment) => assignment.printer_id === printer.id && assignment.ams_id === -1 && assignment.tray_id === 0);
+  if (loadedLocalAssignment?.spool) {
+    return {
+      material: spoolLabel(loadedLocalAssignment.spool),
+      detail: 'Loaded spool',
+      color: loadedLocalAssignment.spool.rgba,
+      remainingPct: spoolRemainingPct(loadedLocalAssignment.spool),
+      source: 'inventory',
+      amsId: -1,
+      trayId: 0,
+      globalTrayId: -1,
+      tray: null,
+      spool: loadedLocalAssignment.spool,
+    };
+  }
+
+  const loadedSpoolmanAssignment = spoolmanSlotAssignments.find((assignment) => assignment.printer_id === printer.id && assignment.ams_id === 255 && assignment.tray_id === 0);
+  const loadedSpoolman = loadedSpoolmanAssignment ? spoolmanSpools.find((spool) => spool.id === loadedSpoolmanAssignment.spoolman_spool_id) : undefined;
+  if (loadedSpoolman) {
+    return {
+      material: spoolLabel(loadedSpoolman),
+      detail: 'Loaded spool',
+      color: loadedSpoolman.rgba,
+      remainingPct: spoolRemainingPct(loadedSpoolman),
+      source: 'spoolman',
+      amsId: 255,
+      trayId: 0,
+      globalTrayId: 254,
+      tray: null,
+      spool: loadedSpoolman,
+    };
+  }
+
+  return null;
 }
