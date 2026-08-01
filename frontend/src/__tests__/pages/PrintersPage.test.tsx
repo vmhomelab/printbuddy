@@ -924,7 +924,7 @@ describe('PrintersPage', () => {
       const groupLabels = Array.from(modelSelect.querySelectorAll('optgroup')).map((group) => group.label);
       const optionValues = Array.from(modelSelect.options).map((option) => option.value);
 
-      expect(groupLabels).toEqual(['Bambu Lab', 'Elegoo', 'Voron', 'Creality Klipper', 'Prusa', 'Generic']);
+      expect(groupLabels).toEqual(['Bambu Lab', 'Elegoo', 'Voron', 'Creality Klipper', 'Snapmaker Klipper', 'Prusa', 'Generic']);
       expect(optionValues).toContain('P1S');
       expect(optionValues).toContain('Elegoo Neptune 4 Pro');
       expect(optionValues).toContain('Elegoo Centauri Carbon');
@@ -934,6 +934,7 @@ describe('PrintersPage', () => {
       expect(optionValues).toContain('Creality K1C');
       expect(optionValues).toContain('Creality K2');
       expect(optionValues).toContain('Creality K2 Plus');
+      expect(optionValues).toContain('Snapmaker U1');
       expect(optionValues).toContain('Prusa MK4S');
       expect(optionValues).toContain('Generic Klipper Printer');
     });

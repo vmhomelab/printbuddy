@@ -542,6 +542,12 @@ const PRINTER_MODEL_GROUPS: PrinterModelOptionGroup[] = [
     ],
   },
   {
+    label: 'Snapmaker Klipper',
+    options: [
+      { value: 'Snapmaker U1', label: 'U1' },
+    ],
+  },
+  {
     label: 'Prusa',
     options: [
       { value: 'Prusa CORE One', label: 'CORE One' },
