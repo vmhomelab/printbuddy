@@ -4066,7 +4066,8 @@ function PrinterCard({
               const nozzleHeating = nozzleTemperatures.some((nozzle) => nozzle.heating);
               const bedHeating = status.temperatures.bed_heating || false;
               const chamberHeating = status.temperatures.chamber_heating || false;
-              const isDualNozzle = printer.nozzle_count === 2 || status.temperatures.nozzle_2 !== undefined;
+              const isMultiToolheadNozzle = nozzleTemperatures.length > 2;
+              const isDualNozzle = !isMultiToolheadNozzle && (printer.nozzle_count === 2 || status.temperatures.nozzle_2 !== undefined);
               // active_extruder: 0=right, 1=left
               const activeNozzle = status.active_extruder === 1 ? 'L' : 'R';
               // Extended nozzle data from nozzle_rack (H2 series: wear, serial, max_temp, etc.)
@@ -4079,7 +4080,7 @@ function PrinterCard({
               return (
                 <div className="flex items-stretch gap-1.5 flex-wrap">
                   {/* Nozzle temps - show every reported Klipper/Moonraker nozzle and mark active tool */}
-                  {nozzleTemperatures.length > 2 ? (
+                  {isMultiToolheadNozzle ? (
                     <div className="px-2 py-1.5 bg-bambu-dark rounded-lg flex-[2] min-w-[180px]">
                       <div className="flex items-center justify-center gap-1 mb-1">
                         <HeaterThermometer className="w-3.5 h-3.5" color="text-orange-400" isHeating={nozzleHeating} />
