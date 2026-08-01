@@ -1531,7 +1531,7 @@ async def assign_on_next_slot(
 async def get_pending_assignment_status(
     assignment_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_READ),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_VIEW_ASSIGNMENTS),
 ):
     """Get the status of a pending slot assignment."""
     from backend.app.services.pending_slot_assignment import get_pending_assignment
