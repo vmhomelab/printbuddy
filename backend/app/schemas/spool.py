@@ -1,6 +1,7 @@
 from datetime import datetime
+from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # Visual variant applied to a spool's swatch — purely cosmetic, does not
 # affect MQTT/firmware. Kept independent of `subtype` so users can override
@@ -248,14 +249,20 @@ class SpoolAssignmentResponse(BaseModel):
 
 
 class PendingSlotAssignmentCreateRequest(BaseModel):
-    """Pending create response."""
+    """Request body for POST /api/v1/inventory/spools/assign-on-next-slot."""
 
-    spool_id: int | None = None
+    spool_id: int | None = Field(default=None, gt=0)
     tray_uuid: str | None = None
     tag_uid: str | None = None
-    printer_id: int | None = None
-    source: str
-    timeout: int
+    printer_id: int | None = Field(default=None, gt=0)
+    source: Literal["nfc", "qr", "spoolbuddy"]
+    timeout: int = Field(default=300, ge=10, le=3600)
+
+    @model_validator(mode="after")
+    def require_identifier(self):
+        if not self.spool_id and not self.tray_uuid and not self.tag_uid:
+            raise ValueError("At least one of spool_id, tray_uuid, or tag_uid must be provided.")
+        return self
 
 
 class PendingSlotAssignmentResponse(BaseModel):

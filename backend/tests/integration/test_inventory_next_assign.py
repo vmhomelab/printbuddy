@@ -61,7 +61,7 @@ class TestAssignOnNextSlotCreate:
             },
         )
 
-        assert response.status_code == 200
+        assert response.status_code == 202
         body = response.json()
         assert body["status"] == "pending"
         assert body["tray_uuid"] == spool.tray_uuid
@@ -86,7 +86,7 @@ class TestAssignOnNextSlotCreate:
             },
         )
 
-        assert response.status_code == 200
+        assert response.status_code == 202
         body = response.json()
         assert body["status"] == "pending"
         assert body["tag_uid"] == spool.tag_uid
@@ -110,7 +110,7 @@ class TestAssignOnNextSlotCreate:
             },
         )
 
-        assert response.status_code == 200
+        assert response.status_code == 202
         body = response.json()
         assert body["status"] == "pending"
         assert body["spool_id"] == spool.id
@@ -136,7 +136,7 @@ class TestAssignOnNextSlotCreate:
             },
         )
 
-        assert response.status_code == 200
+        assert response.status_code == 202
         body = response.json()
         assert body["printer_id"] == printer.id
 
@@ -155,7 +155,7 @@ class TestAssignOnNextSlotCreate:
                 "timeout": 300,
             },
         )
-        assert response1.status_code == 200
+        assert response1.status_code == 202
         body1 = response1.json()
 
         response2 = await async_client.post(
@@ -167,7 +167,7 @@ class TestAssignOnNextSlotCreate:
                 "timeout": 300,
             },
         )
-        assert response2.status_code == 200
+        assert response2.status_code == 202
         body2 = response2.json()
 
         # Same assignment returned (idempotent)
@@ -176,30 +176,23 @@ class TestAssignOnNextSlotCreate:
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_create_pending_assignment_requires_identifier(self, async_client: AsyncClient):
-        """Request without tray_uuid, tag_uid, or spool_id still creates an assignment
-        but with spool_id=None since no spool can be resolved."""
+        """Request without tray_uuid, tag_uid, or spool_id returns 422 validation error."""
         response = await async_client.post(
             "/api/v1/inventory/spools/assign-on-next-slot",
             json={
-                "spool_id": 1,
-                "tray_uuid": "DEADBEEF00000000",
                 "source": "nfc",
                 "timeout": 300,
             },
         )
 
-        # The endpoint accepts the request — spool resolution happens internally
-        assert response.status_code == 200
-        body = response.json()
-        assert body["status"] == "pending"
-        # spool_id=1 doesn't exist, so resolved spool_id may be None
-        assert body["tray_uuid"] == "DEADBEEF00000000"
+        # The endpoint rejects requests missing all identifiers
+        assert response.status_code == 422
+        assert "spool_id" in response.text or "tray_uuid" in response.text or "tag_uid" in response.text
 
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_create_pending_assignment_invalid_timeout_too_low(self, async_client: AsyncClient, spool_factory):
-        """Timeout below minimum (< 10) is accepted by the loose schema but the
-        service still creates the assignment."""
+        """Timeout below minimum (< 10) returns 422 validation error."""
         spool = await spool_factory()
 
         response = await async_client.post(
@@ -212,7 +205,43 @@ class TestAssignOnNextSlotCreate:
             },
         )
 
-        assert response.status_code == 200
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_create_pending_assignment_invalid_timeout_too_high(self, async_client: AsyncClient, spool_factory):
+        """Timeout above maximum (> 3600) returns 422 validation error."""
+        spool = await spool_factory()
+
+        response = await async_client.post(
+            "/api/v1/inventory/spools/assign-on-next-slot",
+            json={
+                "spool_id": spool.id,
+                "tray_uuid": spool.tray_uuid,
+                "source": "nfc",
+                "timeout": 7200,
+            },
+        )
+
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_create_pending_assignment_invalid_source(self, async_client: AsyncClient, spool_factory):
+        """Invalid source value returns 422 validation error."""
+        spool = await spool_factory()
+
+        response = await async_client.post(
+            "/api/v1/inventory/spools/assign-on-next-slot",
+            json={
+                "spool_id": spool.id,
+                "tray_uuid": spool.tray_uuid,
+                "source": "invalid_source",
+                "timeout": 300,
+            },
+        )
+
+        assert response.status_code == 422
 
 
 class TestGetPendingAssignmentStatus:
@@ -234,7 +263,7 @@ class TestGetPendingAssignmentStatus:
                 "timeout": 300,
             },
         )
-        assert create_resp.status_code == 200
+        assert create_resp.status_code == 202
         assignment_id = create_resp.json()["assignment_id"]
 
         # Get status
@@ -305,7 +334,7 @@ class TestCancelPendingAssignment:
                 "timeout": 300,
             },
         )
-        assert create_resp.status_code == 200
+        assert create_resp.status_code == 202
         assignment_id = create_resp.json()["assignment_id"]
 
         # Cancel

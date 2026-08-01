@@ -1499,7 +1499,7 @@ async def unassign_spool(
 # ── Pending Slot Assignments (assign-on-next-slot) ────────────────────────────
 
 
-@router.post("/spools/assign-on-next-slot", response_model=PendingSlotAssignmentResponse)
+@router.post("/spools/assign-on-next-slot", response_model=PendingSlotAssignmentResponse, status_code=202)
 async def assign_on_next_slot(
     body: PendingSlotAssignmentCreateRequest,
     db: AsyncSession = Depends(get_db),
