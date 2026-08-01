@@ -324,6 +324,14 @@ export interface AMSTray {
   drying_temp: number | null;      // RFID-recommended drying temp
   drying_time: number | null;      // RFID-recommended drying time (hours)
   state: number | null;            // AMS tray state: 9=empty, 10=spool present not loaded, 11=loaded
+  // Snapmaker U1 Moonraker feeder status. Generic AMS/CFS payloads omit these.
+  loaded_to_feeder?: boolean;
+  loaded_to_extruder?: boolean;
+  filament_detected?: boolean;
+  channel_state?: string | null;
+  channel_action_state?: string | null;
+  channel_error?: string | null;
+  filament_source?: string | null;
 }
 
 export interface AMSUnit {
@@ -414,6 +422,12 @@ export interface PrinterStatus {
     nozzle_2?: number;  // Second nozzle for H2 series (dual nozzle)
     nozzle_2_target?: number;
     nozzle_2_heating?: boolean;  // Actual heater state from MQTT
+    nozzle_3?: number;  // Additional Klipper/Moonraker nozzles (e.g. Snapmaker U1)
+    nozzle_3_target?: number;
+    nozzle_3_heating?: boolean;
+    nozzle_4?: number;
+    nozzle_4_target?: number;
+    nozzle_4_heating?: boolean;
     chamber?: number;
     chamber_target?: number;
     chamber_heating?: boolean;  // Actual heater state from MQTT
