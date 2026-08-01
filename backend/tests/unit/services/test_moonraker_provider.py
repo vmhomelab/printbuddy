@@ -76,7 +76,7 @@ def _moonraker_status_with_snapmaker_u1():
             "extruder1": {
                 "module_exist": True,
                 "filament_detected": True,
-                "channel_state": "load_finish",
+                "channel_state": "preload_finish",
                 "channel_error": "ok",
             },
             "extruder0": {
@@ -100,6 +100,7 @@ def _moonraker_status_with_snapmaker_u1():
                 "module_exist": True,
                 "filament_detected": True,
                 "channel_state": "load_finish",
+                "channel_action_state": "load_finish",
                 "channel_error": "ok",
                 "tray_type": "PETG",
                 "tray_color": "#ff8800",
@@ -111,6 +112,16 @@ def _moonraker_status_with_snapmaker_u1():
                 "channel_state": "wait_insert",
                 "channel_error": "ok",
             },
+        },
+        "print_task_config": {
+            "filament_vendor": ["Snapmaker", "Snapmaker", "Polymaker", "NONE"],
+            "filament_type": ["PLA", "PLA", "PLA", "NONE"],
+            "filament_sub_type": ["SnapSpeed", "SnapSpeed", "PolyLite", "NONE"],
+            "filament_color_rgba": ["E72F1DFF", "080A0DFF", "1E88E5FF", "FFFFFFFF"],
+            "filament_official": [True, True, False, False],
+            "filament_sku": [900002, 900001, 0, 0],
+            "filament_edit": [False, False, True, True],
+            "filament_exist": [True, True, True, False],
         },
     }
 
@@ -237,6 +248,7 @@ def test_moonraker_normalizes_snapmaker_u1_nozzles_chamber_and_feed_slots(monkey
             "extruder3",
             "filament_feed left",
             "filament_feed right",
+            "print_task_config",
         }
     }
     monkeypatch.setattr(client, "_query_objects", lambda object_names: base_status)
@@ -260,14 +272,20 @@ def test_moonraker_normalizes_snapmaker_u1_nozzles_chamber_and_feed_slots(monkey
     assert ams[0]["module_type"] == "snapmaker_u1"
     assert [tray["slot"] for tray in ams[0]["tray"]] == ["U1-E0", "U1-E1", "U1-E2", "U1-E3"]
     assert ams[0]["tray"][0]["tray_type"] == "PLA"
-    assert ams[0]["tray"][0]["tray_sub_brands"] == "Matte"
-    assert ams[0]["tray"][0]["tray_color"] == "#3366CC"
+    assert ams[0]["tray"][0]["tray_sub_brands"] == "SnapSpeed"
+    assert ams[0]["tray"][0]["tray_color"] == "#E72F1D"
     assert ams[0]["tray"][0]["remain"] == 64
     assert ams[0]["tray"][0]["remaining_weight"] == 640
-    assert ams[0]["tray"][2]["tray_type"] == "PETG"
-    assert ams[0]["tray"][2]["tray_color"] == "#ff8800"
+    assert ams[0]["tray"][0]["filament_source"] == "rfid"
+    assert ams[0]["tray"][2]["tray_type"] == "PLA"
+    assert ams[0]["tray"][2]["tray_sub_brands"] == "PolyLite"
+    assert ams[0]["tray"][2]["tray_color"] == "#1E88E5"
+    assert ams[0]["tray"][2]["filament_source"] == "manual"
+    assert ams[0]["tray"][2]["loaded_to_extruder"] is True
     assert ams[0]["tray"][2]["active"] is True
     assert ams[0]["tray"][3]["state"] == 9
+    assert ams[0]["tray"][3]["tray_color"] is None
+    assert client.state.raw_data["snapmaker_u1"]["loaded_to_extruder_slots"] == ["U1-E2"]
 
 
 def test_moonraker_complete_state_clamps_progress_and_remaining_time(monkeypatch):

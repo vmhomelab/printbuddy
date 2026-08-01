@@ -199,7 +199,10 @@ def _normalize_snapmaker_u1_color(value: Any) -> str | None:
             return None
     normalized = raw.lstrip("#")
     if len(normalized) == 8 and all(char in "0123456789abcdefABCDEF" for char in normalized):
-        normalized = normalized[-6:]
+        # Snapmaker U1 print_task_config reports colors as RRGGBBAA strings
+        # (for example E72F1DFF). Older anticipated RFID payloads may report
+        # ARGB strings; prefer RRGGBB when the trailing byte looks like alpha.
+        normalized = normalized[:6] if normalized[-2:].upper() in {"00", "FF"} else normalized[-6:]
     if len(normalized) == 6 and all(char in "0123456789abcdefABCDEF" for char in normalized):
         return f"#{normalized}"
     return raw
@@ -210,6 +213,60 @@ def _snapmaker_first_value(values: dict[str, Any], keys: tuple[str, ...]) -> Any
         if key in values and values.get(key) not in (None, ""):
             return values.get(key)
     return None
+
+
+def _snapmaker_clean_text(value: Any) -> str:
+    raw = str(value or "").strip()
+    return "" if raw.lower() in {"", "none", "null", "unknown", "-1"} else raw
+
+
+def _snapmaker_list_value(config: dict[str, Any], key: str, index: int) -> Any:
+    value = config.get(key) if isinstance(config, dict) else None
+    if isinstance(value, list) and 0 <= index < len(value):
+        return value[index]
+    return None
+
+
+def _snapmaker_u1_task_filament_metadata(config: dict[str, Any], index: int) -> dict[str, Any]:
+    """Extract real U1 slot metadata from print_task_config arrays.
+
+    Real U1 exports show per-slot material data in ``print_task_config`` rather
+    than ``filament_parameters``. ``filament_edit`` is false for RFID/official
+    Snapmaker rolls and true for manually edited/default slots. Slots with
+    filament_type NONE are physically present but unset, so do not surface the
+    default white color as a real spool color.
+    """
+    if not isinstance(config, dict):
+        return {}
+
+    material = _snapmaker_clean_text(_snapmaker_list_value(config, "filament_type", index))
+    subtype = _snapmaker_clean_text(_snapmaker_list_value(config, "filament_sub_type", index))
+    vendor = _snapmaker_clean_text(_snapmaker_list_value(config, "filament_vendor", index))
+    exists = bool(_snapmaker_list_value(config, "filament_exist", index))
+    official = bool(_snapmaker_list_value(config, "filament_official", index))
+    edited = bool(_snapmaker_list_value(config, "filament_edit", index))
+    sku = _safe_int(_snapmaker_list_value(config, "filament_sku", index))
+    color = None
+    if material:
+        color = _normalize_snapmaker_u1_color(_snapmaker_list_value(config, "filament_color_rgba", index))
+        if color is None:
+            color = _normalize_snapmaker_u1_color(_snapmaker_list_value(config, "filament_color", index))
+
+    source = "unset"
+    if material:
+        source = "manual" if edited else "rfid"
+
+    return {
+        "material": material,
+        "subtype": subtype,
+        "vendor": vendor,
+        "color": color,
+        "exists": exists,
+        "official": official,
+        "edited": edited,
+        "sku": sku,
+        "source": source,
+    }
 
 
 def _snapmaker_u1_filament_metadata(values: dict[str, Any]) -> dict[str, Any]:
@@ -930,6 +987,7 @@ class MoonrakerPrinterClient:
             active_index = extruder_names.index(active_extruder_name) if active_extruder_name in extruder_names else 0
             self.state.active_extruder = active_index
 
+        task_config = status.get("print_task_config") if isinstance(status.get("print_task_config"), dict) else {}
         feed_slots: dict[int, dict[str, Any]] = {}
         for module_name in ("filament_feed left", "filament_feed right"):
             module = status.get(module_name)
@@ -943,14 +1001,18 @@ class MoonrakerPrinterClient:
                 if extruder_index is None:
                     continue
                 metadata = _snapmaker_u1_filament_metadata(values)
+                task_metadata = _snapmaker_u1_task_filament_metadata(task_config, extruder_index)
                 detected = bool(values.get("filament_detected"))
-                material = metadata["material"] or ("Unknown" if detected else "")
+                channel_state = str(values.get("channel_state") or "").strip().lower()
+                channel_action_state = str(values.get("channel_action_state") or "").strip().lower()
+                loaded_to_extruder = channel_state == "load_finish" or channel_action_state == "load_finish"
+                material = task_metadata.get("material") or metadata["material"] or ("Unknown" if detected else "")
                 feed_slots[extruder_index] = {
                     "id": extruder_index,
                     "slot": f"U1-E{extruder_index}",
                     "tray_type": material,
-                    "tray_sub_brands": metadata["subtype"],
-                    "tray_color": metadata["color"],
+                    "tray_sub_brands": task_metadata.get("subtype") or metadata["subtype"],
+                    "tray_color": task_metadata.get("color") or metadata["color"],
                     "remain": metadata["remain"],
                     "remaining_weight": metadata["remaining_weight"],
                     "weight": metadata["weight"],
@@ -958,11 +1020,19 @@ class MoonrakerPrinterClient:
                     "state": 11 if detected else 9,
                     "tray_uuid": f"snapmaker-u1-e{extruder_index}",
                     "tag_uid": str(values.get("CARD_UID") or values.get("card_uid") or ""),
-                    "vendor": metadata["vendor"],
+                    "vendor": task_metadata.get("vendor") or metadata["vendor"],
                     "filament_detected": detected,
+                    "loaded_to_feeder": detected,
+                    "loaded_to_extruder": loaded_to_extruder,
                     "module": module_name.removeprefix("filament_feed "),
                     "channel_state": values.get("channel_state"),
+                    "channel_action_state": values.get("channel_action_state"),
                     "channel_error": values.get("channel_error"),
+                    "filament_source": task_metadata.get("source") or "unknown",
+                    "filament_official": task_metadata.get("official"),
+                    "filament_edit": task_metadata.get("edited"),
+                    "filament_sku": task_metadata.get("sku"),
+                    "filament_exist": task_metadata.get("exists"),
                     "raw": values,
                 }
 
@@ -1007,6 +1077,11 @@ class MoonrakerPrinterClient:
 
         if feed_slots:
             trays = [feed_slots[index] for index in sorted(feed_slots)]
+            active_slots = [tray["slot"] for tray in trays if tray.get("active")]
+            loaded_to_extruder_slots = [tray["slot"] for tray in trays if tray.get("loaded_to_extruder")]
+            loaded_to_feeder_slots = [tray["slot"] for tray in trays if tray.get("loaded_to_feeder")]
+            if self.state.active_extruder is not None:
+                self.state.tray_now = self.state.active_extruder
             self.state.raw_data["ams"] = [
                 {
                     "id": 0,
@@ -1018,6 +1093,10 @@ class MoonrakerPrinterClient:
             self.state.raw_data["snapmaker_u1"] = {
                 "type": "snapmaker_u1",
                 "active_extruder": self.state.active_extruder,
+                "active_slots": active_slots,
+                "loaded_to_feeder_slots": loaded_to_feeder_slots,
+                "loaded_to_extruder_slots": loaded_to_extruder_slots,
+                "print_task_config": task_config,
                 "feed_modules": {
                     key: status.get(key)
                     for key in ("filament_feed left", "filament_feed right")
