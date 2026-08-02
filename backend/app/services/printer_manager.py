@@ -161,9 +161,10 @@ def supports_drying(model: str | None, firmware: str | None) -> bool:
 class PrinterInfo:
     """Basic printer info for callbacks."""
 
-    def __init__(self, name: str, serial_number: str):
+    def __init__(self, name: str, serial_number: str, provider: str = "bambu"):
         self.name = name
         self.serial_number = serial_number
+        self.provider = normalize_provider(provider)
 
 
 class PrinterManager:
@@ -440,7 +441,7 @@ class PrinterManager:
         client.connect()
         self._clients[printer_id] = client
         self._models[printer_id] = printer.model  # Cache model for feature detection
-        self._printer_info[printer_id] = PrinterInfo(printer.name, printer.serial_number)
+        self._printer_info[printer_id] = PrinterInfo(printer.name, printer.serial_number, provider)
 
         # Wait a moment for connection
         await asyncio.sleep(1)

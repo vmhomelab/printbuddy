@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 
 from backend.app import main
+from backend.app.services.printer_manager import PrinterInfo
 
 
 def setup_function():
@@ -13,6 +14,7 @@ def setup_function():
     main._progress_job_key.pop(printer_id, None)
     main._last_progress_value.pop(printer_id, None)
     main._pending_progress_milestone.pop(printer_id, None)
+    main.printer_manager._printer_info.pop(printer_id, None)
 
 
 def test_prusalink_requires_second_sample_before_progress_milestone():
@@ -78,3 +80,17 @@ def test_non_prusalink_keeps_single_sample_milestone_behavior():
         )
         is True
     )
+
+
+def test_prusalink_printer_info_resolves_provider_for_progress_guard():
+    main.printer_manager._printer_info[3] = PrinterInfo(
+        name="Core One",
+        serial_number="CORE-ONE",
+        provider="prusalink",
+    )
+
+    assert main._provider_name_for_progress(3) == "prusalink"
+
+
+def test_printer_info_defaults_to_bambu_for_legacy_tests():
+    assert PrinterInfo(name="P1S", serial_number="BAMBU").provider == "bambu"
