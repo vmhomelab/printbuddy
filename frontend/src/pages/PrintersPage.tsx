@@ -120,7 +120,7 @@ import { SkipObjectsModal, SkipObjectsIcon } from '../components/SkipObjectsModa
 import { FileUploadModal } from '../components/FileUploadModal';
 import { PrintModal } from '../components/PrintModal';
 import { PrinterInfoModal } from '../components/PrinterInfoModal';
-import { getGlobalTrayId, getFillBarColor, getSpoolmanFillLevel, getFallbackSpoolTag, isBambuLabSpool, resolveTrayFillLevel } from '../utils/amsHelpers';
+import { getGlobalTrayId, getFillBarColor, getSpoolmanFillLevel, getFallbackSpoolTag, isBambuLabSpool, resolveLoadedFilamentInfo, resolveTrayFillLevel } from '../utils/amsHelpers';
 import { getDefaultPrinterImage, getPrinterImage, getWifiStrength, filterCompatibleQueueItems } from '../utils/printer';
 import { appAssetPath } from '../utils/assetPaths';
 import { FilamentSlotCircle } from '../components/FilamentSlotCircle';
@@ -132,6 +132,7 @@ import { getPrinterFileRuleSet, isPrintableForProvider } from '../utils/printerF
 import type { CameraViewMode } from '../api/client';
 import { canOpenPrinterCamera } from '../utils/printerCamera';
 import { getAssignedPandaBreathState } from '../utils/pandaBreath';
+import { classifyPrinterStatus as classifySharedPrinterStatus } from '../utils/printerStatus';
 
 export interface SpoolmanSlotAssignmentRow {
   printer_id: number;
@@ -1722,20 +1723,8 @@ const STATUS_GROUP_META: Record<string, { labelKey: string; dot: string }> = {
 function classifyPrinterStatus(
   status: { connected: boolean; state: string | null; hms_errors?: HMSError[] } | undefined,
 ): PrinterState {
-  if (!status?.connected) return 'offline';
-  const hmsErrors = status.hms_errors ? filterKnownHMSErrors(status.hms_errors) : [];
-  if (hmsErrors.length > 0) return 'error';
-  switch (status.state) {
-    case 'RUNNING': return 'printing';
-    case 'PAUSE':   return 'paused';
-    case 'FINISH':  return 'finished';
-    // FAILED without an active HMS error is the printer's terminal state after
-    // any unsuccessful end — including user-cancellations. Treat the same as
-    // FINISH for grouping/badging purposes; only escalate to "error" when an
-    // HMS code is actually attached (handled by the early-return above).
-    case 'FAILED':  return 'finished';
-    default:        return 'idle';
-  }
+  const hmsErrors = status?.hms_errors ? filterKnownHMSErrors(status.hms_errors) : [];
+  return classifySharedPrinterStatus(status, hmsErrors.length > 0);
 }
 
 /**
@@ -2277,17 +2266,18 @@ function PrinterCard({
   // inventory spool for local usage tracking.
   const supportsSpoolAssignment = true;
   const prusaLinkWebUrl = getPrusaLinkWebUrl(printer);
-  const loadedSpoolmanSlotAssignment = supportsSpoolAssignment && spoolmanEnabled && !spoolmanLoading
-    ? spoolmanSlotAssignments?.find(a => a.printer_id === printer.id && a.ams_id === 255 && a.tray_id === 0)
+  const resolvedLoadedFilament = useMemo(() => resolveLoadedFilamentInfo({
+    printer,
+    status,
+    getLocalAssignment: onGetAssignment,
+    spoolmanSpools: spoolmanSpools ?? [],
+    spoolmanSlotAssignments: spoolmanSlotAssignments ?? [],
+  }), [onGetAssignment, printer, spoolmanSlotAssignments, spoolmanSpools, status]);
+  const loadedSpoolmanSlotAssignment = resolvedLoadedFilament?.source === 'spoolman'
+    ? spoolmanSlotAssignments?.find(a => a.printer_id === printer.id && a.ams_id === resolvedLoadedFilament.amsId && a.tray_id === resolvedLoadedFilament.trayId)
     : undefined;
-  const loadedSpoolmanSpool = loadedSpoolmanSlotAssignment
-    ? spoolmanSpools?.find(s => s.id === loadedSpoolmanSlotAssignment.spoolman_spool_id)
-    : undefined;
-  const loadedLocalSpoolAssignment = supportsSpoolAssignment && !spoolmanEnabled
-    ? onGetAssignment?.(printer.id, -1, 0)
-    : undefined;
-  const loadedSpool = spoolmanEnabled ? loadedSpoolmanSpool : loadedLocalSpoolAssignment?.spool;
-  const hasLoadedSpoolAssignment = spoolmanEnabled ? !!loadedSpoolmanSlotAssignment : !!loadedLocalSpoolAssignment;
+  const loadedSpool = resolvedLoadedFilament?.spool ?? undefined;
+  const hasLoadedSpoolAssignment = !!resolvedLoadedFilament?.spool;
   const loadedSpoolColor = loadedSpool?.rgba
     ? `#${loadedSpool.rgba.replace(/^#/, '').slice(0, 6)}`
     : undefined;

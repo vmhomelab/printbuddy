@@ -62,7 +62,7 @@ function statusFor(id: number) {
       id,
       name: 'Demo Bambu Lab P1S',
       connected: true,
-      state: 'PRINTING',
+      state: 'RUNNING',
       current_print: 'Gridfinity Calibration Tray',
       subtask_name: null,
       gcode_file: 'gridfinity.3mf',
@@ -83,7 +83,7 @@ function statusFor(id: number) {
     id,
     name: 'Demo Anycubic Kobra 2',
     connected: true,
-    state: 'PAUSED',
+    state: 'PAUSE',
     current_print: null,
     subtask_name: null,
     gcode_file: null,
@@ -199,7 +199,29 @@ describe('PrintFarmMonitorPage', () => {
           },
         },
       ])),
-      http.get('/api/v1/maintenance/overview', () => HttpResponse.json([]))
+      http.get('/api/v1/maintenance/overview', () => HttpResponse.json([])),
+      http.get('/api/v1/projects/', () => HttpResponse.json([
+        {
+          id: 42,
+          name: 'Gridfinity Organizer Set',
+          description: 'Modular storage system for workstations',
+          color: '#3b82f6',
+          status: 'active',
+          target_count: 8,
+          target_parts_count: 64,
+          budget: null,
+          created_at: '2024-01-01T00:00:00Z',
+          archive_count: 4,
+          total_items: 48,
+          completed_count: 42,
+          failed_count: 1,
+          queue_count: 3,
+          progress_percent: 50,
+          archives: [],
+          url: null,
+          cover_image_filename: null,
+        },
+      ]))
     );
   });
 
@@ -207,6 +229,9 @@ describe('PrintFarmMonitorPage', () => {
     render(<PrintFarmMonitorPage />);
 
     expect(await screen.findByRole('heading', { name: 'Print Farm Monitor' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /back to farm command center/i })).toHaveAttribute('href', '/farm-command-center');
+    expect(screen.getByText(new Date('2025-05-23T10:42:00Z').toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }))).toBeInTheDocument();
+    expect(screen.getByText(new Date('2025-05-23T10:42:00Z').toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' }))).toBeInTheDocument();
     await waitFor(() => expect(screen.getByText('1 PRINTERS ACTIVE')).toBeInTheDocument());
 
     expect(screen.getByText(/total printers/i)).toBeInTheDocument();
@@ -217,6 +242,11 @@ describe('PrintFarmMonitorPage', () => {
     expect(screen.getAllByText('PAUSED').length).toBeGreaterThan(0);
     expect(screen.getAllByText('Demo Anycubic Kobra 2').length).toBeGreaterThan(0);
     expect(screen.getByText('ALERTS')).toBeInTheDocument();
+    expect(screen.getByText('ACTIVE PROJECTS')).toBeInTheDocument();
+    expect(screen.getByText('Gridfinity Organizer Set')).toBeInTheDocument();
+    expect(screen.getByText('42 / 64 parts')).toBeInTheDocument();
+    expect(screen.getByText('3 queued')).toBeInTheDocument();
+    expect(screen.getByText('1 failed')).toBeInTheDocument();
     expect(screen.getByText('LOW FILAMENT')).toBeInTheDocument();
     expect(screen.getAllByText(/RealFilament PLA White/).length).toBeGreaterThan(0);
     expect(document.body.textContent).toContain('#FFFFFF');
@@ -227,6 +257,146 @@ describe('PrintFarmMonitorPage', () => {
     expect(document.body.textContent).toContain('every 15s');
     expect(document.body.textContent).toContain('Printbuddy');
     expect(document.body.textContent).toContain('v2.5.1');
+  });
+
+  it('shows the assigned Spoolman spool for the active AMS slot in TV mode', async () => {
+    const activeAmsStatus = {
+      ...statusFor(1),
+      tray_now: 2,
+      ams_exists: true,
+      ams: [
+        {
+          id: 0,
+          name: 'AMS-HT',
+          humidity: 20,
+          temp: 42,
+          is_ams_ht: false,
+          serial_number: 'AMSHT123',
+          sw_ver: '1.0.0',
+          dry_time: 0,
+          dry_status: 0,
+          dry_sub_status: 0,
+          dry_sf_reason: [],
+          module_type: 'n3f',
+          tray: [
+            { id: 0, tray_type: 'PLA', tray_sub_brands: null, tray_color: 'FFFFFFFF', tray_id_name: null, tray_info_idx: null, remain: 90, k: null, cali_idx: null, tag_uid: null, tray_uuid: null, nozzle_temp_min: null, nozzle_temp_max: null, drying_temp: null, drying_time: null, state: null },
+            { id: 2, tray_type: 'ABS', tray_sub_brands: null, tray_color: '111111FF', tray_id_name: null, tray_info_idx: null, remain: 75, k: null, cali_idx: null, tag_uid: null, tray_uuid: null, nozzle_temp_min: null, nozzle_temp_max: null, drying_temp: null, drying_time: null, state: null },
+          ],
+        },
+      ],
+    };
+    const sunluAbs = {
+      id: 42,
+      material: 'ABS',
+      subtype: null,
+      color_name: 'Black',
+      rgba: '111111',
+      extra_colors: null,
+      effect_type: null,
+      brand: 'Sunlu',
+      label_weight: 1000,
+      core_weight: 250,
+      core_weight_catalog_id: null,
+      weight_used: 250,
+      slicer_filament: null,
+      slicer_filament_name: null,
+      nozzle_temp_min: null,
+      nozzle_temp_max: null,
+      note: null,
+      added_full: true,
+      last_used: null,
+      encode_time: null,
+      tag_uid: null,
+      tray_uuid: null,
+      data_origin: null,
+      tag_type: null,
+      archived_at: null,
+      created_at: '2024-01-01T00:00:00Z',
+      updated_at: '2024-01-01T00:00:00Z',
+      cost_per_kg: null,
+      last_scale_weight: null,
+      last_weighed_at: null,
+      category: 'Production shelf',
+      low_stock_threshold_pct: 15,
+      storage_location: 'Shelf A',
+    };
+
+    server.use(
+      http.get('/api/v1/printers/:id/status', ({ params }) => HttpResponse.json(Number(params.id) === 1 ? activeAmsStatus : statusFor(Number(params.id)))),
+      http.get('/api/v1/settings/spoolman', () => HttpResponse.json({ spoolman_enabled: 'true', spoolman_url: 'http://spoolman.local', spoolman_sync_mode: 'read_only', spoolman_disable_weight_sync: 'false', spoolman_report_partial_usage: 'false' })),
+      http.get('/api/v1/spoolman/inventory/spools', () => HttpResponse.json([sunluAbs])),
+      http.get('/api/v1/spoolman/inventory/slot-assignments/all', () => HttpResponse.json([
+        { printer_id: 1, printer_name: 'Demo Bambu Lab P1S', ams_id: 0, tray_id: 2, spoolman_spool_id: 42, ams_label: 'AMS-HT' },
+      ])),
+    );
+
+    render(<PrintFarmMonitorPage />);
+
+    await waitFor(() => expect(screen.getByText('1 PRINTERS ACTIVE')).toBeInTheDocument());
+    expect(screen.getByText('Sunlu ABS Black')).toBeInTheDocument();
+    expect(screen.getByText(/AMS 0 tray 2/)).toBeInTheDocument();
+    expect(screen.getByText(/75%/)).toBeInTheDocument();
+  });
+
+  it('does not mark idle printers as printing when stale completed job metadata remains', async () => {
+    server.use(
+      http.get('/api/v1/printers/:id/status', ({ params }) => {
+        const id = Number(params.id);
+        if (id === 1) {
+          return HttpResponse.json({
+            id,
+            name: 'Demo Bambu Lab P1S',
+            connected: true,
+            state: 'PRINTING',
+            current_print: 'Finished Gridfinity Plate',
+            subtask_name: null,
+            gcode_file: 'finished-gridfinity-plate.gcode.3mf',
+            progress: 100,
+            remaining_time: 0,
+            layer_num: 1228,
+            total_layers: 1228,
+            temperatures: { nozzle: 33, bed: 32 },
+            hms_errors: [],
+            ams: [],
+            ams_exists: false,
+            vt_tray: [],
+            supports_drying: false,
+            awaiting_plate_clear: false,
+          });
+        }
+        return HttpResponse.json(statusFor(id));
+      }),
+    );
+
+    render(<PrintFarmMonitorPage />);
+
+    await screen.findAllByText('Demo Bambu Lab P1S');
+    await waitFor(() => expect(screen.getByText('0 PRINTERS ACTIVE')).toBeInTheDocument());
+    expect(screen.getAllByText('IDLE').length).toBeGreaterThan(0);
+    expect(screen.queryByText('Finished Gridfinity Plate')).not.toBeInTheDocument();
+    expect(screen.queryByText('100%')).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toContain('1228 / 1228 layers');
+  });
+
+  it('does not render the current time as ETA when a running printer reports zero remaining time', async () => {
+    server.use(
+      http.get('/api/v1/printers/:id/status', ({ params }) => {
+        const id = Number(params.id);
+        if (id === 1) {
+          return HttpResponse.json({
+            ...statusFor(id),
+            remaining_time: 0,
+          });
+        }
+        return HttpResponse.json(statusFor(id));
+      }),
+    );
+
+    render(<PrintFarmMonitorPage />);
+
+    await waitFor(() => expect(screen.getByText('1 PRINTERS ACTIVE')).toBeInTheDocument());
+    expect(document.body.textContent).not.toContain('10:42 AM');
+    expect(document.body.textContent).toContain('ETA —');
   });
 
   it('follows the selected PrintBuddy light theme', async () => {

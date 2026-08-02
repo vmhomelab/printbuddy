@@ -6,6 +6,7 @@ export default {
     queue: '打印队列',
     stats: '统计',
     farmMonitor: '打印农场监控',
+    farmCommandCenter: '打印农场指挥中心',
     profiles: '配置文件',
     maintenance: '维护',
     projects: '项目',

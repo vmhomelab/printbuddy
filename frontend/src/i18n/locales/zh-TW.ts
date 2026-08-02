@@ -6,6 +6,7 @@ export default {
     queue: '列印佇列',
     stats: '統計',
     farmMonitor: '列印農場監控',
+    farmCommandCenter: '列印農場指揮中心',
     profiles: '設定檔案',
     maintenance: '維護',
     projects: '專案',

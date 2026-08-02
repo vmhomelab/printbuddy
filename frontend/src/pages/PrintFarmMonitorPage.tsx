@@ -1,7 +1,9 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useQueries, useQuery } from '@tanstack/react-query';
 import {
   AlertTriangle,
+  ArrowLeft,
   Bell,
   CheckCircle2,
   CirclePause,
@@ -23,13 +25,15 @@ import {
   type InventorySpool,
   type MaintenanceStatus,
   type PrintQueueItem,
+  type ProjectListItem,
   type Printer,
   type PrinterMaintenanceOverview,
   type PrinterStatus,
-  type SpoolAssignment,
 } from '../api/client';
 import { getPrinterImage } from '../utils/printer';
+import { classifyPrinterStatus } from '../utils/printerStatus';
 import { appAssetPath } from '../utils/assetPaths';
+import { resolveLoadedFilamentInfo, type ResolvedLoadedFilamentInfo, type SpoolmanSlotAssignmentLike } from '../utils/amsHelpers';
 import { useTheme } from '../contexts/ThemeContext';
 
 interface MonitorPrinter {
@@ -38,22 +42,6 @@ interface MonitorPrinter {
 }
 
 type NormalizedState = 'printing' | 'idle' | 'paused' | 'stopped' | 'offline' | 'error';
-
-type SpoolmanSlotAssignmentRow = {
-  printer_id: number;
-  printer_name: string | null;
-  ams_id: number;
-  tray_id: number;
-  spoolman_spool_id: number;
-  ams_label: string | null;
-};
-
-interface LoadedFilamentInfo {
-  material: string;
-  detail: string;
-  color?: string | null;
-  remainingPct?: number | null;
-}
 
 interface MonitorAlert {
   icon: typeof AlertTriangle;
@@ -109,17 +97,20 @@ function normalizeRefreshSeconds(value: number | null | undefined): number {
 }
 
 function normalizeState(status?: PrinterStatus): NormalizedState {
-  if (!status || !status.connected) return 'offline';
-  const state = (status.state ?? '').toLowerCase();
-  if (state.includes('pause')) return 'paused';
-  if (state.includes('stop') || state.includes('cancel')) return 'stopped';
-  if (state.includes('error') || state.includes('fail')) return 'error';
-  if (state.includes('print') || state.includes('run') || status.progress !== null || status.current_print) return 'printing';
-  return 'idle';
+  const classified = classifyPrinterStatus(status, (status?.hms_errors?.length ?? 0) > 0);
+  return classified === 'finished' ? 'idle' : classified;
 }
 
 function formatClock(date = new Date()): string {
   return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
+function formatHeaderTime(date: Date): string {
+  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+function formatHeaderDate(date: Date): string {
+  return date.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
 }
 
 function formatDuration(minutes: number | null | undefined): string {
@@ -132,9 +123,32 @@ function formatDuration(minutes: number | null | undefined): string {
 }
 
 function formatEta(minutes: number | null | undefined): string {
-  if (minutes === null || minutes === undefined || Number.isNaN(minutes)) return 'Ready';
-  const eta = new Date(Date.now() + Math.max(0, minutes) * 60_000);
+  if (minutes === null || minutes === undefined || Number.isNaN(minutes) || minutes <= 0) return '—';
+  const eta = new Date(Date.now() + minutes * 60_000);
   return eta.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function projectProgress(project: ProjectListItem): number | null {
+  if (project.progress_percent !== null && project.progress_percent !== undefined) {
+    return Math.min(100, Math.max(0, Math.round(project.progress_percent)));
+  }
+  if (project.target_parts_count && project.target_parts_count > 0) {
+    return Math.min(100, Math.round((project.completed_count / project.target_parts_count) * 100));
+  }
+  if (project.target_count && project.target_count > 0) {
+    return Math.min(100, Math.round((project.archive_count / project.target_count) * 100));
+  }
+  return null;
+}
+
+function projectTargetSummary(project: ProjectListItem): string {
+  if (project.target_parts_count) {
+    return `${project.completed_count} / ${project.target_parts_count} parts`;
+  }
+  if (project.target_count) {
+    return `${project.archive_count} / ${project.target_count} plates`;
+  }
+  return `${project.archive_count} plates · ${project.completed_count} parts`;
 }
 
 function getJobName(item: MonitorPrinter): string | null {
@@ -163,60 +177,6 @@ function normalizeSpoolColor(color: string | null | undefined): string | null {
 function displaySpoolColor(color: string | null | undefined): string | null {
   const normalized = normalizeSpoolColor(color);
   return normalized?.startsWith('#') ? normalized.toUpperCase() : normalized;
-}
-
-function getLoadedFilamentInfo(
-  item: MonitorPrinter,
-  localAssignments: SpoolAssignment[],
-  spoolmanSpools: InventorySpool[],
-  spoolmanSlotAssignments: SpoolmanSlotAssignmentRow[],
-): LoadedFilamentInfo | null {
-  const { printer, status } = item;
-
-  const loadedLocal = localAssignments.find((assignment) => assignment.printer_id === printer.id && assignment.ams_id === -1 && assignment.tray_id === 0)?.spool;
-  if (loadedLocal) {
-    return {
-      material: spoolLabel(loadedLocal),
-      detail: 'Loaded spool',
-      color: loadedLocal.rgba,
-      remainingPct: spoolRemainingPct(loadedLocal),
-    };
-  }
-
-  const loadedSpoolmanAssignment = spoolmanSlotAssignments.find((assignment) => assignment.printer_id === printer.id && assignment.ams_id === 255 && assignment.tray_id === 0);
-  const loadedSpoolman = loadedSpoolmanAssignment ? spoolmanSpools.find((spool) => spool.id === loadedSpoolmanAssignment.spoolman_spool_id) : undefined;
-  if (loadedSpoolman) {
-    return {
-      material: spoolLabel(loadedSpoolman),
-      detail: 'Loaded spool',
-      color: loadedSpoolman.rgba,
-      remainingPct: spoolRemainingPct(loadedSpoolman),
-    };
-  }
-
-  const virtualTray = status?.vt_tray?.find((tray) => tray.tray_type || tray.tray_sub_brands || tray.tray_color);
-  if (virtualTray) {
-    return {
-      material: [virtualTray.tray_type, virtualTray.tray_sub_brands].filter(Boolean).join(' ') || 'External filament',
-      detail: 'External spool',
-      color: virtualTray.tray_color,
-      remainingPct: typeof virtualTray.remain === 'number' ? virtualTray.remain : null,
-    };
-  }
-
-  const amsTray = status?.ams
-    ?.flatMap((ams) => ams.tray.map((tray) => ({ amsId: ams.id, tray })))
-    .find(({ tray }) => tray.tray_type || tray.tray_sub_brands || tray.tray_color);
-  if (amsTray) {
-    return {
-      material: [amsTray.tray.tray_type, amsTray.tray.tray_sub_brands].filter(Boolean).join(' ') || `AMS ${amsTray.amsId} tray ${amsTray.tray.id}`,
-      detail: `AMS ${amsTray.amsId} tray ${amsTray.tray.id}`,
-      color: amsTray.tray.tray_color,
-      remainingPct: typeof amsTray.tray.remain === 'number' ? amsTray.tray.remain : null,
-    };
-  }
-
-  return null;
 }
 
 function getLowSpoolAlerts(spools: InventorySpool[], defaultThreshold: number): MonitorAlert[] {
@@ -337,7 +297,7 @@ function StatTile({ icon: Icon, label, value, theme, tone = 'blue', suffix }: { 
   );
 }
 
-function PrinterCard({ item, loadedFilament, theme }: { item: MonitorPrinter; loadedFilament: LoadedFilamentInfo | null; theme: MonitorThemeClasses }) {
+function PrinterCard({ item, loadedFilament, theme }: { item: MonitorPrinter; loadedFilament: ResolvedLoadedFilamentInfo | null; theme: MonitorThemeClasses }) {
   const { printer, status } = item;
   const state = normalizeState(status);
   const progress = status?.progress === null || status?.progress === undefined ? null : Math.min(100, Math.max(0, Math.round(status.progress)));
@@ -497,15 +457,67 @@ function ActivityPanel({ items, theme }: { items: MonitorPrinter[]; theme: Monit
   );
 }
 
+function ActiveProjectsPanel({ projects, theme }: { projects: ProjectListItem[]; theme: MonitorThemeClasses }) {
+  const visibleProjects = projects
+    .slice()
+    .sort((a, b) => (projectProgress(b) ?? -1) - (projectProgress(a) ?? -1))
+    .slice(0, 3);
+
+  return (
+    <section className={`rounded-2xl border p-5 ${theme.card}`}>
+      <div className={`mb-4 flex items-center justify-between border-b pb-4 ${theme.divider}`}>
+        <div className={`flex items-center gap-3 text-xl font-bold ${theme.text}`}><PackageOpen className="h-6 w-6 text-bambu-green-light" /> ACTIVE PROJECTS</div>
+        <span className={`text-sm ${theme.muted}`}>{projects.length} active</span>
+      </div>
+      {visibleProjects.length > 0 ? (
+        <div className="space-y-4">
+          {visibleProjects.map((project) => {
+            const progress = projectProgress(project);
+            return (
+              <article key={project.id} className={`rounded-xl border p-4 ${theme.panelSoft}`}>
+                <div className="flex items-start gap-3">
+                  <span className="mt-1 h-3 w-3 shrink-0 rounded-full" style={{ backgroundColor: project.color || 'var(--accent)' }} />
+                  <div className="min-w-0 flex-1">
+                    <div className={`truncate text-base font-bold ${theme.text}`}>{project.name}</div>
+                    {project.description && <div className={`truncate text-sm ${theme.muted}`}>{project.description}</div>}
+                  </div>
+                  <div className={`text-right text-lg font-bold ${theme.text}`}>{progress !== null ? `${progress}%` : '—'}</div>
+                </div>
+                <div className="mt-4 h-2 overflow-hidden rounded-full bg-bambu-dark-tertiary">
+                  <div className="h-full rounded-full bg-gradient-to-r from-bambu-green-light to-bambu-green" style={{ width: `${progress ?? 0}%` }} />
+                </div>
+                <div className={`mt-3 flex flex-wrap items-center gap-3 text-xs font-semibold uppercase tracking-wide ${theme.muted}`}>
+                  <span>{projectTargetSummary(project)}</span>
+                  {project.queue_count > 0 && <span>{project.queue_count} queued</span>}
+                  {project.failed_count > 0 && <span className="text-red-300">{project.failed_count} failed</span>}
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      ) : (
+        <div className={`py-8 text-center text-sm ${theme.muted}`}>No active projects are currently tracked.</div>
+      )}
+    </section>
+  );
+}
+
 export function PrintFarmMonitorPage() {
-  const now = new Date();
+  const [now, setNow] = useState(() => new Date());
   const { mode } = useTheme();
   const theme = useMemo(() => getMonitorTheme(mode), [mode]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(new Date()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
   const { data: uiPreferences } = useQuery({ queryKey: ['ui-preferences'], queryFn: api.getUiPreferences, staleTime: 30_000 });
   const refreshSeconds = normalizeRefreshSeconds(uiPreferences?.print_farm_monitor_refresh_interval);
   const refreshMs = refreshSeconds * 1000;
   const { data: printers = [] } = useQuery({ queryKey: ['printers'], queryFn: api.getPrinters, refetchInterval: refreshMs });
   const { data: queue = [] } = useQuery({ queryKey: ['queue', 'monitor'], queryFn: () => api.getQueue(), refetchInterval: refreshMs });
+  const { data: activeProjects = [] } = useQuery({ queryKey: ['projects', 'active', 'monitor'], queryFn: () => api.getProjects('active'), refetchInterval: refreshMs, retry: false });
   const { data: version } = useQuery({ queryKey: ['version'], queryFn: api.getVersion, staleTime: Infinity });
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
   const { data: spoolmanSettings } = useQuery({ queryKey: ['settings', 'spoolman', 'monitor'], queryFn: api.getSpoolmanSettings, staleTime: 60_000, retry: false });
@@ -525,7 +537,13 @@ export function PrintFarmMonitorPage() {
   });
 
   const monitorPrinters = useMemo<MonitorPrinter[]>(() => printers.map((printer, index) => ({ printer, status: statusQueries[index]?.data })), [printers, statusQueries]);
-  const loadedFilaments = useMemo(() => new Map(monitorPrinters.map((item) => [item.printer.id, getLoadedFilamentInfo(item, localAssignments, spoolmanSpools, spoolmanSlotAssignments)])), [localAssignments, monitorPrinters, spoolmanSlotAssignments, spoolmanSpools]);
+  const loadedFilaments = useMemo(() => new Map(monitorPrinters.map((item) => [item.printer.id, resolveLoadedFilamentInfo({
+    printer: item.printer,
+    status: item.status,
+    localAssignments,
+    spoolmanSpools,
+    spoolmanSlotAssignments: spoolmanSlotAssignments as SpoolmanSlotAssignmentLike[],
+  })])), [localAssignments, monitorPrinters, spoolmanSlotAssignments, spoolmanSpools]);
   const printing = monitorPrinters.filter((item) => normalizeState(item.status) === 'printing');
   const paused = monitorPrinters.filter((item) => normalizeState(item.status) === 'paused');
   const stopped = monitorPrinters.filter((item) => normalizeState(item.status) === 'stopped');
@@ -549,18 +567,31 @@ export function PrintFarmMonitorPage() {
       <div className={`min-h-screen p-4 xl:p-5 ${theme.backdrop}`}>
         <header className={`mb-4 flex flex-col gap-4 border-b pb-4 xl:flex-row xl:items-center xl:justify-between ${theme.divider}`}>
           <div className="flex items-center gap-5">
+            <Link
+              to="/farm-command-center"
+              aria-label="Back to Farm Command Center"
+              className={`flex h-11 w-11 items-center justify-center rounded-xl border ${theme.border} ${theme.panelSoft} ${theme.muted} transition hover:text-white`}
+            >
+              <ArrowLeft className="h-5 w-5" />
+            </Link>
             <div className={`flex items-center gap-3 border-r pr-8 ${theme.divider}`}>
               <img src={appAssetPath(theme.logoPath)} alt="Printbuddy" className="h-12 w-auto" />
             </div>
             <h1 className={`text-3xl font-bold tracking-tight ${theme.text}`}>Print Farm Monitor</h1>
           </div>
-          <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-            <StatTile icon={PrinterIcon} label="Total Printers" value={printers.length} theme={theme} />
-            <StatTile icon={PlayCircle} label="Printing Now" value={printing.length} tone="green" theme={theme} />
-            <StatTile icon={PauseCircle} label="Idle" value={idle.length} tone="blue" theme={theme} />
-            <StatTile icon={Power} label="Offline" value={offline.length} tone="gray" theme={theme} />
-            <StatTile icon={Layers} label="Queue Size" value={(queue as PrintQueueItem[]).length} tone="purple" theme={theme} />
-            <StatTile icon={AlertTriangle} label="Active Alerts" value={activeAlerts.length} tone="amber" theme={theme} />
+          <div className="flex flex-col gap-3 xl:items-end">
+            <div className="text-right">
+              <div className="font-mono text-3xl font-bold tracking-wider text-blue-300">{formatHeaderTime(now)}</div>
+              <div className={`text-xs ${theme.muted}`}>{formatHeaderDate(now)}</div>
+            </div>
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+              <StatTile icon={PrinterIcon} label="Total Printers" value={printers.length} theme={theme} />
+              <StatTile icon={PlayCircle} label="Printing Now" value={printing.length} tone="green" theme={theme} />
+              <StatTile icon={PauseCircle} label="Idle" value={idle.length} tone="blue" theme={theme} />
+              <StatTile icon={Power} label="Offline" value={offline.length} tone="gray" theme={theme} />
+              <StatTile icon={Layers} label="Queue Size" value={(queue as PrintQueueItem[]).length} tone="purple" theme={theme} />
+              <StatTile icon={AlertTriangle} label="Active Alerts" value={activeAlerts.length} tone="amber" theme={theme} />
+            </div>
           </div>
         </header>
 
@@ -597,6 +628,7 @@ export function PrintFarmMonitorPage() {
           </section>
 
           <aside className="grid gap-4 content-start">
+            <ActiveProjectsPanel projects={activeProjects} theme={theme} />
             <AlertsPanel alerts={activeAlerts} theme={theme} />
             <ActivityPanel items={[...printing, ...paused, ...stopped, ...offline, ...errors]} theme={theme} />
           </aside>

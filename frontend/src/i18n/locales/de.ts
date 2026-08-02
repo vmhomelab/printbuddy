@@ -6,6 +6,7 @@ export default {
     queue: 'Druckwarteschlange',
     stats: 'Statistiken',
     farmMonitor: 'Farm-Monitor',
+    farmCommandCenter: 'Farm-Kommandozentrale',
     profiles: 'Profile',
     maintenance: 'Wartung',
     projects: 'Projekte',

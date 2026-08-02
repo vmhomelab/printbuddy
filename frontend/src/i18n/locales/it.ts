@@ -6,6 +6,7 @@ export default {
     queue: 'Coda di stampa',
     stats: 'Statistiche',
     farmMonitor: 'Monitor farm',
+    farmCommandCenter: 'Centro di comando farm',
     profiles: 'Profili',
     maintenance: 'Manutenzione',
     projects: 'Progetti',

@@ -116,6 +116,57 @@ def test_elegoo_sdcp_client_normalizes_real_centauri_carbon_status_payload(monke
     assert client.state.chamber_light is True
 
 
+def test_elegoo_sdcp_client_clears_active_print_metadata_when_idle(monkeypatch):
+    client = ElegooSDCPPrinterClient("192.168.1.181")
+    payloads = iter([
+        {
+            "Status": {
+                "CurrentStatus": [13],
+                "TempOfHotbed": 70,
+                "TempOfNozzle": 250,
+                "PrintInfo": {
+                    "Status": 13,
+                    "Filename": "finished-gridfinity-plate.gcode",
+                    "Progress": 92,
+                    "RemainTime": 12,
+                    "CurrentLayer": 184,
+                    "TotalLayer": 200,
+                },
+            }
+        },
+        {
+            "Status": {
+                "CurrentStatus": [0],
+                "TempOfHotbed": 32,
+                "TempOfNozzle": 34,
+                "PrintInfo": {
+                    "Status": 0,
+                    "Filename": "finished-gridfinity-plate.gcode",
+                    "Progress": 0,
+                    "RemainTime": 0,
+                    "CurrentLayer": 200,
+                    "TotalLayer": 200,
+                },
+            }
+        },
+    ])
+    monkeypatch.setattr(client, "_query_status", lambda: next(payloads))
+
+    assert client.request_status_update() is True
+    assert client.state.state == "RUNNING"
+    assert client.state.current_print == "finished-gridfinity-plate.gcode"
+
+    assert client.request_status_update() is True
+    assert client.state.state == "IDLE"
+    assert client.state.current_print is None
+    assert client.state.subtask_name is None
+    assert client.state.gcode_file is None
+    assert client.state.progress == 0.0
+    assert client.state.remaining_time == 0
+    assert client.state.layer_num == 0
+    assert client.state.total_layers == 0
+
+
 def test_elegoo_sdcp_chamber_displays_temp_target_box_when_actual_box_temp_missing(monkeypatch):
     client = ElegooSDCPPrinterClient("192.168.1.181")
 
