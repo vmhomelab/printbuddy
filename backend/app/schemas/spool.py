@@ -1,6 +1,7 @@
 from datetime import datetime
+from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # Visual variant applied to a spool's swatch — purely cosmetic, does not
 # affect MQTT/firmware. Kept independent of `subtype` so users can override
@@ -243,3 +244,61 @@ class SpoolAssignmentResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class PendingSlotAssignmentCreateRequest(BaseModel):
+    """Request body for POST /api/v1/inventory/spools/assign-on-next-slot."""
+
+    spool_id: int | None = Field(default=None, gt=0)
+    tray_uuid: str | None = None
+    tag_uid: str | None = None
+    printer_id: int | None = Field(default=None, gt=0)
+    source: Literal["nfc", "qr", "spoolbuddy"]
+    timeout: int = Field(default=300, ge=10, le=3600)
+
+    @model_validator(mode="after")
+    def require_identifier(self):
+        if not self.spool_id and not self.tray_uuid and not self.tag_uid:
+            raise ValueError("At least one of spool_id, tray_uuid, or tag_uid must be provided.")
+        return self
+
+
+class PendingSlotAssignmentResponse(BaseModel):
+    """Response body for pending assignment endpoints."""
+
+    assignment_id: int
+    tray_uuid: str | None = None
+    tag_uid: str | None = None
+    spool_id: int | None = None
+    printer_id: int | None = None
+    source: str
+    status: str  # pending, completed, timed_out, cancelled
+    timeout_seconds: int
+    assigned_printer_id: int | None = None
+    assigned_ams_id: int | None = None
+    assigned_tray_id: int | None = None
+    completed_at: str | None = None
+    time_to_placement: float | None = None
+    created_at: str
+
+    class Config:
+        from_attributes = True
+
+    @staticmethod
+    def from_model(pending_assignment) -> "PendingSlotAssignmentResponse":
+        return PendingSlotAssignmentResponse(
+            assignment_id=pending_assignment.id,
+            tray_uuid=pending_assignment.tray_uuid,
+            tag_uid=pending_assignment.tag_uid,
+            spool_id=pending_assignment.spool_id,
+            printer_id=pending_assignment.printer_id,
+            source=pending_assignment.source,
+            status=pending_assignment.status,
+            timeout_seconds=pending_assignment.timeout_seconds,
+            assigned_printer_id=pending_assignment.assigned_printer_id,
+            assigned_ams_id=pending_assignment.assigned_ams_id,
+            assigned_tray_id=pending_assignment.assigned_tray_id,
+            completed_at=pending_assignment.completed_at.isoformat() if pending_assignment.completed_at else None,
+            time_to_placement=pending_assignment.time_to_placement,
+            created_at=pending_assignment.created_at.isoformat() if pending_assignment.created_at else "",
+        )
