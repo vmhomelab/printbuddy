@@ -45,6 +45,8 @@ VIRTUAL_PRINTER_MODELS = {
     # A1 Series
     "N2S": "A1",  # A1
     "N1": "A1 Mini",  # A1 Mini
+    # A2 Series
+    "N9": "A2L",  # A2L
     # H2 Series
     "O1D": "H2D",  # H2D
     "O1C": "H2C",  # H2C
@@ -75,6 +77,8 @@ MODEL_SERIAL_PREFIXES = {
     # A1 Series
     "N2S": "03900A",  # A1
     "N1": "03000A",  # A1 Mini
+    # A2 Series
+    "N9": "26A19",  # A2L
     # H2 Series
     "O1D": "09400A",  # H2D
     "O1C": "09400A",  # H2C
