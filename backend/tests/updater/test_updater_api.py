@@ -76,6 +76,55 @@ async def test_update_starts_allowlisted_compose_job(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_update_with_target_image_pulls_beta_and_retags_compose_service(monkeypatch):
+    recorded = []
+
+    async def fake_run_command(argv, *, timeout_seconds):
+        recorded.append(argv)
+        if argv[-2:] == ["--format", "json"]:
+            return 0, '{"services":{"printbuddy":{"image":"docker.io/vmhomelabde/printbuddy:latest"}}}', ""
+        return 0, "ok", ""
+
+    monkeypatch.setattr("updater.app.jobs.run_command", fake_run_command)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/update",
+            headers={"Authorization": "Bearer secret-token"},
+            json={"target_image": "docker.io/vmhomelabde/printbuddy:v0.2.5.1b13"},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    job = get_job_store().get(body["job_id"])
+    assert job is not None
+    await job.task
+    assert get_job_store().get(body["job_id"]).status == "completed"
+    assert recorded == [
+        ["docker", "compose", "-p", "printbuddy", "-f", str(job.compose_file), "config", "--format", "json"],
+        ["docker", "pull", "docker.io/vmhomelabde/printbuddy:v0.2.5.1b13"],
+        [
+            "docker",
+            "tag",
+            "docker.io/vmhomelabde/printbuddy:v0.2.5.1b13",
+            "docker.io/vmhomelabde/printbuddy:latest",
+        ],
+        [
+            "docker",
+            "compose",
+            "-p",
+            "printbuddy",
+            "-f",
+            str(job.compose_file),
+            "up",
+            "-d",
+            "--force-recreate",
+            "printbuddy",
+        ],
+    ]
+
+
+@pytest.mark.asyncio
 async def test_update_rejects_concurrent_job(monkeypatch):
     blocker = asyncio.Event()
 

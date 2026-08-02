@@ -154,6 +154,55 @@ export function getSpoolmanFillLevel(
   ));
 }
 
+export type TrayFillSource = 'ams' | 'spoolman' | 'inventory';
+
+export interface ResolveTrayFillLevelInput {
+  spoolmanFill: number | null;
+  slotSpoolFill: number | null;
+  inventoryFill: number | null;
+  printerRemain: number | null | undefined;
+  hasPrinterFillLevel: boolean;
+  isCfsUnit?: boolean;
+}
+
+export interface ResolvedTrayFillLevel {
+  fillLevel: number | null;
+  fillSource: TrayFillSource | undefined;
+}
+
+/**
+ * Resolve the authoritative fill shown on AMS/CFS slot cards.
+ *
+ * Bambu AMS keeps the legacy #676 fallback: if inventory has reached 0%
+ * but the printer still reports positive remain, prefer the printer because
+ * inventory may have been over-counted. Creality CFS must not use that rule:
+ * real K2/CFS RFID captures can report remain_len=100 for a spool that is not
+ * physically full, so explicit inventory/Spoolman assignments stay primary.
+ */
+export function resolveTrayFillLevel({
+  spoolmanFill,
+  slotSpoolFill,
+  inventoryFill,
+  printerRemain,
+  hasPrinterFillLevel,
+  isCfsUnit = false,
+}: ResolveTrayFillLevelInput): ResolvedTrayFillLevel {
+  const resolvedInventoryFill = (!isCfsUnit && inventoryFill === 0 && hasPrinterFillLevel && (printerRemain ?? -1) > 0)
+    ? null
+    : inventoryFill;
+  const cfsPrinterRemainLooksStaleFull = isCfsUnit && printerRemain === 100;
+  const resolvedPrinterRemain = cfsPrinterRemainLooksStaleFull ? null : (printerRemain ?? null);
+  const resolvedHasPrinterFillLevel = hasPrinterFillLevel && resolvedPrinterRemain !== null;
+
+  const fillLevel = spoolmanFill ?? slotSpoolFill ?? resolvedInventoryFill ?? (resolvedHasPrinterFillLevel ? resolvedPrinterRemain : null);
+  const fillSource = (spoolmanFill !== null || slotSpoolFill !== null) ? 'spoolman' as const
+    : resolvedInventoryFill !== null ? 'inventory' as const
+    : resolvedHasPrinterFillLevel ? 'ams' as const
+    : undefined;
+
+  return { fillLevel, fillSource };
+}
+
 function toFixedHex(value: number, width: number): string {
   const safe = Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0;
   return safe.toString(16).toUpperCase().padStart(width, '0').slice(-width);

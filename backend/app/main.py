@@ -265,15 +265,18 @@ root_logger.setLevel(log_level)
 # dropped — which is exactly the "logs/printbuddy.log only shows logs
 # partially" bug we hit. See backend/app/core/trace.py for the
 # ContextVar the filter reads.
+from backend.app.core.logging_filters import CredentialRedactionFilter
 from backend.app.core.trace import TraceIDFilter
 
 _trace_id_filter = TraceIDFilter()
+_credential_redaction_filter = CredentialRedactionFilter()
 
 # Console handler - always enabled
 console_handler = logging.StreamHandler()
 console_handler.setLevel(log_level)
 console_handler.setFormatter(logging.Formatter(log_format))
 console_handler.addFilter(_trace_id_filter)
+console_handler.addFilter(_credential_redaction_filter)
 root_logger.addHandler(console_handler)
 
 # File handler - only in production or if explicitly enabled
@@ -288,6 +291,7 @@ if app_settings.log_to_file:
     file_handler.setLevel(log_level)
     file_handler.setFormatter(logging.Formatter(log_format))
     file_handler.addFilter(_trace_id_filter)
+    file_handler.addFilter(_credential_redaction_filter)
     root_logger.addHandler(file_handler)
     logging.info("Logging to file: %s", log_file)
 
@@ -306,6 +310,7 @@ if app_settings.log_to_file:
     uvicorn_access_logger = logging.getLogger("uvicorn.access")
     uvicorn_access_logger.addHandler(file_handler)
     uvicorn_access_logger.addFilter(WriteRequestsOnlyFilter())
+    uvicorn_access_logger.addFilter(CredentialRedactionFilter())
     # Uvicorn's access logger has propagate=False (its own default), so the
     # root-attached TraceIDFilter never sees these records. Attach a
     # second instance directly so HTTP access lines carry the same trace
@@ -343,6 +348,14 @@ _print_ams_mappings: dict[int, list[int]] = {}
 # Track progress milestones for notifications: {printer_id: last_milestone_notified}
 # Milestones are 25, 50, 75. Value of 0 means no milestone notified yet for current print.
 _last_progress_milestone: dict[int, int] = {}
+
+# Track progress-notification context per active print. PrusaLink/Core One can
+# briefly report progress samples that disagree with both the printer display
+# and Printbuddy's next UI status. Milestone SMS messages are side effects, so a
+# single bad sample must not be enough to fire 25/50/75 notifications.
+_progress_job_key: dict[int, str] = {}
+_last_progress_value: dict[int, float] = {}
+_pending_progress_milestone: dict[int, int] = {}
 
 # Progress percentage that triggers the almost-done notification.
 PRINT_ALMOST_DONE_PROGRESS_THRESHOLD = 97
@@ -1191,6 +1204,93 @@ _last_status_broadcast: dict[int, str] = {}
 _nozzle_count_updated: set[int] = set()
 
 
+def _progress_tracking_job_key(state: PrinterState) -> str | None:
+    """Return a stable active-print key for progress notification tracking."""
+
+    raw_data = state.raw_data if isinstance(getattr(state, "raw_data", None), dict) else {}
+    raw_job = raw_data.get("job") if isinstance(raw_data.get("job"), dict) else {}
+    raw_file = raw_job.get("file") if isinstance(raw_job.get("file"), dict) else {}
+
+    job_id = raw_job.get("id") or raw_data.get("id") or getattr(state, "subtask_id", None)
+    filename = (
+        getattr(state, "subtask_name", None)
+        or getattr(state, "gcode_file", None)
+        or getattr(state, "current_print", None)
+        or raw_file.get("display_name")
+        or raw_file.get("name")
+        or raw_file.get("path")
+    )
+
+    if job_id is None and not filename:
+        return None
+    return f"{job_id or 'unknown'}:{filename or 'unknown'}"
+
+
+def _reset_progress_notification_tracking(printer_id: int, *, clear_job_key: bool = False) -> None:
+    _last_progress_milestone[printer_id] = 0
+    _pending_progress_milestone.pop(printer_id, None)
+    _last_progress_value.pop(printer_id, None)
+    if clear_job_key:
+        _progress_job_key.pop(printer_id, None)
+
+
+def _provider_name_for_progress(printer_id: int) -> str:
+    try:
+        printer = printer_manager.get_printer(printer_id)
+        return str(getattr(printer, "provider", None) or "bambu").strip().lower()
+    except Exception:
+        return ""
+
+
+def _should_send_progress_milestone(
+    printer_id: int,
+    *,
+    provider: str,
+    progress: float,
+    current_milestone: int,
+    last_milestone: int,
+    logger,
+) -> bool:
+    """Return whether the progress milestone notification should fire now.
+
+    Bambu/Moonraker/Elegoo keep the existing one-sample behavior. PrusaLink gets
+    confirmation gating because Core One has been observed sending/triggering a
+    false 75% notification while the printer and UI still showed early progress.
+    """
+
+    if current_milestone <= last_milestone:
+        return False
+
+    if provider != "prusalink":
+        return True
+
+    pending = _pending_progress_milestone.get(printer_id)
+    previous_progress = _last_progress_value.get(printer_id)
+
+    if pending == current_milestone:
+        _pending_progress_milestone.pop(printer_id, None)
+        logger.info(
+            "[PROGRESS_NOTIFY] confirmed PrusaLink milestone: printer=%s progress=%.2f milestone=%s last=%s previous=%s",
+            printer_id,
+            progress,
+            current_milestone,
+            last_milestone,
+            previous_progress,
+        )
+        return True
+
+    _pending_progress_milestone[printer_id] = current_milestone
+    logger.info(
+        "[PROGRESS_NOTIFY] pending PrusaLink milestone confirmation: printer=%s progress=%.2f milestone=%s last=%s previous=%s",
+        printer_id,
+        progress,
+        current_milestone,
+        last_milestone,
+        previous_progress,
+    )
+    return False
+
+
 async def on_printer_status_change(printer_id: int, state: PrinterState):
     """Handle printer status changes - broadcast via WebSocket."""
     # Only broadcast if something meaningful changed (reduce WebSocket spam)
@@ -1223,12 +1323,25 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
 
     # Include tray_now and vt_tray hash so external spool changes trigger broadcasts
     vt_tray_key = hash(str(state.raw_data.get("vt_tray", []))) if state.raw_data else 0
-    # Include AMS dry_time and tray state values so drying/slot changes trigger broadcasts
+    # Include AMS dry_time and tray metadata so drying/slot/fill changes trigger broadcasts.
+    # CFS updates can change only ``remain`` (for example 100 -> 34 after M8200 slot
+    # load/select) while material and tray state stay stable; include the display
+    # metadata used by the frontend so those updates are not de-duped away.
     ams_dry_key = tuple(a.get("dry_time", 0) for a in (state.raw_data.get("ams") or [])) if state.raw_data else ()
-    # Include tray states so load/unload transitions (state 11→10) trigger broadcasts (#784)
     ams_tray_key = (
         tuple(
-            (t.get("id"), t.get("tray_type", ""), t.get("state"))
+            (
+                a.get("id"),
+                t.get("id"),
+                t.get("tray_type", ""),
+                t.get("tray_color", ""),
+                t.get("remain"),
+                t.get("state"),
+                t.get("active"),
+                t.get("tray_uuid", ""),
+                t.get("tag_uid", ""),
+                t.get("vendor", ""),
+            )
             for a in (state.raw_data.get("ams") or [])
             for t in a.get("tray", [])
         )
@@ -1258,51 +1371,97 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
     _last_status_broadcast[printer_id] = status_key
 
     # Check for progress milestone notifications (25%, 50%, 75%)
+    logger = logging.getLogger(__name__)
     progress = state.progress or 0
     is_printing = state.state in ("RUNNING", "PRINTING")
+    provider = _provider_name_for_progress(printer_id)
 
-    if is_printing and progress > 0:
-        # Determine which milestone we've reached
-        current_milestone = 0
-        if progress >= 75:
-            current_milestone = 75
-        elif progress >= 50:
-            current_milestone = 50
-        elif progress >= 25:
-            current_milestone = 25
+    if is_printing:
+        job_key = _progress_tracking_job_key(state)
+        previous_job_key = _progress_job_key.get(printer_id)
+        if job_key and job_key != previous_job_key:
+            _progress_job_key[printer_id] = job_key
+            _reset_progress_notification_tracking(printer_id)
+            _print_almost_done_notified[printer_id] = False
+            _first_layer_notified[printer_id] = False
+            logger.info(
+                "[PROGRESS_NOTIFY] reset tracking for new print: printer=%s provider=%s job=%s previous_job=%s progress=%.2f",
+                printer_id,
+                provider or "unknown",
+                job_key,
+                previous_job_key,
+                progress,
+            )
 
-        last_milestone = _last_progress_milestone.get(printer_id, 0)
+        if progress < 5:
+            # Reset milestone tracking at the beginning of a print even while the
+            # printer is already in RUNNING/PRINTING. The old elif branch never
+            # executed for early active prints because is_printing/progress>0 won.
+            _last_progress_milestone[printer_id] = 0
+            _pending_progress_milestone.pop(printer_id, None)
+            _print_almost_done_notified[printer_id] = False
+            _first_layer_notified[printer_id] = False
 
-        # If we've crossed a new milestone, send notification
-        if current_milestone > last_milestone:
-            _last_progress_milestone[printer_id] = current_milestone
-            try:
-                async with async_session() as db:
-                    from backend.app.models.printer import Printer
+        if progress > 0:
+            # Determine which milestone we've reached
+            current_milestone = 0
+            if progress >= 75:
+                current_milestone = 75
+            elif progress >= 50:
+                current_milestone = 50
+            elif progress >= 25:
+                current_milestone = 25
 
-                    result = await db.execute(select(Printer).where(Printer.id == printer_id))
-                    printer = result.scalar_one_or_none()
-                    printer_name = printer.name if printer else f"Printer {printer_id}"
-                    filename = state.subtask_name or state.gcode_file or "Unknown"
-                    # remaining_time is in minutes, convert to seconds for notification
-                    remaining_time_seconds = state.remaining_time * 60 if state.remaining_time else None
+            last_milestone = _last_progress_milestone.get(printer_id, 0)
 
-                    # Capture camera snapshot for notification image attachment
-                    image_data = await _capture_snapshot_for_notification(
-                        printer_id, printer, logging.getLogger(__name__)
-                    )
+            # If we've crossed a new milestone, send notification
+            if _should_send_progress_milestone(
+                printer_id,
+                provider=provider,
+                progress=progress,
+                current_milestone=current_milestone,
+                last_milestone=last_milestone,
+                logger=logger,
+            ):
+                _last_progress_milestone[printer_id] = current_milestone
+                logger.info(
+                    "[PROGRESS_NOTIFY] sending progress milestone: printer=%s provider=%s progress=%.2f milestone=%s last=%s job=%s",
+                    printer_id,
+                    provider or "unknown",
+                    progress,
+                    current_milestone,
+                    last_milestone,
+                    _progress_job_key.get(printer_id),
+                )
+                try:
+                    async with async_session() as db:
+                        from backend.app.models.printer import Printer
 
-                    await notification_service.on_print_progress(
-                        printer_id,
-                        printer_name,
-                        filename,
-                        current_milestone,
-                        db,
-                        remaining_time_seconds,
-                        image_data=image_data,
-                    )
-            except Exception as e:
-                logging.getLogger(__name__).warning(f"Progress milestone notification failed: {e}")
+                        result = await db.execute(select(Printer).where(Printer.id == printer_id))
+                        printer = result.scalar_one_or_none()
+                        printer_name = printer.name if printer else f"Printer {printer_id}"
+                        filename = state.subtask_name or state.gcode_file or "Unknown"
+                        # remaining_time is in minutes, convert to seconds for notification
+                        remaining_time_seconds = state.remaining_time * 60 if state.remaining_time else None
+
+                        # Capture camera snapshot for notification image attachment
+                        image_data = await _capture_snapshot_for_notification(
+                            printer_id, printer, logging.getLogger(__name__)
+                        )
+
+                        await notification_service.on_print_progress(
+                            printer_id,
+                            printer_name,
+                            filename,
+                            current_milestone,
+                            db,
+                            remaining_time_seconds,
+                            image_data=image_data,
+                        )
+                except Exception as e:
+                    logger.warning(f"Progress milestone notification failed: {e}")
+
+            _last_progress_value[printer_id] = progress
 
         if progress >= PRINT_ALMOST_DONE_PROGRESS_THRESHOLD and not _print_almost_done_notified.get(printer_id, False):
             _print_almost_done_notified[printer_id] = True
@@ -1329,10 +1488,9 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
                         image_data=image_data,
                     )
             except Exception as e:
-                logging.getLogger(__name__).warning(f"Print almost-done notification failed: {e}")
-    elif progress < 5:
-        # Reset milestone tracking when print restarts or new print begins
-        _last_progress_milestone[printer_id] = 0
+                logger.warning(f"Print almost-done notification failed: {e}")
+    else:
+        _reset_progress_notification_tracking(printer_id, clear_job_key=True)
         _print_almost_done_notified[printer_id] = False
         _first_layer_notified[printer_id] = False
 
@@ -1520,6 +1678,14 @@ async def on_ams_change(printer_id: int, ams_data: list):
                 else:
                     current_tray = _find_tray_in_ams_data(ams_data, assignment.ams_id, assignment.tray_id)
                 if not current_tray:
+                    if _print_active:
+                        logger.info(
+                            "Auto-unlink: keeping spool %d AMS%d-T%d — tray missing during active print",
+                            assignment.spool_id,
+                            assignment.ams_id,
+                            assignment.tray_id,
+                        )
+                        continue
                     logger.info(
                         "Auto-unlink: spool %d AMS%d-T%d — tray not found in AMS data (slot empty?)",
                         assignment.spool_id,
@@ -1560,7 +1726,18 @@ async def on_ams_change(printer_id: int, ams_data: list):
                                 assignment.tray_id,
                             )
                         continue
-                    # Different BL spool or unrecognized — unlink so auto-assign can match
+                    # Different BL spool or unrecognized — unlink so auto-assign can match.
+                    # Do not delete during an active print: print-start AMS telemetry can
+                    # be noisy, while the user's assignment is persistent inventory state.
+                    if _print_active:
+                        logger.info(
+                            "Auto-unlink: keeping spool %d AMS%d-T%d — different Bambu Lab UUID during active print (uuid=%s)",
+                            assignment.spool_id,
+                            assignment.ams_id,
+                            assignment.tray_id,
+                            tray_uuid,
+                        )
+                        continue
                     logger.info(
                         "Auto-unlink: spool %d AMS%d-T%d — different Bambu Lab spool detected (uuid=%s)",
                         assignment.spool_id,
@@ -1575,6 +1752,17 @@ async def on_ams_change(printer_id: int, ams_data: list):
                     cur_state = current_tray.get("state")
                     fp_color = assignment.fingerprint_color or ""
                     fp_type = assignment.fingerprint_type or ""
+                    cur_color_normalized = cur_color.strip().upper()
+                    metadata_blank = not cur_type.strip() and cur_color_normalized in ("", "00000000")
+
+                    if metadata_blank:
+                        logger.info(
+                            "Auto-unlink: keeping spool %d AMS%d-T%d — live tray metadata is blank/transient",
+                            assignment.spool_id,
+                            assignment.ams_id,
+                            assignment.tray_id,
+                        )
+                        continue
 
                     # Deferred AMS pre-config replay: fingerprint_type empty means
                     # the slot was empty when the user pre-assigned it
@@ -1657,6 +1845,14 @@ async def on_ams_change(printer_id: int, ams_data: list):
                             spool.rgba if spool else "?",
                             spool.material if spool else "?",
                         )
+                        if _print_active:
+                            logger.info(
+                                "Auto-unlink: keeping spool %d AMS%d-T%d — fingerprint mismatch during active print",
+                                assignment.spool_id,
+                                assignment.ams_id,
+                                assignment.tray_id,
+                            )
+                            continue
                         stale.append(assignment)  # Spool changed
             for a in stale:
                 await db.delete(a)
@@ -5981,8 +6177,11 @@ async def auth_middleware(request, call_next):
             # Auth disabled, allow all requests
             return await call_next(request)
     except Exception:
-        # If we can't check auth status, allow request (fail open for DB issues)
-        return await call_next(request)
+        logging.getLogger(__name__).exception("Failed to determine authentication state; denying request")
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Authentication state unavailable"},
+        )
 
     # Auth is enabled - require valid token
     auth_header = request.headers.get("Authorization")

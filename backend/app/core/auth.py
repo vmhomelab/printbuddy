@@ -469,16 +469,18 @@ async def authenticate_user_by_email(db: AsyncSession, email: str, password: str
 
 
 async def is_auth_enabled(db: AsyncSession) -> bool:
-    """Check if authentication is enabled."""
-    try:
-        result = await db.execute(select(Settings).where(Settings.key == "auth_enabled"))
-        setting = result.scalar_one_or_none()
-        if setting is None:
-            return False
-        return setting.value.lower() == "true"
-    except Exception:
-        # If settings table doesn't exist or query fails, assume auth is disabled
+    """Check if authentication is enabled.
+
+    Fail closed on database errors. A missing settings row still means auth was
+    legitimately never configured, but any real exception while probing auth
+    state must propagate so callers deny the request instead of treating the
+    outage as "auth disabled".
+    """
+    result = await db.execute(select(Settings).where(Settings.key == "auth_enabled"))
+    setting = result.scalar_one_or_none()
+    if setting is None:
         return False
+    return setting.value.lower() == "true"
 
 
 async def _user_from_api_key(db: AsyncSession, api_key: APIKey) -> User | None:

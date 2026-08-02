@@ -34,6 +34,7 @@ const MODEL_IMAGE_ALIASES: Array<[RegExp, string]> = [
   [/^crealityk2plus$/, 'creality-k2-plus'],
   [/^crealityk1c$/, 'creality-k1c'],
   [/^crealityk1$/, 'creality-k1'],
+  [/^(?:snapmakeru1|u1)$/, 'snapmaker-u1'],
   [/^prusacoreone$/, 'prusa-core-one'],
   [/^prusamk4s$/, 'prusa-mk4s'],
   [/^prusamk4$/, 'prusa-mk4'],

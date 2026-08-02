@@ -5,6 +5,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { screen, waitFor, fireEvent, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import type { ReactNode } from 'react';
 import { render } from '../utils';
 import { PrintersPage } from '../../pages/PrintersPage';
 import { setAuthToken } from '../../api/client';
@@ -144,6 +145,74 @@ describe('PrintersPage', () => {
       });
     });
 
+    it('shows every Snapmaker U1 nozzle temperature, active tool, and chamber temperature', async () => {
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          ...mockPrinters[0],
+          id: 7,
+          name: 'Snapmaker U1',
+          provider: 'fluidd',
+          model: 'Snapmaker U1',
+        }])),
+        http.get('/api/v1/printers/:id/status', () => HttpResponse.json({
+          ...mockPrinterStatus,
+          active_extruder: 3,
+          temperatures: {
+            nozzle: 25,
+            nozzle_2: 26,
+            nozzle_3: 27,
+            nozzle_4: 110,
+            nozzle_4_target: 210,
+            bed: 31,
+            chamber: 34,
+          },
+          ams: [{
+            id: 0,
+            name: 'Snapmaker U1 Feeders',
+            humidity: null,
+            temp: null,
+            is_ams_ht: false,
+            serial_number: '',
+            sw_ver: '',
+            dry_time: 0,
+            dry_status: 0,
+            dry_sub_status: 0,
+            dry_sf_reason: [],
+            module_type: 'snapmaker_u1',
+            tray: [
+              { id: 0, tray_color: '#E72F1D', tray_type: 'PLA', tray_sub_brands: 'SnapSpeed', tray_id_name: null, tray_info_idx: null, remain: -1, k: null, cali_idx: null, tag_uid: '', tray_uuid: 'snapmaker-u1-e0', nozzle_temp_min: null, nozzle_temp_max: null, drying_temp: null, drying_time: null, state: 11, filament_detected: true, loaded_to_feeder: true, loaded_to_extruder: true, channel_state: 'load_finish', channel_action_state: 'load_finish' },
+              { id: 1, tray_color: '#080A0D', tray_type: 'PLA', tray_sub_brands: 'SnapSpeed', tray_id_name: null, tray_info_idx: null, remain: -1, k: null, cali_idx: null, tag_uid: '', tray_uuid: 'snapmaker-u1-e1', nozzle_temp_min: null, nozzle_temp_max: null, drying_temp: null, drying_time: null, state: 11, filament_detected: true, loaded_to_feeder: true, loaded_to_extruder: false, channel_state: 'preload_finish', channel_action_state: 'none' },
+              { id: 2, tray_color: '#1E88E5', tray_type: 'PLA', tray_sub_brands: 'PolyLite', tray_id_name: null, tray_info_idx: null, remain: -1, k: null, cali_idx: null, tag_uid: '', tray_uuid: 'snapmaker-u1-e2', nozzle_temp_min: null, nozzle_temp_max: null, drying_temp: null, drying_time: null, state: 11, filament_detected: true, loaded_to_feeder: true, loaded_to_extruder: false, channel_state: 'preload_finish', channel_action_state: 'none' },
+              { id: 3, tray_color: null, tray_type: null, tray_sub_brands: null, tray_id_name: null, tray_info_idx: null, remain: -1, k: null, cali_idx: null, tag_uid: '', tray_uuid: 'snapmaker-u1-e3', nozzle_temp_min: null, nozzle_temp_max: null, drying_temp: null, drying_time: null, state: 9, filament_detected: false, loaded_to_feeder: false, loaded_to_extruder: false, channel_state: 'wait_insert', channel_action_state: 'none' },
+            ],
+          }],
+        })),
+      );
+
+      render(<PrintersPage />);
+
+      const card = await screen.findByTestId('printer-card-7');
+      const temperatureSection = await within(card).findByTestId('printer-card-section-temperatures');
+
+      expect(within(temperatureSection).getByText('E0')).toBeInTheDocument();
+      expect(within(temperatureSection).getByText('25°C')).toBeInTheDocument();
+      expect(within(temperatureSection).getByText('E1')).toBeInTheDocument();
+      expect(within(temperatureSection).getByText('26°C')).toBeInTheDocument();
+      expect(within(temperatureSection).getByText('E2')).toBeInTheDocument();
+      expect(within(temperatureSection).getByText('27°C')).toBeInTheDocument();
+      expect(within(temperatureSection).getByText('E3 · Active')).toBeInTheDocument();
+      expect(within(temperatureSection).getByText('110°C / 210°')).toBeInTheDocument();
+      expect(within(temperatureSection).getByText('Chamber')).toBeInTheDocument();
+      expect(within(temperatureSection).getByText('34°C')).toBeInTheDocument();
+      expect(within(temperatureSection).queryByText('L / R')).toBeNull();
+      expect(within(temperatureSection).queryByText(/^L(?:\s|$)/)).toBeNull();
+      expect(within(temperatureSection).queryByText(/^R(?:\s|$)/)).toBeNull();
+      const filamentSection = await within(card).findByTestId('printer-card-section-filaments');
+      expect(within(filamentSection).getByText('In extruder')).toBeInTheDocument();
+      expect(within(filamentSection).getAllByText('Preloaded')).toHaveLength(2);
+      expect(within(filamentSection).getAllByText('Empty')).toHaveLength(2);
+    });
+
     it('shows one Upload action for Prusa printers', async () => {
       server.use(
         http.get('/api/v1/printers/', () => HttpResponse.json([{
@@ -201,6 +270,44 @@ describe('PrintersPage', () => {
 
       expect(await screen.findByText('File Manager')).toBeInTheDocument();
       expect(await screen.findByRole('combobox', { name: /Storage/i })).toHaveValue('usb');
+    });
+
+    it('shows the Files button on Fluidd/Moonraker printer cards and opens the file manager', async () => {
+      const user = userEvent.setup();
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          ...mockPrinters[0],
+          id: 9,
+          name: 'K2 Plus',
+          provider: 'fluidd',
+          model: 'Creality K2 Plus',
+        }])),
+        http.get('/api/v1/printers/9/storage', () => HttpResponse.json({
+          used_bytes: null,
+          free_bytes: null,
+          storages: [
+            { id: 'gcodes', type: 'LOCAL', name: 'Moonraker gcodes', path: '/', available: true },
+          ],
+        })),
+        http.get('/api/v1/printers/9/files', ({ request }) => {
+          const url = new URL(request.url);
+          return HttpResponse.json({
+            path: url.searchParams.get('path') || '/',
+            storage: url.searchParams.get('storage'),
+            files: [],
+          });
+        }),
+      );
+
+      render(<PrintersPage />);
+
+      await screen.findAllByText('K2 Plus');
+      expect(await screen.findByRole('button', { name: 'Files' })).toBeInTheDocument();
+
+      await user.click(screen.getByRole('button', { name: 'Files' }));
+
+      expect(await screen.findByText('File Manager')).toBeInTheDocument();
+      expect(screen.getAllByText('K2 Plus').length).toBeGreaterThan(0);
     });
 
     it('shows a PrusaLink badge that opens the printer UI in a new tab', async () => {
@@ -820,7 +927,7 @@ describe('PrintersPage', () => {
       const groupLabels = Array.from(modelSelect.querySelectorAll('optgroup')).map((group) => group.label);
       const optionValues = Array.from(modelSelect.options).map((option) => option.value);
 
-      expect(groupLabels).toEqual(['Bambu Lab', 'Elegoo', 'Voron', 'Creality Klipper', 'Prusa', 'Generic']);
+      expect(groupLabels).toEqual(['Bambu Lab', 'Elegoo', 'Voron', 'Creality Klipper', 'Snapmaker Klipper', 'Prusa', 'Generic']);
       expect(optionValues).toContain('P1S');
       expect(optionValues).toContain('Elegoo Neptune 4 Pro');
       expect(optionValues).toContain('Elegoo Centauri Carbon');
@@ -830,6 +937,7 @@ describe('PrintersPage', () => {
       expect(optionValues).toContain('Creality K1C');
       expect(optionValues).toContain('Creality K2');
       expect(optionValues).toContain('Creality K2 Plus');
+      expect(optionValues).toContain('Snapmaker U1');
       expect(optionValues).toContain('Prusa MK4S');
       expect(optionValues).toContain('Generic Klipper Printer');
     });
@@ -2169,11 +2277,11 @@ vi.mock('../../components/FilamentHoverCard', async (importOriginal) => {
     ...actual,
     EmptySlotHoverCard: (props: Record<string, unknown>) => {
       phase13EmptySlotProps.push({ ...props });
-      return null;
+      return <>{props.children as ReactNode}</>;
     },
     FilamentHoverCard: (props: Record<string, unknown>) => {
       phase14HoverCardProps.push({ ...props });
-      return null;
+      return <>{props.children as ReactNode}</>;
     },
   };
 });

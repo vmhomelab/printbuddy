@@ -324,6 +324,14 @@ export interface AMSTray {
   drying_temp: number | null;      // RFID-recommended drying temp
   drying_time: number | null;      // RFID-recommended drying time (hours)
   state: number | null;            // AMS tray state: 9=empty, 10=spool present not loaded, 11=loaded
+  // Snapmaker U1 Moonraker feeder status. Generic AMS/CFS payloads omit these.
+  loaded_to_feeder?: boolean;
+  loaded_to_extruder?: boolean;
+  filament_detected?: boolean;
+  channel_state?: string | null;
+  channel_action_state?: string | null;
+  channel_error?: string | null;
+  filament_source?: string | null;
 }
 
 export interface AMSUnit {
@@ -414,6 +422,12 @@ export interface PrinterStatus {
     nozzle_2?: number;  // Second nozzle for H2 series (dual nozzle)
     nozzle_2_target?: number;
     nozzle_2_heating?: boolean;  // Actual heater state from MQTT
+    nozzle_3?: number;  // Additional Klipper/Moonraker nozzles (e.g. Snapmaker U1)
+    nozzle_3_target?: number;
+    nozzle_3_heating?: boolean;
+    nozzle_4?: number;
+    nozzle_4_target?: number;
+    nozzle_4_heating?: boolean;
     chamber?: number;
     chamber_target?: number;
     chamber_heating?: boolean;  // Actual heater state from MQTT
@@ -1988,6 +2002,13 @@ export interface PrintQueueItemUpdate {
   gcode_injection?: boolean;
 }
 
+export interface PrintQueueHistoryResponse {
+  items: PrintQueueItem[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
 export interface PrintQueueBulkUpdate {
   item_ids: number[];
   printer_id?: number | null;
@@ -2883,7 +2904,7 @@ export interface SelfUpdateStatus {
 
 export interface SelfUpdateJob {
   job_id: string;
-  status: 'queued' | 'pulling' | 'recreating' | 'completed' | 'failed';
+  status: 'queued' | 'checking' | 'pulling' | 'tagging' | 'recreating' | 'completed' | 'failed';
   started_at?: string;
   finished_at?: string | null;
   exit_code?: number | null;
@@ -3770,12 +3791,14 @@ export const api = {
       { method: 'POST' }
     ),
 
-  // Unload the currently loaded filament.
-  unloadAms: (printerId: number) =>
-    request<{ success: boolean; message: string }>(
-      `/printers/${printerId}/ams/unload`,
+  // Unload the currently loaded filament. Moonraker/CFS may pass a trayId for slot-specific unload.
+  unloadAms: (printerId: number, trayId?: number) => {
+    const suffix = trayId == null ? '' : `?tray_id=${trayId}`;
+    return request<{ success: boolean; message: string }>(
+      `/printers/${printerId}/ams/unload${suffix}`,
       { method: 'POST' }
-    ),
+    );
+  },
 
   // MQTT Debug Logging
   enableMQTTLogging: (printerId: number) =>
@@ -3924,12 +3947,13 @@ export const api = {
   startPrinterFile: (
     printerId: number,
     path: string,
-    options?: { bed_levelling?: boolean; print_platform_type?: 0 | 1; storage?: string | null }
+    options?: { bed_levelling?: boolean; print_platform_type?: 0 | 1; storage?: string | null; ams_mapping?: number[] }
   ) => {
     const params = new URLSearchParams({ path });
     if (options?.storage) params.set('storage', options.storage);
     if (options?.bed_levelling !== undefined) params.set('bed_levelling', String(options.bed_levelling));
     if (options?.print_platform_type !== undefined) params.set('print_platform_type', String(options.print_platform_type));
+    options?.ams_mapping?.forEach((trayId) => params.append('ams_mapping', String(trayId)));
     return request<{ status: string; path: string }>(`/printers/${printerId}/files/start?${params.toString()}`, {
       method: 'POST',
     });
@@ -4830,12 +4854,21 @@ export const api = {
     }),
 
   // Print Queue
-  getQueue: (printerId?: number, status?: string, targetModel?: string) => {
+  getQueue: (printerId?: number, status?: string, targetModel?: string, includeHistory = true) => {
     const params = new URLSearchParams();
-    if (printerId) params.set('printer_id', String(printerId));
+    if (printerId !== undefined) params.set('printer_id', String(printerId));
     if (status) params.set('status', status);
     if (targetModel) params.set('target_model', targetModel);
+    if (!includeHistory) params.set('include_history', 'false');
     return request<PrintQueueItem[]>(`/queue/?${params}`);
+  },
+  getQueueHistory: (opts?: { printerId?: number; status?: string; limit?: number; offset?: number }) => {
+    const params = new URLSearchParams();
+    if (opts?.printerId !== undefined) params.set('printer_id', String(opts.printerId));
+    if (opts?.status) params.set('status', opts.status);
+    params.set('limit', String(opts?.limit ?? 50));
+    params.set('offset', String(opts?.offset ?? 0));
+    return request<PrintQueueHistoryResponse>(`/queue/history?${params}`);
   },
   getQueueItem: (id: number) => request<PrintQueueItem>(`/queue/${id}`),
   addToQueue: (data: PrintQueueItemCreate) =>

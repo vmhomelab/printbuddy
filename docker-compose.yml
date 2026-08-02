@@ -18,6 +18,10 @@ services:
     # FTP and RTSP listeners silently fail.
     cap_add:
       - NET_BIND_SERVICE
+    # Give uvicorn time to handle SIGTERM cleanly: checkpoint SQLite WAL,
+    # release DB connections, disconnect MQTT clients, and flush logs before
+    # Docker escalates to SIGKILL during restarts/updates.
+    stop_grace_period: 30s
     #
     # LINUX: Use host mode for printer discovery and camera streaming
     network_mode: host
@@ -88,6 +92,16 @@ services:
       # External PostgreSQL (optional — uses SQLite by default)
       # Example: DATABASE_URL=postgresql+asyncpg://printbuddy:password@db-host:5432/printbuddy
       #- DATABASE_URL=
+      # PostgreSQL pool tuning for larger installs. SQLite keeps its own
+      # internal defaults regardless of these values.
+      #- DB_POOL_SIZE=20
+      #- DB_MAX_OVERFLOW=80
+      #- DB_POOL_TIMEOUT=30
+      #- DB_POOL_RECYCLE=1800
+      # External library folders are disabled unless their host paths live
+      # under this colon-separated allowlist. Example:
+      # PRINTBUDDY_EXTERNAL_ROOTS=/mnt/prints:/srv/print-library
+      #- PRINTBUDDY_EXTERNAL_ROOTS=
       #
       # Slicer API sidecar (optional — Settings → "Use Slicer API" toggles this on).
       # Default points at the OrcaSlicer sidecar on the docker host; change if you

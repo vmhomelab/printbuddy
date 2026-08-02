@@ -7,6 +7,19 @@ from pathlib import Path
 import pytest
 from httpx import AsyncClient
 
+from backend.app.api.routes import library
+
+
+@pytest.fixture(autouse=True)
+def allow_test_external_root(monkeypatch, tmp_path):
+    """Allow each test's tmp_path as an external-folder root.
+
+    Production keeps external folders disabled until PRINTBUDDY_EXTERNAL_ROOTS is
+    configured; these integration tests intentionally exercise the feature using
+    pytest-managed temporary directories.
+    """
+    monkeypatch.setattr(library.app_settings, "external_roots", str(tmp_path))
+
 
 class TestExternalFolderCreation:
     """Tests for POST /library/folders/external."""
@@ -53,11 +66,12 @@ class TestExternalFolderCreation:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_create_external_folder_nonexistent_path(self, async_client: AsyncClient, db_session):
+    async def test_create_external_folder_nonexistent_path(self, async_client: AsyncClient, db_session, tmp_path):
         """Verify 400 for non-existent path."""
+        missing = tmp_path / "missing"
         data = {
             "name": "Bad Path",
-            "external_path": "/nonexistent/path/that/does/not/exist",
+            "external_path": str(missing),
         }
         response = await async_client.post("/api/v1/library/folders/external", json=data)
         assert response.status_code == 400

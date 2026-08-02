@@ -10,6 +10,7 @@
  * fix for weight_used == null (brand new spools) and weight_used == 0.
  */
 import { describe, it, expect } from 'vitest';
+import { resolveTrayFillLevel } from '../../utils/amsHelpers';
 
 /**
  * Mirrors the inline inventoryFill calculation from PrintersPage.tsx.
@@ -77,5 +78,59 @@ describe('inventoryFill: old bug — weight_used > 0 vs weight_used != null', ()
   it('weight_used = 0.1 shows fill (small usage)', () => {
     const result = computeInventoryFill({ label_weight: 1000, weight_used: 0.1 });
     expect(result).toBe(100); // rounds to 100 since 0.1g from 1000g is negligible
+  });
+});
+
+describe('resolveTrayFillLevel', () => {
+  it('keeps CFS inventory 0% authoritative when printer reports stale full remain', () => {
+    const result = resolveTrayFillLevel({
+      spoolmanFill: null,
+      slotSpoolFill: null,
+      inventoryFill: 0,
+      printerRemain: 100,
+      hasPrinterFillLevel: true,
+      isCfsUnit: true,
+    });
+
+    expect(result).toEqual({ fillLevel: 0, fillSource: 'inventory' });
+  });
+
+  it('does not show unassigned CFS printer-reported 100% as authoritative fill', () => {
+    const result = resolveTrayFillLevel({
+      spoolmanFill: null,
+      slotSpoolFill: null,
+      inventoryFill: null,
+      printerRemain: 100,
+      hasPrinterFillLevel: true,
+      isCfsUnit: true,
+    });
+
+    expect(result).toEqual({ fillLevel: null, fillSource: undefined });
+  });
+
+  it('keeps lower CFS printer-reported values as a fallback when no assignment exists', () => {
+    const result = resolveTrayFillLevel({
+      spoolmanFill: null,
+      slotSpoolFill: null,
+      inventoryFill: null,
+      printerRemain: 41,
+      hasPrinterFillLevel: true,
+      isCfsUnit: true,
+    });
+
+    expect(result).toEqual({ fillLevel: 41, fillSource: 'ams' });
+  });
+
+  it('keeps Bambu AMS fallback when inventory says 0% but printer reports positive remain', () => {
+    const result = resolveTrayFillLevel({
+      spoolmanFill: null,
+      slotSpoolFill: null,
+      inventoryFill: 0,
+      printerRemain: 100,
+      hasPrinterFillLevel: true,
+      isCfsUnit: false,
+    });
+
+    expect(result).toEqual({ fillLevel: 100, fillSource: 'ams' });
   });
 });

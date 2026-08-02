@@ -20,6 +20,7 @@ PRINTER_MODEL_MAP = {
     "Bambu Lab H2C": "H2C",
     "Bambu Lab H2S": "H2S",
     "Bambu Lab X2D": "X2D",
+    "Snapmaker U1": "Snapmaker U1",
 }
 
 # Map from printer_model_id (internal codes in slice_info.config) to short names

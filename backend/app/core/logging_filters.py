@@ -12,6 +12,44 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
+
+# ``scheme://user:secret@host`` — the only URL shape that carries a secret.
+# Bound the scheme repetition so long scheme-like strings cannot trigger
+# polynomial regex runtime before logs/support bundles are truncated.
+URL_CREDENTIALS_PATTERN = re.compile(
+    r"(?P<scheme>[a-zA-Z][a-zA-Z0-9+.\-]{0,63}://)(?P<user>[^/:@\s]+):(?P<secret>[^/\s]+)@"
+)
+
+
+def redact_url_credentials(text: str | None) -> str | None:
+    """Mask passwords in ``scheme://user:secret@host`` URLs inside *text*."""
+    if not text or "://" not in text or "@" not in text:
+        return text
+    return URL_CREDENTIALS_PATTERN.sub(r"\g<scheme>\g<user>:[REDACTED]@", text)
+
+
+def _redact_log_value(value):
+    """Redact URL credentials in common logging payload shapes."""
+    if isinstance(value, str):
+        return redact_url_credentials(value)
+    if isinstance(value, tuple):
+        return tuple(_redact_log_value(item) for item in value)
+    if isinstance(value, list):
+        return [_redact_log_value(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _redact_log_value(item) for key, item in value.items()}
+    return value
+
+
+class CredentialRedactionFilter(logging.Filter):
+    """Scrub URL passwords from log records before handlers format them."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.msg = _redact_log_value(record.msg)
+        if record.args:
+            record.args = _redact_log_value(record.args)
+        return True
 
 
 class WriteRequestsOnlyFilter(logging.Filter):

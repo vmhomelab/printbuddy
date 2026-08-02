@@ -148,6 +148,15 @@ class PrintQueueItemResponse(BaseModel):
         from_attributes = True
 
 
+class PrintQueueHistoryResponse(BaseModel):
+    """Paginated response for completed/failed/skipped/cancelled queue history."""
+
+    items: list[PrintQueueItemResponse]
+    total: int
+    limit: int
+    offset: int
+
+
 class PrintQueueReorderItem(BaseModel):
     id: int
     position: int

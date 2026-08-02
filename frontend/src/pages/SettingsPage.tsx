@@ -599,7 +599,7 @@ export function SettingsPage() {
     enabled: !!selfUpdateJobId,
     refetchInterval: (query) => {
       const job = query.state.data as SelfUpdateJob | undefined;
-      if (!job || job.status === 'queued' || job.status === 'pulling' || job.status === 'recreating') {
+      if (!job || job.status === 'queued' || job.status === 'checking' || job.status === 'pulling' || job.status === 'tagging' || job.status === 'recreating') {
         return 1500;
       }
       return false;
@@ -907,7 +907,7 @@ export function SettingsPage() {
     const confirmed = window.confirm(
       t(
         'settings.selfUpdateConfirm',
-        'Printbuddy will pull the newest Docker image and restart this container. The interface may disconnect for 30–90 seconds. Continue?'
+        'Printbuddy will pull the selected update image and restart this container. The interface may disconnect for 30–90 seconds. Continue?'
       )
     );
     if (confirmed) {

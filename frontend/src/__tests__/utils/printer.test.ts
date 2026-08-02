@@ -86,6 +86,7 @@ describe('getPrinterImage', () => {
         ['Creality K1', 'creality-k1.png'],
         ['Creality K1C', 'creality-k1c.png'],
         ['Creality K2 Plus', 'creality-k2-plus.png'],
+        ['Snapmaker U1', 'snapmaker-u1.png'],
         ['Prusa CORE One', 'prusa-core-one.png'],
         ['Prusa MK4S', 'prusa-mk4s.png'],
         ['Prusa MK4', 'prusa-mk4.png'],
@@ -114,6 +115,8 @@ describe('getPrinterImage', () => {
       expect(getPrinterImage('Creality K1C')).toBe('/img/printers/creality-k1c.png');
       expect(getPrinterImage('Creality K2 Plus')).toBe('/img/printers/creality-k2-plus.png');
       expect(getPrinterImage('Creality K10')).toBe('/img/printers/default.png');
+      expect(getPrinterImage('Snapmaker U1')).toBe('/img/printers/snapmaker-u1.png');
+      expect(getPrinterImage('Snapmaker U2')).toBe('/img/printers/default.png');
     });
 
     it('uses the Home Assistant ingress base for static printer images', () => {

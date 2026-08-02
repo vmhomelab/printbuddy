@@ -28,6 +28,7 @@ import { FarmCommandCenterPage } from './pages/FarmCommandCenterPage';
 import { PrintFarmMonitorPage } from './pages/PrintFarmMonitorPage';
 import { appBasePath } from './utils/assetPaths';
 import { useWebSocket } from './hooks/useWebSocket';
+import { useBrowserTabPrintProgress } from './hooks/useBrowserTabPrintProgress';
 import { useStreamTokenSync } from './hooks/useCameraStreamToken';
 import { ThemeProvider } from './contexts/ThemeContext';
 import { ToastProvider } from './contexts/ToastContext';
@@ -84,6 +85,7 @@ function StreamTokenSync() {
 
 function WebSocketProvider({ children }: { children: React.ReactNode }) {
   useWebSocket();
+  useBrowserTabPrintProgress();
   return <>{children}</>;
 }
 

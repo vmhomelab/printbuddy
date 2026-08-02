@@ -108,6 +108,54 @@ class TestPrintQueueAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_list_queue_can_exclude_history_items(self, async_client: AsyncClient, queue_item_factory):
+        """Queue page can load active/pending queue without pulling historical rows."""
+        await queue_item_factory(status="pending", position=1)
+        await queue_item_factory(status="printing", position=2)
+        await queue_item_factory(status="completed", position=3)
+
+        response = await async_client.get("/api/v1/queue/?include_history=false")
+
+        assert response.status_code == 200
+        statuses = [item["status"] for item in response.json()]
+        assert statuses == ["pending", "printing"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_queue_history_endpoint_is_paginated_newest_first(
+        self, async_client: AsyncClient, queue_item_factory
+    ):
+        """History endpoint returns a page plus the total count instead of truncating in the UI."""
+        from datetime import datetime, timedelta, timezone
+
+        base = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        for idx in range(55):
+            await queue_item_factory(
+                status="completed",
+                position=idx + 1,
+                completed_at=base + timedelta(minutes=idx),
+            )
+
+        response = await async_client.get("/api/v1/queue/history?limit=50&offset=0")
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["total"] == 55
+        assert payload["limit"] == 50
+        assert payload["offset"] == 0
+        assert len(payload["items"]) == 50
+        assert payload["items"][0]["position"] == 55
+        assert payload["items"][-1]["position"] == 6
+
+        next_response = await async_client.get("/api/v1/queue/history?limit=50&offset=50")
+        assert next_response.status_code == 200
+        next_payload = next_response.json()
+        assert next_payload["total"] == 55
+        assert len(next_payload["items"]) == 5
+        assert next_payload["items"][0]["position"] == 5
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_add_to_queue(self, async_client: AsyncClient, printer_factory, archive_factory, db_session):
         """Verify item can be added to queue."""
         printer = await printer_factory()
@@ -1742,7 +1790,6 @@ class TestAbortedStatusNormalisation:
     # ========================================================================
     # Batch quantity tests
     # ========================================================================
-
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_add_to_queue_quantity_default(
