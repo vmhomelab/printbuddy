@@ -6,7 +6,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { screen, waitFor, fireEvent, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { render } from '../utils';
-import { PrintersPage } from '../../pages/PrintersPage';
+import { PRINTER_MODEL_GROUPS, PrintersPage, mapModelCode } from '../../pages/PrintersPage';
 import { setAuthToken } from '../../api/client';
 import { http, HttpResponse } from 'msw';
 import { server } from '../mocks/server';
@@ -124,6 +124,18 @@ describe('PrintersPage', () => {
         return HttpResponse.json([]);
       })
     );
+  });
+
+  describe('Bambu model registry', () => {
+    it('maps the A2L SSDP model code to the display model', () => {
+      expect(mapModelCode('N9')).toBe('A2L');
+      expect(mapModelCode('A2L')).toBe('A2L');
+    });
+
+    it('offers A2L under an A2 Series model group', () => {
+      const a2Group = PRINTER_MODEL_GROUPS.find((group) => group.label === 'Bambu Lab A2 Series');
+      expect(a2Group?.options).toContainEqual({ value: 'A2L', label: 'A2L' });
+    });
   });
 
   describe('rendering', () => {
@@ -858,7 +870,19 @@ describe('PrintersPage', () => {
       const groupLabels = Array.from(modelSelect.querySelectorAll('optgroup')).map((group) => group.label);
       const optionValues = Array.from(modelSelect.options).map((option) => option.value);
 
-      expect(groupLabels).toEqual(['Bambu Lab', 'Elegoo', 'Voron', 'Creality Klipper', 'Prusa', 'Generic']);
+      expect(groupLabels).toEqual([
+        'Bambu Lab A1 Series',
+        'Bambu Lab A2 Series',
+        'Bambu Lab P Series',
+        'Bambu Lab X Series',
+        'Bambu Lab H Series',
+        'Elegoo',
+        'Voron',
+        'Creality Klipper',
+        'Prusa',
+        'Generic',
+      ]);
+      expect(optionValues).toContain('A2L');
       expect(optionValues).toContain('P1S');
       expect(optionValues).toContain('Elegoo Neptune 4 Pro');
       expect(optionValues).toContain('Elegoo Centauri Carbon');

@@ -361,7 +361,7 @@ function formatKValue(k: number | null | undefined): string {
   return value.toFixed(3);
 }
 
-type PrinterModelOptionGroup = {
+export type PrinterModelOptionGroup = {
   label: string;
   options: Array<{ value: string; label: string }>;
 };
@@ -441,23 +441,44 @@ function isPrusaPrinter(printer: Pick<Printer, 'provider' | 'model'>): boolean {
   return provider === 'prusalink' || provider === 'prusaconnect' || model.startsWith('prusa ');
 }
 
-const PRINTER_MODEL_GROUPS: PrinterModelOptionGroup[] = [
+export const PRINTER_MODEL_GROUPS: PrinterModelOptionGroup[] = [
   {
-    label: 'Bambu Lab',
+    label: 'Bambu Lab A1 Series',
     options: [
       { value: 'A1', label: 'A1' },
       { value: 'A1 F', label: 'A1 F' },
       { value: 'A1 Mini', label: 'A1 Mini' },
-      { value: 'O1C', label: 'O1C' },
-      { value: 'O1E', label: 'O1E' },
-      { value: 'O1S', label: 'O1S' },
+    ],
+  },
+  {
+    label: 'Bambu Lab A2 Series',
+    options: [
+      { value: 'A2L', label: 'A2L' },
+    ],
+  },
+  {
+    label: 'Bambu Lab P Series',
+    options: [
       { value: 'P1P', label: 'P1P' },
       { value: 'P1S', label: 'P1S' },
       { value: 'P2S', label: 'P2S' },
+    ],
+  },
+  {
+    label: 'Bambu Lab X Series',
+    options: [
       { value: 'X1', label: 'X1' },
       { value: 'X1C', label: 'X1 Carbon' },
       { value: 'X1E', label: 'X1E' },
       { value: 'X2D', label: 'X2D' },
+    ],
+  },
+  {
+    label: 'Bambu Lab H Series',
+    options: [
+      { value: 'O1C', label: 'O1C' },
+      { value: 'O1E', label: 'O1E' },
+      { value: 'O1S', label: 'O1S' },
       { value: 'H2C', label: 'H2C' },
       { value: 'H2D', label: 'H2D' },
       { value: 'H2D Pro', label: 'H2D Pro' },
@@ -1670,7 +1691,7 @@ function getStatusDisplay(state: string | null | undefined, stg_cur_name: string
 }
 
 // Map SSDP model codes to display names
-function mapModelCode(ssdpModel: string | null): string {
+export function mapModelCode(ssdpModel: string | null): string {
   if (!ssdpModel) return '';
   const modelMap: Record<string, string> = {
     // H2 Series
@@ -1693,6 +1714,8 @@ function mapModelCode(ssdpModel: string | null): string {
     // A1 Series
     'N2S': 'A1',
     'N1': 'A1 Mini',
+    // A2 Series
+    'N9': 'A2L',
     // Direct matches
     'X1C': 'X1C',
     'X1': 'X1',
@@ -1703,6 +1726,7 @@ function mapModelCode(ssdpModel: string | null): string {
     'P2S': 'P2S',
     'A1': 'A1',
     'A1 Mini': 'A1 Mini',
+    'A2L': 'A2L',
     'H2D': 'H2D',
     'H2D Pro': 'H2D Pro',
     'H2C': 'H2C',
