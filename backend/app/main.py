@@ -264,15 +264,18 @@ root_logger.setLevel(log_level)
 # dropped — which is exactly the "logs/printbuddy.log only shows logs
 # partially" bug we hit. See backend/app/core/trace.py for the
 # ContextVar the filter reads.
+from backend.app.core.logging_filters import CredentialRedactionFilter
 from backend.app.core.trace import TraceIDFilter
 
 _trace_id_filter = TraceIDFilter()
+_credential_redaction_filter = CredentialRedactionFilter()
 
 # Console handler - always enabled
 console_handler = logging.StreamHandler()
 console_handler.setLevel(log_level)
 console_handler.setFormatter(logging.Formatter(log_format))
 console_handler.addFilter(_trace_id_filter)
+console_handler.addFilter(_credential_redaction_filter)
 root_logger.addHandler(console_handler)
 
 # File handler - only in production or if explicitly enabled
@@ -287,6 +290,7 @@ if app_settings.log_to_file:
     file_handler.setLevel(log_level)
     file_handler.setFormatter(logging.Formatter(log_format))
     file_handler.addFilter(_trace_id_filter)
+    file_handler.addFilter(_credential_redaction_filter)
     root_logger.addHandler(file_handler)
     logging.info("Logging to file: %s", log_file)
 
@@ -305,6 +309,7 @@ if app_settings.log_to_file:
     uvicorn_access_logger = logging.getLogger("uvicorn.access")
     uvicorn_access_logger.addHandler(file_handler)
     uvicorn_access_logger.addFilter(WriteRequestsOnlyFilter())
+    uvicorn_access_logger.addFilter(CredentialRedactionFilter())
     # Uvicorn's access logger has propagate=False (its own default), so the
     # root-attached TraceIDFilter never sees these records. Attach a
     # second instance directly so HTTP access lines carry the same trace
@@ -6171,8 +6176,11 @@ async def auth_middleware(request, call_next):
             # Auth disabled, allow all requests
             return await call_next(request)
     except Exception:
-        # If we can't check auth status, allow request (fail open for DB issues)
-        return await call_next(request)
+        logging.getLogger(__name__).exception("Failed to determine authentication state; denying request")
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Authentication state unavailable"},
+        )
 
     # Auth is enabled - require valid token
     auth_header = request.headers.get("Authorization")

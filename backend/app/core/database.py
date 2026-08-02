@@ -28,7 +28,12 @@ def _create_engine():
     if is_sqlite():
         kwargs = {"pool_size": 20, "max_overflow": 200}
     else:
-        kwargs = {"pool_size": 10, "max_overflow": 20}
+        kwargs = {
+            "pool_size": settings.db_pool_size,
+            "max_overflow": settings.db_max_overflow,
+            "pool_timeout": settings.db_pool_timeout,
+            "pool_recycle": settings.db_pool_recycle,
+        }
     eng = create_async_engine(
         settings.database_url,
         echo=settings.debug,
