@@ -58,17 +58,17 @@ The goal is to make Printbuddy a proper multi-printer operations dashboard for h
 
 The main difference is scope.
 
-Bambuddy is Bambu-only. Printbuddy fully supports Bambu Lab printers too, but it does not stop there.
+Printbuddy fully supports Bambu Lab printers, but it does not stop there. It takes the Bambu functionality and expands the idea into a vendor-neutral 3D printer management platform.
 
-Printbuddy takes the Bambu functionality and expands the idea into a vendor-neutral 3D printer management platform. That means you can manage Bambu printers alongside Klipper/Moonraker, PrusaLink, and other supported printer types from one interface.
+That means you can manage Bambu printers alongside Klipper/Moonraker, PrusaLink, and other supported printer types from one interface.
 
-| Area | Printbuddy | Bambuddy |
-|---|---|---|
-| Bambu Lab support | Fully supported | Fully focused on Bambu |
-| Best use case | One dashboard for all your printers | Dedicated Bambu-only tool |
-| Long-term direction | Vendor-neutral control center | Bambu-focused utility |
-| Other printer brands | Supported / planned depending on backend | Not the goal |
-| Scope | Multi-vendor printer management platform | Bambu-specific companion tool |
+| Area | Printbuddy |
+|---|---|
+| Bambu Lab support | Fully supported |
+| Best use case | One dashboard for all your printers |
+| Long-term direction | Vendor-neutral control center |
+| Other printer brands | Supported / planned depending on backend |
+| Scope | Multi-vendor printer management platform |
 
 
 ---
