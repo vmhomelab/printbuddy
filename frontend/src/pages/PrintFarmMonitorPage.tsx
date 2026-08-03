@@ -595,37 +595,39 @@ export function PrintFarmMonitorPage() {
           </div>
         </header>
 
-        <section className={`mb-4 min-w-0 rounded-2xl border px-4 py-4 sm:px-5 ${theme.panelSoft}`}>
-          <div className="flex min-w-0 flex-wrap items-center gap-4 text-base sm:text-lg">
-            <div className="inline-flex items-center gap-3 rounded-xl bg-status-ok/15 px-4 py-2 font-bold text-status-ok shadow-[0_0_22px_color-mix(in_srgb,var(--status-ok)_18%,transparent)]">
-              <span className="h-4 w-4 rounded-full bg-status-ok shadow-[0_0_16px_color-mix(in_srgb,var(--status-ok)_60%,transparent)]" />
-              {printing.length} PRINTERS ACTIVE
-            </div>
-            <span className="hidden h-5 w-px bg-bambu-dark-tertiary md:block" />
-            <div className={`min-w-0 ${theme.muted}`}>
-              Next completion: <span className="font-bold text-bambu-green-light">{nextCompletion?.printer.name ?? 'No active print'}</span>
-              {nextCompletion?.status?.remaining_time !== null && nextCompletion?.status?.remaining_time !== undefined && <span> in <span className="text-bambu-green-light">{formatDuration(nextCompletion.status.remaining_time)}</span></span>}
-            </div>
-            <div className={`ml-0 flex items-center gap-3 text-sm lg:ml-auto ${theme.muted}`}>
-              <div className="relative h-12 w-12 rounded-full p-1" style={utilizationStyle} aria-label={`Farm utilization ${utilization}%`}>
-                <div className={`h-full w-full rounded-full ${theme.ringInner}`} />
-              </div>
-              <div><div className="text-xs uppercase">Farm Utilization</div><div className={`text-2xl font-bold ${theme.text}`}>{utilization}%</div></div>
-            </div>
-          </div>
-        </section>
-
         <div data-testid="farm-monitor-layout" className="grid min-w-0 gap-4 min-[1280px]:grid-cols-[minmax(0,1fr)_minmax(18rem,24rem)]">
-          <section data-testid="farm-monitor-printer-grid" className="grid min-w-0 auto-rows-fr grid-cols-[repeat(auto-fit,minmax(min(100%,18rem),1fr))] gap-4">
-            {visiblePrinters.map((item) => <PrinterCard key={item.printer.id} item={item} loadedFilament={loadedFilaments.get(item.printer.id) ?? null} theme={theme} />)}
-            {visiblePrinters.length === 0 && (
-              <div className={`col-span-full rounded-2xl border border-dashed p-12 text-center ${theme.panelSoft}`}>
-                <PrinterIcon className={`mx-auto mb-4 h-14 w-14 ${theme.subtle}`} />
-                <h2 className={`text-2xl font-bold ${theme.text}`}>No printers configured</h2>
-                <p className={`mt-2 ${theme.muted}`}>Add printers in Printbuddy to populate the farm monitor.</p>
+          <div data-testid="farm-monitor-main-column" className="grid min-w-0 content-start gap-4">
+            <section data-testid="farm-monitor-status-strip" className={`min-w-0 rounded-2xl border px-4 py-4 sm:px-5 ${theme.panelSoft}`}>
+              <div className="flex min-w-0 flex-wrap items-center gap-4 text-base sm:text-lg">
+                <div className="inline-flex items-center gap-3 rounded-xl bg-status-ok/15 px-4 py-2 font-bold text-status-ok shadow-[0_0_22px_color-mix(in_srgb,var(--status-ok)_18%,transparent)]">
+                  <span className="h-4 w-4 rounded-full bg-status-ok shadow-[0_0_16px_color-mix(in_srgb,var(--status-ok)_60%,transparent)]" />
+                  {printing.length} PRINTERS ACTIVE
+                </div>
+                <span className="hidden h-5 w-px bg-bambu-dark-tertiary md:block" />
+                <div className={`min-w-0 ${theme.muted}`}>
+                  Next completion: <span className="font-bold text-bambu-green-light">{nextCompletion?.printer.name ?? 'No active print'}</span>
+                  {nextCompletion?.status?.remaining_time !== null && nextCompletion?.status?.remaining_time !== undefined && <span> in <span className="text-bambu-green-light">{formatDuration(nextCompletion.status.remaining_time)}</span></span>}
+                </div>
+                <div className={`ml-0 flex items-center gap-3 text-sm lg:ml-auto ${theme.muted}`}>
+                  <div className="relative h-12 w-12 rounded-full p-1" style={utilizationStyle} aria-label={`Farm utilization ${utilization}%`}>
+                    <div className={`h-full w-full rounded-full ${theme.ringInner}`} />
+                  </div>
+                  <div><div className="text-xs uppercase">Farm Utilization</div><div className={`text-2xl font-bold ${theme.text}`}>{utilization}%</div></div>
+                </div>
               </div>
-            )}
-          </section>
+            </section>
+
+            <section data-testid="farm-monitor-printer-grid" className="grid min-w-0 auto-rows-fr grid-cols-[repeat(auto-fit,minmax(min(100%,18rem),1fr))] gap-4">
+              {visiblePrinters.map((item) => <PrinterCard key={item.printer.id} item={item} loadedFilament={loadedFilaments.get(item.printer.id) ?? null} theme={theme} />)}
+              {visiblePrinters.length === 0 && (
+                <div className={`col-span-full rounded-2xl border border-dashed p-12 text-center ${theme.panelSoft}`}>
+                  <PrinterIcon className={`mx-auto mb-4 h-14 w-14 ${theme.subtle}`} />
+                  <h2 className={`text-2xl font-bold ${theme.text}`}>No printers configured</h2>
+                  <p className={`mt-2 ${theme.muted}`}>Add printers in Printbuddy to populate the farm monitor.</p>
+                </div>
+              )}
+            </section>
+          </div>
 
           <aside data-testid="farm-monitor-sidebar" className="grid min-w-0 content-start gap-4">
             <ActiveProjectsPanel projects={activeProjects} theme={theme} />

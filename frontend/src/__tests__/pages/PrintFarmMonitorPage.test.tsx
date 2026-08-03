@@ -266,6 +266,8 @@ describe('PrintFarmMonitorPage', () => {
     expect(heading.closest('main')).toHaveClass('overflow-x-hidden');
     expect(screen.getByTestId('farm-monitor-layout')).toHaveClass('min-w-0');
     expect(screen.getByTestId('farm-monitor-layout').className).toContain('min-[1280px]:grid-cols-[minmax(0,1fr)_minmax(18rem,24rem)]');
+    expect(screen.getByTestId('farm-monitor-main-column')).toContainElement(screen.getByTestId('farm-monitor-status-strip'));
+    expect(screen.getByTestId('farm-monitor-main-column')).toContainElement(screen.getByTestId('farm-monitor-printer-grid'));
     expect(screen.getByTestId('farm-monitor-printer-grid')).toHaveClass('min-w-0');
     expect(screen.getByTestId('farm-monitor-printer-grid').className).toContain('grid-cols-[repeat(auto-fit,minmax(min(100%,18rem),1fr))]');
     expect(screen.getByTestId('farm-monitor-sidebar')).toHaveClass('min-w-0');
