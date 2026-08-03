@@ -394,7 +394,7 @@ function PrinterCard({ item, loadedFilament, theme }: { item: MonitorPrinter; lo
 
 function AlertsPanel({ alerts, theme }: { alerts: MonitorAlert[]; theme: MonitorThemeClasses }) {
   return (
-    <section className={`rounded-2xl border p-5 ${theme.card}`}>
+    <section className={`min-w-0 overflow-hidden rounded-2xl border p-5 ${theme.card}`}>
       <div className={`mb-4 flex items-center justify-between border-b pb-4 ${theme.divider}`}>
         <div className={`flex items-center gap-3 text-xl font-bold ${theme.text}`}><Bell className="h-6 w-6 text-orange-400" /> ALERTS</div>
         <span className={`text-sm ${theme.muted}`}>{alerts.length} active</span>
@@ -402,14 +402,14 @@ function AlertsPanel({ alerts, theme }: { alerts: MonitorAlert[]; theme: Monitor
       {alerts.length > 0 ? (
         <div className={`divide-y ${theme.divider}`}>
           {alerts.slice(0, 5).map((alert) => (
-            <div key={`${alert.title}-${alert.detail}-${alert.sub}`} className="flex gap-4 py-4 first:pt-0 last:pb-0">
+            <div key={`${alert.title}-${alert.detail}-${alert.sub}`} className="flex min-w-0 gap-4 py-4 first:pt-0 last:pb-0">
               <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-amber-500/15"><alert.icon className={`h-5 w-5 ${alert.tone}`} /></div>
               <div className="min-w-0 flex-1">
                 <div className={`text-sm font-bold ${alert.tone}`}>{alert.title}</div>
                 <div className={`truncate text-sm ${theme.text}`}>{alert.detail}</div>
                 <div className={`truncate text-sm ${theme.muted}`}>{alert.sub}</div>
               </div>
-              <div className={`text-right text-lg font-bold ${theme.text}`}>{alert.meta}</div>
+              <div className={`shrink-0 text-right text-lg font-bold ${theme.text}`}>{alert.meta}</div>
             </div>
           ))}
         </div>
@@ -434,12 +434,12 @@ function ActivityPanel({ items, theme }: { items: MonitorPrinter[]; theme: Monit
     });
 
   return (
-    <section className={`rounded-2xl border p-5 ${theme.card}`}>
+    <section className={`min-w-0 overflow-hidden rounded-2xl border p-5 ${theme.card}`}>
       <h2 className={`mb-4 text-base font-semibold uppercase tracking-wide ${theme.muted}`}>Recent Activity</h2>
       {activity.length > 0 ? (
         <div className="space-y-4">
           {activity.map((entry) => (
-            <div key={`${entry.name}-${entry.detail}`} className="flex gap-3">
+            <div key={`${entry.name}-${entry.detail}`} className="flex min-w-0 gap-3">
               <div className={`mt-0.5 flex h-5 w-5 items-center justify-center rounded-full ${entry.state === 'paused' || entry.state === 'stopped' ? 'text-amber-400' : entry.state === 'offline' ? 'text-bambu-gray-light' : entry.state === 'error' ? 'text-red-400' : 'text-emerald-400'}`}>
                 {entry.state === 'paused' || entry.state === 'stopped' ? <CirclePause className="h-5 w-5" /> : entry.state === 'offline' ? <Power className="h-5 w-5" /> : <CheckCircle2 className="h-5 w-5" />}
               </div>
@@ -464,9 +464,9 @@ function ActiveProjectsPanel({ projects, theme }: { projects: ProjectListItem[];
     .slice(0, 3);
 
   return (
-    <section className={`rounded-2xl border p-5 ${theme.card}`}>
-      <div className={`mb-4 flex items-center justify-between border-b pb-4 ${theme.divider}`}>
-        <div className={`flex items-center gap-3 text-xl font-bold ${theme.text}`}><PackageOpen className="h-6 w-6 text-bambu-green-light" /> ACTIVE PROJECTS</div>
+    <section className={`min-w-0 overflow-hidden rounded-2xl border p-5 ${theme.card}`}>
+      <div className={`mb-4 flex min-w-0 items-center justify-between gap-3 border-b pb-4 ${theme.divider}`}>
+        <div className={`flex min-w-0 items-center gap-3 text-xl font-bold ${theme.text}`}><PackageOpen className="h-6 w-6 shrink-0 text-bambu-green-light" /> <span className="truncate">ACTIVE PROJECTS</span></div>
         <span className={`text-sm ${theme.muted}`}>{projects.length} active</span>
       </div>
       {visibleProjects.length > 0 ? (
@@ -474,19 +474,19 @@ function ActiveProjectsPanel({ projects, theme }: { projects: ProjectListItem[];
           {visibleProjects.map((project) => {
             const progress = projectProgress(project);
             return (
-              <article key={project.id} className={`rounded-xl border p-4 ${theme.panelSoft}`}>
-                <div className="flex items-start gap-3">
+              <article key={project.id} className={`min-w-0 overflow-hidden rounded-xl border p-4 ${theme.panelSoft}`}>
+                <div className="flex min-w-0 items-start gap-3">
                   <span className="mt-1 h-3 w-3 shrink-0 rounded-full" style={{ backgroundColor: project.color || 'var(--accent)' }} />
                   <div className="min-w-0 flex-1">
                     <div className={`truncate text-base font-bold ${theme.text}`}>{project.name}</div>
                     {project.description && <div className={`truncate text-sm ${theme.muted}`}>{project.description}</div>}
                   </div>
-                  <div className={`text-right text-lg font-bold ${theme.text}`}>{progress !== null ? `${progress}%` : '—'}</div>
+                  <div className={`shrink-0 text-right text-lg font-bold ${theme.text}`}>{progress !== null ? `${progress}%` : '—'}</div>
                 </div>
-                <div className="mt-4 h-2 overflow-hidden rounded-full bg-bambu-dark-tertiary">
+                <div className="mt-4 h-2 min-w-0 overflow-hidden rounded-full bg-bambu-dark-tertiary">
                   <div className="h-full rounded-full bg-gradient-to-r from-bambu-green-light to-bambu-green" style={{ width: `${progress ?? 0}%` }} />
                 </div>
-                <div className={`mt-3 flex flex-wrap items-center gap-3 text-xs font-semibold uppercase tracking-wide ${theme.muted}`}>
+                <div className={`mt-3 flex min-w-0 flex-wrap items-center gap-3 text-xs font-semibold uppercase tracking-wide ${theme.muted}`}>
                   <span>{projectTargetSummary(project)}</span>
                   {project.queue_count > 0 && <span>{project.queue_count} queued</span>}
                   {project.failed_count > 0 && <span className="text-red-300">{project.failed_count} failed</span>}
@@ -595,7 +595,7 @@ export function PrintFarmMonitorPage() {
           </div>
         </header>
 
-        <div data-testid="farm-monitor-layout" className="grid min-w-0 gap-4 min-[1280px]:grid-cols-[minmax(0,1fr)_minmax(18rem,24rem)]">
+        <div data-testid="farm-monitor-layout" className="grid w-full min-w-0 max-w-full gap-4 min-[1280px]:grid-cols-[minmax(0,1fr)_minmax(0,22rem)] 2xl:grid-cols-[minmax(0,1fr)_minmax(0,24rem)]">
           <div data-testid="farm-monitor-main-column" className="grid min-w-0 content-start gap-4">
             <section data-testid="farm-monitor-status-strip" className={`min-w-0 rounded-2xl border px-4 py-4 sm:px-5 ${theme.panelSoft}`}>
               <div className="flex min-w-0 flex-wrap items-center gap-4 text-base sm:text-lg">
@@ -629,7 +629,7 @@ export function PrintFarmMonitorPage() {
             </section>
           </div>
 
-          <aside data-testid="farm-monitor-sidebar" className="grid min-w-0 content-start gap-4">
+          <aside data-testid="farm-monitor-sidebar" className="grid min-w-0 max-w-full content-start gap-4 overflow-hidden">
             <ActiveProjectsPanel projects={activeProjects} theme={theme} />
             <AlertsPanel alerts={activeAlerts} theme={theme} />
             <ActivityPanel items={[...printing, ...paused, ...stopped, ...offline, ...errors]} theme={theme} />
