@@ -208,6 +208,10 @@ describe('PrintersPage', () => {
       expect(within(temperatureSection).queryByText(/^L(?:\s|$)/)).toBeNull();
       expect(within(temperatureSection).queryByText(/^R(?:\s|$)/)).toBeNull();
       const filamentSection = await within(card).findByTestId('printer-card-section-filaments');
+      expect(within(filamentSection).getByText('Spools')).not.toBeNull();
+      expect(within(filamentSection).getByText('Left')).not.toBeNull();
+      expect(within(filamentSection).getByText('Right')).not.toBeNull();
+      expect(within(filamentSection).queryByText(/^AMS-/)).toBeNull();
       expect(within(filamentSection).getByText('In extruder')).toBeInTheDocument();
       expect(within(filamentSection).getAllByText('Preloaded')).toHaveLength(2);
       expect(within(filamentSection).getAllByText('Empty')).toHaveLength(2);

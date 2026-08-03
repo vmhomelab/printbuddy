@@ -4540,32 +4540,38 @@ function PrinterCard({
                       <div className="grid grid-cols-2 gap-3">
                         {regularAms.map((ams) => {
                         const isK2CfsLikeUnit = isCrealityK2Moonraker && ams.tray.length === 4;
+                        const isSnapmakerU1Unit = ams.module_type === 'snapmaker_u1';
                         const mappedExtruderId = amsExtruderMap[String(ams.id)];
                         const normalizedId = ams.id >= 128 ? ams.id - 128 : ams.id;
                         const extruderId = mappedExtruderId !== undefined ? mappedExtruderId : normalizedId;
                         const isLeftNozzle = extruderId === 1;
                         const isRightNozzle = extruderId === 0;
-                        const amsDisplayLabel = isK2CfsLikeUnit ? `CFS T${ams.id + 1}` : (ams.name || getAmsLabel(ams.id, ams.tray.length));
+                        const amsDisplayLabel = isSnapmakerU1Unit ? 'Spools' : (isK2CfsLikeUnit ? `CFS T${ams.id + 1}` : (ams.name || getAmsLabel(ams.id, ams.tray.length)));
 
                         return (
                           <div key={ams.id} className="p-2.5 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary/30">
                             {/* Header: Label + Stats (no icon) */}
                             <div className="flex items-center justify-between mb-2">
                               <div className="flex items-center gap-1.5">
-                                {/* AMS name — hover to see serial, firmware, and edit friendly name */}
-                                <AmsNameHoverCard
-                                  ams={ams}
-                                  printerId={printer.id}
-                                  label={amsDisplayLabel}
-                                  amsLabels={amsLabels}
-                                  canEdit={hasPermission('printers:update')}
-                                  onSaved={refetchAmsLabels}
-                                >
+                                {isSnapmakerU1Unit ? (
                                   <span className="text-[10px] text-white font-medium cursor-default select-none">
-                                    {amsLabels?.[ams.id] || amsDisplayLabel}
+                                    {amsDisplayLabel}
                                   </span>
-                                </AmsNameHoverCard>
-                                {isDualNozzle && (isLeftNozzle || isRightNozzle) && (
+                                ) : (
+                                  <AmsNameHoverCard
+                                    ams={ams}
+                                    printerId={printer.id}
+                                    label={amsDisplayLabel}
+                                    amsLabels={amsLabels}
+                                    canEdit={hasPermission('printers:update')}
+                                    onSaved={refetchAmsLabels}
+                                  >
+                                    <span className="text-[10px] text-white font-medium cursor-default select-none">
+                                      {amsLabels?.[ams.id] || amsDisplayLabel}
+                                    </span>
+                                  </AmsNameHoverCard>
+                                )}
+                                {!isSnapmakerU1Unit && isDualNozzle && (isLeftNozzle || isRightNozzle) && (
                                   <NozzleBadge side={isLeftNozzle ? 'L' : 'R'} />
                                 )}
                               </div>
@@ -4660,12 +4666,21 @@ function PrinterCard({
                             )}
                             {/* Slots grid: 4 columns - always render 4 slots */}
                             <div className="grid grid-cols-4 gap-1.5">
+                              {isSnapmakerU1Unit && (
+                                <>
+                                  <div className="col-span-2 text-center text-[9px] uppercase tracking-wider text-bambu-gray font-semibold">
+                                    Left
+                                  </div>
+                                  <div className="col-span-2 text-center text-[9px] uppercase tracking-wider text-bambu-gray font-semibold">
+                                    Right
+                                  </div>
+                                </>
+                              )}
                               {[0, 1, 2, 3].map((slotIdx) => {
                                 // Find tray data for this slot (may be undefined if data incomplete)
                                 // Use array index if available, as tray.id may not always be set
                                 const tray = ams.tray[slotIdx] || ams.tray.find(t => t.id === slotIdx);
                                 const isCfsUnit = ams.module_type === 'cfs' || isK2CfsLikeUnit;
-                                const isSnapmakerU1Unit = ams.module_type === 'snapmaker_u1';
                                 const snapmakerLoadState = isSnapmakerU1Unit ? snapmakerU1LoadState(tray) : null;
                                 const hasFillLevel = tray?.tray_type && tray.remain >= 0;
                                 const isEmpty = !tray?.tray_type;
