@@ -1124,6 +1124,15 @@ def _validate_external_path(path_str: str) -> Path:
         if str(path).startswith(prefix):
             raise HTTPException(status_code=400, detail=f"Cannot mount system directory: {prefix}")
 
+    allowed_roots = [Path(root).resolve() for root in app_settings.external_roots.split(":") if root.strip()]
+    if not allowed_roots:
+        raise HTTPException(
+            status_code=400,
+            detail="External folders are disabled. Set PRINTBUDDY_EXTERNAL_ROOTS to an allowlist of host paths.",
+        )
+    if not any(path == root or root in path.parents for root in allowed_roots):
+        raise HTTPException(status_code=400, detail=f"External path is not allowlisted: {path}")
+
     if not path.exists():
         raise HTTPException(status_code=400, detail=f"Path does not exist: {path}")
 

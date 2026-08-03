@@ -117,7 +117,7 @@ def test_moonraker_status_edges_emit_print_start_and_complete(monkeypatch):
     )
 
     monkeypatch.setattr(client, "_query_objects", lambda names: next(statuses))  # noqa: ARG005
-    monkeypatch.setattr(client, "_query_fan_status", lambda: {})
+    monkeypatch.setattr(client, "_query_fan_status", lambda *args, **kwargs: {})
     monkeypatch.setattr(
         "backend.app.services.printer_providers.moonraker.time.monotonic", iter([100.0, 160.0]).__next__
     )

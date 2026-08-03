@@ -5,6 +5,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { screen, waitFor, fireEvent, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import type { ReactNode } from 'react';
 import { render } from '../utils';
 import { PrintersPage } from '../../pages/PrintersPage';
 import { setAuthToken } from '../../api/client';
@@ -77,6 +78,8 @@ describe('PrintersPage', () => {
     localStorage.removeItem('embeddedCameraInlineState_1');
     localStorage.removeItem('printerCardSectionOrder_1');
     localStorage.removeItem('printerCardSectionOrder_2');
+    localStorage.removeItem('printerCardOrder');
+    vi.mocked(localStorage.getItem).mockReturnValue(null);
     setAuthToken(null);
 
     server.use(
@@ -142,6 +145,78 @@ describe('PrintersPage', () => {
       });
     });
 
+    it('shows every Snapmaker U1 nozzle temperature, active tool, and chamber temperature', async () => {
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          ...mockPrinters[0],
+          id: 7,
+          name: 'Snapmaker U1',
+          provider: 'fluidd',
+          model: 'Snapmaker U1',
+        }])),
+        http.get('/api/v1/printers/:id/status', () => HttpResponse.json({
+          ...mockPrinterStatus,
+          active_extruder: 3,
+          temperatures: {
+            nozzle: 25,
+            nozzle_2: 26,
+            nozzle_3: 27,
+            nozzle_4: 110,
+            nozzle_4_target: 210,
+            bed: 31,
+            chamber: 34,
+          },
+          ams: [{
+            id: 0,
+            name: 'Snapmaker U1 Feeders',
+            humidity: null,
+            temp: null,
+            is_ams_ht: false,
+            serial_number: '',
+            sw_ver: '',
+            dry_time: 0,
+            dry_status: 0,
+            dry_sub_status: 0,
+            dry_sf_reason: [],
+            module_type: 'snapmaker_u1',
+            tray: [
+              { id: 0, tray_color: '#E72F1D', tray_type: 'PLA', tray_sub_brands: 'SnapSpeed', tray_id_name: null, tray_info_idx: null, remain: -1, k: null, cali_idx: null, tag_uid: '', tray_uuid: 'snapmaker-u1-e0', nozzle_temp_min: null, nozzle_temp_max: null, drying_temp: null, drying_time: null, state: 11, filament_detected: true, loaded_to_feeder: true, loaded_to_extruder: true, channel_state: 'load_finish', channel_action_state: 'load_finish' },
+              { id: 1, tray_color: '#080A0D', tray_type: 'PLA', tray_sub_brands: 'SnapSpeed', tray_id_name: null, tray_info_idx: null, remain: -1, k: null, cali_idx: null, tag_uid: '', tray_uuid: 'snapmaker-u1-e1', nozzle_temp_min: null, nozzle_temp_max: null, drying_temp: null, drying_time: null, state: 11, filament_detected: true, loaded_to_feeder: true, loaded_to_extruder: false, channel_state: 'preload_finish', channel_action_state: 'none' },
+              { id: 2, tray_color: '#1E88E5', tray_type: 'PLA', tray_sub_brands: 'PolyLite', tray_id_name: null, tray_info_idx: null, remain: -1, k: null, cali_idx: null, tag_uid: '', tray_uuid: 'snapmaker-u1-e2', nozzle_temp_min: null, nozzle_temp_max: null, drying_temp: null, drying_time: null, state: 11, filament_detected: true, loaded_to_feeder: true, loaded_to_extruder: false, channel_state: 'preload_finish', channel_action_state: 'none' },
+              { id: 3, tray_color: null, tray_type: null, tray_sub_brands: null, tray_id_name: null, tray_info_idx: null, remain: -1, k: null, cali_idx: null, tag_uid: '', tray_uuid: 'snapmaker-u1-e3', nozzle_temp_min: null, nozzle_temp_max: null, drying_temp: null, drying_time: null, state: 9, filament_detected: false, loaded_to_feeder: false, loaded_to_extruder: false, channel_state: 'wait_insert', channel_action_state: 'none' },
+            ],
+          }],
+        })),
+      );
+
+      render(<PrintersPage />);
+
+      const card = await screen.findByTestId('printer-card-7');
+      const temperatureSection = await within(card).findByTestId('printer-card-section-temperatures');
+
+      expect(within(temperatureSection).getByText('E0')).toBeInTheDocument();
+      expect(within(temperatureSection).getByText('25°C')).toBeInTheDocument();
+      expect(within(temperatureSection).getByText('E1')).toBeInTheDocument();
+      expect(within(temperatureSection).getByText('26°C')).toBeInTheDocument();
+      expect(within(temperatureSection).getByText('E2')).toBeInTheDocument();
+      expect(within(temperatureSection).getByText('27°C')).toBeInTheDocument();
+      expect(within(temperatureSection).getByText('E3 · Active')).toBeInTheDocument();
+      expect(within(temperatureSection).getByText('110°C / 210°')).toBeInTheDocument();
+      expect(within(temperatureSection).getByText('Chamber')).toBeInTheDocument();
+      expect(within(temperatureSection).getByText('34°C')).toBeInTheDocument();
+      expect(within(temperatureSection).queryByText('L / R')).toBeNull();
+      expect(within(temperatureSection).queryByText(/^L(?:\s|$)/)).toBeNull();
+      expect(within(temperatureSection).queryByText(/^R(?:\s|$)/)).toBeNull();
+      const filamentSection = await within(card).findByTestId('printer-card-section-filaments');
+      expect(within(filamentSection).getByText('Spools')).not.toBeNull();
+      expect(within(filamentSection).getByText('Left')).not.toBeNull();
+      expect(within(filamentSection).getByText('Right')).not.toBeNull();
+      expect(within(filamentSection).queryByText(/^AMS-/)).toBeNull();
+      expect(within(filamentSection).getByText('In extruder')).toBeInTheDocument();
+      expect(within(filamentSection).getAllByText('Preloaded')).toHaveLength(2);
+      expect(within(filamentSection).getAllByText('Empty')).toHaveLength(2);
+    });
+
     it('shows one Upload action for Prusa printers', async () => {
       server.use(
         http.get('/api/v1/printers/', () => HttpResponse.json([{
@@ -199,6 +274,44 @@ describe('PrintersPage', () => {
 
       expect(await screen.findByText('File Manager')).toBeInTheDocument();
       expect(await screen.findByRole('combobox', { name: /Storage/i })).toHaveValue('usb');
+    });
+
+    it('shows the Files button on Fluidd/Moonraker printer cards and opens the file manager', async () => {
+      const user = userEvent.setup();
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          ...mockPrinters[0],
+          id: 9,
+          name: 'K2 Plus',
+          provider: 'fluidd',
+          model: 'Creality K2 Plus',
+        }])),
+        http.get('/api/v1/printers/9/storage', () => HttpResponse.json({
+          used_bytes: null,
+          free_bytes: null,
+          storages: [
+            { id: 'gcodes', type: 'LOCAL', name: 'Moonraker gcodes', path: '/', available: true },
+          ],
+        })),
+        http.get('/api/v1/printers/9/files', ({ request }) => {
+          const url = new URL(request.url);
+          return HttpResponse.json({
+            path: url.searchParams.get('path') || '/',
+            storage: url.searchParams.get('storage'),
+            files: [],
+          });
+        }),
+      );
+
+      render(<PrintersPage />);
+
+      await screen.findAllByText('K2 Plus');
+      expect(await screen.findByRole('button', { name: 'Files' })).toBeInTheDocument();
+
+      await user.click(screen.getByRole('button', { name: 'Files' }));
+
+      expect(await screen.findByText('File Manager')).toBeInTheDocument();
+      expect(screen.getAllByText('K2 Plus').length).toBeGreaterThan(0);
     });
 
     it('shows a PrusaLink badge that opens the printer UI in a new tab', async () => {
@@ -509,11 +622,13 @@ describe('PrintersPage', () => {
       render(<PrintersPage />);
 
       const firstCard = await screen.findByTestId('printer-card-1');
-      expect(firstCard.parentElement).toHaveClass('grid');
-      expect(firstCard.parentElement).toHaveClass('items-start');
+      const sortableCard = firstCard.closest('[data-testid^="sortable-printer-card-"]');
+      expect(sortableCard?.parentElement).toHaveClass('grid');
+      expect(sortableCard?.parentElement).toHaveClass('items-start');
     });
 
-    it('applies the saved draggable printer-card section order and exposes drag handles', async () => {
+    it('applies the saved draggable printer-card section order and exposes drag handles only in layout editing mode', async () => {
+      const user = userEvent.setup();
       const savedSectionOrder = JSON.stringify([
         'temperatures',
         'status',
@@ -541,8 +656,51 @@ describe('PrintersPage', () => {
 
       expect(temperatureSection).toHaveStyle({ order: '0' });
       expect(statusSection).toHaveStyle({ order: '1' });
+      expect(within(card).queryByTestId('printer-card-section-drag-status')).not.toBeInTheDocument();
+      expect(within(card).queryByTestId('printer-card-section-drag-temperatures')).not.toBeInTheDocument();
+
+      await user.click(screen.getByRole('button', { name: 'Show layout controls' }));
+
       expect(within(card).getByTestId('printer-card-section-drag-status')).toBeInTheDocument();
       expect(within(card).getByTestId('printer-card-section-drag-temperatures')).toBeInTheDocument();
+    });
+
+    it('applies the saved whole-printer-card order in the regular grid and exposes drag handles only in layout editing mode', async () => {
+      const user = userEvent.setup();
+      vi.mocked(localStorage.getItem).mockImplementation((key: string) =>
+        key === 'printerCardOrder' ? JSON.stringify([1, 2]) : null
+      );
+
+      render(<PrintersPage />);
+
+      const cards = await screen.findAllByTestId(/^sortable-printer-card-/);
+      expect(cards.map(card => card.getAttribute('data-testid'))).toEqual([
+        'sortable-printer-card-1',
+        'sortable-printer-card-2',
+      ]);
+      expect(screen.queryByTestId('printer-card-drag-1')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('printer-card-drag-2')).not.toBeInTheDocument();
+
+      await user.click(screen.getByRole('button', { name: 'Show layout controls' }));
+
+      expect(screen.getByTestId('printer-card-drag-1')).toBeInTheDocument();
+      expect(screen.getByTestId('printer-card-drag-2')).toBeInTheDocument();
+    });
+
+    it('applies the saved whole-printer-card order inside grouped views', async () => {
+      vi.mocked(localStorage.getItem).mockImplementation((key: string) => {
+        if (key === 'printerSortBy') return 'status';
+        if (key === 'printerCardOrder') return JSON.stringify([2, 1]);
+        return null;
+      });
+
+      render(<PrintersPage />);
+
+      const cards = await screen.findAllByTestId(/^sortable-printer-card-/);
+      expect(cards.map(card => card.getAttribute('data-testid'))).toEqual([
+        'sortable-printer-card-2',
+        'sortable-printer-card-1',
+      ]);
     });
 
     it('resizes the inline camera while enforcing minimum card-friendly dimensions', async () => {
@@ -773,14 +931,60 @@ describe('PrintersPage', () => {
       const groupLabels = Array.from(modelSelect.querySelectorAll('optgroup')).map((group) => group.label);
       const optionValues = Array.from(modelSelect.options).map((option) => option.value);
 
-      expect(groupLabels).toEqual(['Bambu Lab', 'Elegoo', 'Voron', 'Creality Klipper', 'Prusa', 'Generic']);
+      expect(groupLabels).toEqual(['Bambu Lab', 'Elegoo', 'Voron', 'Creality Klipper', 'Snapmaker Klipper', 'Prusa', 'Generic']);
       expect(optionValues).toContain('P1S');
       expect(optionValues).toContain('Elegoo Neptune 4 Pro');
       expect(optionValues).toContain('Elegoo Centauri Carbon');
       expect(optionValues).toContain('Voron 2.4');
       expect(optionValues).toContain('Creality Ender-3 V2');
+      expect(optionValues).toContain('Creality K1');
+      expect(optionValues).toContain('Creality K1C');
+      expect(optionValues).toContain('Creality K2');
+      expect(optionValues).toContain('Creality K2 Plus');
+      expect(optionValues).toContain('Snapmaker U1');
       expect(optionValues).toContain('Prusa MK4S');
       expect(optionValues).toContain('Generic Klipper Printer');
+    });
+
+    it('shows Creality CFS units with CFS labels', async () => {
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          ...mockPrinters[0],
+          name: 'K2 Plus',
+          provider: 'fluidd',
+          model: 'Creality K2 Plus',
+        }])),
+        http.get('/api/v1/printers/:id/status', () => HttpResponse.json({
+          ...mockPrinterStatus,
+          ams_exists: true,
+          tray_now: 1,
+          ams: [{
+            id: 0,
+            name: 'CFS T1',
+            humidity: null,
+            temp: null,
+            is_ams_ht: false,
+            serial_number: '10000949645L325LWVB',
+            sw_ver: '1.4.2',
+            dry_time: 0,
+            dry_status: 0,
+            dry_sub_status: 0,
+            dry_sf_reason: [],
+            module_type: 'cfs',
+            tray: [
+              { id: 0, tray_type: 'PLA', tray_color: '#0A2989', remain: 41, state: 11, tray_uuid: 'T1A' },
+              { id: 1, tray_type: 'PLA', tray_color: '#fff014', remain: 100, state: 11, tray_uuid: 'T1B' },
+              { id: 2, tray_type: 'PLA', tray_color: '#ffffff', remain: 100, state: 11, tray_uuid: 'T1C' },
+              { id: 3, tray_type: 'PLA', tray_color: '#9ea7ae', remain: 100, state: 11, tray_uuid: 'T1D' },
+            ],
+          }],
+        })),
+      );
+
+      render(<PrintersPage />);
+
+      expect(await screen.findByText('K2 Plus')).toBeInTheDocument();
+      expect(await screen.findByText('CFS T1')).toBeInTheDocument();
     });
 
     it('shows Prusa models when Prusa is selected as printer type', async () => {
@@ -970,6 +1174,40 @@ describe('PrintersPage', () => {
       expect(createdPayload).not.toHaveProperty('external_camera_url');
       expect(createdPayload).not.toHaveProperty('external_camera_type');
     }, 10000);
+    it('detects Moonraker webcams and fills the camera URL field', async () => {
+      const user = userEvent.setup();
+
+      server.use(
+        http.get('/api/v1/discovery/info', () => HttpResponse.json({ is_docker: false, subnets: [] })),
+        http.get('/api/v1/printers/moonraker-webcams/discover', ({ request }) => {
+          const url = new URL(request.url);
+          expect(url.searchParams.get('api_url')).toBe('http://k2-plus.local:7125');
+          return HttpResponse.json({
+            webcams: [{
+              name: 'Moonraker Cam',
+              stream_url: 'http://k2-plus.local/webcam/?action=stream',
+              snapshot_url: 'http://k2-plus.local/webcam/?action=snapshot',
+              camera_type: 'mjpeg',
+              enabled: true,
+            }],
+          });
+        }),
+      );
+
+      render(<PrintersPage />);
+
+      await user.click((await screen.findAllByRole('button', { name: /add printer/i })).at(-1)!);
+      await user.selectOptions(screen.getByLabelText(/printer type/i), 'fluidd');
+      await user.type(screen.getByPlaceholderText('192.168.1.100 or printer.local'), 'k2-plus.local');
+      await user.click(screen.getByRole('button', { name: /detect moonraker camera/i }));
+
+      await waitFor(() => {
+        expect(screen.getByPlaceholderText('http://printer.local/webcam/?action=stream')).toHaveValue(
+          'http://k2-plus.local/webcam/?action=stream'
+        );
+      });
+      expect(screen.getByText('Using Moonraker Cam from Moonraker.')).toBeInTheDocument();
+    }, 10000);
   });
 
   describe('manual controls', () => {
@@ -1006,6 +1244,28 @@ describe('PrintersPage', () => {
       expect(screen.queryByTitle('Turn on chamber light')).toBeNull();
       expect(screen.queryByTitle('Plate check disabled - Click to enable')).toBeNull();
       expect(screen.queryByTitle('Manage plate detection calibration')).toBeNull();
+    });
+
+    it('shows manual controls for Creality K2 Plus Fluidd printers', async () => {
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          ...mockPrinters[0],
+          name: 'K2 Plus',
+          provider: 'fluidd',
+          model: 'Creality K2 Plus',
+        }])),
+        http.get('/api/v1/printers/:id/status', () => HttpResponse.json({
+          ...mockPrinterStatus,
+          connected: true,
+          position: { x: 0, y: 0, z: 0 },
+        })),
+      );
+
+      render(<PrintersPage />);
+
+      await screen.findByText('K2 Plus');
+      const controlsToggle = await screen.findByRole('button', { name: /manual controls/i });
+      expect(controlsToggle).toBeInTheDocument();
     });
 
     it('sends XYZ jog requests from the printer card controls', async () => {
@@ -2021,11 +2281,11 @@ vi.mock('../../components/FilamentHoverCard', async (importOriginal) => {
     ...actual,
     EmptySlotHoverCard: (props: Record<string, unknown>) => {
       phase13EmptySlotProps.push({ ...props });
-      return null;
+      return <>{props.children as ReactNode}</>;
     },
     FilamentHoverCard: (props: Record<string, unknown>) => {
       phase14HoverCardProps.push({ ...props });
-      return null;
+      return <>{props.children as ReactNode}</>;
     },
   };
 });

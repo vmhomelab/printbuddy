@@ -20,8 +20,16 @@ function SpoolWeightPicker({
   const { t } = useTranslation();
   const [isOpen, setIsOpen] = useState(false);
   const [search, setSearch] = useState('');
+  const [weightInput, setWeightInput] = useState(String(value));
+  const [isWeightFocused, setIsWeightFocused] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!isWeightFocused) {
+      setWeightInput(String(value));
+    }
+  }, [isWeightFocused, value]);
 
   useEffect(() => {
     const handleClick = (e: MouseEvent) => {
@@ -153,12 +161,31 @@ function SpoolWeightPicker({
           <input
             type="number"
             className="w-16 px-2 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm text-center font-mono focus:outline-none focus:border-bambu-green"
-            value={value}
+            value={weightInput}
             min={0}
             max={2000}
+            onFocus={() => setIsWeightFocused(true)}
             onChange={(e) => {
-              const val = parseInt(e.target.value);
-              if (!isNaN(val) && val >= 0) onChange(val);
+              const raw = e.target.value;
+              if (!/^\d*$/.test(raw)) return;
+              setWeightInput(raw);
+              if (raw === '') return;
+              const next = Number(raw);
+              if (Number.isFinite(next)) {
+                onChange(Math.max(0, Math.min(2000, Math.round(next))));
+              }
+            }}
+            onBlur={() => {
+              setIsWeightFocused(false);
+              const raw = weightInput.trim();
+              const next = Number(raw);
+              if (!raw || !Number.isFinite(next) || next < 0) {
+                setWeightInput(String(value));
+                return;
+              }
+              const clamped = Math.max(0, Math.min(2000, Math.round(next)));
+              onChange(clamped);
+              setWeightInput(String(clamped));
             }}
           />
           <span className="text-bambu-gray text-sm">g</span>

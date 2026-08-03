@@ -641,6 +641,9 @@ export function GitHubBackupSettings() {
                     placeholder={t(PROVIDER_REPO_URL_I18N_KEY[provider])}
                     className="w-full h-10 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                   />
+                  <p className="text-xs text-bambu-gray mt-1">
+                    {t('backup.repositoryUrlInitialCommitHint')}
+                  </p>
                   <label className="flex items-start gap-2 mt-2 cursor-pointer">
                     <input
                       type="checkbox"
@@ -804,10 +807,15 @@ export function GitHubBackupSettings() {
                 <div className="flex items-center justify-between text-sm">
                   <div className="flex items-center gap-2 text-bambu-gray">
                     {status.last_backup_at ? (
-                      <>
-                        <span>{t('backup.lastBackupAt')} {formatRelativeTime(status.last_backup_at, 'system', t)}</span>
-                        <StatusBadge status={status.last_backup_status} />
-                      </>
+                      <div className="flex flex-col gap-1">
+                        <div className="flex items-center gap-2">
+                          <span>{t('backup.lastBackupAt')} {formatRelativeTime(status.last_backup_at, 'system', t)}</span>
+                          <StatusBadge status={status.last_backup_status} />
+                        </div>
+                        {status.last_backup_status === 'skipped' && (
+                          <span className="text-xs text-bambu-gray">{t('backup.backupSkippedNoChangesNote')}</span>
+                        )}
+                      </div>
                     ) : (
                       <span>{t('backup.noBackupsYet')}</span>
                     )}

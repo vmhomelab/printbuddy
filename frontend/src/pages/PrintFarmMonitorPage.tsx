@@ -1,0 +1,647 @@
+import { useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
+import { useQueries, useQuery } from '@tanstack/react-query';
+import {
+  AlertTriangle,
+  ArrowLeft,
+  Bell,
+  CheckCircle2,
+  CirclePause,
+  Clock3,
+  Layers,
+  PackageOpen,
+  PauseCircle,
+  PlayCircle,
+  Power,
+  Printer as PrinterIcon,
+  RefreshCw,
+  Server,
+  Thermometer,
+  TriangleAlert,
+  Wrench,
+} from 'lucide-react';
+import {
+  api,
+  type InventorySpool,
+  type MaintenanceStatus,
+  type PrintQueueItem,
+  type ProjectListItem,
+  type Printer,
+  type PrinterMaintenanceOverview,
+  type PrinterStatus,
+} from '../api/client';
+import { getPrinterImage } from '../utils/printer';
+import { classifyPrinterStatus } from '../utils/printerStatus';
+import { appAssetPath } from '../utils/assetPaths';
+import { resolveLoadedFilamentInfo, type ResolvedLoadedFilamentInfo, type SpoolmanSlotAssignmentLike } from '../utils/amsHelpers';
+import { useTheme } from '../contexts/ThemeContext';
+
+interface MonitorPrinter {
+  printer: Printer;
+  status?: PrinterStatus;
+}
+
+type NormalizedState = 'printing' | 'idle' | 'paused' | 'stopped' | 'offline' | 'error';
+
+interface MonitorAlert {
+  icon: typeof AlertTriangle;
+  title: string;
+  detail: string;
+  sub: string;
+  meta: string;
+  tone: string;
+}
+
+interface MonitorThemeClasses {
+  page: string;
+  backdrop: string;
+  panel: string;
+  panelSoft: string;
+  card: string;
+  text: string;
+  muted: string;
+  subtle: string;
+  border: string;
+  divider: string;
+  imageBox: string;
+  footer: string;
+  ringInner: string;
+  logoPath: string;
+}
+
+const DEFAULT_REFRESH_SECONDS = 15;
+
+function getMonitorTheme(mode: 'dark' | 'light'): MonitorThemeClasses {
+  return {
+    page: 'bg-bambu-dark text-white',
+    backdrop: 'bg-bambu-dark',
+    panel: 'border-bambu-dark-tertiary bg-bambu-dark-secondary shadow-[var(--card-shadow)]',
+    panelSoft: 'border-bambu-dark-tertiary bg-bambu-dark-secondary',
+    card: 'border-bambu-dark-tertiary bg-bambu-dark-secondary shadow-[var(--card-shadow)]',
+    text: 'text-white',
+    muted: 'text-bambu-gray-light',
+    subtle: 'text-bambu-gray',
+    border: 'border-bambu-dark-tertiary',
+    divider: 'border-bambu-dark-tertiary',
+    imageBox: 'border-bambu-dark-tertiary bg-bambu-dark',
+    footer: 'border-bambu-dark-tertiary bg-bambu-dark-secondary text-bambu-gray-light',
+    ringInner: 'bg-bambu-dark',
+    logoPath: mode === 'light' ? '/img/printbuddy_logo_light.png' : '/img/printbuddy_logo_dark.png',
+  };
+}
+
+
+function normalizeRefreshSeconds(value: number | null | undefined): number {
+  if (!Number.isFinite(value ?? NaN)) return DEFAULT_REFRESH_SECONDS;
+  return Math.min(300, Math.max(5, Math.round(value!)));
+}
+
+function normalizeState(status?: PrinterStatus): NormalizedState {
+  const classified = classifyPrinterStatus(status, (status?.hms_errors?.length ?? 0) > 0);
+  return classified === 'finished' ? 'idle' : classified;
+}
+
+function formatClock(date = new Date()): string {
+  return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
+function formatHeaderTime(date: Date): string {
+  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+function formatHeaderDate(date: Date): string {
+  return date.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function formatDuration(minutes: number | null | undefined): string {
+  if (minutes === null || minutes === undefined || Number.isNaN(minutes)) return '—';
+  const rounded = Math.max(0, Math.round(minutes));
+  if (rounded < 60) return `${rounded}m`;
+  const hours = Math.floor(rounded / 60);
+  const mins = rounded % 60;
+  return mins ? `${hours}h ${mins}m` : `${hours}h`;
+}
+
+function formatEta(minutes: number | null | undefined): string {
+  if (minutes === null || minutes === undefined || Number.isNaN(minutes) || minutes <= 0) return '—';
+  const eta = new Date(Date.now() + minutes * 60_000);
+  return eta.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function projectProgress(project: ProjectListItem): number | null {
+  if (project.progress_percent !== null && project.progress_percent !== undefined) {
+    return Math.min(100, Math.max(0, Math.round(project.progress_percent)));
+  }
+  if (project.target_parts_count && project.target_parts_count > 0) {
+    return Math.min(100, Math.round((project.completed_count / project.target_parts_count) * 100));
+  }
+  if (project.target_count && project.target_count > 0) {
+    return Math.min(100, Math.round((project.archive_count / project.target_count) * 100));
+  }
+  return null;
+}
+
+function projectTargetSummary(project: ProjectListItem): string {
+  if (project.target_parts_count) {
+    return `${project.completed_count} / ${project.target_parts_count} parts`;
+  }
+  if (project.target_count) {
+    return `${project.archive_count} / ${project.target_count} plates`;
+  }
+  return `${project.archive_count} plates · ${project.completed_count} parts`;
+}
+
+function getJobName(item: MonitorPrinter): string | null {
+  return item.status?.current_print || item.status?.subtask_name || item.status?.gcode_file || null;
+}
+
+function spoolLabel(spool: InventorySpool): string {
+  return [spool.brand, spool.material, spool.subtype, spool.color_name].filter(Boolean).join(' ');
+}
+
+function spoolRemainingPct(spool: InventorySpool): number | null {
+  if (!spool.label_weight || spool.label_weight <= 0) return null;
+  const remaining = Math.max(0, spool.label_weight - (spool.weight_used ?? 0));
+  return Math.round((remaining / spool.label_weight) * 100);
+}
+
+function normalizeSpoolColor(color: string | null | undefined): string | null {
+  if (!color) return null;
+  const trimmed = color.trim();
+  if (!trimmed) return null;
+  if (trimmed.startsWith('#') || trimmed.startsWith('rgb') || trimmed.startsWith('hsl')) return trimmed;
+  if (/^[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$/.test(trimmed)) return `#${trimmed.slice(0, 6)}`;
+  return trimmed;
+}
+
+function displaySpoolColor(color: string | null | undefined): string | null {
+  const normalized = normalizeSpoolColor(color);
+  return normalized?.startsWith('#') ? normalized.toUpperCase() : normalized;
+}
+
+function getLowSpoolAlerts(spools: InventorySpool[], defaultThreshold: number): MonitorAlert[] {
+  return spools
+    .filter((spool) => !spool.archived_at)
+    .map((spool) => {
+      const remainingPct = spoolRemainingPct(spool);
+      const threshold = spool.low_stock_threshold_pct ?? defaultThreshold;
+      return { spool, remainingPct, threshold };
+    })
+    .filter((entry): entry is { spool: InventorySpool; remainingPct: number; threshold: number } => entry.remainingPct !== null && entry.remainingPct <= entry.threshold)
+    .sort((a, b) => a.remainingPct - b.remainingPct)
+    .slice(0, 4)
+    .map(({ spool, remainingPct }) => ({
+      icon: PackageOpen,
+      title: 'LOW FILAMENT',
+      detail: spoolLabel(spool),
+      sub: spool.storage_location || spool.category || 'Inventory spool',
+      meta: `${remainingPct}%`,
+      tone: 'text-orange-400',
+    }));
+}
+
+function getMaintenanceAlerts(overview: PrinterMaintenanceOverview[]): MonitorAlert[] {
+  return overview
+    .flatMap((printer) => printer.maintenance_items.map((item) => ({ printer, item })))
+    .filter(({ item }) => item.enabled && (item.is_due || item.is_warning))
+    .sort((a, b) => Number(b.item.is_due) - Number(a.item.is_due) || a.item.hours_until_due - b.item.hours_until_due)
+    .slice(0, 4)
+    .map(({ printer, item }) => ({
+      icon: Wrench,
+      title: item.is_due ? 'MAINTENANCE DUE' : 'MAINTENANCE SOON',
+      detail: printer.printer_name,
+      sub: item.maintenance_type_name,
+      meta: formatMaintenanceMeta(item),
+      tone: item.is_due ? 'text-yellow-300' : 'text-amber-300',
+    }));
+}
+
+function formatMaintenanceMeta(item: MaintenanceStatus): string {
+  if (item.interval_type === 'days') {
+    if (item.days_until_due === null || item.days_until_due === undefined) return item.is_due ? 'due' : 'soon';
+    if (item.days_until_due <= 0) return 'due';
+    return `${Math.round(item.days_until_due)}d`;
+  }
+  if (item.hours_until_due <= 0) return 'due';
+  return `${Math.round(item.hours_until_due)}h`;
+}
+
+function getPrinterAlerts(items: MonitorPrinter[]): MonitorAlert[] {
+  return items.flatMap((item) => {
+    const state = normalizeState(item.status);
+    if (state === 'offline') {
+      return [{
+        icon: Power,
+        title: 'PRINTER OFFLINE',
+        detail: item.printer.name,
+        sub: 'Connection lost',
+        meta: 'now',
+        tone: 'text-bambu-gray-light',
+      }];
+    }
+    if (state === 'paused') {
+      return [{
+        icon: PauseCircle,
+        title: 'PRINT PAUSED',
+        detail: item.printer.name,
+        sub: getJobName(item) || 'Paused by printer state',
+        meta: formatDuration(item.status?.remaining_time),
+        tone: 'text-amber-300',
+      }];
+    }
+    if (state === 'stopped') {
+      return [{
+        icon: CirclePause,
+        title: 'PRINT STOPPED',
+        detail: item.printer.name,
+        sub: getJobName(item) || 'Stopped by printer state',
+        meta: 'stopped',
+        tone: 'text-orange-300',
+      }];
+    }
+    if (state === 'error' || (item.status?.hms_errors?.length ?? 0) > 0) {
+      return [{
+        icon: AlertTriangle,
+        title: 'PRINTER ERROR',
+        detail: item.printer.name,
+        sub: `${item.status?.hms_errors?.length ?? 0} active printer error${(item.status?.hms_errors?.length ?? 0) === 1 ? '' : 's'}`,
+        meta: 'error',
+        tone: 'text-red-300',
+      }];
+    }
+    return [];
+  });
+}
+
+function StatTile({ icon: Icon, label, value, theme, tone = 'blue', suffix }: { icon: typeof PrinterIcon; label: string; value: string | number; theme: MonitorThemeClasses; tone?: 'blue' | 'green' | 'gray' | 'purple' | 'amber'; suffix?: string }) {
+  const toneClasses = {
+    blue: 'bg-bambu-green/15 text-bambu-green-light',
+    green: 'bg-status-ok/15 text-status-ok',
+    gray: 'bg-bambu-dark-tertiary text-bambu-gray-light',
+    purple: 'bg-bambu-green/15 text-bambu-green-light',
+    amber: 'bg-amber-500/15 text-amber-300',
+  };
+
+  return (
+    <div className={`flex items-center gap-3 rounded-xl border px-4 py-3 ${theme.panel}`}>
+      <div className={`flex h-11 w-11 items-center justify-center rounded-xl ${toneClasses[tone]}`}>
+        <Icon className="h-6 w-6" />
+      </div>
+      <div className="min-w-0">
+        <div className={`text-[0.65rem] font-semibold uppercase tracking-wide ${theme.muted}`}>{label}</div>
+        <div className={`flex items-baseline gap-1 text-2xl font-bold ${theme.text}`}>
+          {value}{suffix && <span className={`text-sm font-semibold ${theme.muted}`}>{suffix}</span>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PrinterCard({ item, loadedFilament, theme }: { item: MonitorPrinter; loadedFilament: ResolvedLoadedFilamentInfo | null; theme: MonitorThemeClasses }) {
+  const { printer, status } = item;
+  const state = normalizeState(status);
+  const progress = status?.progress === null || status?.progress === undefined ? null : Math.min(100, Math.max(0, Math.round(status.progress)));
+  const nozzle = status?.temperatures?.nozzle === null || status?.temperatures?.nozzle === undefined ? null : Math.round(status.temperatures.nozzle);
+  const bed = status?.temperatures?.bed === null || status?.temperatures?.bed === undefined ? null : Math.round(status.temperatures.bed);
+  const layer = status?.layer_num ?? null;
+  const totalLayers = status?.total_layers ?? null;
+  const jobName = getJobName(item);
+
+  const stateClasses = {
+    printing: 'bg-status-ok/15 text-status-ok shadow-status-ok/20',
+    idle: 'bg-bambu-green/15 text-bambu-green-light shadow-bambu-green/20',
+    paused: 'bg-amber-500/15 text-amber-300 shadow-amber-500/20',
+    stopped: 'bg-orange-500/15 text-orange-300 shadow-orange-500/20',
+    offline: 'bg-bambu-dark-tertiary text-bambu-gray-light shadow-bambu-dark-tertiary',
+    error: 'bg-red-500/15 text-red-300 shadow-red-500/20',
+  };
+  const stateLabel = state === 'printing' ? 'PRINTING' : state === 'paused' ? 'PAUSED' : state === 'stopped' ? 'STOPPED' : state === 'offline' ? 'OFFLINE' : state === 'error' ? 'ERROR' : 'IDLE';
+
+  return (
+    <article className={`min-w-0 rounded-2xl border p-4 sm:p-5 ${theme.card}`}>
+      <div className="flex min-w-0 gap-3 sm:gap-4">
+        <div className={`flex h-24 w-24 shrink-0 items-center justify-center overflow-hidden rounded-xl border p-2 sm:h-28 sm:w-32 ${theme.imageBox}`}>
+          {state === 'offline' ? <TriangleAlert className="h-12 w-12 text-red-400" /> : <img src={getPrinterImage(printer.model)} alt="" className="max-h-full max-w-full object-contain" />}
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className={`mb-3 inline-flex items-center gap-2 rounded-lg px-3 py-1 text-xs font-bold shadow-lg ${stateClasses[state]}`}>
+            <span className={`h-2 w-2 rounded-full ${state === 'printing' ? 'bg-emerald-400' : state === 'paused' ? 'bg-amber-400' : state === 'stopped' ? 'bg-orange-400' : state === 'offline' ? 'bg-bambu-gray-light' : state === 'error' ? 'bg-red-400' : 'bg-bambu-green'}`} />
+            {stateLabel}
+          </div>
+          <h2 className={`truncate text-lg font-bold ${theme.text}`}>{printer.name}</h2>
+          <p className={`truncate text-sm ${theme.muted}`}>{printer.model || printer.provider || 'Printer'}</p>
+          {printer.location && <p className={`truncate text-sm ${theme.muted}`}>{printer.location}</p>}
+        </div>
+      </div>
+
+      {state === 'printing' ? (
+        <div className="mt-5 space-y-3">
+          <div>
+            <div className={`mb-1 text-[0.68rem] font-semibold uppercase ${theme.subtle}`}>Current job</div>
+            <div className="flex min-w-0 items-end justify-between gap-3">
+              <div className={`truncate font-semibold ${theme.text}`}>{jobName ?? 'Active print'}</div>
+              <div className={`text-2xl font-bold ${theme.text}`}>{progress !== null ? `${progress}%` : '—'}</div>
+            </div>
+          </div>
+          <div className="h-2.5 overflow-hidden rounded-full bg-bambu-dark-tertiary">
+            <div className="h-full rounded-full bg-gradient-to-r from-bambu-green-light to-bambu-green shadow-[0_0_14px_color-mix(in_srgb,var(--accent)_45%,transparent)]" style={{ width: `${progress ?? 0}%` }} />
+          </div>
+          <div className={`grid grid-cols-1 gap-2 text-sm min-[420px]:grid-cols-2 ${theme.muted}`}>
+            <div className="flex min-w-0 items-center gap-2"><Clock3 className={`h-4 w-4 shrink-0 ${theme.muted}`} /> ETA <span className="font-semibold text-bambu-green-light">{formatEta(status?.remaining_time)}</span></div>
+            <div className="flex min-w-0 items-center gap-2 min-[420px]:justify-end"><Bell className={`h-4 w-4 shrink-0 ${theme.muted}`} /> {formatDuration(status?.remaining_time)}</div>
+            {(layer !== null || totalLayers !== null) && <div className="flex min-w-0 items-center gap-2 min-[420px]:col-span-2"><Layers className={`h-4 w-4 shrink-0 ${theme.muted}`} /> {layer ?? '—'} / {totalLayers ?? '—'} layers</div>}
+          </div>
+        </div>
+      ) : (
+        <div className={`mt-7 min-h-[5.6rem] border-b pb-5 ${theme.divider}`}>
+          <div className={`text-xl font-bold ${state === 'paused' ? 'text-amber-400' : state === 'stopped' ? 'text-orange-400' : state === 'offline' || state === 'error' ? 'text-red-400' : theme.text}`}>{stateLabel}</div>
+          <p className={`mt-1 text-sm ${theme.muted}`}>{state === 'paused' ? 'Print paused' : state === 'stopped' ? 'Print stopped' : state === 'offline' ? 'No connection' : state === 'error' ? 'Needs attention' : 'Ready to print'}</p>
+        </div>
+      )}
+
+      {(nozzle !== null || bed !== null) && (
+        <div className={`mt-4 grid grid-cols-2 overflow-hidden rounded-xl border ${theme.divider} ${theme.panelSoft}`}>
+          <div className={`flex min-w-0 items-center gap-3 border-r px-3 py-3 sm:px-4 ${theme.divider}`}>
+            <Thermometer className="h-6 w-6 shrink-0 text-red-400" />
+            <div><div className={`font-bold ${theme.text}`}>{nozzle !== null ? `${nozzle}°C` : '—'}</div><div className={`text-xs ${theme.muted}`}>Nozzle</div></div>
+          </div>
+          <div className="flex min-w-0 items-center justify-end gap-3 px-3 py-3 sm:px-4">
+            <Thermometer className="h-6 w-6 text-blue-400" />
+            <div><div className={`font-bold ${theme.text}`}>{bed !== null ? `${bed}°C` : '—'}</div><div className={`text-xs ${theme.muted}`}>Bed</div></div>
+          </div>
+        </div>
+      )}
+
+      {loadedFilament && (
+        <div className={`mt-2 grid grid-cols-[minmax(0,1fr)_auto] overflow-hidden rounded-xl border ${theme.divider} ${theme.panelSoft}`}>
+          <div className="flex min-w-0 items-center gap-3 px-3 py-3 sm:px-4">
+            <span className={`h-9 w-9 rounded-xl border ${theme.divider} shadow-[inset_0_0_0_1px_rgba(0,0,0,0.25)]`} style={{ backgroundColor: normalizeSpoolColor(loadedFilament.color) || 'var(--bg-tertiary)' }} />
+            <div className="min-w-0">
+              <div className={`truncate text-sm font-medium ${theme.text}`}>{loadedFilament.material}</div>
+              <div className={`truncate text-xs ${theme.muted}`}>{loadedFilament.detail}{displaySpoolColor(loadedFilament.color) ? ` · ${displaySpoolColor(loadedFilament.color)}` : ''}</div>
+            </div>
+          </div>
+          {loadedFilament.remainingPct !== null && loadedFilament.remainingPct !== undefined && (
+            <div className={`flex min-w-16 items-center justify-center border-l px-3 py-3 text-center text-xs font-bold sm:min-w-24 sm:px-4 ${theme.divider} ${theme.muted}`}>
+              {loadedFilament.remainingPct}%<br />LEFT
+            </div>
+          )}
+        </div>
+      )}
+    </article>
+  );
+}
+
+function AlertsPanel({ alerts, theme }: { alerts: MonitorAlert[]; theme: MonitorThemeClasses }) {
+  return (
+    <section className={`min-w-0 overflow-hidden rounded-2xl border p-5 ${theme.card}`}>
+      <div className={`mb-4 flex items-center justify-between border-b pb-4 ${theme.divider}`}>
+        <div className={`flex items-center gap-3 text-xl font-bold ${theme.text}`}><Bell className="h-6 w-6 text-orange-400" /> ALERTS</div>
+        <span className={`text-sm ${theme.muted}`}>{alerts.length} active</span>
+      </div>
+      {alerts.length > 0 ? (
+        <div className={`divide-y ${theme.divider}`}>
+          {alerts.slice(0, 5).map((alert) => (
+            <div key={`${alert.title}-${alert.detail}-${alert.sub}`} className="flex min-w-0 gap-4 py-4 first:pt-0 last:pb-0">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-amber-500/15"><alert.icon className={`h-5 w-5 ${alert.tone}`} /></div>
+              <div className="min-w-0 flex-1">
+                <div className={`text-sm font-bold ${alert.tone}`}>{alert.title}</div>
+                <div className={`truncate text-sm ${theme.text}`}>{alert.detail}</div>
+                <div className={`truncate text-sm ${theme.muted}`}>{alert.sub}</div>
+              </div>
+              <div className={`shrink-0 text-right text-lg font-bold ${theme.text}`}>{alert.meta}</div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className={`py-8 text-center text-sm ${theme.muted}`}>No active alerts from printer, inventory, or maintenance data.</div>
+      )}
+    </section>
+  );
+}
+
+function ActivityPanel({ items, theme }: { items: MonitorPrinter[]; theme: MonitorThemeClasses }) {
+  const activity = items
+    .filter((item) => ['printing', 'paused', 'stopped', 'offline', 'error'].includes(normalizeState(item.status)))
+    .slice(0, 4)
+    .map((item) => {
+      const state = normalizeState(item.status);
+      return {
+        name: item.printer.name,
+        detail: state === 'printing' ? 'Printing' : state === 'paused' ? 'Print paused' : state === 'stopped' ? 'Print stopped' : state === 'offline' ? 'Connection lost' : 'Printer error',
+        state,
+      };
+    });
+
+  return (
+    <section className={`min-w-0 overflow-hidden rounded-2xl border p-5 ${theme.card}`}>
+      <h2 className={`mb-4 text-base font-semibold uppercase tracking-wide ${theme.muted}`}>Recent Activity</h2>
+      {activity.length > 0 ? (
+        <div className="space-y-4">
+          {activity.map((entry) => (
+            <div key={`${entry.name}-${entry.detail}`} className="flex min-w-0 gap-3">
+              <div className={`mt-0.5 flex h-5 w-5 items-center justify-center rounded-full ${entry.state === 'paused' || entry.state === 'stopped' ? 'text-amber-400' : entry.state === 'offline' ? 'text-bambu-gray-light' : entry.state === 'error' ? 'text-red-400' : 'text-emerald-400'}`}>
+                {entry.state === 'paused' || entry.state === 'stopped' ? <CirclePause className="h-5 w-5" /> : entry.state === 'offline' ? <Power className="h-5 w-5" /> : <CheckCircle2 className="h-5 w-5" />}
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className={`truncate text-sm font-medium ${theme.text}`}>{entry.name}</div>
+                <div className={`truncate text-sm ${theme.muted}`}>{entry.detail}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className={`py-8 text-center text-sm ${theme.muted}`}>No active printer events.</div>
+      )}
+    </section>
+  );
+}
+
+function ActiveProjectsPanel({ projects, theme }: { projects: ProjectListItem[]; theme: MonitorThemeClasses }) {
+  const visibleProjects = projects
+    .slice()
+    .sort((a, b) => (projectProgress(b) ?? -1) - (projectProgress(a) ?? -1))
+    .slice(0, 3);
+
+  return (
+    <section className={`min-w-0 overflow-hidden rounded-2xl border p-5 ${theme.card}`}>
+      <div className={`mb-4 flex min-w-0 items-center justify-between gap-3 border-b pb-4 ${theme.divider}`}>
+        <div className={`flex min-w-0 items-center gap-3 text-xl font-bold ${theme.text}`}><PackageOpen className="h-6 w-6 shrink-0 text-bambu-green-light" /> <span className="truncate">ACTIVE PROJECTS</span></div>
+        <span className={`text-sm ${theme.muted}`}>{projects.length} active</span>
+      </div>
+      {visibleProjects.length > 0 ? (
+        <div className="space-y-4">
+          {visibleProjects.map((project) => {
+            const progress = projectProgress(project);
+            return (
+              <article key={project.id} className={`min-w-0 overflow-hidden rounded-xl border p-4 ${theme.panelSoft}`}>
+                <div className="flex min-w-0 items-start gap-3">
+                  <span className="mt-1 h-3 w-3 shrink-0 rounded-full" style={{ backgroundColor: project.color || 'var(--accent)' }} />
+                  <div className="min-w-0 flex-1">
+                    <div className={`truncate text-base font-bold ${theme.text}`}>{project.name}</div>
+                    {project.description && <div className={`truncate text-sm ${theme.muted}`}>{project.description}</div>}
+                  </div>
+                  <div className={`shrink-0 text-right text-lg font-bold ${theme.text}`}>{progress !== null ? `${progress}%` : '—'}</div>
+                </div>
+                <div className="mt-4 h-2 min-w-0 overflow-hidden rounded-full bg-bambu-dark-tertiary">
+                  <div className="h-full rounded-full bg-gradient-to-r from-bambu-green-light to-bambu-green" style={{ width: `${progress ?? 0}%` }} />
+                </div>
+                <div className={`mt-3 flex min-w-0 flex-wrap items-center gap-3 text-xs font-semibold uppercase tracking-wide ${theme.muted}`}>
+                  <span>{projectTargetSummary(project)}</span>
+                  {project.queue_count > 0 && <span>{project.queue_count} queued</span>}
+                  {project.failed_count > 0 && <span className="text-red-300">{project.failed_count} failed</span>}
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      ) : (
+        <div className={`py-8 text-center text-sm ${theme.muted}`}>No active projects are currently tracked.</div>
+      )}
+    </section>
+  );
+}
+
+export function PrintFarmMonitorPage() {
+  const [now, setNow] = useState(() => new Date());
+  const { mode } = useTheme();
+  const theme = useMemo(() => getMonitorTheme(mode), [mode]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(new Date()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const { data: uiPreferences } = useQuery({ queryKey: ['ui-preferences'], queryFn: api.getUiPreferences, staleTime: 30_000 });
+  const refreshSeconds = normalizeRefreshSeconds(uiPreferences?.print_farm_monitor_refresh_interval);
+  const refreshMs = refreshSeconds * 1000;
+  const { data: printers = [] } = useQuery({ queryKey: ['printers'], queryFn: api.getPrinters, refetchInterval: refreshMs });
+  const { data: queue = [] } = useQuery({ queryKey: ['queue', 'monitor'], queryFn: () => api.getQueue(), refetchInterval: refreshMs });
+  const { data: activeProjects = [] } = useQuery({ queryKey: ['projects', 'active', 'monitor'], queryFn: () => api.getProjects('active'), refetchInterval: refreshMs, retry: false });
+  const { data: version } = useQuery({ queryKey: ['version'], queryFn: api.getVersion, staleTime: Infinity });
+  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
+  const { data: spoolmanSettings } = useQuery({ queryKey: ['settings', 'spoolman', 'monitor'], queryFn: api.getSpoolmanSettings, staleTime: 60_000, retry: false });
+  const { data: localAssignments = [] } = useQuery({ queryKey: ['inventory-assignments', 'monitor'], queryFn: () => api.getAssignments(), refetchInterval: refreshMs, retry: false });
+  const { data: localSpools = [] } = useQuery({ queryKey: ['inventory-spools', 'monitor'], queryFn: () => api.getSpools(false), refetchInterval: refreshMs, retry: false });
+  const spoolmanEnabled = spoolmanSettings?.spoolman_enabled === 'true';
+  const { data: spoolmanSpools = [] } = useQuery({ queryKey: ['spoolman-inventory-spools', 'monitor'], queryFn: () => api.getSpoolmanInventorySpools(false), enabled: spoolmanEnabled, refetchInterval: refreshMs, retry: false });
+  const { data: spoolmanSlotAssignments = [] } = useQuery({ queryKey: ['spoolman-slot-assignments', 'monitor'], queryFn: () => api.getSpoolmanSlotAssignments(), enabled: spoolmanEnabled, refetchInterval: refreshMs, retry: false });
+  const { data: maintenanceOverview = [] } = useQuery({ queryKey: ['maintenance-overview', 'monitor'], queryFn: api.getMaintenanceOverview, refetchInterval: refreshMs, retry: false });
+  const statusQueries = useQueries({
+    queries: printers.map((printer) => ({
+      queryKey: ['printerStatus', printer.id],
+      queryFn: () => api.getPrinterStatus(printer.id),
+      refetchInterval: refreshMs,
+      enabled: printer.is_active !== false,
+    })),
+  });
+
+  const monitorPrinters = useMemo<MonitorPrinter[]>(() => printers.map((printer, index) => ({ printer, status: statusQueries[index]?.data })), [printers, statusQueries]);
+  const loadedFilaments = useMemo(() => new Map(monitorPrinters.map((item) => [item.printer.id, resolveLoadedFilamentInfo({
+    printer: item.printer,
+    status: item.status,
+    localAssignments,
+    spoolmanSpools,
+    spoolmanSlotAssignments: spoolmanSlotAssignments as SpoolmanSlotAssignmentLike[],
+  })])), [localAssignments, monitorPrinters, spoolmanSlotAssignments, spoolmanSpools]);
+  const printing = monitorPrinters.filter((item) => normalizeState(item.status) === 'printing');
+  const paused = monitorPrinters.filter((item) => normalizeState(item.status) === 'paused');
+  const stopped = monitorPrinters.filter((item) => normalizeState(item.status) === 'stopped');
+  const offline = monitorPrinters.filter((item) => normalizeState(item.status) === 'offline');
+  const idle = monitorPrinters.filter((item) => normalizeState(item.status) === 'idle');
+  const errors = monitorPrinters.filter((item) => normalizeState(item.status) === 'error' || (item.status?.hms_errors?.length ?? 0) > 0);
+  const utilization = printers.length > 0 ? Math.round((printing.length / printers.length) * 100) : 0;
+  const activeAlerts = useMemo(() => [
+    ...getPrinterAlerts(monitorPrinters),
+    ...getLowSpoolAlerts(spoolmanEnabled ? spoolmanSpools : localSpools, settings?.low_stock_threshold ?? 20),
+    ...getMaintenanceAlerts(maintenanceOverview),
+  ], [localSpools, maintenanceOverview, monitorPrinters, settings?.low_stock_threshold, spoolmanEnabled, spoolmanSpools]);
+  const nextCompletion = printing
+    .filter((item) => item.status?.remaining_time !== null && item.status?.remaining_time !== undefined)
+    .sort((a, b) => (a.status?.remaining_time ?? 99999) - (b.status?.remaining_time ?? 99999))[0];
+  const visiblePrinters = monitorPrinters.slice(0, 8);
+  const utilizationStyle = { background: `conic-gradient(var(--accent) ${utilization * 3.6}deg, var(--bg-tertiary) 0deg)` };
+
+  return (
+    <main className={`min-h-screen overflow-x-hidden ${theme.page}`} data-monitor-theme={mode}>
+      <div className={`min-h-screen w-full max-w-full p-3 sm:p-4 xl:p-5 ${theme.backdrop}`}>
+        <header className={`mb-4 flex min-w-0 flex-col gap-4 border-b pb-4 xl:flex-row xl:items-center xl:justify-between ${theme.divider}`}>
+          <div className="flex min-w-0 flex-wrap items-center gap-3 sm:gap-5">
+            <Link
+              to="/farm-command-center"
+              aria-label="Back to Farm Command Center"
+              className={`flex h-11 w-11 items-center justify-center rounded-xl border ${theme.border} ${theme.panelSoft} ${theme.muted} transition hover:text-white`}
+            >
+              <ArrowLeft className="h-5 w-5" />
+            </Link>
+            <div className={`flex items-center gap-3 border-r pr-4 sm:pr-8 ${theme.divider}`}>
+              <img src={appAssetPath(theme.logoPath)} alt="Printbuddy" className="h-12 w-auto" />
+            </div>
+            <h1 className={`min-w-0 truncate text-2xl font-bold tracking-tight sm:text-3xl ${theme.text}`}>Print Farm Monitor</h1>
+          </div>
+          <div className="flex min-w-0 flex-col gap-3 xl:items-end">
+            <div className="text-left xl:text-right">
+              <div className="font-mono text-2xl font-bold tracking-wider text-blue-300 sm:text-3xl">{formatHeaderTime(now)}</div>
+              <div className={`text-xs ${theme.muted}`}>{formatHeaderDate(now)}</div>
+            </div>
+            <div className="grid w-full min-w-0 grid-cols-[repeat(auto-fit,minmax(min(100%,9.5rem),1fr))] gap-3 xl:min-w-[50rem]">
+              <StatTile icon={PrinterIcon} label="Total Printers" value={printers.length} theme={theme} />
+              <StatTile icon={PlayCircle} label="Printing Now" value={printing.length} tone="green" theme={theme} />
+              <StatTile icon={PauseCircle} label="Idle" value={idle.length} tone="blue" theme={theme} />
+              <StatTile icon={Power} label="Offline" value={offline.length} tone="gray" theme={theme} />
+              <StatTile icon={Layers} label="Queue Size" value={(queue as PrintQueueItem[]).length} tone="purple" theme={theme} />
+              <StatTile icon={AlertTriangle} label="Active Alerts" value={activeAlerts.length} tone="amber" theme={theme} />
+            </div>
+          </div>
+        </header>
+
+        <div data-testid="farm-monitor-layout" className="grid w-full min-w-0 max-w-full gap-4 min-[1280px]:grid-cols-[minmax(0,1fr)_minmax(0,22rem)] 2xl:grid-cols-[minmax(0,1fr)_minmax(0,24rem)]">
+          <div data-testid="farm-monitor-main-column" className="grid min-w-0 content-start gap-4">
+            <section data-testid="farm-monitor-status-strip" className={`min-w-0 rounded-2xl border px-4 py-4 sm:px-5 ${theme.panelSoft}`}>
+              <div className="flex min-w-0 flex-wrap items-center gap-4 text-base sm:text-lg">
+                <div className="inline-flex items-center gap-3 rounded-xl bg-status-ok/15 px-4 py-2 font-bold text-status-ok shadow-[0_0_22px_color-mix(in_srgb,var(--status-ok)_18%,transparent)]">
+                  <span className="h-4 w-4 rounded-full bg-status-ok shadow-[0_0_16px_color-mix(in_srgb,var(--status-ok)_60%,transparent)]" />
+                  {printing.length} PRINTERS ACTIVE
+                </div>
+                <span className="hidden h-5 w-px bg-bambu-dark-tertiary md:block" />
+                <div className={`min-w-0 ${theme.muted}`}>
+                  Next completion: <span className="font-bold text-bambu-green-light">{nextCompletion?.printer.name ?? 'No active print'}</span>
+                  {nextCompletion?.status?.remaining_time !== null && nextCompletion?.status?.remaining_time !== undefined && <span> in <span className="text-bambu-green-light">{formatDuration(nextCompletion.status.remaining_time)}</span></span>}
+                </div>
+                <div className={`ml-0 flex items-center gap-3 text-sm lg:ml-auto ${theme.muted}`}>
+                  <div className="relative h-12 w-12 rounded-full p-1" style={utilizationStyle} aria-label={`Farm utilization ${utilization}%`}>
+                    <div className={`h-full w-full rounded-full ${theme.ringInner}`} />
+                  </div>
+                  <div><div className="text-xs uppercase">Farm Utilization</div><div className={`text-2xl font-bold ${theme.text}`}>{utilization}%</div></div>
+                </div>
+              </div>
+            </section>
+
+            <section data-testid="farm-monitor-printer-grid" className="grid min-w-0 auto-rows-fr grid-cols-[repeat(auto-fit,minmax(min(100%,18rem),1fr))] gap-4">
+              {visiblePrinters.map((item) => <PrinterCard key={item.printer.id} item={item} loadedFilament={loadedFilaments.get(item.printer.id) ?? null} theme={theme} />)}
+              {visiblePrinters.length === 0 && (
+                <div className={`col-span-full rounded-2xl border border-dashed p-12 text-center ${theme.panelSoft}`}>
+                  <PrinterIcon className={`mx-auto mb-4 h-14 w-14 ${theme.subtle}`} />
+                  <h2 className={`text-2xl font-bold ${theme.text}`}>No printers configured</h2>
+                  <p className={`mt-2 ${theme.muted}`}>Add printers in Printbuddy to populate the farm monitor.</p>
+                </div>
+              )}
+            </section>
+          </div>
+
+          <aside data-testid="farm-monitor-sidebar" className="grid min-w-0 max-w-full content-start gap-4 overflow-hidden">
+            <ActiveProjectsPanel projects={activeProjects} theme={theme} />
+            <AlertsPanel alerts={activeAlerts} theme={theme} />
+            <ActivityPanel items={[...printing, ...paused, ...stopped, ...offline, ...errors]} theme={theme} />
+          </aside>
+        </div>
+
+        <footer className={`mt-4 flex flex-col gap-3 rounded-xl border px-6 py-4 md:flex-row md:items-center md:justify-between ${theme.footer}`}>
+          <div className="flex items-center gap-3"><RefreshCw className="h-5 w-5" /> Last refreshed: {formatClock(now)} · every {refreshSeconds}s</div>
+          <div className="flex items-center gap-3 text-emerald-300"><CheckCircle2 className="h-6 w-6" /> PrintBuddy is operational</div>
+          <div className="flex flex-wrap items-center gap-6"><span className="flex items-center gap-2"><Server className="h-5 w-5" /> Printbuddy&nbsp; {version?.display_version ?? version?.version ? `v${version?.display_version ?? version?.version}` : ''}</span><span>{now.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })} • {formatClock(now)}</span></div>
+        </footer>
+      </div>
+    </main>
+  );
+}

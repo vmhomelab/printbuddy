@@ -4180,6 +4180,31 @@ class TestStaleReconnect:
 
         assert mqtt_client._disconnection_event.is_set()
 
+    def test_disconnect_timeout_force_closes_socket_before_loop_stop(self, mqtt_client):
+        """disconnect(timeout=...) must not wait forever on paho loop_stop.
+
+        Proxy VP startup calls disconnect(timeout=1) to free the printer's single
+        MQTT slot before opening the slicer proxy. If the printer/paho thread
+        does not deliver on_disconnect promptly, we must break the socket before
+        loop_stop() joins the network thread; otherwise the API request can hang
+        while enabling proxy mode.
+        """
+        from unittest.mock import MagicMock
+
+        mqtt_client._client = MagicMock()
+        original = mqtt_client._client
+        sock = MagicMock()
+        original.socket.return_value = sock
+        mqtt_client._disconnection_event = None
+
+        mqtt_client.disconnect(timeout=0.01)
+
+        original.disconnect.assert_called_once()
+        sock.close.assert_called_once()
+        original.loop_stop.assert_called_once()
+        assert mqtt_client._client is None
+        assert mqtt_client.state.connected is False
+
     def test_on_connect_clears_stale_reconnecting_flag(self, mqtt_client):
         """_on_connect should clear _stale_reconnecting and restore connected=True."""
         mqtt_client._stale_reconnecting = True

@@ -168,6 +168,70 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
     },
   });
 
+  const createFromSlotMutation = useMutation({
+    mutationFn: async () => {
+      if (!trayInfo) {
+        throw new Error(t('inventory.assignFailed'));
+      }
+      const material = (trayInfo.material || trayInfo.type || '').trim() || 'Unknown';
+      const profile = (trayInfo.profile || '').trim();
+      const color = (trayInfo.color || '').replace(/^#/, '').trim();
+      const rgba = /^[0-9A-Fa-f]{6}$/.test(color)
+        ? `${color.toUpperCase()}FF`
+        : /^[0-9A-Fa-f]{8}$/.test(color)
+          ? color.toUpperCase()
+          : null;
+      const createdSpool = await api.createSpool({
+        material,
+        subtype: profile || null,
+        brand: null,
+        color_name: null,
+        rgba,
+        extra_colors: null,
+        effect_type: null,
+        label_weight: 1000,
+        core_weight: 250,
+        core_weight_catalog_id: null,
+        weight_used: 0,
+        slicer_filament: null,
+        slicer_filament_name: profile || null,
+        nozzle_temp_min: null,
+        nozzle_temp_max: null,
+        note: `Created from ${trayInfo.location} detected by printer slot metadata. Verify brand, weight, and remaining amount before relying on usage tracking.`,
+        cost_per_kg: null,
+        category: null,
+        low_stock_threshold_pct: null,
+        data_origin: 'printer-slot',
+        storage_location: trayInfo.location || null,
+      } as Parameters<typeof api.createSpool>[0]);
+      const assignment = await api.assignSpool({
+        spool_id: createdSpool.id,
+        printer_id: printerId,
+        ams_id: amsId,
+        tray_id: trayId,
+      });
+      return { createdSpool, assignment };
+    },
+    onSuccess: ({ createdSpool, assignment }) => {
+      queryClient.invalidateQueries({ queryKey: ['inventory-spools'] });
+      queryClient.setQueryData<SpoolAssignment[]>(['spool-assignments'], (old) => {
+        const filtered = (old || []).filter(a =>
+          !(a.printer_id === printerId && a.ams_id === amsId && a.tray_id === trayId)
+        );
+        filtered.push(assignment);
+        return filtered;
+      });
+      queryClient.invalidateQueries({ queryKey: ['spool-assignments'] });
+      nudgePrinterRepublish();
+      showToast(t('inventory.assignSuccess'), 'success');
+      setSelectedSpoolId(createdSpool.id);
+      onClose();
+    },
+    onError: (error: Error) => {
+      showToast(`${t('inventory.assignFailed')}: ${error.message}`, 'error');
+    },
+  });
+
   // --- Material/profile mismatch logic ---
   const normalizeValue = (value: string | undefined | null) =>
     (value ?? '').trim().toUpperCase();
@@ -379,6 +443,32 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
               </div>
             </div>
           )}
+
+            {trayInfo && !spoolmanEnabled && (
+              <div className="p-3 rounded-lg border border-bambu-green/30 bg-bambu-green/10 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="text-xs text-bambu-gray">
+                  <p className="font-medium text-white">Create an inventory spool from this detected slot</p>
+                  <p>Uses slot material/color/location only. Verify brand and weight afterwards.</p>
+                </div>
+                <Button
+                  variant="secondary"
+                  onClick={() => createFromSlotMutation.mutate()}
+                  disabled={createFromSlotMutation.isPending || assignMutation.isPending}
+                >
+                  {createFromSlotMutation.isPending ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      Creating…
+                    </>
+                  ) : (
+                    <>
+                      <Package className="w-4 h-4" />
+                      Create spool from slot
+                    </>
+                  )}
+                </Button>
+              </div>
+            )}
 
           {/* Search filter */}
           <div className="relative">

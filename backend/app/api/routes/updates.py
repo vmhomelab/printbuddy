@@ -314,6 +314,39 @@ def parse_version(version: str) -> tuple:
     return tuple(parts) + (0, 0, 0)
 
 
+def _version_sort_key(version: str) -> tuple:
+    """Return a sortable key where stable beats prerelease for the same base."""
+    parsed = parse_version(version)
+    base = parsed[:4]
+    is_prerelease = parsed[4] if len(parsed) > 4 else 0
+    prerelease_num = parsed[5] if len(parsed) > 5 else 0
+    stable_rank = 0 if is_prerelease else 1
+    return (*base, stable_rank, prerelease_num)
+
+
+def _select_latest_release(releases: list[dict], include_beta: bool) -> dict | None:
+    """Select the highest versioned release from GitHub's release payload.
+
+    GitHub's `/releases` endpoint is not a contract for semantic-version
+    ordering. During the 0.2.5.1 beta cycle it returned v0.2.5.1b9 before
+    newer v0.2.5.1b11, which made the updater stop at b9 and report "up to
+    date" for users already on b9. Sort by Printbuddy's parsed version instead.
+    """
+    candidates: list[dict] = []
+    for release in releases:
+        tag = release.get("tag_name", "")
+        if not tag:
+            continue
+        parsed = parse_version(tag)
+        if include_beta or parsed[4] == 0:
+            candidates.append(release)
+
+    if not candidates:
+        return None
+
+    return max(candidates, key=lambda release: _version_sort_key(release.get("tag_name", "")))
+
+
 def is_newer_version(latest: str, current: str) -> bool:
     """Check if latest version is newer than current.
 
@@ -470,20 +503,9 @@ async def check_for_updates(
             response.raise_for_status()
             releases = response.json()
 
-            # Find the appropriate release based on beta setting
-            release_data = None
-            for release in releases:
-                tag = release.get("tag_name", "")
-                if include_beta:
-                    # Accept any release (first = newest)
-                    release_data = release
-                    break
-                else:
-                    # Skip prereleases (based on version parsing, not GitHub flag)
-                    parsed = parse_version(tag)
-                    if parsed[4] == 0:  # is_prerelease == 0
-                        release_data = release
-                        break
+            # Find the appropriate release based on beta setting. Do not trust
+            # GitHub response order; select by parsed Printbuddy version.
+            release_data = _select_latest_release(releases, bool(include_beta))
 
             if not release_data:
                 _update_status = {
@@ -589,18 +611,11 @@ async def _discover_target_release(db: AsyncSession) -> str | None:
         logger.error("Could not fetch GitHub releases for update target: %s", exc)
         return None
 
-    for release in releases:
-        tag = release.get("tag_name", "")
-        if not tag:
-            continue
-        if include_beta:
-            return tag
-        # Skip prereleases (parsed from version, not GitHub flag — GitHub's
-        # is_prerelease flag isn't always set on dailies).
-        parsed = parse_version(tag)
-        if parsed[4] == 0:
-            return tag
-    return None
+    release = _select_latest_release(releases, bool(include_beta))
+    if not release:
+        return None
+    tag = release.get("tag_name", "")
+    return tag or None
 
 
 async def _perform_update(target_ref: str):
@@ -839,6 +854,7 @@ async def _perform_update(target_ref: str):
 
 @router.post("/self-update")
 async def start_self_update(
+    db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_UPDATE),
 ):
     """Trigger the optional Docker updater sidecar."""
@@ -848,9 +864,15 @@ async def start_self_update(
         raise HTTPException(status_code=503, detail="Updater sidecar is not configured")
 
     headers = {"Authorization": f"Bearer {settings.updater_token}"}
+    target_ref = await _discover_target_release(db)
+    payload = None
+    if target_ref:
+        payload = {"target_image": f"docker.io/vmhomelabde/printbuddy:{target_ref}"}
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.post(f"{settings.updater_url.rstrip('/')}/update", headers=headers, timeout=5.0)
+            response = await client.post(
+                f"{settings.updater_url.rstrip('/')}/update", headers=headers, json=payload, timeout=5.0
+            )
             response.raise_for_status()
             return response.json()
     except httpx.HTTPStatusError as exc:

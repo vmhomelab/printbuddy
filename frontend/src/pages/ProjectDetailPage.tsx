@@ -1,7 +1,7 @@
 import { useState, useMemo } from 'react';
 import DOMPurify from 'dompurify';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient, useQueries } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
   ArrowLeft,
@@ -37,7 +37,7 @@ import {
 } from 'lucide-react';
 import { api } from '../api/client';
 import { parseUTCDate, formatDateOnly, formatDateTime, formatDurationFromHours, type TimeFormat } from '../utils/date';
-import type { Archive, ProjectUpdate, BOMItem, BOMItemCreate, BOMItemUpdate, LibraryFileListItem } from '../api/client';
+import type { Archive, ProjectUpdate, BOMItem, BOMItemCreate, BOMItemUpdate, LibraryFileListItem, Printer as PrintbuddyPrinter, PrinterStatus, PrintQueueItem, SpoolAssignment } from '../api/client';
 import { Card, CardContent } from '../components/Card';
 import { Button } from '../components/Button';
 import { useToast } from '../contexts/ToastContext';
@@ -201,6 +201,428 @@ function getDueDateStatus(dateString: string | null, t: TFunction): { color: str
   return { color: 'text-bambu-gray', label: t('projectDetail.dueDate.daysLeft', { count: diffDays }) };
 }
 
+function normalizeProductionName(value: string | null | undefined): string {
+  return (value || '')
+    .toLowerCase()
+    .replace(/\.(gcode\.3mf|gcode|bgcode|3mf|stl)$/i, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function productionTokens(value: string | null | undefined): string[] {
+  return normalizeProductionName(value).split(' ').filter((token) => token.length >= 3 && !['plate', 'part', 'print'].includes(token));
+}
+
+function fileMatchesPart(part: BOMItem, filename: string | null | undefined): boolean {
+  const file = normalizeProductionName(filename);
+  if (!file) return false;
+  const partSources = [part.name, part.stl_filename].filter(Boolean) as string[];
+  return partSources.some((source) => {
+    const normalized = normalizeProductionName(source);
+    if (normalized && file.includes(normalized)) return true;
+    const tokens = productionTokens(source);
+    return tokens.length > 0 && tokens.every((token) => file.includes(token));
+  });
+}
+
+function formatProductionDuration(seconds: number | null | undefined): string | null {
+  if (!seconds || seconds <= 0) return null;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+  return remainder ? `${hours}h ${remainder}m` : `${hours}h`;
+}
+
+function formatProductionFilament(grams: number | null | undefined): string | null {
+  if (grams === null || grams === undefined || Number.isNaN(grams)) return null;
+  return formatFilament(grams);
+}
+
+interface ProductionFileState {
+  label: string;
+  detail?: string;
+  tone: 'blue' | 'amber' | 'green' | 'red';
+}
+
+function productionFileMatches(file: LibraryFileListItem, value: string | null | undefined): boolean {
+  if (!value) return false;
+  const lower = value.toLowerCase();
+  return lower.includes(file.filename.toLowerCase()) || (!!file.print_name && lower.includes(file.print_name.toLowerCase()));
+}
+
+function buildProductionFileStates(files: LibraryFileListItem[], queue: PrintQueueItem[], printers: PrintbuddyPrinter[], statuses: Array<PrinterStatus | undefined>): Map<number, ProductionFileState> {
+  const states = new Map<number, ProductionFileState>();
+  files.forEach((file) => {
+    const queueItem = queue.find((item) => item.library_file_id === file.id || productionFileMatches(file, `${item.library_file_name || ''} ${item.archive_name || ''}`));
+    const printerIndex = statuses.findIndex((status) => productionFileMatches(file, status?.current_print || status?.gcode_file));
+    const liveStatus = printerIndex >= 0 ? statuses[printerIndex] : undefined;
+    const livePrinter = printerIndex >= 0 ? printers[printerIndex] : undefined;
+
+    if (liveStatus && livePrinter) {
+      const progress = liveStatus.progress === null || liveStatus.progress === undefined ? undefined : `${Math.round(liveStatus.progress)}%`;
+      states.set(file.id, { label: `Printing on ${livePrinter.name}`, detail: progress, tone: 'blue' });
+      return;
+    }
+
+    if (queueItem) {
+      if (queueItem.status === 'printing') {
+        states.set(file.id, { label: `Printing on ${queueItem.printer_name || 'assigned printer'}`, tone: 'blue' });
+        return;
+      }
+      if (queueItem.status === 'failed' || queueItem.status === 'cancelled' || queueItem.status === 'skipped') {
+        states.set(file.id, { label: queueItem.status === 'failed' ? 'Failed' : 'Needs review', detail: queueItem.error_message || undefined, tone: 'red' });
+        return;
+      }
+      if (queueItem.status === 'completed') {
+        states.set(file.id, { label: 'Completed', tone: 'green' });
+        return;
+      }
+      states.set(file.id, { label: 'Queued', detail: queueItem.printer_name || queueItem.target_model || undefined, tone: 'amber' });
+    }
+  });
+  return states;
+}
+
+function ProductionStateBadge({ state }: { state?: ProductionFileState }) {
+  const effective = state || { label: 'Needs staging', tone: 'amber' as const };
+  const tones = {
+    blue: 'bg-blue-500/15 text-blue-300',
+    amber: 'bg-yellow-500/15 text-yellow-300',
+    green: 'bg-bambu-green/15 text-bambu-green',
+    red: 'bg-red-500/15 text-red-300',
+  };
+  return (
+    <div className="flex flex-col gap-1">
+      <span className={`inline-flex w-fit rounded px-2 py-1 text-xs font-semibold ${tones[effective.tone]}`}>{effective.label}</span>
+      {effective.detail && <span className="text-xs text-bambu-gray-light">{effective.detail}</span>}
+    </div>
+  );
+}
+
+function ProductionPlan({ bomItems, archives, files, fileStates, onStageFile }: { bomItems: BOMItem[]; archives: Archive[]; files: LibraryFileListItem[]; fileStates: Map<number, ProductionFileState>; onStageFile: (file: LibraryFileListItem) => void }) {
+  if (bomItems.length === 0 && archives.length === 0 && files.length === 0) return null;
+
+  const unmatchedArchives = archives.filter((archive) => !bomItems.some((item) => fileMatchesPart(item, archive.print_name || archive.filename)));
+  const unmatchedFiles = files.filter((file) => !bomItems.some((item) => fileMatchesPart(item, file.filename)));
+  const rows = [
+    ...bomItems.map((item) => ({
+      id: `bom-${item.id}`,
+      name: item.name,
+      completed: item.quantity_acquired,
+      target: item.quantity_needed,
+      archives: archives.filter((archive) => fileMatchesPart(item, archive.print_name || archive.filename)),
+      files: files.filter((file) => fileMatchesPart(item, file.filename)),
+    })),
+    ...unmatchedArchives.map((archive) => ({
+      id: `archive-${archive.id}`,
+      name: archive.print_name || archive.filename,
+      completed: archive.status === 'completed' ? archive.quantity : 0,
+      target: archive.quantity,
+      archives: [archive],
+      files: [] as LibraryFileListItem[],
+    })),
+    ...unmatchedFiles.map((file) => ({
+      id: `file-${file.id}`,
+      name: file.print_name || file.filename,
+      completed: 0,
+      target: 0,
+      archives: [] as Archive[],
+      files: [file],
+    })),
+  ];
+
+  return (
+    <Card>
+      <CardContent className="p-4">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h2 className="text-lg font-semibold text-white flex items-center gap-2">
+              <FileBox className="w-5 h-5" />
+              Production Plan
+            </h2>
+            <p className="text-xs text-bambu-gray mt-1">Parts, build plates, files, and current production state.</p>
+          </div>
+          <Link to="/files" className="text-sm text-bambu-green hover:underline">Add files</Link>
+        </div>
+        <div className="space-y-3">
+          {rows.map((row) => (
+            <div key={row.id} className="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark/60 p-4">
+              <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                <div>
+                  <h3 className="font-semibold text-white">{row.name}</h3>
+                  <p className="text-sm text-bambu-gray">{row.target > 0 ? `${row.completed} / ${row.target} complete` : 'No quantity target set'}</p>
+                </div>
+                <div className="flex flex-wrap gap-2 text-xs">
+                  <span className="rounded bg-bambu-dark-tertiary px-2 py-1 text-bambu-gray-light">{row.archives.length} archived plate{row.archives.length === 1 ? '' : 's'}</span>
+                  <span className="rounded bg-bambu-dark-tertiary px-2 py-1 text-bambu-gray-light">{row.files.length} project file{row.files.length === 1 ? '' : 's'}</span>
+                </div>
+              </div>
+              <div className="mt-3 overflow-hidden rounded-lg border border-bambu-dark-tertiary">
+                <table className="w-full text-sm">
+                  <thead className="bg-bambu-dark-tertiary text-xs uppercase text-bambu-gray">
+                    <tr>
+                      <th className="px-3 py-2 text-left font-medium">Build plate / file</th>
+                      <th className="px-3 py-2 text-left font-medium">State</th>
+                      <th className="px-3 py-2 text-left font-medium">Material</th>
+                      <th className="px-3 py-2 text-left font-medium">Model</th>
+                      <th className="px-3 py-2 text-left font-medium">Plate</th>
+                      <th className="px-3 py-2 text-left font-medium">Estimate</th>
+                      <th className="px-3 py-2 text-right font-medium">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-bambu-dark-tertiary">
+                    {row.archives.map((archive) => (
+                      <tr key={`archive-${archive.id}`}>
+                        <td className="px-3 py-2 text-white">{archive.print_name || archive.filename}</td>
+                        <td className="px-3 py-2 text-bambu-green">{archive.status}</td>
+                        <td className="px-3 py-2 text-bambu-gray-light">{archive.filament_type || '-'}</td>
+                        <td className="px-3 py-2 text-bambu-gray-light">{archive.sliced_for_model || '-'}</td>
+                        <td className="px-3 py-2 text-bambu-gray-light">{archive.bed_type || '-'}</td>
+                        <td className="px-3 py-2 text-bambu-gray-light">{[formatProductionFilament(archive.filament_used_grams), formatProductionDuration(archive.print_time_seconds)].filter(Boolean).join(' · ') || '-'}</td>
+                        <td className="px-3 py-2 text-right text-bambu-gray-light">Archived</td>
+                      </tr>
+                    ))}
+                    {row.files.map((file) => (
+                      <tr key={`file-${file.id}`}>
+                        <td className="px-3 py-2 text-white">{file.print_name || file.filename}</td>
+                        <td className="px-3 py-2"><ProductionStateBadge state={fileStates.get(file.id)} /></td>
+                        <td className="px-3 py-2 text-bambu-gray-light">-</td>
+                        <td className="px-3 py-2 text-bambu-gray-light">-</td>
+                        <td className="px-3 py-2 text-bambu-gray-light">-</td>
+                        <td className="px-3 py-2 text-bambu-gray-light">-</td>
+                        <td className="px-3 py-2 text-right">
+                          {isSlicedFilename(file.filename) ? (
+                            <button
+                              type="button"
+                              onClick={() => onStageFile(file)}
+                              className="inline-flex items-center gap-1 rounded bg-blue-500/15 px-2 py-1 text-xs font-semibold text-blue-300 transition hover:bg-blue-500/25 hover:text-white"
+                              aria-label={`Stage ${file.print_name || file.filename} to queue`}
+                            >
+                              <CalendarPlus className="h-3.5 w-3.5" /> Stage to queue
+                            </button>
+                          ) : '-'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+type DispatchState = 'ready' | 'blocked';
+
+type FilamentRequirement = {
+  slot_id: number;
+  type: string;
+  color: string;
+  used_grams: number;
+};
+
+interface FileFilamentRequirements {
+  file_id: number;
+  filaments: FilamentRequirement[];
+}
+
+interface DispatchSuggestion {
+  file: LibraryFileListItem;
+  state: DispatchState;
+  printer: PrintbuddyPrinter | null;
+  reason: string;
+}
+
+function isPrinterDispatchReady(status?: PrinterStatus): boolean {
+  if (!status || !status.connected) return false;
+  if ((status.hms_errors?.length ?? 0) > 0) return false;
+  const state = (status.state || '').toLowerCase();
+  if (state.includes('error') || state.includes('fail') || state.includes('pause')) return false;
+  if (state.includes('print') || state.includes('run') || status.current_print || status.progress !== null) return false;
+  return true;
+}
+
+function spoolRemainingGrams(assignment: SpoolAssignment): number | null {
+  const spool = assignment.spool;
+  if (!spool?.label_weight) return null;
+  return Math.max(0, spool.label_weight - (spool.weight_used ?? 0));
+}
+
+function assignmentSlotLabel(assignment: SpoolAssignment): string {
+  if (assignment.ams_label) return `${assignment.ams_label} T${assignment.tray_id + 1}`;
+  if (assignment.ams_id < 0) return 'External spool';
+  return `AMS ${assignment.ams_id + 1} T${assignment.tray_id + 1}`;
+}
+
+function buildFilamentReadiness(printer: PrintbuddyPrinter, requirements: FileFilamentRequirements | undefined, assignments: SpoolAssignment[]): { state: DispatchState; reason: string | null } {
+  const filaments = requirements?.filaments?.filter((filament) => filament.used_grams > 0) || [];
+  if (filaments.length === 0) return { state: 'ready', reason: null };
+
+  const requirement = filaments[0];
+  const assignment = assignments.find((item) => item.printer_id === printer.id && item.spool?.material?.toLowerCase() === requirement.type.toLowerCase());
+  if (!assignment) {
+    return { state: 'blocked', reason: `Missing ${requirement.type} spool assignment.` };
+  }
+
+  const remaining = spoolRemainingGrams(assignment);
+  if (remaining !== null && remaining < requirement.used_grams) {
+    return { state: 'blocked', reason: `${requirement.type} in ${assignmentSlotLabel(assignment)} has ${Math.round(remaining)}g remaining, needs ${Math.round(requirement.used_grams)}g.` };
+  }
+
+  const remainingText = remaining === null ? 'remaining unknown' : `${Math.round(remaining)}g remaining`;
+  return { state: 'ready', reason: `${requirement.type} ready in ${assignmentSlotLabel(assignment)} (${remainingText}, ${Math.round(requirement.used_grams)}g required).` };
+}
+
+function buildDispatchSuggestions(files: LibraryFileListItem[], printers: PrintbuddyPrinter[], statuses: Array<PrinterStatus | undefined>, queue: PrintQueueItem[], assignments: SpoolAssignment[] = [], requirementsByFile = new Map<number, FileFilamentRequirements>()): DispatchSuggestion[] {
+  const printableFiles = files.filter((file) => isSlicedFilename(file.filename));
+  return printableFiles.map((file) => {
+    const alreadyQueued = queue.some((item) => {
+      if (item.library_file_id === file.id) return true;
+      const candidate = `${item.library_file_name || ''} ${item.archive_name || ''}`.toLowerCase();
+      return candidate.includes(file.filename.toLowerCase()) || (!!file.print_name && candidate.includes(file.print_name.toLowerCase()));
+    });
+    if (alreadyQueued) {
+      return { file, state: 'blocked', printer: null, reason: 'Already queued for this project or file name.' };
+    }
+
+    const readyIndex = printers.findIndex((printer, index) => printer.is_active !== false && isPrinterDispatchReady(statuses[index]));
+    if (readyIndex >= 0) {
+      const printer = printers[readyIndex];
+      const filamentReadiness = buildFilamentReadiness(printer, requirementsByFile.get(file.id), assignments);
+      if (filamentReadiness.state === 'blocked') {
+        return { file, state: 'blocked', printer, reason: filamentReadiness.reason || 'Filament readiness blocked staging.' };
+      }
+      return {
+        file,
+        state: 'ready',
+        printer,
+        reason: `${printer.name} is idle${filamentReadiness.reason ? ` and ${filamentReadiness.reason}` : ' and can be reviewed for staging.'}`,
+      };
+    }
+
+    return { file, state: 'blocked', printer: null, reason: 'No idle printer is currently available for safe staging.' };
+  });
+}
+
+function DispatchBatchReviewDialog({ suggestions, onClose, onStageFirst }: { suggestions: DispatchSuggestion[]; onClose: () => void; onStageFirst: (suggestion: DispatchSuggestion) => void }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" role="dialog" aria-modal="true" aria-labelledby="batch-dispatch-review-title">
+      <div className="w-full max-w-2xl rounded-xl border border-bambu-dark-tertiary bg-bambu-dark-secondary p-5 shadow-2xl">
+        <div className="mb-4 flex items-start justify-between gap-4">
+          <div>
+            <h2 id="batch-dispatch-review-title" className="text-xl font-bold text-white">Batch Dispatch Review</h2>
+            <p className="mt-1 text-sm text-bambu-gray-light">{suggestions.length} job{suggestions.length === 1 ? '' : 's'} selected for staging review.</p>
+          </div>
+          <button type="button" onClick={onClose} aria-label="Close batch dispatch review" className="rounded-lg p-2 text-bambu-gray-light hover:bg-bambu-dark hover:text-white"><X className="h-5 w-5" /></button>
+        </div>
+        <div className="max-h-[50vh] space-y-3 overflow-y-auto">
+          {suggestions.map((suggestion) => {
+            const fileName = suggestion.file.print_name || suggestion.file.filename;
+            return (
+              <div key={suggestion.file.id} className="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark p-3">
+                <div className="font-semibold text-white">{fileName}</div>
+                <div className="mt-1 text-sm text-bambu-gray-light">Target: {suggestion.printer?.name || 'No target'}</div>
+                <div className="mt-1 text-xs text-bambu-gray">{suggestion.reason}</div>
+              </div>
+            );
+          })}
+        </div>
+        <div className="mt-5 flex justify-end gap-2">
+          <button type="button" onClick={onClose} className="rounded-lg border border-bambu-dark-tertiary px-4 py-2 text-sm font-semibold text-bambu-gray-light hover:text-white">Cancel</button>
+          <button type="button" onClick={() => suggestions[0] && onStageFirst(suggestions[0])} disabled={suggestions.length === 0} className="rounded-lg bg-blue-500 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50">Stage first selected job</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DispatchSuggestions({ suggestions, onReview }: { suggestions: DispatchSuggestion[]; onReview: (suggestion: DispatchSuggestion) => void }) {
+  const [selectedFileIds, setSelectedFileIds] = useState<number[]>([]);
+  const [showBatchReview, setShowBatchReview] = useState(false);
+  if (suggestions.length === 0) return null;
+
+  const readySuggestions = suggestions.filter((suggestion) => suggestion.state === 'ready' && suggestion.printer);
+  const selectedSuggestions = suggestions.filter((suggestion) => selectedFileIds.includes(suggestion.file.id) && suggestion.state === 'ready' && suggestion.printer);
+  const toggleSelected = (fileId: number) => {
+    setSelectedFileIds((current) => current.includes(fileId) ? current.filter((id) => id !== fileId) : [...current, fileId]);
+  };
+
+  return (
+    <Card>
+      <CardContent className="p-4">
+        <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div>
+            <h2 className="flex items-center gap-2 text-lg font-semibold text-white">
+              <Printer className="h-5 w-5" />
+              Dispatch Suggestions
+            </h2>
+            <p className="mt-1 text-xs text-bambu-gray">Review suggested printer targets before staging. Nothing starts automatically.</p>
+          </div>
+          {readySuggestions.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowBatchReview(true)}
+              disabled={selectedSuggestions.length === 0}
+              className="inline-flex items-center justify-center gap-2 rounded bg-blue-500/15 px-3 py-2 text-sm font-semibold text-blue-300 transition hover:bg-blue-500/25 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+              aria-label="Review selected dispatch jobs"
+            >
+              <ListTodo className="h-4 w-4" /> Review selected ({selectedSuggestions.length})
+            </button>
+          )}
+        </div>
+        <div className="space-y-3">
+          {suggestions.map((suggestion) => {
+            const fileName = suggestion.file.print_name || suggestion.file.filename;
+            const isReady = suggestion.state === 'ready' && suggestion.printer;
+            return (
+              <div key={suggestion.file.id} className="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark/60 p-4">
+                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                  <div className="flex gap-3">
+                    {isReady && (
+                      <input
+                        type="checkbox"
+                        checked={selectedFileIds.includes(suggestion.file.id)}
+                        onChange={() => toggleSelected(suggestion.file.id)}
+                        aria-label={`Select ${fileName}`}
+                        className="mt-1 h-4 w-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-blue-500"
+                      />
+                    )}
+                    <div>
+                      <div className="font-semibold text-white">{fileName}</div>
+                      <div className="mt-1 text-sm text-bambu-gray-light">{isReady ? `Suggested printer: ${suggestion.printer!.name}` : 'No safe printer target'}</div>
+                      <div className="mt-1 text-xs text-bambu-gray">{suggestion.reason}</div>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className={`rounded px-2 py-1 text-xs font-semibold ${isReady ? 'bg-emerald-500/15 text-emerald-300' : 'bg-amber-500/15 text-amber-300'}`}>
+                      {isReady ? 'Ready to stage' : 'Blocked'}
+                    </span>
+                    {isReady && (
+                      <button
+                        type="button"
+                        onClick={() => onReview(suggestion)}
+                        className="inline-flex items-center gap-1 rounded bg-blue-500/15 px-3 py-1.5 text-xs font-semibold text-blue-300 transition hover:bg-blue-500/25 hover:text-white"
+                        aria-label={`Review staging for ${fileName} on ${suggestion.printer!.name}`}
+                      >
+                        <CalendarPlus className="h-3.5 w-3.5" /> Review staging
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        {showBatchReview && <DispatchBatchReviewDialog suggestions={selectedSuggestions} onClose={() => setShowBatchReview(false)} onStageFirst={(suggestion) => { setShowBatchReview(false); onReview(suggestion); }} />}
+      </CardContent>
+    </Card>
+  );
+}
+
 export function ProjectDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -213,6 +635,7 @@ export function ProjectDetailPage() {
   const [notesContent, setNotesContent] = useState('');
   const [printFile, setPrintFile] = useState<LibraryFileListItem | null>(null);
   const [scheduleFile, setScheduleFile] = useState<LibraryFileListItem | null>(null);
+  const [schedulePrinterIds, setSchedulePrinterIds] = useState<number[]>([]);
 
   const projectId = parseInt(id || '0', 10);
 
@@ -257,6 +680,66 @@ export function ProjectDetailPage() {
     queryFn: () => api.getLibraryFiles(null, false, projectId),
     enabled: projectId > 0,
   });
+
+  const { data: printers = [] } = useQuery({
+    queryKey: ['printers', 'project-dispatch'],
+    queryFn: api.getPrinters,
+    enabled: projectId > 0,
+  });
+
+  const { data: queue = [] } = useQuery({
+    queryKey: ['queue', 'project-dispatch', projectId],
+    queryFn: () => api.getQueue(),
+    enabled: projectId > 0,
+  });
+
+  const { data: spoolAssignments = [] } = useQuery({
+    queryKey: ['spool-assignments', 'project-dispatch'],
+    queryFn: () => api.getAssignments(),
+    enabled: projectId > 0,
+    retry: false,
+  });
+
+  const filamentRequirementQueries = useQueries({
+    queries: (allProjectFiles || []).filter((file) => isSlicedFilename(file.filename)).map((file) => ({
+      queryKey: ['library-file-filament-requirements', file.id, 'project-dispatch'],
+      queryFn: () => api.getLibraryFileFilamentRequirements(file.id),
+      enabled: projectId > 0,
+      retry: false,
+    })),
+  });
+
+  const printerStatusQueries = useQueries({
+    queries: printers.map((printer) => ({
+      queryKey: ['printerStatus', printer.id, 'project-dispatch'],
+      queryFn: () => api.getPrinterStatus(printer.id),
+      enabled: projectId > 0 && printer.is_active !== false,
+    })),
+  });
+
+  const printerStatuses = printerStatusQueries.map((query) => query.data);
+  const filamentRequirementsByFile = useMemo(() => {
+    const map = new Map<number, FileFilamentRequirements>();
+    filamentRequirementQueries.forEach((query) => {
+      if (query.data) map.set(query.data.file_id, query.data as FileFilamentRequirements);
+    });
+    return map;
+  }, [filamentRequirementQueries]);
+  const productionFileStates = useMemo(() => buildProductionFileStates(
+    allProjectFiles || [],
+    queue as PrintQueueItem[],
+    printers,
+    printerStatuses,
+  ), [allProjectFiles, queue, printers, printerStatuses]);
+
+  const dispatchSuggestions = useMemo(() => buildDispatchSuggestions(
+    allProjectFiles || [],
+    printers,
+    printerStatuses,
+    queue as PrintQueueItem[],
+    spoolAssignments as SpoolAssignment[],
+    filamentRequirementsByFile,
+  ), [allProjectFiles, printers, printerStatuses, queue, spoolAssignments, filamentRequirementsByFile]);
 
   // Group files by folder_id for the section-based render
   const filesByFolder = useMemo(() => {
@@ -640,6 +1123,9 @@ export function ProjectDetailPage() {
           />
         </div>
       )}
+
+      <ProductionPlan bomItems={bomItems || []} archives={archives || []} files={allProjectFiles || []} fileStates={productionFileStates} onStageFile={(file) => { setSchedulePrinterIds([]); setScheduleFile(file); }} />
+      <DispatchSuggestions suggestions={dispatchSuggestions} onReview={(suggestion) => { setSchedulePrinterIds(suggestion.printer ? [suggestion.printer.id] : []); setScheduleFile(suggestion.file); }} />
 
       {/* Cost tracking */}
       {stats && (() => {
@@ -1446,10 +1932,12 @@ export function ProjectDetailPage() {
           mode="add-to-queue"
           libraryFileId={scheduleFile.id}
           archiveName={scheduleFile.print_name || scheduleFile.filename}
+          initialSelectedPrinterIds={schedulePrinterIds}
           projectId={projectId}
-          onClose={() => setScheduleFile(null)}
+          onClose={() => { setScheduleFile(null); setSchedulePrinterIds([]); }}
           onSuccess={() => {
             setScheduleFile(null);
+            setSchedulePrinterIds([]);
             queryClient.invalidateQueries({ queryKey: ['queue'] });
           }}
         />

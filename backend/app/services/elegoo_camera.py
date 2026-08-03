@@ -14,7 +14,7 @@ import socket
 import time
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +26,18 @@ ELEGOO_SDCP_WS_PORT = 3030
 ELEGOO_SDCP_DISCOVERY_PORT = 3000
 ELEGOO_SDCP_DISCOVERY_MESSAGE = b"M99999"
 ELEGOO_SDCP_STATUS_COMMAND = 0
+
+MOONRAKER_CAMERA_PROVIDERS = {"klipper", "mainsail", "fluidd", "moonraker"}
+CREALITY_WEBRTC_PORT = 8000
+CREALITY_WEBRTC_K2_PATH = "/call/webrtc_local"
+CREALITY_WEBRTC_ROOT_PATH = "/call"
+CREALITY_GO2RTC_OPTION_KEYS = (
+    "go2rtc_url",
+    "go2rtc_base_url",
+    "creality_go2rtc_url",
+    "creality_go2rtc_base_url",
+)
+CREALITY_K2_MODEL_VERSION_CODES = {"F008", "F012", "F021"}
 
 
 @dataclass(frozen=True)
@@ -78,6 +90,157 @@ def build_elegoo_sdcp_camera_url(ip_address: object) -> str | None:
     return f"http://{host}:{ELEGOO_SDCP_CAMERA_PORT}{ELEGOO_SDCP_CAMERA_PATH}"
 
 
+def _provider_options_dict(printer: Any) -> dict[str, Any]:
+    raw = getattr(printer, "provider_options", None)
+    if isinstance(raw, dict):
+        return raw
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw) if isinstance(raw, str) else {}
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _option_first(options: dict[str, Any], keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = str(options.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _truthy_webrtc_support(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    raw = str(value or "").strip().lower()
+    return raw in {"1", "true", "yes", "on", "supported", "webrtc"}
+
+
+def _creality_model_values(printer: Any, options: dict[str, Any]) -> tuple[str, str]:
+    model = str(
+        getattr(printer, "model", None)
+        or options.get("model")
+        or options.get("printer_model")
+        or options.get("printerModel")
+        or ""
+    ).strip()
+    model_version = str(
+        options.get("modelVersion")
+        or options.get("model_version")
+        or options.get("printer_model_version")
+        or options.get("printerModelVersion")
+        or ""
+    ).strip()
+    return model, model_version
+
+
+def _is_creality_k2_family(model: str, model_version: str) -> bool:
+    model_l = model.lower()
+    version_u = model_version.upper()
+    return "k2" in model_l or any(
+        code in version_u or code in model.upper() for code in CREALITY_K2_MODEL_VERSION_CODES
+    )
+
+
+def _creality_webrtc_provider_camera_source(printer: Any) -> EffectiveCameraSource | None:
+    """Derive Creality K2/K1C WebRTC camera through a configured go2rtc service.
+
+    Creality's K2-family camera endpoint speaks JSON-wrapped SDP rather than a
+    normal MJPEG/RTSP stream. Printbuddy's camera pipeline already consumes MJPEG
+    and snapshots, so use go2rtc's HTTP endpoints as the bridge when the printer
+    is identified as WebRTC-capable and a go2rtc base URL is configured in
+    provider_options.
+    """
+
+    provider = str(getattr(printer, "provider", None) or "").strip().lower()
+    if provider not in MOONRAKER_CAMERA_PROVIDERS:
+        return None
+
+    options = _provider_options_dict(printer)
+    go2rtc_base = _option_first(options, CREALITY_GO2RTC_OPTION_KEYS).rstrip("/")
+    if not go2rtc_base:
+        return None
+
+    model, model_version = _creality_model_values(printer, options)
+    is_k2 = _is_creality_k2_family(model, model_version)
+    supports_webrtc = _truthy_webrtc_support(
+        options.get("webrtcSupport")
+        or options.get("webrtc_support")
+        or options.get("supports_webrtc")
+        or options.get("camera_webrtc")
+    )
+    if not (is_k2 or supports_webrtc):
+        return None
+
+    host = _normalize_host(getattr(printer, "ip_address", None) or getattr(printer, "api_url", None))
+    if not host:
+        return None
+
+    configured_path = str(options.get("creality_webrtc_path") or options.get("webrtc_path") or "").strip()
+    path = configured_path or (CREALITY_WEBRTC_K2_PATH if is_k2 else CREALITY_WEBRTC_ROOT_PATH)
+    if not path.startswith("/"):
+        path = f"/{path}"
+
+    upstream = f"webrtc:http://{host}:{CREALITY_WEBRTC_PORT}{path}#format=creality"
+    encoded_src = quote(upstream, safe="")
+    return EffectiveCameraSource(
+        enabled=True,
+        url=f"{go2rtc_base}/api/stream.mjpeg?src={encoded_src}",
+        camera_type="mjpeg",
+        snapshot_url=f"{go2rtc_base}/api/frame.jpeg?src={encoded_src}",
+        derived=True,
+    )
+
+
+def _prusalink_provider_camera_source(printer: Any) -> EffectiveCameraSource | None:
+    """Return a PrusaLink camera source declared in provider_options.
+
+    PrusaLink/Core One firmware variants do not expose one stable documented
+    snapshot URL that we can safely derive from ``api_url`` alone. However,
+    integrations and imports can already know the correct local camera endpoint.
+    Let them declare it beside the PrusaLink auth options so existing rows do not
+    need the manual external-camera toggle before finish/progress notifications
+    can attach images.
+    """
+
+    if str(getattr(printer, "provider", None) or "").strip().lower() != "prusalink":
+        return None
+
+    options = _provider_options_dict(printer)
+    camera_url = str(
+        options.get("camera_url")
+        or options.get("prusalink_camera_url")
+        or options.get("snapshot_url")
+        or options.get("prusalink_snapshot_url")
+        or ""
+    ).strip()
+    if not camera_url:
+        return None
+
+    snapshot_url = str(options.get("camera_snapshot_url") or options.get("prusalink_camera_snapshot_url") or "").strip()
+    camera_type = str(options.get("camera_type") or options.get("prusalink_camera_type") or "").strip().lower()
+    if camera_type not in {"mjpeg", "rtsp", "snapshot", "usb"}:
+        normalized = camera_url.lower().split("?", 1)[0]
+        if normalized.startswith(("rtsp://", "rtsps://")):
+            camera_type = "rtsp"
+        elif any(token in normalized for token in ("/snapshot", "/frame")) or normalized.endswith(
+            (".jpg", ".jpeg", ".png", ".webp")
+        ):
+            camera_type = "snapshot"
+        else:
+            camera_type = "mjpeg"
+
+    return EffectiveCameraSource(
+        enabled=True,
+        url=camera_url,
+        camera_type=camera_type,
+        snapshot_url=snapshot_url or None,
+        derived=True,
+    )
+
+
 def get_effective_camera_source(printer: Any) -> EffectiveCameraSource:
     """Return the camera source Printbuddy should use for a printer.
 
@@ -99,6 +262,14 @@ def get_effective_camera_source(printer: Any) -> EffectiveCameraSource:
             snapshot_url=configured_snapshot_url,
             derived=False,
         )
+
+    prusalink_camera = _prusalink_provider_camera_source(printer)
+    if prusalink_camera:
+        return prusalink_camera
+
+    creality_webrtc_camera = _creality_webrtc_provider_camera_source(printer)
+    if creality_webrtc_camera:
+        return creality_webrtc_camera
 
     if is_elegoo_sdcp_provider(getattr(printer, "provider", None)):
         derived_url = build_elegoo_sdcp_camera_url(getattr(printer, "ip_address", None))

@@ -24,7 +24,7 @@ describe('LoginPage', () => {
       render(<LoginPage />);
 
       await waitFor(() => {
-        expect(screen.getByRole('heading', { name: /Printbuddy Login/i })).toBeInTheDocument();
+        expect(screen.getByRole('heading', { name: /Login/i })).toBeInTheDocument();
       });
 
       expect(screen.getByLabelText(/Username/i)).toBeInTheDocument();
@@ -281,7 +281,7 @@ describe('LoginPage', () => {
       await user.click(backButton);
 
       await waitFor(() => {
-        expect(screen.getByRole('heading', { name: /Printbuddy Login/i })).toBeInTheDocument();
+        expect(screen.getByRole('heading', { name: /Login/i })).toBeInTheDocument();
       });
     });
 

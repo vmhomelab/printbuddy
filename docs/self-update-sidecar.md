@@ -65,7 +65,7 @@ docker compose up -d
 
 ## What the button does
 
-When an administrator clicks **Update now**, Printbuddy calls the updater sidecar. The sidecar runs exactly:
+When an administrator clicks **Update now**, Printbuddy calls the updater sidecar. For normal channel updates where no exact release image is supplied, the sidecar runs exactly:
 
 ```bash
 docker compose -p "$PRINTBUDDY_COMPOSE_PROJECT" -f "$PRINTBUDDY_COMPOSE_FILE" pull "$PRINTBUDDY_SERVICE_NAME"
@@ -73,6 +73,17 @@ docker compose -p "$PRINTBUDDY_COMPOSE_PROJECT" -f "$PRINTBUDDY_COMPOSE_FILE" up
 ```
 
 Only the configured service is recreated. The updater does not run `docker compose up -d` for the full stack so it does not restart itself mid-job.
+
+When the in-app update checker selected a specific release tag, including a beta tag such as `v0.2.5.1b13`, Printbuddy passes that target image to the sidecar. The sidecar then:
+
+```bash
+docker compose -p "$PRINTBUDDY_COMPOSE_PROJECT" -f "$PRINTBUDDY_COMPOSE_FILE" config --format json
+docker pull "docker.io/vmhomelabde/printbuddy:<selected-release-tag>"
+docker tag "docker.io/vmhomelabde/printbuddy:<selected-release-tag>" "<image declared by the compose service>"
+docker compose -p "$PRINTBUDDY_COMPOSE_PROJECT" -f "$PRINTBUDDY_COMPOSE_FILE" up -d --force-recreate "$PRINTBUDDY_SERVICE_NAME"
+```
+
+That extra retag step is intentional: it lets a compose file that tracks `docker.io/vmhomelabde/printbuddy:latest` install an explicitly selected beta release without rewriting the mounted compose file.
 
 ## Troubleshooting
 

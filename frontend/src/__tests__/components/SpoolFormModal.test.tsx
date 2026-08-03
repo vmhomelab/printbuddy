@@ -277,6 +277,30 @@ describe('SpoolFormModal weightTouched', () => {
     expect(quantityInput.value).toBe('1');
   });
 
+  it('allows clearing the core weight field before normalizing on blur', async () => {
+    render(
+      <SpoolFormModal
+        isOpen={true}
+        onClose={vi.fn()}
+        currencySymbol="$"
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Add Spool' })).toBeInTheDocument();
+    });
+
+    const coreWeightInput = screen.getByDisplayValue('250') as HTMLInputElement;
+    expect(coreWeightInput).toBeInTheDocument();
+
+    fireEvent.focus(coreWeightInput);
+    fireEvent.change(coreWeightInput, { target: { value: '' } });
+    expect(coreWeightInput.value).toBe('');
+
+    fireEvent.blur(coreWeightInput);
+    expect(coreWeightInput.value).toBe('250');
+  });
+
   it('preserves core_weight_catalog_id when editing other fields', async () => {
     const spoolWithCatalogId: InventorySpool = {
       ...existingSpool,

@@ -5,6 +5,8 @@ export default {
     archives: 'Archives',
     queue: 'Print Queue',
     stats: 'Statistics',
+    farmMonitor: 'Farm Monitor',
+    farmCommandCenter: 'Farm Command Center',
     profiles: 'Profiles',
     maintenance: 'Maintenance',
     projects: 'Projects',
@@ -968,6 +970,7 @@ export default {
     savingProgress: 'Saving {{current}}/{{total}}...',
     clearQueue: 'Clear Queue',
     clearHistory: 'Clear History',
+    showMoreHistory: 'Show more',
     emptyQueue: 'Queue is empty',
     position: 'Position',
     scheduledTime: 'Scheduled Time',
@@ -2454,7 +2457,7 @@ export default {
 
   // Login page
   login: {
-    title: 'Printbuddy Login',
+    title: 'Login',
     subtitle: 'Sign in to your account',
     username: 'Username',
     usernamePlaceholder: 'Enter your username',
@@ -3978,6 +3981,7 @@ export default {
     repoIsPublicWarning: 'Repository is PUBLIC. Printbuddy backups include MQTT credentials, Home Assistant tokens, Prometheus tokens, your Bambu Cloud email, and printer access codes via K-profiles. Saving is blocked until you make the repository private in your provider\'s settings.',
     repoVisibilityUnknown: 'Could not determine repository visibility. Printbuddy refuses to back up to anything not confirmed private; saving will be blocked.',
     repositoryUrl: 'Repository URL',
+    repositoryUrlInitialCommitHint: 'Note: after creating the repository, make one initial commit (for example by adding a README file) before enabling backup. Printbuddy can only write to a branch that already exists.',
     repoUrlPlaceholderGitHub: 'https://github.com/username/repo-name',
 	repoUrlPlaceholderGitea: 'https://gitea.example.com/username/repo-name',
     repoUrlPlaceholderForgejo: 'https://forgejo.example.com/username/repo-name',
@@ -4028,6 +4032,7 @@ export default {
     failedToSave: 'Failed to save: {{message}}',
     backupCompleteFiles: 'Backup complete - {{count}} files updated',
     backupSkippedNoChanges: 'Backup skipped - no changes',
+    backupSkippedNoChangesNote: 'Skipped because there were no changes to save.',
     backupFailed2: 'Backup failed: {{message}}',
     clearedLogs: 'Cleared {{count}} logs',
     failedToClearLogs: 'Failed to clear logs: {{message}}',

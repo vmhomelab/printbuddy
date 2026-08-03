@@ -50,6 +50,7 @@ from backend.app.api.routes import (
     pending_uploads,
     print_log,
     print_queue,
+    printer_fleet_groups,
     printers,
     projects,
     settings as settings_routes,
@@ -264,15 +265,18 @@ root_logger.setLevel(log_level)
 # dropped — which is exactly the "logs/printbuddy.log only shows logs
 # partially" bug we hit. See backend/app/core/trace.py for the
 # ContextVar the filter reads.
+from backend.app.core.logging_filters import CredentialRedactionFilter
 from backend.app.core.trace import TraceIDFilter
 
 _trace_id_filter = TraceIDFilter()
+_credential_redaction_filter = CredentialRedactionFilter()
 
 # Console handler - always enabled
 console_handler = logging.StreamHandler()
 console_handler.setLevel(log_level)
 console_handler.setFormatter(logging.Formatter(log_format))
 console_handler.addFilter(_trace_id_filter)
+console_handler.addFilter(_credential_redaction_filter)
 root_logger.addHandler(console_handler)
 
 # File handler - only in production or if explicitly enabled
@@ -287,6 +291,7 @@ if app_settings.log_to_file:
     file_handler.setLevel(log_level)
     file_handler.setFormatter(logging.Formatter(log_format))
     file_handler.addFilter(_trace_id_filter)
+    file_handler.addFilter(_credential_redaction_filter)
     root_logger.addHandler(file_handler)
     logging.info("Logging to file: %s", log_file)
 
@@ -305,6 +310,7 @@ if app_settings.log_to_file:
     uvicorn_access_logger = logging.getLogger("uvicorn.access")
     uvicorn_access_logger.addHandler(file_handler)
     uvicorn_access_logger.addFilter(WriteRequestsOnlyFilter())
+    uvicorn_access_logger.addFilter(CredentialRedactionFilter())
     # Uvicorn's access logger has propagate=False (its own default), so the
     # root-attached TraceIDFilter never sees these records. Attach a
     # second instance directly so HTTP access lines carry the same trace
@@ -342,6 +348,14 @@ _print_ams_mappings: dict[int, list[int]] = {}
 # Track progress milestones for notifications: {printer_id: last_milestone_notified}
 # Milestones are 25, 50, 75. Value of 0 means no milestone notified yet for current print.
 _last_progress_milestone: dict[int, int] = {}
+
+# Track progress-notification context per active print. PrusaLink/Core One can
+# briefly report progress samples that disagree with both the printer display
+# and Printbuddy's next UI status. Milestone SMS messages are side effects, so a
+# single bad sample must not be enough to fire 25/50/75 notifications.
+_progress_job_key: dict[int, str] = {}
+_last_progress_value: dict[int, float] = {}
+_pending_progress_milestone: dict[int, int] = {}
 
 # Progress percentage that triggers the almost-done notification.
 PRINT_ALMOST_DONE_PROGRESS_THRESHOLD = 97
@@ -744,50 +758,215 @@ async def _calculate_loaded_spool_cost(db, printer_id: int, grams: float | None)
     return round((grams / 1000.0) * cost_per_kg, 2) if cost_per_kg > 0 else None
 
 
+def _k2_metadata_basename(value: object) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    return raw.replace("\\", "/").split("/")[-1].lower()
+
+
+def _k2_cur_print_data_metadata(data: dict | None) -> dict:
+    """Extract K2/Creality slicer grams from Moonraker virtual_sdcard.cur_print_data."""
+    if not isinstance(data, dict):
+        return {}
+    data_status = str(data.get("status") or "").lower()
+    if data_status not in {"completed", "complete", "finish", "finished"}:
+        return {}
+
+    raw_data = data.get("raw_data") if isinstance(data.get("raw_data"), dict) else {}
+    virtual_sdcard = raw_data.get("virtual_sdcard")
+    if not isinstance(virtual_sdcard, dict):
+        return {}
+    cur_print_data = virtual_sdcard.get("cur_print_data")
+    if not isinstance(cur_print_data, dict):
+        return {}
+    cur_status = str(cur_print_data.get("status") or "").lower()
+    if cur_status and cur_status not in {"completed", "complete", "finish", "finished"}:
+        return {}
+
+    cur_filename = _k2_metadata_basename(cur_print_data.get("filename"))
+    expected_names = {
+        _k2_metadata_basename(data.get("filename")),
+        _k2_metadata_basename(data.get("gcode_file")),
+        _k2_metadata_basename(data.get("subtask_name")),
+        _k2_metadata_basename(raw_data.get("filename")),
+        _k2_metadata_basename(raw_data.get("gcode_file")),
+    }
+    print_stats = raw_data.get("print_stats") if isinstance(raw_data.get("print_stats"), dict) else {}
+    virtual_file_path = virtual_sdcard.get("file_path")
+    expected_names.update(
+        {
+            _k2_metadata_basename(print_stats.get("filename")),
+            _k2_metadata_basename(virtual_file_path),
+        }
+    )
+    expected_names = {name for name in expected_names if name}
+    if cur_filename and expected_names and cur_filename not in expected_names:
+        return {}
+
+    metadata_raw = cur_print_data.get("metadata")
+    if not isinstance(metadata_raw, dict):
+        return {}
+
+    raw_grams = metadata_raw.get("filament_used_g")
+    if not isinstance(raw_grams, list):
+        return {}
+
+    slot_grams: list[float] = []
+    for value in raw_grams:
+        grams = _metadata_float(str(value).replace(",", "."))
+        slot_grams.append(float(grams or 0.0))
+    total_grams = sum(slot_grams)
+    if total_grams <= 0:
+        return {}
+
+    filament_type = str(
+        metadata_raw.get("filament_type") or metadata_raw.get("model_info", {}).get("MaterialType") or ""
+    ).strip()
+    colors = metadata_raw.get("default_filament_colour")
+    if not isinstance(colors, list):
+        colors = []
+
+    filament_slots: list[dict] = []
+    for idx, grams in enumerate(slot_grams):
+        slot = {"slot": idx, "filament_used_grams": grams}
+        if filament_type:
+            slot["filament_type"] = filament_type
+        if idx < len(colors):
+            slot["color"] = str(colors[idx] or "")
+        filament_slots.append(slot)
+
+    result = {
+        "source": "k2_cur_print_data",
+        "filament_used_grams": total_grams,
+        "filament_slots": filament_slots,
+    }
+    filename = cur_print_data.get("filename")
+    if filename:
+        result["raw_filename"] = str(filename)
+    if filament_type:
+        result["filament_type"] = filament_type
+    estimated_time = _metadata_float(metadata_raw.get("estimated_time"))
+    if estimated_time is not None and estimated_time > 0:
+        result["print_time_seconds"] = int(estimated_time)
+    actual_duration = _metadata_float(cur_print_data.get("print_duration"))
+    if actual_duration is not None and actual_duration > 0:
+        result["actual_print_duration_seconds"] = actual_duration
+    total_duration = _metadata_float(cur_print_data.get("total_duration"))
+    if total_duration is not None and total_duration > 0:
+        result["total_duration_seconds"] = total_duration
+    return result
+
+
 def _filename_filament_metadata(filename: str | None) -> dict:
-    """Extract Printbuddy slicer filename metadata: ..._fw12.34[_tc0.56].gcode."""
+    """Extract slicer estimates embedded in display filenames.
+
+    Supported suffixes:
+    - Printbuddy/Prusa-style: ``..._fw12.34[_tc0.56].gcode``
+    - Creality/K2-style: ``..._PLA_30m41s_12g.gcode`` or
+      ``... - PLA- 30m41s - 12g.gcode``
+    """
     if not filename:
         return {}
+    raw_filename = str(filename)
+    stripped = raw_filename.strip()
+
     match = re.search(
         r"(?:^|[_-])fw(?P<grams>\d+(?:[.,]\d+)?)(?:_tc(?P<cost>\d+(?:[.,]\d+)?))?\.(?:bgcode|gcode)$",
-        str(filename).strip(),
+        stripped,
         re.IGNORECASE,
     )
-    if not match:
-        return {}
-    grams = _metadata_float(match.group("grams").replace(",", "."))
-    raw_cost = match.group("cost")
-    cost = _metadata_float(raw_cost.replace(",", ".")) if raw_cost is not None else None
+    source = "filename_filament_meta"
+    material: str | None = None
+    print_time_seconds: int | None = None
+    cost = None
+
+    if match:
+        grams = _metadata_float(match.group("grams").replace(",", "."))
+        raw_cost = match.group("cost")
+        cost = _metadata_float(raw_cost.replace(",", ".")) if raw_cost is not None else None
+    else:
+        # K2/Moonraker metadata omits weight, but Creality/Orca-generated names
+        # commonly carry material, time, and grams, e.g.
+        # ``3DBenchy_-_K2Plus_-_PLA-_30m41s_-_12g.gcode``.
+        k2_match = re.search(
+            r"(?:^|[\s_-])(?P<material>PLA|PETG|ABS|ASA|TPU|PA|PC|PVA|HIPS)(?:[\s_-]+)?[-_ ]*"
+            r"(?P<hours>\d+h)?(?P<minutes>\d+)m(?P<seconds>\d+s)?[-_ ]+"
+            r"(?P<grams>\d+(?:[.,]\d+)?)g\.(?:bgcode|gcode)$",
+            stripped,
+            re.IGNORECASE,
+        )
+        if not k2_match:
+            return {}
+        grams = _metadata_float(k2_match.group("grams").replace(",", "."))
+        material = k2_match.group("material").upper()
+        hours_raw = k2_match.group("hours")
+        seconds_raw = k2_match.group("seconds")
+        hours = int(hours_raw[:-1]) if hours_raw else 0
+        minutes = int(k2_match.group("minutes"))
+        seconds = int(seconds_raw[:-1]) if seconds_raw else 0
+        print_time_seconds = hours * 3600 + minutes * 60 + seconds
+        source = "creality_filename_meta"
+
     if grams is None or grams <= 0:
         return {}
     metadata = {
-        "source": "filename_filament_meta",
-        "raw_filename": str(filename),
+        "source": source,
+        "raw_filename": raw_filename,
         "filament_used_grams": grams,
     }
+    if material:
+        metadata["filament_type"] = material
+    if print_time_seconds is not None:
+        metadata["print_time_seconds"] = print_time_seconds
     if cost is not None and cost >= 0:
         metadata["filament_cost"] = cost
     return metadata
 
 
-def _prusalink_file_metadata_for_archive(printer, data: dict) -> dict:
-    """Return normalized PrusaLink file metadata only for PrusaLink fallback archives."""
-    if getattr(printer, "provider", None) != "prusalink":
-        return {}
-    metadata = data.get("file_metadata")
-    return metadata if isinstance(metadata, dict) else {}
+def _file_metadata_for_archive(printer, data: dict) -> dict:
+    """Return normalized file metadata for provider fallback archives.
 
-
-def _refresh_prusalink_file_metadata_for_archive(printer_id: int, printer, data: dict, logger) -> dict:
-    """Best-effort late fetch of PrusaLink job file metadata.
-
-    Direct slicer uploads can race: the state transition to PRINTING may reach
-    Printbuddy before ``/api/v1/job`` includes ``file.meta``. Ask the connected
-    provider for one fresh job-detail sample without emitting lifecycle
-    callbacks, then copy the metadata into the active event payload for archive
-    and completion processing.
+    PrusaLink can expose real file metadata. K2/Moonraker currently does not
+    expose weight in `/server/files/metadata`, but Creality/Orca filenames often
+    include material, duration, and grams.
     """
-    metadata = _prusalink_file_metadata_for_archive(printer, data)
+    provider = getattr(printer, "provider", None)
+    raw_data = data.get("raw_data") if isinstance(data.get("raw_data"), dict) else {}
+    if provider in {"klipper", "mainsail", "fluidd"}:
+        k2_metadata = _k2_cur_print_data_metadata(data)
+        if k2_metadata:
+            data["file_metadata"] = k2_metadata
+            return k2_metadata
+
+    metadata = data.get("file_metadata")
+    if isinstance(metadata, dict) and metadata:
+        return metadata
+
+    if provider in {"klipper", "mainsail", "fluidd"}:
+        for raw_name in (
+            data.get("filename"),
+            data.get("gcode_file"),
+            data.get("subtask_name"),
+            raw_data.get("filename"),
+            raw_data.get("gcode_file"),
+        ):
+            metadata = _filename_filament_metadata(str(raw_name) if raw_name else None)
+            if metadata:
+                data["file_metadata"] = metadata
+                return metadata
+
+    return {}
+
+
+def _refresh_file_metadata_for_archive(printer_id: int, printer, data: dict, logger) -> dict:
+    """Best-effort provider metadata for no-3MF fallback archives.
+
+    PrusaLink may need a late ``/api/v1/job`` refresh. K2/Moonraker exposes the
+    completed slicer metadata in ``virtual_sdcard.cur_print_data`` on the status
+    payload, so it must be handled without the PrusaLink-only guard.
+    """
+    metadata = _file_metadata_for_archive(printer, data)
     if metadata:
         return metadata
     if getattr(printer, "provider", None) != "prusalink":
@@ -800,12 +979,12 @@ def _refresh_prusalink_file_metadata_for_archive(printer_id: int, printer, data:
     try:
         metadata = refresh()
     except Exception as exc:
-        logger.debug("[PRUSALINK] Could not refresh current file metadata for printer %s: %s", printer_id, exc)
+        logger.debug("[FILE-META] Could not refresh current file metadata for printer %s: %s", printer_id, exc)
         return {}
     if isinstance(metadata, dict) and metadata:
         data["file_metadata"] = metadata
         logger.info(
-            "[PRUSALINK] Refreshed file metadata for printer %s: %.1fg %s",
+            "[FILE-META] Refreshed file metadata for printer %s: %.1fg %s",
             printer_id,
             _metadata_float(metadata.get("filament_used_grams")) or 0.0,
             metadata.get("filament_type") or "unknown material",
@@ -814,11 +993,11 @@ def _refresh_prusalink_file_metadata_for_archive(printer_id: int, printer, data:
     return {}
 
 
-async def _apply_prusalink_metadata_to_archive(db, printer_id: int, printer, archive, data: dict, logger) -> bool:
-    """Populate a no-3MF PrusaLink archive from late job metadata when needed."""
+async def _apply_file_metadata_to_archive(db, printer_id: int, printer, archive, data: dict, logger) -> bool:
+    """Populate a no-3MF fallback archive from provider metadata when needed."""
     if not archive or archive.file_path or archive.filament_used_grams:
         return False
-    metadata = _refresh_prusalink_file_metadata_for_archive(printer_id, printer, data, logger)
+    metadata = _refresh_file_metadata_for_archive(printer_id, printer, data, logger)
     if not metadata:
         return False
 
@@ -845,7 +1024,7 @@ async def _apply_prusalink_metadata_to_archive(db, printer_id: int, printer, arc
         flag_modified(archive, "extra_data")
     except Exception:
         pass
-    logger.info("[PRUSALINK] Applied late file metadata to archive %s (%.1fg)", archive.id, grams)
+    logger.info("[FILE-META] Applied late file metadata to archive %s (%.1fg)", archive.id, grams)
     return True
 
 
@@ -882,7 +1061,7 @@ async def _refresh_prusalink_archive_metadata_later(
                 if not printer or getattr(printer, "provider", None) != "prusalink":
                     return
 
-                updated = await _apply_prusalink_metadata_to_archive(db, printer_id, printer, archive, data, logger)
+                updated = await _apply_file_metadata_to_archive(db, printer_id, printer, archive, data, logger)
                 if updated:
                     await db.commit()
                     return
@@ -1025,6 +1204,93 @@ _last_status_broadcast: dict[int, str] = {}
 _nozzle_count_updated: set[int] = set()
 
 
+def _progress_tracking_job_key(state: PrinterState) -> str | None:
+    """Return a stable active-print key for progress notification tracking."""
+
+    raw_data = state.raw_data if isinstance(getattr(state, "raw_data", None), dict) else {}
+    raw_job = raw_data.get("job") if isinstance(raw_data.get("job"), dict) else {}
+    raw_file = raw_job.get("file") if isinstance(raw_job.get("file"), dict) else {}
+
+    job_id = raw_job.get("id") or raw_data.get("id") or getattr(state, "subtask_id", None)
+    filename = (
+        getattr(state, "subtask_name", None)
+        or getattr(state, "gcode_file", None)
+        or getattr(state, "current_print", None)
+        or raw_file.get("display_name")
+        or raw_file.get("name")
+        or raw_file.get("path")
+    )
+
+    if job_id is None and not filename:
+        return None
+    return f"{job_id or 'unknown'}:{filename or 'unknown'}"
+
+
+def _reset_progress_notification_tracking(printer_id: int, *, clear_job_key: bool = False) -> None:
+    _last_progress_milestone[printer_id] = 0
+    _pending_progress_milestone.pop(printer_id, None)
+    _last_progress_value.pop(printer_id, None)
+    if clear_job_key:
+        _progress_job_key.pop(printer_id, None)
+
+
+def _provider_name_for_progress(printer_id: int) -> str:
+    try:
+        printer = printer_manager.get_printer(printer_id)
+        return str(getattr(printer, "provider", None) or "bambu").strip().lower()
+    except Exception:
+        return ""
+
+
+def _should_send_progress_milestone(
+    printer_id: int,
+    *,
+    provider: str,
+    progress: float,
+    current_milestone: int,
+    last_milestone: int,
+    logger,
+) -> bool:
+    """Return whether the progress milestone notification should fire now.
+
+    Bambu/Moonraker/Elegoo keep the existing one-sample behavior. PrusaLink gets
+    confirmation gating because Core One has been observed sending/triggering a
+    false 75% notification while the printer and UI still showed early progress.
+    """
+
+    if current_milestone <= last_milestone:
+        return False
+
+    if provider != "prusalink":
+        return True
+
+    pending = _pending_progress_milestone.get(printer_id)
+    previous_progress = _last_progress_value.get(printer_id)
+
+    if pending == current_milestone:
+        _pending_progress_milestone.pop(printer_id, None)
+        logger.info(
+            "[PROGRESS_NOTIFY] confirmed PrusaLink milestone: printer=%s progress=%.2f milestone=%s last=%s previous=%s",
+            printer_id,
+            progress,
+            current_milestone,
+            last_milestone,
+            previous_progress,
+        )
+        return True
+
+    _pending_progress_milestone[printer_id] = current_milestone
+    logger.info(
+        "[PROGRESS_NOTIFY] pending PrusaLink milestone confirmation: printer=%s progress=%.2f milestone=%s last=%s previous=%s",
+        printer_id,
+        progress,
+        current_milestone,
+        last_milestone,
+        previous_progress,
+    )
+    return False
+
+
 async def on_printer_status_change(printer_id: int, state: PrinterState):
     """Handle printer status changes - broadcast via WebSocket."""
     # Only broadcast if something meaningful changed (reduce WebSocket spam)
@@ -1057,12 +1323,25 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
 
     # Include tray_now and vt_tray hash so external spool changes trigger broadcasts
     vt_tray_key = hash(str(state.raw_data.get("vt_tray", []))) if state.raw_data else 0
-    # Include AMS dry_time and tray state values so drying/slot changes trigger broadcasts
+    # Include AMS dry_time and tray metadata so drying/slot/fill changes trigger broadcasts.
+    # CFS updates can change only ``remain`` (for example 100 -> 34 after M8200 slot
+    # load/select) while material and tray state stay stable; include the display
+    # metadata used by the frontend so those updates are not de-duped away.
     ams_dry_key = tuple(a.get("dry_time", 0) for a in (state.raw_data.get("ams") or [])) if state.raw_data else ()
-    # Include tray states so load/unload transitions (state 11→10) trigger broadcasts (#784)
     ams_tray_key = (
         tuple(
-            (t.get("id"), t.get("tray_type", ""), t.get("state"))
+            (
+                a.get("id"),
+                t.get("id"),
+                t.get("tray_type", ""),
+                t.get("tray_color", ""),
+                t.get("remain"),
+                t.get("state"),
+                t.get("active"),
+                t.get("tray_uuid", ""),
+                t.get("tag_uid", ""),
+                t.get("vendor", ""),
+            )
             for a in (state.raw_data.get("ams") or [])
             for t in a.get("tray", [])
         )
@@ -1092,51 +1371,97 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
     _last_status_broadcast[printer_id] = status_key
 
     # Check for progress milestone notifications (25%, 50%, 75%)
+    logger = logging.getLogger(__name__)
     progress = state.progress or 0
     is_printing = state.state in ("RUNNING", "PRINTING")
+    provider = _provider_name_for_progress(printer_id)
 
-    if is_printing and progress > 0:
-        # Determine which milestone we've reached
-        current_milestone = 0
-        if progress >= 75:
-            current_milestone = 75
-        elif progress >= 50:
-            current_milestone = 50
-        elif progress >= 25:
-            current_milestone = 25
+    if is_printing:
+        job_key = _progress_tracking_job_key(state)
+        previous_job_key = _progress_job_key.get(printer_id)
+        if job_key and job_key != previous_job_key:
+            _progress_job_key[printer_id] = job_key
+            _reset_progress_notification_tracking(printer_id)
+            _print_almost_done_notified[printer_id] = False
+            _first_layer_notified[printer_id] = False
+            logger.info(
+                "[PROGRESS_NOTIFY] reset tracking for new print: printer=%s provider=%s job=%s previous_job=%s progress=%.2f",
+                printer_id,
+                provider or "unknown",
+                job_key,
+                previous_job_key,
+                progress,
+            )
 
-        last_milestone = _last_progress_milestone.get(printer_id, 0)
+        if progress < 5:
+            # Reset milestone tracking at the beginning of a print even while the
+            # printer is already in RUNNING/PRINTING. The old elif branch never
+            # executed for early active prints because is_printing/progress>0 won.
+            _last_progress_milestone[printer_id] = 0
+            _pending_progress_milestone.pop(printer_id, None)
+            _print_almost_done_notified[printer_id] = False
+            _first_layer_notified[printer_id] = False
 
-        # If we've crossed a new milestone, send notification
-        if current_milestone > last_milestone:
-            _last_progress_milestone[printer_id] = current_milestone
-            try:
-                async with async_session() as db:
-                    from backend.app.models.printer import Printer
+        if progress > 0:
+            # Determine which milestone we've reached
+            current_milestone = 0
+            if progress >= 75:
+                current_milestone = 75
+            elif progress >= 50:
+                current_milestone = 50
+            elif progress >= 25:
+                current_milestone = 25
 
-                    result = await db.execute(select(Printer).where(Printer.id == printer_id))
-                    printer = result.scalar_one_or_none()
-                    printer_name = printer.name if printer else f"Printer {printer_id}"
-                    filename = state.subtask_name or state.gcode_file or "Unknown"
-                    # remaining_time is in minutes, convert to seconds for notification
-                    remaining_time_seconds = state.remaining_time * 60 if state.remaining_time else None
+            last_milestone = _last_progress_milestone.get(printer_id, 0)
 
-                    # Capture camera snapshot for notification image attachment
-                    image_data = await _capture_snapshot_for_notification(
-                        printer_id, printer, logging.getLogger(__name__)
-                    )
+            # If we've crossed a new milestone, send notification
+            if _should_send_progress_milestone(
+                printer_id,
+                provider=provider,
+                progress=progress,
+                current_milestone=current_milestone,
+                last_milestone=last_milestone,
+                logger=logger,
+            ):
+                _last_progress_milestone[printer_id] = current_milestone
+                logger.info(
+                    "[PROGRESS_NOTIFY] sending progress milestone: printer=%s provider=%s progress=%.2f milestone=%s last=%s job=%s",
+                    printer_id,
+                    provider or "unknown",
+                    progress,
+                    current_milestone,
+                    last_milestone,
+                    _progress_job_key.get(printer_id),
+                )
+                try:
+                    async with async_session() as db:
+                        from backend.app.models.printer import Printer
 
-                    await notification_service.on_print_progress(
-                        printer_id,
-                        printer_name,
-                        filename,
-                        current_milestone,
-                        db,
-                        remaining_time_seconds,
-                        image_data=image_data,
-                    )
-            except Exception as e:
-                logging.getLogger(__name__).warning(f"Progress milestone notification failed: {e}")
+                        result = await db.execute(select(Printer).where(Printer.id == printer_id))
+                        printer = result.scalar_one_or_none()
+                        printer_name = printer.name if printer else f"Printer {printer_id}"
+                        filename = state.subtask_name or state.gcode_file or "Unknown"
+                        # remaining_time is in minutes, convert to seconds for notification
+                        remaining_time_seconds = state.remaining_time * 60 if state.remaining_time else None
+
+                        # Capture camera snapshot for notification image attachment
+                        image_data = await _capture_snapshot_for_notification(
+                            printer_id, printer, logging.getLogger(__name__)
+                        )
+
+                        await notification_service.on_print_progress(
+                            printer_id,
+                            printer_name,
+                            filename,
+                            current_milestone,
+                            db,
+                            remaining_time_seconds,
+                            image_data=image_data,
+                        )
+                except Exception as e:
+                    logger.warning(f"Progress milestone notification failed: {e}")
+
+            _last_progress_value[printer_id] = progress
 
         if progress >= PRINT_ALMOST_DONE_PROGRESS_THRESHOLD and not _print_almost_done_notified.get(printer_id, False):
             _print_almost_done_notified[printer_id] = True
@@ -1163,10 +1488,9 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
                         image_data=image_data,
                     )
             except Exception as e:
-                logging.getLogger(__name__).warning(f"Print almost-done notification failed: {e}")
-    elif progress < 5:
-        # Reset milestone tracking when print restarts or new print begins
-        _last_progress_milestone[printer_id] = 0
+                logger.warning(f"Print almost-done notification failed: {e}")
+    else:
+        _reset_progress_notification_tracking(printer_id, clear_job_key=True)
         _print_almost_done_notified[printer_id] = False
         _first_layer_notified[printer_id] = False
 
@@ -1354,6 +1678,14 @@ async def on_ams_change(printer_id: int, ams_data: list):
                 else:
                     current_tray = _find_tray_in_ams_data(ams_data, assignment.ams_id, assignment.tray_id)
                 if not current_tray:
+                    if _print_active:
+                        logger.info(
+                            "Auto-unlink: keeping spool %d AMS%d-T%d — tray missing during active print",
+                            assignment.spool_id,
+                            assignment.ams_id,
+                            assignment.tray_id,
+                        )
+                        continue
                     logger.info(
                         "Auto-unlink: spool %d AMS%d-T%d — tray not found in AMS data (slot empty?)",
                         assignment.spool_id,
@@ -1394,7 +1726,18 @@ async def on_ams_change(printer_id: int, ams_data: list):
                                 assignment.tray_id,
                             )
                         continue
-                    # Different BL spool or unrecognized — unlink so auto-assign can match
+                    # Different BL spool or unrecognized — unlink so auto-assign can match.
+                    # Do not delete during an active print: print-start AMS telemetry can
+                    # be noisy, while the user's assignment is persistent inventory state.
+                    if _print_active:
+                        logger.info(
+                            "Auto-unlink: keeping spool %d AMS%d-T%d — different Bambu Lab UUID during active print (uuid=%s)",
+                            assignment.spool_id,
+                            assignment.ams_id,
+                            assignment.tray_id,
+                            tray_uuid,
+                        )
+                        continue
                     logger.info(
                         "Auto-unlink: spool %d AMS%d-T%d — different Bambu Lab spool detected (uuid=%s)",
                         assignment.spool_id,
@@ -1409,6 +1752,17 @@ async def on_ams_change(printer_id: int, ams_data: list):
                     cur_state = current_tray.get("state")
                     fp_color = assignment.fingerprint_color or ""
                     fp_type = assignment.fingerprint_type or ""
+                    cur_color_normalized = cur_color.strip().upper()
+                    metadata_blank = not cur_type.strip() and cur_color_normalized in ("", "00000000")
+
+                    if metadata_blank:
+                        logger.info(
+                            "Auto-unlink: keeping spool %d AMS%d-T%d — live tray metadata is blank/transient",
+                            assignment.spool_id,
+                            assignment.ams_id,
+                            assignment.tray_id,
+                        )
+                        continue
 
                     # Deferred AMS pre-config replay: fingerprint_type empty means
                     # the slot was empty when the user pre-assigned it
@@ -1491,6 +1845,14 @@ async def on_ams_change(printer_id: int, ams_data: list):
                             spool.rgba if spool else "?",
                             spool.material if spool else "?",
                         )
+                        if _print_active:
+                            logger.info(
+                                "Auto-unlink: keeping spool %d AMS%d-T%d — fingerprint mismatch during active print",
+                                assignment.spool_id,
+                                assignment.ams_id,
+                                assignment.tray_id,
+                            )
+                            continue
                         stale.append(assignment)  # Spool changed
             for a in stale:
                 await db.delete(a)
@@ -1667,6 +2029,35 @@ async def on_ams_change(printer_id: int, ams_data: list):
                                     tray_id,
                                 )
                             continue
+
+                        # Check pending assign-on-next-slot requests before auto-assign
+                        try:
+                            from backend.app.services.pending_slot_assignment import (
+                                try_complete_pending_assignments,
+                            )
+
+                            if await try_complete_pending_assignments(
+                                db=db,
+                                printer_id=printer_id,
+                                ams_id=ams_id,
+                                tray_id=tray_id,
+                                slot_tray_uuid=tray_uuid or None,
+                                slot_tag_uid=tag_uid or None,
+                            ):
+                                logger.info(
+                                    "Pending slot assignment completed for printer %d AMS%d-T%d",
+                                    printer_id,
+                                    ams_id,
+                                    tray_id,
+                                )
+                                continue
+                        except Exception:
+                            logger.exception(
+                                "Pending slot assignment check failed for printer %d AMS%d-T%d",
+                                printer_id,
+                                ams_id,
+                                tray_id,
+                            )
 
                         if is_bambu_tag(tag_uid, tray_uuid, tray_info_idx):
                             # BL spool with RFID tag: auto-match → inventory match → auto-create
@@ -2985,7 +3376,7 @@ async def on_print_start(printer_id: int, data: dict):
                     if mc_remaining and isinstance(mc_remaining, (int, float)) and mc_remaining > 0:
                         fallback_print_time = int(mc_remaining * 60)
 
-                file_metadata = _refresh_prusalink_file_metadata_for_archive(printer_id, printer, data, logger)
+                file_metadata = _refresh_file_metadata_for_archive(printer_id, printer, data, logger)
                 metadata_filament_grams = _metadata_float(file_metadata.get("filament_used_grams"))
                 metadata_cost = _metadata_float(file_metadata.get("filament_cost"))
                 if metadata_cost is None and metadata_filament_grams is not None:
@@ -3682,11 +4073,11 @@ async def on_print_complete(printer_id: int, data: dict):
                 printer_result = await db.execute(select(Printer).where(Printer.id == printer_id))
                 printer = printer_result.scalar_one_or_none()
                 if archive and printer:
-                    updated = await _apply_prusalink_metadata_to_archive(db, printer_id, printer, archive, data, logger)
+                    updated = await _apply_file_metadata_to_archive(db, printer_id, printer, archive, data, logger)
                     if updated:
                         await db.commit()
         except Exception as e:
-            logger.debug("[PRUSALINK] Late archive metadata enrichment failed for printer %s: %s", printer_id, e)
+            logger.debug("[FILE-META] Late archive metadata enrichment failed for printer %s: %s", printer_id, e)
 
     # Cleanup: delete uploaded file from printer SD card to prevent phantom prints (Issue #374)
     # The print scheduler uploads files to the SD card root (/). Some printers (e.g. P1S)
@@ -5272,6 +5663,11 @@ async def lifespan(app: FastAPI):
     # Rehydrate persisted awaiting-plate-clear gate (#961) so prompts survive restarts
     await printer_manager.load_awaiting_plate_clear_from_db()
 
+    # Restore pending slot assignment timeout tasks that survived a restart
+    from backend.app.services.pending_slot_assignment import restore_pending_timeouts
+
+    await restore_pending_timeouts()
+
     # Layer change callback for external camera timelapse
     async def on_layer_change(printer_id: int, layer_num: int):
         """Capture timelapse frame on layer change + first layer notification."""
@@ -5815,8 +6211,11 @@ async def auth_middleware(request, call_next):
             # Auth disabled, allow all requests
             return await call_next(request)
     except Exception:
-        # If we can't check auth status, allow request (fail open for DB issues)
-        return await call_next(request)
+        logging.getLogger(__name__).exception("Failed to determine authentication state; denying request")
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Authentication state unavailable"},
+        )
 
     # Auth is enabled - require valid token
     auth_header = request.headers.get("Authorization")
@@ -5964,6 +6363,7 @@ app.include_router(local_presets.router, prefix=app_settings.api_prefix)
 app.include_router(smart_plugs.router, prefix=app_settings.api_prefix)
 app.include_router(print_log.router, prefix=app_settings.api_prefix)
 app.include_router(print_queue.router, prefix=app_settings.api_prefix)
+app.include_router(printer_fleet_groups.router, prefix=app_settings.api_prefix)
 app.include_router(background_dispatch_routes.router, prefix=app_settings.api_prefix)
 app.include_router(kprofiles.router, prefix=app_settings.api_prefix)
 app.include_router(notifications.router, prefix=app_settings.api_prefix)

@@ -1158,7 +1158,7 @@ async def test_late_prusalink_metadata_enriches_no_3mf_archive_then_updates_load
 ):
     from sqlalchemy import select
 
-    from backend.app.main import _apply_prusalink_metadata_to_archive
+    from backend.app.main import _apply_file_metadata_to_archive as _apply_prusalink_metadata_to_archive
     from backend.app.models.spool import Spool
     from backend.app.models.spool_assignment import SpoolAssignment
     from backend.app.models.spool_usage_history import SpoolUsageHistory

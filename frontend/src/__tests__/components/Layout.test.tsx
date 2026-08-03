@@ -107,6 +107,22 @@ describe('Layout', () => {
       });
     });
 
+    it('can hide the sidebar completely and restore it from the top-left control', async () => {
+      const user = userEvent.setup();
+      render(<Layout />);
+
+      await waitFor(() => expect(document.querySelector('aside')).toBeInTheDocument());
+
+      await user.click(screen.getByRole('button', { name: /hide sidebar/i }));
+      expect(document.querySelector('aside')).not.toBeInTheDocument();
+      expect(localStorage.setItem).toHaveBeenCalledWith('sidebarHidden', 'true');
+      expect(screen.getByRole('button', { name: /show sidebar/i })).toHaveClass('top-20');
+
+      await user.click(screen.getByRole('button', { name: /show sidebar/i }));
+      await waitFor(() => expect(document.querySelector('aside')).toBeInTheDocument());
+      expect(localStorage.setItem).toHaveBeenCalledWith('sidebarHidden', 'false');
+    });
+
     it('links the Printbuddy logo back to the printers page', async () => {
       const user = userEvent.setup();
       window.history.replaceState({}, '', '/settings');
@@ -131,6 +147,23 @@ describe('Layout', () => {
         const settingsLink = document.querySelector('a[href="/settings"]');
         expect(settingsLink).toBeInTheDocument();
       });
+    });
+
+    it('links the sidebar to Farm Command Center instead of the TV monitor route', async () => {
+      render(<Layout />);
+
+      const commandCenterLink = await screen.findByRole('link', { name: /farm command center/i });
+      expect(commandCenterLink).toHaveAttribute('href', '/farm-command-center');
+      expect(document.querySelector('aside a[href="/farm-monitor"]')).not.toBeInTheDocument();
+    });
+
+    it('hides the bug report bubble on the print farm monitor route', async () => {
+      window.history.replaceState({}, '', '/farm-monitor');
+
+      render(<Layout />);
+
+      await waitFor(() => expect(document.querySelector('aside')).toBeInTheDocument());
+      expect(screen.queryByRole('button', { name: /report a bug/i })).not.toBeInTheDocument();
     });
   });
 

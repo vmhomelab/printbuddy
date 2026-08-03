@@ -27,6 +27,7 @@ from backend.app.schemas.print_queue import (
     PrintBatchResponse,
     PrintQueueBulkUpdate,
     PrintQueueBulkUpdateResponse,
+    PrintQueueHistoryResponse,
     PrintQueueItemCreate,
     PrintQueueItemResponse,
     PrintQueueItemUpdate,
@@ -292,6 +293,7 @@ def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
 async def list_queue(
     printer_id: int | None = Query(None, description="Filter by printer (-1 for unassigned)"),
     status: str | None = Query(None, description="Filter by status"),
+    include_history: bool = Query(True, description="Include completed/failed/skipped/cancelled history rows"),
     target_model: str | None = Query(
         None, description="Filter by target model (also includes model-based items when combined with printer_id)"
     ),
@@ -343,6 +345,8 @@ async def list_queue(
         query = query.where(func.lower(PrintQueueItem.target_model) == target_model.lower())
     if status:
         query = query.where(PrintQueueItem.status == status)
+    elif not include_history:
+        query = query.where(PrintQueueItem.status.in_(["pending", "printing"]))
 
     result = await db.execute(query)
     items = result.scalars().all()
@@ -803,6 +807,65 @@ async def _build_batch_response(db: AsyncSession, batch: PrintBatch) -> PrintBat
         completed_count=status_counts.get("completed", 0),
         failed_count=status_counts.get("failed", 0),
         cancelled_count=status_counts.get("cancelled", 0),
+    )
+
+
+@router.get("/history", response_model=PrintQueueHistoryResponse)
+async def list_queue_history(
+    printer_id: int | None = Query(None, description="Filter by printer (-1 for unassigned)"),
+    status: str | None = Query(None, description="Optional history status filter"),
+    limit: int = Query(50, ge=1, le=200, description="Maximum history rows to return"),
+    offset: int = Query(0, ge=0, description="Rows to skip"),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.QUEUE_READ),
+):
+    """List queue history with pagination, newest completed/created rows first."""
+    history_statuses = ["completed", "failed", "skipped", "cancelled"]
+    query = (
+        select(PrintQueueItem)
+        .options(
+            selectinload(PrintQueueItem.archive),
+            selectinload(PrintQueueItem.printer),
+            selectinload(PrintQueueItem.library_file),
+            selectinload(PrintQueueItem.created_by),
+            selectinload(PrintQueueItem.batch),
+        )
+        .where(PrintQueueItem.status.in_(history_statuses))
+    )
+    count_query = select(func.count(PrintQueueItem.id)).where(PrintQueueItem.status.in_(history_statuses))
+
+    if printer_id is not None:
+        if printer_id == -1:
+            query = query.where(PrintQueueItem.printer_id.is_(None))
+            count_query = count_query.where(PrintQueueItem.printer_id.is_(None))
+        else:
+            query = query.where(PrintQueueItem.printer_id == printer_id)
+            count_query = count_query.where(PrintQueueItem.printer_id == printer_id)
+
+    if status:
+        if status not in history_statuses:
+            query = query.where(False)
+            count_query = count_query.where(False)
+        else:
+            query = query.where(PrintQueueItem.status == status)
+            count_query = count_query.where(PrintQueueItem.status == status)
+
+    total = await db.scalar(count_query) or 0
+    result = await db.execute(
+        query.order_by(
+            PrintQueueItem.completed_at.desc().nullslast(),
+            PrintQueueItem.created_at.desc().nullslast(),
+            PrintQueueItem.id.desc(),
+        )
+        .offset(offset)
+        .limit(limit)
+    )
+    items = result.scalars().all()
+    return PrintQueueHistoryResponse(
+        items=[_enrich_response(item) for item in items],
+        total=total,
+        limit=limit,
+        offset=offset,
     )
 
 

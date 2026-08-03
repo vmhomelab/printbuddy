@@ -26,6 +26,7 @@ import { formatDateInput, parseUTCDate, type DateFormat } from '../utils/date';
 import { formatSlotLabel } from '../utils/amsHelpers';
 import { filterSpoolsByQuery } from '../utils/inventorySearch';
 import { aggregateGroupSpool } from '../utils/inventoryGrouping';
+import { AssignSpoolIcon } from '../components/icons/AssignSpoolIcon';
 
 type ArchiveFilter = 'active' | 'archived';
 type UsageFilter = 'all' | 'used' | 'new' | 'lowstock';
@@ -2176,7 +2177,7 @@ function SpoolCard({
                 title="Assign to printer"
                 aria-label="Assign to printer"
               >
-                <Printer className="w-4 h-4" />
+                <AssignSpoolIcon className="w-4 h-4" />
               </button>
             )}
             <span className="text-xs font-mono text-bambu-gray bg-bambu-dark-tertiary px-2 py-1 rounded">
@@ -2279,7 +2280,7 @@ function SpoolTableRow({
           )}
           {onAssignToPrinter && !spool.archived_at && (
             <button onClick={onAssignToPrinter} className="p-1.5 text-bambu-gray hover:text-bambu-green rounded transition-colors" title="Assign to printer" aria-label="Assign to printer">
-              <Printer className="w-4 h-4" />
+              <AssignSpoolIcon className="w-4 h-4" />
             </button>
           )}
           {onResetUsage && spool.weight_used > 0 && (

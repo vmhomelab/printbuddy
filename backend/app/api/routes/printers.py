@@ -5,6 +5,7 @@ import re
 import tempfile
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
@@ -56,6 +57,7 @@ from backend.app.services.printer_manager import (
     supports_drying,
 )
 from backend.app.services.printer_providers.factory import create_printer_client, normalize_provider
+from backend.app.services.printer_providers.moonraker import create_moonraker_client
 from backend.app.utils.http import build_content_disposition
 
 logger = logging.getLogger(__name__)
@@ -317,6 +319,34 @@ async def create_printer(
         await printer_manager.connect_printer(printer)
 
     return printer
+
+
+@router.get("/moonraker-webcams/discover")
+async def discover_moonraker_webcams(
+    api_url: str = Query(..., min_length=1, max_length=500),
+    ip_address: str | None = Query(None, max_length=253),
+    provider: str = Query("fluidd"),
+    auth_token: str | None = Query(None, max_length=500),
+    model: str | None = Query(None, max_length=200),
+    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_CREATE),
+):
+    """Discover webcam entries exposed by Moonraker's /server/webcams/list endpoint."""
+    normalized_provider = normalize_provider(provider)
+    if normalized_provider not in {"klipper", "mainsail", "fluidd"}:
+        raise HTTPException(400, "Moonraker webcam discovery only supports Klipper/Mainsail/Fluidd providers")
+    printer_stub = SimpleNamespace(
+        api_url=api_url,
+        ip_address=ip_address or api_url,
+        auth_token=auth_token,
+        model=model,
+    )
+    client = create_moonraker_client(printer_stub)
+    try:
+        webcams = await asyncio.to_thread(client.discover_webcams)
+    except Exception as exc:  # noqa: BLE001 - surface sanitized discovery failure to UI
+        logger.warning("Moonraker webcam discovery failed for %s: %s", api_url, type(exc).__name__)
+        raise HTTPException(502, f"Could not query Moonraker webcams: {type(exc).__name__}") from exc
+    return {"webcams": webcams}
 
 
 @router.get("/usb-cameras")
@@ -694,6 +724,7 @@ async def get_printer_status(
             ams_units.append(
                 AMSUnit(
                     id=ams_data.get("id", 0),
+                    name=ams_data.get("name"),
                     humidity=humidity_value,
                     temp=ams_data.get("temp"),
                     is_ams_ht=is_ams_ht,
@@ -1456,6 +1487,7 @@ async def start_printer_file(
     printer_id: int,
     path: str,
     storage: str | None = Query(default=None),
+    ams_mapping: list[int] | None = Query(default=None),
     bed_levelling: bool | None = Query(default=None),
     print_platform_type: int | None = Query(default=None, ge=0, le=1),
     _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_CONTROL),
@@ -1484,6 +1516,8 @@ async def start_printer_file(
             start_options["print_platform_type"] = print_platform_type
         if storage:
             start_options["storage"] = storage
+        if ams_mapping is not None:
+            start_options["ams_mapping"] = ams_mapping
         success = provider_client.start_print(path, **start_options)
     else:
         success = printer_manager.start_print(printer_id, path)
@@ -3758,8 +3792,12 @@ async def refresh_ams_slot(
     if not success:
         raise HTTPException(400, message)
 
-    # Apply PA profile after delay (RFID re-read takes a few seconds)
-    asyncio.create_task(_apply_pa_after_refresh(printer_id, ams_id, slot_id))
+    # Apply PA profile after delay (RFID re-read takes a few seconds). This is
+    # Bambu-specific; Moonraker/CFS refresh is just BOX_INFO_REFRESH and has no
+    # Bambu calibration selection endpoint to reapply.
+    provider = str(getattr(printer, "provider", "") or "").lower()
+    if provider not in {"klipper", "mainsail", "fluidd"}:
+        asyncio.create_task(_apply_pa_after_refresh(printer_id, ams_id, slot_id))
 
     return {"success": True, "message": message}
 
@@ -4010,6 +4048,13 @@ async def ams_load(
 
     success = client.ams_load_filament(tray_id)
     if not success:
+        provider = str(getattr(printer, "provider", "") or "").lower()
+        model = str(getattr(printer, "model", "") or "").lower()
+        if provider in {"klipper", "mainsail", "fluidd"} and "creality k2" in model and tray_id in range(16):
+            raise HTTPException(
+                400,
+                "CFS load is disabled until the Creality K2 slot macro names are hardware-verified",
+            )
         raise HTTPException(500, "Failed to send load command")
 
     if tray_id == 254:
@@ -4024,10 +4069,14 @@ async def ams_load(
 @router.post("/{printer_id}/ams/unload")
 async def ams_unload(
     printer_id: int,
+    tray_id: int | None = Query(None, description="Optional CFS tray ID for slot-specific unload"),
     _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_CONTROL),
     db: AsyncSession = Depends(get_db),
 ):
-    """Unload the currently loaded filament."""
+    """Unload the currently loaded filament, or a specific CFS slot when supported."""
+    if tray_id is not None and tray_id not in range(16) and tray_id not in (254, 255):
+        raise HTTPException(400, "tray_id must be 0..15 (AMS/CFS slot), 254 (external / Ext-L), or 255 (Ext-R)")
+
     result = await db.execute(select(Printer).where(Printer.id == printer_id))
     printer = result.scalar_one_or_none()
     if not printer:
@@ -4037,10 +4086,28 @@ async def ams_unload(
     if not client:
         raise HTTPException(400, "Printer not connected")
 
-    success = client.ams_unload_filament()
+    provider = str(getattr(printer, "provider", "") or "").lower()
+    if provider in {"klipper", "mainsail", "fluidd"}:
+        success = client.ams_unload_filament(tray_id)
+    else:
+        success = client.ams_unload_filament()
     if not success:
+        model = str(getattr(printer, "model", "") or "").lower()
+        if (
+            provider in {"klipper", "mainsail", "fluidd"}
+            and "creality k2" in model
+            and tray_id is not None
+            and tray_id in range(16)
+        ):
+            raise HTTPException(
+                400,
+                "CFS unload is disabled until the Creality K2 slot macro names are hardware-verified",
+            )
         raise HTTPException(500, "Failed to send unload command")
 
+    if tray_id is not None and provider in {"klipper", "mainsail", "fluidd"}:
+        target = f"CFS T{tray_id // 4 + 1} slot {tray_id % 4 + 1}"
+        return {"success": True, "message": f"Unloading filament from {target}"}
     return {"success": True, "message": "Unloading filament"}
 
 

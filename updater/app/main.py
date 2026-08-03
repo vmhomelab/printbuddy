@@ -4,12 +4,17 @@ import os
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, status
+from pydantic import BaseModel
 
 from updater.app.auth import require_token
 from updater.app.jobs import get_job_store, run_update_job
 from updater.app.settings import Settings, get_settings
 
 app = FastAPI(title="Printbuddy Updater", version="0.1.0")
+
+
+class UpdateRequest(BaseModel):
+    target_image: str | None = None
 
 
 def docker_socket_available() -> bool:
@@ -30,13 +35,13 @@ async def health(settings: Settings = Depends(get_settings)):
 
 
 @app.post("/update", dependencies=[Depends(require_token)])
-async def update(settings: Settings = Depends(get_settings)):
+async def update(payload: UpdateRequest | None = None, settings: Settings = Depends(get_settings)):
     if not Path(settings.compose_file).is_file():
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Compose file is not mounted")
 
     store = get_job_store()
     try:
-        job = store.create(settings)
+        job = store.create(settings, target_image=payload.target_image if payload else None)
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     import asyncio

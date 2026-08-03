@@ -87,6 +87,47 @@ describe('spoolMatchesQuery', () => {
     expect(spoolMatchesQuery(spool, 'open filament')).toBe(true);
     expect(spoolMatchesQuery(spool, 'openfilamentdatabase')).toBe(true);
   });
+
+  it('matches multi-term queries across different fields regardless of order (#16)', () => {
+    const spool = makeSpool({
+      material: 'PLA',
+      brand: 'Bambu Lab',
+      color_name: 'Galaxy Black',
+      subtype: 'Matte',
+    });
+
+    expect(spoolMatchesQuery(spool, 'pla galaxy')).toBe(true);
+    expect(spoolMatchesQuery(spool, 'galaxy pla')).toBe(true);
+    expect(spoolMatchesQuery(spool, 'bambu matte')).toBe(true);
+    expect(spoolMatchesQuery(spool, 'matte bambu')).toBe(true);
+  });
+
+  it('requires every query term to match at least one searchable field (#16)', () => {
+    const spool = makeSpool({ material: 'PLA', color_name: 'Red' });
+
+    expect(spoolMatchesQuery(spool, 'pla red')).toBe(true);
+    expect(spoolMatchesQuery(spool, 'pla nylon')).toBe(false);
+  });
+
+  it('ignores extra whitespace between query terms (#16)', () => {
+    const spool = makeSpool({ material: 'PETG', color_name: 'Blue' });
+
+    expect(spoolMatchesQuery(spool, '  petg   blue  ')).toBe(true);
+  });
+
+  it('supports multi-term queries involving numeric id (#16)', () => {
+    const spool = makeSpool({ id: 42, material: 'PLA', color_name: 'Red' });
+
+    expect(spoolMatchesQuery(spool, '42 red')).toBe(true);
+    expect(spoolMatchesQuery(spool, '42 nylon')).toBe(false);
+  });
+
+  it('supports multi-term Open Filament Database alias queries (#16)', () => {
+    const spool = makeSpool({ data_origin: 'openfilamentdatabase', material: 'PLA' });
+
+    expect(spoolMatchesQuery(spool, 'ofdb pla')).toBe(true);
+    expect(spoolMatchesQuery(spool, 'open database')).toBe(true);
+  });
 });
 
 describe('filterSpoolsByQuery', () => {

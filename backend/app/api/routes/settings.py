@@ -195,6 +195,7 @@ async def _build_settings_response(db: AsyncSession, is_api_key: bool = False) -
             "mqtt_port",
             "stagger_group_size",
             "stagger_interval_minutes",
+            "print_farm_monitor_refresh_interval",
             "forecast_global_lead_time_days",
         ]:
             settings_dict[setting.key] = int(setting.value)
@@ -389,6 +390,7 @@ _UI_PREFERENCE_FIELDS: tuple[str, ...] = (
     "ams_temp_fair",
     "bed_cooled_threshold",
     "panda_breath_printer_assignments",
+    "print_farm_monitor_refresh_interval",
 )
 
 

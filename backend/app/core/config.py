@@ -6,7 +6,7 @@ from pathlib import Path
 from pydantic_settings import BaseSettings
 
 # Application version - single source of truth
-APP_VERSION = "0.2.5.0"
+APP_VERSION = "0.2.5.1"
 GITHUB_REPO = "vmhomelab/Printbuddy"
 
 # App directory - where the application is installed (for static files)
@@ -71,6 +71,13 @@ class Settings(BaseSettings):
     static_dir: Path = _app_dir / "static"  # Static files are part of app, not data
     log_dir: Path = _log_dir
     database_url: str = _external_db_url or f"sqlite+aiosqlite:///{_db_path}"
+    db_pool_size: int = 20
+    db_max_overflow: int = 80
+    db_pool_timeout: int = 30
+    db_pool_recycle: int = 1800
+    # Colon-separated allowlist for host paths that may be mounted through the
+    # external library folder feature. Empty means disabled by default.
+    external_roots: str = os.environ.get("PRINTBUDDY_EXTERNAL_ROOTS", "")
 
     # Logging
     log_level: str = "INFO"  # Override with LOG_LEVEL env var or DEBUG=true
@@ -115,6 +122,7 @@ _INTENTIONAL_UNSETTINGS = {
     "DATABASE_URL",  # config.py (above)
     "LOG_DIR",  # config.py (above)
     "LOG_LEVEL",  # main.py logging setup
+    "PRINTBUDDY_EXTERNAL_ROOTS",  # config.py field sourced explicitly above
 }
 
 _known_settings_fields = {f.upper() for f in settings.model_fields}

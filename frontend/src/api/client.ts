@@ -324,10 +324,19 @@ export interface AMSTray {
   drying_temp: number | null;      // RFID-recommended drying temp
   drying_time: number | null;      // RFID-recommended drying time (hours)
   state: number | null;            // AMS tray state: 9=empty, 10=spool present not loaded, 11=loaded
+  // Snapmaker U1 Moonraker feeder status. Generic AMS/CFS payloads omit these.
+  loaded_to_feeder?: boolean;
+  loaded_to_extruder?: boolean;
+  filament_detected?: boolean;
+  channel_state?: string | null;
+  channel_action_state?: string | null;
+  channel_error?: string | null;
+  filament_source?: string | null;
 }
 
 export interface AMSUnit {
   id: number;
+  name?: string | null;
   humidity: number | null;
   temp: number | null;
   is_ams_ht: boolean;  // True for AMS-HT (single spool), False for regular AMS (4 spools)
@@ -413,6 +422,12 @@ export interface PrinterStatus {
     nozzle_2?: number;  // Second nozzle for H2 series (dual nozzle)
     nozzle_2_target?: number;
     nozzle_2_heating?: boolean;  // Actual heater state from MQTT
+    nozzle_3?: number;  // Additional Klipper/Moonraker nozzles (e.g. Snapmaker U1)
+    nozzle_3_target?: number;
+    nozzle_3_heating?: boolean;
+    nozzle_4?: number;
+    nozzle_4_target?: number;
+    nozzle_4_heating?: boolean;
     chamber?: number;
     chamber_target?: number;
     chamber_heating?: boolean;  // Actual heater state from MQTT
@@ -501,6 +516,14 @@ export interface PrinterCreate {
   camera_rotation?: number;
   plate_detection_enabled?: boolean;
   plate_detection_roi?: PlateDetectionROI;
+}
+
+export interface MoonrakerWebcamCandidate {
+  name: string;
+  stream_url: string;
+  snapshot_url?: string | null;
+  camera_type: 'mjpeg' | 'snapshot';
+  enabled: boolean;
 }
 
 // Plate Detection
@@ -1145,6 +1168,8 @@ export interface AppSettings {
   stagger_interval_minutes: number;
   // Plate-clear confirmation
   require_plate_clear: boolean;
+  // Print farm monitor kiosk refresh interval, seconds
+  print_farm_monitor_refresh_interval: number;
   // Shortest job first scheduling
   queue_shortest_first: boolean;
   // Default sidebar order (admin-set for all users)
@@ -1977,6 +2002,13 @@ export interface PrintQueueItemUpdate {
   gcode_injection?: boolean;
 }
 
+export interface PrintQueueHistoryResponse {
+  items: PrintQueueItem[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
 export interface PrintQueueBulkUpdate {
   item_ids: number[];
   printer_id?: number | null;
@@ -2778,6 +2810,23 @@ export interface SpoolAssignment {
   ams_label?: string | null;  // User-defined friendly name for the AMS unit
 }
 
+export interface PrinterFleetGroup {
+  id: number;
+  name: string;
+  color?: string | null;
+  sort_order: number;
+  printer_ids: number[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PrinterFleetGroupPayload {
+  name: string;
+  color?: string | null;
+  sort_order?: number;
+  printer_ids: number[];
+}
+
 export interface FilamentSkuSettings {
   id: number;
   material: string;
@@ -2855,7 +2904,7 @@ export interface SelfUpdateStatus {
 
 export interface SelfUpdateJob {
   job_id: string;
-  status: 'queued' | 'pulling' | 'recreating' | 'completed' | 'failed';
+  status: 'queued' | 'checking' | 'pulling' | 'tagging' | 'recreating' | 'completed' | 'failed';
   started_at?: string;
   finished_at?: string | null;
   exit_code?: number | null;
@@ -3528,6 +3577,17 @@ export const api = {
 
   // Printers
   getPrinters: () => request<Printer[]>('/printers/'),
+  getPrinterFleetGroups: () => request<PrinterFleetGroup[]>('/printer-fleet-groups/'),
+  createPrinterFleetGroup: (data: PrinterFleetGroupPayload) =>
+    request<PrinterFleetGroup>('/printer-fleet-groups/', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  updatePrinterFleetGroup: (id: number, data: PrinterFleetGroupPayload) =>
+    request<PrinterFleetGroup>(`/printer-fleet-groups/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
   getPrinter: (id: number) => request<Printer>(`/printers/${id}`),
   createPrinter: (data: PrinterCreate) =>
     request<Printer>('/printers/', {
@@ -3539,6 +3599,20 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(data),
     }),
+  discoverMoonrakerWebcams: (params: {
+    api_url: string;
+    ip_address?: string;
+    provider?: PrinterProvider;
+    auth_token?: string;
+    model?: string;
+  }) => {
+    const search = new URLSearchParams({ api_url: params.api_url });
+    if (params.ip_address) search.set('ip_address', params.ip_address);
+    if (params.provider) search.set('provider', params.provider);
+    if (params.auth_token) search.set('auth_token', params.auth_token);
+    if (params.model) search.set('model', params.model);
+    return request<{ webcams: MoonrakerWebcamCandidate[] }>(`/printers/moonraker-webcams/discover?${search}`);
+  },
   deletePrinter: (id: number, deleteArchives: boolean = true) =>
     request<{ status: string; archives_deleted: boolean }>(
       `/printers/${id}?delete_archives=${deleteArchives}`,
@@ -3717,12 +3791,14 @@ export const api = {
       { method: 'POST' }
     ),
 
-  // Unload the currently loaded filament.
-  unloadAms: (printerId: number) =>
-    request<{ success: boolean; message: string }>(
-      `/printers/${printerId}/ams/unload`,
+  // Unload the currently loaded filament. Moonraker/CFS may pass a trayId for slot-specific unload.
+  unloadAms: (printerId: number, trayId?: number) => {
+    const suffix = trayId == null ? '' : `?tray_id=${trayId}`;
+    return request<{ success: boolean; message: string }>(
+      `/printers/${printerId}/ams/unload${suffix}`,
       { method: 'POST' }
-    ),
+    );
+  },
 
   // MQTT Debug Logging
   enableMQTTLogging: (printerId: number) =>
@@ -3871,12 +3947,13 @@ export const api = {
   startPrinterFile: (
     printerId: number,
     path: string,
-    options?: { bed_levelling?: boolean; print_platform_type?: 0 | 1; storage?: string | null }
+    options?: { bed_levelling?: boolean; print_platform_type?: 0 | 1; storage?: string | null; ams_mapping?: number[] }
   ) => {
     const params = new URLSearchParams({ path });
     if (options?.storage) params.set('storage', options.storage);
     if (options?.bed_levelling !== undefined) params.set('bed_levelling', String(options.bed_levelling));
     if (options?.print_platform_type !== undefined) params.set('print_platform_type', String(options.print_platform_type));
+    options?.ams_mapping?.forEach((trayId) => params.append('ams_mapping', String(trayId)));
     return request<{ status: string; path: string }>(`/printers/${printerId}/files/start?${params.toString()}`, {
       method: 'POST',
     });
@@ -4572,6 +4649,7 @@ export const api = {
       ams_temp_fair?: number;
       bed_cooled_threshold?: number;
       panda_breath_printer_assignments?: string;
+      print_farm_monitor_refresh_interval?: number;
     }>('/settings/ui-preferences'),
   updateSettings: (data: AppSettingsUpdate) =>
     request<AppSettings>('/settings/', {
@@ -4776,12 +4854,21 @@ export const api = {
     }),
 
   // Print Queue
-  getQueue: (printerId?: number, status?: string, targetModel?: string) => {
+  getQueue: (printerId?: number, status?: string, targetModel?: string, includeHistory = true) => {
     const params = new URLSearchParams();
-    if (printerId) params.set('printer_id', String(printerId));
+    if (printerId !== undefined) params.set('printer_id', String(printerId));
     if (status) params.set('status', status);
     if (targetModel) params.set('target_model', targetModel);
+    if (!includeHistory) params.set('include_history', 'false');
     return request<PrintQueueItem[]>(`/queue/?${params}`);
+  },
+  getQueueHistory: (opts?: { printerId?: number; status?: string; limit?: number; offset?: number }) => {
+    const params = new URLSearchParams();
+    if (opts?.printerId !== undefined) params.set('printer_id', String(opts.printerId));
+    if (opts?.status) params.set('status', opts.status);
+    params.set('limit', String(opts?.limit ?? 50));
+    params.set('offset', String(opts?.offset ?? 0));
+    return request<PrintQueueHistoryResponse>(`/queue/history?${params}`);
   },
   getQueueItem: (id: number) => request<PrintQueueItem>(`/queue/${id}`),
   addToQueue: (data: PrintQueueItemCreate) =>

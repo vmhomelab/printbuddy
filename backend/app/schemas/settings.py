@@ -270,6 +270,15 @@ class AppSettings(BaseModel):
         default=False,
         description="Require per-printer plate-clear confirmation before starting queued prints on finished printers",
     )
+
+    # Print farm monitor kiosk refresh interval
+    print_farm_monitor_refresh_interval: int = Field(
+        default=15,
+        ge=5,
+        le=300,
+        description="Refresh interval in seconds for the TV/kiosk print farm monitor page",
+    )
+
     queue_shortest_first: bool = Field(
         default=False,
         description="Shortest Job First — scheduler prioritizes shorter print jobs over longer ones",
@@ -422,6 +431,7 @@ class AppSettingsUpdate(BaseModel):
     stagger_group_size: int | None = Field(default=None, ge=1, le=50)
     stagger_interval_minutes: int | None = Field(default=None, ge=1, le=60)
     require_plate_clear: bool | None = None
+    print_farm_monitor_refresh_interval: int | None = Field(default=None, ge=5, le=300)
     queue_shortest_first: bool | None = None
     gcode_snippets: str | None = None
     local_backup_enabled: bool | None = None

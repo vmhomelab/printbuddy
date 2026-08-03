@@ -24,8 +24,11 @@ import { LoginPage } from './pages/LoginPage';
 import { SetupPage } from './pages/SetupPage';
 import { NotificationsPage } from './pages/NotificationsPage';
 import { GCodeViewerPage } from './pages/GCodeViewerPage';
+import { FarmCommandCenterPage } from './pages/FarmCommandCenterPage';
+import { PrintFarmMonitorPage } from './pages/PrintFarmMonitorPage';
 import { appBasePath } from './utils/assetPaths';
 import { useWebSocket } from './hooks/useWebSocket';
+import { useBrowserTabPrintProgress } from './hooks/useBrowserTabPrintProgress';
 import { useStreamTokenSync } from './hooks/useCameraStreamToken';
 import { ThemeProvider } from './contexts/ThemeContext';
 import { ToastProvider } from './contexts/ToastContext';
@@ -82,6 +85,7 @@ function StreamTokenSync() {
 
 function WebSocketProvider({ children }: { children: React.ReactNode }) {
   useWebSocket();
+  useBrowserTabPrintProgress();
   return <>{children}</>;
 }
 
@@ -168,12 +172,16 @@ function App() {
                 {/* Stream overlay page - standalone for OBS/streaming embeds, no auth required */}
                 <Route path="/overlay/:printerId" element={<StreamOverlayPage />} />
 
+                {/* TV/kiosk farm monitor - opened from Farm Command Center TV Mode */}
+                <Route path="/farm-monitor" element={<ProtectedRoute><WebSocketProvider><PrintFarmMonitorPage /></WebSocketProvider></ProtectedRoute>} />
+
                 {/* Main app with WebSocket for real-time updates */}
                 <Route element={<ProtectedRoute><WebSocketProvider><Layout /></WebSocketProvider></ProtectedRoute>}>
                   <Route index element={<PrintersPage />} />
                   <Route path="archives" element={<ArchivesPage />} />
                   <Route path="queue" element={<QueuePage />} />
                   <Route path="stats" element={<StatsPage />} />
+                  <Route path="farm-command-center" element={<FarmCommandCenterPage />} />
                   <Route path="profiles" element={<ProfilesPage />} />
                   <Route path="maintenance" element={<MaintenancePage />} />
                   <Route path="projects" element={<ProjectsPage />} />

@@ -125,6 +125,10 @@ describe('QueuePage', () => {
       http.get('/api/v1/printers/', () => {
         return HttpResponse.json(mockPrinters);
       }),
+      http.get('/api/v1/queue/history', () => {
+        const historyItems = mockQueueItems.filter(item => ['completed', 'failed', 'skipped', 'cancelled'].includes(item.status));
+        return HttpResponse.json({ items: historyItems, total: historyItems.length, limit: 50, offset: 0 });
+      }),
       http.delete('/api/v1/queue/:id', () => {
         return HttpResponse.json({ success: true });
       }),
@@ -337,6 +341,51 @@ describe('QueuePage', () => {
 
       const requeueButtons = screen.getAllByTitle('Re-queue');
       expect(requeueButtons.length).toBeGreaterThan(0);
+    });
+  });
+
+
+  describe('history pagination', () => {
+    it('loads additional history rows with Show more instead of truncating at 50', async () => {
+      const firstPage = Array.from({ length: 50 }, (_, index) => ({
+        ...mockQueueItems[2],
+        id: 100 + index,
+        position: 100 + index,
+        archive_name: `History Print ${index + 1}`,
+        completed_at: `2024-01-01T${String(23 - Math.floor(index / 3)).padStart(2, '0')}:00:00Z`,
+      }));
+      const secondPage = [
+        {
+          ...mockQueueItems[2],
+          id: 200,
+          position: 200,
+          archive_name: 'History Print 51',
+          completed_at: '2024-01-01T00:00:00Z',
+        },
+      ];
+
+      server.use(
+        http.get('/api/v1/queue/', () => HttpResponse.json(mockQueueItems.slice(0, 2))),
+        http.get('/api/v1/queue/history', ({ request }) => {
+          const url = new URL(request.url);
+          const offset = Number(url.searchParams.get('offset') || '0');
+          return HttpResponse.json({
+            items: offset === 0 ? firstPage : secondPage,
+            total: 51,
+            limit: 50,
+            offset,
+          });
+        }),
+      );
+
+      render(<QueuePage />);
+
+      await screen.findByText('History Print 1');
+      expect(screen.queryByText('History Print 51')).not.toBeInTheDocument();
+
+      await userEvent.click(screen.getByRole('button', { name: /show more/i }));
+
+      await screen.findByText('History Print 51');
     });
   });
 

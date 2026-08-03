@@ -55,8 +55,32 @@ describe('GitHubBackupSettings - Provider Selection', () => {
     await waitFor(() => {
       expect(screen.getByText('Git Provider')).toBeInTheDocument();
     });
+    expect(screen.getByText(/make one initial commit/i)).toBeInTheDocument();
     const select = screen.getByRole('combobox', { name: /git provider/i });
     expect(select).toHaveValue('github');
+  });
+
+  it('shows a no-changes note when the last backup was skipped', async () => {
+    server.use(
+      http.get('/api/v1/github-backup/status', () =>
+        HttpResponse.json({
+          configured: true,
+          enabled: true,
+          is_running: false,
+          progress: null,
+          last_backup_at: '2026-07-25T12:00:00Z',
+          last_backup_status: 'skipped',
+          last_backup_message: 'No changes to backup',
+          next_scheduled_run: null,
+        })
+      )
+    );
+
+    render(<GitHubBackupSettings />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Skipped because there were no changes to save.')).toBeInTheDocument();
+    });
   });
 
   it('does not show instance URL field for any provider', async () => {

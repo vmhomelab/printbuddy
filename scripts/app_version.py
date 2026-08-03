@@ -27,8 +27,7 @@ def validate_version(version: str) -> None:
         version = version[1:]
     if not VERSION_RE.fullmatch(version):
         raise SystemExit(
-            "Invalid version. Expected forms like 0.2.4, 0.2.4.8, or 0.2.5b1 "
-            f"without a leading v; got {version!r}"
+            f"Invalid version. Expected forms like 0.2.4, 0.2.4.8, or 0.2.5b1 without a leading v; got {version!r}"
         )
 
 
