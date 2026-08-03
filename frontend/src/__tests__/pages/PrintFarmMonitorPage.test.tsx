@@ -259,6 +259,18 @@ describe('PrintFarmMonitorPage', () => {
     expect(document.body.textContent).toContain('v2.5.1');
   });
 
+  it('uses fluid viewport-aware grids instead of fixed-width TV columns', async () => {
+    render(<PrintFarmMonitorPage />);
+
+    const heading = await screen.findByRole('heading', { name: 'Print Farm Monitor' });
+    expect(heading.closest('main')).toHaveClass('overflow-x-hidden');
+    expect(screen.getByTestId('farm-monitor-layout')).toHaveClass('min-w-0');
+    expect(screen.getByTestId('farm-monitor-layout').className).toContain('min-[1280px]:grid-cols-[minmax(0,1fr)_minmax(18rem,24rem)]');
+    expect(screen.getByTestId('farm-monitor-printer-grid')).toHaveClass('min-w-0');
+    expect(screen.getByTestId('farm-monitor-printer-grid').className).toContain('grid-cols-[repeat(auto-fit,minmax(min(100%,18rem),1fr))]');
+    expect(screen.getByTestId('farm-monitor-sidebar')).toHaveClass('min-w-0');
+  });
+
   it('shows the assigned Spoolman spool for the active AMS slot in TV mode', async () => {
     const activeAmsStatus = {
       ...statusFor(1),

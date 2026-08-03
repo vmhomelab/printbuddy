@@ -318,9 +318,9 @@ function PrinterCard({ item, loadedFilament, theme }: { item: MonitorPrinter; lo
   const stateLabel = state === 'printing' ? 'PRINTING' : state === 'paused' ? 'PAUSED' : state === 'stopped' ? 'STOPPED' : state === 'offline' ? 'OFFLINE' : state === 'error' ? 'ERROR' : 'IDLE';
 
   return (
-    <article className={`rounded-2xl border p-5 ${theme.card}`}>
-      <div className="flex gap-4">
-        <div className={`flex h-28 w-32 shrink-0 items-center justify-center overflow-hidden rounded-xl border p-2 ${theme.imageBox}`}>
+    <article className={`min-w-0 rounded-2xl border p-4 sm:p-5 ${theme.card}`}>
+      <div className="flex min-w-0 gap-3 sm:gap-4">
+        <div className={`flex h-24 w-24 shrink-0 items-center justify-center overflow-hidden rounded-xl border p-2 sm:h-28 sm:w-32 ${theme.imageBox}`}>
           {state === 'offline' ? <TriangleAlert className="h-12 w-12 text-red-400" /> : <img src={getPrinterImage(printer.model)} alt="" className="max-h-full max-w-full object-contain" />}
         </div>
         <div className="min-w-0 flex-1">
@@ -338,7 +338,7 @@ function PrinterCard({ item, loadedFilament, theme }: { item: MonitorPrinter; lo
         <div className="mt-5 space-y-3">
           <div>
             <div className={`mb-1 text-[0.68rem] font-semibold uppercase ${theme.subtle}`}>Current job</div>
-            <div className="flex items-end justify-between gap-3">
+            <div className="flex min-w-0 items-end justify-between gap-3">
               <div className={`truncate font-semibold ${theme.text}`}>{jobName ?? 'Active print'}</div>
               <div className={`text-2xl font-bold ${theme.text}`}>{progress !== null ? `${progress}%` : '—'}</div>
             </div>
@@ -346,10 +346,10 @@ function PrinterCard({ item, loadedFilament, theme }: { item: MonitorPrinter; lo
           <div className="h-2.5 overflow-hidden rounded-full bg-bambu-dark-tertiary">
             <div className="h-full rounded-full bg-gradient-to-r from-bambu-green-light to-bambu-green shadow-[0_0_14px_color-mix(in_srgb,var(--accent)_45%,transparent)]" style={{ width: `${progress ?? 0}%` }} />
           </div>
-          <div className={`grid grid-cols-2 gap-2 text-sm ${theme.muted}`}>
-            <div className="flex items-center gap-2"><Clock3 className={`h-4 w-4 ${theme.muted}`} /> ETA <span className="font-semibold text-bambu-green-light">{formatEta(status?.remaining_time)}</span></div>
-            <div className="flex items-center justify-end gap-2"><Bell className={`h-4 w-4 ${theme.muted}`} /> {formatDuration(status?.remaining_time)}</div>
-            {(layer !== null || totalLayers !== null) && <div className="col-span-2 flex items-center gap-2"><Layers className={`h-4 w-4 ${theme.muted}`} /> {layer ?? '—'} / {totalLayers ?? '—'} layers</div>}
+          <div className={`grid grid-cols-1 gap-2 text-sm min-[420px]:grid-cols-2 ${theme.muted}`}>
+            <div className="flex min-w-0 items-center gap-2"><Clock3 className={`h-4 w-4 shrink-0 ${theme.muted}`} /> ETA <span className="font-semibold text-bambu-green-light">{formatEta(status?.remaining_time)}</span></div>
+            <div className="flex min-w-0 items-center gap-2 min-[420px]:justify-end"><Bell className={`h-4 w-4 shrink-0 ${theme.muted}`} /> {formatDuration(status?.remaining_time)}</div>
+            {(layer !== null || totalLayers !== null) && <div className="flex min-w-0 items-center gap-2 min-[420px]:col-span-2"><Layers className={`h-4 w-4 shrink-0 ${theme.muted}`} /> {layer ?? '—'} / {totalLayers ?? '—'} layers</div>}
           </div>
         </div>
       ) : (
@@ -361,11 +361,11 @@ function PrinterCard({ item, loadedFilament, theme }: { item: MonitorPrinter; lo
 
       {(nozzle !== null || bed !== null) && (
         <div className={`mt-4 grid grid-cols-2 overflow-hidden rounded-xl border ${theme.divider} ${theme.panelSoft}`}>
-          <div className={`flex items-center gap-3 border-r px-4 py-3 ${theme.divider}`}>
-            <Thermometer className="h-6 w-6 text-red-400" />
+          <div className={`flex min-w-0 items-center gap-3 border-r px-3 py-3 sm:px-4 ${theme.divider}`}>
+            <Thermometer className="h-6 w-6 shrink-0 text-red-400" />
             <div><div className={`font-bold ${theme.text}`}>{nozzle !== null ? `${nozzle}°C` : '—'}</div><div className={`text-xs ${theme.muted}`}>Nozzle</div></div>
           </div>
-          <div className="flex items-center justify-end gap-3 px-4 py-3">
+          <div className="flex min-w-0 items-center justify-end gap-3 px-3 py-3 sm:px-4">
             <Thermometer className="h-6 w-6 text-blue-400" />
             <div><div className={`font-bold ${theme.text}`}>{bed !== null ? `${bed}°C` : '—'}</div><div className={`text-xs ${theme.muted}`}>Bed</div></div>
           </div>
@@ -373,16 +373,16 @@ function PrinterCard({ item, loadedFilament, theme }: { item: MonitorPrinter; lo
       )}
 
       {loadedFilament && (
-        <div className={`mt-2 grid grid-cols-[1fr_auto] overflow-hidden rounded-xl border ${theme.divider} ${theme.panelSoft}`}>
-          <div className="flex items-center gap-3 px-4 py-3">
+        <div className={`mt-2 grid grid-cols-[minmax(0,1fr)_auto] overflow-hidden rounded-xl border ${theme.divider} ${theme.panelSoft}`}>
+          <div className="flex min-w-0 items-center gap-3 px-3 py-3 sm:px-4">
             <span className={`h-9 w-9 rounded-xl border ${theme.divider} shadow-[inset_0_0_0_1px_rgba(0,0,0,0.25)]`} style={{ backgroundColor: normalizeSpoolColor(loadedFilament.color) || 'var(--bg-tertiary)' }} />
-            <div>
-              <div className={`text-sm font-medium ${theme.text}`}>{loadedFilament.material}</div>
-              <div className={`text-xs ${theme.muted}`}>{loadedFilament.detail}{displaySpoolColor(loadedFilament.color) ? ` · ${displaySpoolColor(loadedFilament.color)}` : ''}</div>
+            <div className="min-w-0">
+              <div className={`truncate text-sm font-medium ${theme.text}`}>{loadedFilament.material}</div>
+              <div className={`truncate text-xs ${theme.muted}`}>{loadedFilament.detail}{displaySpoolColor(loadedFilament.color) ? ` · ${displaySpoolColor(loadedFilament.color)}` : ''}</div>
             </div>
           </div>
           {loadedFilament.remainingPct !== null && loadedFilament.remainingPct !== undefined && (
-            <div className={`flex min-w-24 items-center justify-center border-l px-4 py-3 text-center text-xs font-bold ${theme.divider} ${theme.muted}`}>
+            <div className={`flex min-w-16 items-center justify-center border-l px-3 py-3 text-center text-xs font-bold sm:min-w-24 sm:px-4 ${theme.divider} ${theme.muted}`}>
               {loadedFilament.remainingPct}%<br />LEFT
             </div>
           )}
@@ -563,10 +563,10 @@ export function PrintFarmMonitorPage() {
   const utilizationStyle = { background: `conic-gradient(var(--accent) ${utilization * 3.6}deg, var(--bg-tertiary) 0deg)` };
 
   return (
-    <main className={`min-h-screen ${theme.page}`} data-monitor-theme={mode}>
-      <div className={`min-h-screen p-4 xl:p-5 ${theme.backdrop}`}>
-        <header className={`mb-4 flex flex-col gap-4 border-b pb-4 xl:flex-row xl:items-center xl:justify-between ${theme.divider}`}>
-          <div className="flex items-center gap-5">
+    <main className={`min-h-screen overflow-x-hidden ${theme.page}`} data-monitor-theme={mode}>
+      <div className={`min-h-screen w-full max-w-full p-3 sm:p-4 xl:p-5 ${theme.backdrop}`}>
+        <header className={`mb-4 flex min-w-0 flex-col gap-4 border-b pb-4 xl:flex-row xl:items-center xl:justify-between ${theme.divider}`}>
+          <div className="flex min-w-0 flex-wrap items-center gap-3 sm:gap-5">
             <Link
               to="/farm-command-center"
               aria-label="Back to Farm Command Center"
@@ -574,17 +574,17 @@ export function PrintFarmMonitorPage() {
             >
               <ArrowLeft className="h-5 w-5" />
             </Link>
-            <div className={`flex items-center gap-3 border-r pr-8 ${theme.divider}`}>
+            <div className={`flex items-center gap-3 border-r pr-4 sm:pr-8 ${theme.divider}`}>
               <img src={appAssetPath(theme.logoPath)} alt="Printbuddy" className="h-12 w-auto" />
             </div>
-            <h1 className={`text-3xl font-bold tracking-tight ${theme.text}`}>Print Farm Monitor</h1>
+            <h1 className={`min-w-0 truncate text-2xl font-bold tracking-tight sm:text-3xl ${theme.text}`}>Print Farm Monitor</h1>
           </div>
-          <div className="flex flex-col gap-3 xl:items-end">
-            <div className="text-right">
-              <div className="font-mono text-3xl font-bold tracking-wider text-blue-300">{formatHeaderTime(now)}</div>
+          <div className="flex min-w-0 flex-col gap-3 xl:items-end">
+            <div className="text-left xl:text-right">
+              <div className="font-mono text-2xl font-bold tracking-wider text-blue-300 sm:text-3xl">{formatHeaderTime(now)}</div>
               <div className={`text-xs ${theme.muted}`}>{formatHeaderDate(now)}</div>
             </div>
-            <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+            <div className="grid w-full min-w-0 grid-cols-[repeat(auto-fit,minmax(min(100%,9.5rem),1fr))] gap-3 xl:min-w-[50rem]">
               <StatTile icon={PrinterIcon} label="Total Printers" value={printers.length} theme={theme} />
               <StatTile icon={PlayCircle} label="Printing Now" value={printing.length} tone="green" theme={theme} />
               <StatTile icon={PauseCircle} label="Idle" value={idle.length} tone="blue" theme={theme} />
@@ -595,18 +595,18 @@ export function PrintFarmMonitorPage() {
           </div>
         </header>
 
-        <section className={`mb-4 rounded-2xl border px-5 py-4 ${theme.panelSoft}`}>
-          <div className="flex flex-wrap items-center gap-4 text-lg">
+        <section className={`mb-4 min-w-0 rounded-2xl border px-4 py-4 sm:px-5 ${theme.panelSoft}`}>
+          <div className="flex min-w-0 flex-wrap items-center gap-4 text-base sm:text-lg">
             <div className="inline-flex items-center gap-3 rounded-xl bg-status-ok/15 px-4 py-2 font-bold text-status-ok shadow-[0_0_22px_color-mix(in_srgb,var(--status-ok)_18%,transparent)]">
               <span className="h-4 w-4 rounded-full bg-status-ok shadow-[0_0_16px_color-mix(in_srgb,var(--status-ok)_60%,transparent)]" />
               {printing.length} PRINTERS ACTIVE
             </div>
             <span className="hidden h-5 w-px bg-bambu-dark-tertiary md:block" />
-            <div className={theme.muted}>
+            <div className={`min-w-0 ${theme.muted}`}>
               Next completion: <span className="font-bold text-bambu-green-light">{nextCompletion?.printer.name ?? 'No active print'}</span>
               {nextCompletion?.status?.remaining_time !== null && nextCompletion?.status?.remaining_time !== undefined && <span> in <span className="text-bambu-green-light">{formatDuration(nextCompletion.status.remaining_time)}</span></span>}
             </div>
-            <div className={`ml-auto flex items-center gap-3 text-sm ${theme.muted}`}>
+            <div className={`ml-0 flex items-center gap-3 text-sm lg:ml-auto ${theme.muted}`}>
               <div className="relative h-12 w-12 rounded-full p-1" style={utilizationStyle} aria-label={`Farm utilization ${utilization}%`}>
                 <div className={`h-full w-full rounded-full ${theme.ringInner}`} />
               </div>
@@ -615,8 +615,8 @@ export function PrintFarmMonitorPage() {
           </div>
         </section>
 
-        <div className="grid gap-4 xl:grid-cols-[1fr_360px] 2xl:grid-cols-[1fr_390px]">
-          <section className="grid auto-rows-fr gap-4 md:grid-cols-2 2xl:grid-cols-4">
+        <div data-testid="farm-monitor-layout" className="grid min-w-0 gap-4 min-[1280px]:grid-cols-[minmax(0,1fr)_minmax(18rem,24rem)]">
+          <section data-testid="farm-monitor-printer-grid" className="grid min-w-0 auto-rows-fr grid-cols-[repeat(auto-fit,minmax(min(100%,18rem),1fr))] gap-4">
             {visiblePrinters.map((item) => <PrinterCard key={item.printer.id} item={item} loadedFilament={loadedFilaments.get(item.printer.id) ?? null} theme={theme} />)}
             {visiblePrinters.length === 0 && (
               <div className={`col-span-full rounded-2xl border border-dashed p-12 text-center ${theme.panelSoft}`}>
@@ -627,7 +627,7 @@ export function PrintFarmMonitorPage() {
             )}
           </section>
 
-          <aside className="grid gap-4 content-start">
+          <aside data-testid="farm-monitor-sidebar" className="grid min-w-0 content-start gap-4">
             <ActiveProjectsPanel projects={activeProjects} theme={theme} />
             <AlertsPanel alerts={activeAlerts} theme={theme} />
             <ActivityPanel items={[...printing, ...paused, ...stopped, ...offline, ...errors]} theme={theme} />
