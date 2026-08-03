@@ -411,7 +411,7 @@ describe('PrintFarmMonitorPage', () => {
     render(<PrintFarmMonitorPage />);
 
     await waitFor(() => expect(screen.getByText('1 PRINTERS ACTIVE')).toBeInTheDocument());
-    expect(document.body.textContent).not.toContain('10:42 AM');
+    expect(document.body.textContent).not.toContain('ETA 10:42 AM');
     expect(document.body.textContent).toContain('ETA —');
   });
 

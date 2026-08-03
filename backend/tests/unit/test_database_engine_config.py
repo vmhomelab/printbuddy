@@ -20,7 +20,7 @@ def test_postgres_engine_uses_configurable_pool_settings():
         patch.object(database, "settings", fake_settings),
         patch.object(database, "is_sqlite", return_value=False),
         patch.object(database, "create_async_engine") as create_engine,
-        patch.object(database.event, "listens_for", lambda *args, **kwargs: (lambda fn: fn)),
+        patch.object(database.event, "listens_for", lambda *args, **kwargs: lambda fn: fn),
     ):
         engine = database._create_engine()
 
