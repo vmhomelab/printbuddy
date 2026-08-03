@@ -62,9 +62,10 @@ def _moonraker_status_with_snapmaker_u1():
             "filename": "U1_four_nozzle_test.gcode",
             "print_duration": 300.0,
             "estimated_time": 900.0,
+            "info": {"current_layer": 8, "total_layer": 25},
         },
-        "virtual_sdcard": {"progress": 0.5},
-        "display_status": {"progress": 0.5},
+        "virtual_sdcard": {"progress": 0.2656660911143578, "file_position": 30003, "file_size": 112935},
+        "display_status": {"progress": 0.41},
         "heater_bed": {"temperature": 60.0, "target": 65.0},
         "toolhead": {"extruder": "extruder2"},
         "temperature_sensor cavity": {"temperature": 34.5},
@@ -259,8 +260,10 @@ def test_moonraker_normalizes_snapmaker_u1_nozzles_chamber_and_feed_slots(monkey
     assert client.request_status_update() is True
 
     assert client.state.state == "RUNNING"
-    assert client.state.progress == 50.0
+    assert client.state.progress == 41.0
     assert client.state.remaining_time == 10
+    assert client.state.layer_num == 8
+    assert client.state.total_layers == 25
     assert client.state.active_extruder == 2
     assert client.state.temperatures["chamber"] == 34.5
     assert client.state.temperatures["nozzle"] == 205.0

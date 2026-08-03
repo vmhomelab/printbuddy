@@ -385,13 +385,11 @@ def _moonraker_progress_percent(virtual_sdcard: dict[str, Any], display_status: 
 
     Some K2 Plus firmware samples keep ``virtual_sdcard.progress`` / ``display_status.progress`` stale during short prints. When Moonraker also reports file byte position and size, prefer the furthest trustworthy value.
     """
-    progress = virtual_sdcard.get("progress")
-    if progress is None:
-        progress = display_status.get("progress")
     candidates: list[float] = []
-    fractional = _safe_float(progress)
-    if fractional is not None:
-        candidates.append(max(0.0, min(fractional * 100.0, 100.0)))
+    for progress in (virtual_sdcard.get("progress"), display_status.get("progress")):
+        fractional = _safe_float(progress)
+        if fractional is not None:
+            candidates.append(max(0.0, min(fractional * 100.0, 100.0)))
 
     file_position = _safe_float(virtual_sdcard.get("file_position"))
     file_size = _safe_float(virtual_sdcard.get("file_size") or virtual_sdcard.get("total_size"))
@@ -1274,6 +1272,15 @@ class MoonrakerPrinterClient:
             self.state.gcode_file = str(reported_file)
             self.state.current_print = self.state.gcode_file
             self.state.subtask_name = self.state.gcode_file
+
+        print_info = print_stats.get("info")
+        if isinstance(print_info, dict):
+            current_layer = _safe_int(print_info.get("current_layer"))
+            total_layers = _safe_int(print_info.get("total_layer") or print_info.get("total_layers"))
+            if current_layer is not None:
+                self.state.layer_num = current_layer
+            if total_layers is not None:
+                self.state.total_layers = total_layers
 
         raw_progress = _moonraker_progress_percent(virtual_sdcard, display_status)
         if self.state.state == "FINISH":
