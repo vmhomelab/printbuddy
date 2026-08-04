@@ -435,9 +435,17 @@ class ElegooSDCPPrinterClient:
         return self.state.connected
 
     def _build_lifecycle_payload(self) -> dict[str, Any]:
-        filename = self.state.subtask_name or self.state.current_print or self.state.gcode_file or self._last_active_print_name or "Unknown"
+        filename = (
+            self.state.subtask_name
+            or self.state.current_print
+            or self.state.gcode_file
+            or self._last_active_print_name
+            or "Unknown"
+        )
         progress = self.state.progress if self.state.state in {"RUNNING", "PAUSE"} else self._last_active_progress
-        remaining_time = self.state.remaining_time if self.state.state in {"RUNNING", "PAUSE"} else self._last_active_remaining_time
+        remaining_time = (
+            self.state.remaining_time if self.state.state in {"RUNNING", "PAUSE"} else self._last_active_remaining_time
+        )
         return {
             "filename": filename,
             "subtask_name": filename,

@@ -1594,8 +1594,8 @@ class TestEncryptionStatusEndpoint:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_status_returns_500_on_db_error(self, async_client, monkeypatch):
-        """A8: SQLAlchemyError during count queries → 500 with static message."""
+    async def test_status_returns_503_on_db_error(self, async_client, monkeypatch):
+        """A8: authentication DB failure while checking status fails closed with 503."""
         from unittest.mock import AsyncMock
 
         from sqlalchemy.exc import SQLAlchemyError
@@ -1608,8 +1608,8 @@ class TestEncryptionStatusEndpoint:
         monkeypatch.setattr("sqlalchemy.ext.asyncio.AsyncSession.execute", AsyncMock(side_effect=_raise))
 
         resp = await async_client.get(self.STATUS_URL, headers={"Authorization": f"Bearer {token}"})
-        assert resp.status_code == 500
-        assert "encryption status" in resp.json().get("detail", "").lower()
+        assert resp.status_code == 503
+        assert "authentication state" in resp.json().get("detail", "").lower()
 
     @pytest.mark.asyncio
     @pytest.mark.integration
