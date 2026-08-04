@@ -357,7 +357,7 @@ def _apply_moonraker_fans(state: MoonrakerPrinterState, status: dict[str, Any]) 
                 state.heatbreak_fan_speed = percent
         elif normalized.startswith("fan_generic "):
             fan_name = normalized.removeprefix("fan_generic ")
-            if any(marker in fan_name for marker in ("chamber", "exhaust", "filter", "enclosure")):
+            if any(marker in fan_name for marker in ("chamber", "cavity", "exhaust", "filter", "enclosure")):
                 state.big_fan2_speed = percent
             elif any(marker in fan_name for marker in ("aux", "auxiliary", "side", "boost")):
                 state.big_fan1_speed = percent
@@ -638,6 +638,32 @@ class MoonrakerPrinterClient:
             return self._query_objects(fan_objects)
         except Exception:  # noqa: BLE001 - fans are optional; keep core status healthy if discovery fails
             return {}
+
+    def _target_fan_object(self, fan: str) -> str | None:
+        """Return the Klipper fan object to control for a Printbuddy fan role."""
+        normalized_fan = fan.strip().lower().replace("-", "_")
+        available = [name.lower() for name in self._available_fan_objects()]
+        if normalized_fan in {"part", "model", "model_fan", "cooling"}:
+            return "fan" if "fan" in available else None
+
+        marker_sets = {
+            "aux": ("aux", "auxiliary", "side", "boost"),
+            "auxiliary": ("aux", "auxiliary", "side", "boost"),
+            "auxiliary_fan": ("aux", "auxiliary", "side", "boost"),
+            "chamber": ("chamber", "cavity", "exhaust", "filter", "enclosure"),
+            "box": ("chamber", "cavity", "exhaust", "filter", "enclosure"),
+            "box_fan": ("chamber", "cavity", "exhaust", "filter", "enclosure"),
+        }
+        markers = marker_sets.get(normalized_fan)
+        if not markers:
+            return None
+        for object_name in available:
+            if not object_name.startswith("fan_generic "):
+                continue
+            fan_name = object_name.removeprefix("fan_generic ")
+            if any(marker in fan_name for marker in markers):
+                return object_name
+        return None
 
     def _available_cfs_objects(self, available: list[str] | None = None) -> list[str]:
         if available is None:
@@ -981,9 +1007,10 @@ class MoonrakerPrinterClient:
 
         toolhead = status.get("toolhead")
         active_extruder_name = toolhead.get("extruder") if isinstance(toolhead, dict) else None
-        if isinstance(active_extruder_name, str):
-            active_index = extruder_names.index(active_extruder_name) if active_extruder_name in extruder_names else 0
-            self.state.active_extruder = active_index
+        active_index: int | None = None
+        if isinstance(active_extruder_name, str) and active_extruder_name in extruder_names:
+            active_index = extruder_names.index(active_extruder_name)
+        self.state.active_extruder = active_index if active_index is not None else -1
 
         task_config = status.get("print_task_config") if isinstance(status.get("print_task_config"), dict) else {}
         feed_slots: dict[int, dict[str, Any]] = {}
@@ -1014,7 +1041,7 @@ class MoonrakerPrinterClient:
                     "remain": metadata["remain"],
                     "remaining_weight": metadata["remaining_weight"],
                     "weight": metadata["weight"],
-                    "active": extruder_index == self.state.active_extruder,
+                    "active": active_index is not None and extruder_index == active_index,
                     "state": 11 if detected else 9,
                     "tray_uuid": f"snapmaker-u1-e{extruder_index}",
                     "tag_uid": str(values.get("CARD_UID") or values.get("card_uid") or ""),
@@ -1051,7 +1078,7 @@ class MoonrakerPrinterClient:
                 {
                     "id": extruder_index,
                     "slot": f"U1-E{extruder_index}",
-                    "active": extruder_index == self.state.active_extruder,
+                    "active": active_index is not None and extruder_index == active_index,
                     "state": 11,
                     "tray_uuid": f"snapmaker-u1-e{extruder_index}",
                     "tag_uid": "",
@@ -1078,8 +1105,7 @@ class MoonrakerPrinterClient:
             active_slots = [tray["slot"] for tray in trays if tray.get("active")]
             loaded_to_extruder_slots = [tray["slot"] for tray in trays if tray.get("loaded_to_extruder")]
             loaded_to_feeder_slots = [tray["slot"] for tray in trays if tray.get("loaded_to_feeder")]
-            if self.state.active_extruder is not None:
-                self.state.tray_now = self.state.active_extruder
+            self.state.tray_now = active_index if active_index is not None else 255
             self.state.raw_data["ams"] = [
                 {
                     "id": 0,
@@ -1090,7 +1116,7 @@ class MoonrakerPrinterClient:
             ]
             self.state.raw_data["snapmaker_u1"] = {
                 "type": "snapmaker_u1",
-                "active_extruder": self.state.active_extruder,
+                "active_extruder": active_index,
                 "active_slots": active_slots,
                 "loaded_to_feeder_slots": loaded_to_feeder_slots,
                 "loaded_to_extruder_slots": loaded_to_extruder_slots,
@@ -1336,6 +1362,19 @@ class MoonrakerPrinterClient:
 
     def set_bed_temperature(self, target: int | float) -> bool:
         return self.send_gcode(f"M140 S{int(target)}")
+
+    def set_fan_speed(self, fan: str, speed: int) -> bool:
+        normalized_fan = fan.strip().lower().replace("-", "_")
+        clamped_speed = max(0, min(100, int(speed)))
+        target_object = self._target_fan_object(normalized_fan)
+        if target_object is None:
+            raise ValueError(f"Fan '{fan}' is not available for this Moonraker printer")
+        if target_object == "fan":
+            return self.send_gcode(f"M106 S{round(clamped_speed * 255 / 100)}")
+        if target_object.startswith("fan_generic "):
+            klipper_fan_name = target_object.removeprefix("fan_generic ")
+            return self.send_gcode(f"SET_FAN_SPEED FAN={klipper_fan_name} SPEED={clamped_speed / 100:.2f}")
+        raise ValueError(f"Fan '{fan}' is not controllable through Moonraker")
 
     def home_axes(self, axes: list[str] | None = None) -> bool:
         script = ("G28 " + " ".join(a.upper() for a in axes)) if axes else "G28"

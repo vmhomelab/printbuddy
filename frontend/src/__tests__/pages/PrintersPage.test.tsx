@@ -217,6 +217,127 @@ describe('PrintersPage', () => {
       expect(within(filamentSection).getAllByText('Empty')).toHaveLength(2);
     });
 
+    it('does not highlight a Snapmaker U1 spool when no active extruder is reported', async () => {
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          ...mockPrinters[0],
+          id: 7,
+          name: 'Snapmaker U1',
+          provider: 'fluidd',
+          model: 'Snapmaker U1',
+        }])),
+        http.get('/api/v1/printers/:id/status', () => HttpResponse.json({
+          ...mockPrinterStatus,
+          active_extruder: -1,
+          tray_now: 255,
+          temperatures: {
+            nozzle: 25,
+            nozzle_2: 26,
+            nozzle_3: 27,
+            nozzle_4: 28,
+            bed: 31,
+            chamber: 34,
+          },
+          ams: [{
+            id: 0,
+            name: 'Snapmaker U1 Feeders',
+            module_type: 'snapmaker_u1',
+            tray: [
+              { id: 0, tray_color: '#E72F1D', tray_type: 'PLA', remain: -1, state: 11, active: false, filament_detected: true, loaded_to_feeder: true, loaded_to_extruder: false, channel_state: 'preload_finish' },
+              { id: 1, tray_color: '#080A0D', tray_type: 'PLA', remain: -1, state: 11, active: false, filament_detected: true, loaded_to_feeder: true, loaded_to_extruder: false, channel_state: 'preload_finish' },
+              { id: 2, tray_color: '#1E88E5', tray_type: 'PLA', remain: -1, state: 11, active: false, filament_detected: true, loaded_to_feeder: true, loaded_to_extruder: false, channel_state: 'preload_finish' },
+              { id: 3, tray_color: null, tray_type: null, remain: -1, state: 9, active: false, filament_detected: false, loaded_to_feeder: false, loaded_to_extruder: false, channel_state: 'wait_insert' },
+            ],
+          }],
+        })),
+      );
+
+      render(<PrintersPage />);
+
+      const card = await screen.findByTestId('printer-card-7');
+      const temperatureSection = await within(card).findByTestId('printer-card-section-temperatures');
+      expect(within(temperatureSection).queryByText(/Active/)).toBeNull();
+      const filamentSection = await within(card).findByTestId('printer-card-section-filaments');
+      expect(within(filamentSection).queryByText('In extruder')).toBeNull();
+    });
+
+    it('lets Snapmaker U1 users assign a Spoolman spool from a spool slot menu', async () => {
+      const user = userEvent.setup();
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          ...mockPrinters[0],
+          id: 7,
+          name: 'Snapmaker U1',
+          provider: 'fluidd',
+          model: 'Snapmaker U1',
+        }])),
+        http.get('/api/v1/printers/:id/status', () => HttpResponse.json({
+          ...mockPrinterStatus,
+          ams: [{
+            id: 0,
+            name: 'Snapmaker U1 Feeders',
+            module_type: 'snapmaker_u1',
+            tray: [
+              { id: 0, tray_color: '#E72F1D', tray_type: 'PLA', remain: -1, state: 11, active: false, filament_detected: true, loaded_to_feeder: true, loaded_to_extruder: false, channel_state: 'preload_finish' },
+              { id: 1, tray_color: null, tray_type: null, remain: -1, state: 9, active: false, filament_detected: false, loaded_to_feeder: false, loaded_to_extruder: false, channel_state: 'wait_insert' },
+              { id: 2, tray_color: null, tray_type: null, remain: -1, state: 9, active: false, filament_detected: false, loaded_to_feeder: false, loaded_to_extruder: false, channel_state: 'wait_insert' },
+              { id: 3, tray_color: null, tray_type: null, remain: -1, state: 9, active: false, filament_detected: false, loaded_to_feeder: false, loaded_to_extruder: false, channel_state: 'wait_insert' },
+            ],
+          }],
+        })),
+        http.get('/api/v1/spoolman/status', () => HttpResponse.json({ enabled: true, connected: true, url: 'http://spoolman.local' })),
+        http.get('/api/v1/settings/spoolman', () => HttpResponse.json({ spoolman_enabled: 'true', spoolman_url: 'http://spoolman.local', spoolman_sync_mode: 'read_only' })),
+        http.get('/api/v1/spoolman/inventory/spools', () => HttpResponse.json([])),
+        http.get('/api/v1/spoolman/inventory/slot-assignments/all', () => HttpResponse.json([])),
+      );
+
+      render(<PrintersPage />);
+
+      const card = await screen.findByTestId('printer-card-7');
+      const filamentSection = await within(card).findByTestId('printer-card-section-filaments');
+      await user.click(within(filamentSection).getAllByTitle('Slot options')[0]);
+      expect(await within(filamentSection).findByText('Assign')).not.toBeNull();
+    });
+
+    it('lets Moonraker users set reported fan speeds from the status strip', async () => {
+      const user = userEvent.setup();
+      let requestedFan = '';
+      let requestedSpeed = '';
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          ...mockPrinters[0],
+          id: 7,
+          name: 'Snapmaker U1',
+          provider: 'fluidd',
+          model: 'Snapmaker U1',
+        }])),
+        http.get('/api/v1/printers/:id/status', () => HttpResponse.json({
+          ...mockPrinterStatus,
+          cooling_fan_speed: 0,
+          big_fan1_speed: null,
+          big_fan2_speed: 0,
+          heatbreak_fan_speed: null,
+        })),
+        http.post('/api/v1/printers/:id/fan-speed', ({ request }) => {
+          const url = new URL(request.url);
+          requestedFan = url.searchParams.get('fan') || '';
+          requestedSpeed = url.searchParams.get('speed') || '';
+          return HttpResponse.json({ success: true, message: 'Fan speed set' });
+        }),
+      );
+
+      render(<PrintersPage />);
+
+      expect((await screen.findAllByText('Snapmaker U1')).length).toBeGreaterThan(0);
+      await user.click(await screen.findByTitle('Chamber Fan control'));
+      await user.click((await screen.findAllByRole('button', { name: '100%' }))[0]);
+
+      await waitFor(() => {
+        expect(requestedFan).toBe('chamber');
+        expect(requestedSpeed).toBe('100');
+      });
+    });
+
     it('shows one Upload action for Prusa printers', async () => {
       server.use(
         http.get('/api/v1/printers/', () => HttpResponse.json([{

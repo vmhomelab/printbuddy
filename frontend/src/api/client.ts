@@ -324,6 +324,7 @@ export interface AMSTray {
   drying_temp: number | null;      // RFID-recommended drying temp
   drying_time: number | null;      // RFID-recommended drying time (hours)
   state: number | null;            // AMS tray state: 9=empty, 10=spool present not loaded, 11=loaded
+  active?: boolean;                // Snapmaker U1 currently active feeder slot
   // Snapmaker U1 Moonraker feeder status. Generic AMS/CFS payloads omit these.
   loaded_to_feeder?: boolean;
   loaded_to_extruder?: boolean;

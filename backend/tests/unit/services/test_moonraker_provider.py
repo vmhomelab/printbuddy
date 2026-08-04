@@ -271,6 +271,7 @@ def test_moonraker_normalizes_snapmaker_u1_nozzles_chamber_and_feed_slots(monkey
     assert [nozzle.nozzle_diameter for nozzle in client.state.nozzles] == ["0.4", "0.4", "0.6", "0.8"]
 
     ams = client.state.raw_data["ams"]
+    snapmaker = client.state.raw_data["snapmaker_u1"]
     assert ams[0]["name"] == "Snapmaker U1 Feeders"
     assert ams[0]["module_type"] == "snapmaker_u1"
     assert [tray["slot"] for tray in ams[0]["tray"]] == ["U1-E0", "U1-E1", "U1-E2", "U1-E3"]
@@ -288,7 +289,54 @@ def test_moonraker_normalizes_snapmaker_u1_nozzles_chamber_and_feed_slots(monkey
     assert ams[0]["tray"][2]["active"] is True
     assert ams[0]["tray"][3]["state"] == 9
     assert ams[0]["tray"][3]["tray_color"] is None
-    assert client.state.raw_data["snapmaker_u1"]["loaded_to_extruder_slots"] == ["U1-E2"]
+    assert snapmaker["loaded_to_extruder_slots"] == ["U1-E2"]
+    assert snapmaker["loaded_to_feeder_slots"] == ["U1-E0", "U1-E1", "U1-E2"]
+
+
+def test_moonraker_snapmaker_u1_clears_active_extruder_when_toolhead_reports_none(monkeypatch):
+    client = MoonrakerPrinterClient("http://snapmaker-u1.local:7125", printer_model="Snapmaker U1")
+    status = _moonraker_status_with_snapmaker_u1()
+    status["toolhead"] = {"extruder": ""}
+    base_status = {
+        key: status[key] for key in ("print_stats", "virtual_sdcard", "display_status", "extruder", "heater_bed")
+    }
+    u1_status = {
+        key: value
+        for key, value in status.items()
+        if key not in {"print_stats", "virtual_sdcard", "display_status", "extruder", "heater_bed"}
+    }
+    monkeypatch.setattr(client, "_query_objects", lambda object_names: base_status)
+    monkeypatch.setattr(client, "_query_cfs_status", lambda *args, **kwargs: {})
+    monkeypatch.setattr(client, "_query_fan_status", lambda *args, **kwargs: {})
+    monkeypatch.setattr(client, "_query_snapmaker_u1_status", lambda *args, **kwargs: u1_status)
+
+    assert client.request_status_update() is True
+
+    assert client.state.active_extruder == -1
+    assert client.state.tray_now == 255
+    trays = client.state.raw_data["ams"][0]["tray"]
+    assert [tray["slot"] for tray in trays if tray.get("active")] == []
+    assert client.state.raw_data["snapmaker_u1"]["active_extruder"] is None
+
+
+def test_moonraker_controls_snapmaker_u1_cavity_fan(monkeypatch):
+    client = MoonrakerPrinterClient("http://snapmaker-u1.local:7125", printer_model="Snapmaker U1")
+    sent: list[str] = []
+    monkeypatch.setattr(client, "_available_objects", lambda: ["fan", "fan_generic cavity_fan"])
+    monkeypatch.setattr(client, "send_gcode", lambda script: sent.append(script) or True)
+
+    assert client.set_fan_speed("chamber", 50) is True
+    assert sent == ["SET_FAN_SPEED FAN=cavity_fan SPEED=0.50"]
+
+
+def test_moonraker_controls_part_cooling_fan_with_m106(monkeypatch):
+    client = MoonrakerPrinterClient("http://moonraker.local:7125", printer_model="Generic Klipper Printer")
+    sent: list[str] = []
+    monkeypatch.setattr(client, "_available_objects", lambda: ["fan"])
+    monkeypatch.setattr(client, "send_gcode", lambda script: sent.append(script) or True)
+
+    assert client.set_fan_speed("part", 50) is True
+    assert sent == ["M106 S128"]
 
 
 def test_moonraker_complete_state_clamps_progress_and_remaining_time(monkeypatch):

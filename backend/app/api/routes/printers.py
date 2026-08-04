@@ -3312,7 +3312,10 @@ async def set_fan_speed(
     if not callable(set_fan_speed_method):
         raise HTTPException(400, "Fan speed control is not supported by this printer provider")
 
-    effective_speed = 100 if normalized_fan in {"chamber", "box", "box_fan"} and speed > 0 else speed
+    force_binary_chamber = getattr(printer, "provider", None) == "elegoo_sdcp"
+    effective_speed = (
+        100 if force_binary_chamber and normalized_fan in {"chamber", "box", "box_fan"} and speed > 0 else speed
+    )
     try:
         success = set_fan_speed_method(normalized_fan, effective_speed)
     except ValueError as exc:

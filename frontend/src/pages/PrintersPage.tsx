@@ -4281,7 +4281,7 @@ function PrinterCard({
                     <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 min-w-0">
                       {fanItems.map(({ key, value, title, Icon, active, bg }) => {
                         const running = (value ?? 0) > 0;
-                        const controllableFan = isElegooSDCPProvider && ['part', 'aux', 'chamber'].includes(key);
+                        const controllableFan = (isElegooSDCPProvider || isMoonrakerProvider) && ['part', 'aux', 'chamber'].includes(key);
                         const menuKey = `${printer.id}-${key}`;
                         const indicator = (
                           <>
@@ -4681,6 +4681,7 @@ function PrinterCard({
                                 // Use array index if available, as tray.id may not always be set
                                 const tray = ams.tray[slotIdx] || ams.tray.find(t => t.id === slotIdx);
                                 const isCfsUnit = ams.module_type === 'cfs' || isK2CfsLikeUnit;
+                                const isSlotAssignmentOnlyUnit = isCfsUnit || isSnapmakerU1Unit;
                                 const snapmakerLoadState = isSnapmakerU1Unit ? snapmakerU1LoadState(tray) : null;
                                 const hasFillLevel = tray?.tray_type && tray.remain >= 0;
                                 const isEmpty = !tray?.tray_type;
@@ -4688,7 +4689,7 @@ function PrinterCard({
                                 // Check if this is the currently loaded tray
                                 // Global tray ID = ams.id * 4 + slot index (for standard AMS)
                                 const globalTrayId = ams.id * 4 + slotIdx;
-                                const isActive = effectiveTrayNow === globalTrayId;
+                                const isActive = isSnapmakerU1Unit ? tray?.active === true : effectiveTrayNow === globalTrayId;
                                 // Get cloud preset info if available
                                 const cloudInfo = tray?.tray_info_idx ? filamentInfo?.[tray.tray_info_idx] : null;
                                 // Get saved slot preset mapping (for user-configured slots)
@@ -4817,7 +4818,7 @@ function PrinterCard({
                                       </button>
                                     )}
                                     {/* Dropdown menu */}
-                                    {status?.state !== 'RUNNING' && !isCfsUnit && amsSlotMenu?.amsId === ams.id && amsSlotMenu?.slotId === slotIdx && (
+                                    {status?.state !== 'RUNNING' && !isSlotAssignmentOnlyUnit && amsSlotMenu?.amsId === ams.id && amsSlotMenu?.slotId === slotIdx && (
                                       <div className="absolute top-full left-0 mt-1 z-50 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl py-1 min-w-[120px]">
                                         <button
                                           className={`w-full px-3 py-1.5 text-left text-xs flex items-center gap-2 ${
@@ -4875,7 +4876,7 @@ function PrinterCard({
                                         </button>
                                       </div>
                                     )}
-                                    {status?.state !== 'RUNNING' && isCfsUnit && amsSlotMenu?.amsId === ams.id && amsSlotMenu?.slotId === slotIdx && (
+                                    {status?.state !== 'RUNNING' && isSlotAssignmentOnlyUnit && amsSlotMenu?.amsId === ams.id && amsSlotMenu?.slotId === slotIdx && (
                                       <div className="absolute top-full left-0 mt-1 z-50 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl py-1 min-w-[120px]">
                                         {supportsSpoolAssignment && (
                                           <button
