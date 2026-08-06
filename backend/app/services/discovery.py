@@ -686,7 +686,216 @@ class TasmotaScanner:
         self._running = False
 
 
+@dataclass
+class DiscoveredMoonraker:
+    """Represents a discovered Moonraker / Klipper instance."""
+
+    serial: str
+    name: str
+    ip_address: str
+    api_url: str
+    needs_auth: bool = False
+    model: str | None = None
+    discovered_at: str | None = None
+
+    def to_dict(self) -> dict:
+        return {
+            "serial": self.serial,
+            "name": self.name,
+            "ip_address": self.ip_address,
+            "api_url": self.api_url,
+            "needs_auth": self.needs_auth,
+            "model": self.model,
+            "discovered_at": self.discovered_at,
+        }
+
+
+def _moonraker_serial_for_ip(ip: str) -> str:
+    """Build a synthetic serial matching printer schema conventions."""
+    from backend.app.schemas.printer import _synthetic_moonraker_serial
+
+    return _synthetic_moonraker_serial(ip)
+
+
+def _looks_like_moonraker_info(payload: object) -> bool:
+    """Return True if JSON looks like Moonraker ``server/info``."""
+    if not isinstance(payload, dict):
+        return False
+    data = payload.get("result") if isinstance(payload.get("result"), dict) else payload
+    if not isinstance(data, dict):
+        return False
+    return any(
+        key in data
+        for key in (
+            "klippy_state",
+            "moonraker_version",
+            "api_version",
+            "websocket_port",
+            "klippy_connected",
+        )
+    )
+
+
+class MoonrakerSubnetScanner:
+    """Scanner for discovering Moonraker instances via HTTP ``server/info``."""
+
+    PRIMARY_PORT = 7125
+    FALLBACK_PORT = 80
+
+    def __init__(self):
+        self._discovered: dict[str, DiscoveredMoonraker] = {}
+        self._running = False
+        self._scanned = 0
+        self._total = 0
+
+    @property
+    def is_running(self) -> bool:
+        return self._running
+
+    @property
+    def discovered_printers(self) -> list[DiscoveredMoonraker]:
+        return list(self._discovered.values())
+
+    @property
+    def progress(self) -> tuple[int, int]:
+        """Return (scanned, total) counts."""
+        return self._scanned, self._total
+
+    async def scan_subnet(self, subnet: str, timeout: float = 1.0) -> list[DiscoveredMoonraker]:
+        """Scan a subnet for Moonraker HTTP APIs.
+
+        Args:
+            subnet: CIDR notation subnet (e.g., "192.168.1.0/24")
+            timeout: Connect timeout per host in seconds
+
+        Returns:
+            List of discovered Moonraker instances
+        """
+        if self._running:
+            return []
+
+        self._running = True
+        self._discovered.clear()
+        self._scanned = 0
+
+        try:
+            network = ipaddress.ip_network(subnet, strict=False)
+            hosts = list(network.hosts())
+            self._total = len(hosts)
+
+            if self._total > 1024:
+                logger.warning("Subnet %s has %s hosts, limiting to 1024", subnet, self._total)
+                self._total = 1024
+                hosts = hosts[:1024]
+
+            logger.info("Starting Moonraker subnet scan of %s (%s hosts)", subnet, self._total)
+
+            batch_size = 50
+            for i in range(0, len(hosts), batch_size):
+                if not self._running:
+                    logger.info("Moonraker scan stopped by user")
+                    break
+
+                batch = hosts[i : i + batch_size]
+                tasks = [self._probe_host(str(ip), timeout) for ip in batch]
+                await asyncio.gather(*tasks, return_exceptions=True)
+                self._scanned = min(i + batch_size, len(hosts))
+
+            logger.info("Moonraker scan complete. Found %s instances.", len(self._discovered))
+            return self.discovered_printers
+
+        except ValueError as e:
+            logger.error("Invalid subnet format: %s", e)
+            return []
+        finally:
+            self._running = False
+
+    async def _probe_host(self, ip: str, timeout: float):
+        """Probe a single host for Moonraker on :7125 then :80."""
+        try:
+            await asyncio.wait_for(self._do_probe(ip, timeout), timeout=max(timeout * 4, 5.0))
+        except TimeoutError:
+            pass
+        except Exception:
+            pass
+
+    async def _do_probe(self, ip: str, timeout: float):
+        import httpx
+
+        client_timeout = httpx.Timeout(max(timeout * 2, 2.0), connect=timeout)
+        candidates = [
+            f"http://{ip}:{self.PRIMARY_PORT}",
+            f"http://{ip}",
+        ]
+
+        async with httpx.AsyncClient(timeout=client_timeout, follow_redirects=False) as client:
+            for base_url in candidates:
+                url = f"{base_url}/server/info"
+                try:
+                    response = await client.get(url)
+                except (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError):
+                    continue
+                except Exception:
+                    continue
+
+                if response.status_code in (401, 403):
+                    self._record_hit(ip, base_url, needs_auth=True)
+                    return
+
+                if response.status_code != 200:
+                    continue
+
+                try:
+                    payload = response.json()
+                except Exception:
+                    continue
+
+                if not _looks_like_moonraker_info(payload):
+                    continue
+
+                self._record_hit(ip, base_url, needs_auth=False, payload=payload)
+                return
+
+    def _record_hit(
+        self,
+        ip: str,
+        base_url: str,
+        *,
+        needs_auth: bool,
+        payload: object | None = None,
+    ):
+        if ip in self._discovered:
+            return
+
+        name = f"Moonraker ({ip})"
+        if isinstance(payload, dict):
+            data = payload.get("result") if isinstance(payload.get("result"), dict) else payload
+            if isinstance(data, dict):
+                hostname = data.get("hostname") or data.get("device_name")
+                if isinstance(hostname, str) and hostname.strip():
+                    name = hostname.strip()
+
+        printer = DiscoveredMoonraker(
+            serial=_moonraker_serial_for_ip(ip),
+            name=name,
+            ip_address=ip,
+            api_url=base_url,
+            needs_auth=needs_auth,
+            discovered_at=datetime.now(timezone.utc).isoformat(),
+        )
+        self._discovered[ip] = printer
+        if needs_auth:
+            logger.info("Discovered Moonraker at %s (requires auth)", ip)
+        else:
+            logger.info("Discovered Moonraker at %s (%s)", ip, base_url)
+
+    def stop(self):
+        """Stop the current scan."""
+        self._running = False
+
+
 # Global instances
 discovery_service = PrinterDiscoveryService()
 subnet_scanner = SubnetScanner()
 tasmota_scanner = TasmotaScanner()
+moonraker_subnet_scanner = MoonrakerSubnetScanner()

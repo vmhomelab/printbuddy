@@ -72,7 +72,7 @@ Useful options:
 - `TZ`: timezone used by the container.
 - `PUID` / `PGID`: host UID/GID used for files written into mounted volumes. Run `id -u` and `id -g` on the host.
 - `PORT`: web UI/API port. With `network_mode: host`, Printbuddy listens directly on this host port.
-- `DISCOVERY_EXTRA_SUBNETS`: optional comma-separated CIDRs shown in Add Printer → subnet scan, for printer VLANs reachable by routing but not present as a local host NIC (e.g. `10.0.0.0/24`). Requires `network_mode: host` and a working route from the Docker host.
+- `DISCOVERY_EXTRA_SUBNETS`: optional comma-separated CIDRs shown in Add Printer → subnet scan (Bambu and Moonraker/Klipper), for printer VLANs reachable by routing but not present as a local host NIC (e.g. `10.0.0.0/24`). Requires `network_mode: host` and a working route from the Docker host. Moonraker scans probe HTTP `:7125` then `:80` via `GET /server/info`.
 - `DATABASE_URL`: optional PostgreSQL connection string. If unset, Printbuddy uses SQLite in `/app/data`.
 - `MFA_ENCRYPTION_KEY`: optional managed Fernet key for MFA secrets. If unset, Printbuddy generates one in the data volume.
 - `TRUSTED_FRAME_ORIGINS`: comma-separated iframe origins, for example a Home Assistant dashboard origin.

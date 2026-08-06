@@ -6671,6 +6671,8 @@ export interface DiscoveredPrinter {
   ip_address: string;
   model: string | null;
   discovered_at: string | null;
+  api_url?: string | null;
+  needs_auth?: boolean;
 }
 
 export interface DiscoveryStatus {
@@ -6681,6 +6683,7 @@ export interface DiscoveryInfo {
   is_docker: boolean;
   ssdp_running: boolean;
   scan_running: boolean;
+  moonraker_scan_running?: boolean;
   subnets: string[];
 }
 
@@ -6716,6 +6719,22 @@ export const discoveryApi = {
 
   stopSubnetScan: () =>
     request<SubnetScanStatus>('/discovery/scan/stop', { method: 'POST' }),
+
+  // Moonraker / Klipper subnet scanning
+  startMoonrakerSubnetScan: (subnet: string, timeout: number = 1.0) =>
+    request<SubnetScanStatus>('/discovery/moonraker/scan', {
+      method: 'POST',
+      body: JSON.stringify({ subnet, timeout }),
+    }),
+
+  getMoonrakerScanStatus: () =>
+    request<SubnetScanStatus>('/discovery/moonraker/scan/status'),
+
+  stopMoonrakerSubnetScan: () =>
+    request<SubnetScanStatus>('/discovery/moonraker/scan/stop', { method: 'POST' }),
+
+  getDiscoveredMoonrakerPrinters: () =>
+    request<DiscoveredPrinter[]>('/discovery/moonraker/printers'),
 };
 
 // Virtual Printer types
