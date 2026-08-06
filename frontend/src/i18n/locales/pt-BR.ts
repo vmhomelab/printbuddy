@@ -492,6 +492,8 @@ export default {
       manualEntry: 'Entrada Manual',
       addFromCloud: 'Adicionar da Nuvem',
       subnetToScan: 'Sub-rede para escanear',
+      customSubnet: 'CIDR personalizado…',
+      useDetectedSubnet: 'Usar sub-rede detectada',
       dockerNote: 'Docker detectado. Insira a sub-rede da sua impressora em notação CIDR. Requer network_mode: host no docker-compose.yml.',
       scanSubnet: 'Escanear Sub-rede para Impressoras',
       discoverNetwork: 'Descobrir Impressoras na Rede',

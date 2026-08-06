@@ -492,6 +492,8 @@ export default {
       manualEntry: '手動輸入',
       addFromCloud: '從雲端新增',
       subnetToScan: '要掃描的子網',
+      customSubnet: '自訂 CIDR…',
+      useDetectedSubnet: '使用偵測到的子網',
       dockerNote: '偵測到 Docker 環境。請以 CIDR 格式輸入印表機所在子網。需要在 docker-compose.yml 中設定 network_mode: host。',
       scanSubnet: '掃描子網查詢印表機',
       discoverNetwork: '在網路上發現印表機',

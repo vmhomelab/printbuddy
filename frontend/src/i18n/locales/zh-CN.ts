@@ -492,6 +492,8 @@ export default {
       manualEntry: '手动输入',
       addFromCloud: '从云端添加',
       subnetToScan: '要扫描的子网',
+      customSubnet: '自定义 CIDR…',
+      useDetectedSubnet: '使用检测到的子网',
       dockerNote: '检测到 Docker 环境。请以 CIDR 格式输入打印机所在子网。需要在 docker-compose.yml 中设置 network_mode: host。',
       scanSubnet: '扫描子网查找打印机',
       discoverNetwork: '在网络上发现打印机',

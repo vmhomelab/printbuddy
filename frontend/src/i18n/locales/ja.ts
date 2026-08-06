@@ -491,6 +491,8 @@ export default {
       manualEntry: '手動入力',
       addFromCloud: 'クラウドから追加',
       subnetToScan: 'スキャンするサブネット',
+      customSubnet: 'カスタムCIDR…',
+      useDetectedSubnet: '検出されたサブネットを使用',
       dockerNote: 'Dockerを検出しました。プリンターのサブネットをCIDR表記で入力してください。docker-compose.ymlでnetwork_mode: hostが必要です。',
       scanSubnet: 'サブネットをスキャンしてプリンターを検出',
       discoverNetwork: 'ネットワーク上のプリンターを検出',

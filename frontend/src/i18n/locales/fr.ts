@@ -492,6 +492,8 @@ export default {
       manualEntry: 'Saisie manuelle',
       addFromCloud: 'Ajouter depuis le Cloud',
       subnetToScan: 'Sous-réseau à scanner',
+      customSubnet: 'CIDR personnalisé…',
+      useDetectedSubnet: 'Utiliser le sous-réseau détecté',
       dockerNote: 'Docker détecté. Entrez le sous-réseau en notation CIDR. Nécessite network_mode: host.',
       scanSubnet: 'Scanner le sous-réseau',
       discoverNetwork: 'Découvrir sur le réseau',

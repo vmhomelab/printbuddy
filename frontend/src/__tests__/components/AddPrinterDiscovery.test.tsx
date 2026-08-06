@@ -109,16 +109,48 @@ describe('AddPrinterModal Discovery', () => {
     await userEvent.click(addButton);
 
     await waitFor(() => {
-      // Should show a select element (dropdown) with both subnets
+      // Should show a select element (dropdown) with both subnets + Custom
       const selectElement = screen.getByDisplayValue('192.168.1.0/24');
       expect(selectElement.tagName).toBe('SELECT');
 
-      // Both options should be available
       const options = selectElement.querySelectorAll('option');
-      expect(options).toHaveLength(2);
+      expect(options).toHaveLength(3);
       expect(options[0].textContent).toBe('192.168.1.0/24');
       expect(options[1].textContent).toBe('10.0.0.0/24');
+      expect(options[2].textContent).toMatch(/custom cidr/i);
     });
+  });
+
+  it('allows entering a custom CIDR when subnets are detected', async () => {
+    server.use(
+      http.get('/api/v1/discovery/info', () => {
+        return HttpResponse.json({
+          is_docker: true,
+          ssdp_running: false,
+          scan_running: false,
+          subnets: ['10.2.0.0/24'],
+        });
+      })
+    );
+
+    render(<PrintersPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('X1 Carbon')).toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByText(/add printer/i));
+
+    await waitFor(() => {
+      expect(screen.getByDisplayValue('10.2.0.0/24')).toBeInTheDocument();
+    });
+
+    await userEvent.selectOptions(screen.getByDisplayValue('10.2.0.0/24'), '__custom__');
+
+    const textInput = await screen.findByPlaceholderText('192.168.1.0/24');
+    expect(textInput.tagName).toBe('INPUT');
+    await userEvent.type(textInput, '10.0.0.0/24');
+    expect(textInput).toHaveValue('10.0.0.0/24');
   });
 
   it('shows text input when no subnets detected in Docker mode', async () => {

@@ -492,6 +492,8 @@ export default {
       manualEntry: 'Entrada manual',
       addFromCloud: 'Añadir desde la nube',
       subnetToScan: 'Subred a escanear',
+      customSubnet: 'CIDR personalizado…',
+      useDetectedSubnet: 'Usar subred detectada',
       dockerNote: 'Docker detectado. Introduzca la subred de su impresora en notación CIDR. Requiere network_mode: host en docker-compose.yml.',
       scanSubnet: 'Escanear subred en busca de impresoras',
       discoverNetwork: 'Detectar impresoras en la red',

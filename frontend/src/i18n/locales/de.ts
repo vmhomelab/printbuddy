@@ -492,6 +492,8 @@ export default {
       manualEntry: 'Manuelle Eingabe',
       addFromCloud: 'Aus Cloud hinzufügen',
       subnetToScan: 'Zu scannendes Subnetz',
+      customSubnet: 'Benutzerdefiniertes CIDR…',
+      useDetectedSubnet: 'Erkanntes Subnetz verwenden',
       dockerNote: 'Docker erkannt. Geben Sie das Subnetz Ihres Druckers in CIDR-Notation ein. Erfordert network_mode: host in docker-compose.yml.',
       scanSubnet: 'Subnetz nach Druckern scannen',
       discoverNetwork: 'Drucker im Netzwerk suchen',

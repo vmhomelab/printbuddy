@@ -6644,6 +6644,7 @@ function AddPrinterModal({
   const [isDocker, setIsDocker] = useState(false);
   const [detectedSubnets, setDetectedSubnets] = useState<string[]>([]);
   const [subnet, setSubnet] = useState('');
+  const [customSubnet, setCustomSubnet] = useState(false);
   const [scanProgress, setScanProgress] = useState({ scanned: 0, total: 0 });
   const [showDiagnostic, setShowDiagnostic] = useState(false);
   const [prusaLinkApiAuthMode, setPrusaLinkApiAuthMode] = useState<PrusaLinkApiAuthMode>('auto');
@@ -6973,26 +6974,49 @@ function AddPrinterModal({
                 <label className="block text-sm text-bambu-gray mb-1">
                   {t('printers.discovery.subnetToScan')}
                 </label>
-                {detectedSubnets.length > 0 ? (
+                {detectedSubnets.length > 0 && !customSubnet ? (
                   <select
                     className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
                     value={subnet}
-                    onChange={(e) => setSubnet(e.target.value)}
+                    onChange={(e) => {
+                      if (e.target.value === '__custom__') {
+                        setCustomSubnet(true);
+                        setSubnet('');
+                      } else {
+                        setSubnet(e.target.value);
+                      }
+                    }}
                     disabled={discovering}
                   >
                     {detectedSubnets.map(s => (
                       <option key={s} value={s}>{s}</option>
                     ))}
+                    <option value="__custom__">{t('printers.discovery.customSubnet')}</option>
                   </select>
                 ) : (
-                  <input
-                    type="text"
-                    className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
-                    value={subnet}
-                    onChange={(e) => setSubnet(e.target.value)}
-                    placeholder="192.168.1.0/24"
-                    disabled={discovering}
-                  />
+                  <div className="space-y-2">
+                    <input
+                      type="text"
+                      className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
+                      value={subnet}
+                      onChange={(e) => setSubnet(e.target.value)}
+                      placeholder="192.168.1.0/24"
+                      disabled={discovering}
+                    />
+                    {detectedSubnets.length > 0 && customSubnet && (
+                      <button
+                        type="button"
+                        className="text-xs text-bambu-green hover:underline"
+                        onClick={() => {
+                          setCustomSubnet(false);
+                          setSubnet(detectedSubnets[0]);
+                        }}
+                        disabled={discovering}
+                      >
+                        {t('printers.discovery.useDetectedSubnet')}
+                      </button>
+                    )}
+                  </div>
                 )}
                 <p className="mt-1 text-xs text-bambu-gray">
                   {t('printers.discovery.dockerNote')}
