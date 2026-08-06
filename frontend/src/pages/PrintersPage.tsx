@@ -6644,6 +6644,7 @@ function AddPrinterModal({
   const [isDocker, setIsDocker] = useState(false);
   const [detectedSubnets, setDetectedSubnets] = useState<string[]>([]);
   const [subnet, setSubnet] = useState('');
+  const [customSubnet, setCustomSubnet] = useState(false);
   const [scanProgress, setScanProgress] = useState({ scanned: 0, total: 0 });
   const [showDiagnostic, setShowDiagnostic] = useState(false);
   const [prusaLinkApiAuthMode, setPrusaLinkApiAuthMode] = useState<PrusaLinkApiAuthMode>('auto');
@@ -6781,8 +6782,29 @@ function AddPrinterModal({
     setScanProgress({ scanned: 0, total: 0 });
 
     try {
-      if (isDocker) {
-        // Use subnet scanning for Docker
+      if (isMoonrakerProvider) {
+        // Moonraker has no SSDP path — always subnet-scan via HTTP server/info
+        await discoveryApi.startMoonrakerSubnetScan(subnet);
+
+        const pollInterval = setInterval(async () => {
+          try {
+            const status = await discoveryApi.getMoonrakerScanStatus();
+            setScanProgress({ scanned: status.scanned, total: status.total });
+
+            const printers = await discoveryApi.getDiscoveredMoonrakerPrinters();
+            setDiscovered(printers);
+
+            if (!status.running) {
+              clearInterval(pollInterval);
+              setDiscovering(false);
+              setHasScanned(true);
+            }
+          } catch (e) {
+            console.error('Failed to get Moonraker scan status:', e);
+          }
+        }, 500);
+      } else if (isDocker) {
+        // Use subnet scanning for Docker (Bambu)
         await discoveryApi.startSubnetScan(subnet);
 
         // Poll for scan status and results
@@ -6804,7 +6826,7 @@ function AddPrinterModal({
           }
         }, 500);
       } else {
-        // Use SSDP discovery for native installs
+        // Use SSDP discovery for native installs (Bambu)
         await discoveryApi.startDiscovery(10);
 
         // Poll for discovered printers every second
@@ -6849,13 +6871,31 @@ function AddPrinterModal({
   const selectPrinter = (printer: DiscoveredPrinter) => {
     // Don't pre-fill serial if it's a placeholder (unknown-*) - user needs to enter actual serial
     const serialNumber = printer.serial.startsWith('unknown-') ? '' : printer.serial;
-    setForm({
-      ...form,
-      name: printer.name || '',
-      serial_number: serialNumber,
-      ip_address: printer.ip_address,
-      model: mapModelCode(printer.model),
-    });
+    if (isMoonrakerProvider) {
+      setForm({
+        ...form,
+        name: printer.name || '',
+        serial_number: '',
+        ip_address: printer.ip_address,
+        api_url: printer.api_url || `http://${printer.ip_address}:7125`,
+        auth_token: '',
+        model: '',
+      });
+      if (printer.needs_auth) {
+        setDiscoveryError(t('printers.discovery.moonrakerNeedsAuth'));
+      } else {
+        setDiscoveryError('');
+      }
+    } else {
+      setForm({
+        ...form,
+        name: printer.name || '',
+        serial_number: serialNumber,
+        ip_address: printer.ip_address,
+        model: mapModelCode(printer.model),
+      });
+      setDiscoveryError('');
+    }
     // Clear discovery results after selection
     setDiscovered([]);
   };
@@ -6865,6 +6905,7 @@ function AddPrinterModal({
     return () => {
       discoveryApi.stopDiscovery().catch(() => {});
       discoveryApi.stopSubnetScan().catch(() => {});
+      discoveryApi.stopMoonrakerSubnetScan().catch(() => {});
     };
   }, []);
 
@@ -6965,37 +7006,62 @@ function AddPrinterModal({
             )}
           </div>
 
-          {/* Discovery Section */}
-          {!isHttpProvider && (
+          {/* Discovery Section — Bambu (SSDP/subnet) or Moonraker (subnet HTTP) */}
+          {(!isHttpProvider || isMoonrakerProvider) && (
           <div className="mb-4 pb-4 border-b border-bambu-dark-tertiary">
-            {isDocker && (
+            {(isDocker || isMoonrakerProvider) && (
               <div className="mb-3">
                 <label className="block text-sm text-bambu-gray mb-1">
                   {t('printers.discovery.subnetToScan')}
                 </label>
-                {detectedSubnets.length > 0 ? (
+                {detectedSubnets.length > 0 && !customSubnet ? (
                   <select
                     className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
                     value={subnet}
-                    onChange={(e) => setSubnet(e.target.value)}
+                    onChange={(e) => {
+                      if (e.target.value === '__custom__') {
+                        setCustomSubnet(true);
+                        setSubnet('');
+                      } else {
+                        setSubnet(e.target.value);
+                      }
+                    }}
                     disabled={discovering}
                   >
                     {detectedSubnets.map(s => (
                       <option key={s} value={s}>{s}</option>
                     ))}
+                    <option value="__custom__">{t('printers.discovery.customSubnet')}</option>
                   </select>
                 ) : (
-                  <input
-                    type="text"
-                    className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
-                    value={subnet}
-                    onChange={(e) => setSubnet(e.target.value)}
-                    placeholder="192.168.1.0/24"
-                    disabled={discovering}
-                  />
+                  <div className="space-y-2">
+                    <input
+                      type="text"
+                      className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
+                      value={subnet}
+                      onChange={(e) => setSubnet(e.target.value)}
+                      placeholder="192.168.1.0/24"
+                      disabled={discovering}
+                    />
+                    {detectedSubnets.length > 0 && customSubnet && (
+                      <button
+                        type="button"
+                        className="text-xs text-bambu-green hover:underline"
+                        onClick={() => {
+                          setCustomSubnet(false);
+                          setSubnet(detectedSubnets[0]);
+                        }}
+                        disabled={discovering}
+                      >
+                        {t('printers.discovery.useDetectedSubnet')}
+                      </button>
+                    )}
+                  </div>
                 )}
                 <p className="mt-1 text-xs text-bambu-gray">
-                  {t('printers.discovery.dockerNote')}
+                  {isMoonrakerProvider
+                    ? t('printers.discovery.moonrakerSubnetNote')
+                    : t('printers.discovery.dockerNote')}
                 </p>
               </div>
             )}
@@ -7004,20 +7070,24 @@ function AddPrinterModal({
               type="button"
               variant="secondary"
               onClick={startDiscovery}
-              disabled={discovering}
+              disabled={discovering || ((isDocker || isMoonrakerProvider) && !subnet.trim())}
               className="w-full"
             >
               {discovering ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin" />
-                  {isDocker && scanProgress.total > 0
+                  {(isDocker || isMoonrakerProvider) && scanProgress.total > 0
                     ? t('printers.discovery.scanProgress', { scanned: scanProgress.scanned, total: scanProgress.total })
                     : t('printers.discovery.scanning')}
                 </>
               ) : (
                 <>
                   <Search className="w-4 h-4" />
-                  {isDocker ? t('printers.discovery.scanSubnet') : t('printers.discovery.discoverNetwork')}
+                  {isMoonrakerProvider
+                    ? t('printers.discovery.scanSubnetMoonraker')
+                    : isDocker
+                      ? t('printers.discovery.scanSubnet')
+                      : t('printers.discovery.discoverNetwork')}
                 </>
               )}
             </Button>
@@ -7039,8 +7109,14 @@ function AddPrinterModal({
                         {printer.name || printer.serial}
                       </p>
                       <p className="text-xs text-bambu-gray truncate">
-                        {mapModelCode(printer.model) || t('printers.discovery.unknown')} • {printer.ip_address}
-                        {printer.serial.startsWith('unknown-') && (
+                        {isMoonrakerProvider
+                          ? (printer.api_url || `http://${printer.ip_address}:7125`)
+                          : (mapModelCode(printer.model) || t('printers.discovery.unknown'))}
+                        {' • '}{printer.ip_address}
+                        {printer.needs_auth && (
+                          <span className="text-yellow-500"> • auth</span>
+                        )}
+                        {!isMoonrakerProvider && printer.serial.startsWith('unknown-') && (
                           <span className="text-yellow-500"> • {t('printers.discovery.serialRequired')}</span>
                         )}
                       </p>
@@ -7053,13 +7129,21 @@ function AddPrinterModal({
 
             {discovering && (
               <p className="mt-2 text-sm text-bambu-gray text-center">
-                {isDocker ? t('printers.discovery.scanningSubnet') : t('printers.discovery.scanningNetwork')}
+                {isMoonrakerProvider
+                  ? t('printers.discovery.scanningSubnetMoonraker')
+                  : isDocker
+                    ? t('printers.discovery.scanningSubnet')
+                    : t('printers.discovery.scanningNetwork')}
               </p>
             )}
 
             {hasScanned && !discovering && discovered.length === 0 && (
               <p className="mt-2 text-sm text-bambu-gray text-center">
-                {isDocker ? t('printers.discovery.noPrintersFoundSubnet') : t('printers.discovery.noPrintersFoundNetwork')}
+                {isMoonrakerProvider
+                  ? t('printers.discovery.noPrintersFoundSubnetMoonraker')
+                  : isDocker
+                    ? t('printers.discovery.noPrintersFoundSubnet')
+                    : t('printers.discovery.noPrintersFoundNetwork')}
               </p>
             )}
 

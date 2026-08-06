@@ -123,6 +123,7 @@ _INTENTIONAL_UNSETTINGS = {
     "LOG_DIR",  # config.py (above)
     "LOG_LEVEL",  # main.py logging setup
     "PRINTBUDDY_EXTERNAL_ROOTS",  # config.py field sourced explicitly above
+    "DISCOVERY_EXTRA_SUBNETS",  # network_utils.py — extra CIDRs for Docker scan UI
 }
 
 _known_settings_fields = {f.upper() for f in settings.model_fields}
