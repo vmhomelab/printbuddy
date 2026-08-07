@@ -6645,6 +6645,7 @@ function AddPrinterModal({
   const [detectedSubnets, setDetectedSubnets] = useState<string[]>([]);
   const [subnet, setSubnet] = useState('');
   const [customSubnet, setCustomSubnet] = useState(false);
+  const [moonrakerPorts, setMoonrakerPorts] = useState('7125,80');
   const [scanProgress, setScanProgress] = useState({ scanned: 0, total: 0 });
   const [showDiagnostic, setShowDiagnostic] = useState(false);
   const [prusaLinkApiAuthMode, setPrusaLinkApiAuthMode] = useState<PrusaLinkApiAuthMode>('auto');
@@ -6784,7 +6785,11 @@ function AddPrinterModal({
     try {
       if (isMoonrakerProvider) {
         // Moonraker has no SSDP path — always subnet-scan via HTTP server/info
-        await discoveryApi.startMoonrakerSubnetScan(subnet);
+        const ports = moonrakerPorts
+          .split(',')
+          .map((p) => parseInt(p.trim(), 10))
+          .filter((p) => Number.isInteger(p) && p >= 1 && p <= 65535);
+        await discoveryApi.startMoonrakerSubnetScan(subnet, 1.0, ports.length > 0 ? ports : undefined);
 
         const pollInterval = setInterval(async () => {
           try {
@@ -7063,6 +7068,24 @@ function AddPrinterModal({
                     ? t('printers.discovery.moonrakerSubnetNote')
                     : t('printers.discovery.dockerNote')}
                 </p>
+                {isMoonrakerProvider && (
+                  <div className="mt-3">
+                    <label className="block text-sm text-bambu-gray mb-1">
+                      {t('printers.discovery.moonrakerPorts')}
+                    </label>
+                    <input
+                      type="text"
+                      className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
+                      value={moonrakerPorts}
+                      onChange={(e) => setMoonrakerPorts(e.target.value)}
+                      placeholder="7125,80"
+                      disabled={discovering}
+                    />
+                    <p className="mt-1 text-xs text-bambu-gray">
+                      {t('printers.discovery.moonrakerPortsNote')}
+                    </p>
+                  </div>
+                )}
               </div>
             )}
 

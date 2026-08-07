@@ -732,16 +732,56 @@ def _looks_like_moonraker_info(payload: object) -> bool:
     return any(key in data for key in ("klippy_state", "moonraker_version", "klippy_connected"))
 
 
+def parse_moonraker_scan_ports(raw: str | list[int] | None = None) -> list[int]:
+    """Parse Moonraker probe ports from request/env (default ``7125,80``).
+
+    Port 80 is included for Cosmos / Fluidd reverse-proxies that expose the
+    Moonraker API on the UI port. Hits still require Moonraker-shaped JSON, so
+    unrelated :80 services (e.g. copyparty auth walls) are not matched.
+    """
+    if isinstance(raw, list):
+        ports = [int(p) for p in raw if isinstance(p, int) or str(p).strip().isdigit()]
+    else:
+        value = raw if raw is not None else os.environ.get("DISCOVERY_MOONRAKER_PORTS", "7125,80")
+        ports = []
+        for part in str(value).split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                port = int(part)
+            except ValueError:
+                logger.warning("Ignoring invalid DISCOVERY_MOONRAKER_PORTS entry: %s", part)
+                continue
+            if 1 <= port <= 65535:
+                ports.append(port)
+            else:
+                logger.warning("Ignoring out-of-range Moonraker scan port: %s", port)
+
+    # Preserve order, drop duplicates
+    seen: set[int] = set()
+    ordered: list[int] = []
+    for port in ports:
+        if port not in seen:
+            seen.add(port)
+            ordered.append(port)
+    return ordered or [7125, 80]
+
+
+def _moonraker_base_url_for_port(ip: str, port: int) -> str:
+    """Build a Moonraker base URL; omit ``:80`` so CosmOS/Fluidd URLs stay clean."""
+    if port == 80:
+        return f"http://{ip}"
+    return f"http://{ip}:{port}"
+
+
 class MoonrakerSubnetScanner:
     """Scanner for discovering Moonraker instances via HTTP ``server/info``.
 
-    Only probes the default Moonraker port (7125). Port 80 fallback and bare
-    401/403 hits were removed — they false-positive on unrelated LAN services
-    (e.g. authenticated file servers). Fluidd/proxy on :80 can still be entered
-    manually after add; the connection client already retries URL candidates.
+    Probes configurable ports (default 7125 then 80). Only HTTP 200 responses
+    with Moonraker/Klipper-shaped JSON count as hits — bare 401/403 auth walls
+    on unrelated LAN services are ignored.
     """
-
-    PRIMARY_PORT = 7125
 
     def __init__(self):
         self._discovered: dict[str, DiscoveredMoonraker] = {}
@@ -762,12 +802,18 @@ class MoonrakerSubnetScanner:
         """Return (scanned, total) counts."""
         return self._scanned, self._total
 
-    async def scan_subnet(self, subnet: str, timeout: float = 1.0) -> list[DiscoveredMoonraker]:
+    async def scan_subnet(
+        self,
+        subnet: str,
+        timeout: float = 1.0,
+        ports: list[int] | None = None,
+    ) -> list[DiscoveredMoonraker]:
         """Scan a subnet for Moonraker HTTP APIs.
 
         Args:
             subnet: CIDR notation subnet (e.g., "192.168.1.0/24")
             timeout: Connect timeout per host in seconds
+            ports: Ports to probe per host (default from DISCOVERY_MOONRAKER_PORTS)
 
         Returns:
             List of discovered Moonraker instances
@@ -778,6 +824,7 @@ class MoonrakerSubnetScanner:
         self._running = True
         self._discovered.clear()
         self._scanned = 0
+        probe_ports = parse_moonraker_scan_ports(ports)
 
         try:
             network = ipaddress.ip_network(subnet, strict=False)
@@ -789,7 +836,12 @@ class MoonrakerSubnetScanner:
                 self._total = 1024
                 hosts = hosts[:1024]
 
-            logger.info("Starting Moonraker subnet scan of %s (%s hosts)", subnet, self._total)
+            logger.info(
+                "Starting Moonraker subnet scan of %s (%s hosts, ports=%s)",
+                subnet,
+                self._total,
+                probe_ports,
+            )
 
             batch_size = 50
             for i in range(0, len(hosts), batch_size):
@@ -798,7 +850,7 @@ class MoonrakerSubnetScanner:
                     break
 
                 batch = hosts[i : i + batch_size]
-                tasks = [self._probe_host(str(ip), timeout) for ip in batch]
+                tasks = [self._probe_host(str(ip), timeout, probe_ports) for ip in batch]
                 await asyncio.gather(*tasks, return_exceptions=True)
                 self._scanned = min(i + batch_size, len(hosts))
 
@@ -811,44 +863,50 @@ class MoonrakerSubnetScanner:
         finally:
             self._running = False
 
-    async def _probe_host(self, ip: str, timeout: float):
-        """Probe a single host for Moonraker on :7125 only."""
+    async def _probe_host(self, ip: str, timeout: float, ports: list[int]):
+        """Probe a single host for Moonraker on the configured ports."""
         try:
-            await asyncio.wait_for(self._do_probe(ip, timeout), timeout=max(timeout * 3, 4.0))
+            # Extra room when multiple ports are tried per host.
+            await asyncio.wait_for(
+                self._do_probe(ip, timeout, ports),
+                timeout=max(timeout * (2 + len(ports)), 5.0),
+            )
         except TimeoutError:
             pass
         except Exception:
             pass
 
-    async def _do_probe(self, ip: str, timeout: float):
+    async def _do_probe(self, ip: str, timeout: float, ports: list[int]):
         import httpx
 
         client_timeout = httpx.Timeout(max(timeout * 2, 2.0), connect=timeout)
-        base_url = f"http://{ip}:{self.PRIMARY_PORT}"
-        url = f"{base_url}/server/info"
 
         async with httpx.AsyncClient(timeout=client_timeout, follow_redirects=False) as client:
-            try:
-                response = await client.get(url)
-            except (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError):
-                return
-            except Exception:
-                return
+            for port in ports:
+                base_url = _moonraker_base_url_for_port(ip, port)
+                url = f"{base_url}/server/info"
+                try:
+                    response = await client.get(url)
+                except (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError):
+                    continue
+                except Exception:
+                    continue
 
-            if response.status_code != 200:
-                # Do not treat generic 401/403 as Moonraker — many LAN services
-                # auth-wall unknown paths (copyparty, NAS UI, etc.).
-                return
+                if response.status_code != 200:
+                    # Do not treat generic 401/403 as Moonraker — many LAN services
+                    # auth-wall unknown paths (copyparty, NAS UI, etc.).
+                    continue
 
-            try:
-                payload = response.json()
-            except Exception:
-                return
+                try:
+                    payload = response.json()
+                except Exception:
+                    continue
 
-            if not _looks_like_moonraker_info(payload):
-                return
+                if not _looks_like_moonraker_info(payload):
+                    continue
 
-            self._record_hit(ip, base_url, needs_auth=False, payload=payload)
+                self._record_hit(ip, base_url, needs_auth=False, payload=payload)
+                return
 
     def _record_hit(
         self,

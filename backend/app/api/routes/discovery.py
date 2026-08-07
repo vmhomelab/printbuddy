@@ -50,6 +50,17 @@ class SubnetScanRequest(BaseModel):
     timeout: float = 1.0  # Connection timeout per host
 
 
+class MoonrakerSubnetScanRequest(BaseModel):
+    """Request to scan a subnet for Moonraker instances."""
+
+    subnet: str  # CIDR notation, e.g., "192.168.1.0/24"
+    timeout: float = 1.0  # Connection timeout per host
+    # Ports to probe per host. Default is DISCOVERY_MOONRAKER_PORTS or 7125,80.
+    # Port 80 covers CosmOS / Fluidd reverse-proxies; hits still require
+    # Moonraker-shaped JSON so unrelated HTTP services are ignored.
+    ports: list[int] | None = None
+
+
 class SubnetScanStatus(BaseModel):
     """Subnet scan status response."""
 
@@ -203,11 +214,17 @@ async def stop_subnet_scan(
 
 @router.post("/moonraker/scan", response_model=SubnetScanStatus)
 async def start_moonraker_subnet_scan(
-    request: SubnetScanRequest,
+    request: MoonrakerSubnetScanRequest,
     _: User | None = RequirePermissionIfAuthEnabled(Permission.DISCOVERY_SCAN),
 ):
     """Start a subnet scan for Moonraker instances (HTTP ``server/info``)."""
-    asyncio.create_task(moonraker_subnet_scanner.scan_subnet(request.subnet, request.timeout))
+    asyncio.create_task(
+        moonraker_subnet_scanner.scan_subnet(
+            request.subnet,
+            request.timeout,
+            ports=request.ports,
+        )
+    )
     scanned, total = moonraker_subnet_scanner.progress
     return SubnetScanStatus(
         running=moonraker_subnet_scanner.is_running,

@@ -457,6 +457,31 @@ def _macro_object_to_command_name(object_name: str) -> str | None:
     return macro or None
 
 
+def _moonraker_camera_origin(base_url: str) -> str:
+    """Origin used to absolutize relative Moonraker webcam paths.
+
+    Webcam streams are almost always served by the Fluidd/Mainsail/CosmOS
+    reverse-proxy on port 80 (or the UI host), not by Moonraker's API port
+    7125. Relative paths like ``/webcam/?action=stream`` must therefore resolve
+    against the UI host — otherwise we produce broken URLs such as
+    ``http://printer:7125/webcam/?action=stream``.
+    """
+    parsed = urlparse(base_url)
+    if not parsed.scheme or not parsed.hostname:
+        return base_url.rstrip("/") + "/"
+
+    host = parsed.hostname
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+
+    # Moonraker API port → prefer default HTTP origin for relative camera paths.
+    if parsed.port == 7125:
+        return urlunparse((parsed.scheme or "http", host, "", "", "", "")).rstrip("/") + "/"
+
+    netloc = parsed.netloc or host
+    return urlunparse((parsed.scheme or "http", netloc, "", "", "", "")).rstrip("/") + "/"
+
+
 def _absolute_moonraker_camera_url(base_url: str, value: Any) -> str | None:
     raw = str(value or "").strip()
     if not raw:
@@ -464,7 +489,7 @@ def _absolute_moonraker_camera_url(base_url: str, value: Any) -> str | None:
     parsed = urlparse(raw)
     if parsed.scheme and parsed.netloc:
         return raw
-    return urljoin(base_url.rstrip("/") + "/", raw.lstrip("/"))
+    return urljoin(_moonraker_camera_origin(base_url), raw.lstrip("/"))
 
 
 def _normalize_moonraker_webcam(base_url: str, webcam: dict[str, Any]) -> dict[str, Any] | None:
@@ -888,6 +913,13 @@ class MoonrakerPrinterClient:
 
     def discover_webcams(self) -> list[dict[str, Any]]:
         """Return normalized Moonraker webcam entries, if the server exposes any."""
+        # Prefer a confirmed working API URL (e.g. CosmOS on :80 when the form
+        # still has the default :7125) before resolving relative camera paths.
+        if not self.state.connected:
+            try:
+                self.connect()
+            except Exception:
+                pass
         result = self._get("server/webcams/list")
         webcams = result.get("webcams") if isinstance(result, dict) else None
         if webcams is None and isinstance(result, dict):

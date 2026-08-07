@@ -6721,10 +6721,10 @@ export const discoveryApi = {
     request<SubnetScanStatus>('/discovery/scan/stop', { method: 'POST' }),
 
   // Moonraker / Klipper subnet scanning
-  startMoonrakerSubnetScan: (subnet: string, timeout: number = 1.0) =>
+  startMoonrakerSubnetScan: (subnet: string, timeout: number = 1.0, ports?: number[]) =>
     request<SubnetScanStatus>('/discovery/moonraker/scan', {
       method: 'POST',
-      body: JSON.stringify({ subnet, timeout }),
+      body: JSON.stringify({ subnet, timeout, ports }),
     }),
 
   getMoonrakerScanStatus: () =>
