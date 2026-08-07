@@ -18,9 +18,7 @@ class TestMoonrakerHelpers:
         assert _moonraker_serial_for_ip("10.0.0.89") == "KLIPPER-10-0-0-89"
 
     def test_looks_like_moonraker_info_wrapped(self):
-        assert _looks_like_moonraker_info(
-            {"result": {"klippy_state": "ready", "moonraker_version": "0.9.0"}}
-        )
+        assert _looks_like_moonraker_info({"result": {"klippy_state": "ready", "moonraker_version": "0.9.0"}})
 
     def test_looks_like_moonraker_info_unwrapped(self):
         assert _looks_like_moonraker_info({"moonraker_version": "0.9.0"})
@@ -61,9 +59,7 @@ async def test_probe_hit_on_7125_server_info():
     scanner = MoonrakerSubnetScanner()
     client = AsyncMock()
     client.get = AsyncMock(
-        return_value=_mock_response(
-            200, {"result": {"klippy_state": "ready", "moonraker_version": "0.9.0"}}
-        )
+        return_value=_mock_response(200, {"result": {"klippy_state": "ready", "moonraker_version": "0.9.0"}})
     )
     client.__aenter__ = AsyncMock(return_value=client)
     client.__aexit__ = AsyncMock(return_value=None)
