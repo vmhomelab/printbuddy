@@ -718,29 +718,30 @@ def _moonraker_serial_for_ip(ip: str) -> str:
 
 
 def _looks_like_moonraker_info(payload: object) -> bool:
-    """Return True if JSON looks like Moonraker ``server/info``."""
+    """Return True if JSON looks like Moonraker ``server/info``.
+
+    Requires Klipper/Moonraker-specific fields so unrelated HTTP services
+    (file servers, reverse proxies, auth walls) are not treated as hits.
+    """
     if not isinstance(payload, dict):
         return False
     data = payload.get("result") if isinstance(payload.get("result"), dict) else payload
     if not isinstance(data, dict):
         return False
-    return any(
-        key in data
-        for key in (
-            "klippy_state",
-            "moonraker_version",
-            "api_version",
-            "websocket_port",
-            "klippy_connected",
-        )
-    )
+    # Prefer strong identifiers; avoid generic keys like api_version alone.
+    return any(key in data for key in ("klippy_state", "moonraker_version", "klippy_connected"))
 
 
 class MoonrakerSubnetScanner:
-    """Scanner for discovering Moonraker instances via HTTP ``server/info``."""
+    """Scanner for discovering Moonraker instances via HTTP ``server/info``.
+
+    Only probes the default Moonraker port (7125). Port 80 fallback and bare
+    401/403 hits were removed — they false-positive on unrelated LAN services
+    (e.g. authenticated file servers). Fluidd/proxy on :80 can still be entered
+    manually after add; the connection client already retries URL candidates.
+    """
 
     PRIMARY_PORT = 7125
-    FALLBACK_PORT = 80
 
     def __init__(self):
         self._discovered: dict[str, DiscoveredMoonraker] = {}
@@ -811,9 +812,9 @@ class MoonrakerSubnetScanner:
             self._running = False
 
     async def _probe_host(self, ip: str, timeout: float):
-        """Probe a single host for Moonraker on :7125 then :80."""
+        """Probe a single host for Moonraker on :7125 only."""
         try:
-            await asyncio.wait_for(self._do_probe(ip, timeout), timeout=max(timeout * 4, 5.0))
+            await asyncio.wait_for(self._do_probe(ip, timeout), timeout=max(timeout * 3, 4.0))
         except TimeoutError:
             pass
         except Exception:
@@ -823,38 +824,31 @@ class MoonrakerSubnetScanner:
         import httpx
 
         client_timeout = httpx.Timeout(max(timeout * 2, 2.0), connect=timeout)
-        candidates = [
-            f"http://{ip}:{self.PRIMARY_PORT}",
-            f"http://{ip}",
-        ]
+        base_url = f"http://{ip}:{self.PRIMARY_PORT}"
+        url = f"{base_url}/server/info"
 
         async with httpx.AsyncClient(timeout=client_timeout, follow_redirects=False) as client:
-            for base_url in candidates:
-                url = f"{base_url}/server/info"
-                try:
-                    response = await client.get(url)
-                except (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError):
-                    continue
-                except Exception:
-                    continue
-
-                if response.status_code in (401, 403):
-                    self._record_hit(ip, base_url, needs_auth=True)
-                    return
-
-                if response.status_code != 200:
-                    continue
-
-                try:
-                    payload = response.json()
-                except Exception:
-                    continue
-
-                if not _looks_like_moonraker_info(payload):
-                    continue
-
-                self._record_hit(ip, base_url, needs_auth=False, payload=payload)
+            try:
+                response = await client.get(url)
+            except (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError):
                 return
+            except Exception:
+                return
+
+            if response.status_code != 200:
+                # Do not treat generic 401/403 as Moonraker — many LAN services
+                # auth-wall unknown paths (copyparty, NAS UI, etc.).
+                return
+
+            try:
+                payload = response.json()
+            except Exception:
+                return
+
+            if not _looks_like_moonraker_info(payload):
+                return
+
+            self._record_hit(ip, base_url, needs_auth=False, payload=payload)
 
     def _record_hit(
         self,

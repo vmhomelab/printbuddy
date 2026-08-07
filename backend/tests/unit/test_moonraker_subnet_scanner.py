@@ -23,7 +23,10 @@ class TestMoonrakerHelpers:
     def test_looks_like_moonraker_info_unwrapped(self):
         assert _looks_like_moonraker_info({"moonraker_version": "0.9.0"})
 
-    def test_looks_like_moonraker_info_rejects_other_json(self):
+    def test_looks_like_moonraker_info_rejects_weak_or_other_json(self):
+        # Generic api_version alone is not enough (false positives).
+        assert not _looks_like_moonraker_info({"api_version": [1, 0, 0]})
+        assert not _looks_like_moonraker_info({"websocket_port": 7125})
         assert not _looks_like_moonraker_info({"status": "ok"})
         assert not _looks_like_moonraker_info([])
         assert not _looks_like_moonraker_info(None)
@@ -64,7 +67,8 @@ async def test_probe_hit_on_7125_server_info():
 
 
 @pytest.mark.asyncio
-async def test_probe_401_counts_as_hit_with_needs_auth():
+async def test_probe_401_is_not_a_hit():
+    """Auth walls on unrelated LAN services must not count as Moonraker."""
     scanner = MoonrakerSubnetScanner()
     client = AsyncMock()
     client.get = AsyncMock(return_value=_mock_response(401))
@@ -72,39 +76,32 @@ async def test_probe_401_counts_as_hit_with_needs_auth():
     client.__aexit__ = AsyncMock(return_value=None)
 
     with patch("httpx.AsyncClient", return_value=client):
-        await scanner._do_probe("10.0.0.50", timeout=0.5)
+        await scanner._do_probe("10.2.0.8", timeout=0.5)
 
-    assert len(scanner.discovered_printers) == 1
-    assert scanner.discovered_printers[0].needs_auth is True
-    assert scanner.discovered_printers[0].api_url == "http://10.0.0.50:7125"
+    assert scanner.discovered_printers == []
+    client.get.assert_awaited_once_with("http://10.2.0.8:7125/server/info")
 
 
 @pytest.mark.asyncio
-async def test_probe_falls_back_to_port_80():
+async def test_probe_does_not_fall_back_to_port_80():
     import httpx
 
     scanner = MoonrakerSubnetScanner()
     client = AsyncMock()
-
-    async def get_side_effect(url: str):
-        if ":7125" in url:
-            raise httpx.ConnectError("refused")
-        return _mock_response(200, {"result": {"klippy_state": "ready"}})
-
-    client.get = AsyncMock(side_effect=get_side_effect)
+    client.get = AsyncMock(side_effect=httpx.ConnectError("refused"))
     client.__aenter__ = AsyncMock(return_value=client)
     client.__aexit__ = AsyncMock(return_value=None)
 
     with patch("httpx.AsyncClient", return_value=client):
         await scanner._do_probe("10.0.0.12", timeout=0.5)
 
-    assert len(scanner.discovered_printers) == 1
-    assert scanner.discovered_printers[0].api_url == "http://10.0.0.12"
-    assert client.get.await_count == 2
+    assert scanner.discovered_printers == []
+    # Only the Moonraker default port is probed.
+    client.get.assert_awaited_once_with("http://10.0.0.12:7125/server/info")
 
 
 @pytest.mark.asyncio
-async def test_probe_miss_when_ports_closed():
+async def test_probe_miss_when_port_closed():
     import httpx
 
     scanner = MoonrakerSubnetScanner()
@@ -115,5 +112,19 @@ async def test_probe_miss_when_ports_closed():
 
     with patch("httpx.AsyncClient", return_value=client):
         await scanner._do_probe("10.0.0.1", timeout=0.5)
+
+    assert scanner.discovered_printers == []
+
+
+@pytest.mark.asyncio
+async def test_probe_rejects_200_without_moonraker_shape():
+    scanner = MoonrakerSubnetScanner()
+    client = AsyncMock()
+    client.get = AsyncMock(return_value=_mock_response(200, {"status": "ok", "files": []}))
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("httpx.AsyncClient", return_value=client):
+        await scanner._do_probe("10.2.0.8", timeout=0.5)
 
     assert scanner.discovered_printers == []

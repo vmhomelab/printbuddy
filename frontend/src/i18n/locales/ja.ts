@@ -502,7 +502,7 @@ export default {
       scanningNetwork: 'ネットワークをスキャン中...',
       noPrintersFoundSubnetMoonraker: '指定したサブネットでMoonrakerが見つかりませんでした。',
       moonrakerNeedsAuth: 'このMoonrakerにはAPIトークンが必要です。下に入力してください。',
-      moonrakerSubnetNote: 'ポート7125（次に80）でMoonrakerを探します。Bambuと同じサブネット一覧（DISCOVERY_EXTRA_SUBNETS含む）を使います。',
+      moonrakerSubnetNote: 'ポート7125のみでMoonrakerを探します（Moonraker/Klipper APIのJSONが必要）。Bambuと同じサブネット一覧（DISCOVERY_EXTRA_SUBNETS含む）を使います。',
       serialRequired: 'シリアル番号が必要です',
       unknown: '不明',
       failedToStart: '印刷の開始に失敗しました',

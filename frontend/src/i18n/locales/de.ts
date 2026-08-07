@@ -503,7 +503,7 @@ export default {
       scanningNetwork: 'Netzwerk wird gescannt...',
       noPrintersFoundSubnetMoonraker: 'Keine Moonraker-Instanzen im angegebenen Subnetz gefunden.',
       moonrakerNeedsAuth: 'Diese Moonraker-Instanz benötigt ein API-Token — bitte unten eingeben.',
-      moonrakerSubnetNote: 'Sucht Moonraker auf Port 7125 (dann Port 80). Nutzt dieselbe Subnetz-Liste wie Bambu, inkl. DISCOVERY_EXTRA_SUBNETS.',
+      moonrakerSubnetNote: 'Sucht Moonraker nur auf Port 7125 (erfordert Moonraker/Klipper-API-JSON). Nutzt dieselbe Subnetz-Liste wie Bambu, inkl. DISCOVERY_EXTRA_SUBNETS.',
       serialRequired: 'Seriennummer erforderlich',
       unknown: 'Unbekannt',
       failedToStart: 'Erkennung konnte nicht gestartet werden',

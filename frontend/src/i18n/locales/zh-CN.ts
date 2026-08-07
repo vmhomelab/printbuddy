@@ -503,7 +503,7 @@ export default {
       scanningNetwork: '正在扫描网络...',
       noPrintersFoundSubnetMoonraker: '在指定子网中未找到 Moonraker 实例。',
       moonrakerNeedsAuth: '此 Moonraker 实例需要 API 令牌 — 请在下方输入。',
-      moonrakerSubnetNote: '在端口 7125（然后是 80）上扫描 Moonraker。使用与拓竹相同的子网列表，包括 DISCOVERY_EXTRA_SUBNETS。',
+      moonrakerSubnetNote: '仅在端口 7125 上扫描 Moonraker（需要 Moonraker/Klipper API JSON）。使用与拓竹相同的子网列表，包括 DISCOVERY_EXTRA_SUBNETS。',
       serialRequired: '需要序列号',
       unknown: '未知',
       failedToStart: '启动发现失败',
