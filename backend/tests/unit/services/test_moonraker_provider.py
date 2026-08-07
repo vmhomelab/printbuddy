@@ -417,6 +417,7 @@ def test_moonraker_send_gcode_treats_verified_read_timeout_as_accepted(monkeypat
 
 def test_moonraker_discovers_and_normalizes_webcams(monkeypatch):
     client = MoonrakerPrinterClient("http://k2-plus.local:7125", printer_model="Creality K2 Plus")
+    client.state.connected = True  # skip live connect() in discover_webcams
     monkeypatch.setattr(
         client,
         "_get",
@@ -434,7 +435,8 @@ def test_moonraker_discovers_and_normalizes_webcams(monkeypatch):
     assert client.discover_webcams() == [
         {
             "name": "Nozzle Cam",
-            "stream_url": "http://k2-plus.local:7125/webcam/?action=stream",
+            # Relative webcam paths resolve to the UI host (port 80), not Moonraker :7125
+            "stream_url": "http://k2-plus.local/webcam/?action=stream",
             "snapshot_url": "http://camera.local/snapshot.jpg",
             "camera_type": "mjpeg",
             "enabled": True,
@@ -449,9 +451,29 @@ def test_moonraker_discovers_and_normalizes_webcams(monkeypatch):
 
 def test_moonraker_webcam_discovery_returns_empty_for_k2_without_moonraker_webcams(monkeypatch):
     client = MoonrakerPrinterClient("http://k2-plus.local:7125", printer_model="Creality K2 Plus")
+    client.state.connected = True
     monkeypatch.setattr(client, "_get", lambda path: {"webcams": []})
 
     assert client.discover_webcams() == []
+
+
+def test_moonraker_relative_webcam_url_uses_ui_port_not_api_port():
+    from backend.app.services.printer_providers.moonraker import _absolute_moonraker_camera_url
+
+    assert (
+        _absolute_moonraker_camera_url(
+            "http://10.0.0.126:7125",
+            "/webcam/?action=stream",
+        )
+        == "http://10.0.0.126/webcam/?action=stream"
+    )
+    assert (
+        _absolute_moonraker_camera_url(
+            "http://10.0.0.126",
+            "/webcam/?action=stream",
+        )
+        == "http://10.0.0.126/webcam/?action=stream"
+    )
 
 
 def test_moonraker_cfs_load_uses_verified_m8200_slot_select(monkeypatch):
