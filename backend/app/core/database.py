@@ -1104,6 +1104,16 @@ async def run_migrations(conn):
     await _safe_execute(conn, "ALTER TABLE print_queue ADD COLUMN timelapse BOOLEAN DEFAULT 0")
     await _safe_execute(conn, "ALTER TABLE print_queue ADD COLUMN use_ams BOOLEAN DEFAULT 1")
 
+    # Migration: safe queue dispatch/filament acknowledgement fields.
+    await _safe_execute(conn, "ALTER TABLE print_queue ADD COLUMN dispatch_attempts INTEGER DEFAULT 0")
+    await _safe_execute(conn, "ALTER TABLE print_queue ADD COLUMN dispatching_at DATETIME")
+    if is_sqlite():
+        await _safe_execute(conn, "ALTER TABLE print_queue ADD COLUMN gate_acknowledged BOOLEAN DEFAULT 0")
+        await _safe_execute(conn, "ALTER TABLE print_queue ADD COLUMN skip_filament_check BOOLEAN DEFAULT 0")
+    else:
+        await _safe_execute(conn, "ALTER TABLE print_queue ADD COLUMN gate_acknowledged BOOLEAN DEFAULT false")
+        await _safe_execute(conn, "ALTER TABLE print_queue ADD COLUMN skip_filament_check BOOLEAN DEFAULT false")
+
     # Migration: Add library_file_id column to print_queue and make archive_id nullable
     # This allows queue items to reference library files directly (archive created at print start)
     try:
@@ -1145,6 +1155,10 @@ async def run_migrations(conn):
                         layer_inspect BOOLEAN DEFAULT 0,
                         timelapse BOOLEAN DEFAULT 0,
                         use_ams BOOLEAN DEFAULT 1,
+                        dispatch_attempts INTEGER DEFAULT 0,
+                        dispatching_at DATETIME,
+                        gate_acknowledged BOOLEAN DEFAULT 0,
+                        skip_filament_check BOOLEAN DEFAULT 0,
                         status VARCHAR(20) DEFAULT 'pending',
                         started_at DATETIME,
                         completed_at DATETIME,
@@ -1160,6 +1174,8 @@ async def run_migrations(conn):
                            manual_start, require_previous_success, auto_off_after, ams_mapping, plate_id,
                            COALESCE(bed_levelling, 1), NULL, COALESCE(flow_cali, 0), COALESCE(vibration_cali, 1),
                            COALESCE(layer_inspect, 0), COALESCE(timelapse, 0), COALESCE(use_ams, 1),
+                           COALESCE(dispatch_attempts, 0), dispatching_at,
+                           COALESCE(gate_acknowledged, 0), COALESCE(skip_filament_check, 0),
                            status, started_at, completed_at, error_message, created_at
                     FROM print_queue
                 """)

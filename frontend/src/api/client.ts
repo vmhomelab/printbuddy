@@ -1894,6 +1894,7 @@ export interface PrintQueueItem {
   // any required slot's grams (#1496). Surfaced on the queue row as a
   // "filament short" badge; cleared on a successful ▶ click (live recheck).
   filament_short: boolean;
+  skip_filament_check: boolean;
   ams_mapping: number[] | null;  // AMS slot mapping for multi-color prints
   filament_overrides: Array<{ slot_id: number; type: string; color: string; color_name?: string; force_color_match?: boolean }> | null;  // Filament overrides for model-based assignment
   plate_id: number | null;  // Plate ID for multi-plate 3MF files
@@ -1961,6 +1962,7 @@ export interface PrintQueueItemCreate {
   require_previous_success?: boolean;
   auto_off_after?: boolean;
   manual_start?: boolean;  // Requires manual trigger to start (staged)
+  skip_filament_check?: boolean;
   ams_mapping?: number[] | null;  // AMS slot mapping for multi-color prints
   plate_id?: number | null;  // Plate ID for multi-plate 3MF files
   // Print options
