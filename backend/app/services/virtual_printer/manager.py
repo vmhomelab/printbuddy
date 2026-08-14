@@ -483,7 +483,10 @@ class VirtualPrinterInstance:
                             .where(PrintQueueItem.printer_id.is_(None))
                             .where(PrintQueueItem.status == "pending")
                         )
-                    max_pos = max_pos_result.scalar() or 0
+                    max_pos_value = max_pos_result.scalar()
+                    if hasattr(max_pos_value, "__await__"):
+                        max_pos_value = await max_pos_value
+                    max_pos = max_pos_value or 0
 
                     queue_items: list[PrintQueueItem] = []
                     for offset, plate_id in enumerate(plate_ids):
