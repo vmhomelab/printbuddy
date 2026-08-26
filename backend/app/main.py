@@ -1397,6 +1397,29 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
                 raw_progress,
             )
 
+        try:
+            async with async_session() as db:
+                from backend.app.models.printer import Printer
+
+                result = await db.execute(select(Printer).where(Printer.id == printer_id))
+                printer = result.scalar_one_or_none()
+                printer_name = printer.name if printer else f"Printer {printer_id}"
+                filename = state.subtask_name or state.gcode_file or "Unknown"
+                remaining_time_seconds = state.remaining_time * 60 if state.remaining_time else None
+
+                await notify_live_activity_service.on_print_progress(
+                    db,
+                    printer_id=printer_id,
+                    printer_name=printer_name,
+                    filename=filename,
+                    progress=progress,
+                    remaining_time=remaining_time_seconds,
+                    layer_num=state.layer_num,
+                    total_layers=state.total_layers,
+                )
+        except Exception as e:
+            logger.warning(f"Live Activity progress update failed: {e}")
+
         if progress < 5:
             # Reset milestone tracking at the beginning of a print even while the
             # printer is already in RUNNING/PRINTING. The old elif branch never
@@ -1463,6 +1486,7 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
                             image_data=image_data,
                             layer_num=state.layer_num,
                             total_layers=state.total_layers,
+                            update_live_activity=False,
                         )
                 except Exception as e:
                     logger.warning(f"Progress milestone notification failed: {e}")

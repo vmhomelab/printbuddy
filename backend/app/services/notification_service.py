@@ -1066,21 +1066,23 @@ class NotificationService:
         image_data: bytes | None = None,
         layer_num: int | None = None,
         total_layers: int | None = None,
+        update_live_activity: bool = True,
     ):
         """Handle print progress milestone (25%, 50%, 75%)."""
-        try:
-            await notify_live_activity_service.on_print_progress(
-                db,
-                printer_id=printer_id,
-                printer_name=printer_name,
-                filename=filename,
-                progress=progress,
-                remaining_time=remaining_time,
-                layer_num=layer_num,
-                total_layers=total_layers,
-            )
-        except Exception:
-            logger.exception("Notify Live Activity progress hook failed for printer %s", printer_id)
+        if update_live_activity:
+            try:
+                await notify_live_activity_service.on_print_progress(
+                    db,
+                    printer_id=printer_id,
+                    printer_name=printer_name,
+                    filename=filename,
+                    progress=progress,
+                    remaining_time=remaining_time,
+                    layer_num=layer_num,
+                    total_layers=total_layers,
+                )
+            except Exception:
+                logger.exception("Notify Live Activity progress hook failed for printer %s", printer_id)
 
         providers = await self._get_providers_for_event(db, "on_print_progress", printer_id)
         if not providers:
