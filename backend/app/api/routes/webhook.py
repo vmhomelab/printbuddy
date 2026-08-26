@@ -196,10 +196,10 @@ async def webhook_stop_print(
     check_printer_access(api_key, printer_id)
 
     status = printer_manager.get_status(printer_id)
-    if not status or not status.get("connected"):
+    if not status or not status.connected:
         raise HTTPException(status_code=503, detail="Printer not connected")
 
-    if status.get("state") != "RUNNING":
+    if status.state != "RUNNING":
         raise HTTPException(status_code=409, detail="No print in progress")
 
     try:
@@ -224,10 +224,10 @@ async def webhook_cancel_print(
     check_printer_access(api_key, printer_id)
 
     status = printer_manager.get_status(printer_id)
-    if not status or not status.get("connected"):
+    if not status or not status.connected:
         raise HTTPException(status_code=503, detail="Printer not connected")
 
-    if status.get("state") not in ["RUNNING", "PAUSE"]:
+    if status.state not in ["RUNNING", "PAUSE"]:
         raise HTTPException(status_code=409, detail="No print to cancel")
 
     try:
@@ -263,11 +263,11 @@ async def webhook_get_printer_status(
     return PrinterStatusResponse(
         id=printer.id,
         name=printer.name,
-        connected=status.get("connected", False) if status else False,
-        state=status.get("state") if status else None,
-        current_print=status.get("current_print") if status else None,
-        progress=status.get("progress") if status else None,
-        remaining_time=status.get("remaining_time") if status else None,
+        connected=status.connected if status else False,
+        state=status.state if status else None,
+        current_print=status.current_print if status else None,
+        progress=status.progress if status else None,
+        remaining_time=status.remaining_time if status else None,
     )
 
 
