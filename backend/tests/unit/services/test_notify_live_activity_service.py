@@ -132,6 +132,39 @@ async def test_print_progress_updates_existing_activity(db_session, notify_provi
 
 
 @pytest.mark.asyncio
+async def test_print_progress_creates_missing_activity_for_running_print(db_session, notify_provider):
+    client = AsyncMock()
+    client.start = AsyncMock(return_value="activity-created-by-progress")
+    service = NotifyLiveActivityService(client_factory=lambda config: client)
+
+    await service.on_print_progress(
+        db_session,
+        printer_id=7,
+        printer_name="Workshop P1S",
+        filename="dragon.3mf",
+        progress=5.36,
+        remaining_time=360,
+        subtask_id="task-1",
+        layer_num=3,
+        total_layers=56,
+    )
+
+    client.start.assert_awaited_once()
+    payload = client.start.await_args.args[0]
+    assert payload["body"] == "5% · Layer 3 / 56"
+    assert payload["progress"] == 5.36
+    activity = await db_session.scalar(select(NotificationLiveActivity))
+    assert activity is not None
+    assert activity.provider_id == notify_provider.id
+    assert activity.printer_id == 7
+    assert activity.activity_id == "activity-created-by-progress"
+    assert activity.subtask_id == "task-1"
+    assert activity.last_progress == 5.36
+    assert activity.last_layer_num == 3
+    assert activity.last_total_layers == 56
+
+
+@pytest.mark.asyncio
 async def test_print_progress_replaces_gone_activity(db_session, notify_provider):
     activity = NotificationLiveActivity(
         provider_id=notify_provider.id,

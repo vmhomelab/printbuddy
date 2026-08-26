@@ -127,6 +127,42 @@ class NotifyLiveActivityService:
             provider_id = provider.id
             activity = await self._active_activity(db, provider_id, printer_id, subtask_id=subtask_id)
             if not activity:
+                try:
+                    await self._create_activity(
+                        db,
+                        provider_id=provider_id,
+                        printer_id=printer_id,
+                        activity_id=await (await self._client(config)).start(
+                            build_start_content(
+                                printer_name=printer_name,
+                                filename=filename or "Unknown print",
+                                progress=progress,
+                                remaining_time=remaining_time,
+                                layer_num=layer_num,
+                                total_layers=total_layers,
+                            )
+                        ),
+                        subtask_id=subtask_id,
+                        filename=filename or "Unknown print",
+                        progress=progress,
+                        remaining_time=remaining_time,
+                        layer_num=layer_num,
+                        total_layers=total_layers,
+                        config=config,
+                    )
+                    await db.commit()
+                    logger.info(
+                        "Notify Live Activity created from progress update for provider %s printer %s",
+                        provider_id,
+                        printer_id,
+                    )
+                except Exception:
+                    await db.rollback()
+                    logger.exception(
+                        "Notify Live Activity progress recovery failed for provider %s printer %s",
+                        provider_id,
+                        printer_id,
+                    )
                 continue
             activity_db_id = activity.id
             activity_filename = activity.filename
