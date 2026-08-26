@@ -200,10 +200,10 @@ async def test_keepalive_updates_active_activity_from_current_printer_state(db_s
 
     client.update.assert_awaited_once()
     payload = client.update.await_args.args[1]
-    assert payload["progress"] == 0.64
+    assert payload["progress"] == 32
     assert payload["endsIn"] == 2700
     await db_session.refresh(activity)
-    assert activity.last_progress == 64
+    assert activity.last_progress == 32
     assert activity.last_remaining_time == 2700
 
 

@@ -45,7 +45,7 @@ def build_update_content(
     state: str = "running",
 ) -> dict[str, Any]:
     """Build payload for updating a Live Activity."""
-    progress_value = _normalize_progress(progress)
+    progress_value = _normalize_progress_percent(progress)
     state_key = (state or "running").lower()
     body = _progress_body(progress_value, layer_num=layer_num, total_layers=total_layers)
 
@@ -59,7 +59,7 @@ def build_update_content(
     }
 
     if state_key in {"pause", "paused"}:
-        content["body"] = f"Paused · {int(progress_value * 100)}%"
+        content["body"] = f"Paused · {int(progress_value)}%"
         content["tintColor"] = _PAUSED_COLOR
     elif remaining_time is not None and remaining_time > 0:
         content["endsIn"] = int(remaining_time)
@@ -94,23 +94,23 @@ def build_end_content(
         "title": printer_name,
         "subtitle": filename or "Unknown print",
         "body": body,
-        "progress": 1.0,
+        "progress": 100,
         "symbol": _PRINTBUDDY_SYMBOL,
         "tintColor": color,
     }
 
 
-def _normalize_progress(progress: float | int | None) -> float:
+def _normalize_progress_percent(progress: float | int | None) -> float:
     if progress is None:
-        return 0.0
+        return 0
     value = float(progress)
-    if value > 1:
-        value = value / 100
-    return round(min(max(value, 0.0), 1.0), 4)
+    if 0 < value <= 1:
+        value *= 100
+    return round(min(max(value, 0), 100), 2)
 
 
 def _progress_body(progress: float, *, layer_num: int | None, total_layers: int | None) -> str:
-    percent = int(progress * 100)
+    percent = int(progress)
     if layer_num is not None and total_layers:
         return f"{percent}% · Layer {layer_num} / {total_layers}"
     return f"{percent}%"

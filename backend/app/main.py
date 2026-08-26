@@ -96,6 +96,7 @@ from backend.app.services.mqtt_smart_plug import mqtt_smart_plug_service
 from backend.app.services.notification_service import notification_service
 from backend.app.services.notify_live_activity_service import notify_live_activity_service
 from backend.app.services.obico_detection import obico_detection_service
+from backend.app.services.print_progress import effective_print_progress
 from backend.app.services.print_scheduler import scheduler as print_scheduler
 from backend.app.services.printer_manager import (
     init_printer_connections,
@@ -1373,7 +1374,8 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
 
     # Check for progress milestone notifications (25%, 50%, 75%)
     logger = logging.getLogger(__name__)
-    progress = state.progress or 0
+    raw_progress = state.progress or 0
+    progress = effective_print_progress(state)
     is_printing = state.state in ("RUNNING", "PRINTING")
     provider = _provider_name_for_progress(printer_id)
 
@@ -1386,12 +1388,13 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
             _print_almost_done_notified[printer_id] = False
             _first_layer_notified[printer_id] = False
             logger.info(
-                "[PROGRESS_NOTIFY] reset tracking for new print: printer=%s provider=%s job=%s previous_job=%s progress=%.2f",
+                "[PROGRESS_NOTIFY] reset tracking for new print: printer=%s provider=%s job=%s previous_job=%s progress=%.2f raw_progress=%.2f",
                 printer_id,
                 provider or "unknown",
                 job_key,
                 previous_job_key,
                 progress,
+                raw_progress,
             )
 
         if progress < 5:
@@ -1458,6 +1461,8 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
                             db,
                             remaining_time_seconds,
                             image_data=image_data,
+                            layer_num=state.layer_num,
+                            total_layers=state.total_layers,
                         )
                 except Exception as e:
                     logger.warning(f"Progress milestone notification failed: {e}")
@@ -1487,6 +1492,8 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
                         db,
                         remaining_time_seconds,
                         image_data=image_data,
+                        layer_num=state.layer_num,
+                        total_layers=state.total_layers,
                     )
             except Exception as e:
                 logger.warning(f"Print almost-done notification failed: {e}")

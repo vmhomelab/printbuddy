@@ -1064,6 +1064,8 @@ class NotificationService:
         db: AsyncSession,
         remaining_time: int | None = None,
         image_data: bytes | None = None,
+        layer_num: int | None = None,
+        total_layers: int | None = None,
     ):
         """Handle print progress milestone (25%, 50%, 75%)."""
         try:
@@ -1074,6 +1076,8 @@ class NotificationService:
                 filename=filename,
                 progress=progress,
                 remaining_time=remaining_time,
+                layer_num=layer_num,
+                total_layers=total_layers,
             )
         except Exception:
             logger.exception("Notify Live Activity progress hook failed for printer %s", printer_id)
@@ -1114,6 +1118,8 @@ class NotificationService:
         remaining_time: int | None = None,
         image_data: bytes | None = None,
         finish_photo_url: str | None = None,
+        layer_num: int | None = None,
+        total_layers: int | None = None,
     ):
         """Handle 99% print almost-done milestone with a camera snapshot."""
         try:
@@ -1124,6 +1130,8 @@ class NotificationService:
                 filename=filename,
                 progress=99,
                 remaining_time=remaining_time,
+                layer_num=layer_num,
+                total_layers=total_layers,
             )
         except Exception:
             logger.exception("Notify Live Activity almost-done hook failed for printer %s", printer_id)

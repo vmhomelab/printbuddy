@@ -19,7 +19,7 @@ def test_start_content_normalizes_progress_eta_and_layers():
 
     assert content["title"] == "Workshop P1S"
     assert content["subtitle"] == "dragon.3mf"
-    assert content["progress"] == 0.12
+    assert content["progress"] == 12
     assert content["endsIn"] == 5400
     assert content["body"] == "12% · Layer 8 / 120"
     assert content["symbol"] == "printer"
@@ -34,7 +34,7 @@ def test_update_content_clamps_progress_and_omits_unknown_eta():
         remaining_time=None,
     )
 
-    assert content["progress"] == 1.0
+    assert content["progress"] == 100
     assert "endsIn" not in content
     assert content["body"] == "100%"
 
@@ -64,5 +64,5 @@ def test_end_content_uses_terminal_status_visual_state():
     assert content["title"] == "Workshop P1S"
     assert content["subtitle"] == "dragon.3mf"
     assert content["body"] == "Failed · Filament runout"
-    assert content["progress"] == 1.0
+    assert content["progress"] == 100
     assert content["tintColor"] == "#dc2626"

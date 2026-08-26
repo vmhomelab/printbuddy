@@ -296,6 +296,8 @@ class TestNotificationService:
                 filename="test.3mf",
                 progress=50,
                 remaining_time=1200,
+                layer_num=None,
+                total_layers=None,
             )
 
     @pytest.mark.asyncio
