@@ -4696,6 +4696,7 @@ export default {
       discord: 'Discord',
       webhook: 'Webhook',
       homeassistant: 'Home Assistant',
+      notify: 'Notify',
     },
     // Provider descriptions
     providerDescriptions: {
@@ -4707,6 +4708,7 @@ export default {
       callmebot: '通过 CallMeBot 免费发送 WhatsApp 通知',
       webhook: '通用 HTTP POST 到任意 URL',
       homeassistant: 'Home Assistant 仪表板中的持久通知',
+      notify: '通过 Notify 应用发送推送通知',
     },
     // NotificationProviderCard
     lastSuccess: '上次：{{date}}',

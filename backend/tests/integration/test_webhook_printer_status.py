@@ -19,6 +19,10 @@ class DataclassPrinterState:
     current_print: str | None = "calibration_cube.3mf"
     progress: float | None = 42.5
     remaining_time: int | None = 37
+    layer_num: int | None = 12
+    total_layers: int | None = 80
+    hms_errors: list[dict] | None = None
+    subtask_id: str | None = "subtask-123"
 
 
 @pytest.fixture
@@ -54,7 +58,9 @@ class TestWebhookPrinterStateDataclass:
     ):
         """Connected dataclass state should return 200 instead of AttributeError/500."""
         with patch("backend.app.api.routes.webhook.printer_manager") as mock_pm:
-            mock_pm.get_status.return_value = DataclassPrinterState()
+            mock_pm.get_status.return_value = DataclassPrinterState(
+                hms_errors=[{"code": "0x0300", "attr": 50331648, "severity": 2}]
+            )
 
             resp = await async_client.get(
                 f"/api/v1/webhook/printer/{webhook_printer.id}/status",
@@ -70,6 +76,11 @@ class TestWebhookPrinterStateDataclass:
             "current_print": "calibration_cube.3mf",
             "progress": 42.5,
             "remaining_time": 37,
+            "layer_num": 12,
+            "total_layers": 80,
+            "hms_errors": [{"code": "0x0300", "attr": 50331648, "severity": 2}],
+            "subtask_id": "subtask-123",
+            "serial_number": webhook_printer.serial_number,
         }
 
     @pytest.mark.asyncio

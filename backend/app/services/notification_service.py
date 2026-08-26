@@ -181,6 +181,8 @@ class NotificationService:
                 return await self._send_webhook(config, title, message)
             elif provider_type == "homeassistant":
                 return await self._send_homeassistant(config, title, message, db=db)
+            elif provider_type == "notify":
+                return await self._send_notify(config, title, message, event_type="test")
             else:
                 return False, f"Unknown provider type: {provider_type}"
         except Exception as e:
@@ -624,6 +626,38 @@ class NotificationService:
         else:
             return False, f"HTTP {response.status_code}: {response.text[:200]}"
 
+    async def _send_notify(
+        self,
+        config: dict,
+        title: str,
+        message: str,
+        event_type: str | None = None,
+    ) -> tuple[bool, str]:
+        """Send a normal push notification via Notify."""
+        device_id = str(config.get("device_id", "")).strip()
+        device_token = str(config.get("device_token", "")).strip()
+        base_url = str(config.get("base_url") or "https://push.getnotifyapp.com").strip().rstrip("/")
+
+        if not device_id or not device_token:
+            return False, "Device ID and device token are required"
+
+        url = f"{base_url}/notify-json/{quote(device_id)}?token={quote(device_token)}"
+        payload = {
+            "title": title,
+            "text": message,
+            "groupType": event_type or "printbuddy",
+            "iconUrl": "https://icons.getnotifyapp.com/icons/mt39aefs-tjpz3wae.png",
+        }
+
+        client = await self._get_client()
+        response = await client.post(url, json=payload, headers={"Content-Type": "application/json"})
+
+        if response.status_code in (200, 201, 202, 204):
+            return True, "Notification sent via Notify"
+        if response.status_code in (401, 403):
+            return False, "Notify authentication failed - check your device ID and token"
+        return False, f"HTTP {response.status_code}: {response.text[:200]}"
+
     async def _send_to_provider(
         self,
         provider: NotificationProvider,
@@ -661,6 +695,8 @@ class NotificationService:
                 )
             elif provider.provider_type == "homeassistant":
                 return await self._send_homeassistant(config, title, message, db=db)
+            elif provider.provider_type == "notify":
+                return await self._send_notify(config, title, message, event_type=event_type)
             else:
                 return False, f"Unknown provider type: {provider.provider_type}"
         except Exception as e:

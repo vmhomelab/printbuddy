@@ -4709,6 +4709,7 @@ export default {
       discord: 'Discord',
       webhook: 'Webhook',
       homeassistant: 'Home Assistant',
+      notify: 'Notify',
     },
     // Provider descriptions
     providerDescriptions: {
@@ -4720,6 +4721,7 @@ export default {
       callmebot: 'CallMeBot経由の無料WhatsApp通知',
       webhook: '任意のURLへの汎用HTTP POST',
       homeassistant: 'Home Assistantダッシュボードの永続通知',
+      notify: 'Notifyアプリ経由のプッシュ通知',
     },
     // NotificationProviderCard
     lastSuccess: '最終: {{date}}',

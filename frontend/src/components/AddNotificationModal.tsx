@@ -12,7 +12,7 @@ interface AddNotificationModalProps {
   onClose: () => void;
 }
 
-const PROVIDER_VALUES: ProviderType[] = ['email', 'telegram', 'discord', 'ntfy', 'pushover', 'callmebot', 'webhook', 'homeassistant'];
+const PROVIDER_VALUES: ProviderType[] = ['email', 'telegram', 'discord', 'ntfy', 'pushover', 'callmebot', 'webhook', 'homeassistant', 'notify'];
 
 export function AddNotificationModal({ provider, onClose }: AddNotificationModalProps) {
   const { t } = useTranslation();
@@ -248,6 +248,12 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
       case 'homeassistant':
         return [
           { key: 'service', label: 'Home Assistant Service', placeholder: 'notify.mobile_app_myphone', type: 'text', required: false },
+        ];
+      case 'notify':
+        return [
+          { key: 'device_id', label: 'Device ID', placeholder: 'ABCD1234', type: 'text', required: true },
+          { key: 'device_token', label: 'Device Token', placeholder: 'Your Notify device token', type: 'password', required: true },
+          { key: 'base_url', label: 'Gateway URL', placeholder: 'https://push.getnotifyapp.com', type: 'text', required: false },
         ];
       default:
         return [];

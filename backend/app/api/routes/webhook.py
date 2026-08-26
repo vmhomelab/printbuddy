@@ -1,4 +1,6 @@
 import logging
+from dataclasses import asdict, is_dataclass
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -45,6 +47,11 @@ class PrinterStatusResponse(BaseModel):
     current_print: str | None
     progress: float | None
     remaining_time: int | None
+    layer_num: int | None = None
+    total_layers: int | None = None
+    hms_errors: list[dict[str, Any]] | None = None
+    subtask_id: str | None = None
+    serial_number: str | None = None
 
 
 class QueueStatusResponse(BaseModel):
@@ -53,6 +60,25 @@ class QueueStatusResponse(BaseModel):
     pending: int
     printing: int
     items: list[dict]
+
+
+def _serialize_hms_errors(errors: Any) -> list[dict[str, Any]]:
+    """Convert provider HMS error objects to API-safe dictionaries."""
+    serialized: list[dict[str, Any]] = []
+    for error in errors or []:
+        if isinstance(error, dict):
+            serialized.append(error)
+        elif is_dataclass(error):
+            serialized.append(asdict(error))
+        else:
+            serialized.append(
+                {
+                    key: getattr(error, key)
+                    for key in ("code", "attr", "module", "severity")
+                    if hasattr(error, key)
+                }
+            )
+    return serialized
 
 
 # Webhook endpoints
@@ -268,6 +294,11 @@ async def webhook_get_printer_status(
         current_print=status.current_print if status else None,
         progress=status.progress if status else None,
         remaining_time=status.remaining_time if status else None,
+        layer_num=getattr(status, "layer_num", None) if status else None,
+        total_layers=getattr(status, "total_layers", None) if status else None,
+        hms_errors=_serialize_hms_errors(getattr(status, "hms_errors", None)) if status else None,
+        subtask_id=getattr(status, "subtask_id", None) if status else None,
+        serial_number=printer.serial_number,
     )
 
 

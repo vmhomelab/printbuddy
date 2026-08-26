@@ -19,6 +19,7 @@ class ProviderType(StrEnum):
     DISCORD = "discord"
     WEBHOOK = "webhook"
     HOMEASSISTANT = "homeassistant"
+    NOTIFY = "notify"
 
 
 class NotificationProviderBase(BaseModel):
@@ -253,6 +254,14 @@ class EmailConfig(BaseModel):
     from_email: str = Field(..., description="From email address")
     to_email: str = Field(..., description="Recipient email address")
     use_tls: bool = Field(default=True, description="Use TLS encryption")
+
+
+class NotifyConfig(BaseModel):
+    """Notify push notification configuration."""
+
+    device_id: str = Field(..., description="Notify device ID")
+    device_token: str = Field(..., description="Notify device token")
+    base_url: str = Field(default="https://push.getnotifyapp.com", description="Notify gateway URL")
 
 
 # Notification Log schemas
