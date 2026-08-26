@@ -100,3 +100,20 @@ async def test_rate_limit_error_is_retryable(config, mock_client):
 
     assert exc_info.value.status_code == 429
     assert exc_info.value.retryable is True
+
+
+@pytest.mark.asyncio
+async def test_success_false_body_is_treated_as_error(config, mock_client):
+    response = MagicMock()
+    response.status_code = 200
+    response.json.return_value = {"success": False, "message": "Live Activities are disabled for this device"}
+    response.text = '{"success":false,"message":"Live Activities are disabled for this device"}'
+    mock_client.post = AsyncMock(return_value=response)
+    client = NotifyLiveActivityClient(config, http_client=mock_client)
+
+    with pytest.raises(NotifyLiveActivityError) as exc_info:
+        await client.start({"title": "P1S"})
+
+    assert "Live Activities are disabled for this device" in str(exc_info.value)
+    assert exc_info.value.status_code == 200
+    assert exc_info.value.retryable is False

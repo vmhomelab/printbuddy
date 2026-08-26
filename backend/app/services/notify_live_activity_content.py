@@ -104,8 +104,6 @@ def _normalize_progress_percent(progress: float | int | None) -> float:
     if progress is None:
         return 0
     value = float(progress)
-    if 0 < value <= 1:
-        value *= 100
     return round(min(max(value, 0), 100), 2)
 
 

@@ -36,6 +36,7 @@ class NotifyLiveActivityClient:
         )
         self._raise_for_error(response)
         data = self._json(response)
+        self._raise_for_body_error(data, response)
         activity_id = data.get("id") or data.get("activity_id") or data.get("activityId")
         if not activity_id:
             raise NotifyLiveActivityError("Notify Live Activity start response did not include an activity ID")
@@ -49,6 +50,7 @@ class NotifyLiveActivityClient:
             headers={"Content-Type": "application/json"},
         )
         self._raise_for_error(response)
+        self._raise_for_body_error(self._json(response), response)
 
     async def end(self, activity_id: str, content: dict[str, Any] | None = None, *, keep_for_seconds: int = 0) -> None:
         """End an existing Live Activity."""
@@ -58,12 +60,15 @@ class NotifyLiveActivityClient:
             headers={"Content-Type": "application/json"},
         )
         self._raise_for_error(response)
+        self._raise_for_body_error(self._json(response), response)
 
     async def status(self, activity_id: str) -> dict[str, Any]:
         """Fetch a Live Activity status document."""
         response = await self.http_client.get(self._activity_url(activity_id))
         self._raise_for_error(response)
-        return self._json(response)
+        data = self._json(response)
+        self._raise_for_body_error(data, response)
+        return data
 
     def _activity_url(
         self,
@@ -100,6 +105,13 @@ class NotifyLiveActivityClient:
             status_code=status_code,
             retryable=retryable,
         )
+
+    def _raise_for_body_error(self, data: dict[str, Any], response: Any) -> None:
+        if data.get("success") is not False:
+            return
+        status_code = int(getattr(response, "status_code", 0) or 0)
+        message = str(data.get("message") or data.get("error") or "Notify Live Activity request failed")
+        raise NotifyLiveActivityError(self._redact(message), status_code=status_code, retryable=False)
 
     def _redact(self, value: str) -> str:
         safe = value

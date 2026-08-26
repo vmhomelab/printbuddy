@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.notification import NotificationProvider
 from backend.app.models.notification_live_activity import NotificationLiveActivity
+from backend.app.models.printer import Printer
 from backend.app.services.notify_live_activity_client import NotifyLiveActivityClient
 from backend.app.services.notify_live_activity_content import (
     build_end_content,
@@ -270,11 +271,114 @@ class NotifyLiveActivityService:
                     activity.printer_id,
                 )
 
+        await self._ensure_running_printers_have_activities(db)
+
+    async def _ensure_running_printers_have_activities(self, db: AsyncSession) -> None:
+        """Create a missing Live Activity when reconciliation sees an active print.
+
+        Print-start events can be missed during restarts, deployment windows, or a
+        transient Notify gateway/device error. The keepalive loop already has the
+        authoritative current printer state, so it should repair a missing tile
+        instead of waiting for a future print-start edge.
+        """
+        providers = await self._all_enabled_live_notify_providers(db)
+        if not providers:
+            return
+
+        printers = (await db.scalars(select(Printer).where(Printer.is_active.is_(True)))).all()
+        printer_by_id = {printer.id: printer for printer in printers}
+        printer_ids = {printer.id for printer in printers}
+        printer_ids.update(provider.printer_id for provider, _ in providers if provider.printer_id is not None)
+
+        for printer_id in sorted(printer_ids):
+            state = self._printer_status(printer_id)
+            if not self._is_running_state(state):
+                continue
+            printer = printer_by_id.get(printer_id)
+            printer_name = getattr(printer, "name", None) or self._printer_name(printer_id)
+            for provider, config in providers:
+                if provider.printer_id is not None and provider.printer_id != printer_id:
+                    continue
+                if await self._active_activity(db, provider.id, printer_id):
+                    continue
+                await self._start_from_state(
+                    db,
+                    provider=provider,
+                    config=config,
+                    printer_id=printer_id,
+                    printer_name=printer_name,
+                    state=state,
+                )
+
+    async def _start_from_state(
+        self,
+        db: AsyncSession,
+        *,
+        provider: NotificationProvider,
+        config: dict[str, Any],
+        printer_id: int,
+        printer_name: str,
+        state: Any,
+    ) -> None:
+        filename = getattr(state, "subtask_name", None) or getattr(state, "current_print", None) or "Unknown print"
+        subtask_id = getattr(state, "subtask_id", None)
+        progress = effective_print_progress(state)
+        remaining_time = self._state_remaining_time_seconds(state)
+        layer_num = self._optional_int(getattr(state, "layer_num", None))
+        total_layers = self._optional_int(getattr(state, "total_layers", None))
+        client = await self._client(config)
+        try:
+            payload = build_start_content(
+                printer_name=printer_name,
+                filename=str(filename),
+                progress=progress,
+                remaining_time=remaining_time,
+                layer_num=layer_num,
+                total_layers=total_layers,
+            )
+            activity_id = await client.start(payload)
+            db.add(
+                NotificationLiveActivity(
+                    provider_id=provider.id,
+                    printer_id=printer_id,
+                    activity_id=activity_id,
+                    subtask_id=str(subtask_id) if subtask_id else None,
+                    filename=str(filename),
+                    state="active",
+                    last_progress=progress,
+                    last_remaining_time=remaining_time,
+                    last_layer_num=layer_num,
+                    last_total_layers=total_layers,
+                    expires_at=self._expires_at(config),
+                )
+            )
+            await db.commit()
+            logger.info(
+                "Notify Live Activity keepalive created missing activity for provider %s printer %s",
+                provider.id,
+                printer_id,
+            )
+        except Exception:
+            await db.rollback()
+            logger.exception(
+                "Notify Live Activity keepalive start failed for provider %s printer %s",
+                provider.id,
+                printer_id,
+            )
+
     async def _enabled_notify_providers(
         self,
         db: AsyncSession,
         printer_id: int,
     ) -> list[tuple[NotificationProvider, dict[str, Any]]]:
+        providers = await self._all_enabled_live_notify_providers(db)
+        return [
+            (provider, config)
+            for provider, config in providers
+            if provider.printer_id is None or provider.printer_id == printer_id
+        ]
+
+    async def _all_enabled_live_notify_providers(self, db: AsyncSession) -> list[tuple[NotificationProvider, dict[str, Any]]]:
         result = await db.scalars(
             select(NotificationProvider).where(
                 NotificationProvider.enabled.is_(True),
@@ -283,8 +387,6 @@ class NotifyLiveActivityService:
         )
         providers: list[tuple[NotificationProvider, dict[str, Any]]] = []
         for provider in result.all():
-            if provider.printer_id is not None and provider.printer_id != printer_id:
-                continue
             config = self._config(provider)
             if self._truthy(config.get("live_activities_enabled")):
                 providers.append((provider, config))
@@ -381,6 +483,12 @@ class NotifyLiveActivityService:
 
         printer = printer_manager.get_printer(printer_id)
         return getattr(printer, "name", None) or f"Printer {printer_id}"
+
+    @staticmethod
+    def _is_running_state(state: Any) -> bool:
+        if not state or not getattr(state, "connected", True):
+            return False
+        return str(getattr(state, "state", "")).upper() in {"RUNNING", "PRINTING", "PAUSE", "PAUSED"}
 
     @staticmethod
     def _state_remaining_time_seconds(state: Any) -> int | None:

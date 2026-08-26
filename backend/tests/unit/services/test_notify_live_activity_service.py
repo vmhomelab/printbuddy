@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from backend.app.models.notification import NotificationProvider
 from backend.app.models.notification_live_activity import NotificationLiveActivity
+from backend.app.models.printer import Printer
 from backend.app.services.notify_live_activity_service import NotifyLiveActivityService
 
 
@@ -205,6 +206,58 @@ async def test_keepalive_updates_active_activity_from_current_printer_state(db_s
     await db_session.refresh(activity)
     assert activity.last_progress == 32
     assert activity.last_remaining_time == 2700
+
+
+@pytest.mark.asyncio
+async def test_keepalive_creates_missing_activity_for_running_printer(db_session, notify_provider):
+    printer = Printer(
+        id=7,
+        name="Workshop P1S",
+        serial_number="SERIAL7",
+        ip_address="10.0.0.7",
+        access_code="12345678",
+        provider="bambu",
+        model="P1S",
+        location="Workshop",
+    )
+    db_session.add(printer)
+    await db_session.commit()
+
+    printer_state = type(
+        "PrinterState",
+        (),
+        {
+            "connected": True,
+            "state": "RUNNING",
+            "current_print": "dragon.3mf",
+            "subtask_name": "dragon.3mf",
+            "subtask_id": "task-1",
+            "progress": 35,
+            "remaining_time": 11,
+            "layer_num": 1,
+            "total_layers": 128,
+        },
+    )()
+    client = AsyncMock()
+    client.start = AsyncMock(return_value="activity-created-by-keepalive")
+    service = NotifyLiveActivityService(
+        client_factory=lambda config: client,
+        status_getter=lambda printer_id: printer_state,
+        printer_name_getter=lambda printer_id: "Workshop P1S",
+    )
+
+    await service.keepalive_once(db_session)
+
+    client.start.assert_awaited_once()
+    payload = client.start.await_args.args[0]
+    assert payload["title"] == "Workshop P1S"
+    assert payload["progress"] == 0.78
+    activity = await db_session.scalar(select(NotificationLiveActivity))
+    assert activity is not None
+    assert activity.provider_id == notify_provider.id
+    assert activity.printer_id == 7
+    assert activity.activity_id == "activity-created-by-keepalive"
+    assert activity.state == "active"
 
 
 @pytest.mark.asyncio
