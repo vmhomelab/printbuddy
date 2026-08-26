@@ -99,6 +99,43 @@ async def test_duplicate_print_start_ends_existing_activity_first(db_session, no
 
 
 @pytest.mark.asyncio
+async def test_print_start_reuses_existing_activity_for_same_print(db_session, notify_provider):
+    existing = NotificationLiveActivity(
+        provider_id=notify_provider.id,
+        printer_id=7,
+        activity_id="progress-created-activity",
+        subtask_id="task-1",
+        filename="dragon.3mf",
+        state="active",
+        last_progress=5.36,
+        last_layer_num=3,
+        last_total_layers=56,
+    )
+    db_session.add(existing)
+    await db_session.commit()
+
+    client = AsyncMock()
+    client.start = AsyncMock(return_value="duplicate-activity")
+    client.end = AsyncMock(return_value=None)
+    service = NotifyLiveActivityService(client_factory=lambda config: client)
+
+    await service.on_print_start(
+        db_session,
+        printer_id=7,
+        printer_name="Workshop P1S",
+        data={"filename": "dragon.3mf", "subtask_id": "task-1", "progress": 0, "layer_num": 0, "total_layers": 56},
+    )
+
+    client.end.assert_not_awaited()
+    client.start.assert_not_awaited()
+    activities = (await db_session.scalars(select(NotificationLiveActivity).order_by(NotificationLiveActivity.id))).all()
+    assert len(activities) == 1
+    assert activities[0].activity_id == "progress-created-activity"
+    assert activities[0].state == "active"
+    assert activities[0].last_progress == 5.36
+
+
+@pytest.mark.asyncio
 async def test_print_progress_updates_existing_activity(db_session, notify_provider):
     activity = NotificationLiveActivity(
         provider_id=notify_provider.id,
@@ -129,6 +166,45 @@ async def test_print_progress_updates_existing_activity(db_session, notify_provi
     await db_session.refresh(activity)
     assert activity.last_progress == 62
     assert activity.last_remaining_time == 1800
+
+
+@pytest.mark.asyncio
+async def test_print_progress_skips_unchanged_live_activity_payload(db_session, notify_provider):
+    activity = NotificationLiveActivity(
+        provider_id=notify_provider.id,
+        printer_id=7,
+        activity_id="activity-123",
+        subtask_id="task-1",
+        filename="dragon.3mf",
+        state="active",
+        last_progress=5.36,
+        last_remaining_time=360,
+        last_layer_num=3,
+        last_total_layers=56,
+    )
+    db_session.add(activity)
+    await db_session.commit()
+
+    client = AsyncMock()
+    client.update = AsyncMock(return_value=None)
+    service = NotifyLiveActivityService(client_factory=lambda config: client)
+
+    await service.on_print_progress(
+        db_session,
+        printer_id=7,
+        printer_name="Workshop P1S",
+        filename="dragon.3mf",
+        progress=5.36,
+        remaining_time=360,
+        subtask_id="task-1",
+        layer_num=3,
+        total_layers=56,
+    )
+
+    client.update.assert_not_awaited()
+    await db_session.refresh(activity)
+    assert activity.last_progress == 5.36
+    assert activity.last_layer_num == 3
 
 
 @pytest.mark.asyncio

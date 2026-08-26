@@ -73,6 +73,14 @@ class NotifyLiveActivityService:
             try:
                 existing = await self._active_activity(db, provider_id, printer_id)
                 if existing:
+                    if self._same_print(existing, subtask_id=subtask_id, filename=filename):
+                        logger.info(
+                            "Notify Live Activity already active for provider %s printer %s print %s; reusing existing activity",
+                            provider_id,
+                            printer_id,
+                            subtask_id or filename,
+                        )
+                        continue
                     try:
                         await self._end_existing(client, existing, provider_config=config, printer_name=printer_name, status="stopped")
                     except NotifyLiveActivityError as exc:
@@ -166,10 +174,20 @@ class NotifyLiveActivityService:
                 continue
             activity_db_id = activity.id
             activity_filename = activity.filename
+            display_filename = filename or activity_filename or "Unknown print"
+            if self._activity_payload_unchanged(
+                activity,
+                filename=display_filename,
+                progress=progress,
+                remaining_time=remaining_time,
+                layer_num=layer_num,
+                total_layers=total_layers,
+            ):
+                continue
             client = await self._client(config)
             payload = build_update_content(
                 printer_name=printer_name,
-                filename=filename or activity_filename or "Unknown print",
+                filename=display_filename,
                 progress=progress,
                 remaining_time=remaining_time,
                 layer_num=layer_num,
@@ -593,6 +611,37 @@ class NotifyLiveActivityService:
     def _subtask_id(data: dict[str, Any]) -> str | None:
         value = data.get("subtask_id") or data.get("task_id")
         return str(value) if value else None
+
+    @staticmethod
+    def _same_print(activity: NotificationLiveActivity, *, subtask_id: str | None, filename: str | None) -> bool:
+        if subtask_id and activity.subtask_id == subtask_id:
+            return True
+        return bool(filename and activity.filename == filename and not activity.subtask_id)
+
+    @classmethod
+    def _activity_payload_unchanged(
+        cls,
+        activity: NotificationLiveActivity,
+        *,
+        filename: str,
+        progress: float | int,
+        remaining_time: int | None,
+        layer_num: int | None,
+        total_layers: int | None,
+    ) -> bool:
+        return (
+            activity.filename == filename
+            and cls._float_equal(activity.last_progress, progress)
+            and activity.last_remaining_time == remaining_time
+            and activity.last_layer_num == layer_num
+            and activity.last_total_layers == total_layers
+        )
+
+    @staticmethod
+    def _float_equal(left: float | int | None, right: float | int | None) -> bool:
+        if left is None or right is None:
+            return left is right
+        return abs(float(left) - float(right)) < 0.01
 
     @staticmethod
     def _remaining_time(data: dict[str, Any], *, archive_data: dict[str, Any] | None = None) -> int | None:
