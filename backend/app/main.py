@@ -94,6 +94,7 @@ from backend.app.services.local_backup import local_backup_service
 from backend.app.services.mqtt_relay import mqtt_relay
 from backend.app.services.mqtt_smart_plug import mqtt_smart_plug_service
 from backend.app.services.notification_service import notification_service
+from backend.app.services.notify_live_activity_service import notify_live_activity_service
 from backend.app.services.obico_detection import obico_detection_service
 from backend.app.services.print_scheduler import scheduler as print_scheduler
 from backend.app.services.printer_manager import (
@@ -5852,6 +5853,9 @@ async def lifespan(app: FastAPI):
     # Start the notification digest scheduler
     notification_service.start_digest_scheduler()
 
+    # Start Notify Live Activity keepalive/reconciliation
+    notify_live_activity_service.start_scheduler()
+
     # Start the GitHub backup scheduler
     await github_backup_service.start_scheduler()
 
@@ -5905,6 +5909,7 @@ async def lifespan(app: FastAPI):
     await background_dispatch.stop()
     smart_plug_manager.stop_scheduler()
     notification_service.stop_digest_scheduler()
+    notify_live_activity_service.stop_scheduler()
     github_backup_service.stop_scheduler()
     local_backup_service.stop_scheduler()
     library_trash_service.stop_scheduler()

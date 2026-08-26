@@ -254,6 +254,12 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
           { key: 'device_id', label: 'Device ID', placeholder: 'ABCD1234', type: 'text', required: true },
           { key: 'device_token', label: 'Device Token', placeholder: 'Your Notify device token', type: 'password', required: true },
           { key: 'base_url', label: 'Gateway URL', placeholder: 'https://push.getnotifyapp.com', type: 'text', required: false },
+          { key: 'live_activities_enabled', label: 'Live Activities', type: 'select', required: false, options: [
+            { value: 'false', label: 'Disabled' },
+            { value: 'true', label: 'Enabled' },
+          ]},
+          { key: 'live_activity_keepalive_seconds', label: 'Live Activity Keepalive Seconds', placeholder: '60', type: 'number', required: false },
+          { key: 'live_activity_end_keep_for_seconds', label: 'Keep Final Tile Seconds', placeholder: '300', type: 'number', required: false },
         ];
       default:
         return [];

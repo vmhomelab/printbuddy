@@ -189,6 +189,7 @@ async def init_db():
         long_lived_token,
         maintenance,
         notification,
+        notification_live_activity,
         notification_template,
         oidc_provider,
         orca_base_cache,

@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.notification import NotificationDigestQueue, NotificationLog, NotificationProvider
 from backend.app.models.notification_template import NotificationTemplate
+from backend.app.services.notify_live_activity_service import notify_live_activity_service
 
 logger = logging.getLogger(__name__)
 
@@ -646,7 +647,7 @@ class NotificationService:
             "title": title,
             "text": message,
             "groupType": event_type or "printbuddy",
-            "iconUrl": "https://icons.getnotifyapp.com/icons/mt39aefs-tjpz3wae.png",
+            "iconUrl": "https://raw.githubusercontent.com/vmhomelab/printbuddy/main/static/img/printbuddy_icon.png",
         }
 
         client = await self._get_client()
@@ -853,6 +854,17 @@ class NotificationService:
             archive_data: Optional archive data with print_time_seconds from 3MF parsing
         """
         logger.info("on_print_start called for printer %s (%s)", printer_id, printer_name)
+        try:
+            await notify_live_activity_service.on_print_start(
+                db,
+                printer_id=printer_id,
+                printer_name=printer_name,
+                data=data,
+                archive_data=archive_data,
+            )
+        except Exception:
+            logger.exception("Notify Live Activity start hook failed for printer %s", printer_id)
+
         providers = await self._get_providers_for_event(db, "on_print_start", printer_id)
         if not providers:
             logger.info("No notification providers configured for print_start event on printer %s", printer_id)
@@ -945,6 +957,17 @@ class NotificationService:
             logger.warning("Unknown print status '%s', defaulting to on_print_complete", status)
             event_field = "on_print_complete"
             event_type = "print_complete"
+
+        try:
+            await notify_live_activity_service.on_print_end(
+                db,
+                printer_id=printer_id,
+                printer_name=printer_name,
+                status=status,
+                data=data,
+            )
+        except Exception:
+            logger.exception("Notify Live Activity end hook failed for printer %s", printer_id)
 
         providers = await self._get_providers_for_event(db, event_field, printer_id)
         if not providers:
@@ -1043,6 +1066,18 @@ class NotificationService:
         image_data: bytes | None = None,
     ):
         """Handle print progress milestone (25%, 50%, 75%)."""
+        try:
+            await notify_live_activity_service.on_print_progress(
+                db,
+                printer_id=printer_id,
+                printer_name=printer_name,
+                filename=filename,
+                progress=progress,
+                remaining_time=remaining_time,
+            )
+        except Exception:
+            logger.exception("Notify Live Activity progress hook failed for printer %s", printer_id)
+
         providers = await self._get_providers_for_event(db, "on_print_progress", printer_id)
         if not providers:
             return
@@ -1081,6 +1116,18 @@ class NotificationService:
         finish_photo_url: str | None = None,
     ):
         """Handle 99% print almost-done milestone with a camera snapshot."""
+        try:
+            await notify_live_activity_service.on_print_progress(
+                db,
+                printer_id=printer_id,
+                printer_name=printer_name,
+                filename=filename,
+                progress=99,
+                remaining_time=remaining_time,
+            )
+        except Exception:
+            logger.exception("Notify Live Activity almost-done hook failed for printer %s", printer_id)
+
         providers = await self._get_providers_for_event(db, "on_print_almost_done", printer_id)
         if not providers:
             return
