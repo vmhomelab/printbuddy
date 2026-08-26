@@ -25,6 +25,7 @@ def mock_client():
     response.text = '{"id":"activity-123"}'
     client.post = AsyncMock(return_value=response)
     client.delete = AsyncMock(return_value=response)
+    client.request = AsyncMock(return_value=response)
     client.get = AsyncMock(return_value=response)
     return client
 
@@ -62,11 +63,13 @@ async def test_end_deletes_existing_activity_with_keep_for(config, mock_client):
 
     await client.end("activity 123", {"status": "completed"}, keep_for_seconds=300)
 
-    mock_client.delete.assert_called_once_with(
+    mock_client.request.assert_called_once_with(
+        "DELETE",
         "https://push.getnotifyapp.com/live-activity/activity%20123?token=secret%20token&keepFor=300",
         json={"status": "completed"},
         headers={"Content-Type": "application/json"},
     )
+    mock_client.delete.assert_not_called()
 
 
 @pytest.mark.asyncio

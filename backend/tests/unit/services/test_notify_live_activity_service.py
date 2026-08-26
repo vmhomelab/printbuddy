@@ -9,6 +9,7 @@ from sqlalchemy import select
 from backend.app.models.notification import NotificationProvider
 from backend.app.models.notification_live_activity import NotificationLiveActivity
 from backend.app.models.printer import Printer
+from backend.app.services.notify_live_activity_client import NotifyLiveActivityError
 from backend.app.services.notify_live_activity_service import NotifyLiveActivityService
 
 
@@ -128,6 +129,89 @@ async def test_print_progress_updates_existing_activity(db_session, notify_provi
     await db_session.refresh(activity)
     assert activity.last_progress == 62
     assert activity.last_remaining_time == 1800
+
+
+@pytest.mark.asyncio
+async def test_print_progress_replaces_gone_activity(db_session, notify_provider):
+    activity = NotificationLiveActivity(
+        provider_id=notify_provider.id,
+        printer_id=7,
+        activity_id="overdue-activity",
+        subtask_id="task-1",
+        filename="dragon.3mf",
+        state="active",
+    )
+    db_session.add(activity)
+    await db_session.commit()
+
+    client = AsyncMock()
+    client.update = AsyncMock(
+        side_effect=NotifyLiveActivityError(
+            'Notify Live Activity request failed with HTTP 410: {"error":"Gone"}',
+            status_code=410,
+            retryable=False,
+        )
+    )
+    client.start = AsyncMock(return_value="replacement-activity")
+    service = NotifyLiveActivityService(client_factory=lambda config: client)
+
+    await service.on_print_progress(
+        db_session,
+        printer_id=7,
+        printer_name="Workshop P1S",
+        filename="dragon.3mf",
+        progress=50,
+        remaining_time=900,
+        subtask_id="task-1",
+        layer_num=1,
+        total_layers=56,
+    )
+
+    client.update.assert_awaited_once()
+    client.start.assert_awaited_once()
+    activities = (await db_session.scalars(select(NotificationLiveActivity).order_by(NotificationLiveActivity.id))).all()
+    assert [row.state for row in activities] == ["ended", "active"]
+    assert activities[-1].activity_id == "replacement-activity"
+    assert activities[-1].last_progress == 50
+    assert activities[-1].last_remaining_time == 900
+
+
+@pytest.mark.asyncio
+async def test_print_start_replaces_gone_existing_activity(db_session, notify_provider):
+    existing = NotificationLiveActivity(
+        provider_id=notify_provider.id,
+        printer_id=7,
+        activity_id="overdue-activity",
+        subtask_id="old-task",
+        filename="old.3mf",
+        state="active",
+    )
+    db_session.add(existing)
+    await db_session.commit()
+
+    client = AsyncMock()
+    client.end = AsyncMock(
+        side_effect=NotifyLiveActivityError(
+            'Notify Live Activity request failed with HTTP 410: {"error":"Gone"}',
+            status_code=410,
+            retryable=False,
+        )
+    )
+    client.start = AsyncMock(return_value="new-activity")
+    service = NotifyLiveActivityService(client_factory=lambda config: client)
+
+    await service.on_print_start(
+        db_session,
+        printer_id=7,
+        printer_name="Workshop P1S",
+        data={"filename": "new.3mf", "subtask_id": "new-task", "progress": 0},
+    )
+
+    client.end.assert_awaited_once()
+    client.start.assert_awaited_once()
+    activities = (await db_session.scalars(select(NotificationLiveActivity).order_by(NotificationLiveActivity.id))).all()
+    assert [row.state for row in activities] == ["ended", "active"]
+    assert activities[-1].activity_id == "new-activity"
 
 
 @pytest.mark.asyncio

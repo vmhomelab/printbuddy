@@ -54,7 +54,8 @@ class NotifyLiveActivityClient:
 
     async def end(self, activity_id: str, content: dict[str, Any] | None = None, *, keep_for_seconds: int = 0) -> None:
         """End an existing Live Activity."""
-        response = await self.http_client.delete(
+        response = await self.http_client.request(
+            "DELETE",
             self._activity_url(activity_id, keep_for_seconds=keep_for_seconds),
             json=content or {},
             headers={"Content-Type": "application/json"},
