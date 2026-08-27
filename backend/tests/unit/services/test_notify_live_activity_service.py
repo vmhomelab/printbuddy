@@ -1,10 +1,12 @@
 """Tests for native Notify Live Activity lifecycle management."""
 
+import asyncio
 import json
 from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.models.notification import NotificationProvider
 from backend.app.models.notification_live_activity import NotificationLiveActivity
@@ -315,6 +317,122 @@ async def test_print_progress_creates_missing_activity_for_running_print(db_sess
     assert activity.last_progress == 5.36
     assert activity.last_layer_num == 3
     assert activity.last_total_layers == 56
+
+
+@pytest.mark.asyncio
+async def test_concurrent_print_progress_creates_only_one_missing_activity(test_engine, notify_provider):
+    started = asyncio.Event()
+    release = asyncio.Event()
+    start_calls = 0
+
+    async def start_activity(payload):
+        nonlocal start_calls
+        start_calls += 1
+        started.set()
+        await release.wait()
+        return f"activity-{start_calls}"
+
+    client = AsyncMock()
+    client.start = AsyncMock(side_effect=start_activity)
+    service = NotifyLiveActivityService(client_factory=lambda config: client)
+    session_factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def send_progress():
+        async with session_factory() as session:
+            await service.on_print_progress(
+                session,
+                printer_id=7,
+                printer_name="Prusa CORE One",
+                filename="coreone-test.gcode",
+                progress=1,
+                remaining_time=300,
+                subtask_id="coreone-test.gcode",
+            )
+
+    task1 = asyncio.create_task(send_progress())
+    await started.wait()
+    task2 = asyncio.create_task(send_progress())
+    await asyncio.sleep(0)
+    release.set()
+    await asyncio.gather(task1, task2)
+
+    assert client.start.await_count == 1
+    assert start_calls == 1
+    async with session_factory() as session:
+        activities = (await session.scalars(select(NotificationLiveActivity))).all()
+    assert len(activities) == 1
+    assert activities[0].activity_id == "activity-1"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_recovery_serializes_missing_activity_creation():
+    class FakeProvider:
+        id = 2
+        config = {}
+
+    class FakeDb:
+        commits = 0
+        rollbacks = 0
+
+        async def commit(self):
+            self.commits += 1
+
+        async def rollback(self):
+            self.rollbacks += 1
+
+    class RaceService(NotifyLiveActivityService):
+        def __init__(self, *, client):
+            super().__init__(client_factory=lambda config: client)
+            self.created_activity = None
+            self.concurrent_readers = 0
+            self.both_reading = asyncio.Event()
+
+        async def _enabled_notify_providers(self, db, printer_id):
+            return [(FakeProvider(), {"live_activities_enabled": True})]
+
+        async def _active_activity(self, db, provider_id, printer_id, *, subtask_id=None):
+            if self.created_activity is not None:
+                return self.created_activity
+            self.concurrent_readers += 1
+            if self.concurrent_readers == 2:
+                self.both_reading.set()
+            await asyncio.sleep(0)
+            return None
+
+        async def _create_activity(self, db, **kwargs):
+            self.created_activity = NotificationLiveActivity(
+                provider_id=kwargs["provider_id"],
+                printer_id=kwargs["printer_id"],
+                activity_id=kwargs["activity_id"],
+                subtask_id=kwargs["subtask_id"],
+                filename=kwargs["filename"],
+                state="active",
+                last_progress=float(kwargs["progress"]),
+                last_remaining_time=kwargs["remaining_time"],
+                last_layer_num=kwargs["layer_num"],
+                last_total_layers=kwargs["total_layers"],
+            )
+
+    client = AsyncMock()
+    client.start = AsyncMock(return_value="activity-created-by-progress")
+    service = RaceService(client=client)
+    db = FakeDb()
+
+    async def send_progress():
+        await service.on_print_progress(
+            db,
+            printer_id=4,
+            printer_name="Prusa CORE One",
+            filename="coreone-test.gcode",
+            progress=1,
+            remaining_time=300,
+            subtask_id="coreone-test.gcode",
+        )
+
+    await asyncio.gather(send_progress(), send_progress())
+
+    client.start.assert_awaited_once()
+    assert db.commits == 1
 
 
 @pytest.mark.asyncio

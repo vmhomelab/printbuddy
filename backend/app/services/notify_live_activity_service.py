@@ -45,6 +45,7 @@ class NotifyLiveActivityService:
         self.status_getter = status_getter
         self.printer_name_getter = printer_name_getter
         self._scheduler_task: asyncio.Task | None = None
+        self._activity_locks: dict[tuple[int, int], asyncio.Lock] = {}
 
     async def on_print_start(
         self,
@@ -69,51 +70,20 @@ class NotifyLiveActivityService:
 
         for provider, config in providers:
             provider_id = provider.id
-            client = await self._client(config)
-            try:
-                existing = await self._active_activity(db, provider_id, printer_id)
-                if existing:
-                    if self._same_print(existing, subtask_id=subtask_id, filename=filename):
-                        logger.info(
-                            "Notify Live Activity already active for provider %s printer %s print %s; reusing existing activity",
-                            provider_id,
-                            printer_id,
-                            subtask_id or filename,
-                        )
-                        continue
-                    try:
-                        await self._end_existing(client, existing, provider_config=config, printer_name=printer_name, status="stopped")
-                    except NotifyLiveActivityError as exc:
-                        if not self._is_gone_error(exc):
-                            raise
-                        self._mark_ended(existing)
-
-                await self._create_activity(
+            async with self._activity_lock(provider_id, printer_id):
+                await self._on_print_start_for_provider(
                     db,
                     provider_id=provider_id,
                     printer_id=printer_id,
-                    activity_id=await client.start(
-                        build_start_content(
-                            printer_name=printer_name,
-                            filename=filename,
-                            progress=progress,
-                            remaining_time=remaining_time,
-                            layer_num=layer_num,
-                            total_layers=total_layers,
-                        )
-                    ),
-                    subtask_id=subtask_id,
+                    printer_name=printer_name,
+                    config=config,
                     filename=filename,
-                    progress=progress,
                     remaining_time=remaining_time,
+                    progress=progress,
                     layer_num=layer_num,
                     total_layers=total_layers,
-                    config=config,
+                    subtask_id=subtask_id,
                 )
-                await db.commit()
-            except Exception:
-                await db.rollback()
-                logger.exception("Notify Live Activity start failed for provider %s printer %s", provider_id, printer_id)
 
     async def on_print_progress(
         self,
@@ -133,99 +103,110 @@ class NotifyLiveActivityService:
         providers = await self._enabled_notify_providers(db, printer_id)
         for provider, config in providers:
             provider_id = provider.id
-            activity = await self._active_activity(db, provider_id, printer_id, subtask_id=subtask_id)
-            if not activity:
+            async with self._activity_lock(provider_id, printer_id):
+                await self._on_print_progress_for_provider(
+                    db,
+                    provider_id=provider_id,
+                    printer_id=printer_id,
+                    printer_name=printer_name,
+                    filename=filename,
+                    progress=progress,
+                    remaining_time=remaining_time,
+                    subtask_id=subtask_id,
+                    layer_num=layer_num,
+                    total_layers=total_layers,
+                    state=state,
+                    config=config,
+                )
+
+    async def _on_print_start_for_provider(
+        self,
+        db: AsyncSession,
+        *,
+        provider_id: int,
+        printer_id: int,
+        printer_name: str,
+        config: dict[str, Any],
+        filename: str,
+        remaining_time: int | None,
+        progress: float | int,
+        layer_num: int | None,
+        total_layers: int | None,
+        subtask_id: str | None,
+    ) -> None:
+        client = await self._client(config)
+        try:
+            existing = await self._active_activity(db, provider_id, printer_id)
+            if existing:
+                if self._same_print(existing, subtask_id=subtask_id, filename=filename):
+                    logger.info(
+                        "Notify Live Activity already active for provider %s printer %s print %s; reusing existing activity",
+                        provider_id,
+                        printer_id,
+                        subtask_id or filename,
+                    )
+                    return
                 try:
-                    await self._create_activity(
-                        db,
-                        provider_id=provider_id,
-                        printer_id=printer_id,
-                        activity_id=await (await self._client(config)).start(
-                            build_start_content(
-                                printer_name=printer_name,
-                                filename=filename or "Unknown print",
-                                progress=progress,
-                                remaining_time=remaining_time,
-                                layer_num=layer_num,
-                                total_layers=total_layers,
-                            )
-                        ),
-                        subtask_id=subtask_id,
-                        filename=filename or "Unknown print",
+                    await self._end_existing(client, existing, provider_config=config, printer_name=printer_name, status="stopped")
+                except NotifyLiveActivityError as exc:
+                    if not self._is_gone_error(exc):
+                        raise
+                    self._mark_ended(existing)
+
+            await self._create_activity(
+                db,
+                provider_id=provider_id,
+                printer_id=printer_id,
+                activity_id=await client.start(
+                    build_start_content(
+                        printer_name=printer_name,
+                        filename=filename,
                         progress=progress,
                         remaining_time=remaining_time,
                         layer_num=layer_num,
                         total_layers=total_layers,
-                        config=config,
                     )
-                    await db.commit()
-                    logger.info(
-                        "Notify Live Activity created from progress update for provider %s printer %s",
-                        provider_id,
-                        printer_id,
-                    )
-                except Exception:
-                    await db.rollback()
-                    logger.exception(
-                        "Notify Live Activity progress recovery failed for provider %s printer %s",
-                        provider_id,
-                        printer_id,
-                    )
-                continue
-            activity_db_id = activity.id
-            activity_filename = activity.filename
-            display_filename = filename or activity_filename or "Unknown print"
-            progress, layer_num, total_layers = self._monotonic_progress_payload(
-                activity,
-                progress=progress,
-                layer_num=layer_num,
-                total_layers=total_layers,
-            )
-            if self._activity_payload_unchanged(
-                activity,
-                filename=display_filename,
+                ),
+                subtask_id=subtask_id,
+                filename=filename,
                 progress=progress,
                 remaining_time=remaining_time,
                 layer_num=layer_num,
                 total_layers=total_layers,
-            ):
-                continue
-            client = await self._client(config)
-            payload = build_update_content(
-                printer_name=printer_name,
-                filename=display_filename,
-                progress=progress,
-                remaining_time=remaining_time,
-                layer_num=layer_num,
-                total_layers=total_layers,
-                state=state,
+                config=config,
             )
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            logger.exception("Notify Live Activity start failed for provider %s printer %s", provider_id, printer_id)
+
+    async def _on_print_progress_for_provider(
+        self,
+        db: AsyncSession,
+        *,
+        provider_id: int,
+        printer_id: int,
+        printer_name: str,
+        filename: str,
+        progress: float | int,
+        remaining_time: int | None,
+        subtask_id: str | None,
+        layer_num: int | None,
+        total_layers: int | None,
+        state: str,
+        config: dict[str, Any],
+    ) -> None:
+        activity = await self._active_activity(db, provider_id, printer_id, subtask_id=subtask_id)
+        if not activity:
             try:
-                await client.update(activity.activity_id, payload)
-                activity.last_progress = float(progress)
-                activity.last_remaining_time = remaining_time
-                activity.last_layer_num = layer_num
-                activity.last_total_layers = total_layers
-                activity.updated_at = datetime.utcnow()
-                await db.commit()
-            except NotifyLiveActivityError as exc:
-                if not self._is_gone_error(exc):
-                    await db.rollback()
-                    logger.exception("Notify Live Activity update failed for provider %s printer %s", provider_id, printer_id)
-                    continue
-                await db.rollback()
-                stale_activity = await db.get(NotificationLiveActivity, activity_db_id)
-                if stale_activity:
-                    self._mark_ended(stale_activity)
-                    await db.commit()
                 await self._create_activity(
                     db,
                     provider_id=provider_id,
                     printer_id=printer_id,
-                    activity_id=await client.start(
+                    activity_id=await (await self._client(config)).start(
                         build_start_content(
                             printer_name=printer_name,
-                            filename=filename or activity_filename or "Unknown print",
+                            filename=filename or "Unknown print",
                             progress=progress,
                             remaining_time=remaining_time,
                             layer_num=layer_num,
@@ -233,8 +214,8 @@ class NotifyLiveActivityService:
                         )
                     ),
                     subtask_id=subtask_id,
-                    filename=filename or activity_filename or "Unknown print",
-                    progress=float(progress),
+                    filename=filename or "Unknown print",
+                    progress=progress,
                     remaining_time=remaining_time,
                     layer_num=layer_num,
                     total_layers=total_layers,
@@ -242,13 +223,105 @@ class NotifyLiveActivityService:
                 )
                 await db.commit()
                 logger.info(
-                    "Notify Live Activity replaced expired activity for provider %s printer %s",
+                    "Notify Live Activity created from progress update for provider %s printer %s",
                     provider_id,
                     printer_id,
                 )
             except Exception:
                 await db.rollback()
+                logger.exception(
+                    "Notify Live Activity progress recovery failed for provider %s printer %s",
+                    provider_id,
+                    printer_id,
+                )
+            return
+
+        activity_db_id = activity.id
+        activity_filename = activity.filename
+        display_filename = filename or activity_filename or "Unknown print"
+        progress, layer_num, total_layers = self._monotonic_progress_payload(
+            activity,
+            progress=progress,
+            layer_num=layer_num,
+            total_layers=total_layers,
+        )
+        if self._activity_payload_unchanged(
+            activity,
+            filename=display_filename,
+            progress=progress,
+            remaining_time=remaining_time,
+            layer_num=layer_num,
+            total_layers=total_layers,
+        ):
+            return
+
+        client = await self._client(config)
+        payload = build_update_content(
+            printer_name=printer_name,
+            filename=display_filename,
+            progress=progress,
+            remaining_time=remaining_time,
+            layer_num=layer_num,
+            total_layers=total_layers,
+            state=state,
+        )
+        try:
+            await client.update(activity.activity_id, payload)
+            activity.last_progress = float(progress)
+            activity.last_remaining_time = remaining_time
+            activity.last_layer_num = layer_num
+            activity.last_total_layers = total_layers
+            activity.updated_at = datetime.utcnow()
+            await db.commit()
+        except NotifyLiveActivityError as exc:
+            if not self._is_gone_error(exc):
+                await db.rollback()
                 logger.exception("Notify Live Activity update failed for provider %s printer %s", provider_id, printer_id)
+                return
+            await db.rollback()
+            stale_activity = await db.get(NotificationLiveActivity, activity_db_id)
+            if stale_activity:
+                self._mark_ended(stale_activity)
+                await db.commit()
+            await self._create_activity(
+                db,
+                provider_id=provider_id,
+                printer_id=printer_id,
+                activity_id=await client.start(
+                    build_start_content(
+                        printer_name=printer_name,
+                        filename=filename or activity_filename or "Unknown print",
+                        progress=progress,
+                        remaining_time=remaining_time,
+                        layer_num=layer_num,
+                        total_layers=total_layers,
+                    )
+                ),
+                subtask_id=subtask_id,
+                filename=filename or activity_filename or "Unknown print",
+                progress=float(progress),
+                remaining_time=remaining_time,
+                layer_num=layer_num,
+                total_layers=total_layers,
+                config=config,
+            )
+            await db.commit()
+            logger.info(
+                "Notify Live Activity replaced expired activity for provider %s printer %s",
+                provider_id,
+                printer_id,
+            )
+        except Exception:
+            await db.rollback()
+            logger.exception("Notify Live Activity update failed for provider %s printer %s", provider_id, printer_id)
+
+    def _activity_lock(self, provider_id: int, printer_id: int) -> asyncio.Lock:
+        key = (provider_id, printer_id)
+        lock = self._activity_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._activity_locks[key] = lock
+        return lock
 
     async def on_print_end(
         self,
