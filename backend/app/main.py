@@ -1376,7 +1376,7 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
     logger = logging.getLogger(__name__)
     raw_progress = state.progress or 0
     progress = effective_print_progress(state)
-    is_printing = state.state in ("RUNNING", "PRINTING")
+    is_printing = bool(state.connected) and state.state in ("RUNNING", "PRINTING")
     provider = _provider_name_for_progress(printer_id)
 
     if is_printing:

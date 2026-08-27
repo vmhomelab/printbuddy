@@ -26,6 +26,8 @@ from backend.app.services.print_progress import effective_print_progress
 
 logger = logging.getLogger(__name__)
 
+APPLE_LIVE_ACTIVITY_PROGRESS_FLOOR_SECONDS = 15
+
 ClientFactory = Callable[[dict[str, Any]], Any]
 StatusGetter = Callable[[int], Any]
 PrinterNameGetter = Callable[[int], str]
@@ -250,6 +252,13 @@ class NotifyLiveActivityService:
             filename=display_filename,
             progress=progress,
             remaining_time=remaining_time,
+            layer_num=layer_num,
+            total_layers=total_layers,
+        ):
+            return
+        if self._routine_progress_update_too_soon(
+            activity,
+            progress=progress,
             layer_num=layer_num,
             total_layers=total_layers,
         ):
@@ -715,6 +724,32 @@ class NotifyLiveActivityService:
             and activity.last_layer_num == layer_num
             and activity.last_total_layers == total_layers
         )
+
+    @staticmethod
+    def _routine_progress_update_too_soon(
+        activity: NotificationLiveActivity,
+        *,
+        progress: float | int,
+        layer_num: int | None,
+        total_layers: int | None,
+    ) -> bool:
+        """Respect Apple's Live Activity pacing for routine progress-only updates.
+
+        Creation, first real layer, and completion remain immediate. Intermediate
+        layer/progress frames can be coalesced safely; sending them too quickly
+        causes iOS/Notify to batch or visibly lag behind.
+        """
+        updated_at = activity.updated_at
+        if updated_at is None or activity.last_progress is None:
+            return False
+        if float(progress) >= 100:
+            return False
+        if total_layers is not None and layer_num is not None and total_layers > 0 and layer_num >= total_layers:
+            return False
+        if (activity.last_layer_num in (None, 0)) and layer_num is not None and layer_num > 0:
+            return False
+        elapsed = (datetime.utcnow() - updated_at).total_seconds()
+        return elapsed < APPLE_LIVE_ACTIVITY_PROGRESS_FLOOR_SECONDS
 
     @staticmethod
     def _monotonic_progress_payload(

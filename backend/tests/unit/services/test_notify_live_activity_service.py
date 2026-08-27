@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from datetime import datetime, timedelta
 from unittest.mock import AsyncMock
 
 import pytest
@@ -284,6 +285,166 @@ async def test_print_progress_does_not_resend_same_eta_inside_tolerance(db_sessi
     client.update.assert_not_awaited()
     await db_session.refresh(activity)
     assert activity.last_remaining_time == 240
+
+
+@pytest.mark.asyncio
+async def test_print_progress_paces_routine_layer_updates_inside_apple_cooldown(db_session, notify_provider):
+    activity = NotificationLiveActivity(
+        provider_id=notify_provider.id,
+        printer_id=7,
+        activity_id="activity-123",
+        subtask_id="task-1",
+        filename="dragon.3mf",
+        state="active",
+        last_progress=7.14,
+        last_remaining_time=720,
+        last_layer_num=4,
+        last_total_layers=56,
+        updated_at=datetime.utcnow() - timedelta(seconds=5),
+    )
+    db_session.add(activity)
+    await db_session.commit()
+
+    client = AsyncMock()
+    client.update = AsyncMock(return_value=None)
+    service = NotifyLiveActivityService(client_factory=lambda config: client)
+
+    await service.on_print_progress(
+        db_session,
+        printer_id=7,
+        printer_name="Workshop P1S",
+        filename="dragon.3mf",
+        progress=8.93,
+        remaining_time=710,
+        subtask_id="task-1",
+        layer_num=5,
+        total_layers=56,
+    )
+
+    client.update.assert_not_awaited()
+    await db_session.refresh(activity)
+    assert activity.last_progress == 7.14
+    assert activity.last_layer_num == 4
+
+
+@pytest.mark.asyncio
+async def test_print_progress_sends_routine_layer_update_after_apple_cooldown(db_session, notify_provider):
+    activity = NotificationLiveActivity(
+        provider_id=notify_provider.id,
+        printer_id=7,
+        activity_id="activity-123",
+        subtask_id="task-1",
+        filename="dragon.3mf",
+        state="active",
+        last_progress=7.14,
+        last_remaining_time=720,
+        last_layer_num=4,
+        last_total_layers=56,
+        updated_at=datetime.utcnow() - timedelta(seconds=16),
+    )
+    db_session.add(activity)
+    await db_session.commit()
+
+    client = AsyncMock()
+    client.update = AsyncMock(return_value=None)
+    service = NotifyLiveActivityService(client_factory=lambda config: client)
+
+    await service.on_print_progress(
+        db_session,
+        printer_id=7,
+        printer_name="Workshop P1S",
+        filename="dragon.3mf",
+        progress=8.93,
+        remaining_time=710,
+        subtask_id="task-1",
+        layer_num=5,
+        total_layers=56,
+    )
+
+    client.update.assert_awaited_once()
+    await db_session.refresh(activity)
+    assert activity.last_progress == 8.93
+    assert activity.last_layer_num == 5
+
+
+@pytest.mark.asyncio
+async def test_print_progress_sends_first_real_layer_inside_apple_cooldown(db_session, notify_provider):
+    activity = NotificationLiveActivity(
+        provider_id=notify_provider.id,
+        printer_id=7,
+        activity_id="activity-123",
+        subtask_id="task-1",
+        filename="dragon.3mf",
+        state="active",
+        last_progress=0,
+        last_remaining_time=720,
+        last_layer_num=0,
+        last_total_layers=56,
+        updated_at=datetime.utcnow() - timedelta(seconds=5),
+    )
+    db_session.add(activity)
+    await db_session.commit()
+
+    client = AsyncMock()
+    client.update = AsyncMock(return_value=None)
+    service = NotifyLiveActivityService(client_factory=lambda config: client)
+
+    await service.on_print_progress(
+        db_session,
+        printer_id=7,
+        printer_name="Workshop P1S",
+        filename="dragon.3mf",
+        progress=1.79,
+        remaining_time=710,
+        subtask_id="task-1",
+        layer_num=1,
+        total_layers=56,
+    )
+
+    client.update.assert_awaited_once()
+    await db_session.refresh(activity)
+    assert activity.last_progress == 1.79
+    assert activity.last_layer_num == 1
+
+
+@pytest.mark.asyncio
+async def test_print_progress_sends_completion_inside_apple_cooldown(db_session, notify_provider):
+    activity = NotificationLiveActivity(
+        provider_id=notify_provider.id,
+        printer_id=7,
+        activity_id="activity-123",
+        subtask_id="task-1",
+        filename="dragon.3mf",
+        state="active",
+        last_progress=98.21,
+        last_remaining_time=60,
+        last_layer_num=55,
+        last_total_layers=56,
+        updated_at=datetime.utcnow() - timedelta(seconds=5),
+    )
+    db_session.add(activity)
+    await db_session.commit()
+
+    client = AsyncMock()
+    client.update = AsyncMock(return_value=None)
+    service = NotifyLiveActivityService(client_factory=lambda config: client)
+
+    await service.on_print_progress(
+        db_session,
+        printer_id=7,
+        printer_name="Workshop P1S",
+        filename="dragon.3mf",
+        progress=100,
+        remaining_time=0,
+        subtask_id="task-1",
+        layer_num=56,
+        total_layers=56,
+    )
+
+    client.update.assert_awaited_once()
+    await db_session.refresh(activity)
+    assert activity.last_progress == 100
+    assert activity.last_layer_num == 56
 
 
 @pytest.mark.asyncio

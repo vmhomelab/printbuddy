@@ -85,9 +85,9 @@ async def test_printer_status_broadcasts_when_cfs_remain_changes():
     assert send_status.await_count == 2
 
 
-def _printing_state(*, progress: float, layer_num: int, total_layers: int):
+def _printing_state(*, progress: float, layer_num: int, total_layers: int, connected: bool = True):
     return SimpleNamespace(
-        connected=True,
+        connected=connected,
         state="RUNNING",
         progress=progress,
         layer_num=layer_num,
@@ -164,6 +164,51 @@ async def test_live_activity_updates_on_layer_change_without_progress_milestone(
         layer_num=3,
         total_layers=56,
     )
+
+
+@pytest.mark.asyncio
+async def test_disconnected_running_state_does_not_update_live_activity_from_stale_values():
+    """Disconnected printer frames carry last-seen values and must not advance Live Activities."""
+
+    printer_id = 5454
+    main._last_status_broadcast.pop(printer_id, None)
+    main._last_progress_milestone.pop(printer_id, None)
+    main._last_progress_value.pop(printer_id, None)
+    main._progress_job_key.pop(printer_id, None)
+    main._pending_progress_milestone.pop(printer_id, None)
+    main._print_almost_done_notified.pop(printer_id, None)
+    main._first_layer_notified.pop(printer_id, None)
+
+    printer = SimpleNamespace(name="Bambu Lab P1S")
+    db = AsyncMock()
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = printer
+    db.execute = AsyncMock(return_value=result)
+
+    with (
+        patch.object(main, "mqtt_relay") as mqtt_relay,
+        patch.object(main, "printer_manager") as printer_manager,
+        patch.object(main, "notification_service") as notification_service,
+        patch.object(main, "notify_live_activity_service") as live_activity_service,
+        patch.object(main, "smart_plug_manager") as smart_plug_manager,
+        patch.object(main, "async_session", return_value=_AsyncSessionContext(db)),
+        patch.object(main.ws_manager, "send_printer_status", new_callable=AsyncMock),
+        patch.object(main, "printer_state_to_dict", return_value={"connected": False}),
+    ):
+        mqtt_relay.on_printer_status = AsyncMock()
+        printer_manager.get_printer.return_value = printer
+        printer_manager.get_model.return_value = "P1S"
+        notification_service.on_print_progress = AsyncMock()
+        live_activity_service.on_print_progress = AsyncMock()
+        smart_plug_manager.handle_print_state_change = AsyncMock()
+
+        await main.on_printer_status_change(
+            printer_id,
+            _printing_state(progress=75, layer_num=42, total_layers=56, connected=False),
+        )
+
+    live_activity_service.on_print_progress.assert_not_awaited()
+    notification_service.on_print_progress.assert_not_awaited()
 
 
 @pytest.mark.asyncio
