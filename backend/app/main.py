@@ -1414,6 +1414,7 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
                     filename=filename,
                     progress=progress,
                     remaining_time=remaining_time_seconds,
+                    subtask_id=state.subtask_id,
                     layer_num=state.layer_num,
                     total_layers=state.total_layers,
                 )

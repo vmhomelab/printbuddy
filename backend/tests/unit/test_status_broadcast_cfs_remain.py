@@ -93,6 +93,7 @@ def _printing_state(*, progress: float, layer_num: int, total_layers: int):
         layer_num=layer_num,
         total_layers=total_layers,
         subtask_name="half_test_cube",
+        subtask_id="1057596979",
         gcode_file="half_test_cube.3mf",
         current_print="half_test_cube.3mf",
         remaining_time=6,
@@ -159,6 +160,7 @@ async def test_live_activity_updates_on_layer_change_without_progress_milestone(
         filename="half_test_cube",
         progress=5.36,
         remaining_time=360,
+        subtask_id="1057596979",
         layer_num=3,
         total_layers=56,
     )
@@ -214,6 +216,7 @@ async def test_milestone_notification_does_not_send_second_live_activity_update(
         filename="half_test_cube",
         progress=51.79,
         remaining_time=360,
+        subtask_id="1057596979",
         layer_num=29,
         total_layers=56,
     )
