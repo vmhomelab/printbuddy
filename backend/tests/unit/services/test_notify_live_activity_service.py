@@ -208,6 +208,83 @@ async def test_print_progress_skips_unchanged_live_activity_payload(db_session, 
 
 
 @pytest.mark.asyncio
+async def test_print_progress_clamps_backwards_progress_for_same_print(db_session, notify_provider):
+    activity = NotificationLiveActivity(
+        provider_id=notify_provider.id,
+        printer_id=7,
+        activity_id="activity-123",
+        subtask_id="task-1",
+        filename="dragon.3mf",
+        state="active",
+        last_progress=30.36,
+        last_remaining_time=240,
+        last_layer_num=17,
+        last_total_layers=56,
+    )
+    db_session.add(activity)
+    await db_session.commit()
+
+    client = AsyncMock()
+    client.update = AsyncMock(return_value=None)
+    service = NotifyLiveActivityService(client_factory=lambda config: client)
+
+    await service.on_print_progress(
+        db_session,
+        printer_id=7,
+        printer_name="Workshop P1S",
+        filename="dragon.3mf",
+        progress=5.36,
+        remaining_time=240,
+        subtask_id="task-1",
+        layer_num=3,
+        total_layers=56,
+    )
+
+    client.update.assert_not_awaited()
+    await db_session.refresh(activity)
+    assert activity.last_progress == 30.36
+    assert activity.last_layer_num == 17
+
+
+@pytest.mark.asyncio
+async def test_print_progress_does_not_resend_same_eta_inside_tolerance(db_session, notify_provider):
+    activity = NotificationLiveActivity(
+        provider_id=notify_provider.id,
+        printer_id=7,
+        activity_id="activity-123",
+        subtask_id="task-1",
+        filename="dragon.3mf",
+        state="active",
+        last_progress=30.36,
+        last_remaining_time=240,
+        last_layer_num=17,
+        last_total_layers=56,
+    )
+    db_session.add(activity)
+    await db_session.commit()
+
+    client = AsyncMock()
+    client.update = AsyncMock(return_value=None)
+    service = NotifyLiveActivityService(client_factory=lambda config: client)
+
+    await service.on_print_progress(
+        db_session,
+        printer_id=7,
+        printer_name="Workshop P1S",
+        filename="dragon.3mf",
+        progress=30.36,
+        remaining_time=238,
+        subtask_id="task-1",
+        layer_num=17,
+        total_layers=56,
+    )
+
+    client.update.assert_not_awaited()
+    await db_session.refresh(activity)
+    assert activity.last_remaining_time == 240
+
+
+@pytest.mark.asyncio
 async def test_print_progress_creates_missing_activity_for_running_print(db_session, notify_provider):
     client = AsyncMock()
     client.start = AsyncMock(return_value="activity-created-by-progress")

@@ -175,6 +175,12 @@ class NotifyLiveActivityService:
             activity_db_id = activity.id
             activity_filename = activity.filename
             display_filename = filename or activity_filename or "Unknown print"
+            progress, layer_num, total_layers = self._monotonic_progress_payload(
+                activity,
+                progress=progress,
+                layer_num=layer_num,
+                total_layers=total_layers,
+            )
             if self._activity_payload_unchanged(
                 activity,
                 filename=display_filename,
@@ -632,10 +638,52 @@ class NotifyLiveActivityService:
         return (
             activity.filename == filename
             and cls._float_equal(activity.last_progress, progress)
-            and activity.last_remaining_time == remaining_time
+            and cls._remaining_time_equal(activity, remaining_time)
             and activity.last_layer_num == layer_num
             and activity.last_total_layers == total_layers
         )
+
+    @staticmethod
+    def _monotonic_progress_payload(
+        activity: NotificationLiveActivity,
+        *,
+        progress: float | int,
+        layer_num: int | None,
+        total_layers: int | None,
+    ) -> tuple[float | int, int | None, int | None]:
+        """Keep one active Live Activity moving forward for a print.
+
+        Bambu reports firmware progress, preparation stages, and layer counters
+        at different times. If consecutive frames briefly switch scale/source,
+        never publish an older visible progress/layer than the last successful
+        Live Activity payload for this same activity.
+        """
+        last_progress = activity.last_progress
+        if last_progress is not None and float(progress) < float(last_progress):
+            progress = last_progress
+            if activity.last_layer_num is not None and (layer_num is None or layer_num < activity.last_layer_num):
+                layer_num = activity.last_layer_num
+                total_layers = activity.last_total_layers
+
+        if activity.last_layer_num is not None and layer_num is not None and layer_num < activity.last_layer_num:
+            layer_num = activity.last_layer_num
+            total_layers = activity.last_total_layers
+
+        return progress, layer_num, total_layers
+
+    @classmethod
+    def _remaining_time_equal(cls, activity: NotificationLiveActivity, remaining_time: int | None) -> bool:
+        if activity.last_remaining_time == remaining_time:
+            return True
+        if activity.last_remaining_time is None or remaining_time is None:
+            return False
+        return abs(cls._decayed_remaining_time(activity) - remaining_time) <= 15
+
+    @staticmethod
+    def _decayed_remaining_time(activity: NotificationLiveActivity) -> int:
+        updated_at = activity.updated_at or datetime.utcnow()
+        elapsed = max(int((datetime.utcnow() - updated_at).total_seconds()), 0)
+        return max(int(activity.last_remaining_time or 0) - elapsed, 0)
 
     @staticmethod
     def _float_equal(left: float | int | None, right: float | int | None) -> bool:
