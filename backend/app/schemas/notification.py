@@ -262,9 +262,13 @@ class NotifyConfig(BaseModel):
     device_id: str = Field(..., description="Notify device ID")
     device_token: str = Field(..., description="Notify device token")
     base_url: str = Field(default="https://push.getnotifyapp.com", description="Notify gateway URL")
-    live_activities_enabled: bool = Field(default=False, description="Create and update iOS Live Activities during prints")
+    live_activities_enabled: bool = Field(
+        default=False, description="Create and update iOS Live Activities during prints"
+    )
     live_activity_keepalive_seconds: int = Field(default=60, description="Live Activity reconciliation interval")
-    live_activity_end_keep_for_seconds: int = Field(default=300, description="Seconds to keep final Live Activity state")
+    live_activity_end_keep_for_seconds: int = Field(
+        default=300, description="Seconds to keep final Live Activity state"
+    )
 
 
 # Notification Log schemas

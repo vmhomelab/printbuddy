@@ -71,6 +71,42 @@ async def test_print_start_creates_live_activity_row(db_session, notify_provider
 
 
 @pytest.mark.asyncio
+async def test_print_start_uses_configured_progress_compact_display(db_session, notify_provider):
+    notify_provider.config = json.dumps(
+        {
+            "device_id": "DEVICE123",
+            "device_token": "token",
+            "live_activities_enabled": True,
+            "live_activity_compact_display": "progress",
+        }
+    )
+    await db_session.commit()
+
+    client = AsyncMock()
+    client.start = AsyncMock(return_value="activity-123")
+    service = NotifyLiveActivityService(client_factory=lambda config: client)
+
+    await service.on_print_start(
+        db_session,
+        printer_id=7,
+        printer_name="Workshop P1S",
+        data={
+            "filename": "dragon.3mf",
+            "subtask_id": "task-1",
+            "remaining_time": 5400,
+            "layer_num": 8,
+            "total_layers": 120,
+        },
+    )
+
+    payload = client.start.await_args.args[0]
+    assert payload["body"] == "dragon"
+    assert payload["endsIn"] is None
+    assert payload["trailing"] == "6% · L8/120"
+    assert payload["status"] == "6%"
+
+
+@pytest.mark.asyncio
 async def test_duplicate_print_start_ends_existing_activity_first(db_session, notify_provider):
     existing = NotificationLiveActivity(
         provider_id=notify_provider.id,
@@ -96,7 +132,9 @@ async def test_duplicate_print_start_ends_existing_activity_first(db_session, no
     )
 
     client.end.assert_awaited_once()
-    activities = (await db_session.scalars(select(NotificationLiveActivity).order_by(NotificationLiveActivity.id))).all()
+    activities = (
+        await db_session.scalars(select(NotificationLiveActivity).order_by(NotificationLiveActivity.id))
+    ).all()
     assert [activity.state for activity in activities] == ["ended", "active"]
     assert activities[-1].activity_id == "new-activity"
 
@@ -131,7 +169,9 @@ async def test_print_start_reuses_existing_activity_for_same_print(db_session, n
 
     client.end.assert_not_awaited()
     client.start.assert_not_awaited()
-    activities = (await db_session.scalars(select(NotificationLiveActivity).order_by(NotificationLiveActivity.id))).all()
+    activities = (
+        await db_session.scalars(select(NotificationLiveActivity).order_by(NotificationLiveActivity.id))
+    ).all()
     assert len(activities) == 1
     assert activities[0].activity_id == "progress-created-activity"
     assert activities[0].state == "active"
@@ -467,7 +507,8 @@ async def test_print_progress_creates_missing_activity_for_running_print(db_sess
 
     client.start.assert_awaited_once()
     payload = client.start.await_args.args[0]
-    assert payload["body"] == "5% · Layer 3 / 56"
+    assert payload["body"] == "dragon"
+    assert payload["status"] == "5%"
     assert payload["progress"] == 5.36
     activity = await db_session.scalar(select(NotificationLiveActivity))
     assert activity is not None
@@ -634,7 +675,9 @@ async def test_print_progress_replaces_gone_activity(db_session, notify_provider
 
     client.update.assert_awaited_once()
     client.start.assert_awaited_once()
-    activities = (await db_session.scalars(select(NotificationLiveActivity).order_by(NotificationLiveActivity.id))).all()
+    activities = (
+        await db_session.scalars(select(NotificationLiveActivity).order_by(NotificationLiveActivity.id))
+    ).all()
     assert [row.state for row in activities] == ["ended", "active"]
     assert activities[-1].activity_id == "replacement-activity"
     assert activities[-1].last_progress == 50
@@ -674,7 +717,9 @@ async def test_print_start_replaces_gone_existing_activity(db_session, notify_pr
 
     client.end.assert_awaited_once()
     client.start.assert_awaited_once()
-    activities = (await db_session.scalars(select(NotificationLiveActivity).order_by(NotificationLiveActivity.id))).all()
+    activities = (
+        await db_session.scalars(select(NotificationLiveActivity).order_by(NotificationLiveActivity.id))
+    ).all()
     assert [row.state for row in activities] == ["ended", "active"]
     assert activities[-1].activity_id == "new-activity"
 
@@ -840,7 +885,9 @@ async def test_keepalive_ends_activity_when_printer_is_no_longer_running(db_sess
 
 @pytest.mark.asyncio
 async def test_string_true_live_activity_config_enables_activity(db_session, notify_provider):
-    notify_provider.config = json.dumps({"device_id": "DEVICE123", "device_token": "token", "live_activities_enabled": "true"})
+    notify_provider.config = json.dumps(
+        {"device_id": "DEVICE123", "device_token": "token", "live_activities_enabled": "true"}
+    )
     await db_session.commit()
 
     client = AsyncMock()
@@ -859,7 +906,9 @@ async def test_string_true_live_activity_config_enables_activity(db_session, not
 
 @pytest.mark.asyncio
 async def test_disabled_live_activity_config_does_not_call_notify(db_session, notify_provider):
-    notify_provider.config = json.dumps({"device_id": "DEVICE123", "device_token": "token", "live_activities_enabled": False})
+    notify_provider.config = json.dumps(
+        {"device_id": "DEVICE123", "device_token": "token", "live_activities_enabled": False}
+    )
     await db_session.commit()
 
     client = AsyncMock()

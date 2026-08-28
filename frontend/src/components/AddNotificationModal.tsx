@@ -258,6 +258,10 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
             { value: 'false', label: 'Disabled' },
             { value: 'true', label: 'Enabled' },
           ]},
+          { key: 'live_activity_compact_display', label: 'Dynamic Island Display', type: 'select', required: false, options: [
+            { value: 'eta', label: 'Time remaining' },
+            { value: 'progress', label: 'Percent / layer' },
+          ]},
           { key: 'live_activity_keepalive_seconds', label: 'Live Activity Keepalive Seconds', placeholder: '60', type: 'number', required: false },
           { key: 'live_activity_end_keep_for_seconds', label: 'Keep Final Tile Seconds', placeholder: '300', type: 'number', required: false },
         ];
@@ -343,13 +347,16 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
             <p className="text-sm text-bambu-gray">{t('notifications.configuration')}</p>
             {configFields
               .filter((field) => !('showIf' in field) || (field as { showIf?: (cfg: Record<string, string>) => boolean }).showIf?.(config) !== false)
-              .map((field) => (
+              .map((field) => {
+                const fieldId = `notification-config-${field.key}`;
+                return (
               <div key={field.key}>
-                <label className="block text-sm text-bambu-gray mb-1">
+                <label htmlFor={fieldId} className="block text-sm text-bambu-gray mb-1">
                   {field.label} {field.required && '*'}
                 </label>
                 {field.type === 'select' && 'options' in field && field.options ? (
                   <select
+                    id={fieldId}
                     value={config[field.key] || field.options[0]?.value || ''}
                     onChange={(e) => {
                       setConfig({ ...config, [field.key]: e.target.value });
@@ -365,6 +372,7 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
                   </select>
                 ) : (
                   <input
+                    id={fieldId}
                     type={field.type}
                     value={config[field.key] || ''}
                     onChange={(e) => {
@@ -376,7 +384,8 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
                   />
                 )}
               </div>
-            ))}
+                );
+              })}
           </div>
 
           {/* Test Button */}

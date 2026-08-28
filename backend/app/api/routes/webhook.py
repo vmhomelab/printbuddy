@@ -72,11 +72,7 @@ def _serialize_hms_errors(errors: Any) -> list[dict[str, Any]]:
             serialized.append(asdict(error))
         else:
             serialized.append(
-                {
-                    key: getattr(error, key)
-                    for key in ("code", "attr", "module", "severity")
-                    if hasattr(error, key)
-                }
+                {key: getattr(error, key) for key in ("code", "attr", "module", "severity") if hasattr(error, key)}
             )
     return serialized
 

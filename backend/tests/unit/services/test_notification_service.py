@@ -834,7 +834,9 @@ class TestNotificationProviderTypes:
         with patch.object(service, "_get_client", new_callable=AsyncMock) as mock_get_client:
             mock_get_client.return_value = mock_client
 
-            success, message = await service._send_notify(config, "Test Title", "Test Message", event_type="print_start")
+            success, message = await service._send_notify(
+                config, "Test Title", "Test Message", event_type="print_start"
+            )
 
         assert success is True
         assert message == "Notification sent via Notify"
@@ -845,7 +847,10 @@ class TestNotificationProviderTypes:
         assert payload["title"] == "Test Title"
         assert payload["text"] == "Test Message"
         assert payload["groupType"] == "print_start"
-        assert payload["iconUrl"] == "https://raw.githubusercontent.com/vmhomelab/printbuddy/main/static/img/printbuddy_icon.png"
+        assert (
+            payload["iconUrl"]
+            == "https://raw.githubusercontent.com/vmhomelab/printbuddy/main/static/img/printbuddy_icon.png"
+        )
 
     @pytest.mark.asyncio
     async def test_notify_provider_requires_device_credentials(self, service):

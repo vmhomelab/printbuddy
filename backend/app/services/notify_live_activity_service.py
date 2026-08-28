@@ -149,7 +149,9 @@ class NotifyLiveActivityService:
                     )
                     return
                 try:
-                    await self._end_existing(client, existing, provider_config=config, printer_name=printer_name, status="stopped")
+                    await self._end_existing(
+                        client, existing, provider_config=config, printer_name=printer_name, status="stopped"
+                    )
                 except NotifyLiveActivityError as exc:
                     if not self._is_gone_error(exc):
                         raise
@@ -167,6 +169,7 @@ class NotifyLiveActivityService:
                         remaining_time=remaining_time,
                         layer_num=layer_num,
                         total_layers=total_layers,
+                        compact_display=self._compact_display(config),
                     )
                 ),
                 subtask_id=subtask_id,
@@ -213,6 +216,7 @@ class NotifyLiveActivityService:
                             remaining_time=remaining_time,
                             layer_num=layer_num,
                             total_layers=total_layers,
+                            compact_display=self._compact_display(config),
                         )
                     ),
                     subtask_id=subtask_id,
@@ -273,6 +277,7 @@ class NotifyLiveActivityService:
             layer_num=layer_num,
             total_layers=total_layers,
             state=state,
+            compact_display=self._compact_display(config),
         )
         try:
             await client.update(activity.activity_id, payload)
@@ -285,7 +290,9 @@ class NotifyLiveActivityService:
         except NotifyLiveActivityError as exc:
             if not self._is_gone_error(exc):
                 await db.rollback()
-                logger.exception("Notify Live Activity update failed for provider %s printer %s", provider_id, printer_id)
+                logger.exception(
+                    "Notify Live Activity update failed for provider %s printer %s", provider_id, printer_id
+                )
                 return
             await db.rollback()
             stale_activity = await db.get(NotificationLiveActivity, activity_db_id)
@@ -304,6 +311,7 @@ class NotifyLiveActivityService:
                         remaining_time=remaining_time,
                         layer_num=layer_num,
                         total_layers=total_layers,
+                        compact_display=self._compact_display(config),
                     )
                 ),
                 subtask_id=subtask_id,
@@ -399,9 +407,7 @@ class NotifyLiveActivityService:
 
     async def keepalive_once(self, db: AsyncSession) -> None:
         """Reconcile every active Live Activity against current printer state."""
-        result = await db.scalars(
-            select(NotificationLiveActivity).where(NotificationLiveActivity.state == "active")
-        )
+        result = await db.scalars(select(NotificationLiveActivity).where(NotificationLiveActivity.state == "active"))
         for activity in result.all():
             provider = await db.get(NotificationProvider, activity.provider_id)
             if not provider or not provider.enabled:
@@ -414,11 +420,16 @@ class NotifyLiveActivityService:
             printer_name = self._printer_name(activity.printer_id)
             client = await self._client(config)
             try:
-                if not state or not getattr(state, "connected", True) or str(getattr(state, "state", "")).upper() not in {
-                    "RUNNING",
-                    "PAUSE",
-                    "PAUSED",
-                }:
+                if (
+                    not state
+                    or not getattr(state, "connected", True)
+                    or str(getattr(state, "state", "")).upper()
+                    not in {
+                        "RUNNING",
+                        "PAUSE",
+                        "PAUSED",
+                    }
+                ):
                     payload = build_end_content(
                         printer_name=printer_name,
                         filename=activity.filename or "Unknown print",
@@ -430,7 +441,9 @@ class NotifyLiveActivityService:
                     await db.commit()
                     continue
 
-                filename = getattr(state, "subtask_name", None) or getattr(state, "current_print", None) or activity.filename
+                filename = (
+                    getattr(state, "subtask_name", None) or getattr(state, "current_print", None) or activity.filename
+                )
                 remaining_time = self._state_remaining_time_seconds(state)
                 progress = effective_print_progress(state)
                 layer_num = self._optional_int(getattr(state, "layer_num", None))
@@ -443,6 +456,7 @@ class NotifyLiveActivityService:
                     layer_num=layer_num,
                     total_layers=total_layers,
                     state=str(getattr(state, "state", "running")),
+                    compact_display=self._compact_display(config),
                 )
                 await client.update(activity.activity_id, payload)
                 activity.last_progress = progress
@@ -549,6 +563,7 @@ class NotifyLiveActivityService:
                     remaining_time=remaining_time,
                     layer_num=layer_num,
                     total_layers=total_layers,
+                    compact_display=self._compact_display(config),
                 )
             )
             await self._create_activity(
@@ -590,7 +605,9 @@ class NotifyLiveActivityService:
             if provider.printer_id is None or provider.printer_id == printer_id
         ]
 
-    async def _all_enabled_live_notify_providers(self, db: AsyncSession) -> list[tuple[NotificationProvider, dict[str, Any]]]:
+    async def _all_enabled_live_notify_providers(
+        self, db: AsyncSession
+    ) -> list[tuple[NotificationProvider, dict[str, Any]]]:
         result = await db.scalars(
             select(NotificationProvider).where(
                 NotificationProvider.enabled.is_(True),
@@ -806,7 +823,9 @@ class NotifyLiveActivityService:
         value = data.get("remaining_time")
         if value:
             return int(value)
-        raw_minutes = data.get("raw_data", {}).get("mc_remaining_time") if isinstance(data.get("raw_data"), dict) else None
+        raw_minutes = (
+            data.get("raw_data", {}).get("mc_remaining_time") if isinstance(data.get("raw_data"), dict) else None
+        )
         if raw_minutes:
             return int(raw_minutes) * 60
         return None
@@ -856,6 +875,11 @@ class NotifyLiveActivityService:
             return int(value)
         except (TypeError, ValueError):
             return None
+
+    @staticmethod
+    def _compact_display(config: dict[str, Any]) -> str:
+        value = str(config.get("live_activity_compact_display") or "eta").strip().lower()
+        return "progress" if value in {"progress", "percent", "percentage", "layer"} else "eta"
 
     @staticmethod
     def _truthy(value: Any) -> bool:
