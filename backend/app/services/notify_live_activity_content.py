@@ -85,13 +85,15 @@ def build_update_content(
     elif display_mode == "progress":
         content["status"] = percent_text
         content["endsIn"] = None
-        content["trailing"] = progress_detail
         if remaining_time is not None and remaining_time > 0:
+            content["trailing"] = _remaining_time_text(remaining_time)
             content["body"] = _progress_body(
                 job_name,
                 remaining_time=remaining_time,
                 progress_detail=progress_detail,
             )
+        else:
+            content["trailing"] = progress_detail
     elif remaining_time is not None and remaining_time > 0:
         content["endsIn"] = int(remaining_time)
         content["trailing"] = None
@@ -153,7 +155,7 @@ def _compact_progress_text(progress: float, *, layer_num: int | None, total_laye
 
 
 def _progress_body(job_name: str, *, remaining_time: int, progress_detail: str) -> str:
-    prefix = f"{_remaining_time_text(remaining_time)} · {progress_detail} · "
+    prefix = f"{progress_detail} · "
     available = max(_BODY_MAX_CHARS - len(prefix), 1)
     return f"{prefix}{_truncate(job_name, available)}"
 

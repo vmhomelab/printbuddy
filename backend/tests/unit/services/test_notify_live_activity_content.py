@@ -19,10 +19,10 @@ def test_start_content_shows_percent_and_layer_in_dynamic_island_by_default():
 
     assert content["title"] == "Workshop P1S"
     assert "subtitle" not in content
-    assert content["body"] == "1:30 · 12% · L8/120 · dragon"
+    assert content["body"] == "12% · L8/120 · dragon"
     assert content["progress"] == 12
     assert content["endsIn"] is None
-    assert content["trailing"] == "12% · L8/120"
+    assert content["trailing"] == "1:30"
     assert content["status"] == "12%"
     assert content["symbol"] == "printer"
     assert content["tint"] == "#0a84ff"
@@ -60,14 +60,14 @@ def test_update_content_can_show_percent_and_layer_in_dynamic_island_slot():
 
     assert content["title"] == "Workshop P1S"
     assert "subtitle" not in content
-    assert content["body"] == "1:30 · 12% · L8/120 · dragon"
+    assert content["body"] == "12% · L8/120 · dragon"
     assert content["progress"] == 12.75
     assert content["endsIn"] is None
-    assert content["trailing"] == "12% · L8/120"
+    assert content["trailing"] == "1:30"
     assert content["status"] == "12%"
 
 
-def test_update_content_shortens_long_filename_after_remaining_time():
+def test_update_content_shortens_long_filename_after_progress_details():
     content = build_update_content(
         printer_name="Workshop P1S",
         filename="Ribbed_Bowl_MediumSize_SizeAdjusted_0.20mm_Long_Print_Name.3mf",
@@ -78,9 +78,9 @@ def test_update_content_shortens_long_filename_after_remaining_time():
         compact_display="progress",
     )
 
-    assert content["body"] == "47:57 · 59% · L304/511 · Ribbed_..."
+    assert content["body"] == "59% · L304/511 · Ribbed_Bowl_Med..."
     assert len(content["body"]) <= 35
-    assert content["trailing"] == "59% · L304/511"
+    assert content["trailing"] == "47:57"
     assert content["endsIn"] is None
 
 
