@@ -507,7 +507,7 @@ async def test_print_progress_creates_missing_activity_for_running_print(db_sess
 
     client.start.assert_awaited_once()
     payload = client.start.await_args.args[0]
-    assert payload["body"] == "dragon"
+    assert payload["body"] == "dragon · 5% · L3/56"
     assert payload["status"] == "5% · L3/56"
     assert payload["progress"] == 5.36
     activity = await db_session.scalar(select(NotificationLiveActivity))

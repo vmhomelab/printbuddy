@@ -19,13 +19,13 @@ def test_start_content_shows_job_name_in_body_and_eta_in_compact_slot_by_default
 
     assert content["title"] == "Workshop P1S"
     assert "subtitle" not in content
-    assert content["body"] == "dragon"
+    assert content["body"] == "dragon · 12% · L8/120"
     assert content["progress"] == 12
     assert content["endsIn"] == 5400
     assert content["trailing"] is None
     assert content["status"] == "12% · L8/120"
     assert content["symbol"] == "printer"
-    assert content["tint"] == "#16a34a"
+    assert content["tint"] == "#0a84ff"
     assert "tintColor" not in content
 
 

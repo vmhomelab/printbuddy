@@ -7,7 +7,7 @@ import re
 from typing import Any
 
 _PRINTBUDDY_SYMBOL = "printer"
-_ACTIVE_COLOR = "#16a34a"
+_ACTIVE_COLOR = "#0a84ff"
 _PAUSED_COLOR = "#f59e0b"
 _FAILED_COLOR = "#dc2626"
 _DONE_COLOR = "#2563eb"
@@ -56,12 +56,21 @@ def build_update_content(
     percent_text = _percent_text(progress_value)
     state_key = (state or "running").lower()
     display_mode = _compact_display(compact_display)
+    progress_detail = _compact_progress_text(progress_value, layer_num=layer_num, total_layers=total_layers)
+    body = _job_display_name(filename) or "Unknown print"
+    if (
+        state_key not in {"pause", "paused"}
+        and display_mode == "eta"
+        and remaining_time is not None
+        and remaining_time > 0
+    ):
+        body = f"{body} · {progress_detail}"
 
     content: dict[str, Any] = {
         "title": printer_name,
-        "body": _job_display_name(filename) or "Unknown print",
+        "body": body,
         "progress": progress_value,
-        "status": _compact_progress_text(progress_value, layer_num=layer_num, total_layers=total_layers),
+        "status": progress_detail,
         "symbol": _PRINTBUDDY_SYMBOL,
         "tint": _ACTIVE_COLOR,
     }
@@ -74,12 +83,12 @@ def build_update_content(
     elif display_mode == "progress":
         content["status"] = percent_text
         content["endsIn"] = None
-        content["trailing"] = _compact_progress_text(progress_value, layer_num=layer_num, total_layers=total_layers)
+        content["trailing"] = progress_detail
     elif remaining_time is not None and remaining_time > 0:
         content["endsIn"] = int(remaining_time)
         content["trailing"] = None
     else:
-        content["trailing"] = _compact_progress_text(progress_value, layer_num=layer_num, total_layers=total_layers)
+        content["trailing"] = progress_detail
 
     return content
 
