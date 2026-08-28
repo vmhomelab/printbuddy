@@ -61,17 +61,18 @@ def build_update_content(
         "title": printer_name,
         "body": _job_display_name(filename) or "Unknown print",
         "progress": progress_value,
-        "status": percent_text,
+        "status": _compact_progress_text(progress_value, layer_num=layer_num, total_layers=total_layers),
         "symbol": _PRINTBUDDY_SYMBOL,
-        "tintColor": _ACTIVE_COLOR,
+        "tint": _ACTIVE_COLOR,
     }
 
     if state_key in {"pause", "paused"}:
         content["status"] = f"Paused · {percent_text}"
         content["trailing"] = f"Paused · {percent_text}"
         content["endsIn"] = None
-        content["tintColor"] = _PAUSED_COLOR
+        content["tint"] = _PAUSED_COLOR
     elif display_mode == "progress":
+        content["status"] = percent_text
         content["endsIn"] = None
         content["trailing"] = _compact_progress_text(progress_value, layer_num=layer_num, total_layers=total_layers)
     elif remaining_time is not None and remaining_time > 0:
@@ -112,7 +113,7 @@ def build_end_content(
         "status": body,
         "progress": 100,
         "symbol": _PRINTBUDDY_SYMBOL,
-        "tintColor": color,
+        "tint": color,
     }
 
 

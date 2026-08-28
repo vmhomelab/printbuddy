@@ -23,9 +23,10 @@ def test_start_content_shows_job_name_in_body_and_eta_in_compact_slot_by_default
     assert content["progress"] == 12
     assert content["endsIn"] == 5400
     assert content["trailing"] is None
-    assert content["status"] == "12%"
+    assert content["status"] == "12% · L8/120"
     assert content["symbol"] == "printer"
-    assert content["tintColor"] == "#16a34a"
+    assert content["tint"] == "#16a34a"
+    assert "tintColor" not in content
 
 
 def test_update_content_can_show_percent_and_layer_in_dynamic_island_slot():
@@ -75,7 +76,7 @@ def test_update_content_marks_paused_without_countdown():
     assert content["status"] == "Paused · 50%"
     assert content["trailing"] == "Paused · 50%"
     assert content["endsIn"] is None
-    assert content["tintColor"] == "#f59e0b"
+    assert content["tint"] == "#f59e0b"
 
 
 def test_end_content_uses_terminal_status_visual_state():
@@ -91,4 +92,4 @@ def test_end_content_uses_terminal_status_visual_state():
     assert content["body"] == "dragon"
     assert content["status"] == "Failed · Filament runout"
     assert content["progress"] == 100
-    assert content["tintColor"] == "#dc2626"
+    assert content["tint"] == "#dc2626"
