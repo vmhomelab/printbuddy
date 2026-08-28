@@ -19,7 +19,7 @@ def test_start_content_shows_percent_and_layer_in_dynamic_island_by_default():
 
     assert content["title"] == "Workshop P1S"
     assert "subtitle" not in content
-    assert content["body"] == "dragon"
+    assert content["body"] == "1:30 · 12% · L8/120 · dragon"
     assert content["progress"] == 12
     assert content["endsIn"] is None
     assert content["trailing"] == "12% · L8/120"
@@ -60,11 +60,28 @@ def test_update_content_can_show_percent_and_layer_in_dynamic_island_slot():
 
     assert content["title"] == "Workshop P1S"
     assert "subtitle" not in content
-    assert content["body"] == "dragon"
+    assert content["body"] == "1:30 · 12% · L8/120 · dragon"
     assert content["progress"] == 12.75
     assert content["endsIn"] is None
     assert content["trailing"] == "12% · L8/120"
     assert content["status"] == "12%"
+
+
+def test_update_content_shortens_long_filename_after_remaining_time():
+    content = build_update_content(
+        printer_name="Workshop P1S",
+        filename="Ribbed_Bowl_MediumSize_SizeAdjusted_0.20mm_Long_Print_Name.3mf",
+        progress=59,
+        remaining_time=2877,
+        layer_num=304,
+        total_layers=511,
+        compact_display="progress",
+    )
+
+    assert content["body"] == "47:57 · 59% · L304/511 · Ribbed_..."
+    assert len(content["body"]) <= 35
+    assert content["trailing"] == "59% · L304/511"
+    assert content["endsIn"] is None
 
 
 def test_update_content_clamps_progress_and_omits_unknown_eta():

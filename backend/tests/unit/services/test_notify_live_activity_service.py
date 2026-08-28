@@ -100,10 +100,10 @@ async def test_print_start_uses_configured_progress_compact_display(db_session, 
     )
 
     payload = client.start.await_args.args[0]
-    assert payload["body"] == "dragon"
-    assert payload["endsIn"] is None
-    assert payload["trailing"] == "6% · L8/120"
+    assert payload["body"] == "1:30 · 6% · L8/120 · dragon"
     assert payload["status"] == "6%"
+    assert payload["trailing"] == "6% · L8/120"
+    assert payload["endsIn"] is None
 
 
 @pytest.mark.asyncio
@@ -507,7 +507,7 @@ async def test_print_progress_creates_missing_activity_for_running_print(db_sess
 
     client.start.assert_awaited_once()
     payload = client.start.await_args.args[0]
-    assert payload["body"] == "dragon"
+    assert payload["body"] == "6:00 · 5% · L3/56 · dragon"
     assert payload["status"] == "5%"
     assert payload["trailing"] == "5% · L3/56"
     assert payload["endsIn"] is None

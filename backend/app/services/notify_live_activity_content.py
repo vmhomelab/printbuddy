@@ -14,6 +14,7 @@ _DONE_COLOR = "#2563eb"
 _STOPPED_COLOR = "#64748b"
 _EXTENSIONS = (".gcode.3mf", ".gcode", ".3mf", ".stl")
 _MEANINGLESS_NAME = re.compile(r"^plate[_\-]?\d+$", re.IGNORECASE)
+_BODY_MAX_CHARS = 35
 
 
 def build_start_content(
@@ -57,7 +58,8 @@ def build_update_content(
     state_key = (state or "running").lower()
     display_mode = _compact_display(compact_display)
     progress_detail = _compact_progress_text(progress_value, layer_num=layer_num, total_layers=total_layers)
-    body = _job_display_name(filename) or "Unknown print"
+    job_name = _job_display_name(filename) or "Unknown print"
+    body = job_name
     if (
         state_key not in {"pause", "paused"}
         and display_mode == "eta"
@@ -84,6 +86,12 @@ def build_update_content(
         content["status"] = percent_text
         content["endsIn"] = None
         content["trailing"] = progress_detail
+        if remaining_time is not None and remaining_time > 0:
+            content["body"] = _progress_body(
+                job_name,
+                remaining_time=remaining_time,
+                progress_detail=progress_detail,
+            )
     elif remaining_time is not None and remaining_time > 0:
         content["endsIn"] = int(remaining_time)
         content["trailing"] = None
@@ -142,6 +150,29 @@ def _compact_progress_text(progress: float, *, layer_num: int | None, total_laye
     if layer_num is not None and total_layers:
         return f"{percent} · L{layer_num}/{total_layers}"
     return percent
+
+
+def _progress_body(job_name: str, *, remaining_time: int, progress_detail: str) -> str:
+    prefix = f"{_remaining_time_text(remaining_time)} · {progress_detail} · "
+    available = max(_BODY_MAX_CHARS - len(prefix), 1)
+    return f"{prefix}{_truncate(job_name, available)}"
+
+
+def _remaining_time_text(seconds: int) -> str:
+    seconds = max(int(seconds), 0)
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}"
+    return f"{minutes}:{seconds:02d}"
+
+
+def _truncate(value: str, max_chars: int) -> str:
+    if len(value) <= max_chars:
+        return value
+    if max_chars <= 3:
+        return value[:max_chars]
+    return f"{value[: max_chars - 3]}..."
 
 
 def _compact_display(value: str | None) -> str:
