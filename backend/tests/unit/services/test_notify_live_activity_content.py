@@ -7,7 +7,7 @@ from backend.app.services.notify_live_activity_content import (
 )
 
 
-def test_start_content_shows_job_name_in_body_and_eta_in_compact_slot_by_default():
+def test_start_content_shows_percent_and_layer_in_dynamic_island_by_default():
     content = build_start_content(
         printer_name="Workshop P1S",
         filename="dragon.3mf",
@@ -19,14 +19,32 @@ def test_start_content_shows_job_name_in_body_and_eta_in_compact_slot_by_default
 
     assert content["title"] == "Workshop P1S"
     assert "subtitle" not in content
+    assert content["body"] == "dragon"
+    assert content["progress"] == 12
+    assert content["endsIn"] is None
+    assert content["trailing"] == "12% · L8/120"
+    assert content["status"] == "12%"
+    assert content["symbol"] == "printer"
+    assert content["tint"] == "#0a84ff"
+    assert "tintColor" not in content
+
+
+def test_start_content_can_explicitly_keep_eta_in_dynamic_island():
+    content = build_start_content(
+        printer_name="Workshop P1S",
+        filename="dragon.3mf",
+        progress=12,
+        remaining_time=5400,
+        layer_num=8,
+        total_layers=120,
+        compact_display="eta",
+    )
+
     assert content["body"] == "dragon · 12% · L8/120"
     assert content["progress"] == 12
     assert content["endsIn"] == 5400
     assert content["trailing"] is None
     assert content["status"] == "12% · L8/120"
-    assert content["symbol"] == "printer"
-    assert content["tint"] == "#0a84ff"
-    assert "tintColor" not in content
 
 
 def test_update_content_can_show_percent_and_layer_in_dynamic_island_slot():
@@ -58,7 +76,7 @@ def test_update_content_clamps_progress_and_omits_unknown_eta():
     )
 
     assert content["progress"] == 100
-    assert "endsIn" not in content
+    assert content["endsIn"] is None
     assert content["body"] == "dragon"
     assert content["status"] == "100%"
 

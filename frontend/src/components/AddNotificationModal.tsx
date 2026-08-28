@@ -259,8 +259,8 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
             { value: 'true', label: 'Enabled' },
           ]},
           { key: 'live_activity_compact_display', label: 'Dynamic Island Display', type: 'select', required: false, options: [
-            { value: 'eta', label: 'Time remaining' },
             { value: 'progress', label: 'Percent / layer' },
+            { value: 'eta', label: 'Time remaining' },
           ]},
           { key: 'live_activity_keepalive_seconds', label: 'Live Activity Keepalive Seconds', placeholder: '60', type: 'number', required: false },
           { key: 'live_activity_end_keep_for_seconds', label: 'Keep Final Tile Seconds', placeholder: '300', type: 'number', required: false },

@@ -878,8 +878,8 @@ class NotifyLiveActivityService:
 
     @staticmethod
     def _compact_display(config: dict[str, Any]) -> str:
-        value = str(config.get("live_activity_compact_display") or "eta").strip().lower()
-        return "progress" if value in {"progress", "percent", "percentage", "layer"} else "eta"
+        value = str(config.get("live_activity_compact_display") or "progress").strip().lower()
+        return "eta" if value in {"eta", "time", "remaining", "timer"} else "progress"
 
     @staticmethod
     def _truthy(value: Any) -> bool:

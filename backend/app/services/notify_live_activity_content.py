@@ -25,7 +25,7 @@ def build_start_content(
     layer_num: int | None = None,
     total_layers: int | None = None,
     state: str = "running",
-    compact_display: str = "eta",
+    compact_display: str = "progress",
 ) -> dict[str, Any]:
     """Build payload for creating a Live Activity."""
     return build_update_content(
@@ -49,7 +49,7 @@ def build_update_content(
     layer_num: int | None = None,
     total_layers: int | None = None,
     state: str = "running",
-    compact_display: str = "eta",
+    compact_display: str = "progress",
 ) -> dict[str, Any]:
     """Build payload for updating a Live Activity."""
     progress_value = _normalize_progress_percent(progress)
@@ -145,7 +145,7 @@ def _compact_progress_text(progress: float, *, layer_num: int | None, total_laye
 
 
 def _compact_display(value: str | None) -> str:
-    return "progress" if str(value or "").lower() in {"progress", "percent", "percentage", "layer"} else "eta"
+    return "eta" if str(value or "").lower() in {"eta", "time", "remaining", "timer"} else "progress"
 
 
 def _job_display_name(filename: str | None) -> str | None:

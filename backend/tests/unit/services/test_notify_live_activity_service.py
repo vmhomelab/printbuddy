@@ -507,8 +507,10 @@ async def test_print_progress_creates_missing_activity_for_running_print(db_sess
 
     client.start.assert_awaited_once()
     payload = client.start.await_args.args[0]
-    assert payload["body"] == "dragon · 5% · L3/56"
-    assert payload["status"] == "5% · L3/56"
+    assert payload["body"] == "dragon"
+    assert payload["status"] == "5%"
+    assert payload["trailing"] == "5% · L3/56"
+    assert payload["endsIn"] is None
     assert payload["progress"] == 5.36
     activity = await db_session.scalar(select(NotificationLiveActivity))
     assert activity is not None
@@ -796,7 +798,9 @@ async def test_keepalive_updates_active_activity_from_current_printer_state(db_s
     client.update.assert_awaited_once()
     payload = client.update.await_args.args[1]
     assert payload["progress"] == 32
-    assert payload["endsIn"] == 2700
+    assert payload["endsIn"] is None
+    assert payload["trailing"] == "32% · L32/100"
+    assert payload["status"] == "32%"
     await db_session.refresh(activity)
     assert activity.last_progress == 32
     assert activity.last_remaining_time == 2700
