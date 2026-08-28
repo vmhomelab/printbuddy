@@ -170,6 +170,7 @@ class NotifyLiveActivityService:
                         layer_num=layer_num,
                         total_layers=total_layers,
                         compact_display=self._compact_display(config),
+                        native_countdown=self._native_tile_countdown(config),
                     )
                 ),
                 subtask_id=subtask_id,
@@ -217,6 +218,7 @@ class NotifyLiveActivityService:
                             layer_num=layer_num,
                             total_layers=total_layers,
                             compact_display=self._compact_display(config),
+                            native_countdown=self._native_tile_countdown(config),
                         )
                     ),
                     subtask_id=subtask_id,
@@ -278,6 +280,7 @@ class NotifyLiveActivityService:
             total_layers=total_layers,
             state=state,
             compact_display=self._compact_display(config),
+            native_countdown=self._native_tile_countdown(config),
         )
         try:
             await client.update(activity.activity_id, payload)
@@ -312,6 +315,7 @@ class NotifyLiveActivityService:
                         layer_num=layer_num,
                         total_layers=total_layers,
                         compact_display=self._compact_display(config),
+                        native_countdown=self._native_tile_countdown(config),
                     )
                 ),
                 subtask_id=subtask_id,
@@ -457,6 +461,7 @@ class NotifyLiveActivityService:
                     total_layers=total_layers,
                     state=str(getattr(state, "state", "running")),
                     compact_display=self._compact_display(config),
+                    native_countdown=self._native_tile_countdown(config),
                 )
                 await client.update(activity.activity_id, payload)
                 activity.last_progress = progress
@@ -564,6 +569,7 @@ class NotifyLiveActivityService:
                     layer_num=layer_num,
                     total_layers=total_layers,
                     compact_display=self._compact_display(config),
+                    native_countdown=self._native_tile_countdown(config),
                 )
             )
             await self._create_activity(
@@ -880,6 +886,10 @@ class NotifyLiveActivityService:
     def _compact_display(config: dict[str, Any]) -> str:
         value = str(config.get("live_activity_compact_display") or "progress").strip().lower()
         return "eta" if value in {"eta", "time", "remaining", "timer"} else "progress"
+
+    @staticmethod
+    def _native_tile_countdown(config: dict[str, Any]) -> bool:
+        return NotifyLiveActivityService._truthy(config.get("live_activity_native_tile_countdown"))
 
     @staticmethod
     def _truthy(value: Any) -> bool:

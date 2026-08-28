@@ -107,6 +107,43 @@ async def test_print_start_uses_configured_progress_compact_display(db_session, 
 
 
 @pytest.mark.asyncio
+async def test_print_start_uses_configured_native_tile_countdown(db_session, notify_provider):
+    notify_provider.config = json.dumps(
+        {
+            "device_id": "DEVICE123",
+            "device_token": "token",
+            "live_activities_enabled": True,
+            "live_activity_compact_display": "progress",
+            "live_activity_native_tile_countdown": "true",
+        }
+    )
+    await db_session.commit()
+
+    client = AsyncMock()
+    client.start = AsyncMock(return_value="activity-123")
+    service = NotifyLiveActivityService(client_factory=lambda config: client)
+
+    await service.on_print_start(
+        db_session,
+        printer_id=7,
+        printer_name="Workshop P1S",
+        data={
+            "filename": "dragon.3mf",
+            "subtask_id": "task-1",
+            "remaining_time": 5400,
+            "layer_num": 8,
+            "total_layers": 120,
+        },
+    )
+
+    payload = client.start.await_args.args[0]
+    assert payload["body"] == "6% · L8/120 · dragon"
+    assert payload["status"] == "6%"
+    assert payload["trailing"] is None
+    assert payload["endsIn"] == 5400
+
+
+@pytest.mark.asyncio
 async def test_duplicate_print_start_ends_existing_activity_first(db_session, notify_provider):
     existing = NotificationLiveActivity(
         provider_id=notify_provider.id,

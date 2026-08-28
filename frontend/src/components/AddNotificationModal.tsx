@@ -262,6 +262,10 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
             { value: 'progress', label: 'Percent / layer' },
             { value: 'eta', label: 'Time remaining' },
           ]},
+          { key: 'live_activity_native_tile_countdown', label: 'Advanced Options: Use native countdown on tile', type: 'select', required: false, helperText: 'May cause dynamic island to look messy, depending on printing time', options: [
+            { value: 'false', label: 'Disabled' },
+            { value: 'true', label: 'Enabled' },
+          ]},
           { key: 'live_activity_keepalive_seconds', label: 'Live Activity Keepalive Seconds', placeholder: '60', type: 'number', required: false },
           { key: 'live_activity_end_keep_for_seconds', label: 'Keep Final Tile Seconds', placeholder: '300', type: 'number', required: false },
         ];
@@ -382,6 +386,9 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
                     placeholder={field.placeholder}
                     className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                   />
+                )}
+                {'helperText' in field && field.helperText && (
+                  <p className="text-xs text-amber-300 mt-1">{field.helperText}</p>
                 )}
               </div>
                 );

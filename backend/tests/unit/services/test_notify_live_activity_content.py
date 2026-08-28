@@ -84,6 +84,25 @@ def test_update_content_shortens_long_filename_after_progress_details():
     assert content["endsIn"] is None
 
 
+def test_update_content_can_use_native_tile_countdown_without_moving_progress_from_body():
+    content = build_update_content(
+        printer_name="Workshop P1S",
+        filename="Ribbed_Bowl_MediumSize_SizeAdjusted_0.20mm_Long_Print_Name.3mf",
+        progress=69,
+        remaining_time=188,
+        layer_num=354,
+        total_layers=511,
+        compact_display="progress",
+        native_countdown=True,
+    )
+
+    assert content["title"] == "Workshop P1S"
+    assert content["body"] == "69% · L354/511 · Ribbed_Bowl_Med..."
+    assert content["endsIn"] == 188
+    assert content["trailing"] is None
+    assert content["status"] == "69%"
+
+
 def test_update_content_clamps_progress_and_omits_unknown_eta():
     content = build_update_content(
         printer_name="Workshop P1S",

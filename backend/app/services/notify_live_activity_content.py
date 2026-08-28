@@ -27,6 +27,7 @@ def build_start_content(
     total_layers: int | None = None,
     state: str = "running",
     compact_display: str = "progress",
+    native_countdown: bool = False,
 ) -> dict[str, Any]:
     """Build payload for creating a Live Activity."""
     return build_update_content(
@@ -38,6 +39,7 @@ def build_start_content(
         total_layers=total_layers,
         state=state,
         compact_display=compact_display,
+        native_countdown=native_countdown,
     )
 
 
@@ -51,6 +53,7 @@ def build_update_content(
     total_layers: int | None = None,
     state: str = "running",
     compact_display: str = "progress",
+    native_countdown: bool = False,
 ) -> dict[str, Any]:
     """Build payload for updating a Live Activity."""
     progress_value = _normalize_progress_percent(progress)
@@ -86,7 +89,11 @@ def build_update_content(
         content["status"] = percent_text
         content["endsIn"] = None
         if remaining_time is not None and remaining_time > 0:
-            content["trailing"] = _remaining_time_text(remaining_time)
+            if native_countdown:
+                content["endsIn"] = int(remaining_time)
+                content["trailing"] = None
+            else:
+                content["trailing"] = _remaining_time_text(remaining_time)
             content["body"] = _progress_body(
                 job_name,
                 remaining_time=remaining_time,

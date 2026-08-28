@@ -296,7 +296,12 @@ describe('AddNotificationModal — Notify Live Activity display', () => {
     const select = await screen.findByLabelText(/dynamic island display/i);
     expect((select as HTMLSelectElement).value).toBe('eta');
 
+    const countdownSelect = await screen.findByLabelText(/advanced options: use native countdown on tile/i);
+    expect((countdownSelect as HTMLSelectElement).value).toBe('false');
+    expect(screen.getByText(/may cause dynamic island to look messy, depending on printing time/i)).toBeTruthy();
+
     await user.selectOptions(select, 'progress');
+    await user.selectOptions(countdownSelect, 'true');
     await user.click(screen.getByRole('button', { name: /^save$/i }));
 
     await waitFor(() => expect(onClose).toHaveBeenCalled());
@@ -306,6 +311,7 @@ describe('AddNotificationModal — Notify Live Activity display', () => {
       device_token: 'token',
       live_activities_enabled: 'true',
       live_activity_compact_display: 'progress',
+      live_activity_native_tile_countdown: 'true',
     });
   });
 });
