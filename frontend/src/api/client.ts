@@ -2184,6 +2184,7 @@ export interface NotificationProvider {
   daily_digest_time: string | null;
   // Printer filter
   printer_id: number | null;
+  printer_ids: number[];
   // Status tracking
   last_success: string | null;
   last_error: string | null;
@@ -2243,6 +2244,7 @@ export interface NotificationProviderCreate {
   daily_digest_time?: string | null;
   // Printer filter
   printer_id?: number | null;
+  printer_ids?: number[];
 }
 
 export interface NotificationProviderUpdate {
@@ -2295,6 +2297,7 @@ export interface NotificationProviderUpdate {
   daily_digest_time?: string | null;
   // Printer filter
   printer_id?: number | null;
+  printer_ids?: number[];
 }
 
 // GitHub Backup types

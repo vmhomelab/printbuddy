@@ -708,6 +708,51 @@ async def run_migrations(conn):
     await _safe_execute(conn, "ALTER TABLE notification_providers ADD COLUMN daily_digest_enabled BOOLEAN DEFAULT 0")
     await _safe_execute(conn, "ALTER TABLE notification_providers ADD COLUMN daily_digest_time VARCHAR(5)")
 
+    # Migration: Create many-to-many printer scope table for notification providers
+    await _safe_execute(
+        conn,
+        """
+        CREATE TABLE IF NOT EXISTS notification_provider_printers (
+            provider_id INTEGER NOT NULL REFERENCES notification_providers(id) ON DELETE CASCADE,
+            printer_id INTEGER NOT NULL REFERENCES printers(id) ON DELETE CASCADE,
+            PRIMARY KEY (provider_id, printer_id)
+        )
+        """,
+    )
+    await _safe_execute(
+        conn,
+        "CREATE INDEX IF NOT EXISTS ix_notification_provider_printers_printer_id "
+        "ON notification_provider_printers (printer_id)",
+    )
+    try:
+        async with conn.begin_nested():
+            if is_sqlite():
+                await conn.execute(
+                    text(
+                        """
+                        INSERT OR IGNORE INTO notification_provider_printers (provider_id, printer_id)
+                        SELECT id, printer_id
+                        FROM notification_providers
+                        WHERE printer_id IS NOT NULL
+                        """
+                    )
+                )
+            else:
+                await conn.execute(
+                    text(
+                        """
+                        INSERT INTO notification_provider_printers (provider_id, printer_id)
+                        SELECT id, printer_id
+                        FROM notification_providers
+                        WHERE printer_id IS NOT NULL
+                        ON CONFLICT DO NOTHING
+                        """
+                    )
+                )
+    except (OperationalError, ProgrammingError, IntegrityError):
+        logger.exception("notification provider printer-scope backfill failed")
+        raise
+
     # Migration: Add missing-spool-assignment print-start notification toggle
     try:
         async with conn.begin_nested():

@@ -54,6 +54,26 @@ class TestNotificationService:
         db.commit = AsyncMock()
         return db
 
+    @pytest.mark.asyncio
+    async def test_get_providers_for_event_matches_selected_printer_scope(
+        self, service, db_session, notification_provider_factory, printer_factory
+    ):
+        """Providers scoped to selected printers only match those printers."""
+        printer_a = await printer_factory(name="Printer A")
+        printer_b = await printer_factory(name="Printer B")
+        printer_c = await printer_factory(name="Printer C")
+        all_provider = await notification_provider_factory(name="All Printers", printer_id=None)
+        selected_provider = await notification_provider_factory(name="Selected Printers", printer_id=None)
+        other_provider = await notification_provider_factory(name="Other Printer", printer_id=None)
+
+        selected_provider.printers = [printer_a, printer_b]
+        other_provider.printers = [printer_c]
+        await db_session.commit()
+
+        providers = await service._get_providers_for_event(db_session, "on_print_start", printer_a.id)
+
+        assert {provider.name for provider in providers} == {"All Printers", "Selected Printers"}
+
     # ========================================================================
     # Tests for on_print_start
     # ========================================================================

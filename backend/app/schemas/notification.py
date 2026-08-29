@@ -87,6 +87,10 @@ class NotificationProviderBase(BaseModel):
 
     # Printer filter
     printer_id: int | None = Field(default=None, description="Specific printer ID or null for all")
+    printer_ids: list[int] = Field(
+        default_factory=list,
+        description="Selected printer IDs. Empty means all printers unless legacy printer_id is set.",
+    )
 
     @field_validator("quiet_hours_start", "quiet_hours_end", "daily_digest_time")
     @classmethod
@@ -171,6 +175,7 @@ class NotificationProviderUpdate(BaseModel):
 
     # Printer filter
     printer_id: int | None = None
+    printer_ids: list[int] | None = None
 
 
 class NotificationProviderResponse(NotificationProviderBase):

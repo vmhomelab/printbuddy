@@ -65,6 +65,7 @@ function buildProvider(overrides: Partial<NotificationProvider> = {}): Notificat
     daily_digest_enabled: false,
     daily_digest_time: null,
     printer_id: null,
+    printer_ids: [],
     last_success: null,
     last_error: null,
     last_error_at: null,
@@ -75,6 +76,28 @@ function buildProvider(overrides: Partial<NotificationProvider> = {}): Notificat
 }
 
 describe('AddNotificationModal — ntfy Priority (#990)', () => {
+  it('saves selected printer IDs when printer filter is set to selected printers', async () => {
+    let captured: unknown = null;
+    server.use(
+      http.patch('*/api/v1/notifications/1', async ({ request }) => {
+        captured = await request.json();
+        return HttpResponse.json({ id: 1 });
+      }),
+    );
+
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    render(<AddNotificationModal provider={buildProvider()} onClose={onClose} />);
+
+    await user.selectOptions(await screen.findByLabelText(/printer filter/i), 'selected');
+    await user.click(await screen.findByLabelText('Test Printer'));
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(captured).not.toBeNull();
+    expect(captured).toMatchObject({ printer_id: null, printer_ids: [1] });
+  });
+
   it('renders the ntfy Priority section listing only enabled events', async () => {
     render(<AddNotificationModal provider={buildProvider()} onClose={() => undefined} />);
 
