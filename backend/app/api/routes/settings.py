@@ -174,6 +174,8 @@ async def _build_settings_response(db: AsyncSession, is_api_key: bool = False) -
             "default_timelapse",
             "ldap_enabled",
             "ldap_auto_provision",
+            "makerworld_archive_details_default",
+            "makerworld_cover_thumbnail_default",
         ]:
             settings_dict[setting.key] = setting.value.lower() == "true"
         elif setting.key in [

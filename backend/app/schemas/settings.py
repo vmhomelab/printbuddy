@@ -192,6 +192,14 @@ class AppSettings(BaseModel):
         description="Show warning when free disk space falls below this threshold (GB)",
     )
 
+    # MakerWorld import defaults. Both remain opt-in to preserve existing import behavior.
+    makerworld_archive_details_default: bool = Field(
+        default=False, description="Archive MakerWorld description and display images by default when importing"
+    )
+    makerworld_cover_thumbnail_default: bool = Field(
+        default=False, description="Use the locally archived MakerWorld cover as the library thumbnail by default"
+    )
+
     # Camera view settings
     camera_view_mode: str = Field(
         default="window",
@@ -423,6 +431,8 @@ class AppSettingsUpdate(BaseModel):
     prometheus_token: str | None = None
     low_stock_threshold: float | None = Field(default=None, ge=0.1, le=99.9)
     user_notifications_enabled: bool | None = None
+    makerworld_archive_details_default: bool | None = None
+    makerworld_cover_thumbnail_default: bool | None = None
     default_bed_levelling: bool | None = None
     default_flow_cali: bool | None = None
     default_vibration_cali: bool | None = None

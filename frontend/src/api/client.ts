@@ -1142,6 +1142,9 @@ export interface AppSettings {
   // File Manager / Library settings
   library_archive_mode: 'always' | 'never' | 'ask';
   library_disk_warning_gb: number;
+  // MakerWorld import defaults
+  makerworld_archive_details_default: boolean;
+  makerworld_cover_thumbnail_default: boolean;
   // Camera view settings
   camera_view_mode: CameraViewMode;
   // Preferred slicer

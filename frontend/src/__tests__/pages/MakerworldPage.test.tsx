@@ -154,6 +154,38 @@ describe('MakerworldPage', () => {
     expect(saveButtons.length).toBe(2);
   });
 
+  it('applies saved MakerWorld archive defaults and links the cover option to archival', async () => {
+    useAuthedHandlers();
+    server.use(
+      http.get('*/settings/', () =>
+        HttpResponse.json({
+          auto_archive: true,
+          save_thumbnails: true,
+          preferred_slicer: 'bambu_studio',
+          makerworld_archive_details_default: true,
+          makerworld_cover_thumbnail_default: true,
+        }),
+      ),
+      http.post('*/makerworld/resolve', () => HttpResponse.json(resolveResponse())),
+    );
+    render(<MakerworldPage />);
+    await userEvent.type(
+      await screen.findByPlaceholderText(/https:\/\/makerworld\.com/i),
+      'https://makerworld.com/en/models/1400373',
+    );
+    await userEvent.click(screen.getByRole('button', { name: /Resolve/i }));
+
+    const archiveDetails = await screen.findByRole('checkbox', { name: /Archive MakerWorld details/i });
+    const coverThumbnail = screen.getByRole('checkbox', { name: /Use MakerWorld cover as library thumbnail/i });
+    expect(archiveDetails).toBeChecked();
+    expect(coverThumbnail).toBeChecked();
+
+    await userEvent.click(coverThumbnail);
+    expect(archiveDetails).toBeChecked();
+    await userEvent.click(archiveDetails);
+    expect(coverThumbnail).not.toBeChecked();
+  });
+
   it('imports and archives only the selected profiles', async () => {
     useAuthedHandlers();
     const importBodies: Array<Record<string, unknown>> = [];
@@ -183,10 +215,9 @@ describe('MakerworldPage', () => {
     expect(importSelected).toBeDisabled();
     await userEvent.click(screen.getByRole('checkbox', { name: /Select 12 cells/i }));
     const useCoverThumbnail = screen.getByRole('checkbox', { name: /Use MakerWorld cover as library thumbnail/i });
-    expect(useCoverThumbnail).toBeDisabled();
-    await userEvent.click(screen.getByRole('checkbox', { name: /Archive MakerWorld details/i }));
     expect(useCoverThumbnail).toBeEnabled();
     await userEvent.click(useCoverThumbnail);
+    expect(screen.getByRole('checkbox', { name: /Archive MakerWorld details/i })).toBeChecked();
     expect(importSelected).toHaveTextContent('1');
     await userEvent.click(importSelected);
 

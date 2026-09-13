@@ -62,6 +62,27 @@ class TestSettingsAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_update_makerworld_import_defaults(self, async_client: AsyncClient):
+        """MakerWorld archive defaults persist as independent opt-in settings."""
+        response = await async_client.get("/api/v1/settings/")
+        assert response.status_code == 200
+        assert response.json()["makerworld_archive_details_default"] is False
+        assert response.json()["makerworld_cover_thumbnail_default"] is False
+
+        response = await async_client.put(
+            "/api/v1/settings/",
+            json={
+                "makerworld_archive_details_default": True,
+                "makerworld_cover_thumbnail_default": True,
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json()["makerworld_archive_details_default"] is True
+        assert response.json()["makerworld_cover_thumbnail_default"] is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_update_currency(self, async_client: AsyncClient):
         """Verify currency can be updated."""
         response = await async_client.put("/api/v1/settings/", json={"currency": "EUR"})
