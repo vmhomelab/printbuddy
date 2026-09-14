@@ -45,6 +45,19 @@ class User(Base):
     # "global" or "china"; NULL treated as "global" for legacy rows.
     cloud_region: Mapped[str | None] = mapped_column(String(10), nullable=True, default=None)
 
+    # Per-user Orca Cloud external-app credentials. Access tokens expire after
+    # 24h; refresh tokens rotate and must be replaced atomically by the route.
+    # These are OAuth tokens, never the user's Orca password.
+    orca_cloud_token: Mapped[str | None] = mapped_column(String(2000), nullable=True, default=None)
+    orca_cloud_refresh_token: Mapped[str | None] = mapped_column(String(128), nullable=True, default=None)
+    orca_cloud_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
+    orca_cloud_email: Mapped[str | None] = mapped_column(String(255), nullable=True, default=None)
+    orca_cloud_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+    # Transient RFC 8628 device-code state. Cleared on a terminal pairing result.
+    orca_cloud_pending_verifier: Mapped[str | None] = mapped_column(String(128), nullable=True, default=None)
+    orca_cloud_pending_state: Mapped[str | None] = mapped_column(String(32), nullable=True, default=None)
+    orca_cloud_pending_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
+
     # Relationship to groups through association table
     groups: Mapped[list[Group]] = relationship(
         "Group",

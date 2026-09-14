@@ -52,9 +52,10 @@ import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { KProfilesView } from '../components/KProfilesView';
 import { LocalProfilesView } from '../components/LocalProfilesView';
+import { OrcaCloudView } from '../components/OrcaCloudView';
 
 type TFunction = (key: string, options?: Record<string, unknown>) => string;
-type ProfileTab = 'cloud' | 'local' | 'kprofiles' | 'openfilamentdatabase';
+type ProfileTab = 'cloud' | 'orca_cloud' | 'local' | 'kprofiles' | 'openfilamentdatabase';
 type LoginStep = 'email' | 'code' | 'token';
 type PresetType = 'all' | 'filament' | 'printer' | 'process';
 
@@ -2975,6 +2976,17 @@ export function ProfilesPage() {
           {t('profiles.tabs.cloud')}
         </button>
         <button
+          onClick={() => setActiveTab('orca_cloud')}
+          className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors border-b-2 -mb-px ${
+            activeTab === 'orca_cloud'
+              ? 'text-bambu-green border-bambu-green'
+              : 'text-bambu-gray hover:text-white border-transparent'
+          }`}
+        >
+          <Cloud className="w-4 h-4" />
+          Orca Cloud
+        </button>
+        <button
           onClick={() => setActiveTab('local')}
           className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors border-b-2 -mb-px ${
             activeTab === 'local'
@@ -3065,6 +3077,9 @@ export function ProfilesPage() {
           )}
         </>
       )}
+
+      {/* Orca Cloud Profiles Tab — official device pairing, read-only sync. */}
+      {activeTab === 'orca_cloud' && <OrcaCloudView />}
 
       {/* Local Profiles Tab */}
       {activeTab === 'local' && <LocalProfilesView />}

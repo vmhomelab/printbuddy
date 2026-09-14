@@ -46,10 +46,12 @@ const mockApi = api as unknown as {
 
 function makeUnified(overrides: Partial<UnifiedPresetsResponse> = {}): UnifiedPresetsResponse {
   return {
+    orca_cloud: { printer: [], process: [], filament: [] },
     cloud: { printer: [], process: [], filament: [] },
     local: { printer: [], process: [], filament: [] },
     standard: { printer: [], process: [], filament: [] },
     cloud_status: 'ok',
+    orca_cloud_status: 'ok',
     ...overrides,
   };
 }

@@ -47,6 +47,7 @@ from backend.app.api.routes import (
     notifications,
     obico,
     open_filament_database,
+    orca_cloud,
     pending_uploads,
     print_log,
     print_queue,
@@ -5676,9 +5677,13 @@ async def lifespan(app: FastAPI):
     from backend.app.services.makerworld import (
         set_shared_http_client as set_shared_makerworld_http_client,
     )
+    from backend.app.services.orca_cloud import (
+        set_shared_http_client as set_shared_orca_http_client,
+    )
 
     _shared_cloud_http_client = _httpx.AsyncClient(timeout=30.0)
     set_shared_http_client(_shared_cloud_http_client)
+    set_shared_orca_http_client(_shared_cloud_http_client)
     # Reuse the same connection pool for MakerWorld — different host, same
     # keep-alive pool saves a TLS handshake per request.
     set_shared_makerworld_http_client(_shared_cloud_http_client)
@@ -5998,8 +6003,9 @@ async def lifespan(app: FastAPI):
 
     await mqtt_relay.disconnect(timeout=2)
 
-    # Drop the shared Bambu Cloud HTTP client we registered at startup.
+    # Drop shared cloud HTTP clients registered at startup.
     set_shared_http_client(None)
+    set_shared_orca_http_client(None)
     set_shared_makerworld_http_client(None)
     await _shared_cloud_http_client.aclose()
 
@@ -6421,6 +6427,7 @@ app.include_router(inventory.router, prefix=app_settings.api_prefix)
 app.include_router(labels.router, prefix=app_settings.api_prefix)
 app.include_router(settings_routes.router, prefix=app_settings.api_prefix)
 app.include_router(cloud.router, prefix=app_settings.api_prefix)
+app.include_router(orca_cloud.router, prefix=app_settings.api_prefix)
 app.include_router(local_presets.router, prefix=app_settings.api_prefix)
 app.include_router(smart_plugs.router, prefix=app_settings.api_prefix)
 app.include_router(print_log.router, prefix=app_settings.api_prefix)

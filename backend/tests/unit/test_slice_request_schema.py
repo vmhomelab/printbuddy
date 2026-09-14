@@ -40,6 +40,15 @@ class TestNewSourceAwareShape:
         assert req.printer_preset.source == "cloud"
         assert req.printer_preset.id == "PFUprinter"
 
+    def test_orca_cloud_refs_pass_through(self):
+        req = SliceRequest(
+            printer_preset=PresetRef(source="orca_cloud", id="orca-printer"),
+            process_preset=PresetRef(source="orca_cloud", id="orca-process"),
+            filament_preset=PresetRef(source="orca_cloud", id="orca-filament"),
+        )
+        assert req.printer_preset.source == "orca_cloud"
+        assert req.filament_presets == [PresetRef(source="orca_cloud", id="orca-filament")]
+
     def test_mixed_sources_per_slot(self):
         """A user may pick cloud for printer, local for process, standard
         for filament — the modal is per-slot."""

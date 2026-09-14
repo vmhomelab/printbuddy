@@ -12,7 +12,6 @@ import {
   type SlicerBundle,
   type SlicerCloudStatus,
   type UnifiedPreset,
-  type UnifiedPresetsBySlot,
   type UnifiedPresetsResponse,
 } from '../api/client';
 import { useSliceJobTracker } from '../contexts/SliceJobTrackerContext';
@@ -37,6 +36,14 @@ interface SliceModalProps {
 }
 
 type Slot = 'printer' | 'process' | 'filament';
+type PresetTier = 'local' | 'orca_cloud' | 'cloud' | 'standard';
+const EMPTY_TIER = { printer: [], process: [], filament: [] };
+
+function presetTier(by: UnifiedPresetsResponse, tier: PresetTier) {
+  // Orca Cloud was added after this endpoint shipped. Keep the modal safe for
+  // cached/older API payloads that do not have the new tier yet.
+  return by[tier] ?? EMPTY_TIER;
+}
 
 // SliceModal-specific tier priority: local (imported) → cloud → standard.
 // Imported profiles are surfaced first because they're the user's curated
@@ -44,11 +51,11 @@ type Slot = 'printer' | 'process' | 'filament';
 // drive metadata-aware match, standard is the bundled fallback. This is
 // distinct from the listing endpoint's dedup order and only affects what
 // the SliceModal renders / pre-picks.
-const SLICE_MODAL_TIER_ORDER = ['local', 'cloud', 'standard'] as const;
+const SLICE_MODAL_TIER_ORDER: readonly PresetTier[] = ['local', 'orca_cloud', 'cloud', 'standard'];
 
 function pickDefault(by: UnifiedPresetsResponse, slot: Slot): PresetRef | null {
   for (const tier of SLICE_MODAL_TIER_ORDER) {
-    const list = by[tier][slot];
+    const list = presetTier(by, tier)[slot];
     if (list.length > 0) {
       return { source: list[0].source, id: list[0].id };
     }
@@ -65,7 +72,7 @@ function findPreset(
   slot: Slot,
 ): UnifiedPreset | null {
   if (!ref) return null;
-  return by[ref.source][slot].find((p) => p.id === ref.id) ?? null;
+  return presetTier(by, ref.source)[slot].find((p) => p.id === ref.id) ?? null;
 }
 
 // Find a preset by exact name across tiers (local → cloud → standard). Used
@@ -77,7 +84,7 @@ function findPresetByName(
 ): PresetRef | null {
   if (!name) return null;
   for (const tier of SLICE_MODAL_TIER_ORDER) {
-    const p = by[tier][slot].find((x) => x.name === name);
+    const p = presetTier(by, tier)[slot].find((x) => x.name === name);
     if (p) return { source: p.source, id: p.id };
   }
   return null;
@@ -104,7 +111,7 @@ function pickProcessDefault(
   }
   for (const wanted of ['match', 'unknown'] as const) {
     for (const tier of SLICE_MODAL_TIER_ORDER) {
-      for (const p of by[tier].process) {
+      for (const p of presetTier(by, tier).process) {
         if (presetCompatibility(p, 'process', printerName, compatIndex) === wanted) {
           return { source: p.source, id: p.id };
         }
@@ -116,6 +123,7 @@ function pickProcessDefault(
 
 const TIER_BONUS: Record<PresetSource, number> = {
   local: 1.5,
+  orca_cloud: 1.25,
   cloud: 1.0,
   standard: 0.5,
 };
@@ -136,7 +144,7 @@ function pickFilamentForSlot(
 
   let best: { ref: PresetRef; score: number } | null = null;
   for (const tier of SLICE_MODAL_TIER_ORDER) {
-    for (const p of by[tier].filament) {
+    for (const p of presetTier(by, tier).filament) {
       let score = 0;
       const presetType = (p.filament_type ?? '').trim().toUpperCase();
       const presetColor = normalizeColorForCompare(p.filament_colour ?? '');
@@ -1136,8 +1144,9 @@ function PresetDropdown({
   // stay in their tier, so a custom / untagged preset is never hidden, and
   // empty sections collapse out.
   const { sections, otherEntries } = useMemo(() => {
-    const tiers: { key: keyof UnifiedPresetsResponse; label: string; fallback: string }[] = [
+    const tiers: { key: PresetTier; label: string; fallback: string }[] = [
       { key: 'local', label: 'slice.tier.local', fallback: 'Imported' },
+      { key: 'orca_cloud', label: 'slice.tier.orcaCloud', fallback: 'Orca Cloud' },
       { key: 'cloud', label: 'slice.tier.cloud', fallback: 'Cloud' },
       { key: 'standard', label: 'slice.tier.standard', fallback: 'Standard' },
     ];
@@ -1145,7 +1154,7 @@ function PresetDropdown({
     const compatSections: { tierLabel: string; entries: UnifiedPreset[] }[] = [];
     const other: UnifiedPreset[] = [];
     for (const { key, label: lk, fallback } of tiers) {
-      const entries = (data[key] as UnifiedPresetsBySlot)[slot];
+      const entries = (data[key] ?? { printer: [], process: [], filament: [] })[slot];
       if (!filterByPrinter) {
         if (entries.length > 0) compatSections.push({ tierLabel: t(lk, fallback), entries });
         continue;

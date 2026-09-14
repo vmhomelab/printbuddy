@@ -21,6 +21,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.api.routes.cloud import get_stored_token, resolve_api_key_cloud_owner
+from backend.app.api.routes.orca_cloud import (
+    _ORCA_TYPE_TO_BAMBU,
+    _build_authenticated_service as _build_orca_service,
+    _load_credentials as _load_orca_credentials,
+)
 from backend.app.core.auth import RequirePermissionIfAuthEnabled
 from backend.app.core.config import settings as app_settings
 from backend.app.core.database import get_db
@@ -37,6 +42,7 @@ from backend.app.services.bambu_cloud import (
     BambuCloudError,
     BambuCloudService,
 )
+from backend.app.services.orca_cloud import OrcaCloudAuthError, OrcaCloudError
 from backend.app.services.slicer_api import (
     BundleNotFoundError,
     BundleSummary,
@@ -68,6 +74,8 @@ _bundled_cache: tuple[float, dict[str, list[UnifiedPreset]]] | None = None
 # modal open per user".
 _CLOUD_TTL_S = 300.0
 _cloud_cache: dict[tuple[int, str], tuple[float, dict[str, list[UnifiedPreset]]]] = {}
+# Orca follows the same 5-minute, per-user token-fingerprint cache policy.
+_orca_cloud_cache: dict[tuple[int, str], tuple[float, dict[str, list[UnifiedPreset]]]] = {}
 
 
 def _token_fingerprint(token: str) -> str:
@@ -161,6 +169,72 @@ async def _fetch_cloud_presets(db: AsyncSession, user: User | None) -> tuple[dic
         return slots, "ok"
     finally:
         await cloud.close()
+
+
+async def _fetch_orca_cloud_presets(
+    db: AsyncSession, user: User | None, *, refresh: bool = False
+) -> tuple[dict[str, list[UnifiedPreset]], str]:
+    """Return a read-only snapshot of the caller's paired Orca Cloud profiles.
+
+    Orca's pull response already includes each profile's full content, so this
+    tier can expose filament metadata and compatible-printer declarations without
+    per-profile network calls.
+    """
+    if user is not None and not user.has_permission(Permission.ORCA_CLOUD_AUTH.value):
+        return _empty_slots(), "not_authenticated"
+
+    creds = await _load_orca_credentials(db, user)
+    if not creds.token:
+        return _empty_slots(), "not_authenticated"
+
+    user_key = user.id if user is not None else 0
+    cache_key = (user_key, _token_fingerprint(creds.token))
+    now = time.monotonic()
+    if not refresh:
+        cached = _orca_cloud_cache.get(cache_key)
+        if cached and now - cached[0] < _CLOUD_TTL_S:
+            return cached[1], "ok"
+
+    try:
+        svc = await _build_orca_service(db, user)
+        raw_profiles = await svc.list_profiles()
+    except OrcaCloudAuthError:
+        return _empty_slots(), "expired"
+    except OrcaCloudError as exc:
+        logger.warning("Orca Cloud preset fetch failed for user %s: %s", user_key, exc)
+        return _empty_slots(), "unreachable"
+    except HTTPException as exc:
+        return _empty_slots(), "expired" if exc.status_code == 401 else "unreachable"
+    finally:
+        # The builder can fail before assigning svc; only close a constructed
+        # per-request service. Shared clients remain managed by application lifespan.
+        if "svc" in locals():
+            await svc.close()
+
+    slots = _empty_slots()
+    for entry in raw_profiles:
+        content = entry.get("content") if isinstance(entry, dict) else None
+        if not isinstance(content, dict):
+            continue
+        slot = _ORCA_TYPE_TO_BAMBU.get(str(content.get("type", "")))
+        preset_id = entry.get("id") if isinstance(entry, dict) else None
+        name = entry.get("name") if isinstance(entry, dict) else None
+        if slot is None or not preset_id or not name:
+            continue
+        preset = UnifiedPreset(id=str(preset_id), name=str(name), source="orca_cloud")
+        if slot == "filament":
+            preset.filament_type = _first_scalar(content.get("filament_type"))
+            preset.filament_colour = _first_scalar(content.get("default_filament_colour"))
+        compatible = content.get("compatible_printers")
+        if slot in ("process", "filament") and isinstance(compatible, str):
+            preset.compatible_printers = [compatible]
+        elif slot in ("process", "filament") and isinstance(compatible, list):
+            values = [value.strip() for value in compatible if isinstance(value, str) and value.strip()]
+            preset.compatible_printers = values or None
+        slots[slot].append(preset)
+
+    _orca_cloud_cache[cache_key] = (now, slots)
+    return slots, "ok"
 
 
 async def _fetch_local_presets(db: AsyncSession) -> dict[str, list[UnifiedPreset]]:
@@ -399,6 +473,7 @@ async def list_unified_presets(
     too — matching the slice route (#1182 follow-up).
     """
     cloud_token_user = current_user or api_key_cloud_owner
+    orca_cloud, orca_cloud_status = await _fetch_orca_cloud_presets(db, cloud_token_user)
     cloud, cloud_status = await _fetch_cloud_presets(db, cloud_token_user)
     local = await _fetch_local_presets(db)
     standard = await _fetch_bundled_presets(db)
@@ -406,10 +481,12 @@ async def list_unified_presets(
     cloud, local, standard = _dedupe_by_name(cloud, local, standard)
 
     return UnifiedPresetsResponse(
+        orca_cloud=UnifiedPresetsBySlot(**orca_cloud),
         cloud=UnifiedPresetsBySlot(**cloud),
         local=UnifiedPresetsBySlot(**local),
         standard=UnifiedPresetsBySlot(**standard),
         cloud_status=cloud_status,
+        orca_cloud_status=orca_cloud_status,
     )
 
 

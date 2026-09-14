@@ -44,7 +44,7 @@ class UnifiedPreset(BaseModel):
 
     id: str
     name: str
-    source: Literal["cloud", "local", "standard"]
+    source: Literal["orca_cloud", "cloud", "local", "standard"]
     filament_type: str | None = None
     filament_colour: str | None = None
     compatible_printers: list[str] | None = None
@@ -71,7 +71,9 @@ class UnifiedPresetsResponse(BaseModel):
     expired / network down).
     """
 
+    orca_cloud: UnifiedPresetsBySlot = UnifiedPresetsBySlot()
     cloud: UnifiedPresetsBySlot = UnifiedPresetsBySlot()
     local: UnifiedPresetsBySlot = UnifiedPresetsBySlot()
     standard: UnifiedPresetsBySlot = UnifiedPresetsBySlot()
     cloud_status: CloudStatus = "ok"
+    orca_cloud_status: CloudStatus = "ok"

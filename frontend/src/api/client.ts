@@ -1409,7 +1409,7 @@ export interface BuiltinFilament {
 //   - Source-aware refs (`*_preset: PresetRef`) — new SliceModal that picks
 //     across cloud / local / standard tiers. Source-aware refs win when both
 //     are present in the same payload.
-export type PresetSource = 'cloud' | 'local' | 'standard';
+export type PresetSource = 'orca_cloud' | 'cloud' | 'local' | 'standard';
 export interface PresetRef {
   source: PresetSource;
   id: string;
@@ -1488,11 +1488,26 @@ export interface UnifiedPresetsBySlot {
   filament: UnifiedPreset[];
 }
 export interface UnifiedPresetsResponse {
+  orca_cloud: UnifiedPresetsBySlot;
   cloud: UnifiedPresetsBySlot;
   local: UnifiedPresetsBySlot;
   standard: UnifiedPresetsBySlot;
   cloud_status: SlicerCloudStatus;
+  orca_cloud_status: SlicerCloudStatus;
 }
+
+export interface OrcaDeviceStartResponse {
+  user_code: string;
+  verification_uri: string;
+  verification_uri_complete: string;
+  interval: number;
+  expires_in: number;
+}
+export type OrcaDevicePollStatus = 'authorization_pending' | 'slow_down' | 'access_denied' | 'expired_token' | 'complete';
+export interface OrcaDevicePollResponse { status: OrcaDevicePollStatus; connected: boolean; email: string | null; user_id: string | null; }
+export interface OrcaAuthStatusResponse { connected: boolean; email: string | null; user_id: string | null; }
+export interface OrcaProfileMeta { setting_id: string; name: string; type: string; version: string | null; user_id: string | null; updated_time: string | null; is_custom: boolean; }
+export interface OrcaProfileListResponse { filament: OrcaProfileMeta[]; printer: OrcaProfileMeta[]; process: OrcaProfileMeta[]; }
 
 export interface SliceResponse {
   library_file_id: number;
@@ -3079,7 +3094,7 @@ export type Permission =
   | 'system:read'
   | 'settings:read' | 'settings:update' | 'settings:backup' | 'settings:restore'
   | 'github:backup' | 'github:restore'
-  | 'cloud:auth'
+  | 'cloud:auth' | 'orca_cloud:auth'
   | 'makerworld:view' | 'makerworld:import'
   | 'api_keys:read' | 'api_keys:create' | 'api_keys:update' | 'api_keys:delete'
   | 'users:read' | 'users:create' | 'users:update' | 'users:delete'
@@ -4764,6 +4779,14 @@ export const api = {
     }),
   cloudLogout: () =>
     request<{ success: boolean }>('/cloud/logout', { method: 'POST' }),
+
+  // Orca Cloud: official RFC 8628 device authorization, read-only sync:read.
+  orcaCloudDeviceStart: () => request<OrcaDeviceStartResponse>('/orca-cloud/device/start', { method: 'POST' }),
+  orcaCloudDevicePoll: () => request<OrcaDevicePollResponse>('/orca-cloud/device/poll', { method: 'POST' }),
+  orcaCloudStatus: () => request<OrcaAuthStatusResponse>('/orca-cloud/status'),
+  orcaCloudLogout: () => request<{ success: boolean }>('/orca-cloud/logout', { method: 'POST' }),
+  orcaCloudListProfiles: () => request<OrcaProfileListResponse>('/orca-cloud/profiles'),
+
   getCloudSettings: (version = '02.04.00.70') =>
     request<SlicerSettingsResponse>(`/cloud/settings?version=${version}`),
   getBuiltinFilaments: () =>

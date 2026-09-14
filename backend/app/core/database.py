@@ -1838,6 +1838,23 @@ async def run_migrations(conn):
     await _safe_execute(conn, "ALTER TABLE users ADD COLUMN cloud_email VARCHAR(255)")
     await _safe_execute(conn, "ALTER TABLE users ADD COLUMN cloud_region VARCHAR(10)")
 
+    # Migration: per-user Orca Cloud external-app credentials and transient
+    # RFC 8628 device-code pairing state. OAuth tokens are never logged.
+    await _safe_execute(conn, "ALTER TABLE users ADD COLUMN orca_cloud_token VARCHAR(2000)")
+    await _safe_execute(conn, "ALTER TABLE users ADD COLUMN orca_cloud_refresh_token VARCHAR(128)")
+    if is_sqlite():
+        await _safe_execute(conn, "ALTER TABLE users ADD COLUMN orca_cloud_expires_at DATETIME")
+    else:
+        await _safe_execute(conn, "ALTER TABLE users ADD COLUMN IF NOT EXISTS orca_cloud_expires_at TIMESTAMP")
+    await _safe_execute(conn, "ALTER TABLE users ADD COLUMN orca_cloud_email VARCHAR(255)")
+    await _safe_execute(conn, "ALTER TABLE users ADD COLUMN orca_cloud_user_id VARCHAR(64)")
+    await _safe_execute(conn, "ALTER TABLE users ADD COLUMN orca_cloud_pending_verifier VARCHAR(128)")
+    await _safe_execute(conn, "ALTER TABLE users ADD COLUMN orca_cloud_pending_state VARCHAR(32)")
+    if is_sqlite():
+        await _safe_execute(conn, "ALTER TABLE users ADD COLUMN orca_cloud_pending_at DATETIME")
+    else:
+        await _safe_execute(conn, "ALTER TABLE users ADD COLUMN IF NOT EXISTS orca_cloud_pending_at TIMESTAMP")
+
     # Cleanup: Remove obsolete settings keys that are no longer used
     obsolete_keys = ["slicer_binary_path"]
     for key in obsolete_keys:
