@@ -23,6 +23,11 @@ import paho.mqtt.client as mqtt
 
 logger = logging.getLogger(__name__)
 
+# Paho's loop thread must always have a finite teardown window. A caller may
+# replace a client after an abrupt printer-side disconnect, where waiting
+# forever would freeze Printbuddy's asyncio event loop and HTTP server.
+DEFAULT_DISCONNECT_TIMEOUT_SECONDS = 2.0
+
 # AMS module name prefixes used in get_version responses.
 # The numeric suffix after '/' is the AMS unit ID as reported in push_status.
 #   "ams/<id>"  – original AMS (X1C, X1E, P1S, …)
@@ -3688,14 +3693,18 @@ class BambuMQTTClient:
 
         return True
 
-    def disconnect(self, timeout: float = 0):
-        """Disconnect from the printer."""
+    def disconnect(self, timeout: float = DEFAULT_DISCONNECT_TIMEOUT_SECONDS):
+        """Disconnect from the printer without allowing Paho teardown to hang indefinitely."""
         if self._client:
+            timeout = max(float(timeout), 0.1)
             self._disconnection_event = threading.Event()
             client = self._client
-            client.disconnect()
+            try:
+                client.disconnect()
+            except Exception:
+                pass
             disconnected = self._disconnection_event.wait(timeout=timeout)
-            if timeout and not disconnected:
+            if not disconnected:
                 logger.warning(
                     "[%s] MQTT disconnect did not complete within %.1fs; closing socket before loop_stop",
                     self.serial_number,

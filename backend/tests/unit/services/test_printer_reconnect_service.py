@@ -36,6 +36,64 @@ async def test_does_not_reconnect_a_healthy_printer():
 
 
 @pytest.mark.asyncio
+async def test_leaves_an_existing_disconnected_bambu_client_to_paho_reconnect():
+    printer = SimpleNamespace(
+        id=7,
+        name="P1P",
+        provider="bambu",
+        is_active=True,
+        reconnect_interval_seconds=30,
+    )
+    manager = SimpleNamespace(
+        get_client=lambda printer_id: SimpleNamespace(state=SimpleNamespace(connected=False)),
+        connect_printer=AsyncMock(),
+    )
+    service = PrinterReconnectService(manager, session_factory=None)
+
+    await service.reconnect_due_printers([printer], now=100.0)
+
+    manager.connect_printer.assert_not_awaited()
+    assert printer.id not in service.next_attempt_at
+
+
+@pytest.mark.asyncio
+async def test_recreates_a_bambu_printer_when_no_client_exists():
+    printer = SimpleNamespace(
+        id=7,
+        name="P1P",
+        provider="bambu",
+        is_active=True,
+        reconnect_interval_seconds=30,
+    )
+    manager = SimpleNamespace(get_client=lambda printer_id: None, connect_printer=AsyncMock(return_value=True))
+    service = PrinterReconnectService(manager, session_factory=None)
+
+    await service.reconnect_due_printers([printer], now=100.0)
+
+    manager.connect_printer.assert_awaited_once_with(printer)
+
+
+@pytest.mark.asyncio
+async def test_startup_grace_defers_reconnects_until_initial_connections_settle():
+    printer = SimpleNamespace(
+        id=7,
+        name="Klipper",
+        provider="klipper",
+        is_active=True,
+        reconnect_interval_seconds=30,
+    )
+    manager = SimpleNamespace(get_client=lambda printer_id: None, connect_printer=AsyncMock(return_value=True))
+    service = PrinterReconnectService(manager, session_factory=None)
+    service._reconnect_not_before = 160.0
+
+    await service.reconnect_due_printers([printer], now=100.0)
+    manager.connect_printer.assert_not_awaited()
+
+    await service.reconnect_due_printers([printer], now=160.0)
+    manager.connect_printer.assert_awaited_once_with(printer)
+
+
+@pytest.mark.asyncio
 async def test_waits_for_the_printer_specific_interval_before_retrying_again():
     printer = SimpleNamespace(id=7, name="CORE One", is_active=True, reconnect_interval_seconds=45)
     manager = SimpleNamespace(get_client=lambda printer_id: None, connect_printer=AsyncMock(return_value=False))

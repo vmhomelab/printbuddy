@@ -14,6 +14,10 @@ from backend.app.services.printer_providers.factory import create_printer_client
 
 logger = logging.getLogger(__name__)
 
+# Replacing a client can synchronously wait for its network thread. Keep that
+# teardown bounded so a failed device connection cannot freeze the API loop.
+REPLACEMENT_DISCONNECT_TIMEOUT_SECONDS = 2.0
+
 # Models that have a real chamber temperature sensor
 # Based on Home Assistant Bambu Lab integration
 # P1P/P1S and A1/A1Mini do NOT have chamber temp sensors
@@ -373,7 +377,7 @@ class PrinterManager:
     async def connect_printer(self, printer: Printer) -> bool:
         """Connect to a printer."""
         if printer.id in self._clients:
-            self.disconnect_printer(printer.id)
+            self.disconnect_printer(printer.id, timeout=REPLACEMENT_DISCONNECT_TIMEOUT_SECONDS)
 
         printer_id = printer.id
 

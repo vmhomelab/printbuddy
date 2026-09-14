@@ -11,10 +11,12 @@ from typing import Any
 from sqlalchemy import select
 
 from backend.app.models.printer import Printer
+from backend.app.services.printer_providers.factory import normalize_provider
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_RECONNECT_INTERVAL_SECONDS = 30
+STARTUP_RECONNECT_GRACE_SECONDS = 60
 
 
 class PrinterReconnectService:
@@ -25,6 +27,9 @@ class PrinterReconnectService:
         self._session_factory = session_factory
         self._task: asyncio.Task[None] | None = None
         self.next_attempt_at: dict[int, float] = {}
+        # Initial printer connections are asynchronous. Do not immediately
+        # replace a client that is still negotiating its MQTT session.
+        self._reconnect_not_before = 0.0
 
     @staticmethod
     def _interval_seconds(printer: Any) -> int:
@@ -34,13 +39,25 @@ class PrinterReconnectService:
         except (TypeError, ValueError):
             return DEFAULT_RECONNECT_INTERVAL_SECONDS
 
-    def _needs_reconnect(self, printer_id: int) -> bool:
-        client = self._printer_manager.get_client(printer_id)
-        return client is None or not bool(getattr(getattr(client, "state", None), "connected", False))
+    def _needs_reconnect(self, printer: Any) -> bool:
+        client = self._printer_manager.get_client(printer.id)
+        if client is None:
+            return True
+
+        # BambuMQTTClient uses Paho's own reconnect loop. Replacing an existing
+        # disconnected client can synchronously stop Paho's network thread and
+        # stall the FastAPI event loop, taking the WebUI down with it.
+        if normalize_provider(getattr(printer, "provider", None)) == "bambu":
+            return False
+
+        return not bool(getattr(getattr(client, "state", None), "connected", False))
 
     async def reconnect_due_printers(self, printers: list[Any], *, now: float | None = None) -> None:
         """Attempt due active offline printers once; suitable for deterministic tests."""
         current = time.monotonic() if now is None else now
+        if current < self._reconnect_not_before:
+            return
+
         active_ids = {printer.id for printer in printers if getattr(printer, "is_active", False)}
         for printer_id in tuple(self.next_attempt_at):
             if printer_id not in active_ids:
@@ -49,7 +66,7 @@ class PrinterReconnectService:
         for printer in printers:
             if not getattr(printer, "is_active", False):
                 continue
-            if not self._needs_reconnect(printer.id):
+            if not self._needs_reconnect(printer):
                 self.next_attempt_at.pop(printer.id, None)
                 continue
             if current < self.next_attempt_at.get(printer.id, 0):
@@ -64,7 +81,9 @@ class PrinterReconnectService:
                 else:
                     logger.debug("Printer reconnect did not complete yet: %s (id=%s)", printer.name, printer.id)
             except Exception as exc:  # noqa: BLE001 - one offline printer must never stop the worker
-                logger.debug("Printer reconnect failed for %s (id=%s): %s", printer.name, printer.id, type(exc).__name__)
+                logger.debug(
+                    "Printer reconnect failed for %s (id=%s): %s", printer.name, printer.id, type(exc).__name__
+                )
 
     async def _run(self) -> None:
         assert self._session_factory is not None
@@ -83,8 +102,12 @@ class PrinterReconnectService:
         if self._task is None or self._task.done():
             if self._session_factory is None:
                 raise RuntimeError("PrinterReconnectService requires a session factory")
+            self._reconnect_not_before = time.monotonic() + STARTUP_RECONNECT_GRACE_SECONDS
             self._task = asyncio.create_task(self._run(), name="printer-reconnect-worker")
-            logger.info("Printer reconnect worker started")
+            logger.info(
+                "Printer reconnect worker started; delaying retries for %ss while initial connections settle",
+                STARTUP_RECONNECT_GRACE_SECONDS,
+            )
 
     async def stop(self) -> None:
         if self._task is None:

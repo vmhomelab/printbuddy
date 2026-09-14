@@ -185,6 +185,21 @@ class TestPrinterManager:
             mock_client.disconnect.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_connect_printer_uses_bounded_timeout_when_replacing_client(self, manager, mock_printer, mock_client):
+        """Replacing a client must not allow an MQTT teardown to block forever."""
+        manager._clients[mock_printer.id] = mock_client
+
+        with patch("backend.app.services.printer_manager.BambuMQTTClient") as MockClient:
+            new_client = MagicMock()
+            new_client.state = MagicMock()
+            new_client.state.connected = True
+            MockClient.return_value = new_client
+
+            await manager.connect_printer(mock_printer)
+
+        mock_client.disconnect.assert_called_once_with(timeout=2.0)
+
+    @pytest.mark.asyncio
     async def test_connect_printer_returns_false_on_failure(self, manager, mock_printer):
         """Verify returns False when connection fails."""
         with patch("backend.app.services.printer_manager.BambuMQTTClient") as MockClient:
