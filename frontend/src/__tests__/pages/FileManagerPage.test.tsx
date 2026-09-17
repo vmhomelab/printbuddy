@@ -165,6 +165,18 @@ describe('FileManagerPage', () => {
       });
     });
 
+    it('renders material metadata as a card badge', async () => {
+      server.use(
+        http.get('/api/v1/library/files', () =>
+          HttpResponse.json([{ ...mockFiles[0], filename: 'pla-test.gcode', file_type: 'gcode', filament_type: 'PLA' }]),
+        ),
+      );
+
+      render(<FileManagerPage />);
+
+      expect(await screen.findByText('PLA')).toBeInTheDocument();
+    });
+
     it('opens archived MakerWorld source details and sanitises the saved description', async () => {
       server.use(
         http.get('/api/v1/library/files', () =>

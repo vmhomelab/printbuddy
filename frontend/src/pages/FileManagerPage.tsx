@@ -741,6 +741,12 @@ function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, 
         ) : (
           <FileBox className="w-12 h-12 text-bambu-gray/30" />
         )}
+        {/* Filament type badge */}
+        {file.filament_type && (
+          <div className="absolute top-2 left-2 max-w-[55%] truncate bg-bambu-dark/90 text-white text-xs px-1.5 py-0.5 rounded font-medium" title={file.filament_type}>
+            {file.filament_type}
+          </div>
+        )}
         {/* File type badge */}
         <div className={`absolute top-2 right-2 text-xs px-1.5 py-0.5 rounded font-medium ${
           file.file_type === '3mf' ? 'bg-bambu-green/90 text-white'

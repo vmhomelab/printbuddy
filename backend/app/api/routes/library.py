@@ -487,6 +487,44 @@ async def save_3mf_bytes_to_library(
     return library_file, False
 
 
+def extract_gcode_metadata(header: str) -> dict[str, str]:
+    """Extract safe, displayable material metadata from a raw G-code header.
+
+    Elegoo Slicer writes ``initial_filament`` while OrcaSlicer writes
+    ``filament_type``. Only comment lines before the first executable G-code
+    instruction are considered: later comments may describe a tool change or
+    generated feature rather than the job's declared material.
+    """
+    filament_types: list[str] = []
+    header_pattern = re.compile(r"^\s*;\s*(?:initial_filament|filament_type)\s*[:=]\s*(.+?)\s*$", re.IGNORECASE)
+
+    for line in header.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if not stripped.startswith(";"):
+            break
+        match = header_pattern.match(stripped)
+        if not match:
+            continue
+        for value in re.split(r"[;,]", match.group(1)):
+            material = value.strip()
+            if material and material not in filament_types:
+                filament_types.append(material)
+
+    return {"filament_type": ", ".join(filament_types)} if filament_types else {}
+
+
+def extract_gcode_file_metadata(file_path: Path) -> dict[str, str]:
+    """Read only the raw G-code header required for file-card metadata."""
+    try:
+        with file_path.open("r", encoding="utf-8", errors="ignore") as f:
+            return extract_gcode_metadata(f.read(64 * 1024))
+    except OSError as exc:
+        logger.debug("Failed to read G-code metadata from %s: %s", file_path, exc)
+        return {}
+
+
 def extract_gcode_thumbnail(file_path: Path) -> bytes | None:
     """Extract embedded thumbnail from gcode file.
 
@@ -1403,7 +1441,9 @@ async def scan_external_folder(
             # Doing them inline would block the HTTP request for minutes on a
             # large NAS mount (#1299).
 
-            # Extract gcode thumbnail
+            # Extract raw G-code header metadata and thumbnail.
+            if file_type == "gcode":
+                file_metadata = extract_gcode_file_metadata(filepath) or None
             if file_type == "gcode" and thumbnail_path is None:
                 thumb_data = extract_gcode_thumbnail(filepath)
                 if thumb_data:
@@ -1547,11 +1587,13 @@ async def list_files(
         print_name = None
         print_time = None
         filament_grams = None
+        filament_type = None
         sliced_for_model = None
         if f.file_metadata:
             print_name = f.file_metadata.get("print_name")
             print_time = f.file_metadata.get("print_time_seconds")
             filament_grams = f.file_metadata.get("filament_used_grams")
+            filament_type = f.file_metadata.get("filament_type")
             sliced_for_model = f.file_metadata.get("sliced_for_model")
 
         file_list.append(
@@ -1573,6 +1615,7 @@ async def list_files(
                 print_name=print_name,
                 print_time_seconds=print_time,
                 filament_used_grams=filament_grams,
+                filament_type=filament_type,
                 sliced_for_model=sliced_for_model,
             )
         )
@@ -1684,8 +1727,9 @@ async def upload_file(
                 logger.warning("Failed to parse 3MF: %s", e)
 
         elif ext == ".gcode":
-            # Extract embedded thumbnail from gcode
+            # Extract raw G-code header metadata and embedded thumbnail.
             try:
+                metadata = extract_gcode_file_metadata(file_path)
                 thumbnail_data = extract_gcode_thumbnail(file_path)
                 if thumbnail_data:
                     thumb_filename = f"{uuid.uuid4().hex}.png"
@@ -3972,11 +4016,13 @@ async def get_file(
     print_name = None
     print_time = None
     filament_grams = None
+    filament_type = None
     sliced_for_model = None
     if file.file_metadata:
         print_name = file.file_metadata.get("print_name")
         print_time = file.file_metadata.get("print_time_seconds")
         filament_grams = file.file_metadata.get("filament_used_grams")
+        filament_type = file.file_metadata.get("filament_type")
         sliced_for_model = file.file_metadata.get("sliced_for_model")
 
     return FileResponseSchema(
@@ -4007,6 +4053,7 @@ async def get_file(
         print_name=print_name,
         print_time_seconds=print_time,
         filament_used_grams=filament_grams,
+        filament_type=filament_type,
         sliced_for_model=sliced_for_model,
     )
 

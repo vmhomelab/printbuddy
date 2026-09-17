@@ -6575,6 +6575,7 @@ export interface LibraryFile {
   print_name: string | null;
   print_time_seconds: number | null;
   filament_used_grams: number | null;
+  filament_type: string | null;
   sliced_for_model: string | null;
 }
 
@@ -6597,6 +6598,7 @@ export interface LibraryFileListItem {
   print_name: string | null;
   print_time_seconds: number | null;
   filament_used_grams: number | null;
+  filament_type: string | null;
   sliced_for_model: string | null;
 }
 
