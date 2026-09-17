@@ -344,6 +344,14 @@ _active_prints: dict[tuple[int, str], int] = {}
 # {(printer_id, filename): archive_id}
 _expected_prints: dict[tuple[int, str], int] = {}
 
+# First observation of a tag-less/manual spool assignment that appears missing
+# or mismatched in AMS telemetry. Bambu startup publishes partial and stale AMS
+# snapshots, so an individual observation must never delete persistent user
+# inventory state. The value is the observed fault fingerprint; a later callback
+# must report the same fault before cleanup can remove the assignment.
+# {(printer_id, assignment_id): "missing" | "mismatch:<color>:<type>"}
+_manual_assignment_cleanup_observations: dict[tuple[int, int], str] = {}
+
 # Track AMS mapping for prints: {archive_id: [global_tray_id_per_slot]}
 # Used by usage tracker to map 3MF slots to physical AMS trays
 _print_ams_mappings: dict[int, list[int]] = {}
@@ -1665,6 +1673,30 @@ def _is_bambu_uuid(tray_uuid: str) -> bool:
     return bool(tray_uuid) and tray_uuid not in ("", "0" * len(tray_uuid))
 
 
+def _manual_assignment_cleanup_key(printer_id: int, assignment_id: int) -> tuple[int, int]:
+    """Return the process-local key for a pending tag-less assignment cleanup."""
+    return printer_id, assignment_id
+
+
+def _clear_manual_assignment_cleanup_observation(printer_id: int, assignment_id: int) -> None:
+    """Forget a pending cleanup after a slot reports healthy/trustworthy state."""
+    _manual_assignment_cleanup_observations.pop(_manual_assignment_cleanup_key(printer_id, assignment_id), None)
+
+
+def _confirm_manual_assignment_cleanup(printer_id: int, assignment_id: int, fault: str) -> bool:
+    """Require the same tag-less AMS fault in two callbacks before unlinking.
+
+    Bambu sends partial/stale AMS telemetry during printer startup. A single
+    callback therefore cannot safely be treated as an inventory replacement.
+    """
+    key = _manual_assignment_cleanup_key(printer_id, assignment_id)
+    if _manual_assignment_cleanup_observations.get(key) == fault:
+        _manual_assignment_cleanup_observations.pop(key, None)
+        return True
+    _manual_assignment_cleanup_observations[key] = fault
+    return False
+
+
 async def on_ams_change(printer_id: int, ams_data: list):
     """Handle AMS data changes - sync to Spoolman if enabled and auto mode."""
     logger = logging.getLogger(__name__)
@@ -1731,6 +1763,7 @@ async def on_ams_change(printer_id: int, ams_data: list):
                     current_tray = _find_tray_in_ams_data(ams_data, assignment.ams_id, assignment.tray_id)
                 if not current_tray:
                     if _print_active:
+                        _clear_manual_assignment_cleanup_observation(printer_id, assignment.id)
                         logger.info(
                             "Auto-unlink: keeping spool %d AMS%d-T%d — tray missing during active print",
                             assignment.spool_id,
@@ -1738,13 +1771,21 @@ async def on_ams_change(printer_id: int, ams_data: list):
                             assignment.tray_id,
                         )
                         continue
+                    if not _confirm_manual_assignment_cleanup(printer_id, assignment.id, "missing"):
+                        logger.info(
+                            "Auto-unlink: keeping spool %d AMS%d-T%d — tray missing in first AMS callback; awaiting confirmation",
+                            assignment.spool_id,
+                            assignment.ams_id,
+                            assignment.tray_id,
+                        )
+                        continue
                     logger.info(
-                        "Auto-unlink: spool %d AMS%d-T%d — tray not found in AMS data (slot empty?)",
+                        "Auto-unlink: spool %d AMS%d-T%d — tray absent in two AMS callbacks",
                         assignment.spool_id,
                         assignment.ams_id,
                         assignment.tray_id,
                     )
-                    stale.append(assignment)  # Slot empty
+                    stale.append(assignment)  # Confirmed empty slot
                 elif _is_bambu_uuid(current_tray.get("tray_uuid", "")):
                     # A Bambu Lab spool is in this slot — check if it's the same spool
                     # that's currently assigned. If yes, keep the assignment (avoids
@@ -1763,6 +1804,7 @@ async def on_ams_change(printer_id: int, ams_data: list):
                         ):
                             spool_matches = True
                     if spool_matches:
+                        _clear_manual_assignment_cleanup_observation(printer_id, assignment.id)
                         # Same BL spool still in slot — keep assignment, update fingerprint if needed
                         cur_color = current_tray.get("tray_color", "")
                         cur_type = current_tray.get("tray_type", "")
@@ -1779,6 +1821,7 @@ async def on_ams_change(printer_id: int, ams_data: list):
                             )
                         continue
                     # Different BL spool or unrecognized — unlink so auto-assign can match.
+                    _clear_manual_assignment_cleanup_observation(printer_id, assignment.id)
                     # Do not delete during an active print: print-start AMS telemetry can
                     # be noisy, while the user's assignment is persistent inventory state.
                     if _print_active:
@@ -1808,6 +1851,7 @@ async def on_ams_change(printer_id: int, ams_data: list):
                     metadata_blank = not cur_type.strip() and cur_color_normalized in ("", "00000000")
 
                     if metadata_blank:
+                        _clear_manual_assignment_cleanup_observation(printer_id, assignment.id)
                         logger.info(
                             "Auto-unlink: keeping spool %d AMS%d-T%d — live tray metadata is blank/transient",
                             assignment.spool_id,
@@ -1834,6 +1878,7 @@ async def on_ams_change(printer_id: int, ams_data: list):
                     # tray_type that might survive the relay's auto-clearing.
                     loaded = cur_state == 11 or (cur_state not in (9, 10) and cur_type.strip())
                     if not fp_type.strip() and loaded and assignment.spool:
+                        _clear_manual_assignment_cleanup_observation(printer_id, assignment.id)
                         try:
                             from backend.app.api.routes.inventory import (
                                 apply_spool_to_slot_via_mqtt,
@@ -1876,6 +1921,7 @@ async def on_ams_change(printer_id: int, ams_data: list):
                             spool_color = (spool.rgba or "FFFFFFFF").upper()
                             spool_type = (spool.material or "").upper()
                             if _colors_similar(cur_color, spool_color) and cur_type.upper() == spool_type:
+                                _clear_manual_assignment_cleanup_observation(printer_id, assignment.id)
                                 logger.info(
                                     "Auto-unlink: spool %d AMS%d-T%d — fingerprint mismatch but tray matches spool, updating fp",
                                     assignment.spool_id,
@@ -1898,6 +1944,7 @@ async def on_ams_change(printer_id: int, ams_data: list):
                             spool.material if spool else "?",
                         )
                         if _print_active:
+                            _clear_manual_assignment_cleanup_observation(printer_id, assignment.id)
                             logger.info(
                                 "Auto-unlink: keeping spool %d AMS%d-T%d — fingerprint mismatch during active print",
                                 assignment.spool_id,
@@ -1905,7 +1952,18 @@ async def on_ams_change(printer_id: int, ams_data: list):
                                 assignment.tray_id,
                             )
                             continue
-                        stale.append(assignment)  # Spool changed
+                        mismatch_fault = f"mismatch:{cur_color_normalized}:{cur_type.strip().upper()}"
+                        if not _confirm_manual_assignment_cleanup(printer_id, assignment.id, mismatch_fault):
+                            logger.info(
+                                "Auto-unlink: keeping spool %d AMS%d-T%d — first tag-less fingerprint mismatch; awaiting confirmation",
+                                assignment.spool_id,
+                                assignment.ams_id,
+                                assignment.tray_id,
+                            )
+                            continue
+                        stale.append(assignment)  # Confirmed spool change
+                    else:
+                        _clear_manual_assignment_cleanup_observation(printer_id, assignment.id)
             for a in stale:
                 await db.delete(a)
             if stale:
