@@ -174,7 +174,8 @@ describe('FileManagerPage', () => {
 
       render(<FileManagerPage />);
 
-      expect(await screen.findByText('PLA')).toBeInTheDocument();
+      const materialBadge = await screen.findByText('PLA');
+      expect(materialBadge.parentElement).toHaveClass('right-2');
     });
 
     it('opens archived MakerWorld source details and sanitises the saved description', async () => {
