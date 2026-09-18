@@ -490,21 +490,20 @@ async def save_3mf_bytes_to_library(
 def extract_gcode_metadata(header: str) -> dict[str, str]:
     """Extract safe, displayable material metadata from a raw G-code header.
 
-    Elegoo Slicer writes ``initial_filament`` while OrcaSlicer writes
-    ``filament_type``. Only comment lines before the first executable G-code
-    instruction are considered: later comments may describe a tool change or
-    generated feature rather than the job's declared material.
+    Elegoo may emit executable startup commands before its metadata block, so
+    parsing continues through the bounded header window. It stops at the first
+    layer marker, where later comments can describe tool changes rather than
+    the job's declared material.
     """
     filament_types: list[str] = []
     header_pattern = re.compile(r"^\s*;\s*(?:initial_filament|filament_type)\s*[:=]\s*(.+?)\s*$", re.IGNORECASE)
 
+    layer_marker = re.compile(r"^\s*;\s*(?:LAYER(?:\s*:|_CHANGE\b)|AFTER_LAYER_CHANGE\b)", re.IGNORECASE)
+
     for line in header.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if not stripped.startswith(";"):
+        if layer_marker.match(line):
             break
-        match = header_pattern.match(stripped)
+        match = header_pattern.match(line)
         if not match:
             continue
         for value in re.split(r"[;,]", match.group(1)):
