@@ -84,17 +84,39 @@ async def resolve_preset_ref(
     preset type, cloud auth failure, network error fetching cloud detail).
     """
     if ref.source == "local":
-        return await _resolve_local(db, ref, slot)
-    if ref.source == "cloud":
-        return await _resolve_cloud(db, user, ref, slot)
-    if ref.source == "orca_cloud":
-        return await _resolve_orca_cloud(db, user, ref, slot)
-    if ref.source == "standard":
-        return _resolve_standard(ref, slot)
-    raise HTTPException(
-        status_code=400,
-        detail=f"Unknown preset source for {slot}: {ref.source!r}",
-    )
+        content = await _resolve_local(db, ref, slot)
+    elif ref.source == "cloud":
+        content = await _resolve_cloud(db, user, ref, slot)
+    elif ref.source == "orca_cloud":
+        content = await _resolve_orca_cloud(db, user, ref, slot)
+    elif ref.source == "standard":
+        content = _resolve_standard(ref, slot)
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown preset source for {slot}: {ref.source!r}",
+        )
+    return _normalise_profile_for_slicer(content, slot)
+
+
+def _normalise_profile_for_slicer(content: str, slot: str) -> str:
+    """Make a profile payload safe for Orca's strict CLI parser.
+
+    Imported local and Bambu Cloud profiles are historical/user-controlled
+    JSON and can omit, or use Bambu's alternate value for, ``type``. Orca's
+    ``--load-settings`` requires its exact vocabulary (machine/process/
+    filament), so establish it from PrintBuddy's already-validated slot.
+    """
+    expected_type = _SLOT_TO_PROFILE_TYPE.get(slot)
+    if expected_type is None:
+        raise HTTPException(status_code=400, detail=f"Unknown slot for slicer profile: {slot!r}")
+    try:
+        profile = json.loads(content)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid {slot} preset JSON") from exc
+    if not isinstance(profile, dict):
+        raise HTTPException(status_code=400, detail=f"Invalid {slot} preset JSON")
+    return json.dumps({**profile, "type": expected_type})
 
 
 async def _resolve_local(db: AsyncSession, ref: PresetRef, slot: str) -> str:

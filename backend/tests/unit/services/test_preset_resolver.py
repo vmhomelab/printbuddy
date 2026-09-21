@@ -73,6 +73,25 @@ async def test_local_returns_setting_blob():
 
 
 @pytest.mark.asyncio
+async def test_public_resolver_normalizes_local_profile_type_for_sidecar():
+    """Local imports pre-date the API sidecar and can omit `type`, but Orca's
+    --load-settings parser requires the exact slot type (printer → machine)."""
+    db = MagicMock()
+    preset = MagicMock()
+    preset.preset_type = "printer"
+    preset.setting = '{"name": "My P1S", "nozzle_diameter": [0.4]}'
+    db.get = AsyncMock(return_value=preset)
+
+    out = await preset_resolver.resolve_preset_ref(db, None, PresetRef(source="local", id="42"), slot="printer")
+
+    assert json.loads(out) == {
+        "name": "My P1S",
+        "nozzle_diameter": [0.4],
+        "type": "machine",
+    }
+
+
+@pytest.mark.asyncio
 async def test_local_rejects_non_integer_id():
     db = MagicMock()
     db.get = AsyncMock()
@@ -225,7 +244,7 @@ async def test_resolve_preset_ref_dispatches_by_source():
 
     # local
     out = await preset_resolver.resolve_preset_ref(db, user, PresetRef(source="local", id="1"), slot="printer")
-    assert out == '{"local": true}'
+    assert json.loads(out) == {"local": True, "type": "machine"}
 
     # standard
     out = await preset_resolver.resolve_preset_ref(
