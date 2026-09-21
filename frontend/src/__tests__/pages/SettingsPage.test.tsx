@@ -205,6 +205,37 @@ describe('SettingsPage', () => {
       });
     });
 
+    it('tests the enabled slicer API connection and disables the button while pending', async () => {
+      const user = userEvent.setup();
+      let completeRequest: (() => void) | undefined;
+      server.use(
+        http.get('/api/v1/settings/', () => HttpResponse.json({ ...mockSettings, use_slicer_api: true })),
+        http.post('/api/v1/settings/test-slicer-connection', async () => {
+          await new Promise<void>((resolve) => {
+            completeRequest = resolve;
+          });
+          return HttpResponse.json({
+            success: true,
+            slicer: 'bambu_studio',
+            health: { status: 'ok', version: '2.4.1', capabilities: ['slice'] },
+          });
+        }),
+      );
+      render(<SettingsPage />);
+
+      await user.click(await screen.findByText('Workflow'));
+      const button = await screen.findByRole('button', { name: 'Test slicer connection' });
+      await user.click(button);
+
+      expect(button).toBeDisabled();
+      completeRequest?.();
+
+      await waitFor(() => {
+        expect(screen.getByText('Bambu Studio slicer connection succeeded.')).toBeInTheDocument();
+      });
+      expect(button).not.toBeDisabled();
+    });
+
     it('marks default print options as Bambu Lab only with a provider warning', async () => {
       const user = userEvent.setup();
       render(<SettingsPage />);

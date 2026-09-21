@@ -255,6 +255,7 @@ export function SettingsPage() {
   const [changePasswordData, setChangePasswordData] = useState({ currentPassword: '', newPassword: '', confirmPassword: '' });
   const [changePasswordLoading, setChangePasswordLoading] = useState(false);
   const [storageUsageRefreshing, setStorageUsageRefreshing] = useState(false);
+  const [slicerConnectionTesting, setSlicerConnectionTesting] = useState(false);
 
   // User management state
   const [showCreateUserModal, setShowCreateUserModal] = useState(false);
@@ -1232,6 +1233,29 @@ export function SettingsPage() {
     }
     setLocalSettings(prev => prev ? { ...prev, [key]: value } : null);
   }, [authEnabled, hasPermission, showToast, t]);
+
+  const handleTestSlicerConnection = async () => {
+    setSlicerConnectionTesting(true);
+    try {
+      const result = await api.testSlicerConnection();
+      const slicerName = result.slicer === 'orcaslicer' ? 'OrcaSlicer' : 'Bambu Studio';
+      if (result.success) {
+        showToast(
+          t('settings.slicerConnectionSuccess', '{{slicer}} slicer connection succeeded.', { slicer: slicerName }),
+          'success',
+        );
+      } else {
+        showToast(
+          t('settings.slicerConnectionFailed', '{{slicer}} slicer connection failed.', { slicer: slicerName }),
+          'error',
+        );
+      }
+    } catch {
+      showToast(t('settings.slicerConnectionFailed', 'Slicer connection failed.'), 'error');
+    } finally {
+      setSlicerConnectionTesting(false);
+    }
+  };
 
   const handleTestExternalCamera = async (printerId: number, url: string, cameraType: string) => {
     const trimmedUrl = url.trim();
@@ -4714,6 +4738,19 @@ export function SettingsPage() {
                       'URL of the slicer-API sidecar container. Leave blank to use the SLICER_API_URL / BAMBU_STUDIO_API_URL env var defaults.',
                     )}
                   </p>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    onClick={handleTestSlicerConnection}
+                    disabled={slicerConnectionTesting}
+                    className="mt-3"
+                  >
+                    {slicerConnectionTesting && <Loader2 className="w-4 h-4 animate-spin" />}
+                    {slicerConnectionTesting
+                      ? t('settings.testingSlicerConnection', 'Testing slicer connection…')
+                      : t('settings.testSlicerConnection', 'Test slicer connection')}
+                  </Button>
                 </div>
               )}
             </CardContent>

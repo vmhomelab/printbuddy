@@ -18,6 +18,7 @@ from backend.app.core.permissions import Permission
 from backend.app.models.settings import Settings
 from backend.app.models.user import User
 from backend.app.schemas.settings import AppSettings, AppSettingsUpdate
+from backend.app.services.slicer_api import SlicerApiService, SlicerApiUnavailableError
 
 MANUAL_BACKUP_FILENAME_PREFIX = "printbuddy-backup-"
 BACKUP_DATABASE_FILENAME = "printbuddy.db"
@@ -61,6 +62,27 @@ router = APIRouter(prefix="/settings", tags=["settings"])
 
 DEFAULT_SETTINGS = AppSettings()
 
+
+class SlicerHealthPayload(BaseModel):
+    """Safe, documented subset of a slicer sidecar's health response."""
+
+    status: str | None = None
+    version: str | None = None
+    capabilities: list[str] | None = None
+
+
+class SlicerConnectionTestResponse(BaseModel):
+    """Result of testing the selected slicer sidecar connection.
+
+    The endpoint resolves the target only from persisted settings and app
+    configuration; it deliberately accepts no URL or request body.
+    """
+
+    success: bool
+    slicer: str
+    health: SlicerHealthPayload | None = None
+
+
 # Sensitive credential fields blanked for API-key callers
 _SENSITIVE_FIELDS_FOR_API_KEY = (
     "mqtt_password",
@@ -102,6 +124,37 @@ async def get_setting(db: AsyncSession, key: str) -> str | None:
     result = await db.execute(select(Settings).where(Settings.key == key))
     setting = result.scalar_one_or_none()
     return setting.value if setting else None
+
+
+def sanitize_slicer_health_payload(payload: dict) -> dict:
+    """Return only safe, documented fields from an untrusted sidecar response."""
+    safe: dict[str, str | list[str]] = {}
+    for key in ("status", "version"):
+        value = payload.get(key)
+        if isinstance(value, str):
+            safe[key] = value[:200]
+
+    capabilities = payload.get("capabilities")
+    if isinstance(capabilities, list):
+        safe_capabilities = [capability[:100] for capability in capabilities if isinstance(capability, str)][:50]
+        safe["capabilities"] = safe_capabilities
+    return safe
+
+
+async def _resolve_effective_slicer_sidecar(db: AsyncSession) -> tuple[str, str]:
+    """Resolve the selected slicer and sidecar URL using the normal precedence."""
+    preferred = (await get_setting(db, "preferred_slicer")) or "bambu_studio"
+    if preferred == "orcaslicer":
+        configured = await get_setting(db, "orcaslicer_api_url")
+        url = (configured or app_settings.slicer_api_url).strip()
+    elif preferred == "bambu_studio":
+        configured = await get_setting(db, "bambu_studio_api_url")
+        url = (configured or app_settings.bambu_studio_api_url).strip()
+    else:
+        raise ValueError("Invalid preferred slicer configuration")
+    if not url:
+        raise ValueError("No slicer sidecar is configured")
+    return preferred, url
 
 
 async def get_external_login_url(db: AsyncSession) -> str:
@@ -308,6 +361,36 @@ async def patch_settings(
 ):
     """Partially update application settings (same as PUT, for REST compatibility)."""
     return await update_settings(settings_update, db, _)
+
+
+@router.post("/test-slicer-connection", response_model=SlicerConnectionTestResponse)
+async def test_slicer_connection(
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_UPDATE),
+):
+    """Health-check the effective configured slicer sidecar.
+
+    The URL is resolved server-side from the selected slicer setting and its
+    DB-or-environment configuration. No caller-controlled URL is accepted.
+    """
+    try:
+        slicer, sidecar_url = await _resolve_effective_slicer_sidecar(db)
+    except ValueError:
+        logger.warning("Slicer connection test could not resolve the selected sidecar")
+        return SlicerConnectionTestResponse(success=False, slicer="bambu_studio")
+
+    try:
+        async with SlicerApiService(sidecar_url) as service:
+            health = await service.health()
+    except (SlicerApiUnavailableError, ValueError):
+        logger.info("Configured %s slicer sidecar is unavailable or returned invalid health data", slicer)
+        return SlicerConnectionTestResponse(success=False, slicer=slicer)
+
+    return SlicerConnectionTestResponse(
+        success=True,
+        slicer=slicer,
+        health=sanitize_slicer_health_payload(health),
+    )
 
 
 class ElectricityPriceUpdate(BaseModel):
