@@ -214,6 +214,47 @@ describe('SliceModal', () => {
     expect(selects[0].value).toBe('standard:Bambu Lab X1 Carbon 0.4 nozzle');
   });
 
+  it('hides known-incompatible process presets from the selected printer', async () => {
+    mockApi.getSlicerPresets.mockResolvedValue(
+      makeUnified({
+        standard: {
+          printer: [
+            {
+              id: 'p1s',
+              name: 'Bambu Lab P1S 0.4 nozzle - Ethan',
+              source: 'standard',
+            },
+          ],
+          process: [
+            {
+              id: 'p1s-process',
+              name: '0.20mm Standard @BBL P1S',
+              source: 'standard',
+              compatible_printers: ['Bambu Lab P1S 0.4 nozzle - Ethan'],
+            },
+            {
+              id: 'dremel-process',
+              name: '.05mm Super Detail @Dremel 3D40 0.4',
+              source: 'standard',
+              compatible_printers: ['Dremel 3D40 0.4 nozzle'],
+            },
+          ],
+          filament: [{ id: 'pla', name: 'Generic PLA - Silk PLA', source: 'standard' }],
+        },
+      }),
+    );
+    renderWithTracker({
+      source: { kind: 'libraryFile', id: 100, filename: 'Cube.stl' },
+      onClose: vi.fn(),
+    });
+
+    await waitFor(() => expect(screen.getByText('Bambu Lab P1S 0.4 nozzle - Ethan')).toBeDefined());
+    const processSelect = screen.getAllByRole('combobox')[1];
+    expect(within(processSelect).getByText('0.20mm Standard @BBL P1S')).toBeDefined();
+    expect(within(processSelect).queryByText('.05mm Super Detail @Dremel 3D40 0.4')).toBeNull();
+    expect(processSelect.querySelector('optgroup[label="Other printers"]')).toBeNull();
+  });
+
   it('sends source-aware refs (not legacy bare ints) on submit', async () => {
     const onClose = vi.fn();
     mockApi.sliceLibraryFile.mockResolvedValue({
