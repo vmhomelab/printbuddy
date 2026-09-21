@@ -19,7 +19,9 @@
 #
 # First build pulls the sidecar source over git (~5 min — downloads the
 # BambuStudio AppImage, ~220 MB) and caches the image locally.
-# Subsequent runs reuse the cache. Pin the slicer versions via .env.
+# The source revision and slicer versions are pinned in .env. The ports bind
+# to loopback only: Printbuddy runs in host-network mode and reaches them via
+# localhost, while the unauthenticated sidecar must not be exposed to the LAN.
 
 services:
   orca-slicer-api:
@@ -32,7 +34,7 @@ services:
     container_name: orca-slicer-api
     restart: unless-stopped
     ports:
-      - "${ORCA_API_PORT:-3003}:3000"
+      - "127.0.0.1:${ORCA_API_PORT:-3003}:3000"
     volumes:
       - ./data/orca:/app/data
     environment:
@@ -55,7 +57,7 @@ services:
     container_name: bambu-studio-api
     restart: unless-stopped
     ports:
-      - "${BAMBU_API_PORT:-3001}:3000"
+      - "127.0.0.1:${BAMBU_API_PORT:-3001}:3000"
     volumes:
       - ./data/bambu:/app/data
     environment:

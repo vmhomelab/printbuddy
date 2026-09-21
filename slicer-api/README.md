@@ -41,6 +41,16 @@ Subsequent runs reuse the local image — instant start.
 
 Override via `ORCA_API_PORT` / `BAMBU_API_PORT` in `.env`.
 
+## Network exposure
+
+The Compose stack binds both sidecar ports to **`127.0.0.1` only**. This is
+intentional: the API has no authentication and must be consumed by the local
+Printbuddy host-network container, not exposed to the LAN or the Internet.
+
+If Printbuddy and the sidecar run on separate hosts, place them on a private
+network and add authentication/reverse-proxy controls before exposing either
+port; do not simply change the host binding to `0.0.0.0`.
+
 ## Printbuddy wiring
 
 In the Printbuddy UI: **Settings → Slicer**:
@@ -57,17 +67,16 @@ Leaving the URL field blank uses the `SLICER_API_URL` /
 
 ## Where the source lives
 
-Both images build from the git context configured by
-`SLICER_API_BUILD_CONTEXT` in `.env`. The Compose file uses Docker's git build
-context, so you don't need to clone the sidecar manually — Docker pulls the repo
-at build time.
+Both images build from the immutable Git revision configured by
+`SLICER_API_BUILD_CONTEXT` in `.env`. Docker pulls that exact source revision,
+so deployments are reproducible. Update the revision only after the fork
+change has been tested and published; do not point production at a moving
+branch name.
 
-The fork patches AFKFelix's upstream wrapper with the `inherits:`
-chain resolver, `from: "User"` → `"system"` rewrite, `# ` clone-prefix
-strip, and sentinel-value strip — all empirically required to slice
-real GUI exports without segfaulting the CLI. Once those land
-upstream, this Compose file can be flipped to pull from
-`ghcr.io/afkfelix/orca-slicer-api` directly.
+The maintained fork carries the Printbuddy-specific inheritance resolver,
+stock-profile listing, bundle API, and safe slice-progress contract. Once
+those land upstream, this Compose file can be flipped to a versioned upstream
+image or immutable upstream revision.
 
 ## Updating
 
