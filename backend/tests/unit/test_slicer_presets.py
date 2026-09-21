@@ -322,7 +322,13 @@ class TestFetchBundledPresets:
         svc_mock.list_bundled_profiles = AsyncMock(
             return_value={
                 "printer": [{"name": "Bambu X1C 0.4", "base_id": None}],
-                "process": [{"name": "0.20mm Standard", "base_id": "fdm_process_common"}],
+                "process": [
+                    {
+                        "name": "0.20mm Standard",
+                        "base_id": "fdm_process_common",
+                        "compatible_printers": ["Bambu X1C 0.4"],
+                    }
+                ],
                 "filament": [{"name": "Bambu PLA Basic", "base_id": "fdm_filament_pla"}],
             }
         )
@@ -338,6 +344,7 @@ class TestFetchBundledPresets:
         # Bundled presets are addressed by name (the slicer's inheritance
         # walker resolves them by name), so id == name.
         assert slots["printer"][0].id == "Bambu X1C 0.4"
+        assert slots["process"][0].compatible_printers == ["Bambu X1C 0.4"]
 
     @pytest.mark.asyncio
     async def test_cache_hit_skips_sidecar(self):

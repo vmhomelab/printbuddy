@@ -1138,12 +1138,10 @@ function PresetDropdown({
 }: PresetDropdownProps) {
   const { t } = useTranslation();
 
-  // Tier sections (imported → cloud → standard), plus — for a process /
-  // filament slot with a selected printer — a trailing group of presets that
-  // resolve to a different printer (#1325). Compatibility-unknown presets
-  // stay in their tier, so a custom / untagged preset is never hidden, and
-  // empty sections collapse out.
-  const { sections, otherEntries } = useMemo(() => {
+  // A confirmed mismatch must not be selectable: running a Dremel process
+  // profile against a P1S is unsafe and invariably fails downstream. Profiles
+  // with no compatibility declaration remain visible as custom/legacy input.
+  const sections = useMemo(() => {
     const tiers: { key: PresetTier; label: string; fallback: string }[] = [
       { key: 'local', label: 'slice.tier.local', fallback: 'Imported' },
       { key: 'orca_cloud', label: 'slice.tier.orcaCloud', fallback: 'Orca Cloud' },
@@ -1152,7 +1150,6 @@ function PresetDropdown({
     ];
     const filterByPrinter = slot !== 'printer';
     const compatSections: { tierLabel: string; entries: UnifiedPreset[] }[] = [];
-    const other: UnifiedPreset[] = [];
     for (const { key, label: lk, fallback } of tiers) {
       const entries = (data[key] ?? { printer: [], process: [], filament: [] })[slot];
       if (!filterByPrinter) {
@@ -1168,10 +1165,8 @@ function PresetDropdown({
             slot as 'process' | 'filament',
             selectedPrinterName ?? null,
             compatIndex ?? EMPTY_COMPATIBILITY_INDEX,
-          ) === 'mismatch'
+          ) !== 'mismatch'
         ) {
-          other.push(p);
-        } else {
           compatible.push(p);
         }
       }
@@ -1179,11 +1174,10 @@ function PresetDropdown({
         compatSections.push({ tierLabel: t(lk, fallback), entries: compatible });
       }
     }
-    return { sections: compatSections, otherEntries: other };
+    return compatSections;
   }, [data, slot, t, selectedPrinterName, compatIndex]);
 
-  const totalEntries =
-    sections.reduce((sum, s) => sum + s.entries.length, 0) + otherEntries.length;
+  const totalEntries = sections.reduce((sum, s) => sum + s.entries.length, 0);
 
   return (
     <label className="block">
@@ -1217,15 +1211,6 @@ function PresetDropdown({
             ))}
           </optgroup>
         ))}
-        {otherEntries.length > 0 && (
-          <optgroup label={t('slice.otherPrinters')}>
-            {otherEntries.map((p) => (
-              <option key={`${p.source}:${p.id}`} value={`${p.source}:${p.id}`}>
-                {p.name}
-              </option>
-            ))}
-          </optgroup>
-        )}
       </select>
     </label>
   );
