@@ -117,6 +117,20 @@ export function buildCompatibilityIndex(
   };
 }
 
+function canonicalPrinterPresetName(name: string): string {
+  const stripped = name.replace(/^#\s*/, '').trim();
+  // A PrintBuddy/Bambu user clone may append a human label (e.g. " - Ethan")
+  // while its compatible_printers array retains the stock canonical name.
+  // Scope this to explicit Bambu nozzle preset names; do not fuzzy-match
+  // unrelated manufacturers or arbitrary display text.
+  const clone = stripped.match(/^(Bambu Lab .+?\s+\d(?:\.\d+)?\s+nozzle)\s+-\s+.+$/i);
+  return clone ? clone[1] : stripped;
+}
+
+function samePrinterPreset(left: string, right: string): boolean {
+  return canonicalPrinterPresetName(left) === canonicalPrinterPresetName(right);
+}
+
 function normalizeModelFragment(s: string): string {
   return s.replace(/\s+/g, '').toLowerCase();
 }
@@ -185,7 +199,7 @@ function classifyByBambuName(
   // without us having to ship a code update. When they differ in form
   // (X1C vs "X1 Carbon"), the registry is what makes the match work.
   const inferredModel = bambuModelByShortCode[parsed.token] ?? parsed.token;
-  const selectedParts = extractPrinterPresetModel(selectedPrinterName);
+  const selectedParts = extractPrinterPresetModel(canonicalPrinterPresetName(selectedPrinterName));
   if (!selectedParts) return 'unknown';
   if (normalizeModelFragment(selectedParts.model) !== normalizeModelFragment(inferredModel)) {
     return 'mismatch';
@@ -221,7 +235,9 @@ export function presetCompatibility(
   // authoritative when set.
   const compat = preset.compatible_printers;
   if (compat && compat.length > 0) {
-    return compat.includes(selectedPrinterName) ? 'match' : 'mismatch';
+    return compat.some((candidate) => samePrinterPreset(candidate, selectedPrinterName))
+      ? 'match'
+      : 'mismatch';
   }
   // (2) Consult the uploaded Slicer Bundles.
   const printers = index[slot].get(normalizePresetName(preset.name));
