@@ -67,6 +67,18 @@ _SLOT_TO_PROFILE_TYPE = {
     "filament": "filament",
 }
 
+# GUI-originated Bambu/Orca profiles use these exact string values as
+# "inherit from parent" sentinels. The desktop UI resolves them before
+# validation; the headless CLI does not. Keep this list deliberately narrow:
+# removing every negative value would corrupt valid offsets and geometry.
+_PROFILE_INHERIT_SENTINEL_KEYS = frozenset(
+    {
+        "raft_first_layer_expansion",
+        "tree_support_wall_count",
+        "prime_tower_brim_width",
+    }
+)
+
 
 async def resolve_preset_ref(
     db: AsyncSession,
@@ -116,6 +128,15 @@ def _normalise_profile_for_slicer(content: str, slot: str) -> str:
         raise HTTPException(status_code=400, detail=f"Invalid {slot} preset JSON") from exc
     if not isinstance(profile, dict):
         raise HTTPException(status_code=400, detail=f"Invalid {slot} preset JSON")
+    # Profile JSON from the desktop/cloud APIs can carry the same literal
+    # `"-1"` GUI-inheritance sentinels as an embedded project config. If such
+    # a child profile is merged in the sidecar it overwrites the valid parent
+    # with a CLI-invalid value. Dropping only known sentinel keys lets the
+    # inherited parent/default provide the value without changing valid negative
+    # values (e.g. z_offset).
+    profile = {
+        key: value for key, value in profile.items() if not (key in _PROFILE_INHERIT_SENTINEL_KEYS and value == "-1")
+    }
     return json.dumps({**profile, "type": expected_type})
 
 
