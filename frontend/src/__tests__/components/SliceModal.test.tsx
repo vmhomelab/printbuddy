@@ -255,6 +255,45 @@ describe('SliceModal', () => {
     expect(processSelect.querySelector('optgroup[label="Other printers"]')).toBeNull();
   });
 
+  it('keeps an Orca Cloud preset selected and sends its source-aware reference', async () => {
+    mockApi.getSlicerPresets.mockResolvedValue(
+      makeUnified({
+        orca_cloud: {
+          printer: [
+            { id: 'orca-p1s', name: 'Bambu Lab P1S 0.4 nozzle - Ethan', source: 'orca_cloud' },
+            { id: 'orca-p1p', name: 'Bambu Lab P1P 0.4 nozzle', source: 'orca_cloud' },
+          ],
+          process: [{ id: 'orca-process', name: 'My P1S Process', source: 'orca_cloud' }],
+          filament: [{ id: 'orca-filament', name: 'My PLA', source: 'orca_cloud' }],
+        },
+      }),
+    );
+    mockApi.sliceLibraryFile.mockResolvedValue({
+      job_id: 42,
+      status: 'pending',
+      status_url: '/api/v1/slice-jobs/42',
+    });
+
+    renderWithTracker({
+      source: { kind: 'libraryFile', id: 100, filename: 'Cube.stl' },
+      onClose: vi.fn(),
+    });
+
+    await waitFor(() => expect(screen.getByText('Bambu Lab P1S 0.4 nozzle - Ethan')).toBeDefined());
+    const user = userEvent.setup();
+    await user.selectOptions(screen.getAllByRole('combobox')[0], 'orca_cloud:orca-p1p');
+    await user.click(screen.getByRole('button', { name: /^Slice$/ }));
+
+    await waitFor(() => {
+      expect(mockApi.sliceLibraryFile).toHaveBeenCalledWith(
+        100,
+        expect.objectContaining({
+          printer_preset: { source: 'orca_cloud', id: 'orca-p1p' },
+        }),
+      );
+    });
+  });
+
   it('sends source-aware refs (not legacy bare ints) on submit', async () => {
     const onClose = vi.fn();
     mockApi.sliceLibraryFile.mockResolvedValue({

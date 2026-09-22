@@ -175,6 +175,11 @@ async def _resolve_cloud(db: AsyncSession, user: User | None, ref: PresetRef, sl
     # JSON lives under `.setting`. The sidecar wants the preset content, not
     # the envelope.
     payload = detail.get("setting") if isinstance(detail, dict) else None
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid {slot} preset JSON from Bambu Cloud") from exc
     if not isinstance(payload, dict):
         # Some endpoints return the preset at the top level instead of
         # nested under `setting`. Fall back to the whole response in that

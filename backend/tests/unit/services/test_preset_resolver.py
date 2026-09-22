@@ -181,6 +181,35 @@ async def test_cloud_unwraps_setting_envelope():
 
 
 @pytest.mark.asyncio
+async def test_cloud_decodes_serialized_setting_body_before_normalising_slot_type():
+    """Bambu Cloud may return `setting` as JSON text; resolve it once rather
+    than JSON-encoding the string again and sending a JSON string to the CLI."""
+    db = MagicMock()
+    user = MagicMock()
+    user.has_permission = MagicMock(return_value=True)
+    cloud_mock = MagicMock()
+    cloud_mock.set_token = MagicMock()
+    cloud_mock.get_setting_detail = AsyncMock(
+        return_value={
+            "setting_id": "PFU123",
+            "setting": '{"name":"My P1S process","inherits":"0.20mm Standard @BBL P1S","type":"print"}',
+        }
+    )
+    cloud_mock.close = AsyncMock()
+    with (
+        patch.object(preset_resolver, "get_stored_token", AsyncMock(return_value=("tok", "e@x", "global"))),
+        patch.object(preset_resolver, "BambuCloudService", return_value=cloud_mock),
+    ):
+        out = await preset_resolver.resolve_preset_ref(db, user, PresetRef(source="cloud", id="PFU123"), slot="process")
+
+    assert json.loads(out) == {
+        "name": "My P1S process",
+        "inherits": "0.20mm Standard @BBL P1S",
+        "type": "process",
+    }
+
+
+@pytest.mark.asyncio
 async def test_cloud_falls_back_to_top_level_when_no_envelope():
     """If a cloud response doesn't nest under `.setting` (rare but seen on
     some endpoints), forward the whole payload rather than failing — the
