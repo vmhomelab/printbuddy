@@ -110,6 +110,18 @@ describe('presetCompatibility', () => {
     expect(presetCompatibility(preset, 'process', P2S, EMPTY_COMPATIBILITY_INDEX)).toBe('mismatch');
   });
 
+  it('matches a Bambu printer clone to its canonical compatible_printers entry', () => {
+    const p1sClone = 'Bambu Lab P1S 0.4 nozzle - Ethan';
+    expect(
+      presetCompatibility(
+        { name: '0.20mm Standard @BBL P1S', compatible_printers: ['Bambu Lab P1S 0.4 nozzle'] },
+        'process',
+        p1sClone,
+        EMPTY_COMPATIBILITY_INDEX,
+      ),
+    ).toBe('match');
+  });
+
   it('is unknown when compatible_printers is set but no printer is selected', () => {
     expect(
       presetCompatibility({ name: 'P', compatible_printers: [X1C] }, 'process', null, index),
