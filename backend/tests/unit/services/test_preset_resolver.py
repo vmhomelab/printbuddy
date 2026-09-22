@@ -118,6 +118,29 @@ async def test_local_rejects_wrong_preset_type():
 # --- cloud tier -----------------------------------------------------------
 
 
+def test_normalise_profile_removes_allowlisted_inherit_sentinel_values():
+    """Cloud user presets may serialise GUI-only `-1` inheritance sentinels.
+    They must not override a valid bundled parent while the headless CLI
+    validates the merged profile."""
+    out = preset_resolver._normalise_profile_for_slicer(
+        json.dumps(
+            {
+                "name": "My Bambu process",
+                "inherits": "0.20mm Standard @BBL P1S",
+                "tree_support_wall_count": "-1",
+                "prime_tower_brim_width": "-1",
+            }
+        ),
+        "process",
+    )
+
+    assert json.loads(out) == {
+        "name": "My Bambu process",
+        "inherits": "0.20mm Standard @BBL P1S",
+        "type": "process",
+    }
+
+
 @pytest.mark.asyncio
 async def test_cloud_blocks_user_without_cloud_auth():
     """Defence-in-depth: a user holding LIBRARY_UPLOAD but not CLOUD_AUTH
