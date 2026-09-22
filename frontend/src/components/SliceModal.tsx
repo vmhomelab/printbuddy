@@ -218,7 +218,7 @@ function fromRefValue(raw: string): PresetRef | null {
   if (idx < 0) return null;
   const source = raw.slice(0, idx) as PresetSource;
   const id = raw.slice(idx + 1);
-  if (source !== 'cloud' && source !== 'local' && source !== 'standard') return null;
+  if (source !== 'orca_cloud' && source !== 'cloud' && source !== 'local' && source !== 'standard') return null;
   return { source, id };
 }
 
