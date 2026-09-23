@@ -215,8 +215,7 @@ async def test_cloud_public_stock_setting_resolves_as_a_sidecar_standard_stub():
     cloud_mock.set_token = MagicMock()
     cloud_mock.get_setting_detail = AsyncMock(
         return_value={
-            "setting_id": "GFPP01",
-            "name": "Bambu Lab P1P 0.4 nozzle",
+            # The Bambu detail endpoint may omit its listing identifier.
             "setting": {"name": "Bambu Lab P1P 0.4 nozzle", "type": "printer", "bad_gui_value": "-1"},
         }
     )

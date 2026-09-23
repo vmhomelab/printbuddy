@@ -192,25 +192,29 @@ async def _resolve_cloud(db: AsyncSession, user: User | None, ref: PresetRef, sl
     finally:
         await cloud.close()
 
+    # `get_setting_detail` returns the wrapper envelope; the actual preset
+    # JSON lives under `.setting`. Read it before identifying public stock
+    # rows because Bambu's detail endpoint may omit the listing fields.
+    payload = detail.get("setting") if isinstance(detail, dict) else None
+    payload_name = payload.get("name") if isinstance(payload, dict) else None
+
     # Bambu's public/stock setting IDs use the GF* namespace; its personal
     # presets use PFU*/PFUS*. The public Cloud body is designed for the GUI and
-    # can contain parameter encodings the headless CLI does not accept. We have
-    # an exact immutable copy in the sidecar resources, so resolve the selected
-    # public name there instead. Personal Cloud presets remain payload-backed.
-    setting_id = detail.get("setting_id") if isinstance(detail, dict) else None
+    # can contain parameter encodings the headless CLI does not accept. The
+    # reference ID comes directly from the listing response and is stable even
+    # when its later detail response has no top-level setting_id/name.
     preset_name = detail.get("name") if isinstance(detail, dict) else None
+    if not isinstance(preset_name, str) or not preset_name.strip():
+        preset_name = payload_name
     if (
-        isinstance(setting_id, str)
-        and setting_id.upper().startswith("GF")
+        isinstance(ref.id, str)
+        and ref.id.upper().startswith("GF")
         and isinstance(preset_name, str)
         and preset_name.strip()
     ):
         return _resolve_standard(PresetRef(source="standard", id=preset_name), slot)
 
-    # `get_setting_detail` returns the wrapper envelope; the actual preset
-    # JSON lives under `.setting`. The sidecar wants the preset content, not
-    # the envelope.
-    payload = detail.get("setting") if isinstance(detail, dict) else None
+    # The sidecar wants the preset content, not the envelope.
     if isinstance(payload, str):
         try:
             payload = json.loads(payload)
