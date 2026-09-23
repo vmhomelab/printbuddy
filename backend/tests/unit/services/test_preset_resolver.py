@@ -204,7 +204,39 @@ async def test_cloud_unwraps_setting_envelope():
 
 
 @pytest.mark.asyncio
-async def test_cloud_decodes_serialized_setting_body_before_normalising_slot_type():
+async def test_cloud_public_stock_setting_resolves_as_a_sidecar_standard_stub():
+    """Bambu Cloud's public GF* preset bodies contain GUI-specific values that
+    differ from the installed slicer resource. For an exact public stock name,
+    route by name to the sidecar-controlled immutable parent instead."""
+    db = MagicMock()
+    user = MagicMock()
+    user.has_permission = MagicMock(return_value=True)
+    cloud_mock = MagicMock()
+    cloud_mock.set_token = MagicMock()
+    cloud_mock.get_setting_detail = AsyncMock(
+        return_value={
+            "setting_id": "GFPP01",
+            "name": "Bambu Lab P1P 0.4 nozzle",
+            "setting": {"name": "Bambu Lab P1P 0.4 nozzle", "type": "printer", "bad_gui_value": "-1"},
+        }
+    )
+    cloud_mock.close = AsyncMock()
+    with (
+        patch.object(preset_resolver, "get_stored_token", AsyncMock(return_value=("tok", "e@x", "global"))),
+        patch.object(preset_resolver, "BambuCloudService", return_value=cloud_mock),
+    ):
+        out = await preset_resolver.resolve_preset_ref(db, user, PresetRef(source="cloud", id="GFPP01"), slot="printer")
+
+    assert json.loads(out) == {
+        "name": "Bambu Lab P1P 0.4 nozzle",
+        "inherits": "Bambu Lab P1P 0.4 nozzle",
+        "from": "system",
+        "type": "machine",
+    }
+
+
+@pytest.mark.asyncio
+async def test_cloud_custom_setting_keeps_its_cloud_payload():
     """Bambu Cloud may return `setting` as JSON text; resolve it once rather
     than JSON-encoding the string again and sending a JSON string to the CLI."""
     db = MagicMock()

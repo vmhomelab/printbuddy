@@ -192,6 +192,21 @@ async def _resolve_cloud(db: AsyncSession, user: User | None, ref: PresetRef, sl
     finally:
         await cloud.close()
 
+    # Bambu's public/stock setting IDs use the GF* namespace; its personal
+    # presets use PFU*/PFUS*. The public Cloud body is designed for the GUI and
+    # can contain parameter encodings the headless CLI does not accept. We have
+    # an exact immutable copy in the sidecar resources, so resolve the selected
+    # public name there instead. Personal Cloud presets remain payload-backed.
+    setting_id = detail.get("setting_id") if isinstance(detail, dict) else None
+    preset_name = detail.get("name") if isinstance(detail, dict) else None
+    if (
+        isinstance(setting_id, str)
+        and setting_id.upper().startswith("GF")
+        and isinstance(preset_name, str)
+        and preset_name.strip()
+    ):
+        return _resolve_standard(PresetRef(source="standard", id=preset_name), slot)
+
     # `get_setting_detail` returns the wrapper envelope; the actual preset
     # JSON lives under `.setting`. The sidecar wants the preset content, not
     # the envelope.
