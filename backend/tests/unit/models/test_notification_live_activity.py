@@ -12,6 +12,7 @@ def test_notification_live_activity_model_registers_expected_table():
     assert {column.name for column in table.columns} >= {
         "id",
         "provider_id",
+        "recipient_id",
         "printer_id",
         "activity_id",
         "subtask_id",
@@ -26,4 +27,4 @@ def test_notification_live_activity_model_registers_expected_table():
         "expires_at",
         "ended_at",
     }
-    assert any(index.name == "ix_notify_live_provider_printer_state" for index in table.indexes)
+    assert any(index.name == "ix_notify_live_provider_recipient_printer_state" for index in table.indexes)

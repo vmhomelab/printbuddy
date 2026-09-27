@@ -7,6 +7,24 @@ import type { NotificationProvider, NotificationProviderCreate, NotificationProv
 import { Button } from './Button';
 import { Toggle } from './Toggle';
 
+interface NotifyRecipient {
+  id: string;
+  name: string;
+  device_id: string;
+  device_token: string;
+  enabled: boolean;
+  live_activities_enabled: boolean;
+}
+
+const newNotifyRecipient = (): NotifyRecipient => ({
+  id: crypto.randomUUID(),
+  name: '',
+  device_id: '',
+  device_token: '',
+  enabled: true,
+  live_activities_enabled: false,
+});
+
 interface AddNotificationModalProps {
   provider?: NotificationProvider | null;
   onClose: () => void;
@@ -58,11 +76,28 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
     provider?.config
       ? Object.fromEntries(
           Object.entries(provider.config)
-            .filter(([k]) => k !== 'event_priorities')
+            .filter(([k]) => k !== 'event_priorities' && k !== 'recipients' && k !== 'device_id' && k !== 'device_token')
             .map(([k, v]) => [k, String(v)]),
         )
       : {},
   );
+  const [notifyRecipients, setNotifyRecipients] = useState<NotifyRecipient[]>(() => {
+    const configured = provider?.config?.recipients;
+    if (Array.isArray(configured)) {
+      return configured.filter((recipient): recipient is Record<string, unknown> => !!recipient && typeof recipient === 'object').map((recipient) => ({
+        id: String(recipient.id || crypto.randomUUID()),
+        name: String(recipient.name || ''),
+        device_id: String(recipient.device_id || ''),
+        device_token: String(recipient.device_token || ''),
+        enabled: recipient.enabled !== false,
+        live_activities_enabled: recipient.live_activities_enabled === true || recipient.live_activities_enabled === 'true',
+      }));
+    }
+    if (provider?.config?.device_id || provider?.config?.device_token) {
+      return [{ id: 'legacy', name: '', device_id: String(provider.config.device_id || ''), device_token: String(provider.config.device_token || ''), enabled: true, live_activities_enabled: provider.config.live_activities_enabled === true || provider.config.live_activities_enabled === 'true' }];
+    }
+    return [newNotifyRecipient()];
+  });
 
   // Per-event ntfy priority (#990). Map of event key → 1-5. Persisted into
   // config.event_priorities on save; only sent when the provider is ntfy.
@@ -98,7 +133,10 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
 
   // Test configuration mutation
   const testMutation = useMutation({
-    mutationFn: () => api.testNotificationConfig({ provider_type: providerType, config }),
+    mutationFn: () => api.testNotificationConfig({
+      provider_type: providerType,
+      config: providerType === 'notify' ? { ...config, recipients: notifyRecipients } : config,
+    }),
     onSuccess: (result) => {
       setTestResult(result);
       setError(null);
@@ -158,6 +196,14 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
       }
     }
 
+    if (providerType === 'notify') {
+      const invalidRecipient = notifyRecipients.find((recipient) => !recipient.device_id.trim() || !recipient.device_token.trim());
+      if (invalidRecipient) {
+        setError('Every Notify recipient needs a Device ID and Device Token.');
+        return;
+      }
+    }
+
     if (providerType === 'notify' && config.live_activity_button_enabled === 'true') {
       const buttonUrl = config.live_activity_button_url?.trim() || '';
       if (!/^https:\/\/[^\s]+$/i.test(buttonUrl)) {
@@ -167,9 +213,11 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
     }
 
     const finalConfig: Record<string, unknown> =
-      providerType === 'ntfy' && Object.keys(eventPriorities).length > 0
-        ? { ...config, event_priorities: eventPriorities }
-        : config;
+      providerType === 'notify'
+        ? { ...config, recipients: notifyRecipients }
+        : providerType === 'ntfy' && Object.keys(eventPriorities).length > 0
+          ? { ...config, event_priorities: eventPriorities }
+          : config;
 
     const data = {
       name: name.trim(),
@@ -274,8 +322,6 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
         ];
       case 'notify':
         return [
-          { key: 'device_id', label: 'Device ID', placeholder: 'ABCD1234', type: 'text', required: true },
-          { key: 'device_token', label: 'Device Token', placeholder: 'Your Notify device token', type: 'password', required: true },
           { key: 'base_url', label: 'Gateway URL', placeholder: 'https://push.getnotifyapp.com', type: 'text', required: false },
           { key: 'live_activities_enabled', label: 'Live Activities', type: 'select', required: false, options: [
             { value: 'false', label: 'Disabled' },
@@ -371,6 +417,29 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
               {t(`notifications.providerDescriptions.${providerType}`, '')}
             </p>
           </div>
+
+          {/* Notify recipients are deliberately separate from provider-wide event and printer settings. */}
+          {providerType === 'notify' && (
+            <div className="space-y-3 rounded-lg border border-bambu-dark-tertiary p-3">
+              <div>
+                <p className="text-sm text-white">Notify recipients</p>
+                <p className="text-xs text-bambu-gray">One provider can notify multiple devices. Live Activities are tracked separately for each enabled recipient.</p>
+              </div>
+              {notifyRecipients.map((recipient, index) => (
+                <div key={recipient.id} className="space-y-2 rounded border border-bambu-dark-tertiary bg-bambu-dark p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <input aria-label={`Recipient ${index + 1} name`} value={recipient.name} placeholder={`Device ${index + 1}`} onChange={(event) => setNotifyRecipients((current) => current.map((item) => item.id === recipient.id ? { ...item, name: event.target.value } : item))} className="flex-1 bg-transparent text-sm text-white focus:outline-none" />
+                    {notifyRecipients.length > 1 && <button type="button" onClick={() => setNotifyRecipients((current) => current.filter((item) => item.id !== recipient.id))} className="text-xs text-red-400 hover:text-red-300">Remove</button>}
+                  </div>
+                  <input aria-label={`Recipient ${index + 1} Device ID`} value={recipient.device_id} placeholder="Device ID" onChange={(event) => setNotifyRecipients((current) => current.map((item) => item.id === recipient.id ? { ...item, device_id: event.target.value } : item))} className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-white text-sm" />
+                  <input aria-label={`Recipient ${index + 1} Device Token`} type="password" value={recipient.device_token} placeholder="Device Token" onChange={(event) => setNotifyRecipients((current) => current.map((item) => item.id === recipient.id ? { ...item, device_token: event.target.value } : item))} className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-white text-sm" />
+                  <label className="flex items-center gap-2 text-xs text-bambu-gray"><input type="checkbox" checked={recipient.enabled} onChange={(event) => setNotifyRecipients((current) => current.map((item) => item.id === recipient.id ? { ...item, enabled: event.target.checked } : item))} /> Enabled</label>
+                  <label className="flex items-center gap-2 text-xs text-bambu-gray"><input type="checkbox" checked={recipient.live_activities_enabled} onChange={(event) => setNotifyRecipients((current) => current.map((item) => item.id === recipient.id ? { ...item, live_activities_enabled: event.target.checked } : item))} /> Receive Live Activities</label>
+                </div>
+              ))}
+              <Button type="button" variant="secondary" size="sm" onClick={() => setNotifyRecipients((current) => [...current, newNotifyRecipient()])}>Add recipient</Button>
+            </div>
+          )}
 
           {/* Provider-specific configuration */}
           <div className="space-y-3">

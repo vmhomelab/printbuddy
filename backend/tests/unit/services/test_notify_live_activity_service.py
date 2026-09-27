@@ -71,6 +71,46 @@ async def test_print_start_creates_live_activity_row(db_session, notify_provider
 
 
 @pytest.mark.asyncio
+async def test_multi_recipient_print_creates_and_tracks_one_activity_per_recipient(db_session, notify_provider):
+    """Each opted-in Notify recipient needs its own stateful Live Activity ID."""
+    notify_provider.config = json.dumps(
+        {
+            "base_url": "https://push.getnotifyapp.com",
+            "recipients": [
+                {"id": "marko-phone", "device_id": "MARKO_DEVICE", "device_token": "marko-token", "enabled": True, "live_activities_enabled": True},
+                {"id": "workshop-phone", "device_id": "WORKSHOP_DEVICE", "device_token": "workshop-token", "enabled": True, "live_activities_enabled": True},
+            ],
+        }
+    )
+    await db_session.commit()
+
+    clients: dict[str, AsyncMock] = {}
+
+    def client_factory(config):
+        device_id = config["device_id"]
+        client = AsyncMock()
+        client.start = AsyncMock(return_value=f"activity-{device_id}")
+        clients[device_id] = client
+        return client
+
+    service = NotifyLiveActivityService(client_factory=client_factory)
+    await service.on_print_start(
+        db_session,
+        printer_id=7,
+        printer_name="Workshop P1S",
+        data={"filename": "dragon.3mf", "subtask_id": "task-1", "remaining_time": 5400},
+    )
+
+    assert set(clients) == {"MARKO_DEVICE", "WORKSHOP_DEVICE"}
+    assert all(client.start.await_count == 1 for client in clients.values())
+    activities = (await db_session.scalars(select(NotificationLiveActivity))).all()
+    assert {(activity.recipient_id, activity.activity_id) for activity in activities} == {
+        ("marko-phone", "activity-MARKO_DEVICE"),
+        ("workshop-phone", "activity-WORKSHOP_DEVICE"),
+    }
+
+
+@pytest.mark.asyncio
 async def test_print_start_uses_configured_progress_compact_display(db_session, notify_provider):
     notify_provider.config = json.dumps(
         {
@@ -655,9 +695,9 @@ async def test_concurrent_recovery_serializes_missing_activity_creation():
             self.both_reading = asyncio.Event()
 
         async def _enabled_notify_providers(self, db, printer_id):
-            return [(FakeProvider(), {"live_activities_enabled": True})]
+            return [(FakeProvider(), "legacy", {"live_activities_enabled": True})]
 
-        async def _active_activity(self, db, provider_id, printer_id, *, subtask_id=None):
+        async def _active_activity(self, db, provider_id, recipient_id, printer_id, *, subtask_id=None):
             if self.created_activity is not None:
                 return self.created_activity
             self.concurrent_readers += 1
@@ -738,10 +778,10 @@ async def test_keepalive_does_not_create_a_second_activity_while_progress_recove
             self.created_activity = None
 
         async def _enabled_notify_providers(self, db, printer_id):
-            return [(FakeProvider(), {"live_activities_enabled": True})]
+            return [(FakeProvider(), "legacy", {"live_activities_enabled": True})]
 
         async def _all_enabled_live_notify_providers(self, db):
-            return [(FakeProvider(), {"live_activities_enabled": True})]
+            return [(FakeProvider(), "legacy", {"live_activities_enabled": True})]
 
         def _printer_status(self, printer_id):
             return type(
@@ -759,7 +799,7 @@ async def test_keepalive_does_not_create_a_second_activity_while_progress_recove
                 },
             )()
 
-        async def _active_activity(self, db, provider_id, printer_id, *, subtask_id=None):
+        async def _active_activity(self, db, provider_id, recipient_id, printer_id, *, subtask_id=None):
             return self.created_activity
 
         async def _create_activity(self, db, **kwargs):

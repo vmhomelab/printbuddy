@@ -2571,6 +2571,24 @@ async def run_migrations(conn):
         )
         await _safe_execute(conn, "ALTER TABLE filament_shopping_list ADD COLUMN IF NOT EXISTS purchased_at TIMESTAMP")
 
+    # Migration: Persist Notify Live Activity recipient identity. Existing rows
+    # belong to the backwards-compatible single-device recipient named legacy.
+    if is_sqlite():
+        await _safe_execute(
+            conn,
+            "ALTER TABLE notification_live_activities ADD COLUMN recipient_id VARCHAR(128) NOT NULL DEFAULT 'legacy'",
+        )
+    else:
+        await _safe_execute(
+            conn,
+            "ALTER TABLE notification_live_activities ADD COLUMN IF NOT EXISTS recipient_id VARCHAR(128) NOT NULL DEFAULT 'legacy'",
+        )
+    await _safe_execute(
+        conn,
+        "CREATE INDEX IF NOT EXISTS ix_notify_live_provider_recipient_printer_state "
+        "ON notification_live_activities (provider_id, recipient_id, printer_id, state)",
+    )
+
     # Migration: Add inventory stock alert columns to notification_providers.
     # Postgres rejects `DEFAULT 0` for BOOLEAN columns.
     if is_sqlite():

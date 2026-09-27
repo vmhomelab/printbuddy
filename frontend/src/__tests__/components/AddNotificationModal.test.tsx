@@ -391,11 +391,15 @@ describe('AddNotificationModal — Notify Live Activity display', () => {
     await waitFor(() => expect(onClose).toHaveBeenCalled());
     const payload = captured as { config: Record<string, unknown> };
     expect(payload.config).toMatchObject({
-      device_id: 'DEVICE123',
-      device_token: 'token',
       live_activities_enabled: 'true',
       live_activity_compact_display: 'progress',
       live_activity_native_tile_countdown: 'true',
+      recipients: [{
+        id: 'legacy',
+        device_id: 'DEVICE123',
+        device_token: 'token',
+        live_activities_enabled: true,
+      }],
     });
   });
 });

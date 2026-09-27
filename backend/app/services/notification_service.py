@@ -634,7 +634,23 @@ class NotificationService:
         message: str,
         event_type: str | None = None,
     ) -> tuple[bool, str]:
-        """Send a normal push notification via Notify."""
+        """Send a normal Notify push to one legacy device or every enabled recipient."""
+        raw_recipients = config.get("recipients")
+        if isinstance(raw_recipients, list):
+            results = []
+            for recipient in raw_recipients:
+                if not isinstance(recipient, dict) or recipient.get("enabled", True) in (False, "false", "False", "0", 0):
+                    continue
+                device_config = {**config, **recipient}
+                device_config.pop("recipients", None)
+                results.append(await self._send_notify(device_config, title, message, event_type=event_type))
+            if not results:
+                return False, "No enabled Notify recipients are configured"
+            succeeded = sum(success for success, _ in results)
+            if succeeded:
+                return True, f"Notification sent to {succeeded}/{len(results)} Notify recipient(s)"
+            return False, "; ".join(error for _, error in results)
+
         device_id = str(config.get("device_id", "")).strip()
         device_token = str(config.get("device_token", "")).strip()
         base_url = str(config.get("base_url") or "https://push.getnotifyapp.com").strip().rstrip("/")

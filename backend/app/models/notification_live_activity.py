@@ -17,12 +17,23 @@ class NotificationLiveActivity(Base):
     """
 
     __tablename__ = "notification_live_activities"
-    __table_args__ = (Index("ix_notify_live_provider_printer_state", "provider_id", "printer_id", "state"),)
+    __table_args__ = (
+        Index(
+            "ix_notify_live_provider_recipient_printer_state",
+            "provider_id",
+            "recipient_id",
+            "printer_id",
+            "state",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     provider_id: Mapped[int] = mapped_column(
         ForeignKey("notification_providers.id", ondelete="CASCADE"), nullable=False
     )
+    # A Notify Live Activity belongs to a physical recipient/device, not merely
+    # to the provider. "legacy" preserves pre-recipient providers and rows.
+    recipient_id: Mapped[str] = mapped_column(String(128), nullable=False, default="legacy", server_default="legacy")
     printer_id: Mapped[int] = mapped_column(ForeignKey("printers.id", ondelete="CASCADE"), nullable=False)
     activity_id: Mapped[str] = mapped_column(String(128), nullable=False)
     subtask_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
