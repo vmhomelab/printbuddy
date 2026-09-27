@@ -471,6 +471,38 @@ describe('FileManagerPage', () => {
         expect(screen.getByText('Delete')).toBeInTheDocument();
       });
     });
+
+    it('downloads all selected files as a ZIP archive', async () => {
+      const user = userEvent.setup();
+      let requestedFileIds: number[] | null = null;
+      Object.defineProperty(window.URL, 'createObjectURL', {
+        value: vi.fn(() => 'blob:library-files'),
+        configurable: true,
+      });
+      Object.defineProperty(window.URL, 'revokeObjectURL', {
+        value: vi.fn(),
+        configurable: true,
+      });
+      server.use(
+        http.post('/api/v1/library/files/download-zip', async ({ request }) => {
+          requestedFileIds = (await request.json() as { file_ids: number[] }).file_ids;
+          return new HttpResponse(new Blob(['zip archive']), {
+            headers: {
+              'Content-Type': 'application/zip',
+              'Content-Disposition': 'attachment; filename="library-files.zip"',
+            },
+          });
+        }),
+      );
+
+      render(<FileManagerPage />);
+      await user.click(await screen.findByText('Select All'));
+      await user.click(await screen.findByRole('button', { name: 'Download selected' }));
+
+      await waitFor(() => {
+        expect(requestedFileIds).toEqual([1, 2, 3]);
+      });
+    });
   });
 
   describe('new folder modal', () => {

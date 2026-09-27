@@ -256,6 +256,31 @@ class TestLibraryFilesAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_download_selected_files_as_zip(self, async_client: AsyncClient, file_factory, tmp_path):
+        """Selected library files are delivered as a single ZIP archive."""
+        first = await file_factory(filename="first.stl", file_path="library/files/first.stl", file_type="stl")
+        second = await file_factory(filename="second.3mf", file_path="library/files/second.3mf")
+        for file, content in ((first, b"first file"), (second, b"second file")):
+            disk_path = tmp_path / file.file_path
+            disk_path.parent.mkdir(parents=True, exist_ok=True)
+            disk_path.write_bytes(content)
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("backend.app.api.routes.library.app_settings.base_dir", tmp_path)
+            response = await async_client.post(
+                "/api/v1/library/files/download-zip",
+                json={"file_ids": [first.id, second.id]},
+            )
+
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("application/zip")
+        with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+            assert set(archive.namelist()) == {"first.stl", "second.3mf"}
+            assert archive.read("first.stl") == b"first file"
+            assert archive.read("second.3mf") == b"second file"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_get_file_not_found(self, async_client: AsyncClient, db_session):
         """Verify 404 for non-existent file."""
         response = await async_client.get("/api/v1/library/files/9999")

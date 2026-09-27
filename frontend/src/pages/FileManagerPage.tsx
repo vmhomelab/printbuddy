@@ -1401,6 +1401,25 @@ export function FileManagerPage() {
     });
   };
 
+  const handleBulkDownload = async () => {
+    if (selectedFiles.length === 0) return;
+    try {
+      const blob = await api.downloadLibraryFilesAsZip(selectedFiles);
+      const url = window.URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = 'library-files.zip';
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+      window.URL.revokeObjectURL(url);
+      showToast(t('fileManager.bulkDownloadComplete', { count: selectedFiles.length }), 'success');
+      handleDeselectAll();
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : t('fileManager.bulkDownloadFailed'), 'error');
+    }
+  };
+
   const handleDeleteConfirm = () => {
     if (!deleteConfirm) return;
     if (deleteConfirm.type === 'file') {
@@ -1903,6 +1922,16 @@ export function FileManagerPage() {
                         <span className="hidden sm:inline">{t('fileManager.schedulePrint')}</span>
                       </Button>
                     )}
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={handleBulkDownload}
+                      disabled={!hasPermission('library:read')}
+                      title={!hasPermission('library:read') ? t('fileManager.noPermissionDownload') : undefined}
+                    >
+                      <Download className="w-4 h-4 sm:mr-1" />
+                      <span className="hidden sm:inline">{t('fileManager.downloadSelected')}</span>
+                    </Button>
                     <Button
                       variant="secondary"
                       size="sm"

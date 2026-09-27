@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import shutil
+import tempfile
 import uuid
 import zipfile
 from datetime import datetime, timezone
@@ -20,6 +21,7 @@ from fastapi.responses import FileResponse as FastAPIFileResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from starlette.background import BackgroundTask
 
 from backend.app.api.routes.cloud import resolve_api_key_cloud_owner
 from backend.app.core.auth import (
@@ -2266,6 +2268,58 @@ async def add_files_to_queue(
     await db.commit()
 
     return AddToQueueResponse(added=added, errors=errors)
+
+
+@router.post("/files/download-zip")
+async def download_library_files_as_zip(
+    request: dict,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_READ)),
+):
+    """Download selected active library files as a ZIP archive."""
+    file_ids = request.get("file_ids", [])
+    if not isinstance(file_ids, list) or not file_ids or not all(isinstance(file_id, int) for file_id in file_ids):
+        raise HTTPException(status_code=422, detail="file_ids must contain at least one file ID")
+
+    requested_ids = list(dict.fromkeys(file_ids))
+    result = await db.execute(
+        select(LibraryFile).where(LibraryFile.id.in_(requested_ids), LibraryFile.deleted_at.is_(None))
+    )
+    files_by_id = {file.id: file for file in result.scalars()}
+    missing_ids = [file_id for file_id in requested_ids if file_id not in files_by_id]
+    if missing_ids:
+        raise HTTPException(status_code=404, detail="One or more selected files were not found")
+
+    with tempfile.NamedTemporaryFile(prefix="printbuddy-library-", suffix=".zip", delete=False) as temporary_file:
+        archive_path = Path(temporary_file.name)
+
+    used_names: set[str] = set()
+    try:
+        with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as archive:
+            for file_id in requested_ids:
+                file = files_by_id[file_id]
+                abs_path = to_absolute_path(file.file_path)
+                if not abs_path or not abs_path.is_file():
+                    raise HTTPException(status_code=404, detail=f"Selected file is not available on disk: {file.filename}")
+
+                archive_name = Path(file.filename).name or f"file-{file.id}"
+                stem, suffix = Path(archive_name).stem, Path(archive_name).suffix
+                duplicate_index = 2
+                while archive_name in used_names:
+                    archive_name = f"{stem} ({duplicate_index}){suffix}"
+                    duplicate_index += 1
+                used_names.add(archive_name)
+                archive.write(abs_path, archive_name)
+    except Exception:
+        archive_path.unlink(missing_ok=True)
+        raise
+
+    return FastAPIFileResponse(
+        str(archive_path),
+        filename="library-files.zip",
+        media_type="application/zip",
+        background=BackgroundTask(archive_path.unlink, missing_ok=True),
+    )
 
 
 @router.get("/files/{file_id}/plates")
