@@ -19,6 +19,8 @@
   <a href="https://github.com/vmhomelab/Printbuddy/releases/latest">📦 Latest release</a>
   ·
   <a href="https://demo.printbuddy.tech">🚀 Demo</a>
+  .
+  <a href="https://discord.gg/N89h92tdRn">💬 Discord Server</a>
 
 <p align="center">
   Demo login: <code>admin</code> / <code>printbuddy</code>
