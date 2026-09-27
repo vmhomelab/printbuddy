@@ -23,6 +23,7 @@ import type { NotificationProvider } from '../../api/client';
 afterEach(() => {
   server.resetHandlers();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 function buildProvider(overrides: Partial<NotificationProvider> = {}): NotificationProvider {
@@ -289,6 +290,17 @@ describe('AddNotificationModal — ntfy Priority (#990)', () => {
 });
 
 describe('AddNotificationModal — Notify Live Activity display', () => {
+  it('renders a Notify provider when crypto.randomUUID is unavailable', () => {
+    vi.stubGlobal('crypto', {});
+
+    expect(() => render(
+      <AddNotificationModal
+        provider={buildProvider({ provider_type: 'notify', config: {} })}
+        onClose={() => undefined}
+      />,
+    )).not.toThrow();
+  });
+
   it('shows and saves button fields only when the Live Activity button checkbox is enabled', async () => {
     let captured: unknown = null;
     server.use(

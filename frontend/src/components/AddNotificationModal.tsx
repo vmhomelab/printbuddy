@@ -16,8 +16,21 @@ interface NotifyRecipient {
   live_activities_enabled: boolean;
 }
 
+let notifyRecipientSequence = 0;
+
+const newNotifyRecipientId = (): string => {
+  const randomUUID = globalThis.crypto?.randomUUID;
+  if (typeof randomUUID === 'function') return randomUUID.call(globalThis.crypto);
+
+  // Older webviews and some HTTP contexts expose crypto without randomUUID().
+  // Recipient IDs are local configuration keys, so a timestamp + sequence is
+  // sufficient while keeping the form usable in those environments.
+  notifyRecipientSequence += 1;
+  return `recipient-${Date.now().toString(36)}-${notifyRecipientSequence}`;
+};
+
 const newNotifyRecipient = (): NotifyRecipient => ({
-  id: crypto.randomUUID(),
+  id: newNotifyRecipientId(),
   name: '',
   device_id: '',
   device_token: '',
@@ -85,7 +98,7 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
     const configured = provider?.config?.recipients;
     if (Array.isArray(configured)) {
       return configured.filter((recipient): recipient is Record<string, unknown> => !!recipient && typeof recipient === 'object').map((recipient) => ({
-        id: String(recipient.id || crypto.randomUUID()),
+        id: String(recipient.id || newNotifyRecipientId()),
         name: String(recipient.name || ''),
         device_id: String(recipient.device_id || ''),
         device_token: String(recipient.device_token || ''),
