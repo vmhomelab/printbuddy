@@ -301,6 +301,20 @@ describe('AddNotificationModal — Notify Live Activity display', () => {
     )).not.toThrow();
   });
 
+  it('enables Test configuration for Notify without optional Live Activity button fields', () => {
+    render(
+      <AddNotificationModal
+        provider={buildProvider({
+          provider_type: 'notify',
+          config: { device_id: 'DEVICE123', device_token: 'token', live_activities_enabled: 'false' },
+        })}
+        onClose={() => undefined}
+      />,
+    );
+
+    expect(screen.getByRole('button', { name: /test configuration/i })).not.toBeDisabled();
+  });
+
   it('shows and saves button fields only when the Live Activity button checkbox is enabled', async () => {
     let captured: unknown = null;
     server.use(

@@ -364,6 +364,13 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
   };
 
   const configFields = getConfigFields(providerType);
+  const testRequiredFields = getRequiredFields(providerType).filter(
+    (field) => !('showIf' in field)
+      || (field as { showIf?: (cfg: Record<string, string>) => boolean }).showIf?.(config) !== false,
+  );
+  const hasInvalidNotifyRecipient = providerType === 'notify' && notifyRecipients.some(
+    (recipient) => !recipient.device_id.trim() || !recipient.device_token.trim(),
+  );
 
   return (
     <div
@@ -523,7 +530,7 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
                 setTestResult(null);
                 testMutation.mutate();
               }}
-              disabled={testMutation.isPending || (getRequiredFields(providerType).length > 0 && !config[getRequiredFields(providerType)[0]?.key])}
+              disabled={testMutation.isPending || hasInvalidNotifyRecipient || testRequiredFields.some((field) => !config[field.key]?.trim())}
               className="flex-1"
             >
               {testMutation.isPending ? (
