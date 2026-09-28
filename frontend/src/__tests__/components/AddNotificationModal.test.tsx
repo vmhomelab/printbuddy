@@ -354,15 +354,7 @@ describe('AddNotificationModal — Notify Live Activity display', () => {
     });
   });
 
-  it('accepts a Bamfleet Live Activity deep link', async () => {
-    let captured: unknown = null;
-    server.use(
-      http.patch('*/api/v1/notifications/1', async ({ request }) => {
-        captured = await request.json();
-        return HttpResponse.json({ id: 1 });
-      }),
-    );
-
+  it('rejects a Bamfleet Live Activity deep link', async () => {
     const onClose = vi.fn();
     const user = userEvent.setup();
     render(
@@ -380,12 +372,8 @@ describe('AddNotificationModal — Notify Live Activity display', () => {
     await user.type(screen.getByLabelText(/live activity button url/i), 'bamfleet://printers');
     await user.click(screen.getByRole('button', { name: /^save$/i }));
 
-    await waitFor(() => expect(onClose).toHaveBeenCalled());
-    expect((captured as { config: Record<string, unknown> }).config).toMatchObject({
-      live_activity_button_enabled: 'true',
-      live_activity_button_title: 'Open Bamfleet',
-      live_activity_button_url: 'bamfleet://printers',
-    });
+    expect(await screen.findByText(/button URL must use HTTPS/i)).toBeInTheDocument();
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   it('rejects an unsupported Live Activity button URL scheme', async () => {

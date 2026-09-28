@@ -149,7 +149,7 @@ def test_update_content_includes_configured_button():
     }
 
 
-def test_update_content_includes_configured_bamfleet_deep_link_button():
+def test_update_content_omits_button_with_bamfleet_deep_link_url():
     content = build_update_content(
         printer_name="Workshop P1S",
         filename="dragon.3mf",
@@ -158,11 +158,7 @@ def test_update_content_includes_configured_bamfleet_deep_link_button():
         button_url="bamfleet://printers",
     )
 
-    assert content["button"] == {
-        "title": "Open Bamfleet",
-        "url": "bamfleet://printers",
-        "open": True,
-    }
+    assert "button" not in content
 
 
 def test_update_content_omits_button_with_non_https_url():
