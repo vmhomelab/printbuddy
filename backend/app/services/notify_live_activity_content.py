@@ -159,9 +159,15 @@ def _add_button(content: dict[str, Any], *, title: str | None, url: str | None) 
     title = str(title or "").strip()
     url = str(url or "").strip()
     parsed_url = urlparse(url)
-    if title and len(title) <= 20 and len(url) <= 512 and parsed_url.scheme == "https" and parsed_url.netloc:
+    if (
+        title
+        and len(title) <= 20
+        and len(url) <= 512
+        and ((parsed_url.scheme == "https" and parsed_url.netloc) or (parsed_url.scheme == "bamfleet" and parsed_url.netloc))
+    ):
         # Notify defaults to firing a background POST. Printbuddy buttons are
-        # navigation actions, so ask Notify to open the configured HTTPS URL.
+        # navigation actions, so ask Notify to open the configured URL or
+        # Bamfleet deep link.
         content["button"] = {"title": title, "url": url, "open": True}
 
 
