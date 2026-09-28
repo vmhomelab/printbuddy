@@ -219,8 +219,8 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
 
     if (providerType === 'notify' && config.live_activity_button_enabled === 'true') {
       const buttonUrl = config.live_activity_button_url?.trim() || '';
-      if (!/^https:\/\/[^\s]+$/i.test(buttonUrl)) {
-        setError('Live Activity button URL must use HTTPS. Notify does not support HTTP or local IP URLs.');
+      if (!/^(?:https:\/\/|bamfleet:\/\/)[^\s]+$/i.test(buttonUrl)) {
+        setError('Live Activity button URL must use HTTPS or a Bamfleet deep link (bamfleet://). HTTP, local IP, and other URL schemes are not supported.');
         return;
       }
     }
@@ -350,7 +350,7 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
           ]},
           { key: 'live_activity_button_enabled', label: 'Enable Live Activity Button', type: 'checkbox', required: false },
           { key: 'live_activity_button_title', label: 'Live Activity Button Title', placeholder: 'Pause', type: 'text', required: true, showIf: (cfg: Record<string, string>) => cfg.live_activity_button_enabled === 'true' },
-          { key: 'live_activity_button_url', label: 'Live Activity Button URL', placeholder: 'https://printbuddy.example.com/', type: 'url', required: true, helperText: 'Notify requires a public HTTPS URL; HTTP and local IP addresses are not supported.', showIf: (cfg: Record<string, string>) => cfg.live_activity_button_enabled === 'true' },
+          { key: 'live_activity_button_url', label: 'Live Activity Button URL', placeholder: 'https://printbuddy.example.com/ or bamfleet://printers', type: 'url', required: true, helperText: 'Use a public HTTPS URL or a Bamfleet deep link (for example, bamfleet://printers). HTTP, local IP addresses, and other URL schemes are not supported.', showIf: (cfg: Record<string, string>) => cfg.live_activity_button_enabled === 'true' },
           { key: 'live_activity_keepalive_seconds', label: 'Live Activity Keepalive Seconds', placeholder: '60', type: 'number', required: false },
           { key: 'live_activity_end_keep_for_seconds', label: 'Keep Final Tile Seconds', placeholder: '300', type: 'number', required: false },
         ];
