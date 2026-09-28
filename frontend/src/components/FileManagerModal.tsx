@@ -301,6 +301,7 @@ export function FileManagerModal({ printerId, printerName, printerProvider, prin
   const [downloadProgress, setDownloadProgress] = useState<{ current: number; total: number } | null>(null);
   const [viewerFile, setViewerFile] = useState<{ path: string; name: string } | null>(null);
   const [elegooStartFile, setElegooStartFile] = useState<{ path: string; name: string } | null>(null);
+  const [filePendingSpoolConfirmation, setFilePendingSpoolConfirmation] = useState<{ path: string; name: string; options?: { bed_levelling?: boolean; print_platform_type?: ElegooPrintPlatformType } } | null>(null);
   const [elegooHeatedBedLevelling, setElegooHeatedBedLevelling] = useState(true);
   const [elegooPrintPlatformType, setElegooPrintPlatformType] = useState<ElegooPrintPlatformType>(0);
   const isPrusaPrinter = printerProvider === 'prusalink' || printerProvider === 'prusaconnect';
@@ -483,8 +484,19 @@ export function FileManagerModal({ printerId, printerName, printerProvider, prin
 
   const startPrinterFile = async (
     file: { path: string; name: string },
-    options?: { bed_levelling?: boolean; print_platform_type?: ElegooPrintPlatformType }
+    options?: { bed_levelling?: boolean; print_platform_type?: ElegooPrintPlatformType },
+    skipSpoolConfirmation = false,
   ) => {
+    if (!skipSpoolConfirmation) {
+      const [settings, assignments] = await Promise.all([
+        api.getSettings(),
+        api.getAssignments(printerId),
+      ]);
+      if (settings.warn_on_missing_spool_assignment !== false && assignments.length === 0) {
+        setFilePendingSpoolConfirmation({ path: file.path, name: file.name, options });
+        return;
+      }
+    }
     setStartingFile(true);
     try {
       await api.startPrinterFile(printerId, file.path, { ...options, storage: activeStorage });
@@ -895,6 +907,22 @@ export function FileManagerModal({ printerId, printerName, printerProvider, prin
             deleteMutation.mutate(filesToDelete);
           }}
           onCancel={() => setFilesToDelete([])}
+        />
+      )}
+
+      {filePendingSpoolConfirmation && (
+        <ConfirmModal
+          title={t('settings.missingSpoolAssignmentStartTitle')}
+          message={t('settings.missingSpoolAssignmentStartMessage')}
+          confirmText={t('settings.startPrintAnyway')}
+          variant="warning"
+          overlayZIndex="z-[60]"
+          onConfirm={() => {
+            const pending = filePendingSpoolConfirmation;
+            setFilePendingSpoolConfirmation(null);
+            void startPrinterFile(pending, pending.options, true);
+          }}
+          onCancel={() => setFilePendingSpoolConfirmation(null)}
         />
       )}
 

@@ -41,6 +41,10 @@ class AppSettings(BaseModel):
         default=False,
         description="When multiple AMS spools match, prefer the one with lowest remaining filament",
     )
+    warn_on_missing_spool_assignment: bool = Field(
+        default=True,
+        description="Ask for confirmation before starting a print on a printer with no assigned spool",
+    )
 
     # Open Filament Database catalog integration
     open_filament_database_enabled: bool = Field(
@@ -372,6 +376,7 @@ class AppSettingsUpdate(BaseModel):
     spoolman_report_partial_usage: bool | None = None
     disable_filament_warnings: bool | None = None
     prefer_lowest_filament: bool | None = None
+    warn_on_missing_spool_assignment: bool | None = None
     open_filament_database_enabled: bool | None = None
     check_updates: bool | None = None
     check_printer_firmware: bool | None = None

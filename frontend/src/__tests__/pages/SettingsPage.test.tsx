@@ -31,6 +31,7 @@ const mockSettings = {
   panda_breath_printer_assignments: '{}',
   spoolman_enabled: false,
   spoolman_url: '',
+  warn_on_missing_spool_assignment: true,
   ha_enabled: false,
   ha_url: '',
   ha_token: '',
@@ -1091,5 +1092,29 @@ describe('SettingsPage', () => {
       // mode on PR #1263).
       15_000,
     );
+  });
+
+  describe('filament settings', () => {
+    it('lets the user disable the missing spool assignment confirmation', async () => {
+      let updatePayload: Record<string, unknown> | null = null;
+      server.use(
+        http.put('/api/v1/settings/', async ({ request }) => {
+          updatePayload = await request.json() as Record<string, unknown>;
+          return HttpResponse.json({ ...mockSettings, ...updatePayload });
+        })
+      );
+
+      const user = userEvent.setup();
+      render(<SettingsPage />);
+
+      await user.click(await screen.findByRole('button', { name: 'Filament' }));
+      const toggle = await screen.findByRole('checkbox', { name: /warn before starting without an assigned spool/i });
+      expect(toggle).toBeChecked();
+
+      await user.click(toggle);
+      await waitFor(() => {
+        expect(updatePayload).toMatchObject({ warn_on_missing_spool_assignment: false });
+      });
+    });
   });
 });

@@ -220,6 +220,7 @@ export function PrintModal({
   const [submitProgress, setSubmitProgress] = useState({ current: 0, total: 0 });
 
   const [filamentWarningItems, setFilamentWarningItems] = useState<FilamentWarningItem[] | null>(null);
+  const [missingSpoolConfirmationPending, setMissingSpoolConfirmationPending] = useState(false);
 
   // Track which printers have had the "Expand custom mapping by default" setting applied
   // This ensures the setting only affects initial state, not preventing unchecking
@@ -533,8 +534,26 @@ export function PrintModal({
 
   const willUseStagger = scheduleOptions.staggerEnabled && selectedPrinters.length > 1;
 
-  const handleSubmit = async (e?: React.FormEvent, options?: { skipFilamentCheck?: boolean }) => {
+  const handleSubmit = async (e?: React.FormEvent, options?: { skipFilamentCheck?: boolean; skipMissingSpoolConfirmation?: boolean }) => {
     e?.preventDefault();
+
+    if (
+      !options?.skipMissingSpoolConfirmation &&
+      mode === 'reprint' &&
+      assignmentMode === 'printer'
+    ) {
+      const [currentSettings, assignments] = await Promise.all([
+        settings ?? api.getSettings(),
+        spoolAssignments ?? api.getAssignments(),
+      ]);
+      const hasUnassignedPrinter = selectedPrinters.some(
+        (printerId) => !assignments.some((assignment) => assignment.printer_id === printerId)
+      );
+      if (currentSettings.warn_on_missing_spool_assignment !== false && hasUnassignedPrinter) {
+        setMissingSpoolConfirmationPending(true);
+        return;
+      }
+    }
 
     if (
       !options?.skipFilamentCheck &&
@@ -1265,6 +1284,20 @@ export function PrintModal({
             void handleSubmit(undefined, { skipFilamentCheck: true });
           }}
           onCancel={() => setFilamentWarningItems(null)}
+        />
+      )}
+      {missingSpoolConfirmationPending && (
+        <ConfirmModal
+          title={t('settings.missingSpoolAssignmentStartTitle')}
+          message={t('settings.missingSpoolAssignmentStartMessage')}
+          confirmText={t('settings.startPrintAnyway')}
+          variant="warning"
+          overlayZIndex="z-[60]"
+          onConfirm={() => {
+            setMissingSpoolConfirmationPending(false);
+            void handleSubmit(undefined, { skipMissingSpoolConfirmation: true });
+          }}
+          onCancel={() => setMissingSpoolConfirmationPending(false)}
         />
       )}
     </div>
