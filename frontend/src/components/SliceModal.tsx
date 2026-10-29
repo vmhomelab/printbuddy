@@ -375,15 +375,12 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   // and we'll backfill 1 at submit time). Set to a 1-indexed plate number once
   // the user picks one (or implicitly for single-plate sources).
   const [selectedPlate, setSelectedPlate] = useState<number | null>(null);
-  // "Slice all plates" mode: sends ``plate=0`` to the backend which forwards
-  // ``--slice 0`` to the BS CLI, producing a single output 3MF whose
-  // ``Metadata/plate_N.gcode`` entries are *all* plates sliced together —
-  // one archive, one file, all plates. Distinct from the per-plate
-  // ``selectedPlate`` mode (which slices just that one plate). Filament
-  // selection in this mode covers every slot the project defines, not
-  // just the slots the currently-visible plate happens to use — see
-  // ``allProjectFilamentSlots`` below.
+  // "Slice all plates" mode: sends ``plate=0``. Combined (default) writes
+  // one multi-plate 3MF with ``Metadata/plate_N.gcode`` for every plate;
+  // ``splitPlates`` writes one library/archive file per plate instead.
+  // Filament selection covers every project slot — see filamentSlots.
   const [sliceAllPlates, setSliceAllPlates] = useState(false);
+  const [splitPlates, setSplitPlates] = useState(false);
   // Build-plate override (#1337). null = inherit from the process preset
   // (the default). Set to a canonical slicer enum value to patch
   // curr_bed_type into the resolved process JSON before slicing — needed
@@ -684,6 +681,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
       return {
         bundle: bundleSpec,
         ...(plate != null ? { plate } : {}),
+        ...(plate === 0 && splitPlates ? { split_plates: true } : {}),
         // Bed-type override (#1337) also flows through the bundle path —
         // the sidecar forwards `bedType` as --curr_bed_type to the CLI.
         ...(bedType != null ? { bed_type: bedType } : {}),
@@ -703,6 +701,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
       filament_preset: filamentPresets[0] as PresetRef,
       filament_presets: filamentPresets as PresetRef[],
       ...(plate != null ? { plate } : {}),
+      ...(plate === 0 && splitPlates ? { split_plates: true } : {}),
       ...(bedType != null ? { bed_type: bedType } : {}),
     };
   }
@@ -978,19 +977,55 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
             {t('common.cancel')}
           </button>
           {canSliceAll && (
-            <label
-              className="flex items-center gap-2 mr-auto text-sm text-bambu-gray cursor-pointer select-none"
-              title={t('slice.actionAllTitle', { count: totalPlateCount })}
-            >
-              <input
-                type="checkbox"
-                checked={sliceAllPlates}
-                onChange={(e) => setSliceAllPlates(e.target.checked)}
-                disabled={isEnqueuing}
-                className="cursor-pointer"
-              />
-              {t('slice.allPlatesToggle', { count: totalPlateCount })}
-            </label>
+            <div className="mr-auto flex flex-col gap-1.5 text-sm text-bambu-gray">
+              <label
+                className="flex items-center gap-2 cursor-pointer select-none"
+                title={t('slice.actionAllTitle', {
+                  count: totalPlateCount,
+                  defaultValue:
+                    'Slice every plate. Choose combined (one multi-plate file) or separate files below.',
+                })}
+              >
+                <input
+                  type="checkbox"
+                  checked={sliceAllPlates}
+                  onChange={(e) => setSliceAllPlates(e.target.checked)}
+                  disabled={isEnqueuing}
+                  className="cursor-pointer"
+                />
+                {t('slice.allPlatesToggle', { count: totalPlateCount })}
+              </label>
+              {sliceAllPlates && (
+                <div
+                  className="flex flex-wrap items-center gap-3 pl-6"
+                  role="radiogroup"
+                  aria-label={t('slice.outputModeLabel', 'Output')}
+                >
+                  <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                    <input
+                      type="radio"
+                      name="slice-output-mode"
+                      checked={!splitPlates}
+                      onChange={() => setSplitPlates(false)}
+                      disabled={isEnqueuing}
+                      className="cursor-pointer"
+                    />
+                    {t('slice.outputCombined', 'One multi-plate file')}
+                  </label>
+                  <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                    <input
+                      type="radio"
+                      name="slice-output-mode"
+                      checked={splitPlates}
+                      onChange={() => setSplitPlates(true)}
+                      disabled={isEnqueuing}
+                      className="cursor-pointer"
+                    />
+                    {t('slice.outputSeparate', 'Separate file per plate')}
+                  </label>
+                </div>
+              )}
+            </div>
           )}
           {!isReady && !isEnqueuing && (
             <p className="mr-auto text-xs text-amber-400/90 max-w-[18rem]">

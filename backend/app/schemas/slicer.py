@@ -111,7 +111,16 @@ class SliceRequest(BaseModel):
             "(matches the pre-multi-plate behaviour). ``0`` is the sidecar's "
             "'all plates' sentinel — produces a single multi-plate 3MF whose "
             "``Metadata/plate_N.gcode`` entries cover every plate in the "
-            "source. ``>= 1`` slices that one plate."
+            "source (unless ``split_plates`` is true). ``>= 1`` slices that "
+            "one plate."
+        ),
+    )
+    split_plates: bool = Field(
+        default=False,
+        description=(
+            "When ``plate=0`` (slice all), save one library/archive file per "
+            "plate instead of a single consolidated multi-plate 3MF. Ignored "
+            "unless ``plate`` is 0."
         ),
     )
     export_3mf: bool = Field(
@@ -193,6 +202,10 @@ class SliceResponse(BaseModel):
     filament_used_g: float
     filament_used_mm: float
     used_embedded_settings: bool = False
+    # Populated when ``split_plates`` produced one file per plate. ``library_file_id``
+    # / ``name`` remain the first plate for backwards-compatible clients.
+    library_file_ids: list[int] | None = None
+    names: list[str] | None = None
 
 
 class SliceArchiveResponse(BaseModel):
@@ -206,3 +219,5 @@ class SliceArchiveResponse(BaseModel):
     filament_used_g: float
     filament_used_mm: float
     used_embedded_settings: bool = False
+    archive_ids: list[int] | None = None
+    names: list[str] | None = None

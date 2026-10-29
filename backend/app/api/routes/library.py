@@ -3759,46 +3759,28 @@ async def guard_nozzle_class_reslice(
     return None
 
 
-async def slice_and_persist(
+async def _persist_sliced_library_file(
     db: AsyncSession,
     *,
-    model_bytes: bytes,
-    model_filename: str,
+    content: bytes,
+    out_filename: str,
     folder_id: int | None,
     extra_metadata: dict | None,
-    request: SliceRequest,
     current_user_id: int | None,
-    job_id: int | None = None,
-) -> SliceResponse:
-    """Slice a model and save the result as a new ``LibraryFile`` in
-    ``folder_id`` (same folder as the source by convention).
-
-    Always exports as ``.gcode.3mf`` so the existing library thumbnail
-    pipeline works on the new file. Plain ``.gcode`` would have no
-    embedded thumbnail to extract.
+    print_time_seconds: int,
+    filament_used_g: float,
+    filament_used_mm: float,
+    used_embedded_settings: bool,
+) -> tuple[LibraryFile, float, float]:
+    """Write one sliced ``.gcode.3mf`` into the library and return the row
+    plus filament totals (headers may be 0; fall back to parsed 3MF).
     """
     from backend.app.services.archive import ThreeMFParser
 
-    library_request = request.model_copy(update={"export_3mf": True})
-
-    result, used_embedded_settings = await _run_slicer_with_fallback(
-        db,
-        model_bytes=model_bytes,
-        model_filename=model_filename,
-        request=library_request,
-        current_user_id=current_user_id,
-        job_id=job_id,
-    )
-
-    base_name = model_filename.rsplit(".", 1)[0]
-    out_filename = f"{base_name}.gcode.3mf"
     unique_name = f"{uuid.uuid4().hex}.gcode.3mf"
     out_path = get_library_files_dir() / unique_name
-    out_path.write_bytes(result.content)
+    out_path.write_bytes(content)
 
-    # Extract thumbnail from the produced 3MF so the library card shows a
-    # preview. Failures here aren't fatal — the file is still useful
-    # without a thumbnail.
     thumbnail_relative: str | None = None
     parsed_metadata: dict = {}
     try:
@@ -3817,19 +3799,12 @@ async def slice_and_persist(
     except Exception as exc:
         logger.warning("Failed to parse sliced 3MF metadata for %s: %s", out_filename, exc)
 
-    # Drop the embedded `print_name` (see _without_print_name) so the sliced
-    # row's display falls back to its ".gcode.3mf" filename instead of the
-    # source file's project title, which would make the two indistinguishable.
     metadata: dict = dict(_without_print_name(parsed_metadata) or {})
-    # Some slicer-sidecar builds leave the X-Filament-Used-* response headers
-    # unset, so result.filament_used_g/_mm arrive as 0 even for a real
-    # multi-hour print. Fall back to the totals ThreeMFParser read from the
-    # produced 3MF's own G-code header.
-    filament_g = result.filament_used_g or parsed_metadata.get("filament_used_grams") or 0.0
-    filament_mm = result.filament_used_mm or parsed_metadata.get("filament_used_mm") or 0.0
+    filament_g = filament_used_g or parsed_metadata.get("filament_used_grams") or 0.0
+    filament_mm = filament_used_mm or parsed_metadata.get("filament_used_mm") or 0.0
     metadata.update(
         {
-            "print_time_seconds": result.print_time_seconds,
+            "print_time_seconds": print_time_seconds,
             "filament_used_g": filament_g,
             "filament_used_mm": filament_mm,
         }
@@ -3843,13 +3818,9 @@ async def slice_and_persist(
         folder_id=folder_id,
         filename=out_filename,
         file_path=to_relative_path(out_path),
-        # Sliced output is a `.gcode.3mf` zip with embedded G-code, but the
-        # user-facing meaning is "ready-to-print G-code" — using "gcode"
-        # gives it the same badge as plain .gcode files and distinguishes
-        # it from un-sliced `.3mf` source models.
         file_type="gcode",
-        file_size=len(result.content),
-        file_hash=hashlib.sha256(result.content).hexdigest(),
+        file_size=len(content),
+        file_hash=hashlib.sha256(content).hexdigest(),
         thumbnail_path=thumbnail_relative,
         file_metadata=metadata,
         source_type="sliced",
@@ -3857,9 +3828,132 @@ async def slice_and_persist(
     )
     db.add(new_file)
     await db.commit()
-    # No refresh: expire_on_commit=False keeps id/filename accessible, and
-    # refreshing here flakes under pytest-xdist when teardown of a sibling
-    # test races the SELECT.
+    return new_file, float(filament_g), float(filament_mm)
+
+
+async def slice_and_persist(
+    db: AsyncSession,
+    *,
+    model_bytes: bytes,
+    model_filename: str,
+    folder_id: int | None,
+    extra_metadata: dict | None,
+    request: SliceRequest,
+    current_user_id: int | None,
+    job_id: int | None = None,
+) -> SliceResponse:
+    """Slice a model and save the result as a new ``LibraryFile`` in
+    ``folder_id`` (same folder as the source by convention).
+
+    Always exports as ``.gcode.3mf`` so the existing library thumbnail
+    pipeline works on the new file. Plain ``.gcode`` would have no
+    embedded thumbnail to extract.
+
+    When ``request.plate == 0`` and ``request.split_plates``, slices each
+    plate independently and writes one library file per plate
+    (``{base}_plate_{N}.gcode.3mf``).
+    """
+    base_name = model_filename.rsplit(".", 1)[0]
+
+    if request.plate == 0 and request.split_plates:
+        from backend.app.services.slice_dispatch import slice_dispatch as _dispatch
+        from backend.app.services.slicer_3mf_convert import count_plates_in_3mf
+
+        plate_count = count_plates_in_3mf(model_bytes) if model_filename.lower().endswith(".3mf") else 0
+        if plate_count < 1:
+            plate_count = 1
+        logger.info(
+            "Split slice-all: writing %d separate library file(s) for %s",
+            plate_count,
+            model_filename,
+        )
+        file_ids: list[int] = []
+        names: list[str] = []
+        total_time = 0
+        total_g = 0.0
+        total_mm = 0.0
+        any_embedded = False
+        for plate_num in range(1, plate_count + 1):
+            if job_id is not None:
+                _dispatch.set_progress(
+                    job_id,
+                    {
+                        "stage": f"Slicing plate {plate_num}",
+                        "total_percent": int(100 * (plate_num - 1) / plate_count),
+                        "plate_percent": 0,
+                        "plate_index": plate_num,
+                        "plate_count": plate_count,
+                        "multi_plate_index": plate_num,
+                        "multi_plate_count": plate_count,
+                        "updated_at": 0,
+                    },
+                )
+            plate_req = request.model_copy(update={"plate": plate_num, "split_plates": False, "export_3mf": True})
+            result, used_embedded = await _run_slicer_with_fallback(
+                db,
+                model_bytes=model_bytes,
+                model_filename=model_filename,
+                request=plate_req,
+                current_user_id=current_user_id,
+                job_id=job_id,
+            )
+            out_filename = f"{base_name}_plate_{plate_num}.gcode.3mf"
+            plate_meta = dict(extra_metadata or {})
+            plate_meta["sliced_plate"] = plate_num
+            new_file, filament_g, filament_mm = await _persist_sliced_library_file(
+                db,
+                content=result.content,
+                out_filename=out_filename,
+                folder_id=folder_id,
+                extra_metadata=plate_meta,
+                current_user_id=current_user_id,
+                print_time_seconds=result.print_time_seconds,
+                filament_used_g=result.filament_used_g,
+                filament_used_mm=result.filament_used_mm,
+                used_embedded_settings=used_embedded,
+            )
+            file_ids.append(new_file.id)
+            names.append(new_file.filename)
+            total_time += result.print_time_seconds
+            total_g += filament_g
+            total_mm += filament_mm
+            any_embedded = any_embedded or used_embedded
+
+        return SliceResponse(
+            library_file_id=file_ids[0],
+            name=names[0],
+            print_time_seconds=total_time,
+            filament_used_g=total_g,
+            filament_used_mm=total_mm,
+            used_embedded_settings=any_embedded,
+            library_file_ids=file_ids,
+            names=names,
+        )
+
+    library_request = request.model_copy(update={"export_3mf": True})
+
+    result, used_embedded_settings = await _run_slicer_with_fallback(
+        db,
+        model_bytes=model_bytes,
+        model_filename=model_filename,
+        request=library_request,
+        current_user_id=current_user_id,
+        job_id=job_id,
+    )
+
+    out_filename = f"{base_name}.gcode.3mf"
+    new_file, filament_g, filament_mm = await _persist_sliced_library_file(
+        db,
+        content=result.content,
+        out_filename=out_filename,
+        folder_id=folder_id,
+        extra_metadata=extra_metadata,
+        current_user_id=current_user_id,
+        print_time_seconds=result.print_time_seconds,
+        filament_used_g=result.filament_used_g,
+        filament_used_mm=result.filament_used_mm,
+        used_embedded_settings=used_embedded_settings,
+    )
 
     return SliceResponse(
         library_file_id=new_file.id,
