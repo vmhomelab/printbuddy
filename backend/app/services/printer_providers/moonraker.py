@@ -666,18 +666,10 @@ class MoonrakerPrinterClient:
                 {"request_method": "GET", "path": "/v1/spool"},
             )
         except Exception:  # noqa: BLE001 - Spoolman is optional; keep tray status usable
-            return {
-                sid: self._spoolman_remain_cache[sid]
-                for sid in wanted
-                if sid in self._spoolman_remain_cache
-            }
+            return {sid: self._spoolman_remain_cache[sid] for sid in wanted if sid in self._spoolman_remain_cache}
 
         if not isinstance(spools, list):
-            return {
-                sid: self._spoolman_remain_cache[sid]
-                for sid in wanted
-                if sid in self._spoolman_remain_cache
-            }
+            return {sid: self._spoolman_remain_cache[sid] for sid in wanted if sid in self._spoolman_remain_cache}
 
         refreshed: dict[int, tuple[int, float]] = {}
         for spool in spools:
@@ -1265,9 +1257,7 @@ class MoonrakerPrinterClient:
         if feed_slots:
             trays = [feed_slots[index] for index in sorted(feed_slots)]
             spool_ids = {
-                sid
-                for tray in trays
-                if (sid := _safe_int(tray.get("filament_spool_id"))) is not None and sid > 0
+                sid for tray in trays if (sid := _safe_int(tray.get("filament_spool_id"))) is not None and sid > 0
             }
             if spool_ids:
                 remain_by_id = self._spoolman_remain_by_id(spool_ids)
