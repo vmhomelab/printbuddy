@@ -1041,6 +1041,20 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
               )}
             </div>
           )}
+          {!isReady && !isEnqueuing && (
+            <p className="mr-auto text-xs text-amber-400/90 max-w-[18rem]">
+              {!isBundleMode && !processPreset
+                ? t(
+                    'slice.needProcess',
+                    'Pick a process preset (Import one under Profiles, or start the Orca slicer-api sidecar for Standard profiles).',
+                  )
+                : !isBundleMode && filamentPresets.some((r) => r == null)
+                  ? t('slice.needFilament', 'Pick a filament for every used slot.')
+                  : !filamentReqsQuery.isSuccess
+                    ? t('slice.needPlateMeta', 'Waiting for plate / filament metadata…')
+                    : t('slice.needPresets', 'Select printer, process, and filament to slice.')}
+            </p>
+          )}
           <button
             type="button"
             onClick={() => {
