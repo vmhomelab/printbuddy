@@ -3275,6 +3275,16 @@ class TestPrinterCustomImage:
         assert response.status_code == 400
         assert not self.images_dir.exists() or not list(self.images_dir.iterdir())
 
+    @pytest.mark.integration
+    def test_custom_image_route_reaches_its_stream_token_gate(self):
+        """The global auth middleware must let token-only <img> requests reach
+        this exact GET route; the route's stream-token dependency does auth."""
+        from backend.app.main import is_public_stream_image_path
+
+        assert is_public_stream_image_path("/api/v1/printers/42/image")
+        assert not is_public_stream_image_path("/api/v1/printers/42/status")
+        assert not is_public_stream_image_path("/api/v1/printers/42/image/extra")
+
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_deleting_printer_removes_its_custom_image(self, async_client: AsyncClient, printer_factory):

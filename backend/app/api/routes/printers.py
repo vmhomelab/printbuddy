@@ -656,12 +656,26 @@ def get_printer_images_dir() -> Path:
     return Path(settings.archive_dir) / "printer_images"
 
 
+def _custom_image_path(filename: str | None, printer_id: int) -> Path | None:
+    """Resolve only filenames generated for this printer inside its image directory."""
+    if not filename or not re.fullmatch(
+        rf"printer_{printer_id}_[0-9a-f]{{32}}\.(?:jpg|jpeg|png|gif|webp)", filename
+    ):
+        return None
+    images_dir = get_printer_images_dir().resolve()
+    image_path = (images_dir / filename).resolve()
+    return image_path if image_path.parent == images_dir else None
+
+
 def _remove_custom_image_file(filename: str | None, printer_id: int) -> None:
     """Best-effort removal of a generated custom image file."""
-    if not filename:
+    image_path = _custom_image_path(filename, printer_id)
+    if not image_path:
+        if filename:
+            logger.warning("Ignoring unsafe custom image filename for printer %s: %r", printer_id, filename)
         return
     try:
-        (get_printer_images_dir() / filename).unlink(missing_ok=True)
+        image_path.unlink(missing_ok=True)
     except OSError as exc:
         logger.warning("Failed to remove custom image for printer %s: %s", printer_id, exc)
 
@@ -751,14 +765,14 @@ async def get_printer_image(
     if not printer.custom_image_filename:
         raise HTTPException(404, "No custom image set")
 
-    image_path = get_printer_images_dir() / printer.custom_image_filename
-    if not image_path.is_file():
+    image_path = _custom_image_path(printer.custom_image_filename, printer_id)
+    if not image_path or not image_path.is_file():
         logger.warning("Custom image missing for printer %s: %s", printer_id, image_path)
         printer.custom_image_filename = None
         await db.commit()
         raise HTTPException(404, "Custom image file not found")
     extension = image_path.suffix.lower()
-    return FileResponse(image_path, media_type=CUSTOM_IMAGE_CONTENT_TYPES[extension])
+    return FileResponse(image_path, media_type=CUSTOM_IMAGE_CONTENT_TYPES.get(extension, "application/octet-stream"))
 
 
 @router.delete("/{printer_id}/image", response_model=PrinterResponse)

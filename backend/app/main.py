@@ -6170,6 +6170,16 @@ PUBLIC_API_PATTERNS = [
 ]
 
 
+def is_public_stream_image_path(path: str) -> bool:
+    """Return whether a token-gated browser image URL may bypass JWT middleware.
+
+    The endpoint itself validates its ``?token=`` via
+    ``RequireCameraStreamTokenIfAuthEnabled``. Keep this exact match narrow so
+    no other printer route becomes reachable without bearer authentication.
+    """
+    return re.fullmatch(r"/api/v1/printers/\d+/image", path) is not None
+
+
 _security_headers_logger = logging.getLogger("backend.app.main.security_headers")
 
 
@@ -6346,6 +6356,12 @@ async def auth_middleware(request, call_next):
     for pattern in PUBLIC_API_PATTERNS:
         if pattern in path:
             return await call_next(request)
+
+    # Token-gated printer images are loaded through <img>, which cannot attach
+    # an Authorization header. The endpoint's own stream-token dependency is
+    # the credential check for this narrowly defined URL.
+    if is_public_stream_image_path(path):
+        return await call_next(request)
 
     # Check if auth is enabled
     try:
