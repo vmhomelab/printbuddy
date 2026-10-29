@@ -381,9 +381,36 @@ def test_moonraker_snapmaker_u1_fills_remain_from_spoolman_spool_ids(monkeypatch
         "_jsonrpc",
         lambda method, params=None: (
             [
-                {"id": 25, "remaining_weight": 398.2, "filament": {"weight": 1000.0, "name": "Charcoal"}},
-                {"id": 105, "remaining_weight": 851.8, "filament": {"weight": 1000.0, "name": "Indigo Purple"}},
-                {"id": 15, "remaining_weight": 74.1, "filament": {"weight": 1000.0, "name": "Cobalt Blue"}},
+                {
+                    "id": 25,
+                    "remaining_weight": 398.2,
+                    "filament": {
+                        "weight": 1000.0,
+                        "name": "Charcoal",
+                        "material": "PLA",
+                        "vendor": {"name": "Bambu Lab"},
+                    },
+                },
+                {
+                    "id": 105,
+                    "remaining_weight": 851.8,
+                    "filament": {
+                        "weight": 1000.0,
+                        "name": "Indigo Purple",
+                        "material": "PLA",
+                        "vendor": {"name": "Bambu Lab"},
+                    },
+                },
+                {
+                    "id": 15,
+                    "remaining_weight": 74.1,
+                    "filament": {
+                        "weight": 1000.0,
+                        "name": "Cobalt Blue",
+                        "material": "PLA",
+                        "vendor": {"name": "Bambu Lab"},
+                    },
+                },
             ]
             if method == "server.spoolman.proxy"
             else None
@@ -396,10 +423,14 @@ def test_moonraker_snapmaker_u1_fills_remain_from_spoolman_spool_ids(monkeypatch
     assert trays[0]["filament_spool_id"] == 25
     assert trays[0]["remain"] == 40
     assert trays[0]["remaining_weight"] == 398.2
+    assert trays[0]["filament_spool_brand"] == "Bambu Lab"
+    assert trays[0]["filament_spool_material"] == "PLA"
+    assert trays[0]["filament_spool_color_name"] == "Charcoal"
     assert trays[1]["filament_spool_id"] == 105
     assert trays[1]["remain"] == 85
     assert trays[2]["filament_spool_id"] == 15
     assert trays[2]["remain"] == 7
+    assert trays[2]["filament_spool_color_name"] == "Cobalt Blue"
     assert trays[3].get("filament_spool_id") in (None, 0)
     assert trays[3]["remain"] == -1
 

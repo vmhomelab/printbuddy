@@ -248,4 +248,45 @@ describe('resolveLoadedFilamentInfo', () => {
       globalTrayId: 1,
     });
   });
+
+  it('uses Snapmaker SpoolLink filament_spool_id when no Printbuddy slot assignment exists', () => {
+    const charcoal = spool({
+      id: 25,
+      brand: 'Snapmaker',
+      material: 'PLA',
+      color_name: 'Charcoal',
+      rgba: '080A0D',
+      label_weight: 1000,
+      weight_used: 602,
+    });
+    const result = resolveLoadedFilamentInfo({
+      printer,
+      status: status({
+        tray_now: 0,
+        ams: [ams({
+          id: 0,
+          module_type: 'snapmaker_u1',
+          tray: [tray({
+            id: 0,
+            tray_type: 'PLA',
+            tray_color: '#080A0D',
+            remain: -1,
+            filament_spool_id: 25,
+            tray_uuid: 'snapmaker-u1-e0',
+          })],
+        })],
+      }),
+      localAssignments: [],
+      spoolmanSpools: [charcoal],
+      spoolmanSlotAssignments: [],
+    });
+
+    expect(result).toMatchObject({
+      material: 'Snapmaker PLA Charcoal',
+      remainingPct: 40,
+      source: 'spoolman',
+      amsId: 0,
+      trayId: 0,
+    });
+  });
 });

@@ -32,6 +32,8 @@ interface InventoryConfig {
   onUnassignSpool?: () => void;
   assignedSpool?: { id: number; material: string; brand: string | null; color_name: string | null; remainingWeightGrams?: number | null } | null;
   isAssigned?: boolean;
+  /** When false, hide the inventory deep-link (e.g. SpoolLink without Printbuddy Spoolman sync). */
+  showOpenInInventory?: boolean;
 }
 
 interface ConfigureSlotConfig {
@@ -374,7 +376,8 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
                         </p>
                         <span className="text-[10px] font-mono text-bambu-gray shrink-0">#{inventory.assignedSpool.id}</span>
                       </div>
-                      {(!spoolman?.linkedSpoolId || inventory.assignedSpool!.id !== spoolman.linkedSpoolId) && (
+                      {inventory.showOpenInInventory !== false
+                        && (!spoolman?.linkedSpoolId || inventory.assignedSpool!.id !== spoolman.linkedSpoolId) && (
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
