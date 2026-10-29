@@ -1,5 +1,5 @@
 import { appAssetPath } from './assetPaths';
-import type { PrintQueueItem } from '../api/client';
+import { api, type PrintQueueItem, type Printer } from '../api/client';
 
 const PRINTER_IMAGE_BASE = '/img/printers';
 const DEFAULT_PRINTER_IMAGE = `${PRINTER_IMAGE_BASE}/default.png`;
@@ -59,6 +59,12 @@ function printerImagePath(filename: string): string {
 
 export function getDefaultPrinterImage(): string {
   return appAssetPath(DEFAULT_PRINTER_IMAGE);
+}
+
+export function getPrinterDisplayImage(printer: Pick<Printer, 'id' | 'model' | 'custom_image_filename'>): string {
+  return printer.custom_image_filename
+    ? api.getPrinterCustomImageUrl(printer.id, printer.custom_image_filename)
+    : getPrinterImage(printer.model);
 }
 
 export function getPrinterImage(model: string | null | undefined): string {

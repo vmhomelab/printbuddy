@@ -996,6 +996,9 @@ async def run_migrations(conn):
     await _safe_execute(conn, "ALTER TABLE projects ADD COLUMN url VARCHAR(2048)")
     await _safe_execute(conn, "ALTER TABLE projects ADD COLUMN cover_image_filename VARCHAR(255)")
 
+    # Migration: optional per-printer custom image filename (#40).
+    await _safe_execute(conn, "ALTER TABLE printers ADD COLUMN custom_image_filename VARCHAR(255)")
+
     # Migration: enhanced filament colour handling on color_catalog (#1154).
     # Mirrors the Spool columns added below; widens hex_color to VARCHAR(9)
     # so catalog entries can store an alpha component (#RRGGBBAA). SQLite

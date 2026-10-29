@@ -286,6 +286,7 @@ export interface Printer {
   provider_options: string | null;
   model: string | null;
   location: string | null;  // Group/location name
+  custom_image_filename: string | null;
   nozzle_count: number;  // 1 or 2, auto-detected from MQTT
   is_active: boolean;
   auto_archive: boolean;
@@ -3640,6 +3641,21 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+  getPrinterCustomImageUrl: (id: number, filename: string) =>
+    withStreamToken(`${API_BASE}/printers/${id}/image?v=${encodeURIComponent(filename)}`),
+  uploadPrinterImage: async (id: number, file: File): Promise<Printer> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const headers: Record<string, string> = {};
+    if (authToken) headers.Authorization = `Bearer ${authToken}`;
+    const response = await fetch(`${API_BASE}/printers/${id}/image`, { method: 'POST', headers, body: formData });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || `HTTP ${response.status}`);
+    }
+    return response.json();
+  },
+  deletePrinterImage: (id: number) => request<Printer>(`/printers/${id}/image`, { method: 'DELETE' }),
   updatePrinter: (id: number, data: Partial<PrinterCreate>) =>
     request<Printer>(`/printers/${id}`, {
       method: 'PATCH',

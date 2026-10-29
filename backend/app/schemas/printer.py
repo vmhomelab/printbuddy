@@ -215,6 +215,7 @@ class PrinterUpdate(BaseModel):
 class PrinterResponse(PrinterBase):
     id: int
     is_active: bool
+    custom_image_filename: str | None = None
     nozzle_count: int = 1  # 1 or 2, auto-detected from MQTT
     print_hours_offset: float = 0.0
     external_camera_url: str | None = None
@@ -246,6 +247,7 @@ class PrinterResponse(PrinterBase):
             "provider_options": getattr(printer, "provider_options", None),
             "model": printer.model,
             "location": printer.location,
+            "custom_image_filename": getattr(printer, "custom_image_filename", None),
             "auto_archive": printer.auto_archive,
             "reconnect_interval_seconds": getattr(printer, "reconnect_interval_seconds", 30),
             "external_camera_url": effective_camera.url,

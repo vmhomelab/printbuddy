@@ -8,9 +8,19 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { getPrinterImage } from '../../utils/printer';
+import { getPrinterDisplayImage, getPrinterImage } from '../../utils/printer';
 
 describe('getPrinterImage', () => {
+  it('prefers a printer custom image over the model artwork', () => {
+    expect(getPrinterDisplayImage({ id: 42, model: 'P1S', custom_image_filename: 'printer_42_new.png' }))
+      .toBe('/api/v1/printers/42/image?v=printer_42_new.png');
+  });
+
+  it('falls back to model artwork when a printer has no custom image', () => {
+    expect(getPrinterDisplayImage({ id: 42, model: 'P1S', custom_image_filename: null }))
+      .toBe('/img/printers/p1s.png');
+  });
+
   describe('X2D (#988)', () => {
     it('resolves display name "X2D" to x2d.png', () => {
       expect(getPrinterImage('X2D')).toBe('/img/printers/x2d.png');
