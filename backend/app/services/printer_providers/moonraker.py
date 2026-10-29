@@ -1462,6 +1462,14 @@ class MoonrakerPrinterClient:
         self._post("printer/print/cancel", {})
         return True
 
+    def pause_print(self) -> bool:
+        self._post("printer/print/pause", {})
+        return True
+
+    def resume_print(self) -> bool:
+        self._post("printer/print/resume", {})
+        return True
+
 
 def create_moonraker_client(printer: Any, **callbacks: Any) -> MoonrakerPrinterClient:  # noqa: ARG001
     base_url = printer.api_url or f"http://{printer.ip_address}:7125"

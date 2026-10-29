@@ -1,3 +1,5 @@
+import pytest
+
 from backend.app.services.printer_providers.moonraker import MoonrakerPrinterClient
 
 
@@ -652,3 +654,37 @@ def test_moonraker_list_files_filters_flat_root_listing_to_requested_folder(monk
     assert [file["name"] for file in files] == ["cached-cube.gcode", "nested"]
     assert [file["type"] for file in files] == ["file", "directory"]
     assert [file["path"] for file in files] == ["/cache/cached-cube.gcode", "/cache/nested"]
+
+
+@pytest.mark.parametrize(
+    ("method_name", "expected_path"),
+    [
+        ("pause_print", "printer/print/pause"),
+        ("resume_print", "printer/print/resume"),
+    ],
+)
+def test_moonraker_print_control_commands_use_the_expected_endpoint(monkeypatch, method_name, expected_path):
+    client = MoonrakerPrinterClient("http://klipper.local:7125")
+    calls = []
+
+    def fake_post(path, payload):
+        calls.append((path, payload))
+        return {"result": "ok"}
+
+    monkeypatch.setattr(client, "_post", fake_post)
+
+    assert getattr(client, method_name)() is True
+    assert calls == [(expected_path, {})]
+
+
+@pytest.mark.parametrize("method_name", ["pause_print", "resume_print"])
+def test_moonraker_print_control_commands_preserve_transport_errors(monkeypatch, method_name):
+    client = MoonrakerPrinterClient("http://klipper.local:7125")
+
+    def failing_post(path, payload):
+        raise RuntimeError("Moonraker rejected command")
+
+    monkeypatch.setattr(client, "_post", failing_post)
+
+    with pytest.raises(RuntimeError, match="Moonraker rejected command"):
+        getattr(client, method_name)()
