@@ -7,9 +7,14 @@ import zipfile
 from io import BytesIO
 
 from backend.app.services.slicer_3mf_convert import (
+    any_plate_needs_multi_filament_load,
     count_plates_in_3mf,
     extract_source_printer_model,
+    filaments_for_plate_load,
     merge_plate_3mfs,
+    plate_needs_multi_filament_load,
+    plate_sole_used_slot,
+    remap_plate_extruders_to_one,
     substitute_unused_plate_filaments,
 )
 
@@ -309,6 +314,11 @@ class TestSubstituteUnusedPlateFilaments:
         result = substitute_unused_plate_filaments(b"any bytes", plate_id=None, items=items)
         assert result == items
 
+    def test_no_op_when_plate_id_is_slice_all(self):
+        items = ["a.json", "b.json", "c.json"]
+        result = substitute_unused_plate_filaments(b"any bytes", plate_id=0, items=items)
+        assert result == items
+
     def test_no_op_when_single_filament(self):
         result = substitute_unused_plate_filaments(b"any bytes", plate_id=1, items=["only.json"])
         assert result == ["only.json"]
@@ -326,3 +336,60 @@ class TestSubstituteUnusedPlateFilaments:
         items = ["a.json", "b.json", "c.json"]
         result = substitute_unused_plate_filaments(zip_bytes, plate_id=1, items=items)
         assert result == items
+
+
+class TestFilamentsForPlateLoad:
+    """Mono-slot plates compact to one --load-filaments entry (#12426)."""
+
+    @staticmethod
+    def _model_settings_xml(per_plate_extruders: list[tuple[int, list[int]]]) -> bytes:
+        return TestSubstituteUnusedPlateFilaments._model_settings_xml(per_plate_extruders)
+
+    def test_mono_slot_plate_compacts_to_one(self):
+        # Plate 1 uses slot 1 only; project still has 3 filament picks submitted.
+        zip_bytes = _make_3mf({"Metadata/model_settings.config": self._model_settings_xml([(1, [1])])})
+        items = ["pla_basic.json", "abs_unused.json", "petg_unused.json"]
+        assert filaments_for_plate_load(zip_bytes, plate_id=1, items=items) == ["pla_basic.json"]
+
+    def test_mono_slot_other_than_one_uses_that_slots_profile(self):
+        zip_bytes = _make_3mf({"Metadata/model_settings.config": self._model_settings_xml([(2, [2])])})
+        items = ["slot1.json", "slot2_red.json", "slot3.json"]
+        assert filaments_for_plate_load(zip_bytes, plate_id=2, items=items) == ["slot2_red.json"]
+        assert plate_sole_used_slot(zip_bytes, 2) == 2
+
+    def test_multi_slot_plate_keeps_substituted_full_list(self):
+        zip_bytes = _make_3mf({"Metadata/model_settings.config": self._model_settings_xml([(1, [1, 3])])})
+        items = ["pla_white.json", "abs_unused.json", "pla_blue.json"]
+        assert filaments_for_plate_load(zip_bytes, plate_id=1, items=items) == [
+            "pla_white.json",
+            "pla_white.json",
+            "pla_blue.json",
+        ]
+
+    def test_paint_strip_gate_skips_all_mono_plates(self):
+        # Two plates, each mono-colour on a different slot — slice-all should
+        # not proactive-strip paint just because the modal sent 2+ picks.
+        zip_bytes = _make_3mf({"Metadata/model_settings.config": self._model_settings_xml([(1, [1]), (2, [2])])})
+        assert plate_needs_multi_filament_load(zip_bytes, 1, filament_slot_count=3) is False
+        assert plate_needs_multi_filament_load(zip_bytes, 2, filament_slot_count=3) is False
+        assert any_plate_needs_multi_filament_load(zip_bytes, plate_count=2, filament_slot_count=3) is False
+
+    def test_paint_strip_gate_fires_when_any_plate_is_multi(self):
+        zip_bytes = _make_3mf({"Metadata/model_settings.config": self._model_settings_xml([(1, [1]), (2, [1, 2])])})
+        assert any_plate_needs_multi_filament_load(zip_bytes, plate_count=2, filament_slot_count=3) is True
+
+    def test_remap_plate_extruders_to_one(self):
+        import xml.etree.ElementTree as ET
+
+        zip_bytes = _make_3mf({"Metadata/model_settings.config": self._model_settings_xml([(1, [2])])})
+        remapped = remap_plate_extruders_to_one(zip_bytes, plate_id=1, from_slot=2)
+        assert remapped is not zip_bytes
+        with zipfile.ZipFile(BytesIO(remapped), "r") as zf:
+            root = ET.fromstring(zf.read("Metadata/model_settings.config"))
+        extruders = [
+            meta.get("value")
+            for obj in root.findall(".//object")
+            for meta in obj.findall("metadata")
+            if meta.get("key") == "extruder"
+        ]
+        assert extruders == ["1"]

@@ -12,6 +12,7 @@ import json
 import logging
 import zipfile
 from datetime import datetime, timedelta, timezone
+from urllib.parse import quote
 
 import httpx
 from sqlalchemy import select
@@ -22,7 +23,24 @@ from backend.app.models.orca_base_cache import OrcaBaseProfile
 
 logger = logging.getLogger(__name__)
 
-ORCA_BASE_URL = "https://raw.githubusercontent.com/SoftFever/OrcaSlicer/main/resources/profiles/BBL"
+# Upstream moved from SoftFever → OrcaSlicer; SoftFever still mirrors. Prefer
+# the OrcaSlicer org, fall back to SoftFever. Vendors beyond BBL matter for
+# headless Snapmaker U1 slices — those machine profiles inherit
+# fdm_U1 → fdm_toolchanger → fdm_klipper under resources/profiles/Snapmaker/.
+ORCA_PROFILE_ROOTS = (
+    "https://raw.githubusercontent.com/OrcaSlicer/OrcaSlicer/main/resources/profiles",
+    "https://raw.githubusercontent.com/SoftFever/OrcaSlicer/main/resources/profiles",
+)
+ORCA_PROFILE_VENDORS = (
+    "BBL",
+    "Snapmaker",
+    "Prusa",
+    "Voron",
+    "Custom",
+    "OrcaFilamentLibrary",
+)
+# Back-compat alias used by older call sites / tests.
+ORCA_BASE_URL = f"{ORCA_PROFILE_ROOTS[1]}/BBL"
 CACHE_TTL_DAYS = 7
 MAX_INHERITANCE_DEPTH = 10
 
@@ -64,21 +82,32 @@ async def fetch_and_cache_base_profile(name: str, profile_type: str, db: AsyncSe
     }
     subdir = type_dirs.get(profile_type, "filament")
 
-    # Try fetching from GitHub
-    urls_to_try = [
-        f"{ORCA_BASE_URL}/{subdir}/{name}.json",
-    ]
-    # Also try filament dir as fallback for any type
-    if subdir != "filament":
-        urls_to_try.append(f"{ORCA_BASE_URL}/filament/{name}.json")
+    # Prefer Snapmaker when the inherits name looks like a U1/klipper parent
+    # so we don't burn a round-trip on BBL 404s for every fdm_U1 lookup.
+    vendors = list(ORCA_PROFILE_VENDORS)
+    lowered = name.lower()
+    if lowered.startswith("fdm_") or "snapmaker" in lowered or lowered.startswith("u1"):
+        vendors = ["Snapmaker"] + [v for v in vendors if v != "Snapmaker"]
+
+    # Walk vendor × root. Filament dir is also tried as a last-resort for
+    # mis-typed profile_type hints. Quote the file stem so names with spaces
+    # / parentheses (e.g. "Snapmaker U1 (0.4 nozzle)") resolve.
+    encoded = quote(name)
+    urls_to_try: list[str] = []
+    for root in ORCA_PROFILE_ROOTS:
+        for vendor in vendors:
+            urls_to_try.append(f"{root}/{vendor}/{subdir}/{encoded}.json")
+            if subdir != "filament":
+                urls_to_try.append(f"{root}/{vendor}/filament/{encoded}.json")
 
     data = None
-    async with httpx.AsyncClient(timeout=15.0) as client:
+    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
         for url in urls_to_try:
             try:
                 resp = await client.get(url)
                 if resp.status_code == 200:
                     data = resp.json()
+                    logger.info("Resolved base profile '%s' from %s", name, url)
                     break
             except Exception as e:
                 logger.debug("Failed to fetch %s: %s", url, e)

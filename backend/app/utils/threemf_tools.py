@@ -306,6 +306,71 @@ def extract_embedded_presets_from_3mf(zf: zipfile.ZipFile) -> dict[str, str | No
     return result
 
 
+def discover_plate_indices(zf: zipfile.ZipFile) -> list[int]:
+    """Return sorted 1-indexed plate numbers defined by a 3MF project.
+
+    Priority (first non-empty wins):
+
+    1. ``Metadata/plate_N.gcode`` — sliced projects
+    2. ``Metadata/plate_N.json`` / ``plate_N.png`` — Bambu unsliced exports
+       that still ship per-plate previews
+    3. ``<plate><metadata key="plater_id">`` in ``model_settings.config`` —
+       Snapmaker/Orca converted projects often drop the preview PNGs but
+       keep the plate list here. Without this fallback the plates API
+       reports ``is_multi_plate: false`` and SliceModal skips the picker.
+    """
+    namelist = zf.namelist()
+    indices: list[int] = []
+
+    for name in namelist:
+        if not (name.startswith("Metadata/plate_") and name.endswith(".gcode")):
+            continue
+        try:
+            indices.append(int(name[len("Metadata/plate_") : -len(".gcode")]))
+        except ValueError:
+            continue
+    if indices:
+        return sorted(set(indices))
+
+    plate_re = re.compile(r"^Metadata/plate_(\d+)\.(json|png)$")
+    seen: set[int] = set()
+    for name in namelist:
+        if name.endswith(".png") and ("_small" in name or "no_light" in name):
+            continue
+        match = plate_re.match(name)
+        if not match:
+            continue
+        try:
+            index = int(match.group(1))
+        except ValueError:
+            continue
+        if index not in seen:
+            seen.add(index)
+            indices.append(index)
+    if indices:
+        return sorted(indices)
+
+    if "Metadata/model_settings.config" not in namelist:
+        return []
+    try:
+        root = ET.fromstring(zf.read("Metadata/model_settings.config"))
+    except (ET.ParseError, UnicodeDecodeError, OSError, KeyError):
+        return []
+    for plate_elem in root.findall(".//plate"):
+        for meta in plate_elem.findall("metadata"):
+            if meta.get("key") not in ("plater_id", "plate_id"):
+                continue
+            value = meta.get("value")
+            if not value:
+                continue
+            try:
+                indices.append(int(value))
+            except ValueError:
+                continue
+            break
+    return sorted(set(indices))
+
+
 def extract_nozzle_mapping_from_3mf(zf: zipfile.ZipFile) -> dict[int, int] | None:
     """Extract per-slot nozzle/extruder mapping from a 3MF file.
 

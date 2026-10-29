@@ -416,20 +416,22 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   // extraction. plate_id is always sent: single-plate falls through to plate
   // 1 server-side; multi-plate uses the user's pick.
   const effectivePlateId = selectedPlate ?? 1;
-  // Generate a request_id per (source, plate) pair so the backend's
-  // preview-slice and the FilamentAnalysisSpinner's progress poll share
-  // the same id. useMemo keeps it stable across renders within the same
-  // pair; switching plates regenerates so a stale poll doesn't bleed
-  // progress between plates.
-  const previewRequestId = useMemo(() => {
-    const random =
+  // Pure UUID per (source, plate) — orca-slicer-api rejects anything that
+  // fails isUuid() on POST /slice. useMemo keeps it stable for the spinner
+  // poll; switching plates regenerates so stale progress doesn't bleed.
+  const previewRequestId = useMemo(
+    () =>
       typeof crypto !== 'undefined' && 'randomUUID' in crypto
         ? crypto.randomUUID()
-        : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    // Tag the id with the (source, plate) so logs/Network panel show which
-    // pair owns the poll. Also lets the lint rule see the deps in use.
-    return `${source.kind}-${source.id}-p${effectivePlateId}-${random}`;
-  }, [source.kind, source.id, effectivePlateId]);
+        : // RFC 4122-ish fallback when crypto.randomUUID is unavailable.
+          'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+            const r = (Math.random() * 16) | 0;
+            const v = c === 'x' ? r : (r & 0x3) | 0x8;
+            return v.toString(16);
+          }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- regenerate when plate/source changes
+    [source.kind, source.id, effectivePlateId],
+  );
   const filamentReqsQuery = useQuery({
     queryKey: ['sliceFilamentReqs', source.kind, source.id, effectivePlateId],
     queryFn: async () => {
@@ -989,6 +991,20 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
               />
               {t('slice.allPlatesToggle', { count: totalPlateCount })}
             </label>
+          )}
+          {!isReady && !isEnqueuing && (
+            <p className="mr-auto text-xs text-amber-400/90 max-w-[18rem]">
+              {!isBundleMode && !processPreset
+                ? t(
+                    'slice.needProcess',
+                    'Pick a process preset (Import one under Profiles, or start the Orca slicer-api sidecar for Standard profiles).',
+                  )
+                : !isBundleMode && filamentPresets.some((r) => r == null)
+                  ? t('slice.needFilament', 'Pick a filament for every used slot.')
+                  : !filamentReqsQuery.isSuccess
+                    ? t('slice.needPlateMeta', 'Waiting for plate / filament metadata…')
+                    : t('slice.needPresets', 'Select printer, process, and filament to slice.')}
+            </p>
           )}
           <button
             type="button"

@@ -232,3 +232,80 @@ async def test_resolve_preset_ref_dispatches_by_source():
         db, user, PresetRef(source="standard", id="Some Bundled Name"), slot="printer"
     )
     assert json.loads(out)["inherits"] == "Some Bundled Name"
+
+
+# --- orca_cloud tier -------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_orca_cloud_flattens_inherits_and_drops_chain():
+    """Snapmaker U1 Cloud machine presets inherit fdm_U1 → … → fdm_klipper.
+    Forwarding the delta as-is makes the CLI SIGSEGV; we must merge parents
+    and strip inherits before --load-settings."""
+    db = MagicMock()
+    user = MagicMock()
+    user.has_permission = MagicMock(return_value=True)
+
+    sparse = {
+        "name": "Snapmaker U1 0.4 nozzle",
+        "inherits": "fdm_U1",
+        "printer_model": "Snapmaker U1",
+    }
+    flattened = {
+        **sparse,
+        "printable_area": ["0x0", "250x250"],
+        "nozzle_diameter": ["0.4"],
+        "gcode_flavor": "klipper",
+    }
+
+    svc = MagicMock()
+    svc.get_profile = AsyncMock(return_value={"id": "oc-1", "content": sparse})
+    svc.close = AsyncMock()
+
+    with (
+        patch.object(preset_resolver, "_build_orca_service", AsyncMock(return_value=svc)),
+        patch(
+            "backend.app.services.orca_profiles.resolve_preset",
+            AsyncMock(return_value=flattened),
+        ) as resolve_mock,
+    ):
+        out = await preset_resolver._resolve_orca_cloud(
+            db, user, PresetRef(source="orca_cloud", id="oc-1"), slot="printer"
+        )
+
+    payload = json.loads(out)
+    assert payload["type"] == "machine"
+    assert payload["from"] == "system"
+    assert "inherits" not in payload
+    assert payload["printable_area"] == ["0x0", "250x250"]
+    assert payload["gcode_flavor"] == "klipper"
+    resolve_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_orca_cloud_keeps_inherits_when_flatten_finds_nothing():
+    """If GitHub can't supply the parent, leave inherits so a 2.4.0+ sidecar
+    can finish the walk from its bundled Snapmaker profiles."""
+    db = MagicMock()
+    user = MagicMock()
+    user.has_permission = MagicMock(return_value=True)
+
+    sparse = {"name": "Snapmaker U1 0.4 nozzle", "inherits": "fdm_U1"}
+    svc = MagicMock()
+    svc.get_profile = AsyncMock(return_value={"id": "oc-1", "content": sparse})
+    svc.close = AsyncMock()
+
+    with (
+        patch.object(preset_resolver, "_build_orca_service", AsyncMock(return_value=svc)),
+        patch(
+            "backend.app.services.orca_profiles.resolve_preset",
+            AsyncMock(return_value=dict(sparse)),  # same size → unresolved
+        ),
+    ):
+        out = await preset_resolver._resolve_orca_cloud(
+            db, user, PresetRef(source="orca_cloud", id="oc-1"), slot="printer"
+        )
+
+    payload = json.loads(out)
+    assert payload["inherits"] == "fdm_U1"
+    assert payload["type"] == "machine"

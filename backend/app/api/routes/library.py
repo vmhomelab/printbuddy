@@ -68,6 +68,7 @@ from backend.app.schemas.slicer import SliceRequest, SliceResponse
 from backend.app.services.archive import ThreeMFParser
 from backend.app.services.stl_thumbnail import generate_stl_thumbnail
 from backend.app.utils.threemf_tools import (
+    discover_plate_indices,
     extract_embedded_presets_from_3mf,
     extract_nozzle_mapping_from_3mf,
     extract_project_filaments_from_3mf,
@@ -2365,49 +2366,18 @@ async def get_library_file_plates(
             namelist = zf.namelist()
             embedded_presets = extract_embedded_presets_from_3mf(zf)
 
-            # Find all plate gcode files to determine available plates
-            gcode_files = [n for n in namelist if n.startswith("Metadata/plate_") and n.endswith(".gcode")]
-
-            # If no gcode is present (source-only or unsliced), fall back to plate JSON/PNG
-            plate_indices: list[int] = []
-            if gcode_files:
-                # Extract plate indices from gcode filenames
-                for gf in gcode_files:
-                    try:
-                        plate_str = gf[15:-6]  # Remove "Metadata/plate_" and ".gcode"
-                        plate_indices.append(int(plate_str))
-                    except ValueError:
-                        pass  # Skip gcode file with non-numeric plate index
-            else:
-                plate_json_files = [n for n in namelist if n.startswith("Metadata/plate_") and n.endswith(".json")]
-                plate_png_files = [
-                    n
-                    for n in namelist
-                    if n.startswith("Metadata/plate_")
-                    and n.endswith(".png")
-                    and "_small" not in n
-                    and "no_light" not in n
-                ]
-                plate_name_candidates = plate_json_files + plate_png_files
-                plate_re = re.compile(r"^Metadata/plate_(\d+)\.(json|png)$")
-                seen_indices: set[int] = set()
-                for name in plate_name_candidates:
-                    match = plate_re.match(name)
-                    if match:
-                        try:
-                            index = int(match.group(1))
-                        except ValueError:
-                            continue
-                        if index in seen_indices:
-                            continue
-                        seen_indices.add(index)
-                        plate_indices.append(index)
+            plate_indices = discover_plate_indices(zf)
 
             if not plate_indices:
                 # No plate metadata found
-                return {"file_id": file_id, "filename": lib_file.filename, "plates": [], "is_multi_plate": False}
-
-            plate_indices.sort()
+                return {
+                    "file_id": file_id,
+                    "filename": lib_file.filename,
+                    "plates": [],
+                    "is_multi_plate": False,
+                    "embedded_printer": embedded_presets["printer"],
+                    "embedded_process": embedded_presets["process"],
+                }
 
             # Parse model_settings.config for plate names + object assignments
             plate_names = {}
@@ -2673,6 +2643,10 @@ async def _try_preview_slice_filaments(
         file_bytes = file_path.read_bytes()
     except OSError:
         return None
+    # Same project_settings patches as the real slice path — converted
+    # MakerWorld 3MFs otherwise fail preview with process/printer mismatch.
+    if file_path.suffix.lower() == ".3mf":
+        file_bytes = _sanitize_project_settings_sentinels(file_bytes)
     return await get_preview_filaments(
         kind=kind,
         source_id=source_id,
@@ -2968,23 +2942,19 @@ _PROJECT_SETTINGS_SENTINEL_KEYS = frozenset(
 
 
 def _sanitize_project_settings_sentinels(zip_bytes: bytes) -> bytes:
-    """Strip ``"-1"`` inherit-from-parent sentinels from the 3MF's
-    ``Metadata/project_settings.config`` so the slicer CLI's range validator
-    accepts the file (#1201).
+    """Patch ``Metadata/project_settings.config`` before the slicer CLI sees it.
 
-    Removes only allowlisted keys (see ``_PROJECT_SETTINGS_SENTINEL_KEYS``)
-    when their value is exactly ``"-1"``. The rest of the config — and every
-    other entry in the zip — is preserved byte-for-byte. Unlike the earlier
-    full-strip experiment (see ``_strip_3mf_embedded_settings`` and the
-    cautionary comment in ``_run_slicer_with_fallback``) this leaves
-    ``StaticPrintConfig`` initialisation intact: the file is still present,
-    still parses, and the slicer falls back to the supplied
-    ``--load-settings`` value for the removed key.
+    Two fixes in one re-zip pass:
 
-    Returns the original bytes unchanged when no sanitisation is needed
-    (input isn't a valid zip, no ``project_settings.config``, no allowlisted
-    sentinels present, or any other parse failure) so the caller can pass
-    the result on without further checks.
+    1. Strip allowlisted ``"-1"`` inherit-from-parent sentinels (#1201) so
+       ``StaticPrintConfig``'s range validator accepts the file.
+    2. Ensure ``print_compatible_printers`` lists ``printer_settings_id``.
+       Snapmaker-converted MakerWorld 3MFs often keep a Bambu process compat
+       list (e.g. ``["Bambu Lab H2C 0.4 nozzle"]``) after the printer was
+       switched to U1 — Orca 2.5 then rejects with *"The selected printer is
+       not compatible with the process preset in the 3mf."*
+
+    Returns the original bytes unchanged when nothing needs changing.
     """
     from io import BytesIO
 
@@ -2998,16 +2968,47 @@ def _sanitize_project_settings_sentinels(zip_bytes: bytes) -> bytes:
                 return zip_bytes
             if not isinstance(config, dict):
                 return zip_bytes
+
+            changed = False
             removed = [key for key in _PROJECT_SETTINGS_SENTINEL_KEYS if config.get(key) == "-1"]
-            if not removed:
+            if removed:
+                for key in removed:
+                    config.pop(key, None)
+                changed = True
+                logger.info(
+                    "3MF sanitiser: removed sentinel '-1' for keys %s — slicer will use --load-settings defaults",
+                    sorted(removed),
+                )
+
+            printer_id = config.get("printer_settings_id")
+            if isinstance(printer_id, list):
+                printer_id = next(
+                    (item for item in printer_id if isinstance(item, str) and item.strip()),
+                    None,
+                )
+            if isinstance(printer_id, str) and printer_id.strip():
+                printer_id = printer_id.strip()
+                raw_compat = config.get("print_compatible_printers")
+                if isinstance(raw_compat, str) and raw_compat.strip():
+                    compat_list = [raw_compat.strip()]
+                elif isinstance(raw_compat, list):
+                    compat_list = [item.strip() for item in raw_compat if isinstance(item, str) and item.strip()]
+                else:
+                    compat_list = []
+                if printer_id not in compat_list:
+                    config["print_compatible_printers"] = compat_list + [printer_id]
+                    changed = True
+                    logger.info(
+                        "3MF sanitiser: added %r to print_compatible_printers "
+                        "(was %s) so embedded process matches printer_settings_id",
+                        printer_id,
+                        compat_list or "[]",
+                    )
+
+            if not changed:
                 return zip_bytes
-            for key in removed:
-                config.pop(key, None)
+
             patched = json.dumps(config)
-            logger.info(
-                "3MF sanitiser: removed sentinel '-1' for keys %s — slicer will use --load-settings defaults",
-                sorted(removed),
-            )
             dst = BytesIO()
             with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as zout:
                 for item in zin.infolist():
@@ -3041,6 +3042,85 @@ def _patch_process_bed_type(process_json: str, bed_type: str) -> str:
         return process_json
     profile["curr_bed_type"] = bed_type
     return json.dumps(profile)
+
+
+def _ensure_preset_compatible_with_printer(
+    preset_json: str,
+    printer_json: str,
+    *,
+    kind: str = "preset",
+) -> str:
+    """Ensure a process/filament preset's ``compatible_printers`` lists the
+    selected printer so both the sidecar preflight and the Orca/BambuStudio
+    CLI accept the pair.
+
+    The orca-slicer-api sidecar's ``validateProfileCompatibility`` rejects
+    with HTTP 400 when a filament (or process) declares a non-empty
+    ``compatible_printers`` list that does not include the printer's
+    ``name`` — e.g. standard ``Bambu PLA Basic`` vs an Orca Cloud
+    ``Snapmaker U1 (0.4 nozzle) - Copy``. Independently, OrcaSlicer's CLI
+    runs ``is_compatible_with_printer`` on process presets and exits
+    ``CLI_PROCESS_NOT_COMPATIBLE`` (-17) on a miss.
+
+    Cross-vendor re-slices (Bambu-authored 3MF → Snapmaker U1) intentionally
+    pick mismatched stock profiles in SliceModal; the desktop GUI's
+    "Switch Printer" path adds the new machine to each preset's compat
+    list. Mirror that here.
+
+    No-op when either payload isn't a JSON object, or when every candidate
+    name is already present. ``kind`` is only used in the log line.
+    """
+    try:
+        preset = json.loads(preset_json)
+        printer = json.loads(printer_json)
+    except json.JSONDecodeError:
+        return preset_json
+    if not isinstance(preset, dict) or not isinstance(printer, dict):
+        return preset_json
+
+    candidates: list[str] = []
+    for key in ("name", "inherits", "printer_settings_id"):
+        value = printer.get(key)
+        if isinstance(value, str) and value.strip():
+            candidates.append(value.strip())
+        elif isinstance(value, list):
+            for item in value:
+                if isinstance(item, str) and item.strip():
+                    candidates.append(item.strip())
+    # Deduplicate while preserving order.
+    unique_candidates: list[str] = []
+    seen: set[str] = set()
+    for name in candidates:
+        if name not in seen:
+            seen.add(name)
+            unique_candidates.append(name)
+    if not unique_candidates:
+        return preset_json
+
+    existing = preset.get("compatible_printers")
+    if isinstance(existing, str) and existing.strip():
+        compat_list = [existing.strip()]
+    elif isinstance(existing, list):
+        compat_list = [item.strip() for item in existing if isinstance(item, str) and item.strip()]
+    else:
+        compat_list = []
+
+    missing = [name for name in unique_candidates if name not in compat_list]
+    if not missing:
+        return preset_json
+
+    preset["compatible_printers"] = compat_list + missing
+    logger.info(
+        "%s compat: added %s to compatible_printers so slicer accepts the selected printer",
+        kind.capitalize(),
+        missing,
+    )
+    return json.dumps(preset)
+
+
+def _ensure_process_compatible_with_printer(process_json: str, printer_json: str) -> str:
+    """Process-slot wrapper around ``_ensure_preset_compatible_with_printer``."""
+    return _ensure_preset_compatible_with_printer(process_json, printer_json, kind="process")
 
 
 # The sidecar prefixes the slicer CLI's own error_string with this when the
@@ -3148,6 +3228,17 @@ async def _run_slicer_with_fallback(
         if request.bed_type:
             presets["process"] = _patch_process_bed_type(presets["process"], request.bed_type)
 
+        # Sidecar 400 + Orca CLI -17: ensure process/filament presets list
+        # the selected printer in compatible_printers (mirrors the GUI
+        # Switch-Printer path). Critical for cross-vendor re-slices where
+        # SliceModal sends Bambu stock filaments (e.g. "Bambu PLA Basic")
+        # against an Orca Cloud Snapmaker printer whose name is not on
+        # those presets' original compat lists.
+        presets["process"] = _ensure_process_compatible_with_printer(presets["process"], presets["printer"])
+        filament_jsons = [
+            _ensure_preset_compatible_with_printer(fj, presets["printer"], kind="filament") for fj in filament_jsons
+        ]
+
     # Slicer routing — pick the sidecar URL by preferred_slicer.
     # The per-install URL setting (Settings UI → Slicer card) wins; an
     # empty value falls back to the SLICER_API_URL / BAMBU_STUDIO_API_URL
@@ -3209,24 +3300,40 @@ async def _run_slicer_with_fallback(
     # user's deliberate layout. The bed-type and arrange flags are
     # orthogonal so this decision doesn't interact with the #1337 build-
     # plate override.
+    #
+    # Also enable for cross-vendor re-slices (e.g. Bambu P1S → Snapmaker
+    # U1): different beds / kinematics need the same rearrange pass, but
+    # same-vendor model swaps (X1C → P1S) still keep the user's layout.
     cross_class_arrange = False
     if is_3mf:
         from backend.app.services.slicer_3mf_convert import (
             extract_source_printer_model,
         )
-        from backend.app.utils.printer_models import is_dual_nozzle_model
+        from backend.app.utils.printer_models import (
+            PRINTER_MODEL_MAP,
+            is_dual_nozzle_model,
+        )
 
         source_model = extract_source_printer_model(primary_bytes)
         target_model = await _resolve_target_printer_model(db, user, request)
-        if source_model and target_model and is_dual_nozzle_model(source_model) != is_dual_nozzle_model(target_model):
-            logger.info(
-                "Cross-nozzle-class re-slice (%s -> %s, %s): enabling --arrange so BS reconciles "
-                "the embedded project layout against the target printer",
-                source_model,
-                target_model,
-                "bundle" if use_bundle else "presets",
+        bambu_only_models = frozenset(
+            short for long, short in PRINTER_MODEL_MAP.items() if long.startswith("Bambu Lab")
+        )
+        if source_model and target_model:
+            nozzle_class_cross = is_dual_nozzle_model(source_model) != is_dual_nozzle_model(target_model)
+            vendor_cross = source_model != target_model and (
+                source_model not in bambu_only_models or target_model not in bambu_only_models
             )
-            cross_class_arrange = True
+            if nozzle_class_cross or vendor_cross:
+                logger.info(
+                    "Cross-%s re-slice (%s -> %s, %s): enabling --arrange so the slicer reconciles "
+                    "the embedded project layout against the target printer",
+                    "nozzle-class" if nozzle_class_cross else "vendor",
+                    source_model,
+                    target_model,
+                    "bundle" if use_bundle else "presets",
+                )
+                cross_class_arrange = True
     # When this slice is dispatcher-tracked, generate a request_id so
     # the sidecar publishes progress under it, and wire a callback that
     # forwards each frame onto SliceDispatchService.set_progress for the
@@ -3250,20 +3357,31 @@ async def _run_slicer_with_fallback(
     # (e.g. ABS in slot 2 next to a PLA in the used slot 1) makes
     # BambuStudio reject the slice with "the temperature difference of
     # the filaments used is too large" (exit 194) even though the G-code
-    # never touches the unused slot. Replace unused-slot entries with the
-    # slot-1 selection before the real slice so the loaded-filament set
-    # is materially homogeneous.
+    # never touches the unused slot. For a single plate, compact via
+    # filaments_for_plate_load (mono-slot → one --load-filaments entry).
+    # Slice-all (plate=0) is handled per-plate in the cross-class loop
+    # below, or left as the full project list for same-class --slice 0.
     bundle_filament_names: list[str] | None = None
-    if is_3mf and request.plate is not None:
-        from backend.app.services.slicer_3mf_convert import substitute_unused_plate_filaments
+    full_bundle_filament_names: list[str] | None = None
+    full_filament_jsons = list(filament_jsons)
+    if use_bundle and request.bundle is not None:
+        full_bundle_filament_names = list(request.bundle.filament_names)
+    if is_3mf and request.plate is not None and request.plate > 0:
+        from backend.app.services.slicer_3mf_convert import (
+            filaments_for_plate_load,
+            plate_sole_used_slot,
+            remap_plate_extruders_to_one,
+        )
 
         if use_bundle:
             assert request.bundle is not None
-            bundle_filament_names = substitute_unused_plate_filaments(
-                primary_bytes, request.plate, list(request.bundle.filament_names)
-            )
+            assert full_bundle_filament_names is not None
+            bundle_filament_names = filaments_for_plate_load(primary_bytes, request.plate, full_bundle_filament_names)
         else:
-            filament_jsons = substitute_unused_plate_filaments(primary_bytes, request.plate, filament_jsons)
+            filament_jsons = filaments_for_plate_load(primary_bytes, request.plate, full_filament_jsons)
+        sole = plate_sole_used_slot(primary_bytes, request.plate)
+        if sole is not None and sole > 1:
+            primary_bytes = remap_plate_extruders_to_one(primary_bytes, request.plate, sole)
 
     # Cross-class slice-all loop (#1493): when the user asks for
     # ``plate=0`` (all plates) AND the source's nozzle class differs from
@@ -3276,6 +3394,14 @@ async def _run_slicer_with_fallback(
     # Same-class slice-all goes through the regular path below — the
     # sidecar's native ``--slice 0`` produces the right shape directly.
     use_cross_class_slice_all = cross_class_arrange and request.plate == 0 and request.export_3mf
+
+    # Orca #12426 (painted 3MF + 2+ --load-filaments → SIGSEGV) is fixed in
+    # 2.5.0-beta — keep face-paint so multi-colour G-code is produced.
+    # Reactive strip/STL fallback below still runs if an older sidecar
+    # SIGSEGVs on a cross-class re-slice. Reapply restores paint onto the
+    # result 3MF metadata only; G-code from a stripped retry stays mono.
+    paint_stripped = False
+    saved_paint: dict[str, list[str | None]] | None = None
 
     try:
         try:
@@ -3303,15 +3429,11 @@ async def _run_slicer_with_fallback(
 
                 per_plate_results: list[tuple[int, SliceResult]] = []
 
-                # Forward the same progress request_id + callback to each
-                # per-plate sub-call so the toast keeps showing the
-                # sidecar's stage messages ("Generating G-code 45%…").
-                # The sub-calls run sequentially, so the poller for plate
-                # N is cancelled before plate N+1's poller starts — no
-                # cross-talk between plate streams. Wrap the callback to
-                # surface "(plate N/M)" alongside the slicer's stage
-                # message so the user sees progress through the whole
-                # multi-plate loop, not just one plate at a time.
+                # Fresh requestId per plate — the sidecar rejects reuse with
+                # 409 "A slice request with this requestId is already active"
+                # even after the prior plate finishes. Progress still funnels
+                # through the shared job callback with multi_plate_index so
+                # the toast shows "(plate N/M)" across the loop.
                 def _wrap_progress_for_plate(plate_num: int, total: int):
                     if progress_callback is None:
                         return None
@@ -3324,39 +3446,51 @@ async def _run_slicer_with_fallback(
 
                     return _cb
 
+                from backend.app.services.slicer_3mf_convert import (
+                    filaments_for_plate_load,
+                    plate_sole_used_slot,
+                    remap_plate_extruders_to_one,
+                )
+
                 for plate_num in range(1, plate_count + 1):
                     plate_cb = _wrap_progress_for_plate(plate_num, plate_count)
+                    plate_request_id = str(uuid.uuid4()) if progress_request_id is not None else None
+                    # Per-plate filament list: mono-colour plates compact to
+                    # one --load-filaments entry so paint can stay (#12426).
+                    plate_model_bytes = primary_bytes
+                    sole = plate_sole_used_slot(primary_bytes, plate_num)
+                    if sole is not None and sole > 1:
+                        plate_model_bytes = remap_plate_extruders_to_one(primary_bytes, plate_num, sole)
                     if use_bundle:
                         assert request.bundle is not None
+                        assert full_bundle_filament_names is not None
+                        plate_filaments = filaments_for_plate_load(primary_bytes, plate_num, full_bundle_filament_names)
                         per_plate = await service.slice_with_bundle(
-                            model_bytes=primary_bytes,
+                            model_bytes=plate_model_bytes,
                             model_filename=model_filename,
                             bundle_id=request.bundle.bundle_id,
                             printer_name=request.bundle.printer_name,
                             process_name=request.bundle.process_name,
-                            filament_names=(
-                                bundle_filament_names
-                                if bundle_filament_names is not None
-                                else request.bundle.filament_names
-                            ),
+                            filament_names=plate_filaments,
                             plate=plate_num,
                             export_3mf=True,
                             arrange=True,
                             bed_type=request.bed_type,
-                            request_id=progress_request_id,
+                            request_id=plate_request_id,
                             on_progress=plate_cb,
                         )
                     else:
+                        plate_filaments = filaments_for_plate_load(primary_bytes, plate_num, full_filament_jsons)
                         per_plate = await service.slice_with_profiles(
-                            model_bytes=primary_bytes,
+                            model_bytes=plate_model_bytes,
                             model_filename=model_filename,
                             printer_profile_json=presets["printer"],
                             process_profile_json=presets["process"],
-                            filament_profile_jsons=filament_jsons,
+                            filament_profile_jsons=plate_filaments,
                             plate=plate_num,
                             export_3mf=True,
                             arrange=True,
-                            request_id=progress_request_id,
+                            request_id=plate_request_id,
                             on_progress=plate_cb,
                         )
                     per_plate_results.append((plate_num, per_plate))
@@ -3425,31 +3559,111 @@ async def _run_slicer_with_fallback(
                 raise HTTPException(status_code=400, detail=rejection) from exc
             if not is_3mf:
                 raise
-            logger.warning(
-                "Slicer CLI failed on the --load-settings path for %s (%s); retrying with embedded settings",
-                model_filename,
-                exc,
-            )
-            # Forward the same request_id + callback so the toast's live
-            # progress keeps updating across the fallback retry instead
-            # of going blank for the rest of the slice. Use the sanitised
-            # bytes — the embedded-settings path also reads the same
-            # project_settings.config and the same range validator runs
-            # there too, so without sanitisation the fallback would die
-            # on the same sentinel error (#1201). Same fallback applies
-            # to the bundle path: if the resolved triplet crashes the CLI,
-            # embedded settings give the user *something* rather than a
-            # hard failure (the SliceModal flags the difference via
-            # used_embedded_settings).
-            result = await service.slice_without_profiles(
-                model_bytes=primary_bytes,
-                model_filename=model_filename,
-                plate=request.plate,
-                export_3mf=request.export_3mf,
-                request_id=progress_request_id,
-                on_progress=progress_callback,
-            )
-            used_embedded_settings = True
+            # Cross-vendor / cross-nozzle-class re-slices (Bambu → Snapmaker,
+            # single ↔ dual, …) must not fall back to embedded settings —
+            # that path re-slices for the *source* printer and would hand
+            # back P1S/X1C gcode after a Snapmaker SIGSEGV. First retry as
+            # paint-stripped 3MF / STL geometry (#12426); only then surface
+            # a pointed error (Orca 2.5.0-beta+ for U1, desktop GUI as escape hatch).
+            if cross_class_arrange:
+                detail = str(exc)
+                is_crash = "SIGSEGV" in detail.upper() or "segfault" in detail.lower()
+                crash_hint = (
+                    "OrcaSlicer CLI crashed (SIGSEGV) while re-slicing this 3MF for a "
+                    "different printer. Use OrcaSlicer 2.5.0-beta+ in the slicer-api "
+                    "sidecar (slicer-api/.env ORCA_VERSION), or open the file in desktop "
+                    "Orca → Switch Printer → slice (upstream #12426)."
+                )
+                recovered = False
+                if is_crash and is_3mf and not use_bundle and not use_cross_class_slice_all:
+                    from backend.app.services.slicer_3mf_convert import (
+                        extract_3mf_meshes_as_stl,
+                        extract_3mf_paint_colors,
+                        strip_3mf_paint_color,
+                    )
+
+                    retry_bytes = primary_bytes
+                    retry_name = model_filename
+                    retry_plate = request.plate
+                    if not paint_stripped:
+                        if saved_paint is None:
+                            saved_paint = extract_3mf_paint_colors(primary_bytes)
+                        stripped = strip_3mf_paint_color(primary_bytes)
+                        if stripped is not primary_bytes:
+                            retry_bytes = stripped
+                            paint_stripped = True
+                            logger.warning(
+                                "SIGSEGV on cross-printer slice of %s; retrying with paint_color stripped",
+                                model_filename,
+                            )
+                    if retry_bytes is primary_bytes:
+                        stl = extract_3mf_meshes_as_stl(primary_bytes)
+                        if stl is not None:
+                            retry_bytes = stl
+                            stem = model_filename.rsplit(".", 1)[0] or "model"
+                            retry_name = f"{stem}.stl"
+                            retry_plate = None  # STL has no plates
+                            logger.warning(
+                                "SIGSEGV on cross-printer slice of %s; retrying as STL geometry export",
+                                model_filename,
+                            )
+                    if retry_bytes is not primary_bytes or retry_name != model_filename:
+                        try:
+                            result = await service.slice_with_profiles(
+                                model_bytes=retry_bytes,
+                                model_filename=retry_name,
+                                printer_profile_json=presets["printer"],
+                                process_profile_json=presets["process"],
+                                filament_profile_jsons=filament_jsons[:1] or filament_jsons,
+                                plate=retry_plate,
+                                export_3mf=request.export_3mf,
+                                arrange=True,
+                                request_id=progress_request_id,
+                                on_progress=progress_callback,
+                            )
+                            recovered = True
+                        except SlicerApiServerError as retry_exc:
+                            detail = str(retry_exc)
+                            if "SIGSEGV" in detail.upper() or "segfault" in detail.lower():
+                                detail = (
+                                    "OrcaSlicer CLI crashed (SIGSEGV) re-slicing this 3MF for a "
+                                    "different printer, even after paint-strip/STL fallback. "
+                                    "Use OrcaSlicer 2.5.0-beta+ in the slicer-api sidecar "
+                                    "(slicer-api/.env ORCA_VERSION), or open the file in desktop "
+                                    "Orca → Switch Printer → Snapmaker U1 → slice (upstream #12426)."
+                                )
+                            raise HTTPException(status_code=502, detail=detail) from retry_exc
+                if not recovered:
+                    raise HTTPException(
+                        status_code=502,
+                        detail=crash_hint if is_crash else detail,
+                    ) from exc
+            else:
+                # Forward the same request_id + callback so the toast's live
+                # progress keeps updating across the fallback retry instead
+                # of going blank for the rest of the slice. Use the sanitised
+                # bytes — the embedded-settings path also reads the same
+                # project_settings.config and the same range validator runs
+                # there too, so without sanitisation the fallback would die
+                # on the same sentinel error (#1201). Same fallback applies
+                # to the bundle path: if the resolved triplet crashes the CLI,
+                # embedded settings give the user *something* rather than a
+                # hard failure (the SliceModal flags the difference via
+                # used_embedded_settings).
+                logger.warning(
+                    "Slicer CLI failed on the --load-settings path for %s (%s); retrying with embedded settings",
+                    model_filename,
+                    exc,
+                )
+                result = await service.slice_without_profiles(
+                    model_bytes=primary_bytes,
+                    model_filename=model_filename,
+                    plate=request.plate,
+                    export_3mf=request.export_3mf,
+                    request_id=progress_request_id,
+                    on_progress=progress_callback,
+                )
+                used_embedded_settings = True
     except SlicerInputError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except SlicerApiServerError as exc:
@@ -3458,6 +3672,22 @@ async def _run_slicer_with_fallback(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     finally:
         await service.close()
+
+    # Best-effort: put face-paint back onto the result 3MF when the slicer
+    # preserved same-topology .model meshes. No-op for STL fallback / G-code
+    # plates that dropped the source mesh — see reapply_3mf_paint_colors.
+    if paint_stripped and saved_paint and request.export_3mf and result is not None and result.content[:2] == b"PK":
+        from backend.app.services.slicer_3mf_convert import reapply_3mf_paint_colors
+        from backend.app.services.slicer_api import SliceResult
+
+        restored = reapply_3mf_paint_colors(result.content, saved_paint)
+        if restored is not result.content:
+            result = SliceResult(
+                content=restored,
+                print_time_seconds=result.print_time_seconds,
+                filament_used_g=result.filament_used_g,
+                filament_used_mm=result.filament_used_mm,
+            )
 
     return result, used_embedded_settings
 
