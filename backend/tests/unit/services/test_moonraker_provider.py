@@ -379,13 +379,15 @@ def test_moonraker_snapmaker_u1_fills_remain_from_spoolman_spool_ids(monkeypatch
     monkeypatch.setattr(
         client,
         "_jsonrpc",
-        lambda method, params=None: [
-            {"id": 25, "remaining_weight": 398.2, "filament": {"weight": 1000.0, "name": "Charcoal"}},
-            {"id": 105, "remaining_weight": 851.8, "filament": {"weight": 1000.0, "name": "Indigo Purple"}},
-            {"id": 15, "remaining_weight": 74.1, "filament": {"weight": 1000.0, "name": "Cobalt Blue"}},
-        ]
-        if method == "server.spoolman.proxy"
-        else None,
+        lambda method, params=None: (
+            [
+                {"id": 25, "remaining_weight": 398.2, "filament": {"weight": 1000.0, "name": "Charcoal"}},
+                {"id": 105, "remaining_weight": 851.8, "filament": {"weight": 1000.0, "name": "Indigo Purple"}},
+                {"id": 15, "remaining_weight": 74.1, "filament": {"weight": 1000.0, "name": "Cobalt Blue"}},
+            ]
+            if method == "server.spoolman.proxy"
+            else None
+        ),
     )
 
     assert client.request_status_update() is True
