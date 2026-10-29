@@ -905,6 +905,14 @@ def printer_state_to_dict(state: PrinterState, printer_id: int | None = None, mo
                 if state_val is None and len(tray) == 1 and "id" in tray:
                     state_val = 9
 
+                filament_spool_id = tray.get("filament_spool_id")
+                try:
+                    filament_spool_id = int(filament_spool_id) if filament_spool_id is not None else None
+                except (TypeError, ValueError):
+                    filament_spool_id = None
+                if filament_spool_id is not None and filament_spool_id <= 0:
+                    filament_spool_id = None
+
                 trays.append(
                     {
                         "id": int(tray.get("id", 0)),
@@ -923,6 +931,22 @@ def printer_state_to_dict(state: PrinterState, printer_id: int | None = None, mo
                         "drying_temp": tray.get("drying_temp"),
                         "drying_time": tray.get("drying_time"),
                         "state": state_val,
+                        # Snapmaker U1 / SpoolLink — must survive WebSocket AMS
+                        # broadcasts or the UI loses assigned-spool identity after
+                        # the first live update (HTTP /status already included these).
+                        "active": tray.get("active"),
+                        "loaded_to_feeder": tray.get("loaded_to_feeder"),
+                        "loaded_to_extruder": tray.get("loaded_to_extruder"),
+                        "filament_detected": tray.get("filament_detected"),
+                        "channel_state": tray.get("channel_state"),
+                        "channel_action_state": tray.get("channel_action_state"),
+                        "channel_error": tray.get("channel_error"),
+                        "filament_source": tray.get("filament_source"),
+                        "filament_spool_id": filament_spool_id,
+                        "remaining_weight": tray.get("remaining_weight"),
+                        "filament_spool_brand": tray.get("filament_spool_brand"),
+                        "filament_spool_material": tray.get("filament_spool_material"),
+                        "filament_spool_color_name": tray.get("filament_spool_color_name"),
                     }
                 )
             # Prefer humidity_raw (actual percentage) over humidity (index 1-5)
@@ -948,6 +972,7 @@ def printer_state_to_dict(state: PrinterState, printer_id: int | None = None, mo
             ams_units.append(
                 {
                     "id": int(ams_data.get("id", 0)),
+                    "name": ams_data.get("name"),
                     "humidity": humidity_value,
                     "temp": ams_data.get("temp"),
                     "is_ams_ht": is_ams_ht,
@@ -963,7 +988,7 @@ def printer_state_to_dict(state: PrinterState, printer_id: int | None = None, mo
                     "dry_sub_status": int(ams_data.get("dry_sub_status") or 0),
                     # Cannot-dry reasons from firmware (e.g. 1=InsufficientPower, 8=NeedPluginPower)
                     "dry_sf_reason": list(ams_data.get("dry_sf_reason") or []),
-                    # Module type: "ams", "n3f", "n3s" (from get_version)
+                    # Module type: "ams", "n3f", "n3s", "snapmaker_u1" (from get_version / Moonraker)
                     "module_type": str(ams_data.get("module_type") or ""),
                 }
             )

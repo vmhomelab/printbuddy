@@ -334,6 +334,13 @@ export interface AMSTray {
   channel_action_state?: string | null;
   channel_error?: string | null;
   filament_source?: string | null;
+  /** Snapmaker U1 SpoolLink / Moonraker Spoolman spool id when the slot is bound. */
+  filament_spool_id?: number | null;
+  remaining_weight?: number | null;
+  /** Identity fields from Moonraker Spoolman proxy (independent of Printbuddy Spoolman sync). */
+  filament_spool_brand?: string | null;
+  filament_spool_material?: string | null;
+  filament_spool_color_name?: string | null;
 }
 
 export interface AMSUnit {

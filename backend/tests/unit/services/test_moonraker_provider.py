@@ -291,6 +291,97 @@ def test_moonraker_normalizes_snapmaker_u1_nozzles_chamber_and_feed_slots(monkey
     assert ams[0]["tray"][3]["tray_color"] is None
     assert snapmaker["loaded_to_extruder_slots"] == ["U1-E2"]
     assert snapmaker["loaded_to_feeder_slots"] == ["U1-E0", "U1-E1", "U1-E2"]
+    # Slots without RFID remain stay unknown (-1) rather than false 0%.
+    assert ams[0]["tray"][1]["remain"] == -1
+
+
+def test_moonraker_snapmaker_u1_fills_remain_from_spoolman_spool_ids(monkeypatch):
+    """SpoolLink exposes filament_spool_id without remain %; resolve via Moonraker proxy."""
+    client = MoonrakerPrinterClient("http://snapmaker-u1.local:7125", printer_model="Snapmaker U1")
+    status = _moonraker_status_with_snapmaker_u1()
+    # Real U1 SpoolLink payloads have spool IDs but no remain on filament_feed.
+    status["filament_feed left"]["extruder0"].pop("filament_info", None)
+    status["filament_feed right"]["extruder2"].pop("remain", None)
+    status["print_task_config"]["filament_spool_id"] = [25, 105, 15, 0]
+    base_status = {
+        key: status[key] for key in ("print_stats", "virtual_sdcard", "display_status", "heater_bed", "toolhead")
+    }
+    u1_status = {
+        key: value
+        for key, value in status.items()
+        if key
+        in {
+            "temperature_sensor cavity",
+            "extruder",
+            "extruder1",
+            "extruder2",
+            "extruder3",
+            "filament_feed left",
+            "filament_feed right",
+            "print_task_config",
+        }
+    }
+    monkeypatch.setattr(client, "_query_objects", lambda object_names: base_status)
+    monkeypatch.setattr(client, "_query_cfs_status", lambda *args, **kwargs: {})
+    monkeypatch.setattr(client, "_query_snapmaker_u1_status", lambda *args, **kwargs: u1_status)
+    monkeypatch.setattr(client, "_query_fan_status", lambda *args, **kwargs: {})
+    monkeypatch.setattr(
+        client,
+        "_jsonrpc",
+        lambda method, params=None: (
+            [
+                {
+                    "id": 25,
+                    "remaining_weight": 398.2,
+                    "filament": {
+                        "weight": 1000.0,
+                        "name": "Charcoal",
+                        "material": "PLA",
+                        "vendor": {"name": "Bambu Lab"},
+                    },
+                },
+                {
+                    "id": 105,
+                    "remaining_weight": 851.8,
+                    "filament": {
+                        "weight": 1000.0,
+                        "name": "Indigo Purple",
+                        "material": "PLA",
+                        "vendor": {"name": "Bambu Lab"},
+                    },
+                },
+                {
+                    "id": 15,
+                    "remaining_weight": 74.1,
+                    "filament": {
+                        "weight": 1000.0,
+                        "name": "Cobalt Blue",
+                        "material": "PLA",
+                        "vendor": {"name": "Bambu Lab"},
+                    },
+                },
+            ]
+            if method == "server.spoolman.proxy"
+            else None
+        ),
+    )
+
+    assert client.request_status_update() is True
+
+    trays = client.state.raw_data["ams"][0]["tray"]
+    assert trays[0]["filament_spool_id"] == 25
+    assert trays[0]["remain"] == 40
+    assert trays[0]["remaining_weight"] == 398.2
+    assert trays[0]["filament_spool_brand"] == "Bambu Lab"
+    assert trays[0]["filament_spool_material"] == "PLA"
+    assert trays[0]["filament_spool_color_name"] == "Charcoal"
+    assert trays[1]["filament_spool_id"] == 105
+    assert trays[1]["remain"] == 85
+    assert trays[2]["filament_spool_id"] == 15
+    assert trays[2]["remain"] == 7
+    assert trays[2]["filament_spool_color_name"] == "Cobalt Blue"
+    assert trays[3].get("filament_spool_id") in (None, 0)
+    assert trays[3]["remain"] == -1
 
 
 def test_moonraker_snapmaker_u1_clears_active_extruder_when_toolhead_reports_none(monkeypatch):

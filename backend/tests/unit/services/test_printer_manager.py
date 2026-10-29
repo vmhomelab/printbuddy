@@ -849,6 +849,51 @@ class TestPrinterStateToDict:
         assert len(result["ams"][0]["tray"]) == 1
         assert result["ams"][0]["tray"][0]["tray_color"] == "FF0000"
 
+    def test_snapmaker_spoolink_fields_survive_websocket_dict(self, mock_state):
+        """WebSocket broadcasts must keep SpoolLink identity (not only HTTP /status)."""
+        mock_state.raw_data = {
+            "ams": [
+                {
+                    "id": 0,
+                    "name": "Snapmaker U1 Feeders",
+                    "module_type": "snapmaker_u1",
+                    "tray": [
+                        {
+                            "id": 0,
+                            "tray_color": "#FF9016",
+                            "tray_type": "PLA",
+                            "remain": 99,
+                            "tray_uuid": "snapmaker-u1-e0",
+                            "active": True,
+                            "loaded_to_feeder": True,
+                            "loaded_to_extruder": True,
+                            "filament_detected": True,
+                            "channel_state": "load_finish",
+                            "filament_source": "rfid",
+                            "filament_spool_id": 114,
+                            "remaining_weight": 996.6,
+                            "filament_spool_brand": "Bambu Lab",
+                            "filament_spool_material": "PLA",
+                            "filament_spool_color_name": "Pumpkin Orange",
+                        }
+                    ],
+                }
+            ]
+        }
+
+        result = printer_state_to_dict(mock_state)
+        tray = result["ams"][0]["tray"][0]
+
+        assert result["ams"][0]["module_type"] == "snapmaker_u1"
+        assert result["ams"][0]["name"] == "Snapmaker U1 Feeders"
+        assert tray["filament_spool_id"] == 114
+        assert tray["filament_spool_brand"] == "Bambu Lab"
+        assert tray["filament_spool_material"] == "PLA"
+        assert tray["filament_spool_color_name"] == "Pumpkin Orange"
+        assert tray["remaining_weight"] == 996.6
+        assert tray["active"] is True
+        assert tray["loaded_to_feeder"] is True
+
     def test_empty_tag_uid_becomes_none(self, mock_state):
         """Verify empty tag_uid is converted to None."""
         mock_state.raw_data = {

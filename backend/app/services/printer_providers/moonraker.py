@@ -246,6 +246,7 @@ def _snapmaker_u1_task_filament_metadata(config: dict[str, Any], index: int) -> 
     official = bool(_snapmaker_list_value(config, "filament_official", index))
     edited = bool(_snapmaker_list_value(config, "filament_edit", index))
     sku = _safe_int(_snapmaker_list_value(config, "filament_sku", index))
+    spool_id = _safe_int(_snapmaker_list_value(config, "filament_spool_id", index))
     color = None
     if material:
         color = _normalize_snapmaker_u1_color(_snapmaker_list_value(config, "filament_color_rgba", index))
@@ -265,6 +266,7 @@ def _snapmaker_u1_task_filament_metadata(config: dict[str, Any], index: int) -> 
         "official": official,
         "edited": edited,
         "sku": sku,
+        "spool_id": spool_id if spool_id and spool_id > 0 else None,
         "source": source,
     }
 
@@ -560,6 +562,12 @@ class MoonrakerPrinterClient:
         self._has_status_sample = False
         self._last_bed_temp: float | None = None
         self._current_print_started_at: float | None = None
+        # Snapmaker U1 SpoolLink exposes Spoolman IDs on print_task_config but
+        # not remain %. Cache Moonraker's spoolman proxy results briefly so
+        # status polling does not re-fetch the full spool list every cycle.
+        # Values: remain %, remaining_weight g, brand, material, color_name.
+        self._spoolman_remain_cache: dict[int, dict[str, Any]] = {}
+        self._spoolman_remain_cache_at: float = 0.0
 
     @property
     def _headers(self) -> dict[str, str]:
@@ -574,6 +582,82 @@ class MoonrakerPrinterClient:
         if isinstance(data, dict) and isinstance(data.get("result"), dict):
             return data["result"]
         return data if isinstance(data, dict) else {"value": data}
+
+    def _jsonrpc(self, method: str, params: dict[str, Any] | None = None) -> Any:
+        response = httpx.post(
+            urljoin(self.base_url, "server/jsonrpc"),
+            headers={**self._headers, "Content-Type": "application/json"},
+            json={"jsonrpc": "2.0", "method": method, "params": params or {}, "id": 1},
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        data = response.json()
+        if not isinstance(data, dict):
+            return None
+        if data.get("error"):
+            return None
+        return data.get("result")
+
+    def _spoolman_remain_by_id(self, spool_ids: set[int]) -> dict[int, dict[str, Any]]:
+        """Map Spoolman spool IDs to remain % and spool identity fields.
+
+        Snapmaker U1 Extended Firmware / SpoolLink stores per-lane Spoolman IDs
+        in ``print_task_config.filament_spool_id`` but does not publish remain %
+        on ``filament_feed``. Moonraker's spoolman proxy is the authoritative
+        source for remaining weight and brand/material labels on those printers.
+        """
+        wanted = {sid for sid in spool_ids if isinstance(sid, int) and sid > 0}
+        if not wanted:
+            return {}
+
+        now = time.monotonic()
+        cache_fresh = (now - self._spoolman_remain_cache_at) < 30.0
+        if cache_fresh and wanted.issubset(self._spoolman_remain_cache.keys()):
+            return {sid: self._spoolman_remain_cache[sid] for sid in wanted}
+
+        try:
+            spools = self._jsonrpc(
+                "server.spoolman.proxy",
+                {"request_method": "GET", "path": "/v1/spool"},
+            )
+        except Exception:  # noqa: BLE001 - Spoolman is optional; keep tray status usable
+            return {sid: self._spoolman_remain_cache[sid] for sid in wanted if sid in self._spoolman_remain_cache}
+
+        if not isinstance(spools, list):
+            return {sid: self._spoolman_remain_cache[sid] for sid in wanted if sid in self._spoolman_remain_cache}
+
+        refreshed: dict[int, dict[str, Any]] = {}
+        for spool in spools:
+            if not isinstance(spool, dict):
+                continue
+            sid = _safe_int(spool.get("id"))
+            if sid is None or sid <= 0:
+                continue
+            remaining = _safe_float(spool.get("remaining_weight"))
+            filament = spool.get("filament") if isinstance(spool.get("filament"), dict) else {}
+            if not isinstance(filament, dict):
+                filament = {}
+            initial = _safe_float(filament.get("weight"))
+            if remaining is None or initial is None or initial <= 0:
+                continue
+            pct = max(0, min(100, round((remaining / initial) * 100)))
+            vendor = filament.get("vendor") if isinstance(filament.get("vendor"), dict) else {}
+            brand = _snapmaker_clean_text(vendor.get("name")) if isinstance(vendor, dict) else ""
+            material = _snapmaker_clean_text(filament.get("material"))
+            color_name = _snapmaker_clean_text(filament.get("name"))
+            refreshed[sid] = {
+                "remain": pct,
+                "remaining_weight": remaining,
+                "brand": brand or None,
+                "material": material or None,
+                "color_name": color_name or None,
+            }
+
+        if refreshed:
+            self._spoolman_remain_cache.update(refreshed)
+            self._spoolman_remain_cache_at = now
+
+        return {sid: self._spoolman_remain_cache[sid] for sid in wanted if sid in self._spoolman_remain_cache}
 
     def _query_objects(self, object_names: list[str]) -> dict[str, Any]:
         query = "printer/objects/query?" + "&".join(quote(name, safe="") for name in object_names)
@@ -1064,13 +1148,17 @@ class MoonrakerPrinterClient:
                 channel_action_state = str(values.get("channel_action_state") or "").strip().lower()
                 loaded_to_extruder = channel_state == "load_finish" or channel_action_state == "load_finish"
                 material = task_metadata.get("material") or metadata["material"] or ("Unknown" if detected else "")
+                # RFID/feed payloads often omit remain; use -1 (unknown) so the UI
+                # does not treat a missing value as 0% empty. Spoolman enrichment
+                # below overwrites this when filament_spool_id is present.
+                remain = metadata["remain"] if metadata.get("remain") is not None else -1
                 feed_slots[extruder_index] = {
                     "id": extruder_index,
                     "slot": f"U1-E{extruder_index}",
                     "tray_type": material,
                     "tray_sub_brands": task_metadata.get("subtype") or metadata["subtype"],
                     "tray_color": task_metadata.get("color") or metadata["color"],
-                    "remain": metadata["remain"],
+                    "remain": remain,
                     "remaining_weight": metadata["remaining_weight"],
                     "weight": metadata["weight"],
                     "active": active_index is not None and extruder_index == active_index,
@@ -1090,6 +1178,7 @@ class MoonrakerPrinterClient:
                     "filament_edit": task_metadata.get("edited"),
                     "filament_sku": task_metadata.get("sku"),
                     "filament_exist": task_metadata.get("exists"),
+                    "filament_spool_id": task_metadata.get("spool_id"),
                     "raw": values,
                 }
 
@@ -1134,6 +1223,24 @@ class MoonrakerPrinterClient:
 
         if feed_slots:
             trays = [feed_slots[index] for index in sorted(feed_slots)]
+            spool_ids = {
+                sid for tray in trays if (sid := _safe_int(tray.get("filament_spool_id"))) is not None and sid > 0
+            }
+            if spool_ids:
+                remain_by_id = self._spoolman_remain_by_id(spool_ids)
+                for tray in trays:
+                    sid = _safe_int(tray.get("filament_spool_id"))
+                    if sid is None or sid not in remain_by_id:
+                        continue
+                    info = remain_by_id[sid]
+                    tray["remain"] = info["remain"]
+                    tray["remaining_weight"] = info["remaining_weight"]
+                    if info.get("brand"):
+                        tray["filament_spool_brand"] = info["brand"]
+                    if info.get("material"):
+                        tray["filament_spool_material"] = info["material"]
+                    if info.get("color_name"):
+                        tray["filament_spool_color_name"] = info["color_name"]
             active_slots = [tray["slot"] for tray in trays if tray.get("active")]
             loaded_to_extruder_slots = [tray["slot"] for tray in trays if tray.get("loaded_to_extruder")]
             loaded_to_feeder_slots = [tray["slot"] for tray in trays if tray.get("loaded_to_feeder")]

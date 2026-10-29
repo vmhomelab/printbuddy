@@ -695,6 +695,14 @@ async def get_printer_status(
                 if k_value is None and cali_idx is not None and cali_idx in kprofile_map:
                     k_value = kprofile_map[cali_idx]
 
+                filament_spool_id = tray_data.get("filament_spool_id")
+                try:
+                    filament_spool_id = int(filament_spool_id) if filament_spool_id is not None else None
+                except (TypeError, ValueError):
+                    filament_spool_id = None
+                if filament_spool_id is not None and filament_spool_id <= 0:
+                    filament_spool_id = None
+
                 trays.append(
                     AMSTray(
                         id=tray_data.get("id", 0),
@@ -713,6 +721,19 @@ async def get_printer_status(
                         drying_temp=tray_data.get("drying_temp"),
                         drying_time=tray_data.get("drying_time"),
                         state=tray_data.get("state"),
+                        active=tray_data.get("active"),
+                        loaded_to_feeder=tray_data.get("loaded_to_feeder"),
+                        loaded_to_extruder=tray_data.get("loaded_to_extruder"),
+                        filament_detected=tray_data.get("filament_detected"),
+                        channel_state=tray_data.get("channel_state"),
+                        channel_action_state=tray_data.get("channel_action_state"),
+                        channel_error=tray_data.get("channel_error"),
+                        filament_source=tray_data.get("filament_source"),
+                        filament_spool_id=filament_spool_id,
+                        remaining_weight=tray_data.get("remaining_weight"),
+                        filament_spool_brand=tray_data.get("filament_spool_brand"),
+                        filament_spool_material=tray_data.get("filament_spool_material"),
+                        filament_spool_color_name=tray_data.get("filament_spool_color_name"),
                     )
                 )
             # Prefer humidity_raw (percentage) over humidity (index 1-5)
