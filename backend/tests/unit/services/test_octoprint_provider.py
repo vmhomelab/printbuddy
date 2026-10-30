@@ -381,3 +381,46 @@ def test_home_axes_uses_printhead_command(fake, client):
     assert client.home_axes(["x", "y"]) is True
 
     assert fake.calls[-1]["json"] == {"command": "home", "axes": ["x", "y"]}
+
+
+def test_discover_webcam_resolves_relative_urls_and_rotation(fake):
+    client = OctoPrintPrinterClient("http://octopi.local/octoprint/", api_key="secret")
+    fake.routes[("GET", "/octoprint/api/settings")] = (200, _fixture("settings_webcam"))
+
+    webcam = client.discover_webcam()
+
+    assert webcam == {
+        # "/webcam/..." is host-relative, as in OctoPrint's own web UI.
+        "camera_url": "http://octopi.local/webcam/?action=stream",
+        "camera_snapshot_url": "http://octopi.local:8080/?action=snapshot",
+        "camera_type": "mjpeg",
+        # rotate90 (counter-clockwise) + flipH/flipV (180) = 90 clockwise.
+        "camera_rotation": 90,
+    }
+
+
+def test_discover_webcam_falls_back_to_legacy_settings(fake, client):
+    fake.routes[("GET", "/api/settings")] = (
+        200,
+        {"webcam": {"webcamEnabled": True, "streamUrl": "", "snapshotUrl": "/webcam/?action=snapshot"}},
+    )
+
+    webcam = client.discover_webcam()
+
+    assert webcam["camera_url"] == "http://octopi.local/webcam/?action=snapshot"
+    assert webcam["camera_type"] == "snapshot"
+    assert webcam["camera_rotation"] == 0
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {},
+        {"webcam": {"webcamEnabled": False, "streamUrl": "/webcam/?action=stream"}},
+        {"webcam": {"webcamEnabled": True, "webcams": [{"name": "classic", "compat": {"stream": ""}}]}},
+    ],
+)
+def test_discover_webcam_returns_none_without_a_camera(fake, client, settings):
+    fake.routes[("GET", "/api/settings")] = (200, settings)
+
+    assert client.discover_webcam() is None

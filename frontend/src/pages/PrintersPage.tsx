@@ -7467,6 +7467,11 @@ function AddPrinterModal({
                   <p className="text-xs text-bambu-gray mt-1">
                     Optional for non-Bambu printers. Add a camera stream or snapshot URL if available; Printbuddy will detect MJPEG, RTSP, snapshot, or USB camera type automatically.
                   </p>
+                  {isOctoPrintProvider && (
+                    <p className="text-xs text-bambu-gray mt-1">
+                      Leave empty to use the webcam configured in OctoPrint, including its rotation.
+                    </p>
+                  )}
                   {isMoonrakerProvider && (
                     <div className="mt-3 flex flex-col gap-2">
                       <Button

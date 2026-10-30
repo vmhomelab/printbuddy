@@ -368,6 +368,16 @@ async def create_printer(
                 printer_payload["provider_options"] = json.dumps(existing_options, separators=(",", ":"))
         except (TypeError, ValueError):
             printer_payload["provider_options"] = detected_provider_options
+    detected_camera = test_result.get("detected_camera")
+    if detected_camera and not printer_payload.get("external_camera_url"):
+        # Use the webcam the provider reports (OctoPrint) unless the user
+        # entered a camera URL; it can be changed in the camera settings later.
+        printer_payload["external_camera_url"] = detected_camera["camera_url"]
+        printer_payload["external_camera_type"] = detected_camera["camera_type"]
+        printer_payload["external_camera_snapshot_url"] = detected_camera.get("camera_snapshot_url") or None
+        printer_payload["external_camera_enabled"] = True
+        if detected_camera.get("camera_rotation") and not printer_payload.get("camera_rotation"):
+            printer_payload["camera_rotation"] = detected_camera["camera_rotation"]
 
     printer = Printer(**printer_payload)
     db.add(printer)

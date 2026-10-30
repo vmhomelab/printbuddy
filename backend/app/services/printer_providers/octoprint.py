@@ -278,6 +278,45 @@ class OctoPrintPrinterClient(PolledLifecycleMixin):
             )
         return user
 
+    # -- webcam -----------------------------------------------------------
+
+    def discover_webcam(self) -> dict[str, Any] | None:
+        """Return the default webcam OctoPrint reports in ``/api/settings``.
+
+        OctoPrint 1.9+ lists webcams under ``webcam.webcams`` with the URLs in
+        ``compat``; older versions only have ``streamUrl`` / ``snapshotUrl``.
+        URLs are often relative to OctoPrint (``/webcam/?action=stream``) and
+        are resolved against the OctoPrint URL here.
+        """
+        settings = self._get("api/settings")
+        webcam = settings.get("webcam") if isinstance(settings.get("webcam"), dict) else {}
+        if not webcam or webcam.get("webcamEnabled") is False:
+            return None
+
+        cameras = [camera for camera in webcam.get("webcams") or [] if isinstance(camera, dict)]
+        default = next((camera for camera in cameras if camera.get("name") == webcam.get("defaultWebcam")), None)
+        camera = default or (cameras[0] if cameras else webcam)
+        compat = camera.get("compat") if isinstance(camera.get("compat"), dict) else {}
+
+        stream = str(compat.get("stream") or webcam.get("streamUrl") or "").strip()
+        snapshot = str(compat.get("snapshot") or webcam.get("snapshotUrl") or "").strip()
+        if not stream and not snapshot:
+            return None
+
+        # Printbuddy rotates clockwise; OctoPrint's rotate90 is counter-clockwise
+        # and flipping both axes equals a 180 degree rotation. A single-axis
+        # mirror has no rotation equivalent and is left as is.
+        rotation = 270 if camera.get("rotate90") else 0
+        if camera.get("flipH") and camera.get("flipV"):
+            rotation = (rotation + 180) % 360
+
+        return {
+            "camera_url": urljoin(self.base_url, stream or snapshot),
+            "camera_snapshot_url": urljoin(self.base_url, snapshot) if snapshot else "",
+            "camera_type": "mjpeg" if stream else "snapshot",
+            "camera_rotation": rotation,
+        }
+
     # -- lifecycle --------------------------------------------------------
 
     def connect(self) -> None:

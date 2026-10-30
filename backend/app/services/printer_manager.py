@@ -730,6 +730,12 @@ class PrinterManager:
                 if provider_name == "octoprint":
                     await asyncio.to_thread(client.verify_api_key)
                 await asyncio.to_thread(client.connect)
+                detected_camera = None
+                if provider_name == "octoprint":
+                    try:
+                        detected_camera = await asyncio.to_thread(client.discover_webcam)
+                    except Exception as exc:  # noqa: BLE001 - camera detection must not block adding the printer
+                        logger.info("OctoPrint webcam detection failed: %s", type(exc).__name__)
                 result = {
                     "success": True,
                     "state": getattr(getattr(client, "state", None), "state", "connected"),
@@ -737,6 +743,8 @@ class PrinterManager:
                 }
                 if detected_provider_options:
                     result["provider_options"] = json.dumps(detected_provider_options, separators=(",", ":"))
+                if detected_camera:
+                    result["detected_camera"] = detected_camera
                 return result
             except OctoPrintAuthError as exc:
                 return {

@@ -255,6 +255,73 @@ class TestPrintersAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_create_octoprint_printer_stores_detected_webcam(
+        self, async_client: AsyncClient, _mock_printer_test_connection, monkeypatch
+    ):
+        _mock_printer_test_connection.return_value = {
+            "success": True,
+            "state": "IDLE",
+            "model": "OctoPrint",
+            "detected_camera": {
+                "camera_url": "http://192.168.1.61/webcam/?action=stream",
+                "camera_snapshot_url": "http://192.168.1.61/webcam/?action=snapshot",
+                "camera_type": "mjpeg",
+                "camera_rotation": 90,
+            },
+        }
+        monkeypatch.setattr(
+            "backend.app.api.routes.printers.printer_manager.connect_printer",
+            AsyncMock(return_value=True),
+        )
+        data = {"name": "Ender 3", "provider": "octoprint", "ip_address": "192.168.1.61", "auth_token": "key"}
+
+        response = await async_client.post("/api/v1/printers/", json=data)
+
+        assert response.status_code == 200, response.text
+        printer = response.json()
+        assert printer["camera_rotation"] == 90
+        assert printer["external_camera_url"] == "http://192.168.1.61/webcam/?action=stream"
+        assert printer["external_camera_snapshot_url"] == "http://192.168.1.61/webcam/?action=snapshot"
+        assert printer["external_camera_type"] == "mjpeg"
+        assert printer["external_camera_enabled"] is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_create_octoprint_printer_keeps_manual_camera_url(
+        self, async_client: AsyncClient, _mock_printer_test_connection, monkeypatch
+    ):
+        _mock_printer_test_connection.return_value = {
+            "success": True,
+            "state": "IDLE",
+            "model": "OctoPrint",
+            "detected_camera": {
+                "camera_url": "http://192.168.1.62/webcam/?action=stream",
+                "camera_snapshot_url": "",
+                "camera_type": "mjpeg",
+                "camera_rotation": 90,
+            },
+        }
+        monkeypatch.setattr(
+            "backend.app.api.routes.printers.printer_manager.connect_printer",
+            AsyncMock(return_value=True),
+        )
+        data = {
+            "name": "Ender 3",
+            "provider": "octoprint",
+            "ip_address": "192.168.1.62",
+            "auth_token": "key",
+            "external_camera_url": "rtsp://camera.local/stream",
+        }
+
+        response = await async_client.post("/api/v1/printers/", json=data)
+
+        assert response.status_code == 200, response.text
+        printer = response.json()
+        assert printer["external_camera_url"] == "rtsp://camera.local/stream"
+        assert printer["camera_rotation"] == 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_create_octoprint_printer_unreachable_uses_generic_code(self, async_client: AsyncClient):
         data = {"name": "Ender 3", "provider": "octoprint", "ip_address": "192.168.1.60", "auth_token": "key"}
 
