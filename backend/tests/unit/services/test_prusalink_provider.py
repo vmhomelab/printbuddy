@@ -1,6 +1,6 @@
 import httpx
 
-from backend.app.services.printer_providers import prusalink
+from backend.app.services.printer_providers import _http_common, prusalink
 from backend.app.services.printer_providers.prusalink import PrusaLinkPrinterClient, _normalize_prusalink_file_meta
 
 
@@ -384,7 +384,7 @@ def test_prusalink_completion_payload_includes_elapsed_time(monkeypatch):
 
     times = iter([100.0, 160.0])
     monkeypatch.setattr(client, "_get", fake_get)
-    monkeypatch.setattr(prusalink.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(_http_common.time, "monotonic", lambda: next(times))
 
     client.request_status_update()  # baseline idle; no callbacks
     client.request_status_update()  # start; records monotonic 100.0
