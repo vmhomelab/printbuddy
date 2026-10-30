@@ -77,11 +77,13 @@ describe('StreamOverlayPage', () => {
 
   beforeEach(() => {
     // Mock WebSocket
-    vi.stubGlobal('WebSocket', vi.fn().mockImplementation(() => ({
-      close: vi.fn(),
-      onmessage: null,
-      onerror: null,
-    })));
+    vi.stubGlobal('WebSocket', vi.fn().mockImplementation(function () {
+      return {
+        close: vi.fn(),
+        onmessage: null,
+        onerror: null,
+      };
+    }));
 
     server.use(
       http.get('/api/v1/printers/:id', () => {
