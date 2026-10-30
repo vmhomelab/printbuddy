@@ -164,4 +164,4 @@ def test_external_camera_update_clears_disabled_state_when_url_is_blank():
 
 def test_printer_create_rejects_unknown_provider():
     with pytest.raises(ValidationError):
-        PrinterCreate(**_printer_payload(provider="octoprint"))
+        PrinterCreate(**_printer_payload(provider="repetier"))

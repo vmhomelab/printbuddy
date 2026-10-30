@@ -1,0 +1,19 @@
+{
+  "groups": [
+    "readonly"
+  ],
+  "name": "limited",
+  "permissions": [
+    "STATUS",
+    "WEBCAM",
+    "FILES_LIST",
+    "FILES_DOWNLOAD",
+    "GCODE_VIEWER",
+    "MONITOR_TERMINAL",
+    "TIMELAPSE_LIST",
+    "TIMELAPSE_DOWNLOAD",
+    "SETTINGS_READ",
+    "PLUGIN_ACHIEVEMENTS_VIEW",
+    "PLUGIN_PLUGINMANAGER_LIST"
+  ]
+}

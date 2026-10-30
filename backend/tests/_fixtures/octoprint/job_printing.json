@@ -1,0 +1,30 @@
+{
+  "job": {
+    "averagePrintTime": null,
+    "estimatedPrintTime": 25.951614716074836,
+    "filament": {
+      "tool0": {
+        "length": 5.9,
+        "volume": 0.0
+      }
+    },
+    "file": {
+      "date": 1793375603,
+      "display": "cube.gcode",
+      "name": "cube.gcode",
+      "origin": "local",
+      "path": "prints/cube.gcode",
+      "size": 1914
+    },
+    "lastPrintTime": null,
+    "user": "admin"
+  },
+  "progress": {
+    "completion": 20.794148380355278,
+    "filepos": 398,
+    "printTime": 4,
+    "printTimeLeft": 21,
+    "printTimeLeftOrigin": "analysis"
+  },
+  "state": "Printing"
+}

@@ -16,7 +16,16 @@ from backend.app.services.printer_providers.prusalink import PrusaLinkPrinterCli
 
 
 def test_supported_printbuddy_providers_are_registered():
-    assert {"bambu", "klipper", "mainsail", "fluidd", "prusalink", "prusaconnect", "elegoo_sdcp"} == SUPPORTED_PROVIDERS
+    assert {
+        "bambu",
+        "klipper",
+        "mainsail",
+        "fluidd",
+        "prusalink",
+        "prusaconnect",
+        "elegoo_sdcp",
+        "octoprint",
+    } == SUPPORTED_PROVIDERS
 
 
 @pytest.mark.parametrize("provider", ["klipper", "mainsail", "fluidd"])
@@ -854,7 +863,7 @@ async def test_prusalink_connection_probe_returns_detected_provider_options(monk
 
 def test_unknown_provider_is_rejected():
     with pytest.raises(ValueError, match="Unsupported printer provider"):
-        normalize_provider("octoprint")
+        normalize_provider("repetier")
 
 
 def test_moonraker_lists_gcode_files(monkeypatch):

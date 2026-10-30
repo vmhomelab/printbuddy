@@ -8,9 +8,11 @@ from backend.app.services.elegoo_camera import (
     get_effective_camera_source,
 )
 
-PrinterProvider = Literal["bambu", "klipper", "mainsail", "fluidd", "prusalink", "prusaconnect", "elegoo_sdcp"]
+PrinterProvider = Literal[
+    "bambu", "klipper", "mainsail", "fluidd", "prusalink", "prusaconnect", "elegoo_sdcp", "octoprint"
+]
 MOONRAKER_PROVIDERS = {"klipper", "mainsail", "fluidd"}
-HTTP_PROVIDERS = MOONRAKER_PROVIDERS | {"prusalink", "prusaconnect", "elegoo_sdcp"}
+HTTP_PROVIDERS = MOONRAKER_PROVIDERS | {"prusalink", "prusaconnect", "elegoo_sdcp", "octoprint"}
 PRUSA_CONNECT_MOBILE_BASE_URL = "https://connect-mobile-api.prusa3d.com"
 
 
@@ -39,6 +41,12 @@ def _synthetic_elegoo_sdcp_serial(value: object) -> str:
     raw = str(value or "elegoo-sdcp").strip().upper()
     normalized = "".join(ch if ch.isalnum() else "-" for ch in raw).strip("-") or "ELEGOO-SDCP"
     return f"ELEGOO-SDCP-{normalized}"[:50]
+
+
+def _synthetic_octoprint_serial(value: object) -> str:
+    raw = str(value or "octoprint").strip().upper()
+    normalized = "".join(ch if ch.isalnum() else "-" for ch in raw).strip("-") or "OCTOPRINT"
+    return f"OCTOPRINT-{normalized}"[:50]
 
 
 def infer_external_camera_type(camera_url: str) -> str:
@@ -109,6 +117,13 @@ class PrinterBase(BaseModel):
                 data["access_code"] = "prusaconnect"
             if not data.get("api_url"):
                 data["api_url"] = PRUSA_CONNECT_MOBILE_BASE_URL
+        elif provider == "octoprint":
+            if not str(data.get("serial_number") or "").strip():
+                data["serial_number"] = _synthetic_octoprint_serial(data.get("ip_address") or data.get("api_url"))
+            if not str(data.get("access_code") or "").strip():
+                data["access_code"] = "octoprint"
+            if not data.get("api_url") and data.get("ip_address"):
+                data["api_url"] = f"http://{str(data['ip_address']).strip()}:5000"
         elif provider == "elegoo_sdcp":
             if not str(data.get("serial_number") or "").strip():
                 data["serial_number"] = _synthetic_elegoo_sdcp_serial(data.get("ip_address"))
