@@ -1459,15 +1459,43 @@ class MoonrakerPrinterClient:
         return True
 
     def stop_print(self) -> bool:
-        self._post("printer/print/cancel", {})
+        if self._has_status_sample and self.state.state not in {"RUNNING", "PAUSE"}:
+            return True
+        try:
+            self._post("printer/print/cancel", {})
+        except httpx.HTTPStatusError as exc:
+            # Handle Moonraker 400 when Klippy is already cancelled/idle
+            if exc.response is not None and exc.response.status_code == 400:
+                return True
+            raise
         return True
 
     def pause_print(self) -> bool:
-        self._post("printer/print/pause", {})
+        if self._has_status_sample and self.state.state == "PAUSE":
+            return True
+        if self._has_status_sample and self.state.state not in {"RUNNING"}:
+            return False
+        try:
+            self._post("printer/print/pause", {})
+        except httpx.HTTPStatusError as exc:
+            if exc.response is not None and exc.response.status_code == 400:
+                # E.g. already paused in Moonraker
+                return True
+            raise
         return True
 
     def resume_print(self) -> bool:
-        self._post("printer/print/resume", {})
+        if self._has_status_sample and self.state.state == "RUNNING":
+            return True
+        if self._has_status_sample and self.state.state not in {"PAUSE"}:
+            return False
+        try:
+            self._post("printer/print/resume", {})
+        except httpx.HTTPStatusError as exc:
+            if exc.response is not None and exc.response.status_code == 400:
+                # E.g. already resumed in Moonraker
+                return True
+            raise
         return True
 
 

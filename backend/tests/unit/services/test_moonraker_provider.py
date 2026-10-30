@@ -677,6 +677,33 @@ def test_moonraker_print_control_commands_use_the_expected_endpoint(monkeypatch,
     assert calls == [(expected_path, {})]
 
 
+def test_moonraker_print_control_commands_idempotent_when_state_matches():
+    client = MoonrakerPrinterClient("http://klipper.local:7125")
+    client._has_status_sample = True
+
+    # When already paused, pause_print succeeds without HTTP call
+    client.state.state = "PAUSE"
+    assert client.pause_print() is True
+
+    # When not running, pause_print returns False safely
+    client.state.state = "IDLE"
+    assert client.pause_print() is False
+
+    # When already running, resume_print succeeds without HTTP call
+    client.state.state = "RUNNING"
+    assert client.resume_print() is True
+
+    # When not paused, resume_print returns False safely
+    client.state.state = "IDLE"
+    assert client.resume_print() is False
+
+    # When idle/finished, stop_print succeeds idempotently without HTTP call
+    client.state.state = "IDLE"
+    assert client.stop_print() is True
+    client.state.state = "FINISH"
+    assert client.stop_print() is True
+
+
 @pytest.mark.parametrize("method_name", ["pause_print", "resume_print"])
 def test_moonraker_print_control_commands_preserve_transport_errors(monkeypatch, method_name):
     client = MoonrakerPrinterClient("http://klipper.local:7125")
