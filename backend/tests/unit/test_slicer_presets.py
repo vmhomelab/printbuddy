@@ -650,7 +650,8 @@ class TestParseCompatiblePrinters:
 
     def test_parses_json_array(self):
         raw = '["Bambu Lab X1 Carbon 0.4 nozzle", "Bambu Lab X1 0.4 nozzle"]'
-        assert sp._parse_compatible_printers(raw) == [
+        parsed = sp._parse_compatible_printers(raw)
+        assert parsed == [
             "Bambu Lab X1 Carbon 0.4 nozzle",
             "Bambu Lab X1 0.4 nozzle",
         ]
@@ -666,9 +667,17 @@ class TestParseCompatiblePrinters:
         assert sp._parse_compatible_printers('"a string"') is None
 
     def test_drops_non_string_and_blank_entries(self):
-        assert sp._parse_compatible_printers('["X1C", 5, "", "  ", "A1"]') == [
-            "X1C",
-            "A1",
+        parsed = sp._parse_compatible_printers('["X1C", 5, "", "  ", "A1"]')
+        assert parsed == ["X1C", "A1"]
+
+    def test_returns_system_names_without_synthesizing_copy_aliases(self):
+        # Clone/rename matching lives in the frontend containment matcher;
+        # the API returns the slicer's declared system names as-is.
+        raw = '["Snapmaker U1 (0.4 nozzle)", "Snapmaker U1 (0.2 nozzle)"]'
+        parsed = sp._parse_compatible_printers(raw)
+        assert parsed == [
+            "Snapmaker U1 (0.4 nozzle)",
+            "Snapmaker U1 (0.2 nozzle)",
         ]
 
 

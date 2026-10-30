@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { AlertCircle, AlertTriangle, Calendar, Code, Layers, Loader2, Pencil, Printer, X } from 'lucide-react';
+import { AlertCircle, AlertTriangle, Calendar, Circle, Code, Layers, Loader2, Pencil, Printer, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { PrintQueueItemCreate, PrintQueueItemUpdate, SpoolAssignment } from '../../api/client';
@@ -14,7 +14,7 @@ import { useMultiPrinterFilamentMapping, type PerPrinterConfig } from '../../hoo
 import { getColorName } from '../../utils/colors';
 import { getCurrencySymbol } from '../../utils/currency';
 import { toDateTimeLocalValue, parseUTCDate } from '../../utils/date';
-import { getGlobalTrayId, isPlaceholderDate } from '../../utils/amsHelpers';
+import { getGlobalTrayId, isPlaceholderDate, normalizeColor } from '../../utils/amsHelpers';
 import { FilamentMapping } from './FilamentMapping';
 import { FilamentOverride } from './FilamentOverride';
 import { PlateSelector } from './PlateSelector';
@@ -353,6 +353,21 @@ export function PrintModal({
     }
     return platesData.plates.find((plate) => plate.index === selectedPlate)?.name || undefined;
   }, [platesData, selectedPlate]);
+
+  // Colors for the job header. Prefer /filament-requirements (used_g > 0), but
+  // fall back to plates[].filaments which already carries correct colors for
+  // split-per-plate library files (slice_info index may be 2/3 while callers
+  // briefly request plate_id=1 before auto-select settles).
+  const scheduleFilamentSwatches = useMemo(() => {
+    const fromReqs = (effectiveFilamentReqs?.filaments ?? []).filter(
+      (f) => (f.used_grams ?? 0) > 0,
+    );
+    if (fromReqs.length > 0) return fromReqs;
+    const plate =
+      platesData?.plates?.find((p) => selectedPlate == null || p.index === selectedPlate)
+      ?? platesData?.plates?.[0];
+    return (plate?.filaments ?? []).filter((f) => (f.used_grams ?? 0) > 0);
+  }, [effectiveFilamentReqs, platesData, selectedPlate]);
 
   // Fetch available filaments for model-based assignment (for filament override UI)
   const { data: availableFilaments } = useQuery({
@@ -1010,22 +1025,57 @@ export function PrintModal({
           </div>
 
           <form onSubmit={handleSubmit} className={mode === 'reprint' ? '' : 'p-4 space-y-4'}>
-            {/* Archive name */}
-            <p className={`text-sm text-bambu-gray ${mode === 'reprint' ? 'mb-4' : ''}`}>
-              {mode === 'reprint' ? (
-                <>
-                  Send <span className="text-white">{archiveName}</span> to{' '}
-                  {initialSelectedPrinterIds?.length === 1 && printers
-                    ? <span className="text-white">{printers.find(p => p.id === initialSelectedPrinterIds[0])?.name ?? 'printer(s)'}</span>
-                    : 'printer(s)'}
-                </>
-              ) : (
-                <>
-                  <span className="block text-bambu-gray mb-1">Print Job</span>
-                  <span className="text-white font-medium truncate block">{archiveName}</span>
-                </>
+            {/* Job summary: name + filament colors (and library thumb when plate picker is hidden) */}
+            <div className={`flex items-start gap-3 ${mode === 'reprint' ? 'mb-4' : ''}`}>
+              {isLibraryFile && libraryFileDetails?.thumbnail_path && !isMultiPlate && (
+                <img
+                  src={api.getLibraryFileThumbnailUrl(libraryFileId!)}
+                  alt=""
+                  className="w-14 h-14 rounded object-cover bg-bambu-dark-tertiary flex-shrink-0"
+                />
               )}
-            </p>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm text-bambu-gray">
+                  {mode === 'reprint' ? (
+                    <>
+                      Send <span className="text-white">{archiveName}</span> to{' '}
+                      {initialSelectedPrinterIds?.length === 1 && printers
+                        ? <span className="text-white">{printers.find(p => p.id === initialSelectedPrinterIds[0])?.name ?? 'printer(s)'}</span>
+                        : 'printer(s)'}
+                    </>
+                  ) : (
+                    <>
+                      <span className="block text-bambu-gray mb-1">Print Job</span>
+                      <span className="text-white font-medium truncate block">{archiveName}</span>
+                    </>
+                  )}
+                </p>
+                {/* Filament colors — visible before printer selection / AMS mapping
+                    expand. Split-per-plate library files hide PlateSelector, so
+                    this is the only early color signal. */}
+                {scheduleFilamentSwatches.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-1.5 mt-2" aria-label={t('printModal.filamentMapping')}>
+                    {scheduleFilamentSwatches.map((filament) => {
+                      const color = normalizeColor(filament.color);
+                      return (
+                        <span
+                          key={filament.slot_id}
+                          title={`${filament.type || 'Filament'} — ${getColorName(color)} (${filament.used_grams}g)`}
+                          className="inline-flex items-center justify-center"
+                        >
+                          <Circle
+                            className="w-3.5 h-3.5"
+                            fill={color}
+                            stroke={color === '#000000' || color === '#000' ? '#666' : color}
+                            strokeWidth={color === '#000000' || color === '#000' ? 1.5 : 1}
+                          />
+                        </span>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
 
             {/* Plate selection - first so users know filament requirements before selecting printers */}
             <PlateSelector

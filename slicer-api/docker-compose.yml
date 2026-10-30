@@ -21,14 +21,25 @@
 # BambuStudio AppImage, ~220 MB) and caches the image locally.
 # Subsequent runs reuse the cache. Pin the slicer versions via .env.
 
+networks:
+  # Share Printbuddy's compose network so the printbuddy container can reach
+  # this sidecar as http://orca-slicer-api:3000 (localhost:3003 only works
+  # from the Mac host, not from inside another container).
+  printbuddy_default:
+    external: true
+
 services:
   orca-slicer-api:
     build:
       context: "${SLICER_API_BUILD_CONTEXT}"
       dockerfile: Dockerfile
       args:
-        ORCA_VERSION: "${ORCA_VERSION:-2.3.2}"
-    image: printbuddy-orca-slicer-api:orca${ORCA_VERSION:-2.3.2}
+        # 2.4.0+ ships Snapmaker U1 vendor profiles. 2.5.0-beta+ includes
+        # upstream #15998 (painted 3MF + multi --load-filaments no longer
+        # SIGSEGVs — was #12426). Snapmaker's fork proved the path; vanilla
+        # Orca now sizes painted segmentation from filament_diameter count.
+        ORCA_VERSION: "${ORCA_VERSION:-2.5.0-beta}"
+    image: printbuddy-orca-slicer-api:orca${ORCA_VERSION:-2.5.0-beta}
     container_name: orca-slicer-api
     restart: unless-stopped
     ports:
@@ -38,6 +49,8 @@ services:
     environment:
       NODE_ENV: production
       PORT: "3000"
+    networks:
+      - printbuddy_default
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
       interval: 30s
@@ -61,6 +74,8 @@ services:
     environment:
       NODE_ENV: production
       PORT: "3000"
+    networks:
+      - printbuddy_default
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
       interval: 30s

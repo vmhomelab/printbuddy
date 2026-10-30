@@ -1778,42 +1778,9 @@ async def get_printer_file_plates(
         with zipfile.ZipFile(io.BytesIO(data), "r") as zf:
             namelist = zf.namelist()
 
-            # Find all plate gcode files to determine available plates
-            gcode_files = [n for n in namelist if n.startswith("Metadata/plate_") and n.endswith(".gcode")]
+            from backend.app.utils.threemf_tools import discover_plate_indices
 
-            # If no gcode is present (source-only or unsliced), fall back to plate JSON/PNG
-            plate_indices: list[int] = []
-            if gcode_files:
-                for gf in gcode_files:
-                    try:
-                        plate_str = gf[15:-6]  # Remove "Metadata/plate_" and ".gcode"
-                        plate_indices.append(int(plate_str))
-                    except ValueError:
-                        pass  # Skip gcode files with non-numeric plate indices
-            else:
-                plate_json_files = [n for n in namelist if n.startswith("Metadata/plate_") and n.endswith(".json")]
-                plate_png_files = [
-                    n
-                    for n in namelist
-                    if n.startswith("Metadata/plate_")
-                    and n.endswith(".png")
-                    and "_small" not in n
-                    and "no_light" not in n
-                ]
-                plate_name_candidates = plate_json_files + plate_png_files
-                plate_re = re.compile(r"^Metadata/plate_(\d+)\.(json|png)$")
-                seen_indices: set[int] = set()
-                for name in plate_name_candidates:
-                    match = plate_re.match(name)
-                    if match:
-                        try:
-                            index = int(match.group(1))
-                        except ValueError:
-                            continue
-                        if index in seen_indices:
-                            continue
-                        seen_indices.add(index)
-                        plate_indices.append(index)
+            plate_indices = discover_plate_indices(zf)
 
             if not plate_indices:
                 return {
@@ -1823,8 +1790,6 @@ async def get_printer_file_plates(
                     "plates": [],
                     "is_multi_plate": False,
                 }
-
-            plate_indices.sort()
 
             # Parse model_settings.config for plate names
             plate_names = {}

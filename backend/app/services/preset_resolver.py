@@ -68,6 +68,31 @@ _SLOT_TO_PROFILE_TYPE = {
 }
 
 
+def _strip_inherits_if_concrete(preset_json: str) -> str:
+    """Drop ``inherits`` from already-expanded presets before the CLI sees them.
+
+    OrcaSlicer 2.5+ rejects temp ``--load-settings`` files that still name a
+    parent (``error_string: The input preset file is invalid and can not be
+    parsed``, ``return_code: -5``): the CLI re-walks ``inherits`` next to the
+    temp file and can't see ``resources/profiles/...``. Imported / flattened
+    local+cloud presets often keep a leftover ``inherits`` even when their
+    keys are already fully merged. Standard-tier stubs (name/inherits/from/type
+    only) must keep ``inherits`` so the sidecar can still expand them.
+    """
+    try:
+        data = json.loads(preset_json)
+    except (TypeError, ValueError):
+        return preset_json
+    if not isinstance(data, dict) or not data.get("inherits"):
+        return preset_json
+    stub_keys = {"name", "inherits", "from", "type", "compatible_printers"}
+    concrete = set(data) - stub_keys
+    if len(concrete) < 5:
+        return preset_json
+    data = {k: v for k, v in data.items() if k != "inherits"}
+    return json.dumps(data)
+
+
 async def resolve_preset_ref(
     db: AsyncSession,
     user: User | None,
@@ -84,17 +109,20 @@ async def resolve_preset_ref(
     preset type, cloud auth failure, network error fetching cloud detail).
     """
     if ref.source == "local":
-        return await _resolve_local(db, ref, slot)
-    if ref.source == "cloud":
-        return await _resolve_cloud(db, user, ref, slot)
-    if ref.source == "orca_cloud":
-        return await _resolve_orca_cloud(db, user, ref, slot)
-    if ref.source == "standard":
+        raw = await _resolve_local(db, ref, slot)
+    elif ref.source == "cloud":
+        raw = await _resolve_cloud(db, user, ref, slot)
+    elif ref.source == "orca_cloud":
+        raw = await _resolve_orca_cloud(db, user, ref, slot)
+    elif ref.source == "standard":
+        # Stubs must keep inherits for the sidecar's bundled-profile walk.
         return _resolve_standard(ref, slot)
-    raise HTTPException(
-        status_code=400,
-        detail=f"Unknown preset source for {slot}: {ref.source!r}",
-    )
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown preset source for {slot}: {ref.source!r}",
+        )
+    return _strip_inherits_if_concrete(raw)
 
 
 async def _resolve_local(db: AsyncSession, ref: PresetRef, slot: str) -> str:
@@ -207,6 +235,47 @@ async def _resolve_orca_cloud(db: AsyncSession, user: User | None, ref: PresetRe
         )
         content = profile
     if isinstance(content, dict):
+        # Flatten inherits (e.g. Snapmaker U1 → fdm_U1 → fdm_toolchanger →
+        # fdm_klipper) before the sidecar writes a temp JSON for --load-settings.
+        # Headless Orca can't see vendor parents next to that temp file, and
+        # an unresolved chain is a common SIGSEGV / wrong-defaults failure
+        # mode for Snapmaker U1 Cloud profiles. Drop `inherits` after the
+        # merge so the CLI doesn't try to re-walk it.
+        inherits = content.get("inherits")
+        if inherits:
+            from backend.app.services.orca_profiles import resolve_preset
+
+            profile_type = "printer" if slot == "printer" else slot
+            try:
+                key_count_before = len(content)
+                flattened = await resolve_preset(content, profile_type, db)
+                if len(flattened) > key_count_before:
+                    # Parents merged in — drop inherits so the CLI doesn't
+                    # re-walk a chain next to a temp file it can't see.
+                    content = {k: v for k, v in flattened.items() if k != "inherits"}
+                    logger.info(
+                        "Flattened Orca Cloud %s preset %r (inherits=%r → %d keys)",
+                        slot,
+                        ref.id,
+                        inherits,
+                        len(content),
+                    )
+                else:
+                    # Parent unresolved here; keep inherits so a sidecar with
+                    # bundled Snapmaker/BBL profiles (Orca 2.4.0+) can finish
+                    # the walk from BUNDLED_PROFILES_PATH.
+                    logger.warning(
+                        "Could not flatten Orca Cloud %s preset %r (inherits=%r); forwarding with inherits for sidecar",
+                        slot,
+                        ref.id,
+                        inherits,
+                    )
+            except Exception:
+                logger.exception(
+                    "Failed flattening Orca Cloud %s preset %r; forwarding raw content",
+                    slot,
+                    ref.id,
+                )
         # Orca can contain Bambu-style printer/print labels. Normalize every
         # source to the CLI's machine/process/filament vocabulary.
         content = {**content, "type": _SLOT_TO_PROFILE_TYPE[slot], "from": "system"}

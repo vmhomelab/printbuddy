@@ -1440,6 +1440,8 @@ export interface SliceRequest {
   // dispatch ignores the preset side when bundle is set).
   bundle?: SliceBundleSpec;
   plate?: number;
+  /** When plate=0, write one library/archive file per plate instead of one multi-plate 3MF. */
+  split_plates?: boolean;
   export_3mf?: boolean;
   // Build-plate override (#1337). When omitted, the slicer uses the process
   // preset's curr_bed_type as-is. Canonical values match BambuStudio /
@@ -1517,6 +1519,9 @@ export interface SliceResponse {
   filament_used_g: number;
   filament_used_mm: number;
   used_embedded_settings: boolean;
+  /** Present when split_plates wrote one file per plate. */
+  library_file_ids?: number[] | null;
+  names?: string[] | null;
 }
 
 export interface SliceArchiveResponse {
@@ -1526,6 +1531,8 @@ export interface SliceArchiveResponse {
   filament_used_g: number;
   filament_used_mm: number;
   used_embedded_settings: boolean;
+  archive_ids?: number[] | null;
+  names?: string[] | null;
 }
 
 // Background slice-job lifecycle. POST /slice returns 202 + this shape;

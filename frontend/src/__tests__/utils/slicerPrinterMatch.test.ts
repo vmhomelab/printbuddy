@@ -110,6 +110,35 @@ describe('presetCompatibility', () => {
     expect(presetCompatibility(preset, 'process', P2S, EMPTY_COMPATIBILITY_INDEX)).toBe('mismatch');
   });
 
+  it('matches printer clones/renames via containment against system compatible_printers', () => {
+    // Local Snapmaker filaments declare the system nozzle name; the SliceModal
+    // often has a renamed Orca Cloud clone selected. Exact string equality
+    // used to dump every local filament into "Other printers".
+    const snapmaker = 'Snapmaker U1 (0.4 nozzle)';
+    const preset = {
+      name: 'PolyTerra PLA',
+      compatible_printers: [snapmaker, 'Snapmaker U1 (0.2 nozzle)'],
+    };
+    expect(
+      presetCompatibility(preset, 'filament', `${snapmaker} - Copy`, EMPTY_COMPATIBILITY_INDEX),
+    ).toBe('match');
+    expect(
+      presetCompatibility(preset, 'filament', `${snapmaker} - Copy 2`, EMPTY_COMPATIBILITY_INDEX),
+    ).toBe('match');
+    expect(
+      presetCompatibility(preset, 'filament', `${snapmaker} - Copy (3)`, EMPTY_COMPATIBILITY_INDEX),
+    ).toBe('match');
+    expect(
+      presetCompatibility(preset, 'filament', `${snapmaker} (workshop)`, EMPTY_COMPATIBILITY_INDEX),
+    ).toBe('match');
+    expect(
+      presetCompatibility(preset, 'filament', `My ${snapmaker}`, EMPTY_COMPATIBILITY_INDEX),
+    ).toBe('match');
+    expect(
+      presetCompatibility(preset, 'filament', 'Snapmaker U1 (0.6 nozzle) - Copy', EMPTY_COMPATIBILITY_INDEX),
+    ).toBe('mismatch');
+  });
+
   it('is unknown when compatible_printers is set but no printer is selected', () => {
     expect(
       presetCompatibility({ name: 'P', compatible_printers: [X1C] }, 'process', null, index),
@@ -275,10 +304,42 @@ describe('presetCompatibility — @BBL name fallback (no bundles)', () => {
     expect(presetCompatibility({ name: 'My Custom Process' }, 'process', X1C, idx)).toBe('unknown');
   });
 
-  it('is unknown for a Bambu preset against a non-Bambu printer (can\'t parse the printer name)', () => {
+  it('flags a @BBL preset as mismatch against a non-Bambu printer (Snapmaker / custom)', () => {
+    // @BBL is explicitly Bambu-scoped. Against Snapmaker U1 (or any printer
+    // whose name isn't "Bambu Lab …") the preset must be a mismatch so the
+    // SliceModal re-picks a printer-compatible process instead of keeping
+    // the 3MF's embedded Bambu process and hitting CLI -17.
     expect(
       presetCompatibility({ name: '0.20mm Standard @BBL X1C' }, 'process', 'CustomBuild 0.4', idx),
-    ).toBe('unknown');
+    ).toBe('mismatch');
+    expect(
+      presetCompatibility(
+        { name: '0.20mm Standard @BBL P1S' },
+        'process',
+        'Snapmaker U1 0.4 nozzle',
+        idx,
+      ),
+    ).toBe('mismatch');
+    expect(
+      presetCompatibility(
+        { name: 'Bambu PLA Basic @BBL X1C' },
+        'filament',
+        'Snapmaker U1 0.4 nozzle',
+        idx,
+      ),
+    ).toBe('mismatch');
+  });
+
+  it('keeps an Orca Cloud Snapmaker process as a match via compatible_printers', () => {
+    const snapmaker = 'Snapmaker U1 0.4 nozzle';
+    expect(
+      presetCompatibility(
+        { name: '0.20mm Standard @Snapmaker U1', compatible_printers: [snapmaker] },
+        'process',
+        snapmaker,
+        idx,
+      ),
+    ).toBe('match');
   });
 
   it('falls back to raw-token comparison for a model not yet in the registry', () => {

@@ -178,8 +178,21 @@ export function SliceJobTrackerProvider({ children }: { children: ReactNode }) {
         // firing on essentially every slice (3MF inputs trigger the
         // embedded-settings fallback as a normal path) and just added
         // noise — see the trailing yellow toast complaint, removed.
+        const splitCount =
+          state.result && 'library_file_ids' in state.result && state.result.library_file_ids
+            ? state.result.library_file_ids.length
+            : state.result && 'archive_ids' in state.result && state.result.archive_ids
+              ? state.result.archive_ids.length
+              : 0;
         showToast(
-          t('slice.completedToast', 'Sliced {{name}}', { name: prettifyFilename(job.sourceName) }),
+          splitCount > 1
+            ? t('slice.completedToastSplit', 'Sliced {{count}} plates from {{name}}', {
+                count: splitCount,
+                name: prettifyFilename(job.sourceName),
+              })
+            : t('slice.completedToast', 'Sliced {{name}}', {
+                name: prettifyFilename(job.sourceName),
+              }),
           'success',
         );
       } else if (state.status === 'failed') {

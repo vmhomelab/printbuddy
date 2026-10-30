@@ -113,10 +113,9 @@ services:
       #- PRINTBUDDY_EXTERNAL_ROOTS=
       #
       # Slicer API sidecar (optional — Settings → "Use Slicer API" toggles this on).
-      # Default points at the OrcaSlicer sidecar on the docker host; change if you
-      # run the sidecar on a different host/port. The matching docker-compose.yml
-      # for the sidecars lives under slicer-api/ in this repository.
-      #- SLICER_API_URL=http://localhost:3003
+      # From inside this container use the Compose service DNS name on port 3000.
+      # Host-side access is localhost:3003 (see slicer-api/docker-compose.yml).
+      #- SLICER_API_URL=http://orca-slicer-api:3000
       #
       # MFA at-rest encryption key (#1219). Auto-generated to
       # DATA_DIR/.mfa_encryption_key on first startup if unset. Override here
