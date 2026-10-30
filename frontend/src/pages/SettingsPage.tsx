@@ -1809,6 +1809,7 @@ export function SettingsPage() {
                       <option value="oled">{t('settings.bgOled')}</option>
                       <option value="slate">{t('settings.bgSlate')}</option>
                       <option value="forest">{t('settings.bgForest')}</option>
+                      <option value="christmas">{t('settings.bgChristmas')}</option>
                     </select>
                   </div>
                   <div>
@@ -1824,6 +1825,7 @@ export function SettingsPage() {
                       <option value="orange">{t('settings.accentOrange')}</option>
                       <option value="purple">{t('settings.accentPurple')}</option>
                       <option value="red">{t('settings.accentRed')}</option>
+                      <option value="christmas">{t('settings.accentChristmas')}</option>
                     </select>
                   </div>
                   <div>
@@ -1836,6 +1838,7 @@ export function SettingsPage() {
                       <option value="classic">{t('settings.styleClassic')}</option>
                       <option value="glow">{t('settings.styleGlow')}</option>
                       <option value="vibrant">{t('settings.styleVibrant')}</option>
+                      <option value="christmas">{t('settings.styleChristmas')}</option>
                     </select>
                   </div>
                 </div>
@@ -1858,6 +1861,7 @@ export function SettingsPage() {
                       <option value="neutral">{t('settings.bgNeutral')}</option>
                       <option value="warm">{t('settings.bgWarm')}</option>
                       <option value="cool">{t('settings.bgCool')}</option>
+                      <option value="christmas">{t('settings.bgChristmas')}</option>
                     </select>
                   </div>
                   <div>
@@ -1873,6 +1877,7 @@ export function SettingsPage() {
                       <option value="orange">{t('settings.accentOrange')}</option>
                       <option value="purple">{t('settings.accentPurple')}</option>
                       <option value="red">{t('settings.accentRed')}</option>
+                      <option value="christmas">{t('settings.accentChristmas')}</option>
                     </select>
                   </div>
                   <div>
@@ -1885,6 +1890,7 @@ export function SettingsPage() {
                       <option value="classic">{t('settings.styleClassic')}</option>
                       <option value="glow">{t('settings.styleGlow')}</option>
                       <option value="vibrant">{t('settings.styleVibrant')}</option>
+                      <option value="christmas">{t('settings.styleChristmas')}</option>
                     </select>
                   </div>
                 </div>

@@ -3,10 +3,10 @@ import { api } from '../api/client';
 import { appAssetPath } from '../utils/assetPaths';
 
 type ThemeMode = 'light' | 'dark';
-type ThemeStyle = 'classic' | 'glow' | 'vibrant';
-type DarkBackground = 'neutral' | 'warm' | 'cool' | 'oled' | 'slate' | 'forest';
-type LightBackground = 'neutral' | 'warm' | 'cool';
-type ThemeAccent = 'green' | 'teal' | 'blue' | 'orange' | 'purple' | 'red';
+type ThemeStyle = 'classic' | 'glow' | 'vibrant' | 'christmas';
+type DarkBackground = 'neutral' | 'warm' | 'cool' | 'oled' | 'slate' | 'forest' | 'christmas';
+type LightBackground = 'neutral' | 'warm' | 'cool' | 'christmas';
+type ThemeAccent = 'green' | 'teal' | 'blue' | 'orange' | 'purple' | 'red' | 'christmas';
 
 interface ThemeContextType {
   mode: ThemeMode;
@@ -152,9 +152,9 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     // Remove all theme classes
     root.classList.remove(
       'dark',
-      'style-classic', 'style-glow', 'style-vibrant',
-      'bg-neutral', 'bg-warm', 'bg-cool', 'bg-oled', 'bg-slate', 'bg-forest',
-      'accent-green', 'accent-teal', 'accent-blue', 'accent-orange', 'accent-purple', 'accent-red'
+      'style-classic', 'style-glow', 'style-vibrant', 'style-christmas',
+      'bg-neutral', 'bg-warm', 'bg-cool', 'bg-oled', 'bg-slate', 'bg-forest', 'bg-christmas',
+      'accent-green', 'accent-teal', 'accent-blue', 'accent-orange', 'accent-purple', 'accent-red', 'accent-christmas'
     );
 
     // Apply based on current mode

@@ -132,6 +132,18 @@ html {
   --border-color: #c8d4e0;
 }
 
+/* Christmas - fresh snow with warm candlelight undertones */
+.bg-christmas {
+  --bg-primary: #f7f4ee;
+  --bg-secondary: #fffdf8;
+  --bg-tertiary: #e9e2d4;
+  --text-primary: #1f2a22;
+  --text-secondary: #4d5a50;
+  --text-muted: #6e786e;
+  --text-tertiary: #949c92;
+  --border-color: #dcd3c2;
+}
+
 /* Dark mode backgrounds */
 .dark.bg-neutral {
   --bg-primary: #1a1a1a;
@@ -199,6 +211,18 @@ html {
   --border-color: #2a3d30;
 }
 
+/* Christmas - deep fir green at midnight, snow-white text */
+.dark.bg-christmas {
+  --bg-primary: #0d1512;
+  --bg-secondary: #16241d;
+  --bg-tertiary: #223a2e;
+  --text-primary: #f6f1e7;
+  --text-secondary: #b9b39c;
+  --text-muted: #8f9a8c;
+  --text-tertiary: #4f6656;
+  --border-color: #2a4536;
+}
+
 /* Printer card control buttons: stack only when they clip */
 .printer-control-buttons-container {
   container-type: inline-size;
@@ -242,6 +266,81 @@ html {
   --card-shadow: 0 10px 40px rgba(0, 0, 0, 0.6), 0 4px 12px rgba(0, 0, 0, 0.4);
 }
 
+/* Christmas - candlelight glow on cards, falling snow and a string of fairy lights */
+.style-christmas {
+  --card-shadow: 0 4px 14px rgba(0, 0, 0, 0.1), 0 0 24px rgba(212, 42, 60, 0.1), 0 0 2px rgba(234, 179, 8, 0.35);
+  --snow-color: rgba(148, 163, 184, 0.55);
+}
+
+.dark.style-christmas {
+  --card-shadow: 0 8px 30px rgba(0, 0, 0, 0.55), 0 0 36px rgba(212, 42, 60, 0.14), 0 0 2px rgba(234, 179, 8, 0.45);
+  --snow-color: rgba(255, 255, 255, 0.8);
+}
+
+/* Snowfall: three layers of radial-gradient flakes drifting at different speeds.
+   Fixed overlay with pointer-events disabled so it never blocks interaction. */
+.style-christmas body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  pointer-events: none;
+  background-image:
+    radial-gradient(3px 3px at 20px 30px, var(--snow-color), transparent 60%),
+    radial-gradient(2.5px 2.5px at 140px 90px, var(--snow-color), transparent 60%),
+    radial-gradient(4px 4px at 80px 160px, var(--snow-color), transparent 60%),
+    radial-gradient(2px 2px at 190px 220px, var(--snow-color), transparent 60%),
+    radial-gradient(3.5px 3.5px at 260px 60px, var(--snow-color), transparent 60%),
+    radial-gradient(2px 2px at 320px 280px, var(--snow-color), transparent 60%);
+  background-size: 240px 240px, 300px 300px, 360px 360px, 240px 240px, 340px 340px, 400px 400px;
+  opacity: 0.85;
+  animation: christmas-snow 30s linear infinite;
+}
+
+/* Fairy lights along the top edge */
+.style-christmas body::after {
+  content: '';
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 6px;
+  z-index: 31;
+  pointer-events: none;
+  background-image:
+    radial-gradient(circle at 12px 3px, #ef4444 2.5px, transparent 3.5px),
+    radial-gradient(circle at 36px 3px, #facc15 2.5px, transparent 3.5px),
+    radial-gradient(circle at 60px 3px, #22c55e 2.5px, transparent 3.5px),
+    radial-gradient(circle at 84px 3px, #60a5fa 2.5px, transparent 3.5px);
+  background-size: 96px 6px;
+  animation: christmas-lights 2.4s ease-in-out infinite alternate;
+}
+
+@keyframes christmas-snow {
+  from {
+    background-position: 0 0, 0 0, 0 0, 0 0, 0 0, 0 0;
+  }
+  to {
+    background-position: 40px 240px, -60px 300px, 30px 360px, -20px 240px, 50px 340px, -40px 400px;
+  }
+}
+
+@keyframes christmas-lights {
+  from {
+    filter: brightness(0.75) drop-shadow(0 0 2px rgba(250, 204, 21, 0.4));
+  }
+  to {
+    filter: brightness(1.25) drop-shadow(0 0 5px rgba(250, 204, 21, 0.8));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .style-christmas body::before,
+  .style-christmas body::after {
+    animation: none;
+  }
+}
+
 /* ============================================
    LAYER 3: ACCENT COLORS
    ============================================ */
@@ -280,6 +379,12 @@ html {
   --accent: #ef4444;
   --accent-light: #f87171;
   --accent-dark: #dc2626;
+}
+
+.accent-christmas {
+  --accent: #d42a3c;
+  --accent-light: #e85565;
+  --accent-dark: #b01e2f;
 }
 
 body {
