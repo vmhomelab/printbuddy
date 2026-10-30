@@ -93,6 +93,8 @@ services:
       # Moonraker subnet-scan ports (comma-separated). Default 7125,80 covers
       # CosmOS / Fluidd reverse-proxies. Hits still require Moonraker JSON.
       #- DISCOVERY_MOONRAKER_PORTS=7125,80
+      # OctoPrint subnet-scan ports. Default 5000,80 (80 covers OctoPi's haproxy).
+      #- DISCOVERY_OCTOPRINT_PORTS=5000,80
       # Virtual printer: Set to the Docker host's IP when using bridge mode (ports:).
       # Required for FTP passive mode to work behind NAT.
       # Example: VIRTUAL_PRINTER_PASV_ADDRESS=192.168.1.100

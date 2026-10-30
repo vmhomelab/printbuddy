@@ -308,4 +308,63 @@ describe('AddPrinterModal Discovery', () => {
       expect(screen.getByDisplayValue('voron')).toBeInTheDocument();
     });
   });
+
+  it('scans for OctoPrint and asks for the API key after selecting a result', async () => {
+    let scanBody: Record<string, unknown> | null = null;
+    server.use(
+      http.get('/api/v1/discovery/info', () => {
+        return HttpResponse.json({
+          is_docker: true,
+          ssdp_running: false,
+          scan_running: false,
+          moonraker_scan_running: false,
+          octoprint_scan_running: false,
+          subnets: ['10.0.0.0/24'],
+        });
+      }),
+      http.post('/api/v1/discovery/octoprint/scan', async ({ request }) => {
+        scanBody = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json({ running: true, scanned: 0, total: 1 });
+      }),
+      http.get('/api/v1/discovery/octoprint/scan/status', () => {
+        return HttpResponse.json({ running: false, scanned: 1, total: 1 });
+      }),
+      http.get('/api/v1/discovery/octoprint/printers', () => {
+        return HttpResponse.json([
+          {
+            serial: 'OCTOPRINT-10-0-0-60',
+            name: 'OctoPrint on octopi',
+            ip_address: '10.0.0.60',
+            api_url: 'http://10.0.0.60',
+            needs_auth: true,
+            model: null,
+            discovered_at: '2026-10-30T00:00:00Z',
+          },
+        ]);
+      }),
+      http.post('/api/v1/discovery/octoprint/scan/stop', () => {
+        return HttpResponse.json({ running: false, scanned: 1, total: 1 });
+      }),
+    );
+
+    render(<PrintersPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('X1 Carbon')).toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByText(/add printer/i));
+    await userEvent.selectOptions(screen.getByLabelText(/printer type/i), 'octoprint');
+    await userEvent.click(await screen.findByText(/scan subnet for octoprint/i));
+
+    await userEvent.click(await screen.findByText('OctoPrint on octopi'));
+
+    await waitFor(() => {
+      expect(screen.getByDisplayValue('10.0.0.60')).toBeInTheDocument();
+      expect(screen.getByDisplayValue('http://10.0.0.60')).toBeInTheDocument();
+    });
+    expect(screen.getByLabelText('OctoPrint API key')).toBeRequired();
+    expect(screen.queryByText(/no octoprint instances found/i)).not.toBeInTheDocument();
+    expect(scanBody).toMatchObject({ subnet: '10.0.0.0/24', ports: [5000, 80] });
+  });
 });

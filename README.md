@@ -65,6 +65,7 @@ Current state:
 - Bambu Lab support from the original foundation ✅
 - Prusa support added via PrusaLink ✅(Prusa Connect not tested)
 - Klipper (open fimrware) support being added ⌛ (not officially supported yet)
+- OctoPrint (Marlin / RepRap printers) support added ⌛ (in testing)
 - Provider architecture in progress ⌛
 
 ---
@@ -76,6 +77,7 @@ Current and planned goals include:
 - Multi-printer dashboard
 - Bambu Lab printer support
 - Klipper printer support through Moonraker
+- Marlin / RepRap printer support through OctoPrint
 - Prusa-compatible environments
 - Self-hosted deployment
 - Docker-based setup
@@ -205,6 +207,7 @@ Planned providers:
 | `klipper` | Moonraker-backed Klipper printer status and control | In progress ⌛ |
 | `prusa` | PrusaLink support | Implemented ✅ |
 | `elegoo` | CC1 support | In progress ⌛ |
+| `octoprint` | OctoPrint REST API (Marlin / RepRap printers) | In testing ⌛ |
 
 The first implementation step adds the provider and printer metadata to allow printers to be added.
 

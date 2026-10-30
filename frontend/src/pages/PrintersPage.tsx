@@ -6745,6 +6745,7 @@ function AddPrinterModal({
   const [subnet, setSubnet] = useState('');
   const [customSubnet, setCustomSubnet] = useState(false);
   const [moonrakerPorts, setMoonrakerPorts] = useState('7125,80');
+  const [octoprintPorts, setOctoprintPorts] = useState('5000,80');
   const [scanProgress, setScanProgress] = useState({ scanned: 0, total: 0 });
   const [showDiagnostic, setShowDiagnostic] = useState(false);
   const [prusaLinkApiAuthMode, setPrusaLinkApiAuthMode] = useState<PrusaLinkApiAuthMode>('auto');
@@ -6781,6 +6782,8 @@ function AddPrinterModal({
   const isElegooSDCPProvider = form.provider === 'elegoo_sdcp';
   const isOctoPrintProvider = form.provider === 'octoprint';
   const isHttpProvider = isMoonrakerProvider || isPrusaProvider || isElegooSDCPProvider || isOctoPrintProvider;
+  // Providers discovered by an HTTP subnet scan instead of Bambu SSDP.
+  const isHttpScanProvider = isMoonrakerProvider || isOctoPrintProvider;
 
   const buildSubmitPayload = (): PrinterCreate => {
     const ipAddress = form.ip_address.trim();
@@ -6885,7 +6888,31 @@ function AddPrinterModal({
     setScanProgress({ scanned: 0, total: 0 });
 
     try {
-      if (isMoonrakerProvider) {
+      if (isOctoPrintProvider) {
+        const ports = octoprintPorts
+          .split(',')
+          .map((p) => parseInt(p.trim(), 10))
+          .filter((p) => Number.isInteger(p) && p >= 1 && p <= 65535);
+        await discoveryApi.startOctoPrintSubnetScan(subnet, 1.0, ports.length > 0 ? ports : undefined);
+
+        const pollInterval = setInterval(async () => {
+          try {
+            const status = await discoveryApi.getOctoPrintScanStatus();
+            setScanProgress({ scanned: status.scanned, total: status.total });
+
+            const printers = await discoveryApi.getDiscoveredOctoPrintPrinters();
+            setDiscovered(printers);
+
+            if (!status.running) {
+              clearInterval(pollInterval);
+              setDiscovering(false);
+              setHasScanned(true);
+            }
+          } catch (e) {
+            console.error('Failed to get OctoPrint scan status:', e);
+          }
+        }, 500);
+      } else if (isMoonrakerProvider) {
         // Moonraker has no SSDP path — always subnet-scan via HTTP server/info
         const ports = moonrakerPorts
           .split(',')
@@ -6978,7 +7005,17 @@ function AddPrinterModal({
   const selectPrinter = (printer: DiscoveredPrinter) => {
     // Don't pre-fill serial if it's a placeholder (unknown-*) - user needs to enter actual serial
     const serialNumber = printer.serial.startsWith('unknown-') ? '' : printer.serial;
-    if (isMoonrakerProvider) {
+    if (isOctoPrintProvider) {
+      setForm({
+        ...form,
+        name: printer.name || '',
+        serial_number: '',
+        ip_address: printer.ip_address,
+        api_url: printer.api_url || `http://${printer.ip_address}:5000`,
+        model: '',
+      });
+      setDiscoveryError('');
+    } else if (isMoonrakerProvider) {
       setForm({
         ...form,
         name: printer.name || '',
@@ -7003,8 +7040,10 @@ function AddPrinterModal({
       });
       setDiscoveryError('');
     }
-    // Clear discovery results after selection
+    // Clear discovery results after selection; reset hasScanned so the empty
+    // list is not reported as "no printers found".
     setDiscovered([]);
+    setHasScanned(false);
   };
 
   // Cleanup discovery on unmount
@@ -7013,6 +7052,7 @@ function AddPrinterModal({
       discoveryApi.stopDiscovery().catch(() => {});
       discoveryApi.stopSubnetScan().catch(() => {});
       discoveryApi.stopMoonrakerSubnetScan().catch(() => {});
+      discoveryApi.stopOctoPrintSubnetScan().catch(() => {});
     };
   }, []);
 
@@ -7120,9 +7160,9 @@ function AddPrinterModal({
           </div>
 
           {/* Discovery Section — Bambu (SSDP/subnet) or Moonraker (subnet HTTP) */}
-          {(!isHttpProvider || isMoonrakerProvider) && (
+          {(!isHttpProvider || isHttpScanProvider) && (
           <div className="mb-4 pb-4 border-b border-bambu-dark-tertiary">
-            {(isDocker || isMoonrakerProvider) && (
+            {(isDocker || isHttpScanProvider) && (
               <div className="mb-3">
                 <label className="block text-sm text-bambu-gray mb-1">
                   {t('printers.discovery.subnetToScan')}
@@ -7172,10 +7212,31 @@ function AddPrinterModal({
                   </div>
                 )}
                 <p className="mt-1 text-xs text-bambu-gray">
-                  {isMoonrakerProvider
-                    ? t('printers.discovery.moonrakerSubnetNote')
-                    : t('printers.discovery.dockerNote')}
+                  {isOctoPrintProvider
+                    ? t('printers.discovery.octoprintSubnetNote')
+                    : isMoonrakerProvider
+                      ? t('printers.discovery.moonrakerSubnetNote')
+                      : t('printers.discovery.dockerNote')}
                 </p>
+                {isOctoPrintProvider && (
+                  <div className="mt-3">
+                    <label htmlFor="octoprint_scan_ports" className="block text-sm text-bambu-gray mb-1">
+                      {t('printers.discovery.moonrakerPorts')}
+                    </label>
+                    <input
+                      id="octoprint_scan_ports"
+                      type="text"
+                      className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
+                      value={octoprintPorts}
+                      onChange={(e) => setOctoprintPorts(e.target.value)}
+                      placeholder="5000,80"
+                      disabled={discovering}
+                    />
+                    <p className="mt-1 text-xs text-bambu-gray">
+                      {t('printers.discovery.octoprintPortsNote')}
+                    </p>
+                  </div>
+                )}
                 {isMoonrakerProvider && (
                   <div className="mt-3">
                     <label className="block text-sm text-bambu-gray mb-1">
@@ -7201,20 +7262,22 @@ function AddPrinterModal({
               type="button"
               variant="secondary"
               onClick={startDiscovery}
-              disabled={discovering || ((isDocker || isMoonrakerProvider) && !subnet.trim())}
+              disabled={discovering || ((isDocker || isHttpScanProvider) && !subnet.trim())}
               className="w-full"
             >
               {discovering ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin" />
-                  {(isDocker || isMoonrakerProvider) && scanProgress.total > 0
+                  {(isDocker || isHttpScanProvider) && scanProgress.total > 0
                     ? t('printers.discovery.scanProgress', { scanned: scanProgress.scanned, total: scanProgress.total })
                     : t('printers.discovery.scanning')}
                 </>
               ) : (
                 <>
                   <Search className="w-4 h-4" />
-                  {isMoonrakerProvider
+                  {isOctoPrintProvider
+                    ? t('printers.discovery.scanSubnetOctoPrint')
+                    : isMoonrakerProvider
                     ? t('printers.discovery.scanSubnetMoonraker')
                     : isDocker
                       ? t('printers.discovery.scanSubnet')
@@ -7240,14 +7303,14 @@ function AddPrinterModal({
                         {printer.name || printer.serial}
                       </p>
                       <p className="text-xs text-bambu-gray truncate">
-                        {isMoonrakerProvider
-                          ? (printer.api_url || `http://${printer.ip_address}:7125`)
+                        {isHttpScanProvider
+                          ? (printer.api_url || printer.ip_address)
                           : (mapModelCode(printer.model) || t('printers.discovery.unknown'))}
                         {' • '}{printer.ip_address}
                         {printer.needs_auth && (
-                          <span className="text-yellow-500"> • auth</span>
+                          <span className="text-yellow-500"> • {isOctoPrintProvider ? 'API key' : 'auth'}</span>
                         )}
-                        {!isMoonrakerProvider && printer.serial.startsWith('unknown-') && (
+                        {!isHttpScanProvider && printer.serial.startsWith('unknown-') && (
                           <span className="text-yellow-500"> • {t('printers.discovery.serialRequired')}</span>
                         )}
                       </p>
@@ -7260,7 +7323,9 @@ function AddPrinterModal({
 
             {discovering && (
               <p className="mt-2 text-sm text-bambu-gray text-center">
-                {isMoonrakerProvider
+                {isOctoPrintProvider
+                  ? t('printers.discovery.scanningSubnetOctoPrint')
+                  : isMoonrakerProvider
                   ? t('printers.discovery.scanningSubnetMoonraker')
                   : isDocker
                     ? t('printers.discovery.scanningSubnet')
@@ -7270,7 +7335,9 @@ function AddPrinterModal({
 
             {hasScanned && !discovering && discovered.length === 0 && (
               <p className="mt-2 text-sm text-bambu-gray text-center">
-                {isMoonrakerProvider
+                {isOctoPrintProvider
+                  ? t('printers.discovery.noPrintersFoundSubnetOctoPrint')
+                  : isMoonrakerProvider
                   ? t('printers.discovery.noPrintersFoundSubnetMoonraker')
                   : isDocker
                     ? t('printers.discovery.noPrintersFoundSubnet')

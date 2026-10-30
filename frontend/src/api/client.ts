@@ -6811,6 +6811,7 @@ export interface DiscoveryInfo {
   ssdp_running: boolean;
   scan_running: boolean;
   moonraker_scan_running?: boolean;
+  octoprint_scan_running?: boolean;
   subnets: string[];
 }
 
@@ -6862,6 +6863,22 @@ export const discoveryApi = {
 
   getDiscoveredMoonrakerPrinters: () =>
     request<DiscoveredPrinter[]>('/discovery/moonraker/printers'),
+
+  // OctoPrint subnet scanning
+  startOctoPrintSubnetScan: (subnet: string, timeout: number = 1.0, ports?: number[]) =>
+    request<SubnetScanStatus>('/discovery/octoprint/scan', {
+      method: 'POST',
+      body: JSON.stringify({ subnet, timeout, ports }),
+    }),
+
+  getOctoPrintScanStatus: () =>
+    request<SubnetScanStatus>('/discovery/octoprint/scan/status'),
+
+  stopOctoPrintSubnetScan: () =>
+    request<SubnetScanStatus>('/discovery/octoprint/scan/stop', { method: 'POST' }),
+
+  getDiscoveredOctoPrintPrinters: () =>
+    request<DiscoveredPrinter[]>('/discovery/octoprint/printers'),
 };
 
 // Virtual Printer types

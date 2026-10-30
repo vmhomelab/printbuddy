@@ -732,17 +732,12 @@ def _looks_like_moonraker_info(payload: object) -> bool:
     return any(key in data for key in ("klippy_state", "moonraker_version", "klippy_connected"))
 
 
-def parse_moonraker_scan_ports(raw: str | list[int] | None = None) -> list[int]:
-    """Parse Moonraker probe ports from request/env (default ``7125,80``).
-
-    Port 80 is included for Cosmos / Fluidd reverse-proxies that expose the
-    Moonraker API on the UI port. Hits still require Moonraker-shaped JSON, so
-    unrelated :80 services (e.g. copyparty auth walls) are not matched.
-    """
+def _parse_scan_ports(raw: str | list[int] | None, env_var: str, default: list[int]) -> list[int]:
+    """Parse HTTP probe ports from a request value or ``env_var``."""
     if isinstance(raw, list):
         ports = [int(p) for p in raw if isinstance(p, int) or str(p).strip().isdigit()]
     else:
-        value = raw if raw is not None else os.environ.get("DISCOVERY_MOONRAKER_PORTS", "7125,80")
+        value = raw if raw is not None else os.environ.get(env_var, ",".join(str(p) for p in default))
         ports = []
         for part in str(value).split(","):
             part = part.strip()
@@ -751,12 +746,12 @@ def parse_moonraker_scan_ports(raw: str | list[int] | None = None) -> list[int]:
             try:
                 port = int(part)
             except ValueError:
-                logger.warning("Ignoring invalid DISCOVERY_MOONRAKER_PORTS entry: %s", part)
+                logger.warning("Ignoring invalid %s entry: %s", env_var, part)
                 continue
             if 1 <= port <= 65535:
                 ports.append(port)
             else:
-                logger.warning("Ignoring out-of-range Moonraker scan port: %s", port)
+                logger.warning("Ignoring out-of-range %s port: %s", env_var, port)
 
     # Preserve order, drop duplicates
     seen: set[int] = set()
@@ -765,7 +760,25 @@ def parse_moonraker_scan_ports(raw: str | list[int] | None = None) -> list[int]:
         if port not in seen:
             seen.add(port)
             ordered.append(port)
-    return ordered or [7125, 80]
+    return ordered or list(default)
+
+
+def parse_moonraker_scan_ports(raw: str | list[int] | None = None) -> list[int]:
+    """Parse Moonraker probe ports from request/env (default ``7125,80``).
+
+    Port 80 is included for Cosmos / Fluidd reverse-proxies that expose the
+    Moonraker API on the UI port. Hits still require Moonraker-shaped JSON, so
+    unrelated :80 services (e.g. copyparty auth walls) are not matched.
+    """
+    return _parse_scan_ports(raw, "DISCOVERY_MOONRAKER_PORTS", [7125, 80])
+
+
+def parse_octoprint_scan_ports(raw: str | list[int] | None = None) -> list[int]:
+    """Parse OctoPrint probe ports from request/env (default ``5000,80``).
+
+    5000 is OctoPrint's own port; OctoPi images put it behind haproxy on 80.
+    """
+    return _parse_scan_ports(raw, "DISCOVERY_OCTOPRINT_PORTS", [5000, 80])
 
 
 def _moonraker_base_url_for_port(ip: str, port: int) -> str:
@@ -782,6 +795,12 @@ class MoonrakerSubnetScanner:
     with Moonraker/Klipper-shaped JSON count as hits — bare 401/403 auth walls
     on unrelated LAN services are ignored.
     """
+
+    LABEL = "Moonraker"
+
+    @staticmethod
+    def _parse_ports(ports: list[int] | None) -> list[int]:
+        return parse_moonraker_scan_ports(ports)
 
     def __init__(self):
         self._discovered: dict[str, DiscoveredMoonraker] = {}
@@ -824,7 +843,7 @@ class MoonrakerSubnetScanner:
         self._running = True
         self._discovered.clear()
         self._scanned = 0
-        probe_ports = parse_moonraker_scan_ports(ports)
+        probe_ports = self._parse_ports(ports)
 
         try:
             network = ipaddress.ip_network(subnet, strict=False)
@@ -837,7 +856,8 @@ class MoonrakerSubnetScanner:
                 hosts = hosts[:1024]
 
             logger.info(
-                "Starting Moonraker subnet scan of %s (%s hosts, ports=%s)",
+                "Starting %s subnet scan of %s (%s hosts, ports=%s)",
+                self.LABEL,
                 subnet,
                 self._total,
                 probe_ports,
@@ -846,7 +866,7 @@ class MoonrakerSubnetScanner:
             batch_size = 50
             for i in range(0, len(hosts), batch_size):
                 if not self._running:
-                    logger.info("Moonraker scan stopped by user")
+                    logger.info("%s scan stopped by user", self.LABEL)
                     break
 
                 batch = hosts[i : i + batch_size]
@@ -854,7 +874,7 @@ class MoonrakerSubnetScanner:
                 await asyncio.gather(*tasks, return_exceptions=True)
                 self._scanned = min(i + batch_size, len(hosts))
 
-            logger.info("Moonraker scan complete. Found %s instances.", len(self._discovered))
+            logger.info("%s scan complete. Found %s instances.", self.LABEL, len(self._discovered))
             return self.discovered_printers
 
         except ValueError as e:
@@ -946,8 +966,73 @@ class MoonrakerSubnetScanner:
         self._running = False
 
 
+def _octoprint_serial_for_ip(ip: str) -> str:
+    from backend.app.schemas.printer import _synthetic_octoprint_serial
+
+    return _synthetic_octoprint_serial(ip)
+
+
+_OCTOPRINT_FRIENDLY_NAME = re.compile(r"<friendlyName>([^<]+)</friendlyName>")
+
+
+class OctoPrintSubnetScanner(MoonrakerSubnetScanner):
+    """Scanner for discovering OctoPrint instances without an API key.
+
+    The bundled Discovery plugin serves ``/plugin/discovery/discovery.xml``
+    without authentication; its manufacturer is "The OctoPrint Project". When
+    that plugin is disabled the login page title still identifies OctoPrint.
+    """
+
+    LABEL = "OctoPrint"
+
+    @staticmethod
+    def _parse_ports(ports: list[int] | None) -> list[int]:
+        return parse_octoprint_scan_ports(ports)
+
+    async def _do_probe(self, ip: str, timeout: float, ports: list[int]):
+        import httpx
+
+        client_timeout = httpx.Timeout(max(timeout * 2, 2.0), connect=timeout)
+
+        async with httpx.AsyncClient(timeout=client_timeout, follow_redirects=False) as client:
+            for port in ports:
+                base_url = _moonraker_base_url_for_port(ip, port)
+                name: str | None = None
+                try:
+                    response = await client.get(f"{base_url}/plugin/discovery/discovery.xml")
+                    if response.status_code == 200 and "The OctoPrint Project" in response.text:
+                        match = _OCTOPRINT_FRIENDLY_NAME.search(response.text)
+                        name = match.group(1).strip() if match else ""
+                    else:
+                        response = await client.get(f"{base_url}/login")
+                        if response.status_code == 200 and "<title>OctoPrint" in response.text:
+                            name = ""
+                except Exception:
+                    continue
+                if name is None:
+                    continue
+
+                self._record_octoprint_hit(ip, base_url, name)
+                return
+
+    def _record_octoprint_hit(self, ip: str, base_url: str, name: str):
+        if ip in self._discovered:
+            return
+        self._discovered[ip] = DiscoveredMoonraker(
+            serial=_octoprint_serial_for_ip(ip),
+            name=name or f"OctoPrint ({ip})",
+            ip_address=ip,
+            api_url=base_url,
+            # OctoPrint always needs an API key, which discovery cannot provide.
+            needs_auth=True,
+            discovered_at=datetime.now(timezone.utc).isoformat(),
+        )
+        logger.info("Discovered OctoPrint at %s (%s)", ip, base_url)
+
+
 # Global instances
 discovery_service = PrinterDiscoveryService()
 subnet_scanner = SubnetScanner()
 tasmota_scanner = TasmotaScanner()
 moonraker_subnet_scanner = MoonrakerSubnetScanner()
+octoprint_subnet_scanner = OctoPrintSubnetScanner()
