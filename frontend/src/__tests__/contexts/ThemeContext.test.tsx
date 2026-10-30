@@ -36,4 +36,19 @@ describe('ThemeProvider defaults', () => {
     expect(document.documentElement).toHaveClass('dark');
     expect(document.documentElement).toHaveClass('accent-teal');
   });
+
+  it('keeps the Christmas theme opt-in for new installs', () => {
+    render(
+      <ThemeProvider>
+        <ThemeProbe />
+      </ThemeProvider>
+    );
+
+    const root = document.documentElement;
+    expect(root).toHaveClass('style-vibrant');
+    expect(root).toHaveClass('bg-cool');
+    expect(root).not.toHaveClass('style-christmas');
+    expect(root).not.toHaveClass('bg-christmas');
+    expect(root).not.toHaveClass('accent-christmas');
+  });
 });

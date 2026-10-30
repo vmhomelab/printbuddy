@@ -17,6 +17,9 @@ import { Card, CardHeader, CardContent } from './Card';
 import { parseUTCDate } from '../utils/date';
 import { Button } from './Button';
 import { BugReportBubble } from './BugReportBubble';
+import { ChristmasHat } from './ChristmasHat';
+import { useIsChristmasStyle } from '../hooks/useIsChristmasStyle';
+import { ChristmasScene } from './ChristmasScene';
 import { appAssetPath } from '../utils/assetPaths';
 
 const SOURCE_CODE_URL = 'https://github.com/vmhomelab/Printbuddy';
@@ -82,6 +85,7 @@ export function Layout() {
   const navigate = useNavigate();
   const location = useLocation();
   const { mode, toggleMode } = useTheme();
+  const showChristmas = useIsChristmasStyle();
   const { t } = useTranslation();
   const isSidebarCompact = useIsSidebarCompact();
   // Re-render Layout (and the page rendered inside <Outlet />) whenever the
@@ -503,6 +507,8 @@ export function Layout() {
 
   return (
     <div className="flex min-h-screen">
+      {showChristmas && <ChristmasScene />}
+
       {/* Hidden sidebar restore control */}
       {sidebarHidden && (
         <button
@@ -532,11 +538,14 @@ export function Layout() {
             title={t('nav.printers')}
             className="ml-3 flex h-full items-center rounded px-1 cursor-pointer focus:outline-none focus:ring-2 focus:ring-bambu-green"
           >
-            <img
-              src={appAssetPath(mode === 'dark' ? '/img/printbuddy_logo_dark.png' : '/img/printbuddy_logo_light.png')}
-              alt="Printbuddy"
-              className="h-8"
-            />
+            <span className="relative inline-flex">
+              <img
+                src={appAssetPath(mode === 'dark' ? '/img/printbuddy_logo_dark.png' : '/img/printbuddy_logo_light.png')}
+                alt="Printbuddy"
+                className="h-8"
+              />
+              {showChristmas && <ChristmasHat variant="logo" />}
+            </span>
           </NavLink>
         </header>
       )}
@@ -569,11 +578,16 @@ export function Layout() {
               isSidebarCompact || sidebarExpanded ? 'h-24 w-full' : 'h-12 w-12'
             }`}
           >
-            <img
-              src={appAssetPath(sidebarBrandImagePath)}
-              alt="Printbuddy"
-              className={isSidebarCompact || sidebarExpanded ? 'h-16 w-auto' : 'h-8 w-8'}
-            />
+            <span className="relative inline-flex">
+              <img
+                src={appAssetPath(sidebarBrandImagePath)}
+                alt="Printbuddy"
+                className={isSidebarCompact || sidebarExpanded ? 'h-16 w-auto' : 'h-8 w-8'}
+              />
+              {showChristmas && (
+                <ChristmasHat variant={isSidebarCompact || sidebarExpanded ? 'logo' : 'icon'} />
+              )}
+            </span>
           </NavLink>
         </div>
 
@@ -956,7 +970,7 @@ export function Layout() {
       )}
 
       {/* Main content */}
-      <main className={`flex-1 bg-bambu-dark overflow-auto transition-all duration-300 ${
+      <main className={`flex-1 ${showChristmas ? 'bg-transparent' : 'bg-bambu-dark'} overflow-auto transition-all duration-300 ${
         sidebarHidden ? 'ml-0 mt-0' : isSidebarCompact ? 'mt-14' : sidebarExpanded ? 'ml-64' : 'ml-16'
       }`}>
         {/* Debug logging indicator */}

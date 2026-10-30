@@ -334,6 +334,131 @@ html {
   }
 }
 
+/* Winter scene (ChristmasScene component): village along the bottom edge
+   behind the content, sleigh flying across the sky above it. */
+.style-christmas {
+  --scene-hill: #e4ded2;
+  --scene-ground: #ffffff;
+  --scene-snow: #ffffff;
+  --scene-roof: #4a3426;
+  --scene-far-tree: #9fb5a5;
+  --scene-window: #fbbf24;
+  --scene-wall-filter: none;
+}
+
+.dark.style-christmas {
+  --scene-hill: #1c2e25;
+  --scene-ground: #cfd9e2;
+  --scene-snow: #e2e8f0;
+  --scene-roof: #2b1d14;
+  --scene-far-tree: #183026;
+  --scene-window: #fcd34d;
+  --scene-wall-filter: brightness(0.75);
+}
+
+.christmas-scene {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.christmas-moon {
+  display: none;
+  position: absolute;
+  bottom: calc(clamp(180px, 36vh, 360px) + 2vh);
+  right: 9vw;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  background: #fef9c3;
+  box-shadow: 0 0 40px 14px rgba(254, 243, 199, 0.35);
+}
+
+.dark .christmas-moon {
+  display: block;
+}
+
+.christmas-village {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 100%;
+  height: clamp(180px, 36vh, 360px);
+}
+
+.christmas-village .scene-hill { fill: var(--scene-hill); }
+.christmas-village .scene-ground { fill: var(--scene-ground); }
+.christmas-village .scene-snow { fill: var(--scene-snow); }
+.christmas-village .scene-roof { fill: var(--scene-roof); }
+.christmas-village .scene-far-tree { fill: var(--scene-far-tree); }
+.christmas-village .scene-wall { filter: var(--scene-wall-filter); }
+.christmas-village .scene-tree { filter: var(--scene-wall-filter); }
+
+.christmas-village .scene-window {
+  fill: var(--scene-window);
+  filter: drop-shadow(0 0 6px rgba(251, 191, 36, 0.8));
+}
+
+.christmas-scene .scene-light {
+  animation: christmas-twinkle 1.6s ease-in-out infinite alternate;
+}
+
+.christmas-village .scene-star {
+  filter: drop-shadow(0 0 8px rgba(250, 204, 21, 0.9));
+}
+
+/* The sleigh flies behind the content in a lane chosen by ChristmasScene so it
+   never covers text, cards or buttons (lowest free lane above the rooftops);
+   it crosses for ~18s, then waits off-screen. */
+.christmas-sleigh-track {
+  position: fixed;
+  top: 50vh;
+  left: 0;
+  width: clamp(190px, 20vw, 300px);
+  pointer-events: none;
+  z-index: -1;
+  transition: top 0.8s ease-in-out;
+  animation: christmas-sleigh-fly 40s linear infinite;
+}
+
+.christmas-sleigh {
+  display: block;
+  width: 100%;
+  height: auto;
+  animation: christmas-sleigh-bob 2.2s ease-in-out infinite alternate;
+  filter: drop-shadow(0 0 6px rgba(254, 243, 199, 0.35));
+}
+
+@keyframes christmas-sleigh-fly {
+  0% { transform: translateX(-320px); }
+  45% { transform: translateX(105vw); }
+  100% { transform: translateX(105vw); }
+}
+
+@keyframes christmas-sleigh-bob {
+  from { transform: translateY(-4px) rotate(-2deg); }
+  to { transform: translateY(4px) rotate(1deg); }
+}
+
+@keyframes christmas-twinkle {
+  from { opacity: 0.55; }
+  to { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .christmas-sleigh-track,
+  .christmas-sleigh,
+  .christmas-scene .scene-light {
+    animation: none;
+  }
+
+  .christmas-sleigh-track {
+    transform: translateX(55vw);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .style-christmas body::before,
   .style-christmas body::after {

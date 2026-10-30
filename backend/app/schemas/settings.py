@@ -136,12 +136,18 @@ class AppSettings(BaseModel):
     dark_background: str = Field(
         default="cool", description="Dark mode background: neutral, warm, cool, oled, slate, forest, christmas"
     )
-    dark_accent: str = Field(default="teal", description="Dark mode accent: green, teal, blue, orange, purple, red, christmas")
+    dark_accent: str = Field(
+        default="teal", description="Dark mode accent: green, teal, blue, orange, purple, red, christmas"
+    )
 
     # Light mode theme settings
     light_style: str = Field(default="classic", description="Light mode style: classic, glow, vibrant, christmas")
-    light_background: str = Field(default="neutral", description="Light mode background: neutral, warm, cool, christmas")
-    light_accent: str = Field(default="teal", description="Light mode accent: green, teal, blue, orange, purple, red, christmas")
+    light_background: str = Field(
+        default="neutral", description="Light mode background: neutral, warm, cool, christmas"
+    )
+    light_accent: str = Field(
+        default="teal", description="Light mode accent: green, teal, blue, orange, purple, red, christmas"
+    )
 
     # FTP retry settings for unreliable WiFi connections
     ftp_retry_enabled: bool = Field(default=True, description="Enable automatic retry for FTP operations")

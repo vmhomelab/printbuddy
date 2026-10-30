@@ -9,6 +9,9 @@ import { api, type LoginResponse, type OIDCProvider, type TokenPersistence } fro
 import { Card, CardHeader, CardContent } from '../components/Card';
 import { Button } from '../components/Button';
 import { appAssetPath } from '../utils/assetPaths';
+import { ChristmasHat } from '../components/ChristmasHat';
+import { ChristmasScene } from '../components/ChristmasScene';
+import { useIsChristmasStyle } from '../hooks/useIsChristmasStyle';
 
 type LoginStep = 'credentials' | '2fa' | 'reset-password';
 
@@ -93,6 +96,7 @@ function OIDCProviderButton({
 }
 
 export function LoginPage() {
+  const showChristmas = useIsChristmasStyle();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const { t } = useTranslation();
@@ -372,8 +376,9 @@ export function LoginPage() {
     };
 
     return (
-      <div className="min-h-screen flex items-center justify-center bg-bambu-dark p-4">
-        <div className="max-w-md w-full space-y-8 p-8 bg-gradient-to-br from-bambu-card to-bambu-dark-secondary rounded-xl border border-bambu-dark-tertiary shadow-lg">
+      <div className={`min-h-screen flex items-center justify-center ${showChristmas ? 'bg-transparent' : 'bg-bambu-dark'} p-4`}>
+        {showChristmas && <ChristmasScene />}
+        <div className={`max-w-md w-full space-y-8 p-8 bg-gradient-to-br from-bambu-card to-bambu-dark-secondary rounded-xl border border-bambu-dark-tertiary shadow-lg ${showChristmas ? 'relative bg-bambu-dark-secondary' : ''}`}>
           <div className="text-center">
             <div className="flex items-center justify-center mb-4">
               <div className="w-14 h-14 rounded-full bg-bambu-green/20 flex items-center justify-center">
@@ -452,8 +457,9 @@ export function LoginPage() {
   // ---- Render: 2FA step ----
   if (step === '2fa') {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-bambu-dark p-4">
-        <div className="max-w-md w-full space-y-8 p-8 bg-gradient-to-br from-bambu-card to-bambu-dark-secondary rounded-xl border border-bambu-dark-tertiary shadow-lg">
+      <div className={`min-h-screen flex items-center justify-center ${showChristmas ? 'bg-transparent' : 'bg-bambu-dark'} p-4`}>
+        {showChristmas && <ChristmasScene />}
+        <div className={`max-w-md w-full space-y-8 p-8 bg-gradient-to-br from-bambu-card to-bambu-dark-secondary rounded-xl border border-bambu-dark-tertiary shadow-lg ${showChristmas ? 'relative bg-bambu-dark-secondary' : ''}`}>
           <div className="text-center">
             <div className="flex items-center justify-center mb-4">
               <div className="w-14 h-14 rounded-full bg-bambu-green/20 flex items-center justify-center">
@@ -614,15 +620,19 @@ export function LoginPage() {
 
   // ---- Render: credentials step ----
   return (
-    <div className="min-h-screen flex items-center justify-center bg-bambu-dark p-4">
-      <div className="max-w-md w-full space-y-8 p-8 bg-gradient-to-br from-bambu-card to-bambu-dark-secondary rounded-xl border border-bambu-dark-tertiary shadow-lg">
+    <div className={`min-h-screen flex items-center justify-center ${showChristmas ? 'bg-transparent' : 'bg-bambu-dark'} p-4`}>
+      {showChristmas && <ChristmasScene />}
+      <div className={`max-w-md w-full space-y-8 p-8 bg-gradient-to-br from-bambu-card to-bambu-dark-secondary rounded-xl border border-bambu-dark-tertiary shadow-lg ${showChristmas ? 'relative bg-bambu-dark-secondary' : ''}`}>
         <div className="text-center">
           <div className="flex items-center justify-center gap-3 mb-6" aria-label="Printbuddy">
-            <img
-              src={appAssetPath('/img/printbuddy_icon.png')}
-              alt="Printbuddy app icon"
-              className="h-12 w-12 rounded-xl object-contain"
-            />
+            <span className="relative inline-flex">
+              <img
+                src={appAssetPath('/img/printbuddy_icon.png')}
+                alt="Printbuddy app icon"
+                className="h-12 w-12 rounded-xl object-contain"
+              />
+              {showChristmas && <ChristmasHat variant="icon" />}
+            </span>
             <div className="text-left leading-none">
               <div className="text-2xl font-extrabold tracking-tight text-white">
                 Print<span className="text-bambu-green-light">buddy</span>

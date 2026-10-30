@@ -7,6 +7,9 @@ The historical upstream changelog is preserved after that section for fork/upstr
 
 ### Unreleased
 
+#### Added
+- Added an opt-in Christmas theme. Settings → Appearance now offers a "Christmas" background, a Christmas red accent and a "Christmas (snowfall)" style for dark and light mode. The style adds falling snow, fairy lights along the top edge, a Santa hat on the Printbuddy logo (sidebar and login) and a snowy village with a decorated tree and Santa's sleigh. The sleigh flies behind the content in a lane free of text and controls, and is hidden on pages without one. Animations respect reduced-motion. Defaults are unchanged, so new installs and updates keep the regular theme until the Christmas options are picked.
+
 #### Changed
 - Swept residual upstream identity strings from code, config, docs, tests, install scripts, workflow metadata, and committed frontend assets. Added a repository-wide regression test so the old project/user strings cannot reappear in tracked text files.
 - Added prominent `Source code` links to the authenticated sidebar footer and unauthenticated login flows so network users can reach Printbuddy's complete corresponding source from the UI for AGPL-3.0 section 13.

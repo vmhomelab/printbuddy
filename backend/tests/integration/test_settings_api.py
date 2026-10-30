@@ -281,6 +281,25 @@ class TestSettingsAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_christmas_theme_can_be_selected(self, async_client: AsyncClient):
+        """The Christmas theme is opt-in: selectable, but never a default."""
+        christmas = {
+            "dark_style": "christmas",
+            "dark_background": "christmas",
+            "dark_accent": "christmas",
+            "light_style": "christmas",
+            "light_background": "christmas",
+            "light_accent": "christmas",
+        }
+        response = await async_client.put("/api/v1/settings/", json=christmas)
+
+        assert response.status_code == 200
+        result = response.json()
+        for key, value in christmas.items():
+            assert result[key] == value
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_settings_persist_after_update(self, async_client: AsyncClient):
         """CRITICAL: Verify settings changes persist across requests."""
         # Update settings
