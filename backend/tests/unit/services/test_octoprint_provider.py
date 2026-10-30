@@ -359,3 +359,25 @@ def test_sdcard_storage_is_addressed_explicitly(fake, client):
 
     assert client.list_files("/", storage="sdcard") == []
     assert fake.calls[-1]["path"] == "/api/files/sdcard"
+
+
+@pytest.mark.parametrize(("speed", "gcode"), [(100, "M106 S255"), (50, "M106 S128"), (0, "M107")])
+def test_part_fan_speed_maps_to_m106(fake, client, speed, gcode):
+    fake.routes[("POST", "/api/printer/command")] = (204, None)
+
+    assert client.set_fan_speed("part", speed) is True
+
+    assert fake.calls[-1]["json"] == {"commands": [gcode]}
+
+
+def test_other_fans_are_not_supported(client):
+    with pytest.raises(ValueError):
+        client.set_fan_speed("chamber", 50)
+
+
+def test_home_axes_uses_printhead_command(fake, client):
+    fake.routes[("POST", "/api/printer/printhead")] = (204, None)
+
+    assert client.home_axes(["x", "y"]) is True
+
+    assert fake.calls[-1]["json"] == {"command": "home", "axes": ["x", "y"]}

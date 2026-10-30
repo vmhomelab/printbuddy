@@ -227,6 +227,50 @@ class TestPrintersAPI:
         result = await db_session.execute(select(Printer).where(Printer.serial_number == "00M09A999999999"))
         assert result.scalar_one_or_none() is None, "Failed-probe printer must not be persisted"
 
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_create_octoprint_printer_reports_missing_permissions(self, async_client: AsyncClient, db_session):
+        data = {"name": "Ender 3", "provider": "octoprint", "ip_address": "192.168.1.60", "auth_token": "key"}
+
+        with patch(
+            "backend.app.services.printer_manager.printer_manager.test_connection",
+            new=AsyncMock(
+                return_value={
+                    "success": False,
+                    "state": None,
+                    "model": "OctoPrint",
+                    "error": "OctoPrintAuthError",
+                    "error_code": "octoprint_permissions_missing",
+                    "missing_permissions": ["PRINT", "CONTROL"],
+                }
+            ),
+        ):
+            response = await async_client.post("/api/v1/printers/", json=data)
+
+        assert response.status_code == 400
+        detail = response.json()["detail"]
+        assert detail["code"] == "octoprint_permissions_missing"
+        assert detail["missing_permissions"] == ["PRINT", "CONTROL"]
+        assert "PRINT, CONTROL" in detail["message"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_create_octoprint_printer_unreachable_uses_generic_code(self, async_client: AsyncClient):
+        data = {"name": "Ender 3", "provider": "octoprint", "ip_address": "192.168.1.60", "auth_token": "key"}
+
+        with patch(
+            "backend.app.services.printer_manager.printer_manager.test_connection",
+            new=AsyncMock(
+                return_value={"success": False, "state": None, "model": "OctoPrint", "error": "ConnectError"}
+            ),
+        ):
+            response = await async_client.post("/api/v1/printers/", json=data)
+
+        assert response.status_code == 400
+        detail = response.json()["detail"]
+        assert detail["code"] == "printer_connection_failed"
+        assert "OctoPrint" in detail["message"]
+
     # ========================================================================
     # Get single endpoint
     # ========================================================================

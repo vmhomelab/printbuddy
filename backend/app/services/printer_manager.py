@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.models.printer import Printer
 from backend.app.services.bambu_mqtt import BambuMQTTClient, MQTTLogEntry, PrinterState, get_stage_name
 from backend.app.services.printer_providers.factory import create_printer_client, normalize_provider
+from backend.app.services.printer_providers.octoprint import OctoPrintAuthError
 
 logger = logging.getLogger(__name__)
 
@@ -717,15 +718,18 @@ class PrinterManager:
             )()
             client = create_printer_client(probe_printer)
             detected_provider_options: dict[str, str] = {}
+            model_label = {
+                "prusalink": "PrusaLink",
+                "prusaconnect": "Prusa Connect Mobile",
+                "elegoo_sdcp": "Elegoo SDCP",
+                "octoprint": "OctoPrint",
+            }.get(provider_name, "Klipper/Moonraker")
             try:
                 if provider_name == "prusalink" and hasattr(client, "detect_api_auth_mode"):
                     detected_provider_options = await asyncio.to_thread(client.detect_api_auth_mode)
+                if provider_name == "octoprint":
+                    await asyncio.to_thread(client.verify_api_key)
                 await asyncio.to_thread(client.connect)
-                model_label = {
-                    "prusalink": "PrusaLink",
-                    "prusaconnect": "Prusa Connect Mobile",
-                    "elegoo_sdcp": "Elegoo SDCP",
-                }.get(provider_name, "Klipper/Moonraker")
                 result = {
                     "success": True,
                     "state": getattr(getattr(client, "state", None), "state", "connected"),
@@ -734,12 +738,18 @@ class PrinterManager:
                 if detected_provider_options:
                     result["provider_options"] = json.dumps(detected_provider_options, separators=(",", ":"))
                 return result
+            except OctoPrintAuthError as exc:
+                return {
+                    "success": False,
+                    "state": None,
+                    "model": model_label,
+                    "error": type(exc).__name__,
+                    "error_code": (
+                        "octoprint_permissions_missing" if exc.missing_permissions else "octoprint_api_key_invalid"
+                    ),
+                    "missing_permissions": exc.missing_permissions,
+                }
             except Exception as exc:
-                model_label = {
-                    "prusalink": "PrusaLink",
-                    "prusaconnect": "Prusa Connect Mobile",
-                    "elegoo_sdcp": "Elegoo SDCP",
-                }.get(provider_name, "Klipper/Moonraker")
                 return {"success": False, "state": None, "model": model_label, "error": type(exc).__name__}
             finally:
                 disconnect = getattr(client, "disconnect", None)

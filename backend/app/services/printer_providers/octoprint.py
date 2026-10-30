@@ -406,6 +406,13 @@ class OctoPrintPrinterClient(PolledLifecycleMixin):
     def home_axes(self, axes: list[str] | None = None) -> bool:
         return self._command("api/printer/printhead", {"command": "home", "axes": axes or ["x", "y", "z"]})
 
+    def set_fan_speed(self, fan: str, speed: int) -> bool:
+        # Plain Marlin/RepRap firmware only exposes the part cooling fan via M106.
+        if fan not in {"part", "model", "model_fan", "cooling"}:
+            raise ValueError("OctoPrint printers only support the part cooling fan")
+        pwm = round(max(0, min(int(speed), 100)) * 255 / 100)
+        return self.send_gcode(f"M106 S{pwm}" if pwm else "M107")
+
     def set_nozzle_temperature(self, target: int | float) -> bool:
         return self._command("api/printer/tool", {"command": "target", "targets": {"tool0": int(target)}})
 

@@ -255,6 +255,34 @@ class TestHomeAxesAPI:
             assert response.status_code == 200
             mock_client.send_gcode.assert_called_once_with(expected)
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("axes", "expected"),
+        [("x", ["x"]), ("z", ["z"]), ("xy", ["x", "y"]), ("all", ["x", "y", "z"])],
+    )
+    async def test_home_axes_uses_octoprint_home_command(
+        self, async_client: AsyncClient, printer_factory, axes, expected
+    ):
+        printer = await printer_factory(name="Ender 3", provider="octoprint")
+        mock_client = MagicMock()
+        mock_client.home_axes.return_value = True
+        with patch("backend.app.api.routes.printers.printer_manager") as mock_pm:
+            mock_pm.get_client.return_value = mock_client
+            response = await async_client.post(f"/api/v1/printers/{printer.id}/home-axes?axes={axes}")
+            assert response.status_code == 200
+            mock_client.home_axes.assert_called_once_with(expected)
+            mock_client.send_gcode.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_home_axes_reports_octoprint_conflict(self, async_client: AsyncClient, printer_factory):
+        printer = await printer_factory(name="Ender 3", provider="octoprint")
+        mock_client = MagicMock()
+        mock_client.home_axes.return_value = False
+        with patch("backend.app.api.routes.printers.printer_manager") as mock_pm:
+            mock_pm.get_client.return_value = mock_client
+            response = await async_client.post(f"/api/v1/printers/{printer.id}/home-axes?axes=all")
+            assert response.status_code == 409
+
 
 class TestExtrudeAPI:
     @pytest.mark.asyncio

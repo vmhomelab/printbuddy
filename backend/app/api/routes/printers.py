@@ -314,6 +314,33 @@ async def create_printer(
                 "Could not connect to Elegoo SDCP. Verify the IP/hostname, confirm the printer is reachable on "
                 "the local network, and check that SDCP WebSocket port 3030 is accessible. The printer was not added."
             )
+        elif printer_data.provider == "octoprint":
+            error_code = test_result.get("error_code")
+            missing_permissions = test_result.get("missing_permissions") or []
+            if error_code == "octoprint_api_key_invalid":
+                failure_message = (
+                    "OctoPrint did not accept the API key. Copy a user or application key from "
+                    "OctoPrint settings. The printer was not added."
+                )
+            elif error_code == "octoprint_permissions_missing":
+                failure_message = (
+                    "The OctoPrint API key is missing permissions: "
+                    f"{', '.join(missing_permissions)}. The printer was not added."
+                )
+            else:
+                failure_message = (
+                    "Could not connect to OctoPrint. Verify the OctoPrint URL (usually http://host:5000 "
+                    "or http://octopi.local) and the API key. The printer was not added."
+                )
+            if error_code:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "code": error_code,
+                        "message": failure_message,
+                        "missing_permissions": missing_permissions,
+                    },
+                )
         else:
             failure_message = (
                 "Could not connect to Moonraker. Verify the IP/hostname, Moonraker URL "
@@ -3817,6 +3844,13 @@ async def home_axes(
         raise HTTPException(400, "Printer not connected")
 
     provider = str(getattr(printer, "provider", "") or "").lower()
+    if provider == "octoprint":
+        # OctoPrint has a dedicated home command that respects its printer
+        # profile (axis inversion, custom home G-code) instead of raw G28.
+        home_axes = ["x", "y", "z"] if axes == "all" else list(axes)
+        if not client.home_axes(home_axes):
+            raise HTTPException(409, "OctoPrint rejected the home command (printer busy or not operational)")
+        return {"success": True, "message": f"Home {axes.upper()} command sent"}
     script = axis_scripts[axes] if provider in {"klipper", "mainsail", "fluidd", "prusalink"} else "G28"
     if not client.send_gcode(script):
         raise HTTPException(500, "Failed to send home command")
