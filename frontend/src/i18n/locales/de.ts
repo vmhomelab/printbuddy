@@ -301,6 +301,8 @@ export default {
       failedToDelete: 'Drucker konnte nicht gelöscht werden',
       failedToAdd: 'Drucker konnte nicht hinzugefügt werden',
       connectionFailedNotAdded: 'Keine Verbindung zum Drucker möglich. Prüfen Sie IP-Adresse, Seriennummer und Zugangscode und stellen Sie sicher, dass der Nur-LAN-Modus aktiv ist. Der Drucker wurde nicht hinzugefügt.',
+      octoprintApiKeyInvalid: 'OctoPrint hat den API-Key nicht akzeptiert. Kopieren Sie einen Benutzer- oder Anwendungs-Key aus den OctoPrint-Einstellungen. Der Drucker wurde nicht hinzugefügt.',
+      octoprintPermissionsMissing: 'Dem OctoPrint-API-Key fehlen Berechtigungen: {{permissions}}. Erteilen Sie sie dem zugehörigen Benutzer in OctoPrint. Der Drucker wurde nicht hinzugefügt.',
       failedToUpdate: 'Drucker konnte nicht aktualisiert werden',
       commandSent: 'Befehl gesendet',
       failedToSendCommand: 'Befehl konnte nicht gesendet werden',

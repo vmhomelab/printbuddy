@@ -301,6 +301,8 @@ export default {
       failedToDelete: 'Échec de la suppression',
       failedToAdd: 'Échec de l\'ajout',
       connectionFailedNotAdded: 'Connexion à l\'imprimante impossible. Vérifiez l\'IP, le numéro de série et le code d\'accès, et confirmez que le mode LAN-only est activé. L\'imprimante n\'a pas été ajoutée.',
+      octoprintApiKeyInvalid: 'OctoPrint n\'a pas accepté la clé API. Copiez une clé utilisateur ou d\'application depuis les paramètres d\'OctoPrint. L\'imprimante n\'a pas été ajoutée.',
+      octoprintPermissionsMissing: 'Il manque des autorisations à la clé API OctoPrint : {{permissions}}. Accordez-les à l\'utilisateur de la clé dans OctoPrint. L\'imprimante n\'a pas été ajoutée.',
       failedToUpdate: 'Échec de la mise à jour',
       commandSent: 'Commande envoyée',
       failedToSendCommand: 'Échec de l\'envoi de la commande',

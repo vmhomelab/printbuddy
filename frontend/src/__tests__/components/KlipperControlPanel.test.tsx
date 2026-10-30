@@ -41,6 +41,14 @@ const prusaPrinter = {
   updated_at: '2026-01-01T00:00:00Z',
 } as Printer;
 
+const octoPrintPrinter = {
+  ...prusaPrinter,
+  id: 9,
+  name: 'Ender 3',
+  model: 'Creality Ender 3',
+  provider: 'octoprint',
+} as Printer;
+
 const fluiddPrinter = {
   ...prusaPrinter,
   id: 7,
@@ -79,6 +87,20 @@ describe('KlipperControlPanel PrusaLink controls', () => {
     await user.click(screen.getByRole('button', { name: /extrude/i }));
 
     await waitFor(() => expect(api.extrude).toHaveBeenCalledWith(3, 10, 300));
+    expect(api.klipperExtrude).not.toHaveBeenCalled();
+  });
+
+  it('uses provider-neutral home and extrude endpoints for OctoPrint printers', async () => {
+    const user = userEvent.setup();
+
+    render(<KlipperControlPanel printer={octoPrintPrinter} status={{ connected: true }} showToast={vi.fn()} />);
+
+    await user.click(screen.getByTitle('Home All'));
+    await user.click(screen.getByRole('button', { name: /extrude/i }));
+
+    await waitFor(() => expect(api.homeAxes).toHaveBeenCalledWith(9, 'all'));
+    await waitFor(() => expect(api.extrude).toHaveBeenCalledWith(9, 10, 300));
+    expect(api.klipperHome).not.toHaveBeenCalled();
     expect(api.klipperExtrude).not.toHaveBeenCalled();
   });
 

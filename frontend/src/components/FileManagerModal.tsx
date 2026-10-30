@@ -555,13 +555,16 @@ export function FileManagerModal({ printerId, printerName, printerProvider, prin
     setFilesToDelete(Array.from(selectedFiles));
   };
 
-  // Quick navigation buttons for common directories
-  const quickDirs = [
-    { path: '/', label: 'Root' },
-    { path: '/cache', label: 'Cache' },
-    { path: '/model', label: 'Models' },
-    { path: '/timelapse', label: 'Timelapse' },
-  ];
+  // Quick navigation buttons for common directories. OctoPrint's upload
+  // folder has no fixed sub-directories, so only Root applies there.
+  const quickDirs = printerProvider === 'octoprint'
+    ? [{ path: '/', label: 'Root' }]
+    : [
+        { path: '/', label: 'Root' },
+        { path: '/cache', label: 'Cache' },
+        { path: '/model', label: 'Models' },
+        { path: '/timelapse', label: 'Timelapse' },
+      ];
 
   return (
     <div

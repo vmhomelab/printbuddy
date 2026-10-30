@@ -40,6 +40,9 @@ export function KlipperControlPanel({ printer, status, showToast }: Props) {
   const [extrudeSpeed, setExtrudeSpeed] = useState(5);
   const [nozzleInput, setNozzleInput] = useState('');
   const [bedInput, setBedInput] = useState('');
+  // PrusaLink and OctoPrint have no Klipper-specific routes (z-offset, macros);
+  // they use the provider-neutral jog/home/extrude endpoints.
+  const usesGenericControls = printer.provider === 'prusalink' || printer.provider === 'octoprint';
 
   const onError = () =>
     showToast(t('printers.toast.failedToSendCommand', 'Command failed'), 'error');
@@ -52,7 +55,7 @@ export function KlipperControlPanel({ printer, status, showToast }: Props) {
 
   const homeMut = useMutation({
     mutationFn: (axes?: string[]) => {
-      if (printer.provider === 'prusalink') {
+      if (usesGenericControls) {
         const normalized = axes?.join('').toLowerCase() || 'all';
         const prusaAxes = normalized === 'xy' || normalized === 'x' || normalized === 'y' || normalized === 'z'
           ? normalized
@@ -67,7 +70,7 @@ export function KlipperControlPanel({ printer, status, showToast }: Props) {
   const extrudeMut = useMutation({
     mutationFn: (length: number) => {
       const speed = extrudeSpeed * 60;
-      return printer.provider === 'prusalink'
+      return usesGenericControls
         ? api.extrude(printer.id, length, speed)
         : api.klipperExtrude(printer.id, length, speed);
     },
@@ -118,7 +121,7 @@ export function KlipperControlPanel({ printer, status, showToast }: Props) {
   const inputClass =
     'w-16 rounded px-2 py-1 text-sm bg-[var(--bg-primary)] border border-[var(--border-color)] focus:outline-none focus:border-[var(--accent)]';
 
-  if (printer.provider === 'prusalink') {
+  if (usesGenericControls) {
     const prusaBusy = moveMut.isPending || homeMut.isPending || disableSteppersMut.isPending;
 
     return (

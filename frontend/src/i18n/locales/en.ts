@@ -301,6 +301,8 @@ export default {
       failedToDelete: 'Failed to delete printer',
       failedToAdd: 'Failed to add printer',
       connectionFailedNotAdded: 'Could not connect to the printer. Verify the IP, serial number, and access code, and confirm LAN-only mode is on. The printer was not added.',
+      octoprintApiKeyInvalid: 'OctoPrint did not accept the API key. Copy a user or application key from OctoPrint settings. The printer was not added.',
+      octoprintPermissionsMissing: 'The OctoPrint API key is missing permissions: {{permissions}}. Grant them to the key\'s user in OctoPrint. The printer was not added.',
       failedToUpdate: 'Failed to update printer',
       commandSent: 'Command sent',
       failedToSendCommand: 'Failed to send command',

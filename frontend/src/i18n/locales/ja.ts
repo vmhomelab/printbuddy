@@ -300,6 +300,8 @@ export default {
       failedToDelete: 'プリンターの削除に失敗しました',
       failedToAdd: 'プリンターの追加に失敗しました',
       connectionFailedNotAdded: 'プリンターに接続できませんでした。IPアドレス、シリアル番号、アクセスコードを確認し、LAN専用モードが有効になっていることを確認してください。プリンターは追加されていません。',
+      octoprintApiKeyInvalid: 'OctoPrint が API キーを受け付けませんでした。OctoPrint の設定からユーザーキーまたはアプリケーションキーをコピーしてください。プリンターは追加されませんでした。',
+      octoprintPermissionsMissing: 'OctoPrint の API キーに権限が不足しています: {{permissions}}。OctoPrint でキーのユーザーに付与してください。プリンターは追加されませんでした。',
       failedToUpdate: 'プリンターの更新に失敗しました',
       commandSent: 'コマンドを送信しました',
       failedToSendCommand: 'コマンドの送信に失敗しました',

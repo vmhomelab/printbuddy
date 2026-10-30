@@ -301,6 +301,8 @@ export default {
       failedToDelete: 'Falha ao excluir impressora',
       failedToAdd: 'Falha ao adicionar impressora',
       connectionFailedNotAdded: 'Não foi possível conectar à impressora. Verifique o IP, o número de série e o código de acesso, e confirme que o modo somente LAN está ativado. A impressora não foi adicionada.',
+      octoprintApiKeyInvalid: 'O OctoPrint não aceitou a chave de API. Copie uma chave de usuário ou de aplicativo nas configurações do OctoPrint. A impressora não foi adicionada.',
+      octoprintPermissionsMissing: 'Faltam permissões na chave de API do OctoPrint: {{permissions}}. Conceda-as ao usuário da chave no OctoPrint. A impressora não foi adicionada.',
       failedToUpdate: 'Falha ao atualizar impressora',
       commandSent: 'Comando enviado',
       failedToSendCommand: 'Falha ao enviar comando',

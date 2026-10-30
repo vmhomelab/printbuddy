@@ -46,7 +46,7 @@ const MODEL_IMAGE_ALIASES: Array<[RegExp, string]> = [
   [/^prusaxl$/, 'prusa-xl'],
   [/^prusamini$/, 'prusa-mini+'],
   [/^prusamk3s$/, 'prusa-mk3s+'],
-  [/^(?:klipper|prusalink|genericklipperprinter|genericfdmprinter)$/, 'generic-printer'],
+  [/^(?:klipper|prusalink|octoprint|genericklipperprinter|genericfdmprinter)$/, 'generic-printer'],
 ];
 
 function normalizePrinterModel(model: string): string {

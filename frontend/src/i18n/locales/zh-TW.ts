@@ -301,6 +301,8 @@ export default {
       failedToDelete: '刪除印表機失敗',
       failedToAdd: '新增印表機失敗',
       connectionFailedNotAdded: '無法連線到印表機。請檢查 IP 位址、序號和存取碼，並確認已啟用僅區域網路（LAN-only）模式。該印表機未被新增。',
+      octoprintApiKeyInvalid: 'OctoPrint 未接受該 API 金鑰。請從 OctoPrint 設定中複製使用者或應用程式金鑰。印表機未新增。',
+      octoprintPermissionsMissing: 'OctoPrint API 金鑰缺少權限：{{permissions}}。請在 OctoPrint 中為該金鑰的使用者授予這些權限。印表機未新增。',
       failedToUpdate: '更新印表機失敗',
       commandSent: '命令已傳送',
       failedToSendCommand: '傳送命令失敗',
