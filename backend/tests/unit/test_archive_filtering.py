@@ -31,6 +31,13 @@ class TestBambuFtpArchiveEligibility:
 
         assert _should_attempt_bambu_ftp_archive(printer) is False
 
+    def test_octoprint_skips_bambu_ftp(self):
+        from backend.app.main import _should_attempt_bambu_ftp_archive
+
+        printer = MagicMock(provider="octoprint")
+
+        assert _should_attempt_bambu_ftp_archive(printer) is False
+
     def test_bambu_uses_bambu_ftp_archive_lookup(self):
         from backend.app.main import _should_attempt_bambu_ftp_archive
 

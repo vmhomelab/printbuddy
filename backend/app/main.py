@@ -4220,7 +4220,9 @@ async def on_print_complete(printer_id: int, data: dict):
                 result = await db.execute(select(Printer).where(Printer.id == printer_id))
                 printer = result.scalar_one_or_none()
 
-            if printer:
+            # Only Bambu printers are reached over FTP; other providers would
+            # just burn three connection-refused retries per extension here.
+            if printer and _should_attempt_bambu_ftp_archive(printer):
                 from backend.app.services.bambu_ftp import delete_file_async
 
                 # Try both .3mf and .gcode extensions — the printer may have either
