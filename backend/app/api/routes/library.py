@@ -5,6 +5,7 @@ import base64
 import binascii
 import contextlib
 import hashlib
+import io
 import json
 import logging
 import os
@@ -374,21 +375,47 @@ def _clean_3mf_metadata(obj):
     return obj
 
 
-def _read_3mf_entry(zip_path: Path, entry: str) -> bytes | None:
+def _read_3mf_entry(zip_source: Path | bytes | str, entry: str) -> bytes | None:
     """Return the raw bytes of an entry inside a 3MF (ZIP), or ``None`` when
     the file isn't a parseable zip / doesn't contain that entry / any IO
     error. Used to lift the source archive's per-plate render onto a
     re-sliced archive (#1493 follow-up) — the slicer CLI often doesn't
     emit a fresh ``Metadata/plate_N.png`` and the project-wide cover-art
     fallback in :class:`ThreeMFParser` looks unrelated to the actual slice.
+
+    ``zip_source`` may be a filesystem path or in-memory 3MF bytes (library
+    split-per-plate persist has the source as ``model_bytes``, not a path).
     """
     try:
-        with zipfile.ZipFile(zip_path, "r") as zf:
+        if isinstance(zip_source, (bytes, bytearray)):
+            zf_ctx = zipfile.ZipFile(io.BytesIO(zip_source), "r")
+        else:
+            zf_ctx = zipfile.ZipFile(zip_source, "r")
+        with zf_ctx as zf:
             if entry not in zf.namelist():
                 return None
             return zf.read(entry)
-    except (zipfile.BadZipFile, OSError, KeyError):
+    except (zipfile.BadZipFile, OSError, KeyError, TypeError):
         return None
+
+
+def _inject_3mf_entry(zip_path: Path, entry: str, data: bytes) -> None:
+    """Add or replace ``entry`` inside an on-disk 3MF without rewriting
+    unrelated members. Used so split-per-plate library slices expose
+    ``Metadata/plate_N.png`` to the schedule modal's plate-thumbnail
+    endpoint (Orca/BS CLI often omits that PNG from the sliced zip).
+    """
+    try:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(zip_path, "r") as src, zipfile.ZipFile(buf, "w") as dst:
+            for info in src.infolist():
+                if info.filename == entry:
+                    continue
+                dst.writestr(info, src.read(info.filename))
+            dst.writestr(entry, data)
+        zip_path.write_bytes(buf.getvalue())
+    except (zipfile.BadZipFile, OSError, KeyError):
+        logger.warning("Failed to inject %s into %s", entry, zip_path.name)
 
 
 def _without_print_name(metadata: dict | None) -> dict | None:
@@ -2717,10 +2744,42 @@ async def get_library_file_filament_requirements(
                 content = zf.read("Metadata/slice_info.config").decode()
                 root = ET.fromstring(content)
 
+                def _filaments_from_plate(plate_elem) -> list[dict]:
+                    out: list[dict] = []
+                    for filament_elem in plate_elem.findall("filament"):
+                        filament_id = filament_elem.get("id")
+                        filament_type = filament_elem.get("type", "")
+                        filament_color = filament_elem.get("color", "")
+                        used_g = filament_elem.get("used_g", "0")
+                        used_m = filament_elem.get("used_m", "0")
+                        tray_info_idx = filament_elem.get("tray_info_idx", "")
+                        try:
+                            used_grams = float(used_g)
+                        except (ValueError, TypeError):
+                            used_grams = 0
+                        if used_grams > 0 and filament_id:
+                            out.append(
+                                {
+                                    "slot_id": int(filament_id),
+                                    "type": filament_type,
+                                    "color": filament_color,
+                                    "used_grams": round(used_grams, 1),
+                                    "used_meters": float(used_m) if used_m else 0,
+                                    "tray_info_idx": tray_info_idx,
+                                    # Sliced output already pre-filtered by used_g>0,
+                                    # so every entry that survives is in fact used by
+                                    # this plate. Print-dispatch consumers ignore the
+                                    # flag; SliceModal uses it to enable/disable rows.
+                                    "used_in_plate": True,
+                                }
+                            )
+                    return out
+
+                plate_elems = root.findall(".//plate")
                 if plate_id is not None:
                     # Find filaments for specific plate
-                    for plate_elem in root.findall(".//plate"):
-                        # Check if this is the requested plate
+                    matched = False
+                    for plate_elem in plate_elems:
                         plate_index = None
                         for meta in plate_elem.findall("metadata"):
                             if meta.get("key") == "index":
@@ -2731,66 +2790,19 @@ async def get_library_file_filament_requirements(
                                 break
 
                         if plate_index == plate_id:
-                            # Extract filaments from this plate
-                            for filament_elem in plate_elem.findall("filament"):
-                                filament_id = filament_elem.get("id")
-                                filament_type = filament_elem.get("type", "")
-                                filament_color = filament_elem.get("color", "")
-                                used_g = filament_elem.get("used_g", "0")
-                                used_m = filament_elem.get("used_m", "0")
-
-                                tray_info_idx = filament_elem.get("tray_info_idx", "")
-
-                                try:
-                                    used_grams = float(used_g)
-                                except (ValueError, TypeError):
-                                    used_grams = 0
-
-                                if used_grams > 0 and filament_id:
-                                    filaments.append(
-                                        {
-                                            "slot_id": int(filament_id),
-                                            "type": filament_type,
-                                            "color": filament_color,
-                                            "used_grams": round(used_grams, 1),
-                                            "used_meters": float(used_m) if used_m else 0,
-                                            "tray_info_idx": tray_info_idx,
-                                            # Sliced output already pre-filtered by used_g>0,
-                                            # so every entry that survives is in fact used by
-                                            # this plate. Print-dispatch consumers ignore the
-                                            # flag; SliceModal uses it to enable/disable rows.
-                                            "used_in_plate": True,
-                                        }
-                                    )
+                            filaments.extend(_filaments_from_plate(plate_elem))
+                            matched = True
                             break
+                    # Split-per-plate exports keep the original plate index
+                    # (e.g. plate 2 only). Callers that default plate_id=1
+                    # would otherwise miss slice_info and fall through to the
+                    # unsliced project_settings path (0g, every AMS slot).
+                    if not matched and len(plate_elems) == 1:
+                        filaments.extend(_filaments_from_plate(plate_elems[0]))
                 else:
                     # Extract all filaments with used_g > 0 (for single-plate or overview)
-                    for filament_elem in root.findall(".//filament"):
-                        filament_id = filament_elem.get("id")
-                        filament_type = filament_elem.get("type", "")
-                        filament_color = filament_elem.get("color", "")
-                        used_g = filament_elem.get("used_g", "0")
-                        used_m = filament_elem.get("used_m", "0")
-
-                        tray_info_idx = filament_elem.get("tray_info_idx", "")
-
-                        try:
-                            used_grams = float(used_g)
-                        except (ValueError, TypeError):
-                            used_grams = 0
-
-                        if used_grams > 0 and filament_id:
-                            filaments.append(
-                                {
-                                    "slot_id": int(filament_id),
-                                    "type": filament_type,
-                                    "color": filament_color,
-                                    "used_grams": round(used_grams, 1),
-                                    "used_meters": float(used_m) if used_m else 0,
-                                    "tray_info_idx": tray_info_idx,
-                                    "used_in_plate": True,
-                                }
-                            )
+                    for plate_elem in plate_elems:
+                        filaments.extend(_filaments_from_plate(plate_elem))
 
             # Unsliced project files: slice_info had no per-plate data.
             # Return the FULL project_settings.config AMS slot list so
@@ -3771,9 +3783,16 @@ async def _persist_sliced_library_file(
     filament_used_g: float,
     filament_used_mm: float,
     used_embedded_settings: bool,
+    source_3mf_bytes: bytes | None = None,
+    plate_number: int | None = None,
 ) -> tuple[LibraryFile, float, float]:
     """Write one sliced ``.gcode.3mf`` into the library and return the row
     plus filament totals (headers may be 0; fall back to parsed 3MF).
+
+    When ``source_3mf_bytes`` + ``plate_number`` are provided (split-per-plate
+    and single-plate library slices), prefer the source project's colored
+    ``Metadata/plate_{N}.png`` for the card thumbnail — the CLI often omits a
+    fresh per-plate render and Auxiliaries cover art looks colorless/wrong.
     """
     from backend.app.services.archive import ThreeMFParser
 
@@ -3781,23 +3800,43 @@ async def _persist_sliced_library_file(
     out_path = get_library_files_dir() / unique_name
     out_path.write_bytes(content)
 
+    plate_num = plate_number if plate_number and plate_number > 0 else None
     thumbnail_relative: str | None = None
+    plate_png_bytes: bytes | None = None
+    if source_3mf_bytes and plate_num is not None:
+        source_plate = _read_3mf_entry(source_3mf_bytes, f"Metadata/plate_{plate_num}.png")
+        if source_plate:
+            plate_png_bytes = source_plate
+            thumb_filename = f"{uuid.uuid4().hex}.png"
+            thumb_path = get_library_thumbnails_dir() / thumb_filename
+            thumb_path.write_bytes(source_plate)
+            thumbnail_relative = to_relative_path(thumb_path)
+
     parsed_metadata: dict = {}
     try:
-        parser = ThreeMFParser(str(out_path))
+        parser = ThreeMFParser(str(out_path), plate_number=plate_num)
         parsed = parser.parse()
-        thumb_data = parsed.get("_thumbnail_data")
-        thumb_ext = parsed.get("_thumbnail_ext", ".png")
-        if thumb_data:
-            thumb_filename = f"{uuid.uuid4().hex}{thumb_ext}"
-            thumb_path = get_library_thumbnails_dir() / thumb_filename
-            thumb_path.write_bytes(thumb_data)
-            thumbnail_relative = to_relative_path(thumb_path)
+        if thumbnail_relative is None:
+            thumb_data = parsed.get("_thumbnail_data")
+            thumb_ext = parsed.get("_thumbnail_ext", ".png")
+            if thumb_data:
+                if plate_png_bytes is None and thumb_ext == ".png":
+                    plate_png_bytes = thumb_data
+                thumb_filename = f"{uuid.uuid4().hex}{thumb_ext}"
+                thumb_path = get_library_thumbnails_dir() / thumb_filename
+                thumb_path.write_bytes(thumb_data)
+                thumbnail_relative = to_relative_path(thumb_path)
         cleaned = _clean_3mf_metadata(parsed)
         if isinstance(cleaned, dict):
             parsed_metadata = cleaned
     except Exception as exc:
         logger.warning("Failed to parse sliced 3MF metadata for %s: %s", out_filename, exc)
+
+    # Ensure Metadata/plate_N.png exists inside the sliced zip so schedule /
+    # plate-thumbnail APIs can serve a colored preview (CLI often omits it).
+    if plate_num is not None and plate_png_bytes:
+        if _read_3mf_entry(out_path, f"Metadata/plate_{plate_num}.png") is None:
+            _inject_3mf_entry(out_path, f"Metadata/plate_{plate_num}.png", plate_png_bytes)
 
     metadata: dict = dict(_without_print_name(parsed_metadata) or {})
     filament_g = filament_used_g or parsed_metadata.get("filament_used_grams") or 0.0
@@ -3814,13 +3853,14 @@ async def _persist_sliced_library_file(
     if extra_metadata:
         metadata.update(extra_metadata)
 
+    final_bytes = out_path.read_bytes()
     new_file = LibraryFile(
         folder_id=folder_id,
         filename=out_filename,
         file_path=to_relative_path(out_path),
         file_type="gcode",
-        file_size=len(content),
-        file_hash=hashlib.sha256(content).hexdigest(),
+        file_size=len(final_bytes),
+        file_hash=hashlib.sha256(final_bytes).hexdigest(),
         thumbnail_path=thumbnail_relative,
         file_metadata=metadata,
         source_type="sliced",
@@ -3911,6 +3951,8 @@ async def slice_and_persist(
                 filament_used_g=result.filament_used_g,
                 filament_used_mm=result.filament_used_mm,
                 used_embedded_settings=used_embedded,
+                source_3mf_bytes=model_bytes if model_filename.lower().endswith(".3mf") else None,
+                plate_number=plate_num,
             )
             file_ids.append(new_file.id)
             names.append(new_file.filename)
@@ -3942,6 +3984,7 @@ async def slice_and_persist(
     )
 
     out_filename = f"{base_name}.gcode.3mf"
+    sliced_plate = library_request.plate if library_request.plate and library_request.plate > 0 else None
     new_file, filament_g, filament_mm = await _persist_sliced_library_file(
         db,
         content=result.content,
@@ -3953,6 +3996,8 @@ async def slice_and_persist(
         filament_used_g=result.filament_used_g,
         filament_used_mm=result.filament_used_mm,
         used_embedded_settings=used_embedded_settings,
+        source_3mf_bytes=model_bytes if model_filename.lower().endswith(".3mf") else None,
+        plate_number=sliced_plate,
     )
 
     return SliceResponse(
