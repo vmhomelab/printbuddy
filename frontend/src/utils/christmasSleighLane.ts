@@ -52,7 +52,16 @@ export function findFreeSleighLane(sleighHeight: number, floor: number): number 
     }
     return value;
   };
-  const isCard = (el: Element) => opaque(el) && el.getBoundingClientRect().width >= MIN_CARD_WIDTH;
+  // insideCard walks every ancestor of every element, so cache the answer
+  const cardCache = new Map<Element, boolean>();
+  const isCard = (el: Element) => {
+    let value = cardCache.get(el);
+    if (value === undefined) {
+      value = opaque(el) && el.getBoundingClientRect().width >= MIN_CARD_WIDTH;
+      cardCache.set(el, value);
+    }
+    return value;
+  };
   const insideCard = (el: Element) => {
     for (let p = el.parentElement; p && p !== root; p = p.parentElement) {
       if (isCard(p)) return true;

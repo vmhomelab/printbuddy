@@ -277,27 +277,34 @@ html {
   --snow-color: rgba(255, 255, 255, 0.8);
 }
 
-/* Snowfall: three layers of radial-gradient flakes drifting at different speeds.
-   Fixed overlay with pointer-events disabled so it never blocks interaction. */
+/* Snowfall: two sizes of radial-gradient flakes on a fixed overlay with
+   pointer-events disabled so it never blocks interaction.  The flakes are
+   painted once; the layer (one tile taller than the viewport) only moves by
+   transform, which the compositor handles without repainting.  The tile sizes
+   divide 360px, so shifting by 360px loops seamlessly. */
 .style-christmas body::before {
   content: '';
   position: fixed;
-  inset: 0;
+  top: -360px;
+  left: 0;
+  right: 0;
+  height: calc(100% + 360px);
   z-index: 30;
   pointer-events: none;
   background-image:
     radial-gradient(3px 3px at 20px 30px, var(--snow-color), transparent 60%),
-    radial-gradient(2.5px 2.5px at 140px 90px, var(--snow-color), transparent 60%),
-    radial-gradient(4px 4px at 80px 160px, var(--snow-color), transparent 60%),
-    radial-gradient(2px 2px at 190px 220px, var(--snow-color), transparent 60%),
-    radial-gradient(3.5px 3.5px at 260px 60px, var(--snow-color), transparent 60%),
-    radial-gradient(2px 2px at 320px 280px, var(--snow-color), transparent 60%);
-  background-size: 240px 240px, 300px 300px, 360px 360px, 240px 240px, 340px 340px, 400px 400px;
+    radial-gradient(4px 4px at 250px 120px, var(--snow-color), transparent 60%),
+    radial-gradient(3.5px 3.5px at 130px 290px, var(--snow-color), transparent 60%),
+    radial-gradient(2px 2px at 140px 90px, var(--snow-color), transparent 60%),
+    radial-gradient(2.5px 2.5px at 60px 150px, var(--snow-color), transparent 60%),
+    radial-gradient(2px 2px at 160px 40px, var(--snow-color), transparent 60%);
+  background-size: 360px 360px, 360px 360px, 360px 360px, 180px 180px, 180px 180px, 180px 180px;
   opacity: 0.85;
-  animation: christmas-snow 30s linear infinite;
+  will-change: transform;
+  animation: christmas-snow 28s linear infinite;
 }
 
-/* Fairy lights along the top edge */
+/* Fairy lights along the top edge; the glow is static, only opacity pulses */
 .style-christmas body::after {
   content: '';
   position: fixed;
@@ -313,24 +320,26 @@ html {
     radial-gradient(circle at 60px 3px, #22c55e 2.5px, transparent 3.5px),
     radial-gradient(circle at 84px 3px, #60a5fa 2.5px, transparent 3.5px);
   background-size: 96px 6px;
+  filter: drop-shadow(0 0 4px rgba(250, 204, 21, 0.7));
+  will-change: opacity;
   animation: christmas-lights 2.4s ease-in-out infinite alternate;
 }
 
 @keyframes christmas-snow {
   from {
-    background-position: 0 0, 0 0, 0 0, 0 0, 0 0, 0 0;
+    transform: translate3d(0, 0, 0);
   }
   to {
-    background-position: 40px 240px, -60px 300px, 30px 360px, -20px 240px, 50px 340px, -40px 400px;
+    transform: translate3d(0, 360px, 0);
   }
 }
 
 @keyframes christmas-lights {
   from {
-    filter: brightness(0.75) drop-shadow(0 0 2px rgba(250, 204, 21, 0.4));
+    opacity: 0.6;
   }
   to {
-    filter: brightness(1.25) drop-shadow(0 0 5px rgba(250, 204, 21, 0.8));
+    opacity: 1;
   }
 }
 
@@ -401,8 +410,11 @@ html {
   filter: drop-shadow(0 0 6px rgba(251, 191, 36, 0.8));
 }
 
+/* Twinkling lights sit inside SVGs, which repaint whenever one of them
+   changes; switching in steps keeps that to a few repaints per second
+   instead of one every frame. */
 .christmas-scene .scene-light {
-  animation: christmas-twinkle 1.6s ease-in-out infinite alternate;
+  animation: christmas-twinkle 1.6s steps(1, end) infinite alternate;
 }
 
 .christmas-village .scene-star {
