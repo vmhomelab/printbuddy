@@ -35,6 +35,8 @@ logger = logging.getLogger(__name__)
 
 PRUSA_CONNECT_LOCAL_DEFAULT_PORT = 8080
 PRUSA_CONNECT_LOCAL_DEVICE_OPTION = "pcl_device_id"
+CHAMBER_LED_VERB = "core.command.set_chamber_led_intensity"
+CHAMBER_LED_ARGUMENT = "chamber.led_intensity"
 _DEVICE_PAGE_SIZE = 100
 _MAX_DEVICE_PAGES = 50
 
@@ -410,6 +412,10 @@ class PrusaConnectLocalPrinterClient(PrusaLinkPrinterClient):
         ok = bool(result.get("ok", True))
         if not ok:
             logger.info("Prusa Connect Local refused %s for device %s: %s", full_verb, self.device_id, result)
+        elif full_verb == CHAMBER_LED_VERB and args:
+            # The device does not report the LED level back, so the last accepted
+            # value is the best state Printbuddy has.
+            self.state.chamber_light = _as_float(args.get(CHAMBER_LED_ARGUMENT)) > 0
         return ok
 
     def get_control_snapshot(self) -> dict[str, Any]:
@@ -450,6 +456,7 @@ class PrusaConnectLocalPrinterClient(PrusaLinkPrinterClient):
         self.state.raw_data = {**self.state.raw_data, "prusa_connect_local_device": device}
         self.state.firmware_version = str(device.get("firmware") or "") or None
         self._capabilities = {str(cap) for cap in device.get("capabilities") or []}
+        self.state.raw_data["chamber_light_supported"] = CHAMBER_LED_VERB in self._capabilities
 
         if not connected:
             self.state.state = "OFFLINE"
@@ -523,6 +530,10 @@ class PrusaConnectLocalPrinterClient(PrusaLinkPrinterClient):
 
     def set_bed_temperature(self, target: int | float) -> bool:
         return self.send_command("set_bed_temperature", {"bed_temperature": _format_arg(target)})
+
+    def set_chamber_light(self, on: bool) -> bool:
+        """Chamber LED fully on (100 %) or off (0 %)."""
+        return self.send_command(CHAMBER_LED_VERB, {CHAMBER_LED_ARGUMENT: 100 if on else 0})
 
     def send_gcode(self, script: str) -> bool:
         lines = [line.strip() for line in script.splitlines() if line.strip() and not line.strip().startswith(";")]

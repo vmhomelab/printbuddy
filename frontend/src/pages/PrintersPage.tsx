@@ -4142,6 +4142,7 @@ function PrinterCard({
                 { key: 'chamber', value: status.big_fan2_speed, title: t('printers.fans.chamber'), Icon: AirVent, active: 'text-green-400', bg: 'bg-green-500/10' },
                 { key: 'heatbreak', value: status.heatbreak_fan_speed, title: t('printers.fans.heatbreak'), Icon: Fan, active: 'text-purple-400', bg: 'bg-purple-500/10' },
               ].filter((fan) => fan.value !== null && fan.value !== undefined);
+              const hasChamberLightToggle = isElegooSDCPProvider || !!status.chamber_light_supported;
 
               return (
                 <div className="mt-3">
@@ -4218,7 +4219,7 @@ function PrinterCard({
                         );
                       })}
 
-                      {isElegooSDCPProvider && (
+                      {hasChamberLightToggle && (
                         <button
                           type="button"
                           onClick={() => chamberLightMutation.mutate(!status.chamber_light)}
@@ -4235,7 +4236,7 @@ function PrinterCard({
                         </button>
                       )}
 
-                      {(fanItems.length > 0 || isElegooSDCPProvider) && <div className="w-px h-5 bg-bambu-gray/30" />}
+                      {(fanItems.length > 0 || hasChamberLightToggle) && <div className="w-px h-5 bg-bambu-gray/30" />}
 
                       {/* Airduct Mode (P2S / X2D / H2*) */}
                       {(['P2S', 'X2D', 'H2D', 'H2C', 'H2S'].includes(printer.model ?? '')) && (() => {

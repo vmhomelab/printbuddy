@@ -1063,6 +1063,7 @@ def printer_state_to_dict(state: PrinterState, printer_id: int | None = None, mo
         "heatbreak_fan_speed": state.heatbreak_fan_speed,
         # Chamber light state
         "chamber_light": state.chamber_light,
+        "chamber_light_supported": bool(raw_data.get("chamber_light_supported")),
         # Active extruder for dual-nozzle printers (0=right, 1=left)
         "active_extruder": state.active_extruder,
         # Print speed mode (1=silent, 2=standard, 3=sport, 4=ludicrous)

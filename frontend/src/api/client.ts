@@ -458,6 +458,8 @@ export interface PrinterStatus {
   speed_level: number;
   // Chamber light on/off
   chamber_light: boolean;
+  // Provider reported a switchable chamber light (Prusa Connect Local)
+  chamber_light_supported?: boolean;
   // Active extruder for dual nozzle (0=right, 1=left)
   active_extruder: number;
   // AMS mapping - which AMS is connected to which nozzle

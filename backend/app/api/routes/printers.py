@@ -1111,6 +1111,7 @@ async def get_printer_status(
         airduct_mode=state.airduct_mode,
         speed_level=state.speed_level,
         chamber_light=state.chamber_light,
+        chamber_light_supported=bool((state.raw_data or {}).get("chamber_light_supported")),
         active_extruder=state.active_extruder,
         ams_mapping=ams_mapping,
         ams_extruder_map=ams_extruder_map,

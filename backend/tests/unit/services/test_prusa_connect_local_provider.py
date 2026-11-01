@@ -247,6 +247,47 @@ def test_refused_command_returns_false(monkeypatch):
     assert client.stop_print() is False
 
 
+def test_chamber_light_toggles_led_between_0_and_100_percent(monkeypatch):
+    calls = []
+    client = PrusaConnectLocalPrinterClient("http://pcl:8080/", device_id=DEVICE_ID, api_key="secret")
+    monkeypatch.setattr(client, "_json", lambda method, path, **kwargs: calls.append(kwargs["json"]) or {"ok": True})
+
+    assert client.set_chamber_light(True)
+    assert client.state.chamber_light is True
+    assert client.set_chamber_light(False)
+    assert client.state.chamber_light is False
+    # A level set from the controls panel moves the toggle too.
+    assert client.send_command("set_chamber_led_intensity", {"chamber.led_intensity": 40})
+    assert client.state.chamber_light is True
+
+    assert [call["verb"] for call in calls] == ["core.command.set_chamber_led_intensity"] * 3
+    assert [call["args"] for call in calls] == [
+        {"chamber.led_intensity": "100"},
+        {"chamber.led_intensity": "0"},
+        {"chamber.led_intensity": "40"},
+    ]
+
+
+def test_refused_chamber_light_keeps_previous_state(monkeypatch):
+    client = PrusaConnectLocalPrinterClient("http://pcl:8080/", device_id=DEVICE_ID, api_key="secret")
+    monkeypatch.setattr(client, "_json", lambda *args, **kwargs: {"ok": False})
+    assert client.set_chamber_light(True) is False
+    assert client.state.chamber_light is False
+
+
+def test_chamber_light_supported_follows_device_capabilities(monkeypatch):
+    client = PrusaConnectLocalPrinterClient("http://pcl:8080/", device_id=DEVICE_ID, api_key="secret")
+    with_led = _device(state="IDLE")
+    with_led["capabilities"] = ["core.command.set_chamber_led_intensity"]
+    devices = iter([with_led, _device(state="IDLE")])
+    monkeypatch.setattr(client, "_json", lambda method, path, **kwargs: next(devices))
+
+    client.request_status_update()
+    assert client.state.raw_data["chamber_light_supported"] is True
+    client.request_status_update()
+    assert client.state.raw_data["chamber_light_supported"] is False
+
+
 def test_factory_and_schema_defaults():
     printer = PrinterCreate(
         name="CoreOne",
