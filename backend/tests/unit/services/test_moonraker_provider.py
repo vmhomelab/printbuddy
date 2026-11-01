@@ -1,3 +1,4 @@
+import httpx
 import pytest
 
 from backend.app.services.printer_providers.moonraker import MoonrakerPrinterClient
@@ -715,3 +716,111 @@ def test_moonraker_print_control_commands_preserve_transport_errors(monkeypatch,
 
     with pytest.raises(RuntimeError, match="Moonraker rejected command"):
         getattr(client, method_name)()
+
+
+def _moonraker_http_400(path: str) -> httpx.HTTPStatusError:
+    request = httpx.Request("POST", f"http://klipper.local:7125/{path}")
+    response = httpx.Response(400, request=request, json={"error": {"message": "rejected"}})
+    return httpx.HTTPStatusError("400 Bad Request", request=request, response=response)
+
+
+@pytest.mark.parametrize(
+    ("method_name", "path", "known_state", "state_after_refresh"),
+    [
+        ("pause_print", "printer/print/pause", "RUNNING", "PAUSE"),
+        ("resume_print", "printer/print/resume", "PAUSE", "RUNNING"),
+        ("stop_print", "printer/print/cancel", "RUNNING", "IDLE"),
+        ("stop_print", "printer/print/cancel", "PAUSE", "CANCELLED"),
+    ],
+)
+def test_moonraker_control_400_is_success_only_when_refresh_shows_target_state(
+    monkeypatch, method_name, path, known_state, state_after_refresh
+):
+    client = MoonrakerPrinterClient("http://klipper.local:7125")
+    client._has_status_sample = True
+    client.state.state = known_state
+    refreshes = []
+
+    def fake_post(p, payload):
+        raise _moonraker_http_400(p)
+
+    def fake_refresh():
+        refreshes.append(True)
+        client.state.state = state_after_refresh
+        return True
+
+    monkeypatch.setattr(client, "_post", fake_post)
+    monkeypatch.setattr(client, "request_status_update", fake_refresh)
+
+    assert getattr(client, method_name)() is True
+    assert refreshes == [True]
+
+
+@pytest.mark.parametrize(
+    ("method_name", "known_state", "state_after_refresh"),
+    [
+        ("pause_print", "RUNNING", "RUNNING"),
+        ("resume_print", "PAUSE", "PAUSE"),
+        ("stop_print", "RUNNING", "RUNNING"),
+        ("stop_print", "PAUSE", "PAUSE"),
+    ],
+)
+def test_moonraker_control_400_is_reraised_when_printer_did_not_reach_target(
+    monkeypatch, method_name, known_state, state_after_refresh
+):
+    client = MoonrakerPrinterClient("http://klipper.local:7125")
+    client._has_status_sample = True
+    client.state.state = known_state
+
+    def fake_post(p, payload):
+        raise _moonraker_http_400(p)
+
+    def fake_refresh():
+        client.state.state = state_after_refresh
+        return True
+
+    monkeypatch.setattr(client, "_post", fake_post)
+    monkeypatch.setattr(client, "request_status_update", fake_refresh)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        getattr(client, method_name)()
+
+
+def test_moonraker_control_400_reraises_original_error_when_refresh_fails(monkeypatch):
+    client = MoonrakerPrinterClient("http://klipper.local:7125")
+    client._has_status_sample = True
+    client.state.state = "RUNNING"
+    original = _moonraker_http_400("printer/print/pause")
+
+    def fake_post(p, payload):
+        raise original
+
+    def fake_refresh():
+        raise httpx.ConnectError("printer unreachable")
+
+    monkeypatch.setattr(client, "_post", fake_post)
+    monkeypatch.setattr(client, "request_status_update", fake_refresh)
+
+    with pytest.raises(httpx.HTTPStatusError) as caught:
+        client.pause_print()
+    assert caught.value is original
+
+
+def test_moonraker_control_non_400_errors_are_not_swallowed(monkeypatch):
+    client = MoonrakerPrinterClient("http://klipper.local:7125")
+    client._has_status_sample = True
+    client.state.state = "RUNNING"
+    request = httpx.Request("POST", "http://klipper.local:7125/printer/print/pause")
+    error = httpx.HTTPStatusError("500", request=request, response=httpx.Response(500, request=request))
+
+    def fake_post(p, payload):
+        raise error
+
+    def fake_refresh():
+        raise AssertionError("status must not be refreshed for non-400 errors")
+
+    monkeypatch.setattr(client, "_post", fake_post)
+    monkeypatch.setattr(client, "request_status_update", fake_refresh)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        client.pause_print()
