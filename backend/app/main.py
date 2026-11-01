@@ -1154,6 +1154,7 @@ def _maybe_start_layer_timelapse(printer, printer_id: int, archive_id: int) -> b
         effective_camera.url,
         effective_camera.camera_type or "mjpeg",
         snapshot_url=effective_camera.snapshot_url,
+        headers=effective_camera.headers,
     )
     logging.getLogger(__name__).info("Started layer timelapse for printer %s, archive %s", printer_id, archive_id)
     return True
@@ -2477,6 +2478,7 @@ async def _capture_snapshot_for_notification(printer_id: int, printer, logger) -
                     effective_camera.url,
                     effective_camera.camera_type or "mjpeg",
                     snapshot_url=effective_camera.snapshot_url,
+                    headers=effective_camera.headers,
                 )
             if frame_data and len(frame_data) <= 2_500_000:
                 logger.info("[SNAPSHOT] External camera frame: %s bytes", len(frame_data))
@@ -4892,6 +4894,7 @@ async def on_print_complete(printer_id: int, data: dict):
                                             effective_camera.url,
                                             effective_camera.camera_type or "mjpeg",
                                             snapshot_url=effective_camera.snapshot_url,
+                                            headers=effective_camera.headers,
                                         )
                                 if frame_data:
                                     photos_dir = archive_dir / "photos"

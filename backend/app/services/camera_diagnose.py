@@ -223,6 +223,7 @@ async def _check_first_external_frame(
     camera_type: str | None,
     timeout: int,
     snapshot_url: str | None = None,
+    headers: dict[str, str] | None = None,
 ) -> CameraDiagnoseStage:
     """Stage 2 for configured external cameras — capture one frame through
     the same helper used by /camera/stream and /camera/snapshot."""
@@ -235,6 +236,7 @@ async def _check_first_external_frame(
             camera_type or "mjpeg",
             timeout=timeout,
             snapshot_url=snapshot_url,
+            headers=headers,
         )
     except Exception as exc:  # noqa: BLE001 — preserve diagnostic shape for UI
         logger.warning("External camera diagnose first-frame capture raised: %s", exc)
@@ -281,6 +283,7 @@ async def diagnose_external_camera(
     printer_id: int,
     *,
     snapshot_url: str | None = None,
+    headers: dict[str, str] | None = None,
     tcp_timeout: float = 3.0,
     capture_timeout: int = 15,
 ) -> CameraDiagnoseResult:
@@ -313,7 +316,7 @@ async def diagnose_external_camera(
         # USB/local device paths have no remote TCP boundary to probe.
         result.stages.append(CameraDiagnoseStage(name="tcp_reachable", status="skipped", duration_ms=0))
 
-    frame_stage = await _check_first_external_frame(camera_url, camera_type, capture_timeout, snapshot_url)
+    frame_stage = await _check_first_external_frame(camera_url, camera_type, capture_timeout, snapshot_url, headers)
     result.stages.append(frame_stage)
     if frame_stage.status != "ok":
         result.overall_status = "failed"

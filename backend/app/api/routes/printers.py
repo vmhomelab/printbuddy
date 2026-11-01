@@ -4,12 +4,13 @@ import logging
 import re
 import tempfile
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 
 import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -58,6 +59,18 @@ from backend.app.services.printer_manager import (
 )
 from backend.app.services.printer_providers.factory import create_printer_client, normalize_provider
 from backend.app.services.printer_providers.moonraker import create_moonraker_client
+from backend.app.services.printer_providers.prusaconnectlocal import (
+    PRUSA_CONNECT_LOCAL_CONTROL_VERBS,
+    PrusaConnectLocalError,
+    PrusaConnectLocalPrinterClient,
+    build_prusa_connect_local_base_url,
+    list_prusa_connect_local_cameras,
+    list_prusa_connect_local_devices,
+    pick_prusa_connect_local_camera,
+    prusa_connect_local_camera_options,
+    prusa_connect_local_serial,
+    summarize_prusa_connect_local_device,
+)
 from backend.app.utils.filament_ids import effective_bambu_material, generic_bambu_filament_id
 from backend.app.utils.http import build_content_disposition
 
@@ -98,7 +111,7 @@ def _safe_prusalink_firmware_upload_path(directory: str, filename: str) -> str:
 
 
 def _remote_path_with_filename(remote_path: str, filename: str) -> str:
-    parent = str(Path(remote_path).parent).replace(".", "/")
+    parent = str(PurePosixPath(remote_path).parent).replace(".", "/")
     normalized_dir = "/" + parent.strip("/") if parent.strip("/") else ""
     return f"{normalized_dir}/{filename}"
 
@@ -177,7 +190,7 @@ def _provider_file_matches_path(entry: dict, remote_path: str) -> bool:
 
 def _provider_file_entry(provider_client, remote_path: str, *, storage: str | None = None) -> dict | None:
     try:
-        files = provider_client.list_files(str(Path(remote_path).parent).replace(".", "/"), storage=storage)
+        files = provider_client.list_files(str(PurePosixPath(remote_path).parent).replace(".", "/"), storage=storage)
     except Exception as exc:  # noqa: BLE001 - reconciliation is best-effort after a side-effecting upload timeout
         logger.warning(
             "Could not reconcile printer upload state after provider exception: %s",
@@ -281,6 +294,7 @@ async def create_printer(
         provider=printer_data.provider,
         api_url=printer_data.api_url,
         auth_token=printer_data.auth_token,
+        provider_options=printer_data.provider_options if printer_data.provider == "prusaconnectlocal" else None,
     )
     if not test_result.get("success"):
         if printer_data.provider == "bambu":
@@ -293,6 +307,11 @@ async def create_printer(
             failure_message = (
                 "Could not connect to Elegoo SDCP. Verify the IP/hostname, confirm the printer is reachable on "
                 "the local network, and check that SDCP WebSocket port 3030 is accessible. The printer was not added."
+            )
+        elif printer_data.provider == "prusaconnectlocal":
+            failure_message = (
+                "Could not reach the printer through Prusa Connect Local. Verify the server IP/port, "
+                "the API key and that the selected device is known to the server. The printer was not added."
             )
         else:
             failure_message = (
@@ -332,6 +351,190 @@ async def create_printer(
         await printer_manager.connect_printer(printer)
 
     return printer
+
+
+class PrusaConnectLocalDiscoverRequest(BaseModel):
+    host: str = Field(..., min_length=1, max_length=253)
+    port: int | None = Field(default=None, ge=1, le=65535)
+    api_url: str | None = Field(default=None, max_length=500)
+    api_key: str = Field(..., min_length=1, max_length=500)
+
+
+@router.post("/prusa-connect-local/discover")
+async def discover_prusa_connect_local_printers(
+    body: PrusaConnectLocalDiscoverRequest,
+    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_CREATE),
+    db: AsyncSession = Depends(get_db),
+):
+    """List the printers a Prusa Connect Local server knows about.
+
+    The add-printer dialog calls this with the server address and API key, shows
+    the devices as a checklist and then creates one Printbuddy printer per
+    selected device.
+    """
+    host = body.host.strip()
+    if body.port and not body.api_url:
+        host = f"{host.split(':', 1)[0]}:{body.port}"
+    try:
+        base_url = build_prusa_connect_local_base_url(host, body.api_url)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    try:
+        devices = await asyncio.to_thread(list_prusa_connect_local_devices, base_url, body.api_key)
+    except PrusaConnectLocalError as exc:
+        status = 401 if exc.status_code in {401, 403} else 502
+        raise HTTPException(status, str(exc)) from exc
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.warning("Prusa Connect Local discovery failed for %s: %s", base_url, type(exc).__name__)
+        raise HTTPException(502, f"Could not reach Prusa Connect Local at {base_url}: {type(exc).__name__}") from exc
+
+    existing_result = await db.execute(select(Printer.serial_number, Printer.provider_options))
+    existing_serials: set[str] = set()
+    existing_device_ids: set[str] = set()
+    for serial_number, provider_options in existing_result.all():
+        existing_serials.add(str(serial_number or "").upper())
+        try:
+            options = json.loads(provider_options) if provider_options else {}
+        except (TypeError, ValueError):
+            options = {}
+        if isinstance(options, dict) and options.get("pcl_device_id"):
+            existing_device_ids.add(str(options["pcl_device_id"]))
+
+    try:
+        cameras = await asyncio.to_thread(list_prusa_connect_local_cameras, base_url, body.api_key)
+    except (PrusaConnectLocalError, httpx.HTTPError, ValueError) as exc:
+        # A key that may read printers but not cameras still adds the printers.
+        logger.info("Prusa Connect Local camera lookup failed for %s: %s", base_url, type(exc).__name__)
+        cameras = []
+
+    printers = []
+    for device in devices:
+        summary = summarize_prusa_connect_local_device(device)
+        if not summary["id"]:
+            continue
+        summary["camera"] = pick_prusa_connect_local_camera(
+            [camera for camera in cameras if camera["device_id"] == summary["id"]]
+        )
+        summary["printbuddy_serial"] = prusa_connect_local_serial(summary["id"], summary["serial"])
+        summary["already_added"] = (
+            summary["id"] in existing_device_ids or summary["printbuddy_serial"].upper() in existing_serials
+        )
+        printers.append(summary)
+    return {"api_url": base_url.rstrip("/"), "printers": printers}
+
+
+class PrusaConnectLocalCommandRequest(BaseModel):
+    verb: str = Field(..., min_length=1, max_length=64)
+    args: dict[str, str | int | float | bool] = Field(default_factory=dict)
+
+
+async def _prusa_connect_local_printer(
+    printer_id: int, db: AsyncSession
+) -> tuple[Printer, PrusaConnectLocalPrinterClient]:
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+    client = _provider_for_printer(printer)
+    if not isinstance(client, PrusaConnectLocalPrinterClient):
+        raise HTTPException(400, "Printer is not a Prusa Connect Local printer")
+    return printer, client
+
+
+def _prusa_connect_local_options(printer: Printer) -> dict:
+    try:
+        options = json.loads(printer.provider_options) if printer.provider_options else {}
+    except (TypeError, ValueError):
+        options = {}
+    return options if isinstance(options, dict) else {}
+
+
+def _prusa_connect_local_camera_summary(printer: Printer) -> dict | None:
+    options = _prusa_connect_local_options(printer)
+    if not options.get("pcl_camera"):
+        return None
+    return {
+        "name": options["pcl_camera"],
+        "stream": options.get("pcl_camera_stream") is not False,
+        "snapshot": options.get("pcl_camera_snapshot") is not False,
+        "overridden": bool(printer.external_camera_enabled and printer.external_camera_url),
+    }
+
+
+def _prusa_connect_local_http_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, PrusaConnectLocalError):
+        status = exc.status_code if exc.status_code in {400, 401, 403, 404, 409, 422} else 502
+        return HTTPException(status, str(exc))
+    return HTTPException(502, f"Could not reach Prusa Connect Local: {type(exc).__name__}")
+
+
+@router.get("/{printer_id}/prusa-connect-local/controls")
+async def get_prusa_connect_local_controls(
+    printer_id: int,
+    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_READ),
+    db: AsyncSession = Depends(get_db),
+):
+    """Live values and the control verbs Prusa Connect Local resolved for this printer."""
+    printer, client = await _prusa_connect_local_printer(printer_id, db)
+    try:
+        snapshot = await asyncio.to_thread(client.get_control_snapshot)
+    except (PrusaConnectLocalError, httpx.HTTPError, ValueError) as exc:
+        raise _prusa_connect_local_http_error(exc) from exc
+    snapshot["camera"] = _prusa_connect_local_camera_summary(printer)
+    return snapshot
+
+
+@router.post("/{printer_id}/prusa-connect-local/camera/detect")
+async def detect_prusa_connect_local_camera(
+    printer_id: int,
+    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_UPDATE),
+    db: AsyncSession = Depends(get_db),
+):
+    """Look up the camera Prusa Connect Local declares for this printer and use it.
+
+    Covers printers added before their camera was declared on the server. A
+    camera that disappeared from the server is removed from the printer too.
+    """
+    printer, client = await _prusa_connect_local_printer(printer_id, db)
+    if not client.device_id:
+        raise HTTPException(400, "No Prusa Connect Local device is selected for this printer")
+    try:
+        cameras = await asyncio.to_thread(
+            list_prusa_connect_local_cameras, client.base_url, client.api_key, device_id=client.device_id
+        )
+    except (PrusaConnectLocalError, httpx.HTTPError, ValueError) as exc:
+        raise _prusa_connect_local_http_error(exc) from exc
+
+    camera = pick_prusa_connect_local_camera(cameras)
+    options = {**_prusa_connect_local_options(printer), **prusa_connect_local_camera_options(camera)}
+    printer.provider_options = json.dumps({key: value for key, value in options.items() if value is not None})
+    await db.commit()
+    await db.refresh(printer)
+    return {
+        "camera": _prusa_connect_local_camera_summary(printer),
+        "webrtc_only": [item["name"] for item in cameras if item["watch"] and not (item["stream"] or item["snapshot"])],
+    }
+
+
+@router.post("/{printer_id}/prusa-connect-local/commands")
+async def send_prusa_connect_local_command(
+    printer_id: int,
+    body: PrusaConnectLocalCommandRequest,
+    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_CONTROL),
+    db: AsyncSession = Depends(get_db),
+):
+    """Send one manual-control verb; Prusa Connect Local validates the arguments."""
+    verb = body.verb.removeprefix("core.command.")
+    if verb not in PRUSA_CONNECT_LOCAL_CONTROL_VERBS:
+        raise HTTPException(400, f"Verb {verb!r} is not available in the controls panel")
+    _printer, client = await _prusa_connect_local_printer(printer_id, db)
+    try:
+        accepted = await asyncio.to_thread(client.send_command, verb, body.args or None)
+    except (PrusaConnectLocalError, httpx.HTTPError, ValueError) as exc:
+        raise _prusa_connect_local_http_error(exc) from exc
+    if not accepted:
+        raise HTTPException(409, f"The printer refused {verb}")
+    return {"success": True, "verb": verb}
 
 
 @router.get("/moonraker-webcams/discover")

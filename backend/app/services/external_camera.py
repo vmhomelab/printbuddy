@@ -11,7 +11,7 @@ import asyncio
 import logging
 import re
 import shutil
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Mapping
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -178,6 +178,7 @@ async def capture_frame(
     camera_type: str,
     timeout: int = 15,
     snapshot_url: str | None = None,
+    headers: Mapping[str, str] | None = None,
 ) -> bytes | None:
     """Capture single frame from external camera.
 
@@ -190,20 +191,23 @@ async def capture_frame(
             handling on sources that expose a dedicated frame endpoint (e.g. go2rtc's
             `/api/frame.jpeg` reliably returns a clean image while the MJPEG stream's
             first frame is often the encoder's stale keyframe). #1177.
+        headers: Extra HTTP request headers for HTTP sources, e.g. the bearer token a
+            Prusa Connect Local camera needs. Kept out of the URL so it never reaches
+            the browser.
 
     Returns:
         JPEG bytes or None on failure
     """
     if snapshot_url:
         logger.debug("capture_frame using snapshot override url=%s...", snapshot_url[:50])
-        return await _capture_snapshot(snapshot_url, timeout)
+        return await _capture_snapshot(snapshot_url, timeout, headers=headers)
     logger.debug("capture_frame called: type=%s, url=%s...", camera_type, url[:50] if url else "None")
     if camera_type == "mjpeg":
-        return await _capture_mjpeg_frame(url, timeout)
+        return await _capture_mjpeg_frame(url, timeout, headers=headers)
     elif camera_type == "rtsp":
         return await _capture_rtsp_frame(url, timeout)
     elif camera_type == "snapshot":
-        return await _capture_snapshot(url, timeout)
+        return await _capture_snapshot(url, timeout, headers=headers)
     elif camera_type == "usb":
         return await _capture_usb_frame(url, timeout)
     else:
@@ -292,7 +296,7 @@ async def _capture_usb_frame(device: str, timeout: int) -> bytes | None:
         return None
 
 
-async def _capture_mjpeg_frame(url: str, timeout: int) -> bytes | None:
+async def _capture_mjpeg_frame(url: str, timeout: int, *, headers: Mapping[str, str] | None = None) -> bytes | None:
     """Extract a single representative frame from an MJPEG stream.
 
     Many MJPEG sources — go2rtc most notably (#1177), and several IP cameras —
@@ -322,7 +326,7 @@ async def _capture_mjpeg_frame(url: str, timeout: int) -> bytes | None:
     try:
         async with (
             aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout)) as session,
-            session.get(safe_url) as response,
+            session.get(safe_url, headers=headers) as response,
         ):
             if response.status != 200:
                 logger.error("MJPEG stream returned status %s", response.status)
@@ -461,7 +465,7 @@ async def _capture_rtsp_frame(url: str, timeout: int) -> bytes | None:
             await proxy_server.wait_closed()
 
 
-async def _capture_snapshot(url: str, timeout: int) -> bytes | None:
+async def _capture_snapshot(url: str, timeout: int, *, headers: Mapping[str, str] | None = None) -> bytes | None:
     """Fetch snapshot from HTTP URL.
 
     Note: This function intentionally makes requests to user-configured URLs.
@@ -477,7 +481,7 @@ async def _capture_snapshot(url: str, timeout: int) -> bytes | None:
     try:
         async with (
             aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout)) as session,
-            session.get(safe_url) as response,
+            session.get(safe_url, headers=headers) as response,
         ):
             if response.status != 200:
                 logger.error("Snapshot URL returned status %s", response.status)
@@ -500,7 +504,13 @@ async def _capture_snapshot(url: str, timeout: int) -> bytes | None:
         return None
 
 
-async def test_connection(url: str, camera_type: str) -> dict:
+async def test_connection(
+    url: str,
+    camera_type: str,
+    *,
+    snapshot_url: str | None = None,
+    headers: Mapping[str, str] | None = None,
+) -> dict:
     """Test camera connection.
 
     Returns:
@@ -508,7 +518,7 @@ async def test_connection(url: str, camera_type: str) -> dict:
     """
     logger.info("Testing camera connection: type=%s, url=%s...", camera_type, url[:50])
     try:
-        frame = await capture_frame(url, camera_type, timeout=10)
+        frame = await capture_frame(url, camera_type, timeout=10, snapshot_url=snapshot_url, headers=headers)
         logger.info("Capture result: %s bytes", len(frame) if frame else 0)
 
         if frame:
@@ -539,7 +549,13 @@ async def test_connection(url: str, camera_type: str) -> dict:
         return {"success": False, "error": f"Connection failed: {error_type}"}
 
 
-async def generate_mjpeg_stream(url: str, camera_type: str, fps: int = 10) -> AsyncGenerator[bytes, None]:
+async def generate_mjpeg_stream(
+    url: str,
+    camera_type: str,
+    fps: int = 10,
+    *,
+    headers: Mapping[str, str] | None = None,
+) -> AsyncGenerator[bytes, None]:
     """Generator yielding MJPEG frames for streaming.
 
     Args:
@@ -558,7 +574,7 @@ async def generate_mjpeg_stream(url: str, camera_type: str, fps: int = 10) -> As
         max_retries = 3
         for attempt in range(max_retries + 1):
             frame_yielded = False
-            async for frame in _stream_mjpeg(url):
+            async for frame in _stream_mjpeg(url, headers=headers):
                 frame_yielded = True
                 current_time = asyncio.get_event_loop().time()
                 if current_time - last_frame_time >= frame_interval:
@@ -599,7 +615,7 @@ async def generate_mjpeg_stream(url: str, camera_type: str, fps: int = 10) -> As
         # Poll snapshot URL at interval
         while True:
             try:
-                frame = await _capture_snapshot(url, timeout=10)
+                frame = await _capture_snapshot(url, timeout=10, headers=headers)
                 if frame:
                     yield _format_mjpeg_frame(frame)
                 await asyncio.sleep(frame_interval)
@@ -620,7 +636,7 @@ def _format_mjpeg_frame(frame: bytes) -> bytes:
     )
 
 
-async def _stream_mjpeg(url: str) -> AsyncGenerator[bytes, None]:
+async def _stream_mjpeg(url: str, *, headers: Mapping[str, str] | None = None) -> AsyncGenerator[bytes, None]:
     """Stream frames from MJPEG URL.
 
     Note: This function intentionally makes requests to user-configured URLs.
@@ -642,7 +658,10 @@ async def _stream_mjpeg(url: str) -> AsyncGenerator[bytes, None]:
         # timeout on the stream body; client disconnect/route cleanup owns
         # lifecycle termination.
         timeout = aiohttp.ClientTimeout(total=None, sock_connect=10, sock_read=None)
-        async with aiohttp.ClientSession(timeout=timeout) as session, session.get(safe_url) as response:
+        async with (
+            aiohttp.ClientSession(timeout=timeout) as session,
+            session.get(safe_url, headers=headers) as response,
+        ):
             if response.status != 200:
                 logger.error("MJPEG stream returned status %s", response.status)
                 return

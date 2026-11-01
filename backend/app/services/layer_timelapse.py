@@ -41,6 +41,7 @@ class TimelapseSession:
     camera_url: str
     camera_type: str
     snapshot_url: str | None = None  # Optional single-frame override; #1177
+    headers: dict[str, str] | None = None  # e.g. Prusa Connect Local bearer token
     last_layer: int = -1
     frame_count: int = 0
     session_id: str = field(default_factory=lambda: datetime.now().strftime("%Y%m%d_%H%M%S"))
@@ -67,7 +68,9 @@ class TimelapseSession:
         self.last_layer = layer_num
 
         try:
-            frame_data = await capture_frame(self.camera_url, self.camera_type, snapshot_url=self.snapshot_url)
+            frame_data = await capture_frame(
+                self.camera_url, self.camera_type, snapshot_url=self.snapshot_url, headers=self.headers
+            )
             if frame_data:
                 frame_path = self.frames_dir / f"layer_{layer_num:05d}.jpg"
                 await asyncio.to_thread(frame_path.write_bytes, frame_data)
@@ -187,6 +190,7 @@ def start_session(
     url: str,
     cam_type: str,
     snapshot_url: str | None = None,
+    headers: dict[str, str] | None = None,
 ) -> TimelapseSession:
     """Start new timelapse session for a printer.
 
@@ -210,6 +214,7 @@ def start_session(
         camera_url=url,
         camera_type=cam_type,
         snapshot_url=snapshot_url,
+        headers=headers,
     )
     _active_sessions[printer_id] = session
     logger.info("Started timelapse session for printer %s", printer_id)

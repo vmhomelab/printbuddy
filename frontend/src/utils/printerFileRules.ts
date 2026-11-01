@@ -12,6 +12,12 @@ const DEFAULT_RULES: PrinterFileRuleSet = {
   descriptionExtensions: '.gcode, .gco, .g',
 };
 
+const PRUSA_RULES: PrinterFileRuleSet = {
+  accept: '.bgcode,.gcode,.gco,.g',
+  extensions: ['.bgcode', '.gcode', '.gco', '.g'],
+  descriptionExtensions: '.bgcode, .gcode, .gco, .g',
+};
+
 const RULES_BY_PROVIDER: Partial<Record<PrinterProvider, PrinterFileRuleSet>> = {
   bambu: {
     accept: '.3mf,.gcode.3mf',
@@ -22,11 +28,8 @@ const RULES_BY_PROVIDER: Partial<Record<PrinterProvider, PrinterFileRuleSet>> = 
   mainsail: DEFAULT_RULES,
   fluidd: DEFAULT_RULES,
   elegoo_sdcp: DEFAULT_RULES,
-  prusalink: {
-    accept: '.bgcode,.gcode,.gco,.g',
-    extensions: ['.bgcode', '.gcode', '.gco', '.g'],
-    descriptionExtensions: '.bgcode, .gcode, .gco, .g',
-  },
+  prusalink: PRUSA_RULES,
+  prusaconnectlocal: PRUSA_RULES,
 };
 
 export const getPrinterFileRuleSet = (provider?: PrinterProvider | null): PrinterFileRuleSet => {

@@ -644,6 +644,7 @@ async def camera_stream(
     if effective_camera.enabled and effective_camera.url:
         camera_url = effective_camera.url
         camera_type = effective_camera.camera_type or "mjpeg"
+        camera_headers = effective_camera.headers
         import time
 
         from backend.app.services.external_camera import generate_mjpeg_stream
@@ -681,7 +682,7 @@ async def camera_stream(
                         await asyncio.wait_for(disconnect_event.wait(), timeout=1.0)
                     except TimeoutError:
                         pass
-                async for chunk in generate_mjpeg_stream(camera_url, camera_type, fps):
+                async for chunk in generate_mjpeg_stream(camera_url, camera_type, fps, headers=camera_headers):
                     if disconnect_event.is_set():
                         break
                     frame_start = chunk.find(b"\xff\xd8")
@@ -967,6 +968,7 @@ async def camera_snapshot(
                 effective_camera.camera_type or "mjpeg",
                 timeout=15,
                 snapshot_url=effective_camera.snapshot_url,
+                headers=effective_camera.headers,
             )
         if not frame_data:
             raise HTTPException(
@@ -1052,7 +1054,12 @@ async def test_camera(
     if effective_camera.enabled and effective_camera.url:
         from backend.app.services.external_camera import test_connection
 
-        return await test_connection(effective_camera.url, effective_camera.camera_type or "mjpeg")
+        return await test_connection(
+            effective_camera.url,
+            effective_camera.camera_type or "mjpeg",
+            snapshot_url=effective_camera.snapshot_url,
+            headers=effective_camera.headers,
+        )
 
     result = await test_camera_connection(
         ip_address=printer.ip_address,
@@ -1088,6 +1095,7 @@ async def diagnose_camera_route(
             camera_type=effective_camera.camera_type,
             printer_id=printer_id,
             snapshot_url=effective_camera.snapshot_url,
+            headers=effective_camera.headers,
         )
         return result.to_dict()
 
@@ -1192,11 +1200,12 @@ async def test_external_camera(
         Dict with {success: bool, error?: str, resolution?: str}
     """
     # Verify printer exists (for authorization)
-    await get_printer_or_404(printer_id, db)
+    printer = await get_printer_or_404(printer_id, db)
 
+    from backend.app.services.elegoo_camera import prusa_connect_local_camera_headers
     from backend.app.services.external_camera import test_connection
 
-    return await test_connection(url, camera_type)
+    return await test_connection(url, camera_type, headers=prusa_connect_local_camera_headers(printer, url))
 
 
 @router.get("/{printer_id}/camera/check-plate")

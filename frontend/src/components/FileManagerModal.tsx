@@ -305,7 +305,7 @@ export function FileManagerModal({ printerId, printerName, printerProvider, prin
   const [filePendingSpoolConfirmation, setFilePendingSpoolConfirmation] = useState<{ path: string; name: string; options?: { bed_levelling?: boolean; print_platform_type?: ElegooPrintPlatformType } } | null>(null);
   const [elegooHeatedBedLevelling, setElegooHeatedBedLevelling] = useState(true);
   const [elegooPrintPlatformType, setElegooPrintPlatformType] = useState<ElegooPrintPlatformType>(0);
-  const isPrusaPrinter = printerProvider === 'prusalink' || printerProvider === 'prusaconnect';
+  const isPrusaPrinter = printerProvider === 'prusalink' || printerProvider === 'prusaconnect' || printerProvider === 'prusaconnectlocal';
   const isPrusaLinkPrinter = printerProvider === 'prusalink';
   const isElegooSDCPPrinter = isElegooCc1Printer(printerProvider, printerModel);
 

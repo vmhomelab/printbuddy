@@ -675,6 +675,7 @@ class PrinterManager:
         provider: str = "bambu",
         api_url: str | None = None,
         auth_token: str | None = None,
+        provider_options: str | None = None,
     ) -> dict:
         """Test connection to a printer without persisting.
 
@@ -693,7 +694,7 @@ class PrinterManager:
                     "api_url": api_url,
                     "auth_token": auth_token,
                     "ip_address": ip_address,
-                    "provider_options": None,
+                    "provider_options": provider_options,
                 },
             )()
             client = create_printer_client(probe_printer)
@@ -705,6 +706,7 @@ class PrinterManager:
                 model_label = {
                     "prusalink": "PrusaLink",
                     "prusaconnect": "Prusa Connect Mobile",
+                    "prusaconnectlocal": "Prusa Connect Local",
                     "elegoo_sdcp": "Elegoo SDCP",
                 }.get(provider_name, "Klipper/Moonraker")
                 result = {
@@ -719,6 +721,7 @@ class PrinterManager:
                 model_label = {
                     "prusalink": "PrusaLink",
                     "prusaconnect": "Prusa Connect Mobile",
+                    "prusaconnectlocal": "Prusa Connect Local",
                     "elegoo_sdcp": "Elegoo SDCP",
                 }.get(provider_name, "Klipper/Moonraker")
                 return {"success": False, "state": None, "model": model_label, "error": type(exc).__name__}

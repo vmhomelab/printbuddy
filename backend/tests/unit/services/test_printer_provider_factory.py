@@ -16,7 +16,16 @@ from backend.app.services.printer_providers.prusalink import PrusaLinkPrinterCli
 
 
 def test_supported_printbuddy_providers_are_registered():
-    assert {"bambu", "klipper", "mainsail", "fluidd", "prusalink", "prusaconnect", "elegoo_sdcp"} == SUPPORTED_PROVIDERS
+    assert {
+        "bambu",
+        "klipper",
+        "mainsail",
+        "fluidd",
+        "prusalink",
+        "prusaconnect",
+        "prusaconnectlocal",
+        "elegoo_sdcp",
+    } == (SUPPORTED_PROVIDERS)
 
 
 @pytest.mark.parametrize("provider", ["klipper", "mainsail", "fluidd"])

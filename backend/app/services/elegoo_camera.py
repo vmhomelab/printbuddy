@@ -53,6 +53,9 @@ class EffectiveCameraSource:
     camera_type: str | None
     snapshot_url: str | None = None
     derived: bool = False
+    # Request headers the backend sends to the camera (e.g. a bearer token).
+    # Never serialized to clients; the browser always goes through the proxy.
+    headers: dict[str, str] | None = None
 
 
 def is_elegoo_sdcp_provider(provider: object) -> bool:
@@ -241,6 +244,70 @@ def _prusalink_provider_camera_source(printer: Any) -> EffectiveCameraSource | N
     )
 
 
+PRUSA_CONNECT_LOCAL_PROVIDER = "prusaconnectlocal"
+
+
+def _prusa_connect_local_base_url(printer: Any) -> str | None:
+    from backend.app.services.printer_providers.prusaconnectlocal import build_prusa_connect_local_base_url
+
+    try:
+        return build_prusa_connect_local_base_url(
+            getattr(printer, "ip_address", None), getattr(printer, "api_url", None)
+        )
+    except ValueError:
+        return None
+
+
+def prusa_connect_local_camera_headers(printer: Any, url: object) -> dict[str, str] | None:
+    """Bearer header for a camera URL served by this printer's Prusa Connect Local server.
+
+    Only URLs under the printer's own server get the token, so a manually
+    configured third-party camera never receives the Prusa Connect Local key.
+    """
+    if str(getattr(printer, "provider", None) or "").strip().lower() != PRUSA_CONNECT_LOCAL_PROVIDER:
+        return None
+    token = str(getattr(printer, "auth_token", None) or "").strip()
+    base = _prusa_connect_local_base_url(printer)
+    if not token or not base or not str(url or "").startswith(f"{base}api/v1/cameras/"):
+        return None
+    return {"Authorization": token if token.lower().startswith("bearer ") else f"Bearer {token}"}
+
+
+def _prusa_connect_local_camera_source(printer: Any) -> EffectiveCameraSource | None:
+    """Camera Prusa Connect Local declared for this printer, picked up when the printer was added.
+
+    provider_options carries ``pcl_camera`` (the camera's instance name) and
+    which of its outputs exist. The stream is preferred; a camera that only
+    answers stills is polled through its snapshot endpoint.
+    """
+    if str(getattr(printer, "provider", None) or "").strip().lower() != PRUSA_CONNECT_LOCAL_PROVIDER:
+        return None
+    options = _provider_options_dict(printer)
+    name = str(options.get("pcl_camera") or "").strip()
+    base = _prusa_connect_local_base_url(printer)
+    if not name or not base:
+        return None
+
+    camera_base = f"{base}api/v1/cameras/{quote(name, safe='')}"
+    has_stream = options.get("pcl_camera_stream") is not False
+    has_snapshot = options.get("pcl_camera_snapshot") is not False
+    if has_stream:
+        url, camera_type = f"{camera_base}/stream", "mjpeg"
+    elif has_snapshot:
+        url, camera_type = f"{camera_base}/snapshot", "snapshot"
+    else:
+        return None
+
+    return EffectiveCameraSource(
+        enabled=True,
+        url=url,
+        camera_type=camera_type,
+        snapshot_url=f"{camera_base}/snapshot" if has_snapshot else None,
+        derived=True,
+        headers=prusa_connect_local_camera_headers(printer, url),
+    )
+
+
 def get_effective_camera_source(printer: Any) -> EffectiveCameraSource:
     """Return the camera source Printbuddy should use for a printer.
 
@@ -261,7 +328,12 @@ def get_effective_camera_source(printer: Any) -> EffectiveCameraSource:
             camera_type=configured_type or ELEGOO_SDCP_CAMERA_TYPE,
             snapshot_url=configured_snapshot_url,
             derived=False,
+            headers=prusa_connect_local_camera_headers(printer, configured_url),
         )
+
+    pcl_camera = _prusa_connect_local_camera_source(printer)
+    if pcl_camera:
+        return pcl_camera
 
     prusalink_camera = _prusalink_provider_camera_source(printer)
     if prusalink_camera:

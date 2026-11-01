@@ -121,6 +121,7 @@ import { SkipObjectsModal, SkipObjectsIcon } from '../components/SkipObjectsModa
 import { FileUploadModal } from '../components/FileUploadModal';
 import { PrintModal } from '../components/PrintModal';
 import { PrinterInfoModal } from '../components/PrinterInfoModal';
+import { PrusaConnectLocalAddSection } from '../components/PrusaConnectLocalAddSection';
 import { getGlobalTrayId, getFillBarColor, getSpoolmanFillLevel, getFallbackSpoolTag, isBambuLabSpool, resolveLoadedFilamentInfo, resolveTrayFillLevel } from '../utils/amsHelpers';
 import { getDefaultPrinterImage, getPrinterImage, getWifiStrength, filterCompatibleQueueItems } from '../utils/printer';
 import { appAssetPath } from '../utils/assetPaths';
@@ -128,6 +129,7 @@ import { FilamentSlotCircle } from '../components/FilamentSlotCircle';
 import { Collapsible } from '../components/Collapsible';
 import { ConnectionDiagnosticModal, DiagnosticChecklist } from '../components/ConnectionDiagnostic';
 import { KlipperControlPanel } from '../components/KlipperControlPanel';
+import { PrusaConnectLocalControlPanel } from '../components/PrusaConnectLocalControlPanel';
 import { getColorName, parseFilamentColor, isLightColor } from '../utils/colors';
 import { getPrinterFileRuleSet, isPrintableForProvider } from '../utils/printerFileRules';
 import type { CameraViewMode } from '../api/client';
@@ -470,7 +472,7 @@ function getPrusaLinkWebUrl(printer: Printer): string | null {
 function isPrusaPrinter(printer: Pick<Printer, 'provider' | 'model'>): boolean {
   const provider = printer.provider?.toLowerCase();
   const model = printer.model?.toLowerCase() ?? '';
-  return provider === 'prusalink' || provider === 'prusaconnect' || model.startsWith('prusa ');
+  return provider === 'prusalink' || provider === 'prusaconnect' || provider === 'prusaconnectlocal' || model.startsWith('prusa ');
 }
 
 function PrinterModelSelect({
@@ -487,7 +489,7 @@ function PrinterModelSelect({
   provider?: PrinterCreate['provider'];
 }) {
   const { t } = useTranslation();
-  const visibleGroups = provider === 'prusalink' || provider === 'prusaconnect'
+  const visibleGroups = provider === 'prusalink' || provider === 'prusaconnect' || provider === 'prusaconnectlocal'
     ? PRINTER_MODEL_GROUPS
         .map((group) => {
           if (group.label === 'Prusa') return group;
@@ -3051,7 +3053,9 @@ function PrinterCard({
     status?.connected && viewMode === 'expanded' && ((amsData?.length ?? 0) > 0 || (status.vt_tray?.length ?? 0) > 0) ? 'filaments' : null,
     smartPlug && viewMode === 'expanded' ? 'smart-plug' : null,
     viewMode === 'expanded' ? 'actions' : null,
-    (printer.provider === 'klipper' || printer.provider === 'mainsail' || printer.provider === 'fluidd') && !isPrusaModelPrinter && viewMode === 'expanded' ? 'manual-controls' : null,
+    ((printer.provider === 'klipper' || printer.provider === 'mainsail' || printer.provider === 'fluidd') && !isPrusaModelPrinter) || printer.provider === 'prusaconnectlocal'
+      ? (viewMode === 'expanded' ? 'manual-controls' : null)
+      : null,
   ].filter((sectionId): sectionId is PrinterCardSectionId => sectionId !== null);
 
   if (shouldHide) {
@@ -5828,7 +5832,7 @@ function PrinterCard({
                   </Button>
                 </div>
               )}
-              {(isBambuProvider || printer.provider === 'prusalink' || isMoonrakerProvider) && (
+              {(isBambuProvider || printer.provider === 'prusalink' || printer.provider === 'prusaconnectlocal' || isMoonrakerProvider) && (
                 <Button
                   variant="secondary"
                   size="sm"
@@ -5899,6 +5903,33 @@ function PrinterCard({
             <KlipperControlPanel
               printer={printer}
               status={status}
+              showToast={showToast}
+            />
+          </Collapsible>
+          </SortablePrinterCardSection>
+        )}
+
+        {/* Prusa Connect Local controls (capability-driven, mirrors the PCL controls page) */}
+        {printer.provider === 'prusaconnectlocal' && viewMode === 'expanded' && (
+          <SortablePrinterCardSection layoutEditing={layoutEditing} id="manual-controls" title="Manual controls" order={getCardSectionOrder('manual-controls')}>
+          <Collapsible
+            defaultOpen={false}
+            className="mt-4 pt-3 border-t border-bambu-dark-tertiary"
+            summaryClassName="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark/50 px-3 py-2 hover:bg-bambu-dark transition-colors"
+            summary={
+              <div className="flex items-center gap-2 min-w-0">
+                <SlidersHorizontal className="w-4 h-4 text-bambu-green flex-shrink-0" />
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold text-white truncate">{t('printers.prusaConnectLocal.controls.title')}</p>
+                  <p className="text-[10px] text-bambu-gray truncate">{t('printers.prusaConnectLocal.controls.subtitle')}</p>
+                </div>
+              </div>
+            }
+          >
+            <PrusaConnectLocalControlPanel
+              printer={printer}
+              canControl={hasPermission('printers:control')}
+              canUpdate={hasPermission('printers:update')}
               showToast={showToast}
             />
           </Collapsible>
@@ -6632,10 +6663,12 @@ function PrinterCard({
 function AddPrinterModal({
   onClose,
   onAdd,
+  onBulkAdded,
   existingSerials,
 }: {
   onClose: () => void;
   onAdd: (data: PrinterCreate) => void;
+  onBulkAdded?: (printers: Printer[], errors: string[]) => void;
   existingSerials: string[];
 }) {
   const { t } = useTranslation();
@@ -6696,7 +6729,8 @@ function AddPrinterModal({
   const isMoonrakerProvider = form.provider === 'klipper' || form.provider === 'mainsail' || form.provider === 'fluidd';
   const isPrusaLinkProvider = form.provider === 'prusalink';
   const isPrusaConnectProvider = form.provider === 'prusaconnect';
-  const isPrusaProvider = isPrusaLinkProvider || isPrusaConnectProvider;
+  const isPrusaConnectLocalProvider = form.provider === 'prusaconnectlocal';
+  const isPrusaProvider = isPrusaLinkProvider || isPrusaConnectProvider || isPrusaConnectLocalProvider;
   const isElegooSDCPProvider = form.provider === 'elegoo_sdcp';
   const isHttpProvider = isMoonrakerProvider || isPrusaProvider || isElegooSDCPProvider;
 
@@ -7004,6 +7038,7 @@ function AddPrinterModal({
                 >
                   <option value="prusalink">PrusaLink (local network)</option>
                   <option value="prusaconnect">Connect Mobile API (Prusa cloud)</option>
+                  <option value="prusaconnectlocal">Prusa Connect Local (self-hosted server)</option>
                 </select>
               </div>
             )}
@@ -7195,6 +7230,41 @@ function AddPrinterModal({
             )}
           </div>
           )}
+          {isPrusaConnectLocalProvider ? (
+            <div className="space-y-4">
+              <PrusaConnectLocalAddSection
+                location={form.location}
+                autoArchive={form.auto_archive}
+                reconnectIntervalSeconds={form.reconnect_interval_seconds}
+                onAdded={(printers, errors) => onBulkAdded?.(printers, errors)}
+              />
+              <div>
+                <label className="block text-sm text-bambu-gray mb-1">{t('printers.modal.locationGroup')}</label>
+                <input
+                  type="text"
+                  className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                  value={form.location || ''}
+                  onChange={(e) => setForm({ ...form, location: e.target.value })}
+                  placeholder={t('printers.modal.locationPlaceholder')}
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  id="pcl_auto_archive"
+                  checked={form.auto_archive}
+                  onChange={(e) => setForm({ ...form, auto_archive: e.target.checked })}
+                  className="rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+                />
+                <label htmlFor="pcl_auto_archive" className="text-sm text-bambu-gray">
+                  {t('printers.modal.autoArchiveLabel')}
+                </label>
+              </div>
+              <Button type="button" variant="secondary" onClick={onClose} className="w-full">
+                {t('common.close')}
+              </Button>
+            </div>
+          ) : (
           <form onSubmit={handleAddSubmit} className="space-y-4">
             <div>
               <label className="block text-sm text-bambu-gray mb-1">
@@ -7460,6 +7530,7 @@ function AddPrinterModal({
               </div>
             )}
           </form>
+          )}
         </CardContent>
       </Card>
     </div>
@@ -9267,6 +9338,17 @@ export function PrintersPage() {
         <AddPrinterModal
           onClose={() => setShowAddModal(false)}
           onAdd={(data) => addMutation.mutate(data)}
+          onBulkAdded={(created, errors) => {
+            queryClient.invalidateQueries({ queryKey: ['printers'] });
+            queryClient.invalidateQueries({ queryKey: ['maintenanceOverview'] });
+            if (created.length > 0) {
+              showToast(t('printers.prusaConnectLocal.addedCount', { count: created.length }), errors.length ? 'warning' : 'success');
+            }
+            if (errors.length > 0 && created.length === 0) {
+              showToast(errors[0], 'error');
+            }
+            if (errors.length === 0 && created.length > 0) setShowAddModal(false);
+          }}
           existingSerials={printers?.map(p => p.serial_number) || []}
         />
       )}

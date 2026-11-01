@@ -6,9 +6,19 @@ from backend.app.services.printer_providers.bambu import create_bambu_client
 from backend.app.services.printer_providers.elegoo_sdcp import create_elegoo_sdcp_client
 from backend.app.services.printer_providers.moonraker import create_moonraker_client
 from backend.app.services.printer_providers.prusaconnect import create_prusa_connect_mobile_client
+from backend.app.services.printer_providers.prusaconnectlocal import create_prusa_connect_local_client
 from backend.app.services.printer_providers.prusalink import create_prusalink_client
 
-SUPPORTED_PROVIDERS = {"bambu", "klipper", "mainsail", "fluidd", "prusalink", "prusaconnect", "elegoo_sdcp"}
+SUPPORTED_PROVIDERS = {
+    "bambu",
+    "klipper",
+    "mainsail",
+    "fluidd",
+    "prusalink",
+    "prusaconnect",
+    "prusaconnectlocal",
+    "elegoo_sdcp",
+}
 MOONRAKER_PROVIDERS = {"klipper", "mainsail", "fluidd"}
 
 
@@ -28,7 +38,8 @@ def create_printer_client(printer: Any, **callbacks: Any) -> Any:
     Bambu remains the default for backwards compatibility. Klipper/Mainsail/
     Fluidd all use Moonraker because those are UIs on top of a
     Moonraker-enabled Klipper printer. PrusaLink uses Prusa's local HTTP API;
-    Prusa Connect Mobile uses Prusa's cloud mobile API.
+    Prusa Connect Mobile uses Prusa's cloud mobile API;
+    Prusa Connect Local uses a self-hosted Prusa Connect Local server.
     """
 
     provider = normalize_provider(getattr(printer, "provider", "bambu"))
@@ -40,6 +51,8 @@ def create_printer_client(printer: Any, **callbacks: Any) -> Any:
         return create_prusalink_client(printer, **callbacks)
     if provider == "prusaconnect":
         return create_prusa_connect_mobile_client(printer, **callbacks)
+    if provider == "prusaconnectlocal":
+        return create_prusa_connect_local_client(printer, **callbacks)
     if provider == "elegoo_sdcp":
         return create_elegoo_sdcp_client(printer, **callbacks)
     raise ValueError(f"Unsupported printer provider: {provider!r}")

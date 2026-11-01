@@ -283,6 +283,7 @@ class TestCameraAPI:
             camera_type="mjpeg",
             printer_id=printer.id,
             snapshot_url=None,
+            headers=None,
         )
         built_in_diag.assert_not_called()
         body = response.json()

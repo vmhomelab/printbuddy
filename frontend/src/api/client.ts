@@ -272,7 +272,7 @@ export interface LongLivedCameraToken {
 }
 
 // Printer types
-export type PrinterProvider = 'bambu' | 'klipper' | 'mainsail' | 'fluidd' | 'prusalink' | 'prusaconnect' | 'elegoo_sdcp';
+export type PrinterProvider = 'bambu' | 'klipper' | 'mainsail' | 'fluidd' | 'prusalink' | 'prusaconnect' | 'prusaconnectlocal' | 'elegoo_sdcp';
 
 export interface Printer {
   id: number;
@@ -519,6 +519,88 @@ export interface PrinterCreate {
   camera_rotation?: number;
   plate_detection_enabled?: boolean;
   plate_detection_roi?: PlateDetectionROI;
+}
+
+export interface PrusaConnectLocalDevice {
+  id: string;
+  name: string | null;
+  vendor: string | null;
+  model: string | null;
+  serial: string | null;
+  firmware: string | null;
+  driver?: string | null;
+  connected: boolean;
+  state: string | null;
+  retired: boolean;
+  can_operate: boolean;
+  printbuddy_serial: string;
+  already_added: boolean;
+  camera: PrusaConnectLocalCamera | null;
+}
+
+export interface PrusaConnectLocalCamera {
+  name: string;
+  serving: boolean;
+  stream: boolean;
+  snapshot: boolean;
+  watch: boolean;
+}
+
+export interface PrusaConnectLocalPrinterCamera {
+  name: string;
+  stream: boolean;
+  snapshot: boolean;
+  /** A manually configured external camera takes precedence over this one. */
+  overridden: boolean;
+}
+
+export interface PrusaConnectLocalDiscoverResult {
+  api_url: string;
+  printers: PrusaConnectLocalDevice[];
+}
+
+export interface PrusaConnectLocalVerbArgument {
+  name: string;
+  type?: string;
+  required?: boolean;
+  minimum?: number;
+  maximum?: number;
+  enum?: string[];
+  unit?: string;
+  max_length?: number;
+}
+
+export interface PrusaConnectLocalTool {
+  index: number;
+  active: boolean;
+  nozzle_diameter: number | null;
+  high_flow: boolean | null;
+  hardened: boolean | null;
+  material: string | null;
+  nozzle_temp: number | null;
+  nozzle_target_temp: number | null;
+}
+
+export interface PrusaConnectLocalControls {
+  device_id: string;
+  connected: boolean;
+  can_operate: boolean;
+  state: string | null;
+  verbs: Record<string, PrusaConnectLocalVerbArgument[]>;
+  position: { x: number | null; y: number | null; z: number | null };
+  speed: number | null;
+  flow: number | null;
+  temperatures: {
+    nozzle: number | null;
+    nozzle_target: number | null;
+    bed: number | null;
+    bed_target: number | null;
+    chamber: number | null;
+    chamber_target: number | null;
+  };
+  hostname: string | null;
+  tools: PrusaConnectLocalTool[];
+  camera: PrusaConnectLocalPrinterCamera | null;
 }
 
 export interface MoonrakerWebcamCandidate {
@@ -3644,6 +3726,23 @@ export const api = {
     request<Printer>(`/printers/${id}`, {
       method: 'PATCH',
       body: JSON.stringify(data),
+    }),
+  discoverPrusaConnectLocalPrinters: (params: { host: string; port?: number; api_key: string }) =>
+    request<PrusaConnectLocalDiscoverResult>('/printers/prusa-connect-local/discover', {
+      method: 'POST',
+      body: JSON.stringify(params),
+    }),
+  getPrusaConnectLocalControls: (printerId: number) =>
+    request<PrusaConnectLocalControls>(`/printers/${printerId}/prusa-connect-local/controls`),
+  detectPrusaConnectLocalCamera: (printerId: number) =>
+    request<{ camera: PrusaConnectLocalPrinterCamera | null; webrtc_only: string[] }>(
+      `/printers/${printerId}/prusa-connect-local/camera/detect`,
+      { method: 'POST' },
+    ),
+  sendPrusaConnectLocalCommand: (printerId: number, verb: string, args?: Record<string, string | number | boolean>) =>
+    request<{ success: boolean; verb: string }>(`/printers/${printerId}/prusa-connect-local/commands`, {
+      method: 'POST',
+      body: JSON.stringify({ verb, args: args ?? {} }),
     }),
   discoverMoonrakerWebcams: (params: {
     api_url: string;

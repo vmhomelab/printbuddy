@@ -259,6 +259,7 @@ class TestExternalCameraDiagnostic:
             "mjpeg",
             timeout=15,
             snapshot_url=None,
+            headers=None,
         )
         assert result.overall_status == "ok"
         assert result.summary_code == "all_ok"

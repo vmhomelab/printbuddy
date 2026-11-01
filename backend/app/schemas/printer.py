@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 from typing import Any, Literal
 
@@ -8,9 +9,11 @@ from backend.app.services.elegoo_camera import (
     get_effective_camera_source,
 )
 
-PrinterProvider = Literal["bambu", "klipper", "mainsail", "fluidd", "prusalink", "prusaconnect", "elegoo_sdcp"]
+PrinterProvider = Literal[
+    "bambu", "klipper", "mainsail", "fluidd", "prusalink", "prusaconnect", "prusaconnectlocal", "elegoo_sdcp"
+]
 MOONRAKER_PROVIDERS = {"klipper", "mainsail", "fluidd"}
-HTTP_PROVIDERS = MOONRAKER_PROVIDERS | {"prusalink", "prusaconnect", "elegoo_sdcp"}
+HTTP_PROVIDERS = MOONRAKER_PROVIDERS | {"prusalink", "prusaconnect", "prusaconnectlocal", "elegoo_sdcp"}
 PRUSA_CONNECT_MOBILE_BASE_URL = "https://connect-mobile-api.prusa3d.com"
 
 
@@ -33,6 +36,22 @@ def _synthetic_prusa_connect_serial(value: object) -> str:
     raw = str(value or "prusaconnect").strip().upper()
     normalized = "".join(ch if ch.isalnum() else "-" for ch in raw).strip("-") or "PRUSACONNECT"
     return f"PRUSACONNECT-{normalized}"[:50]
+
+
+def _synthetic_prusa_connect_local_serial(value: object) -> str:
+    raw = str(value or "device").strip().upper()
+    normalized = "".join(ch if ch.isalnum() else "-" for ch in raw).strip("-") or "DEVICE"
+    return f"PCL-{normalized}"[:50]
+
+
+def _prusa_connect_local_device_id(provider_options: object) -> str:
+    if not provider_options:
+        return ""
+    try:
+        options = json.loads(provider_options) if isinstance(provider_options, str) else provider_options
+    except (TypeError, ValueError):
+        return ""
+    return str(options.get("pcl_device_id") or "").strip() if isinstance(options, dict) else ""
 
 
 def _synthetic_elegoo_sdcp_serial(value: object) -> str:
@@ -109,6 +128,15 @@ class PrinterBase(BaseModel):
                 data["access_code"] = "prusaconnect"
             if not data.get("api_url"):
                 data["api_url"] = PRUSA_CONNECT_MOBILE_BASE_URL
+        elif provider == "prusaconnectlocal":
+            if not str(data.get("serial_number") or "").strip():
+                data["serial_number"] = _synthetic_prusa_connect_local_serial(
+                    _prusa_connect_local_device_id(data.get("provider_options")) or data.get("ip_address")
+                )
+            if not str(data.get("access_code") or "").strip():
+                data["access_code"] = "pcl"
+            if not data.get("api_url") and data.get("ip_address"):
+                data["api_url"] = f"http://{str(data['ip_address']).strip()}:8080"
         elif provider == "elegoo_sdcp":
             if not str(data.get("serial_number") or "").strip():
                 data["serial_number"] = _synthetic_elegoo_sdcp_serial(data.get("ip_address"))

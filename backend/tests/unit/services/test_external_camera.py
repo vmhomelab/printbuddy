@@ -59,7 +59,8 @@ class _FakeMjpegSession:
     def __init__(self, response):
         self._response = response
 
-    def get(self, _url):
+    def get(self, _url, headers=None):
+        self.headers = headers
         return self._response
 
     async def __aenter__(self):
