@@ -695,9 +695,7 @@ def get_printer_images_dir() -> Path:
 
 def _custom_image_path(filename: str | None, printer_id: int) -> Path | None:
     """Resolve only filenames generated for this printer inside its image directory."""
-    if not filename or not re.fullmatch(
-        rf"printer_{printer_id}_[0-9a-f]{{32}}\.(?:jpg|jpeg|png|gif|webp)", filename
-    ):
+    if not filename or not re.fullmatch(rf"printer_{printer_id}_[0-9a-f]{{32}}\.(?:jpg|jpeg|png|gif|webp)", filename):
         return None
     images_dir = get_printer_images_dir().resolve()
     image_path = (images_dir / filename).resolve()
@@ -3385,6 +3383,44 @@ async def debug_simulate_print_complete(
 # Print Control Endpoints
 # =============================================================================
 
+# Printer states from which each control action is valid. A client returning
+# False while the printer is outside these states is a request conflict (409),
+# not a server failure (500).
+_PRINT_CONTROL_VALID_STATES = {
+    "pause": frozenset({"RUNNING"}),
+    "resume": frozenset({"PAUSE"}),
+}
+
+
+def _printer_state_name(client) -> str | None:
+    state = getattr(getattr(client, "state", None), "state", None)
+    return state if isinstance(state, str) and state else None
+
+
+def _run_print_control(client, action: str) -> None:
+    """Send a print-control command and map failures to precise HTTP errors.
+
+    - Printer in a state where the action makes no sense -> 409 with the state.
+    - Printer rejected the command (HTTP 4xx from the provider) -> 409 with the state.
+    - Anything else -> 500 / 502 as before.
+    """
+    method = {"pause": client.pause_print, "resume": client.resume_print, "stop": client.stop_print}[action]
+    try:
+        success = method()
+    except httpx.HTTPStatusError as exc:
+        status = exc.response.status_code if exc.response is not None else None
+        state = _printer_state_name(client) or "unknown"
+        if status is not None and 400 <= status < 500:
+            raise HTTPException(409, f"Printer rejected {action} (state={state})") from exc
+        raise HTTPException(502, f"Printer returned an error for {action} (state={state})") from exc
+    if success:
+        return
+    state = _printer_state_name(client)
+    valid = _PRINT_CONTROL_VALID_STATES.get(action)
+    if state and valid is not None and state not in valid:
+        raise HTTPException(409, f"Cannot {action} print while printer is {state}")
+    raise HTTPException(500, f"Failed to {action} print")
+
 
 @router.post("/{printer_id}/print/stop")
 async def stop_print(
@@ -3402,9 +3438,7 @@ async def stop_print(
     if not client:
         raise HTTPException(400, "Printer not connected")
 
-    success = client.stop_print()
-    if not success:
-        raise HTTPException(500, "Failed to stop print")
+    _run_print_control(client, "stop")
 
     # Mark this printer as user-stopped so on_print_complete reclassifies
     # the resulting "failed"/"aborted" MQTT status as "cancelled" — otherwise
@@ -3472,9 +3506,7 @@ async def pause_print(
     if not client:
         raise HTTPException(400, "Printer not connected")
 
-    success = client.pause_print()
-    if not success:
-        raise HTTPException(500, "Failed to pause print")
+    _run_print_control(client, "pause")
 
     return {"success": True, "message": "Print pause command sent"}
 
@@ -3495,9 +3527,7 @@ async def resume_print(
     if not client:
         raise HTTPException(400, "Printer not connected")
 
-    success = client.resume_print()
-    if not success:
-        raise HTTPException(500, "Failed to resume print")
+    _run_print_control(client, "resume")
 
     return {"success": True, "message": "Print resume command sent"}
 

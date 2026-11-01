@@ -7,6 +7,7 @@ from io import BytesIO
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import unquote
 
+import httpx
 import pytest
 from httpx import AsyncClient
 from PIL import Image
@@ -3413,3 +3414,71 @@ class TestPrinterCustomImage:
             deleted = await async_client.delete(f"/api/v1/printers/{printer.id}")
         assert deleted.status_code == 200
         assert not (self.images_dir / filename).exists()
+
+
+class TestPrintControlStateErrors:
+    """Print control routes report printer-state conflicts as 409, not 500."""
+
+    @staticmethod
+    def _client(method: str, state: str, *, result=False, error=None) -> MagicMock:
+        client = MagicMock()
+        client.state.state = state
+        if error is not None:
+            getattr(client, method).side_effect = error
+        else:
+            getattr(client, method).return_value = result
+        return client
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    @pytest.mark.parametrize(
+        ("action", "method", "state"),
+        [
+            ("pause", "pause_print", "IDLE"),
+            ("pause", "pause_print", "FINISH"),
+            ("resume", "resume_print", "RUNNING"),
+            ("resume", "resume_print", "IDLE"),
+        ],
+    )
+    async def test_invalid_state_returns_409_with_state(
+        self, async_client: AsyncClient, printer_factory, action, method, state
+    ):
+        printer = await printer_factory(name="State Printer")
+        mock_client = self._client(method, state)
+        with patch("backend.app.api.routes.printers.printer_manager") as mock_pm:
+            mock_pm.get_client.return_value = mock_client
+            response = await async_client.post(f"/api/v1/printers/{printer.id}/print/{action}")
+        assert response.status_code == 409
+        assert state in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    @pytest.mark.parametrize(
+        ("action", "method"), [("pause", "pause_print"), ("resume", "resume_print"), ("stop", "stop_print")]
+    )
+    async def test_provider_rejection_returns_409(self, async_client: AsyncClient, printer_factory, action, method):
+        printer = await printer_factory(name="Rejecting Printer")
+        request = httpx.Request("POST", "http://klipper.local:7125/printer/print/x")
+        error = httpx.HTTPStatusError("400", request=request, response=httpx.Response(400, request=request))
+        mock_client = self._client(method, "RUNNING", error=error)
+        with patch("backend.app.api.routes.printers.printer_manager") as mock_pm:
+            mock_pm.get_client.return_value = mock_client
+            response = await async_client.post(f"/api/v1/printers/{printer.id}/print/{action}")
+        assert response.status_code == 409
+        assert "RUNNING" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    @pytest.mark.parametrize(
+        ("action", "method", "state"),
+        [("pause", "pause_print", "RUNNING"), ("resume", "resume_print", "PAUSE"), ("stop", "stop_print", "RUNNING")],
+    )
+    async def test_failure_in_valid_state_stays_500(
+        self, async_client: AsyncClient, printer_factory, action, method, state
+    ):
+        printer = await printer_factory(name="Broken Printer")
+        mock_client = self._client(method, state)
+        with patch("backend.app.api.routes.printers.printer_manager") as mock_pm:
+            mock_pm.get_client.return_value = mock_client
+            response = await async_client.post(f"/api/v1/printers/{printer.id}/print/{action}")
+        assert response.status_code == 500

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -521,6 +522,11 @@ def _normalize_moonraker_webcam(base_url: str, webcam: dict[str, Any]) -> dict[s
         "enabled": bool(webcam.get("enabled", True)),
         "raw": webcam,
     }
+
+
+logger = logging.getLogger(__name__)
+
+_MOONRAKER_ACTIVE_PRINT_STATES = frozenset({"RUNNING", "PAUSE"})
 
 
 class MoonrakerPrinterClient:
@@ -1458,17 +1464,63 @@ class MoonrakerPrinterClient:
             raise
         return True
 
-    def stop_print(self) -> bool:
-        self._post("printer/print/cancel", {})
+    def _confirm_state_after_rejection(
+        self,
+        exc: httpx.HTTPStatusError,
+        accepted_states: set[str] | None = None,
+        *,
+        rejected_states: set[str] | None = None,
+    ) -> bool:
+        """Decide what a Moonraker HTTP 400 on a print-control command means.
+
+        A 400 can be an external state race (someone paused from the printer
+        screen between our last poll and this command) or a genuine command
+        rejection. Refresh status and only report success when the printer is
+        already in the requested target state; otherwise re-raise the original
+        error so the caller sees the rejection.
+        """
+        try:
+            self.request_status_update()
+        except Exception as refresh_exc:  # noqa: BLE001 - surface the original rejection, not the refresh failure
+            logger.warning("Moonraker status refresh after HTTP 400 failed: %s", refresh_exc)
+            raise exc from refresh_exc
+        state = self.state.state
+        if accepted_states is not None and state in accepted_states:
+            return True
+        if rejected_states is not None and state not in rejected_states:
+            return True
+        raise exc
+
+    def _post_control(
+        self, path: str, accepted_states: set[str] | None = None, *, rejected_states: set[str] | None = None
+    ) -> bool:
+        try:
+            self._post(path, {})
+        except httpx.HTTPStatusError as exc:
+            if exc.response is not None and exc.response.status_code == 400:
+                return self._confirm_state_after_rejection(exc, accepted_states, rejected_states=rejected_states)
+            raise
         return True
+
+    def stop_print(self) -> bool:
+        if self._has_status_sample and self.state.state not in _MOONRAKER_ACTIVE_PRINT_STATES:
+            return True
+        # Success after a 400 only if the printer is no longer printing.
+        return self._post_control("printer/print/cancel", rejected_states=_MOONRAKER_ACTIVE_PRINT_STATES)
 
     def pause_print(self) -> bool:
-        self._post("printer/print/pause", {})
-        return True
+        if self._has_status_sample and self.state.state == "PAUSE":
+            return True
+        if self._has_status_sample and self.state.state != "RUNNING":
+            return False
+        return self._post_control("printer/print/pause", {"PAUSE"})
 
     def resume_print(self) -> bool:
-        self._post("printer/print/resume", {})
-        return True
+        if self._has_status_sample and self.state.state == "RUNNING":
+            return True
+        if self._has_status_sample and self.state.state != "PAUSE":
+            return False
+        return self._post_control("printer/print/resume", {"RUNNING"})
 
 
 def create_moonraker_client(printer: Any, **callbacks: Any) -> MoonrakerPrinterClient:  # noqa: ARG001
