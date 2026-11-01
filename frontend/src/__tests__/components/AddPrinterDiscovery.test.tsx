@@ -360,8 +360,8 @@ describe('AddPrinterModal Discovery', () => {
     await userEvent.click(await screen.findByText('OctoPrint on octopi'));
 
     await waitFor(() => {
-      expect(screen.getByDisplayValue('10.0.0.60')).toBeInTheDocument();
       expect(screen.getByDisplayValue('http://10.0.0.60')).toBeInTheDocument();
+      expect(screen.getByDisplayValue('OctoPrint on octopi')).toBeInTheDocument();
     });
     expect(screen.getByLabelText('OctoPrint API key')).toBeRequired();
     expect(screen.queryByText(/no octoprint instances found/i)).not.toBeInTheDocument();

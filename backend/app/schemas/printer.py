@@ -1,5 +1,6 @@
 from datetime import datetime
 from typing import Any, Literal
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -47,6 +48,22 @@ def _synthetic_octoprint_serial(value: object) -> str:
     raw = str(value or "octoprint").strip().upper()
     normalized = "".join(ch if ch.isalnum() else "-" for ch in raw).strip("-") or "OCTOPRINT"
     return f"OCTOPRINT-{normalized}"[:50]
+
+
+def normalize_octoprint_url(value: object) -> str | None:
+    """Return an OctoPrint base URL with scheme, e.g. ``octopi.local`` -> ``http://octopi.local``."""
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    if "://" not in raw:
+        raw = f"http://{raw}"
+    return raw.rstrip("/")
+
+
+def host_from_url(value: object) -> str | None:
+    """Return the hostname of a URL, used as ip_address for URL-only providers."""
+    url = normalize_octoprint_url(value)
+    return urlparse(url).hostname if url else None
 
 
 def infer_external_camera_type(camera_url: str) -> str:
@@ -118,6 +135,12 @@ class PrinterBase(BaseModel):
             if not data.get("api_url"):
                 data["api_url"] = PRUSA_CONNECT_MOBILE_BASE_URL
         elif provider == "octoprint":
+            # OctoPrint is configured by URL; the host doubles as ip_address so
+            # the URL is the single source of truth.
+            if data.get("api_url"):
+                data["api_url"] = normalize_octoprint_url(data["api_url"])
+                if not str(data.get("ip_address") or "").strip():
+                    data["ip_address"] = host_from_url(data["api_url"])
             if not str(data.get("serial_number") or "").strip():
                 data["serial_number"] = _synthetic_octoprint_serial(data.get("ip_address") or data.get("api_url"))
             if not str(data.get("access_code") or "").strip():

@@ -10,7 +10,10 @@ The historical upstream changelog is preserved after that section for fork/upstr
 #### Added
 - **OctoPrint as printer type (#34)** — Marlin/RepRap printers managed by OctoPrint (OctoPi, Anycubic, Raise3D Pro2, …) can now be added with the OctoPrint URL and an API key. Status (state, nozzle/bed/chamber temperatures, progress, remaining time), start/pause/resume/cancel, the File Manager (list, upload, download, delete on `local`/`sdcard`), manual controls (home, jog, extrude, temperatures, part fan) and print archiving work through OctoPrint's REST API. Adding a printer checks the API key via `/api/currentuser` and reports invalid keys or missing permissions (`octoprint_api_key_invalid` / `octoprint_permissions_missing`) instead of a generic connection error. The webcam configured in OctoPrint (including rotation) is used as the printer camera unless a camera URL is entered. OctoPrint instances can be found with a subnet scan on ports 5000/80 (`DISCOVERY_OCTOPRINT_PORTS`) that works without an API key. Print start/finish detection moved into a shared helper for HTTP-polled providers (`printer_providers/_http_common.py`); PrusaLink behaviour is unchanged. Tests use fixtures recorded from OctoPrint 1.11.8 with its virtual printer.
 
+- OctoPrint printers are configured by their OctoPrint URL only: the Add and Edit dialogs show a single "OctoPrint URL" field (``http://`` is added if missing) and the host is stored as the printer's address, so changing the URL keeps both in sync.
+
 #### Fixed
+- Changing a printer's API URL now reconnects the printer, like changing its IP address already did.
 - Post-print SD-card cleanup no longer tries Bambu FTP for non-Bambu printers (PrusaLink, Moonraker, Elegoo, OctoPrint), which delayed print-complete handling by about 8 seconds per print.
 
 #### Changed

@@ -16,7 +16,7 @@ async function openOctoPrintForm() {
   await user.click(await screen.findByText(/add printer/i));
   await user.selectOptions(await screen.findByLabelText('Printer type'), 'octoprint');
   await user.type(screen.getByPlaceholderText('My Printer'), 'Ender 3');
-  await user.type(screen.getByPlaceholderText('192.168.1.100 or printer.local'), '192.168.1.60');
+  await user.type(screen.getByLabelText('OctoPrint URL'), 'octopi.local');
   await user.type(screen.getByLabelText('OctoPrint API key'), 'ABCDEF');
   const submit = screen
     .getAllByRole('button', { name: /add printer/i })
@@ -35,7 +35,7 @@ describe('AddPrinterModal OctoPrint', () => {
     );
   });
 
-  it('submits the API key and defaults the OctoPrint URL to port 5000', async () => {
+  it('derives the host from the OctoPrint URL and adds http:// when missing', async () => {
     let payload: Record<string, unknown> | null = null;
     server.use(
       http.post('/api/v1/printers/', async ({ request }) => {
@@ -46,13 +46,15 @@ describe('AddPrinterModal OctoPrint', () => {
 
     const { user, submit } = await openOctoPrintForm();
     expect(screen.queryByPlaceholderText('01P00A000000000')).not.toBeInTheDocument();
+    // OctoPrint is configured by URL only; there is no separate IP field.
+    expect(screen.queryByPlaceholderText('192.168.1.100 or printer.local')).not.toBeInTheDocument();
     await user.click(submit);
 
     await waitFor(() => expect(payload).not.toBeNull());
     expect(payload).toMatchObject({
       provider: 'octoprint',
-      ip_address: '192.168.1.60',
-      api_url: 'http://192.168.1.60:5000',
+      ip_address: 'octopi.local',
+      api_url: 'http://octopi.local',
       auth_token: 'ABCDEF',
     });
   }, 10000);

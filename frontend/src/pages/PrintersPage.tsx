@@ -467,6 +467,21 @@ function getPrusaLinkWebUrl(printer: Printer): string | null {
   return `http://${rawUrl}`;
 }
 
+// OctoPrint printers are configured by URL only; the host doubles as ip_address.
+function normalizeOctoPrintUrl(raw: string): string {
+  const trimmed = raw.trim().replace(/\/+$/, '');
+  if (!trimmed) return '';
+  return /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
+}
+
+function octoPrintHost(url: string): string {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return '';
+  }
+}
+
 function isPrusaPrinter(printer: Pick<Printer, 'provider' | 'model'>): boolean {
   const provider = printer.provider?.toLowerCase();
   const model = printer.model?.toLowerCase() ?? '';
@@ -6786,17 +6801,16 @@ function AddPrinterModal({
   const isHttpScanProvider = isMoonrakerProvider || isOctoPrintProvider;
 
   const buildSubmitPayload = (): PrinterCreate => {
-    const ipAddress = form.ip_address.trim();
+    const octoPrintUrl = isOctoPrintProvider ? normalizeOctoPrintUrl(form.api_url || '') : '';
+    const ipAddress = isOctoPrintProvider ? octoPrintHost(octoPrintUrl) : form.ip_address.trim();
     const fallbackUrl = isMoonrakerProvider
       ? `http://${ipAddress}:7125`
       : isPrusaLinkProvider
         ? `http://${ipAddress}`
         : isPrusaConnectProvider
           ? 'https://connect-mobile-api.prusa3d.com'
-          : isOctoPrintProvider
-            ? `http://${ipAddress}:5000`
-            : undefined;
-    const apiUrl = (form.api_url || '').trim() || fallbackUrl;
+          : undefined;
+    const apiUrl = isOctoPrintProvider ? octoPrintUrl : (form.api_url || '').trim() || fallbackUrl;
     const externalCameraUrl = isHttpProvider ? (form.external_camera_url || '').trim() : '';
     return {
       ...form,
@@ -7366,6 +7380,7 @@ function AddPrinterModal({
                 placeholder={t('printers.modal.myPrinter')}
               />
             </div>
+            {!isOctoPrintProvider && (
             <div>
               <label className="block text-sm text-bambu-gray mb-1">
                 {isPrusaConnectProvider ? 'Prusa Connect printer UUID' : t('printers.ipAddress')}
@@ -7383,6 +7398,7 @@ function AddPrinterModal({
                 <p className="text-xs text-bambu-gray mt-1">Use the printer UUID from Prusa Connect, not the local IP address.</p>
               )}
             </div>
+            )}
             {!isHttpProvider && (
               <>
                 <div>
@@ -7484,13 +7500,14 @@ function AddPrinterModal({
                   <label htmlFor="octoprint_url" className="block text-sm text-bambu-gray mb-1">OctoPrint URL</label>
                   <input
                     id="octoprint_url"
-                    type="url"
+                    type="text"
+                    required
                     className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                     value={form.api_url || ''}
                     onChange={(e) => setForm({ ...form, api_url: e.target.value })}
                     placeholder="http://octopi.local"
                   />
-                  <p className="text-xs text-bambu-gray mt-1">Leave empty to use http://host:5000 from the IP/hostname above. OctoPi images serve OctoPrint on port 80.</p>
+                  <p className="text-xs text-bambu-gray mt-1">The address you open OctoPrint at, e.g. http://octopi.local (OctoPi) or http://192.168.1.60:5000. http:// is added if missing.</p>
                 </div>
                 <div>
                   <label htmlFor="octoprint_api_key" className="block text-sm text-bambu-gray mb-1">OctoPrint API key</label>
@@ -7965,6 +7982,7 @@ function EditPrinterModal({
   const [form, setForm] = useState({
     name: printer.name,
     ip_address: printer.ip_address,
+    api_url: printer.api_url || '',
     access_code: '',
     model: printer.model || '',
     location: printer.location || '',
@@ -8012,6 +8030,9 @@ function EditPrinterModal({
         data.auth_token = form.access_code;
       }
     } else if (isOctoPrintProvider) {
+      const octoPrintUrl = normalizeOctoPrintUrl(form.api_url);
+      data.api_url = octoPrintUrl;
+      data.ip_address = octoPrintHost(octoPrintUrl) || form.ip_address;
       if (form.access_code) {
         data.auth_token = form.access_code;
       }
@@ -8066,6 +8087,20 @@ function EditPrinterModal({
                 placeholder={t('printers.modal.myPrinter')}
               />
             </div>
+            {isOctoPrintProvider ? (
+            <div>
+              <label htmlFor="edit_octoprint_url" className="block text-sm text-bambu-gray mb-1">OctoPrint URL</label>
+              <input
+                id="edit_octoprint_url"
+                type="text"
+                required
+                className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                value={form.api_url}
+                onChange={(e) => setForm({ ...form, api_url: e.target.value })}
+                placeholder="http://octopi.local"
+              />
+            </div>
+            ) : (
             <div>
               <label className="block text-sm text-bambu-gray mb-1">{t('printers.ipAddress')}</label>
               <input
@@ -8078,6 +8113,7 @@ function EditPrinterModal({
                 placeholder="192.168.1.100 or printer.local"
               />
             </div>
+            )}
             <div>
               <label className="block text-sm text-bambu-gray mb-1">{t('printers.serialNumber')}</label>
               <input

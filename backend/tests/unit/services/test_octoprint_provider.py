@@ -73,6 +73,22 @@ def test_factory_creates_octoprint_client_with_default_port():
     assert client.api_key == "key"
 
 
+@pytest.mark.parametrize(
+    ("api_url", "expected_url", "expected_host"),
+    [
+        ("octopi.local", "http://octopi.local", "octopi.local"),
+        ("http://192.168.1.60:5000/", "http://192.168.1.60:5000", "192.168.1.60"),
+        ("https://print.example.org/octoprint", "https://print.example.org/octoprint", "print.example.org"),
+    ],
+)
+def test_octoprint_printer_can_be_created_from_url_only(api_url, expected_url, expected_host):
+    printer = PrinterCreate(name="Ender 3", provider="octoprint", api_url=api_url, auth_token="key")
+
+    assert printer.api_url == expected_url
+    assert printer.ip_address == expected_host
+    assert printer.serial_number.startswith("OCTOPRINT-")
+
+
 def test_octoprint_printer_can_be_created_with_ip_and_api_key_only():
     printer = PrinterCreate(name="Ender 3", provider="octoprint", ip_address="192.168.1.60", auth_token="key")
 

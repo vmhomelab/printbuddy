@@ -380,6 +380,31 @@ class TestPrintersAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_update_octoprint_url_syncs_host_and_reconnects(
+        self, async_client: AsyncClient, printer_factory, monkeypatch
+    ):
+        printer = await printer_factory(
+            name="Ender 3",
+            provider="octoprint",
+            ip_address="192.168.1.60",
+            api_url="http://192.168.1.60:5000",
+            auth_token="key",
+        )
+        disconnect = MagicMock()
+        connect = AsyncMock(return_value=True)
+        monkeypatch.setattr("backend.app.api.routes.printers.printer_manager.disconnect_printer", disconnect)
+        monkeypatch.setattr("backend.app.api.routes.printers.printer_manager.connect_printer", connect)
+
+        response = await async_client.patch(f"/api/v1/printers/{printer.id}", json={"api_url": "octopi.local/"})
+
+        assert response.status_code == 200, response.text
+        assert response.json()["api_url"] == "http://octopi.local"
+        assert response.json()["ip_address"] == "octopi.local"
+        disconnect.assert_called_once_with(printer.id)
+        connect.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_update_printer_active_status(self, async_client: AsyncClient, printer_factory, db_session):
         """Verify printer active status can be updated."""
         printer = await printer_factory(is_active=True)

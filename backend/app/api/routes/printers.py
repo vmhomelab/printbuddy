@@ -37,7 +37,9 @@ from backend.app.schemas.printer import (
     PrinterStatus,
     PrinterUpdate,
     PrintOptionsResponse,
+    host_from_url,
     normalize_external_camera_update,
+    normalize_octoprint_url,
 )
 from backend.app.services import direct_print_tracking
 from backend.app.services.bambu_ftp import (
@@ -586,6 +588,11 @@ async def update_printer(
         raise HTTPException(404, "Printer not found")
 
     update_data = normalize_external_camera_update(printer_data.model_dump(exclude_unset=True))
+    if (printer.provider or "").lower() == "octoprint" and update_data.get("api_url"):
+        # OctoPrint is edited by URL; keep ip_address (and thus discovery
+        # de-duplication and diagnostics) in sync with the URL's host.
+        update_data["api_url"] = normalize_octoprint_url(update_data["api_url"])
+        update_data.setdefault("ip_address", host_from_url(update_data["api_url"]))
 
     # Handle nested ROI object - flatten to individual columns
     if "plate_detection_roi" in update_data:
@@ -609,7 +616,10 @@ async def update_printer(
     await db.refresh(printer)
 
     # Reconnect if connection settings changed
-    if any(k in update_data for k in ["ip_address", "access_code", "auth_token", "provider_options", "is_active"]):
+    if any(
+        k in update_data
+        for k in ["ip_address", "api_url", "access_code", "auth_token", "provider_options", "is_active"]
+    ):
         printer_manager.disconnect_printer(printer_id)
         if printer.is_active:
             try:
