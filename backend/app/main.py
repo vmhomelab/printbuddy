@@ -1470,11 +1470,10 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
         if progress < 5:
             # Reset milestone tracking at the beginning of a print even while the
             # printer is already in RUNNING/PRINTING. Keep the almost-done sent
-            # flag until the job changes or becomes inactive so a transient
-            # same-job progress regression cannot send a duplicate.
+            # and first-layer sent flags until the job changes or becomes inactive
+            # so a transient same-job progress regression cannot send duplicates.
             _last_progress_milestone[printer_id] = 0
             _pending_progress_milestone.pop(printer_id, None)
-            _first_layer_notified[printer_id] = False
 
         if progress > 0:
             # Determine which milestone we've reached
@@ -2513,17 +2512,21 @@ async def _capture_snapshot_for_notification(printer_id: int, printer, logger) -
                 )
                 return None
 
-        # Try buffered frame from active stream
-        from backend.app.api.routes.camera import _active_chamber_streams, _active_streams, get_buffered_frame
+        # Reuse only a fresh buffered frame while a camera stream is active.
+        # A stalled stream must not attach an outdated image, and opening a
+        # competing socket can disconnect viewers on single-connection firmware.
+        from backend.app.api.routes.camera import is_stream_active, try_get_active_buffered_frame
 
-        active_for_printer = [k for k in _active_streams if k.startswith(f"{printer_id}-")]
-        active_chamber = [k for k in _active_chamber_streams if k.startswith(f"{printer_id}-")]
-        buffered_frame = get_buffered_frame(printer_id)
-
-        if (active_for_printer or active_chamber) and buffered_frame:
+        buffered_frame = try_get_active_buffered_frame(printer_id)
+        if buffered_frame:
             logger.info("[SNAPSHOT] Using buffered frame for printer %s: %s bytes", printer_id, len(buffered_frame))
             if len(buffered_frame) <= 2_500_000:
                 return _apply_camera_rotation(buffered_frame, printer, logger)
+        if is_stream_active(printer_id):
+            logger.warning(
+                "[SNAPSHOT] Active camera stream for printer %s has no fresh frame; skipping attachment", printer_id
+            )
+            return None
 
         # Fresh capture from printer camera
         logger.info("[SNAPSHOT] Capturing fresh frame for printer %s", printer_id)

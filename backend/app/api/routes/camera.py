@@ -5,6 +5,7 @@ import logging
 import os
 import subprocess
 import sys
+import time
 from collections.abc import AsyncGenerator
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -59,6 +60,9 @@ _last_frames: dict[int, bytes] = {}
 
 # Track last frame timestamp for each printer (for stall detection)
 _last_frame_times: dict[int, float] = {}
+
+# Snapshot consumers must never attach a frame from a stalled live stream.
+MAX_BUFFERED_FRAME_AGE_SECONDS = 5.0
 
 # Track stream start times for each printer
 _stream_start_times: dict[int, float] = {}
@@ -128,7 +132,14 @@ def try_get_active_buffered_frame(printer_id: int) -> bytes | None:
     """
     if not is_stream_active(printer_id):
         return None
-    return _last_frames.get(printer_id)
+    frame = _last_frames.get(printer_id)
+    frame_time = _last_frame_times.get(printer_id)
+    if not frame or frame_time is None:
+        return None
+    if time.time() - frame_time > MAX_BUFFERED_FRAME_AGE_SECONDS:
+        logger.warning("Discarding stale buffered camera frame for printer %s", printer_id)
+        return None
+    return frame
 
 
 async def get_printer_or_404(printer_id: int, db: AsyncSession) -> Printer:

@@ -3,6 +3,7 @@
 Tests the full request/response cycle for /api/v1/printers/{id}/camera/ endpoints.
 """
 
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -353,13 +354,15 @@ class TestCameraAPI:
         printer = await printer_factory()
         fake_jpeg = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
 
-        # Simulate a running broadcaster: one active stream entry + buffered frame.
+        # Simulate a running broadcaster: one active stream entry + fresh buffered frame.
         active_streams = {f"{printer.id}-fanout": MagicMock()}
         last_frames = {printer.id: fake_jpeg}
+        last_frame_times = {printer.id: time.time()}
 
         with (
             patch("backend.app.api.routes.camera._active_streams", active_streams),
             patch("backend.app.api.routes.camera._last_frames", last_frames),
+            patch("backend.app.api.routes.camera._last_frame_times", last_frame_times),
             patch("backend.app.api.routes.camera.capture_camera_frame", new_callable=AsyncMock) as mock_capture,
         ):
             response = await async_client.get(f"/api/v1/printers/{printer.id}/camera/snapshot")
