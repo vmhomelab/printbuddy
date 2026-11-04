@@ -1256,7 +1256,7 @@ async def assign_spool(
     if spool.archived_at:
         raise HTTPException(400, "Cannot assign an archived spool")
 
-    is_loaded_spool_marker = data.ams_id == -1 and data.tray_id == 0
+    is_local_tool_assignment = data.ams_id == -1 and data.tray_id >= 0
     is_cfs_slot = False
 
     # 2. Get current AMS tray state for fingerprint + existing filament ID.
@@ -1271,7 +1271,11 @@ async def assign_spool(
     current_tray_info_idx = ""
     tray_state: int | None = None
     state = printer_manager.get_status(data.printer_id)
-    if not is_loaded_spool_marker and state and state.raw_data:
+    if is_local_tool_assignment and data.tray_id > 0:
+        tool_slots = state.raw_data.get("tool_slots", []) if state and isinstance(state.raw_data, dict) else []
+        if not any(isinstance(slot, dict) and slot.get("id") == data.tray_id for slot in tool_slots):
+            raise HTTPException(400, "Local tool slot is not available on this printer")
+    if not is_local_tool_assignment and state and state.raw_data:
         if data.ams_id == 255:
             # External slot: look up tray from vt_tray by global ID
             vt_tray = state.raw_data.get("vt_tray") or []
@@ -1342,7 +1346,7 @@ async def assign_spool(
     await db.commit()
     await db.refresh(assignment)
 
-    if is_loaded_spool_marker or is_cfs_slot:
+    if is_local_tool_assignment or is_cfs_slot:
         result = await db.execute(
             select(SpoolAssignment)
             .options(

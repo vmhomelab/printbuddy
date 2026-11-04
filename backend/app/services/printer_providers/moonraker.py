@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -133,6 +134,45 @@ def _safe_float(value: Any) -> float | None:
         return float(str(value).strip())
     except (TypeError, ValueError):
         return None
+
+
+_GENERIC_KLIPPER_EXTRUDER_RE = re.compile(r"^extruder(\d*)$")
+
+
+def _generic_moonraker_tool_slots(status: dict[str, Any]) -> list[dict[str, Any]]:
+    """Normalize generic multi-tool Klipper state without replacing real feeders."""
+    if not isinstance(status, dict) or any(key.startswith("filament_feed ") for key in status):
+        return []
+    extruders: list[tuple[int, str, dict[str, Any]]] = []
+    for name, values in status.items():
+        match = _GENERIC_KLIPPER_EXTRUDER_RE.fullmatch(name)
+        if match and isinstance(values, dict):
+            extruders.append((int(match.group(1) or 0), name, values))
+    extruders.sort(key=lambda item: item[0])
+    if len(extruders) < 2:
+        return []
+    toolhead = status.get("toolhead") if isinstance(status.get("toolhead"), dict) else {}
+    active_extruder = toolhead.get("extruder")
+
+    def sensor_state(*names: str) -> bool | None:
+        for sensor_name in names:
+            sensor = status.get(sensor_name)
+            if isinstance(sensor, dict) and "filament_detected" in sensor:
+                return bool(sensor["filament_detected"])
+        return None
+
+    return [
+        {
+            "id": index,
+            "extruder": name,
+            "nozzle_diameter": str(values.get("nozzle_diameter") or ""),
+            "active": name == active_extruder,
+            "filament_present": sensor_state(f"filament_switch_sensor filament{index}"),
+            "docked": sensor_state(f"filament_switch_sensor docked{index}"),
+            "path_present": sensor_state(f"filament_switch_sensor path_{index}", f"filament_switch_sensor path{index}"),
+        }
+        for index, name, values in extruders
+    ]
 
 
 def _list_value(values: Any, index: int, default: Any = None) -> Any:
@@ -1320,6 +1360,18 @@ class MoonrakerPrinterClient:
         snapmaker_u1_status = self._query_snapmaker_u1_status(available_objects)
         if snapmaker_u1_status:
             status.update(snapmaker_u1_status)
+        generic_tool_objects = [
+            name
+            for name in available_objects
+            if _GENERIC_KLIPPER_EXTRUDER_RE.fullmatch(name)
+            or name == "toolhead"
+            or re.fullmatch(r"filament_switch_sensor (?:filament|docked|path_?)\d+", name)
+        ]
+        if generic_tool_objects:
+            try:
+                status.update(self._query_objects(generic_tool_objects))
+            except Exception:  # noqa: BLE001 - optional tool telemetry must not break core status polling
+                pass
         self.state.connected = True
         self.state.raw_status = status
         self.state.raw_data = status
@@ -1358,6 +1410,13 @@ class MoonrakerPrinterClient:
             self.state.remaining_time = _remaining_minutes(print_stats, self.state.progress)
         self.state.temperatures = _moonraker_temperatures(status)
         self._apply_snapmaker_u1_status(status)
+        tool_slots = _generic_moonraker_tool_slots(status)
+        if tool_slots:
+            self.state.raw_data["tool_slots"] = tool_slots
+            self.state.active_extruder = next((slot["id"] for slot in tool_slots if slot["active"]), -1)
+            self.state.nozzles = [NozzleInfo(nozzle_diameter=slot["nozzle_diameter"]) for slot in tool_slots]
+        else:
+            self.state.raw_data.pop("tool_slots", None)
         _apply_moonraker_fans(self.state, status)
         self._emit_status_callbacks(previous_state)
         self._last_state = self.state.state

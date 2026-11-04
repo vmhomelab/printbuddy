@@ -1117,6 +1117,7 @@ def printer_state_to_dict(state: PrinterState, printer_id: int | None = None, mo
             }
             for n in (state.nozzle_rack or [])
         ],
+        "tool_slots": state.raw_data.get("tool_slots", []) if isinstance(state.raw_data, dict) else [],
         # AMS drying support
         "supports_drying": supports_drying(model, state.firmware_version),
         # 1-indexed plate number parsed from gcode_file (e.g. /Metadata/plate_2.gcode).

@@ -1,7 +1,55 @@
 import httpx
 import pytest
 
-from backend.app.services.printer_providers.moonraker import MoonrakerPrinterClient
+from backend.app.services.printer_providers.moonraker import MoonrakerPrinterClient, _generic_moonraker_tool_slots
+
+
+def test_generic_moonraker_tool_slots_exposes_verified_multitool_sensor_state():
+    status = {
+        "toolhead": {"extruder": "extruder1"},
+        "extruder": {"nozzle_diameter": 0.4},
+        "extruder1": {"nozzle_diameter": 0.4},
+        "extruder2": {"nozzle_diameter": 0.6},
+        "filament_switch_sensor filament0": {"filament_detected": True},
+        "filament_switch_sensor filament1": {"filament_detected": True},
+        "filament_switch_sensor docked1": {"filament_detected": False},
+        "filament_switch_sensor path_1": {"filament_detected": True},
+    }
+
+    assert _generic_moonraker_tool_slots(status) == [
+        {
+            "id": 0,
+            "extruder": "extruder",
+            "nozzle_diameter": "0.4",
+            "active": False,
+            "filament_present": True,
+            "docked": None,
+            "path_present": None,
+        },
+        {
+            "id": 1,
+            "extruder": "extruder1",
+            "nozzle_diameter": "0.4",
+            "active": True,
+            "filament_present": True,
+            "docked": False,
+            "path_present": True,
+        },
+        {
+            "id": 2,
+            "extruder": "extruder2",
+            "nozzle_diameter": "0.6",
+            "active": False,
+            "filament_present": None,
+            "docked": None,
+            "path_present": None,
+        },
+    ]
+
+
+def test_generic_moonraker_tool_slots_ignores_single_tool_and_real_feeder_status():
+    assert _generic_moonraker_tool_slots({"extruder": {}}) == []
+    assert _generic_moonraker_tool_slots({"extruder": {}, "extruder1": {}, "filament_feed left": {}}) == []
 
 
 def _moonraker_status_with_cfs(active_filament="A"):

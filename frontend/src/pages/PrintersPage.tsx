@@ -2425,7 +2425,41 @@ function PrinterCard({
     ? currentTrayNow
     : cachedTrayNow.current;
 
-  const showLoadedSpoolPicker = supportsSpoolAssignment && !spoolmanLoading && (amsData.length === 0) && ((status?.vt_tray?.length ?? 0) === 0);
+  const genericToolSlots = status?.tool_slots ?? [];
+  const hasGenericMultiToolSlots = genericToolSlots.length > 1;
+  const showLoadedSpoolPicker = supportsSpoolAssignment && !spoolmanLoading && !hasGenericMultiToolSlots && (amsData.length === 0) && ((status?.vt_tray?.length ?? 0) === 0);
+  const genericToolSpoolPickers = hasGenericMultiToolSlots ? (
+    <div className="space-y-2">
+      {genericToolSlots.map((tool) => {
+        const assignment = onGetAssignment?.(printer.id, -1, tool.id);
+        const spool = assignment?.spool ?? undefined;
+        const color = spool?.rgba ? `#${spool.rgba.replace(/^#/, '').slice(0, 6)}` : undefined;
+        const state = tool.active ? 'Active' : tool.docked === true ? 'Docked' : tool.filament_present === true ? 'Filament detected' : 'No filament detected';
+        return (
+          <div key={tool.id} className="flex items-center justify-between gap-3 rounded-lg bg-bambu-dark/70 border border-bambu-dark-tertiary px-3 py-2">
+            <div className="min-w-0">
+              <p className="text-[10px] uppercase tracking-wide text-bambu-gray">T{tool.id}{tool.nozzle_diameter ? ` · ${tool.nozzle_diameter} mm` : ''} · {state}</p>
+              {spool ? (
+                <div className="flex items-center gap-1.5 min-w-0">
+                  {color && <span className="w-2.5 h-2.5 rounded-full border border-black/30 flex-shrink-0" style={{ backgroundColor: color }} />}
+                  <p className="text-xs text-white truncate">{spool.brand ? `${spool.brand} ` : ''}{spool.material}{spool.subtype ? ` ${spool.subtype}` : ''}{spool.color_name ? ` · ${spool.color_name}` : ''}</p>
+                </div>
+              ) : <p className="text-xs text-bambu-gray">No inventory spool selected</p>}
+            </div>
+            <div className="flex items-center gap-2 flex-shrink-0">
+              {assignment && <Button variant="secondary" size="sm" onClick={() => onUnassignSpool?.(printer.id, -1, tool.id)}>Clear</Button>}
+              <Button variant="secondary" size="sm" onClick={() => setAssignSpoolModal({
+                printerId: printer.id, amsId: -1, trayId: tool.id,
+                trayInfo: { type: spool?.material || '', material: spool?.material, profile: spool?.slicer_filament_name || spool?.slicer_filament || '', color: spool?.rgba?.slice(0, 6) || '', location: `Tool T${tool.id}` },
+              })}>
+                <AssignSpoolIcon className="w-4 h-4" />{assignment ? 'Change' : 'Assign'}
+              </Button>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  ) : null;
   const loadedSpoolPicker = showLoadedSpoolPicker ? (
     <div className="flex items-center justify-between gap-3 rounded-lg bg-bambu-dark/70 border border-bambu-dark-tertiary px-3 py-2">
       <div className="min-w-0">
@@ -3841,10 +3875,10 @@ function PrinterCard({
           </div>
         )}
 
-        {loadedSpoolPicker && (
-          <SortablePrinterCardSection layoutEditing={layoutEditing} id="loaded-spool" title="Loaded spool" order={getCardSectionOrder('loaded-spool')}>
+        {(loadedSpoolPicker || genericToolSpoolPickers) && (
+          <SortablePrinterCardSection layoutEditing={layoutEditing} id="loaded-spool" title={genericToolSpoolPickers ? 'Tool spools' : 'Loaded spool'} order={getCardSectionOrder('loaded-spool')}>
             <div className="mt-2">
-              {loadedSpoolPicker}
+              {genericToolSpoolPickers || loadedSpoolPicker}
             </div>
           </SortablePrinterCardSection>
         )}

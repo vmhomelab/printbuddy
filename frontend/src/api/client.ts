@@ -401,6 +401,16 @@ export interface FilaSwitchState {
   info: number;
 }
 
+export interface GenericToolSlot {
+  id: number;
+  extruder: string;
+  nozzle_diameter: string;
+  active: boolean;
+  filament_present: boolean | null;
+  docked: boolean | null;
+  path_present: boolean | null;
+}
+
 export interface PrinterStatus {
   id: number;
   name: string;
@@ -448,6 +458,7 @@ export interface PrinterStatus {
   door_open: boolean;  // Enclosure door open (X1/P1S/P2S/H2*)
   nozzles: NozzleInfo[];  // Nozzle hardware info (index 0=left/primary, 1=right)
   nozzle_rack: NozzleRackSlot[];  // H2C 6-nozzle tool-changer rack
+  tool_slots: GenericToolSlot[];  // Generic multi-tool Klipper local spool slots
   print_options: PrintOptions | null;  // AI detection and print options
   // Calibration stage tracking
   stg_cur: number;  // Current stage number (-1 = not calibrating)

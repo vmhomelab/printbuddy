@@ -42,7 +42,7 @@ async def spool_factory(db_session: AsyncSession):
     return _create_spool
 
 
-def _make_mock_status(ams_data=None, vt_tray=None, nozzles=None, ams_extruder_map=None):
+def _make_mock_status(ams_data=None, vt_tray=None, nozzles=None, ams_extruder_map=None, tool_slots=None):
     """Build a mock printer status with optional AMS/nozzle data."""
     status = MagicMock()
     raw = {}
@@ -50,6 +50,8 @@ def _make_mock_status(ams_data=None, vt_tray=None, nozzles=None, ams_extruder_ma
         raw["ams"] = {"ams": ams_data}
     if vt_tray is not None:
         raw["vt_tray"] = vt_tray
+    if tool_slots is not None:
+        raw["tool_slots"] = tool_slots
     status.raw_data = raw
     status.nozzles = nozzles or [MagicMock(nozzle_diameter="0.4")]
     status.ams_extruder_map = ams_extruder_map
@@ -58,6 +60,29 @@ def _make_mock_status(ams_data=None, vt_tray=None, nozzles=None, ams_extruder_ma
 
 class TestAssignSpoolTrayInfoIdx:
     """Tests for tray_info_idx resolution during spool assignment."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_generic_multitool_local_assignment_is_stored_without_firmware_configuration(
+        self, async_client: AsyncClient, printer_factory, spool_factory
+    ):
+        printer = await printer_factory(name="ZR Ultra")
+        spool = await spool_factory()
+        status = _make_mock_status(tool_slots=[{"id": 0}, {"id": 1}, {"id": 2}, {"id": 3}])
+        client = MagicMock()
+
+        with patch("backend.app.services.printer_manager.printer_manager") as mock_pm:
+            mock_pm.get_status.return_value = status
+            mock_pm.get_client.return_value = client
+            response = await async_client.post(
+                "/api/v1/inventory/assignments",
+                json={"spool_id": spool.id, "printer_id": printer.id, "ams_id": -1, "tray_id": 1},
+            )
+
+        assert response.status_code == 200
+        assert response.json()["ams_id"] == -1
+        assert response.json()["tray_id"] == 1
+        client.ams_set_filament_setting.assert_not_called()
 
     @pytest.mark.asyncio
     @pytest.mark.integration
