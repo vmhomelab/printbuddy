@@ -1684,6 +1684,9 @@ export default {
     noDefaultPrinter: '無預設（每次詢問）',
     // Sidebar
     sidebarOrder: '側邊欄順序',
+    sidebarVisibility: '側邊欄項目',
+    sidebarVisibilityDescription: '僅顯示您最常使用的導覽項目。變更會立即套用到此裝置。',
+    sidebarSettingsAlwaysVisible: '設定會保持顯示，以便您還原隱藏的項目。',
     // Camera
     saveThumbnails: '儲存縮圖',
     captureFinishPhoto: '拍攝完成照片',

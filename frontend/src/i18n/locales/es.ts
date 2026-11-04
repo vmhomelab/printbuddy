@@ -1686,6 +1686,9 @@ export default {
     noDefaultPrinter: 'Sin predeterminada (preguntar cada vez)',
     // Sidebar
     sidebarOrder: 'Orden de la barra lateral',
+    sidebarVisibility: 'Elementos de la barra lateral',
+    sidebarVisibilityDescription: 'Muestra solo los elementos de navegación que más utilizas. Los cambios se aplican de inmediato en este dispositivo.',
+    sidebarSettingsAlwaysVisible: 'Configuración siempre se muestra para que puedas restaurar elementos ocultos.',
     // Camera
     saveThumbnails: 'Guardar miniaturas',
     captureFinishPhoto: 'Capturar foto de finalización',

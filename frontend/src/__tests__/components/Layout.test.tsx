@@ -149,6 +149,20 @@ describe('Layout', () => {
       });
     });
 
+    it('hides a user-selected sidebar item but keeps Settings available', async () => {
+      vi.mocked(localStorage.getItem).mockImplementation((key: string) => (
+        key === 'sidebarHiddenItems' ? JSON.stringify(['makerworld']) : null
+      ));
+
+      render(<Layout />);
+
+      await waitFor(() => {
+        expect(document.querySelector('aside')).toBeInTheDocument();
+        expect(document.querySelector('aside a[href="/makerworld"]')).not.toBeInTheDocument();
+        expect(document.querySelector('aside a[href="/settings"]')).toBeInTheDocument();
+      });
+    });
+
     it('links the sidebar to Farm Command Center instead of the TV monitor route', async () => {
       render(<Layout />);
 

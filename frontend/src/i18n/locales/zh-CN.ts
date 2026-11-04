@@ -1684,6 +1684,9 @@ export default {
     noDefaultPrinter: '无默认（每次询问）',
     // Sidebar
     sidebarOrder: '侧边栏顺序',
+    sidebarVisibility: '侧边栏项目',
+    sidebarVisibilityDescription: '仅显示您最常使用的导航项目。更改会立即应用到此设备。',
+    sidebarSettingsAlwaysVisible: '设置始终显示，方便您恢复隐藏的项目。',
     // Camera
     saveThumbnails: '保存缩略图',
     captureFinishPhoto: '拍摄完成照片',

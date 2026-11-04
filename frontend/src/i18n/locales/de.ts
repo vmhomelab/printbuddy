@@ -1684,6 +1684,9 @@ export default {
     noDefaultPrinter: 'Kein Standard (jedes Mal fragen)',
     // Sidebar
     sidebarOrder: 'Seitenleisten-Reihenfolge',
+    sidebarVisibility: 'Seitenleisten-Einträge',
+    sidebarVisibilityDescription: 'Zeige nur die Navigationseinträge, die du regelmäßig verwendest. Änderungen werden auf diesem Gerät sofort übernommen.',
+    sidebarSettingsAlwaysVisible: 'Einstellungen bleibt immer sichtbar, damit ausgeblendete Einträge wiederhergestellt werden können.',
     // Camera
     saveThumbnails: 'Vorschaubilder speichern',
     captureFinishPhoto: 'Abschlussfoto aufnehmen',

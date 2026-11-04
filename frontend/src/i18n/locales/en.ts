@@ -1686,6 +1686,9 @@ export default {
     noDefaultPrinter: 'No default (ask each time)',
     // Sidebar
     sidebarOrder: 'Sidebar order',
+    sidebarVisibility: 'Sidebar items',
+    sidebarVisibilityDescription: 'Show only the navigation items you use most. Changes apply immediately on this device.',
+    sidebarSettingsAlwaysVisible: 'Settings is always shown so you can restore hidden items.',
     // Camera
     saveThumbnails: 'Save thumbnails',
     captureFinishPhoto: 'Capture finish photo',

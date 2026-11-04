@@ -63,6 +63,32 @@ function saveSidebarOrder(order: string[]) {
   localStorage.setItem('sidebarOrder', JSON.stringify(order));
 }
 
+const SIDEBAR_HIDDEN_ITEMS_KEY = 'sidebarHiddenItems';
+export const SIDEBAR_VISIBILITY_CHANGED_EVENT = 'sidebarVisibilityChanged';
+
+// Sidebar visibility is a personal UI preference. Settings is deliberately
+// excluded so users always retain a route to restore hidden menu entries.
+export function getSidebarHiddenItems(): string[] {
+  const stored = localStorage.getItem(SIDEBAR_HIDDEN_ITEMS_KEY);
+  if (!stored) return [];
+
+  try {
+    const parsed = JSON.parse(stored);
+    return Array.isArray(parsed)
+      ? parsed.filter((id): id is string => typeof id === 'string' && id !== 'settings')
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveSidebarHiddenItems(hiddenItems: string[]) {
+  const validIds = new Set(defaultNavItems.map(item => item.id));
+  const sanitized = [...new Set(hiddenItems)].filter(id => validIds.has(id) && id !== 'settings');
+  localStorage.setItem(SIDEBAR_HIDDEN_ITEMS_KEY, JSON.stringify(sanitized));
+  window.dispatchEvent(new Event(SIDEBAR_VISIBILITY_CHANGED_EVENT));
+}
+
 // Check if an ID is an external link
 function isExternalLinkId(id: string): boolean {
   return id.startsWith('ext-');
@@ -103,6 +129,7 @@ export function Layout() {
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [showSwitchbar, setShowSwitchbar] = useState(false);
   const [sidebarOrder, setSidebarOrder] = useState<string[]>(getSidebarOrder);
+  const [sidebarHiddenItems, setSidebarHiddenItems] = useState<string[]>(getSidebarHiddenItems);
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
   const hasRedirected = useRef(false);
@@ -259,6 +286,12 @@ export function Layout() {
     }
   }, [sidebarHidden]);
 
+  useEffect(() => {
+    const syncSidebarVisibility = () => setSidebarHiddenItems(getSidebarHiddenItems());
+    window.addEventListener(SIDEBAR_VISIBILITY_CHANGED_EVENT, syncSidebarVisibility);
+    return () => window.removeEventListener(SIDEBAR_VISIBILITY_CHANGED_EVENT, syncSidebarVisibility);
+  }, []);
+
   // Calculate debug duration client-side for real-time updates
   const [debugDuration, setDebugDuration] = useState<number | null>(null);
   useEffect(() => {
@@ -301,6 +334,7 @@ export function Layout() {
     };
 
     const isHidden = (id: string) => {
+      if (sidebarHiddenItems.includes(id)) return true;
       if (authEnabled && id in navPermissions && !hasPermission(navPermissions[id])) return true;
       // notifications nav item also requires advanced auth to be enabled and user_notifications_enabled setting
       if (id === 'notifications' && (!authEnabled || !advancedAuthStatus?.advanced_auth_enabled || (settings?.user_notifications_enabled === false))) return true;

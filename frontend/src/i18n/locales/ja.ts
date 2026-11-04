@@ -1683,6 +1683,9 @@ export default {
     noDefaultPrinter: 'デフォルトなし（毎回選択）',
     // Sidebar
     sidebarOrder: 'サイドバーの順序',
+    sidebarVisibility: 'サイドバー項目',
+    sidebarVisibilityDescription: 'よく使うナビゲーション項目だけを表示します。変更はこの端末ですぐに反映されます。',
+    sidebarSettingsAlwaysVisible: '非表示にした項目を戻せるよう、設定は常に表示されます。',
     // Camera
     saveThumbnails: 'サムネイルを保存',
     captureFinishPhoto: '完了写真を撮影',

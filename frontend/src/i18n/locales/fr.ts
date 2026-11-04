@@ -1684,6 +1684,9 @@ export default {
     noDefaultPrinter: 'Aucune par défaut (demander à chaque fois)',
     // Sidebar
     sidebarOrder: 'Ordre de la barre latérale',
+    sidebarVisibility: 'Éléments de la barre latérale',
+    sidebarVisibilityDescription: 'N’affichez que les éléments de navigation que vous utilisez le plus. Les changements s’appliquent immédiatement sur cet appareil.',
+    sidebarSettingsAlwaysVisible: 'Paramètres reste toujours visible afin de restaurer les éléments masqués.',
     // Camera
     saveThumbnails: 'Enregistrer les vignettes',
     captureFinishPhoto: 'Prendre une photo à la fin',

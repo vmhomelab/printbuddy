@@ -159,6 +159,22 @@ describe('SettingsPage', () => {
       });
     });
 
+    it('lets users hide a sidebar item from the navigation preferences', async () => {
+      const user = userEvent.setup();
+      render(<SettingsPage />);
+
+      const makerWorldLabel = (await screen.findAllByText('MakerWorld')).find(element => element.tagName === 'SPAN');
+      if (!makerWorldLabel) throw new Error('MakerWorld sidebar label was not rendered');
+      const makerWorldToggle = makerWorldLabel.parentElement?.querySelector('[role="switch"]');
+      expect(makerWorldToggle).not.toBeNull();
+      if (!makerWorldToggle) throw new Error('MakerWorld navigation toggle was not rendered');
+      expect(makerWorldToggle.getAttribute('aria-checked')).toBe('true');
+
+      await user.click(makerWorldToggle);
+
+      expect(localStorage.setItem).toHaveBeenCalledWith('sidebarHiddenItems', JSON.stringify(['makerworld']));
+    });
+
     it('offers the printer-card camera view mode in the Camera settings', async () => {
       const user = userEvent.setup();
       render(<SettingsPage />);

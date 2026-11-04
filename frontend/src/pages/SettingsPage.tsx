@@ -37,7 +37,7 @@ import { SecurityStatusCard } from '../components/SecurityStatusCard';
 import { APIBrowser } from '../components/APIBrowser';
 import { Toggle } from '../components/Toggle';
 import { virtualPrinterApi } from '../api/client';
-import { defaultNavItems, getDefaultView, setDefaultView } from '../components/Layout';
+import { defaultNavItems, getDefaultView, getSidebarHiddenItems, saveSidebarHiddenItems, setDefaultView } from '../components/Layout';
 import { availableLanguages } from '../i18n';
 import { useToast } from '../contexts/ToastContext';
 import { useTheme, type ThemeStyle, type DarkBackground, type LightBackground, type ThemeAccent } from '../contexts/ThemeContext';
@@ -300,7 +300,18 @@ export function SettingsPage() {
 
   const handleResetSidebarOrder = () => {
     localStorage.removeItem('sidebarOrder');
+    localStorage.removeItem('sidebarHiddenItems');
     window.location.reload();
+  };
+
+  const [sidebarHiddenItems, setSidebarHiddenItems] = useState<string[]>(getSidebarHiddenItems);
+
+  const handleSidebarItemVisibilityChange = (itemId: string, visible: boolean) => {
+    const nextHiddenItems = visible
+      ? sidebarHiddenItems.filter(id => id !== itemId)
+      : [...sidebarHiddenItems, itemId];
+    setSidebarHiddenItems(nextHiddenItems);
+    saveSidebarHiddenItems(nextHiddenItems);
   };
 
   const isDefaultSidebarEnabled = !!localSettings?.default_sidebar_order;
@@ -1777,6 +1788,25 @@ export function SettingsPage() {
                     </div>
                   )}
                 </div>
+              </div>
+              <div className="border-t border-bambu-dark-tertiary pt-3">
+                <p className="text-white">{t('settings.sidebarVisibility')}</p>
+                <p className="text-sm text-bambu-gray mb-3">{t('settings.sidebarVisibilityDescription')}</p>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {defaultNavItems.filter(item => item.id !== 'settings').map(item => {
+                    const visible = !sidebarHiddenItems.includes(item.id);
+                    return (
+                      <div key={item.id} className="flex items-center justify-between rounded-lg border border-bambu-dark-tertiary px-3 py-2">
+                        <span className="text-sm text-white">{t(item.labelKey)}</span>
+                        <Toggle
+                          checked={visible}
+                          onChange={(checked) => handleSidebarItemVisibilityChange(item.id, checked)}
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+                <p className="text-xs text-bambu-gray mt-3">{t('settings.sidebarSettingsAlwaysVisible')}</p>
               </div>
             </CardContent>
           </Card>
