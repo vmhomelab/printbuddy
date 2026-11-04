@@ -139,7 +139,7 @@ def sanitize_log_content(content: str, sensitive_strings: dict[str, str] | None 
     """Remove sensitive data from log content.
 
     ``sensitive_strings`` maps known exact values (printer names, serials, etc.)
-    to replacement labels; pass the result of :func:`collect_sensitive_strings`.
+    to replacement labels; pass the result of `collect_sensitive_strings`.
     Regex passes additionally redact credentials in URLs, emails, serials, and
     IP addresses that were not captured by exact matching.
     """
@@ -182,7 +182,7 @@ async def collect_sensitive_strings(db: AsyncSession) -> dict[str, str]:
 
     Covers printer names, serial numbers, IP addresses, access codes, auth
     usernames, and the Bambu Cloud email. Pass the result to
-    :func:`sanitize_log_content`.
+    `sanitize_log_content`.
     """
     sensitive_strings: dict[str, str] = {}
 

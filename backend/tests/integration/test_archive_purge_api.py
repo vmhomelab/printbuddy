@@ -166,7 +166,7 @@ async def test_auto_purge_soft_deletes_by_default(
     settings toggle.
 
     ``async_client`` is included solely so its fixture activates the module-level
-    ``async_session`` patches that let :meth:`purge_older_than`'s per-row
+    ``async_session`` patches that let `purge_older_than`'s per-row
     delete sessions reach the in-memory test database.
     """
     from backend.app.models.archive import PrintArchive

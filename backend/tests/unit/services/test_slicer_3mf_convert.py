@@ -379,7 +379,7 @@ class TestFilamentsForPlateLoad:
         assert any_plate_needs_multi_filament_load(zip_bytes, plate_count=2, filament_slot_count=3) is True
 
     def test_remap_plate_extruders_to_one(self):
-        import xml.etree.ElementTree as ET
+        import defusedxml.ElementTree as ET
 
         zip_bytes = _make_3mf({"Metadata/model_settings.config": self._model_settings_xml([(1, [2])])})
         remapped = remap_plate_extruders_to_one(zip_bytes, plate_id=1, from_slot=2)

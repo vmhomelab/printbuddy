@@ -398,7 +398,7 @@ async def _report_spool_usage_for_slots(
 
     When ``slot_colors_out`` is provided it is populated with
     ``{slot_id: color_hex}`` for every resolved spool — used by
-    :func:`report_usage` to stamp the archive's filament colour from the
+    `report_usage` to stamp the archive's filament colour from the
     Spoolman spool rather than the slicer's 3MF value (#1494).
 
     Returns number of spools successfully updated.

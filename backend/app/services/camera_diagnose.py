@@ -105,7 +105,7 @@ class CameraDiagnoseResult:
 
 def _profile_label(model: str | None) -> str:
     """Return ``"default"`` or the resolved model name when this model
-    has an override entry in :data:`camera_profiles._PROFILES`."""
+    has an override entry in `camera_profiles._PROFILES`."""
     profile = get_camera_profile(model)
     if profile is DEFAULT_PROFILE:
         return "default"

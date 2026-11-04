@@ -37,7 +37,7 @@ class ImplicitFTP_TLS(FTP_TLS):
     printers to skip SSL on the data channel (control channel remains encrypted).
 
     Optionally caps the SSL context's maximum TLS version to v1.2 (P2S firmware
-    01.02.00.00 needs this — see :mod:`ftp_profiles` and #1401).
+    01.02.00.00 needs this — see `ftp_profiles` and #1401).
     """
 
     def __init__(self, *args, skip_session_reuse: bool = False, cap_tls_v1_2: bool = False, **kwargs):

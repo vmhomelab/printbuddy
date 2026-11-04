@@ -184,7 +184,7 @@ def scan_logs(
 ) -> ScanResult:
     """Scan the recent app log against the signature catalog.
 
-    ``sensitive_strings`` (from :func:`log_reader.collect_sensitive_strings`) is
+    ``sensitive_strings`` (from `log_reader.collect_sensitive_strings`) is
     applied to every sample line so printer names, serials, IPs, and access
     codes never leave the process. Even when it is ``None`` the regex-based
     redaction passes still run.

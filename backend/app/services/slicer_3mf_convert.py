@@ -3,13 +3,13 @@
 Helpers here rewrite the bytes we hand the slicer CLI so known upstream
 crash / reject paths don't fire:
 
-- :func:`substitute_unused_plate_filaments` /
-  :func:`filaments_for_plate_load` — unused AMS slots don't trip
+- `substitute_unused_plate_filaments` /
+  `filaments_for_plate_load` — unused AMS slots don't trip
   BambuStudio's loaded-filament temperature validator; mono-slot plates
   compact to a one-element ``--load-filaments`` list so Orca #12426's
   paint + multi-filament SIGSEGV doesn't force a paint strip.
-- :func:`threemf_has_paint_color` / :func:`strip_3mf_paint_color` /
-  :func:`extract_3mf_paint_colors` / :func:`reapply_3mf_paint_colors` —
+- `threemf_has_paint_color` / `strip_3mf_paint_color` /
+  `extract_3mf_paint_colors` / `reapply_3mf_paint_colors` —
   OrcaSlicer CLI SIGSEGVs on painted multi-filament 3MFs with
   ``--load-filaments`` (upstream #12426). Stripping ``paint_color`` turns
   the file into the "plain.3mf" case that the CLI handles; extract +
@@ -17,7 +17,7 @@ crash / reject paths don't fire:
   triangle order is preserved (metadata for desktop reopen — it does
   not put painted multi-colour into the G-code that already sliced
   without paint).
-- :func:`extract_3mf_meshes_as_stl` — last-resort geometry export when
+- `extract_3mf_meshes_as_stl` — last-resort geometry export when
   even a paint-stripped 3MF still crashes the CLI on cross-vendor
   re-slices (Bambu → Snapmaker).
 
@@ -33,6 +33,11 @@ import logging
 import re
 import zipfile
 from io import BytesIO
+
+import defusedxml.ElementTree as ET
+
+from backend.app.utils.printer_models import normalize_printer_model
+from backend.app.utils.threemf_tools import extract_plate_extruder_set_from_3mf
 
 logger = logging.getLogger(__name__)
 
@@ -75,13 +80,11 @@ def extract_source_printer_model(zip_bytes: bytes) -> str | None:
     the 3MF's embedded ``printer_model`` field, or ``None`` if the input
     isn't a 3MF, has no embedded settings, the field is missing, or the
     model isn't recognised. Canonicalisation goes through
-    :func:`normalize_printer_model`, which strips the ``"Bambu Lab "``
+    `normalize_printer_model`, which strips the ``"Bambu Lab "``
     vendor prefix and maps long display names to the short codes that
-    :func:`is_dual_nozzle_model` matches against (the raw field is
+    `is_dual_nozzle_model` matches against (the raw field is
     ``"Bambu Lab H2D"``, not ``"H2D"``).
     """
-    from backend.app.utils.printer_models import normalize_printer_model
-
     try:
         with zipfile.ZipFile(BytesIO(zip_bytes), "r") as zf:
             if _PROJECT_SETTINGS_PATH not in zf.namelist():
@@ -506,8 +509,6 @@ def _plate_used_extruders(source_3mf_bytes: bytes, plate_id: int) -> set[int] | 
     """Return the 1-indexed extruder set for ``plate_id``, or ``None`` when
     the source can't be parsed (caller should fail open).
     """
-    from backend.app.utils.threemf_tools import extract_plate_extruder_set_from_3mf
-
     try:
         with zipfile.ZipFile(BytesIO(source_3mf_bytes), "r") as zf:
             return extract_plate_extruder_set_from_3mf(zf, plate_id)
@@ -535,7 +536,7 @@ def substitute_unused_plate_filaments(source_3mf_bytes: bytes, plate_id: int | N
 
     The substitution is a no-op when:
     - ``plate_id`` is None or ``<= 0`` (slice-all / unknown — handled
-      per-plate by :func:`filaments_for_plate_load` instead),
+      per-plate by `filaments_for_plate_load` instead),
     - the source isn't a valid 3MF / zip,
     - the source doesn't carry plate-extruder metadata (parse returns
       empty set — treat as "every slot is used", same fallback the
@@ -578,7 +579,7 @@ def filaments_for_plate_load(
 ) -> list[str]:
     """Filament list to pass as ``--load-filaments`` for one plate.
 
-    Multi-slot plates keep :func:`substitute_unused_plate_filaments`
+    Multi-slot plates keep `substitute_unused_plate_filaments`
     behaviour (full-length list, unused slots cloned from slot 1).
 
     Mono-slot plates (the common multi-plate / one-colour-per-plate case)
@@ -586,7 +587,7 @@ def filaments_for_plate_load(
     the Orca CLI keep face-paint without hitting #12426 (paint + 2+
     ``--load-filaments`` SIGSEGV). When the sole used slot isn't slot 1,
     callers should also remap that plate's object extruders to 1 via
-    :func:`remap_plate_extruders_to_one` so the single loaded profile is
+    `remap_plate_extruders_to_one` so the single loaded profile is
     what the objects reference.
     """
     if plate_id is None or plate_id <= 0 or len(items) < 2:
@@ -650,14 +651,22 @@ def any_plate_needs_multi_filament_load(
     source_3mf_bytes: bytes,
     plate_count: int,
     filament_slot_count: int,
+    plate_ids: list[int] | None = None,
 ) -> bool:
-    """True when any plate in ``1..plate_count`` needs a multi-filament load."""
-    if filament_slot_count < 2 or plate_count < 1:
-        return filament_slot_count >= 2
-    return any(
-        plate_needs_multi_filament_load(source_3mf_bytes, plate_num, filament_slot_count)
-        for plate_num in range(1, plate_count + 1)
-    )
+    """True when any plate needs a multi-filament load.
+
+    Prefer ``plate_ids`` from `discover_plate_indices_from_bytes` so
+    sparse retained IDs are honoured. ``plate_count`` remains for callers that
+    only know a count (falls back to contiguous ``1..plate_count``).
+    """
+    if filament_slot_count < 2:
+        return False
+    ids = plate_ids
+    if not ids:
+        if plate_count < 1:
+            return filament_slot_count >= 2
+        ids = list(range(1, plate_count + 1))
+    return any(plate_needs_multi_filament_load(source_3mf_bytes, plate_num, filament_slot_count) for plate_num in ids)
 
 
 def remap_plate_extruders_to_one(
@@ -668,7 +677,7 @@ def remap_plate_extruders_to_one(
     """Rewrite ``model_settings.config`` extruder metadata for objects on
     ``plate_id`` from ``from_slot`` → ``1``.
 
-    Used with :func:`filaments_for_plate_load` when a mono-colour plate's
+    Used with `filaments_for_plate_load` when a mono-colour plate's
     sole used slot isn't slot 1: we load a single filament profile (index
     1 for the CLI) and point the plate's objects at it. Paint nibbles are
     left alone — with only one ``--load-filaments`` entry #12426 doesn't
@@ -682,8 +691,6 @@ def remap_plate_extruders_to_one(
         zin = zipfile.ZipFile(BytesIO(source_3mf_bytes), "r")
     except (zipfile.BadZipFile, OSError):
         return source_3mf_bytes
-
-    import xml.etree.ElementTree as ET
 
     try:
         with zin:
