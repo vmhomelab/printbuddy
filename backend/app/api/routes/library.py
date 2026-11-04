@@ -17,6 +17,7 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+import defusedxml.ElementTree as ET
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile
 from fastapi.responses import FileResponse as FastAPIFileResponse
 from sqlalchemy import func, select
@@ -25,10 +26,13 @@ from sqlalchemy.orm import selectinload
 from starlette.background import BackgroundTask
 
 from backend.app.api.routes.cloud import resolve_api_key_cloud_owner
+from backend.app.api.routes.settings import get_setting
 from backend.app.core.auth import (
     RequireCameraStreamTokenIfAuthEnabled,
+    create_slicer_download_token,
     require_ownership_permission,
     require_permission_if_auth_enabled,
+    verify_slicer_download_token,
 )
 from backend.app.core.config import settings as app_settings
 from backend.app.core.database import async_session, get_db
@@ -65,11 +69,36 @@ from backend.app.schemas.library import (
     ZipExtractResponse,
     ZipExtractResult,
 )
-from backend.app.schemas.slicer import SliceRequest, SliceResponse
+from backend.app.schemas.slicer import SliceArchiveResponse, SliceRequest, SliceResponse
 from backend.app.services.archive import ThreeMFParser
+from backend.app.services.background_dispatch import DispatchEnqueueRejected, background_dispatch
+from backend.app.services.preset_resolver import resolve_preset_ref
+from backend.app.services.printer_manager import printer_manager
+from backend.app.services.slice_dispatch import http_exception_to_job_error, slice_dispatch
+from backend.app.services.slice_preview import get_preview_filaments
+from backend.app.services.slicer_3mf_convert import (
+    extract_3mf_meshes_as_stl,
+    extract_3mf_paint_colors,
+    extract_source_printer_model,
+    filaments_for_plate_load,
+    merge_plate_3mfs,
+    plate_sole_used_slot,
+    reapply_3mf_paint_colors,
+    remap_plate_extruders_to_one,
+    strip_3mf_paint_color,
+)
+from backend.app.services.slicer_api import (
+    SlicerApiServerError,
+    SlicerApiService,
+    SlicerApiUnavailableError,
+    SliceResult,
+    SlicerInputError,
+)
 from backend.app.services.stl_thumbnail import generate_stl_thumbnail
+from backend.app.utils.printer_models import PRINTER_MODEL_MAP, is_dual_nozzle_model, normalize_printer_model
 from backend.app.utils.threemf_tools import (
     discover_plate_indices,
+    discover_plate_indices_from_bytes,
     extract_embedded_presets_from_3mf,
     extract_nozzle_mapping_from_3mf,
     extract_project_filaments_from_3mf,
@@ -357,7 +386,7 @@ def _move_file_bytes(file: LibraryFile, target_folder: LibraryFolder | None) -> 
 def _clean_3mf_metadata(obj):
     """Strip bytes and thumbnail-carrier keys so the payload is JSON-storable.
 
-    Shared by ``upload_file`` and :func:`save_3mf_bytes_to_library` — the
+    Shared by ``upload_file`` and `save_3mf_bytes_to_library` — the
     ``ThreeMFParser`` output embeds the thumbnail bytes under
     ``_thumbnail_data``/``_thumbnail_ext`` and may also include raw bytes in
     other fields, none of which can be JSON-encoded.
@@ -381,7 +410,7 @@ def _read_3mf_entry(zip_source: Path | bytes | str, entry: str) -> bytes | None:
     error. Used to lift the source archive's per-plate render onto a
     re-sliced archive (#1493 follow-up) — the slicer CLI often doesn't
     emit a fresh ``Metadata/plate_N.png`` and the project-wide cover-art
-    fallback in :class:`ThreeMFParser` looks unrelated to the actual slice.
+    fallback in `ThreeMFParser` looks unrelated to the actual slice.
 
     ``zip_source`` may be a filesystem path or in-memory 3MF bytes (library
     split-per-plate persist has the source as ``model_bytes``, not a path).
@@ -455,7 +484,7 @@ async def save_3mf_bytes_to_library(
     change each download, so hash-based dedupe alone would miss re-imports).
 
     Parses 3MF metadata + thumbnail the same way the multipart upload route
-    does, via :class:`ThreeMFParser`. Paths are stored as relative so the
+    does, via `ThreeMFParser`. Paths are stored as relative so the
     library is portable across installs.
     """
     # Source-URL-based dedupe: return the existing row untouched.
@@ -1831,7 +1860,6 @@ async def extract_zip_file(
         create_folder_from_zip: If True, create a folder named after the ZIP file and extract into it
         generate_stl_thumbnails: If True, generate thumbnails for STL files
     """
-    import tempfile
 
     if not file.filename or not file.filename.lower().endswith(".zip"):
         raise HTTPException(status_code=400, detail="Only ZIP files are supported")
@@ -2363,9 +2391,6 @@ async def get_library_file_plates(
     Returns a list of plates with their index, name, thumbnail availability,
     and filament requirements. For single-plate exports, returns a single plate.
     """
-    import json
-
-    import defusedxml.ElementTree as ET
 
     # Get the library file
     result = await db.execute(LibraryFile.active().where(LibraryFile.id == file_id))
@@ -2600,8 +2625,6 @@ async def get_library_file_plate_thumbnail(
     _: None = RequireCameraStreamTokenIfAuthEnabled,
 ):
     """Get the thumbnail image for a specific plate from a library file."""
-    from starlette.responses import Response
-
     result = await db.execute(LibraryFile.active().where(LibraryFile.id == file_id))
     lib_file = result.scalar_one_or_none()
 
@@ -2651,8 +2674,6 @@ async def _try_preview_slice_filaments(
     to the embedded-settings path so a half-completed Bundle-tier selection
     in the modal doesn't error out.
     """
-    from backend.app.api.routes.settings import get_setting
-    from backend.app.services.slice_preview import get_preview_filaments
 
     preferred = (await get_setting(db, "preferred_slicer")) or "bambu_studio"
     if preferred == "orcaslicer":
@@ -2716,7 +2737,6 @@ async def get_library_file_filament_requirements(
             settings fallback. ``filament_names`` is comma- or semicolon-
             separated to mirror the slice route's multi-color form.
     """
-    import defusedxml.ElementTree as ET
 
     # Get the library file
     result = await db.execute(LibraryFile.active().where(LibraryFile.id == file_id))
@@ -2916,10 +2936,9 @@ def _strip_3mf_embedded_settings(zip_bytes: bytes) -> bytes:
     failure that made every profile-driven slice fall back to embedded
     settings.
     """
-    from io import BytesIO
 
-    src = BytesIO(zip_bytes)
-    dst = BytesIO()
+    src = io.BytesIO(zip_bytes)
+    dst = io.BytesIO()
     with zipfile.ZipFile(src, "r") as zin, zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as zout:
         for item in zin.infolist():
             if item.filename in _STRIPPABLE_3MF_CONFIGS:
@@ -2968,10 +2987,9 @@ def _sanitize_project_settings_sentinels(zip_bytes: bytes) -> bytes:
 
     Returns the original bytes unchanged when nothing needs changing.
     """
-    from io import BytesIO
 
     try:
-        with zipfile.ZipFile(BytesIO(zip_bytes), "r") as zin:
+        with zipfile.ZipFile(io.BytesIO(zip_bytes), "r") as zin:
             if "Metadata/project_settings.config" not in zin.namelist():
                 return zip_bytes
             try:
@@ -3021,7 +3039,7 @@ def _sanitize_project_settings_sentinels(zip_bytes: bytes) -> bytes:
                 return zip_bytes
 
             patched = json.dumps(config)
-            dst = BytesIO()
+            dst = io.BytesIO()
             with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as zout:
                 for item in zin.infolist():
                     if item.filename == "Metadata/project_settings.config":
@@ -3188,14 +3206,6 @@ async def _run_slicer_with_fallback(
     time. Pass None for synchronous routes that aren't tracked by the
     dispatcher.
     """
-    from backend.app.api.routes.settings import get_setting
-    from backend.app.services.preset_resolver import resolve_preset_ref
-    from backend.app.services.slicer_api import (
-        SlicerApiServerError,
-        SlicerApiService,
-        SlicerApiUnavailableError,
-        SlicerInputError,
-    )
 
     # Bundle dispatch path: when SliceRequest.bundle is set, the schema
     # validator short-circuited the presets-required check, so the
@@ -3318,14 +3328,6 @@ async def _run_slicer_with_fallback(
     # same-vendor model swaps (X1C → P1S) still keep the user's layout.
     cross_class_arrange = False
     if is_3mf:
-        from backend.app.services.slicer_3mf_convert import (
-            extract_source_printer_model,
-        )
-        from backend.app.utils.printer_models import (
-            PRINTER_MODEL_MAP,
-            is_dual_nozzle_model,
-        )
-
         source_model = extract_source_printer_model(primary_bytes)
         target_model = await _resolve_target_printer_model(db, user, request)
         bambu_only_models = frozenset(
@@ -3353,14 +3355,10 @@ async def _run_slicer_with_fallback(
     progress_request_id: str | None = None
     progress_callback = None
     if job_id is not None:
-        from uuid import uuid4
-
-        from backend.app.services.slice_dispatch import slice_dispatch as _dispatch
-
-        progress_request_id = str(uuid4())
+        progress_request_id = str(uuid.uuid4())
 
         def _on_progress(snapshot: dict) -> None:
-            _dispatch.set_progress(job_id, snapshot)
+            slice_dispatch.set_progress(job_id, snapshot)
 
         progress_callback = _on_progress
     # SliceModal lets the user pick a filament profile per slot, but each
@@ -3379,12 +3377,6 @@ async def _run_slicer_with_fallback(
     if use_bundle and request.bundle is not None:
         full_bundle_filament_names = list(request.bundle.filament_names)
     if is_3mf and request.plate is not None and request.plate > 0:
-        from backend.app.services.slicer_3mf_convert import (
-            filaments_for_plate_load,
-            plate_sole_used_slot,
-            remap_plate_extruders_to_one,
-        )
-
         if use_bundle:
             assert request.bundle is not None
             assert full_bundle_filament_names is not None
@@ -3418,26 +3410,21 @@ async def _run_slicer_with_fallback(
     try:
         try:
             if use_cross_class_slice_all:
-                from backend.app.services.slicer_3mf_convert import (
-                    count_plates_in_3mf,
-                    merge_plate_3mfs,
-                )
-
-                plate_count = count_plates_in_3mf(primary_bytes)
+                plate_ids = discover_plate_indices_from_bytes(primary_bytes)
+                plate_count = len(plate_ids)
                 if plate_count == 0:
                     raise HTTPException(
                         status_code=400,
                         detail=(
-                            "Couldn't read plate count from the source 3MF for cross-class "
+                            "Couldn't read plate IDs from the source 3MF for cross-class "
                             "slice-all. The source may be malformed or missing "
-                            "Metadata/model_settings.config."
+                            "plate metadata / Metadata/model_settings.config."
                         ),
                     )
                 logger.info(
-                    "Cross-class slice-all: looping over %d plates with --arrange per plate, then merging",
-                    plate_count,
+                    "Cross-class slice-all: looping over plates %s with --arrange per plate, then merging",
+                    plate_ids,
                 )
-                from backend.app.services.slicer_api import SliceResult
 
                 per_plate_results: list[tuple[int, SliceResult]] = []
 
@@ -3446,26 +3433,20 @@ async def _run_slicer_with_fallback(
                 # even after the prior plate finishes. Progress still funnels
                 # through the shared job callback with multi_plate_index so
                 # the toast shows "(plate N/M)" across the loop.
-                def _wrap_progress_for_plate(plate_num: int, total: int):
+                def _wrap_progress_for_plate(ordinal: int, total: int):
                     if progress_callback is None:
                         return None
 
                     def _cb(snapshot: dict) -> None:
                         snapshot = dict(snapshot)
-                        snapshot["multi_plate_index"] = plate_num
+                        snapshot["multi_plate_index"] = ordinal
                         snapshot["multi_plate_count"] = total
                         progress_callback(snapshot)
 
                     return _cb
 
-                from backend.app.services.slicer_3mf_convert import (
-                    filaments_for_plate_load,
-                    plate_sole_used_slot,
-                    remap_plate_extruders_to_one,
-                )
-
-                for plate_num in range(1, plate_count + 1):
-                    plate_cb = _wrap_progress_for_plate(plate_num, plate_count)
+                for ordinal, plate_num in enumerate(plate_ids, start=1):
+                    plate_cb = _wrap_progress_for_plate(ordinal, plate_count)
                     plate_request_id = str(uuid.uuid4()) if progress_request_id is not None else None
                     # Per-plate filament list: mono-colour plates compact to
                     # one --load-filaments entry so paint can stay (#12426).
@@ -3588,12 +3569,6 @@ async def _run_slicer_with_fallback(
                 )
                 recovered = False
                 if is_crash and is_3mf and not use_bundle and not use_cross_class_slice_all:
-                    from backend.app.services.slicer_3mf_convert import (
-                        extract_3mf_meshes_as_stl,
-                        extract_3mf_paint_colors,
-                        strip_3mf_paint_color,
-                    )
-
                     retry_bytes = primary_bytes
                     retry_name = model_filename
                     retry_plate = request.plate
@@ -3689,9 +3664,6 @@ async def _run_slicer_with_fallback(
     # preserved same-topology .model meshes. No-op for STL fallback / G-code
     # plates that dropped the source mesh — see reapply_3mf_paint_colors.
     if paint_stripped and saved_paint and request.export_3mf and result is not None and result.content[:2] == b"PK":
-        from backend.app.services.slicer_3mf_convert import reapply_3mf_paint_colors
-        from backend.app.services.slicer_api import SliceResult
-
         restored = reapply_3mf_paint_colors(result.content, saved_paint)
         if restored is not result.content:
             result = SliceResult(
@@ -3710,9 +3682,6 @@ def _canonical_printer_model(raw: str | None) -> str | None:
     ``" 0.4 nozzle"`` variant suffix that preset names carry but bare model
     names don't — without this, ``"Bambu Lab H2D 0.4 nozzle"`` wouldn't
     normalise to ``H2D``."""
-    import re
-
-    from backend.app.utils.printer_models import normalize_printer_model
 
     if not raw:
         return None
@@ -3729,7 +3698,6 @@ async def _resolve_target_printer_model(db: AsyncSession, user: User | None, req
     Returns ``None`` when it can't be determined (the nozzle-class guard
     then simply doesn't fire — fail-open, never blocks a slice spuriously).
     """
-    from backend.app.services.preset_resolver import resolve_preset_ref
 
     if request.bundle is not None:
         return _canonical_printer_model(request.bundle.printer_name)
@@ -3785,6 +3753,7 @@ async def _persist_sliced_library_file(
     used_embedded_settings: bool,
     source_3mf_bytes: bytes | None = None,
     plate_number: int | None = None,
+    commit: bool = True,
 ) -> tuple[LibraryFile, float, float]:
     """Write one sliced ``.gcode.3mf`` into the library and return the row
     plus filament totals (headers may be 0; fall back to parsed 3MF).
@@ -3793,8 +3762,10 @@ async def _persist_sliced_library_file(
     and single-plate library slices), prefer the source project's colored
     ``Metadata/plate_{N}.png`` for the card thumbnail — the CLI often omits a
     fresh per-plate render and Auxiliaries cover art looks colorless/wrong.
+
+    Pass ``commit=False`` to stage the row for a later multi-plate commit
+    (split-plate atomic persist).
     """
-    from backend.app.services.archive import ThreeMFParser
 
     unique_name = f"{uuid.uuid4().hex}.gcode.3mf"
     out_path = get_library_files_dir() / unique_name
@@ -3867,7 +3838,12 @@ async def _persist_sliced_library_file(
         created_by_id=current_user_id,
     )
     db.add(new_file)
-    await db.commit()
+    if commit:
+        await db.commit()
+        await db.refresh(new_file)
+    else:
+        await db.flush()
+        await db.refresh(new_file)
     return new_file, float(filament_g), float(filament_mm)
 
 
@@ -3896,34 +3872,30 @@ async def slice_and_persist(
     base_name = model_filename.rsplit(".", 1)[0]
 
     if request.plate == 0 and request.split_plates:
-        from backend.app.services.slice_dispatch import slice_dispatch as _dispatch
-        from backend.app.services.slicer_3mf_convert import count_plates_in_3mf
-
-        plate_count = count_plates_in_3mf(model_bytes) if model_filename.lower().endswith(".3mf") else 0
-        if plate_count < 1:
-            plate_count = 1
+        plate_ids = discover_plate_indices_from_bytes(model_bytes) if model_filename.lower().endswith(".3mf") else []
+        if not plate_ids:
+            plate_ids = [1]
+        plate_count = len(plate_ids)
         logger.info(
-            "Split slice-all: writing %d separate library file(s) for %s",
+            "Split slice-all: slicing plates %s then persisting %d library file(s) for %s",
+            plate_ids,
             plate_count,
             model_filename,
         )
-        file_ids: list[int] = []
-        names: list[str] = []
-        total_time = 0
-        total_g = 0.0
-        total_mm = 0.0
-        any_embedded = False
-        for plate_num in range(1, plate_count + 1):
+        # Slice every plate first. Persist only after all succeed so a later
+        # plate failure does not leave orphan library rows from earlier plates.
+        sliced: list[tuple[int, object, bool]] = []
+        for ordinal, plate_num in enumerate(plate_ids, start=1):
             if job_id is not None:
-                _dispatch.set_progress(
+                slice_dispatch.set_progress(
                     job_id,
                     {
                         "stage": f"Slicing plate {plate_num}",
-                        "total_percent": int(100 * (plate_num - 1) / plate_count),
+                        "total_percent": int(100 * (ordinal - 1) / plate_count),
                         "plate_percent": 0,
                         "plate_index": plate_num,
                         "plate_count": plate_count,
-                        "multi_plate_index": plate_num,
+                        "multi_plate_index": ordinal,
                         "multi_plate_count": plate_count,
                         "updated_at": 0,
                     },
@@ -3937,29 +3909,44 @@ async def slice_and_persist(
                 current_user_id=current_user_id,
                 job_id=job_id,
             )
-            out_filename = f"{base_name}_plate_{plate_num}.gcode.3mf"
-            plate_meta = dict(extra_metadata or {})
-            plate_meta["sliced_plate"] = plate_num
-            new_file, filament_g, filament_mm = await _persist_sliced_library_file(
-                db,
-                content=result.content,
-                out_filename=out_filename,
-                folder_id=folder_id,
-                extra_metadata=plate_meta,
-                current_user_id=current_user_id,
-                print_time_seconds=result.print_time_seconds,
-                filament_used_g=result.filament_used_g,
-                filament_used_mm=result.filament_used_mm,
-                used_embedded_settings=used_embedded,
-                source_3mf_bytes=model_bytes if model_filename.lower().endswith(".3mf") else None,
-                plate_number=plate_num,
-            )
-            file_ids.append(new_file.id)
-            names.append(new_file.filename)
-            total_time += result.print_time_seconds
-            total_g += filament_g
-            total_mm += filament_mm
-            any_embedded = any_embedded or used_embedded
+            sliced.append((plate_num, result, used_embedded))
+
+        file_ids: list[int] = []
+        names: list[str] = []
+        total_time = 0
+        total_g = 0.0
+        total_mm = 0.0
+        any_embedded = False
+        try:
+            for plate_num, result, used_embedded in sliced:
+                out_filename = f"{base_name}_plate_{plate_num}.gcode.3mf"
+                plate_meta = dict(extra_metadata or {})
+                plate_meta["sliced_plate"] = plate_num
+                new_file, filament_g, filament_mm = await _persist_sliced_library_file(
+                    db,
+                    content=result.content,
+                    out_filename=out_filename,
+                    folder_id=folder_id,
+                    extra_metadata=plate_meta,
+                    current_user_id=current_user_id,
+                    print_time_seconds=result.print_time_seconds,
+                    filament_used_g=result.filament_used_g,
+                    filament_used_mm=result.filament_used_mm,
+                    used_embedded_settings=used_embedded,
+                    source_3mf_bytes=model_bytes if model_filename.lower().endswith(".3mf") else None,
+                    plate_number=plate_num,
+                    commit=False,
+                )
+                file_ids.append(new_file.id)
+                names.append(new_file.filename)
+                total_time += result.print_time_seconds
+                total_g += filament_g
+                total_mm += filament_mm
+                any_embedded = any_embedded or used_embedded
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise
 
         return SliceResponse(
             library_file_id=file_ids[0],
@@ -4010,71 +3997,44 @@ async def slice_and_persist(
     )
 
 
-async def slice_and_persist_as_archive(
+async def _persist_sliced_archive_row(
     db: AsyncSession,
     *,
-    model_bytes: bytes,
-    model_filename: str,
-    request: SliceRequest,
-    source_archive,  # PrintArchive — hint kept loose to avoid cyclic import
+    content: bytes,
+    out_filename: str,
+    print_name_suffix: str,
+    plate_num: int,
+    result_print_time: int,
+    result_filament_g: float,
+    result_filament_mm: float,
+    used_embedded_settings: bool,
+    source_archive,
     current_user_id: int | None,
-    job_id: int | None = None,
+    source_3mf_bytes: bytes | None,
+    commit: bool = True,
 ):
-    """Slice a model and save the result as a new ``PrintArchive`` row,
-    inheriting printer / project / makerworld metadata from the source
-    archive. Always exports as a `.gcode.3mf` so the existing thumbnail
-    and plates infrastructure (which expects a zip-shaped 3MF) works on
-    the new archive. Returns ``SliceArchiveResponse``.
-    """
-    from backend.app.models.archive import PrintArchive
-    from backend.app.schemas.slicer import SliceArchiveResponse
-    from backend.app.services.archive import ThreeMFParser
+    """Write one sliced archive file + DB row. Used by combined and split paths."""
 
-    # Archive sinks always want a 3MF. The library route still respects the
-    # caller's `export_3mf` flag; here we override.
-    archive_request = request.model_copy(update={"export_3mf": True})
-
-    result, used_embedded_settings = await _run_slicer_with_fallback(
-        db,
-        model_bytes=model_bytes,
-        model_filename=model_filename,
-        request=archive_request,
-        job_id=job_id,
-        current_user_id=current_user_id,
+    base_stem = (
+        out_filename.rsplit(".", 2)[0] if out_filename.endswith(".gcode.3mf") else out_filename.rsplit(".", 1)[0]
     )
-
-    base_name = model_filename.rsplit(".", 1)[0]
-    out_filename = f"{base_name}.gcode.3mf"
-
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     printer_folder = str(source_archive.printer_id) if source_archive.printer_id is not None else "unassigned"
-    archive_subdir = f"{timestamp}_{base_name}_sliced"
+    archive_subdir = f"{timestamp}_{base_stem}_sliced"
     archive_dir = app_settings.archive_dir / printer_folder / archive_subdir
     archive_dir.mkdir(parents=True, exist_ok=True)
     out_path = archive_dir / out_filename
-    out_path.write_bytes(result.content)
+    out_path.write_bytes(content)
 
-    # Extract a thumbnail for the new archive card. Priority order:
-    #   1. Source archive's ``Metadata/plate_{N}.png`` — the GUI-rendered
-    #      preview of the same plate the user is re-slicing. Closer to
-    #      "what's actually printing" than any other available image
-    #      (with --arrange the layout may differ slightly, but objects
-    #      and colours match).
-    #   2. ``ThreeMFParser`` fallback chain on the sliced output: the
-    #      slicer's own per-plate render if it wrote one, then the
-    #      project-wide thumbnail under ``Auxiliaries/.thumbnails/``.
-    # BambuStudio CLI frequently doesn't emit a fresh per-plate render
-    # (slice writes the new gcode but leaves the preview slot empty),
-    # so without (1) the card falls all the way through to the
-    # MakerWorld-style cover art — visually unrelated to what the user
-    # picked, see #1493 follow-up. Failures don't fail the slice — the
-    # archive row is still useful without a thumbnail.
-    plate_num = request.plate or 1
     thumbnail_path: str | None = None
     parsed_metadata: dict = {}
 
-    src_3mf_path = app_settings.base_dir / source_archive.file_path
-    source_plate_bytes = _read_3mf_entry(src_3mf_path, f"Metadata/plate_{plate_num}.png")
+    source_plate_bytes = None
+    if source_3mf_bytes:
+        source_plate_bytes = _read_3mf_entry(source_3mf_bytes, f"Metadata/plate_{plate_num}.png")
+    if source_plate_bytes is None:
+        src_3mf_path = app_settings.base_dir / source_archive.file_path
+        source_plate_bytes = _read_3mf_entry(src_3mf_path, f"Metadata/plate_{plate_num}.png")
     if source_plate_bytes:
         thumb_dest = archive_dir / "thumbnail.png"
         thumb_dest.write_bytes(source_plate_bytes)
@@ -4096,37 +4056,22 @@ async def slice_and_persist_as_archive(
 
     metadata = dict(source_archive.extra_data) if source_archive.extra_data else {}
     metadata.update(parsed_metadata)
-    # Fall back to the produced 3MF's G-code-header totals when the sidecar
-    # leaves the X-Filament-Used-* headers unset (result.filament_used_g == 0
-    # even for a real multi-hour print).
-    filament_g = result.filament_used_g or parsed_metadata.get("filament_used_grams") or 0.0
-    filament_mm = result.filament_used_mm or parsed_metadata.get("filament_used_mm") or 0.0
+    filament_g = result_filament_g or parsed_metadata.get("filament_used_grams") or 0.0
+    filament_mm = result_filament_mm or parsed_metadata.get("filament_used_mm") or 0.0
     metadata.update(
         {
             "sliced_from_archive_id": source_archive.id,
-            "print_time_seconds": result.print_time_seconds,
+            "print_time_seconds": result_print_time,
             "filament_used_g": filament_g,
             "filament_used_mm": filament_mm,
+            "sliced_plate": plate_num,
         }
     )
     if used_embedded_settings:
         metadata["used_embedded_settings"] = True
 
-    # Prefer the actually-used filament list from the sliced output's
-    # slice_info.config (parsed_metadata.filament_* — only entries with
-    # used_g > 0). Falling back to the source_archive's list would
-    # surface every project-wide AMS slot, including ones the picked
-    # plate doesn't use (16+ swatches on the card for a 2-color print).
     new_filament_type = parsed_metadata.get("filament_type") or source_archive.filament_type
     new_filament_color = parsed_metadata.get("filament_color") or source_archive.filament_color
-
-    # When the user re-slices for a different printer model than the source,
-    # the source's printer_id (e.g. an H2D's "Workshop H2C") no longer
-    # represents where the new archive can be reprinted. The archive card
-    # and reprint modal both read printer_id first and only fall back to
-    # sliced_for_model when it's None, so leaving the inherited id makes
-    # the X1C-sliced card display the source H2D's printer name.
-    # Same pitfall as the sliced_for_model copy a few lines below.
     new_target_model = parsed_metadata.get("sliced_for_model") or source_archive.sliced_for_model
     is_cross_model_reslice = (
         new_target_model is not None
@@ -4135,48 +4080,174 @@ async def slice_and_persist_as_archive(
     )
     new_printer_id = None if is_cross_model_reslice else source_archive.printer_id
 
+    display_base = source_archive.print_name or base_stem
     new_archive = PrintArchive(
         printer_id=new_printer_id,
         project_id=source_archive.project_id,
         filename=out_filename,
         file_path=str(out_path.relative_to(app_settings.base_dir)),
-        file_size=len(result.content),
-        content_hash=hashlib.sha256(result.content).hexdigest(),
+        file_size=len(content),
+        content_hash=hashlib.sha256(content).hexdigest(),
         thumbnail_path=thumbnail_path,
-        # Inherit identity from the source archive so the new entry shows
-        # up alongside its sibling in the archives list.
-        print_name=(source_archive.print_name or base_name) + " (re-sliced)",
-        print_time_seconds=result.print_time_seconds,
+        print_name=f"{display_base}{print_name_suffix}",
+        print_time_seconds=result_print_time,
         filament_used_grams=filament_g or None,
         filament_type=new_filament_type,
         filament_color=new_filament_color,
         layer_height=source_archive.layer_height,
         nozzle_diameter=source_archive.nozzle_diameter,
-        # The re-sliced output is for whatever printer the user just picked,
-        # not the source archive's printer — read the model the slicer baked
-        # into the new 3MF, falling back to the source only if it's absent.
-        # (Copying source_archive.sliced_for_model kept a cross-printer
-        # re-slice, e.g. X1C→H2D, showing the old "X1C sliced" model.)
         sliced_for_model=parsed_metadata.get("sliced_for_model") or source_archive.sliced_for_model,
-        # Build plate type that the sliced output was produced for (#1493
-        # follow-up): the frontend's ArchiveCard reads ``archive.bed_type``
-        # off the top-level column, not extra_data, so without this lift the
-        # re-sliced card had no plate badge. ThreeMFParser pulls it from the
-        # sliced 3MF's ``slice_info.config`` ``curr_bed_type``; if that's
-        # absent (older sidecar / older slice profile) the source archive's
-        # bed_type is the right default.
         bed_type=parsed_metadata.get("bed_type") or source_archive.bed_type,
         makerworld_url=source_archive.makerworld_url,
         designer=source_archive.designer,
-        # Sliced-but-not-printed: keep status default ("completed") so it
-        # surfaces in the normal archives list, but do not stamp
-        # started/completed_at — the user hasn't actually printed it yet.
         extra_data=metadata,
         created_by_id=current_user_id,
     )
     db.add(new_archive)
-    await db.commit()
-    await db.refresh(new_archive)
+    if commit:
+        await db.commit()
+        await db.refresh(new_archive)
+    else:
+        await db.flush()
+        await db.refresh(new_archive)
+    return new_archive, float(filament_g), float(filament_mm)
+
+
+async def slice_and_persist_as_archive(
+    db: AsyncSession,
+    *,
+    model_bytes: bytes,
+    model_filename: str,
+    request: SliceRequest,
+    source_archive,  # PrintArchive — hint kept loose to avoid cyclic import
+    current_user_id: int | None,
+    job_id: int | None = None,
+):
+    """Slice a model and save the result as a new ``PrintArchive`` row,
+    inheriting printer / project / makerworld metadata from the source
+    archive. Always exports as a `.gcode.3mf` so the existing thumbnail
+    and plates infrastructure (which expects a zip-shaped 3MF) works on
+    the new archive. Returns ``SliceArchiveResponse``.
+
+    When ``request.plate == 0`` and ``request.split_plates``, slices each
+    plate independently and writes one archive per plate
+    (``{base}_plate_{N}.gcode.3mf``), then commits them together.
+    """
+
+    base_name = model_filename.rsplit(".", 1)[0]
+    source_3mf = model_bytes if model_filename.lower().endswith(".3mf") else None
+
+    if request.plate == 0 and request.split_plates:
+        plate_ids = discover_plate_indices_from_bytes(model_bytes) if source_3mf is not None else []
+        if not plate_ids:
+            plate_ids = [1]
+        plate_count = len(plate_ids)
+        logger.info(
+            "Split archive slice-all: slicing plates %s then persisting %d archive(s) for %s",
+            plate_ids,
+            plate_count,
+            model_filename,
+        )
+        sliced: list[tuple[int, object, bool]] = []
+        for ordinal, plate_num in enumerate(plate_ids, start=1):
+            if job_id is not None:
+                slice_dispatch.set_progress(
+                    job_id,
+                    {
+                        "stage": f"Slicing plate {plate_num}",
+                        "total_percent": int(100 * (ordinal - 1) / plate_count),
+                        "plate_percent": 0,
+                        "plate_index": plate_num,
+                        "plate_count": plate_count,
+                        "multi_plate_index": ordinal,
+                        "multi_plate_count": plate_count,
+                        "updated_at": 0,
+                    },
+                )
+            plate_req = request.model_copy(update={"plate": plate_num, "split_plates": False, "export_3mf": True})
+            result, used_embedded = await _run_slicer_with_fallback(
+                db,
+                model_bytes=model_bytes,
+                model_filename=model_filename,
+                request=plate_req,
+                job_id=job_id,
+                current_user_id=current_user_id,
+            )
+            sliced.append((plate_num, result, used_embedded))
+
+        archive_ids: list[int] = []
+        names: list[str] = []
+        total_time = 0
+        total_g = 0.0
+        total_mm = 0.0
+        any_embedded = False
+        try:
+            for plate_num, result, used_embedded in sliced:
+                out_filename = f"{base_name}_plate_{plate_num}.gcode.3mf"
+                new_archive, filament_g, filament_mm = await _persist_sliced_archive_row(
+                    db,
+                    content=result.content,
+                    out_filename=out_filename,
+                    print_name_suffix=f" (re-sliced plate {plate_num})",
+                    plate_num=plate_num,
+                    result_print_time=result.print_time_seconds,
+                    result_filament_g=result.filament_used_g,
+                    result_filament_mm=result.filament_used_mm,
+                    used_embedded_settings=used_embedded,
+                    source_archive=source_archive,
+                    current_user_id=current_user_id,
+                    source_3mf_bytes=source_3mf,
+                    commit=False,
+                )
+                archive_ids.append(new_archive.id)
+                names.append(new_archive.print_name or out_filename)
+                total_time += result.print_time_seconds
+                total_g += filament_g
+                total_mm += filament_mm
+                any_embedded = any_embedded or used_embedded
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise
+
+        return SliceArchiveResponse(
+            archive_id=archive_ids[0],
+            name=names[0],
+            print_time_seconds=total_time,
+            filament_used_g=total_g,
+            filament_used_mm=total_mm,
+            used_embedded_settings=any_embedded,
+            archive_ids=archive_ids,
+            names=names,
+        )
+
+    archive_request = request.model_copy(update={"export_3mf": True})
+    result, used_embedded_settings = await _run_slicer_with_fallback(
+        db,
+        model_bytes=model_bytes,
+        model_filename=model_filename,
+        request=archive_request,
+        job_id=job_id,
+        current_user_id=current_user_id,
+    )
+
+    out_filename = f"{base_name}.gcode.3mf"
+    plate_num = request.plate if request.plate and request.plate > 0 else 1
+    new_archive, filament_g, filament_mm = await _persist_sliced_archive_row(
+        db,
+        content=result.content,
+        out_filename=out_filename,
+        print_name_suffix=" (re-sliced)",
+        plate_num=plate_num,
+        result_print_time=result.print_time_seconds,
+        result_filament_g=result.filament_used_g,
+        result_filament_mm=result.filament_used_mm,
+        used_embedded_settings=used_embedded_settings,
+        source_archive=source_archive,
+        current_user_id=current_user_id,
+        source_3mf_bytes=source_3mf,
+        commit=True,
+    )
 
     return SliceArchiveResponse(
         archive_id=new_archive.id,
@@ -4199,11 +4270,6 @@ async def slice_library_file(
     """Enqueue a slice job for a library file. Returns 202 + job_id; the
     slice runs in the background, the caller polls `GET /slice-jobs/{id}`.
     """
-    from backend.app.core.database import async_session
-    from backend.app.services.slice_dispatch import (
-        http_exception_to_job_error,
-        slice_dispatch,
-    )
 
     src_result = await db.execute(LibraryFile.active().where(LibraryFile.id == file_id))
     lib_file = src_result.scalar_one_or_none()
@@ -4304,9 +4370,6 @@ async def print_library_file(
 
     Only sliced files (.bgcode, .gcode, or .gcode.3mf) can be printed.
     """
-    from backend.app.models.printer import Printer
-    from backend.app.services.background_dispatch import DispatchEnqueueRejected, background_dispatch
-    from backend.app.services.printer_manager import printer_manager
 
     # Use defaults if no body provided
     if body is None:
@@ -4744,7 +4807,6 @@ async def create_library_slicer_token(
     Slicer protocol handlers (bambustudioopen://, orcaslicer://) cannot send
     auth headers, so they use this token in the URL path instead.
     """
-    from backend.app.core.auth import create_slicer_download_token
 
     result = await db.execute(LibraryFile.active().where(LibraryFile.id == file_id))
     file = result.scalar_one_or_none()
@@ -4768,7 +4830,6 @@ async def download_library_file_for_slicer(
     and single-use, created by POST /files/{file_id}/slicer-token.
     Filename is at the end of the URL so slicers can detect the file format.
     """
-    from backend.app.core.auth import verify_slicer_download_token
 
     if not await verify_slicer_download_token(token, "library", file_id):
         raise HTTPException(status_code=403, detail="Invalid or expired download token")
@@ -4848,8 +4909,6 @@ async def get_gcode(
                 if not gcode_files:
                     raise HTTPException(status_code=404, detail="No gcode found in 3MF file")
                 gcode_content = zf.read(gcode_files[0])
-                from fastapi.responses import Response
-
                 return Response(content=gcode_content, media_type="text/plain")
         except zipfile.BadZipFile:
             raise HTTPException(status_code=400, detail="Invalid 3MF file")

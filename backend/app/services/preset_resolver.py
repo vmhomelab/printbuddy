@@ -41,6 +41,7 @@ from backend.app.services.bambu_cloud import (
     BambuCloudService,
 )
 from backend.app.services.orca_cloud import OrcaCloudAuthError, OrcaCloudError
+from backend.app.services.orca_profiles import resolve_preset
 
 logger = logging.getLogger(__name__)
 
@@ -68,16 +69,16 @@ _SLOT_TO_PROFILE_TYPE = {
 }
 
 
-def _strip_inherits_if_concrete(preset_json: str) -> str:
-    """Drop ``inherits`` from already-expanded presets before the CLI sees them.
+async def _flatten_and_strip_inherits(db: AsyncSession, preset_json: str, slot: str) -> str:
+    """Drop ``inherits`` only after a confirmed parent merge.
 
     OrcaSlicer 2.5+ rejects temp ``--load-settings`` files that still name a
-    parent (``error_string: The input preset file is invalid and can not be
-    parsed``, ``return_code: -5``): the CLI re-walks ``inherits`` next to the
-    temp file and can't see ``resources/profiles/...``. Imported / flattened
-    local+cloud presets often keep a leftover ``inherits`` even when their
-    keys are already fully merged. Standard-tier stubs (name/inherits/from/type
-    only) must keep ``inherits`` so the sidecar can still expand them.
+    parent the CLI can't see next to the temp file. We must not infer
+    "already flattened" from key count — a custom child can have many
+    overrides while still depending on inherited defaults. Only strip
+    ``inherits`` when `resolve_preset` actually merges parent keys.
+    Unresolved parents keep ``inherits`` so a sidecar with bundled profiles
+    can finish the walk.
     """
     try:
         data = json.loads(preset_json)
@@ -85,12 +86,19 @@ def _strip_inherits_if_concrete(preset_json: str) -> str:
         return preset_json
     if not isinstance(data, dict) or not data.get("inherits"):
         return preset_json
-    stub_keys = {"name", "inherits", "from", "type", "compatible_printers"}
-    concrete = set(data) - stub_keys
-    if len(concrete) < 5:
+
+    profile_type = "printer" if slot == "printer" else slot
+    try:
+        key_count_before = len(data)
+        flattened = await resolve_preset(data, profile_type, db)
+    except Exception:
+        logger.exception("Failed flattening %s preset; forwarding with inherits", slot)
         return preset_json
-    data = {k: v for k, v in data.items() if k != "inherits"}
-    return json.dumps(data)
+
+    if len(flattened) > key_count_before:
+        stripped = {k: v for k, v in flattened.items() if k != "inherits"}
+        return json.dumps(stripped)
+    return preset_json
 
 
 async def resolve_preset_ref(
@@ -113,7 +121,8 @@ async def resolve_preset_ref(
     elif ref.source == "cloud":
         raw = await _resolve_cloud(db, user, ref, slot)
     elif ref.source == "orca_cloud":
-        raw = await _resolve_orca_cloud(db, user, ref, slot)
+        # Orca Cloud path already flattens + strips inherits when parents merge.
+        return await _resolve_orca_cloud(db, user, ref, slot)
     elif ref.source == "standard":
         # Stubs must keep inherits for the sidecar's bundled-profile walk.
         return _resolve_standard(ref, slot)
@@ -122,7 +131,7 @@ async def resolve_preset_ref(
             status_code=400,
             detail=f"Unknown preset source for {slot}: {ref.source!r}",
         )
-    return _strip_inherits_if_concrete(raw)
+    return await _flatten_and_strip_inherits(db, raw, slot)
 
 
 async def _resolve_local(db: AsyncSession, ref: PresetRef, slot: str) -> str:
@@ -243,8 +252,6 @@ async def _resolve_orca_cloud(db: AsyncSession, user: User | None, ref: PresetRe
         # merge so the CLI doesn't try to re-walk it.
         inherits = content.get("inherits")
         if inherits:
-            from backend.app.services.orca_profiles import resolve_preset
-
             profile_type = "printer" if slot == "printer" else slot
             try:
                 key_count_before = len(content)

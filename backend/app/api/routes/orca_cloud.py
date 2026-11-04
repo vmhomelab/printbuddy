@@ -4,7 +4,7 @@ Orca Cloud API Routes
 Device-pairing (RFC 8628) connect/disconnect + profile sync endpoints for the
 Orca Cloud external-app surface.
 
-Auth shape (see :mod:`backend.app.services.orca_cloud` for the deep dive):
+Auth shape (see `backend.app.services.orca_cloud` for the deep dive):
 
     POST /orca-cloud/device/start
         Request a device code, persist it server-side (TTL 10 min), return the
@@ -434,7 +434,7 @@ async def _build_authenticated_service(
     user: User | None,
     clear_on_auth_failure: bool = True,
 ) -> OrcaCloudService:
-    """Construct an :class:`OrcaCloudService` pre-populated with stored
+    """Construct an `OrcaCloudService` pre-populated with stored
     credentials. If the access token is within the refresh-leeway of expiry,
     proactively refresh and persist the new pair BEFORE returning, so the
     next API call doesn't time out mid-flight on an expired token.

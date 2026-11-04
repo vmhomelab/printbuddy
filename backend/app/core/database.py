@@ -261,14 +261,14 @@ async def _migrate_encrypt_legacy_secrets() -> None:
     """Re-encrypt OIDC ``client_secret`` and TOTP ``secret`` rows that are still
     stored as plaintext (no ``fernet:`` prefix).
 
-    Called from :func:`init_db` after :func:`run_migrations` finishes. No-ops
+    Called from `init_db` after `run_migrations` finishes. No-ops
     when no encryption key is configured (so plaintext storage stays the
     legacy behaviour for installs without a key).
 
     B2: per-row strategy — each row is committed in its own AsyncSession so a
     single corrupt row does NOT block other successful re-encryptions on every
     startup forever. The skipped-row count is exposed via
-    :func:`get_migration_error_count` and surfaced on /encryption-status.
+    `get_migration_error_count` and surfaced on /encryption-status.
 
     B3: unexpected (non-row) failures during the read phase are re-raised so
     operators see the problem instead of silent data corruption — startup

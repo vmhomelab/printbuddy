@@ -343,7 +343,7 @@ async def generate_rtsp_mjpeg_stream(
     This is for X1/H2/P2 models that support RTSP streaming.
     Auto-reconnects when the printer drops the RTSP session (common on P2S).
     Per-model knobs (probesize, analyzeduration, reconnect cadence) come from
-    :func:`camera_profiles.get_camera_profile` so quirky firmwares can be
+    `camera_profiles.get_camera_profile` so quirky firmwares can be
     handled by adding a profile entry rather than tuning a global constant.
     """
     ffmpeg = get_ffmpeg_path()

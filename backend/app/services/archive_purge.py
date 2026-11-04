@@ -240,18 +240,18 @@ class ArchivePurgeService:
         Two modes, parameter-controlled (#1390):
 
         * ``purge_stats=False`` (default): each archive goes through
-          :meth:`ArchiveService.soft_delete_archive` — files removed from disk
+          `ArchiveService.soft_delete_archive` — files removed from disk
           and the row hidden via ``deleted_at``, but the linked
           ``PrintLogEntry`` rows are untouched so Quick Stats keeps every
           contribution (filament, cost, energy, time accuracy).
         * ``purge_stats=True``: linked log rows are hard-deleted up front and
           the archive row is hard-removed via
-          :meth:`ArchiveService.delete_archive`. Matches the single-archive
+          `ArchiveService.delete_archive`. Matches the single-archive
           ``DELETE /archives/{id}?purge_stats=true`` semantics from #1343.
 
         Each delete runs in its own session so a commit-per-row doesn't churn
         the caller's session (matches how the sweeper uses
-        :func:`_database.async_session` in production).
+        `_database.async_session` in production).
         """
         if older_than_days < 1:
             return 0

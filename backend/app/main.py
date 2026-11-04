@@ -2619,7 +2619,7 @@ async def _dispatch_user_print_email(
     """Send a user-specific print-completion email based on print status.
 
     Maps the normalised print status to the correct event type and delegates
-    to :meth:`NotificationService.send_user_print_email`.  A single helper
+    to `NotificationService.send_user_print_email`.  A single helper
     avoids duplicating the ``if status == "completed" / elif "failed" / elif
     "stopped"`` dispatch block at every call site.
 

@@ -265,7 +265,7 @@ async def test_orca_cloud_flattens_inherits_and_drops_chain():
     with (
         patch.object(preset_resolver, "_build_orca_service", AsyncMock(return_value=svc)),
         patch(
-            "backend.app.services.orca_profiles.resolve_preset",
+            "backend.app.services.preset_resolver.resolve_preset",
             AsyncMock(return_value=flattened),
         ) as resolve_mock,
     ):
@@ -298,7 +298,7 @@ async def test_orca_cloud_keeps_inherits_when_flatten_finds_nothing():
     with (
         patch.object(preset_resolver, "_build_orca_service", AsyncMock(return_value=svc)),
         patch(
-            "backend.app.services.orca_profiles.resolve_preset",
+            "backend.app.services.preset_resolver.resolve_preset",
             AsyncMock(return_value=dict(sparse)),  # same size → unresolved
         ),
     ):

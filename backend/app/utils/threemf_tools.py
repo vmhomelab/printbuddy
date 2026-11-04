@@ -10,6 +10,7 @@ import logging
 import math
 import re
 import zipfile
+from io import BytesIO
 from pathlib import Path
 
 import defusedxml.ElementTree as ET
@@ -369,6 +370,19 @@ def discover_plate_indices(zf: zipfile.ZipFile) -> list[int]:
                 continue
             break
     return sorted(set(indices))
+
+
+def discover_plate_indices_from_bytes(zip_bytes: bytes) -> list[int]:
+    """Return sorted plate IDs from 3MF bytes, or ``[]`` if unreadable.
+
+    Prefer this over counting ``plater_id`` metadata and assuming ``1..N`` —
+    retained plate IDs may be sparse (e.g. ``[1, 3]`` after deleting plate 2).
+    """
+    try:
+        with zipfile.ZipFile(BytesIO(zip_bytes), "r") as zf:
+            return discover_plate_indices(zf)
+    except (zipfile.BadZipFile, OSError):
+        return []
 
 
 def extract_nozzle_mapping_from_3mf(zf: zipfile.ZipFile) -> dict[int, int] | None:

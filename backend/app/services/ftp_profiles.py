@@ -1,6 +1,6 @@
 """Per-printer-model FTP tuning knobs.
 
-Mirrors the shape of :mod:`backend.app.services.camera_profiles` — a
+Mirrors the shape of `backend.app.services.camera_profiles` — a
 small registry of per-model overrides so quirky firmwares can be
 tuned without sprinkling ``if model == "X":`` branches through
 ``bambu_ftp.py``. Adding a new model's quirk is a config edit (an
@@ -13,7 +13,7 @@ behaviour byte-for-byte.
 
 Currently only the TLS-version cap lives here (P2S firmware
 01.02.00.00 needs it — see ``cap_tls_v1_2`` below). The A1
-data-channel-plaintext quirk still lives in :class:`BambuFTPClient`
+data-channel-plaintext quirk still lives in `BambuFTPClient`
 via ``A1_MODELS`` / ``skip_session_reuse``; folding that into a
 profile field is a future cleanup, not load-bearing for this fix.
 """
@@ -78,18 +78,18 @@ _PROFILES: dict[str, FTPProfile] = {
 }
 
 # SSDP internal codes that should resolve to a display-name profile.
-# Mirrors the same map in :mod:`camera_profiles`.
+# Mirrors the same map in `camera_profiles`.
 _MODEL_ALIASES: dict[str, str] = {
     "N7": "P2S",  # P2S internal SSDP code
 }
 
 
 def get_ftp_profile(model: str | None) -> FTPProfile:
-    """Return the :class:`FTPProfile` for *model*, or the default.
+    """Return the `FTPProfile` for *model*, or the default.
 
     ``model`` can be either a display name (e.g. ``"P2S"``) or an
     internal SSDP code (e.g. ``"N7"``). Unknown / missing models fall
-    back to :data:`DEFAULT_PROFILE` so the FTP path is never blocked
+    back to `DEFAULT_PROFILE` so the FTP path is never blocked
     on a missing entry.
     """
     if not model:
