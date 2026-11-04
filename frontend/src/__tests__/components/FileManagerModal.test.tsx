@@ -374,6 +374,32 @@ describe('FileManagerModal', () => {
       await waitFor(() => expect(startedPath).toBe('/print_job.gcode'));
     });
 
+    it('starts without confirmation when the spool is assigned via Spoolman', async () => {
+      let startedPath: string | null = null;
+      server.use(
+        http.get('/api/v1/settings/', () => HttpResponse.json({ warn_on_missing_spool_assignment: true })),
+        http.get('/api/v1/inventory/assignments', () => HttpResponse.json([])),
+        http.get('/api/v1/settings/spoolman', () => HttpResponse.json({ spoolman_enabled: 'true' })),
+        http.get('/api/v1/spoolman/inventory/slot-assignments/all', () =>
+          HttpResponse.json([
+            { printer_id: 1, printer_name: 'Prusa CORE One', ams_id: 0, tray_id: 1, spoolman_spool_id: 33, ams_label: null },
+          ]),
+        ),
+        http.post('/api/v1/printers/:id/files/start', ({ request }) => {
+          startedPath = new URL(request.url).searchParams.get('path');
+          return HttpResponse.json({ status: 'started', path: startedPath });
+        }),
+      );
+
+      render(<FileManagerModal printerId={1} printerName="Prusa CORE One" onClose={mockOnClose} />);
+      expect(await screen.findByText('print_job.gcode')).toBeInTheDocument();
+      fireEvent.click(screen.getAllByRole('button').filter(btn => btn.querySelector('svg')?.classList.contains('lucide-square'))[1]);
+      fireEvent.click(screen.getByRole('button', { name: /^Print$/i }));
+
+      await waitFor(() => expect(startedPath).toBe('/print_job.gcode'));
+      expect(screen.queryByRole('heading', { name: 'No spool assigned' })).not.toBeInTheDocument();
+    });
+
     it('passes the selected PrusaLink storage when listing and starting a file', async () => {
       const seenListStorages: Array<string | null> = [];
       let startedStorage: string | null = null;

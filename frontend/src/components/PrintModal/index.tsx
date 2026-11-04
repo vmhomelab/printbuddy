@@ -15,6 +15,7 @@ import { getColorName } from '../../utils/colors';
 import { getCurrencySymbol } from '../../utils/currency';
 import { toDateTimeLocalValue, parseUTCDate } from '../../utils/date';
 import { getGlobalTrayId, isPlaceholderDate } from '../../utils/amsHelpers';
+import { getPrinterIdsWithSpoolAssignment } from '../../utils/spoolAssignments';
 import { FilamentMapping } from './FilamentMapping';
 import { FilamentOverride } from './FilamentOverride';
 import { PlateSelector } from './PlateSelector';
@@ -542,13 +543,11 @@ export function PrintModal({
       mode === 'reprint' &&
       assignmentMode === 'printer'
     ) {
-      const [currentSettings, assignments] = await Promise.all([
+      const [currentSettings, printersWithSpool] = await Promise.all([
         settings ?? api.getSettings(),
-        spoolAssignments ?? api.getAssignments(),
+        getPrinterIdsWithSpoolAssignment(),
       ]);
-      const hasUnassignedPrinter = selectedPrinters.some(
-        (printerId) => !assignments.some((assignment) => assignment.printer_id === printerId)
-      );
+      const hasUnassignedPrinter = selectedPrinters.some((printerId) => !printersWithSpool.has(printerId));
       if (currentSettings.warn_on_missing_spool_assignment !== false && hasUnassignedPrinter) {
         setMissingSpoolConfirmationPending(true);
         return;
