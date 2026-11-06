@@ -502,7 +502,7 @@ class MakerWorldService:
         MakerWorld's access logs.
 
         Validates that the URL's host is one of the known MakerWorld CDN
-        hosts (SSRF guard — same allowlist as :meth:`download_3mf`). Caps
+        hosts (SSRF guard — same allowlist as `download_3mf`). Caps
         payload at 5 MB. Returns ``(bytes, content_type)``; content type
         defaults to ``image/jpeg`` if the upstream didn't set one.
         """

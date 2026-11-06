@@ -17,7 +17,7 @@ stream within 32 bytes and gives up with "not enough frames to estimate
 rate" (#1395 follow-up — Tschipel's reproduction).
 
 This module replaces those module constants with per-model
-:class:`CameraProfile` entries. Defaults match the historical pre-fix
+`CameraProfile` entries. Defaults match the historical pre-fix
 behaviour, so existing models (X1, H2, X2D, X1E) keep their fast-
 startup tuning unchanged. Quirky models override the relevant fields
 only — the P2S entry below is the first example.
@@ -108,11 +108,11 @@ _MODEL_ALIASES: dict[str, str] = {
 
 
 def get_camera_profile(model: str | None) -> CameraProfile:
-    """Return the :class:`CameraProfile` for *model*, or the default.
+    """Return the `CameraProfile` for *model*, or the default.
 
     ``model`` can be either a display name (e.g. ``"P2S"``) or an
     internal SSDP code (e.g. ``"N7"``). Unknown models fall back to
-    :data:`DEFAULT_PROFILE` so the camera path is never blocked on a
+    `DEFAULT_PROFILE` so the camera path is never blocked on a
     missing entry.
     """
     if not model:

@@ -9,9 +9,13 @@ strips it on import; ``_migrate_drop_library_print_name`` clears it from rows
 imported before the fix.
 """
 
+import io
+import zipfile
+from pathlib import Path
+
 from sqlalchemy import select
 
-from backend.app.api.routes.library import _without_print_name
+from backend.app.api.routes.library import _read_3mf_entry, _without_print_name
 from backend.app.core.database import _migrate_drop_library_print_name
 from backend.app.models.library import LibraryFile
 
@@ -93,3 +97,25 @@ async def test_migration_strips_print_name_from_existing_rows(db_session, monkey
     assert by_name["halloween.3mf"].file_metadata == {"print_time_seconds": 100}
     assert by_name["no_meta.3mf"].file_metadata == {"print_time_seconds": 50}
     assert by_name["null_meta.3mf"].file_metadata is None
+
+
+# --- _read_3mf_entry (path + in-memory bytes) -------------------------------
+
+
+def _zip_with_plate(plate_num: int, payload: bytes) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr(f"Metadata/plate_{plate_num}.png", payload)
+    return buf.getvalue()
+
+
+def test_read_3mf_entry_from_bytes():
+    data = _zip_with_plate(2, b"COLORED_PLATE")
+    assert _read_3mf_entry(data, "Metadata/plate_2.png") == b"COLORED_PLATE"
+    assert _read_3mf_entry(data, "Metadata/plate_1.png") is None
+
+
+def test_read_3mf_entry_from_path(tmp_path: Path):
+    path = tmp_path / "src.3mf"
+    path.write_bytes(_zip_with_plate(1, b"FROM_PATH"))
+    assert _read_3mf_entry(path, "Metadata/plate_1.png") == b"FROM_PATH"

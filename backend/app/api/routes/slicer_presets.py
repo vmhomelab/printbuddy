@@ -263,7 +263,12 @@ async def _fetch_local_presets(db: AsyncSession) -> dict[str, list[UnifiedPreset
 def _parse_compatible_printers(raw: str | None) -> list[str] | None:
     """``LocalPreset.compatible_printers`` stores a JSON array of printer-preset
     names. Return the parsed list, or ``None`` on missing / malformed data so
-    the SliceModal falls back to the uploaded-bundle index for that preset."""
+    the SliceModal falls back to the uploaded-bundle index for that preset.
+
+    Clone/rename matching (``" - Copy"``, custom suffixes, …) is handled on
+    the frontend via containment against these system names — no need to
+    synthesize alias strings here.
+    """
     if not raw:
         return None
     try:
@@ -272,7 +277,7 @@ def _parse_compatible_printers(raw: str | None) -> list[str] | None:
         return None
     if not isinstance(data, list):
         return None
-    names = [s for s in data if isinstance(s, str) and s.strip()]
+    names = [s.strip() for s in data if isinstance(s, str) and s.strip()]
     return names or None
 
 
