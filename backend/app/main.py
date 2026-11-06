@@ -985,7 +985,8 @@ def _refresh_file_metadata_for_archive(printer_id: int, printer, data: dict, log
     metadata = _file_metadata_for_archive(printer, data)
     if metadata:
         return metadata
-    if getattr(printer, "provider", None) != "prusalink":
+    provider = getattr(printer, "provider", None)
+    if provider not in {"prusalink", "klipper", "mainsail", "fluidd"}:
         return {}
 
     client = printer_manager.get_client(printer_id)
@@ -1017,31 +1018,45 @@ async def _apply_file_metadata_to_archive(db, printer_id: int, printer, archive,
     if not metadata:
         return False
 
+    updated = False
     grams = _metadata_float(metadata.get("filament_used_grams"))
-    if grams is None or grams <= 0:
-        return False
-
-    archive.filament_used_grams = grams
-    archive.filament_type = metadata.get("filament_type") or archive.filament_type
-    metadata_cost = _metadata_float(metadata.get("filament_cost"))
-    if metadata_cost is None:
-        metadata_cost = await _calculate_loaded_spool_cost(db, printer_id, grams)
-    archive.cost = metadata_cost if metadata_cost is not None else archive.cost
+    if grams is not None and grams > 0:
+        archive.filament_used_grams = grams
+        archive.filament_type = metadata.get("filament_type") or archive.filament_type
+        metadata_cost = _metadata_float(metadata.get("filament_cost"))
+        if metadata_cost is None:
+            metadata_cost = await _calculate_loaded_spool_cost(db, printer_id, grams)
+        archive.cost = metadata_cost if metadata_cost is not None else archive.cost
+        updated = True
     metadata_print_time_raw = _metadata_float(metadata.get("print_time_seconds"))
     if metadata_print_time_raw is not None and not archive.print_time_seconds:
         archive.print_time_seconds = int(metadata_print_time_raw)
+        updated = True
+    layer_height = _metadata_float(metadata.get("layer_height"))
+    if layer_height is not None and layer_height > 0 and not archive.layer_height:
+        archive.layer_height = layer_height
+        updated = True
+    total_layers = _metadata_float(metadata.get("total_layers"))
+    if total_layers is not None and total_layers > 0 and not archive.total_layers:
+        archive.total_layers = int(total_layers)
+        updated = True
 
     extra_data = archive.extra_data if isinstance(archive.extra_data, dict) else {}
     extra_data["file_metadata"] = metadata
     archive.extra_data = extra_data
+    updated = True
     try:
         from sqlalchemy.orm.attributes import flag_modified
 
         flag_modified(archive, "extra_data")
     except Exception:
         pass
-    logger.info("[FILE-META] Applied late file metadata to archive %s (%.1fg)", archive.id, grams)
-    return True
+    logger.info(
+        "[FILE-META] Applied late file metadata to archive %s (%s)",
+        archive.id,
+        f"{grams:.1f}g" if grams is not None and grams > 0 else "no weight estimate",
+    )
+    return updated
 
 
 async def _refresh_prusalink_archive_metadata_later(

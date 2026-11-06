@@ -93,6 +93,18 @@ PROVIDER_UPLOAD_RECONCILE_ATTEMPTS = 30
 PROVIDER_UPLOAD_RECONCILE_INTERVAL_SECONDS = 1.0
 
 
+def _should_attempt_bambu_ftp_cover(printer: Printer) -> bool:
+    """Return True only for the Bambu-specific 3MF cover implementation.
+
+    Null provider rows retain legacy Bambu behaviour, matching the archive
+    path. Explicit G-code providers must never be sent through Bambu FTP.
+    """
+    provider = getattr(printer, "provider", None)
+    if not isinstance(provider, str) or not provider.strip():
+        return True
+    return provider.lower() == "bambu"
+
+
 def _is_printable_printer_file(filename: str) -> bool:
     lower = filename.lower()
     return any(lower.endswith(ext) for ext in PRINTABLE_PRINTER_FILE_EXTENSIONS) or ".gcode." in lower
@@ -1310,6 +1322,10 @@ async def get_printer_cover(
     printer = result.scalar_one_or_none()
     if not printer:
         raise HTTPException(404, "Printer not found")
+
+    if not _should_attempt_bambu_ftp_cover(printer):
+        logger.info("Cover unavailable for non-Bambu provider %s on printer %s", printer.provider, printer_id)
+        raise HTTPException(404, "3MF cover extraction is unavailable for this printer provider")
 
     state = printer_manager.get_status(printer_id)
     if not state:

@@ -176,3 +176,50 @@ def test_non_metadata_filename_is_ignored_for_moonraker_archive():
 
     assert main._file_metadata_for_archive(SimpleNamespace(provider="fluidd"), data) == {}
     assert "file_metadata" not in data
+
+
+@pytest.mark.asyncio
+async def test_moonraker_file_metadata_enriches_no_3mf_archive_without_grams(
+    db_session, printer_factory, archive_factory, monkeypatch
+):
+    """Generic G-code metadata must populate archive details without guessed weight."""
+    from backend.app import main
+
+    printer = await printer_factory(provider="mainsail", model="Creality K2 Plus")
+    archive = await archive_factory(
+        printer.id,
+        filename="models/cube.gcode",
+        file_path="",
+        filament_used_grams=None,
+        print_time_seconds=None,
+        layer_height=None,
+        total_layers=None,
+        status="printing",
+        extra_data={"no_3mf_available": True},
+    )
+    metadata = {
+        "source": "moonraker_file_metadata",
+        "raw_filename": "models/cube.gcode",
+        "print_time_seconds": 1234,
+        "layer_height": 0.2,
+        "total_layers": 50,
+        "filament_total_mm": 4567.8,
+        "slicer": "OrcaSlicer",
+        "raw_metadata": {"filename": "models/cube.gcode", "filament_total": 4567.8},
+    }
+    monkeypatch.setattr(
+        main.printer_manager,
+        "get_client",
+        lambda printer_id: type("Client", (), {"refresh_current_file_metadata": lambda self: metadata})(),
+    )
+
+    updated = await main._apply_file_metadata_to_archive(
+        db_session, printer.id, printer, archive, {"filename": "models/cube.gcode"}, logging.getLogger(__name__)
+    )
+
+    assert updated is True
+    assert archive.filament_used_grams is None
+    assert archive.print_time_seconds == 1234
+    assert archive.layer_height == pytest.approx(0.2)
+    assert archive.total_layers == 50
+    assert archive.extra_data["file_metadata"] == metadata

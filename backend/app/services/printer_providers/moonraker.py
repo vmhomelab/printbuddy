@@ -621,6 +621,49 @@ class MoonrakerPrinterClient:
             return data["result"]
         return data if isinstance(data, dict) else {"value": data}
 
+    def refresh_current_file_metadata(self) -> dict[str, Any]:
+        """Return normalized Moonraker metadata for the active G-code file.
+
+        Moonraker archives are G-code based; they must not depend on Bambu's
+        separate 3MF transport. ``filament_total`` is a length in millimetres,
+        so it is retained as length rather than guessed into grams.
+        """
+        filename = str(self.state.gcode_file or "").strip().lstrip("/")
+        if not filename:
+            raw_data = self.state.raw_data if isinstance(self.state.raw_data, dict) else {}
+            virtual_sdcard = raw_data.get("virtual_sdcard") if isinstance(raw_data.get("virtual_sdcard"), dict) else {}
+            print_stats = raw_data.get("print_stats") if isinstance(raw_data.get("print_stats"), dict) else {}
+            filename = str(virtual_sdcard.get("file_path") or print_stats.get("filename") or "").strip().lstrip("/")
+        if not filename:
+            return {}
+
+        metadata = self._get(f"server/files/metadata?filename={quote(filename, safe='')}")
+        if not isinstance(metadata, dict) or not metadata:
+            return {}
+
+        result: dict[str, Any] = {
+            "source": "moonraker_file_metadata",
+            "raw_filename": str(metadata.get("filename") or filename),
+            "raw_metadata": metadata,
+        }
+        estimated_time = _safe_float(metadata.get("estimated_time"))
+        if estimated_time is not None and estimated_time > 0:
+            result["print_time_seconds"] = int(estimated_time)
+        layer_height = _safe_float(metadata.get("layer_height"))
+        if layer_height is not None and layer_height > 0:
+            result["layer_height"] = layer_height
+            object_height = _safe_float(metadata.get("object_height"))
+            if object_height is not None and object_height > 0:
+                result["total_layers"] = max(1, round(object_height / layer_height))
+        filament_total = _safe_float(metadata.get("filament_total"))
+        if filament_total is not None and filament_total > 0:
+            result["filament_total_mm"] = filament_total
+        for key in ("slicer", "thumbnails"):
+            value = metadata.get(key)
+            if value:
+                result[key] = value
+        return result
+
     def _query_objects(self, object_names: list[str]) -> dict[str, Any]:
         query = "printer/objects/query?" + "&".join(quote(name, safe="") for name in object_names)
         objects = self._get(query)

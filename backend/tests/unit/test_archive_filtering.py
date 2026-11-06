@@ -60,6 +60,20 @@ class TestBambuFtpArchiveEligibility:
         assert _should_attempt_bambu_ftp_archive(printer) is True
 
 
+class TestBambuCoverEligibility:
+    """The 3MF cover endpoint must not make FTP calls for G-code providers."""
+
+    def test_mainsail_skips_bambu_3mf_cover_lookup(self):
+        from backend.app.api.routes.printers import _should_attempt_bambu_ftp_cover
+
+        assert _should_attempt_bambu_ftp_cover(MagicMock(provider="mainsail")) is False
+
+    def test_bambu_uses_bambu_3mf_cover_lookup(self):
+        from backend.app.api.routes.printers import _should_attempt_bambu_ftp_cover
+
+        assert _should_attempt_bambu_ftp_cover(MagicMock(provider="bambu")) is True
+
+
 class TestCalibrationPrintFiltering:
     """Test that internal printer files under /usr/ are not archived."""
 

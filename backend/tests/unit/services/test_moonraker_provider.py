@@ -872,3 +872,45 @@ def test_moonraker_control_non_400_errors_are_not_swallowed(monkeypatch):
 
     with pytest.raises(httpx.HTTPStatusError):
         client.pause_print()
+
+
+def test_moonraker_refreshes_active_gcode_metadata(monkeypatch):
+    """Archive fallbacks must use the real active G-code, never a fabricated 3MF."""
+    client = MoonrakerPrinterClient("http://k2-plus.local:7125", printer_model="Creality K2 Plus")
+    client.state.gcode_file = "models/cube.gcode"
+    requested: list[str] = []
+
+    def get(path: str):
+        requested.append(path)
+        return {
+            "filename": "models/cube.gcode",
+            "estimated_time": 1234.5,
+            "layer_height": 0.2,
+            "object_height": 10.0,
+            "filament_total": 4567.8,
+            "slicer": "OrcaSlicer",
+            "thumbnails": [{"width": 320, "height": 240, "relative_path": ".thumbs/cube.png"}],
+        }
+
+    monkeypatch.setattr(client, "_get", get)
+
+    assert client.refresh_current_file_metadata() == {
+        "source": "moonraker_file_metadata",
+        "raw_filename": "models/cube.gcode",
+        "print_time_seconds": 1234,
+        "layer_height": 0.2,
+        "total_layers": 50,
+        "filament_total_mm": 4567.8,
+        "slicer": "OrcaSlicer",
+        "thumbnails": [{"width": 320, "height": 240, "relative_path": ".thumbs/cube.png"}],
+        "raw_metadata": {
+            "filename": "models/cube.gcode",
+            "estimated_time": 1234.5,
+            "layer_height": 0.2,
+            "object_height": 10.0,
+            "filament_total": 4567.8,
+            "slicer": "OrcaSlicer",
+            "thumbnails": [{"width": 320, "height": 240, "relative_path": ".thumbs/cube.png"}],
+        },
+    }
+    assert requested == ["server/files/metadata?filename=models%2Fcube.gcode"]
