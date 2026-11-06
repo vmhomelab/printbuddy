@@ -544,36 +544,29 @@ async def import_instance(
     service = await _build_service(db, current_user)
 
     try:
-        # YASTL#51's iot-service endpoint needs the *alphanumeric* modelId
-        # (e.g. "US2bb73b106683e5"), not the integer design id from /models/{N}.
-        # Fetch design metadata to resolve it, and — in the same call — pick a
-        # default profileId from the response if the frontend didn't specify one.
+        # Resolve the selected profile first. The primary download endpoint is
+        # keyed by the *instance* behind that profile, while the legacy
+        # iot-service fallback is keyed by profileId plus alphanumeric modelId.
         try:
             design = await service.get_design(body.model_id)
         except MakerWorldError as exc:
             raise _map_service_error(exc) from exc
 
-        alphanumeric_model_id = design.get("modelId")
-        if not isinstance(alphanumeric_model_id, str) or not alphanumeric_model_id:
-            raise HTTPException(
-                status_code=502,
-                detail="MakerWorld design metadata missing the modelId field",
-            )
-
         profile_id = body.profile_id
+        instances_envelope: dict | None = None
         if profile_id is None:
             for instance in design.get("instances") or []:
-                pid = instance.get("profileId")
+                pid = instance.get("profileId") if isinstance(instance, dict) else None
                 if isinstance(pid, int) and pid > 0:
                     profile_id = pid
                     break
             if profile_id is None:
                 try:
-                    envelope = await service.get_design_instances(body.model_id)
+                    instances_envelope = await service.get_design_instances(body.model_id)
                 except MakerWorldError as exc:
                     raise _map_service_error(exc) from exc
-                for hit in envelope.get("hits") or []:
-                    pid = hit.get("profileId")
+                for hit in instances_envelope.get("hits") or []:
+                    pid = hit.get("profileId") if isinstance(hit, dict) else None
                     if isinstance(pid, int) and pid > 0:
                         profile_id = pid
                         break
@@ -583,16 +576,56 @@ async def import_instance(
                     detail="MakerWorld returned no instances for this model",
                 )
 
+        # Find the instance behind the selected profile. Older design responses
+        # can omit ``instances[].id``, so use the instances envelope as a
+        # second source before falling back to the legacy profile endpoint.
+        instance_id: int | None = None
+        for instance in design.get("instances") or []:
+            if not isinstance(instance, dict) or instance.get("profileId") != profile_id:
+                continue
+            candidate_id = instance.get("id")
+            if isinstance(candidate_id, int) and candidate_id > 0:
+                instance_id = candidate_id
+                break
+        if instance_id is None:
+            if instances_envelope is None:
+                try:
+                    instances_envelope = await service.get_design_instances(body.model_id)
+                except MakerWorldError as exc:
+                    raise _map_service_error(exc) from exc
+            for hit in instances_envelope.get("hits") or []:
+                if not isinstance(hit, dict) or hit.get("profileId") != profile_id:
+                    continue
+                candidate_id = hit.get("id")
+                if isinstance(candidate_id, int) and candidate_id > 0:
+                    instance_id = candidate_id
+                    break
+
         # Canonical URL includes profile_id so each plate gets its own library
         # entry (see ``_canonical_url`` docstring).
         source_url = _canonical_url(body.model_id, profile_id)
 
-        try:
-            manifest = await service.get_profile_download(profile_id, alphanumeric_model_id)
-        except MakerWorldError as exc:
-            raise _map_service_error(exc) from exc
+        manifest: dict = {}
+        if instance_id is not None:
+            try:
+                manifest = await service.get_instance_download(instance_id)
+            except MakerWorldError as exc:
+                raise _map_service_error(exc) from exc
 
         signed_url = manifest.get("url")
+        if not signed_url or not isinstance(signed_url, str):
+            alphanumeric_model_id = design.get("modelId")
+            if not isinstance(alphanumeric_model_id, str) or not alphanumeric_model_id:
+                raise HTTPException(
+                    status_code=502,
+                    detail="MakerWorld design metadata missing the modelId field",
+                )
+            try:
+                manifest = await service.get_profile_download(profile_id, alphanumeric_model_id)
+            except MakerWorldError as exc:
+                raise _map_service_error(exc) from exc
+            signed_url = manifest.get("url")
+
         # Basename-strip any path components from the upstream filename so a
         # malicious response (``name: "../../evil.3mf"``) can't persist a suspect
         # string into the library row or the UI. On-disk storage uses a UUID

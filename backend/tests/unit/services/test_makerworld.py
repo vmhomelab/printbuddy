@@ -261,6 +261,27 @@ class TestGetProfileDownload:
         assert call.kwargs["params"] == {"model_id": "US2bb73b106683e5"}
 
     @pytest.mark.asyncio
+    async def test_instance_download_sends_bearer_and_download_query(self):
+        """The per-instance endpoint must use the existing Cloud bearer."""
+        svc = self._make_service(auth_token="tok-abc")
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {
+            "name": "benchy.3mf",
+            "url": "https://makerworld.bblmw.com/makerworld/model/X/Y/f.3mf?exp=1&key=k",
+        }
+        svc._client.get.return_value = resp
+
+        manifest = await svc.get_instance_download(4028000)
+
+        assert manifest["name"] == "benchy.3mf"
+        call = svc._client.get.call_args
+        url = call.args[0] if call.args else call.kwargs.get("url")
+        assert url == "https://api.bambulab.com/v1/design-service/instance/4028000/f3mf"
+        assert call.kwargs["headers"]["Authorization"] == "Bearer tok-abc"
+        assert call.kwargs["params"] == {"type": "download"}
+
+    @pytest.mark.asyncio
     async def test_maps_401_to_auth_error(self):
         svc = self._make_service()
         resp = MagicMock()
