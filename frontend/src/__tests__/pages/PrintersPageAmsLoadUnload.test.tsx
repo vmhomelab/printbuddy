@@ -373,6 +373,12 @@ describe('PrintersPage - AMS load/unload (#891)', () => {
     const user = userEvent.setup();
 
     server.use(
+      http.get('/api/v1/printers/', () => HttpResponse.json([{
+        ...mockPrinter,
+        name: 'Core One Bench',
+        provider: 'prusalink',
+        model: 'Prusa CORE One',
+      }])),
       http.get('/api/v1/printers/:id/status', () => HttpResponse.json({
         ...mockIdleStatusWithAms,
         connected: false,
@@ -403,7 +409,7 @@ describe('PrintersPage - AMS load/unload (#891)', () => {
     render(<PrintersPage />);
 
     await waitFor(() => {
-      expect(screen.getByText('X1 Carbon')).toBeInTheDocument();
+      expect(screen.getByText('Core One Bench')).toBeInTheDocument();
       expect(screen.getByText('Offline')).toBeInTheDocument();
     });
 
@@ -413,5 +419,30 @@ describe('PrintersPage - AMS load/unload (#891)', () => {
       expect(screen.getByRole('heading', { name: 'Assign Spool' })).toBeInTheDocument();
     });
     expect(screen.getByText(/Polymaker/)).toBeInTheDocument();
+  });
+
+  it('does not offer a virtual loaded spool for an offline Bambu printer', async () => {
+    server.use(
+      http.get('/api/v1/printers/:id/status', () => HttpResponse.json({
+        ...mockIdleStatusWithAms,
+        connected: false,
+        ams: [],
+        vt_tray: [],
+        temperatures: null,
+      })),
+      http.get('/api/v1/inventory/assignments', () => HttpResponse.json([])),
+      http.get('/api/v1/settings/spoolman', () => HttpResponse.json({ spoolman_enabled: 'false', spoolman_url: '' })),
+      http.get('/api/v1/settings/', () => HttpResponse.json({})),
+    );
+
+    render(<PrintersPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('X1 Carbon')).toBeInTheDocument();
+      expect(screen.getByText('Offline')).toBeInTheDocument();
+    });
+
+    expect(screen.queryByText('Loaded spool')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Assign' })).not.toBeInTheDocument();
   });
 });

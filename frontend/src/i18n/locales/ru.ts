@@ -2530,8 +2530,6 @@ export default {
     styleGlow: "Свечение",
     styleVibrant: "Насыщенный",
     themeToggleHint: "Переключайте тёмную, светлую и системную тему значком в боковой панели.",
-    progressInTitle: "Прогресс во вкладке",
-    progressInTitleDescription: "Показывает процент текущей печати и кольцо прогресса во вкладке браузера.",
     autoArchivePrints: "Автоматически архивировать печать",
     autoArchiveDescription: "Автоматически сохранять 3MF после завершения печати",
     saveThumbnailsDescription: "Извлекать и сохранять изображения предпросмотра из 3MF",

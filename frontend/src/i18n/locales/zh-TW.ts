@@ -2659,8 +2659,6 @@ export default {
     styleGlow: '發光',
     styleVibrant: '鮮豔',
     themeToggleHint: '使用側邊欄中的圖示在深色、淺色和系統模式之間切換。',
-    progressInTitle: '在分頁顯示列印進度',
-    progressInTitleDescription: '在瀏覽器分頁中顯示目前列印的百分比和進度環。',
     autoArchivePrints: '自動歸檔列印',
     autoArchiveDescription: '列印完成時自動儲存3MF檔案',
     saveThumbnailsDescription: '從3MF檔案中提取並儲存預覽影像',

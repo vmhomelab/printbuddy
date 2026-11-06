@@ -2660,8 +2660,6 @@ export default {
     styleGlow: 'Lumineux',
     styleVibrant: 'Vif',
     themeToggleHint: 'Basculer entre le mode sombre, clair et système avec l\'icône dans la barre latérale.',
-    progressInTitle: 'Progression dans l\'onglet',
-    progressInTitleDescription: 'Affiche le pourcentage de l\'impression en cours et un anneau de progression dans l\'onglet du navigateur.',
     autoArchivePrints: 'Archiver automatiquement les impressions',
     autoArchiveDescription: 'Sauvegarder automatiquement les fichiers 3MF à la fin des impressions',
     saveThumbnailsDescription: 'Extraire et sauvegarder les images d\'aperçu des fichiers 3MF',

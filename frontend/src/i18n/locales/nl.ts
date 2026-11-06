@@ -2680,8 +2680,6 @@ export default {
     styleGlow: 'Gloed',
     styleVibrant: 'Levendig',
     themeToggleHint: 'Schakel met het pictogram in de zijbalk tussen donkere, lichte en systeemmodus.',
-    progressInTitle: 'Afdrukvoortgang in tabblad',
-    progressInTitleDescription: 'Toon het percentage van de actieve afdruk en een voortgangsring in het browsertabblad.',
     // Archive
     autoArchivePrints: 'Afdrukken automatisch archiveren',
     autoArchiveDescription: '3MF-bestanden automatisch opslaan wanneer afdrukken zijn voltooid',

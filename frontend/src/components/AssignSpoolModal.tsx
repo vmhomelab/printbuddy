@@ -24,9 +24,18 @@ interface AssignSpoolModalProps {
     location: string;
   };
   spoolmanEnabled?: boolean;
+  /**
+   * The target is tracked in inventory only and never configured on the
+   * printer: a non-Bambu provider's slot (Creality CFS, Snapmaker U1, Klipper
+   * tool) or the virtual "Loaded spool" of a single-spool printer. Such
+   * targets often report no material/profile, so absent metadata is not a
+   * mismatch, and a spool can be created straight from the slot. Bambu AMS
+   * and external slots leave this unset and keep the upstream flow.
+   */
+  inventoryOnlySlot?: boolean;
 }
 
-export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, trayInfo, spoolmanEnabled }: AssignSpoolModalProps) {
+export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, trayInfo, spoolmanEnabled, inventoryOnlySlot = false }: AssignSpoolModalProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
@@ -375,20 +384,22 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
 
     if (!settings?.disable_filament_warnings && trayInfo) {
       const trayMaterial = trayInfo.material || trayInfo.type;
-      const materialIsComparable = Boolean(normalizeValue(selectedSpool.material) && normalizeValue(trayMaterial));
+      // Inventory-only targets (see `inventoryOnlySlot`) often carry no
+      // material/profile at all, so absent comparison data is not treated as
+      // a mismatch there. Printer slots compare exactly as before.
+      const materialIsComparable = !inventoryOnlySlot
+        || Boolean(normalizeValue(selectedSpool.material) && normalizeValue(trayMaterial));
       const materialMatchResult = materialIsComparable
         ? checkMaterialMatch(selectedSpool.material, trayMaterial)
         : 'exact';
       const spoolProfile = selectedSpool.slicer_filament_name || selectedSpool.slicer_filament;
       const trayProfile = trayInfo.profile || trayInfo.type;
-      const profileIsComparable = hasComparableProfile(spoolProfile, trayProfile);
+      const profileIsComparable = !inventoryOnlySlot || hasComparableProfile(spoolProfile, trayProfile);
       const profileMismatch = profileIsComparable && !checkProfileMatch(spoolProfile, trayProfile);
 
       // Only material-bearing mismatches warn — profile-only deltas are
       // silently resolved by the backend's AMS reconfigure on every assign
-      // (#1552). Missing profile/material metadata is common for virtual
-      // Loaded spool targets and OFDB/manual spools, so absent comparison
-      // data is not treated as a mismatch.
+      // (#1552).
       if (materialMatchResult !== 'exact') {
         let mismatchType: 'material' | 'partial' | 'material_profile' | 'partial_profile';
         if (materialMatchResult === 'none' && profileMismatch) {
@@ -465,7 +476,7 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
             </div>
           )}
 
-            {trayInfo && !spoolmanEnabled && (
+            {trayInfo && inventoryOnlySlot && !spoolmanEnabled && (
               <div className="p-3 rounded-lg border border-bambu-green/30 bg-bambu-green/10 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div className="text-xs text-bambu-gray">
                   <p className="font-medium text-white">Create an inventory spool from this detected slot</p>

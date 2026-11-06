@@ -9,7 +9,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.spool import Spool
@@ -951,288 +950,6 @@ class TestAssignSpoolEmptySlotPreConfig:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_on_ams_change_keeps_manual_assignment_when_print_start_reports_blank_metadata(
-        self, async_client: AsyncClient, printer_factory, spool_factory, db_session: AsyncSession
-    ):
-        """Print-start AMS telemetry can briefly clear third-party slot metadata.
-
-        That is not strong enough evidence to delete the user's persistent spool
-        assignment; otherwise remaining-weight display disappears as soon as the
-        print starts.
-        """
-        from unittest.mock import AsyncMock
-
-        from backend.app.main import on_ams_change
-        from backend.app.models.spool_assignment import SpoolAssignment
-
-        printer = await printer_factory(name="P2S")
-        spool = await spool_factory(slicer_filament="Generic PLA", material="PLA", rgba="FF0000FF")
-        assignment = SpoolAssignment(
-            spool_id=spool.id,
-            printer_id=printer.id,
-            ams_id=0,
-            tray_id=1,
-            fingerprint_color="FF0000FF",
-            fingerprint_type="PLA",
-        )
-        db_session.add(assignment)
-        await db_session.commit()
-        assignment_id = assignment.id
-
-        ams_data = [{"id": 0, "tray": [{"id": 1, "tray_type": "", "tray_color": "00000000", "state": 3}]}]
-        status = _make_mock_status(ams_data=ams_data)
-        printer_info = MagicMock(name="P2S", serial_number="01P00A000000001")
-
-        with (
-            patch("backend.app.main.printer_manager") as mock_pm_main,
-            patch("backend.app.services.printer_manager.printer_manager") as mock_pm_inv,
-            patch("backend.app.main.mqtt_relay") as mock_relay,
-            patch("backend.app.main.ws_manager") as mock_ws,
-        ):
-            mock_pm_main.get_printer.return_value = printer_info
-            mock_pm_main.get_status.return_value = status
-            mock_pm_main.get_client.return_value = MagicMock()
-            mock_pm_main.get_model.return_value = "P2S"
-            mock_pm_inv.get_client.return_value = MagicMock()
-            mock_pm_inv.get_status.return_value = status
-            mock_relay.on_ams_change = AsyncMock()
-            mock_ws.send_printer_status = AsyncMock()
-            mock_ws.broadcast = AsyncMock()
-
-            await on_ams_change(printer.id, ams_data)
-
-        kept = await db_session.scalar(select(SpoolAssignment).where(SpoolAssignment.id == assignment_id))
-        assert kept is not None
-        assert kept.spool_id == spool.id
-
-    @pytest.mark.asyncio
-    @pytest.mark.integration
-    async def test_on_ams_change_keeps_manual_assignment_until_missing_slot_is_confirmed(
-        self, async_client: AsyncClient, printer_factory, spool_factory, db_session: AsyncSession
-    ):
-        """A startup snapshot missing a tag-less AMS slot must not unlink it immediately."""
-        from unittest.mock import AsyncMock
-
-        from backend.app.main import _manual_assignment_cleanup_observations, on_ams_change
-        from backend.app.models.spool_assignment import SpoolAssignment
-
-        printer = await printer_factory(name="P1S")
-        spool = await spool_factory(slicer_filament="Generic PLA", material="PLA", rgba="FF0000FF")
-        assignment = SpoolAssignment(
-            spool_id=spool.id,
-            printer_id=printer.id,
-            ams_id=0,
-            tray_id=1,
-            fingerprint_color="FF0000FF",
-            fingerprint_type="PLA",
-        )
-        db_session.add(assignment)
-        await db_session.commit()
-        assignment_id = assignment.id
-        _manual_assignment_cleanup_observations.clear()
-
-        # A partial AMS startup snapshot has no tray 1 at all.
-        missing_slot_data = [{"id": 0, "tray": [{"id": 0, "tray_type": "PLA", "tray_color": "FFFFFFFF"}]}]
-        status = _make_mock_status(ams_data=missing_slot_data)
-        printer_info = MagicMock(name="P1S", serial_number="01P00A000000003")
-
-        with (
-            patch("backend.app.main.printer_manager") as mock_pm_main,
-            patch("backend.app.services.printer_manager.printer_manager") as mock_pm_inv,
-            patch("backend.app.main.mqtt_relay") as mock_relay,
-            patch("backend.app.main.ws_manager") as mock_ws,
-        ):
-            mock_pm_main.get_printer.return_value = printer_info
-            mock_pm_main.get_status.return_value = status
-            mock_pm_main.get_client.return_value = MagicMock()
-            mock_pm_main.get_model.return_value = "P1S"
-            mock_pm_inv.get_client.return_value = MagicMock()
-            mock_pm_inv.get_status.return_value = status
-            mock_relay.on_ams_change = AsyncMock()
-            mock_ws.send_printer_status = AsyncMock()
-            mock_ws.broadcast = AsyncMock()
-
-            await on_ams_change(printer.id, missing_slot_data)
-            kept = await db_session.scalar(select(SpoolAssignment).where(SpoolAssignment.id == assignment_id))
-            assert kept is not None
-
-            # The same absent slot in a later AMS callback is now confirmed.
-            await on_ams_change(printer.id, missing_slot_data)
-
-        removed = await db_session.scalar(select(SpoolAssignment).where(SpoolAssignment.id == assignment_id))
-        assert removed is None
-
-    @pytest.mark.asyncio
-    @pytest.mark.integration
-    async def test_on_ams_change_keeps_manual_assignment_until_mismatch_is_confirmed(
-        self, async_client: AsyncClient, printer_factory, spool_factory, db_session: AsyncSession
-    ):
-        """One mismatching startup report must not unlink a tag-less AMS spool."""
-        from unittest.mock import AsyncMock
-
-        from backend.app.main import _manual_assignment_cleanup_observations, on_ams_change
-        from backend.app.models.spool_assignment import SpoolAssignment
-
-        printer = await printer_factory(name="P1S")
-        spool = await spool_factory(slicer_filament="Generic PLA", material="PLA", rgba="FF0000FF")
-        assignment = SpoolAssignment(
-            spool_id=spool.id,
-            printer_id=printer.id,
-            ams_id=0,
-            tray_id=1,
-            fingerprint_color="FF0000FF",
-            fingerprint_type="PLA",
-        )
-        db_session.add(assignment)
-        await db_session.commit()
-        assignment_id = assignment.id
-        _manual_assignment_cleanup_observations.clear()
-
-        mismatch_data = [{"id": 0, "tray": [{"id": 1, "tray_type": "PETG", "tray_color": "00FF00FF", "state": 3}]}]
-        status = _make_mock_status(ams_data=mismatch_data)
-        printer_info = MagicMock(name="P1S", serial_number="01P00A000000005")
-
-        with (
-            patch("backend.app.main.printer_manager") as mock_pm_main,
-            patch("backend.app.services.printer_manager.printer_manager") as mock_pm_inv,
-            patch("backend.app.main.mqtt_relay") as mock_relay,
-            patch("backend.app.main.ws_manager") as mock_ws,
-        ):
-            mock_pm_main.get_printer.return_value = printer_info
-            mock_pm_main.get_status.return_value = status
-            mock_pm_main.get_client.return_value = MagicMock()
-            mock_pm_main.get_model.return_value = "P1S"
-            mock_pm_inv.get_client.return_value = MagicMock()
-            mock_pm_inv.get_status.return_value = status
-            mock_relay.on_ams_change = AsyncMock()
-            mock_ws.send_printer_status = AsyncMock()
-            mock_ws.broadcast = AsyncMock()
-
-            await on_ams_change(printer.id, mismatch_data)
-            kept = await db_session.scalar(select(SpoolAssignment).where(SpoolAssignment.id == assignment_id))
-            assert kept is not None
-
-            await on_ams_change(printer.id, mismatch_data)
-
-        removed = await db_session.scalar(select(SpoolAssignment).where(SpoolAssignment.id == assignment_id))
-        assert removed is None
-
-    @pytest.mark.asyncio
-    @pytest.mark.integration
-    async def test_on_ams_change_clears_pending_manual_unlink_when_slot_recovers(
-        self, async_client: AsyncClient, printer_factory, spool_factory, db_session: AsyncSession
-    ):
-        """A later matching startup snapshot must cancel a pending tag-less unlink."""
-        from unittest.mock import AsyncMock
-
-        from backend.app.main import _manual_assignment_cleanup_observations, on_ams_change
-        from backend.app.models.spool_assignment import SpoolAssignment
-
-        printer = await printer_factory(name="P1S")
-        spool = await spool_factory(slicer_filament="Generic PLA", material="PLA", rgba="FF0000FF")
-        assignment = SpoolAssignment(
-            spool_id=spool.id,
-            printer_id=printer.id,
-            ams_id=0,
-            tray_id=1,
-            fingerprint_color="FF0000FF",
-            fingerprint_type="PLA",
-        )
-        db_session.add(assignment)
-        await db_session.commit()
-        assignment_id = assignment.id
-        _manual_assignment_cleanup_observations.clear()
-
-        missing_slot_data = [{"id": 0, "tray": [{"id": 0, "tray_type": "PLA", "tray_color": "FFFFFFFF"}]}]
-        recovered_data = [{"id": 0, "tray": [{"id": 1, "tray_type": "PLA", "tray_color": "FF0000FF", "state": 3}]}]
-        status = _make_mock_status(ams_data=missing_slot_data)
-        printer_info = MagicMock(name="P1S", serial_number="01P00A000000004")
-
-        with (
-            patch("backend.app.main.printer_manager") as mock_pm_main,
-            patch("backend.app.services.printer_manager.printer_manager") as mock_pm_inv,
-            patch("backend.app.main.mqtt_relay") as mock_relay,
-            patch("backend.app.main.ws_manager") as mock_ws,
-        ):
-            mock_pm_main.get_printer.return_value = printer_info
-            mock_pm_main.get_status.return_value = status
-            mock_pm_main.get_client.return_value = MagicMock()
-            mock_pm_main.get_model.return_value = "P1S"
-            mock_pm_inv.get_client.return_value = MagicMock()
-            mock_pm_inv.get_status.return_value = status
-            mock_relay.on_ams_change = AsyncMock()
-            mock_ws.send_printer_status = AsyncMock()
-            mock_ws.broadcast = AsyncMock()
-
-            await on_ams_change(printer.id, missing_slot_data)
-            await on_ams_change(printer.id, recovered_data)
-
-        kept = await db_session.scalar(select(SpoolAssignment).where(SpoolAssignment.id == assignment_id))
-        assert kept is not None
-        assert _manual_assignment_cleanup_observations == {}
-
-    @pytest.mark.asyncio
-    @pytest.mark.integration
-    async def test_on_ams_change_keeps_manual_assignment_mismatch_during_active_print(
-        self, async_client: AsyncClient, printer_factory, spool_factory, db_session: AsyncSession
-    ):
-        """A single material/color mismatch during an active print must not unlink.
-
-        Print start is exactly when Bambu AMS state is most likely to be noisy;
-        inventory assignments are persistent user state and should survive that.
-        """
-        from unittest.mock import AsyncMock
-
-        from backend.app.main import on_ams_change
-        from backend.app.models.spool_assignment import SpoolAssignment
-        from backend.app.services.usage_tracker import _active_sessions
-
-        printer = await printer_factory(name="P2S")
-        spool = await spool_factory(slicer_filament="Generic PLA", material="PLA", rgba="FF0000FF")
-        assignment = SpoolAssignment(
-            spool_id=spool.id,
-            printer_id=printer.id,
-            ams_id=0,
-            tray_id=2,
-            fingerprint_color="FF0000FF",
-            fingerprint_type="PLA",
-        )
-        db_session.add(assignment)
-        await db_session.commit()
-        assignment_id = assignment.id
-
-        ams_data = [{"id": 0, "tray": [{"id": 2, "tray_type": "PETG", "tray_color": "00FF00FF", "state": 11}]}]
-        status = _make_mock_status(ams_data=ams_data)
-        printer_info = MagicMock(name="P2S", serial_number="01P00A000000002")
-
-        _active_sessions[printer.id] = MagicMock()
-        try:
-            with (
-                patch("backend.app.main.printer_manager") as mock_pm_main,
-                patch("backend.app.services.printer_manager.printer_manager") as mock_pm_inv,
-                patch("backend.app.main.mqtt_relay") as mock_relay,
-                patch("backend.app.main.ws_manager") as mock_ws,
-            ):
-                mock_pm_main.get_printer.return_value = printer_info
-                mock_pm_main.get_status.return_value = status
-                mock_pm_main.get_client.return_value = MagicMock()
-                mock_pm_main.get_model.return_value = "P2S"
-                mock_pm_inv.get_client.return_value = MagicMock()
-                mock_pm_inv.get_status.return_value = status
-                mock_relay.on_ams_change = AsyncMock()
-                mock_ws.send_printer_status = AsyncMock()
-                mock_ws.broadcast = AsyncMock()
-
-                await on_ams_change(printer.id, ams_data)
-        finally:
-            _active_sessions.pop(printer.id, None)
-
-        kept = await db_session.scalar(select(SpoolAssignment).where(SpoolAssignment.id == assignment_id))
-        assert kept is not None
-        assert kept.spool_id == spool.id
-
-    @pytest.mark.asyncio
-    @pytest.mark.integration
     async def test_auto_unlink_broadcasts_assignment_change(
         self, async_client: AsyncClient, printer_factory, spool_factory, db_session: AsyncSession
     ):
@@ -1244,10 +961,9 @@ class TestAssignSpoolEmptySlotPreConfig:
 
         from sqlalchemy import select
 
-        from backend.app.main import _manual_assignment_cleanup_observations, on_ams_change
+        from backend.app.main import on_ams_change
         from backend.app.models.spool_assignment import SpoolAssignment
 
-        _manual_assignment_cleanup_observations.clear()
         printer = await printer_factory(name="X1C")
         spool = await spool_factory(slicer_filament="GFU01", material="TPU")
 
@@ -1292,9 +1008,6 @@ class TestAssignSpoolEmptySlotPreConfig:
             mock_ws.send_printer_status = AsyncMock()
             mock_ws.broadcast = AsyncMock()
 
-            # Printbuddy confirms a tag-less fingerprint mismatch on a second
-            # AMS callback before unlinking (startup snapshots are noisy).
-            await on_ams_change(printer.id, [])
             await on_ams_change(printer.id, [])
 
             # The stale TPU assignment on the now-ABS external slot was unlinked...
@@ -1848,16 +1561,10 @@ class TestAutoUnlinkDuringRunout:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_cleared_tray_data_is_kept_as_transient_when_idle(
+    async def test_cleared_tray_data_still_unlinks_when_idle(
         self, async_client: AsyncClient, printer_factory, spool_factory, db_session: AsyncSession
     ):
-        """Printbuddy treats blank tray metadata as transient even off the print.
-
-        Upstream unlinks here; Printbuddy deliberately keeps a tag-less
-        assignment while the slot reports no type and no colour, because Bambu
-        firmware sends exactly that during startup and partial AMS pushes. The
-        slot is unlinked once it reports a different filament instead.
-        """
+        """Off the print, an emptied slot really does mean the spool is gone."""
         from unittest.mock import AsyncMock
 
         from backend.app.main import on_ams_change
@@ -1895,7 +1602,7 @@ class TestAutoUnlinkDuringRunout:
             await on_ams_change(printer.id, ams_data)
 
         db_session.expunge_all()
-        assert await db_session.get(SpoolAssignment, assignment_id) is not None
+        assert await db_session.get(SpoolAssignment, assignment_id) is None
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -1938,8 +1645,6 @@ class TestAutoUnlinkDuringRunout:
             mock_ws.send_printer_status = AsyncMock()
             mock_ws.broadcast = AsyncMock()
 
-            # Confirmed on a second AMS callback (Printbuddy's noisy-startup guard).
-            await on_ams_change(printer.id, ams_data)
             await on_ams_change(printer.id, ams_data)
 
         db_session.expunge_all()

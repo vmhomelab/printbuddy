@@ -802,6 +802,7 @@ async def _report_spool_usage_for_slots(
 
         global_tray_id = _resolve_global_tray_id(slot_id, slot_to_tray, ams_trays)
         tray_info = ams_trays.get(global_tray_id)
+        used_loaded_spool_fallback = False
         if not tray_info and allow_loaded_spool_fallback and slot_id == positive_usage_items[0][0]:
             # Non-AMS single-spool providers (PrusaLink, Klipper/Moonraker,
             # Elegoo SDCP) often report no live ``ams``/``vt_tray`` state at
@@ -810,6 +811,7 @@ async def _report_spool_usage_for_slots(
             # slot 1 -> global tray 254 -> ams_id=255,tray_id=0.
             global_tray_id = 254
             tray_info = {"tray_uuid": "", "tag_uid": "", "tray_type": ""}
+            used_loaded_spool_fallback = True
         if not tray_info:
             logger.debug("[SPOOLMAN] Slot %s: no tray at global_tray_id %s", slot_id, global_tray_id)
             continue
@@ -838,11 +840,11 @@ async def _report_spool_usage_for_slots(
 
         ams_id, tray_id = _global_tray_id_to_ams_slot(global_tray_id)
 
-        # External/non-AMS/virtual-tray slots are user-assigned in Printbuddy.
-        # Prefer the local row before any tag lookup so a stale deterministic
-        # fallback tag in Spoolman's extra.tag cannot steal usage from the
-        # spool currently assigned to the external holder.
-        if is_external and printer_id is not None:
+        # The synthetic loaded-spool slot of a non-AMS provider has no tray of
+        # its own, so the local row is the only binding it can have; resolve it
+        # before any tag lookup. Real Bambu trays (external spool included) keep
+        # the tag-first order below.
+        if used_loaded_spool_fallback and printer_id is not None:
             spool_id_to_use = await _resolve_spool_id_via_slot_assignment(printer_id, ams_id, tray_id)
             if spool_id_to_use is not None:
                 resolution_path = "slot-assignment"

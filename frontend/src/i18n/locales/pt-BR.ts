@@ -2659,8 +2659,6 @@ export default {
     styleGlow: 'Brilhante',
     styleVibrant: 'Vibrante',
     themeToggleHint: 'Alternar entre modo escuro, claro e sistema usando o ícone na barra lateral.',
-    progressInTitle: 'Progresso na aba',
-    progressInTitleDescription: 'Mostra a porcentagem da impressão ativa e um anel de progresso na aba do navegador.',
     autoArchivePrints: 'Arquivar impressões automaticamente',
     autoArchiveDescription: 'Salvar automaticamente arquivos 3MF quando impressões forem concluídas',
     saveThumbnailsDescription: 'Extrair e salvar imagens de pré-visualização dos arquivos 3MF',

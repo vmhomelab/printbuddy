@@ -237,7 +237,6 @@ export function SettingsPage() {
     setMode,
     setDarkStyle, setDarkBackground, setDarkAccent,
     setLightStyle, setLightBackground, setLightAccent,
-    progressInTitle, setProgressInTitle,
   } = useTheme();
   const [localSettings, setLocalSettings] = useState<AppSettings | null>(null);
   // Transient typed strings for the per-filament humidity threshold inputs
@@ -2157,23 +2156,6 @@ export function SettingsPage() {
                 {t('settings.themeToggleHint')}
               </p>
 
-              <div className="flex items-center justify-between pt-2 border-t border-bambu-dark-tertiary">
-                <div>
-                  <p className="text-white">{t('settings.progressInTitle')}</p>
-                  <p className="text-sm text-bambu-gray">
-                    {t('settings.progressInTitleDescription')}
-                  </p>
-                </div>
-                <label className="relative inline-flex items-center cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={progressInTitle}
-                    onChange={(e) => { setProgressInTitle(e.target.checked); showToast(t('settings.toast.settingsSaved'), 'success'); }}
-                    className="sr-only peer"
-                  />
-                  <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
-                </label>
-              </div>
             </CardContent>
           </Card>
 

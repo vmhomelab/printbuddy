@@ -679,6 +679,13 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     queryKey: ['printers'],
     queryFn: api.getPrinters,
   });
+  // "Assign to printer" binds the spool to a printer's virtual Loaded spool,
+  // which only exists for providers without slots of their own. Bambu
+  // printers assign spools to a concrete AMS/external slot from the printer
+  // card instead, so they are not offered here.
+  const loadedSpoolPrinters = (printers as PrinterType[]).filter(
+    (printer) => !!printer.provider && printer.provider !== 'bambu',
+  );
 
   // CSV export (#1576) — downloads the active inventory as a CSV file.
   const handleExportCsv = useCallback(async () => {
@@ -2113,10 +2120,10 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
                                 pct={pct}
                                 onClick={() => setFormModal({ spool, mode: 'edit' })}
                                 onPrintLabel={() => setLabelPickerSpoolIds([spool.id])}
-                                onAssignToPrinter={() => {
+                                onAssignToPrinter={loadedSpoolPrinters.length > 0 ? () => {
                                   setAssignModalSpool(spool);
                                   setAssignPrinterId('');
-                                }}
+                                } : undefined}
                                 onCopy={() => setFormModal({ spool: spool, mode: 'copy' })}
                                 t={t}
                                 colorizeLocationSensors={colorizeLocationSensors}
@@ -2142,10 +2149,10 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
                     pct={pct}
                     onClick={() => setFormModal({ spool, mode: 'edit' })}
                     onPrintLabel={() => setLabelPickerSpoolIds([spool.id])}
-                    onAssignToPrinter={() => {
+                    onAssignToPrinter={loadedSpoolPrinters.length > 0 ? () => {
                       setAssignModalSpool(spool);
                       setAssignPrinterId('');
-                    }}
+                    } : undefined}
                     onCopy={() => setFormModal({ spool: spool, mode: 'copy' })}
                     t={t}
                     colorizeLocationSensors={colorizeLocationSensors}
@@ -2273,10 +2280,10 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
                           onArchive={(id) => setConfirmAction({ type: 'archive', spoolId: id })}
                           onDelete={(id) => setConfirmAction({ type: 'delete', spoolId: id })}
                           onPrintLabel={(id) => setLabelPickerSpoolIds([id])}
-                          onAssignToPrinter={(spool) => {
+                          onAssignToPrinter={loadedSpoolPrinters.length > 0 ? (spool) => {
                             setAssignModalSpool(spool);
                             setAssignPrinterId('');
-                          }}
+                          } : undefined}
                           onResetConsumedCounter={(id) => setConfirmAction({ type: 'reset-consumed-counter', spoolId: id })}
                           visibleColumns={visibleColumns}
                           assignmentMap={assignmentMap}
@@ -2310,10 +2317,10 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
                         onArchive={() => setConfirmAction({ type: 'archive', spoolId: spool.id })}
                         onDelete={() => setConfirmAction({ type: 'delete', spoolId: spool.id })}
                         onPrintLabel={() => setLabelPickerSpoolIds([spool.id])}
-                        onAssignToPrinter={() => {
+                        onAssignToPrinter={loadedSpoolPrinters.length > 0 ? () => {
                           setAssignModalSpool(spool);
                           setAssignPrinterId('');
-                        }}
+                        } : undefined}
                         onResetConsumedCounter={() => setConfirmAction({ type: 'reset-consumed-counter', spoolId: spool.id })}
                         visibleColumns={visibleColumns}
                         assignmentMap={assignmentMap}
@@ -2437,13 +2444,13 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
                 onChange={(event) => setAssignPrinterId(event.target.value)}
               >
                 <option value="">{t('inventory.selectPrinter', 'Select printer...')}</option>
-                {(printers as PrinterType[]).map((printer) => (
+                {loadedSpoolPrinters.map((printer) => (
                   <option key={printer.id} value={printer.id}>{printer.name}</option>
                 ))}
               </select>
             </label>
 
-            {printers.length === 0 && (
+            {loadedSpoolPrinters.length === 0 && (
               <p className="text-xs text-bambu-gray">{t('inventory.noPrintersAvailable', 'No printers available.')}</p>
             )}
 

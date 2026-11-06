@@ -48,9 +48,6 @@ async def _run_ams_change(printer_id: int, ams_data: list):
         relay.on_ams_change = AsyncMock()
         ws.send_printer_status = AsyncMock()
         ws.broadcast = AsyncMock()
-        # Printbuddy confirms a tag-less fingerprint mismatch on a second AMS
-        # callback before unlinking, so push the same state twice.
-        await on_ams_change(printer_id, ams_data)
         await on_ams_change(printer_id, ams_data)
 
 

@@ -2659,8 +2659,6 @@ export default {
     styleGlow: '发光',
     styleVibrant: '鲜艳',
     themeToggleHint: '使用侧边栏中的图标在深色、浅色和系统模式之间切换。',
-    progressInTitle: '在标签页显示打印进度',
-    progressInTitleDescription: '在浏览器标签页中显示当前打印的百分比和进度环。',
     autoArchivePrints: '自动归档打印',
     autoArchiveDescription: '打印完成时自动保存3MF文件',
     saveThumbnailsDescription: '从3MF文件中提取并保存预览图像',

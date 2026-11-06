@@ -838,8 +838,7 @@ describe('useWebSocket hook', () => {
         vi.advanceTimersByTime(200);
       });
 
-      // This is the key the tab-title/favicon progress reads
-      // (usePrintProgressTitle) and nothing else.
+      // The status lands under the per-printer query key and nothing else.
       expect(queryClient.getQueryData(['printerStatus', 1])).toMatchObject({
         state: 'RUNNING',
         progress: 42,

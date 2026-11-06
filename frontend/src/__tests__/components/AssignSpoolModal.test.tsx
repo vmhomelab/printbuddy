@@ -294,6 +294,7 @@ describe('AssignSpoolModal', () => {
     render(
       <AssignSpoolModal
         {...defaultProps}
+        inventoryOnlySlot
         trayId={1}
         trayInfo={{
           type: 'PLA',
@@ -319,8 +320,20 @@ describe('AssignSpoolModal', () => {
     expect(api.assignSpool).toHaveBeenCalledWith({ spool_id: 42, printer_id: 1, ams_id: 0, tray_id: 1 });
   });
 
+  it('does not show quick-create for Bambu printer slots', () => {
+    render(
+      <AssignSpoolModal
+        {...defaultProps}
+        trayInfo={{ type: 'PLA', material: 'PLA', color: 'FFF014', location: 'AMS 1 - Slot 1' }}
+      />
+    );
+
+    expect(screen.getByRole('heading', { name: 'Assign Spool' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /create spool from slot/i })).not.toBeInTheDocument();
+  });
+
   it('does not show quick-create for Spoolman slot assignment mode', async () => {
-    render(<AssignSpoolModal {...defaultProps} spoolmanEnabled />);
+    render(<AssignSpoolModal {...defaultProps} spoolmanEnabled inventoryOnlySlot />);
 
     expect(screen.getByRole('heading', { name: 'Assign Spool' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /create spool from slot/i })).not.toBeInTheDocument();
@@ -460,6 +473,7 @@ describe('AssignSpoolModal', () => {
         printerId={7}
         amsId={-1}
         trayId={0}
+        inventoryOnlySlot
         trayInfo={{ type: '', material: undefined, profile: '', color: '', location: 'Loaded spool' }}
       />
     );

@@ -2660,8 +2660,6 @@ export default {
     styleGlow: 'グロー',
     styleVibrant: 'ビビッド',
     themeToggleHint: 'サイドバーのアイコンでダーク、ライト、システムモードを切り替えます。',
-    progressInTitle: 'タブに印刷の進捗を表示',
-    progressInTitleDescription: 'ブラウザのタブに進行中の印刷の進捗率と進捗リングを表示します。',
     // Archive
     autoArchivePrints: '印刷を自動アーカイブ',
     autoArchiveDescription: '印刷完了時に3MFファイルを自動保存',

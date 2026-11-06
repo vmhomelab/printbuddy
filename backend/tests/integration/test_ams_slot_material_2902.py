@@ -600,10 +600,6 @@ class TestTheAssignmentSurvivesTheSlotItJustConfigured:
             ws.send_printer_status = AsyncMock()
             ws.broadcast = AsyncMock()
 
-            # Printbuddy confirms a tag-less fingerprint mismatch on a second
-            # AMS callback before unlinking (startup snapshots are noisy), so
-            # push the same state twice.
-            await on_ams_change(printer.id, ams_data)
             await on_ams_change(printer.id, ams_data)
 
         # on_ams_change commits through its own session.

@@ -2659,8 +2659,6 @@ export default {
     styleGlow: 'Luminoso',
     styleVibrant: 'Vibrante',
     themeToggleHint: 'Passa tra modalità scura, chiara e sistema con l\'icona nella barra laterale.',
-    progressInTitle: 'Avanzamento nella scheda',
-    progressInTitleDescription: 'Mostra la percentuale della stampa attiva e un anello di avanzamento nella scheda del browser.',
     autoArchivePrints: 'Archiviazione automatica stampe',
     autoArchiveDescription: 'Salva automaticamente i file 3MF al completamento delle stampe',
     saveThumbnailsDescription: 'Estrai e salva le immagini di anteprima dai file 3MF',

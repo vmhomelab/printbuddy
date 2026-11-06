@@ -3199,7 +3199,10 @@ function PrinterCard({
 
   const genericToolSlots = status?.tool_slots ?? [];
   const hasGenericMultiToolSlots = genericToolSlots.length > 1;
-  const showLoadedSpoolPicker = supportsSpoolAssignment && !spoolmanLoading && !hasGenericMultiToolSlots && (amsData.length === 0) && ((status?.vt_tray?.length ?? 0) === 0);
+  // Bambu printers always report their real slots (AMS trays, external spool)
+  // and assign spools to those; the virtual "Loaded spool" target is only for
+  // providers that have no slot of their own to assign to.
+  const showLoadedSpoolPicker = supportsSpoolAssignment && !isBambuProvider && !spoolmanLoading && !hasGenericMultiToolSlots && (amsData.length === 0) && ((status?.vt_tray?.length ?? 0) === 0);
   const genericToolSpoolPickers = hasGenericMultiToolSlots ? (
     <div className="space-y-2">
       {genericToolSlots.map((tool) => {
@@ -8542,6 +8545,7 @@ function PrinterCard({
           trayId={assignSpoolModal.trayId}
           trayInfo={assignSpoolModal.trayInfo}
           spoolmanEnabled={!!spoolmanEnabled}
+          inventoryOnlySlot={!isBambuProvider || assignSpoolModal.amsId === -1}
         />
       )}
 

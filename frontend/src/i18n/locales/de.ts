@@ -2661,8 +2661,6 @@ export default {
     styleGlow: 'Leuchtend',
     styleVibrant: 'Lebendig',
     themeToggleHint: 'Zwischen Dunkel-, Hell- und Systemmodus mit dem Symbol in der Seitenleiste wechseln.',
-    progressInTitle: 'Druckfortschritt im Tab',
-    progressInTitleDescription: 'Zeigt den Prozentsatz des aktiven Drucks und einen Fortschrittsring im Browser-Tab an.',
     // Archive
     autoArchivePrints: 'Drucke automatisch archivieren',
     autoArchiveDescription: '3MF-Dateien automatisch speichern, wenn Drucke abgeschlossen sind',

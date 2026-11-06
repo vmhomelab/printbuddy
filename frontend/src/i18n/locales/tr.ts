@@ -2682,8 +2682,6 @@ export default {
     autoArchiveDescription: 'Baskılar tamamlandığında 3MF dosyalarını otomatik olarak kaydet',
     saveThumbnailsDescription: '3MF dosyalarından önizleme görüntülerini çıkar ve kaydet',
     captureFinishPhotoDescription: 'Baskı tamamlandığında yazıcı kamerasından bir fotoğraf çek. Printbuddy, baskı sırasında kısa bir zaman atlamalı kayıt yapar, böylece fotoğraf tabla inmeden önceki andan alınabilir. Bu baskı için zaman atlamalı kaydı etkinleştirdiyseniz dosya saklanır, aksi takdirde fotoğraf çekildikten sonra otomatik olarak silinir.',
-    progressInTitle: 'Sekmede baskı ilerlemesi',
-    progressInTitleDescription: 'Tarayıcı sekmesinde etkin baskının yüzdesini ve bir ilerleme halkası gösterir.',
     // Arşiv
     finishPhotoRestorePlate: 'Bitiş fotoğrafı için tablayı yükselt',
     finishPhotoRestorePlateDescription: 'Yazıcı, baskı bittiğinde tablayı yaklaşık 100 mm aşağı indirir ve tamamlanmış baskı kameranın çerçevesinin altında kalır. Printbuddy tablayı son basılan katmanın hemen üzerine geri kaldırır, fotoğrafı çeker ve ardından tekrar indirir. Baskı yüksekliği bilinmiyorsa veya kuyrukta başka bir iş varsa atlanır.',
