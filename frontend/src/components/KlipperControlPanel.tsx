@@ -118,14 +118,27 @@ export function KlipperControlPanel({ printer, status, showToast }: Props) {
         ? 'bg-[var(--accent)] text-white border-[var(--accent)]'
         : 'bg-transparent text-[var(--text-secondary)] border-[var(--border-color)] hover:border-[var(--text-muted)]'
     }`;
+  // Layout reacts to the width of the printer card (container query), not the
+  // viewport: narrow cards stack the motion pads above the settings column,
+  // wide cards place them side by side.
+  const panelContainer = '@container';
+  const panelLayout =
+    'flex flex-col gap-4 p-3 rounded-xl bg-[var(--bg-secondary)] border border-[var(--border-color)] @xl:flex-row @xl:items-start @xl:gap-6';
+  const motionGroup = 'flex flex-col gap-2 items-center shrink-0 @xl:items-start';
+  const motionPads = 'flex flex-wrap justify-center gap-4';
+  const stepRow = 'flex flex-wrap justify-center gap-1 max-w-[232px] @xl:justify-start';
+  const rightPanel = 'flex flex-col gap-3 flex-1 min-w-0 w-full';
   const inputClass =
-    'w-16 rounded px-2 py-1 text-sm bg-[var(--bg-primary)] border border-[var(--border-color)] focus:outline-none focus:border-[var(--accent)]';
+    'w-16 shrink-0 rounded px-2 py-1 text-sm bg-[var(--bg-primary)] border border-[var(--border-color)] focus:outline-none focus:border-[var(--accent)]';
 
   if (usesGenericControls) {
     const prusaBusy = moveMut.isPending || homeMut.isPending || disableSteppersMut.isPending;
 
     return (
-      <div className="flex flex-wrap gap-6 p-3 rounded-xl bg-[var(--bg-secondary)] border border-[var(--border-color)]">
+      <div className={panelContainer}>
+      <div className={panelLayout}>
+        <div data-testid="motion-controls" className={motionGroup}>
+        <div className={motionPads}>
         {/* ── XY jog grid ── */}
         <div className="flex flex-col gap-1">
           <div className="flex gap-1">
@@ -167,13 +180,6 @@ export function KlipperControlPanel({ printer, status, showToast }: Props) {
             </button>
           </div>
 
-          <div className="flex gap-1 mt-1 flex-wrap">
-            {XY_STEPS.map((s) => (
-              <button key={s} className={stepBtnClass(xyStep === s)} onClick={() => setXyStep(s)}>
-                {s}
-              </button>
-            ))}
-          </div>
         </div>
 
         {/* ── Z jog ── */}
@@ -189,16 +195,26 @@ export function KlipperControlPanel({ printer, status, showToast }: Props) {
             <ArrowDown size={16} />
           </button>
         </div>
+        </div>
+
+        <div className={stepRow}>
+          {XY_STEPS.map((s) => (
+            <button key={s} className={stepBtnClass(xyStep === s)} onClick={() => setXyStep(s)}>
+              {s}
+            </button>
+          ))}
+        </div>
+        </div>
 
         {/* ── Right panel ── */}
-        <div className="flex flex-col gap-3 min-w-[230px] flex-1">
-          <div className="grid grid-cols-3 gap-3 p-2 rounded-lg bg-[var(--bg-primary)] border border-[var(--border-color)]">
+        <div className={rightPanel}>
+          <div className="grid grid-cols-3 gap-2 p-2 rounded-lg bg-[var(--bg-primary)] border border-[var(--border-color)]">
             {(['x', 'y', 'z'] as const).map((axis) => (
-              <div key={axis} className="flex flex-col">
-                <span className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider">
+              <div key={axis} className="flex flex-col min-w-0">
+                <span className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider truncate">
                   {axis.toUpperCase()} [{((pos as Record<string, number>)[axis] ?? 0).toFixed(2)}]
                 </span>
-                <span className="text-sm font-mono font-semibold tabular-nums">
+                <span className="text-sm font-mono font-semibold tabular-nums truncate">
                   {((pos as Record<string, number>)[axis] ?? 0).toFixed(2)}
                 </span>
               </div>
@@ -207,25 +223,25 @@ export function KlipperControlPanel({ printer, status, showToast }: Props) {
 
           <div className="flex flex-col gap-1.5">
             <div className="flex items-center gap-2">
-              <label className="text-xs text-[var(--text-muted)] w-32 shrink-0">
+              <label className="text-xs text-[var(--text-muted)] flex-1 min-w-0 truncate">
                 {t('printers.klipper.extrusionLength', 'Extrusion length')}
               </label>
               <input type="number" className={inputClass} value={extrudeLength} min={0.1} step={1} onChange={(e) => setExtrudeLength(Number(e.target.value))} />
-              <span className="text-xs text-[var(--text-muted)]">mm</span>
+              <span className="text-xs text-[var(--text-muted)] w-8 shrink-0">mm</span>
             </div>
             <div className="flex items-center gap-2">
-              <label className="text-xs text-[var(--text-muted)] w-32 shrink-0">
+              <label className="text-xs text-[var(--text-muted)] flex-1 min-w-0 truncate">
                 {t('printers.klipper.extrusionSpeed', 'Extrusion speed')}
               </label>
               <input type="number" className={inputClass} value={extrudeSpeed} min={1} step={1} onChange={(e) => setExtrudeSpeed(Number(e.target.value))} />
-              <span className="text-xs text-[var(--text-muted)]">mm/s</span>
+              <span className="text-xs text-[var(--text-muted)] w-8 shrink-0">mm/s</span>
             </div>
             <div className="flex gap-2">
-              <button className={`flex-1 flex items-center justify-center gap-1 px-3 py-1.5 rounded text-sm font-medium ${secondaryControlBtn}`} disabled={extrudeMut.isPending} onClick={() => extrudeMut.mutate(-extrudeLength)}>
+              <button className={`flex-1 flex items-center justify-center gap-1 px-3 py-1.5 rounded text-sm font-medium min-w-0 ${secondaryControlBtn}`} disabled={extrudeMut.isPending} onClick={() => extrudeMut.mutate(-extrudeLength)}>
                 {t('printers.klipper.retract', 'Retract')}
                 <ChevronUp size={14} />
               </button>
-              <button className={`flex-1 flex items-center justify-center gap-1 px-3 py-1.5 rounded text-sm font-medium ${secondaryControlBtn}`} disabled={extrudeMut.isPending} onClick={() => extrudeMut.mutate(extrudeLength)}>
+              <button className={`flex-1 flex items-center justify-center gap-1 px-3 py-1.5 rounded text-sm font-medium min-w-0 ${secondaryControlBtn}`} disabled={extrudeMut.isPending} onClick={() => extrudeMut.mutate(extrudeLength)}>
                 {t('printers.klipper.extrude', 'Extrude')}
                 <ChevronDown size={14} />
               </button>
@@ -235,24 +251,24 @@ export function KlipperControlPanel({ printer, status, showToast }: Props) {
           <div className="flex flex-col gap-1.5">
             <div className="flex items-center gap-2">
               <Thermometer size={14} className="text-orange-400 shrink-0" />
-              <label className="text-xs text-[var(--text-muted)] w-16 shrink-0">{t('printers.klipper.nozzle', 'Nozzle')}</label>
-              <span className="text-xs font-mono tabular-nums text-[var(--text-secondary)] w-12">{Math.round(temps.nozzle ?? 0)}°C</span>
+              <label className="text-xs text-[var(--text-muted)] flex-1 min-w-0 truncate">{t('printers.klipper.nozzle', 'Nozzle')}</label>
+              <span className="text-xs font-mono tabular-nums text-[var(--text-secondary)] w-12 shrink-0 text-right">{Math.round(temps.nozzle ?? 0)}°C</span>
               <input type="number" aria-label="Nozzle temperature target" className={inputClass} value={nozzleInput} min={0} max={350} placeholder={String(Math.round(temps.nozzle_target ?? 0) || '—')} onChange={(e) => setNozzleInput(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && nozzleInput !== '') nozzleMut.mutate(Number(nozzleInput)); }} />
-              <button aria-label="Nozzle" className={`px-2 py-1 rounded text-xs ${secondaryControlBtn}`} disabled={nozzleMut.isPending || nozzleInput === ''} onClick={() => nozzleMut.mutate(Number(nozzleInput))}>Set</button>
+              <button aria-label="Nozzle" className={`px-2 py-1 rounded text-xs shrink-0 ${secondaryControlBtn}`} disabled={nozzleMut.isPending || nozzleInput === ''} onClick={() => nozzleMut.mutate(Number(nozzleInput))}>Set</button>
             </div>
             <div className="flex items-center gap-2">
               <Thermometer size={14} className="text-blue-400 shrink-0" />
-              <label className="text-xs text-[var(--text-muted)] w-16 shrink-0">{t('printers.klipper.bed', 'Bed')}</label>
-              <span className="text-xs font-mono tabular-nums text-[var(--text-secondary)] w-12">{Math.round(temps.bed ?? 0)}°C</span>
+              <label className="text-xs text-[var(--text-muted)] flex-1 min-w-0 truncate">{t('printers.klipper.bed', 'Bed')}</label>
+              <span className="text-xs font-mono tabular-nums text-[var(--text-secondary)] w-12 shrink-0 text-right">{Math.round(temps.bed ?? 0)}°C</span>
               <input type="number" aria-label="Bed temperature target" className={inputClass} value={bedInput} min={0} max={140} placeholder={String(Math.round(temps.bed_target ?? 0) || '—')} onChange={(e) => setBedInput(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && bedInput !== '') bedMut.mutate(Number(bedInput)); }} />
-              <button aria-label="Bed" className={`px-2 py-1 rounded text-xs ${secondaryControlBtn}`} disabled={bedMut.isPending || bedInput === ''} onClick={() => bedMut.mutate(Number(bedInput))}>Set</button>
+              <button aria-label="Bed" className={`px-2 py-1 rounded text-xs shrink-0 ${secondaryControlBtn}`} disabled={bedMut.isPending || bedInput === ''} onClick={() => bedMut.mutate(Number(bedInput))}>Set</button>
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-[var(--text-muted)] flex-1">Stepper motors</span>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs text-[var(--text-muted)] flex-1 min-w-0 truncate">Stepper motors</span>
             <button
-              className={`flex items-center justify-center gap-1 px-3 py-1.5 rounded text-sm font-medium ${secondaryControlBtn}`}
+              className={`flex items-center justify-center gap-1 px-3 py-1.5 rounded text-sm font-medium min-w-0 ${secondaryControlBtn}`}
               disabled={disableSteppersMut.isPending}
               onClick={() => disableSteppersMut.mutate()}
             >
@@ -261,12 +277,15 @@ export function KlipperControlPanel({ printer, status, showToast }: Props) {
           </div>
         </div>
       </div>
+      </div>
     );
   }
 
   return (
-    <div className="flex flex-col gap-6 p-3 rounded-xl bg-[var(--bg-secondary)] border border-[var(--border-color)] lg:flex-row">
-      <div data-testid="motion-controls" className="flex flex-wrap gap-6">
+    <div className={panelContainer}>
+    <div className={panelLayout}>
+      <div data-testid="motion-controls" className={motionGroup}>
+        <div className={motionPads}>
         {/* ── XY jog grid ── */}
         <div className="flex flex-col gap-1">
           {/* row 1: Y+ | spacer | Home All */}
@@ -351,14 +370,6 @@ export function KlipperControlPanel({ printer, status, showToast }: Props) {
           </button>
         </div>
 
-        {/* XY step sizes */}
-        <div className="flex gap-1 mt-1 flex-wrap">
-          {XY_STEPS.map((s) => (
-            <button key={s} className={stepBtnClass(xyStep === s)} onClick={() => setXyStep(s)}>
-              {s}
-            </button>
-          ))}
-        </div>
       </div>
 
       {/* ── Z jog ── */}
@@ -391,16 +402,26 @@ export function KlipperControlPanel({ printer, status, showToast }: Props) {
         </div>
         </div>
 
-        {/* ── Right panel ── */}
-      <div className="flex flex-col gap-3 min-w-[230px] flex-1">
+        {/* XY / Z step sizes */}
+        <div className={stepRow}>
+          {XY_STEPS.map((s) => (
+            <button key={s} className={stepBtnClass(xyStep === s)} onClick={() => setXyStep(s)}>
+              {s}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* ── Right panel ── */}
+      <div className={rightPanel}>
         {/* Position readout */}
-        <div className="grid grid-cols-3 gap-3 p-2 rounded-lg bg-[var(--bg-primary)] border border-[var(--border-color)]">
+        <div className="grid grid-cols-3 gap-2 p-2 rounded-lg bg-[var(--bg-primary)] border border-[var(--border-color)]">
           {(['x', 'y', 'z'] as const).map((axis) => (
-            <div key={axis} className="flex flex-col">
-              <span className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider">
+            <div key={axis} className="flex flex-col min-w-0">
+              <span className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider truncate">
                 {axis.toUpperCase()} [{((pos as Record<string, number>)[axis] ?? 0).toFixed(2)}]
               </span>
-              <span className="text-sm font-mono font-semibold tabular-nums">
+              <span className="text-sm font-mono font-semibold tabular-nums truncate">
                 {((pos as Record<string, number>)[axis] ?? 0).toFixed(2)}
               </span>
             </div>
@@ -410,7 +431,7 @@ export function KlipperControlPanel({ printer, status, showToast }: Props) {
         {/* Extrusion controls */}
         <div className="flex flex-col gap-1.5">
           <div className="flex items-center gap-2">
-            <label className="text-xs text-[var(--text-muted)] w-32 shrink-0">
+            <label className="text-xs text-[var(--text-muted)] flex-1 min-w-0 truncate">
               {t('printers.klipper.extrusionLength', 'Extrusion length')}
             </label>
             <input
@@ -421,10 +442,10 @@ export function KlipperControlPanel({ printer, status, showToast }: Props) {
               step={1}
               onChange={(e) => setExtrudeLength(Number(e.target.value))}
             />
-            <span className="text-xs text-[var(--text-muted)]">mm</span>
+            <span className="text-xs text-[var(--text-muted)] w-8 shrink-0">mm</span>
           </div>
           <div className="flex items-center gap-2">
-            <label className="text-xs text-[var(--text-muted)] w-32 shrink-0">
+            <label className="text-xs text-[var(--text-muted)] flex-1 min-w-0 truncate">
               {t('printers.klipper.extrusionSpeed', 'Extrusion speed')}
             </label>
             <input
@@ -435,11 +456,11 @@ export function KlipperControlPanel({ printer, status, showToast }: Props) {
               step={1}
               onChange={(e) => setExtrudeSpeed(Number(e.target.value))}
             />
-            <span className="text-xs text-[var(--text-muted)]">mm/s</span>
+            <span className="text-xs text-[var(--text-muted)] w-8 shrink-0">mm/s</span>
           </div>
           <div className="flex gap-2">
             <button
-              className={`flex-1 flex items-center justify-center gap-1 px-3 py-1.5 rounded text-sm font-medium ${secondaryControlBtn}`}
+              className={`flex-1 flex items-center justify-center gap-1 px-3 py-1.5 rounded text-sm font-medium min-w-0 ${secondaryControlBtn}`}
               disabled={extrudeMut.isPending}
               onClick={() => extrudeMut.mutate(-extrudeLength)}
             >
@@ -447,7 +468,7 @@ export function KlipperControlPanel({ printer, status, showToast }: Props) {
               <ChevronUp size={14} />
             </button>
             <button
-              className={`flex-1 flex items-center justify-center gap-1 px-3 py-1.5 rounded text-sm font-medium ${secondaryControlBtn}`}
+              className={`flex-1 flex items-center justify-center gap-1 px-3 py-1.5 rounded text-sm font-medium min-w-0 ${secondaryControlBtn}`}
               disabled={extrudeMut.isPending}
               onClick={() => extrudeMut.mutate(extrudeLength)}
             >
@@ -461,10 +482,10 @@ export function KlipperControlPanel({ printer, status, showToast }: Props) {
         <div className="flex flex-col gap-1.5">
           <div className="flex items-center gap-2">
             <Thermometer size={14} className="text-orange-400 shrink-0" />
-            <label className="text-xs text-[var(--text-muted)] w-16 shrink-0">
+            <label className="text-xs text-[var(--text-muted)] flex-1 min-w-0 truncate">
               {t('printers.klipper.nozzle', 'Nozzle')}
             </label>
-            <span className="text-xs font-mono tabular-nums text-[var(--text-secondary)] w-12">
+            <span className="text-xs font-mono tabular-nums text-[var(--text-secondary)] w-12 shrink-0 text-right">
               {Math.round(temps.nozzle ?? 0)}°C
             </span>
             <input
@@ -482,7 +503,7 @@ export function KlipperControlPanel({ printer, status, showToast }: Props) {
             />
             <button
               aria-label="Nozzle"
-              className={`px-2 py-1 rounded text-xs ${secondaryControlBtn}`}
+              className={`px-2 py-1 rounded text-xs shrink-0 ${secondaryControlBtn}`}
               disabled={nozzleMut.isPending || nozzleInput === ''}
               onClick={() => nozzleMut.mutate(Number(nozzleInput))}
             >
@@ -491,10 +512,10 @@ export function KlipperControlPanel({ printer, status, showToast }: Props) {
           </div>
           <div className="flex items-center gap-2">
             <Thermometer size={14} className="text-blue-400 shrink-0" />
-            <label className="text-xs text-[var(--text-muted)] w-16 shrink-0">
+            <label className="text-xs text-[var(--text-muted)] flex-1 min-w-0 truncate">
               {t('printers.klipper.bed', 'Bed')}
             </label>
-            <span className="text-xs font-mono tabular-nums text-[var(--text-secondary)] w-12">
+            <span className="text-xs font-mono tabular-nums text-[var(--text-secondary)] w-12 shrink-0 text-right">
               {Math.round(temps.bed ?? 0)}°C
             </span>
             <input
@@ -512,7 +533,7 @@ export function KlipperControlPanel({ printer, status, showToast }: Props) {
             />
             <button
               aria-label="Bed"
-              className={`px-2 py-1 rounded text-xs ${secondaryControlBtn}`}
+              className={`px-2 py-1 rounded text-xs shrink-0 ${secondaryControlBtn}`}
               disabled={bedMut.isPending || bedInput === ''}
               onClick={() => bedMut.mutate(Number(bedInput))}
             >
@@ -530,12 +551,12 @@ export function KlipperControlPanel({ printer, status, showToast }: Props) {
               </button>
             ))}
           </div>
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-[var(--text-muted)] flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs text-[var(--text-muted)] flex-1 min-w-0">
               {t('printers.klipper.zOffset', 'Z-Offset')}{' '}
-              <span className="font-mono tabular-nums">{zOffset.toFixed(3)} mm</span>
+              <span className="font-mono tabular-nums whitespace-nowrap">{zOffset.toFixed(3)} mm</span>
             </span>
-            <div className="flex gap-1">
+            <div className="flex gap-1 ml-auto">
               <button
                 className={homeBtn}
                 disabled={zOffsetMut.isPending}
@@ -564,10 +585,10 @@ export function KlipperControlPanel({ printer, status, showToast }: Props) {
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-[var(--text-muted)] flex-1">Stepper motors</span>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs text-[var(--text-muted)] flex-1 min-w-0 truncate">Stepper motors</span>
           <button
-            className={`flex items-center justify-center gap-1 px-3 py-1.5 rounded text-sm font-medium ${secondaryControlBtn}`}
+            className={`flex items-center justify-center gap-1 px-3 py-1.5 rounded text-sm font-medium min-w-0 ${secondaryControlBtn}`}
             disabled={disableSteppersMut.isPending}
             onClick={() => disableSteppersMut.mutate()}
           >
@@ -575,6 +596,7 @@ export function KlipperControlPanel({ printer, status, showToast }: Props) {
           </button>
         </div>
       </div>
+    </div>
     </div>
   );
 }
