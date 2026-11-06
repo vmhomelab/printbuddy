@@ -4,6 +4,9 @@ Self-contained Docker Compose stack that runs HTTP wrappers around the
 OrcaSlicer and/or Bambu Studio CLI. Printbuddy's **Slice** action calls
 these to slice models server-side, no desktop slicer required.
 
+For a step-by-step user guide, including what to pick in the Slice dialog
+for each printer, see [docs/slicer-sidecar.md](../docs/slicer-sidecar.md).
+
 This folder is **optional**. Printbuddy works without it — Slice falls back
 to opening the model in the user's local desktop slicer via URI scheme.
 Enable the API path by:
