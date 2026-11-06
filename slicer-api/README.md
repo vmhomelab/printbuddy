@@ -32,6 +32,17 @@ First build downloads the slicer's AppImage (~110 MB OrcaSlicer, ~220 MB
 BambuStudio) and compiles the Node wrapper. Takes 3–8 minutes per service.
 Subsequent runs reuse the local image — instant start.
 
+### Which slicer for which printer
+
+| Sidecar | Default version | Notes |
+|---|---|---|
+| `bambu-studio-api` | Bambu Studio 02.08.02.61 | Recommended for Bambu Lab printers. Required for newer models such as the **X2D** (Bambu Studio ≥ 02.05.03). AMD64 only. |
+| `orca-slicer-api` | OrcaSlicer 2.3.2 | Covers many non-Bambu printers. OrcaSlicer 2.3.2 has no X2D profiles. |
+
+PrintBuddy slices with the sidecar of the **Preferred Slicer** setting, so
+start the matching service. Plain `docker compose up -d` starts **only**
+OrcaSlicer; Bambu Studio needs `--profile bambu`.
+
 ## Ports
 
 | Service | Default host port | Why this port |
@@ -80,17 +91,35 @@ image or immutable upstream revision.
 
 ## Updating
 
-Bump the versions in `.env`, then:
+Update the versions or `SLICER_API_BUILD_CONTEXT` in `.env` (compare
+with `.env.example` after a PrintBuddy update), then:
 
 ```bash
-docker compose --profile bambu build --no-cache
+docker compose --profile bambu build --no-cache --pull
 docker compose --profile bambu up -d
 ```
 
 `--no-cache` is needed because the Dockerfile downloads the AppImage
-inline; Docker won't re-fetch it on a version change otherwise.
+inline; Docker won't re-fetch it on a version change otherwise. `--pull`
+refreshes the base images.
 
 ## Troubleshooting
+
+- **`failed to read dockerfile: open Dockerfile.bambu-studio`** — your
+  `.env` still points `SLICER_API_BUILD_CONTEXT` at an old sidecar revision
+  without the Bambu Studio image. Copy the value from `.env.example`.
+- **Bambu Studio build fails with "No Ubuntu 22.04 AppImage found"** — the
+  version does not exist, or the GitHub API lookup was rate-limited. Set
+  `BAMBU_APPIMAGE_URL` in `.env` to the `BambuStudio_ubuntu22.04-…AppImage`
+  asset URL from the Bambu Studio release page.
+- **`Filament profile "… @BBL X2D" is not compatible with printer "Bambu Lab X2D 0.4 nozzle"`**
+  — for the X2D, Bambu Studio names its 0.4 mm filament profiles with an
+  explicit suffix (`… @BBL X2D 0.4 nozzle`); the variants without a suffix
+  are for the 0.6/0.8 mm nozzles.
+- **`Unable to resolve inherited … profile: parent "…" was not found`** —
+  the running slicer does not ship that stock profile, typically a printer
+  that is newer than the slicer version. Use Bambu Studio or raise the
+  version in `.env`.
 
 - **`address already in use` on port 3000 or 3002** — Printbuddy's
   virtual-printer feature owns those. Don't change `ORCA_API_PORT` to

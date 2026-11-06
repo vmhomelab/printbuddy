@@ -52,8 +52,9 @@ services:
       context: "${SLICER_API_BUILD_CONTEXT}"
       dockerfile: Dockerfile.bambu-studio
       args:
-        BAMBU_VERSION: "${BAMBU_VERSION:-02.06.00.51}"
-    image: printbuddy-bambu-studio-api:bambu${BAMBU_VERSION:-02.06.00.51}
+        BAMBU_VERSION: "${BAMBU_VERSION:-02.08.02.61}"
+        BAMBU_APPIMAGE_URL: "${BAMBU_APPIMAGE_URL:-}"
+    image: printbuddy-bambu-studio-api:bambu${BAMBU_VERSION:-02.08.02.61}
     container_name: bambu-studio-api
     restart: unless-stopped
     ports:
