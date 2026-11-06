@@ -770,6 +770,114 @@ class TestPrintersAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_cover_pick_view_serves_active_plate_object_mask(
+        self, async_client: AsyncClient, printer_factory, db_session, tmp_path
+    ):
+        """The skip-items UI needs the slicer's exact object-ID mask, not an
+        inferred bounding box, so a plate click resolves to the firmware ID."""
+        import zipfile
+        from unittest.mock import MagicMock, patch
+
+        from backend.app.services.bambu_ftp import cache_3mf_download
+        from backend.app.services.bambu_mqtt import PrinterState
+
+        printer = await printer_factory()
+        threemf_path = tmp_path / "PickMask.3mf"
+        with zipfile.ZipFile(threemf_path, "w") as zf:
+            zf.writestr("Metadata/pick_1.png", b"PICK_ONE")
+            zf.writestr("Metadata/pick_3.png", b"PICK_THREE")
+            zf.writestr("Metadata/plate_3.gcode", "; active plate\n")
+
+        cache_3mf_download(printer.id, "PickMask.3mf", threemf_path)
+
+        state = PrinterState()
+        state.connected = True
+        state.state = "RUNNING"
+        state.subtask_name = "PickMask"
+        state.gcode_file = "PickMask.3mf"
+
+        with patch("backend.app.api.routes.printers.printer_manager") as mock_pm:
+            mock_pm.get_status = MagicMock(return_value=state)
+            response = await async_client.get(f"/api/v1/printers/{printer.id}/cover?view=pick")
+
+        assert response.status_code == 200
+        assert response.content == b"PICK_THREE"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_cover_pick_view_404s_rather_than_serving_a_render(
+        self, async_client: AsyncClient, printer_factory, db_session, tmp_path
+    ):
+        """A mask is coordinates, not decoration. Archives without pick_N.png
+        (Handy jobs, older slicers) must 404 so the UI drops to the checklist —
+        every other view's fallback to a rendered thumbnail would be decoded as
+        object IDs here, and a click would skip an arbitrary object."""
+        import zipfile
+        from unittest.mock import MagicMock, patch
+
+        from backend.app.services.bambu_ftp import cache_3mf_download
+        from backend.app.services.bambu_mqtt import PrinterState
+
+        printer = await printer_factory()
+        threemf_path = tmp_path / "NoMask.3mf"
+        with zipfile.ZipFile(threemf_path, "w") as zf:
+            zf.writestr("Metadata/top_1.png", b"TOP_RENDER")
+            zf.writestr("Metadata/plate_1.png", b"PLATE_RENDER")
+            zf.writestr("Metadata/plate_1.gcode", "; active plate\n")
+
+        cache_3mf_download(printer.id, "NoMask.3mf", threemf_path)
+
+        state = PrinterState()
+        state.connected = True
+        state.state = "RUNNING"
+        state.subtask_name = "NoMask"
+        state.gcode_file = "NoMask.3mf"
+
+        with patch("backend.app.api.routes.printers.printer_manager") as mock_pm:
+            mock_pm.get_status = MagicMock(return_value=state)
+            response = await async_client.get(f"/api/v1/printers/{printer.id}/cover?view=pick")
+
+        assert response.status_code == 404
+        assert b"RENDER" not in response.content
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_cover_pick_view_does_not_borrow_another_plates_mask(
+        self, async_client: AsyncClient, printer_factory, db_session, tmp_path
+    ):
+        """Plate 1's mask over plate 3's layout resolves clicks to whatever
+        occupied that pixel on a different plate, so the active plate's mask is
+        the only acceptable answer."""
+        import zipfile
+        from unittest.mock import MagicMock, patch
+
+        from backend.app.services.bambu_ftp import cache_3mf_download
+        from backend.app.services.bambu_mqtt import PrinterState
+
+        printer = await printer_factory()
+        threemf_path = tmp_path / "OtherPlate.3mf"
+        with zipfile.ZipFile(threemf_path, "w") as zf:
+            zf.writestr("Metadata/pick_1.png", b"PICK_ONE")
+            zf.writestr("Metadata/top_3.png", b"TOP_THREE")
+            zf.writestr("Metadata/plate_3.gcode", "; active plate\n")
+
+        cache_3mf_download(printer.id, "OtherPlate.3mf", threemf_path)
+
+        state = PrinterState()
+        state.connected = True
+        state.state = "RUNNING"
+        state.subtask_name = "OtherPlate"
+        state.gcode_file = "OtherPlate.3mf"
+
+        with patch("backend.app.api.routes.printers.printer_manager") as mock_pm:
+            mock_pm.get_status = MagicMock(return_value=state)
+            response = await async_client.get(f"/api/v1/printers/{printer.id}/cover?view=pick")
+
+        assert response.status_code == 404
+        assert response.content != b"PICK_ONE"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_cover_3mf_scan_fallback_for_per_plate_archive(
         self, async_client: AsyncClient, printer_factory, db_session, tmp_path
     ):
@@ -887,6 +995,32 @@ class TestPrintersAPI:
     # ========================================================================
     # Test connection endpoint
     # ========================================================================
+
+
+class TestCoverPoolHygiene:
+    """Regression guard for the /cover DB-connection leak (issue #2572)."""
+
+    def test_cover_does_not_hold_a_get_db_session(self):
+        """The cover endpoint must NOT take a ``Depends(get_db)`` session.
+
+        ``get_db`` is a ``yield`` dependency, so its session stays open for the
+        whole request — including the 3MF cover download (up to 8 remote paths ×
+        retries with backoff, minutes under FTP contention), pinning one pooled
+        DB connection ``idle in transaction`` the entire time. The endpoint
+        fetches the printer in a short-lived ``async with async_session()`` and
+        releases the connection before the FTP work. If someone re-adds a
+        ``Depends(get_db)`` param, this fails.
+        """
+        import inspect
+
+        from backend.app.api.routes.printers import get_db, get_printer_cover
+
+        for name, param in inspect.signature(get_printer_cover).parameters.items():
+            dependency = getattr(param.default, "dependency", None)
+            assert dependency is not get_db, (
+                f"get_printer_cover re-introduced a get_db-held session via parameter {name!r} — "
+                "it would stay open for the entire FTP cover download (issue #2572)"
+            )
 
 
 class TestPrinterDataIntegrity:
@@ -1421,6 +1555,82 @@ class TestConfigureAMSSlotAPI:
             assert response.status_code == 200
             call_kwargs = mock_client.ams_set_filament_setting.call_args
             assert call_kwargs.kwargs["tray_info_idx"] == "GFL05"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_configure_builtin_empty_setting_id_is_derived(self, async_client: AsyncClient, printer_factory):
+        """A built-in preset (GF* tray_info_idx, empty setting_id) gets a derived GFS* setting_id (#2604).
+
+        The Configure AMS Slot modal sends built-in / local / Orca-generic presets with an
+        empty setting_id. Publishing a filament-id-without-setting-id slot makes the printer
+        treat it as half configured and revert to its previous profile, so the route must
+        back-fill setting_id from the resolved tray_info_idx.
+        """
+        printer = await printer_factory(name="X1C")
+
+        mock_client = MagicMock()
+        mock_client.ams_set_filament_setting.return_value = True
+        mock_client.extrusion_cali_sel.return_value = True
+        mock_client.request_status_update.return_value = True
+
+        with patch("backend.app.api.routes.printers.printer_manager") as mock_pm:
+            mock_pm.get_client.return_value = mock_client
+            mock_pm.get_status.return_value = None
+
+            response = await async_client.post(
+                f"/api/v1/printers/{printer.id}/slots/0/1/configure",
+                params={
+                    "tray_info_idx": "GFB99",  # Generic ABS, built-in
+                    "tray_type": "ABS",
+                    "tray_sub_brands": "Generic ABS",
+                    "tray_color": "000000FF",
+                    "nozzle_temp_min": 240,
+                    "nozzle_temp_max": 280,
+                    # setting_id intentionally omitted (empty) — as the modal sends it
+                },
+            )
+
+            assert response.status_code == 200
+            call_kwargs = mock_client.ams_set_filament_setting.call_args
+            assert call_kwargs.kwargs["tray_info_idx"] == "GFB99"
+            assert call_kwargs.kwargs["setting_id"] == "GFSB99"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_configure_generic_material_fallback_derives_setting_id(
+        self, async_client: AsyncClient, printer_factory
+    ):
+        """When only a material is given, the generic tray_info_idx fallback still yields a setting_id (#2604)."""
+        printer = await printer_factory(name="X1C")
+
+        mock_client = MagicMock()
+        mock_client.ams_set_filament_setting.return_value = True
+        mock_client.extrusion_cali_sel.return_value = True
+        mock_client.request_status_update.return_value = True
+
+        mock_status = MagicMock()
+        mock_status.raw_data = {"ams": {"ams": []}}  # No existing tray to reuse
+
+        with patch("backend.app.api.routes.printers.printer_manager") as mock_pm:
+            mock_pm.get_client.return_value = mock_client
+            mock_pm.get_status.return_value = mock_status
+
+            response = await async_client.post(
+                f"/api/v1/printers/{printer.id}/slots/0/1/configure",
+                params={
+                    "tray_info_idx": "",  # No preset id — route derives generic from material
+                    "tray_type": "ABS",
+                    "tray_sub_brands": "Generic ABS",
+                    "tray_color": "000000FF",
+                    "nozzle_temp_min": 240,
+                    "nozzle_temp_max": 280,
+                },
+            )
+
+            assert response.status_code == 200
+            call_kwargs = mock_client.ams_set_filament_setting.call_args
+            assert call_kwargs.kwargs["tray_info_idx"] == "GFB99"
+            assert call_kwargs.kwargs["setting_id"] == "GFSB99"
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -2125,24 +2335,26 @@ class TestExecuteHMSActionAPI:
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_execute_hms_action_success(self, async_client: AsyncClient, printer_factory):
-        """200 happy path — dispatcher returns True AND printer state moves
-        within the ack-wait window. The state delta is the firmware's only
-        proof that the command landed (publish success is necessary but not
-        sufficient; see #1830 §(3))."""
+        """200 happy path — dispatcher returns True AND the printer pushes at
+        least one MQTT message into the ack-wait window. A fresh inbound
+        message is the firmware's proof that the command landed (publish
+        success is necessary but not sufficient; see #1830 §(3))."""
         printer = await printer_factory(name="Test Printer")
 
         mock_client = MagicMock()
-        # Pre-action state — paused with a fault.
+        # Pre-action state — paused with a fault, last message arrived at t=0.
         mock_client.state.state = "PAUSE"
         mock_client.state.print_error = 0x05008051
         mock_client.state.hms_errors = [object()]
+        mock_client._last_message_time = 100.0
 
         def _act(*_a, **_kw):
-            # Simulate the printer accepting the command and clearing the fault
-            # by the time the ack-wait expires.
-            mock_client.state.state = "FAILED"
-            mock_client.state.print_error = 0
-            mock_client.state.hms_errors = []
+            # Simulate the printer pushing a status update within the ack-wait
+            # window. The pushall that follows every command is what produces
+            # this — the actual state fields don't have to move (#1869: a
+            # wrong-plate IGNORE_RESUME re-pauses with the same fault but the
+            # printer DID push back).
+            mock_client._last_message_time = 100.5
             return True
 
         mock_client.execute_hms_action.side_effect = _act
@@ -2185,8 +2397,8 @@ class TestExecuteHMSActionAPI:
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_execute_hms_action_no_printer_ack_returns_502(self, async_client: AsyncClient, printer_factory):
-        """502 when publish succeeded but printer state didn't move within the
-        ack-wait window. This is the silent-rejection failure mode #1830
+        """502 when publish succeeded but no MQTT message arrives back within
+        the ack-wait window. This is the silent-rejection failure mode #1830
         identifies: the broker ACKs the publish at QoS 1 but the firmware
         drops the command (err mismatch, wrong shape, state mismatch).
         Surfacing this as 502 instead of 200 stops the UI from claiming
@@ -2197,8 +2409,9 @@ class TestExecuteHMSActionAPI:
         mock_client.state.state = "PAUSE"
         mock_client.state.print_error = 0x05008051
         mock_client.state.hms_errors = [object()]
+        mock_client._last_message_time = 100.0
         mock_client.execute_hms_action.return_value = True  # publish "succeeded"
-        # Crucially: state does NOT change → ack-wait detects no movement.
+        # Crucially: _last_message_time does NOT advance → no inbound push.
 
         with (
             patch("backend.app.api.routes.printers.printer_manager") as mock_pm,
@@ -2215,6 +2428,49 @@ class TestExecuteHMSActionAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_execute_hms_action_ignore_resume_repauses_within_window_still_acks(
+        self, async_client: AsyncClient, printer_factory
+    ):
+        """200 when the printer ack'd the command but immediately re-paused
+        with the same fault — e.g. wrong-plate IGNORE_RESUME (#1869). The
+        previous (gcode_state, hms_errors-len) diff produced a false 502
+        because both fields round-tripped to their pre-publish values inside
+        the ack window. Probing `_last_message_time` survives the round-trip
+        because the printer's status push lands regardless of the eventual
+        state."""
+        printer = await printer_factory(name="Test Printer")
+
+        mock_client = MagicMock()
+        mock_client.state.state = "PAUSE"
+        mock_client.state.print_error = 0x05008051
+        mock_client.state.hms_errors = [object()]
+        mock_client._last_message_time = 100.0
+
+        def _act(*_a, **_kw):
+            # Printer ack'd, briefly resumed, re-detected the wrong plate, and
+            # re-paused with the same fault. Net diff on state fields is zero,
+            # but a fresh status push DID arrive.
+            mock_client._last_message_time = 100.4
+            mock_client.state.state = "PAUSE"  # round-tripped
+            mock_client.state.hms_errors = [object()]  # same length
+            return True
+
+        mock_client.execute_hms_action.side_effect = _act
+
+        with (
+            patch("backend.app.api.routes.printers.printer_manager") as mock_pm,
+            patch("backend.app.api.routes.printers.HMS_ACTION_ACK_WAIT_SECONDS", 0.01),
+        ):
+            mock_pm.get_client.return_value = mock_client
+
+            body = {"print_error": "05008051", "action": "IGNORE_RESUME", "job_id": None}
+            response = await async_client.post(f"/api/v1/printers/{printer.id}/hms/execute-action", json=body)
+
+            assert response.status_code == 200
+            assert response.json()["success"] is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_execute_hms_action_accepts_16_char_full_code(self, async_client: AsyncClient, printer_factory):
         """200 for a 16-char full_code (hms[]-array-sourced fault). The
         schema's relaxed pattern allows both 8-char (print_error) and
@@ -2225,9 +2481,10 @@ class TestExecuteHMSActionAPI:
         mock_client.state.state = "RUNNING"
         mock_client.state.print_error = 0
         mock_client.state.hms_errors = [object()]
+        mock_client._last_message_time = 100.0
 
         def _act(*_a, **_kw):
-            mock_client.state.hms_errors = []
+            mock_client._last_message_time = 100.4
             return True
 
         mock_client.execute_hms_action.side_effect = _act
@@ -4245,7 +4502,7 @@ class TestXYJogAPI:
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_success_x_only_emits_relative_gcode(self, async_client: AsyncClient, printer_factory):
-        """X-only jog should emit G91/G90 wrapping and only include the X axis."""
+        """X-only jog is a bare relative move (no M211), wraps in G91/G90, X only."""
         printer = await printer_factory(name="P", model="X1C")
         mock_client = MagicMock()
         mock_client.send_gcode.return_value = True
@@ -4254,6 +4511,8 @@ class TestXYJogAPI:
             response = await async_client.post(f"/api/v1/printers/{printer.id}/xy-jog?x=10&y=0")
         assert response.status_code == 200
         sent = mock_client.send_gcode.call_args.args[0]
+        # Never touch M211 — bare move, exactly like the touchscreen (#2579).
+        assert "M211" not in sent
         assert sent.startswith("G91\n")
         assert sent.endswith("\nG90")
         assert "X10.00" in sent

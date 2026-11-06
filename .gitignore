@@ -77,8 +77,6 @@ data/
 # MFA encryption key file (#1219) — same protection as .jwt_secret
 .mfa_encryption_key
 
-# SpoolBuddy SSH keys (generated at runtime for remote updates)
-spoolbuddy/ssh/
 
 # Security scan output
 *.sarif
@@ -96,3 +94,6 @@ gitleaks-report.json
 scripts/pip-audit.sh
 
 security/
+
+test_pipeline_archive_source.3mf
+test_pipeline_run_1.3mf

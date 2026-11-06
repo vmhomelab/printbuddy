@@ -1481,4 +1481,57 @@ describe('SettingsPage', () => {
       });
     });
   });
+
+  // --------------------------------------------------------------------
+  // Slicer Pipelines (#1425) — Workflow tab sub-tabs
+  // --------------------------------------------------------------------
+  describe('workflow sub-tabs (#1425)', () => {
+    beforeEach(() => {
+      // Endpoints the Pipelines panel calls (#1425).
+      server.use(
+        http.get('/api/v1/slicer-pipelines/', () => HttpResponse.json({ pipelines: [] })),
+        http.get('/api/v1/slicer/presets', () =>
+          HttpResponse.json({
+            orca_cloud: { printer: [], process: [], filament: [] },
+            cloud: { printer: [], process: [], filament: [] },
+            local: { printer: [], process: [], filament: [] },
+            standard: { printer: [], process: [], filament: [] },
+            cloud_status: 'ok',
+            orca_cloud_status: 'ok',
+          }),
+        ),
+      );
+    });
+
+    it('renders Queue & Dispatch + Pipelines sub-tabs under Workflow', async () => {
+      render(<SettingsPage />);
+      const user = userEvent.setup();
+      await waitFor(() => {
+        // Workflow tab in the sidebar — exact match to avoid colliding with
+        // "Print Queue" or "Queue Settings" labels elsewhere on the page.
+        expect(screen.getByRole('button', { name: 'Workflow' })).toBeInTheDocument();
+      });
+      await user.click(screen.getByRole('button', { name: 'Workflow' }));
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: /Queue & Dispatch/i })).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: /^Pipelines$/i })).toBeInTheDocument();
+      });
+    });
+
+    it('clicking Pipelines sub-tab shows the empty-state hint and updates the URL', async () => {
+      render(<SettingsPage />);
+      const user = userEvent.setup();
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Workflow' })).toBeInTheDocument());
+      await user.click(screen.getByRole('button', { name: 'Workflow' }));
+      await user.click(screen.getByRole('button', { name: /^Pipelines$/i }));
+
+      await waitFor(() => {
+        expect(screen.getByText(/No pipelines yet/i)).toBeInTheDocument();
+        // Deep-link URL carries both ?tab=queue and ?sub=pipelines
+        expect(window.location.search).toContain('tab=queue');
+        expect(window.location.search).toContain('sub=pipelines');
+      });
+    });
+  });
 });
+

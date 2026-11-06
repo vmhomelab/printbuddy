@@ -833,6 +833,7 @@ class TestDeleteTimelapse:
 
         mock_archive = MagicMock()
         mock_archive.timelapse_path = "archives/1/timelapse.mp4"
+        mock_archive.deleted_at = None
 
         mock_db = AsyncMock()
         mock_db.execute = AsyncMock()
@@ -842,7 +843,8 @@ class TestDeleteTimelapse:
 
         with patch("backend.app.api.routes.archives.settings") as mock_settings:
             mock_settings.base_dir = tmp_path
-            result = await delete_timelapse(archive_id=1, db=mock_db)
+            # auth_result=(None, True) → the auth-disabled / can_modify_all path.
+            result = await delete_timelapse(archive_id=1, db=mock_db, auth_result=(None, True))
 
         assert result == {"status": "deleted"}
         assert mock_archive.timelapse_path is None
@@ -858,6 +860,7 @@ class TestDeleteTimelapse:
 
         mock_archive = MagicMock()
         mock_archive.timelapse_path = None
+        mock_archive.deleted_at = None
 
         mock_db = AsyncMock()
         mock_result = MagicMock()
@@ -865,7 +868,7 @@ class TestDeleteTimelapse:
         mock_db.execute = AsyncMock(return_value=mock_result)
 
         with pytest.raises(HTTPException) as exc_info:
-            await delete_timelapse(archive_id=1, db=mock_db)
+            await delete_timelapse(archive_id=1, db=mock_db, auth_result=(None, True))
 
         assert exc_info.value.status_code == 404
 
@@ -882,6 +885,6 @@ class TestDeleteTimelapse:
         mock_db.execute = AsyncMock(return_value=mock_result)
 
         with pytest.raises(HTTPException) as exc_info:
-            await delete_timelapse(archive_id=999, db=mock_db)
+            await delete_timelapse(archive_id=999, db=mock_db, auth_result=(None, True))
 
         assert exc_info.value.status_code == 404

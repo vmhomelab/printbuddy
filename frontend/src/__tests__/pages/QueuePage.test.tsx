@@ -24,8 +24,8 @@ const mockQueueItems = [
     manual_start: false,
     ams_mapping: null,
     plate_id: null,
-    bed_levelling: true,
-    flow_cali: false,
+    bed_levelling: 'on',
+    flow_cali: 'off',
     vibration_cali: true,
     layer_inspect: false,
     timelapse: false,
@@ -51,8 +51,8 @@ const mockQueueItems = [
     manual_start: false,
     ams_mapping: null,
     plate_id: null,
-    bed_levelling: true,
-    flow_cali: false,
+    bed_levelling: 'on',
+    flow_cali: 'off',
     vibration_cali: true,
     layer_inspect: false,
     timelapse: false,
@@ -78,8 +78,8 @@ const mockQueueItems = [
     manual_start: false,
     ams_mapping: null,
     plate_id: null,
-    bed_levelling: true,
-    flow_cali: false,
+    bed_levelling: 'on',
+    flow_cali: 'off',
     vibration_cali: true,
     layer_inspect: false,
     timelapse: false,
@@ -393,6 +393,8 @@ describe('QueuePage', () => {
 
       await screen.findByText('History Print 1');
       expect(screen.queryByText('History Print 51')).not.toBeInTheDocument();
+      // #2682: the Show more control also states how much is on screen.
+      expect(screen.getByText('Showing 50 of 51')).toBeInTheDocument();
 
       await user.click(screen.getByRole('button', { name: /show more/i }));
 
@@ -585,6 +587,67 @@ describe('QueuePage', () => {
 
       await waitFor(() => expect(secondCallSkippedCheck).toBe(true));
       expect(attempts).toBe(2);
+    });
+  });
+
+  // #2667: mobile can't drag-reorder the queue, so pending rows get up/down
+  // arrows. They persist via the same POST /queue/reorder as drag. The
+  // buttons live in the DOM at every width (Tailwind `sm:hidden` is CSS-only),
+  // so they're clickable in jsdom.
+  describe('mobile reorder arrows (#2667)', () => {
+    const threePending = [1, 2, 3].map((n) => ({
+      ...mockQueueItems[0],
+      id: n,
+      archive_id: n,
+      position: n,
+      status: 'pending',
+      archive_name: `Pending ${n}`,
+    }));
+
+    it('renders Move Up / Move Down controls for pending items', async () => {
+      server.use(http.get('/api/v1/queue/', () => HttpResponse.json(threePending)));
+      render(<QueuePage />);
+
+      await waitFor(() => expect(screen.getByText('Pending 1')).toBeInTheDocument());
+
+      // One pair per pending row.
+      expect(screen.getAllByTitle('Move Up')).toHaveLength(3);
+      expect(screen.getAllByTitle('Move Down')).toHaveLength(3);
+    });
+
+    it('moving the first item down persists the swapped order', async () => {
+      let reorderBody: { items: { id: number; position: number }[] } | null = null;
+      server.use(
+        http.get('/api/v1/queue/', () => HttpResponse.json(threePending)),
+        http.post('/api/v1/queue/reorder', async ({ request }) => {
+          reorderBody = (await request.json()) as typeof reorderBody;
+          return HttpResponse.json({ message: 'ok' });
+        }),
+      );
+      render(<QueuePage />);
+
+      await waitFor(() => expect(screen.getByText('Pending 1')).toBeInTheDocument());
+
+      // First row's "Move Down": item 1 drops below item 2 → [2, 1, 3].
+      await userEvent.click(screen.getAllByTitle('Move Down')[0]);
+
+      await waitFor(() => expect(reorderBody).not.toBeNull());
+      expect(reorderBody!.items).toEqual([
+        { id: 2, position: 1 },
+        { id: 1, position: 2 },
+        { id: 3, position: 3 },
+      ]);
+    });
+
+    it('disables Move Up on the first row and Move Down on the last', async () => {
+      server.use(http.get('/api/v1/queue/', () => HttpResponse.json(threePending)));
+      render(<QueuePage />);
+
+      await waitFor(() => expect(screen.getByText('Pending 1')).toBeInTheDocument());
+
+      // Rows render top-to-bottom in position order.
+      expect(screen.getAllByTitle('Move Up')[0]).toBeDisabled();
+      expect(screen.getAllByTitle('Move Down')[2]).toBeDisabled();
     });
   });
 });

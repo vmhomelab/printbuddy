@@ -44,6 +44,14 @@ class User(Base):
     cloud_email: Mapped[str | None] = mapped_column(String(255), nullable=True, default=None)
     # "global" or "china"; NULL treated as "global" for legacy rows.
     cloud_region: Mapped[str | None] = mapped_column(String(10), nullable=True, default=None)
+    # Set when Bambu answers 401 to a call made with ``cloud_token`` — the token
+    # has expired or been revoked. NULL means "not known to be dead". The token
+    # itself is kept: clearing it would lose the email/region we show on the
+    # re-login form, and a token can only be replaced by signing in again anyway.
+    # Bambu's token is opaque and carries no expiry we can read, and Printbuddy
+    # does not persist the refresh token, so this flag is the *only* record that
+    # a stored credential has stopped working (#2562 follow-up).
+    cloud_token_invalid_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
 
     # Per-user Orca Cloud external-app credentials. Access tokens expire after
     # 24h; refresh tokens rotate and must be replaced atomically by the route.

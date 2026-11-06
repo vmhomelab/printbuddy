@@ -178,6 +178,13 @@ services:
       #- UPDATER_URL=http://127.0.0.1:8787
       #- UPDATER_TOKEN=${PRINTBUDDY_UPDATER_TOKEN}
     restart: unless-stopped
+    # Docker's default is 10s, after which it SIGKILLs. Printbuddy shuts down in
+    # well under that (uvicorn caps its wait on in-flight requests at 5s, then
+    # the app checkpoints the SQLite WAL, disconnects MQTT and stops the virtual
+    # printers), but a Pi with several virtual printers and a slow SD card can be
+    # nearer the limit than is comfortable. The headroom costs nothing — the
+    # container exits as soon as it is done, not when the timer expires.
+    stop_grace_period: 30s
 
   # Optional self-update sidecar. Uncomment together with the SELF_UPDATE_*
   # environment variables above. The sidecar is the only container that gets

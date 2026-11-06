@@ -14,6 +14,7 @@ import { ProjectDetailPage } from './pages/ProjectDetailPage';
 import { FileManagerPage } from './pages/FileManagerPage';
 import { LibraryTrashPage } from './pages/LibraryTrashPage';
 import { CameraPage } from './pages/CameraPage';
+import { CamWallPage } from './pages/CamWallPage';
 import { StreamOverlayPage } from './pages/StreamOverlayPage';
 import { ExternalLinkPage } from './pages/ExternalLinkPage';
 import { GroupEditPage } from './pages/GroupEditPage';
@@ -183,11 +184,20 @@ function App() {
                 {/* TV/kiosk farm monitor - opened from Farm Command Center TV Mode */}
                 <Route path="/farm-monitor" element={<ProtectedRoute><WebSocketProvider><PrintFarmMonitorPage /></WebSocketProvider></ProtectedRoute>} />
 
+                {/* Cam Wall on its own URL (#2531). Outside ProtectedRoute because a
+                    ?token= kiosk has no session to protect; the page itself sends a
+                    tokenless visitor to /login, and the backend gates the feed. */}
+                <Route path="/camwall" element={<CamWallPage />} />
+
                 {/* Main app with WebSocket for real-time updates */}
                 <Route element={<ProtectedRoute><WebSocketProvider><Layout /></WebSocketProvider></ProtectedRoute>}>
                   <Route index element={<PrintersPage />} />
                   <Route path="archives" element={<ArchivesPage />} />
                   <Route path="queue" element={<QueuePage />} />
+                  {/* Slicer Pipelines (#1425) — Pipelines tab lives on the
+                      Print Queue page (Queue + History + Timeline +
+                      Pipelines). Old standalone URL redirects. */}
+                  <Route path="pipelines/runs" element={<Navigate to="/queue?tab=pipelines" replace />} />
                   <Route path="stats" element={<StatsPage />} />
                   <Route path="farm-command-center" element={<FarmCommandCenterPage />} />
                   <Route path="profiles" element={<ProfilesPage />} />

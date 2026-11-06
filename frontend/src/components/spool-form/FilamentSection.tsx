@@ -553,7 +553,7 @@ export function FilamentSection({
             </div>
           )}
           {errors?.slicer_filament && (
-            <p className="mt-1 text-xs text-red-400">{errors.slicer_filament}</p>
+            <p className="mt-1 text-xs text-red-700 dark:text-red-400">{errors.slicer_filament}</p>
           )}
         </div>
       )}
@@ -617,7 +617,7 @@ export function FilamentSection({
           )}
         </div>
         {errors?.material && (
-          <p className="mt-1 text-xs text-red-400">{errors.material}</p>
+          <p className="mt-1 text-xs text-red-700 dark:text-red-400">{errors.material}</p>
         )}
       </div>
 
@@ -682,7 +682,7 @@ export function FilamentSection({
             )}
           </div>
           {errors?.brand && (
-            <p className="mt-1 text-xs text-red-400">{errors.brand}</p>
+            <p className="mt-1 text-xs text-red-700 dark:text-red-400">{errors.brand}</p>
           )}
       </div>
 
@@ -746,7 +746,7 @@ export function FilamentSection({
             )}
           </div>
           {errors?.subtype && (
-            <p className="mt-1 text-xs text-red-400">{errors.subtype}</p>
+            <p className="mt-1 text-xs text-red-700 dark:text-red-400">{errors.subtype}</p>
           )}
       </div>
 
