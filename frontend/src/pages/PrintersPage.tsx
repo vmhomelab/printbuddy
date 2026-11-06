@@ -4993,7 +4993,7 @@ function PrinterCard({
                                           };
                                         })()}
                                         configureSlot={{
-                                          enabled: hasPermission('printers:control') && !isCfsUnit,
+                                          enabled: hasPermission('printers:control') && !isSlotAssignmentOnlyUnit,
                                           onConfigure: () => setConfigureSlotModal({
                                             amsId: ams.id,
                                             trayId: slotIdx,
@@ -5014,7 +5014,7 @@ function PrinterCard({
                                       <EmptySlotHoverCard
                                         kind={emptyKind ?? undefined}
                                         configureSlot={{
-                                          enabled: hasPermission('printers:control') && !isCfsUnit,
+                                          enabled: hasPermission('printers:control') && !isSlotAssignmentOnlyUnit,
                                           onConfigure: () => setConfigureSlotModal({
                                             amsId: ams.id,
                                             trayId: slotIdx,

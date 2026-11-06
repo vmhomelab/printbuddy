@@ -2695,6 +2695,16 @@ def _slot_preset_key(ams_id: int, tray_id: int) -> int:
     return ams_id * 4 + tray_id
 
 
+def _is_snapmaker_u1_printer(printer: Printer | None) -> bool:
+    """Return whether a persisted printer is a Snapmaker U1.
+
+    This capability is deliberately determined from the saved model rather than
+    transient Moonraker status, which may be unavailable while the printer is
+    offline.
+    """
+    return bool(printer and (printer.model or "").strip().lower() == "snapmaker u1")
+
+
 @router.get("/{printer_id}/slot-presets")
 async def get_slot_presets(
     printer_id: int,
@@ -2878,6 +2888,16 @@ async def configure_ams_slot(
     )
 
     effective_tray_type = effective_bambu_material(tray_type, tray_sub_brands)
+
+    printer_result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = printer_result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(status_code=404, detail="Printer not found")
+    if _is_snapmaker_u1_printer(printer):
+        raise HTTPException(
+            status_code=409,
+            detail="Snapmaker U1 filament configuration is managed on the printer; use Assign Spool to link inventory.",
+        )
 
     # Get MQTT client for this printer
     client = printer_manager.get_client(printer_id)
@@ -3212,6 +3232,16 @@ async def reset_ams_slot(
 
     This clears the filament configuration from the slot.
     """
+    printer_result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = printer_result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(status_code=404, detail="Printer not found")
+    if _is_snapmaker_u1_printer(printer):
+        raise HTTPException(
+            status_code=409,
+            detail="Snapmaker U1 filament configuration is managed on the printer; use Assign Spool to link inventory.",
+        )
+
     # Get MQTT client for this printer
     client = printer_manager.get_client(printer_id)
     if not client:

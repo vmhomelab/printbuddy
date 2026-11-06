@@ -1369,6 +1369,52 @@ class TestConfigureAMSSlotAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_snapmaker_u1_configure_returns_capability_error_without_bambu_command(
+        self, async_client: AsyncClient, printer_factory
+    ):
+        """U1 slot state is printer-owned and must never reach Bambu MQTT methods."""
+        printer = await printer_factory(name="Snapmaker U1", provider="moonraker", model="Snapmaker U1")
+        client = MagicMock()
+
+        with patch("backend.app.api.routes.printers.printer_manager") as mock_pm:
+            mock_pm.get_client.return_value = None
+            mock_pm.get_status.return_value = None
+            response = await async_client.post(
+                f"/api/v1/printers/{printer.id}/slots/0/0/configure",
+                params={
+                    "tray_info_idx": "GFL99",
+                    "tray_type": "PLA",
+                    "tray_sub_brands": "PLA Basic",
+                    "tray_color": "FF0000FF",
+                    "nozzle_temp_min": 190,
+                    "nozzle_temp_max": 230,
+                },
+            )
+
+        assert response.status_code == 409
+        assert "snapmaker" in response.json()["detail"].lower()
+        client.ams_set_filament_setting.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_snapmaker_u1_reset_returns_capability_error_without_bambu_command(
+        self, async_client: AsyncClient, printer_factory
+    ):
+        """Reset Slot is a Bambu AMS operation and is unavailable on the U1."""
+        printer = await printer_factory(name="Snapmaker U1", provider="moonraker", model="Snapmaker U1")
+        client = MagicMock()
+
+        with patch("backend.app.api.routes.printers.printer_manager") as mock_pm:
+            mock_pm.get_client.return_value = None
+            mock_pm.get_status.return_value = None
+            response = await async_client.post(f"/api/v1/printers/{printer.id}/ams/0/tray/0/reset")
+
+        assert response.status_code == 409
+        assert "snapmaker" in response.json()["detail"].lower()
+        client.reset_ams_slot.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_configure_not_connected(self, async_client: AsyncClient, printer_factory):
         """Verify error when printer is not connected."""
         printer = await printer_factory(name="Disconnected")

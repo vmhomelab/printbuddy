@@ -86,6 +86,29 @@ class TestAssignSpoolTrayInfoIdx:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_snapmaker_u1_assignment_is_stored_without_bambu_configuration(
+        self, async_client: AsyncClient, printer_factory, spool_factory
+    ):
+        """U1 inventory links remain local even before Moonraker publishes status."""
+        printer = await printer_factory(name="Snapmaker U1", provider="moonraker", model="Snapmaker U1")
+        spool = await spool_factory()
+        client = MagicMock()
+
+        with patch("backend.app.services.printer_manager.printer_manager") as mock_pm:
+            mock_pm.get_status.return_value = None
+            mock_pm.get_client.return_value = client
+            response = await async_client.post(
+                "/api/v1/inventory/assignments",
+                json={"spool_id": spool.id, "printer_id": printer.id, "ams_id": 0, "tray_id": 0},
+            )
+
+        assert response.status_code == 200
+        assert response.json()["configured"] is True
+        assert response.json()["pending_config"] is False
+        client.ams_set_filament_setting.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_pfus_slicer_filament_falls_back_to_generic(
         self, async_client: AsyncClient, printer_factory, spool_factory
     ):
