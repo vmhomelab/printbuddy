@@ -24,6 +24,13 @@ class PrintLogEntry(Base):
     archive_id: Mapped[int | None] = mapped_column(
         ForeignKey("print_archives.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    # Which queue item produced this run, when one did. Printer-initiated
+    # prints have none. Batch cost/energy roll-up joins on this (#342): the
+    # archive alone can't attribute a run to an order because several orders
+    # — and plain reprints — share one archive.
+    queue_item_id: Mapped[int | None] = mapped_column(
+        ForeignKey("print_queue.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     print_name: Mapped[str | None] = mapped_column(String(255))
     printer_name: Mapped[str | None] = mapped_column(String(255))
     printer_id: Mapped[int | None] = mapped_column(Integer)

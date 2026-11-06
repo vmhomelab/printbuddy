@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { api } from '../api/client';
 import { formatRelativeTime } from '../utils/date';
 import { filterCompatibleQueueItems } from '../utils/printer';
+import { queueItemDisplayName } from '../utils/queueItemName';
 
 interface PrinterQueueWidgetProps {
   printerId: number;
@@ -53,7 +54,7 @@ export function PrinterQueueWidget({ printerId, printerModel, loadedFilamentType
           <div className="min-w-0 flex-1">
             <p className="text-xs text-bambu-gray">{t('queue.nextInQueue')}</p>
             <p className="text-sm text-white truncate">
-              {nextItem?.archive_name || nextItem?.library_file_name || `File #${nextItem?.archive_id || nextItem?.library_file_id}`}
+              {nextItem ? queueItemDisplayName(nextItem) : ''}
             </p>
           </div>
         </div>

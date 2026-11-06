@@ -2,6 +2,19 @@
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
+
+from backend.app.models.finance import CostCenter
+from backend.app.models.settings import Settings
+
+
+async def enable_billing(db_session):
+    setting = await db_session.scalar(select(Settings).where(Settings.key == "billing_enabled"))
+    if setting is None:
+        db_session.add(Settings(key="billing_enabled", value="true"))
+    else:
+        setting.value = "true"
+    await db_session.commit()
 
 
 class TestPrintQueueAPI:
@@ -175,6 +188,176 @@ class TestPrintQueueAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_add_to_queue_with_cost_center_id(
+        self, async_client: AsyncClient, printer_factory, archive_factory, db_session
+    ):
+        """Verify item can be added to queue with cost_center_id."""
+        await enable_billing(db_session)
+        printer = await printer_factory()
+        archive = await archive_factory(cost=1.25, filament_used_grams=50.0)
+        cost_center = CostCenter(name="Queue CC", is_active=True, is_private=False)
+        db_session.add(cost_center)
+        await db_session.commit()
+        await db_session.refresh(cost_center)
+
+        response = await async_client.post(
+            "/api/v1/queue/",
+            json={
+                "printer_id": printer.id,
+                "archive_id": archive.id,
+                "cost_center_id": cost_center.id,
+                "estimated_cost": 0.01,
+            },
+        )
+        assert response.status_code == 200
+        result = response.json()
+        assert result["cost_center_id"] == cost_center.id
+        assert result["estimated_cost"] == 1.25
+
+        from backend.app.models.print_queue import PrintQueueItem
+
+        row = await db_session.scalar(select(PrintQueueItem).where(PrintQueueItem.id == result["id"]))
+        assert row is not None
+        assert row.cost_center_id == cost_center.id
+        assert row.estimated_cost == 1.25
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_add_to_queue_derives_cost_without_client_estimate(
+        self, async_client: AsyncClient, printer_factory, archive_factory, db_session
+    ):
+        """The persisted budget estimate comes from the archive, not the request."""
+        await enable_billing(db_session)
+        printer = await printer_factory()
+        archive = await archive_factory(cost=1.25, filament_used_grams=50.0)
+        cost_center = CostCenter(name="Budget CC", is_active=True, is_private=False, monthly_budget=10.0)
+        db_session.add(cost_center)
+        await db_session.commit()
+        await db_session.refresh(cost_center)
+
+        response = await async_client.post(
+            "/api/v1/queue/",
+            json={
+                "printer_id": printer.id,
+                "archive_id": archive.id,
+                "cost_center_id": cost_center.id,
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json()["estimated_cost"] == 1.25
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_add_model_based_queue_item_derives_cost_without_client_estimate(
+        self, async_client: AsyncClient, printer_factory, archive_factory, db_session
+    ):
+        """Model dispatch has no printer-side estimate but remains billable."""
+        await enable_billing(db_session)
+        await printer_factory(model="X1C")
+        archive = await archive_factory(cost=1.25, filament_used_grams=50.0, sliced_for_model="X1C")
+        cost_center = CostCenter(name="Model Budget CC", is_active=True, is_private=False, monthly_budget=10.0)
+        db_session.add(cost_center)
+        await db_session.commit()
+        await db_session.refresh(cost_center)
+
+        response = await async_client.post(
+            "/api/v1/queue/",
+            json={
+                "target_model": "X1C",
+                "archive_id": archive.id,
+                "cost_center_id": cost_center.id,
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json()["printer_id"] is None
+        assert response.json()["estimated_cost"] == 1.25
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_add_to_queue_rejects_tampered_client_cost_when_server_cost_exceeds_budget(
+        self, async_client: AsyncClient, printer_factory, archive_factory, db_session
+    ):
+        """A forged low client hint cannot bypass the server-derived budget check."""
+        await enable_billing(db_session)
+        printer = await printer_factory()
+        archive = await archive_factory(cost=2.0, filament_used_grams=50.0)
+        cost_center = CostCenter(name="Tiny Budget CC", is_active=True, is_private=False, monthly_budget=1.0)
+        db_session.add(cost_center)
+        await db_session.commit()
+        await db_session.refresh(cost_center)
+
+        response = await async_client.post(
+            "/api/v1/queue/",
+            json={
+                "printer_id": printer.id,
+                "archive_id": archive.id,
+                "cost_center_id": cost_center.id,
+                "estimated_cost": 0.01,
+            },
+        )
+
+        assert response.status_code == 400
+        assert "exceeds available cost center budget" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_add_to_queue_requires_cost_center_when_billing_enabled(
+        self, async_client: AsyncClient, printer_factory, archive_factory, db_session
+    ):
+        """Billing enforcement rejects queue jobs that omit cost center."""
+        await enable_billing(db_session)
+        printer = await printer_factory()
+        archive = await archive_factory(cost=1.0, filament_used_grams=50.0)
+
+        response = await async_client.post(
+            "/api/v1/queue/",
+            json={
+                "printer_id": printer.id,
+                "archive_id": archive.id,
+            },
+        )
+
+        assert response.status_code == 400
+        assert "Cost center is required" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_add_to_queue_counts_pending_queue_reservations_against_budget(
+        self, async_client: AsyncClient, printer_factory, archive_factory, queue_item_factory, db_session
+    ):
+        """Open queue items reserve budget until they leave pending/printing states."""
+        await enable_billing(db_session)
+        printer = await printer_factory()
+        archive = await archive_factory(cost=3.0, filament_used_grams=50.0)
+        cost_center = CostCenter(name="Reserved Budget CC", is_active=True, is_private=False, monthly_budget=10.0)
+        db_session.add(cost_center)
+        await db_session.commit()
+        await db_session.refresh(cost_center)
+        await queue_item_factory(
+            printer_id=printer.id,
+            archive_id=archive.id,
+            cost_center_id=cost_center.id,
+            estimated_cost=8.0,
+            status="pending",
+        )
+
+        response = await async_client.post(
+            "/api/v1/queue/",
+            json={
+                "printer_id": printer.id,
+                "archive_id": archive.id,
+                "cost_center_id": cost_center.id,
+                "estimated_cost": 0.01,
+            },
+        )
+
+        assert response.status_code == 400
+        assert "exceeds available cost center budget" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_add_to_queue_with_manual_start(
         self, async_client: AsyncClient, printer_factory, archive_factory, db_session
     ):
@@ -261,6 +444,30 @@ class TestPrintQueueAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_update_queue_item_cost_center_id(
+        self, async_client: AsyncClient, printer_factory, archive_factory, queue_item_factory, db_session
+    ):
+        """Verify a pending queue item can be updated with cost_center_id."""
+        await enable_billing(db_session)
+        printer = await printer_factory()
+        archive = await archive_factory(cost=1.25, filament_used_grams=50.0)
+        item = await queue_item_factory(printer_id=printer.id, archive_id=archive.id)
+        cost_center = CostCenter(name="Update CC", is_active=True, is_private=False)
+        db_session.add(cost_center)
+        await db_session.commit()
+        await db_session.refresh(cost_center)
+
+        response = await async_client.patch(
+            f"/api/v1/queue/{item.id}",
+            json={"cost_center_id": cost_center.id, "estimated_cost": 0.01},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["cost_center_id"] == cost_center.id
+        assert response.json()["estimated_cost"] == 1.25
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_add_to_queue_with_project_id(
         self, async_client: AsyncClient, printer_factory, archive_factory, db_session
     ):
@@ -335,6 +542,211 @@ class TestPrintQueueAPI:
         assert result["printer_id"] == printer.id
         assert result["archive_id"] == archive.id
         assert result["ams_mapping"] == [5, -1, 2, -1]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_add_to_queue_falls_back_to_archive_slicer_ams_mapping_when_unset(
+        self, async_client: AsyncClient, printer_factory, archive_factory, db_session
+    ):
+        """When the caller sends no explicit ams_mapping, but the archive
+        carries the slicer's own saved pick for this exact printer
+        (extra_data.slicer_ams_mapping, written by a VP with "Save AMS
+        mapping" on), the queue item should inherit it — the same
+        exact-physical-spool reuse the "Mapping" button gives you, but
+        automatic when nothing was hand-edited.
+        """
+        printer = await printer_factory()
+        archive = await archive_factory(
+            extra_data={"slicer_ams_mapping": {"mapping": [5, -1, 2, -1], "printer_id": printer.id}}
+        )
+
+        data = {
+            "printer_id": printer.id,
+            "archive_id": archive.id,
+        }
+        response = await async_client.post("/api/v1/queue/", json=data)
+        assert response.status_code == 200
+        result = response.json()
+        assert result["ams_mapping"] == [5, -1, 2, -1]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_add_to_queue_ignores_archive_slicer_ams_mapping_for_different_printer(
+        self, async_client: AsyncClient, printer_factory, archive_factory, db_session
+    ):
+        """A saved mapping's tray IDs only mean something relative to the
+        printer they were resolved against. Reprinting the same archive on a
+        *different* printer must not inherit it — tray 5 on printer A can
+        hold a completely different spool than tray 5 on printer B.
+        """
+        origin_printer = await printer_factory()
+        other_printer = await printer_factory()
+        archive = await archive_factory(
+            extra_data={"slicer_ams_mapping": {"mapping": [5, -1, 2, -1], "printer_id": origin_printer.id}}
+        )
+
+        data = {
+            "printer_id": other_printer.id,
+            "archive_id": archive.id,
+        }
+        response = await async_client.post("/api/v1/queue/", json=data)
+        assert response.status_code == 200
+        result = response.json()
+        assert result["ams_mapping"] is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_add_to_queue_ignores_archive_slicer_ams_mapping_for_model_based_dispatch(
+        self, async_client: AsyncClient, printer_factory, archive_factory, db_session
+    ):
+        """A model-based item (no fixed printer_id) can't know in advance
+        which printer the scheduler will pick, so a saved mapping resolved
+        against one specific printer must never be inherited here either.
+        """
+        origin_printer = await printer_factory()
+        archive = await archive_factory(
+            extra_data={"slicer_ams_mapping": {"mapping": [5, -1, 2, -1], "printer_id": origin_printer.id}}
+        )
+
+        data = {
+            "target_model": "X1C",
+            "archive_id": archive.id,
+        }
+        response = await async_client.post("/api/v1/queue/", json=data)
+        assert response.status_code == 200
+        result = response.json()
+        assert result["ams_mapping"] is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_add_to_queue_explicit_ams_mapping_wins_over_archive_fallback(
+        self, async_client: AsyncClient, printer_factory, archive_factory, db_session
+    ):
+        """An explicit ams_mapping in the request (e.g. from the filament
+        mapping panel) must take priority over the archive's saved slicer
+        pick — the fallback only fires when the caller sent nothing at all.
+        """
+        printer = await printer_factory()
+        archive = await archive_factory(
+            extra_data={"slicer_ams_mapping": {"mapping": [5, -1, 2, -1], "printer_id": printer.id}}
+        )
+
+        data = {
+            "printer_id": printer.id,
+            "archive_id": archive.id,
+            "ams_mapping": [9, -1, 1, -1],
+        }
+        response = await async_client.post("/api/v1/queue/", json=data)
+        assert response.status_code == 200
+        result = response.json()
+        assert result["ams_mapping"] == [9, -1, 1, -1]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_add_to_queue_archive_extra_data_without_slicer_mapping_key_not_used(
+        self, async_client: AsyncClient, printer_factory, archive_factory, db_session
+    ):
+        """extra_data present but without a slicer_ams_mapping key (the
+        common case — most archives have other metadata but no saved slicer
+        mapping) must not accidentally trip the fallback."""
+        printer = await printer_factory()
+        archive = await archive_factory(extra_data={"filament_slots": []})
+
+        data = {
+            "printer_id": printer.id,
+            "archive_id": archive.id,
+        }
+        response = await async_client.post("/api/v1/queue/", json=data)
+        assert response.status_code == 200
+        result = response.json()
+        assert result["ams_mapping"] is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_add_to_queue_force_color_match_overrides_beat_the_archive_fallback(
+        self, async_client: AsyncClient, printer_factory, archive_factory, db_session
+    ):
+        """Force-color-match overrides are the caller asking the scheduler to
+        match strictly against the printer's live trays, and they are only ever
+        applied inside `_compute_ams_mapping_for_printer` — the function a
+        stored mapping makes the scheduler skip. Inheriting the saved mapping
+        here would silently retire the strictness that was just requested
+        (#2700 review).
+        """
+        printer = await printer_factory()
+        archive = await archive_factory(
+            extra_data={"slicer_ams_mapping": {"mapping": [5, -1, 2, -1], "printer_id": printer.id}}
+        )
+
+        data = {
+            "printer_id": printer.id,
+            "archive_id": archive.id,
+            "filament_overrides": [
+                {"slot_id": 1, "type": "PLA", "color": "#FF0000", "force_color_match": True},
+            ],
+        }
+        response = await async_client.post("/api/v1/queue/", json=data)
+        assert response.status_code == 200
+        result = response.json()
+        assert result["ams_mapping"] is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_add_to_queue_plain_overrides_still_allow_the_archive_fallback(
+        self, async_client: AsyncClient, printer_factory, archive_factory, db_session
+    ):
+        """Only force_color_match stands the fallback down. A plain preference
+        override is a filament swap, not a request for live colour matching, so
+        the saved mapping is still the best starting point.
+        """
+        printer = await printer_factory()
+        archive = await archive_factory(
+            extra_data={"slicer_ams_mapping": {"mapping": [5, -1, 2, -1], "printer_id": printer.id}}
+        )
+
+        data = {
+            "printer_id": printer.id,
+            "archive_id": archive.id,
+            "filament_overrides": [{"slot_id": 1, "type": "PLA", "color": "#FF0000"}],
+        }
+        response = await async_client.post("/api/v1/queue/", json=data)
+        assert response.status_code == 200
+        result = response.json()
+        assert result["ams_mapping"] == [5, -1, 2, -1]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_queue_response_flags_saved_mapping_only_for_its_own_printer(
+        self, async_client: AsyncClient, printer_factory, archive_factory, db_session
+    ):
+        """`archive_has_slicer_ams_mapping` drives a badge that claims the
+        print reuses the slicer's exact trays. Global tray IDs mean nothing on
+        another printer, so the flag must be false for a row targeting one —
+        otherwise the badge is there while nothing is reused (#2700 review).
+        """
+        origin_printer = await printer_factory()
+        other_printer = await printer_factory()
+        archive = await archive_factory(
+            extra_data={"slicer_ams_mapping": {"mapping": [5, -1, 2, -1], "printer_id": origin_printer.id}}
+        )
+
+        own = await async_client.post(
+            "/api/v1/queue/", json={"printer_id": origin_printer.id, "archive_id": archive.id}
+        )
+        assert own.status_code == 200
+        assert own.json()["archive_has_slicer_ams_mapping"] is True
+
+        foreign = await async_client.post(
+            "/api/v1/queue/", json={"printer_id": other_printer.id, "archive_id": archive.id}
+        )
+        assert foreign.status_code == 200
+        assert foreign.json()["archive_has_slicer_ams_mapping"] is False
+
+        # Model-based: the scheduler hasn't picked a printer yet, so the
+        # mapping is not reused there either.
+        model_based = await async_client.post("/api/v1/queue/", json={"target_model": "X1C", "archive_id": archive.id})
+        assert model_based.status_code == 200
+        assert model_based.json()["archive_has_slicer_ams_mapping"] is False
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -509,6 +921,54 @@ class TestPrintQueueAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_delete_queue_item_releases_reserved_budget(
+        self, async_client: AsyncClient, printer_factory, archive_factory, queue_item_factory, db_session
+    ):
+        """Deleting a pending cost-center queue item releases its reserved budget."""
+        await enable_billing(db_session)
+        printer = await printer_factory()
+        archive = await archive_factory(cost=3.0, filament_used_grams=50.0)
+        cost_center = CostCenter(
+            name="Delete Releases Budget CC", is_active=True, is_private=False, monthly_budget=10.0
+        )
+        db_session.add(cost_center)
+        await db_session.commit()
+        await db_session.refresh(cost_center)
+        item = await queue_item_factory(
+            printer_id=printer.id,
+            archive_id=archive.id,
+            cost_center_id=cost_center.id,
+            estimated_cost=8.0,
+            status="pending",
+        )
+
+        blocked = await async_client.post(
+            "/api/v1/queue/",
+            json={
+                "printer_id": printer.id,
+                "archive_id": archive.id,
+                "cost_center_id": cost_center.id,
+                "estimated_cost": 0.01,
+            },
+        )
+        assert blocked.status_code == 400
+
+        deleted = await async_client.delete(f"/api/v1/queue/{item.id}")
+        assert deleted.status_code == 200
+
+        allowed = await async_client.post(
+            "/api/v1/queue/",
+            json={
+                "printer_id": printer.id,
+                "archive_id": archive.id,
+                "cost_center_id": cost_center.id,
+                "estimated_cost": 0.01,
+            },
+        )
+        assert allowed.status_code == 200
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_delete_queue_item_not_found(self, async_client: AsyncClient):
         """Verify 404 for deleting non-existent queue item."""
         response = await async_client.delete("/api/v1/queue/9999")
@@ -632,6 +1092,24 @@ class TestQueueStartEndpoint:
         assert response.status_code == 200
         result = response.json()
         assert result["manual_start"] is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_start_queue_item_with_cost_center_requires_estimated_cost(
+        self, async_client: AsyncClient, queue_item_factory, db_session
+    ):
+        """Starting a cost-center queue item requires a stored estimate."""
+        await enable_billing(db_session)
+        cost_center = CostCenter(name="Start Budget CC", is_active=True, is_private=False, monthly_budget=10.0)
+        db_session.add(cost_center)
+        await db_session.commit()
+        await db_session.refresh(cost_center)
+        item = await queue_item_factory(manual_start=True, cost_center_id=cost_center.id, estimated_cost=None)
+
+        response = await async_client.post(f"/api/v1/queue/{item.id}/start")
+
+        assert response.status_code == 400
+        assert "Estimated cost is required" in response.json()["detail"]
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -1336,6 +1814,58 @@ class TestBulkUpdateEndpoint:
         assert response.status_code == 400
         assert "printer not found" in response.json()["detail"].lower()
 
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_bulk_update_cost_center_requires_estimated_cost(
+        self, async_client: AsyncClient, queue_item_factory, db_session
+    ):
+        """Bulk assigning a cost center requires an estimate, same as single-item updates."""
+        await enable_billing(db_session)
+        item = await queue_item_factory()
+        cost_center = CostCenter(name="Bulk Budget CC", is_active=True, is_private=False, monthly_budget=10.0)
+        db_session.add(cost_center)
+        await db_session.commit()
+        await db_session.refresh(cost_center)
+
+        response = await async_client.patch(
+            "/api/v1/queue/bulk",
+            json={"item_ids": [item.id], "cost_center_id": cost_center.id},
+        )
+
+        assert response.status_code == 400
+        assert "Estimated cost is required" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_bulk_update_cost_center_counts_pending_reservations(
+        self, async_client: AsyncClient, queue_item_factory, archive_factory, db_session
+    ):
+        """A forged bulk-update hint cannot weaken the server-derived reservation."""
+        await enable_billing(db_session)
+        archive = await archive_factory(cost=3.0, filament_used_grams=50.0)
+        item = await queue_item_factory(archive_id=archive.id)
+        existing = await queue_item_factory()
+        cost_center = CostCenter(name="Bulk Reserved CC", is_active=True, is_private=False, monthly_budget=10.0)
+        db_session.add(cost_center)
+        await db_session.commit()
+        await db_session.refresh(cost_center)
+
+        existing.cost_center_id = cost_center.id
+        existing.estimated_cost = 8.0
+        await db_session.commit()
+
+        response = await async_client.patch(
+            "/api/v1/queue/bulk",
+            json={"item_ids": [item.id], "cost_center_id": cost_center.id, "estimated_cost": 0.01},
+        )
+
+        assert response.status_code == 400
+        assert "exceeds available cost center budget" in response.json()["detail"]
+
+        await db_session.refresh(item)
+        assert item.cost_center_id is None
+        assert item.estimated_cost is None
+
 
 class TestTargetLocationFeature:
     """Tests for queue items with target_location (Issue #220)."""
@@ -1728,14 +2258,20 @@ class TestAbortedStatusNormalisation:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_on_print_complete_normalises_aborted_to_cancelled(self, queue_item_factory, db_session):
+    async def test_on_print_complete_normalises_aborted_to_cancelled(
+        self, queue_item_factory, archive_factory, db_session
+    ):
         """Verify the completion handler maps 'aborted' → 'cancelled' for queue items."""
         import asyncio
         from unittest.mock import AsyncMock, MagicMock, patch
 
-        item = await queue_item_factory(status="printing")
+        archive = await archive_factory(filename="Abort_Me.gcode.3mf")
+        item = await queue_item_factory(status="printing", archive_id=archive.id)
 
-        # Build a mock session whose execute returns our item
+        # Build a mock session whose execute returns our item. `get` has to
+        # answer with the item's real archive: the handler checks the completion
+        # is about this row's print before closing it, and an archive that names
+        # a different subtask is exactly what it refuses.
         mock_result = MagicMock()
         mock_result.scalars.return_value.all.return_value = [item]
 
@@ -1743,6 +2279,7 @@ class TestAbortedStatusNormalisation:
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=False)
         mock_session.execute = AsyncMock(return_value=mock_result)
+        mock_session.get = AsyncMock(return_value=archive)
         mock_session.commit = AsyncMock()
 
         tasks_before = set(asyncio.all_tasks())
@@ -1771,7 +2308,7 @@ class TestAbortedStatusNormalisation:
                 {
                     "status": "aborted",
                     "filename": "test.gcode",
-                    "subtask_name": "Test",
+                    "subtask_name": "Abort_Me",
                     "timelapse_was_active": False,
                 },
             )
@@ -1825,12 +2362,23 @@ class TestAbortedStatusNormalisation:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_completed_status_passes_through_unchanged(self, queue_item_factory, db_session):
-        """Verify normal statuses like 'completed' are not affected by normalisation."""
+    async def test_leaves_a_printing_item_alone_when_the_completion_is_for_another_print(
+        self, queue_item_factory, archive_factory, db_session
+    ):
+        """A completion naming a different subtask must not close this row.
+
+        The handler looks its row up by printer and ``status='printing'`` only,
+        so before this guard any completion delivered for the printer closed
+        whatever was printing on it. That is how a live 14-hour job was marked
+        completed 18 minutes in -- by an event that had nothing to do with it --
+        which also stranded the second plate of its batch, since the queue will
+        not dispatch while the printer is still running.
+        """
         import asyncio
         from unittest.mock import AsyncMock, MagicMock, patch
 
-        item = await queue_item_factory(status="printing")
+        archive = await archive_factory(filename="AMS_Rack.gcode.3mf")
+        item = await queue_item_factory(status="printing", archive_id=archive.id)
 
         mock_result = MagicMock()
         mock_result.scalars.return_value.all.return_value = [item]
@@ -1839,6 +2387,68 @@ class TestAbortedStatusNormalisation:
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=False)
         mock_session.execute = AsyncMock(return_value=mock_result)
+        mock_session.get = AsyncMock(return_value=archive)
+        mock_session.commit = AsyncMock()
+
+        tasks_before = set(asyncio.all_tasks())
+
+        with (
+            patch("backend.app.main.async_session", return_value=mock_session),
+            patch("backend.app.core.database.async_session", return_value=mock_session),
+            patch("backend.app.main.ws_manager") as mock_ws,
+            patch("backend.app.main.mqtt_relay") as mock_relay,
+            patch("backend.app.main.notification_service") as mock_notif,
+            patch("backend.app.main.smart_plug_manager") as mock_plug,
+            patch("backend.app.main.printer_manager") as mock_pm,
+        ):
+            mock_ws.send_print_complete = AsyncMock()
+            mock_ws.broadcast = AsyncMock()
+            mock_relay.on_print_complete = AsyncMock()
+            mock_relay.on_queue_job_completed = AsyncMock()
+            mock_notif.on_print_complete = AsyncMock()
+            mock_plug.on_print_complete = AsyncMock()
+            mock_pm.get_printer.return_value = None
+
+            from backend.app.main import on_print_complete
+
+            await on_print_complete(
+                item.printer_id,
+                {
+                    "status": "completed",
+                    "filename": "/data/Metadata/plate_1.gcode",
+                    "subtask_name": "Some_Other_Print",
+                    "timelapse_was_active": False,
+                },
+            )
+
+            for task in asyncio.all_tasks() - tasks_before:
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
+
+        assert item.status == "printing"
+        assert item.completed_at is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_completed_status_passes_through_unchanged(self, queue_item_factory, archive_factory, db_session):
+        """Verify normal statuses like 'completed' are not affected by normalisation."""
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        archive = await archive_factory(filename="Finish_Me.gcode.3mf")
+        item = await queue_item_factory(status="printing", archive_id=archive.id)
+
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = [item]
+
+        mock_session = AsyncMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+        mock_session.execute = AsyncMock(return_value=mock_result)
+        mock_session.get = AsyncMock(return_value=archive)
         mock_session.commit = AsyncMock()
 
         tasks_before = set(asyncio.all_tasks())
@@ -1867,7 +2477,7 @@ class TestAbortedStatusNormalisation:
                 {
                     "status": "completed",
                     "filename": "test.gcode",
-                    "subtask_name": "Test",
+                    "subtask_name": "Finish_Me",
                     "timelapse_was_active": False,
                 },
             )

@@ -1,15 +1,16 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
-import { X, ExternalLink, Box, Code2, Cog, Loader2, Layers, Check, Maximize2, Minimize2 } from 'lucide-react';
+import { X, ExternalLink, Box, Cog, Loader2, Layers, Check, Maximize2, Minimize2, ChevronDown } from 'lucide-react';
 import { ModelViewer } from './ModelViewer';
-import { GcodeViewer } from './GcodeViewer';
 import { Button } from './Button';
 import { api, withStreamToken } from '../api/client';
-import { openInSlicer, type SlicerType } from '../utils/slicer';
+import { useToast } from '../contexts/ToastContext';
+import { isApiSliceableFileType, isSliceableFileType, openInSlicer, resolveDesktopSlicer, type SlicerType } from '../utils/slicer';
 import type { ArchivePlatesResponse, LibraryFilePlatesResponse, PlateMetadata } from '../types/plates';
 
-type ViewTab = '3d' | 'gcode';
+// The modal shows the model only; G-code has its own full-page viewer.
+type ViewTab = '3d';
 
 interface ModelViewerModalProps {
   archiveId?: number;
@@ -26,20 +27,110 @@ interface ModelViewerModalProps {
 
 interface Capabilities {
   has_model: boolean;
-  has_gcode: boolean;
   has_source: boolean;
   build_volume: { x: number; y: number; z: number };
   filament_colors: string[];
 }
 
+interface SlicerSplitButtonProps {
+  icon: ReactNode;
+  label: string;
+  dropdownLabel: string;
+  onPrimary: () => void;
+  items: Array<{ key: string; label: string; onClick: () => void }>;
+}
+
+// Split button: the primary part runs the default slicer action, the chevron
+// opens a dropdown with the other slicer options. Outside click or Escape
+// (non-propagating) closes the dropdown. The split only renders when the
+// action is already possible, so there is no disabled state to express.
+function SlicerSplitButton({ icon, label, dropdownLabel, onPrimary, items }: SlicerSplitButtonProps) {
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handlePointerDown = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        setOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [open]);
+
+  return (
+    <div className="relative inline-flex" ref={containerRef}>
+      <div className="flex relative z-50">
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={() => {
+            setOpen(false);
+            onPrimary();
+          }}
+          className="rounded-r-none"
+        >
+          {icon}
+          {label}
+        </Button>
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={() => setOpen((prev) => !prev)}
+          aria-label={dropdownLabel}
+          aria-haspopup="menu"
+          aria-expanded={open}
+          className="rounded-l-none border-l border-bambu-dark px-2"
+        >
+          <ChevronDown className={`w-4 h-4 transition-transform ${open ? 'rotate-180' : ''}`} />
+        </Button>
+      </div>
+      {open && (
+        <div
+          role="menu"
+          className="absolute right-0 top-full mt-1 w-56 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-lg z-50 py-1"
+        >
+          {items.map((item) => (
+            <button
+              key={item.key}
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setOpen(false);
+                item.onClick();
+              }}
+              className="w-full text-left px-3 py-2 text-sm text-bambu-gray-light hover:bg-bambu-dark-tertiary hover:text-white transition-colors flex items-center gap-2"
+            >
+              <ExternalLink className="w-4 h-4 flex-shrink-0" />
+              {item.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, onClose, onSliceWithPrintbuddy }: ModelViewerModalProps) {
   const { t } = useTranslation();
+  const { showToast } = useToast();
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
   // Desktop "Open in Slicer" target — falls back to preferred_slicer when the
   // user hasn't explicitly chosen a different desktop slicer (#1329). This
   // variable is only used for URI-handoff; sidecar slicing keeps using
   // preferred_slicer directly.
-  const preferredSlicer: SlicerType = settings?.open_in_slicer || settings?.preferred_slicer || 'bambu_studio';
+  const preferredSlicer: SlicerType = resolveDesktopSlicer(settings?.open_in_slicer, settings?.preferred_slicer);
   const isLibrary = libraryFileId != null;
   const [activeTab, setActiveTab] = useState<ViewTab | null>(null);
   const [capabilities, setCapabilities] = useState<Capabilities | null>(null);
@@ -81,15 +172,13 @@ export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, on
       // the 3D-tab + g-code-tab gating (#1543).
       const isThreeMfFamily = normalizedType === '3mf' || normalizedType === 'gcode.3mf';
       const hasModel = isThreeMfFamily || normalizedType === 'stl';
-      const hasGcode = isThreeMfFamily || normalizedType === 'gcode';
       setCapabilities({
         has_model: hasModel,
-        has_gcode: hasGcode,
         has_source: false,
         build_volume: { x: 256, y: 256, z: 256 },
         filament_colors: [],
       });
-      setActiveTab(hasModel ? '3d' : hasGcode ? 'gcode' : null);
+      setActiveTab(hasModel ? '3d' : null);
       setLoading(false);
       return;
     }
@@ -107,14 +196,12 @@ export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, on
         // Auto-select the first available tab
         if (caps.has_model) {
           setActiveTab('3d');
-        } else if (caps.has_gcode) {
-          setActiveTab('gcode');
         }
         setLoading(false);
       })
       .catch(() => {
         // Fallback to 3D model tab if capabilities check fails
-        setCapabilities({ has_model: true, has_gcode: false, has_source: false, build_volume: { x: 256, y: 256, z: 256 }, filament_colors: [] });
+        setCapabilities({ has_model: true, has_source: false, build_volume: { x: 256, y: 256, z: 256 }, filament_colors: [] });
         setActiveTab('3d');
         setLoading(false);
       });
@@ -280,7 +367,15 @@ export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, on
     };
   }, [isDraggingDivider, dividerHeight, minPlateHeight, minViewerPx, minViewerRatio]);
 
-  const canOpenInSlicer = isLibrary ? (fileType || '').toLowerCase() === '3mf' : true;
+  // Which file types can be handed to a desktop slicer via the URL protocol
+  // handler. Shares its list with `isSliceableFilename()`, which the File
+  // Manager's card menu and list row use, so a file's "Slice" action and its
+  // 3D-preview slicer button can no longer disagree about the same file.
+  const slicerReadyType = isSliceableFileType(fileType);
+  const canOpenInSlicer = isLibrary ? slicerReadyType : true;
+  // The sidecar's list is narrower: its CLI cannot load STEP even though the
+  // desktop GUI opens one fine, so in-app slicing is gated separately.
+  const apiSlicerReadyType = isApiSliceableFileType(fileType);
 
   // When the user has the in-app Slicer API enabled (Settings → Workflow →
   // Slicer → Use Slicer API), library-mode previews route the header's slicer
@@ -288,38 +383,48 @@ export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, on
   // in the file-row actions. Falls back to the external-slicer launcher when
   // the API is off, when no in-app handler is wired (e.g. archive preview),
   // or when the file type can't be sliced (.gcode / .gcode.3mf, etc.).
-  const sliceableType = (() => {
-    const t = (fileType || '').toLowerCase();
-    return t === '3mf' || t === 'stl' || t === 'step' || t === 'stp';
-  })();
   const usePrintbuddySlicer = Boolean(
-    isLibrary && settings?.use_slicer_api && onSliceWithPrintbuddy && sliceableType,
+    isLibrary && settings?.use_slicer_api && onSliceWithPrintbuddy && apiSlicerReadyType,
   );
 
-  const handleOpenInSlicer = async () => {
+  const handleOpenInSlicer = async (slicer: SlicerType) => {
     if (!canOpenInSlicer) return;
     const filename = title || 'model';
     try {
       if (isLibrary) {
         const { token } = await api.createLibrarySlicerToken(libraryFileId!);
         const path = api.getLibrarySlicerDownloadUrl(libraryFileId!, token, filename);
-        openInSlicer(`${window.location.origin}${path}`, preferredSlicer);
+        openInSlicer(`${window.location.origin}${path}`, slicer);
       } else {
         const { token } = await api.createArchiveSlicerToken(archiveId!);
         const path = api.getArchiveSlicerDownloadUrl(archiveId!, token, filename);
-        openInSlicer(`${window.location.origin}${path}`, preferredSlicer);
+        openInSlicer(`${window.location.origin}${path}`, slicer);
       }
     } catch {
-      // Fallback to direct URL (works when auth is disabled)
+      // Fallback to direct URL (works when auth is disabled). With auth on the
+      // slicer may then hit a 401, so surface the failure instead of making a
+      // permission denial look identical to "no slicer installed".
+      showToast(t('modelViewer.openInSlicerFailed'), 'error');
       if (isLibrary) {
         const downloadUrl = `${window.location.origin}${api.getLibraryFileDownloadUrl(libraryFileId!)}`;
-        openInSlicer(downloadUrl, preferredSlicer);
+        openInSlicer(downloadUrl, slicer);
       } else {
         const downloadUrl = `${window.location.origin}${api.getArchiveForSlicer(archiveId!, filename)}`;
-        openInSlicer(downloadUrl, preferredSlicer);
+        openInSlicer(downloadUrl, slicer);
       }
     }
   };
+
+  const slicerDropdownTypes: SlicerType[] = usePrintbuddySlicer
+    ? ['bambu_studio', 'orcaslicer']
+    : [preferredSlicer === 'orcaslicer' ? 'bambu_studio' : 'orcaslicer'];
+  const slicerName = (slicer: SlicerType) =>
+    slicer === 'orcaslicer' ? t('settings.slicerOrcaSlicer') : t('settings.slicerBambuStudio');
+  const slicerDropdownItems = slicerDropdownTypes.map((slicer) => ({
+    key: slicer,
+    label: t('modelViewer.openInSlicerWith', { slicer: slicerName(slicer) }),
+    onClick: () => handleOpenInSlicer(slicer),
+  }));
 
   return (
     <div
@@ -344,12 +449,23 @@ export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, on
           </div>
           <div className="flex items-center gap-2">
             {usePrintbuddySlicer ? (
-              <Button variant="secondary" size="sm" onClick={onSliceWithPrintbuddy}>
-                <Cog className="w-4 h-4" />
-                {t('slice.action')}
-              </Button>
+              <SlicerSplitButton
+                icon={<Cog className="w-4 h-4" />}
+                label={t('slice.action')}
+                dropdownLabel={t('modelViewer.moreSlicerOptions')}
+                onPrimary={() => onSliceWithPrintbuddy?.()}
+                items={slicerDropdownItems}
+              />
+            ) : canOpenInSlicer ? (
+              <SlicerSplitButton
+                icon={<ExternalLink className="w-4 h-4" />}
+                label={t('modelViewer.openInSlicer')}
+                dropdownLabel={t('modelViewer.moreSlicerOptions')}
+                onPrimary={() => handleOpenInSlicer(preferredSlicer)}
+                items={slicerDropdownItems}
+              />
             ) : (
-              <Button variant="secondary" size="sm" onClick={handleOpenInSlicer} disabled={!canOpenInSlicer}>
+              <Button variant="secondary" size="sm" disabled>
                 <ExternalLink className="w-4 h-4" />
                 {t('modelViewer.openInSlicer')}
               </Button>
@@ -385,21 +501,6 @@ export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, on
               <Box className="w-4 h-4" />
               {t('modelViewer.tabs.model')}
               {!capabilities.has_model && <span className="text-xs">({t('modelViewer.notAvailable')})</span>}
-            </button>
-            <button
-              onClick={() => capabilities.has_gcode && setActiveTab('gcode')}
-              disabled={!capabilities.has_gcode}
-              className={`flex items-center gap-2 px-6 py-3 text-sm font-medium transition-colors ${
-                activeTab === 'gcode'
-                  ? 'text-bambu-green border-b-2 border-bambu-green'
-                  : capabilities.has_gcode
-                    ? 'text-bambu-gray hover:text-white'
-                    : 'text-bambu-gray/30 cursor-not-allowed'
-              }`}
-            >
-              <Code2 className="w-4 h-4" />
-              {t('modelViewer.tabs.gcode')}
-              {!capabilities.has_gcode && <span className="text-xs">({t('modelViewer.notSliced')})</span>}
             </button>
           </div>
         )}
@@ -642,12 +743,6 @@ export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, on
                   />
               </div>
             </div>
-          ) : activeTab === 'gcode' && capabilities ? (
-            <GcodeViewer
-              gcodeUrl={isLibrary ? api.getLibraryFileGcodeUrl(libraryFileId!) : api.getArchiveGcode(archiveId!)}
-              filamentColors={capabilities.filament_colors}
-              className="w-full h-full"
-            />
           ) : (
             <div className="w-full h-full flex items-center justify-center text-bambu-gray">
               {t('modelViewer.noPreview')}

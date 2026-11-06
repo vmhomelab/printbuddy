@@ -64,7 +64,10 @@ firmware/
 # Node modules
 node_modules/
 
-data/
+# Runtime data dir (db, archives, backups). Anchored to the repo root on
+# purpose: a bare `data/` also matches frontend/src/data and
+# backend/app/data, which are source, not runtime state.
+/data/
 
 # Local-dev runtime caches (matplotlib MPLCONFIGDIR lands here when DATA_DIR
 # is unset, so base_dir resolves to the repo root). In Docker this sits

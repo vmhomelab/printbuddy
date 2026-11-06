@@ -1,5 +1,5 @@
 import { appAssetPath } from './assetPaths';
-import { api, type PrintQueueItem, type Printer } from '../api/client';
+import { api, type PrintQueueItem, type Printer, type PrinterStatus } from '../api/client';
 
 const PRINTER_IMAGE_BASE = '/img/printers';
 const DEFAULT_PRINTER_IMAGE = `${PRINTER_IMAGE_BASE}/default.png`;
@@ -74,6 +74,14 @@ export function getPrinterImage(model: string | null | undefined): string {
   return imageKey ? printerImagePath(`${imageKey}.png`) : getDefaultPrinterImage();
 }
 
+// Ceiling for every chamber-temperature target the UI accepts (manual set,
+// preheat filament map, per-item preheat override, chamber quick-select
+// presets). Mirrors backend MAX_CHAMBER_TEMP_C in
+// backend/app/utils/printer_models.py — keep the two in sync. The H2 series
+// (H2C / H2D / H2D Pro / H2S) and X2D heat the chamber to 65 °C; X1E tops out
+// at 60 and its firmware clamps anything higher.
+export const MAX_CHAMBER_TEMP_C = 65;
+
 // G-code interchange families (#2578). Mirrors backend GCODE_COMPAT_FAMILIES
 // in backend/app/utils/printer_models.py — keep the two in sync. A sliced 3MF
 // may target a different model ONLY within its family; everything else is
@@ -102,6 +110,22 @@ export function getWifiStrength(rssi: number): { labelKey: string; color: string
   if (rssi >= -70) return { labelKey: 'printers.wifiSignal.fair', color: 'text-yellow-400', bars: 2 };
   if (rssi >= -80) return { labelKey: 'printers.wifiSignal.weak', color: 'text-orange-400', bars: 1 };
   return { labelKey: 'printers.wifiSignal.veryWeak', color: 'text-red-400', bars: 1 };
+}
+
+/**
+ * True when a queue item aimed at this printer would start now rather than wait.
+ *
+ * Every print Printbuddy sends goes through the queue, so this is not "can we
+ * print at all" — it is "will ASAP mean now". The PrintModal uses it to promise
+ * a later start, and the printer card uses it to say whether a dropped file
+ * prints or queues. Both must agree, or the card promises one thing and the
+ * modal immediately says another.
+ */
+export function isPrinterCurrentlyDispatchable(status: PrinterStatus | undefined): boolean {
+  if (!status?.connected) return false;
+  if (status.awaiting_plate_clear) return false;
+  if (status.ams?.some((ams) => ams.dry_time > 0)) return false;
+  return ['IDLE', 'FINISH', 'FAILED'].includes(status.state ?? '');
 }
 
 /**

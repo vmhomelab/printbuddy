@@ -12,6 +12,15 @@ class PrintArchive(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     printer_id: Mapped[int | None] = mapped_column(ForeignKey("printers.id"), nullable=True)
     project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
+    # Which library file this run was dispatched from (#1897). Set by the queue
+    # scheduler when it archives a library-file print; older rows are matched by
+    # content_hash/filename instead. SET NULL so deleting a file keeps history.
+    library_file_id: Mapped[int | None] = mapped_column(
+        ForeignKey("library_files.id", ondelete="SET NULL"), nullable=True
+    )
+    cost_center_id: Mapped[int | None] = mapped_column(
+        ForeignKey("cost_centers.id", ondelete="SET NULL"), nullable=True
+    )
 
     # File info
     filename: Mapped[str] = mapped_column(String(255))
@@ -30,6 +39,16 @@ class PrintArchive(Base):
     forced_timelapse: Mapped[bool] = mapped_column(
         "bambu" + "ddy_forced_timelapse", Boolean, default=False, server_default="0"
     )
+    # Video filenames present in the printer's /timelapse directory when this
+    # print started (#2704). The printer writes its video only at print end, so
+    # anything not in this list belongs to this print — a comparison that needs
+    # no clock, which matters because a LAN-only printer can't reach Bambu's NTP
+    # server and its filename timestamps are arbitrarily wrong. Persisted (not
+    # just held in memory) so the diff survives a restart and so the manual
+    # "Scan for Timelapse" button can use it instead of guessing from
+    # timestamps. NULL for archives predating this, and for baselines taken at
+    # completion time, which are useless by construction.
+    timelapse_baseline: Mapped[list | None] = mapped_column(JSON, nullable=True)
     source_3mf_path: Mapped[str | None] = mapped_column(String(500))  # Original project 3MF from slicer
     f3d_path: Mapped[str | None] = mapped_column(String(500))  # Fusion 360 design file
 
@@ -59,6 +78,9 @@ class PrintArchive(Base):
     # if the same subtask_id reappears after restart, we know it's the same
     # print and keep the original row instead of cancel-then-create.
     subtask_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Durable Printbuddy UUID for billing idempotency. Unlike subtask_id, this is
+    # not constrained by printer firmware and is replaced for every reprint.
+    billing_run_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
     # Which plate of a multi-plate 3MF this print was for (1-based), copied from
     # the queue item at dispatch (#2603). A whole multi-plate 3MF is uploaded
@@ -80,6 +102,7 @@ class PrintArchive(Base):
 
     # User additions
     is_favorite: Mapped[bool] = mapped_column(Boolean, default=False)
+    wallet_charge_skipped: Mapped[bool] = mapped_column(Boolean, default=False)
     tags: Mapped[str | None] = mapped_column(Text)
     notes: Mapped[str | None] = mapped_column(Text)
     cost: Mapped[float | None] = mapped_column(Float)
@@ -110,9 +133,11 @@ class PrintArchive(Base):
     # Relationships
     printer: Mapped["Printer | None"] = relationship(back_populates="archives")
     project: Mapped["Project | None"] = relationship(back_populates="archives")
+    cost_center: Mapped["CostCenter | None"] = relationship()
     created_by: Mapped["User | None"] = relationship()
 
 
+from backend.app.models.finance import CostCenter  # noqa: E402, F811
 from backend.app.models.printer import Printer  # noqa: E402, F811
 from backend.app.models.project import Project  # noqa: E402, F811
 from backend.app.models.user import User  # noqa: E402, F811

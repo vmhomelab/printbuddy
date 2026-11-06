@@ -145,3 +145,68 @@ class TestWriteLogEntryReconciledDuration:
     async def test_non_reconciled_missing_times_is_none(self):
         entry = await self._write(status="completed", started_at=datetime(2026, 7, 15, 10, 0, 0))
         assert entry.duration_seconds is None
+
+
+class TestSchemaValidatesFromOrmRow:
+    """#2636: the Print Log's cost and energy columns read empty for every
+    run because both routes built the response field-by-field and simply
+    never mentioned ``cost`` / ``energy_kwh`` / ``energy_cost``. Pydantic
+    filled the gap with each field's default, so a dropped field looked
+    exactly like a NULL column on the wire — no error, no log line. The
+    same trap had already eaten ``failure_reason`` once (#1687 part 4).
+
+    Validating from the ORM row is what removes the chance to forget one, so
+    these tests pin the mechanism rather than any particular field list.
+    """
+
+    @staticmethod
+    def _row(**overrides):
+        row = MagicMock()
+        row.id = 7
+        row.archive_id = 3
+        row.print_name = "Benchy"
+        row.printer_name = "X1C-01"
+        row.printer_id = 1
+        row.status = "completed"
+        row.started_at = datetime(2026, 7, 24, 18, 35, 0)
+        row.completed_at = datetime(2026, 7, 24, 19, 24, 0)
+        row.duration_seconds = 2940
+        row.filament_type = "PLA"
+        row.filament_color = "#000000"
+        row.filament_used_grams = 15.5
+        row.cost = 0.42
+        row.energy_kwh = 0.31
+        row.energy_cost = 0.09
+        # Non-null so `test_every_declared_field_is_carried` can assert that
+        # nothing falls back to its default.
+        row.failure_reason = "warping"
+        row.thumbnail_path = "archives/1/x/thumbnail.png"
+        row.created_by_id = 2
+        row.created_by_username = "martin"
+        row.created_at = datetime(2026, 7, 24, 18, 35, 0)
+        for k, v in overrides.items():
+            setattr(row, k, v)
+        return row
+
+    def test_money_and_energy_survive_the_round_trip(self):
+        entry = PrintLogEntrySchema.model_validate(self._row())
+        assert entry.cost == 0.42
+        assert entry.energy_kwh == 0.31
+        assert entry.energy_cost == 0.09
+        assert entry.filament_used_grams == 15.5
+
+    def test_every_declared_field_is_carried(self):
+        """Nothing on the schema may come back as its default when the row
+        has a value — that is the whole failure mode, generalised."""
+        entry = PrintLogEntrySchema.model_validate(self._row())
+        for name in PrintLogEntrySchema.model_fields:
+            assert getattr(entry, name) is not None, f"{name} was dropped in serialisation"
+
+    def test_a_genuinely_null_column_stays_null(self):
+        """The counterpart: energy is written by a background task after the
+        row, so a just-finished print really has none. That must read as
+        None, not as a fabricated zero."""
+        entry = PrintLogEntrySchema.model_validate(self._row(energy_kwh=None, energy_cost=None))
+        assert entry.energy_kwh is None
+        assert entry.energy_cost is None
+        assert entry.cost == 0.42

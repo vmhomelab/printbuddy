@@ -430,4 +430,149 @@ describe('StreamOverlayPage', () => {
       expect(WebSocket).not.toHaveBeenCalled();
     });
   });
+
+  describe('temperatures (#1422)', () => {
+    const withTemps = {
+      ...mockStatusPrinting,
+      temperatures: {
+        nozzle: 219.6,
+        nozzle_target: 220,
+        bed: 60,
+        bed_target: 60,
+        chamber: 38.4,
+      },
+    };
+
+    beforeEach(() => {
+      server.use(http.get('/api/v1/printers/:id/status', () => HttpResponse.json(withTemps)));
+    });
+
+    it('draws no temperatures unless the URL asks for them', async () => {
+      renderOverlayPage(1);
+
+      await waitFor(() => {
+        expect(screen.getByText('45%')).toBeInTheDocument();
+      });
+      // Default ?show= is unchanged by #1422, so overlays already running in an
+      // OBS scene look identical after the upgrade.
+      expect(screen.queryByText('Nozzle')).not.toBeInTheDocument();
+      expect(screen.queryByText('Bed')).not.toBeInTheDocument();
+    });
+
+    it('draws only the readings named in ?show=', async () => {
+      renderOverlayPage(1, '?show=progress,nozzle');
+
+      await waitFor(() => {
+        expect(screen.getByText('Nozzle')).toBeInTheDocument();
+      });
+      expect(screen.queryByText('Bed')).not.toBeInTheDocument();
+      expect(screen.queryByText('Chamber')).not.toBeInTheDocument();
+    });
+
+    it('rounds the reading and hides a target it has already reached', async () => {
+      renderOverlayPage(1, '?show=nozzle,bed');
+
+      await waitFor(() => {
+        expect(screen.getByText('220°C')).toBeInTheDocument();
+      });
+      // Nozzle is 219.6 against a target of 220: both round to 220, so the
+      // "/ 220°C" half is dropped rather than reading "220 / 220°C" all print.
+      expect(screen.queryByText('/')).not.toBeInTheDocument();
+      expect(screen.getByText('60°C')).toBeInTheDocument();
+    });
+
+    it('shows the target while the heater is still climbing', async () => {
+      server.use(
+        http.get('/api/v1/printers/:id/status', () =>
+          HttpResponse.json({ ...withTemps, temperatures: { nozzle: 140, nozzle_target: 220 } }),
+        ),
+      );
+      renderOverlayPage(1, '?show=nozzle');
+
+      await waitFor(() => {
+        expect(screen.getByText('140°C')).toBeInTheDocument();
+      });
+      expect(screen.getByText('220°C')).toBeInTheDocument();
+    });
+
+    it('skips a reading the printer does not report', async () => {
+      server.use(
+        http.get('/api/v1/printers/:id/status', () =>
+          // A P1S: the backend drops chamber for models without a real sensor,
+          // so asking for it in ?show= must not produce an empty row.
+          HttpResponse.json({ ...withTemps, temperatures: { nozzle: 200, bed: 55 } }),
+        ),
+      );
+      renderOverlayPage(1, '?show=nozzle,bed,chamber');
+
+      await waitFor(() => {
+        expect(screen.getByText('Nozzle')).toBeInTheDocument();
+      });
+      expect(screen.queryByText('Chamber')).not.toBeInTheDocument();
+    });
+
+    it('draws both nozzles on a dual-nozzle printer', async () => {
+      server.use(
+        http.get('/api/v1/printers/:id/status', () =>
+          HttpResponse.json({
+            ...withTemps,
+            temperatures: { nozzle: 220, nozzle_2: 250, nozzle_2_target: 250 },
+          }),
+        ),
+      );
+      renderOverlayPage(1, '?show=nozzle');
+
+      await waitFor(() => {
+        expect(screen.getByText('Nozzle')).toBeInTheDocument();
+      });
+      expect(screen.getByText('Nozzle 2')).toBeInTheDocument();
+      expect(screen.getByText('250°C')).toBeInTheDocument();
+    });
+
+    it('draws temperatures while the printer is idle', async () => {
+      server.use(
+        http.get('/api/v1/printers/:id/status', () =>
+          HttpResponse.json({ ...mockStatusIdle, temperatures: { bed: 45, bed_target: 60 } }),
+        ),
+      );
+      renderOverlayPage(1, '?show=bed');
+
+      await waitFor(() => {
+        expect(screen.getByText('Printer is idle')).toBeInTheDocument();
+      });
+      // A preheating printer is exactly when the readings are worth watching,
+      // so they are not gated behind a running print.
+      expect(screen.getByText('45°C')).toBeInTheDocument();
+      expect(screen.getByText('60°C')).toBeInTheDocument();
+    });
+
+    it('reads temperatures from the token-authed feed in kiosk mode', async () => {
+      server.use(
+        http.get('/api/v1/printers/:id/overlay-status', () =>
+          HttpResponse.json({
+            id: 1,
+            name: 'X1 Carbon',
+            camera_rotation: 0,
+            connected: true,
+            state: 'RUNNING',
+            current_print: 'KioskBenchy.gcode.3mf',
+            gcode_file: 'plate_1.gcode',
+            progress: 67,
+            remaining_time: 40,
+            layer_num: 10,
+            total_layers: 20,
+            stg_cur_name: null,
+            temperatures: { chamber: 38, chamber_target: 40 },
+            time_format: 'system',
+          }),
+        ),
+      );
+      renderOverlayPage(1, '?token=obs-tok&show=chamber');
+
+      await waitFor(() => {
+        expect(screen.getByText('Chamber')).toBeInTheDocument();
+      });
+      expect(screen.getByText('38°C')).toBeInTheDocument();
+    });
+  });
 });

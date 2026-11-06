@@ -125,7 +125,7 @@ function isAlwaysAllowedIdentical(value) {
   if (/^https?:\/\//.test(value)) return true;          // URL
   if (/^ON,\s+true,\s+1$/.test(value)) return true;     // literal example "ON, true, 1"
   // Brand / technical names that ship verbatim everywhere.
-  if (/^(Printbuddy|Printbuddy URL|Printbuddy Backend URL|Printbuddy|Printbuddy|Bambu Lab|Bambu Studio|Bambu Studio 2\.6\+|Bambu Studio sidecar URL|OrcaSlicer|OrcaSlicer sidecar URL|MakerWorld|Spoolman|\(Spoolman\)|Spoolman URL|Tailscale|GitHub|GitLab|Gitea|Forgejo|Discord|MQTT|FTP|HTTPS?|JSON|YAML|RTSP|TLS|SSL|CSRF|OIDC|SSO|SSO \/ OIDC|LDAP|TOTP|2FA|MFA|API|AMS|CRC|SHA256|SHA-256|kWh|MB|GB|KB|RGBA?|HSL|RGB|UTC|ISO|UI|HTTP|HTTP Method|H2D|H2D Pro|X1C|X1E|P1S|P1P|A1|A1 Mini|H2C|N3F|N3S|PETG|PLA|ABS|PA|TPU|PEI|PA-CF|PVA|HIPS|ASA|PC|PETG-HF|G\.code|G-code|gcode|cm³|°C|°F|GCODE|SOURCE|ntfy|Notify|Pushover|Telegram|Webhook|Webhook URL|Home Assistant|Home Assistant URL|CallMeBot\/WhatsApp|Printbuddy URL|Cool Plate|Cool Plate SuperTack|Engineering Plate|High Temp Plate|Smooth PEI Plate|Textured PEI Plate|Ext-L|Ext-R|ISO \(YYYY-MM-DD\))$/.test(value)) return true;
+  if (/^(Printbuddy|Printbuddy URL|Printbuddy Backend URL|Bambu Lab|Bambu Studio|Bambu Studio 2\.6\+|Bambu Studio sidecar URL|OrcaSlicer|OrcaSlicer sidecar URL|MakerWorld|Spoolman|\(Spoolman\)|Spoolman URL|Tailscale|GitHub|GitLab|Gitea|Forgejo|Discord|MQTT|FTP|HTTPS?|JSON|YAML|RTSP|TLS|SSL|CSRF|OIDC|SSO|SSO \/ OIDC|LDAP|TOTP|2FA|MFA|API|AMS|CRC|SHA256|SHA-256|kWh|MB|GB|KB|RGBA?|HSL|RGB|UTC|ISO|UI|HTTP|HTTP Method|H2D|H2D Pro|X1C|X1E|P1S|P1P|A1|A1 Mini|H2C|N3F|N3S|PETG|PLA|ABS|PA|TPU|PEI|PA-CF|PVA|HIPS|ASA|PC|PETG-HF|G\.code|G-code|gcode|cm³|°C|°F|GCODE|SOURCE|ntfy|Notify|Pushover|Bark|Telegram|Webhook|Webhook URL|Home Assistant|Home Assistant URL|CallMeBot\/WhatsApp|Cool Plate|Cool Plate SuperTack|Engineering Plate|High Temp Plate|Smooth PEI Plate|Textured PEI Plate|Ext-L|Ext-R|ISO \(YYYY-MM-DD\))$/.test(value)) return true;
   return false;
 }
 
@@ -174,6 +174,7 @@ const DE_COGNATES = [
   'China', 'Proxy', 'Start',
   'Diagnose',  // DE: same spelling/meaning as EN — camera diagnostic button label
   '{{filament}} @ {{temp}}°C',  // drying badge: filament code + universal °C
+  'Score',  // #1546 AI detection modal — established DE loanword (Duden)
 ];
 
 // French cognates — many UI labels overlap with English exactly.
@@ -188,6 +189,7 @@ const FR_COGNATES = [
   'Copies', '{{n}} copies', 'max {{n}}',  // #1425 PR C — French uses these forms verbatim
   'round robin',  // borrowed English term used as-is in French tech contexts
   'Action', 'Actions', 'Date', 'Type', 'Cache', 'Service', 'Configuration',
+  'Score',  // #1546 AI detection modal — "le score" is standard French
   'Archives', 'Maintenance', 'Notifications', 'Notification', 'Position',
   'Pause', 'Solution', 'Source', 'Version', 'Format', 'Documentation',
   'Mode', 'Format', 'Default', 'Auto', 'Image', 'Audio', 'Video', 'Hex',
@@ -218,6 +220,8 @@ const FR_COGNATES = [
   'Compact',  // cam-wall status overlay mode — same word in French
   'ntfy, Pushover, Discord, etc.',
   '{{filament}} @ {{temp}}°C',  // drying badge: filament code + universal °C
+  'Simple', 'Expert',  // slicer settings visibility tiers — identical words in French
+  'Support',  // same word in French
 ];
 
 // Italian cognates.
@@ -252,6 +256,7 @@ const IT_COGNATES = [
   'Proxy', 'Designer',
   'Off',  // cam-wall status overlay mode — common loanword in Italian UI
   '{{filament}} @ {{temp}}°C',  // drying badge: filament code + universal °C
+  'Skirt / brim',  // Italian slicer UIs keep the English terms
 ];
 
 // Japanese: very few cognates because of script difference. Almost
@@ -363,6 +368,7 @@ const ES_COGNATES = [
   'Avery L7160 — A4 sheet (38.1 × 63.5 mm × 21)',
   'Avery 5160 — US Letter sheet (25.4 × 66.7 mm × 30)',
   '{{filament}} @ {{temp}}°C',  // drying badge: filament code + universal °C
+  'Simple',  // slicer settings visibility tier — identical word in Spanish
 ];
 
 // Turkish cognates — technical UI labels that Turkish speakers use verbatim
@@ -395,6 +401,60 @@ const RU_COGNATES = [
   '(25%, 50%, 75%)',
 ];
 
+// Ukrainian keeps only Latin brand names and placeholder/punctuation-only
+// formats verbatim; every prose string in uk.ts is translated.
+const UK_COGNATES = [
+  'MakerWorld: {{designer}}',                         // brand + placeholder
+  '{{printer}}: {{error}}',                           // pure placeholders
+  'Bambu Cloud', 'Orca Cloud',                        // brand names — same in every locale
+  'Sport (124%)', 'Ludicrous (166%)',                 // official Bambu speed-mode names
+  'email',                                            // OIDC claim name placeholder
+  '{{name}} — {{stage}} ({{percent}}%) — {{elapsed}}',
+  'EC984C,#6CD4BC,A66EB9,D87694',
+  '({{count}}/8)',
+  '(25%, 50%, 75%)',
+];
+
+// Dutch cognates. Dutch shares most technical UI vocabulary with English
+// verbatim -- printer, filament, status, nozzle, timelapse, dashboard --
+// and the slicer feature names (support, ironing, prime tower, gap fill)
+// are used untranslated by Dutch slicer users. Each entry below was
+// checked individually against the Dutch translation in #2891.
+const NL_COGNATES = [
+  '1 printer', '{{n}} printers',
+  '1 week', '(25%, 50%, 75%)', 'Accent', 'AMS Filament Backup',
+  '{{ams}} Slot {{slot}}', 'Auto', 'Auto Home', 'Bambu Cloud',
+  'Batch', 'Batches', 'Branch', 'Budget',
+  'Camera', 'China', 'Client Secret', 'Cloud',
+  'Commit', 'Compact', '({{count}}/8)', '{{count}} downloads',
+  '{{count}} filament', '({{count}} item)', '{{count}} item', '({{count}} items)',
+  '{{count}} items', '{{count}} object', 'Dashboard', 'Diagnose',
+  'Diameter', 'EC984C,#6CD4BC,A66EB9,D87694', 'Effect', 'email',
+  'ETA {{minutes}} min', 'Expert', 'Extruder', 'Extruders',
+  'Factor', 'Filament', 'Filament {{index}} ({{type}})', 'Filament {{n}}',
+  '{{filament}} @ {{temp}}°C', 'Filters', 'Firmware', 'Flow',
+  'Galaxy', 'Gap fill', 'Hex', 'Hex: #{{hex}}',
+  'Host', 'In browser', 'Interval', 'Interval (min)',
+  'Interval ({{type}})', 'Ironing', 'Jade White, Fire Red...', 'Label',
+  'Label...', 'LAN Developer Mode', 'Live', 'Long-Lived Access Token',
+  'Ludicrous (166%)', 'MakerWorld: {{designer}}', 'Metadata', 'Min',
+  'Model', '{{name}} — {{stage}} ({{percent}}%) — {{elapsed}}', '{{name}} - Timelapse', 'Nozzle',
+  'Nozzle 2', '{{n}} run', '{{n}} runs', 'Offline',
+  'Online', 'Open', 'Orca Cloud', 'parallel',
+  'Personal Access Token', 'Pipeline', 'Pipelines', 'Platform',
+  'Pressure Advance', 'Prime tower', 'Printer', 'Printer:',
+  '{{printer}}: {{error}}', '{{printer}} is offline', 'Printer is offline', 'Printer offline',
+  'Printers', 'Project', 'Project: {{name}}', 'Protocol',
+  'Providers', 'Provider: {{type}}', 'Proxy', 'Recent',
+  'Records', 'round robin', 'Scopes', 'Score',
+  'sets', 'Skirt / brim', 'Slicer',
+  'Sport (124%)', 'Start', 'Status', 'Subtype',
+  'Support', 'Tag', 'Tags', 'Temp',
+  'Timelapse', 'Topic', 'Trend', 'Type',
+  'Type:', 'Updates', 'Uptime', 'Urgent',
+  'Warm', '{{weight}}g', 'Workflow',
+];
+
 const IDENTICAL_TO_EN_ALLOWED = {
   de: new Set(DE_COGNATES),
   fr: new Set(FR_COGNATES),
@@ -407,6 +467,8 @@ const IDENTICAL_TO_EN_ALLOWED = {
   'zh-TW': new Set(ZH_TW_COGNATES),
   tr: new Set(TR_COGNATES),
   ru: new Set(RU_COGNATES),
+  uk: new Set(UK_COGNATES),
+  nl: new Set(NL_COGNATES),
 };
 
 // Pure comparison logic, exported so tests can verify each failure mode

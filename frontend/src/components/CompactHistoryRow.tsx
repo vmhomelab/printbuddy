@@ -16,6 +16,7 @@ import { api } from '../api/client';
 import { type TimeFormat, formatDuration, formatRelativeTime } from '../utils/date';
 import type { PrintQueueItem, Permission } from '../api/client';
 import { Button } from './Button';
+import { queueItemDisplayName } from '../utils/queueItemName';
 
 const STATUS_CONFIG = {
   completed: { icon: CheckCircle, color: 'text-emerald-600 dark:text-emerald-400', border: 'border-l-emerald-500' },
@@ -54,7 +55,7 @@ export function CompactHistoryRow({
 }) {
   const config = STATUS_CONFIG[item.status as keyof typeof STATUS_CONFIG] || STATUS_CONFIG.cancelled;
   const StatusIcon = config.icon;
-  const displayName = item.archive_name || item.library_file_name || `File #${item.archive_id || item.library_file_id}`;
+  const displayName = queueItemDisplayName(item);
 
   const thumbnailUrl = item.archive_thumbnail
     ? api.getArchiveThumbnail(item.archive_id!)

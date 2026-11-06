@@ -2,7 +2,7 @@ import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/rea
 import { AlertCircle, AlertTriangle, Loader2, Pencil, Printer, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { PrinterStatus, PrintQueueItemCreate, PrintQueueItemUpdate, SpoolAssignment } from '../../api/client';
+import type { CostCenterSummary, PrintQueueItemCreate, PrintQueueItemUpdate, SlotMaterial } from '../../api/client';
 import { api } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
 import { Card, CardContent } from '../Card';
@@ -17,12 +17,13 @@ import {
 } from '../../hooks/useFilamentMapping';
 import { useMultiPrinterFilamentMapping, type PerPrinterConfig } from '../../hooks/useMultiPrinterFilamentMapping';
 import { getColorName } from '../../utils/colors';
-import { isGcodeCompatible } from '../../utils/printer';
+import { isGcodeCompatible, isPrinterCurrentlyDispatchable } from '../../utils/printer';
 import { getCurrencySymbol } from '../../utils/currency';
 import { getBedTypeInfo } from '../../utils/bedType';
 import { toDateTimeLocalValue, parseUTCDate } from '../../utils/date';
-import { getGlobalTrayId, isPlaceholderDate, effectivePreferLowest } from '../../utils/amsHelpers';
+import { isPlaceholderDate, effectivePreferLowest } from '../../utils/amsHelpers';
 import { getPrinterIdsWithSpoolAssignment } from '../../utils/spoolAssignments';
+import { resolveArchiveSlicerAmsMapping } from './archiveAmsMapping';
 import { FilamentMapping } from './FilamentMapping';
 import { FilamentOverride } from './FilamentOverride';
 import { PlateSelector } from './PlateSelector';
@@ -35,6 +36,8 @@ import {
   getSharedSupportedPrintOptionKeys,
   sanitizePrintOptionsForPrinter,
 } from './printOptionCapabilities';
+import { VariantCandidates, type VariantCandidate } from './VariantCandidates';
+import { CostCenterSelect } from './CostCenterSelect';
 import type {
   AssignmentMode,
   CalibrationMode,
@@ -65,21 +68,46 @@ export function PrintModal({
   onSuccess,
   projectId,
   cleanupLibraryAfterDispatch,
+  variantFiles,
 }: PrintModalProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
-  const { hasPermission } = useAuth();
+  const { hasPermission, user } = useAuth();
 
   // Determine if we're printing a library file
   const isLibraryFile = !!libraryFileId && !archiveId;
   const isEditing = mode === 'edit-queue-item';
+
+  // Cross-model alternatives (#671). One candidate is not a choice, so a
+  // single-entry list behaves exactly like an ordinary print.
+  const isCrossModel = mode === 'create' && (variantFiles?.length ?? 0) > 1;
+  // Editing an already-queued cross-model item. The candidates are shown so the
+  // dialog doesn't misrepresent the job as a plain "Any H2D" — which is what it
+  // did before, offering a printer picker whose Save would have left a row with
+  // both variants and a printer_id. They are not editable here: changing the
+  // set after queueing needs a variant-level API that doesn't exist, and the
+  // backend refuses the printer/model change either way.
+  const editingVariants: VariantCandidate[] =
+    mode === 'edit-queue-item' && (queueItem?.variants?.length ?? 0) > 1
+      ? queueItem!.variants!.map((v) => ({
+          id: v.library_file_id,
+          filename: v.filename,
+          sliced_for_model: v.target_model,
+        }))
+      : [];
+  const hasEditingVariants = editingVariants.length > 0;
+  const [candidates, setCandidates] = useState<VariantCandidate[]>(variantFiles ?? []);
+  const [candidatePlates, setCandidatePlates] = useState<Record<number, number | null>>({});
 
   type FilamentWarningItem = {
     printerName: string;
     slotLabel: string;
     requiredGrams: number;
     remainingGrams: number;
+    /** True when AMS Filament Backup pooled more than one spool for this slot;
+     *  `requiredGrams` / `remainingGrams` are then the pooled totals. */
+    pooled?: boolean;
   };
 
   // Multiple printer selection (used for all modes now)
@@ -107,6 +135,11 @@ export function PrintModal({
 
   // Quantity — number of copies (creates a batch if > 1)
   const [quantity, setQuantity] = useState(1);
+
+  // Per-plate quantities for multi-plate files (#342). Keyed by plate index;
+  // a plate with no entry means one run. Only used in create mode on a
+  // multi-plate file, where it replaces the single global Quantity field.
+  const [plateQuantities, setPlateQuantities] = useState<Record<number, number>>({});
 
   const [printOptions, setPrintOptions] = useState<PrintOptions>(() => {
     if (mode === 'edit-queue-item' && queueItem) {
@@ -177,6 +210,11 @@ export function PrintModal({
 
   // Assignment mode: 'printer' (specific) or 'model' (any of model)
   const [assignmentMode, setAssignmentMode] = useState<AssignmentMode>(() => {
+    // Cross-model alternatives are model-based by definition — naming one
+    // printer would defeat the point of offering the other file.
+    if (isCrossModel) {
+      return 'model';
+    }
     // Initialize from queue item if editing with target_model
     if (mode === 'edit-queue-item' && queueItem?.target_model) {
       return 'model';
@@ -199,6 +237,12 @@ export function PrintModal({
     }
     return null;
   });
+
+  const [selectedCostCenterId, setSelectedCostCenterId] = useState<number | null>(() =>
+    mode === 'edit-queue-item' ? queueItem?.cost_center_id ?? null : null
+  );
+  const [estimatedCost, setEstimatedCost] = useState<number | null>(queueItem?.estimated_cost ?? null);
+  const [estimatedCostsByPlate, setEstimatedCostsByPlate] = useState<Record<number, number | null>>({});
 
   // Filament overrides for model-based assignment: slot_id -> {type, color}
   const [filamentOverrides, setFilamentOverrides] = useState<Record<number, { type: string; color: string }>>(() => {
@@ -281,6 +325,7 @@ export function PrintModal({
 
   const currencySymbol = getCurrencySymbol(settings?.currency || 'USD');
   const defaultCostPerKg = settings?.default_filament_cost ?? 0;
+  const billingEnabled = settings?.billing_enabled === true;
 
   const { data: printers, isLoading: loadingPrinters } = useQuery({
     queryKey: ['printers'],
@@ -301,12 +346,39 @@ export function PrintModal({
     [selectedPrinterRecords]
   );
 
+  // Printbuddy: inventory spool assignments surface a selectable external slot
+  // for printers that report no vt_tray (Moonraker / Elegoo), see
+  // buildLoadedFilaments.
   const { data: spoolAssignments } = useQuery({
     queryKey: ['spool-assignments'],
     queryFn: () => api.getAssignments(),
     staleTime: 30 * 1000,
     enabled: !isEditing && assignmentMode === 'printer',
   });
+
+  const { data: myCostCenters, isLoading: loadingCostCenters } = useQuery({
+    queryKey: ['finance', 'cost-centers', 'mine'],
+    queryFn: api.getMyCostCenters,
+    enabled: !!user && billingEnabled,
+  });
+
+  const printableCostCenters = useMemo(
+    () => (myCostCenters || []).filter((center: CostCenterSummary) => center.can_print && center.is_active),
+    [myCostCenters],
+  );
+  const selectedCostCenter = useMemo(
+    () => printableCostCenters.find((center) => center.id === selectedCostCenterId) ?? null,
+    [printableCostCenters, selectedCostCenterId],
+  );
+
+  useEffect(() => {
+    if (printableCostCenters.length === 0) return;
+    if (selectedCostCenterId != null && printableCostCenters.some((center) => center.id === selectedCostCenterId)) {
+      return;
+    }
+    const preferredPrivate = printableCostCenters.find((center) => center.is_private);
+    setSelectedCostCenterId(preferredPrivate?.id ?? printableCostCenters[0].id);
+  }, [printableCostCenters, selectedCostCenterId]);
 
   // Fetch per-printer Map<globalTrayId, gramsRemaining> via the dedicated
   // backend endpoint (#1766). Server-side mirrors `_build_inventory_remain_overrides`
@@ -318,6 +390,10 @@ export function PrintModal({
       queryKey: ['printer-inventory-remain', printerId],
       queryFn: () => api.getInventoryRemain(printerId),
       staleTime: 30 * 1000,
+      // Same key, same reason as FilamentMapping's copy — see the note there.
+      // Concurrent mounts dedupe, so opening the dialog costs one fetch per
+      // printer however many plate panels are on screen.
+      refetchOnMount: 'always',
       enabled: selectedPrinters.length > 0,
     })),
   });
@@ -331,6 +407,23 @@ export function PrintModal({
         const gtid = Number(key);
         if (!Number.isNaN(gtid)) printerMap.set(gtid, grams);
       });
+      result.set(printerId, printerMap);
+    });
+    return result;
+  }, [selectedPrinters, inventoryRemainQueries]);
+
+  // Same endpoint, the other half of its payload: every inventory-bound slot on
+  // the printer with the backend's material identity and extruder side. The
+  // pre-flight filament check groups on these instead of resolving spools
+  // itself, which is what makes it agree with the dispatcher and work in
+  // Spoolman mode (where the modal has no assignment rows of its own).
+  const slotMaterialsPerPrinter = useMemo(() => {
+    const result = new Map<number, Map<number, SlotMaterial>>();
+    selectedPrinters.forEach((printerId, idx) => {
+      const slots = inventoryRemainQueries[idx]?.data?.slot_materials;
+      if (!slots) return;
+      const printerMap = new Map<number, SlotMaterial>();
+      slots.forEach((slot) => printerMap.set(slot.global_tray_id, slot));
       result.set(printerId, printerMap);
     });
     return result;
@@ -352,6 +445,19 @@ export function PrintModal({
 
   // Get sliced_for_model from archive or library file
   const slicedForModel = archiveDetails?.sliced_for_model || libraryFileDetails?.sliced_for_model || null;
+
+  // The archive's own saved AMS-slot pick from the slicer (see the "Save AMS
+  // mapping" virtual-printer setting) — undefined for library files or
+  // archives that predate the feature / had it off at print time, and
+  // deliberately undefined unless the selected printer is the one the mapping
+  // was resolved against. See `resolveArchiveSlicerAmsMapping`.
+  const archiveSlicerAmsMapping = useMemo(
+    () =>
+      isLibraryFile
+        ? undefined
+        : resolveArchiveSlicerAmsMapping(archiveDetails?.extra_data, effectivePrinterId),
+    [isLibraryFile, archiveDetails?.extra_data, effectivePrinterId],
+  );
 
   // Fetch plates for archives
   const { data: archivePlatesData, isError: archivePlatesError } = useQuery({
@@ -399,6 +505,42 @@ export function PrintModal({
     enabled: assignmentMode === 'model' && !!targetModel,
   });
 
+  // A cross-model job (#671) has no single target model, so the query above is
+  // disabled and the override UI would silently vanish — leaving less control
+  // than the ordinary "Any X1C" flow offers. Ask each candidate's model instead
+  // and offer the union: the job can land on any of them, so anything loaded on
+  // any of them is a legitimate choice. Picking one only some models have is
+  // allowed and meaningful — it narrows which candidates can match.
+  const candidateModels = useMemo(
+    () => Array.from(new Set(candidates.map((c) => c.sliced_for_model).filter((m): m is string => !!m))),
+    [candidates],
+  );
+  const candidateFilamentQueries = useQueries({
+    queries: isCrossModel
+      ? candidateModels.map((model) => ({
+          queryKey: ['available-filaments', model, targetLocation],
+          queryFn: () => api.getAvailableFilaments(model, targetLocation ?? undefined),
+        }))
+      : [],
+  });
+  const crossModelFilaments = useMemo(() => {
+    const seen = new Set<string>();
+    const merged: NonNullable<typeof availableFilaments> = [];
+    for (const query of candidateFilamentQueries) {
+      for (const filament of query.data ?? []) {
+        // Same type+colour loaded on two models is one choice, not two.
+        const key = `${filament.type}|${filament.color}|${filament.tray_info_idx}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          merged.push(filament);
+        }
+      }
+    }
+    return merged;
+  }, [candidateFilamentQueries]);
+
+  const effectiveAvailableFilaments = isCrossModel ? crossModelFilaments : availableFilaments;
+
   // Only fetch printer status when single printer selected (for filament mapping)
   const { data: printerStatus, isLoading: printerStatusLoading } = useQuery({
     queryKey: ['printer-status', effectivePrinterId],
@@ -413,13 +555,6 @@ export function PrintModal({
     settings?.prefer_lowest_filament,
     printerStatus?.ams_filament_backup,
   );
-
-  const isPrinterCurrentlyDispatchable = (status: PrinterStatus | undefined): boolean => {
-    if (!status?.connected) return false;
-    if (status.awaiting_plate_clear) return false;
-    if (status.ams?.some((ams) => ams.dry_time > 0)) return false;
-    return ['IDLE', 'FINISH', 'FAILED'].includes(status.state ?? '');
-  };
 
   const asapToastShouldPromiseLaterStart = async (): Promise<boolean> => {
     if (scheduleOptions.scheduleType !== 'asap' || assignmentMode !== 'printer') return false;
@@ -505,6 +640,23 @@ export function PrintModal({
   // Manual slot overrides are per plate: slot 3 of plate 1 and slot 3 of plate 2
   // are different prints and may want different trays.
   const [manualMappingsByPlate, setManualMappingsByPlate] = useState<Record<number, Record<number, number>>>({});
+  // Rack position per filament group (#1784), and one set per plate for the
+  // per-plate panels — each plate has its own groups.
+  const [nozzleRackChoice, setNozzleRackChoice] = useState<Record<number, number>>(() => {
+    // Re-opening an item shows the positions it was queued with, so editing
+    // one filament does not silently drop the rest.
+    if (mode === 'edit-queue-item' && queueItem?.nozzle_rack_choice) {
+      const seeded: Record<number, number> = {};
+      for (const [groupId, position] of Object.entries(queueItem.nozzle_rack_choice)) {
+        const group = Number(groupId);
+        if (Number.isInteger(group) && Number.isInteger(position)) seeded[group] = position;
+      }
+      return seeded;
+    }
+    return {};
+  });
+  const [nozzleRackChoiceByPlate, setNozzleRackChoiceByPlate] =
+    useState<Record<number, Record<number, number>>>({});
 
   // Only ever computed for a single target printer: a tray id means nothing on a
   // different printer, so a fan-out across printers must not reuse these.
@@ -663,32 +815,26 @@ export function PrintModal({
   const isMultiPlate = platesData?.is_multi_plate ?? false;
   const plates = platesData?.plates ?? [];
 
-  const spoolAssignmentsByPrinter = useMemo(() => {
-    const map = new Map<number, Map<number, SpoolAssignment>>();
-    if (!spoolAssignments) return map;
-    spoolAssignments.forEach((assignment) => {
-      const isExternal = assignment.ams_id === 255;
-      const globalTrayId = getGlobalTrayId(
-        assignment.ams_id,
-        assignment.tray_id,
-        isExternal
-      );
-      const printerMap = map.get(assignment.printer_id) ?? new Map();
-      printerMap.set(globalTrayId, assignment);
-      map.set(assignment.printer_id, printerMap);
-    });
-    return map;
-  }, [spoolAssignments]);
-
   const filamentWarningMessage = useMemo(() => {
     if (!filamentWarningItems || filamentWarningItems.length === 0) return '';
     const lines = filamentWarningItems.map((item) =>
-      t('printModal.insufficientFilamentLine', {
-        printer: item.printerName,
-        slot: item.slotLabel,
-        required: Math.round(item.requiredGrams),
-        remaining: Math.round(item.remainingGrams),
-      })
+      // Under AMS Filament Backup the shortfall is against the pooled spools,
+      // not the one slot — quoting that slot's remaining next to a pooled
+      // requirement reads as a contradiction ("needs 1441g, remaining 1000g"
+      // while a second full spool sits next to it).
+      item.pooled
+        ? t('printModal.insufficientFilamentLinePooled', {
+            printer: item.printerName,
+            slot: item.slotLabel,
+            required: Math.round(item.requiredGrams),
+            remaining: Math.round(item.remainingGrams),
+          })
+        : t('printModal.insufficientFilamentLine', {
+            printer: item.printerName,
+            slot: item.slotLabel,
+            required: Math.round(item.requiredGrams),
+            remaining: Math.round(item.remainingGrams),
+          })
     );
     return [t('printModal.insufficientFilamentMessage'), ...lines].join('\n');
   }, [filamentWarningItems, t]);
@@ -740,6 +886,11 @@ export function PrintModal({
   const handleSubmit = async (e?: React.FormEvent, options?: { skipFilamentCheck?: boolean; skipMissingSpoolConfirmation?: boolean }) => {
     e?.preventDefault();
 
+    if (billingEnabled && selectedCostCenter == null) {
+      showToast(t('printModal.noPrintableCostCenters'), 'error');
+      return;
+    }
+
     if (
       !options?.skipMissingSpoolConfirmation &&
       !isEditing &&
@@ -774,13 +925,7 @@ export function PrintModal({
         ? selectedPlateIds.map((plateId) => ({ plateId, reqs: perPlateReqs.get(plateId)?.filaments ?? [] }))
         : [{ plateId: selectedPlate, reqs: effectiveFilamentReqs?.filaments ?? [] }];
 
-      if (plateJobs.some((job) => job.reqs.length > 0) && spoolAssignmentsByPrinter.size > 0) {
-        const getRemainingWeight = (labelWeight: number, weightUsed: number) => {
-          if (!Number.isFinite(labelWeight) || labelWeight <= 0) return null;
-          if (!Number.isFinite(weightUsed) || weightUsed < 0) return null;
-          return Math.max(0, labelWeight - weightUsed);
-        };
-
+      if (plateJobs.some((job) => job.reqs.length > 0) && slotMaterialsPerPrinter.size > 0) {
         for (const printerId of selectedPrinters) {
           const printerStatusForWarning = selectedPrinters.length > 1
             ? multiPrinterMapping.printerResults.find((result) => result.printerId === printerId)?.status
@@ -788,10 +933,13 @@ export function PrintModal({
 
           const loadedFilaments = buildLoadedFilaments(printerStatusForWarning, spoolAssignments, printerId);
           const slotLabelByTray = new Map(loadedFilaments.map((f) => [f.globalTrayId, f.label]));
-          const assignments = spoolAssignmentsByPrinter.get(printerId);
+          // Slots the backend could price. A slot missing here is one with no
+          // inventory binding, or one whose Spoolman spool it could not read —
+          // both mean "nothing to weigh", never "empty".
+          const slotMaterials = slotMaterialsPerPrinter.get(printerId);
           const printerName = printers?.find((p) => p.id === printerId)?.name ?? `Printer ${printerId}`;
 
-          if (!assignments) continue;
+          if (!slotMaterials || slotMaterials.size === 0) continue;
 
           const gramsByTray = new Map<number, number>();
           for (const job of plateJobs) {
@@ -808,19 +956,62 @@ export function PrintModal({
             });
           }
 
+          // With AMS Filament Backup ON the firmware switches to any other slot
+          // holding the same material, so the print is only short when the whole
+          // pool is (#1762). The dispatcher has accounted for this since #1762 —
+          // this check did not, and blocked prints the dispatcher would have run.
+          // Dual-extruder printers pool per side: the firmware cannot cross
+          // nozzles even with the backup bit set, which is why `extruder` is part
+          // of the key the backend hands us.
+          const backupOn = printerStatusForWarning?.ams_filament_backup === true;
+          const poolKey = (slot: SlotMaterial) => `${slot.material_key}#${slot.extruder}`;
+
+          const pooledGrams = new Map<string, number>();
+          const pooledSlotCount = new Map<string, number>();
+          const pooledRequired = new Map<string, number>();
+          if (backupOn) {
+            slotMaterials.forEach((slot) => {
+              const key = poolKey(slot);
+              pooledGrams.set(key, (pooledGrams.get(key) ?? 0) + slot.remaining_g);
+              pooledSlotCount.set(key, (pooledSlotCount.get(key) ?? 0) + 1);
+            });
+            for (const [globalTrayId, requiredGrams] of gramsByTray) {
+              const slot = slotMaterials.get(globalTrayId);
+              if (!slot) continue;
+              const key = poolKey(slot);
+              pooledRequired.set(key, (pooledRequired.get(key) ?? 0) + requiredGrams);
+            }
+          }
+
           for (const [globalTrayId, requiredGrams] of gramsByTray) {
-            const spool = assignments.get(globalTrayId)?.spool;
-            if (!spool) continue;
+            const slot = slotMaterials.get(globalTrayId);
+            if (!slot) continue;
 
-            const remainingGrams = getRemainingWeight(spool.label_weight, spool.weight_used);
-            if (remainingGrams === null) continue;
-            if (remainingGrams >= requiredGrams) continue;
+            const slotLabel = slotLabelByTray.get(globalTrayId) ?? `Tray ${globalTrayId}`;
 
+            if (backupOn) {
+              const key = poolKey(slot);
+              const available = pooledGrams.get(key) ?? 0;
+              const needed = pooledRequired.get(key) ?? 0;
+              if (available >= needed) continue;
+              warningItems.push({
+                printerName,
+                slotLabel,
+                requiredGrams: needed,
+                remainingGrams: available,
+                // A pool of one is just the slot itself — same numbers, so use
+                // the plain wording rather than talk about spools that aren't there.
+                pooled: (pooledSlotCount.get(key) ?? 1) > 1,
+              });
+              continue;
+            }
+
+            if (slot.remaining_g >= requiredGrams) continue;
             warningItems.push({
               printerName,
-              slotLabel: slotLabelByTray.get(globalTrayId) ?? `Tray ${globalTrayId}`,
+              slotLabel,
               requiredGrams,
-              remainingGrams,
+              remainingGrams: slot.remaining_g,
             });
           }
         }
@@ -837,16 +1028,20 @@ export function PrintModal({
       showToast('Please select at least one printer', 'error');
       return;
     }
-    if (assignmentMode === 'model' && !targetModel) {
+    // A cross-model job has no single target model — each candidate carries its
+    // own, and the backend gates each of them separately. Both checks below are
+    // about the one-model case only.
+    if (!isCrossModel && assignmentMode === 'model' && !targetModel) {
       showToast('Please select a target printer model', 'error');
       return;
     }
     // Cross-model safety gate (#2578) — mirrors the backend's 400 so the user
     // gets inline feedback instead of a failed request.
-    if (assignmentMode === 'model' && !isGcodeCompatible(slicedForModel, targetModel)) {
+    if (!isCrossModel && assignmentMode === 'model' && !isGcodeCompatible(slicedForModel, targetModel)) {
       showToast(`File was sliced for ${slicedForModel} and cannot be dispatched to ${targetModel} printers`, 'error');
       return;
     }
+
 
     setIsSubmitting(true);
     // Calculate total API calls: plates × printers (or 1 for model-based)
@@ -926,28 +1121,87 @@ export function PrintModal({
       return {};
     };
 
-    // Multi-plate auto-batch: when the user adds 2+ plates from one source in
-    // a single create submission, pre-create a PrintBatch and pass its
-    // id to each subsequent addToQueue call so the queue UI groups them as a
-    // collapsible batch. Only triggered for single-target submissions —
-    // multi-printer fan-out keeps the old per-item shape.
+    // Cross-model alternatives (#671): ONE item carrying a candidate per file,
+    // in the order the user arranged. This returns before the plate/printer
+    // fan-out below because it deliberately fans out to nothing — the whole
+    // point is that exactly one of these candidates ever runs.
+    //
+    // Filament overrides are shared rather than per-candidate, matching how
+    // single-model assignment already behaves: the printer is unknown at queue
+    // time, so what is expressed here is "this job needs PETG", which is true of
+    // every slice of the same job. The AMS mapping is likewise absent — the
+    // scheduler computes it against the printer it actually picks.
+    if (isCrossModel) {
+      try {
+        await api.addToQueue({
+          variants: candidates.map((c) => ({
+            library_file_id: c.id,
+            plate_id: candidatePlates[c.id] ?? null,
+            filament_overrides: filamentOverridesArray,
+          })),
+          target_location: targetLocation,
+          require_previous_success: scheduleOptions.requirePreviousSuccess,
+          auto_off_after: scheduleOptions.autoOffAfter,
+          gcode_injection: scheduleOptions.gcodeInjection,
+          manual_start: scheduleOptions.scheduleType === 'queue' && scheduleOptions.requireManualStart,
+          scheduled_time: scheduleOptions.scheduleType === 'scheduled' && scheduleOptions.scheduledTime
+            ? new Date(scheduleOptions.scheduledTime).toISOString()
+            : undefined,
+          quantity,
+          ...printOptions,
+          project_id: projectId ?? undefined,
+        });
+        showToast(t('printModal.variants.queued', { count: candidates.length }), 'success');
+        queryClient.invalidateQueries({ queryKey: ['queue'] });
+        onSuccess?.();
+        onClose();
+      } catch (error) {
+        showToast(error instanceof Error ? error.message : String(error), 'error');
+      } finally {
+        setIsSubmitting(false);
+      }
+      return;
+    }
+
+    // Batch order (#342): a create submission that produces more than one run
+    // from one source is pre-created as a batch carrying per-plate targets,
+    // and its id is passed to each subsequent addToQueue call. The targets are
+    // what make the order able to say a failed run is still owed — without
+    // them the batch only knows what it happened to queue. Only for
+    // single-target submissions; multi-printer fan-out keeps the old per-item
+    // shape, where "how many" is answered by the printer count.
+    const plateTargets = platesToQueue.map((plate, index) => {
+      const plateIndex = plate ? plate.index : selectedPlate;
+      return {
+        plate_id: plateIndex,
+        plate_name: plate ? (plate.name || null) : null,
+        quantity_target: quantityForPlate(plateIndex),
+        sort_order: index,
+      };
+    });
+    const totalRuns = plateTargets.reduce((sum, target) => sum + target.quantity_target, 0);
     const shouldAutoBatch =
       mode === 'create'
-      && platesToQueue.length > 1
+      && (platesToQueue.length > 1 || totalRuns > 1)
       && (assignmentMode === 'model' || selectedPrinters.length === 1);
     let autoBatchId: number | null = null;
     if (shouldAutoBatch) {
       try {
         const baseName = (archiveName || '').replace(/\.gcode\.3mf$/i, '').replace(/\.3mf$/i, '');
-        const batchName = `${baseName || 'Batch'} · ${platesToQueue.length} plates`;
+        const batchName = platesToQueue.length > 1
+          ? `${baseName || 'Batch'} · ${platesToQueue.length} plates`
+          : `${baseName || 'Batch'} ×${totalRuns}`;
         const batch = await api.createBatch({
           name: batchName,
           archive_id: isLibraryFile ? undefined : archiveId,
           library_file_id: isLibraryFile ? libraryFileId : undefined,
+          plates: plateTargets,
         });
         autoBatchId = batch.id;
       } catch {
         // Non-fatal: fall back to ungrouped items so the queue still works.
+        // The server still creates a plain batch when quantity > 1, so the
+        // queue grouping survives even when the order layer doesn't.
         autoBatchId = null;
       }
     }
@@ -968,8 +1222,19 @@ export function PrintModal({
     };
 
     // Common queue data for create and edit modes
+    // One panel per plate when several are selected, one shared panel
+    // otherwise -- the same split the AMS mappings use above.
+    const rackChoiceForPlate = (plateId: number | null): Record<number, number> | undefined => {
+      const choice = plateId != null && isMultiPlateSelection
+        ? nozzleRackChoiceByPlate[plateId]
+        : nozzleRackChoice;
+      return choice && Object.keys(choice).length > 0 ? choice : undefined;
+    };
+
     const getQueueData = (printerId: number | null, plateOverride?: number | null): PrintQueueItemCreate => {
       const plateId = plateOverride !== undefined ? plateOverride : selectedPlate;
+      const plateEstimatedCost =
+        plateId != null && isMultiPlateSelection ? estimatedCostsByPlate[plateId] ?? null : estimatedCost;
       return {
       printer_id: assignmentMode === 'printer' ? printerId : null,
       target_model: assignmentMode === 'model' ? targetModel : null,
@@ -987,6 +1252,11 @@ export function PrintModal({
       // re-flag the item on its first dispatch tick (#1698-followup).
       skip_filament_check: options?.skipFilamentCheck === true ? true : undefined,
       ams_mapping: printerId ? getMappingForPrinter(printerId, plateId) : undefined,
+      // Rack positions per filament group (#1784). Only sent in printer mode:
+      // in model mode the target printer is not known yet, and the rack it
+      // will be dispatched to cannot be validated against here. The dispatcher
+      // assigns them itself in that case.
+      nozzle_rack_choice: printerId ? rackChoiceForPlate(plateId) : undefined,
       plate_id: plateId,
       scheduled_time: scheduleOptions.scheduleType === 'scheduled' && scheduleOptions.scheduledTime
         ? new Date(scheduleOptions.scheduledTime).toISOString()
@@ -994,6 +1264,8 @@ export function PrintModal({
       ...getPrintOptionsForPrinter(printerId),
       ...getElegooCc1OptionsForPrinter(printerId),
       project_id: projectId ?? undefined,
+      cost_center_id: billingEnabled ? selectedCostCenterId : undefined,
+      estimated_cost: billingEnabled && selectedCostCenterId != null ? plateEstimatedCost : undefined,
       batch_id: autoBatchId ?? undefined,
       cleanup_library_after_dispatch: cleanupLibraryAfterDispatch,
       };
@@ -1026,13 +1298,16 @@ export function PrintModal({
                 : null,
               ...getPrintOptionsForPrinter(null),
               ...getElegooCc1OptionsForPrinter(null),
+              cost_center_id: billingEnabled ? selectedCostCenterId : undefined,
+              estimated_cost: billingEnabled && selectedCostCenterId != null ? estimatedCost : undefined,
             };
             await updateQueueMutation.mutateAsync(updateData);
           } else {
             // Add-to-queue mode with model-based assignment
             const queueData = getQueueData(null, plateId);
-            if (effectiveQuantity > 1) queueData.quantity = effectiveQuantity;
-            applyAsapInsertion(queueData, null, effectiveQuantity);
+            const plateQuantity = quantityForPlate(plateId);
+            if (plateQuantity > 1) queueData.quantity = plateQuantity;
+            applyAsapInsertion(queueData, null, plateQuantity);
             await addToQueueMutation.mutateAsync(queueData);
           }
           results.success++;
@@ -1076,19 +1351,30 @@ export function PrintModal({
                 gcode_injection: scheduleOptions.gcodeInjection,
                 manual_start: scheduleOptions.scheduleType === 'queue' && scheduleOptions.requireManualStart,
                 ams_mapping: printerMapping,
+                // null, not undefined: an operator who cleared their picks
+                // means "assign these again", and undefined would leave the
+                // stale ones on the row (#1784).
+                nozzle_rack_choice: rackChoiceForPlate(plateId) ?? null,
                 plate_id: plateId,
                 scheduled_time: scheduleOptions.scheduleType === 'scheduled' && scheduleOptions.scheduledTime
                   ? new Date(scheduleOptions.scheduledTime).toISOString()
                   : null,
                 ...getPrintOptionsForPrinter(printerId),
                 ...getElegooCc1OptionsForPrinter(printerId),
+                cost_center_id: billingEnabled ? selectedCostCenterId : undefined,
+                estimated_cost: billingEnabled && selectedCostCenterId != null
+                  ? (plateId != null && isMultiPlateSelection
+                    ? estimatedCostsByPlate[plateId] ?? null
+                    : estimatedCost)
+                  : undefined,
               };
               await updateQueueMutation.mutateAsync(updateData);
             } else {
               // New print mode, staggered print, or edit mode with additional entries
               const queueData = getQueueData(printerId, plateId);
-              if (effectiveQuantity > 1) queueData.quantity = effectiveQuantity;
-              applyAsapInsertion(queueData, printerId, effectiveQuantity);
+              const plateQuantity = quantityForPlate(plateId);
+              if (plateQuantity > 1) queueData.quantity = plateQuantity;
+              applyAsapInsertion(queueData, printerId, plateQuantity);
               // Apply stagger offset for groups after the first
               if (useStagger) {
                 const groupIndex = Math.floor(i / scheduleOptions.staggerGroupSize);
@@ -1154,11 +1440,18 @@ export function PrintModal({
   const canSubmit = useMemo(() => {
     if (isPending) return false;
 
+    // Billing requires a server-authorized cost center. Wait for the query and
+    // keep submission disabled when the user has no printable center, rather
+    // than letting the API fail with an unexplained 400.
+    if (billingEnabled && (loadingCostCenters || selectedCostCenter == null)) return false;
+
     // Need valid printer/model selection
     if (assignmentMode === 'printer' && selectedPrinters.length === 0) return false;
-    if (assignmentMode === 'model' && !targetModel) return false;
+    // Both are about the single-model case. A cross-model job has no one target
+    // model, and each candidate is gated against its own by the backend (#671).
+    if (!isCrossModel && assignmentMode === 'model' && !targetModel) return false;
     // Cross-model mismatch cannot be queued (#2578)
-    if (assignmentMode === 'model' && !isGcodeCompatible(slicedForModel, targetModel)) return false;
+    if (!isCrossModel && assignmentMode === 'model' && !isGcodeCompatible(slicedForModel, targetModel)) return false;
 
     // For multi-plate files, need at least one plate selected
     if (isMultiPlate && selectedPlates.size === 0) return false;
@@ -1187,10 +1480,29 @@ export function PrintModal({
     perPlateReqsPending,
     perPlateReqsFailed,
     printerStatusLoading,
+    isCrossModel,
+    billingEnabled,
+    loadingCostCenters,
+    selectedCostCenter,
   ]);
 
   // Quantity only applies for single-printer or model-based assignment (not multi-printer)
   const effectiveQuantity = (assignmentMode === 'printer' && selectedPrinters.length > 1) ? 1 : quantity;
+
+  // On a multi-plate file the per-plate steppers own the quantity and the
+  // global field is hidden (#342) — the reporter's case is "plate 1 once,
+  // plate 2 twice", which one shared number cannot express. Single-plate
+  // files, and edit mode, keep the single field exactly as before.
+  const usePerPlateQuantities = mode === 'create' && isMultiPlate && plates.length > 1;
+
+  /** Runs to queue for one plate. `null` = the single-plate / whole-file case. */
+  const quantityForPlate = (plateIndex: number | null): number => {
+    if (!usePerPlateQuantities || plateIndex == null) return effectiveQuantity;
+    // Multi-printer fan-out already means one copy per printer; multiplying by
+    // a per-plate count on top would silently produce plates × printers × n.
+    if (assignmentMode === 'printer' && selectedPrinters.length > 1) return 1;
+    return Math.max(1, plateQuantities[plateIndex] ?? 1);
+  };
 
   // Clear gcode_injection if the admin removes all snippets while the modal
   // is open — the checkbox itself hides via hasGcodeSnippets in
@@ -1243,6 +1555,12 @@ export function PrintModal({
     isLibraryFile || (isMultiPlate ? selectedPlate !== null : true)
   );
 
+  useEffect(() => {
+    if (!showFilamentMapping || archiveDataMissing || selectedPrinters.length !== 1) {
+      setEstimatedCost(null);
+    }
+  }, [archiveDataMissing, selectedPrinters.length, showFilamentMapping]);
+
   // Several plates on one printer: one mapping panel per plate, each mapping only
   // the slots its own plate prints. Multi-printer fan-out would be a panel per
   // plate *per printer*, so those items ship without a mapping and the scheduler
@@ -1254,8 +1572,13 @@ export function PrintModal({
   // is the filament each slot must be printed in, which the scheduler matches
   // against whatever printer of the model it picks. Needs the model's loaded
   // filaments to offer as alternatives.
+  // Cross-model items have no targetModel by design — their candidates each
+  // carry their own — so gate on having somewhere to source choices from.
   const showFilamentOverride =
-    assignmentMode === 'model' && !!targetModel && !!availableFilaments && availableFilaments.length > 0;
+    assignmentMode === 'model'
+    && (isCrossModel || !!targetModel)
+    && !!effectiveAvailableFilaments
+    && effectiveAvailableFilaments.length > 0;
 
   // Dual-nozzle gate for the Nozzle Offset Calibration toggle (#1682).
   // Mirrors backend `DUAL_NOZZLE_MODELS` so model-based assignment can show
@@ -1279,8 +1602,14 @@ export function PrintModal({
       className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4"
       onClick={isSubmitting ? undefined : onClose}
     >
+      {/* 4xl rather than the 2xl this was: the filament rows carry the most
+          horizontal content in the dialog — a required name, a nozzle picker on
+          rack machines, and an AMS slot dropdown naming type, colour and
+          remaining weight — and anything narrower truncated the name to
+          "Bamb..." (#1784). 4xl is 896px, so it still fits a 1024-wide laptop
+          with the surrounding padding, and `w-full` keeps it fluid below that. */}
       <Card
-        className="w-full max-w-2xl max-h-[90vh] overflow-y-auto"
+        className="w-full max-w-4xl max-h-[90vh] overflow-y-auto"
         onClick={(e) => e.stopPropagation()}
       >
         <CardContent className="p-0">
@@ -1348,10 +1677,39 @@ export function PrintModal({
               onSelectAll={!isEditing ? () => setSelectedPlates(new Set(plates.map(p => p.index))) : undefined}
               onDeselectAll={!isEditing ? () => setSelectedPlates(new Set()) : undefined}
               multiSelect={!isEditing}
+              quantities={usePerPlateQuantities ? plateQuantities : undefined}
+              onQuantityChange={usePerPlateQuantities
+                ? (plateIndex, value) => setPlateQuantities(prev => ({ ...prev, [plateIndex]: value }))
+                : undefined}
             />
 
+            {/* Cross-model alternatives (#671) replace the printer picker entirely:
+                the user already answered "which printer" by choosing these files,
+                and the remaining question is only which they'd rather have. */}
+            {isCrossModel && (
+              <VariantCandidates
+                candidates={candidates}
+                onReorder={setCandidates}
+                plateByFile={candidatePlates}
+                onPlateChange={(fileId, plateId) =>
+                  setCandidatePlates((prev) => ({ ...prev, [fileId]: plateId }))
+                }
+              />
+            )}
+
+            {hasEditingVariants && (
+              <VariantCandidates
+                candidates={editingVariants}
+                readOnly
+                readOnlyNote={t('printModal.variants.editNote')}
+                onReorder={() => {}}
+                plateByFile={{}}
+                onPlateChange={() => {}}
+              />
+            )}
+
             {/* Printer selection with per-printer mapping — hidden when printer is pre-selected via props */}
-            {!initialSelectedPrinterIds?.length && (
+            {!isCrossModel && !hasEditingVariants && !initialSelectedPrinterIds?.length && (
               <PrinterSelector
                 printers={printers || []}
                 selectedPrinterIds={selectedPrinters}
@@ -1383,7 +1741,7 @@ export function PrintModal({
             {showFilamentOverride && !isMultiPlateSelection && effectiveFilamentReqs && (
               <FilamentOverride
                 filamentReqs={effectiveFilamentReqs}
-                availableFilaments={availableFilaments!}
+                availableFilaments={effectiveAvailableFilaments!}
                 overrides={filamentOverrides}
                 onChange={setFilamentOverrides}
                 forceColorMatch={forceColorMatch}
@@ -1469,6 +1827,9 @@ export function PrintModal({
                 filamentReqs={effectiveFilamentReqs}
                 manualMappings={manualMappings}
                 onManualMappingChange={setManualMappings}
+                onEstimatedCostChange={setEstimatedCost}
+                budgetAvailable={billingEnabled ? selectedCostCenter?.budget_available ?? null : null}
+                quantity={effectiveQuantity}
                 defaultExpanded={!!initialSelectedPrinterIds?.length || (settings?.per_printer_mapping_expanded ?? false)}
                 currencySymbol={currencySymbol}
                 defaultCostPerKg={defaultCostPerKg}
@@ -1476,6 +1837,9 @@ export function PrintModal({
                 onForceColorMatchChange={(slotId, value) =>
                   setForceColorMatch((prev) => ({ ...prev, [slotId]: value }))
                 }
+                archiveAmsMapping={archiveSlicerAmsMapping}
+                nozzleRackChoice={nozzleRackChoice}
+                onNozzleRackChoiceChange={setNozzleRackChoice}
               />
             )}
 
@@ -1495,12 +1859,22 @@ export function PrintModal({
                   onManualMappingChange={(mappings) =>
                     setManualMappingsByPlate((prev) => ({ ...prev, [plateId]: mappings }))
                   }
+                  onEstimatedCostChange={(cost) =>
+                    setEstimatedCostsByPlate((prev) => ({ ...prev, [plateId]: cost }))
+                  }
+                  budgetAvailable={billingEnabled ? selectedCostCenter?.budget_available ?? null : null}
+                  quantity={quantityForPlate(plateId)}
                   defaultExpanded={false}
                   currencySymbol={currencySymbol}
                   defaultCostPerKg={defaultCostPerKg}
                   forceColorMatch={forceColorMatch}
                   onForceColorMatchChange={(slotId, value) =>
                     setForceColorMatch((prev) => ({ ...prev, [slotId]: value }))
+                  }
+                  archiveAmsMapping={archiveSlicerAmsMapping}
+                  nozzleRackChoice={nozzleRackChoiceByPlate[plateId] ?? {}}
+                  onNozzleRackChoiceChange={(choice) =>
+                    setNozzleRackChoiceByPlate((prev) => ({ ...prev, [plateId]: choice }))
                   }
                 />
               );
@@ -1521,8 +1895,28 @@ export function PrintModal({
               />
             )}
 
-            {/* Quantity — create multiple copies (batch). Hidden for multi-printer selection. */}
-            {mode !== 'edit-queue-item' && (assignmentMode === 'model' || selectedPrinters.length <= 1) && (
+            {billingEnabled && printableCostCenters.length > 0 && (
+              <CostCenterSelect
+                costCenters={printableCostCenters}
+                selectedCostCenterId={selectedCostCenterId}
+                onChange={setSelectedCostCenterId}
+              />
+            )}
+            {billingEnabled && !loadingCostCenters && printableCostCenters.length === 0 && (
+              <div
+                role="alert"
+                className="p-3 bg-yellow-100 dark:bg-yellow-500/20 border border-yellow-500/50 rounded-lg text-sm text-yellow-800 dark:text-yellow-300 flex items-start gap-2"
+              >
+                <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+                {t('printModal.noPrintableCostCenters')}
+              </div>
+            )}
+
+            {/* Quantity — create multiple copies (batch). Hidden for multi-printer
+                selection, and for multi-plate files where the per-plate steppers
+                in PlateSelector own the number instead (#342). */}
+            {mode !== 'edit-queue-item' && !usePerPlateQuantities
+              && (assignmentMode === 'model' || selectedPrinters.length <= 1) && (
               <div className="flex items-center gap-3">
                 <label htmlFor="printQuantity" className="text-sm text-bambu-gray whitespace-nowrap">
                   {t('queue.quantity', 'Quantity')}

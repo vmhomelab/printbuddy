@@ -17,6 +17,10 @@ vi.mock('../../api/client', () => ({
     getCloudSettingDetail: vi.fn(),
     saveSlotPreset: vi.fn(),
     getSettings: vi.fn().mockResolvedValue({}),
+    // Queried by the modal for the @BBL short-code matcher. Omitted, it is
+    // undefined here, so the query runs with no queryFn and rejects -- a
+    // stray render at an unpredictable moment in every one of these tests.
+    getSlicerPrinterModels: vi.fn().mockResolvedValue({}),
     updateSettings: vi.fn().mockResolvedValue({}),
     getLocalPresets: vi.fn(),
     getBuiltinFilaments: vi.fn(),
@@ -90,6 +94,23 @@ describe('ConfigureAmsSlotModal', () => {
   it('renders nothing visible when closed', () => {
     render(<ConfigureAmsSlotModal {...defaultProps} isOpen={false} />);
     expect(screen.queryByText('Configure AMS Slot')).not.toBeInTheDocument();
+  });
+
+  it('renders a clear tray as the transparency checkerboard rather than solid black (#2912)', () => {
+    render(
+      <ConfigureAmsSlotModal
+        {...defaultProps}
+        slotInfo={{ ...defaultProps.slotInfo, trayType: 'PETG', trayColor: '00000000' }}
+      />,
+    );
+
+    const styled = Array.from(document.querySelectorAll<HTMLElement>('[style]'));
+    expect(
+      styled.some((el) => el.style.backgroundImage.includes('repeating-conic-gradient')),
+    ).toBe(true);
+    // The regression this pins: the alpha byte was sliced off before painting,
+    // so a clear tray rendered as opaque black — the reported symptom, in the UI.
+    expect(styled.some((el) => el.style.backgroundColor === 'rgb(0, 0, 0)')).toBe(false);
   });
 
   it('renders modal when open', async () => {
@@ -536,6 +557,202 @@ describe('ConfigureAmsSlotModal', () => {
     });
   });
 
+  describe('Generic presets and the K-profile picker (#2710)', () => {
+    // Reporter's printer: nine Flow-Dynamics entries, every one of them
+    // calibrated against Generic PLA (filament_id GFL99) and named after the
+    // spool's colour rather than its material. Bambu Studio lists all nine for
+    // a Generic PLA slot; Printbuddy showed only the one already bound to the
+    // slot via cali_idx.
+    const genericPlaProfiles = [
+      'Black PLA+', 'Dark Brown', 'Glow', 'Gray', 'Lt Brown',
+      'Marble', 'Orange PLA', 'Sunlu White PLA+', 'White PLA+ Duramic',
+    ].map((name, i) => ({
+      slot_id: i + 1,
+      extruder_id: 0,
+      nozzle_id: 'HH00-0.4',
+      nozzle_diameter: '0.4',
+      filament_id: 'GFL99',
+      name,
+      k_value: `0.0${30 + i}`,
+      n_coef: '0',
+      ams_id: 0,
+      tray_id: 0,
+      setting_id: '',
+    }));
+
+    const genericPlaSlot = {
+      ...defaultProps.slotInfo,
+      savedPresetId: 'builtin_GFL99',
+      extruderId: 0,
+    };
+
+    beforeEach(() => {
+      (api.getBuiltinFilaments as ReturnType<typeof vi.fn>).mockResolvedValue([
+        { filament_id: 'GFL99', name: 'Generic PLA', filament_type: 'PLA' },
+      ]);
+      (api.getKProfiles as ReturnType<typeof vi.fn>).mockResolvedValue({
+        profiles: genericPlaProfiles,
+      });
+    });
+
+    it('offers every Generic PLA profile when the slot preset is Generic PLA', async () => {
+      render(<ConfigureAmsSlotModal {...defaultProps} slotInfo={genericPlaSlot} />);
+
+      await waitFor(() => {
+        expect(screen.getByRole('option', { name: /Dark Brown/ })).toBeInTheDocument();
+      });
+      // All nine, not just the one bound via cali_idx — matching the printer's
+      // own calibration table for GFL99.
+      for (const profile of genericPlaProfiles) {
+        expect(
+          screen.getByRole('option', { name: `${profile.name} (K=${profile.k_value})` }),
+        ).toBeInTheDocument();
+      }
+    });
+
+    it('offers them on a freshly reset slot with no active cali_idx', async () => {
+      // "When I reset the AMS slot, the generic PLA shows no k-values at all."
+      // With no cali_idx the #1689 safety net has nothing to surface, so the
+      // list came back empty; the id match has to stand on its own.
+      render(
+        <ConfigureAmsSlotModal
+          {...defaultProps}
+          slotInfo={{ ...genericPlaSlot, caliIdx: 0 }}
+        />
+      );
+
+      await waitFor(() => {
+        expect(screen.getByRole('option', { name: /Marble/ })).toBeInTheDocument();
+      });
+      expect(screen.getByRole('option', { name: /Glow/ })).toBeInTheDocument();
+    });
+
+    it('matches on name when the profile carries no filament_id at all', async () => {
+      // Not every firmware fills filament_id in extrusion_cali_get. "Generic"
+      // is not a brand, so the name path must fall back to the material
+      // instead of demanding "GENERIC" in the profile name.
+      (api.getKProfiles as ReturnType<typeof vi.fn>).mockResolvedValue({
+        profiles: [
+          { ...genericPlaProfiles[0], filament_id: '', name: 'Orange PLA' },
+          { ...genericPlaProfiles[1], filament_id: '', name: 'Dark Brown' },
+        ],
+      });
+      render(<ConfigureAmsSlotModal {...defaultProps} slotInfo={genericPlaSlot} />);
+
+      await waitFor(() => {
+        expect(screen.getByRole('option', { name: /Orange PLA/ })).toBeInTheDocument();
+      });
+    });
+
+    it('does not sweep generic profiles into a brand preset', async () => {
+      // Guard against the id path widening: "Bambu PLA Basic" is GFL05, so
+      // GFL99 profiles must still be filtered out of the matching group and
+      // only reachable through the explicit "other profiles" group.
+      render(
+        <ConfigureAmsSlotModal
+          {...defaultProps}
+          slotInfo={{ ...defaultProps.slotInfo, savedPresetId: 'GFSL05_09', extruderId: 0 }}
+        />
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText('Bambu PLA Basic @BBL X1C')).toBeInTheDocument();
+      });
+      // Every GFL99 profile is demoted to the other group: the brand gate on
+      // "Bambu" still applies, and none of these names carry it.
+      for (const profile of genericPlaProfiles) {
+        const option = screen.getByRole('option', { name: `${profile.name} (K=${profile.k_value})` });
+        expect(option.closest('optgroup')).toHaveAttribute(
+          'label',
+          'Other K profiles on this printer',
+        );
+      }
+    });
+
+    it("offers the printer's other profiles even when nothing matches the preset", async () => {
+      // The escape hatch: a PETG preset matches none of the PLA profiles, but
+      // the user can still reach every profile the printer holds instead of
+      // being sent to the slicer.
+      (api.getBuiltinFilaments as ReturnType<typeof vi.fn>).mockResolvedValue([
+        { filament_id: 'GFG99', name: 'Generic PETG', filament_type: 'PETG' },
+      ]);
+      render(
+        <ConfigureAmsSlotModal
+          {...defaultProps}
+          slotInfo={{ ...genericPlaSlot, savedPresetId: 'builtin_GFG99', caliIdx: 0 }}
+        />
+      );
+
+      await waitFor(() => {
+        expect(screen.getByRole('option', { name: /Dark Brown/ })).toBeInTheDocument();
+      });
+      expect(screen.getByRole('option', { name: /Dark Brown/ }).closest('optgroup')).toHaveAttribute(
+        'label',
+        'Other K profiles on this printer',
+      );
+    });
+
+    it('sends the cali_idx of a profile picked from the other-profiles group', async () => {
+      (api.getBuiltinFilaments as ReturnType<typeof vi.fn>).mockResolvedValue([
+        { filament_id: 'GFG99', name: 'Generic PETG', filament_type: 'PETG' },
+      ]);
+      render(
+        <ConfigureAmsSlotModal
+          {...defaultProps}
+          slotInfo={{ ...genericPlaSlot, savedPresetId: 'builtin_GFG99', caliIdx: 0 }}
+        />
+      );
+
+      await waitFor(() => {
+        expect(screen.getByRole('option', { name: /Marble/ })).toBeInTheDocument();
+      });
+      const marble = genericPlaProfiles.find(p => p.name === 'Marble')!;
+      // Option identity carries the extruder, so a filament calibrated on both
+      // hotends yields two distinguishable entries rather than one.
+      fireEvent.change(screen.getByRole('combobox'), {
+        target: { value: `${marble.extruder_id}|${marble.name}|${marble.k_value}` },
+      });
+      fireEvent.click(screen.getByRole('button', { name: /Configure Slot/i }));
+
+      await waitFor(() => {
+        expect(api.configureAmsSlot).toHaveBeenCalled();
+      });
+      const payload = (api.configureAmsSlot as ReturnType<typeof vi.fn>).mock.calls[0][3];
+      expect(payload.cali_idx).toBe(marble.slot_id);
+      expect(payload.kprofile_filament_id).toBe('GFL99');
+    });
+
+    it('distinguishes two profiles that share a name but differ in K', async () => {
+      // The picker used to key options by name alone, so same-named profiles
+      // were indistinguishable and the first always won. The key now also
+      // carries the extruder, for the same reason one step further out: the
+      // printer numbers its calibration table per hotend.
+      (api.getKProfiles as ReturnType<typeof vi.fn>).mockResolvedValue({
+        profiles: [
+          { ...genericPlaProfiles[0], slot_id: 1, name: 'PLA', k_value: '0.020' },
+          { ...genericPlaProfiles[1], slot_id: 2, name: 'PLA', k_value: '0.045' },
+        ],
+      });
+      render(
+        <ConfigureAmsSlotModal
+          {...defaultProps}
+          slotInfo={{ ...genericPlaSlot, caliIdx: 0 }}
+        />
+      );
+
+      await waitFor(() => {
+        expect(screen.getByRole('option', { name: /K=0.045/ })).toBeInTheDocument();
+      });
+      fireEvent.change(screen.getByRole('combobox'), { target: { value: '0|PLA|0.045' } });
+      fireEvent.click(screen.getByRole('button', { name: /Configure Slot/i }));
+
+      await waitFor(() => {
+        expect(api.configureAmsSlot).toHaveBeenCalled();
+      });
+      expect((api.configureAmsSlot as ReturnType<typeof vi.fn>).mock.calls[0][3].cali_idx).toBe(2);
+    });
+  });
+
   it('does not include the active K-profile when caliIdx is 0 or null (#1689 guard)', async () => {
     // cali_idx == 0 / null means no profile is active (printer default 0.020).
     // The safety net only triggers for activeIdx > 0 — otherwise unrelated
@@ -569,5 +786,127 @@ describe('ConfigureAmsSlotModal', () => {
       expect(screen.getByText(/Configure AMS/)).toBeInTheDocument();
     });
     expect(screen.queryByRole('option', { name: /should-not-appear/ })).not.toBeInTheDocument();
+  });
+});
+
+describe('ConfigureAmsSlotModal — per-nozzle K-profiles', () => {
+  /**
+   * K-profiles are per-nozzle and the printer numbers its calibration table per
+   * nozzle too, so one filament calibrated on both hotends gives two profiles
+   * with the same name and the same index space. Measured on the maintainer's
+   * H2C: "HF Bambu PLA Matte Black" is K=0.018 at index 16 on the left hotend
+   * and K=0.020 at index 15 on the right.
+   *
+   * A tray holds exactly one cali_idx, so the picker has to resolve it against
+   * the slot's own nozzle. It used to match on the index alone and, failing
+   * that, take the first profile in the list — which on a Filament Track Switch
+   * machine (where no AMS reports an extruder at all) was arbitrary.
+   */
+  const matteBlack = (extruder: number, caliIdx: number, k: string) => ({
+    slot_id: caliIdx,
+    extruder_id: extruder,
+    nozzle_id: 'HH00-0.4',
+    nozzle_diameter: '0.4',
+    filament_id: 'GFL99',
+    name: 'HF Bambu PLA Matte Black',
+    k_value: k,
+    n_coef: '0',
+    ams_id: 0,
+    tray_id: 0,
+    setting_id: '',
+  });
+
+  const bothNozzles = [matteBlack(1, 16, '0.018'), matteBlack(0, 15, '0.020')];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    Element.prototype.scrollIntoView = vi.fn();
+    (api.getCloudSettings as ReturnType<typeof vi.fn>).mockResolvedValue(mockCloudSettings);
+    (api.getBuiltinFilaments as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { filament_id: 'GFL99', name: 'Generic PLA', filament_type: 'PLA' },
+    ]);
+    (api.getKProfiles as ReturnType<typeof vi.fn>).mockResolvedValue({ profiles: bothNozzles });
+    (api.configureAmsSlot as ReturnType<typeof vi.fn>).mockResolvedValue({ success: true });
+  });
+
+  const slot = (extruderId: number | undefined, caliIdx: number) => ({
+    ...defaultProps.slotInfo,
+    savedPresetId: 'builtin_GFL99',
+    extruderId,
+    caliIdx,
+  });
+
+  it('preselects the right hotend profile for a slot on the right hotend', async () => {
+    // The reported bug, from the other side: the slot is bound to cali_idx 16,
+    // which is the LEFT hotend's entry. On a right-hotend slot the picker must
+    // land on 15, not follow the index into the wrong table.
+    render(<ConfigureAmsSlotModal {...defaultProps} slotInfo={slot(0, 16)} />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('combobox')).toBeInTheDocument();
+    });
+    expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe('0|HF Bambu PLA Matte Black|0.020');
+  });
+
+  it('preselects the left hotend profile for a slot on the left hotend', async () => {
+    render(<ConfigureAmsSlotModal {...defaultProps} slotInfo={slot(1, 16)} />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('combobox')).toBeInTheDocument();
+    });
+    expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe('1|HF Bambu PLA Matte Black|0.018');
+  });
+
+  it('does not offer the other hotend profile as a match', async () => {
+    // Both are still reachable — the other lands in the "Other K profiles"
+    // group — but only one is a match for this slot.
+    render(<ConfigureAmsSlotModal {...defaultProps} slotInfo={slot(0, 15)} />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('option', { name: /K=0.020/ })).toBeInTheDocument();
+    });
+    const matchGroup = screen.getByRole('combobox').querySelectorAll(':scope > option');
+    const matchValues = Array.from(matchGroup).map(o => (o as HTMLOptionElement).value).filter(Boolean);
+    expect(matchValues).toEqual(['0|HF Bambu PLA Matte Black|0.020']);
+  });
+
+  it('names the hotend on each option when the printer has two', async () => {
+    render(<ConfigureAmsSlotModal {...defaultProps} slotInfo={slot(0, 15)} />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('option', { name: /K=0.020/ })).toBeInTheDocument();
+    });
+    expect(screen.getByRole('option', { name: /K=0\.020.*Right/ })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: /K=0\.018.*Left/ })).toBeInTheDocument();
+  });
+
+  it('leaves single-nozzle printers unlabelled', async () => {
+    (api.getKProfiles as ReturnType<typeof vi.fn>).mockResolvedValue({
+      profiles: [matteBlack(0, 15, '0.020')],
+    });
+    render(<ConfigureAmsSlotModal {...defaultProps} slotInfo={slot(0, 15)} />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('option', { name: /K=0.020/ })).toBeInTheDocument();
+    });
+    expect(screen.queryByRole('option', { name: /Right/ })).not.toBeInTheDocument();
+  });
+
+  it('sends the cali_idx of the nozzle-correct profile', async () => {
+    render(<ConfigureAmsSlotModal {...defaultProps} slotInfo={slot(0, 16)} />);
+
+    // Wait for the preselect to settle, not merely for the control to mount —
+    // the submit reads the selected profile, which lands an effect later.
+    await waitFor(() => {
+      expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe(
+        '0|HF Bambu PLA Matte Black|0.020'
+      );
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Configure Slot/i }));
+
+    await waitFor(() => {
+      expect(api.configureAmsSlot).toHaveBeenCalled();
+    });
+    expect((api.configureAmsSlot as ReturnType<typeof vi.fn>).mock.calls[0][3].cali_idx).toBe(15);
   });
 });

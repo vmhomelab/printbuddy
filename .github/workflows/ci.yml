@@ -124,21 +124,35 @@ jobs:
           pip install -r requirements-dev.txt
 
       - name: Run tests (shard ${{ matrix.shard }}/4)
-        timeout-minutes: 10
+        timeout-minutes: 15
         run: |
           cd backend
           # -v dropped: 5300+ "PASSED foo::bar" lines per worker eat 30-60s
           # of stdout I/O time on 2-vCPU runners. --tb=short is enough.
-          # --splits 4 --group N uses pytest-split to slice the collected
-          # test set roughly evenly across the 4 matrix shards; first run
-          # is name-hash-based, subsequent runs improve via .test_durations
-          # if you ever commit one (we don't — even the naive hash split
-          # gets us ≈25% per shard given the test mix here).
+          #
+          # --splits 4 --group N slices the suite across the 4 matrix shards.
+          # Without a durations file pytest-split balances by test COUNT, which
+          # is not the same thing as time: measured 2026-08-31, that put 658s of
+          # the suite's 1046s into shard 1 and 101s into shard 4 -- a 6.5x spread
+          # that walked shard 1 into the old 10-minute timeout on a docs-only
+          # commit. tests/.test_durations is committed so the split is balanced
+          # by measured time instead (1.01x spread). Shard test counts are
+          # lopsided by design once it is used: shard 4 takes thousands of fast
+          # unit tests, shard 1 keeps the slow integration ones.
+          #
+          # --durations-path must be explicit: pytest-split defaults it to
+          # $CWD/.test_durations, and this job runs from backend/ while the
+          # Docker job below runs from the image root. Left implicit, one of
+          # them silently finds no file and falls back to the count split.
+          # Regenerate after adding slow tests:
+          #   cd backend && python -m pytest tests/ --store-durations \
+          #     --durations-path tests/.test_durations
           python -m pytest tests/ \
             --tb=short \
             --timeout=60 --timeout-method=thread \
             -n auto \
-            --splits 4 --group ${{ matrix.shard }}
+            --splits 4 --group ${{ matrix.shard }} \
+            --durations-path tests/.test_durations
 
   # ============================================================================
   # Frontend Checks
@@ -203,15 +217,12 @@ jobs:
           vulns = data.get('vulnerabilities', {})
           # Documented advisory exceptions: high/critical findings whose only offered
           # 'fix' is a semver-major change and which do not apply to how Printbuddy ships.
-          # Keyed by GHSA id; RE-REVIEW ON EVERY react-router BUMP.
-          #   GHSA-qwww-vcr4-c8h2 - React Router RSC-mode CSRF. Printbuddy is a Vite SPA
-          #   using BrowserRouter with no RSC runtime (@react-router/server is NOT
-          #   installed), so the vulnerable code path is unreachable. No non-major fix
-          #   exists (7.18.1 is the most-patched 7.x - it clears 14 other advisories that
-          #   older 7.x carry - and the RSC fix landed only in the 8.3.0 major). react-router
-          #   /-dom are pinned to 7.18.1 in package.json. If a non-major fix ships, this stops
-          #   being exempt (major-only guard below) and the gate fails until we take it.
-          ALLOWLIST = {'GHSA-qwww-vcr4-c8h2'}
+          # Keyed by GHSA id. An entry only holds while the fix stays major-only (see
+          # fix_is_major below) - once upstream backports, the gate fails until we take
+          # the patch. That is what retired the one entry this list used to carry:
+          # GHSA-qwww-vcr4-c8h2 (React Router RSC-mode CSRF) shipped in 7.18.2, so the
+          # pin moved rather than the exception staying.
+          ALLOWLIST = set()
           def advisory_ids(name, seen=None):
               seen = seen if seen is not None else set()
               if name in seen:
@@ -368,7 +379,8 @@ jobs:
               --timeout=60 --timeout-method=thread \
               -p no:cacheprovider \
               -n auto \
-              --splits 4 --group ${{ matrix.shard }}
+              --splits 4 --group ${{ matrix.shard }} \
+              --durations-path backend/tests/.test_durations
 
   docker-test:
     name: Docker Build

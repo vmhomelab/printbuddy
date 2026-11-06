@@ -12,7 +12,7 @@
  * paths no-op instead of crashing.
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { act, render, renderHook } from '@testing-library/react';
 import { type ReactNode } from 'react';
 import { ToastProvider, useToast } from '../../contexts/ToastContext';
@@ -159,5 +159,66 @@ describe('ToastContext viewport suppression', () => {
     expect(toast?.style.maxWidth).toContain('100vw');
     expect(toast?.style.maxWidth).toContain('safe-area-inset-left');
     expect(toast?.style.maxWidth).toContain('safe-area-inset-right');
+  });
+});
+
+describe('ToastContext auto-dismiss timing by type', () => {
+  // Errors and warnings carry more text than a success confirmation — a
+  // backend failure reason often runs to a couple of lines — so they hold
+  // for 6s while success/info keep the 3s default.
+  function TypedToastProbe({ type }: { type: 'success' | 'error' | 'warning' | 'info' }) {
+    const { showToast } = useToast();
+    return <button data-testid="show" onClick={() => showToast(`a ${type} message`, type)} />;
+  }
+
+  function showAndAdvance(
+    type: 'success' | 'error' | 'warning' | 'info',
+    ms: number,
+  ): boolean {
+    const { getByTestId, queryByText, unmount } = render(
+      <ToastProvider>
+        <TypedToastProbe type={type} />
+      </ToastProvider>
+    );
+    act(() => {
+      getByTestId('show').click();
+    });
+    // Present before any time passes, otherwise a "gone" assertion below
+    // would pass on a toast that never rendered.
+    expect(queryByText(`a ${type} message`)).not.toBeNull();
+    act(() => {
+      vi.advanceTimersByTime(ms);
+    });
+    const stillThere = queryByText(`a ${type} message`) !== null;
+    unmount();
+    return stillThere;
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('keeps error toasts up for 6s', () => {
+    // Just past the old 3s window — an error must still be readable here.
+    expect(showAndAdvance('error', 3100)).toBe(true);
+    expect(showAndAdvance('error', 5999)).toBe(true);
+    expect(showAndAdvance('error', 6000)).toBe(false);
+  });
+
+  it('keeps warning toasts up for 6s', () => {
+    expect(showAndAdvance('warning', 3100)).toBe(true);
+    expect(showAndAdvance('warning', 5999)).toBe(true);
+    expect(showAndAdvance('warning', 6000)).toBe(false);
+  });
+
+  it('leaves success and info toasts on the 3s default', () => {
+    expect(showAndAdvance('success', 2999)).toBe(true);
+    expect(showAndAdvance('success', 3000)).toBe(false);
+    expect(showAndAdvance('info', 2999)).toBe(true);
+    expect(showAndAdvance('info', 3000)).toBe(false);
   });
 });

@@ -14,6 +14,7 @@ from backend.app.utils.printer_models import (
     is_dual_nozzle_model,
     normalize_printer_model,
     normalize_printer_model_id,
+    supports_nozzle_flow_type,
 )
 
 
@@ -202,6 +203,42 @@ class TestDualNozzleModel:
     def test_none_and_empty_are_not_dual(self):
         assert is_dual_nozzle_model(None) is False
         assert is_dual_nozzle_model("") is False
+
+
+class TestSupportsNozzleFlowType:
+    """Which models offer a Standard / High Flow choice on a K-profile.
+
+    Mirrors the slicer's own rule — BambuStudio/OrcaSlicer gate their
+    Nozzle-Flow control on ``len(nozzle_volume) // len(nozzle_diameter) > 1``
+    read from the machine preset. Evaluated over every bundled Bambu profile,
+    only the A-series lands on one variant. Getting this wrong in the
+    permissive direction shows a redundant dropdown; getting it wrong in the
+    other direction makes half a printer's calibration table unreachable.
+    """
+
+    def test_a_series_has_one_flow_variant(self):
+        for model in ("A1", "A1 Mini", "A1MINI", "A2L"):
+            assert supports_nozzle_flow_type(model) is False, model
+
+    def test_a_series_internal_codes(self):
+        for code in ("N1", "N2S", "N9", "A04", "A11", "A12"):
+            assert supports_nozzle_flow_type(code) is False, code
+
+    def test_single_nozzle_models_still_offer_both_flows(self):
+        # The split is NOT nozzle count: all of these are single-nozzle and
+        # all carry two nozzle_volume variants in their machine preset.
+        for model in ("X1", "X1C", "X1E", "P1P", "P1S", "P2S", "H2S"):
+            assert supports_nozzle_flow_type(model) is True, model
+
+    def test_dual_nozzle_models_offer_both_flows(self):
+        for model in ("H2D", "H2D Pro", "H2C"):
+            assert supports_nozzle_flow_type(model) is True, model
+
+    def test_unknown_and_empty_default_to_supported(self):
+        # Fail open: a redundant dropdown beats an unreachable half-table.
+        assert supports_nozzle_flow_type(None) is True
+        assert supports_nozzle_flow_type("") is True
+        assert supports_nozzle_flow_type("SomeFuturePrinter") is True
 
 
 class TestHasExternalStorage:

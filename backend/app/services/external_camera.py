@@ -8,24 +8,94 @@ to ensure they are well-formed before use.
 """
 
 import asyncio
+import functools
+import ipaddress
 import logging
 import re
 import shutil
+import socket
 from collections.abc import AsyncGenerator, Callable
 from pathlib import Path
 from urllib.parse import urlparse
 
 import aiohttp
 
+from backend.app.core.logging_filters import redact_url_credentials
+from backend.app.utils.ffmpeg_output import NO_FFMPEG_OUTPUT, summarize_ffmpeg_stderr
+
 logger = logging.getLogger(__name__)
+
+# Protocols ffmpeg may use for an RTSP input. RTSP negotiates its media
+# transport at runtime, so the transports have to be here alongside rtsp itself;
+# tls and crypto cover encrypted variants. Everything ffmpeg would otherwise
+# accept behind an -i — file, http, tcp to anywhere, concat — is left out, so a
+# stream that references something outside itself cannot pull it in.
+_RTSP_PROTOCOL_WHITELIST = "rtsp,rtp,udp,tcp,tls,crypto"
+
+
+def _blocked_host_reason(hostname: str) -> str | None:
+    """Describe why *hostname* is a destination we refuse to fetch, or None to allow it.
+
+    Camera URLs are user-supplied and reach the network — over aiohttp for the
+    HTTP types, and as an ``ffmpeg -i`` argument for RTSP — so this is where the
+    SSRF boundary sits. LAN addresses are deliberately allowed: cameras live on
+    the same network as Printbuddy, and blocking RFC-1918 would remove the feature
+    rather than protect it. What is left to refuse is the host talking to
+    itself, the unspecified address, link-local (which is where the cloud
+    metadata endpoint lives), and the metadata hostnames.
+
+    IP literals are classified with ``ipaddress`` rather than compared against a
+    list of spellings, because 127.0.0.1, 127.0.0.2, 2130706433, 0177.0.0.1,
+    127.1 and ::ffff:127.0.0.1 all arrive at loopback and a list of strings only
+    ever catches whichever one someone thought to write down. ``inet_aton``
+    comes first because it accepts the legacy octal, decimal and short forms
+    that ``ip_address`` rejects — the C resolvers behind aiohttp and ffmpeg
+    accept them, so refusing to understand them here would only mean not seeing
+    where the request is actually going.
+    """
+    host = hostname.lower()
+
+    ip: ipaddress.IPv4Address | ipaddress.IPv6Address | None = None
+    try:
+        ip = ipaddress.ip_address(socket.inet_aton(host))
+    except OSError:
+        try:
+            ip = ipaddress.ip_address(host)
+        except ValueError:
+            ip = None
+
+    if ip is None:
+        # A name, not an address. It is not resolved here on purpose: aiohttp
+        # and ffmpeg each resolve independently afterwards, so a check here
+        # decides nothing about where they end up (DNS rebinding), while a
+        # lookup on every capture would break LAN cameras behind slow or
+        # intermittent local DNS.
+        if host == "localhost" or host.endswith(".localhost"):
+            return "localhost"
+        if host in ("metadata.google.internal", "metadata.google"):
+            return "a cloud metadata service"
+        return None
+
+    # ::ffff:127.0.0.1 is loopback wearing an IPv6 spelling.
+    mapped = getattr(ip, "ipv4_mapped", None)
+    if mapped is not None:
+        ip = mapped
+
+    if ip.is_loopback:
+        return "loopback"
+    if ip.is_unspecified:
+        return "the unspecified address"
+    if ip.is_link_local:
+        return "a link-local address (the cloud metadata range)"
+    return None
 
 
 def _sanitize_camera_url(url: str, allowed_schemes: tuple[str, ...] = ("http", "https", "rtsp")) -> str | None:
     """Validate and sanitize camera URL, returning a safe reconstructed URL.
 
-    This validates that the URL is well-formed, uses an allowed scheme,
-    does not target cloud metadata services, and returns a reconstructed
-    URL from validated components.
+    This validates that the URL is well-formed, uses an allowed scheme, does not
+    target the host itself or a cloud metadata service, and returns a URL
+    reconstructed from the validated components.
 
     Note: This intentionally allows user-provided URLs as that is the
     purpose of external camera configuration. Local network IPs are
@@ -48,37 +118,35 @@ def _sanitize_camera_url(url: str, allowed_schemes: tuple[str, ...] = ("http", "
         if scheme not in allowed_schemes:
             return None
 
-        # Block cloud metadata service endpoints (SSRF mitigation)
-        # These are dangerous destinations that should never be accessed
         hostname = parsed.hostname or ""
-        hostname_lower = hostname.lower()
-        blocked_hosts = (
-            "169.254.169.254",  # AWS/GCP/Azure metadata
-            "metadata.google.internal",  # GCP metadata
-            "metadata.google",
-            "localhost",  # Block localhost to prevent internal service access
-            "127.0.0.1",
-            "::1",
-            "0.0.0.0",  # nosec B104
-        )
-        if hostname_lower in blocked_hosts:
-            logger.warning("Blocked camera URL targeting restricted host: %s", hostname)
+        if not hostname:
             return None
-
-        # Block link-local addresses (169.254.x.x)
-        if hostname.startswith("169.254."):
-            logger.warning("Blocked camera URL targeting link-local address: %s", hostname)
+        blocked = _blocked_host_reason(hostname)
+        if blocked:
+            logger.warning("Blocked camera URL targeting %s: %s", blocked, hostname)
             return None
 
         # Reconstruct URL from validated components to break taint chain
         # This creates a new string from validated parts
+        #
+        # The credentials are carried across verbatim from netloc rather than
+        # via parsed.username/.password, which urlparse has already percent-
+        # decoded: re-emitting those would corrupt any password containing an
+        # @ or a :. They have to survive at all because most RTSP cameras — and
+        # a fair number of MJPEG ones — carry their login in the URL, and
+        # dropping it turns every one of them into an authentication failure.
+        netloc = parsed.netloc
+        userinfo = f"{netloc.rsplit('@', 1)[0]}@" if "@" in netloc else ""
+        # parsed.hostname has already stripped the brackets off an IPv6 literal;
+        # without them back the result is not a URL any client can parse.
+        host_str = f"[{hostname}]" if ":" in hostname else hostname
         port_str = f":{parsed.port}" if parsed.port else ""
         path = parsed.path or ""
         query = f"?{parsed.query}" if parsed.query else ""
         fragment = f"#{parsed.fragment}" if parsed.fragment else ""
 
         # Build sanitized URL from validated components
-        sanitized = f"{scheme}://{hostname}{port_str}{path}{query}{fragment}"
+        sanitized = f"{scheme}://{userinfo}{host_str}{port_str}{path}{query}{fragment}"
         return sanitized
     except ValueError:
         return None
@@ -173,6 +241,70 @@ def get_ffmpeg_path() -> str | None:
     return None
 
 
+# In-flight one-shot captures, keyed by (url, camera_type, snapshot_url) —
+# the tuple that actually identifies the physical resource being contended
+# (#2707 comment thread, following #2705's shape for the built-in path).
+#
+# V4L2 USB devices allow exactly one open handle, and is_stream_active() /
+# try_get_active_buffered_frame() (#2707) only stop a one-shot capturer from
+# competing with the fan-out live view. They do nothing for capturer-vs-
+# capturer with no viewer attached, where every consumer correctly concludes
+# it isn't competing with a viewer and then collides with the others -
+# exactly the #2705 report, just for this module's callers instead of
+# capture_camera_frame_bytes()'s (Obico polling, the in-print frame bank,
+# the finish-photo moment, plate detection, and the notification snapshot
+# all reach capture_frame() independently).
+#
+# snapshot_url is part of the key (not just url/camera_type) because it
+# routes to a completely different endpoint (#1177) - two printers that
+# share a camera_url but differ only in snapshot_url must not coalesce.
+_inflight_captures: dict[tuple[str, str, str | None], asyncio.Task[bytes | None]] = {}
+
+
+def capture_in_flight(url: str, camera_type: str, snapshot_url: str | None = None) -> bool:
+    """Return True iff a one-shot capture for this key is running right now.
+
+    Mirrors camera.py's capture_in_flight() for the built-in path - for a
+    caller that needs to know it will JOIN someone else's capture rather
+    than open its own connection. Ordinary consumers should ignore this:
+    they want "a recent frame", and capture_frame() already does the right
+    thing for them.
+    """
+    task = _inflight_captures.get((url, camera_type, snapshot_url))
+    return task is not None and not task.done()
+
+
+def _discard_inflight_capture(key: tuple[str, str, str | None], task: asyncio.Task) -> None:
+    """Done-callback: drop the finished task from the in-flight registry.
+
+    Guarded on identity so a slow task that finishes after a newer capture
+    has registered for the same key can't evict its successor.
+
+    Also retrieves the exception, if any: the leader normally awaits the
+    task and would surface it, but a leader whose own caller was cancelled
+    leaves nobody to collect it, and an unretrieved task exception is
+    logged by asyncio as a warning with a traceback at an arbitrary later
+    point otherwise.
+    """
+    if _inflight_captures.get(key) is task:
+        del _inflight_captures[key]
+    if not task.cancelled() and task.exception() is not None:
+        logger.debug("In-flight external-camera capture for %s ended in an exception", _log_key(key))
+
+
+def _log_key(key: tuple[str, str, str | None]) -> str:
+    """Render an in-flight key for a log line, with credentials redacted.
+
+    Unlike camera.py's coalescing — which is keyed by IP address and so has
+    nothing to hide — these keys carry the camera URL, and an RTSP camera URL
+    routinely embeds ``user:pass@``. Redact before truncating: slicing first
+    can cut the URL short of the ``@`` the pattern anchors on and leave the
+    password in the log, which is why every other URL log in this module does
+    it in this order.
+    """
+    return redact_url_credentials(key[0])[:50] if key[0] else "None"
+
+
 async def capture_frame(
     url: str,
     camera_type: str,
@@ -184,7 +316,10 @@ async def capture_frame(
     Args:
         url: Live-stream URL (MJPEG stream, RTSP URL, HTTP snapshot URL, or USB device path).
         camera_type: "mjpeg", "rtsp", "snapshot", or "usb".
-        timeout: Connection timeout in seconds.
+        timeout: Connection timeout in seconds. Applies to this caller's own
+            wait, including when it joins another caller's capture - call
+            sites disagree about the value, and a follower must not silently
+            inherit the leader's deadline in either direction.
         snapshot_url: Optional override for single-frame capture. When set, fetched
             via plain HTTP GET regardless of `camera_type`. Bypasses MJPEG warm-up
             handling on sources that expose a dedicated frame endpoint (e.g. go2rtc's
@@ -193,22 +328,151 @@ async def capture_frame(
 
     Returns:
         JPEG bytes or None on failure
+
+    Concurrent callers for the same (url, camera_type, snapshot_url) share
+    one capture (#2705-shape fix, filed for the external-camera path as a
+    follow-up on #2707): the first opens the connection, everyone arriving
+    while it's in flight awaits the same result. This coalesces; it does
+    not cache - a call that arrives after the previous capture finished
+    always captures fresh, since plate detection and the finish-photo path
+    judge a running print from these frames and a stale one there is worse
+    than a slow one (#1397).
     """
-    if snapshot_url:
-        logger.debug("capture_frame using snapshot override url=%s...", snapshot_url[:50])
-        return await _capture_snapshot(snapshot_url, timeout)
-    logger.debug("capture_frame called: type=%s, url=%s...", camera_type, url[:50] if url else "None")
-    if camera_type == "mjpeg":
-        return await _capture_mjpeg_frame(url, timeout)
-    elif camera_type == "rtsp":
-        return await _capture_rtsp_frame(url, timeout)
-    elif camera_type == "snapshot":
-        return await _capture_snapshot(url, timeout)
-    elif camera_type == "usb":
-        return await _capture_usb_frame(url, timeout)
+    key = (url, camera_type, snapshot_url)
+
+    # A follower whose leader fails takes a turn of its own rather than
+    # inheriting a failure it never had a chance to avoid - by then the
+    # leader has finished, so there's no connection left to compete with.
+    # Bounded at two rounds: if the capture we joined AND its replacement
+    # both failed, a third attempt won't help, and this caller has already
+    # spent its patience.
+    for _ in range(2):
+        leader = _inflight_captures.get(key)
+        if leader is None or leader.done():
+            break
+        try:
+            frame = await asyncio.wait_for(asyncio.shield(leader), timeout=timeout)
+        except TimeoutError:
+            # shield() keeps the capture running for whoever else is still
+            # waiting on it - giving up is this caller's decision alone.
+            logger.warning(
+                "Gave up waiting %ss on the in-flight external-camera capture for %s", timeout, _log_key(key)
+            )
+            return None
+        except asyncio.CancelledError:
+            # Distinguish "the capture I joined was cancelled" from "I was
+            # cancelled". Only the former is ours to recover from.
+            if not leader.cancelled():
+                raise
+            logger.info("In-flight external-camera capture for %s was cancelled; capturing our own", _log_key(key))
+            continue
+        if frame is not None:
+            logger.debug(
+                "Reusing in-flight external-camera capture for %s: %d bytes (no second connection opened)",
+                _log_key(key),
+                len(frame),
+            )
+            return frame
+        logger.debug("In-flight external-camera capture for %s failed; capturing our own", _log_key(key))
     else:
-        logger.warning("Unknown camera type: %s", camera_type)
         return None
+
+    task = asyncio.create_task(_capture_frame_uncoalesced(url, camera_type, timeout, snapshot_url))
+    _inflight_captures[key] = task
+    task.add_done_callback(functools.partial(_discard_inflight_capture, key))
+    # No wait_for here: this caller IS the capture, and each dispatched
+    # _capture_* function already enforces `timeout` internally, where it
+    # can also kill the ffmpeg process - a second deadline on top would
+    # abandon the subprocess instead of killing it. shield() so a cancelled
+    # leader (a client navigating away mid-request is routine) doesn't take
+    # the capture down with it - followers already waiting on it still get
+    # their frame.
+    return await asyncio.shield(task)
+
+
+async def _capture_frame_uncoalesced(
+    url: str,
+    camera_type: str,
+    timeout: int,
+    snapshot_url: str | None,
+) -> bytes | None:
+    """Open a connection and capture one frame. See capture_frame().
+
+    Callers want that wrapper, not this: it opens a connection
+    unconditionally, which is the collision #2705/#2707 are about.
+
+    Failure is reported as ``None``, never as an exception. That is load-
+    bearing now that captures are shared: the coalescing wrapper hands one
+    task's outcome to every caller waiting on it, and it can only give a
+    follower its own turn for an outcome it can recognise. An exception
+    escaping here would instead propagate to every follower at once —
+    turning one caller's failure into N — and none of them would retry.
+    The per-type helpers below each catch what they expect and return None,
+    but they catch narrowly (``aiohttp.ClientError``/``OSError``/timeouts),
+    so this is the structural guarantee rather than one contingent on their
+    coverage. Mirrors ``_capture_camera_frame_bytes_uncoalesced`` in
+    camera.py, which ends in the same blanket catch for the same reason.
+    """
+    try:
+        if snapshot_url:
+            # Redact before truncating — slicing first can cut the URL short of the
+            # ``@`` the pattern anchors on and leave the password in the log.
+            logger.debug("capture_frame using snapshot override url=%s...", redact_url_credentials(snapshot_url)[:50])
+            return await _capture_snapshot(snapshot_url, timeout)
+        logger.debug(
+            "capture_frame called: type=%s, url=%s...",
+            camera_type,
+            redact_url_credentials(url)[:50] if url else "None",
+        )
+        if camera_type == "mjpeg":
+            return await _capture_mjpeg_frame(url, timeout)
+        elif camera_type == "rtsp":
+            return await _capture_rtsp_frame(url, timeout)
+        elif camera_type == "snapshot":
+            return await _capture_snapshot(url, timeout)
+        elif camera_type == "usb":
+            return await _capture_usb_frame(url, timeout)
+        else:
+            logger.warning("Unknown camera type: %s", camera_type)
+            return None
+    except asyncio.CancelledError:
+        # Cancellation is not a capture failure and must stay distinguishable:
+        # the wrapper checks ``leader.cancelled()`` to decide whether a
+        # follower may take its own turn.
+        raise
+    except Exception:
+        logger.exception("External camera capture failed for %s", redact_url_credentials(url)[:50] if url else "None")
+        return None
+
+
+def _safe_usb_device_path(device: str) -> str | None:
+    """Rebuild a /dev/videoN path from a validated device number, or None.
+
+    Validate device path - must be /dev/videoN format where N is 0-99. This
+    prevents path traversal by using a strict allowlist approach: the returned
+    path is built from an integer, which cannot carry a traversal, rather than
+    from any part of the caller's string.
+
+    Returns None if the device does not exist, so a caller cannot hand ffmpeg a
+    path to something that is not a device node.
+    """
+    device_match = re.match(r"^/dev/video(\d{1,2})$", device)
+    if not device_match:
+        logger.error("Invalid USB device path format: %s", device)
+        return None
+
+    # Convert to integer to break taint chain - integers cannot contain path traversal
+    # lgtm[py/path-injection] - device_num is validated integer 0-99
+    device_num = int(device_match.group(1))  # Safe: regex guarantees 1-2 digits
+
+    # Construct safe path from validated integer (completely untainted)
+    safe_device_path = Path(f"/dev/video{device_num}")  # lgtm[py/path-injection]
+
+    if not safe_device_path.exists():
+        logger.error("USB device does not exist: %s", safe_device_path)
+        return None
+
+    return str(safe_device_path)  # lgtm[py/path-injection]
 
 
 async def _capture_usb_frame(device: str, timeout: int) -> bytes | None:
@@ -218,31 +482,12 @@ async def _capture_usb_frame(device: str, timeout: int) -> bytes | None:
         logger.error("ffmpeg not found - required for USB camera capture")
         return None
 
-    # Validate device path - must be /dev/videoN format where N is 0-99
-    # This prevents path traversal by using a strict allowlist approach
-    import re as regex_module
-
-    device_match = regex_module.match(r"^/dev/video(\d{1,2})$", device)
-    if not device_match:
-        logger.error("Invalid USB device path format: %s", device)
-        return None
-
-    # Convert to integer to break taint chain - integers cannot contain path traversal
-    # lgtm[py/path-injection] - device_num is validated integer 0-99
-    device_num = int(device_match.group(1))  # Safe: regex guarantees 1-2 digits
-    if device_num > 99:
-        logger.error("USB device number out of range: %s", device_num)
-        return None
-
-    # Construct safe path from validated integer (completely untainted)
-    safe_device_path = Path(f"/dev/video{device_num}")  # lgtm[py/path-injection]
-
-    if not safe_device_path.exists():
-        logger.error("USB device does not exist: %s", safe_device_path)
+    safe_device = _safe_usb_device_path(device)
+    if not safe_device:
         return None
 
     # Use the safe path for ffmpeg - this is a hardcoded /dev/videoN path
-    device = str(safe_device_path)  # lgtm[py/path-injection]
+    device = safe_device  # lgtm[py/path-injection]
 
     # Use ffmpeg to grab a single frame from USB camera
     cmd = [
@@ -273,7 +518,7 @@ async def _capture_usb_frame(device: str, timeout: int) -> bytes | None:
         stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
 
         if process.returncode != 0:
-            logger.error("ffmpeg USB capture failed: %s", stderr.decode()[:200])
+            logger.error("ffmpeg USB capture failed: %s", summarize_ffmpeg_stderr(stderr) or NO_FFMPEG_OUTPUT)
             return None
 
         if not stdout or len(stdout) < 100:
@@ -311,7 +556,7 @@ async def _capture_mjpeg_frame(url: str, timeout: int) -> bytes | None:
     """
     safe_url = _sanitize_camera_url(url, ("http", "https"))
     if not safe_url:
-        logger.error("Invalid MJPEG URL format: %s...", url[:50])
+        logger.error("Invalid MJPEG URL format: %s...", redact_url_credentials(url)[:50])
         return None
 
     jpeg_start = b"\xff\xd8"
@@ -373,22 +618,34 @@ async def _capture_rtsp_frame(url: str, timeout: int) -> bytes | None:
     """Capture frame from RTSP using ffmpeg.
 
     For rtsps:// URLs, a local TLS proxy is used to avoid GnuTLS issues.
+
+    Note: this function intentionally connects to user-configured URLs, the same
+    as the MJPEG and snapshot paths. The URL is sanitized and dangerous
+    destinations are blocked before it reaches ffmpeg.
     """
     ffmpeg = get_ffmpeg_path()
     if not ffmpeg:
         logger.error("ffmpeg not found - required for RTSP capture")
         return None
 
+    # ffmpeg's -i accepts every protocol it was built with, so an unchecked URL
+    # here is a request to any host and scheme the caller names, not merely to a
+    # camera. Restricting the scheme to RTSP is what keeps this a camera fetch.
+    safe_url = _sanitize_camera_url(url, ("rtsp", "rtsps"))
+    if not safe_url:
+        logger.error("Invalid RTSP URL: %s...", redact_url_credentials(url)[:50])
+        return None
+
     # If rtsps://, use TLS proxy
     proxy_server = None
-    effective_url = url
-    if url.lower().startswith("rtsps://"):
+    effective_url = safe_url
+    if safe_url.lower().startswith("rtsps://"):
         try:
             from urllib.parse import urlparse
 
-            from backend.app.services.camera import create_tls_proxy
+            from backend.app.services.camera import close_tls_proxy, create_tls_proxy
 
-            parsed = urlparse(url)
+            parsed = urlparse(safe_url)
             target_port = parsed.port or 322
             proxy_port, proxy_server = await create_tls_proxy(parsed.hostname, target_port)
             userinfo = ""
@@ -397,17 +654,24 @@ async def _capture_rtsp_frame(url: str, timeout: int) -> bytes | None:
                 if parsed.password:
                     userinfo += f":{parsed.password}"
                 userinfo += "@"
+            # Points at loopback deliberately, and is built after the check
+            # above rather than re-checked: the destination that mattered was
+            # the one the caller named, and it has already been vetted.
             effective_url = f"rtsp://{userinfo}127.0.0.1:{proxy_port}{parsed.path}"
             if parsed.query:
                 effective_url += f"?{parsed.query}"
         except Exception as e:
             logger.warning("Failed to create TLS proxy for RTSP capture, falling back: %s", e)
-            effective_url = url
+            effective_url = safe_url
 
     cmd = [
         ffmpeg,
         "-rtsp_transport",
         "tcp",
+        # Belt and braces on the scheme check above: a demuxer that follows a
+        # reference out of the stream cannot leave these protocols either.
+        "-protocol_whitelist",
+        _RTSP_PROTOCOL_WHITELIST,
         "-i",
         effective_url,
         "-frames:v",
@@ -438,7 +702,8 @@ async def _capture_rtsp_frame(url: str, timeout: int) -> bytes | None:
         )
 
         if process.returncode != 0:
-            logger.error("ffmpeg RTSP capture failed: %s", stderr.decode()[:200])
+            # The summariser masks the camera password the input URL carries.
+            logger.error("ffmpeg RTSP capture failed: %s", summarize_ffmpeg_stderr(stderr) or NO_FFMPEG_OUTPUT)
             return None
 
         if not stdout or len(stdout) < 100:
@@ -457,8 +722,7 @@ async def _capture_rtsp_frame(url: str, timeout: int) -> bytes | None:
         return None
     finally:
         if proxy_server:
-            proxy_server.close()
-            await proxy_server.wait_closed()
+            await close_tls_proxy(proxy_server)
 
 
 def _transcode_to_jpeg(data: bytes) -> bytes | None:
@@ -504,7 +768,7 @@ async def _capture_snapshot(url: str, timeout: int) -> bytes | None:
     # Sanitize URL - returns reconstructed URL from validated components
     safe_url = _sanitize_camera_url(url, ("http", "https"))
     if not safe_url:
-        logger.error("Invalid snapshot URL format: %s...", url[:50])
+        logger.error("Invalid snapshot URL format: %s...", redact_url_credentials(url)[:50])
         return None
 
     try:
@@ -557,12 +821,26 @@ async def test_connection(url: str, camera_type: str) -> dict:
     """Test camera connection.
 
     Returns:
-        Dict with {success: bool, error?: str, resolution?: str}
+        Dict with {success: bool, error?: str, resolution?: str, coalesced: bool}
+
+    ``coalesced`` is True when the frame came from a capture that was already
+    running rather than from a connection this test opened. Captures are shared
+    (see ``capture_frame``), so a test that lands while Obico is polling — or
+    while any other one-shot consumer is mid-capture — gets that frame back and
+    would otherwise report a healthy connection it never made, which is the one
+    answer a *connection test* must not give silently. Forcing an uncoalesced
+    capture here would be worse: it would open the second handle to a
+    single-reader device that this whole mechanism exists to prevent. So the
+    test still shares, and says so. Mirrors the ``coalesced_capture`` code the
+    built-in diagnostic reports for the same situation (camera_diagnose.py).
     """
-    logger.info("Testing camera connection: type=%s, url=%s...", camera_type, url[:50])
+    logger.info("Testing camera connection: type=%s, url=%s...", camera_type, redact_url_credentials(url)[:50])
+    # Sampled before the call, while it can still distinguish "someone else is
+    # mid-capture" from "I am the one capturing".
+    coalesced = capture_in_flight(url, camera_type)
     try:
         frame = await capture_frame(url, camera_type, timeout=10)
-        logger.info("Capture result: %s bytes", len(frame) if frame else 0)
+        logger.info("Capture result: %s bytes%s", len(frame) if frame else 0, " (coalesced)" if coalesced else "")
 
         if frame:
             # Try to get resolution from JPEG header
@@ -581,15 +859,15 @@ async def test_connection(url: str, camera_type: str) -> dict:
             except (IndexError, ValueError):
                 pass  # Resolution detection is optional; fall back to default
 
-            return {"success": True, "resolution": resolution}
+            return {"success": True, "resolution": resolution, "coalesced": coalesced}
         else:
-            return {"success": False, "error": "Failed to capture frame from camera"}
+            return {"success": False, "error": "Failed to capture frame from camera", "coalesced": coalesced}
 
     except Exception as e:
         # Sanitize error message - don't expose internal details
         error_type = type(e).__name__
         logger.error("Camera connection test failed: %s", e)
-        return {"success": False, "error": f"Connection failed: {error_type}"}
+        return {"success": False, "error": f"Connection failed: {error_type}", "coalesced": coalesced}
 
 
 async def generate_mjpeg_stream(
@@ -598,6 +876,7 @@ async def generate_mjpeg_stream(
     fps: int = 10,
     *,
     on_process: Callable[[asyncio.subprocess.Process], None] | None = None,
+    on_frame: Callable[[bytes], None] | None = None,
     stop_event: asyncio.Event | None = None,
 ) -> AsyncGenerator[bytes, None]:
     """Generator yielding MJPEG frames for streaming.
@@ -613,6 +892,16 @@ async def generate_mjpeg_stream(
             open (#2675). Without it the process is reachable only from this
             generator's own ``finally``, which an abrupt client disconnect can
             skip (same cancellation-timing class as #776).
+        on_frame: Called with each RAW frame, before it is wrapped for the wire,
+            so the route layer can publish it as the printer's buffered frame
+            (#2707). It has to be a callback: what this generator yields is
+            multipart-wrapped, so a consumer of the stream cannot recover the
+            JPEG, and until now nothing populated the buffer for external
+            cameras at all — leaving every one-shot consumer (layer timelapse,
+            finish photo, Obico, plate check) with nothing to reuse and no
+            option but to open a competing handle on a single-reader device.
+            Exceptions are logged and swallowed: buffering must never be able
+            to break the live stream.
         stop_event: When set, the reconnect loops stop retrying — so an explicit
             stop (which kills the current ffmpeg) doesn't immediately respawn a
             new process and reacquire the device.
@@ -622,6 +911,15 @@ async def generate_mjpeg_stream(
     """
     frame_interval = 1.0 / max(fps, 1)
     last_frame_time = 0.0
+
+    def _publish(frame: bytes) -> bytes:
+        """Hand the raw frame to on_frame, then format it for the wire."""
+        if on_frame is not None:
+            try:
+                on_frame(frame)
+            except Exception:
+                logger.exception("on_frame callback raised")
+        return _format_mjpeg_frame(frame)
 
     if camera_type == "mjpeg":
         # Proxy MJPEG stream directly, with reconnect on timeout
@@ -633,7 +931,7 @@ async def generate_mjpeg_stream(
                 current_time = asyncio.get_event_loop().time()
                 if current_time - last_frame_time >= frame_interval:
                     last_frame_time = current_time
-                    yield _format_mjpeg_frame(frame)
+                    yield _publish(frame)
             if not frame_yielded or attempt == max_retries or (stop_event is not None and stop_event.is_set()):
                 break
             logger.warning(
@@ -650,7 +948,7 @@ async def generate_mjpeg_stream(
             frame_yielded = False
             async for frame in _stream_rtsp(url, fps, on_process=on_process):
                 frame_yielded = True
-                yield _format_mjpeg_frame(frame)
+                yield _publish(frame)
             if not frame_yielded or attempt == max_retries or (stop_event is not None and stop_event.is_set()):
                 break
             logger.warning(
@@ -663,7 +961,7 @@ async def generate_mjpeg_stream(
     elif camera_type == "usb":
         # Use ffmpeg to stream from USB camera
         async for frame in _stream_usb(url, fps, on_process=on_process):
-            yield _format_mjpeg_frame(frame)
+            yield _publish(frame)
 
     elif camera_type == "snapshot":
         # Poll snapshot URL at interval
@@ -671,7 +969,7 @@ async def generate_mjpeg_stream(
             try:
                 frame = await _capture_snapshot(url, timeout=10)
                 if frame:
-                    yield _format_mjpeg_frame(frame)
+                    yield _publish(frame)
                 await asyncio.sleep(frame_interval)
             except asyncio.CancelledError:
                 break
@@ -700,7 +998,7 @@ async def _stream_mjpeg(url: str) -> AsyncGenerator[bytes, None]:
     # Sanitize URL - returns reconstructed URL from validated components
     safe_url = _sanitize_camera_url(url, ("http", "https"))
     if not safe_url:
-        logger.error("Invalid MJPEG stream URL: %s...", url[:50])
+        logger.error("Invalid MJPEG stream URL: %s...", redact_url_credentials(url)[:50])
         return
 
     try:
@@ -759,6 +1057,11 @@ async def _stream_rtsp(
     For rtsps:// URLs, a local TLS proxy (Python OpenSSL) is used instead
     of relying on ffmpeg's GnuTLS backend, which has compatibility issues
     with some printer firmwares.
+
+    Note: this function intentionally connects to user-configured URLs. The URL
+    is sanitized and dangerous destinations are blocked before it reaches
+    ffmpeg — see ``_capture_rtsp_frame``, which guards the one-shot path the
+    same way.
     """
     ffmpeg = get_ffmpeg_path()
     if not ffmpeg:
@@ -767,16 +1070,21 @@ async def _stream_rtsp(
 
     from backend.app.services.camera import rtsp_socket_timeout_flag
 
+    safe_url = _sanitize_camera_url(url, ("rtsp", "rtsps"))
+    if not safe_url:
+        logger.error("Invalid RTSP stream URL: %s...", redact_url_credentials(url)[:50])
+        return
+
     # If the URL uses rtsps://, set up a TLS proxy so ffmpeg uses plain rtsp://
     proxy_server = None
-    effective_url = url
-    if url.lower().startswith("rtsps://"):
+    effective_url = safe_url
+    if safe_url.lower().startswith("rtsps://"):
         try:
             from urllib.parse import urlparse
 
-            from backend.app.services.camera import create_tls_proxy
+            from backend.app.services.camera import close_tls_proxy, create_tls_proxy
 
-            parsed = urlparse(url)
+            parsed = urlparse(safe_url)
             target_port = parsed.port or 322
             proxy_port, proxy_server = await create_tls_proxy(parsed.hostname, target_port)
             # Rewrite URL: rtsps://user:pass@host:port/path → rtsp://user:pass@127.0.0.1:proxy/path
@@ -786,12 +1094,14 @@ async def _stream_rtsp(
                 if parsed.password:
                     userinfo += f":{parsed.password}"
                 userinfo += "@"
+            # Loopback by design, and built after the check above rather than
+            # re-checked — see the same rewrite in _capture_rtsp_frame.
             effective_url = f"rtsp://{userinfo}127.0.0.1:{proxy_port}{parsed.path}"
             if parsed.query:
                 effective_url += f"?{parsed.query}"
         except Exception as e:
             logger.warning("Failed to create TLS proxy for RTSP, falling back to direct: %s", e)
-            effective_url = url
+            effective_url = safe_url
 
     cmd = [
         ffmpeg,
@@ -799,6 +1109,8 @@ async def _stream_rtsp(
         "tcp",
         "-rtsp_flags",
         "prefer_tcp",
+        "-protocol_whitelist",
+        _RTSP_PROTOCOL_WHITELIST,
         # Socket I/O timeout name varies by ffmpeg version (#1504); see
         # `rtsp_socket_timeout_flag()` in services.camera.
         f"-{rtsp_socket_timeout_flag()}",
@@ -844,7 +1156,10 @@ async def _stream_rtsp(
         await asyncio.sleep(0.1)
         if process.returncode is not None:
             stderr = await process.stderr.read()
-            logger.error("ffmpeg RTSP stream failed immediately: %s", stderr.decode()[:300])
+            # The summariser masks the camera password the input URL carries.
+            logger.error(
+                "ffmpeg RTSP stream failed immediately: %s", summarize_ffmpeg_stderr(stderr) or NO_FFMPEG_OUTPUT
+            )
             return
 
         buffer = b""
@@ -895,8 +1210,7 @@ async def _stream_rtsp(
                 process.kill()
                 await process.wait()
         if proxy_server:
-            proxy_server.close()
-            await proxy_server.wait_closed()
+            await close_tls_proxy(proxy_server)
 
 
 async def _stream_usb(
@@ -911,14 +1225,13 @@ async def _stream_usb(
         logger.error("ffmpeg not found - required for USB camera streaming")
         return
 
-    # Validate device path
-    if not device.startswith("/dev/video"):
-        logger.error("Invalid USB device path: %s", device)
+    # Same validation as the one-shot path: a prefix check accepted
+    # /dev/video/../../<anything that exists>, which -f v4l2 would then refuse
+    # rather than the check refusing it.
+    safe_device = _safe_usb_device_path(device)
+    if not safe_device:
         return
-
-    if not Path(device).exists():
-        logger.error("USB device does not exist: %s", device)
-        return
+    device = safe_device
 
     # ffmpeg command to stream from USB camera (v4l2)
     cmd = [
@@ -957,7 +1270,9 @@ async def _stream_usb(
         await asyncio.sleep(0.5)
         if process.returncode is not None:
             stderr = await process.stderr.read()
-            logger.error("ffmpeg USB stream failed immediately: %s", stderr.decode()[:300])
+            logger.error(
+                "ffmpeg USB stream failed immediately: %s", summarize_ffmpeg_stderr(stderr) or NO_FFMPEG_OUTPUT
+            )
             return
 
         buffer = b""

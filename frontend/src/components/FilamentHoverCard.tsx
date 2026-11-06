@@ -4,11 +4,16 @@ import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Droplets, Copy, Check, Settings2, Package, Unlink } from 'lucide-react';
 import { AssignSpoolIcon } from './icons/AssignSpoolIcon';
-import { isLightColor } from '../utils/colors';
+import { isLightColor, resolveSpoolColorName } from '../utils/colors';
+import { buildFilamentBackground, parseStops } from './filamentSwatchHelpers';
 
 interface FilamentData {
   vendor: 'Bambu Lab' | 'Generic';
   profile: string;
+  /** Catalogue name for the loaded colour. Callers that know the material
+   *  should resolve it with ``getColorName(hex, tray_sub_brands)`` -- a white
+   *  Matte spool is Ivory White, not the Jade White that shares its hex
+   *  (#2875). An assigned spool overrides this; see ``displayColorName``. */
   colorName: string;
   colorHex: string | null;
   kFactor: string;
@@ -30,7 +35,23 @@ interface SpoolmanConfig {
 interface InventoryConfig {
   onAssignSpool?: () => void;
   onUnassignSpool?: () => void;
-  assignedSpool?: { id: number; material: string; brand: string | null; color_name: string | null; remainingWeightGrams?: number | null } | null;
+  // `subtype` is part of the spool's name, not decoration: "PLA" and "PLA Wood"
+  // are different filaments, and a card that prints only the material tells the
+  // user their wood-filled roll is plain PLA (the display-side half of #2902).
+  // `rgba` / `extra_colors` / `effect_type` are the spool's own swatch. The
+  // slot's telemetry colour is a single hex and can never describe a gradient
+  // or a surface effect, so a tri-colour roll read as one flat band (#2967).
+  assignedSpool?: {
+    id: number;
+    material: string;
+    subtype: string | null;
+    brand: string | null;
+    color_name: string | null;
+    rgba?: string | null;
+    extra_colors?: string | null;
+    effect_type?: string | null;
+    remainingWeightGrams?: number | null;
+  } | null;
   isAssigned?: boolean;
 }
 
@@ -186,7 +207,64 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
   };
 
   const colorHex = data.colorHex ? `#${data.colorHex.replace('#', '')}` : null;
+
+  // An assigned spool outranks any hex lookup: it is the roll the user put in
+  // this slot, named by whoever created it, and it is already shown two rows
+  // below under ASSIGNED. Passing a null rgba keeps the helper to its
+  // readable-name test -- a Bambu internal code like "A06-D0" is not a name
+  // (#857) and must not displace the catalogue answer, which the caller has
+  // already resolved with the slot's material (#2875).
+  // Trimmed, so a spool saved with a whitespace-only colour name leaves the
+  // swatch reading the catalogue answer instead of reading blank.
+  const assignedColorName = resolveSpoolColorName(inventory?.assignedSpool?.color_name ?? null, null)?.trim();
+  const displayColorName = assignedColorName || data.colorName;
   const assignedRemainingWeight = inventory?.assignedSpool?.remainingWeightGrams ?? null;
+
+  // The header paints the spool's own swatch whenever the spool describes more
+  // than one colour, or any surface effect (#2967). Telemetry cannot: a tray
+  // record carries a single `tray_color` hex, so a Tri Color roll of yellow,
+  // cyan and pink read as one flat band of whichever hex the slot was
+  // configured with.
+  //
+  // Only when the spool actually says something extra. A plain single-colour
+  // spool keeps the flat `backgroundColor` it has always had, so the common
+  // case is untouched and the gradient machinery cannot regress it.
+  const assignedSwatch = inventory?.assignedSpool ?? null;
+  const swatchStops = parseStops(assignedSwatch?.extra_colors);
+  const hasSwatchEffect = Boolean(assignedSwatch?.effect_type);
+  // Any stop at all, not just two: `buildColorLayer` ignores `rgba` the moment
+  // stops exist, so a one-stop spool renders that stop's colour and not the
+  // slot hex. Honouring it here is what keeps this header agreeing with the
+  // Inventory swatch, which is the whole point of sharing the builder.
+  const useSpoolSwatch = Boolean(assignedSwatch) && (swatchStops.length > 0 || hasSwatchEffect);
+  // Built from the spool end to end when used. Mixing the spool's stops over
+  // the slot's base hex would render a gradient the user never configured if
+  // the two ever disagreed.
+  const spoolSwatchStyle = useSpoolSwatch
+    ? buildFilamentBackground({
+        effectSize: 'card',
+        rgba: assignedSwatch?.rgba ?? colorHex,
+        extraColors: assignedSwatch?.extra_colors,
+        effectType: assignedSwatch?.effect_type,
+        subtype: assignedSwatch?.subtype,
+      })
+    : null;
+  // A single hex cannot decide legibility across several bands, and the header
+  // label sits dead centre where a multi-stop background is most likely to
+  // change under it. So a genuinely multi-band swatch puts the name on the same
+  // scrim the vendor badge already uses rather than betting on one of the
+  // stops. One stop, or an effect over one colour, leaves the base colour
+  // intact -- the contrast test still has a real answer there, and scrimming
+  // every effect spool would put a black pill on cards that never needed one.
+  const swatchNeedsScrim = swatchStops.length > 1;
+  // Which colour the contrast test should actually run against. Not always the
+  // slot hex any more: once the spool's swatch is painted, a single stop
+  // replaces the base entirely, and an effect-only spool paints the spool's own
+  // rgba rather than the slot's. Testing the slot hex in either case would pick
+  // the text colour for a background that is no longer on screen.
+  const contrastBaseHex = useSpoolSwatch
+    ? (swatchStops.length === 1 ? swatchStops[0] : assignedSwatch?.rgba ?? colorHex)
+    : colorHex;
 
   return (
     <div
@@ -226,20 +304,28 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
             {/* Color swatch header - the hero element */}
             <div
               className="h-12 relative overflow-hidden"
-              style={{
-                backgroundColor: colorHex || '#3d3d3d',
-              }}
+              style={
+                spoolSwatchStyle
+                  ? { ...spoolSwatchStyle, backgroundColor: colorHex || '#3d3d3d' }
+                  : { backgroundColor: colorHex || '#3d3d3d' }
+              }
             >
               {/* Subtle gradient overlay for depth */}
               <div className="absolute inset-0 bg-gradient-to-b from-white/10 to-transparent" />
 
               {/* Color name on swatch */}
-              <div className={`
-                absolute inset-0 flex items-center justify-center
-                font-semibold text-sm tracking-wide
-                ${isLightColor(colorHex) ? 'text-black/80' : 'text-white/90'}
-              `}>
-                {data.colorName}
+              <div className="absolute inset-0 flex items-center justify-center">
+                <span
+                  className={
+                    swatchNeedsScrim
+                      ? 'px-2 py-0.5 rounded bg-black/60 text-white font-semibold text-sm tracking-wide'
+                      : `font-semibold text-sm tracking-wide ${
+                          isLightColor(contrastBaseHex) ? 'text-black/80' : 'text-white/90'
+                        }`
+                  }
+                >
+                  {displayColorName}
+                </span>
               </div>
 
               {/* Vendor badge - solid background for visibility on any color */}
@@ -345,7 +431,7 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
                           dismiss();
                           navigate(`/inventory?spool=${spoolman.linkedSpoolId}`);
                         }}
-                        className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs font-medium rounded transition-colors bg-bambu-green/20 hover:bg-bambu-green/30 text-bambu-green"
+                        className="w-full flex items-center justify-start gap-1.5 px-2 py-1.5 text-xs font-medium rounded transition-colors bg-bambu-green/20 hover:bg-bambu-green/40 text-bambu-green"
                         title={t('inventory.openInInventory')}
                       >
                         <Package className="w-3.5 h-3.5" />
@@ -386,6 +472,7 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
                         <p className="text-xs text-white truncate">
                           {inventory.assignedSpool.brand ? `${inventory.assignedSpool.brand} ` : ''}
                           {inventory.assignedSpool.material}
+                          {inventory.assignedSpool.subtype ? ` ${inventory.assignedSpool.subtype}` : ''}
                           {inventory.assignedSpool.color_name ? ` - ${inventory.assignedSpool.color_name}` : ''}
                         </p>
                         <span className="text-[10px] font-mono text-bambu-gray shrink-0">#{inventory.assignedSpool.id}</span>
@@ -397,7 +484,7 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
                             dismiss();
                             navigate(`/inventory?spool=${inventory.assignedSpool!.id}`);
                           }}
-                          className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs font-medium rounded transition-colors bg-bambu-green/20 hover:bg-bambu-green/30 text-bambu-green"
+                          className="w-full flex items-center justify-start gap-1.5 px-2 py-1.5 text-xs font-medium rounded transition-colors bg-bambu-green/20 hover:bg-bambu-green/40 text-bambu-green"
                           title={t('inventory.openInInventory')}
                         >
                           <Package className="w-3.5 h-3.5" />
@@ -411,7 +498,7 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
                             dismiss();
                             inventory.onUnassignSpool?.();
                           }}
-                          className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs font-medium rounded transition-colors bg-red-100 dark:bg-red-500/20 hover:bg-red-200 dark:hover:bg-red-500/30 text-red-700 dark:text-red-400"
+                          className="w-full flex items-center justify-start gap-1.5 px-2 py-1.5 text-xs font-medium rounded transition-colors bg-red-100 dark:bg-red-500/20 hover:bg-red-200 dark:hover:bg-red-500/40 text-red-700 dark:text-red-400"
                         >
                           <Unlink className="w-3.5 h-3.5" />
                           {t('inventory.unassignSpool')}
@@ -426,8 +513,8 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
                         inventory.onAssignSpool?.();
                       }}
                       disabled={!!inventory.isAssigned}
-                      className={`w-full flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs font-medium rounded transition-colors bg-bambu-blue/20 text-bambu-blue ${
-                        inventory.isAssigned ? 'opacity-50 cursor-not-allowed' : 'hover:bg-bambu-blue/30'
+                      className={`w-full flex items-center justify-start gap-1.5 px-2 py-1.5 text-xs font-medium rounded transition-colors bg-bambu-blue/20 text-bambu-blue ${
+                        inventory.isAssigned ? 'opacity-50 cursor-not-allowed' : 'hover:bg-bambu-blue/40'
                       }`}
                     >
                       <AssignSpoolIcon className="w-3.5 h-3.5" />
@@ -446,7 +533,7 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
                       dismiss();
                       configureSlot.onConfigure?.();
                     }}
-                    className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs font-medium rounded transition-colors bg-bambu-blue/20 hover:bg-bambu-blue/30 text-bambu-blue"
+                    className="w-full flex items-center justify-start gap-1.5 px-2 py-1.5 text-xs font-medium rounded transition-colors bg-bambu-blue/20 hover:bg-bambu-blue/40 text-bambu-blue"
                     title={t('ams.configureSlot')}
                   >
                     <Settings2 className="w-3.5 h-3.5" />
@@ -506,7 +593,7 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
                     spoolman?.onUnlinkSpool?.();
                     setShowUnlinkConfirm(false);
                   }}
-                  className="flex-1 px-3 py-2 text-sm font-medium rounded transition-colors bg-red-100 dark:bg-red-500/20 hover:bg-red-200 dark:hover:bg-red-500/30 text-red-700 dark:text-red-400"
+                  className="flex-1 px-3 py-2 text-sm font-medium rounded transition-colors bg-red-100 dark:bg-red-500/20 hover:bg-red-200 dark:hover:bg-red-500/40 text-red-700 dark:text-red-400"
                 >
                   {t('inventory.unassignSpool')}
                 </button>
@@ -622,6 +709,20 @@ export function EmptySlotHoverCard({ children, className = '', configureSlot, on
             {/* Configure slot button */}
             {(configureSlot?.enabled || onAssignSpool || actions) && (
               <div className="px-2 pb-2 space-y-1">
+                {/* Assign before Configure, matching the filled-slot card
+                    above (#2791).  The two cards are separate render paths
+                    and had drifted into opposite orders, so the menu
+                    reshuffled itself depending on whether the slot happened
+                    to hold filament. */}
+                {onAssignSpool && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); dismiss(); onAssignSpool(); }}
+                    className="w-full flex items-center justify-start gap-1.5 px-2 py-1.5 text-xs font-medium rounded transition-colors bg-bambu-blue/20 hover:bg-bambu-blue/40 text-bambu-blue"
+                  >
+                    <AssignSpoolIcon className="w-3.5 h-3.5" />
+                    {t('inventory.assignSpool')}
+                  </button>
+                )}
                 {configureSlot?.enabled && (
                   <button
                     onClick={(e) => {
@@ -629,20 +730,11 @@ export function EmptySlotHoverCard({ children, className = '', configureSlot, on
                       dismiss();
                       configureSlot.onConfigure?.();
                     }}
-                    className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs font-medium rounded transition-colors bg-bambu-blue/20 hover:bg-bambu-blue/30 text-bambu-blue"
+                    className="w-full flex items-center justify-start gap-1.5 px-2 py-1.5 text-xs font-medium rounded transition-colors bg-bambu-blue/20 hover:bg-bambu-blue/40 text-bambu-blue"
                     title={t('ams.configureSlot')}
                   >
                     <Settings2 className="w-3.5 h-3.5" />
                     {t('ams.configure')}
-                  </button>
-                )}
-                {onAssignSpool && (
-                  <button
-                    onClick={(e) => { e.stopPropagation(); dismiss(); onAssignSpool(); }}
-                    className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs font-medium rounded transition-colors bg-bambu-blue/20 hover:bg-bambu-blue/30 text-bambu-blue"
-                  >
-                    <AssignSpoolIcon className="w-3.5 h-3.5" />
-                    {t('inventory.assignSpool')}
                   </button>
                 )}
                 {actions && (

@@ -18,6 +18,7 @@ async def write_log_entry(
     *,
     status: str,
     archive_id: int | None = None,
+    queue_item_id: int | None = None,
     print_name: str | None = None,
     printer_name: str | None = None,
     printer_id: int | None = None,
@@ -56,6 +57,7 @@ async def write_log_entry(
 
     entry = PrintLogEntry(
         archive_id=archive_id,
+        queue_item_id=queue_item_id,
         print_name=print_name,
         printer_name=printer_name,
         printer_id=printer_id,

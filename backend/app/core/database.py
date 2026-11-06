@@ -27,6 +27,11 @@ def _set_sqlite_pragmas(dbapi_conn, connection_record):
 # /system/db-pool can report it without re-deriving the dialect defaults.
 _pool_config: dict = {}
 
+# What the PostgreSQL server itself will allow, read once at startup. None on
+# SQLite, or when the probe could not run. Reported by get_pool_status() so a
+# support bundle carries both sides of the comparison.
+_server_connection_limits: dict | None = None
+
 
 def _resolve_pool_kwargs() -> dict:
     """Build the pool kwargs for ``create_async_engine`` (issue #2572).
@@ -60,9 +65,43 @@ def _resolve_pool_kwargs() -> dict:
     return kwargs
 
 
+def _resolve_connect_args() -> dict:
+    """Connect args that pin a PostgreSQL session to UTC (issue #2855).
+
+    Printbuddy's ``DateTime`` columns are naive and hold UTC, and the frontend's
+    ``parseUTCDate()`` reads a timestamp with no offset as UTC. Python-side
+    writes honour that (``utcnow_naive()``), but ~96 columns take their value
+    from ``server_default=func.now()`` and the migration DDL has ~49 more on
+    ``DEFAULT CURRENT_TIMESTAMP`` — those are filled by the database, not by us.
+
+    On PostgreSQL ``now()`` is a ``timestamptz``, so storing it into a
+    ``timestamp without time zone`` column casts it through the session
+    ``TimeZone``. A Postgres container started with ``TZ=Europe/Istanbul`` bakes
+    that zone into ``postgresql.conf`` at initdb, and every defaulted timestamp
+    is then written as local wall-clock and rendered three hours in the future.
+    Pinning the session makes the cast a no-op regardless of the server's own
+    setting.
+
+    SQLite needs nothing: its ``CURRENT_TIMESTAMP`` is UTC by definition and has
+    no session timezone to get wrong. This makes Postgres match SQLite rather
+    than introducing a third convention.
+    """
+    if is_sqlite():
+        return {}
+    # asyncpg is the documented driver and sends these in the startup packet;
+    # anything else Postgres goes through libpq, which takes the same setting
+    # as a command-line option.
+    if "+asyncpg" in settings.database_url:
+        return {"server_settings": {"timezone": "UTC"}}
+    return {"options": "-c timezone=UTC"}
+
+
 def _create_engine():
     """Create the async engine with dialect-appropriate settings."""
     kwargs = _resolve_pool_kwargs()
+    connect_args = _resolve_connect_args()
+    if connect_args:
+        kwargs["connect_args"] = connect_args
 
     global _pool_config
     _pool_config = {
@@ -151,6 +190,10 @@ def get_pool_status() -> dict:
     return {
         "dialect": "sqlite" if is_sqlite() else "postgresql",
         "config": dict(_pool_config),
+        # Both sides of the ceiling-vs-server comparison, so a support bundle
+        # shows whether a TooManyConnectionsError was a misconfiguration or a
+        # genuine leak. None on SQLite or if the startup probe couldn't run.
+        "server_limits": dict(_server_connection_limits) if _server_connection_limits else None,
         **gauges,
     }
 
@@ -241,6 +284,7 @@ async def get_db() -> AsyncSession:
 async def init_db():
     # Import models to register them with SQLAlchemy
     from backend.app.models import (  # noqa: F401
+        active_print_session,
         active_print_spoolman,
         ams_history,
         ams_label,
@@ -252,12 +296,14 @@ async def init_db():
         external_link,
         filament,
         filament_sku_settings,
+        finance,
         github_backup,
         group,
         kprofile_note,
         library,
         local_preset,
         location,
+        location_ha_sensor,
         long_lived_token,
         maintenance,
         notification,
@@ -273,9 +319,11 @@ async def init_db():
         print_queue,
         printer,
         printer_fleet_group,
+        printer_ha_sensor,
         printer_sensor_history,
         project,
         project_bom,
+        scheduled_drying,
         settings,
         shopping_list,
         slicer_pipeline,
@@ -285,6 +333,7 @@ async def init_db():
         spool,
         spool_assignment,
         spool_catalog,
+        spool_filament_preset,
         spool_k_profile,
         spool_usage_history,
         spoolman_k_profile,
@@ -318,6 +367,107 @@ async def init_db():
     # Seed default catalog entries
     await seed_spool_catalog()
     await seed_color_catalog()
+
+    await check_pool_fits_server()
+
+
+async def check_pool_fits_server() -> None:
+    """Warn when the pool may ask PostgreSQL for more connections than it allows.
+
+    ``pool_size + max_overflow`` is the most connections one worker process will
+    ever open. If that exceeds what the server permits, the pool never reaches
+    its own limit and so never queues: it goes straight to the server, which
+    refuses with ``TooManyConnectionsError``. That surfaces wherever the next
+    connection happened to be needed — in the reported case, halfway through a
+    queue dispatch, which then left an expected-print registration and a dispatch
+    claim behind (#2702 follow-up).
+
+    The distinction is worth knowing when reading a log: SQLAlchemy's own
+    ``QueuePool limit ... timed out`` means the pool is the bottleneck (too much
+    concurrency, or connections held too long), whereas asyncpg's
+    ``TooManyConnectionsError`` means the pool's ceiling is above the server's.
+
+    Not clamped, deliberately. Pool sizes are fixed when the engine is created,
+    which happens at import — before any connection exists to ask the server
+    with — and ``engine`` / ``async_session`` are imported by name in ~150 places,
+    so swapping the engine afterwards would leave stale references. The correct
+    ceiling also depends on the worker count and on anything else sharing the
+    server, neither of which Printbuddy can see. So this reports the mismatch with
+    both numbers and the knobs to fix it, and leaves the choice to the operator.
+    """
+    global _server_connection_limits
+    if is_sqlite():
+        return
+
+    from sqlalchemy import text
+
+    in_use: int | None = None
+    try:
+        async with engine.connect() as conn:
+            max_conn = int((await conn.execute(text("SHOW max_connections"))).scalar_one())
+            reserved = int((await conn.execute(text("SHOW superuser_reserved_connections"))).scalar_one())
+            try:
+                in_use = int(
+                    (
+                        await conn.execute(
+                            text("SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'client backend'")
+                        )
+                    ).scalar_one()
+                )
+            except Exception as exc:
+                # `pg_stat_activity.backend_type` is PostgreSQL 10+, and a
+                # restricted role sees fewer rows. The count is a nice-to-have
+                # for spotting other clients; the warning itself only needs the
+                # two settings above, so losing it must not cost the warning.
+                # Done last on purpose: a failed statement can abort the
+                # transaction, and nothing else uses this connection after it.
+                logger.debug("Could not count client backends: %s", exc)
+    except Exception as exc:
+        # A diagnostic must never be the reason startup fails. An older server
+        # or a restricted role may refuse these.
+        logger.debug("Could not read PostgreSQL connection limits: %s", exc)
+        return
+
+    available = max_conn - reserved
+    ceiling = _pool_config.get("pool_size", 0) + _pool_config.get("max_overflow", 0)
+    _server_connection_limits = {
+        "max_connections": max_conn,
+        "superuser_reserved_connections": reserved,
+        "available_to_printbuddy": available,
+        "client_backends_at_startup": in_use,
+        "pool_ceiling_per_worker": ceiling,
+    }
+
+    if ceiling > available:
+        in_use_note = (
+            f" {in_use} client connection(s) are open on the server right now, including "
+            "this one — a count well above 1 means something else shares it."
+            if in_use is not None
+            else ""
+        )
+        logger.warning(
+            "DB pool may exceed what PostgreSQL allows: this worker can open up to %d "
+            "connections (pool_size %d + max_overflow %d) but the server permits %d "
+            "(max_connections %d minus %d reserved for superusers).%s Exhaustion surfaces "
+            "as TooManyConnectionsError at whatever ran next, not as a pool timeout. "
+            "Lower DB_POOL_SIZE / DB_MAX_OVERFLOW, or raise the server's "
+            "max_connections — and account for every worker process and any other "
+            "client sharing this server.",
+            ceiling,
+            _pool_config.get("pool_size", 0),
+            _pool_config.get("max_overflow", 0),
+            available,
+            max_conn,
+            reserved,
+            in_use_note,
+        )
+    else:
+        logger.info(
+            "DB pool fits the server: up to %d connection(s) per worker, %d available (max_connections %d).",
+            ceiling,
+            available,
+            max_conn,
+        )
 
 
 # B2: Module-level counter exposing the number of rows skipped during the last
@@ -448,16 +598,64 @@ async def _migrate_encrypt_legacy_secrets() -> None:
         )
 
 
+# PostgreSQL SQLSTATE codes meaning "this DDL statement has already been applied".
+# We classify on these rather than on the error text because the server renders
+# messages in its own ``lc_messages`` locale: a Russian-locale server answers a
+# duplicate ADD COLUMN with "уже существует", which no English substring check can
+# recognise. That made Printbuddy unstartable on every non-English PostgreSQL server,
+# fresh or existing — create_all() runs before run_migrations(), so on a new database
+# essentially every ADD COLUMN below is expected to come back as a duplicate (#2949).
+_PG_ALREADY_APPLIED = frozenset(
+    {
+        "42701",  # duplicate_column — ALTER TABLE ADD COLUMN
+        "42P07",  # duplicate_table — CREATE TABLE, CREATE INDEX
+        "42710",  # duplicate_object — ADD CONSTRAINT, CREATE TRIGGER
+        "23505",  # unique_violation — duplicate key
+    }
+)
+
+# undefined_column. Idempotency only for RENAME COLUMN (the rename already ran);
+# on any other statement a missing column means a broken schema, not a re-run.
+_PG_UNDEFINED_COLUMN = "42703"
+
+
+def _sqlstate(exc) -> str | None:
+    """Return the PostgreSQL SQLSTATE behind a SQLAlchemy error, or None.
+
+    None on SQLite, whose DBAPI exceptions carry no such code — and which never
+    localises its messages, so the text match below stays correct there.
+    """
+    orig = getattr(exc, "orig", None)
+    for attr in ("sqlstate", "pgcode"):
+        code = getattr(orig, attr, None)
+        if code:
+            return str(code)
+    return None
+
+
+def _is_already_applied(exc, sql: str) -> bool:
+    """Return True if a failed DDL statement had simply already been applied."""
+    is_rename = "rename column" in sql.lower()
+
+    state = _sqlstate(exc)
+    if state is not None:
+        return state in _PG_ALREADY_APPLIED or (state == _PG_UNDEFINED_COLUMN and is_rename)
+
+    msg = str(exc).lower()
+    if any(k in msg for k in ("already exists", "duplicate key", "duplicate column name", "no such column")):
+        return True
+    return is_rename and "column" in msg and "does not exist" in msg
+
+
 async def _safe_execute(conn, sql):
     """Execute a DDL migration statement, silently ignoring idempotency errors.
 
-    'already exists', 'duplicate column name' (SQLite ADD COLUMN), 'no such column'
-    (SQLite RENAME COLUMN), 'duplicate key', and the compound
-    'column … does not exist' (PostgreSQL RENAME COLUMN idempotency) are swallowed
-    so that re-running DDL migrations is safe.  The compound check additionally
-    requires the SQL to be a RENAME COLUMN statement so that "does not exist" errors
-    from ADD COLUMN or CREATE INDEX (which would indicate schema corruption, not
-    idempotency) are never silently swallowed.
+    Statements that had already been applied are swallowed so that re-running DDL
+    migrations is safe — see :func:`_is_already_applied` for how that is decided
+    (SQLSTATE on PostgreSQL, message text on SQLite). Idempotency for a missing
+    column is narrowed to RENAME COLUMN, so a missing column on ADD COLUMN or
+    CREATE INDEX — which would indicate schema corruption, not a re-run — is never
+    silently swallowed.
     Any other error is logged and re-raised — callers must not assume silent
     recovery, as a failure will abort the migration sequence and prevent
     application startup.
@@ -475,14 +673,7 @@ async def _safe_execute(conn, sql):
         async with conn.begin_nested():
             await conn.execute(text(sql))
     except (OperationalError, ProgrammingError) as exc:
-        msg = str(exc).lower()
-        # Only swallow "column … does not exist" for RENAME COLUMN — not for ADD COLUMN
-        # or CREATE INDEX where it would indicate schema corruption, not idempotency.
-        column_not_exists = "rename column" in sql.lower() and "column" in msg and "does not exist" in msg
-        if (
-            not any(k in msg for k in ("already exists", "duplicate key", "duplicate column name", "no such column"))
-            and not column_not_exists
-        ):
+        if not _is_already_applied(exc, sql):
             logger.error("Migration statement failed: %s | SQL: %.200s", exc, sql)
             raise
 
@@ -692,6 +883,168 @@ async def _migrate_scope_run_filament_to_plate(conn) -> None:
         # Mark done unconditionally (even when nothing matched) so this one-shot
         # never re-scans the print log on subsequent boots. id/timestamps come
         # from the table's own defaults; "key" is quoted as it's a keyword.
+        await conn.execute(
+            text('INSERT INTO settings ("key", value) VALUES (:k, :v)'),
+            {"k": flag, "v": "true"},
+        )
+
+
+async def _reclassify_sliced_3mf_library_files(conn) -> None:
+    """Re-type library rows holding a sliced 3MF that does not say so (#2993).
+
+    ``file_type`` was decided from the filename alone, so a sliced 3MF whose
+    name lacks the ``.gcode`` infix landed as a source-only project. That is
+    not a rare shape: a plate exported from Studio, or a print dispatched
+    through the cloud, reaches the archive as ``Foo.3mf`` with its G-code
+    intact, and downloading one and re-importing it produced a library file
+    Printbuddy refused to offer a Print button for. The forward fix classifies on
+    content; this pass reaches the rows already stored.
+
+    One-shot, for the same reason the #2614 backfill is: a genuine source 3MF
+    keeps matching ``file_type = '3mf'`` forever, so without the gate every
+    boot would re-open every model file in the library.
+
+    External rows are deliberately skipped. They point at a mount that may be
+    slow, unmounted, or enormous, and startup is the worst possible place to
+    find that out -- the folder's own scan re-types them with no such risk.
+    """
+    from pathlib import Path
+
+    from sqlalchemy import text
+
+    from backend.app.utils.threemf_tools import carries_gcode
+
+    flag = "_backfill_2993_sliced_3mf_type_done"
+
+    async with conn.begin_nested():
+        already = (
+            await conn.execute(text('SELECT value FROM settings WHERE "key" = :k'), {"k": flag})
+        ).scalar_one_or_none()
+        if already:
+            return
+
+        rows = (
+            await conn.execute(
+                text(
+                    "SELECT id, file_path FROM library_files "
+                    "WHERE file_type = '3mf' AND deleted_at IS NULL "
+                    "AND file_path IS NOT NULL AND file_path <> '' "
+                    "AND (is_external IS NULL OR is_external = :false_val)"
+                ),
+                {"false_val": False},
+            )
+        ).fetchall()
+
+        reclassified = 0
+        for row in rows:
+            path = Path(row.file_path)
+            if not path.is_absolute():
+                path = settings.base_dir / row.file_path
+            # carries_gcode swallows a missing or unreadable file, so a library
+            # with holes in it still finishes the pass.
+            if not carries_gcode(path):
+                continue
+            await conn.execute(
+                text("UPDATE library_files SET file_type = 'gcode.3mf' WHERE id = :id"),
+                {"id": row.id},
+            )
+            reclassified += 1
+
+        if reclassified:
+            logger.info(
+                "[#2993] Re-typed %d library file(s) from source 3MF to sliced -- they carry G-code",
+                reclassified,
+            )
+
+        # Marked done even when nothing matched, so the scan never repeats.
+        await conn.execute(
+            text('INSERT INTO settings ("key", value) VALUES (:k, :v)'),
+            {"k": flag, "v": "true"},
+        )
+
+
+async def _backfill_archive_bed_temperature(conn) -> None:
+    """Fill in ``print_archives.bed_temperature`` for archives written before #2989.
+
+    Bed temperature was read by looking for a ``bed_temperature`` key, which
+    BambuStudio does not write -- it stores a per-filament array per plate type
+    and names the fitted plate in ``curr_bed_type``. Every archive from a Bambu
+    slice therefore stored NULL: 0 of 455 real 3MFs resolved on the install this
+    was measured on. The forward fix reads the right array; without this, every
+    archive made before it stays blank, and preheat keeps falling back to the
+    keep-warm bed temperature when those jobs are reprinted from the queue.
+
+    Only rows that are still NULL are touched, and only from the 3MF already on
+    disk -- nothing is invented and nothing already recorded is overwritten. An
+    archive whose file is gone (a no-3MF fallback, or one whose 3MF has been
+    cleaned up) is skipped and stays NULL, which is the honest answer.
+
+    Gated to run exactly once via a settings flag, like #2614's repair. The
+    work itself is repeatable -- it only fills NULLs -- but the rows it cannot
+    fill are exactly the ones it would re-open on every boot, and that set grows
+    with print history.
+    """
+    from pathlib import Path
+
+    from sqlalchemy import text
+
+    from backend.app.utils.threemf_tools import extract_bed_temperature_from_3mf
+
+    flag = "_backfill_2989_bed_temperature_done"
+
+    async with conn.begin_nested():
+        already = (
+            await conn.execute(text('SELECT value FROM settings WHERE "key" = :k'), {"k": flag})
+        ).scalar_one_or_none()
+        if already is not None:
+            # Presence, not truthiness. A flag row that somehow holds an empty
+            # string would otherwise re-run and then fail the unique key on the
+            # INSERT below -- which, at startup, is a boot loop.
+            return
+
+        rows = (
+            await conn.execute(
+                text(
+                    "SELECT id, file_path FROM print_archives "
+                    "WHERE bed_temperature IS NULL "
+                    "AND file_path IS NOT NULL AND file_path != ''"
+                )
+            )
+        ).fetchall()
+
+        filled = 0
+        for row in rows:
+            # Per row, and broad, for the reason in the extractor's docstring:
+            # nothing above this has a handler, so one unreadable archive must
+            # not cost the user their boot. #2614's repair guards its rows the
+            # same way.
+            try:
+                path = Path(row.file_path)
+                if not path.is_absolute():
+                    path = settings.base_dir / row.file_path
+                if not path.exists():
+                    continue
+                temperature = extract_bed_temperature_from_3mf(path)
+            except Exception as exc:
+                logger.warning("[#2989] could not read %s for archive %s: %s", row.file_path, row.id, exc)
+                continue
+            if not temperature:
+                continue
+            await conn.execute(
+                text("UPDATE print_archives SET bed_temperature = :t WHERE id = :id"),
+                {"t": temperature, "id": row.id},
+            )
+            filled += 1
+
+        if filled:
+            logger.info(
+                "[#2989] Read the bed temperature from the 3MF for %d archive(s) that had none",
+                filled,
+            )
+
+        # Marked done even when nothing matched, so the rows it could not fill --
+        # which are exactly the ones it would re-open every boot -- are not
+        # rescanned forever. Same shape as #2614's one-shot.
         await conn.execute(
             text('INSERT INTO settings ("key", value) VALUES (:k, :v)'),
             {"k": flag, "v": "true"},
@@ -915,6 +1268,468 @@ async def _migrate_widen_spoolman_slot_ams_id_range(conn) -> None:
         raise
 
 
+async def _migrate_create_finance_tables(conn) -> None:
+    """Create finance tables missing from databases that predate billing.
+
+    ``Base.metadata.create_all()`` covers fresh installs, but upgrade and
+    restore paths can run the handwritten migrations against an existing
+    PostgreSQL schema.  The finance column migrations below must therefore not
+    assume these tables already exist.
+
+    ``UserWallet`` is mapped to ``user_wallets``.
+    """
+    if is_sqlite():
+        statements = [
+            """
+            CREATE TABLE IF NOT EXISTS cost_centers (
+                id INTEGER PRIMARY KEY,
+                code VARCHAR(32) NOT NULL UNIQUE,
+                name VARCHAR(150) NOT NULL,
+                is_active BOOLEAN NOT NULL DEFAULT 1,
+                is_private BOOLEAN NOT NULL DEFAULT 0,
+                owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                total_budget NUMERIC(14,2),
+                monthly_budget NUMERIC(14,2),
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS user_wallets (
+                id INTEGER PRIMARY KEY,
+                user_id INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+                balance NUMERIC(14,2) NOT NULL DEFAULT 0.0,
+                currency VARCHAR(3) NOT NULL DEFAULT 'EUR',
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS cost_center_members (
+                id INTEGER PRIMARY KEY,
+                cost_center_id INTEGER NOT NULL REFERENCES cost_centers(id) ON DELETE CASCADE,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                can_print BOOLEAN NOT NULL DEFAULT 1,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT uq_cost_center_members_cc_user UNIQUE (cost_center_id, user_id)
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS wallet_transactions (
+                id INTEGER PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                cost_center_id INTEGER REFERENCES cost_centers(id) ON DELETE SET NULL,
+                transaction_type VARCHAR(40) NOT NULL,
+                amount NUMERIC(14,2) NOT NULL,
+                balance_after NUMERIC(14,2),
+                description TEXT,
+                created_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                print_run_id VARCHAR(100),
+                print_archive_id INTEGER REFERENCES print_archives(id) ON DELETE SET NULL,
+                print_queue_id INTEGER REFERENCES print_queue(id) ON DELETE SET NULL,
+                is_voided BOOLEAN NOT NULL DEFAULT 0,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT ck_wallet_transactions_transaction_type CHECK (
+                    transaction_type IN ('print_charge', 'deposit', 'withdraw', 'manual_adjustment')
+                )
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS budget_reservations (
+                id INTEGER PRIMARY KEY,
+                cost_center_id INTEGER NOT NULL REFERENCES cost_centers(id) ON DELETE CASCADE,
+                amount NUMERIC(14,2) NOT NULL,
+                status VARCHAR(20) NOT NULL,
+                source_type VARCHAR(50) NOT NULL,
+                source_id INTEGER,
+                print_archive_id INTEGER REFERENCES print_archives(id) ON DELETE SET NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                released_at DATETIME
+            )
+            """,
+        ]
+    else:
+        statements = [
+            """
+            CREATE TABLE IF NOT EXISTS cost_centers (
+                id SERIAL PRIMARY KEY,
+                code VARCHAR(32) NOT NULL UNIQUE,
+                name VARCHAR(150) NOT NULL,
+                is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                is_private BOOLEAN NOT NULL DEFAULT FALSE,
+                owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                total_budget NUMERIC(14,2),
+                monthly_budget NUMERIC(14,2),
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS user_wallets (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+                balance NUMERIC(14,2) NOT NULL DEFAULT 0.0,
+                currency VARCHAR(3) NOT NULL DEFAULT 'EUR',
+                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS cost_center_members (
+                id SERIAL PRIMARY KEY,
+                cost_center_id INTEGER NOT NULL REFERENCES cost_centers(id) ON DELETE CASCADE,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                can_print BOOLEAN NOT NULL DEFAULT TRUE,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT uq_cost_center_members_cc_user UNIQUE (cost_center_id, user_id)
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS wallet_transactions (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                cost_center_id INTEGER REFERENCES cost_centers(id) ON DELETE SET NULL,
+                transaction_type VARCHAR(40) NOT NULL,
+                amount NUMERIC(14,2) NOT NULL,
+                balance_after NUMERIC(14,2),
+                description TEXT,
+                created_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                print_run_id VARCHAR(100),
+                print_archive_id INTEGER REFERENCES print_archives(id) ON DELETE SET NULL,
+                print_queue_id INTEGER REFERENCES print_queue(id) ON DELETE SET NULL,
+                is_voided BOOLEAN NOT NULL DEFAULT FALSE,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT ck_wallet_transactions_transaction_type CHECK (
+                    transaction_type IN ('print_charge', 'deposit', 'withdraw', 'manual_adjustment')
+                )
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS budget_reservations (
+                id SERIAL PRIMARY KEY,
+                cost_center_id INTEGER NOT NULL REFERENCES cost_centers(id) ON DELETE CASCADE,
+                amount NUMERIC(14,2) NOT NULL,
+                status VARCHAR(20) NOT NULL,
+                source_type VARCHAR(50) NOT NULL,
+                source_id INTEGER,
+                print_archive_id INTEGER REFERENCES print_archives(id) ON DELETE SET NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                released_at TIMESTAMP
+            )
+            """,
+        ]
+
+    for statement in statements:
+        await _safe_execute(conn, statement)
+
+
+async def _migrate_create_finance_indexes(conn) -> None:
+    """Create finance indexes after legacy tables have received new columns."""
+    # Older billing migrations created this as a non-unique index. Recreate it
+    # so upgraded databases enforce the same constraint as the ORM model.
+    await _safe_execute(conn, "DROP INDEX IF EXISTS ix_cost_centers_code")
+    indexes = [
+        "CREATE UNIQUE INDEX IF NOT EXISTS ix_cost_centers_code ON cost_centers (code)",
+        "CREATE INDEX IF NOT EXISTS ix_cost_centers_name ON cost_centers (name)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS ix_user_wallets_user_id ON user_wallets (user_id)",
+        "CREATE INDEX IF NOT EXISTS ix_cost_center_members_cost_center_id ON cost_center_members (cost_center_id)",
+        "CREATE INDEX IF NOT EXISTS ix_cost_center_members_user_id ON cost_center_members (user_id)",
+        "CREATE INDEX IF NOT EXISTS ix_wallet_transactions_user_id ON wallet_transactions (user_id)",
+        "CREATE INDEX IF NOT EXISTS ix_wallet_transactions_cost_center_id ON wallet_transactions (cost_center_id)",
+        "CREATE INDEX IF NOT EXISTS ix_wallet_transactions_transaction_type ON wallet_transactions (transaction_type)",
+        "CREATE INDEX IF NOT EXISTS ix_wallet_transactions_created_by_user_id "
+        "ON wallet_transactions (created_by_user_id)",
+        "CREATE INDEX IF NOT EXISTS ix_wallet_transactions_print_run_id ON wallet_transactions (print_run_id)",
+        "CREATE INDEX IF NOT EXISTS ix_wallet_transactions_print_archive_id ON wallet_transactions (print_archive_id)",
+        "CREATE INDEX IF NOT EXISTS ix_wallet_transactions_print_queue_id ON wallet_transactions (print_queue_id)",
+        "CREATE INDEX IF NOT EXISTS ix_wallet_transactions_created_at ON wallet_transactions (created_at)",
+        "CREATE INDEX IF NOT EXISTS ix_budget_reservations_cost_center_id ON budget_reservations (cost_center_id)",
+        "CREATE INDEX IF NOT EXISTS ix_budget_reservations_status ON budget_reservations (status)",
+        "CREATE INDEX IF NOT EXISTS ix_budget_reservations_source_type ON budget_reservations (source_type)",
+        "CREATE INDEX IF NOT EXISTS ix_budget_reservations_source_id ON budget_reservations (source_id)",
+        "CREATE INDEX IF NOT EXISTS ix_budget_reservations_print_archive_id ON budget_reservations (print_archive_id)",
+    ]
+    for statement in indexes:
+        await _safe_execute(conn, statement)
+
+
+async def _migrate_finance_money_to_numeric(conn) -> None:
+    """Convert persisted finance money columns on PostgreSQL upgrades."""
+    if is_sqlite():
+        # SQLite uses dynamic type affinity. New tables declare NUMERIC, while
+        # existing values remain protected by cent-rounding at write/rebuild.
+        return
+
+    columns = {
+        "cost_centers": ("total_budget", "monthly_budget"),
+        "user_wallets": ("balance",),
+        "wallet_transactions": ("amount", "balance_after"),
+        "budget_reservations": ("amount",),
+    }
+    for table_name, column_names in columns.items():
+        for column_name in column_names:
+            await _safe_execute(
+                conn,
+                f"ALTER TABLE {table_name} ALTER COLUMN {column_name} "
+                f"TYPE NUMERIC(14,2) USING ROUND({column_name}::numeric, 2)",
+            )
+
+
+async def _migrate_add_print_archive_cost_center(conn) -> None:
+    """Add the nullable cost-center link missing from pre-billing archives."""
+    await _safe_execute(
+        conn,
+        "ALTER TABLE print_archives ADD COLUMN cost_center_id INTEGER REFERENCES cost_centers(id) ON DELETE SET NULL",
+    )
+
+
+# Historical failure-reason labels, mapped to the canonical key that replaced
+# them (issue #2974).
+#
+# Three writers used to put three different spellings of one cause into
+# ``failure_reason``: the backend wrote English display labels, older versions
+# of the archive editor wrote the *translated* label in whatever locale that
+# user was running, and two stale-archive paths wrote English prose sentences.
+# The Failure Analysis widget groups on the raw column, so one real cause could
+# occupy several buckets -- measured on a live install before this landed: 91
+# rows reading "User cancelled" beside 1 reading "userCancelled", which in an
+# English UI rendered as the same words twice with different counts.
+#
+# This is deliberately a FROZEN SNAPSHOT rather than something derived from the
+# locale files at run time. It maps values as they were written historically; if
+# a translation is reworded tomorrow, the old string is still what sits in the
+# database and still has to map. Regenerating it from ``en.ts`` and friends
+# would silently stop recognising the very rows it exists to convert.
+#
+# Every label here resolves to exactly one key -- verified across all 14 locales
+# with no collisions -- so the conversion is exact rather than a best guess. A
+# value that is NOT in this map (free text from an older build, a translation
+# since edited) is deliberately left alone: it already renders through the
+# ``defaultValue`` fallback in both the editor and the Statistics breakdown, and
+# guessing at it would be worse than leaving one honest string in its own bucket.
+_LEGACY_FAILURE_REASON_LABELS: dict[str, str] = {
+    "Adhesion failure": "adhesionFailure",
+    "Agotamiento del filamento": "filamentRunout",
+    "Alabeo": "warping",
+    "Altro": "other",
+    "Annullato dall'utente": "userCancelled",
+    "Annulé par l'utilisateur": "userCancelled",
+    "Aucune mise à jour d'état reçue": "noStatusUpdate",
+    "Autre": "other",
+    "Az ekstrüzyon": "underExtrusion",
+    "Bico entupido": "cloggedNozzle",
+    "Boquilla obstruida": "cloggedNozzle",
+    "Buse bouchée": "cloggedNozzle",
+    "Bükülme": "warping",
+    "Cancelada por el usuario": "userCancelled",
+    "Cancelado pelo usuário": "userCancelled",
+    "Clogged nozzle": "cloggedNozzle",
+    "Corte de corriente": "powerFailure",
+    "Coupure courant": "powerFailure",
+    "Deformazione": "warping",
+    "Deslocamento de camada": "layerShift",
+    "Desplazamiento de capa": "layerShift",
+    "Diğer": "other",
+    "Door gebruiker geannuleerd": "userCancelled",
+    "Draadvorming": "stringing",
+    "Durum güncellemesi alınmadı": "noStatusUpdate",
+    "Décalage de couche": "layerShift",
+    "Défaut d'adhésion": "adhesionFailure",
+    "Empenamento": "warping",
+    "Espagueti / Desprendido": "spaghettiDetached",
+    "Fadenziehen": "stringing",
+    "Falha de adesão": "adhesionFailure",
+    "Falha de energia": "powerFailure",
+    "Fallimento adesione": "adhesionFailure",
+    "Fallo de adhesión": "adhesionFailure",
+    "Filament aufgebraucht": "filamentRunout",
+    "Filament bitti": "filamentRunout",
+    "Filament fini": "filamentRunout",
+    "Filament op": "filamentRunout",
+    "Filament runout": "filamentRunout",
+    "Filamento": "stringing",
+    "Filamento esaurito": "filamentRunout",
+    "Fim do filamento": "filamentRunout",
+    "Fios": "stringing",
+    "Geen statusupdate ontvangen": "noStatusUpdate",
+    "Güç kesintisi": "powerFailure",
+    "Haftungsfehler": "adhesionFailure",
+    "Hechtingsprobleem": "adhesionFailure",
+    "Hilos": "stringing",
+    "Katman kayması": "layerShift",
+    "Kein Statusupdate empfangen": "noStatusUpdate",
+    "Kromtrekken": "warping",
+    "Kullanıcı iptal etti": "userCancelled",
+    "Laagverschuiving": "layerShift",
+    "Layer shift": "layerShift",
+    "Mancanza corrente": "powerFailure",
+    "Nenhuma atualização de status recebida": "noStatusUpdate",
+    "Nessun aggiornamento di stato ricevuto": "noStatusUpdate",
+    "No se recibió actualización de estado": "noStatusUpdate",
+    "No status update received": "noStatusUpdate",
+    "Onderextrusie": "underExtrusion",
+    "Other": "other",
+    "Otro": "other",
+    "Outro": "other",
+    "Overig": "other",
+    "Power failure": "powerFailure",
+    "Schichtversatz": "layerShift",
+    "Sonstiges": "other",
+    "Sotto-estrusione": "underExtrusion",
+    "Sous-extrusion": "underExtrusion",
+    "Spagetti / Ayrılmış": "spaghettiDetached",
+    "Spaghetti / Abgelöst": "spaghettiDetached",
+    "Spaghetti / Destacado": "spaghettiDetached",
+    "Spaghetti / Detached": "spaghettiDetached",
+    "Spaghetti / Détaché": "spaghettiDetached",
+    "Spaghetti / losgeraakt": "spaghettiDetached",
+    "Spaghetti / staccato": "spaghettiDetached",
+    "Spostamento layer": "layerShift",
+    "Stale - print likely cancelled or failed without status update": "noStatusUpdate",
+    "Stale - reconciled after reconnect, end time unknown": "noStatusUpdate",
+    "Stringing": "stringing",
+    "Stringing (Cheveux d'ange)": "stringing",
+    "Stromausfall": "powerFailure",
+    "Stroomuitval": "powerFailure",
+    "Subextrusión": "underExtrusion",
+    "Subextrusão": "underExtrusion",
+    "Tıkalı nozul": "cloggedNozzle",
+    "Ugello intasato": "cloggedNozzle",
+    "Under-extrusion": "underExtrusion",
+    "Unterextrusion": "underExtrusion",
+    "User cancelled": "userCancelled",
+    "Verformung": "warping",
+    "Verstopfte Düse": "cloggedNozzle",
+    "Verstopte nozzle": "cloggedNozzle",
+    "Vom Benutzer abgebrochen": "userCancelled",
+    "Warping": "warping",
+    "Warping (Déformation)": "warping",
+    "Yapışma başarısız": "adhesionFailure",
+    "İplik oluşumu": "stringing",
+    "Биття філаменту": "filamentRunout",
+    "Викривлення": "warping",
+    "Другое": "other",
+    "Закончился филамент": "filamentRunout",
+    "Засмічене сопло": "cloggedNozzle",
+    "Засор сопла": "cloggedNozzle",
+    "Збій живлення": "powerFailure",
+    "Зсув шару": "layerShift",
+    "Користувач скасовано": "userCancelled",
+    "Коробление": "warping",
+    "Нанизування": "stringing",
+    "Недоэкструзия": "underExtrusion",
+    "Обновление статуса не получено": "noStatusUpdate",
+    "Оновлення статусу не отримано": "noStatusUpdate",
+    "Отменено пользователем": "userCancelled",
+    "Плохая адгезия к столу": "adhesionFailure",
+    "Порушення адгезії": "adhesionFailure",
+    "Підвидавлювання": "underExtrusion",
+    "Сбой питания": "powerFailure",
+    "Сдвиг слоёв": "layerShift",
+    "Спагетти / отрыв детали": "spaghettiDetached",
+    "Спагетті / Відр": "spaghettiDetached",
+    "Стрингинг": "stringing",
+    "інше": "other",
+    "その他": "other",
+    "ステータス更新を受信できませんでした": "noStatusUpdate",
+    "スパゲッティ / 剥離": "spaghettiDetached",
+    "ノズル詰まり": "cloggedNozzle",
+    "フィラメント切れ": "filamentRunout",
+    "ユーザーによるキャンセル": "userCancelled",
+    "レイヤーシフト": "layerShift",
+    "使用者取消": "userCancelled",
+    "其他": "other",
+    "反り": "warping",
+    "喷嘴堵塞": "cloggedNozzle",
+    "噴嘴堵塞": "cloggedNozzle",
+    "定着不良": "adhesionFailure",
+    "层偏移": "layerShift",
+    "層偏移": "layerShift",
+    "押出不足": "underExtrusion",
+    "拉丝": "stringing",
+    "拉丝 / 脱落": "spaghettiDetached",
+    "拉絲": "stringing",
+    "拉絲 / 脫落": "spaghettiDetached",
+    "挤出不足": "underExtrusion",
+    "擠出不足": "underExtrusion",
+    "断电": "powerFailure",
+    "斷電": "powerFailure",
+    "未收到状态更新": "noStatusUpdate",
+    "未收到狀態更新": "noStatusUpdate",
+    "用户取消": "userCancelled",
+    "糸引き": "stringing",
+    "翘曲": "warping",
+    "翹曲": "warping",
+    "耗材用完": "filamentRunout",
+    "附着力失败": "adhesionFailure",
+    "附著力失敗": "adhesionFailure",
+    "電源障害": "powerFailure",
+    "기타": "other",
+    "노즐 막힘": "cloggedNozzle",
+    "레이어 시프트": "layerShift",
+    "사용자 취소": "userCancelled",
+    "상태 업데이트를 받지 못함": "noStatusUpdate",
+    "스트링": "stringing",
+    "스파게티 / 분리": "spaghettiDetached",
+    "압출 부족": "underExtrusion",
+    "전원 실패": "powerFailure",
+    "접착 실패": "adhesionFailure",
+    "필라멘트 소진": "filamentRunout",
+    "휨": "warping",
+}
+
+
+async def _migrate_failure_reason_vocabulary(conn):
+    """Fold historical failure-reason labels onto the canonical keys (#2974).
+
+    ``print_archives.failure_reason`` and ``print_log_entries.failure_reason``
+    accumulated three spellings of the same cause -- see
+    ``_LEGACY_FAILURE_REASON_LABELS`` for who wrote what. The PATCH route in
+    ``api/routes/print_log.py`` has enforced the key vocabulary for a while and
+    ``derive_failure_reason`` now produces it too, so this is the one-time pass
+    that brings existing rows in line.
+
+    Deliberately NOT gated behind a settings flag, unlike the #2614 backfill.
+    The statement is self-terminating -- it only matches values in the map, and
+    a key is never a label, so a second run updates nothing -- which makes the
+    flag pure overhead. It would also be actively wrong: a user who restores an
+    older database, or upgrades through this version twice, would carry the flag
+    with none of the conversion, and their legacy rows would never be touched
+    again. Cheap and repeatable beats one-shot here.
+    """
+    from collections import defaultdict
+
+    from sqlalchemy import bindparam, text
+
+    # Invert the map before issuing anything: 168 labels collapse onto 12 keys,
+    # so one UPDATE per key with an IN list is 24 statements rather than 336
+    # single-value ones on every boot. Identity rows (an en.ts label that is
+    # spelled the same as its own key) are dropped -- they would match and
+    # rewrite themselves to the value they already hold.
+    by_key: dict[str, list[str]] = defaultdict(list)
+    for label, key in _LEGACY_FAILURE_REASON_LABELS.items():
+        if label != key:
+            by_key[key].append(label)
+
+    total = 0
+    async with conn.begin_nested():
+        # nosec B608 — the only interpolated fragment is `table`, which the loop
+        # below draws from a literal tuple; no caller value reaches the string.
+        # Both the key and the label list are bound parameters. A table name
+        # cannot be expressed as one, which is why it is interpolated at all.
+        for table in ("print_archives", "print_log_entries"):
+            for key, labels in by_key.items():
+                result = await conn.execute(
+                    text(
+                        f"UPDATE {table} SET failure_reason = :key "  # noqa: S608  # nosec B608
+                        "WHERE failure_reason IN :labels"
+                    ).bindparams(bindparam("key"), bindparam("labels", expanding=True)),
+                    {"key": key, "labels": labels},
+                )
+                total += result.rowcount or 0
+
+    if total:
+        logger.info("[#2974] converted %d failure_reason value(s) to the canonical vocabulary", total)
+
+
 async def run_migrations(conn):
     """Run all schema migrations and data backfills on startup.
 
@@ -929,6 +1744,16 @@ async def run_migrations(conn):
     """
     from sqlalchemy import text
 
+    # Existing PostgreSQL databases predate the finance ORM tables. These must
+    # exist before any ALTER TABLE / CREATE INDEX statements below reference
+    # them. Fresh installs remain idempotent because create_all() runs first.
+    await _migrate_create_finance_tables(conn)
+
+    # Data migration: one vocabulary for failure_reason (#2974). Runs early so
+    # the Failure Analysis widget and the archive editor never observe a
+    # half-converted column.
+    await _migrate_failure_reason_vocabulary(conn)
+
     # Migration: Add parent_run_id column to pipeline_runs (#1425 PR C).
     # Links a retry-failed run back to its parent so the dashboard can show
     # "Retry of run #N" inline. Idempotent on both SQLite and Postgres.
@@ -939,8 +1764,8 @@ async def run_migrations(conn):
 
     # Migration: Add source_archive_id column to pipeline_runs (#1425 PR B follow-up).
     # Allows a pipeline run to source from an archive's source 3MF in addition
-    # to a library file. Idempotent — _safe_execute swallows the "already exists"
-    # case on both SQLite and Postgres.
+    # to a library file. Idempotent — _safe_execute swallows an already-applied
+    # statement on both SQLite and Postgres.
     await _safe_execute(
         conn,
         "ALTER TABLE pipeline_runs ADD COLUMN source_archive_id INTEGER REFERENCES print_archives(id) ON DELETE SET NULL",
@@ -948,6 +1773,12 @@ async def run_migrations(conn):
 
     # Migration: Add is_favorite column to print_archives
     await _safe_execute(conn, "ALTER TABLE print_archives ADD COLUMN is_favorite BOOLEAN DEFAULT 0")
+
+    # Migration: Add wallet_charge_skipped column to print_archives so deleted print charges stay deleted
+    if is_sqlite():
+        await _safe_execute(conn, "ALTER TABLE print_archives ADD COLUMN wallet_charge_skipped BOOLEAN DEFAULT 0")
+    else:
+        await _safe_execute(conn, "ALTER TABLE print_archives ADD COLUMN wallet_charge_skipped BOOLEAN DEFAULT FALSE")
 
     # Migration: Add content_hash column to print_archives for duplicate detection
     await _safe_execute(conn, "ALTER TABLE print_archives ADD COLUMN content_hash VARCHAR(64)")
@@ -989,6 +1820,35 @@ async def run_migrations(conn):
 
     # Migration: Add is_deleted column to maintenance_types for soft-deletes
     await _safe_execute(conn, "ALTER TABLE maintenance_types ADD COLUMN is_deleted BOOLEAN DEFAULT 0")
+
+    # Migration: Add cost_center columns expected by current finance model
+    await _safe_execute(conn, "ALTER TABLE cost_centers ADD COLUMN code VARCHAR(32)")
+    if is_sqlite():
+        await _safe_execute(conn, "ALTER TABLE cost_centers ADD COLUMN is_private BOOLEAN DEFAULT 0")
+    else:
+        await _safe_execute(conn, "ALTER TABLE cost_centers ADD COLUMN is_private BOOLEAN DEFAULT FALSE")
+    await _safe_execute(
+        conn,
+        "ALTER TABLE cost_centers ADD COLUMN owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL",
+    )
+    await _safe_execute(conn, "ALTER TABLE cost_centers ADD COLUMN total_budget NUMERIC(14,2)")
+    await _safe_execute(conn, "ALTER TABLE cost_centers ADD COLUMN monthly_budget NUMERIC(14,2)")
+    timestamp_type = "DATETIME" if is_sqlite() else "TIMESTAMP"
+    await _safe_execute(conn, f"ALTER TABLE cost_centers ADD COLUMN created_at {timestamp_type}")
+    await _safe_execute(conn, f"ALTER TABLE cost_centers ADD COLUMN updated_at {timestamp_type}")
+
+    # Backfill empty cost center codes on upgraded databases.
+    if is_sqlite():
+        await _safe_execute(
+            conn,
+            "UPDATE cost_centers SET code = lower(hex(randomblob(6))) WHERE code IS NULL OR trim(code) = ''",
+        )
+    else:
+        await _safe_execute(
+            conn,
+            "UPDATE cost_centers SET code = substr(md5(random()::text || clock_timestamp()::text), 1, 12) "
+            "WHERE code IS NULL OR btrim(code) = ''",
+        )
 
     # Migration: Add custom_interval_type column to printer_maintenance
     await _safe_execute(conn, "ALTER TABLE printer_maintenance ADD COLUMN custom_interval_type VARCHAR(20)")
@@ -1052,6 +1912,14 @@ async def run_migrations(conn):
     except (OperationalError, ProgrammingError, IntegrityError):
         logger.exception("notification provider printer-scope backfill failed")
         raise
+    # Migration: Add print_run_id to wallet_transactions so repeated prints of the same archive
+    # can be billed independently without mutating archive history.
+    await _safe_execute(conn, "ALTER TABLE wallet_transactions ADD COLUMN print_run_id VARCHAR(100)")
+
+    # CREATE TABLE IF NOT EXISTS is a no-op for an older, incomplete table.
+    # Delay indexes until every legacy column they reference has been added.
+    await _migrate_finance_money_to_numeric(conn)
+    await _migrate_create_finance_indexes(conn)
 
     # Migration: Add missing-spool-assignment print-start notification toggle
     try:
@@ -1095,6 +1963,16 @@ async def run_migrations(conn):
     await _safe_execute(
         conn,
         "CREATE UNIQUE INDEX IF NOT EXISTS uq_oidc_link_user_provider ON user_oidc_links (user_id, provider_id)",
+    )
+
+    # Migration: Add unique indexes to prevent duplicate print-charge transactions
+    await _safe_execute(
+        conn,
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_wallet_transactions_print_run ON wallet_transactions (transaction_type, print_run_id)",
+    )
+    await _safe_execute(
+        conn,
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_wallet_transactions_archive ON wallet_transactions (transaction_type, print_archive_id)",
     )
 
     # Migration: Create FTS5 virtual table for archive full-text search (SQLite only)
@@ -1251,6 +2129,20 @@ async def run_migrations(conn):
     # Migration: Add manual_start column to print_queue for staged prints
     await _safe_execute(conn, "ALTER TABLE print_queue ADD COLUMN manual_start BOOLEAN DEFAULT 0")
 
+    # Migration: Add cost_center_id column to print_queue for billing metadata
+    try:
+        async with conn.begin_nested():
+            await conn.execute(
+                text(
+                    "ALTER TABLE print_queue ADD COLUMN cost_center_id INTEGER REFERENCES cost_centers(id) ON DELETE SET NULL"
+                )
+            )
+    except (OperationalError, ProgrammingError):
+        pass  # Already applied
+
+    # Migration: Add cost_center_id column to print_archives for billing metadata
+    await _migrate_add_print_archive_cost_center(conn)
+
     # Migration: Add wiki_url column to maintenance_types for documentation links
     await _safe_execute(conn, "ALTER TABLE maintenance_types ADD COLUMN wiki_url VARCHAR(500)")
 
@@ -1307,6 +2199,15 @@ async def run_migrations(conn):
             conn, "ALTER TABLE virtual_printers ADD COLUMN queue_force_color_match BOOLEAN DEFAULT FALSE"
         )
 
+    # Migration: Add save_ams_mapping column to virtual_printers. Opt-in flag:
+    # when true, VP queue-mode uploads persist the slicer's own AMS-slot pick
+    # onto the archive (`extra_data.slicer_ams_mapping`) for reuse on reprint.
+    # Default false to preserve current behaviour for upgraders.
+    if is_sqlite():
+        await _safe_execute(conn, "ALTER TABLE virtual_printers ADD COLUMN save_ams_mapping BOOLEAN DEFAULT 0")
+    else:
+        await _safe_execute(conn, "ALTER TABLE virtual_printers ADD COLUMN save_ams_mapping BOOLEAN DEFAULT FALSE")
+
     # Per-VP opt-in for auto-print G-code injection (#1516). Default false so
     # existing gcode_snippets users don't silently start injecting on VP/Studio
     # Send jobs after upgrading.
@@ -1326,6 +2227,16 @@ async def run_migrations(conn):
     # still load; nothing reads or writes to it anymore.
     await _safe_execute(conn, "ALTER TABLE print_queue ADD COLUMN nozzle_mapping TEXT")
     await _safe_execute(conn, "ALTER TABLE print_queue ADD COLUMN nozzles_info TEXT")
+
+    # Migration: nozzle_rack_choice (#1784). Which rack position each filament
+    # group prints from, as JSON {group_id: 1-based position}. Kept separate
+    # from nozzle_mapping above because that one is BambuStudio's own expanded
+    # answer and rides to the printer verbatim, while this is the operator's
+    # pick and has to survive being re-checked against a rack that may have
+    # been re-loaded since. Also on the variants table so a batch clone does
+    # not silently lose it. Nullable TEXT, no Postgres / SQLite divergence.
+    await _safe_execute(conn, "ALTER TABLE print_queue ADD COLUMN nozzle_rack_choice TEXT")
+    await _safe_execute(conn, "ALTER TABLE print_queue_variants ADD COLUMN nozzle_rack_choice TEXT")
 
     # Migration: Add target_parts_count column to projects for tracking total parts needed
     await _safe_execute(conn, "ALTER TABLE projects ADD COLUMN target_parts_count INTEGER")
@@ -1357,12 +2268,15 @@ async def run_migrations(conn):
             result = await conn.execute(text("SELECT sql FROM sqlite_master WHERE type='table' AND name='print_queue'"))
             row = result.fetchone()
             if row and "printer_id INTEGER NOT NULL" in (row[0] or ""):
+                cols_result = await conn.execute(text("PRAGMA table_info(print_queue)"))
+                col_names = {col[1] for col in cols_result.fetchall()}
                 await conn.execute(
                     text("""
                     CREATE TABLE print_queue_new (
                         id INTEGER PRIMARY KEY,
                         printer_id INTEGER REFERENCES printers(id) ON DELETE CASCADE,
                         archive_id INTEGER NOT NULL REFERENCES print_archives(id) ON DELETE CASCADE,
+                        cost_center_id INTEGER REFERENCES cost_centers(id) ON DELETE SET NULL,
                         project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
                         position INTEGER DEFAULT 0,
                         scheduled_time DATETIME,
@@ -1378,15 +2292,26 @@ async def run_migrations(conn):
                     )
                 """)
                 )
-                await conn.execute(
-                    text("""
+                if "cost_center_id" in col_names:
+                    await conn.execute(
+                        text("""
                     INSERT INTO print_queue_new
-                    SELECT id, printer_id, archive_id, project_id, position, scheduled_time,
+                    SELECT id, printer_id, archive_id, cost_center_id, project_id, position, scheduled_time,
                            manual_start, require_previous_success, auto_off_after, ams_mapping,
                            status, started_at, completed_at, error_message, created_at
                     FROM print_queue
                 """)
-                )
+                    )
+                else:
+                    await conn.execute(
+                        text("""
+                    INSERT INTO print_queue_new
+                    SELECT id, printer_id, archive_id, NULL, project_id, position, scheduled_time,
+                           manual_start, require_previous_success, auto_off_after, ams_mapping,
+                           status, started_at, completed_at, error_message, created_at
+                    FROM print_queue
+                """)
+                    )
                 await conn.execute(text("DROP TABLE print_queue"))
                 await conn.execute(text("ALTER TABLE print_queue_new RENAME TO print_queue"))
         except (OperationalError, ProgrammingError):
@@ -1612,6 +2537,8 @@ async def run_migrations(conn):
             result = await conn.execute(text("SELECT sql FROM sqlite_master WHERE type='table' AND name='print_queue'"))
             row = result.fetchone()
             if row and "archive_id INTEGER NOT NULL" in (row[0] or ""):
+                cols_result = await conn.execute(text("PRAGMA table_info(print_queue)"))
+                col_names = {col[1] for col in cols_result.fetchall()}
                 await conn.execute(
                     text("""
                     CREATE TABLE print_queue_new2 (
@@ -1619,6 +2546,7 @@ async def run_migrations(conn):
                         printer_id INTEGER REFERENCES printers(id) ON DELETE CASCADE,
                         archive_id INTEGER REFERENCES print_archives(id) ON DELETE CASCADE,
                         library_file_id INTEGER REFERENCES library_files(id) ON DELETE CASCADE,
+                        cost_center_id INTEGER REFERENCES cost_centers(id) ON DELETE SET NULL,
                         project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
                         position INTEGER DEFAULT 0,
                         scheduled_time DATETIME,
@@ -1646,10 +2574,11 @@ async def run_migrations(conn):
                     )
                 """)
                 )
-                await conn.execute(
-                    text("""
+                if "cost_center_id" in col_names:
+                    await conn.execute(
+                        text("""
                     INSERT INTO print_queue_new2
-                    SELECT id, printer_id, archive_id, NULL, project_id, position, scheduled_time,
+                    SELECT id, printer_id, archive_id, NULL, cost_center_id, project_id, position, scheduled_time,
                            manual_start, require_previous_success, auto_off_after, ams_mapping, plate_id,
                            COALESCE(bed_levelling, 1), NULL, COALESCE(flow_cali, 0), COALESCE(vibration_cali, 1),
                            COALESCE(layer_inspect, 0), COALESCE(timelapse, 0), COALESCE(use_ams, 1),
@@ -1658,7 +2587,19 @@ async def run_migrations(conn):
                            status, started_at, completed_at, error_message, created_at
                     FROM print_queue
                 """)
-                )
+                    )
+                else:
+                    await conn.execute(
+                        text("""
+                    INSERT INTO print_queue_new2
+                    SELECT id, printer_id, archive_id, NULL, NULL, project_id, position, scheduled_time,
+                           manual_start, require_previous_success, auto_off_after, ams_mapping, plate_id,
+                           COALESCE(bed_levelling, 1), COALESCE(flow_cali, 0), COALESCE(vibration_cali, 1),
+                           COALESCE(layer_inspect, 0), COALESCE(timelapse, 0), COALESCE(use_ams, 1),
+                           status, started_at, completed_at, error_message, created_at
+                    FROM print_queue
+                """)
+                    )
                 await conn.execute(text("DROP TABLE print_queue"))
                 await conn.execute(text("ALTER TABLE print_queue_new2 RENAME TO print_queue"))
         except (OperationalError, ProgrammingError):
@@ -1996,6 +2937,7 @@ async def run_migrations(conn):
             layer_usage TEXT,
             filament_properties TEXT,
             tray_remain_start TEXT,
+            tray_now_at_start INTEGER,
             UNIQUE(printer_id, archive_id)
         )
         """
@@ -2011,6 +2953,7 @@ async def run_migrations(conn):
             layer_usage TEXT,
             filament_properties TEXT,
             tray_remain_start TEXT,
+            tray_now_at_start INTEGER,
             UNIQUE(printer_id, archive_id)
         )
         """,
@@ -2019,6 +2962,18 @@ async def run_migrations(conn):
     # the original schema: add tray_remain_start, and relax filament_usage's
     # NOT NULL so the no-3MF branch can persist a remain-only tracking row.
     await _safe_execute(conn, "ALTER TABLE active_print_spoolman ADD COLUMN tray_remain_start TEXT")
+    # Which slot the print was drawing from at the start, so the remain%-delta
+    # fallback can tell a slot this print used from one it never touched
+    # (#1820). Nullable, because a row written mid-upgrade has no answer to
+    # give. INTEGER is spelled the same either way; the branch is only for
+    # IF NOT EXISTS, which SQLite's ALTER TABLE does not accept.
+    if is_sqlite():
+        await _safe_execute(conn, "ALTER TABLE active_print_spoolman ADD COLUMN tray_now_at_start INTEGER")
+    else:
+        await _safe_execute(
+            conn,
+            "ALTER TABLE active_print_spoolman ADD COLUMN IF NOT EXISTS tray_now_at_start INTEGER",
+        )
     if is_sqlite():
         # SQLite can't ALTER COLUMN; patch sqlite_master directly. Mirrors the
         # users.password_hash NULL-relaxation a few hundred lines below — see
@@ -2559,12 +3514,68 @@ async def run_migrations(conn):
     except (OperationalError, ProgrammingError):
         pass
 
+    # Migration (#342): batch orders — planning metadata on print_batches. The
+    # per-plate target rows live in their own table, created by create_all().
+    await _safe_execute(
+        conn, "ALTER TABLE print_batches ADD COLUMN project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL"
+    )
+    await _safe_execute(conn, "ALTER TABLE print_batches ADD COLUMN notes TEXT")
+    if is_sqlite():
+        await _safe_execute(conn, "ALTER TABLE print_batches ADD COLUMN due_date DATETIME")
+        await _safe_execute(conn, "ALTER TABLE print_batches ADD COLUMN completed_at DATETIME")
+    else:
+        await _safe_execute(conn, "ALTER TABLE print_batches ADD COLUMN due_date TIMESTAMP")
+        await _safe_execute(conn, "ALTER TABLE print_batches ADD COLUMN completed_at TIMESTAMP")
+
+    # Migration (#342): attribute a logged run to the queue item that produced
+    # it, so batch cost/energy can be summed without guessing from archive_id.
+    await _safe_execute(
+        conn,
+        "ALTER TABLE print_log_entries ADD COLUMN queue_item_id INTEGER REFERENCES print_queue(id) ON DELETE SET NULL",
+    )
+    await _safe_execute(
+        conn, "CREATE INDEX IF NOT EXISTS ix_print_log_entries_queue_item_id ON print_log_entries (queue_item_id)"
+    )
+
     # Migration: Shortest-job-first scheduling columns on print_queue
     await _safe_execute(conn, "ALTER TABLE print_queue ADD COLUMN print_time_seconds INTEGER")
     await _safe_execute(conn, "ALTER TABLE print_queue ADD COLUMN been_jumped BOOLEAN DEFAULT FALSE NOT NULL")
 
     # Migration: Auto-print G-code injection (#422)
     await _safe_execute(conn, "ALTER TABLE print_queue ADD COLUMN gcode_injection BOOLEAN DEFAULT FALSE NOT NULL")
+
+    # Migration: Store estimated print cost for budget checks before queued jobs start
+    await _safe_execute(conn, "ALTER TABLE print_queue ADD COLUMN estimated_cost FLOAT")
+    await _safe_execute(conn, "ALTER TABLE print_queue ADD COLUMN billing_run_id VARCHAR(36)")
+    await _safe_execute(conn, "ALTER TABLE print_archives ADD COLUMN billing_run_id VARCHAR(36)")
+    if is_sqlite():
+        await _safe_execute(conn, "ALTER TABLE wallet_transactions ADD COLUMN is_voided BOOLEAN DEFAULT 0 NOT NULL")
+    else:
+        await _safe_execute(conn, "ALTER TABLE wallet_transactions ADD COLUMN is_voided BOOLEAN DEFAULT FALSE NOT NULL")
+    await _safe_execute(
+        conn,
+        "CREATE INDEX IF NOT EXISTS ix_wallet_transactions_is_voided ON wallet_transactions (is_voided)",
+    )
+    if is_sqlite():
+        await _safe_execute(
+            conn,
+            "ALTER TABLE notification_providers ADD COLUMN on_billing_charge_failed BOOLEAN DEFAULT 1",
+        )
+    else:
+        await _safe_execute(
+            conn,
+            "ALTER TABLE notification_providers ADD COLUMN on_billing_charge_failed BOOLEAN DEFAULT TRUE",
+        )
+
+    # Reprints reuse their source archive, so archive uniqueness must only be
+    # the legacy fallback for rows without a per-run UUID. The globally unique
+    # print_run_id is the idempotency key for all new charges.
+    await _safe_execute(conn, "DROP INDEX IF EXISTS uq_wallet_transactions_archive")
+    await _safe_execute(
+        conn,
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_wallet_transactions_archive"
+        " ON wallet_transactions (transaction_type, print_archive_id) WHERE print_run_id IS NULL",
+    )
 
     # Migration: Add backup_spools and backup_archives columns to github_backup_config
     await _safe_execute(conn, "ALTER TABLE github_backup_config ADD COLUMN backup_spools BOOLEAN DEFAULT 0")
@@ -2766,17 +3777,17 @@ async def run_migrations(conn):
     # SQLite does not support ALTER TABLE ADD CONSTRAINT — handled by __table_args__ at creation.
     # Runs AFTER the backfill so Fall B rows don't fail constraint validation.
     if not is_sqlite():
+        add_constraint = (
+            "ALTER TABLE oidc_providers ADD CONSTRAINT ck_auto_link_requires_verified_email_claim "
+            "CHECK (auto_link_existing_accounts = FALSE OR email_claim != 'email' OR require_email_verified = TRUE)"
+        )
         try:
             async with conn.begin_nested():
-                await conn.execute(
-                    text(
-                        "ALTER TABLE oidc_providers ADD CONSTRAINT ck_auto_link_requires_verified_email_claim "
-                        "CHECK (auto_link_existing_accounts = FALSE OR email_claim != 'email' OR require_email_verified = TRUE)"
-                    )
-                )
+                await conn.execute(text(add_constraint))
         except (OperationalError, ProgrammingError) as exc:
-            msg = str(exc).lower()
-            if "already exists" not in msg:
+            # Classified by SQLSTATE, not by message text: a non-English server
+            # reports the constraint as already present in its own language (#2949).
+            if not _is_already_applied(exc, add_constraint):
                 logger.error(
                     "Security constraint migration FAILED — auto_link safety constraint may not be enforced: %s",
                     exc,
@@ -3430,6 +4441,34 @@ async def run_migrations(conn):
             conn, "ALTER TABLE notification_providers ADD COLUMN on_stock_break_alert BOOLEAN DEFAULT false"
         )
 
+    # Backfill the two flags above. The DEFAULT on those ALTERs only reaches
+    # existing rows when the ALTER is the statement that adds the column -- and
+    # on an install whose notification_providers table was (re)created from
+    # Base.metadata, create_all() had already added them by the time migrations
+    # ran, so _safe_execute swallowed the ALTER as a duplicate column and every
+    # pre-existing row kept NULL. Harmless while nothing read the flags; a 500
+    # on the whole provider list once #2827 declared them on the response
+    # schema, because pydantic will not accept None for a bool.
+    #
+    # false matches both the intent of the DEFAULT above and the behaviour the
+    # rows already have: _get_providers_for_event filters on `.is_(True)`, so a
+    # NULL flag never sent anything. Idempotent -- the WHERE matches nothing on
+    # the second run.
+    async with conn.begin_nested():
+        stock_backfill = await conn.execute(
+            text(
+                "UPDATE notification_providers SET on_stock_reorder_alert = :off WHERE on_stock_reorder_alert IS NULL"
+            ),
+            {"off": False},
+        )
+        stock_backfill_break = await conn.execute(
+            text("UPDATE notification_providers SET on_stock_break_alert = :off WHERE on_stock_break_alert IS NULL"),
+            {"off": False},
+        )
+    repaired = (stock_backfill.rowcount or 0) + (stock_backfill_break.rowcount or 0)
+    if repaired:
+        logger.info("Backfilled %s NULL inventory stock alert flag(s) on notification_providers", repaired)
+
     # Migration: Heal orphan auth-related rows left behind by user-delete
     # on SQLite. user_oidc_links, user_totp, user_otp_codes (introduced in
     # PR #933) and long_lived_tokens (PR #1108) all declare ON DELETE
@@ -3745,6 +4784,14 @@ async def run_migrations(conn):
     else:
         await _safe_execute(conn, "ALTER TABLE oidc_providers ADD COLUMN is_autologin BOOLEAN DEFAULT false")
 
+    # Migration: Add is_env_managed column to oidc_providers (#2593). Marks the
+    # provider upserted from the PRINTBUDDY_OIDC_* env vars on startup. Postgres
+    # rejects ``DEFAULT 0`` for BOOLEAN columns.
+    if is_sqlite():
+        await _safe_execute(conn, "ALTER TABLE oidc_providers ADD COLUMN is_env_managed BOOLEAN DEFAULT 0")
+    else:
+        await _safe_execute(conn, "ALTER TABLE oidc_providers ADD COLUMN is_env_managed BOOLEAN DEFAULT false")
+
     # (dispatch_attempts, #2555, is added with the other print_queue dispatch
     # columns before the print_queue_new2 recreate above.)
 
@@ -3803,6 +4850,16 @@ async def run_migrations(conn):
     # #2603 archive plate_id backfill above so print_archives.plate_id is populated.
     await _migrate_scope_run_filament_to_plate(conn)
 
+    # Backfill: archives written before #2989 have no bed temperature, because
+    # the extractor looked for a key BambuStudio never writes. Re-reads the 3MF
+    # already on disk. One-shot; see the function for why it is gated.
+    await _backfill_archive_bed_temperature(conn)
+
+    # Backfill: library rows typed from the filename alone kept a sliced 3MF
+    # named `Foo.3mf` filed as a source-only project (#2993). Re-reads the zip
+    # already on disk. One-shot, internal rows only; see the function.
+    await _reclassify_sliced_3mf_library_files(conn)
+
     # Migration: Add controls_printer_power to smart_plugs (#2629). Marks
     # whether a plug actually feeds the printer's own power — only then may an
     # auto-off mark the printer offline. Defaults to true so existing plugs
@@ -3824,7 +4881,7 @@ async def run_migrations(conn):
     # ordering was arbitrary. Nullable; the timestamp type differs by dialect
     # (SQLite DATETIME vs Postgres TIMESTAMP) so an existing-DB upgrade doesn't hit
     # "type datetime does not exist" on Postgres. On a fresh DB create_all() already
-    # built the column, so the ALTER is swallowed as "already exists".
+    # built the column, so the ALTER is swallowed as already applied.
     if is_sqlite():
         await _safe_execute(conn, "ALTER TABLE library_files ADD COLUMN fs_modified_at DATETIME")
         await _safe_execute(conn, "ALTER TABLE library_folders ADD COLUMN fs_modified_at DATETIME")
@@ -3835,6 +4892,450 @@ async def run_migrations(conn):
     # Migration: Disambiguate the four ``user_print_*`` notification template
     # names by appending " Email" (#1792). See ``_migrate_rename_user_print_template_names``.
     await _migrate_rename_user_print_template_names(conn)
+
+    # Migration: per-file print progress inside a project (#1897).
+    # - print_archives.library_file_id: which library file a queued run was
+    #   dispatched from; nullable, no FK constraint added to existing tables
+    #   (SQLite can't ADD CONSTRAINT; the application uses SET NULL semantics
+    #   via the ORM on fresh installs and tolerates dangling ids by matching
+    #   hash/filename as fallback anyway).
+    # - projects.target_sets: optional copies-per-file target. INTEGER is
+    #   spelled identically on SQLite and Postgres — no dialect branch.
+    await _safe_execute(conn, "ALTER TABLE print_archives ADD COLUMN library_file_id INTEGER")
+    await _safe_execute(conn, "ALTER TABLE projects ADD COLUMN target_sets INTEGER")
+
+    # Migration: persist the timelapse snapshot-diff baseline (#2704).
+    # The list of video filenames present on the printer when the print began,
+    # so the diff survives a restart and the manual scan can use it instead of
+    # the clock-based matching that a LAN-only printer defeats. No dialect
+    # branch: SQLAlchemy renders this column as `JSON` on both SQLite and
+    # Postgres for a fresh install (checked with CreateTable against each
+    # dialect), so spelling the ALTER the same way keeps a migrated database
+    # identical to a new one. Matching matters on Postgres in particular —
+    # asyncpg binds the serialised value as json and would reject a TEXT column
+    # (mirrors the `projects.attachments JSON` migration above).
+    await _safe_execute(conn, "ALTER TABLE print_archives ADD COLUMN timelapse_baseline JSON")
+
+    # Migration: plate-clear-required notification opt-in (#2525). Off by
+    # default — it fires after every print, at the same moment as the
+    # print-complete alert. Postgres rejects `DEFAULT 0` for BOOLEAN.
+    if is_sqlite():
+        await _safe_execute(
+            conn, "ALTER TABLE notification_providers ADD COLUMN on_plate_clear_required BOOLEAN DEFAULT 0"
+        )
+    else:
+        await _safe_execute(
+            conn, "ALTER TABLE notification_providers ADD COLUMN on_plate_clear_required BOOLEAN DEFAULT false"
+        )
+
+    # Migration: variant grouping for library files (#671 / #2570). The
+    # `file_variant_groups` table itself needs no migration — create_all() above
+    # builds it — but the two member-side columns do. INTEGER and the inline
+    # REFERENCES clause are spelled identically on SQLite and Postgres, and
+    # SQLite accepts a REFERENCES on ADD COLUMN (same form as the
+    # pipeline_runs.parent_run_id migration at the top of this function).
+    await _safe_execute(
+        conn,
+        "ALTER TABLE library_files ADD COLUMN variant_group_id INTEGER "
+        "REFERENCES file_variant_groups(id) ON DELETE SET NULL",
+    )
+    await _safe_execute(conn, "ALTER TABLE library_files ADD COLUMN variant_position INTEGER DEFAULT 0")
+    # User-declared target model for a file whose 3MF does not say (#671).
+    # VARCHAR(50) is spelled identically on SQLite and Postgres.
+    await _safe_execute(conn, "ALTER TABLE library_files ADD COLUMN variant_target_model VARCHAR(50)")
+    # The model declares index=True, so fresh installs get this from create_all();
+    # migrated databases need it spelled out. Resolution looks members up by group
+    # on every scheduler pass that touches a grouped item.
+    await _safe_execute(
+        conn,
+        "CREATE INDEX IF NOT EXISTS ix_library_files_variant_group_id ON library_files (variant_group_id)",
+    )
+    await _migrate_backfill_variant_groups(conn)
+
+    # Migration: Home Assistant sensor alerts (#1148). The printer_ha_sensors
+    # table itself is new, so create_all() builds it; only the provider opt-in
+    # column needs adding to existing databases.
+    #
+    # DEFAULT FALSE, not DEFAULT 0: Postgres will not take an integer default
+    # for a boolean column, and _safe_execute swallows the DatatypeMismatchError
+    # — so the older "BOOLEAN DEFAULT 0" migrations above quietly do nothing on
+    # Postgres and only work there because create_all() builds the column on a
+    # fresh install. SQLite has understood FALSE since 3.23, so this spelling
+    # is the one that actually applies on both.
+    await _safe_execute(conn, "ALTER TABLE notification_providers ADD COLUMN on_ha_sensor_alert BOOLEAN DEFAULT FALSE")
+
+    # Migration: auto-drying-suspended notification opt-in (#2770). Defaults ON:
+    # it fires at most once per AMS unit, and only to say Printbuddy has STOPPED
+    # doing something it was doing before — silence there reads as "still
+    # drying" and is exactly how the reporter lost two days to a re-arm loop.
+    await _safe_execute(
+        conn, "ALTER TABLE notification_providers ADD COLUMN on_ams_drying_suspended BOOLEAN DEFAULT TRUE"
+    )
+
+    # Migration: storage location sensor alerts (#2824), own column rather than
+    # reusing on_ha_sensor_alert. That column can be scoped to one printer
+    # (printer_id), and a location alert has no printer to scope by — sharing
+    # the column meant a provider narrowed to one printer's sensors silently
+    # also received every drybox alert, with no toggle to separate the two.
+    await _safe_execute(
+        conn, "ALTER TABLE notification_providers ADD COLUMN on_location_ha_sensor_alert BOOLEAN DEFAULT FALSE"
+    )
+
+    # Migration: rename the ha_sensor_alert template (#2824). "Home Assistant
+    # Sensor Alert" was fine as a name while it was the only such template;
+    # next to the new "Storage Location Sensor Alert" it no longer says which
+    # one is the printer's. See _migrate_rename_user_print_template_names for
+    # why this is a plain UPDATE guarded on the old name rather than a
+    # DEFAULT_TEMPLATES re-seed.
+    await _migrate_rename_ha_sensor_alert_template(conn)
+
+    # Migration: back the one-binding-per-(location, entity) rule with a unique
+    # index (#2824). The API's duplicate check is read-then-insert, so two
+    # concurrent creates could both pass it; the index turns the loser into an
+    # IntegrityError the route maps back to the same 400. create_all() adds it
+    # on fresh installs only — this covers databases whose table predates it.
+    await _migrate_location_ha_sensor_unique_binding(conn)
+
+    # Migration: repair the tare of spools the RFID auto-add gave the wrong
+    # Bambu spool row (#2909). Runs last so the spool catalogue it reads is
+    # whatever this database actually holds.
+    await _migrate_repair_rfid_core_weight(conn)
+
+    # Migration: drop the AMS slot markers an older Printbuddy wrote into
+    # Spoolman and the location sync then imported as storage locations.
+    await _migrate_drop_ams_slot_locations(conn)
+
+
+async def _migrate_rename_ha_sensor_alert_template(conn) -> None:
+    """Rename the ha_sensor_alert template to "Printer Sensor Alert" (#2824).
+
+    Renames only if ``name`` is still the old default — an admin who renamed
+    the template themselves keeps their custom name.
+    """
+    from sqlalchemy import text
+
+    await conn.execute(
+        text("UPDATE notification_templates SET name = :new WHERE event_type = :et AND name = :old"),
+        {"new": "Printer Sensor Alert", "et": "ha_sensor_alert", "old": "Home Assistant Sensor Alert"},
+    )
+
+
+async def _migrate_location_ha_sensor_unique_binding(conn) -> None:
+    """Unique index on location_ha_sensors (location_id, entity_id) (#2824).
+
+    Same name and shape as the Index in the model, so fresh installs (which
+    get it from create_all) and upgraded ones end up identical.
+
+    Rows that already violate it — duplicates slipped in through the pre-index
+    race — are collapsed to the oldest row first, because CREATE UNIQUE INDEX
+    refuses to build over duplicates and _safe_execute would re-raise that,
+    aborting startup. The oldest row wins: it is the one the card and the
+    poller cache were already keyed on.
+    """
+    from sqlalchemy import text
+
+    async with conn.begin_nested():
+        await conn.execute(
+            text(
+                "DELETE FROM location_ha_sensors WHERE id NOT IN ("
+                "SELECT MIN(id) FROM location_ha_sensors GROUP BY location_id, entity_id)"
+            )
+        )
+    await _safe_execute(
+        conn,
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_location_ha_sensors_location_entity "
+        "ON location_ha_sensors (location_id, entity_id)",
+    )
+
+
+async def _migrate_drop_ams_slot_locations(conn) -> None:
+    """Remove imported AMS slot markers from the storage-location catalogue.
+
+    Printbuddy used to record which slot a spool was loaded into by writing
+    "<printer> - AMS A1" into Spoolman's ``location`` field. That writer went
+    away when Storage Location became something the user picks (#1114), but the
+    strings stayed on people's Spoolman spools, and
+    ``sync_locations_from_spoolman`` imported every distinct one -- so a printer
+    slot turned up in the Storage Location dropdown as somewhere to put a spool
+    away. Worse, they could not be cleared by hand: the delete route refuses a
+    location that has spools, and in Spoolman mode it counts them by matching
+    that same string, so every marker still on a loaded spool answered 409.
+
+    The import now skips them (``is_ams_slot_location``); this clears the ones
+    already in the catalogue. A row is only deleted when no spool in this
+    database points at it -- neither by ``location_id`` nor by a legacy
+    free-text ``storage_location`` -- so an internal-mode user who has
+    deliberately filed spools under such a name keeps it, dropdown entry and
+    all.
+
+    Spools in Spoolman are not consulted and not touched: their ``location``
+    strings are the user's data on the user's server, and one that still reads
+    "H2D-1 - AMS A1" in the inventory list is telling the truth about what
+    Spoolman holds. It simply stops being offered as a destination, which is
+    the whole point -- those are exactly the markers this cleans up.
+    """
+    from sqlalchemy import text
+
+    from backend.app.services.location_service import is_ams_slot_location, location_name_key
+
+    flag = "_cleanup_ams_slot_locations_done"
+
+    async with conn.begin_nested():
+        already = (
+            await conn.execute(text('SELECT value FROM settings WHERE "key" = :k'), {"k": flag})
+        ).scalar_one_or_none()
+        if already:
+            return
+
+        rows = (await conn.execute(text("SELECT id, name FROM locations"))).fetchall()
+        removed = []
+        for row in rows:
+            if not is_ams_slot_location(row.name):
+                continue
+            in_use = (
+                await conn.execute(
+                    text(
+                        "SELECT COUNT(*) FROM spool WHERE location_id = :id "
+                        "OR LOWER(TRIM(COALESCE(storage_location, ''))) = :key"
+                    ),
+                    {"id": row.id, "key": location_name_key(row.name)},
+                )
+            ).scalar_one()
+            if in_use:
+                continue
+            await conn.execute(text("DELETE FROM locations WHERE id = :id"), {"id": row.id})
+            removed.append(row.name)
+
+        if removed:
+            logger.info(
+                "Removed %d AMS slot marker(s) from the storage-location catalogue: %s",
+                len(removed),
+                ", ".join(sorted(removed)),
+            )
+
+        await conn.execute(
+            text('INSERT INTO settings ("key", value) VALUES (:k, :v)'),
+            {"k": flag, "v": "true"},
+        )
+
+
+async def _migrate_repair_rfid_core_weight(conn) -> None:
+    """Correct the tare of RFID-added spools that took the wrong catalogue row (#2909).
+
+    A Bambu roll arrives on the 250 g Low Temp spool, but the lookup that gave
+    an auto-added spool its ``core_weight`` asked for the first row whose name
+    starts "Bambu Lab" and took whatever came back. There are three, and which
+    one is first is up to the database: SQLite returns insertion order in
+    practice, Postgres promises nothing once the table has seen an update. So
+    the same roll could be recorded with a 216 g High Temp tare on one install
+    and correctly on another, and the reporting instance here got 216.
+
+    The tare is not cosmetic. A spool weighed on a scale has its remaining
+    filament worked out as ``scale reading - core_weight``, so a 34 g low tare
+    credits the roll with 34 g of filament that is not there and writes a
+    ``weight_used`` 34 g short. That error is a constant: every later print
+    adds to ``weight_used`` on top of it, so adding the difference back is an
+    exact repair however much has been printed since. Only rows that have
+    actually been weighed carry it -- a spool that was never on the scale has
+    a ``weight_used`` derived from the AMS remaining percentage, which the tare
+    never touched.
+
+    Which rows: ``data_origin = 'rfid_auto'`` narrows it to spools this code
+    path created, and a ``core_weight`` matching one of the *other* Bambu
+    catalogue rows is the signature of the broken lookup. Reading the weights
+    out of the catalogue rather than hardcoding 216 and 253 keeps it correct on
+    an install whose catalogue has been edited.
+
+    One case cannot be told apart and is stated rather than hidden: a user who
+    moved an RFID roll onto a genuine High Temp spool and set its tare to 216
+    by hand looks identical to a row the lookup got wrong, and is normalised
+    with them. Keying on ``core_weight_catalog_id IS NULL`` instead would not
+    have rescued them -- the spool form's weight picker auto-selects the only
+    catalogue row matching the weight and writes its id on the next save, so
+    that column says only whether the form was ever opened.
+
+    Gated to run exactly once via a settings flag, so a user who deliberately
+    sets one of these tares afterwards keeps it.
+    """
+    from sqlalchemy import bindparam, text
+
+    # The same two values the creating path uses, imported rather than repeated:
+    # a repair that looked for a different row than the code writes would leave
+    # the tare it was built to correct in place. Imported inside the function to
+    # keep this module free of a service-layer dependency at import time.
+    from backend.app.services.spool_tag_matcher import (
+        BAMBU_PLASTIC_SPOOL_CATALOG_NAME,
+        BAMBU_PLASTIC_SPOOL_CORE_WEIGHT,
+    )
+
+    flag = "_backfill_2909_rfid_core_weight_done"
+
+    async with conn.begin_nested():
+        already = (
+            await conn.execute(text('SELECT value FROM settings WHERE "key" = :k'), {"k": flag})
+        ).scalar_one_or_none()
+        if already:
+            return
+
+        # The row that names the spool an RFID roll actually arrives on. Its
+        # absence is not an error -- a catalogue the user has pruned still gets
+        # the documented default.
+        correct = (
+            await conn.execute(
+                text("SELECT id, weight FROM spool_catalog WHERE UPPER(name) = :name ORDER BY id LIMIT 1"),
+                {"name": BAMBU_PLASTIC_SPOOL_CATALOG_NAME.upper()},
+            )
+        ).fetchone()
+        correct_id = correct[0] if correct else None
+        correct_weight = correct[1] if correct else BAMBU_PLASTIC_SPOOL_CORE_WEIGHT
+
+        bambu_weights = {
+            row[0]
+            for row in (
+                await conn.execute(
+                    text("SELECT weight FROM spool_catalog WHERE UPPER(name) LIKE :prefix"),
+                    {"prefix": "BAMBU LAB%"},
+                )
+            ).fetchall()
+        }
+        wrong_weights = sorted(bambu_weights - {correct_weight})
+
+        repaired = 0
+        reweighed = 0
+        if wrong_weights:
+            rows = (
+                await conn.execute(
+                    text(
+                        "SELECT id, core_weight, label_weight, weight_used, last_weighed_at FROM spool "
+                        "WHERE data_origin = 'rfid_auto' AND core_weight IN :wrong"
+                    ).bindparams(bindparam("wrong", expanding=True)),
+                    {"wrong": wrong_weights},
+                )
+            ).fetchall()
+
+            for row in rows:
+                delta = correct_weight - row.core_weight
+                weight_used = row.weight_used or 0.0
+                if row.last_weighed_at is not None:
+                    weight_used = min(max(0.0, weight_used + delta), float(row.label_weight or 0))
+                    reweighed += 1
+                await conn.execute(
+                    text(
+                        "UPDATE spool SET core_weight = :cw, core_weight_catalog_id = :cid, "
+                        "weight_used = :wu WHERE id = :id"
+                    ),
+                    {"cw": correct_weight, "cid": correct_id, "wu": weight_used, "id": row.id},
+                )
+                repaired += 1
+
+        if repaired:
+            logger.info(
+                "[#2909] Corrected the spool tare on %d RFID-added spool(s) to %d g; "
+                "%d of them had been weighed and had their used weight adjusted with it",
+                repaired,
+                correct_weight,
+                reweighed,
+            )
+
+        # Marked done even when nothing matched, so the one-shot never reopens
+        # a tare the user has since set for themselves.
+        await conn.execute(
+            text('INSERT INTO settings ("key", value) VALUES (:k, :v)'),
+            {"k": flag, "v": "true"},
+        )
+
+
+async def _migrate_backfill_variant_groups(conn) -> None:
+    """Build variant groups from the slice provenance already on disk (#671 / #2570).
+
+    ``sliced_from_library_file_id`` has been stamped into ``file_metadata`` by the
+    Slice button (routes/library.py) and the pipeline runner (routes/pipeline_runs.py)
+    since those features shipped, and until now nothing ever read it back — the
+    link existed but was inert. This promotes it to real group membership so an
+    existing library arrives with its slice sets already grouped instead of
+    requiring the user to re-declare by hand what Printbuddy itself recorded.
+
+    Only sources with **two or more** sliced children carrying **distinct**
+    ``sliced_for_model`` values produce a group:
+
+    - Fewer than two candidates is not a choice, and a one-member group would
+      change nothing at print time while creating a row per sliced file in every
+      library on earth.
+    - Two children sliced for the same printer are not alternatives — the
+      resolver has no basis to prefer one, so grouping them would turn a
+      harmless duplicate into an arbitrary pick. Those sources are skipped
+      whole; the user can still group them by hand and choose an order.
+
+    The unsliced source file is deliberately not a member. It has no
+    ``sliced_for_model``, so it can never be a dispatch candidate; showing it
+    alongside its variants is a File Manager listing concern, which is out of
+    scope.
+
+    Idempotent: only files with no group yet are considered, so a re-run after a
+    partial apply resumes rather than duplicating, and a user who has since
+    ungrouped files by hand does not get them silently regrouped.
+    """
+    from sqlalchemy import text
+
+    from backend.app.models.library import FileVariantGroup
+
+    if is_sqlite():
+        source_expr = "json_extract(file_metadata, '$.sliced_from_library_file_id')"
+        model_expr = "json_extract(file_metadata, '$.sliced_for_model')"
+    else:
+        # file_metadata is JSON, not JSONB — cast before using the -> operators,
+        # matching _migrate_drop_library_print_name above.
+        source_expr = "file_metadata::jsonb->>'sliced_from_library_file_id'"
+        model_expr = "file_metadata::jsonb->>'sliced_for_model'"
+
+    async with conn.begin_nested():
+        # nosec B608 — the only interpolated fragments are the two dialect
+        # literals assigned directly above; both branches are constants and no
+        # caller value reaches this string. They are JSON *expressions*, not
+        # values, so a bind parameter cannot express them.
+        rows = (
+            await conn.execute(
+                text(
+                    f"SELECT id, {source_expr} AS source_id, {model_expr} AS model "  # nosec B608
+                    "FROM library_files "
+                    f"WHERE {source_expr} IS NOT NULL AND {model_expr} IS NOT NULL "
+                    "AND variant_group_id IS NULL AND deleted_at IS NULL "
+                    "ORDER BY id"
+                )
+            )
+        ).fetchall()
+
+        by_source: dict[str, list[tuple[int, str]]] = {}
+        for file_id, source_id, model in rows:
+            by_source.setdefault(str(source_id), []).append((file_id, str(model)))
+
+        for source_id, members in by_source.items():
+            if len(members) < 2:
+                continue
+            models = [m for _, m in members]
+            if len(set(models)) != len(models):
+                # Same printer sliced twice — ambiguous, leave it to the user.
+                continue
+
+            # Name the group after the source file when it is still around; its
+            # filename is what the user recognises. A deleted source leaves the
+            # variants perfectly usable, so fall back rather than skip.
+            name_row = (
+                await conn.execute(
+                    text("SELECT filename FROM library_files WHERE id = :sid"),
+                    {"sid": int(source_id)},
+                )
+            ).fetchone()
+            group_name = name_row[0] if name_row else f"{members[0][1]} + {len(members) - 1} more"
+
+            result = await conn.execute(FileVariantGroup.__table__.insert().values(name=group_name))
+            group_id = result.inserted_primary_key[0]
+
+            for position, (file_id, _model) in enumerate(members):
+                await conn.execute(
+                    text("UPDATE library_files SET variant_group_id = :gid, variant_position = :pos WHERE id = :fid"),
+                    {"gid": group_id, "pos": position, "fid": file_id},
+                )
 
 
 _USER_PRINT_TEMPLATE_RENAMES: tuple[tuple[str, str, str], ...] = (
@@ -4010,6 +5511,18 @@ async def seed_default_groups():
         "library:read": "library:read_own",
     }
 
+    FINANCE_PERMISSION_MIGRATION = {
+        "finance:read_own": "cost_centers:read_own",
+        "finance:read_all": "cost_centers:read_all",
+        "finance:transactions:create": "cost_centers:modify",
+        "finance:create_transactions": "cost_centers:modify",
+        "finance:createTransactions:create": "cost_centers:modify",
+        "finance:cost_centers:create": "cost_centers:create",
+        "finance:cost_centers:update": "cost_centers:modify",
+        "finance:cost_centers:assign_users": "cost_centers:modify",
+        "finance:budgets:update": "cost_centers:modify",
+    }
+
     async with async_session() as session:
         # Get existing groups
         result = await session.execute(select(Group))
@@ -4041,6 +5554,16 @@ async def seed_default_groups():
                     )
 
                     for old_perm, new_perm in migration_map.items():
+                        if old_perm in new_permissions:
+                            new_permissions.remove(old_perm)
+                            if new_perm not in new_permissions:
+                                new_permissions.append(new_perm)
+                            updated = True
+                            logger.info(
+                                "Migrated permission '%s' to '%s' in group '%s'", old_perm, new_perm, group_name
+                            )
+
+                    for old_perm, new_perm in FINANCE_PERMISSION_MIGRATION.items():
                         if old_perm in new_permissions:
                             new_permissions.remove(old_perm)
                             if new_perm not in new_permissions:
@@ -4301,3 +5824,93 @@ async def seed_color_catalog():
             )
         await session.commit()
         logger.info("Seeded %d default color catalog entries", len(DEFAULT_COLOR_CATALOG))
+
+
+async def repair_wallet_ledger_internal(session: AsyncSession):
+    """Internal helper that repairs wallet ledger using an existing session.
+
+    Used by API endpoints that need to rebuild the ledger within their own transaction.
+    """
+    from sqlalchemy import bindparam, select
+
+    from backend.app.models.finance import CostCenter, UserWallet, WalletTransaction
+    from backend.app.services.finance_balance import transaction_affects_personal_balance
+
+    center_rows = await session.execute(select(CostCenter.id, CostCenter.is_private, CostCenter.owner_user_id))
+    centers = {
+        int(center_id): (bool(is_private), owner_user_id) for center_id, is_private, owner_user_id in center_rows
+    }
+
+    # Build running balances per (user, cost_center_id) pair
+    cc_running_balances: dict[int, float] = {}  # cost_center_id -> running balance
+    user_personal_balances: dict[int, float] = {}  # user_id -> personal running balance
+
+    updated_count = 0
+    batch_size = 1000
+    batch_offset = 0
+    while True:
+        rows = (
+            await session.execute(
+                select(
+                    WalletTransaction.id,
+                    WalletTransaction.user_id,
+                    WalletTransaction.cost_center_id,
+                    WalletTransaction.amount,
+                    WalletTransaction.balance_after,
+                )
+                .where(WalletTransaction.is_voided.is_(False))
+                .order_by(WalletTransaction.created_at.asc(), WalletTransaction.id.asc())
+                .offset(batch_offset)
+                .limit(batch_size)
+            )
+        ).all()
+        if not rows:
+            break
+
+        updates: list[dict[str, object]] = []
+        for transaction_id, user_id, cost_center_id, amount, balance_after in rows:
+            amount_value = float(amount)
+            center_is_private, center_owner_user_id = centers.get(cost_center_id, (False, None))
+            affects_personal = transaction_affects_personal_balance(
+                user_id,
+                cost_center_id,
+                is_private=center_is_private,
+                owner_user_id=center_owner_user_id,
+            )
+            if cost_center_id is None:
+                new_balance = round(user_personal_balances.get(user_id, 0.0) + amount_value, 2)
+                user_personal_balances[user_id] = new_balance
+            else:
+                new_balance = round(cc_running_balances.get(cost_center_id, 0.0) + amount_value, 2)
+                cc_running_balances[cost_center_id] = new_balance
+                if affects_personal:
+                    user_personal_balances[user_id] = round(
+                        user_personal_balances.get(user_id, 0.0) + amount_value,
+                        2,
+                    )
+
+            if balance_after is None or round(float(balance_after), 2) != new_balance:
+                updates.append({"_transaction_id": transaction_id, "_balance_after": new_balance})
+
+        if updates:
+            statement = (
+                WalletTransaction.__table__.update()
+                .where(WalletTransaction.__table__.c.id == bindparam("_transaction_id"))
+                .values(balance_after=bindparam("_balance_after"))
+            )
+            await session.execute(statement, updates)
+            updated_count += len(updates)
+        batch_offset += len(rows)
+
+    # Update every wallet, including stale wallets whose canonical balance is
+    # now zero because their last personal transaction was deleted.
+    wallet_result = await session.execute(select(UserWallet))
+    for wallet in wallet_result.scalars().all():
+        balance = round(user_personal_balances.get(wallet.user_id, 0.0), 2)
+        if wallet.balance != balance:
+            wallet.balance = balance
+            session.add(wallet)
+            updated_count += 1
+
+    await session.flush()
+    return updated_count

@@ -12,6 +12,7 @@ import {
   CALIBRATION_MODE_ACTIVE,
   CALIBRATION_MODE_INACTIVE,
 } from '../../utils/calibrationMode';
+import { MAX_CHAMBER_TEMP_C } from '../../utils/printer';
 
 type OptionConfig = {
   key: keyof PrintOptionsType;
@@ -86,7 +87,7 @@ export function PrintOptionsPanel({
     if (Number.isNaN(parsed)) return;
     onChange({
       ...options,
-      preheat_chamber_target_override: Math.max(0, Math.min(60, parsed)),
+      preheat_chamber_target_override: Math.max(0, Math.min(MAX_CHAMBER_TEMP_C, parsed)),
     });
   };
 
@@ -201,7 +202,7 @@ export function PrintOptionsPanel({
                 <input
                   type="number"
                   min={0}
-                  max={60}
+                  max={MAX_CHAMBER_TEMP_C}
                   step={1}
                   value={options.preheat_chamber_target_override ?? ''}
                   onChange={(e) => handlePreheatTarget(e.target.value)}

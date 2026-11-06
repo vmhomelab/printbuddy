@@ -26,6 +26,7 @@ class ProjectCreate(BaseModel):
     color: str | None = None
     target_count: int | None = None
     target_parts_count: int | None = None
+    target_sets: int | None = None  # Copies-per-file target (#1897)
     notes: str | None = None
     tags: str | None = None
     due_date: datetime | None = None
@@ -49,6 +50,7 @@ class ProjectUpdate(BaseModel):
     status: str | None = None  # active, completed, archived
     target_count: int | None = None
     target_parts_count: int | None = None
+    target_sets: int | None = None  # Copies-per-file target (#1897)
     notes: str | None = None
     tags: str | None = None
     due_date: datetime | None = None
@@ -89,13 +91,24 @@ class ProjectStats(BaseModel):
 
 
 class ProjectChildPreview(BaseModel):
-    """Minimal project data for child preview."""
+    """A sub-project as listed on its parent's page.
+
+    The figures cover the child's *own* subtree, not just its own prints, so
+    the listed rows add up to the parent's roll-up minus the parent's own
+    prints (#1264).
+    """
 
     id: int
     name: str
     color: str | None
     status: str
     progress_percent: float | None = None
+    descendant_count: int = 0  # Sub-projects nested under this one, at any depth
+    total_archives: int = 0
+    completed_prints: int = 0
+    total_print_time_hours: float = 0.0
+    total_filament_grams: float = 0.0
+    total_cost: float = 0.0  # Filament + energy + BOM, matching the parent's cost card
 
 
 class ProjectResponse(BaseModel):
@@ -108,6 +121,7 @@ class ProjectResponse(BaseModel):
     status: str
     target_count: int | None
     target_parts_count: int | None = None
+    target_sets: int | None = None  # Copies-per-file target (#1897)
     notes: str | None = None
     attachments: list | None = None
     tags: str | None = None
@@ -119,14 +133,25 @@ class ProjectResponse(BaseModel):
     parent_id: int | None = None
     parent_name: str | None = None  # For display
     children: list[ProjectChildPreview] = []
+    descendant_count: int = 0  # Sub-projects at any depth beneath this one (#1264)
     created_at: datetime
     updated_at: datetime
     stats: ProjectStats | None = None
+    # This project's numbers combined with every sub-project's. Null when there
+    # are none, since it would only repeat ``stats`` (#1264).
+    rollup_stats: ProjectStats | None = None
     url: str | None = None
     cover_image_filename: str | None = None
 
     class Config:
         from_attributes = True
+
+
+class ProjectFileProgress(BaseModel):
+    """Completed-run count for one library file inside a project (#1897)."""
+
+    file_id: int
+    completed_count: int
 
 
 class ArchivePreview(BaseModel):
@@ -150,6 +175,7 @@ class ProjectListResponse(BaseModel):
     status: str
     target_count: int | None
     target_parts_count: int | None = None
+    target_sets: int | None = None  # Copies-per-file target (#1897); the shared edit dialog needs it
     budget: float | None = None
     # The edit dialog is shared with the project detail page and seeds its fields
     # from whichever project object it is handed, so the list payload has to carry
@@ -166,6 +192,10 @@ class ProjectListResponse(BaseModel):
     failed_count: int = 0  # Sum of quantities for failed prints
     queue_count: int = 0
     progress_percent: float | None = None
+    # Nesting (#1264) — the grid needs both to tell a sub-project apart from a
+    # top-level one without fetching every project's detail.
+    parent_id: int | None = None
+    child_count: int = 0  # Direct sub-projects only
     # Preview of archives (up to 5)
     archives: list[ArchivePreview] = []
     # #1155: card-level metadata
@@ -276,6 +306,7 @@ class ProjectExport(BaseModel):
     status: str
     target_count: int | None
     target_parts_count: int | None
+    target_sets: int | None = None
     notes: str | None
     tags: str | None
     due_date: datetime | None
@@ -294,6 +325,7 @@ class ProjectImport(BaseModel):
     status: str = "active"
     target_count: int | None = None
     target_parts_count: int | None = None
+    target_sets: int | None = None
     notes: str | None = None
     tags: str | None = None
     due_date: datetime | None = None

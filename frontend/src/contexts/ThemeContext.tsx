@@ -20,6 +20,9 @@ interface ThemeContextType {
   lightStyle: ThemeStyle;
   lightBackground: LightBackground;
   lightAccent: ThemeAccent;
+  // Show live print progress (% + accent-coloured ring favicon) in the browser tab
+  progressInTitle: boolean;
+  setProgressInTitle: (v: boolean) => void;
   // Actions
   toggleMode: () => void;
   setMode: (mode: ThemeMode) => void;
@@ -60,7 +63,8 @@ function updateOrCreateLink(selector: string, attributes: Record<string, string>
 }
 
 function applyBrandIcons(mode: 'light' | 'dark') {
-  const icons = BRAND_ICONS[mode];
+  // Fall back to light when a stored theme value is unrecognised.
+  const icons = BRAND_ICONS[mode] ?? BRAND_ICONS.light;
 
   updateOrCreateLink('link[rel="icon"][sizes="16x16"]', {
     rel: 'icon',
@@ -139,6 +143,17 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const [lightAccent, setLightAccentState] = useState<ThemeAccent>(() => {
     return (localStorage.getItem('light-accent') as ThemeAccent) || 'teal';
   });
+
+  // Client-only pref (localStorage), no api.updateSettings sync — the tab
+  // title/favicon is per-browser behaviour. Move to server settings if it
+  // ever needs to follow the user across devices. Default off.
+  const [progressInTitle, setProgressInTitleState] = useState<boolean>(() => {
+    return localStorage.getItem('progress-in-title') === 'true';
+  });
+  const setProgressInTitle = (v: boolean) => {
+    setProgressInTitleState(v);
+    localStorage.setItem('progress-in-title', String(v));
+  };
 
   // Sync from API once auth state is known. Same gate shape as
   // useStreamTokenSync / ColorCatalogProvider: wait for AuthContext to
@@ -256,6 +271,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       resolvedMode,
       darkStyle, darkBackground, darkAccent,
       lightStyle, lightBackground, lightAccent,
+      progressInTitle, setProgressInTitle,
       toggleMode, setMode,
       setDarkStyle, setDarkBackground, setDarkAccent,
       setLightStyle, setLightBackground, setLightAccent,

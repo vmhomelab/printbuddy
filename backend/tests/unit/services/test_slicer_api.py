@@ -330,6 +330,115 @@ class TestSliceWithProfiles:
         assert b'name="arrange"' not in captured["body"]
 
     @pytest.mark.asyncio
+    async def test_orient_true_emits_form_field(self):
+        """#2548: user-requested auto-orient reaches the sidecar as its own
+        form field, which it turns into ``--orient 1``."""
+        captured: dict = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["body"] = request.content
+            return httpx.Response(
+                status_code=200,
+                content=b"3MF",
+                headers={"x-print-time-seconds": "0", "x-filament-used-g": "0", "x-filament-used-mm": "0"},
+            )
+
+        service = SlicerApiService("http://sidecar:3000", client=_mock_client(handler))
+        await service.slice_with_profiles(
+            model_bytes=b"x",
+            model_filename="Cube.3mf",
+            printer_profile_json="{}",
+            process_profile_json="{}",
+            filament_profile_jsons=["{}"],
+            orient=True,
+        )
+
+        assert b'name="orient"' in captured["body"]
+
+    @pytest.mark.asyncio
+    async def test_orient_false_omits_form_field(self):
+        """An off flag must be expressed by ABSENCE, never by sending
+        "false". The sidecar branches on ``settings.orient !== undefined``
+        and multipart fields arrive as strings — and ``"false"`` is truthy
+        in JavaScript, so sending it would switch auto-orient ON for every
+        user who left the box unticked."""
+        captured: dict = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["body"] = request.content
+            return httpx.Response(
+                status_code=200,
+                content=b"3MF",
+                headers={"x-print-time-seconds": "0", "x-filament-used-g": "0", "x-filament-used-mm": "0"},
+            )
+
+        service = SlicerApiService("http://sidecar:3000", client=_mock_client(handler))
+        await service.slice_with_profiles(
+            model_bytes=b"x",
+            model_filename="Cube.3mf",
+            printer_profile_json="{}",
+            process_profile_json="{}",
+            filament_profile_jsons=["{}"],
+            orient=False,
+        )
+
+        body = captured["body"]
+        assert b'name="orient"' not in body
+        assert b"false" not in body
+
+    @pytest.mark.asyncio
+    async def test_profileless_slice_forwards_both_layout_flags(self):
+        """The embedded-settings path and the segfault fallback both run
+        through ``slice_without_profiles``. Arrange / orient are CLI actions
+        on the geometry rather than profile values, so a user's per-slice
+        choice has to survive those routes too (#2548) — before this they
+        could not be expressed there at all."""
+        captured: dict = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["body"] = request.content
+            return httpx.Response(
+                status_code=200,
+                content=b"3MF",
+                headers={"x-print-time-seconds": "0", "x-filament-used-g": "0", "x-filament-used-mm": "0"},
+            )
+
+        service = SlicerApiService("http://sidecar:3000", client=_mock_client(handler))
+        await service.slice_without_profiles(
+            model_bytes=b"x",
+            model_filename="Cube.3mf",
+            arrange=True,
+            orient=True,
+        )
+
+        body = captured["body"]
+        assert b'name="arrange"' in body
+        assert b'name="orient"' in body
+
+    @pytest.mark.asyncio
+    async def test_profileless_slice_defaults_omit_layout_flags(self):
+        """The filament-discovery preview also uses this method and passes
+        neither flag — it must keep sending the pre-#2548 payload, since
+        rearranging objects would not change which slots a plate consumes
+        but would burn the arrange pass on every preview."""
+        captured: dict = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["body"] = request.content
+            return httpx.Response(
+                status_code=200,
+                content=b"3MF",
+                headers={"x-print-time-seconds": "0", "x-filament-used-g": "0", "x-filament-used-mm": "0"},
+            )
+
+        service = SlicerApiService("http://sidecar:3000", client=_mock_client(handler))
+        await service.slice_without_profiles(model_bytes=b"x", model_filename="Cube.3mf")
+
+        body = captured["body"]
+        assert b'name="arrange"' not in body
+        assert b'name="orient"' not in body
+
+    @pytest.mark.asyncio
     async def test_multi_filament_sends_one_part_per_profile(self):
         # Multi-color slicing requires N filament profiles, in plate-slot
         # order, sent as N repeated multipart `filamentProfile` parts (NOT a

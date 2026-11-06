@@ -10,6 +10,7 @@ import pytest
 
 from backend.app.services.printer_manager import (
     PrinterManager,
+    display_temperatures,
     drying_screen_only,
     get_derived_status_name,
     has_stg_cur_idle_bug,
@@ -410,6 +411,7 @@ class TestPrinterManager:
             use_ams=True,
             nozzle_offset_cali="auto",
             nozzle_mapping=None,
+            nozzle_slot_extruders=None,
         )
         assert result is True
 
@@ -875,7 +877,90 @@ class TestPrinterStateToDict:
         state.raw_data = {}
         state.stg_cur = -1  # No calibration stage active
         state.firmware_version = None
+        state.extruder_slots = {}
         return state
+
+    def test_fila_switch_and_inlets_ride_the_websocket(self, mock_state):
+        """The FTS fields must be in the broadcast dict, not only the REST status.
+
+        The frontend shallow-merges each WebSocket push over its cached status,
+        so a field this dict omits keeps whatever the last full fetch left —
+        which is why the AMS inlet badges only ever changed on a page reload.
+        """
+        from backend.app.services.bambu_mqtt import FilaSwitchState
+
+        mock_state.fila_switch = FilaSwitchState(
+            installed=True, in_slots=[-1, 0x0102], out_extruders=[1, 0], stat=0, info=1
+        )
+        mock_state.ams_switch_inlet = {"0": "A", "1": "B"}
+
+        result = printer_state_to_dict(mock_state)
+
+        assert result["ams_switch_inlet"] == {"0": "A", "1": "B"}
+        assert result["fila_switch"] == {
+            "installed": True,
+            "in_slots": [-1, 0x0102],
+            "out_extruders": [1, 0],
+            "stat": 0,
+            "info": 1,
+            "ready": True,
+        }
+
+    def test_a_switch_is_not_ready_until_every_ams_has_an_inlet(self, mock_state):
+        """An AMS with no inlet binding means the switch cannot route a load.
+
+        The load dialog blocks on this rather than publishing a command the
+        firmware will drop, the same way BambuStudio's DevFilaSwitch::IsReady
+        gates its own dialog.
+        """
+        from backend.app.services.bambu_mqtt import FilaSwitchState
+
+        mock_state.fila_switch = FilaSwitchState(installed=True)
+        mock_state.raw_data = {"ams": [{"id": "0", "tray": []}, {"id": "1", "tray": []}]}
+        mock_state.ams_switch_inlet = {"0": "A"}
+
+        assert printer_state_to_dict(mock_state)["fila_switch"]["ready"] is False
+
+        mock_state.ams_switch_inlet = {"0": "A", "1": "B"}
+
+        assert printer_state_to_dict(mock_state)["fila_switch"]["ready"] is True
+
+    def test_extruder_slots_ride_the_websocket(self, mock_state):
+        """Which hotend holds which slot has to travel with every push.
+
+        The AMS slot menu decides from it which hotend the load dialog may
+        offer, and tray_now cannot stand in: it is one value for the whole
+        printer, so with both hotends loaded it names only one of them.
+        """
+        from backend.app.services.bambu_mqtt import ExtruderSlot
+
+        mock_state.extruder_slots = {
+            0: ExtruderSlot(ams_id=0, slot_id=2, has_filament=True),
+            1: ExtruderSlot(ams_id=None, slot_id=None, has_filament=False),
+        }
+
+        result = printer_state_to_dict(mock_state)
+
+        assert result["extruder_slots"] == {
+            "0": {"ams_id": 0, "slot_id": 2, "has_filament": True},
+            "1": {"ams_id": None, "slot_id": None, "has_filament": False},
+        }
+
+    def test_extruder_slots_are_empty_when_unreported(self, mock_state):
+        """Printers outside the H2/X2 series never send the block."""
+        assert printer_state_to_dict(mock_state)["extruder_slots"] == {}
+
+    def test_inlets_are_dropped_without_a_switch(self, mock_state):
+        """A binding must not outlive the accessory being unplugged."""
+        from backend.app.services.bambu_mqtt import FilaSwitchState
+
+        mock_state.fila_switch = FilaSwitchState(installed=False)
+        mock_state.ams_switch_inlet = {"0": "A"}
+
+        result = printer_state_to_dict(mock_state)
+
+        assert result["fila_switch"] is None
+        assert result["ams_switch_inlet"] == {}
 
     def test_basic_conversion(self, mock_state):
         """Verify basic state fields are converted."""
@@ -1405,9 +1490,10 @@ class TestDryingTargetExposure:
         assert result["ams"][0]["dry_filament"] == "PETG"
         assert result["ams"][0]["dry_target_temp"] == 65
 
-    def test_falls_back_to_loaded_tray_when_no_cache(self):
-        """No cached target → derive from first loaded tray's tray_type +
-        RFID-recommended drying_temp (popover seed heuristic)."""
+    def test_falls_back_to_loaded_tray_filament_when_no_cache(self):
+        """No cached target → name the filament from the loaded trays when they
+        agree on a type. The temperature stays unknown: only the cache records
+        what we actually sent."""
         state = self._state_with_ams(
             {
                 "id": 0,
@@ -1419,7 +1505,7 @@ class TestDryingTargetExposure:
         )
         result = printer_state_to_dict(state, drying_targets=None)
         assert result["ams"][0]["dry_filament"] == "ABS"
-        assert result["ams"][0]["dry_target_temp"] == 70
+        assert result["ams"][0]["dry_target_temp"] is None
 
     def test_returns_none_when_no_cache_and_empty_trays(self):
         """No cache + no loaded tray with tray_type → both fields are None."""
@@ -1446,6 +1532,132 @@ class TestDryingTargetExposure:
         result = printer_state_to_dict(state, drying_targets={1: {"filament": "PETG", "temp": 65}})
         assert result["ams"][0]["dry_filament"] is None
         assert result["ams"][0]["dry_target_temp"] is None
+
+    def test_no_fallback_when_loaded_trays_disagree(self):
+        """#2759 — the reporter's AMS held 2 PETG and 2 PLA and was drying the
+        PLA at 45°C, but the fallback read slot 1 and labelled it "PETG @ 65°C".
+        A mixed unit gives no evidence of what the cycle is running, so the
+        badge must show the countdown alone rather than a confident wrong
+        answer."""
+        state = self._state_with_ams(
+            {
+                "id": 0,
+                "dry_time": 719,
+                "tray": [
+                    {"id": 0, "tray_type": "PETG", "drying_temp": 65, "state": 11},
+                    {"id": 1, "tray_type": "PETG", "drying_temp": 65, "state": 11},
+                    {"id": 2, "tray_type": "PLA", "drying_temp": 45, "state": 11},
+                    {"id": 3, "tray_type": "PLA", "drying_temp": 45, "state": 11},
+                ],
+            }
+        )
+        result = printer_state_to_dict(state, drying_targets={})
+        assert result["ams"][0]["dry_filament"] is None
+        assert result["ams"][0]["dry_target_temp"] is None
+
+    def test_fallback_survives_multiple_trays_of_one_type(self):
+        """Agreement across slots is still evidence of the filament — a unit
+        loaded entirely with PLA keeps the name the mixed case gives up."""
+        state = self._state_with_ams(
+            {
+                "id": 0,
+                "dry_time": 719,
+                "tray": [
+                    {"id": 0, "tray_type": "PLA", "drying_temp": 45, "state": 11},
+                    {"id": 1, "tray_type": "PLA", "drying_temp": 45, "state": 11},
+                    {"id": 2},
+                ],
+            }
+        )
+        result = printer_state_to_dict(state, drying_targets={})
+        assert result["ams"][0]["dry_filament"] == "PLA"
+
+    def test_uniform_unit_never_invents_a_temperature(self):
+        """#2759 follow-up — the reporter's second AMS held only PLA and was
+        drying at the 45°C they picked, but with no cached target the badge
+        answered with the RFID recommendation and read "PLA @ 55°C". Every
+        spool agreeing tells us the filament; it tells us nothing about a
+        temperature the user chose freely in the popover."""
+        state = self._state_with_ams(
+            {
+                "id": 0,
+                "dry_time": 719,
+                "tray": [
+                    {"id": 0, "tray_type": "PLA", "drying_temp": 55, "state": 11},
+                    {"id": 1, "tray_type": "PLA", "drying_temp": 55, "state": 11},
+                ],
+            }
+        )
+        result = printer_state_to_dict(state, drying_targets={})
+        assert result["ams"][0]["dry_filament"] == "PLA"
+        assert result["ams"][0]["dry_target_temp"] is None
+
+    def test_cached_temp_survives_a_unit_whose_trays_disagree(self):
+        """The cache is authoritative for both fields. A mixed unit costs us the
+        filament fallback but must not touch a target we actually sent."""
+        state = self._state_with_ams(
+            {
+                "id": 0,
+                "dry_time": 719,
+                "tray": [
+                    {"id": 0, "tray_type": "PETG", "drying_temp": 65, "state": 11},
+                    {"id": 1, "tray_type": "PLA", "drying_temp": 55, "state": 11},
+                ],
+            }
+        )
+        result = printer_state_to_dict(state, drying_targets={0: {"filament": "PLA", "temp": 45}})
+        assert result["ams"][0]["dry_filament"] == "PLA"
+        assert result["ams"][0]["dry_target_temp"] == 45
+
+
+class TestDisplayTemperatures:
+    """#1422 — the readings handed to the streaming overlay.
+
+    `state.temperatures` doubles as the MQTT client's working memory: alongside
+    the readings it carries derived heater flags and private timestamps. The
+    overlay feed is reached by a token rather than a login, so it gets an
+    allow-list rather than the dict.
+    """
+
+    def test_keeps_the_readings_the_overlay_draws(self):
+        result = display_temperatures({"nozzle": 219.5, "nozzle_target": 220.0, "bed": 60.0, "bed_target": 60.0}, "X1C")
+        assert result == {"nozzle": 219.5, "nozzle_target": 220.0, "bed": 60.0, "bed_target": 60.0}
+
+    def test_drops_heater_flags_and_private_bookkeeping(self):
+        result = display_temperatures(
+            {
+                "nozzle": 219.5,
+                "nozzle_heating": True,
+                "bed_heating": False,
+                "_nozzle_target_set_time": 1754300000.0,
+                "_chamber_target_set_time": 1754300000.0,
+            },
+            "X1C",
+        )
+        assert result == {"nozzle": 219.5}
+
+    def test_chamber_kept_on_models_with_a_real_sensor(self):
+        result = display_temperatures({"chamber": 38.0, "chamber_target": 40.0}, "X1C")
+        assert result == {"chamber": 38.0, "chamber_target": 40.0}
+
+    def test_chamber_dropped_on_models_without_one(self):
+        """P1P, P1S, A1 and A1 mini publish a meaningless chamber_temper. Drawing
+        it on a live stream would state a measurement that doesn't exist."""
+        for model in ("P1S", "P1P", "A1", "A1MINI"):
+            assert display_temperatures({"nozzle": 200.0, "chamber": 38.0}, model) == {"nozzle": 200.0}
+
+    def test_second_nozzle_is_included(self):
+        result = display_temperatures({"nozzle": 220.0, "nozzle_2": 240.0, "nozzle_2_target": 250.0}, "H2D")
+        assert result == {"nozzle": 220.0, "nozzle_2": 240.0, "nozzle_2_target": 250.0}
+
+    def test_unparseable_and_missing_values_are_skipped(self):
+        """A reading that isn't a number is dropped rather than crashing the
+        feed or reaching the page as a string."""
+        assert display_temperatures({"nozzle": None, "bed": "warm", "chamber": 38.0}, "X1C") == {"chamber": 38.0}
+
+    def test_empty_and_none_are_empty(self):
+        assert display_temperatures(None, "X1C") == {}
+        assert display_temperatures({}, "X1C") == {}
 
 
 class TestSupportsChamberTemp:

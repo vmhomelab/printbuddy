@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { renderHook, waitFor, act } from '@testing-library/react';
+import { renderHook, waitFor, act, screen } from '@testing-library/react';
 import React from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ToastProvider } from '../../contexts/ToastContext';
@@ -22,6 +22,14 @@ vi.mock('react-i18next', () => ({
       if (key === 'printers.toast.missingSpoolAssignment' && options) {
         const { printer, slots } = options as { printer: string; slots: string };
         return `Missing assignments for ${printer}: ${slots}`;
+      }
+      if (key === 'printers.toast.killSwitchTriggered' && options) {
+        const { printer, filename } = options as { printer: string; filename: string };
+        return `Billing kill switch stopped ${filename} on ${printer}`;
+      }
+      if (key === 'printers.toast.billingChargeFailed' && options) {
+        const { printer, filename } = options as { printer: string; filename: string };
+        return `Billing failed for ${filename} on ${printer}. The budget reservation was retained; check the server logs.`;
       }
       return key;
     },
@@ -321,10 +329,6 @@ describe('useWebSocket hook', () => {
 
     it('invalidates archives on print_complete message', async () => {
       vi.useFakeTimers();
-      vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
-        cb(0);
-        return 0;
-      });
       const { useWebSocket } = await import('../../hooks/useWebSocket');
 
       const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
@@ -363,10 +367,6 @@ describe('useWebSocket hook', () => {
 
     it('invalidates archives on archive_created message', async () => {
       vi.useFakeTimers();
-      vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
-        cb(0);
-        return 0;
-      });
       const { useWebSocket } = await import('../../hooks/useWebSocket');
 
       const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
@@ -404,10 +404,6 @@ describe('useWebSocket hook', () => {
 
     it('invalidates archives on archive_updated message', async () => {
       vi.useFakeTimers();
-      vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
-        cb(0);
-        return 0;
-      });
       const { useWebSocket } = await import('../../hooks/useWebSocket');
 
       const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
@@ -444,10 +440,6 @@ describe('useWebSocket hook', () => {
 
     it('invalidates inventory queries on inventory_changed message', async () => {
       vi.useFakeTimers();
-      vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
-        cb(0);
-        return 0;
-      });
       const { useWebSocket } = await import('../../hooks/useWebSocket');
 
       const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
@@ -478,11 +470,103 @@ describe('useWebSocket hook', () => {
       vi.unstubAllGlobals();
     });
 
-    it('handles missing_spool_assignment message without error', async () => {
-      vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
-        cb(0);
-        return 0;
+    /*
+     * Swapping a spool leaves the previous spool's preset name on the AMS slot
+     * card.
+     *
+     * The RFID auto-assign rewrites the slot's slot_preset_mappings row, and
+     * PrintersPage reads `slotPreset?.preset_name` *ahead of* the live
+     * tray_info_idx lookup -- so a cached row wins over correct data pushed
+     * over the socket. Everything else on the card rides the status push and
+     * updates instantly, which is why this surfaces as one wrong line rather
+     * than a stale card: pull a Bambu ABS Orange, insert a PLA Matte Dark
+     * Blue, and the card reads "Bambu ABS" against the new colour.
+     *
+     * `slotPresets` has a 2-minute staleTime and no refetch interval, so on a
+     * dashboard left open and focused nothing ever refetches it.
+     */
+    it('invalidates slot presets on spool_auto_assigned message', async () => {
+      vi.useFakeTimers();
+      const { useWebSocket } = await import('../../hooks/useWebSocket');
+
+      const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
+
+      renderHook(() => useWebSocket(), {
+        wrapper: createWrapper(queryClient),
       });
+
+      const ws = await waitForWs();
+
+      act(() => {
+        ws.open();
+      });
+
+      act(() => {
+        ws.simulateMessage({
+          type: 'spool_auto_assigned',
+          printer_id: 7,
+          ams_id: 0,
+          tray_id: 0,
+          spool_id: 110,
+        });
+      });
+
+      // No timer advance: the user is standing at the printer looking at the
+      // card, so the slot's own queries must not wait out the 3s cascade
+      // debounce (which any further event would restart anyway).
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['slotPresets'] });
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['spool-assignments'] });
+
+      // The spool list is not on the card's critical path and stays debounced.
+      expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ['inventory-spools'] });
+      await act(async () => {
+        vi.advanceTimersByTime(5000);
+      });
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['inventory-spools'] });
+
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    });
+
+    /*
+     * Spoolman mode reaches the same slot_preset_mappings row through its own
+     * AMS sync, which raises spool_assignment_changed. Its slot rows live under
+     * a different query key, so the internal-mode key alone left that half of
+     * the UI on the previous spool.
+     */
+    it('invalidates both inventory modes on spool_assignment_changed message', async () => {
+      vi.useFakeTimers();
+      const { useWebSocket } = await import('../../hooks/useWebSocket');
+
+      const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
+
+      renderHook(() => useWebSocket(), {
+        wrapper: createWrapper(queryClient),
+      });
+
+      const ws = await waitForWs();
+
+      act(() => {
+        ws.open();
+      });
+
+      act(() => {
+        ws.simulateMessage({
+          type: 'spool_assignment_changed',
+          printer_id: 7,
+          ams_id: 0,
+          tray_id: 0,
+        });
+      });
+
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['slotPresets'] });
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['spool-assignments'] });
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['spoolman-slot-assignments'] });
+
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    });
+    it('handles missing_spool_assignment message without error', async () => {
       const { useWebSocket } = await import('../../hooks/useWebSocket');
 
       renderHook(() => useWebSocket(), {
@@ -510,11 +594,53 @@ describe('useWebSocket hook', () => {
       vi.unstubAllGlobals();
     });
 
-    it('handles spool_assignment_verified messages (success and failure) without error', async () => {
-      vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
-        cb(0);
-        return 0;
+    it('shows an error toast when the billing kill switch stops a print', async () => {
+      const { useWebSocket } = await import('../../hooks/useWebSocket');
+
+      renderHook(() => useWebSocket(), {
+        wrapper: createWrapper(queryClient),
       });
+
+      const ws = await waitForWs();
+      act(() => {
+        ws.open();
+        ws.simulateMessage({
+          type: 'kill_switch_triggered',
+          printer_id: 7,
+          printer_name: 'Printer B',
+          filename: 'foreign_job.3mf',
+        });
+      });
+
+      const toast = screen.getByText('Billing kill switch stopped foreign_job.3mf on Printer B');
+      expect(toast.parentElement).toHaveClass('bg-red-500/10');
+    });
+
+    it('shows an error toast when a completed print could not be charged', async () => {
+      const { useWebSocket } = await import('../../hooks/useWebSocket');
+
+      renderHook(() => useWebSocket(), {
+        wrapper: createWrapper(queryClient),
+      });
+
+      const ws = await waitForWs();
+      act(() => {
+        ws.open();
+        ws.simulateMessage({
+          type: 'billing_charge_failed',
+          printer_id: 7,
+          printer_name: 'Printer B',
+          filename: 'paid-job.3mf',
+        });
+      });
+
+      const toast = screen.getByText(
+        'Billing failed for paid-job.3mf on Printer B. The budget reservation was retained; check the server logs.',
+      );
+      expect(toast.parentElement).toHaveClass('bg-red-500/10');
+    });
+
+    it('handles spool_assignment_verified messages (success and failure) without error', async () => {
       const { useWebSocket } = await import('../../hooks/useWebSocket');
 
       renderHook(() => useWebSocket(), {
@@ -642,6 +768,190 @@ describe('useWebSocket hook', () => {
       }).not.toThrow();
 
       expect(invalidateSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  /**
+   * #2754 (reporter @mic4rd): live updates froze whenever the tab wasn't in
+   * front, and caught up all at once on switching back.
+   *
+   * Two causes, fixed in two rounds. First the cache writes ran inside a
+   * requestAnimationFrame, and a hidden tab gets no rendering opportunities —
+   * the browser holds queued frame callbacks indefinitely rather than merely
+   * throttling them. The rAF stub below is what makes those tests meaningful:
+   * it hands back a handle and never invokes the callback, which is what a
+   * real hidden tab does.
+   *
+   * Removing the frame callback did not close the report, because the 100ms
+   * coalescing timer was still in the path and a hidden page's timers are
+   * clamped to at best once a second — once a minute past five minutes hidden.
+   * So the writes must not depend on a timer either while hidden, which is
+   * what `writes without waiting on a timer` pins down. Note it deliberately
+   * never advances the clock: a test that advances fake timers cannot tell a
+   * throttled timer from a prompt one, which is exactly why the original tests
+   * kept passing while the reporter's tab stayed frozen.
+   */
+  describe('hidden tab (#2754)', () => {
+    let rafSpy: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+      // The shared test client sets gcTime: 0, which collects a query the
+      // moment it has no observers — advancing timers past the 100ms
+      // coalescing window would drop the entry we just wrote before we could
+      // read it back. Nothing observes ['printerStatus', 1] here, so this
+      // block needs a client that keeps unobserved data.
+      queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false, gcTime: Infinity } },
+      });
+      Object.defineProperty(document, 'hidden', { configurable: true, value: true });
+      // Order matters: vi.useFakeTimers() fakes requestAnimationFrame as well
+      // (backing it with the mock clock, so advanceTimersByTime would run it
+      // and hide the very defect under test). Stub it afterwards so the
+      // never-firing version is the one the hook sees.
+      vi.useFakeTimers();
+      rafSpy = vi.fn(() => 1);
+      vi.stubGlobal('requestAnimationFrame', rafSpy);
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+      Object.defineProperty(document, 'hidden', { configurable: true, value: false });
+    });
+
+    it('applies printer status to the query cache', async () => {
+      const { useWebSocket } = await import('../../hooks/useWebSocket');
+
+      renderHook(() => useWebSocket(), { wrapper: createWrapper(queryClient) });
+      const ws = await waitForWs();
+      act(() => ws.open());
+
+      act(() => {
+        ws.simulateMessage({
+          type: 'printer_status',
+          printer_id: 1,
+          data: { state: 'RUNNING', progress: 42 },
+        });
+      });
+
+      // Past the 100ms coalescing window.
+      await act(async () => {
+        vi.advanceTimersByTime(200);
+      });
+
+      // This is the key the tab-title/favicon progress reads
+      // (usePrintProgressTitle) and nothing else.
+      expect(queryClient.getQueryData(['printerStatus', 1])).toMatchObject({
+        state: 'RUNNING',
+        progress: 42,
+      });
+      expect(rafSpy).not.toHaveBeenCalled();
+    });
+
+    it('writes without waiting on a timer', async () => {
+      const { useWebSocket } = await import('../../hooks/useWebSocket');
+
+      renderHook(() => useWebSocket(), { wrapper: createWrapper(queryClient) });
+      const ws = await waitForWs();
+      act(() => ws.open());
+
+      act(() => {
+        ws.simulateMessage({
+          type: 'printer_status',
+          printer_id: 1,
+          data: { state: 'RUNNING', progress: 42 },
+        });
+      });
+
+      // No advanceTimersByTime: a hidden tab's timers are throttled to once a
+      // second at best, so anything the title depends on has to have landed
+      // already. Reintroduce the coalescing timer on this path and the cache
+      // is still empty here.
+      expect(queryClient.getQueryData(['printerStatus', 1])).toMatchObject({
+        state: 'RUNNING',
+        progress: 42,
+      });
+    });
+
+    it('applies the newest value when several arrive before a frame would have run', async () => {
+      const { useWebSocket } = await import('../../hooks/useWebSocket');
+
+      renderHook(() => useWebSocket(), { wrapper: createWrapper(queryClient) });
+      const ws = await waitForWs();
+      act(() => ws.open());
+
+      act(() => {
+        ws.simulateMessage({ type: 'printer_status', printer_id: 1, data: { progress: 40 } });
+        ws.simulateMessage({ type: 'printer_status', printer_id: 1, data: { progress: 41 } });
+      });
+
+      // Writing through per message must not resurrect an earlier one: the
+      // pending map is drained on each flush, so a stale entry cannot be
+      // re-applied over the newer value.
+      expect(queryClient.getQueryData(['printerStatus', 1])).toMatchObject({ progress: 41 });
+    });
+
+    it('drains queued messages instead of wedging the queue', async () => {
+      const { useWebSocket } = await import('../../hooks/useWebSocket');
+      const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
+
+      renderHook(() => useWebSocket(), { wrapper: createWrapper(queryClient) });
+      const ws = await waitForWs();
+      act(() => ws.open());
+
+      // Everything other than printer_status goes through the message queue,
+      // which used to stall with processingRef stuck true — messages then
+      // piled up unbounded until the tab was shown again.
+      act(() => {
+        ws.simulateMessage({ type: 'print_complete', printer_id: 1, data: {} });
+      });
+
+      // 3s debounce, then the 500ms-apart stagger.
+      await act(async () => {
+        vi.advanceTimersByTime(4000);
+      });
+
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['archives'] });
+      expect(rafSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('visible tab still coalesces (#2754)', () => {
+    /**
+     * The counterpart to the hidden-tab block: the write-through is scoped to
+     * a hidden tab on purpose. A visible one is painting, and the 100ms window
+     * is what stops a burst of status messages turning into a render cascade —
+     * so "just always write through" is not the simplification it looks like.
+     */
+    it('defers the write while the tab is visible', async () => {
+      const { useWebSocket } = await import('../../hooks/useWebSocket');
+
+      const client = new QueryClient({
+        defaultOptions: { queries: { retry: false, gcTime: Infinity } },
+      });
+      vi.useFakeTimers();
+      try {
+        renderHook(() => useWebSocket(), { wrapper: createWrapper(client) });
+        const ws = await waitForWs();
+        act(() => ws.open());
+
+        act(() => {
+          ws.simulateMessage({
+            type: 'printer_status',
+            printer_id: 1,
+            data: { state: 'RUNNING', progress: 42 },
+          });
+        });
+
+        expect(client.getQueryData(['printerStatus', 1])).toBeUndefined();
+
+        await act(async () => {
+          vi.advanceTimersByTime(200);
+        });
+
+        expect(client.getQueryData(['printerStatus', 1])).toMatchObject({ progress: 42 });
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 

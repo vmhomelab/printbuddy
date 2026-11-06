@@ -13,11 +13,21 @@ import asyncio
 import ipaddress
 import logging
 import socket
+import ssl
 
 from backend.app.models.printer import Printer
 from backend.app.schemas.printer import DiagnosticCheck, PrinterDiagnosticResult
+from backend.app.services.bambu_ftp import find_remote_file_async
+from backend.app.services.bambu_mqtt import CONNECT_ERROR_AUTH_REJECTED
 from backend.app.services.camera import get_camera_port
 from backend.app.services.discovery import is_running_in_docker
+from backend.app.services.ftp_profiles import get_ftp_profile
+from backend.app.services.print_storage import (
+    REASON_INTERNAL_STORAGE,
+    StorageVerdict,
+    ftp_probe_paths,
+    last_print_storage_verdict,
+)
 from backend.app.services.printer_manager import printer_manager
 from backend.app.utils.printer_models import has_external_storage, has_remote_storage_toggle
 
@@ -30,6 +40,12 @@ PORT_RTSPS = 322  # RTSPS — camera stream; optional.
 PORT_CHAMBER_IMAGE = 6000  # Chamber image protocol — A1/P1 camera stream; optional.
 
 _PORT_PROBE_TIMEOUT = 3.0
+
+# Cap for the storage probe (#2856). One connection and a handful of directory
+# listings, so a healthy printer answers in well under a second. Kept short on
+# purpose: this check sits inside the support bundle's 15s-per-printer budget,
+# and in the interactive run it is spinner time the user is watching.
+_STORAGE_PROBE_TIMEOUT = 6.0
 
 # Default seconds the `printer_publishing` check will wait for the first
 # report-topic message before declaring fail. Bambu printers in idle publish
@@ -54,6 +70,124 @@ async def _check_port(ip: str, port: int, timeout: float = _PORT_PROBE_TIMEOUT) 
         return True
     except Exception:
         return False
+
+
+# Public alias. The connection watchdog probes the MQTT port before rebuilding a
+# client, so it can tell "the printer is switched off" (leave it alone, paho will
+# keep retrying) from "the printer is answering but our session is dead" (#2732).
+check_port = _check_port
+
+
+async def _check_ftps_tls(ip: str, model: str | None, timeout: float = _PORT_PROBE_TIMEOUT) -> str:
+    """Probe port 990 the way the FTP client does, and say how far it got.
+
+    Returns ``"ok"``, ``"closed"`` (nothing accepted the TCP connection) or
+    ``"no_tls"`` (the port accepted the connection but the TLS handshake did
+    not complete).
+
+    A plain TCP probe cannot tell the last two apart, which is exactly how
+    #2780 hid: the reporter's diagnostic reported port 990 as reachable and
+    green while every real transfer died in the handshake with
+    ``WRONG_VERSION_NUMBER``, so archives quietly arrived empty with nothing
+    on screen to explain it.
+
+    The context mirrors :class:`~backend.app.services.bambu_ftp.ImplicitFTP_TLS`
+    -- including the model's TLS cap -- so a pass here means the FTP client
+    would also get through. Handshake only; no login is attempted, so this
+    stays valid for the pre-save Add-Printer flow where no access code exists
+    yet.
+    """
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    if get_ftp_profile(model).cap_tls_v1_2:
+        context.maximum_version = ssl.TLSVersion.TLSv1_2
+
+    writer = None
+    try:
+        _reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(ip, PORT_FTPS, ssl=context),
+            timeout=timeout,
+        )
+        return "ok"
+    except ssl.SSLError:
+        # The socket was accepted and then failed to negotiate TLS. Reaching
+        # here at all proves something is listening, so this is never "port
+        # blocked" -- it is the printer's file service in a state no retry
+        # gets past.
+        return "no_tls"
+    except Exception:
+        return "closed"
+    finally:
+        if writer is not None:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:
+                pass
+
+
+async def _last_print_file_is_reachable(
+    printer: Printer | None,
+    verdict: StorageVerdict,
+    *,
+    ftps_ok: bool,
+) -> bool:
+    """Did the last print's file turn up on external storage after all? (#2856)
+
+    ``verdict`` is read off the dispatch URL, which says where the printer
+    *put* the file, not whether port 990 can serve it: an H2D with a card in
+    the slot reports ``brtc://emmc/<name>`` and then hands the same file over
+    from ``/cache`` without complaint. Warning that the file is out of reach
+    while that user's archives are quietly complete would send them chasing a
+    setting that is already right.
+
+    So check before saying it -- one connection, one listing per candidate
+    directory, no transfer, and only for the check that is about to warn.
+    "Could not check" returns False and leaves the warning standing, which is
+    the safe direction: it is a warn, not a fail.
+    """
+    if not ftps_ok or not verdict.probe_filename or printer is None:
+        return False
+    # Attribute reads inside the guard too: this also runs from the support
+    # bundle, where the row may outlive its session, and a detached-instance
+    # error there is "could not check", not a broken diagnostic.
+    ip_address = None
+    try:
+        ip_address = getattr(printer, "ip_address", None)
+        access_code = getattr(printer, "access_code", None)
+        if not ip_address or not access_code:
+            return False
+        found = await find_remote_file_async(
+            ip_address,
+            access_code,
+            ftp_probe_paths(verdict.probe_filename),
+            timeout=_STORAGE_PROBE_TIMEOUT,
+            socket_timeout=_STORAGE_PROBE_TIMEOUT,
+            printer_model=getattr(printer, "model", None),
+        )
+    except Exception as e:
+        logger.debug("Could not probe %s for %s: %s", ip_address, verdict.probe_filename, e)
+        return False
+    if found:
+        logger.debug("Last print file is on external storage at %s despite %s", found, verdict.reason)
+    return found is not None
+
+
+def _auth_reason_params(reason: str | None) -> dict:
+    """Map a client's CONNACK-refusal slug onto the check's `params.reason`.
+
+    The frontend renders `diagnostic.check.<id>.<status>_<reason>` when a reason
+    is present and falls back to the plain per-status text otherwise, so an
+    unknown or absent slug degrades to today's generic wording rather than a
+    missing string. Only `auth_rejected` currently carries its own message:
+    that is the one case where the printer positively told us the credentials
+    were wrong, as opposed to us merely observing that we are not connected.
+    """
+    if reason == CONNECT_ERROR_AUTH_REJECTED:
+        return {"reason": CONNECT_ERROR_AUTH_REJECTED}
+    return {}
 
 
 def _camera_port_for_printer(printer: Printer | None) -> tuple[int, str]:
@@ -134,14 +268,22 @@ async def run_connection_diagnostic(
 
     # --- Port reachability (probed in parallel) ---
     camera_port, camera_protocol = _camera_port_for_printer(printer)
-    mqtt_ok, ftps_ok, camera_ok = await asyncio.gather(
+    mqtt_ok, ftps_state, camera_ok = await asyncio.gather(
         _check_port(ip_address, PORT_MQTT),
-        _check_port(ip_address, PORT_FTPS),
+        _check_ftps_tls(ip_address, getattr(printer, "model", None) if printer else None),
         _check_port(ip_address, camera_port),
     )
     # MQTT is connection-critical; FTPS/camera only degrade printing/camera.
     checks.append(DiagnosticCheck(id="port_mqtt", status="pass" if mqtt_ok else "fail"))
-    checks.append(DiagnosticCheck(id="port_ftps", status="pass" if ftps_ok else "warn"))
+    # "no_tls" gets its own message: the port is open, so the usual advice
+    # (unblock port 990) is wrong and only a printer restart helps (#2780).
+    checks.append(
+        DiagnosticCheck(
+            id="port_ftps",
+            status="pass" if ftps_state == "ok" else "warn",
+            params={} if ftps_state != "no_tls" else {"reason": "no_tls"},
+        )
+    )
     checks.append(
         DiagnosticCheck(
             id="port_rtsps",
@@ -218,11 +360,14 @@ async def run_connection_diagnostic(
     store_to_sdcard = getattr(state, "store_to_sdcard", None) if state else None
     if not model_has_slot or state is None or not state.connected:
         checks.append(DiagnosticCheck(id="external_storage", status="skip"))
-    elif store_to_sdcard is True:
-        checks.append(DiagnosticCheck(id="external_storage", status="pass"))
     elif store_to_sdcard is False and not has_remote_storage_toggle(model):
         # Slot present but no way to enable it on this firmware — don't nag
         # with an unresolvable fail; explain why via the reason param.
+        #
+        # Ahead of the empty-slot check below on purpose (#2524 over #2780):
+        # on a P1-series the toggle cannot be switched on at all, so telling
+        # the operator to insert a card would promise a fix that inserting a
+        # card does not deliver.
         checks.append(
             DiagnosticCheck(
                 id="external_storage",
@@ -230,6 +375,47 @@ async def run_connection_diagnostic(
                 params={"reason": "unsupported_model"},
             )
         )
+    elif getattr(state, "sdcard_reported", False) and not getattr(state, "sdcard", False):
+        # The toggle can be on and still achieve nothing with an empty slot,
+        # and that combination used to report a clean pass — #2780's H2C had
+        # `store_to_sdcard` set and `sdcard` False for three solid weeks while
+        # every one of its archives came out blank. Report the empty slot,
+        # which is the part the operator can actually act on.
+        checks.append(
+            DiagnosticCheck(
+                id="external_storage",
+                status="fail",
+                params={"reason": "no_media"},
+            )
+        )
+    elif not (last_verdict := last_print_storage_verdict(state)).reachable and not await _last_print_file_is_reachable(
+        printer, last_verdict, ftps_ok=ftps_state == "ok"
+    ):
+        # The toggle is on, a card is in, the printer said the last print's file
+        # is on internal storage — and a probe confirmed it really is out of
+        # reach. That is what H2-series and P2S firmware does, and no setting
+        # here changes it (#2762 tracks reading that storage). A pass here would
+        # be a lie; a fail would be unresolvable.
+        #
+        # The verdict's own reason, not a fixed one: a print started from the
+        # printer's screen reaches this branch too, and it never involved a
+        # slicer, so the advice attached to REASON_INTERNAL_STORAGE would name a
+        # dialog its operator never opened (#1820).
+        checks.append(
+            DiagnosticCheck(
+                id="external_storage",
+                status="warn",
+                params={"reason": last_verdict.reason or REASON_INTERNAL_STORAGE},
+            )
+        )
+    elif not last_verdict.reachable:
+        # Reached only when the probe above found the file: the printer named
+        # internal storage and served it over FTPS anyway. What this check is
+        # for is whether Printbuddy can read the print file, and it demonstrably
+        # can — so pass, whatever the toggle happens to say (#2856).
+        checks.append(DiagnosticCheck(id="external_storage", status="pass"))
+    elif store_to_sdcard is True:
+        checks.append(DiagnosticCheck(id="external_storage", status="pass"))
     elif store_to_sdcard is False:
         checks.append(DiagnosticCheck(id="external_storage", status="fail"))
     else:
@@ -249,14 +435,30 @@ async def run_connection_diagnostic(
                 serial_number=serial_number,
                 access_code=access_code,
             )
-            checks.append(DiagnosticCheck(id="mqtt_auth", status="pass" if result.get("success") else "fail"))
+            checks.append(
+                DiagnosticCheck(
+                    id="mqtt_auth",
+                    status="pass" if result.get("success") else "fail",
+                    params=_auth_reason_params(result.get("reason")),
+                )
+            )
         except Exception:
             logger.debug("test_connection failed during diagnostic", exc_info=True)
             checks.append(DiagnosticCheck(id="mqtt_auth", status="fail"))
     elif state is not None:
         # Existing printer: trust the live MQTT state rather than opening a
         # second connection (Bambu printers tolerate few concurrent sessions).
-        checks.append(DiagnosticCheck(id="mqtt_auth", status="pass" if state.connected else "fail"))
+        # `connected == False` alone does not say *why* — the live client keeps
+        # the last CONNACK refusal, so a rejected access code can be reported as
+        # such instead of as a generic failure the user has to guess at (#2698).
+        client = printer_manager.get_client(printer.id) if printer else None
+        checks.append(
+            DiagnosticCheck(
+                id="mqtt_auth",
+                status="pass" if state.connected else "fail",
+                params={} if state.connected else _auth_reason_params(getattr(client, "last_connect_error", None)),
+            )
+        )
     else:
         checks.append(DiagnosticCheck(id="mqtt_auth", status="skip"))
 

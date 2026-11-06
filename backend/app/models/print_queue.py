@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.core.database import Base
@@ -32,6 +32,13 @@ class PrintQueueItem(Base):
     library_file_id: Mapped[int | None] = mapped_column(
         ForeignKey("library_files.id", ondelete="CASCADE"), nullable=True
     )
+    cost_center_id: Mapped[int | None] = mapped_column(
+        ForeignKey("cost_centers.id", ondelete="SET NULL"), nullable=True
+    )
+    estimated_cost: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Printbuddy-owned globally unique identity for one physical dispatch. This
+    # must not reuse the printer protocol's 31-bit subtask_id.
+    billing_run_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
     batch_id: Mapped[int | None] = mapped_column(ForeignKey("print_batches.id", ondelete="SET NULL"), nullable=True)
 
@@ -84,6 +91,17 @@ class PrintQueueItem(Base):
     # load; never written to or read from.
     nozzle_mapping: Mapped[str | None] = mapped_column(Text, nullable=True)
     nozzles_info: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Which rack position each filament group prints from, on a nozzle-rack
+    # machine (#1784). JSON object keyed by the 3MF's group id, valued with a
+    # 1-based rack position as the operator counts them.
+    #
+    # Deliberately not the expanded `nozzle_mapping` above, though that is what
+    # goes on the wire: the rack can be re-loaded between queueing and
+    # dispatch, and only the position-and-group form can be re-checked against
+    # what is actually mounted at the moment the job runs. NULL means nothing
+    # was picked, and the dispatcher assigns positions itself.
+    nozzle_rack_choice: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Printer-card direct uploads create transient library rows. When this is
     # true, the scheduler deletes the source row/files after archiving a copy.
@@ -165,12 +183,91 @@ class PrintQueueItem(Base):
     printer: Mapped["Printer"] = relationship()
     archive: Mapped["PrintArchive | None"] = relationship()
     library_file: Mapped["LibraryFile | None"] = relationship()
+    cost_center: Mapped["CostCenter | None"] = relationship()
     project: Mapped["Project | None"] = relationship(back_populates="queue_items")
     batch: Mapped["PrintBatch | None"] = relationship(back_populates="queue_items")
     created_by: Mapped["User | None"] = relationship()
+    variants: Mapped[list["PrintQueueVariant"]] = relationship(
+        back_populates="queue_item",
+        cascade="all, delete-orphan",
+        order_by="PrintQueueVariant.position",
+    )
+
+
+class PrintQueueVariant(Base):
+    """One candidate file for a queue item that may print on several models (#671).
+
+    A user with an H2S and an H2C slices the same job twice and does not care
+    which machine runs it. Each slice becomes a variant; the scheduler walks them
+    in ``position`` order and takes the first whose model has an idle printer.
+
+    **This is a snapshot, not a pointer.** The candidate list is copied from the
+    library's variant group when the item is queued, and every per-file setting
+    the dispatcher needs is copied with it. Two reasons:
+
+    - Editing the library group afterwards must not silently change a job that is
+      already waiting in the queue.
+    - The per-file settings genuinely differ between candidates and are choices
+      the user made for *this* job, not properties of the file. An H2C slice is
+      dual-nozzle and will not have the same slot count, AMS mapping or nozzle
+      mapping as the H2S slice of the same model.
+
+    On a match the winning variant's fields are written onto the queue row before
+    the dispatch commit, so everything downstream — upload, archive creation,
+    print history, reprint — sees an ordinary single-file item and needs no
+    knowledge that variants exist.
+
+    Variants reference library files only. An archive records a print that already
+    happened, of one specific file, so it is never a candidate for "which of these
+    should we run".
+    """
+
+    __tablename__ = "print_queue_variants"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    queue_item_id: Mapped[int] = mapped_column(
+        ForeignKey("print_queue.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # User's priority order. When two printers are idle in the same scheduler
+    # pass, the lowest position wins — so the choice is reproducible instead of
+    # depending on which match the matcher happened to find first.
+    position: Mapped[int] = mapped_column(Integer, default=0)
+
+    # CASCADE: deleting the file drops this candidate but leaves the item and its
+    # other candidates alone. Losing the *last* candidate is handled by the
+    # resolver, which holds the item pending with an explicit waiting_reason
+    # rather than letting it sit there looking dispatchable forever.
+    library_file_id: Mapped[int] = mapped_column(ForeignKey("library_files.id", ondelete="CASCADE"), nullable=False)
+    # Normalized short name ("H2S"), taken from the file's own sliced_for_model
+    # at creation, or picked by the user for a legacy file that declares none.
+    target_model: Mapped[str] = mapped_column(String(50), nullable=False)
+
+    # Per-file dispatch settings, same semantics as the identically named columns
+    # on PrintQueueItem — see there for the formats.
+    plate_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ams_mapping: Mapped[str | None] = mapped_column(Text, nullable=True)
+    nozzle_mapping: Mapped[str | None] = mapped_column(Text, nullable=True)
+    nozzle_rack_choice: Mapped[str | None] = mapped_column(Text, nullable=True)
+    filament_overrides: Mapped[str | None] = mapped_column(Text, nullable=True)
+    required_filament_types: Mapped[str | None] = mapped_column(Text, nullable=True)
+    print_time_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # How many times this candidate has been dispatched and bounced back to
+    # pending by the start-watchdog. The resolver tries least-attempted first, so
+    # a printer that accepts the file and never starts (#1678) hands the job to
+    # the other machine on the next lap instead of burning the item's whole
+    # DISPATCH_MAX_ATTEMPTS budget against the same wedged printer — which is the
+    # entire reason the user queued an alternative.
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    queue_item: Mapped["PrintQueueItem"] = relationship(back_populates="variants")
+    library_file: Mapped["LibraryFile"] = relationship()
 
 
 from backend.app.models.archive import PrintArchive  # noqa: E402
+from backend.app.models.finance import CostCenter  # noqa: E402
 from backend.app.models.library import LibraryFile  # noqa: E402
 from backend.app.models.print_batch import PrintBatch  # noqa: E402
 from backend.app.models.printer import Printer  # noqa: E402

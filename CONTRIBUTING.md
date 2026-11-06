@@ -217,21 +217,18 @@ The frontend uses [react-i18next](https://react.i18next.com/) for all user-facin
 
 ### Locale Files
 
-Translations live in `frontend/src/i18n/locales/`:
+Translations live in `frontend/src/i18n/locales/`. `en.ts` is the reference locale; every other `*.ts` file in that directory is checked against it. The parity check discovers the directory at runtime, so a new locale is picked up automatically — this file never needs updating when one is added.
 
-| File | Language |
-|------|----------|
-| `en.ts` | English (primary) |
-| `de.ts` | German |
-| `fr.ts` | French |
-| `ja.ts` | Japanese |
-| `pt-BR.ts` | Brazilian Portuguese |
-[...]
-check for possibly more files!!!
+To see the current set of locales and check your work:
+
+```bash
+cd frontend
+npm run check:i18n
+```
 
 ### Adding New Strings
 
-1. Add the key to the appropriate section in **all three** locale files
+1. Add the key to the appropriate section in **every** locale file
 2. Use the `useTranslation` hook in your component:
 
 ```tsx
@@ -247,9 +244,9 @@ function MyComponent() {
 
 ### Important Notes
 
-- All three locale files must use the **same key structure** — same nesting, same key paths
-- Always add keys to all three locales to maintain parity
-- Run frontend tests after changes — locale parity is validated
+- Every locale file must use the **same key structure** — same nesting, same key paths
+- Always add keys to **every** locale to maintain parity, with real translations rather than English placeholders — the check flags leaves that are identical to `en`
+- Run `npm run test:run` before pushing — it chains the parity check, which CI runs too. Plain `npm test` is vitest in watch mode and skips it
 - If you find structural inconsistencies between locales, fix them — different key paths cause silent fallback to English
 
 ## Authentication & Permissions
@@ -336,6 +333,13 @@ pytest backend/tests/ -v           # All tests
 pytest backend/tests/unit/         # Unit tests only
 pytest backend/tests/ --cov=backend  # With coverage
 ```
+
+`conftest.py` redirects `DATABASE_URL` to a throwaway SQLite file before any app
+module is imported, and aborts the run if that redirect did not take. Your `.env`
+is ignored for the duration, so the suite cannot reach the database you develop
+against — it exercises code paths that open their own sessions, and some of those
+write. Don't undo that override to "test against real data": point `DATABASE_URL`
+at a copy instead.
 
 **Frontend** — tests use [Vitest](https://vitest.dev/) and are in `frontend/src/__tests__/`:
 

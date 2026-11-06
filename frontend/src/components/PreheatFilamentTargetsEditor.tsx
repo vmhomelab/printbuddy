@@ -5,6 +5,7 @@ import {
   parsePreheatFilamentTargets,
   serializePreheatFilamentTargets,
 } from '../utils/preheatFilamentTargets';
+import { MAX_CHAMBER_TEMP_C } from '../utils/printer';
 
 interface Props {
   // JSON-encoded map; empty string means "use bundled defaults".
@@ -15,7 +16,7 @@ interface Props {
 
 // Per-filament chamber target editor for Settings → Workflow → Preheat card
 // (#1468). Renders one row per filament type with a numeric input clamped to
-// 0-60 °C. Stripping back to the bundled defaults is handled by the parent
+// 0-MAX_CHAMBER_TEMP_C. Stripping back to the bundled defaults is handled by the parent
 // (Reset button next to the section title) — passing an empty string upward
 // is the canonical "use defaults" signal, which keeps the editor stateless
 // across resets.
@@ -24,7 +25,7 @@ export function PreheatFilamentTargetsEditor({ value, onChange, disabled = false
   const map = parsePreheatFilamentTargets(value);
 
   const updateOne = (key: string, next: number) => {
-    const clamped = Math.max(0, Math.min(60, Math.round(next)));
+    const clamped = Math.max(0, Math.min(MAX_CHAMBER_TEMP_C, Math.round(next)));
     const updated = { ...map, [key]: clamped };
     onChange(serializePreheatFilamentTargets(updated));
   };
@@ -45,7 +46,7 @@ export function PreheatFilamentTargetsEditor({ value, onChange, disabled = false
               <input
                 type="number"
                 min={0}
-                max={60}
+                max={MAX_CHAMBER_TEMP_C}
                 step={1}
                 value={current}
                 onChange={(e) => updateOne(key, parseInt(e.target.value, 10) || 0)}

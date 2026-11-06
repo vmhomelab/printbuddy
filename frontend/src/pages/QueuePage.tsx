@@ -19,6 +19,7 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
+import { queueItemDisplayName } from '../utils/queueItemName';
 import {
   Clock,
   Trash2,
@@ -76,6 +77,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { QueueStatsBar } from '../components/QueueStatsBar';
 import { CompactHistoryRow } from '../components/CompactHistoryRow';
 import { QueueTimelineView } from '../components/QueueTimelineView';
+import { BatchOrdersView } from '../components/BatchOrdersView';
 
 const HISTORY_PAGE_SIZE = 50;
 const HISTORY_STATUSES = ['completed', 'failed', 'skipped', 'cancelled'];
@@ -359,6 +361,8 @@ function SortableQueueItem({
   hasPermission,
   canModify,
   printerState,
+  showEta = false,
+  etaNow,
   t,
 }: {
   item: PrintQueueItem;
@@ -380,6 +384,11 @@ function SortableQueueItem({
   hasPermission: (permission: Permission) => boolean;
   canModify: (resource: 'queue' | 'archives' | 'library', action: 'update' | 'delete' | 'reprint', createdById: number | null | undefined) => boolean;
   printerState?: string | null;
+  // Whether this item qualifies for an "if started now" ETA (#2740), and the
+  // instant to measure it from. Both are decided by the page so every row on
+  // screen quotes the same clock.
+  showEta?: boolean;
+  etaNow?: number;
   t: (key: string, options?: Record<string, unknown>) => string;
 }) {
   // Fetch printer status every 30 seconds while printing to monitor progress
@@ -431,6 +440,16 @@ function SortableQueueItem({
   const isPending = item.status === 'pending';
   const isHistory = ['completed', 'failed', 'skipped', 'cancelled'].includes(item.status);
 
+  // This is an "if started now" estimate, not a cumulative queue forecast, so
+  // it is only shown for items the page determined could actually start now
+  // (see etaEligibleIds). etaNow is the caller's ticking clock — deriving the
+  // ETA from it rather than from Date.now() keeps this render deterministic and
+  // stops the value freezing at first paint.
+  const queueItemEta =
+    isPending && showEta && item.print_time_seconds != null && item.print_time_seconds > 0
+      ? formatETA(item.print_time_seconds / 60, timeFormat, t, etaNow)
+      : null;
+
   const isMobileSelectable = isPending && onToggleSelect;
 
   return (
@@ -450,7 +469,7 @@ function SortableQueueItem({
         ${isPrinting ? 'border-blue-500/30 bg-gradient-to-r from-blue-500/5 to-transparent' : ''}
         ${isSelected && isMobileSelectable ? 'sm:border-bambu-dark-tertiary border-bambu-green/40' : ''}
         ${!isSelected && !isPrinting ? 'border-bambu-dark-tertiary hover:border-bambu-dark-tertiary/80' : ''}
-        ${isMobileSelectable ? 'sm:cursor-default' : ''}
+        ${isMobileSelectable ? 'cursor-pointer sm:cursor-default' : ''}
       `}
       onClick={isMobileSelectable ? () => {
         if (window.innerWidth < 640) onToggleSelect();
@@ -562,7 +581,7 @@ function SortableQueueItem({
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1">
             <p className="text-sm sm:text-base text-white font-medium truncate">
-              {item.archive_name || item.library_file_name || `File #${item.archive_id || item.library_file_id}`}
+              {queueItemDisplayName(item, (n) => t('common.plusNMore', { count: n }))}
               {(platesData?.is_multi_plate ?? false) && item.plate_id !== undefined && item.plate_id !== null && ` • ${plates.find(plate => plate.index === item.plate_id)?.name || t('queue.plateNumber', { index: item.plate_id })}`}
             </p>
             {item.archive_id ? (
@@ -593,7 +612,12 @@ function SortableQueueItem({
             <span className={`flex items-center gap-1 sm:gap-1.5 ${item.printer_id === null && !item.target_model ? 'text-orange-700 dark:text-orange-400' : ''} ${item.target_model && !item.printer_id ? 'text-blue-700 dark:text-blue-400' : ''}`}>
               <Printer className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
               <span className="truncate max-w-[120px] sm:max-w-none">
-              {item.target_model && !item.printer_id
+              {/* A cross-model item (#671) is waiting on several models at once.
+                  Showing only target_model would name whichever candidate is
+                  first and read as a lie the moment the other one runs. */}
+              {(item.variants?.length ?? 0) > 1 && !item.printer_id
+                ? `${t('queue.filter.any')} ${item.variants!.map(v => v.target_model).join(' / ')}${item.target_location ? ` @ ${item.target_location}` : ''}`
+                : item.target_model && !item.printer_id
                 ? `${t('queue.filter.any')} ${item.target_model}${item.target_location ? ` @ ${item.target_location}` : ''}${item.required_filament_types?.length ? ` (${item.required_filament_types.join(', ')})` : ''}`
                 : item.printer_id === null
                   ? t('queue.filter.unassigned')
@@ -604,6 +628,15 @@ function SortableQueueItem({
               <span className="flex items-center gap-1 sm:gap-1.5">
                 <Timer className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
                 {formatDuration(item.print_time_seconds)}
+              </span>
+            )}
+            {queueItemEta && (
+              <span
+                data-testid="queue-item-eta"
+                className="text-bambu-green font-medium"
+                title={t('queue.time.etaIfStartedNow')}
+              >
+                ETA {queueItemEta}
               </span>
             )}
             {item.filament_used_grams && (
@@ -734,6 +767,19 @@ function SortableQueueItem({
             </p>
           )}
 
+          {/* Archive carries the slicer's own live-resolved AMS-slot pick
+              (extra_data.slicer_ams_mapping) — reprints of this archive reuse
+              the exact physical spool instead of re-deriving one. */}
+          {item.archive_has_slicer_ams_mapping && (
+            <p
+              className="text-[10px] sm:text-xs text-green-700 dark:text-green-400 mt-1.5 sm:mt-2 flex items-start gap-1"
+              title={t('queue.slicerAmsMapping.rowTooltip')}
+            >
+              <Check className="w-3 h-3 mt-0.5 flex-shrink-0" />
+              <span>{t('queue.slicerAmsMapping.rowBadge')}</span>
+            </p>
+          )}
+
           {/* Error message */}
           {item.error_message && (
             <p className="text-[10px] sm:text-xs text-red-700 dark:text-red-400 mt-1.5 sm:mt-2 flex items-center gap-1">
@@ -847,6 +893,10 @@ interface QueueRowRenderProps {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   canModify: (resource: any, action: any, createdById?: number | null) => boolean;
   t: (key: string, options?: Record<string, unknown>) => string;
+  // Items that qualify for an "if started now" ETA, and the shared clock it is
+  // measured from (#2740).
+  etaEligibleIds: Set<number>;
+  etaNow: number;
   aggregateForRows: (rows: QueueRow[]) => { count: number; time: number; weight: number };
   // Mobile tap-to-reorder (#2667). onMoveUp/onMoveDown move this whole row
   // (single item or batch) one step among its siblings; onMoveBlock is the
@@ -872,6 +922,8 @@ function QueueRowRender(props: QueueRowRenderProps) {
     hasPermission,
     canModify,
     t,
+    etaEligibleIds,
+    etaNow,
     onMoveUp,
     onMoveDown,
   } = props;
@@ -893,6 +945,8 @@ function QueueRowRender(props: QueueRowRenderProps) {
         onToggleSelect={() => handleToggleSelect(row.item.id)}
         hasPermission={hasPermission}
         canModify={canModify}
+        showEta={etaEligibleIds.has(row.item.id)}
+        etaNow={etaNow}
         t={t}
       />
     );
@@ -918,6 +972,8 @@ function SortableBatchRow({
   hasPermission,
   canModify,
   t,
+  etaEligibleIds,
+  etaNow,
   aggregateForRows,
   onMoveUp,
   onMoveDown,
@@ -1109,6 +1165,8 @@ function SortableBatchRow({
               onToggleSelect={() => handleToggleSelect(child.id)}
               hasPermission={hasPermission}
               canModify={canModify}
+              showEta={etaEligibleIds.has(child.id)}
+              etaNow={etaNow}
               t={t}
             />
           ))}
@@ -1396,16 +1454,16 @@ export function QueuePage() {
   // History tab renders unconditionally so this no longer drives the UI.
   // Tabbed page structure: Active queue stays as the main view; History
   // and Timeline split off. Persists per-user via localStorage.
-  const [activeTab, setActiveTab] = useState<'queue' | 'history' | 'timeline' | 'pipelines'>(() => {
+  const [activeTab, setActiveTab] = useState<'queue' | 'batches' | 'history' | 'timeline' | 'pipelines'>(() => {
     // URL deep-link wins so the legacy /pipelines/runs redirect lands on the
     // right tab. localStorage holds the per-user last-selected fallback.
     const search = new URLSearchParams(window.location.search);
     const url = search.get('tab');
-    if (url === 'pipelines' || url === 'history' || url === 'timeline' || url === 'queue') {
+    if (url === 'pipelines' || url === 'history' || url === 'timeline' || url === 'queue' || url === 'batches') {
       return url;
     }
     const saved = localStorage.getItem('queue.activeTab');
-    if (saved === 'history' || saved === 'timeline' || saved === 'pipelines') return saved;
+    if (saved === 'history' || saved === 'timeline' || saved === 'pipelines' || saved === 'batches') return saved;
     return 'queue';
   });
   // Active-tab layout toggle. "position" = today's flat list; "printer"
@@ -1480,6 +1538,16 @@ export function QueuePage() {
   const activeStatusFilter = filterStatus && !isHistoryStatusFilter ? filterStatus : undefined;
   const historyStatusFilter = isHistoryStatusFilter ? filterStatus : undefined;
   const apiFilterPrinter = filterPrinter === null ? undefined : filterPrinter;
+  // Badge count for the Batches tab (#342). Deliberately its own query rather
+  // than derived from the queue: an order whose runs have all finished has no
+  // queue rows left, and those are precisely the orders the tab exists to
+  // surface. Shares the ['batches'] key with the tab itself, so dispatching or
+  // cancelling refreshes both.
+  const { data: activeBatches } = useQuery({
+    queryKey: ['batches', 'active'],
+    queryFn: () => api.getBatches('active'),
+  });
+  const activeBatchCount = activeBatches?.length ?? 0;
 
   const { data: queue, isLoading } = useQuery({
     queryKey: ['queue', filterPrinter, activeStatusFilter, 'active'],
@@ -1537,11 +1605,15 @@ export function QueuePage() {
 
   const removeMutation = useMutation({
     mutationFn: (id: number) => api.removeFromQueue(id),
-    onSuccess: () => {
+    onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ['queue'] });
       queryClient.invalidateQueries({ queryKey: ['queueHistory'] });
+      queryClient.invalidateQueries({ queryKey: ['batches'] });
       setHistoryOffset(0);
-      showToast(t('queue.toast.removed'));
+      // The backend keeps an order's last run for a plate, cancelled rather
+      // than deleted, so the order can still re-queue it (#2960). Say so:
+      // the row stays on screen and silence would read as a failed delete.
+      showToast(result.deleted === false ? t('queue.toast.keptForOrder') : t('queue.toast.removed'));
     },
     onError: () => showToast(t('queue.toast.removeFailed'), 'error'),
   });
@@ -1602,30 +1674,44 @@ export function QueuePage() {
 
   const clearHistoryMutation = useMutation({
     mutationFn: async () => {
-      let deleted = 0;
+      let cleared = 0;
+      let kept = 0;
+      const seen = new Set<number>();
       while (true) {
+        const keptBefore = kept;
         const page = await api.getQueueHistory({
           printerId: apiFilterPrinter,
           status: historyStatusFilter,
           limit: 200,
-          offset: 0,
+          offset: kept,
         });
-        if (page.items.length === 0) break;
-        for (const item of page.items) {
-          await api.removeFromQueue(item.id);
-          deleted += 1;
+        const fresh = page.items.filter((item) => !seen.has(item.id));
+        if (fresh.length === 0) break;
+        for (const item of fresh) {
+          seen.add(item.id);
+          const result = await api.removeFromQueue(item.id);
+          // A row a batch order still needs is kept rather than deleted, so the
+          // count has to come from what the backend actually did (#2960). Kept
+          // rows stay in history, so the next page starts after them.
+          if (result.deleted === false) kept += 1;
+          else cleared += 1;
         }
-        if (page.items.length >= page.total) break;
+        if (keptBefore + page.items.length >= page.total) break;
       }
-      return deleted;
+      return { cleared, kept };
     },
-    onSuccess: (count) => {
+    onSuccess: ({ cleared, kept }) => {
       queryClient.invalidateQueries({ queryKey: ['queue'] });
       queryClient.invalidateQueries({ queryKey: ['queueHistory'] });
+      queryClient.invalidateQueries({ queryKey: ['batches'] });
       setHistoryOffset(0);
       setLoadedHistoryItems([]);
       setHistoryTotal(0);
-      showToast(t('queue.toast.historyCleared', { count }));
+      showToast(
+        kept > 0
+          ? `${t('queue.toast.historyCleared', { count: cleared })} ${t('queue.toast.historyKeptForOrders', { kept })}`
+          : t('queue.toast.historyCleared', { count: cleared })
+      );
     },
     onError: () => showToast(t('queue.toast.clearHistoryFailed'), 'error'),
   });
@@ -1797,6 +1883,106 @@ export function QueuePage() {
     }
     return items;
   }, [queue, filterLocation, matchesLocationFilter]);
+
+  // Queue items eligible for an "if started now" ETA (#2740).
+  //
+  // The ETA answers "when would this finish if it began right now", so it may
+  // only appear on items that really could begin right now. Deriving that from
+  // waiting_reason alone is not enough: the scheduler only writes that field on
+  // the model-based assignment path (print_scheduler.py), so an item pinned to a
+  // specific printer sits behind a running job with waiting_reason still NULL.
+  //
+  // Computed from the unfiltered queue on purpose — hiding a printer behind the
+  // location filter must not make its printer look free.
+  const etaEligibleIds = useMemo(() => {
+    const eligible = new Set<number>();
+    if (!queue) return eligible;
+
+    const busyPrinters = new Set<number>();
+    queue.forEach(item => {
+      if (item.status === 'printing' && item.printer_id) busyPrinters.add(item.printer_id);
+    });
+
+    const isFutureScheduled = (item: PrintQueueItem): boolean => {
+      if (!item.scheduled_time) return false;
+      return (parseUTCDate(item.scheduled_time)?.getTime() ?? 0) > Date.now();
+    };
+
+    // Mirrors the scheduler's own ordering so "next up" here means the item the
+    // scheduler would actually dispatch next, not whatever the user sorted by.
+    const schedulerOrder = (a: PrintQueueItem, b: PrintQueueItem): number => {
+      if (settings?.queue_shortest_first) {
+        const aJumped = a.been_jumped ? 1 : 0;
+        const bJumped = b.been_jumped ? 1 : 0;
+        if (aJumped !== bJumped) return bJumped - aJumped;
+        const aTime = a.print_time_seconds ?? Infinity;
+        const bTime = b.print_time_seconds ?? Infinity;
+        if (aTime !== bTime) return aTime - bTime;
+      }
+      return a.position - b.position;
+    };
+
+    // Claimants for each printer, in the order the scheduler would take them.
+    // Staged and future-scheduled items are excluded: the scheduler skips both
+    // without marking the printer busy, so neither holds up the item behind it.
+    const contenders = new Map<number, PrintQueueItem[]>();
+    queue
+      .filter(
+        item =>
+          item.status === 'pending' &&
+          item.printer_id != null &&
+          !item.manual_start &&
+          !isFutureScheduled(item)
+      )
+      .sort(schedulerOrder)
+      .forEach(item => {
+        const list = contenders.get(item.printer_id!) ?? [];
+        list.push(item);
+        contenders.set(item.printer_id!, list);
+      });
+
+    queue.forEach(item => {
+      if (item.status !== 'pending') return;
+      // Blocked, scheduled for later, or no usable duration to add.
+      if (item.waiting_reason) return;
+      if (isFutureScheduled(item)) return;
+      if (item.print_time_seconds == null || item.print_time_seconds <= 0) return;
+      // Conditional on an earlier print's outcome, which the UI cannot see: the
+      // scheduler may skip it outright rather than ever running it.
+      if (item.require_previous_success) return;
+
+      // Model-based items have no printer yet; an empty waiting_reason is the
+      // scheduler saying it found one, so trust that.
+      if (item.printer_id == null) {
+        eligible.add(item.id);
+        return;
+      }
+
+      if (busyPrinters.has(item.printer_id)) return;
+      // Staged items wait on the user, not on the queue, so they are startable
+      // whenever their printer is free regardless of what is queued ahead.
+      if (item.manual_start) {
+        eligible.add(item.id);
+        return;
+      }
+      if (contenders.get(item.printer_id)?.[0]?.id === item.id) eligible.add(item.id);
+    });
+
+    return eligible;
+  }, [queue, settings?.queue_shortest_first]);
+
+  // The ETA is "now + duration", so it goes stale on its own. Nothing else
+  // re-renders these rows while the queue payload is unchanged (react-query's
+  // structural sharing keeps the reference stable), so drive it from a clock of
+  // our own. Only runs while an ETA is actually on screen.
+  const [etaNow, setEtaNow] = useState(() => Date.now());
+  const hasEtas = etaEligibleIds.size > 0;
+  useEffect(() => {
+    if (!hasEtas) return;
+    setEtaNow(Date.now());
+    const id = setInterval(() => setEtaNow(Date.now()), 30000);
+    return () => clearInterval(id);
+  }, [hasEtas]);
 
   // Get unique printer IDs from active items to fetch their statuses
   const activePrinterIds = useMemo(() => {
@@ -2091,6 +2277,20 @@ export function QueuePage() {
           isUnassigned: false,
         };
       }
+      // A cross-model item (#671) is waiting on several models. Its own
+      // target_model is just the first candidate mirrored onto the row, so
+      // bucketing on it would file the job under one printer it might never
+      // run on — and the row underneath already says "Any H2D / X1C".
+      if ((item.variants?.length ?? 0) > 1) {
+        const models = item.variants!.map((v) => v.target_model).join(' / ');
+        return {
+          key: `models:${models}`,
+          label: `${t('queue.filter.any')} ${models}`,
+          printerId: null,
+          targetModel: null,
+          isUnassigned: false,
+        };
+      }
       if (item.target_model) {
         return {
           key: `model:${item.target_model}`,
@@ -2194,6 +2394,7 @@ export function QueuePage() {
       <div className="flex gap-1 border-b border-bambu-dark-tertiary mb-6 overflow-x-auto">
         {([
           { id: 'queue' as const, label: t('queue.tabs.queue'), icon: Clock, count: pendingItems.length + activeItems.length },
+          { id: 'batches' as const, label: t('queue.tabs.batches'), icon: Package, count: activeBatchCount },
           { id: 'history' as const, label: t('queue.tabs.history'), icon: ListOrdered, count: historyTotal || historyItems.length },
           { id: 'timeline' as const, label: t('queue.tabs.timeline'), icon: GanttChart, count: null as number | null },
           // Slicer Pipelines dashboard (#1425 PR C). Lives here instead of
@@ -2224,7 +2425,7 @@ export function QueuePage() {
       </div>
 
       {/* Summary Stats — about the print queue, not pipelines. */}
-      {activeTab !== 'pipelines' && <QueueStatsBar
+      {activeTab !== 'pipelines' && activeTab !== 'batches' && <QueueStatsBar
         activeCount={activeItems.length}
         pendingCount={pendingItems.length}
         totalTime={totalQueueTime}
@@ -2273,7 +2474,7 @@ export function QueuePage() {
       {/* Filters — about the print queue items (printer / status / location).
           The Pipelines tab has its own pipeline + status filters inside the
           dashboard, so this row is hidden when that tab is active. */}
-      {activeTab !== 'pipelines' && (
+      {activeTab !== 'pipelines' && activeTab !== 'batches' && (
       <div className="flex flex-wrap items-center gap-2 sm:gap-4 mb-6">
         <select
           className="px-2 sm:px-3 py-2 text-sm sm:text-base bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none min-w-0 flex-1 sm:flex-none"
@@ -2386,6 +2587,8 @@ export function QueuePage() {
           dashboard renders even when the regular queue is empty. */}
       {activeTab === 'pipelines' ? (
         <PipelineRunsView />
+      ) : activeTab === 'batches' ? (
+        <BatchOrdersView hasPermission={hasPermission} t={t} />
       ) : isLoading ? (
         <div className="text-center py-12 text-bambu-gray">{t('common.loading')}</div>
       ) : (queue?.length || 0) === 0 && historyItems.length === 0 ? (
@@ -2587,6 +2790,8 @@ export function QueuePage() {
                           hasPermission={hasPermission}
                           canModify={canModify}
                           t={t}
+                          etaEligibleIds={etaEligibleIds}
+                          etaNow={etaNow}
                           aggregateForRows={aggregateForRows}
                           {...rowMovers(groupedRows, idx)}
                           onMoveBlock={canReorderManually ? moveBlockRelativeTo : undefined}
@@ -2625,6 +2830,8 @@ export function QueuePage() {
                                   hasPermission={hasPermission}
                                   canModify={canModify}
                                   t={t}
+                                  etaEligibleIds={etaEligibleIds}
+                                  etaNow={etaNow}
                                   aggregateForRows={aggregateForRows}
                                   {...rowMovers(bucket.rows, idx)}
                                   onMoveBlock={canReorderManually ? moveBlockRelativeTo : undefined}
@@ -2685,7 +2892,7 @@ export function QueuePage() {
           mode="edit-queue-item"
           archiveId={editItem.archive_id ?? undefined}
           libraryFileId={editItem.library_file_id ?? undefined}
-          archiveName={editItem.archive_name || editItem.library_file_name || `File #${editItem.archive_id || editItem.library_file_id}`}
+          archiveName={queueItemDisplayName(editItem, (n) => t('common.plusNMore', { count: n }))}
           queueItem={editItem}
           onClose={() => setEditItem(null)}
         />
@@ -2697,7 +2904,7 @@ export function QueuePage() {
           mode="create"
           archiveId={requeueItem.archive_id ?? undefined}
           libraryFileId={requeueItem.library_file_id ?? undefined}
-          archiveName={requeueItem.archive_name || requeueItem.library_file_name || `File #${requeueItem.archive_id || requeueItem.library_file_id}`}
+          archiveName={queueItemDisplayName(requeueItem, (n) => t('common.plusNMore', { count: n }))}
           onClose={() => setRequeueItem(null)}
         />
       )}

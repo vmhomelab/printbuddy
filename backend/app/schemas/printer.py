@@ -8,6 +8,7 @@ from backend.app.services.elegoo_camera import (
     build_elegoo_sdcp_camera_url,
     get_effective_camera_source,
 )
+from backend.app.utils.printer_models import supports_nozzle_flow_type
 
 PrinterProvider = Literal[
     "bambu", "klipper", "mainsail", "fluidd", "prusalink", "prusaconnect", "elegoo_sdcp", "octoprint"
@@ -260,6 +261,11 @@ class PrinterResponse(PrinterBase):
     is_active: bool
     custom_image_filename: str | None = None
     nozzle_count: int = 1  # 1 or 2, auto-detected from MQTT
+    # Whether the model is sold with both Standard and High Flow nozzles, so a
+    # K-profile's flow type is a real choice rather than a meaningless field.
+    # Derived from the model, not from nozzle_count — see
+    # printer_models.supports_nozzle_flow_type.
+    supports_nozzle_flow_type: bool = True
     print_hours_offset: float = 0.0
     external_camera_url: str | None = None
     external_camera_type: str | None = None
@@ -298,6 +304,7 @@ class PrinterResponse(PrinterBase):
             "camera_rotation": printer.camera_rotation,
             "is_active": printer.is_active,
             "nozzle_count": printer.nozzle_count,
+            "supports_nozzle_flow_type": supports_nozzle_flow_type(printer.model),
             "print_hours_offset": printer.print_hours_offset,
             "plate_detection_enabled": printer.plate_detection_enabled,
             "created_at": printer.created_at,
@@ -349,6 +356,15 @@ class HMSErrorResponse(BaseModel):
     # truncated short_code that historically caused silent command rejection
     # (#1830, H2D wrong-plate verification).
     full_code: str = ""
+    # The bundled catalogue's sentence for this fault, so a client does not have
+    # to carry its own copy of the same table to tell a user why a print halted
+    # (#2926). English only and not localized — the catalogue ships one language.
+    # None when the catalogue does not cover the code, which is common for
+    # `hms[]`-array faults: those resolve through a lossy collapse of their
+    # 16-char identifier and many land on no key at all (#2728). A client should
+    # treat null as "no text available", never as "no fault" — `full_code` is
+    # what identifies the fault, and it is always present.
+    description: str | None = None
 
 
 class AMSTray(BaseModel):
@@ -447,6 +463,25 @@ class FilaSwitchResponse(BaseModel):
     out_extruders: list[int] = []
     stat: int = 0
     info: int = 0
+    # Whether the switch is set up: every AMS bound to one of its two inlets.
+    # A load cannot be routed until it is, so the UI blocks on this rather than
+    # sending a command the firmware will drop.
+    ready: bool = False
+
+
+class ExtruderSlotResponse(BaseModel):
+    """Which AMS slot one hotend is currently fed from.
+
+    From ``device.extruder.info[i].snow``. Needed because ``tray_now`` is a
+    single printer-wide value: on a dual-nozzle machine with both hotends
+    loaded it names only one of them, so it cannot say which hotend holds a
+    given slot.
+    """
+
+    # None when the hotend is not fed from any slot.
+    ams_id: int | None = None
+    slot_id: int | None = None
+    has_filament: bool = False
 
 
 class PrintOptionsResponse(BaseModel):
@@ -519,6 +554,16 @@ class PrinterStatus(BaseModel):
     # Filament Track Switch (FTS) accessory — when installed, AMS reports
     # bits 8-11 = 0xE (uninitialized) and routing is dynamic via the FTS. See #1162.
     fila_switch: FilaSwitchResponse | None = None
+    # Per-AMS FTS inlet binding: {ams_id: "A" | "B"}, from AMS info bits 24-27.
+    # Which of the switch's two inlets each AMS is plumbed into, as set on the
+    # printer's "Manual AMS Setup" screen. Empty unless an FTS is installed —
+    # an FTS-bound AMS reaches BOTH nozzles, so it has no entry in
+    # ams_extruder_map and must not be labelled left or right.
+    ams_switch_inlet: dict[str, str] = {}
+    # Which AMS slot each hotend is fed from, keyed by extruder id as a string
+    # ("0" = right/main, "1" = left/deputy). Empty on printers that do not
+    # report ``device.extruder.info``.
+    extruder_slots: dict[str, ExtruderSlotResponse] = {}
     # Currently loaded tray (global ID): 254 = external spool, 255 = no filament
     tray_now: int = 255
     # Runout / filament-replacement guidance (#2587). Populated only while the
@@ -549,6 +594,11 @@ class PrinterStatus(BaseModel):
     big_fan1_speed: int | None = None  # Auxiliary fan
     big_fan2_speed: int | None = None  # Chamber/exhaust fan
     heatbreak_fan_speed: int | None = None  # Hotend heatbreak fan
+    # Left auxiliary part cooling fan (optional P2S/X2D accessory, airduct part id 10).
+    # None = not installed / not reported by this model.
+    left_aux_fan_speed: int | None = None
+    # Chamber exhaust fan present (P2S/X2D External Exhaust Fan kit; airduct part id 3).
+    exhaust_fan_present: bool = False
     # Firmware version (from info.module[name="ota"].sw_ver)
     firmware_version: str | None = None
     # Provider-specific connection/diagnostic details safe for display in the UI.
@@ -617,3 +667,27 @@ class DiagnosticRequest(BaseModel):
     ip_address: str
     serial_number: str | None = None
     access_code: str | None = None
+
+
+class PrinterFilesDownloadRequest(BaseModel):
+    """Printer paths selected for a bulk download."""
+
+    paths: list[str] = Field(..., max_length=1000)
+    sizes: dict[str, int] = Field(default_factory=dict, max_length=1000)
+
+    @model_validator(mode="after")
+    def _validate_sizes(self):
+        """Validate optional FTP-reported sizes used for early rejection."""
+
+        if self.sizes and set(self.sizes) != set(self.paths):
+            raise ValueError("A size is required for every selected printer path")
+        if any(size < 0 for size in self.sizes.values()):
+            raise ValueError("Printer file sizes must not be negative")
+        return self
+
+
+class PrinterFilesJobRequest(PrinterFilesDownloadRequest):
+    """Browser preparation request, including native download presentation."""
+
+    filename: str = Field(default="printer-files.zip", min_length=1, max_length=255)
+    as_zip: bool = True

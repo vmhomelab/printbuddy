@@ -17,6 +17,7 @@ interface WebSocketMessage {
   printer_id?: number;
   data?: Record<string, unknown>;
   printer_name?: string;
+  filename?: string;
   missing_slots?: Array<{ slot?: string }>;
   // Spool-assignment read-back verification (#2582).
   slot?: string;
@@ -69,16 +70,16 @@ export function useWebSocket() {
     const processNext = () => {
       const message = messageQueueRef.current.shift();
       if (message) {
-        // Use requestAnimationFrame to yield to the browser
-        requestAnimationFrame(() => {
-          handleMessageRef.current(message);
-          // Small delay between messages to prevent overwhelming the browser
-          if (messageQueueRef.current.length > 0) {
-            setTimeout(processNext, 16); // ~60fps
-          } else {
-            processingRef.current = false;
-          }
-        });
+        handleMessageRef.current(message);
+        // Small delay between messages to prevent overwhelming the browser.
+        // This setTimeout is the yield; a requestAnimationFrame around the
+        // handler used to sit here too, which stalled the whole queue in a
+        // hidden tab (see the note on the rAF removal below).
+        if (messageQueueRef.current.length > 0) {
+          setTimeout(processNext, 16); // ~60fps
+        } else {
+          processingRef.current = false;
+        }
       } else {
         processingRef.current = false;
       }
@@ -194,37 +195,69 @@ export function useWebSocket() {
     wsRef.current = ws;
   }, [processMessageQueue]);
 
-  // Throttled printer status update - coalesces rapid updates per printer
+  // Write every pending printer status into the query cache.
+  //
+  // Extracted so the hidden-tab path below can run it inline: both paths share
+  // this one body, so the merge semantics cannot drift apart. Cancels any
+  // scheduled coalescing timer, since everything it was going to write has
+  // just been written and re-running it would re-apply stale data over newer.
+  const flushPrinterStatus = useCallback(() => {
+    if (printerStatusTimeoutRef.current) {
+      clearTimeout(printerStatusTimeoutRef.current);
+      printerStatusTimeoutRef.current = null;
+    }
+
+    const updates = new Map(pendingPrinterStatus.current);
+    pendingPrinterStatus.current.clear();
+
+    updates.forEach((statusData, id) => {
+      queryClient.setQueryData(['printerStatus', id], (old: Record<string, unknown> | undefined) => {
+        const merged = { ...old, ...statusData };
+        if (merged.wifi_signal == null && old?.wifi_signal != null) {
+          merged.wifi_signal = old.wifi_signal;
+        }
+        return merged;
+      });
+    });
+  }, [queryClient]);
+
+  // Printer status update — coalesced while the tab is visible, written
+  // straight through while it is not.
+  //
+  // #2754 (reporter @mic4rd), in two stages. First, these writes ran inside a
+  // requestAnimationFrame: a hidden tab gets no rendering opportunities, so
+  // the browser *holds* queued frame callbacks rather than throttling them,
+  // and nothing reached the cache until the tab was shown again. Removing the
+  // frame callback fixed that total stall but not the report, because a second
+  // timer-shaped dependency was left behind — this 100ms coalescing window.
+  //
+  // Browsers clamp timers in a hidden page to at best once a second, and drop
+  // pages hidden for more than five minutes to roughly one wake-up a minute.
+  // The reporter saw a tab title stuck at 2% beside a page at 40%.
+  //
+  // The coalescing exists to stop rapid messages triggering a render cascade.
+  // A hidden tab is not painting, so there is no cascade to prevent there —
+  // the timer is pure cost, and it is exactly the thing being throttled. So
+  // when hidden, skip it and write immediately.
+  //
+  // Note "hidden", not "unfocused": on Windows a fully-occluded window reports
+  // visibilityState 'hidden' too, which is why the reporter saw this from
+  // merely clicking away rather than only from switching tabs.
   const throttledPrinterStatusUpdate = useCallback((printerId: number, data: Record<string, unknown>) => {
     // Merge with any pending data for this printer
     const existing = pendingPrinterStatus.current.get(printerId) || {};
     pendingPrinterStatus.current.set(printerId, { ...existing, ...data });
 
+    if (document.hidden) {
+      flushPrinterStatus();
+      return;
+    }
+
     // Schedule update if not already scheduled
     if (!printerStatusTimeoutRef.current) {
-      printerStatusTimeoutRef.current = window.setTimeout(() => {
-        const updates = new Map(pendingPrinterStatus.current);
-        pendingPrinterStatus.current.clear();
-        printerStatusTimeoutRef.current = null;
-
-        // Apply all pending updates
-        requestAnimationFrame(() => {
-          updates.forEach((statusData, id) => {
-            queryClient.setQueryData(
-              ['printerStatus', id],
-              (old: Record<string, unknown> | undefined) => {
-                const merged = { ...old, ...statusData };
-                if (merged.wifi_signal == null && old?.wifi_signal != null) {
-                  merged.wifi_signal = old.wifi_signal;
-                }
-                return merged;
-              }
-            );
-          });
-        });
-      }, 100); // Update at most every 100ms
+      printerStatusTimeoutRef.current = window.setTimeout(flushPrinterStatus, 100);
     }
-  }, [queryClient]);
+  }, [flushPrinterStatus]);
 
   // Debounced invalidation helper - coalesces multiple rapid invalidations
   const debouncedInvalidate = useCallback((queryKey: string) => {
@@ -241,17 +274,32 @@ export function useWebSocket() {
       pendingInvalidations.current.clear();
       invalidationTimeoutRef.current = null;
 
-      // Invalidate queries one at a time with delays to prevent freeze
+      // Invalidate queries one at a time with delays to prevent freeze.
+      // The 500ms stagger is the anti-cascade measure; a frame callback around
+      // each invalidation used to sit inside it and stalled these refreshes in
+      // a hidden tab for the same reason as the status writes above (#2754).
       let delay = 0;
       keys.forEach((key) => {
         setTimeout(() => {
-          requestAnimationFrame(() => {
-            queryClient.invalidateQueries({ queryKey: [key] });
-          });
+          queryClient.invalidateQueries({ queryKey: [key] });
         }, delay);
         delay += 500; // 500ms between each invalidation
       });
     }, 3000);
+  }, [queryClient]);
+
+  // Slot changes skip the cascade debounce above. That debounce exists for
+  // print completion, where one event fans out across half the app; a spool
+  // swap touches one slot and the user is standing at the printer looking at
+  // the card. Waiting 3s of quiet and then staggering the keys 500ms apart put
+  // several seconds of visibly wrong data on screen for no benefit, and the
+  // timer restarts on every further event, so a busy moment could defer it
+  // indefinitely. React Query coalesces repeat invalidations of one key, so a
+  // Spoolman sync reporting a dozen slots at once still costs three refetches.
+  const invalidateSlotQueries = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: ['spool-assignments'] });
+    queryClient.invalidateQueries({ queryKey: ['spoolman-slot-assignments'] });
+    queryClient.invalidateQueries({ queryKey: ['slotPresets'] });
   }, [queryClient]);
 
   const handleMessage = useCallback((message: WebSocketMessage) => {
@@ -308,6 +356,20 @@ export function useWebSocket() {
         debouncedInvalidate('archiveStats');
         break;
 
+      case 'kill_switch_triggered': {
+        const printer = message.printer_name || `Printer ${message.printer_id ?? '?'}`;
+        const filename = message.filename || t('common.unknown');
+        showToast(t('printers.toast.killSwitchTriggered', { printer, filename }), 'error');
+        break;
+      }
+
+      case 'billing_charge_failed': {
+        const printer = message.printer_name || `Printer ${message.printer_id ?? '?'}`;
+        const filename = message.filename || t('common.unknown');
+        showToast(t('printers.toast.billingChargeFailed', { printer, filename }), 'error');
+        break;
+      }
+
       case 'archive_created':
         debouncedInvalidate('archives');
         debouncedInvalidate('archiveStats');
@@ -341,9 +403,10 @@ export function useWebSocket() {
         break;
 
       case 'spool_assignment_changed':
-        // Spool assigned/unassigned - refresh assignment data across all tabs
-        debouncedInvalidate('spool-assignments');
-        debouncedInvalidate('slotPresets');
+        // Spool assigned/unassigned - refresh assignment data across all tabs.
+        // Both inventory modes: the Spoolman AMS sync raises this event too, and
+        // its slot rows live under their own query keys.
+        invalidateSlotQueries();
         break;
 
       case 'spool_assignment_verified': {
@@ -372,9 +435,15 @@ export function useWebSocket() {
       }
 
       case 'spool_auto_assigned':
-        // RFID tag matched - refresh inventory and assignment data
+        // RFID tag matched - refresh inventory and assignment data.
+        // slotPresets is not optional here: auto-assigning rewrites the slot's
+        // slot_preset_mappings row, and the AMS slot card reads that row ahead
+        // of the live tray_info_idx. Leave it cached and swapping a spool keeps
+        // the *previous* spool's preset name on the card -- the rest of the
+        // card updates off the status push, so it reads as one wrong line
+        // rather than a stale card. Only the manual assign path invalidated it.
         debouncedInvalidate('inventory-spools');
-        debouncedInvalidate('spool-assignments');
+        invalidateSlotQueries();
         break;
 
       case 'spool_usage_logged':
@@ -439,7 +508,7 @@ export function useWebSocket() {
         }
         break;
     }
-  }, [queryClient, debouncedInvalidate, throttledPrinterStatusUpdate, showToast, t]);
+  }, [queryClient, debouncedInvalidate, invalidateSlotQueries, throttledPrinterStatusUpdate, showToast, t]);
 
   // Keep the ref updated with latest handleMessage
   useEffect(() => {

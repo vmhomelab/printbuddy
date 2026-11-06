@@ -1,6 +1,8 @@
 import type { PrintQueueItem, Printer, CalibrationMode } from '../../api/client';
+import type { VariantCandidate } from './VariantCandidates';
 
 export type { CalibrationMode };
+export type { VariantCandidate };
 
 /**
  * Mode of operation for the PrintModal.
@@ -38,6 +40,18 @@ export interface PrintModalProps {
   /** Delete the LibraryFile after dispatch — used by the Printers-page Direct-Print flow
    *  so transient uploads don't linger in File Manager. Only applies to library-file prints. */
   cleanupLibraryAfterDispatch?: boolean;
+  /**
+   * Cross-model alternatives (#671): the same job sliced for several printers,
+   * to be queued as ONE item that runs on whichever frees up first.
+   *
+   * Supplied by the File Manager when the user multi-selects sliced files, or
+   * when the clicked file belongs to a variant group. Two or more entries put
+   * the modal in cross-model mode: the printer picker is replaced by the ordered
+   * candidate list, and submit posts `variants` instead of a single file.
+   * `libraryFileId` must still be the first candidate — the shared filament and
+   * plate preview reads from it.
+   */
+  variantFiles?: VariantCandidate[];
 }
 
 /**
@@ -183,6 +197,14 @@ export interface PlateSelectorProps {
   onDeselectAll?: () => void;
   /** Whether multi-select (checkboxes) is enabled */
   multiSelect?: boolean;
+  /**
+   * How many runs of each plate to queue, keyed by plate index (#342). When
+   * provided, each selected plate gets its own quantity control and the
+   * modal's single global Quantity field is hidden — one number per plate is
+   * the whole point, and two controls for the same value would be ambiguous.
+   */
+  quantities?: Record<number, number>;
+  onQuantityChange?: (plateIndex: number, quantity: number) => void;
 }
 
 /**
@@ -200,7 +222,36 @@ export interface FilamentReqsData {
      *  = user custom). Used to resolve the "original" filament label in
      *  FilamentOverride against the builtin + cloud user-preset maps. #1718. */
     tray_info_idx?: string;
+    /** Which filament group this slot prints in, on a nozzle-rack machine
+     *  (#1784). The group is the slicer's logical nozzle, so it — not the slot
+     *  — is what a rack position is chosen for. Absent on every other model. */
+    group_id?: number;
+    /** What that group needs of a hotend. Only groups with `on_rack` get a
+     *  position picker; the rest are on the fixed carriage and have no choice
+     *  to make. */
+    group?: RackGroupInfo;
   }>;
+}
+
+/** A filament group's hotend requirements, from the 3MF (#1784). */
+export interface RackGroupInfo {
+  on_rack: boolean;
+  nozzle_diameter: string;
+  volume_type: string;
+  filament_color: string;
+}
+
+/** One position on the H2C's six-slot nozzle rack, as offered to the user. */
+export interface RackPositionOption {
+  /** 1-based, the way the printer card, BambuStudio and the operator count. */
+  position: number;
+  diameter: string;
+  nozzleType: string;
+  filamentColor: string;
+  /** False when the position is empty or holds the wrong nozzle for the group. */
+  eligible: boolean;
+  /** Why not, when `eligible` is false — shown as the option's title. */
+  reason?: string;
 }
 
 /**
@@ -212,6 +263,9 @@ export interface FilamentMappingProps {
   filamentReqs: FilamentReqsData | undefined;
   manualMappings: Record<number, number>;
   onManualMappingChange: (mappings: Record<number, number>) => void;
+  onEstimatedCostChange?: (estimatedCost: number | null) => void;
+  budgetAvailable?: number | null;
+  quantity?: number;
   currencySymbol: string;
   defaultCostPerKg: number;
   /** Per-slot force-color-match flags. The scheduler honors this flag in both
@@ -224,6 +278,21 @@ export interface FilamentMappingProps {
    *  plate. Each plate prints its own subset of the file's slots and gets its
    *  own AMS mapping, so the panels have to be told apart. */
   plateLabel?: string;
+  /** The archive's own saved AMS-slot pick from the slicer
+   *  (`extra_data.slicer_ams_mapping`, written when the source virtual
+   *  printer has "Save AMS mapping" enabled) — position = slot_id-1, value =
+   *  global tray ID. When present, a "Mapping" toggle next to "Re-read" lets
+   *  the user select every slot from this array instead of the type/color
+   *  auto-match. Undefined/omitted when the archive has no saved mapping —
+   *  the toggle is hidden and behaviour is unchanged. */
+  archiveAmsMapping?: number[];
+  /** The operator's rack-position pick per filament group (#1784), keyed by
+   *  group id. Only meaningful on a nozzle-rack model; omit elsewhere and no
+   *  picker is rendered. A group absent from the object is assigned a position
+   *  by the dispatcher against the rack as it stands at dispatch. */
+  nozzleRackChoice?: Record<number, number>;
+  /** Called when a rack position is picked for a group. */
+  onNozzleRackChoiceChange?: (choice: Record<number, number>) => void;
 }
 
 /**

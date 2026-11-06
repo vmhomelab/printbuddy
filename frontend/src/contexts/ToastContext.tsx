@@ -97,6 +97,16 @@ const bgColors = {
 const DISPATCH_TOAST_ID = 'background-dispatch';
 const DISPATCH_TERMINAL_DISMISS_MS = 3500;
 
+// Auto-dismiss windows for the plain (non-persistent) toasts. Errors and
+// warnings get double the default because they carry far more text than a
+// success confirmation — a backend failure reason or a validation message
+// often runs to a couple of lines, and 3s isn't long enough to finish
+// reading one before it slides away. Success/info stay short: they confirm
+// something the user just did and are skimmed, not read.
+const TOAST_DISMISS_MS = 3000;
+const TOAST_DISMISS_LONG_MS = 2 * TOAST_DISMISS_MS;
+const LONG_LIVED_TOAST_TYPES: ReadonlySet<ToastType> = new Set(['error', 'warning']);
+
 interface DispatchEventDetail {
   type: string;
   queue_item_id: number;
@@ -161,12 +171,12 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     const id = Math.random().toString(36).substr(2, 9);
     setToasts((prev) => [...prev, { id, message, type }]);
 
-    // Auto-dismiss after 3 seconds
+    // Auto-dismiss — longer for the types that carry more to read.
     const timeout = setTimeout(() => {
       if (!isMountedRef.current) return;
       setToasts((prev) => prev.filter((t) => t.id !== id));
       timeoutRefs.current.delete(id);
-    }, 3000);
+    }, LONG_LIVED_TOAST_TYPES.has(type) ? TOAST_DISMISS_LONG_MS : TOAST_DISMISS_MS);
     timeoutRefs.current.set(id, timeout);
   }, []);
 

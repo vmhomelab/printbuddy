@@ -42,6 +42,7 @@ import {
   Plus as PlusIcon,
   HardDrive,
   Database,
+  ShieldAlert,
 } from 'lucide-react';
 import { api } from '../api/client';
 import { formatRelativeTime } from '../utils/date';
@@ -96,7 +97,7 @@ function isUserPreset(settingId: string): boolean {
 // LOGIN FORM
 // ============================================================================
 
-function LoginForm({ onSuccess, t }: { onSuccess: () => void; t: TFunction }) {
+export function LoginForm({ onSuccess, t }: { onSuccess: () => void; t: TFunction }) {
   const { showToast } = useToast();
   const [step, setStep] = useState<LoginStep>('email');
   const [email, setEmail] = useState('');
@@ -106,13 +107,20 @@ function LoginForm({ onSuccess, t }: { onSuccess: () => void; t: TFunction }) {
   const [region, setRegion] = useState('global');
   const [verificationType, setVerificationType] = useState<'email' | 'totp' | null>(null);
   const [tfaKey, setTfaKey] = useState<string | null>(null);
+  // Bambu is challenging this network with a CAPTCHA (#2790). A toast is the
+  // wrong shape for it: nothing the user types will help, the remedy is to wait
+  // or switch to a token, and both need to stay on screen while they read.
+  const [captchaBlocked, setCaptchaBlocked] = useState(false);
 
   const loginMutation = useMutation({
     mutationFn: () => api.cloudLogin(email, password, region),
     onSuccess: (result) => {
+      setCaptchaBlocked(result.reason === 'captcha');
       if (result.success) {
         showToast(t('profiles.login.toast.loggedIn'));
         onSuccess();
+      } else if (result.reason === 'captcha') {
+        return; // The panel below says everything a toast could, and stays put.
       } else if (result.needs_verification) {
         setVerificationType(result.verification_type || 'email');
         setTfaKey(result.tfa_key || null);
@@ -126,20 +134,27 @@ function LoginForm({ onSuccess, t }: { onSuccess: () => void; t: TFunction }) {
         showToast(result.message, 'error');
       }
     },
-    onError: (error: Error) => showToast(error.message, 'error'),
+    onError: (error: Error) => {
+      setCaptchaBlocked(false);
+      showToast(error.message, 'error');
+    },
   });
 
   const verifyMutation = useMutation({
     mutationFn: () => api.cloudVerify(email, code, tfaKey || undefined, region),
     onSuccess: (result) => {
+      setCaptchaBlocked(result.reason === 'captcha');
       if (result.success) {
         showToast(t('profiles.login.toast.loggedIn'));
         onSuccess();
-      } else {
+      } else if (result.reason !== 'captcha') {
         showToast(result.message, 'error');
       }
     },
-    onError: (error: Error) => showToast(error.message, 'error'),
+    onError: (error: Error) => {
+      setCaptchaBlocked(false);
+      showToast(error.message, 'error');
+    },
   });
 
   const tokenMutation = useMutation({
@@ -170,6 +185,29 @@ function LoginForm({ onSuccess, t }: { onSuccess: () => void; t: TFunction }) {
           <h2 className="text-xl font-semibold text-white">{t('profiles.login.title')}</h2>
           <p className="text-sm text-bambu-gray mt-1">{t('profiles.login.subtitle')}</p>
         </div>
+
+        {captchaBlocked && step !== 'token' && (
+          <div role="alert" className="mb-4 p-3 rounded-lg border border-amber-500/40 bg-amber-500/10">
+            <div className="flex items-start gap-2">
+              <ShieldAlert className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm font-medium text-amber-300">{t('profiles.login.captchaTitle')}</p>
+                <p className="text-xs text-bambu-gray mt-1">{t('profiles.login.captchaBody')}</p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCaptchaBlocked(false);
+                    setStep('token');
+                  }}
+                  className="mt-2 text-xs text-bambu-green hover:underline flex items-center gap-1"
+                >
+                  <Key className="w-3 h-3" />
+                  {t('profiles.login.useToken')}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         <form onSubmit={handleSubmit} className="space-y-4">
           {step === 'email' && (
@@ -379,10 +417,13 @@ function ScrollToTop() {
 
   if (!isVisible) return null;
 
+  // bottom-24, not bottom-6: at 24px this sat under the bug-report bubble
+  // (16-64px from both edges), covering ~40x40 of its 44x44. Both are z-40, so
+  // which one you could actually click came down to DOM order (#2750).
   return (
     <button
       onClick={scrollToTop}
-      className="fixed bottom-6 right-6 p-3 bg-bambu-green hover:bg-bambu-green-light text-white rounded-full shadow-lg shadow-bambu-green/25 transition-all z-40"
+      className="fixed bottom-24 right-6 p-3 bg-bambu-green hover:bg-bambu-green-light text-white rounded-full shadow-lg shadow-bambu-green/25 transition-all z-40"
       aria-label="Scroll to top"
     >
       <ArrowUp className="w-5 h-5" />
@@ -461,7 +502,7 @@ function PresetListItem({
       </button>
       <button
         onClick={(e) => { e.stopPropagation(); onDuplicate(); }}
-        className="opacity-0 group-hover:opacity-100 text-bambu-gray hover:text-white transition-all p-1"
+        className="can-hover:opacity-0 group-hover:opacity-100 focus-visible:opacity-100 text-bambu-gray hover:text-white transition-all p-1"
         title={t('profiles.presets.duplicate')}
       >
         <Copy className="w-4 h-4" />

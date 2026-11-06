@@ -2,13 +2,30 @@
  * Tests for the FileManagerPage component.
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { screen, waitFor } from '@testing-library/react';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { render } from '../utils';
 import { FileManagerPage } from '../../pages/FileManagerPage';
+import { openInSlicer } from '../../utils/slicer';
+import { setAuthToken } from '../../api/client';
 import { http, HttpResponse } from 'msw';
 import { server } from '../mocks/server';
+
+// Only the protocol-handler launch is stubbed — it would navigate the jsdom
+// window. Everything else in the module is a pure predicate, so keep the real
+// implementations: isSliceableFilename decides which rows even offer the
+// action these tests click.
+vi.mock('../../utils/slicer', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../utils/slicer')>()),
+  openInSlicer: vi.fn(),
+}));
+
+vi.mock('../../components/SliceModal', () => ({
+  SliceModal: ({ source }: { source: { filename: string } }) => (
+    <div data-testid="slice-modal">{source.filename}</div>
+  ),
+}));
 
 // Mock data
 const mockFolders = [
@@ -21,6 +38,9 @@ const mockFolders = [
     archive_id: null,
     project_name: null,
     archive_name: null,
+    // #2680: distinctive year so the folder-pane display test can assert on it
+    // without colliding with the file mtimes below.
+    latest_activity_at: '2031-04-05T10:00:00Z',
     children: [
       {
         id: 2,
@@ -31,6 +51,7 @@ const mockFolders = [
         archive_id: null,
         project_name: null,
         archive_name: null,
+        latest_activity_at: '2032-06-07T10:00:00Z',
         children: [],
       },
     ],
@@ -44,6 +65,9 @@ const mockFolders = [
     archive_id: null,
     project_name: 'My Art Project',
     archive_name: null,
+    // No activity timestamp — must render no date line rather than an
+    // "Invalid Date" placeholder.
+    latest_activity_at: null,
     children: [],
   },
 ];
@@ -973,6 +997,13 @@ describe('FileManagerPage', () => {
       setItemMock.mockReset();
     });
 
+    // The mock is module-global, so an implementation left behind here would
+    // silently change every later describe (e.g. collapsing the folder tree).
+    afterEach(() => {
+      getItemMock.mockReset();
+      setItemMock.mockReset();
+    });
+
     it('defaults to expanded (nested folders visible) when library-collapse-folders is unset', async () => {
       getItemMock.mockReturnValue(null);
       render(<FileManagerPage />);
@@ -1203,6 +1234,271 @@ describe('FileManagerPage', () => {
       await waitFor(() => {
         expect(screen.queryByText(/2030/)).not.toBeInTheDocument();
       });
+    });
+
+    it('the same toggle reveals latest activity on folder rows, including nested ones', async () => {
+      const user = userEvent.setup();
+      render(<FileManagerPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Functional Parts')).toBeInTheDocument();
+      });
+
+      expect(screen.queryByText(/2031/)).not.toBeInTheDocument();
+
+      await user.click(screen.getByTitle('Show modified dates'));
+
+      await waitFor(() => {
+        expect(screen.getByText(/2031/)).toBeInTheDocument();
+      });
+      // Nested folders get it too — the prop must survive the recursion.
+      expect(screen.getByText(/2032/)).toBeInTheDocument();
+
+      // A folder with no activity timestamp renders nothing rather than an
+      // "Invalid Date" string.
+      const artRow = screen.getByText('Art Projects').closest('div.group')!;
+      expect(artRow.textContent).not.toMatch(/Invalid/);
+
+      await user.click(screen.getByTitle('Hide modified dates'));
+      await waitFor(() => {
+        expect(screen.queryByText(/2031/)).not.toBeInTheDocument();
+      });
+    });
+  });
+
+  describe('slice action', () => {
+    beforeEach(() => {
+      vi.mocked(openInSlicer).mockClear();
+      server.use(
+        http.post('/api/v1/library/files/:id/slicer-token', () => HttpResponse.json({ token: 'test-token' })),
+      );
+    });
+
+    afterEach(() => {
+      // Permission tests set a token; clear it so it can't leak into the
+      // list-view tests that follow (mirrors FileManagerFolderDelete.test.tsx).
+      setAuthToken(null);
+    });
+
+    const openMenu = async (user: ReturnType<typeof userEvent.setup>, filename: string) => {
+      const card = screen.getByText(filename).closest('.group') as HTMLElement;
+      // Target the kebab (ellipsis) toggle specifically rather than the card's
+      // first button — a button added ahead of the kebab would otherwise
+      // break the menu-opening assumption.
+      const kebab = card.querySelector('.lucide-ellipsis-vertical')?.closest('button') as HTMLButtonElement;
+      await user.click(kebab);
+      return card;
+    };
+
+    it('opens the desktop slicer when the slicer API is disabled', async () => {
+      const user = userEvent.setup();
+      render(<FileManagerPage />);
+
+      await waitFor(() => expect(screen.getByText('bracket.stl')).toBeInTheDocument());
+
+      const card = await openMenu(user, 'bracket.stl');
+      await user.click(within(card).getByText('Slice'));
+
+      await waitFor(() => {
+        expect(openInSlicer).toHaveBeenCalledWith(
+          expect.stringContaining('/library/files/2/dl/test-token/'),
+          'bambu_studio',
+        );
+      });
+    });
+
+    it('opens the in-app SliceModal when the slicer API is enabled', async () => {
+      server.use(
+        http.get('/api/v1/settings/', () => HttpResponse.json({ use_slicer_api: true })),
+      );
+      const user = userEvent.setup();
+      render(<FileManagerPage />);
+
+      await waitFor(() => expect(screen.getByText('bracket.stl')).toBeInTheDocument());
+
+      const card = await openMenu(user, 'bracket.stl');
+      await user.click(within(card).getByText('Slice'));
+
+      expect(await screen.findByTestId('slice-modal')).toBeInTheDocument();
+      expect(openInSlicer).not.toHaveBeenCalled();
+    });
+
+    // #2846: the menu used to be an absolutely-positioned child of the card,
+    // and the card clipped its own overflow. A bare STL card is only about
+    // 270px tall -- thumbnail plus name and size -- which is shorter than the
+    // seven-entry menu, so the top entry was cut off. That entry is Slice,
+    // because Print is suppressed for an unsliced file. A 3MF card carries two
+    // more metadata rows and was tall enough, which is why the report said 3MF
+    // worked. Nothing about STL was special; the card was just the shortest.
+    it('keeps the first menu entry out of the card so it cannot be clipped (#2846)', async () => {
+      server.use(
+        http.get('/api/v1/settings/', () => HttpResponse.json({ use_slicer_api: true })),
+      );
+      const user = userEvent.setup();
+      render(<FileManagerPage />);
+
+      await waitFor(() => expect(screen.getByText('bracket.stl')).toBeInTheDocument());
+
+      const card = await openMenu(user, 'bracket.stl');
+      const menu = within(card).getByText('Slice').closest('.fixed');
+      // Viewport-positioned, so no ancestor's overflow can cut it down.
+      expect(menu).not.toBeNull();
+      expect(within(menu as HTMLElement).getAllByRole('button')[0]).toHaveTextContent('Slice');
+      // And the card itself no longer clips what its children draw.
+      expect(card.className).not.toContain('overflow-hidden');
+    });
+
+    it('hides the slice item for already-sliced files', async () => {
+      const user = userEvent.setup();
+      render(<FileManagerPage />);
+
+      await waitFor(() => expect(screen.getByText('Benchy')).toBeInTheDocument());
+
+      const card = await openMenu(user, 'Benchy');
+      expect(within(card).queryByText('Slice')).not.toBeInTheDocument();
+    });
+
+    // Permission gating is the security-relevant half of the slice action: the
+    // in-app API path needs library:upload, and the desktop handoff mirrors the
+    // ownership check the slicer-token endpoint runs — library:read_all or
+    // library:read_own. The legacy library:read is deliberately not accepted;
+    // it satisfies neither the token endpoint nor the folder listing that gets
+    // a user to this page at all.
+    const mockAuthUser = (permissions: string[]) => {
+      setAuthToken('test-token', 'session');
+      server.use(
+        http.get('*/api/v1/auth/status', () =>
+          HttpResponse.json({ auth_enabled: true, requires_setup: false }),
+        ),
+        http.get('*/api/v1/auth/me', () =>
+          HttpResponse.json({
+            id: 7,
+            username: 'operator1',
+            is_admin: false,
+            permissions,
+          }),
+        ),
+        http.get('/api/v1/users/', () => HttpResponse.json([])),
+      );
+    };
+
+    it('disables the Slice menu item without library:upload when the slicer API is enabled', async () => {
+      mockAuthUser([]);
+      server.use(
+        http.get('/api/v1/settings/', () => HttpResponse.json({ use_slicer_api: true })),
+      );
+      const user = userEvent.setup();
+      render(<FileManagerPage />);
+
+      await waitFor(() => expect(screen.getByText('bracket.stl')).toBeInTheDocument());
+
+      const card = await openMenu(user, 'bracket.stl');
+      const sliceItem = within(card).getByText('Slice').closest('button');
+      expect(sliceItem).toBeDisabled();
+
+      await user.click(sliceItem!);
+      expect(openInSlicer).not.toHaveBeenCalled();
+    });
+
+    it('enables the Slice menu item with library:upload when the slicer API is enabled', async () => {
+      mockAuthUser(['library:upload']);
+      server.use(
+        http.get('/api/v1/settings/', () => HttpResponse.json({ use_slicer_api: true })),
+      );
+      const user = userEvent.setup();
+      render(<FileManagerPage />);
+
+      await waitFor(() => expect(screen.getByText('bracket.stl')).toBeInTheDocument());
+
+      const card = await openMenu(user, 'bracket.stl');
+      const sliceItem = within(card).getByText('Slice').closest('button');
+      expect(sliceItem).not.toBeDisabled();
+    });
+
+    it('disables the Slice menu item without any library read permission for the desktop handoff', async () => {
+      mockAuthUser(['library:upload']);
+      const user = userEvent.setup();
+      render(<FileManagerPage />);
+
+      await waitFor(() => expect(screen.getByText('bracket.stl')).toBeInTheDocument());
+
+      const card = await openMenu(user, 'bracket.stl');
+      const sliceItem = within(card).getByText('Slice').closest('button');
+      expect(sliceItem).toBeDisabled();
+
+      await user.click(sliceItem!);
+      expect(openInSlicer).not.toHaveBeenCalled();
+    });
+
+    it('enables the Slice menu item with library:read_own for the desktop handoff', async () => {
+      mockAuthUser(['library:read_own']);
+      const user = userEvent.setup();
+      render(<FileManagerPage />);
+
+      await waitFor(() => expect(screen.getByText('bracket.stl')).toBeInTheDocument());
+
+      const card = await openMenu(user, 'bracket.stl');
+      const sliceItem = within(card).getByText('Slice').closest('button');
+      expect(sliceItem).not.toBeDisabled();
+    });
+
+    it('does not accept the legacy library:read for the desktop handoff', async () => {
+      // require_ownership_permission(LIBRARY_READ_ALL, LIBRARY_READ_OWN) does no
+      // legacy expansion, so this group 403s on the slicer-token endpoint.
+      // Enabling the item would offer an action the server refuses, and the
+      // failure would look like "no slicer installed" once the fallback URL is
+      // handed over.
+      mockAuthUser(['library:read']);
+      const user = userEvent.setup();
+      render(<FileManagerPage />);
+
+      await waitFor(() => expect(screen.getByText('bracket.stl')).toBeInTheDocument());
+
+      const card = await openMenu(user, 'bracket.stl');
+      const sliceItem = within(card).getByText('Slice').closest('button');
+      expect(sliceItem).toBeDisabled();
+
+      await user.click(sliceItem!);
+      expect(openInSlicer).not.toHaveBeenCalled();
+    });
+
+    it('slices from the list-view button when the slicer API is disabled', async () => {
+      const user = userEvent.setup();
+      render(<FileManagerPage />);
+
+      await waitFor(() => expect(screen.getByText('bracket.stl')).toBeInTheDocument());
+
+      await user.click(screen.getByTitle('List view'));
+      await waitFor(() => expect(screen.getByText('bracket.stl')).toBeInTheDocument());
+
+      const row = screen.getByText('bracket.stl').closest('div[class*="cursor-pointer"]') as HTMLElement;
+      await user.click(within(row).getByTitle('Slice'));
+
+      await waitFor(() => {
+        expect(openInSlicer).toHaveBeenCalledWith(
+          expect.stringContaining('/library/files/2/dl/test-token/'),
+          'bambu_studio',
+        );
+      });
+    });
+
+    it('slices from the list-view button into the in-app modal when the slicer API is enabled', async () => {
+      server.use(
+        http.get('/api/v1/settings/', () => HttpResponse.json({ use_slicer_api: true })),
+      );
+      const user = userEvent.setup();
+      render(<FileManagerPage />);
+
+      await waitFor(() => expect(screen.getByText('bracket.stl')).toBeInTheDocument());
+
+      await user.click(screen.getByTitle('List view'));
+      await waitFor(() => expect(screen.getByText('bracket.stl')).toBeInTheDocument());
+
+      const row = screen.getByText('bracket.stl').closest('div[class*="cursor-pointer"]') as HTMLElement;
+      await user.click(within(row).getByTitle('Slice'));
+
+      expect(await screen.findByTestId('slice-modal')).toBeInTheDocument();
+      expect(openInSlicer).not.toHaveBeenCalled();
     });
   });
 });

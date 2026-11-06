@@ -48,12 +48,7 @@ import { PrintModal } from '../components/PrintModal';
 // Project edit modal (reused from ProjectsPage)
 import { ProjectModal } from './ProjectsPage';
 import { getCurrencySymbol } from '../utils/currency';
-
-// Returns true for sliced (printable) files: .gcode and .gcode.3mf
-function isSlicedFilename(filename: string): boolean {
-  const lower = filename.toLowerCase();
-  return lower.endsWith('.gcode') || lower.endsWith('.gcode.3mf');
-}
+import { isSlicedLibraryFile } from '../utils/libraryFiles';
 
 function formatFilament(grams: number): string {
   if (grams >= 1000) {
@@ -391,7 +386,7 @@ function ProductionPlan({ bomItems, archives, files, fileStates, onStageFile }: 
                         <td className="px-3 py-2 text-bambu-gray-light">-</td>
                         <td className="px-3 py-2 text-bambu-gray-light">-</td>
                         <td className="px-3 py-2 text-right">
-                          {isSlicedFilename(file.filename) ? (
+                          {isSlicedLibraryFile(file) ? (
                             <button
                               type="button"
                               onClick={() => onStageFile(file)}
@@ -477,7 +472,7 @@ function buildFilamentReadiness(printer: PrintbuddyPrinter, requirements: FileFi
 }
 
 function buildDispatchSuggestions(files: LibraryFileListItem[], printers: PrintbuddyPrinter[], statuses: Array<PrinterStatus | undefined>, queue: PrintQueueItem[], assignments: SpoolAssignment[] = [], requirementsByFile = new Map<number, FileFilamentRequirements>()): DispatchSuggestion[] {
-  const printableFiles = files.filter((file) => isSlicedFilename(file.filename));
+  const printableFiles = files.filter((file) => isSlicedLibraryFile(file));
   return printableFiles.map((file) => {
     const alreadyQueued = queue.some((item) => {
       if (item.library_file_id === file.id) return true;
@@ -700,7 +695,7 @@ export function ProjectDetailPage() {
   });
 
   const filamentRequirementQueries = useQueries({
-    queries: (allProjectFiles || []).filter((file) => isSlicedFilename(file.filename)).map((file) => ({
+    queries: (allProjectFiles || []).filter((file) => isSlicedLibraryFile(file)).map((file) => ({
       queryKey: ['library-file-filament-requirements', file.id, 'project-dispatch'],
       queryFn: () => api.getLibraryFileFilamentRequirements(file.id),
       enabled: projectId > 0,
@@ -752,6 +747,29 @@ export function ProjectDetailPage() {
     }
     return map;
   }, [allProjectFiles]);
+
+  // Per-file completed-run counts (#1897); a file absent from the response has 0
+  const { data: fileProgress } = useQuery({
+    queryKey: ['project-file-progress', projectId],
+    queryFn: () => api.getProjectFileProgress(projectId),
+    enabled: projectId > 0,
+  });
+
+  const progressByFileId = useMemo(() => {
+    const map = new Map<number, number>();
+    for (const row of fileProgress ?? []) map.set(row.file_id, row.completed_count);
+    return map;
+  }, [fileProgress]);
+
+  // Complete sets (#1897): the number of finished assemblies — the minimum
+  // completed count across the project's printable files, capped at the target.
+  const completeSets = useMemo(() => {
+    const target = project?.target_sets;
+    if (!target || !allProjectFiles) return null;
+    const printable = allProjectFiles.filter((f) => isSlicedLibraryFile(f));
+    if (printable.length === 0) return null;
+    return Math.min(...printable.map((f) => Math.min(progressByFileId.get(f.id) ?? 0, target)));
+  }, [project?.target_sets, allProjectFiles, progressByFileId]);
 
   const currency = getCurrencySymbol(settings?.currency || 'USD');
   const timeFormat: TimeFormat = settings?.time_format || 'system';
@@ -1021,7 +1039,7 @@ export function ProjectDetailPage() {
       </div>
 
       {/* Progress bars (if targets set) */}
-      {(project.target_count || project.target_parts_count) && (
+      {(project.target_count || project.target_parts_count || project.target_sets) && (
         <Card>
           <CardContent className="p-4 space-y-4">
             {/* Plates progress */}
@@ -1084,6 +1102,27 @@ export function ProjectDetailPage() {
                 </div>
               </div>
             )}
+            {/* Complete sets progress (#1897): min per-file completed count */}
+            {project.target_sets ? (
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-sm text-bambu-gray">{t('projectDetail.progress.setsProgress')}</span>
+                  <span className="text-sm font-medium text-white">
+                    {completeSets ?? 0} / {project.target_sets} {t('projectDetail.progress.sets')}
+                  </span>
+                </div>
+                <div className="h-3 bg-bambu-dark rounded-full overflow-hidden">
+                  <div
+                    className="h-full transition-all duration-500"
+                    style={{
+                      width: `${Math.min(((completeSets ?? 0) / project.target_sets) * 100, 100)}%`,
+                      backgroundColor: (completeSets ?? 0) >= project.target_sets ? '#22c55e' : project.color || '#6b7280',
+                    }}
+                  />
+                </div>
+                <p className="text-xs text-bambu-gray/70 mt-1">{t('projectDetail.progress.setsHint')}</p>
+              </div>
+            ) : null}
           </CardContent>
         </Card>
       )}
@@ -1125,6 +1164,79 @@ export function ProjectDetailPage() {
 
       <ProductionPlan bomItems={bomItems || []} archives={archives || []} files={allProjectFiles || []} fileStates={productionFileStates} onStageFile={(file) => { setSchedulePrinterIds([]); setScheduleFile(file); }} />
       <DispatchSuggestions suggestions={dispatchSuggestions} onReview={(suggestion) => { setSchedulePrinterIds(suggestion.printer ? [suggestion.printer.id] : []); setScheduleFile(suggestion.file); }} />
+      {/* #1264: the whole programme in one place. Deliberately a separate card
+          from the stats grid above — the figures there are this project's own
+          prints, and the two must not read as one set. The API sends
+          rollup_stats only when there is a sub-project, so there is never an
+          identical pair on screen. */}
+      {project.rollup_stats && (
+        <Card>
+          <CardContent className="p-4">
+            <h2 className="text-lg font-semibold text-white flex items-center gap-2 mb-3">
+              <FolderTree className="w-5 h-5" />
+              {t('projectDetail.rollup.title', { count: project.descendant_count })}
+            </h2>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div>
+                <p className="text-xs text-bambu-gray uppercase">{t('projectDetail.stats.printJobs')}</p>
+                <p className="text-lg font-semibold text-white">{project.rollup_stats.total_archives}</p>
+                <p className="text-sm text-bambu-gray">
+                  {t('projectDetail.stats.partsPrinted', { count: project.rollup_stats.completed_prints })}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-bambu-gray uppercase">{t('projectDetail.stats.printTime')}</p>
+                <p className="text-lg font-semibold text-white">
+                  {formatDurationFromHours(project.rollup_stats.total_print_time_hours)}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-bambu-gray uppercase">{t('projectDetail.stats.filamentUsed')}</p>
+                <p className="text-lg font-semibold text-white">
+                  {formatFilament(project.rollup_stats.total_filament_grams)}
+                </p>
+              </div>
+              {(() => {
+                const rollupCost =
+                  project.rollup_stats.estimated_cost +
+                  project.rollup_stats.total_energy_cost +
+                  project.rollup_stats.bom_cost;
+                if (rollupCost <= 0) return null;
+                return (
+                  <div>
+                    <p className="text-xs text-bambu-gray uppercase">{t('projectDetail.cost.totalCost')}</p>
+                    <p className="text-lg font-semibold text-bambu-green">
+                      {currency}{rollupCost.toFixed(2)}
+                    </p>
+                  </div>
+                );
+              })()}
+            </div>
+            {project.rollup_stats.progress_percent !== null && (
+              <div className="mt-4">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-sm text-bambu-gray">{t('projectDetail.rollup.progress')}</span>
+                  <span className="text-sm font-medium text-white">
+                    {t('projectDetail.rollup.percentComplete', {
+                      percent: project.rollup_stats.progress_percent.toFixed(0),
+                    })}
+                  </span>
+                </div>
+                <div className="h-3 bg-bambu-dark rounded-full overflow-hidden">
+                  <div
+                    className="h-full transition-all duration-500"
+                    style={{
+                      width: `${Math.min(project.rollup_stats.progress_percent, 100)}%`,
+                      backgroundColor:
+                        project.rollup_stats.progress_percent >= 100 ? '#22c55e' : project.color || '#6b7280',
+                    }}
+                  />
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* Cost tracking */}
       {stats && (() => {
@@ -1204,27 +1316,48 @@ export function ProjectDetailPage() {
                 <Link
                   key={child.id}
                   to={`/projects/${child.id}`}
-                  className="flex items-center justify-between p-3 bg-bambu-dark rounded-lg hover:bg-bambu-dark-tertiary transition-colors"
+                  className="flex items-center justify-between gap-4 p-3 bg-bambu-dark rounded-lg hover:bg-bambu-dark-tertiary transition-colors"
                 >
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-3 min-w-0">
                     <div
-                      className="w-3 h-3 rounded-full"
+                      className="w-3 h-3 rounded-full flex-shrink-0"
                       style={{ backgroundColor: child.color || '#6b7280' }}
                     />
-                    <span className="text-white">{child.name}</span>
-                    <span className={`text-xs px-2 py-0.5 rounded ${
+                    <span className="text-white truncate">{child.name}</span>
+                    <span className={`text-xs px-2 py-0.5 rounded flex-shrink-0 ${
                       child.status === 'completed' ? 'bg-status-ok/20 text-status-ok' :
                       child.status === 'archived' ? 'bg-bambu-gray/20 text-bambu-gray' :
                       'bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-400'
                     }`}>
                       {child.status}
                     </span>
+                    {/* A branch of its own, so its figures cover more than the
+                        one project named on this row (#1264). */}
+                    {child.descendant_count > 0 && (
+                      <span className="text-xs text-bambu-gray flex-shrink-0 inline-flex items-center gap-1">
+                        <FolderTree className="w-3 h-3" />
+                        {child.descendant_count}
+                      </span>
+                    )}
                   </div>
-                  {child.progress_percent !== null && (
-                    <span className="text-sm text-bambu-gray">
-                      {child.progress_percent.toFixed(0)}%
-                    </span>
-                  )}
+                  {/* Each row carries its own branch's roll-up, so the rows add
+                      up to the card above minus this project's own prints. */}
+                  <div className="flex items-center gap-4 text-sm text-bambu-gray flex-shrink-0">
+                    {child.total_archives > 0 && (
+                      <span className="hidden sm:inline">
+                        {t('projectDetail.subProjects.jobs', { count: child.total_archives })}
+                      </span>
+                    )}
+                    {child.total_filament_grams > 0 && (
+                      <span className="hidden md:inline">{formatFilament(child.total_filament_grams)}</span>
+                    )}
+                    {child.total_cost > 0 && (
+                      <span className="hidden md:inline">{currency}{child.total_cost.toFixed(2)}</span>
+                    )}
+                    {child.progress_percent !== null && (
+                      <span>{child.progress_percent.toFixed(0)}%</span>
+                    )}
+                  </div>
                 </Link>
               ))}
             </div>
@@ -1408,7 +1541,7 @@ export function ProjectDetailPage() {
                     ) : (
                       <div className="space-y-1 pl-3">
                         {files.map((file) => {
-                          const printable = isSlicedFilename(file.filename);
+                          const printable = isSlicedLibraryFile(file);
                           return (
                             <div
                               key={file.id}
@@ -1440,6 +1573,41 @@ export function ProjectDetailPage() {
                                   {file.file_type.toUpperCase()}
                                 </span>
                               </div>
+
+                              {/* Per-file print progress (#1897) */}
+                              {printable && (() => {
+                                const done = progressByFileId.get(file.id) ?? 0;
+                                const target = project.target_sets;
+                                if (!target) {
+                                  // No copies-per-file target — show a plain printed-count badge
+                                  return done > 0 ? (
+                                    <span
+                                      className="shrink-0 text-xs px-1.5 py-0.5 rounded-full bg-bambu-dark text-bambu-gray"
+                                      title={t('projectDetail.files.printedCount', { count: done })}
+                                    >
+                                      {done}×
+                                    </span>
+                                  ) : null;
+                                }
+                                const pct = Math.min((done / target) * 100, 100);
+                                const textColor =
+                                  done >= target ? 'text-status-ok' : done > 0 ? 'text-status-warning' : 'text-bambu-gray';
+                                const barColor =
+                                  done >= target ? 'bg-status-ok' : done > 0 ? 'bg-status-warning' : 'bg-bambu-gray';
+                                return (
+                                  <div
+                                    className="shrink-0 w-20"
+                                    title={t('projectDetail.files.progressTooltip', { done, target })}
+                                  >
+                                    <p className={`text-xs font-medium text-right ${textColor}`}>
+                                      {done} / {target}
+                                    </p>
+                                    <div className="h-1 bg-bambu-dark rounded-full overflow-hidden mt-1">
+                                      <div className={`h-full ${barColor}`} style={{ width: `${pct}%` }} />
+                                    </div>
+                                  </div>
+                                );
+                              })()}
 
                               {/* Print actions for sliced files */}
                               {printable && (
@@ -1883,6 +2051,10 @@ export function ProjectDetailPage() {
             failed_count: stats?.failed_prints || 0,
             queue_count: stats?.queued_prints || 0,
             progress_percent: stats?.progress_percent || null,
+            // Required by ProjectListItem, but nothing in the dialog reads it —
+            // the parent picker works off the project list it fetches itself.
+            // Guarded like every other read of `children` on this page (#1264).
+            child_count: project.children?.length ?? 0,
             archives: [],
           }}
           onClose={() => setShowEditModal(false)}

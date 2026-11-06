@@ -48,24 +48,37 @@ def _provider_to_dict(provider: NotificationProvider) -> dict:
         "on_print_progress": provider.on_print_progress,
         "on_print_almost_done": provider.on_print_almost_done,
         "on_print_missing_spool_assignment": provider.on_print_missing_spool_assignment,
+        "on_billing_charge_failed": provider.on_billing_charge_failed,
         # Printer status events
         "on_printer_offline": provider.on_printer_offline,
         "on_printer_error": provider.on_printer_error,
         "on_ai_failure_detection": provider.on_ai_failure_detection,
         "on_filament_low": provider.on_filament_low,
         "on_maintenance_due": provider.on_maintenance_due,
+        # Home Assistant sensor alerts (#1148, #2824). Both directions of this
+        # file are hand-maintained field maps, so a column missing here reads
+        # back as the schema default (False) no matter what the row holds.
+        "on_ha_sensor_alert": provider.on_ha_sensor_alert,
+        "on_location_ha_sensor_alert": provider.on_location_ha_sensor_alert,
         # AMS environmental alarms (regular AMS)
         "on_ams_humidity_high": provider.on_ams_humidity_high,
         "on_ams_temperature_high": provider.on_ams_temperature_high,
+        "on_ams_drying_suspended": provider.on_ams_drying_suspended,
         # AMS-HT environmental alarms
         "on_ams_ht_humidity_high": provider.on_ams_ht_humidity_high,
         "on_ams_ht_temperature_high": provider.on_ams_ht_temperature_high,
         # Build plate detection
         "on_plate_not_empty": provider.on_plate_not_empty,
+        "on_plate_clear_required": provider.on_plate_clear_required,
         # Bed cooled
         "on_bed_cooled": provider.on_bed_cooled,
         # First layer complete
         "on_first_layer_complete": provider.on_first_layer_complete,
+        # Inventory stock alerts. Absent here, the toggles above always read
+        # back off no matter what the row holds — the same hand-maintained
+        # field map the Home Assistant comment warns about.
+        "on_stock_reorder_alert": provider.on_stock_reorder_alert,
+        "on_stock_break_alert": provider.on_stock_break_alert,
         # Print queue events
         "on_queue_job_added": provider.on_queue_job_added,
         "on_queue_job_assigned": provider.on_queue_job_assigned,
@@ -151,24 +164,33 @@ async def create_notification_provider(
         on_print_progress=provider_data.on_print_progress,
         on_print_almost_done=provider_data.on_print_almost_done,
         on_print_missing_spool_assignment=provider_data.on_print_missing_spool_assignment,
+        on_billing_charge_failed=provider_data.on_billing_charge_failed,
         # Printer status events
         on_printer_offline=provider_data.on_printer_offline,
         on_printer_error=provider_data.on_printer_error,
         on_ai_failure_detection=provider_data.on_ai_failure_detection,
         on_filament_low=provider_data.on_filament_low,
         on_maintenance_due=provider_data.on_maintenance_due,
+        # Home Assistant sensor alerts (#1148, #2824)
+        on_ha_sensor_alert=provider_data.on_ha_sensor_alert,
+        on_location_ha_sensor_alert=provider_data.on_location_ha_sensor_alert,
         # AMS environmental alarms (regular AMS)
         on_ams_humidity_high=provider_data.on_ams_humidity_high,
         on_ams_temperature_high=provider_data.on_ams_temperature_high,
+        on_ams_drying_suspended=provider_data.on_ams_drying_suspended,
         # AMS-HT environmental alarms
         on_ams_ht_humidity_high=provider_data.on_ams_ht_humidity_high,
         on_ams_ht_temperature_high=provider_data.on_ams_ht_temperature_high,
         # Build plate detection
         on_plate_not_empty=provider_data.on_plate_not_empty,
+        on_plate_clear_required=provider_data.on_plate_clear_required,
         # Bed cooled
         on_bed_cooled=provider_data.on_bed_cooled,
         # First layer complete
         on_first_layer_complete=provider_data.on_first_layer_complete,
+        # Inventory stock alerts
+        on_stock_reorder_alert=provider_data.on_stock_reorder_alert,
+        on_stock_break_alert=provider_data.on_stock_break_alert,
         # Print queue events
         on_queue_job_added=provider_data.on_queue_job_added,
         on_queue_job_assigned=provider_data.on_queue_job_assigned,

@@ -1393,3 +1393,742 @@ class TestProjectListEditableFields:
         result = response.json()
         assert result["tags"] is None
         assert result["due_date"] is None
+
+
+class TestProjectFileProgress:
+    """Per-file print progress inside a project (#1897).
+
+    Covers GET /projects/{id}/file-progress (attribution: library_file_id →
+    content hash → filename, completed runs only, project-scoped), the
+    target_sets field round-trip, and the add-to-queue project inheritance
+    that feeds the attribution chain.
+    """
+
+    @pytest.fixture
+    async def project_factory(self, db_session):
+        _counter = [0]
+
+        async def _create_project(**kwargs):
+            from backend.app.models.project import Project
+
+            _counter[0] += 1
+            defaults = {"name": f"Progress Project {_counter[0]}"}
+            defaults.update(kwargs)
+            project = Project(**defaults)
+            db_session.add(project)
+            await db_session.commit()
+            await db_session.refresh(project)
+            return project
+
+        return _create_project
+
+    @pytest.fixture
+    async def folder_factory(self, db_session):
+        _counter = [0]
+
+        async def _create_folder(**kwargs):
+            from backend.app.models.library import LibraryFolder
+
+            _counter[0] += 1
+            defaults = {"name": f"ProgressFolder {_counter[0]}"}
+            defaults.update(kwargs)
+            folder = LibraryFolder(**defaults)
+            db_session.add(folder)
+            await db_session.commit()
+            await db_session.refresh(folder)
+            return folder
+
+        return _create_folder
+
+    @pytest.fixture
+    async def file_factory(self, db_session):
+        _counter = [0]
+
+        async def _create_file(**kwargs):
+            from backend.app.models.library import LibraryFile
+
+            _counter[0] += 1
+            counter = _counter[0]
+            defaults = {
+                "filename": f"plate_{counter}.gcode.3mf",
+                "file_path": f"library/plate_{counter}.gcode.3mf",
+                "file_size": 1024,
+                "file_type": "3mf",
+            }
+            defaults.update(kwargs)
+            lib_file = LibraryFile(**defaults)
+            db_session.add(lib_file)
+            await db_session.commit()
+            await db_session.refresh(lib_file)
+            return lib_file
+
+        return _create_file
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_counts_by_library_file_id(
+        self, async_client: AsyncClient, project_factory, folder_factory, file_factory, printer_factory, archive_factory
+    ):
+        """Runs stamped with library_file_id count toward that file even when
+        the archive's filename differs (rename after dispatch)."""
+        project = await project_factory()
+        folder = await folder_factory(project_id=project.id)
+        file_a = await file_factory(folder_id=folder.id)
+        file_b = await file_factory(folder_id=folder.id)
+        printer = await printer_factory()
+
+        for _ in range(2):
+            await archive_factory(
+                printer.id,
+                project_id=project.id,
+                library_file_id=file_a.id,
+                filename="renamed_on_dispatch.gcode.3mf",
+            )
+        await archive_factory(printer.id, project_id=project.id, library_file_id=file_b.id)
+
+        response = await async_client.get(f"/api/v1/projects/{project.id}/file-progress")
+        assert response.status_code == 200
+        counts = {row["file_id"]: row["completed_count"] for row in response.json()}
+        assert counts == {file_a.id: 2, file_b.id: 1}
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_hash_and_filename_fallback(
+        self, async_client: AsyncClient, project_factory, folder_factory, file_factory, printer_factory, archive_factory
+    ):
+        """Historical archives without library_file_id match by content hash,
+        then by filename."""
+        project = await project_factory()
+        folder = await folder_factory(project_id=project.id)
+        hashed_file = await file_factory(folder_id=folder.id, file_hash="a" * 64)
+        named_file = await file_factory(folder_id=folder.id, filename="unique_name.gcode.3mf")
+        printer = await printer_factory()
+
+        # Hash match despite a different filename
+        await archive_factory(
+            printer.id, project_id=project.id, content_hash="a" * 64, filename="printer_copy.gcode.3mf"
+        )
+        # Filename match with no hash on either side
+        await archive_factory(printer.id, project_id=project.id, filename="unique_name.gcode.3mf")
+
+        response = await async_client.get(f"/api/v1/projects/{project.id}/file-progress")
+        counts = {row["file_id"]: row["completed_count"] for row in response.json()}
+        assert counts == {hashed_file.id: 1, named_file.id: 1}
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_only_completed_runs_count(
+        self, async_client: AsyncClient, project_factory, folder_factory, file_factory, printer_factory, archive_factory
+    ):
+        """Failed runs and never-printed archives do not advance the count."""
+        project = await project_factory()
+        folder = await folder_factory(project_id=project.id)
+        lib_file = await file_factory(folder_id=folder.id)
+        printer = await printer_factory()
+
+        await archive_factory(printer.id, project_id=project.id, library_file_id=lib_file.id)
+        await archive_factory(
+            printer.id, project_id=project.id, library_file_id=lib_file.id, status="failed", run_status="failed"
+        )
+        await archive_factory(printer.id, project_id=project.id, library_file_id=lib_file.id, with_run=False)
+
+        response = await async_client.get(f"/api/v1/projects/{project.id}/file-progress")
+        counts = {row["file_id"]: row["completed_count"] for row in response.json()}
+        assert counts == {lib_file.id: 1}
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_scoped_to_project(
+        self, async_client: AsyncClient, project_factory, folder_factory, file_factory, printer_factory, archive_factory
+    ):
+        """Runs of the same file outside the project (no project / another
+        project) are excluded."""
+        project = await project_factory()
+        other_project = await project_factory()
+        folder = await folder_factory(project_id=project.id)
+        lib_file = await file_factory(folder_id=folder.id)
+        printer = await printer_factory()
+
+        await archive_factory(printer.id, project_id=None, library_file_id=lib_file.id)
+        await archive_factory(printer.id, project_id=other_project.id, library_file_id=lib_file.id)
+
+        response = await async_client.get(f"/api/v1/projects/{project.id}/file-progress")
+        assert response.json() == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_unknown_project_404(self, async_client: AsyncClient):
+        response = await async_client.get("/api/v1/projects/999999/file-progress")
+        assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_target_sets_roundtrip(self, async_client: AsyncClient):
+        """target_sets survives create, update, and explicit-null clearing."""
+        create = await async_client.post("/api/v1/projects/", json={"name": "Sets Project", "target_sets": 10})
+        assert create.status_code == 200
+        project = create.json()
+        assert project["target_sets"] == 10
+
+        update = await async_client.patch(f"/api/v1/projects/{project['id']}", json={"target_sets": 4})
+        assert update.status_code == 200, update.json()
+        assert update.json()["target_sets"] == 4
+
+        cleared = await async_client.patch(f"/api/v1/projects/{project['id']}", json={"target_sets": None})
+        assert cleared.json()["target_sets"] is None
+
+        untouched = await async_client.patch(f"/api/v1/projects/{project['id']}", json={"name": "Renamed"})
+        assert untouched.json()["target_sets"] is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_add_to_queue_inherits_folder_project(
+        self, async_client: AsyncClient, project_factory, folder_factory, file_factory, db_session, tmp_path
+    ):
+        """Queueing a file from a project-linked folder attributes the queue
+        item (and thus the later archive) to that project; a root file stays
+        unattributed."""
+        from sqlalchemy import select
+
+        from backend.app.models.print_queue import PrintQueueItem
+
+        project = await project_factory()
+        folder = await folder_factory(project_id=project.id)
+
+        on_disk = tmp_path / "linked.gcode.3mf"
+        on_disk.write_bytes(b"fake sliced content")
+        linked_file = await file_factory(folder_id=folder.id, file_path=str(on_disk))
+
+        root_disk = tmp_path / "root.gcode.3mf"
+        root_disk.write_bytes(b"fake sliced content")
+        root_file = await file_factory(folder_id=None, file_path=str(root_disk))
+
+        response = await async_client.post(
+            "/api/v1/library/files/add-to-queue", json={"file_ids": [linked_file.id, root_file.id]}
+        )
+        assert response.status_code == 200
+        assert len(response.json()["added"]) == 2
+
+        result = await db_session.execute(
+            select(PrintQueueItem.library_file_id, PrintQueueItem.project_id).where(
+                PrintQueueItem.library_file_id.in_([linked_file.id, root_file.id])
+            )
+        )
+        projects_by_file = dict(result.all())
+        assert projects_by_file[linked_file.id] == project.id
+        assert projects_by_file[root_file.id] is None
+
+
+class TestSoftDeletedArchivesLeaveTheProject:
+    """Deleting a print removes it from its project, everywhere (#2731).
+
+    The default archive delete is soft (#1343): the files go, the row stays so
+    global Quick Stats keeps counting its filament / time / cost. Nothing in the
+    projects module filtered on that, so a deleted print stayed listed on the
+    project with a thumbnail pointing at a file that no longer existed — and
+    could not be unassigned, because the only unassign UI lives on the Archives
+    page, which correctly hides it.
+
+    Unlike Quick Stats, project *counts* exclude it too. A project is a piece of
+    work with a definite membership, not a lifetime total, so a project that
+    lists one print must not claim two.
+    """
+
+    @pytest.fixture
+    async def project_factory(self, db_session):
+        async def _create_project(**kwargs):
+            from backend.app.models.project import Project
+
+            defaults = {"name": "Deleted Archive Project", "color": "#FF0000"}
+            defaults.update(kwargs)
+            project = Project(**defaults)
+            db_session.add(project)
+            await db_session.commit()
+            await db_session.refresh(project)
+            return project
+
+        return _create_project
+
+    @pytest.fixture
+    async def archive_factory(self, db_session):
+        """Archive + matching PrintLogEntry, as production always writes both."""
+
+        async def _create_archive(**kwargs):
+            from backend.app.models.archive import PrintArchive
+            from backend.app.models.print_log import PrintLogEntry
+
+            defaults = {
+                "filename": "test.3mf",
+                "file_path": "test/test.3mf",
+                "file_size": 1000,
+                "print_name": "Test Print",
+                "status": "completed",
+                "quantity": 1,
+                "thumbnail_path": "test/thumb.png",
+            }
+            defaults.update(kwargs)
+            archive = PrintArchive(**defaults)
+            db_session.add(archive)
+            await db_session.commit()
+            await db_session.refresh(archive)
+
+            db_session.add(
+                PrintLogEntry(
+                    archive_id=archive.id,
+                    print_name=archive.print_name,
+                    status=archive.status,
+                    filament_used_grams=10.0,
+                )
+            )
+            await db_session.commit()
+            return archive
+
+        return _create_archive
+
+    @staticmethod
+    async def _soft_delete(db_session, archive) -> int:
+        """Soft-delete *archive* and return its id.
+
+        The commit expires the instance, so reading an attribute off it
+        afterwards is lazy IO outside the greenlet context (MissingGreenlet).
+        Callers take the id from here instead.
+        """
+        from datetime import datetime, timezone
+
+        archive_id = archive.id
+        archive.deleted_at = datetime.now(timezone.utc)
+        await db_session.commit()
+        return archive_id
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_deleted_archive_is_not_listed_on_the_project(
+        self, async_client: AsyncClient, project_factory, archive_factory, db_session
+    ):
+        """The reported symptom: a card with a broken preview image."""
+        project = await project_factory()
+        await archive_factory(project_id=project.id, print_name="Kept")
+        gone = await archive_factory(project_id=project.id, print_name="Deleted")
+        await self._soft_delete(db_session, gone)
+
+        response = await async_client.get(f"/api/v1/projects/{project.id}/archives")
+        assert response.status_code == 200
+        assert [a["print_name"] for a in response.json()] == ["Kept"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_deleted_archive_is_not_a_preview_on_the_project_card(
+        self, async_client: AsyncClient, project_factory, archive_factory, db_session
+    ):
+        """The overview page renders these as thumbnails too, so it broke there
+        as well — not just on the detail page."""
+        project = await project_factory()
+        gone = await archive_factory(project_id=project.id, print_name="Deleted")
+        await self._soft_delete(db_session, gone)
+
+        response = await async_client.get("/api/v1/projects/")
+        assert response.status_code == 200
+        row = next(p for p in response.json() if p["id"] == project.id)
+        assert row["archives"] == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_project_counts_exclude_the_deleted_archive(
+        self, async_client: AsyncClient, project_factory, archive_factory, db_session
+    ):
+        """The list shows one print, so the count must say one."""
+        project = await project_factory()
+        await archive_factory(project_id=project.id, print_name="Kept")
+        gone = await archive_factory(project_id=project.id, print_name="Deleted")
+        await self._soft_delete(db_session, gone)
+
+        response = await async_client.get("/api/v1/projects/")
+        row = next(p for p in response.json() if p["id"] == project.id)
+        assert row["archive_count"] == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_project_stats_exclude_the_deleted_archive(
+        self, async_client: AsyncClient, project_factory, archive_factory, db_session
+    ):
+        """Deliberate divergence from #1343: the contribution leaves the project
+        even though it stays in global Quick Stats."""
+        project = await project_factory()
+        await archive_factory(project_id=project.id, print_name="Kept")
+        gone = await archive_factory(project_id=project.id, print_name="Deleted")
+        await self._soft_delete(db_session, gone)
+
+        response = await async_client.get(f"/api/v1/projects/{project.id}")
+        assert response.status_code == 200
+        stats = response.json()["stats"]
+        assert stats["total_archives"] == 1
+        assert stats["total_filament_grams"] == pytest.approx(10.0)
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_deleted_archive_is_not_in_the_project_timeline(
+        self, async_client: AsyncClient, project_factory, archive_factory, db_session
+    ):
+        """A timeline entry for it links to an archive that 404s when clicked."""
+        project = await project_factory()
+        gone = await archive_factory(project_id=project.id, print_name="Deleted")
+        await self._soft_delete(db_session, gone)
+
+        response = await async_client.get(f"/api/v1/projects/{project.id}/timeline")
+        assert response.status_code == 200
+        assert not any(e.get("description") == "Deleted" for e in response.json())
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_live_archive_is_untouched_by_all_of_this(
+        self, async_client: AsyncClient, project_factory, archive_factory
+    ):
+        """The filter must not cost a project its actual prints."""
+        project = await project_factory()
+        await archive_factory(project_id=project.id, print_name="Kept")
+
+        listing = await async_client.get(f"/api/v1/projects/{project.id}/archives")
+        assert [a["print_name"] for a in listing.json()] == ["Kept"]
+
+        stats = await async_client.get(f"/api/v1/projects/{project.id}")
+        assert stats.json()["stats"]["total_archives"] == 1
+
+        row = next(p for p in (await async_client.get("/api/v1/projects/")).json() if p["id"] == project.id)
+        assert row["archive_count"] == 1
+        assert len(row["archives"]) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_unassigning_an_already_orphaned_link_still_works(
+        self, async_client: AsyncClient, project_factory, archive_factory, db_session
+    ):
+        """The listings hide it, but the API must still be able to clear the
+        link — that is the repair path for rows written before this fix."""
+        from sqlalchemy import select
+
+        from backend.app.models.archive import PrintArchive
+
+        project = await project_factory()
+        gone = await archive_factory(project_id=project.id, print_name="Deleted")
+        gone_id = await self._soft_delete(db_session, gone)
+
+        response = await async_client.post(
+            f"/api/v1/projects/{project.id}/remove-archives", json={"archive_ids": [gone_id]}
+        )
+        assert response.status_code == 200
+
+        db_session.expire_all()
+        result = await db_session.execute(select(PrintArchive.project_id).where(PrintArchive.id == gone_id))
+        assert result.scalar_one() is None
+
+
+class TestSubProjectRollup:
+    """Tests for #1264 — nesting projects and rolling their figures up.
+
+    The parent/child columns predate this; what these cover is the roll-up,
+    the cycle guard that a roll-up needs to terminate, and what a delete does
+    to the branch hanging off it.
+    """
+
+    @pytest.fixture
+    async def project_factory(self, db_session):
+        async def _create_project(**kwargs):
+            from backend.app.models.project import Project
+
+            defaults = {"name": "Rollup Project", "color": "#FF0000"}
+            defaults.update(kwargs)
+            project = Project(**defaults)
+            db_session.add(project)
+            await db_session.commit()
+            await db_session.refresh(project)
+            return project
+
+        return _create_project
+
+    @pytest.fixture
+    async def run_factory(self, db_session):
+        """One completed run against a project, with figures worth summing."""
+
+        async def _create_run(project_id, *, grams=100.0, cost=5.0, seconds=3600, status="completed", quantity=1):
+            from backend.app.models.archive import PrintArchive
+            from backend.app.models.print_log import PrintLogEntry
+
+            archive = PrintArchive(
+                filename="test.3mf",
+                file_path="test/test.3mf",
+                file_size=1000,
+                print_name="Run",
+                status=status,
+                quantity=quantity,
+                project_id=project_id,
+            )
+            db_session.add(archive)
+            await db_session.commit()
+            await db_session.refresh(archive)
+
+            db_session.add(
+                PrintLogEntry(
+                    archive_id=archive.id,
+                    print_name=archive.print_name,
+                    status=status,
+                    duration_seconds=seconds,
+                    filament_used_grams=grams,
+                    cost=cost,
+                )
+            )
+            await db_session.commit()
+            return archive
+
+        return _create_run
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_master_project_rolls_up_every_sub_project(
+        self, async_client: AsyncClient, project_factory, run_factory
+    ):
+        """The whole point of the feature: one number for the programme."""
+        master = await project_factory(name="Airframe")
+        wing = await project_factory(name="Wing", parent_id=master.id)
+        tail = await project_factory(name="Tail", parent_id=master.id)
+
+        await run_factory(master.id, grams=10.0, cost=1.0, seconds=3600)
+        await run_factory(wing.id, grams=20.0, cost=2.0, seconds=7200)
+        await run_factory(tail.id, grams=30.0, cost=3.0, seconds=1800)
+
+        body = (await async_client.get(f"/api/v1/projects/{master.id}")).json()
+
+        assert body["descendant_count"] == 2
+        assert body["rollup_stats"]["total_archives"] == 3
+        assert body["rollup_stats"]["total_filament_grams"] == 60.0
+        assert body["rollup_stats"]["estimated_cost"] == 6.0
+        assert body["rollup_stats"]["total_print_time_hours"] == 3.5
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_the_masters_own_stats_still_mean_its_own_prints(
+        self, async_client: AsyncClient, project_factory, run_factory
+    ):
+        """``stats`` keeps its existing meaning — anyone who nested projects
+        over the API before this shipped must not see their figures restated."""
+        master = await project_factory(name="Airframe")
+        wing = await project_factory(name="Wing", parent_id=master.id)
+        await run_factory(master.id, grams=10.0)
+        await run_factory(wing.id, grams=20.0)
+
+        body = (await async_client.get(f"/api/v1/projects/{master.id}")).json()
+
+        assert body["stats"]["total_archives"] == 1
+        assert body["stats"]["total_filament_grams"] == 10.0
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_the_roll_up_reaches_past_the_first_generation(
+        self, async_client: AsyncClient, project_factory, run_factory
+    ):
+        """Nesting is arbitrary depth, so a grandchild has to count too."""
+        master = await project_factory(name="Airframe")
+        wing = await project_factory(name="Wing", parent_id=master.id)
+        spar = await project_factory(name="Spar", parent_id=wing.id)
+        await run_factory(spar.id, grams=50.0)
+
+        body = (await async_client.get(f"/api/v1/projects/{master.id}")).json()
+
+        assert body["descendant_count"] == 2
+        assert body["rollup_stats"]["total_filament_grams"] == 50.0
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_childless_project_reports_no_roll_up_at_all(
+        self, async_client: AsyncClient, project_factory, run_factory
+    ):
+        """Null, not a copy of ``stats`` — the page uses the absence to stay
+        quiet rather than printing the same figures twice."""
+        lonely = await project_factory(name="Solo")
+        await run_factory(lonely.id)
+
+        body = (await async_client.get(f"/api/v1/projects/{lonely.id}")).json()
+
+        assert body["rollup_stats"] is None
+        assert body["descendant_count"] == 0
+        assert body["children"] == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_each_listed_child_carries_its_own_branch_total(
+        self, async_client: AsyncClient, project_factory, run_factory
+    ):
+        """Otherwise the listed rows do not add up to the master's total and
+        the page contradicts itself."""
+        master = await project_factory(name="Airframe")
+        wing = await project_factory(name="Wing", parent_id=master.id)
+        spar = await project_factory(name="Spar", parent_id=wing.id)
+        await run_factory(wing.id, grams=20.0, cost=2.0)
+        await run_factory(spar.id, grams=30.0, cost=3.0)
+
+        body = (await async_client.get(f"/api/v1/projects/{master.id}")).json()
+
+        assert len(body["children"]) == 1
+        row = body["children"][0]
+        assert row["name"] == "Wing"
+        assert row["descendant_count"] == 1
+        assert row["total_archives"] == 2
+        assert row["total_filament_grams"] == 50.0
+        assert row["total_cost"] == 5.0
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_roll_up_progress_measures_against_the_summed_targets(
+        self, async_client: AsyncClient, project_factory, run_factory
+    ):
+        """A target on each part of the tree is a target for the whole."""
+        master = await project_factory(name="Airframe", target_count=2)
+        wing = await project_factory(name="Wing", parent_id=master.id, target_count=2)
+        await run_factory(master.id)
+        await run_factory(wing.id)
+        await run_factory(wing.id)
+
+        body = (await async_client.get(f"/api/v1/projects/{master.id}")).json()
+
+        assert body["stats"]["progress_percent"] == 50.0  # 1 of its own 2
+        assert body["rollup_stats"]["progress_percent"] == 75.0  # 3 of the tree's 4
+        assert body["rollup_stats"]["remaining_prints"] == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_project_cannot_be_moved_under_its_own_sub_project(
+        self, async_client: AsyncClient, project_factory
+    ):
+        """Rejecting only the direct self-parent left A -> B -> A reachable in
+        two calls, and a cycle has no root to roll anything up to."""
+        master = await project_factory(name="Airframe")
+        wing = await project_factory(name="Wing", parent_id=master.id)
+
+        response = await async_client.patch(f"/api/v1/projects/{master.id}", json={"parent_id": wing.id})
+
+        assert response.status_code == 400
+        assert "sub-projects" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_the_guard_reaches_a_distant_descendant_too(self, async_client: AsyncClient, project_factory):
+        """A three-deep loop is no more legal than a two-deep one."""
+        master = await project_factory(name="Airframe")
+        wing = await project_factory(name="Wing", parent_id=master.id)
+        spar = await project_factory(name="Spar", parent_id=wing.id)
+
+        response = await async_client.patch(f"/api/v1/projects/{master.id}", json={"parent_id": spar.id})
+
+        assert response.status_code == 400
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_an_unrelated_project_is_still_a_legal_parent(self, async_client: AsyncClient, project_factory):
+        """The guard must not refuse ordinary nesting."""
+        master = await project_factory(name="Airframe")
+        wing = await project_factory(name="Wing", parent_id=master.id)
+        other = await project_factory(name="Ground Station")
+
+        response = await async_client.patch(f"/api/v1/projects/{other.id}", json={"parent_id": wing.id})
+
+        assert response.status_code == 200
+        assert response.json()["parent_id"] == wing.id
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_cycle_already_in_the_database_does_not_hang_the_roll_up(
+        self, async_client: AsyncClient, project_factory, db_session
+    ):
+        """Databases written before the guard was widened can hold A -> B -> A.
+        Reading one has to terminate, not spin."""
+        from sqlalchemy import update as sa_update
+
+        from backend.app.models.project import Project
+
+        first = await project_factory(name="First")
+        second = await project_factory(name="Second", parent_id=first.id)
+        # Straight to the table: the API now refuses to write this.
+        await db_session.execute(sa_update(Project).where(Project.id == first.id).values(parent_id=second.id))
+        await db_session.commit()
+
+        response = await async_client.get(f"/api/v1/projects/{first.id}")
+
+        assert response.status_code == 200
+        assert response.json()["descendant_count"] == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_deleting_a_middle_layer_promotes_its_children(
+        self, async_client: AsyncClient, project_factory, db_session
+    ):
+        """Collapse the tree by one rather than scattering the branch."""
+        from sqlalchemy import select
+
+        from backend.app.models.project import Project
+
+        master = await project_factory(name="Airframe")
+        wing = await project_factory(name="Wing", parent_id=master.id)
+        spar = await project_factory(name="Spar", parent_id=wing.id)
+        # Read the ids out before expiring: an expired instance refreshes itself
+        # on attribute access, which is a lazy load in a sync frame.
+        master_id, spar_id = master.id, spar.id
+
+        response = await async_client.delete(f"/api/v1/projects/{wing.id}")
+        assert response.status_code == 200
+
+        db_session.expire_all()
+        parent_id = (await db_session.execute(select(Project.parent_id).where(Project.id == spar_id))).scalar_one()
+        assert parent_id == master_id
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_deleting_a_top_level_project_frees_its_children(
+        self, async_client: AsyncClient, project_factory, db_session
+    ):
+        """Nothing to promote to, so the child becomes top-level — and the
+        delete has to succeed at all, which the bare FK would have refused."""
+        from sqlalchemy import select
+
+        from backend.app.models.project import Project
+
+        master = await project_factory(name="Airframe")
+        wing = await project_factory(name="Wing", parent_id=master.id)
+        wing_id = wing.id  # See the sibling test: expiring invalidates the instance.
+
+        response = await async_client.delete(f"/api/v1/projects/{master.id}")
+        assert response.status_code == 200
+
+        db_session.expire_all()
+        parent_id = (await db_session.execute(select(Project.parent_id).where(Project.id == wing_id))).scalar_one()
+        assert parent_id is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_the_grid_can_tell_a_sub_project_from_a_top_level_one(
+        self, async_client: AsyncClient, project_factory
+    ):
+        """Without these the list view shows eight sub-projects as eight
+        unrelated ones."""
+        master = await project_factory(name="Airframe")
+        await project_factory(name="Wing", parent_id=master.id)
+
+        rows = {p["name"]: p for p in (await async_client.get("/api/v1/projects/")).json()}
+
+        assert rows["Airframe"]["parent_id"] is None
+        assert rows["Airframe"]["child_count"] == 1
+        assert rows["Wing"]["parent_id"] == master.id
+        assert rows["Wing"]["child_count"] == 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_filtered_listing_still_admits_to_its_hidden_children(
+        self, async_client: AsyncClient, project_factory
+    ):
+        """A parent that claimed no children would invite deleting it as if
+        nothing hung off it."""
+        master = await project_factory(name="Airframe", status="active")
+        await project_factory(name="Wing", parent_id=master.id, status="completed")
+
+        rows = {p["name"]: p for p in (await async_client.get("/api/v1/projects/?status=active")).json()}
+
+        assert "Wing" not in rows
+        assert rows["Airframe"]["child_count"] == 1

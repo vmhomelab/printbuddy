@@ -417,10 +417,10 @@ describe('PrintersPage', () => {
       render(<PrintersPage />);
 
       await screen.findAllByText('Prusa CORE One');
-      expect(await screen.findByRole('button', { name: 'Files' })).toBeInTheDocument();
+      expect(await screen.findByRole('button', { name: /browse printer files/i })).toBeInTheDocument();
       expect(screen.getByRole('button', { name: 'Upload' })).toBeInTheDocument();
 
-      await user.click(screen.getByRole('button', { name: 'Files' }));
+      await user.click(screen.getByRole('button', { name: /browse printer files/i }));
 
       expect(await screen.findByText('File Manager')).toBeInTheDocument();
       expect(await screen.findByRole('combobox', { name: /Storage/i })).toHaveValue('usb');
@@ -456,9 +456,9 @@ describe('PrintersPage', () => {
       render(<PrintersPage />);
 
       await screen.findAllByText('K2 Plus');
-      expect(await screen.findByRole('button', { name: 'Files' })).toBeInTheDocument();
+      expect(await screen.findByRole('button', { name: /browse printer files/i })).toBeInTheDocument();
 
-      await user.click(screen.getByRole('button', { name: 'Files' }));
+      await user.click(screen.getByRole('button', { name: /browse printer files/i }));
 
       expect(await screen.findByText('File Manager')).toBeInTheDocument();
       expect(screen.getAllByText('K2 Plus').length).toBeGreaterThan(0);
@@ -1492,6 +1492,22 @@ describe('PrintersPage', () => {
         ]));
       });
     });
+
+    it('offers FTP file browsing when MQTT status is offline', async () => {
+      server.use(
+        http.get('/api/v1/printers/:id/status', () => {
+          return HttpResponse.json({ ...mockPrinterStatus, connected: false });
+        }),
+      );
+
+      render(<PrintersPage />);
+
+      const browseButtons = await screen.findAllByRole('button', { name: /browse printer files/i });
+      expect(browseButtons).toHaveLength(mockPrinters.length);
+      await userEvent.click(browseButtons[0]);
+
+      expect(await screen.findByText('File Manager')).toBeInTheDocument();
+    });
   });
 
   describe('printer info', () => {
@@ -1652,6 +1668,113 @@ describe('PrintersPage', () => {
         expect(screen.getByTitle('Chamber Fan')).toBeInTheDocument();
       });
     });
+
+    // P2S/X2D left auxiliary part cooling fan (airduct part id 10) — optional
+    // hardware, so the badge must only appear when the firmware reports it.
+    const renderWithStatus = (
+      printer: typeof mockPrinters[number],
+      status: Record<string, unknown>,
+    ) => {
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([printer])),
+        http.get('/api/v1/printers/:id/status', () => HttpResponse.json(status)),
+      );
+      render(<PrintersPage />);
+    };
+
+    it('shows the exhaust tile labeled "Exhaust" on P2S when the kit is present', async () => {
+      // Exhaust fan is an add-on kit; the tile appears only when the printer
+      // reports it (airduct part id 3 -> exhaust_fan_present).
+      renderWithStatus(
+        { ...mockPrinters[0], model: 'P2S' },
+        { ...statusWithFans, exhaust_fan_present: true },
+      );
+
+      await waitFor(() => {
+        expect(screen.getByTitle('Part Cooling Fan')).toBeInTheDocument();
+      });
+      expect(screen.getByTitle('Exhaust')).toBeInTheDocument();
+      expect(screen.queryByTitle('Chamber Fan')).not.toBeInTheDocument();
+    });
+
+    it('hides the exhaust tile on a base P2S without the kit', async () => {
+      renderWithStatus(
+        { ...mockPrinters[0], model: 'P2S' },
+        { ...statusWithFans, exhaust_fan_present: false },
+      );
+
+      await waitFor(() => {
+        expect(screen.getByTitle('Part Cooling Fan')).toBeInTheDocument();
+      });
+      expect(screen.queryByTitle('Exhaust')).not.toBeInTheDocument();
+      expect(screen.queryByTitle('Chamber Fan')).not.toBeInTheDocument();
+    });
+
+    it('keeps the always-on "Chamber Fan" tile on X1C regardless of exhaust_fan_present', async () => {
+      renderWithStatus(
+        { ...mockPrinters[0], model: 'X1C' },
+        { ...statusWithFans, exhaust_fan_present: false },
+      );
+
+      await waitFor(() => {
+        expect(screen.getByTitle('Chamber Fan')).toBeInTheDocument();
+      });
+      expect(screen.queryByTitle('Exhaust')).not.toBeInTheDocument();
+    });
+
+    it('hides the left aux badge when the accessory is not reported', async () => {
+      renderWithStatus({ ...mockPrinters[0], model: 'P2S' }, statusWithFans);
+
+      await waitFor(() => {
+        expect(screen.getByTitle('Part Cooling Fan')).toBeInTheDocument();
+      });
+      expect(screen.queryByTitle('Left Auxiliary Fan')).not.toBeInTheDocument();
+    });
+
+    it('orders the fan badges left-to-right: part, left aux, aux, exhaust', async () => {
+      // The two aux badges should read in the same order as the physical
+      // hardware, so the left fan sits before the right one.
+      renderWithStatus(
+        { ...mockPrinters[0], model: 'P2S' },
+        { ...statusWithFans, left_aux_fan_speed: 80, exhaust_fan_present: true },
+      );
+
+      await waitFor(() => {
+        expect(screen.getByTitle('Left Auxiliary Fan')).toBeInTheDocument();
+      });
+
+      const order = ['Part Cooling Fan', 'Left Auxiliary Fan', 'Auxiliary Fan', 'Exhaust'].map(
+        (title) => screen.getByTitle(title),
+      );
+      for (let i = 1; i < order.length; i++) {
+        // Node.compareDocumentPosition returns FOLLOWING (4) when the argument
+        // comes after the reference node in document order.
+        expect(order[i - 1].compareDocumentPosition(order[i])).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+      }
+    });
+
+    it('shows left aux fan badge when the accessory is installed (P2S)', async () => {
+      renderWithStatus(
+        { ...mockPrinters[0], model: 'P2S' },
+        { ...statusWithFans, left_aux_fan_speed: 80 },
+      );
+
+      await waitFor(() => {
+        expect(screen.getByTitle('Left Auxiliary Fan')).toBeInTheDocument();
+      });
+    });
+
+    it('shows left aux fan badge even at 0% while installed', async () => {
+      renderWithStatus(
+        { ...mockPrinters[0], model: 'P2S' },
+        { ...statusWithFans, left_aux_fan_speed: 0 },
+      );
+
+      await waitFor(() => {
+        expect(screen.getByTitle('Left Auxiliary Fan')).toBeInTheDocument();
+      });
+    });
+
   });
 
   describe('empty state', () => {
@@ -1729,6 +1852,47 @@ describe('PrintersPage', () => {
       });
 
       expect(screen.getAllByRole('button', { name: 'Mark plate as cleared' }).length).toBeGreaterThan(0);
+    });
+
+    it('offers the clear action on a powered-down printer (#2864)', async () => {
+      // Auto Power Off leaves exactly this: gate up, printer unreachable. The
+      // control used to be hidden here, so a plate cleared by hand could not be
+      // acknowledged until the printer was powered back on.
+      let awaitingPlateClear = true;
+      let cleared = false;
+
+      server.use(
+        http.get('/api/v1/printers/', () => {
+          return HttpResponse.json([mockPrinters[0]]);
+        }),
+        http.get('/api/v1/printers/:id/status', () => {
+          return HttpResponse.json({
+            ...mockPrinterStatus,
+            connected: false,
+            state: 'unknown',
+            awaiting_plate_clear: awaitingPlateClear,
+          });
+        }),
+        http.post('/api/v1/printers/:id/clear-plate', () => {
+          cleared = true;
+          awaitingPlateClear = false;
+          return HttpResponse.json({ success: true, message: 'Plate cleared' });
+        })
+      );
+
+      render(<PrintersPage />);
+
+      const clearButton = await screen.findByRole('button', { name: 'Mark plate as cleared' });
+
+      fireEvent.click(clearButton);
+
+      await waitFor(() => {
+        expect(cleared).toBe(true);
+      });
+
+      await waitFor(() => {
+        expect(screen.queryByRole('button', { name: 'Mark plate as cleared' })).not.toBeInTheDocument();
+      });
     });
 
     it('updates the plate clear status after using the printer card action', async () => {
@@ -2047,8 +2211,55 @@ describe('PrintersPage', () => {
       const rackLabel = screen.getAllByText('Nozzle Rack')[0];
       const rackCard = rackLabel.parentElement!;
       const slotRow = rackCard.querySelectorAll('div.flex')[0];
-      const slotTexts = Array.from(slotRow.querySelectorAll('span')).map(s => s.textContent);
+      // Match the diameter spans specifically — each chip also carries a slot
+      // number span, and a bare `span` sweep would interleave the two.
+      const slotTexts = Array.from(slotRow.querySelectorAll('span[data-rack-diameter]')).map(s => s.textContent);
       expect(slotTexts).toEqual(['—', '0.2', '0.6', '0.8', '1.0', '1.2']);
+    });
+
+    it('labels every rack position 1..6 regardless of which nozzles are present', async () => {
+      // The numbering is positional, not a count of what is loaded: the empty
+      // position keeps its number so "the nozzle in slot 4" means the same
+      // thing whether or not slots 1..3 are occupied.
+      server.use(
+        http.get('/api/v1/printers/:id/status', () => {
+          return HttpResponse.json(h2cStatus);
+        })
+      );
+
+      render(<PrintersPage />);
+
+      await waitFor(() => {
+        expect(screen.getAllByText('Nozzle Rack').length).toBeGreaterThan(0);
+      });
+
+      const rackLabel = screen.getAllByText('Nozzle Rack')[0];
+      const slotRow = rackLabel.parentElement!.querySelectorAll('div.flex')[0];
+      const numbers = Array.from(slotRow.querySelectorAll('span:not([data-rack-diameter])')).map(s => s.textContent);
+      expect(numbers).toEqual(['1', '2', '3', '4', '5', '6']);
+    });
+
+    it('sizes the rack chips from the card scale rather than a fixed 28px', async () => {
+      // The chips were hard-coded while the type and icons around them grow
+      // with the card size, so at L and XL the rack read as a shrunken strip
+      // next to neighbours that had grown by up to 40%.
+      server.use(
+        http.get('/api/v1/printers/:id/status', () => {
+          return HttpResponse.json(h2cStatus);
+        })
+      );
+
+      render(<PrintersPage />);
+
+      await waitFor(() => {
+        expect(screen.getAllByText('Nozzle Rack').length).toBeGreaterThan(0);
+      });
+
+      const rackLabel = screen.getAllByText('Nozzle Rack')[0];
+      const slotRow = rackLabel.parentElement!.querySelectorAll('div.flex')[0];
+      const chip = slotRow.querySelector('span[data-rack-diameter]')!.parentElement!;
+      expect(chip.className).toContain('w-[var(--pc-i7,28px)]');
+      expect(chip.className).toContain('h-[var(--pc-i7,28px)]');
     });
 
     it('hides nozzle rack when only L/R nozzles present (H2D)', async () => {

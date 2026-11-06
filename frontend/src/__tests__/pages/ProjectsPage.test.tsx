@@ -7,6 +7,7 @@ import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { render } from '../utils';
 import { ProjectsPage, ProjectModal } from '../../pages/ProjectsPage';
+import { eligibleParents } from '../../utils/projectTree';
 import { http, HttpResponse } from 'msw';
 import { server } from '../mocks/server';
 
@@ -464,6 +465,434 @@ describe('ProjectsPage', () => {
       // undefined would drop the key from the PATCH body and the backend would
       // keep the old tags — the field has to be cleared explicitly.
       expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ tags: null }));
+    });
+  });
+  describe('status tab badges (#2888)', () => {
+    // Every tab is counted from the whole fleet, not from the page below it.
+    const fleet = [
+      { ...mockProjects[0], id: 1, status: 'active' },
+      { ...mockProjects[1], id: 2, status: 'completed' },
+      { ...mockProjects[1], id: 3, name: 'Last Year', status: 'archived' },
+      { ...mockProjects[1], id: 4, name: 'Year Before', status: 'archived' },
+    ];
+
+    beforeEach(() => {
+      // Stands in for the API's own status filter, so `projects` really does
+      // hold one status at a time the way it does in the app.
+      server.use(
+        http.get('/api/v1/projects/', ({ request }) => {
+          const status = new URL(request.url).searchParams.get('status');
+          return HttpResponse.json(status ? fleet.filter((p) => p.status === status) : fleet);
+        }),
+      );
+    });
+
+    const badgeFor = (label: string) =>
+      screen.getByRole('button', { name: new RegExp(`^${label}`) }).querySelector('span:last-child');
+
+    it('counts the tabs the filter is hiding', async () => {
+      // The page opens on Active, so before this every other tab counted zero
+      // and dropped its badge -- the reporter's fleet of thirty finished
+      // projects showed Completed bare next to "Active 5".
+      render(<ProjectsPage />);
+
+      await waitFor(() => expect(badgeFor('Active')).toHaveTextContent('1'));
+      expect(badgeFor('Completed')).toHaveTextContent('1');
+      expect(badgeFor('Archived')).toHaveTextContent('2');
+      expect(badgeFor('All')).toHaveTextContent('4');
+    });
+
+    it('keeps the same counts after switching tabs', async () => {
+      const user = userEvent.setup();
+      render(<ProjectsPage />);
+      await waitFor(() => expect(badgeFor('Archived')).toHaveTextContent('2'));
+
+      await user.click(screen.getByRole('button', { name: /^Archived/ }));
+
+      // Only the page below changes; the badges describe the fleet either way.
+      await waitFor(() => expect(screen.getByText('Last Year')).toBeInTheDocument());
+      expect(badgeFor('Active')).toHaveTextContent('1');
+      expect(badgeFor('Completed')).toHaveTextContent('1');
+      expect(badgeFor('All')).toHaveTextContent('4');
+    });
+  });
+
+  describe('nesting projects under a master project (#1264)', () => {
+    const listItem = (over: Record<string, unknown>) => ({
+      id: 1,
+      name: 'Airframe',
+      description: null,
+      color: '#00ae42',
+      status: 'active',
+      target_count: null,
+      target_parts_count: null,
+      target_sets: null,
+      budget: null,
+      tags: null,
+      due_date: null,
+      priority: 'normal',
+      created_at: '2024-01-01T00:00:00Z',
+      archive_count: 0,
+      total_items: 0,
+      completed_count: 0,
+      failed_count: 0,
+      queue_count: 0,
+      progress_percent: null,
+      parent_id: null,
+      child_count: 0,
+      archives: [],
+      url: null,
+      cover_image_filename: null,
+      ...over,
+    });
+
+    describe('eligibleParents', () => {
+      it('offers every other project when creating a new one', () => {
+        const projects = [listItem({ id: 1 }), listItem({ id: 2, name: 'Wing' })];
+
+        expect(eligibleParents(projects, undefined).map((p) => p.id)).toEqual([1, 2]);
+      });
+
+      it('never offers the project itself', () => {
+        const projects = [listItem({ id: 1 }), listItem({ id: 2, name: 'Wing' })];
+
+        expect(eligibleParents(projects, 1).map((p) => p.id)).toEqual([2]);
+      });
+
+      it('never offers a project already nested underneath', () => {
+        // The API rejects a cycle, so offering one would only produce an error
+        // the user can do nothing about.
+        const projects = [
+          listItem({ id: 1 }),
+          listItem({ id: 2, name: 'Wing', parent_id: 1 }),
+          listItem({ id: 3, name: 'Unrelated' }),
+        ];
+
+        expect(eligibleParents(projects, 1).map((p) => p.id)).toEqual([3]);
+      });
+
+      it('excludes a grandchild listed before its own parent', () => {
+        // Reversion-proof for a single-pass version: the list arrives in update
+        // order, so a grandchild can precede the parent that blocks it.
+        const projects = [
+          listItem({ id: 3, name: 'Spar', parent_id: 2 }),
+          listItem({ id: 2, name: 'Wing', parent_id: 1 }),
+          listItem({ id: 1 }),
+        ];
+
+        expect(eligibleParents(projects, 1)).toEqual([]);
+      });
+    });
+
+    it('sends 0 to clear a parent, because null would read as omitted', async () => {
+      const user = userEvent.setup();
+      const onSave = vi.fn();
+      server.use(http.get('/api/v1/projects/', () => HttpResponse.json([listItem({ id: 9, name: 'Other' })])));
+
+      render(
+        <ProjectModal
+          project={listItem({ id: 1, parent_id: 9 })}
+          onClose={() => {}}
+          onSave={onSave as never}
+          isLoading={false}
+          currencySymbol="EUR"
+          t={((k: string) => k) as never}
+        />,
+      );
+
+      const parentSelect = () =>
+        Array.from(document.querySelectorAll('select')).find((s) =>
+          s.querySelector('option[value=""]'),
+        ) as HTMLSelectElement;
+      await waitFor(() => expect(parentSelect().value).toBe('9'));
+
+      await user.selectOptions(parentSelect(), '');
+      await user.click(screen.getByRole('button', { name: 'common.save' }));
+
+      expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ parent_id: 0 }));
+    });
+
+    it('draws a sub-project inside its parent group, not loose in the grid', async () => {
+      server.use(
+        http.get('/api/v1/projects/', () =>
+          HttpResponse.json([
+            listItem({ id: 1, name: 'Airframe', child_count: 1 }),
+            listItem({ id: 2, name: 'Wing', parent_id: 1 }),
+          ]),
+        ),
+      );
+
+      render(<ProjectsPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Sub-projects of Airframe')).toBeInTheDocument();
+      });
+      // Two cards sitting columns apart cannot show that they belong together,
+      // however they are captioned — the child has to be physically inside the
+      // parent's group.
+      const group = screen.getByText('Sub-projects of Airframe').closest('.col-span-full');
+      expect(group).not.toBeNull();
+      expect(group!.textContent).toContain('Wing');
+      // And the caption is then redundant.
+      expect(screen.queryByText('Part of Airframe')).not.toBeInTheDocument();
+    });
+
+    it('keeps a sub-project visible when the filter hides its parent', async () => {
+      server.use(
+        http.get('/api/v1/projects/', ({ request }) => {
+          const status = new URL(request.url).searchParams.get('status');
+          const all = [
+            listItem({ id: 1, name: 'Airframe', status: 'completed', child_count: 1 }),
+            listItem({ id: 2, name: 'Wing', parent_id: 1 }),
+          ];
+          return HttpResponse.json(status ? all.filter((p) => p.status === status) : all);
+        }),
+      );
+
+      // The page opens on the Active filter, which already hides the completed
+      // parent and leaves its active child with nowhere to nest.
+      render(<ProjectsPage />);
+
+      // Nothing to nest under, so it stays a top-level card — and then the
+      // caption is the only thing that can say where it belongs.
+      await waitFor(() => {
+        expect(screen.getByText('Part of Airframe')).toBeInTheDocument();
+      });
+      expect(screen.queryByText('Sub-projects of Airframe')).not.toBeInTheDocument();
+    });
+
+    it('still shows every project when the data holds a parent cycle', async () => {
+      // Grouping hides anything that has a visible parent, and a cycle has no
+      // root — so A -> B -> A would take both projects off the page entirely.
+      // A database written before the API refused a cycle can still hold one.
+      server.use(
+        http.get('/api/v1/projects/', () =>
+          HttpResponse.json([
+            listItem({ id: 1, name: 'Alpha', parent_id: 2 }),
+            listItem({ id: 2, name: 'Beta', parent_id: 1 }),
+          ]),
+        ),
+      );
+
+      render(<ProjectsPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Alpha')).toBeInTheDocument();
+      });
+      // Exactly once each: following the cycle round would redraw them.
+      expect(screen.getAllByText('Alpha')).toHaveLength(1);
+      expect(screen.getAllByText('Beta')).toHaveLength(1);
+    });
+
+    it('nests a grandchild under its own parent, not under the top of the tree', async () => {
+      server.use(
+        http.get('/api/v1/projects/', () =>
+          HttpResponse.json([
+            listItem({ id: 1, name: 'Airframe', child_count: 1 }),
+            listItem({ id: 2, name: 'Wing', parent_id: 1, child_count: 1 }),
+            listItem({ id: 3, name: 'Spar', parent_id: 2 }),
+          ]),
+        ),
+      );
+
+      render(<ProjectsPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Sub-projects of Wing')).toBeInTheDocument();
+      });
+      const wingGroup = screen.getByText('Sub-projects of Wing').closest('.col-span-full');
+      expect(wingGroup!.textContent).toContain('Spar');
+      // Flattening every descendant onto the root would lose the depth.
+      expect(wingGroup!.textContent).not.toContain('Airframe');
+    });
+
+    describe('folding sub-project groups away (#2991)', () => {
+      // localStorage is globally mocked in setup.ts, so each test programs the
+      // preference it wants explicitly.
+      const getItemMock = localStorage.getItem as ReturnType<typeof vi.fn>;
+      const setItemMock = localStorage.setItem as ReturnType<typeof vi.fn>;
+
+      beforeEach(() => {
+        getItemMock.mockReset();
+        setItemMock.mockReset();
+      });
+
+      // The mock is module-global: an implementation left behind here would
+      // silently collapse the groups of every later test.
+      afterEach(() => {
+        getItemMock.mockReset();
+        setItemMock.mockReset();
+      });
+
+      const serveAirframe = () =>
+        server.use(
+          http.get('/api/v1/projects/', () =>
+            HttpResponse.json([
+              listItem({ id: 1, name: 'Airframe', child_count: 1 }),
+              listItem({ id: 2, name: 'Wing', parent_id: 1 }),
+            ]),
+          ),
+        );
+
+      it('leaves groups open when no preference has been stored', async () => {
+        getItemMock.mockReturnValue(null);
+        serveAirframe();
+
+        render(<ProjectsPage />);
+
+        await waitFor(() => {
+          expect(screen.getByText('Sub-projects of Airframe')).toBeInTheDocument();
+        });
+        // The page behaved this way before the toggle existed, and an upgrade
+        // that hides half of somebody's projects is not a fix.
+        expect(screen.getByText('Wing')).toBeInTheDocument();
+      });
+
+      it('opens with the groups shut when that is what was stored', async () => {
+        getItemMock.mockImplementation((key: string) =>
+          key === 'projects-collapse-subprojects' ? 'true' : null,
+        );
+        serveAirframe();
+
+        render(<ProjectsPage />);
+
+        await waitFor(() => {
+          expect(screen.getByText('Sub-projects of Airframe')).toBeInTheDocument();
+        });
+        // The caption stays — it is the way back in, and it says what is behind
+        // it. Only the cards go.
+        expect(screen.queryByText('Wing')).not.toBeInTheDocument();
+      });
+
+      it('shuts one group from its own caption, leaving the others alone', async () => {
+        getItemMock.mockReturnValue(null);
+        server.use(
+          http.get('/api/v1/projects/', () =>
+            HttpResponse.json([
+              listItem({ id: 1, name: 'Airframe', child_count: 1 }),
+              listItem({ id: 2, name: 'Wing', parent_id: 1 }),
+              listItem({ id: 3, name: 'Fuselage', child_count: 1 }),
+              listItem({ id: 4, name: 'Bulkhead', parent_id: 3 }),
+            ]),
+          ),
+        );
+        const user = userEvent.setup();
+
+        render(<ProjectsPage />);
+
+        await waitFor(() => {
+          expect(screen.getByText('Wing')).toBeInTheDocument();
+        });
+
+        await user.click(screen.getByRole('button', { name: /Sub-projects of Airframe/ }));
+
+        await waitFor(() => {
+          expect(screen.queryByText('Wing')).not.toBeInTheDocument();
+        });
+        expect(screen.getByText('Bulkhead')).toBeInTheDocument();
+        // A per-group chevron is a passing choice, not a new default for the
+        // whole page.
+        expect(setItemMock).not.toHaveBeenCalledWith('projects-collapse-subprojects', 'true');
+      });
+
+      it('remembers the default the pill sets', async () => {
+        getItemMock.mockReturnValue(null);
+        const user = userEvent.setup();
+        serveAirframe();
+
+        render(<ProjectsPage />);
+
+        await waitFor(() => {
+          expect(screen.getByText('Wing')).toBeInTheDocument();
+        });
+
+        await user.click(screen.getByRole('button', { name: 'Collapse' }));
+
+        await waitFor(() => {
+          expect(screen.queryByText('Wing')).not.toBeInTheDocument();
+        });
+        expect(setItemMock).toHaveBeenCalledWith('projects-collapse-subprojects', 'true');
+      });
+
+      it('drops per-group choices when the default is flipped against them', async () => {
+        getItemMock.mockReturnValue(null);
+        const user = userEvent.setup();
+        serveAirframe();
+
+        render(<ProjectsPage />);
+
+        await waitFor(() => {
+          expect(screen.getByText('Wing')).toBeInTheDocument();
+        });
+
+        // Shut this one by hand, then ask for everything shut, then everything
+        // open again. The hand-made choice was made against the old default,
+        // and honouring it now would leave a group defying the pill the user
+        // just pressed.
+        await user.click(screen.getByRole('button', { name: /Sub-projects of Airframe/ }));
+        await waitFor(() => {
+          expect(screen.queryByText('Wing')).not.toBeInTheDocument();
+        });
+
+        await user.click(screen.getByRole('button', { name: 'Collapse' }));
+        await user.click(screen.getByRole('button', { name: 'Collapse' }));
+
+        await waitFor(() => {
+          expect(screen.getByText('Wing')).toBeInTheDocument();
+        });
+      });
+
+      it('counts what the chevron actually unfolds, not the card badge', async () => {
+        // The API counts sub-projects across every status on purpose, so the
+        // card badge says 2 while the Active filter leaves one child to show.
+        // A caption repeating the badge would promise a card that is not there.
+        getItemMock.mockImplementation((key: string) =>
+          key === 'projects-collapse-subprojects' ? 'true' : null,
+        );
+        server.use(
+          http.get('/api/v1/projects/', ({ request }) => {
+            const status = new URL(request.url).searchParams.get('status');
+            const all = [
+              listItem({ id: 1, name: 'Airframe', child_count: 2 }),
+              listItem({ id: 2, name: 'Wing', parent_id: 1 }),
+              listItem({ id: 3, name: 'Tailplane', parent_id: 1, status: 'archived' }),
+            ];
+            return HttpResponse.json(status ? all.filter((p) => p.status === status) : all);
+          }),
+        );
+
+        render(<ProjectsPage />);
+
+        const caption = await screen.findByRole('button', { name: /Sub-projects of Airframe/ });
+        expect(caption.textContent).toContain('1');
+        expect(caption.textContent).not.toContain('2');
+      });
+
+      it('gives a shut group one grid cell instead of a whole row', async () => {
+        // Folding a tree that still spends a full-width row per parent halves
+        // the scrolling at best; the point is to get the page back.
+        getItemMock.mockImplementation((key: string) =>
+          key === 'projects-collapse-subprojects' ? 'true' : null,
+        );
+        serveAirframe();
+
+        render(<ProjectsPage />);
+
+        const caption = await screen.findByRole('button', { name: /Sub-projects of Airframe/ });
+        expect(caption.closest('.col-span-full')).toBeNull();
+      });
+
+      it('offers no pill on a page where nothing is nested', async () => {
+        getItemMock.mockReturnValue(null);
+
+        render(<ProjectsPage />);
+
+        await waitFor(() => {
+          expect(screen.getByText('Functional Parts')).toBeInTheDocument();
+        });
+        // A control that cannot change anything is just one more thing to read.
+        expect(screen.queryByRole('button', { name: 'Collapse' })).not.toBeInTheDocument();
+      });
     });
   });
 });

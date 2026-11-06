@@ -333,6 +333,50 @@ describe('matchesPrinterModelSuffix (#1649)', () => {
   });
 });
 
+describe('H2D Pro spelled H2DP in preset names (#2982)', () => {
+  const H2D_PRO = 'Bambu Lab H2D Pro 0.4 nozzle';
+  const H2D = 'Bambu Lab H2D 0.4 nozzle';
+  const idx = buildCompatibilityIndex(PRINTER_MODELS);
+
+  it('matches the preset-name spelling against the printer-name spelling', () => {
+    // The bundle names every H2D Pro process and filament "@BBL H2DP"; the
+    // printer preset, and PRINTER_MODEL_MAP with it, says "H2D Pro". Without
+    // the alias an H2D Pro read all 198 bundled processes as another
+    // printer's, and got an A1 process auto-picked.
+    expect(matchesPrinterModelSuffix('H2DP', 'H2D Pro')).toBe(true);
+    expect(matchesPrinterModelSuffix('H2D Pro', 'H2DP')).toBe(true);
+  });
+
+  it('does NOT collapse H2DP into the plain H2D', () => {
+    // Different machines. The nozzle-count and build-volume differences make
+    // their presets genuinely non-interchangeable.
+    expect(matchesPrinterModelSuffix('H2DP', 'H2D')).toBe(false);
+    expect(matchesPrinterModelSuffix('H2D', 'H2D Pro')).toBe(false);
+  });
+
+  it('classifies an @BBL H2DP process as compatible with an H2D Pro', () => {
+    expect(
+      presetCompatibility(
+        { name: '0.20mm Balanced Strength @BBL H2DP' },
+        'process',
+        H2D_PRO,
+        idx,
+      ),
+    ).toBe('match');
+  });
+
+  it('still classifies an @BBL H2DP process as a mismatch for a plain H2D', () => {
+    expect(
+      presetCompatibility(
+        { name: '0.20mm Balanced Strength @BBL H2DP' },
+        'process',
+        H2D,
+        idx,
+      ),
+    ).toBe('mismatch');
+  });
+});
+
 describe('presetCompatibility with Bambu cloud A1M rename (#1649)', () => {
   const A1_MINI = 'Bambu Lab A1 mini 0.4 nozzle';
   const A1 = 'Bambu Lab A1 0.4 nozzle';
@@ -483,5 +527,63 @@ describe('presetCompatibility — nozzle-only @<size> tag (#2628 follow-up)', ()
     expect(
       presetCompatibility({ name: 'My PLA @Bambu Lab X1 Carbon 0.4 nozzle' }, 'filament', P2S_04, idx),
     ).toBe('mismatch');
+  });
+});
+
+describe("presetCompatibility — BambuStudio's \"# \" user-clone prefix", () => {
+  const index = buildCompatibilityIndex(PRINTER_MODELS);
+  // Editing a system preset saves a copy under this name; .bbscfg bundle
+  // exports use the same convention. The backend already normalises it in
+  // _canonical_printer_model.
+  const CLONED_X1C = '# Bambu Lab X1 Carbon 0.4 nozzle';
+
+  it('still matches a printer-tagged preset when the printer is a clone', () => {
+    // Regression: the prefix failed the "Bambu Lab …" test, so every preset
+    // came back 'unknown' and the dropdown filter silently did nothing.
+    expect(
+      presetCompatibility({ name: '0.20mm Standard @BBL X1C' }, 'process', CLONED_X1C, index),
+    ).toBe('match');
+  });
+
+  it('still rules out another printer when the selected printer is a clone', () => {
+    expect(
+      presetCompatibility({ name: '0.20mm Standard @BBL H2D' }, 'process', CLONED_X1C, index),
+    ).toBe('mismatch');
+  });
+
+  it('matches a cloned preset against an unprefixed printer', () => {
+    expect(
+      presetCompatibility({ name: '# 0.20mm Standard @BBL X1C' }, 'process', X1C, index),
+    ).toBe('match');
+  });
+
+  it('still compares the nozzle size through the prefix', () => {
+    expect(
+      presetCompatibility({ name: '0.20mm Standard @BBL X1C 0.6 nozzle' }, 'process', CLONED_X1C, index),
+    ).toBe('mismatch');
+  });
+
+  it('matches compatible_printers with the prefix on either side', () => {
+    // A preset cloned from a system printer lists the *unprefixed* name; a raw
+    // comparison against the "# " form reads as a mismatch, which now hides
+    // the preset rather than merely demoting it.
+    expect(
+      presetCompatibility({ name: 'My Process', compatible_printers: [X1C] }, 'process', CLONED_X1C, index),
+    ).toBe('match');
+    expect(
+      presetCompatibility({ name: 'My Process', compatible_printers: [CLONED_X1C] }, 'process', X1C, index),
+    ).toBe('match');
+  });
+
+  it('does not let the prefix turn a genuine mismatch into a match', () => {
+    expect(
+      presetCompatibility({ name: 'My Process', compatible_printers: [P2S] }, 'process', CLONED_X1C, index),
+    ).toBe('mismatch');
+  });
+
+  it('leaves an untagged clone unknown rather than guessing', () => {
+    expect(
+      presetCompatibility({ name: '# My own profile' }, 'process', CLONED_X1C, index),
+    ).toBe('unknown');
   });
 });

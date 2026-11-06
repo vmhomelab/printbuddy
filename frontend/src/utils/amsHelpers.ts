@@ -33,6 +33,48 @@ export function normalizeColorForCompare(color: string | undefined): string {
 }
 
 /**
+ * Which side letter stands for a Filament Track Switch inlet: In-A reads as L,
+ * In-B as R.
+ *
+ * This labels the inlet's position, not the nozzle it feeds — the switch can
+ * route either inlet to either nozzle, and it never reports which pairing is
+ * live. Anywhere this letter is shown next to a hover target, the tooltip names
+ * the inlet outright so the two cannot be confused.
+ */
+export const FTS_INLET_SIDE = { A: 'L', B: 'R' } as const;
+
+/**
+ * Which extruder each switch inlet feeds. Out-A is the left hotend and Out-B the
+ * right one (measured on an H2C), and the inlet pairs with its own outlet in the
+ * switch's rest position. Mirrors `backend/app/utils/fts_routing.py`, which
+ * carries the full reasoning and the reason `fila_switch.out` cannot be used.
+ */
+const FTS_INLET_EXTRUDER: Record<string, number> = { A: 1, B: 0 };
+
+/**
+ * The extruder an AMS slot feeds, or undefined when it genuinely cannot be told.
+ *
+ * Undefined is not the same as extruder 0. K-profiles are per-nozzle, so a slot
+ * whose nozzle is unknown must not be silently treated as right-hand — that is
+ * what bound a left-nozzle profile to a slot sitting on the right.
+ */
+export function resolveSlotExtruder(
+  amsId: number,
+  trayId: number,
+  amsExtruderMap: Record<string, number> | undefined,
+  amsSwitchInlet: Record<string, string> | undefined
+): number | undefined {
+  // External holder: the tray id names the side. 254/Ext-L feeds extruder 1.
+  if (amsId === 255) return trayId === 0 || trayId === 1 ? 1 - trayId : undefined;
+
+  const mapped = amsExtruderMap?.[String(amsId)];
+  if (mapped !== undefined) return mapped;
+
+  const inlet = amsSwitchInlet?.[String(amsId)];
+  return inlet ? FTS_INLET_EXTRUDER[inlet.toUpperCase()] : undefined;
+}
+
+/**
  * AMS unit label using the codebase convention: "AMS-A / AMS-B / ..." for
  * regular AMS, "HT-A / HT-B / ..." for AMS-HT (single-tray modules with
  * IDs starting at 128). `trayCount` is required because the type can't be
@@ -115,6 +157,174 @@ export function colorsAreSimilar(
     Math.abs(g1 - g2) <= threshold &&
     Math.abs(b1 - b2) <= threshold
   );
+}
+
+const D65_WHITE: readonly [number, number, number] = [0.95047, 1.0, 1.08883];
+const LAB_DELTA = 6 / 29;
+
+/**
+ * Convert a hex colour to CIE L*a*b* under D65, or null if it is unusable.
+ *
+ * Alpha is dropped by `normalizeColorForCompare`, deliberately: the alpha a
+ * slicer writes for a transparent filament is not a colour the user chose, and
+ * counting it would stop a transparent filament matching itself.
+ */
+function hexToLab(color: string | undefined): [number, number, number] | null {
+  const hex = normalizeColorForCompare(color);
+  if (!hex || hex.length < 6) return null;
+
+  const channels = [0, 2, 4].map((i) => parseInt(hex.substring(i, i + 2), 16) / 255);
+  if (channels.some(Number.isNaN)) return null;
+
+  // sRGB gamma -> linear light.
+  const [r, g, b] = channels.map((c) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+
+  const xyz: [number, number, number] = [
+    0.4124564 * r + 0.3575761 * g + 0.1804375 * b,
+    0.2126729 * r + 0.7151522 * g + 0.072175 * b,
+    0.0193339 * r + 0.119192 * g + 0.9503041 * b,
+  ];
+
+  const f = (t: number) =>
+    t > LAB_DELTA ** 3 ? Math.cbrt(t) : t / (3 * LAB_DELTA * LAB_DELTA) + 4 / 29;
+  const [fx, fy, fz] = xyz.map((v, i) => f(v / D65_WHITE[i]));
+
+  return [116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)];
+}
+
+/**
+ * CIEDE2000 colour difference between two L*a*b* triples.
+ *
+ * Straight transcription of the CIE formulation with kL = kC = kH = 1, kept
+ * structurally identical to `perceptual_color_distance` in
+ * `backend/app/utils/color_utils.py` so the two can be read side by side. They
+ * must agree: the dialog must not promise a spool the scheduler would not pick.
+ */
+function ciede2000(lab1: [number, number, number], lab2: [number, number, number]): number {
+  const [l1, a1, b1] = lab1;
+  const [l2, a2, b2] = lab2;
+  const rad = (deg: number) => (deg * Math.PI) / 180;
+
+  const c1 = Math.hypot(a1, b1);
+  const c2 = Math.hypot(a2, b2);
+  const cBar7 = ((c1 + c2) / 2) ** 7;
+  const g = 0.5 * (1 - Math.sqrt(cBar7 / (cBar7 + 25 ** 7)));
+
+  const a1p = (1 + g) * a1;
+  const a2p = (1 + g) * a2;
+  const c1p = Math.hypot(a1p, b1);
+  const c2p = Math.hypot(a2p, b2);
+
+  const hue = (ap: number, bp: number) => {
+    if (ap === 0 && bp === 0) return 0;
+    const deg = (Math.atan2(bp, ap) * 180) / Math.PI;
+    return deg < 0 ? deg + 360 : deg;
+  };
+  const h1p = hue(a1p, b1);
+  const h2p = hue(a2p, b2);
+
+  const dlp = l2 - l1;
+  const dcp = c2p - c1p;
+
+  const chromaProduct = c1p * c2p;
+  let dhp = 0;
+  if (chromaProduct !== 0) {
+    dhp = h2p - h1p;
+    if (dhp > 180) dhp -= 360;
+    else if (dhp < -180) dhp += 360;
+  }
+  const dhpBig = 2 * Math.sqrt(chromaProduct) * Math.sin(rad(dhp) / 2);
+
+  const lBar = (l1 + l2) / 2;
+  const cBar = (c1p + c2p) / 2;
+
+  let hBar: number;
+  if (chromaProduct === 0) hBar = h1p + h2p;
+  else if (Math.abs(h1p - h2p) <= 180) hBar = (h1p + h2p) / 2;
+  else if (h1p + h2p < 360) hBar = (h1p + h2p + 360) / 2;
+  else hBar = (h1p + h2p - 360) / 2;
+
+  const t =
+    1 -
+    0.17 * Math.cos(rad(hBar - 30)) +
+    0.24 * Math.cos(rad(2 * hBar)) +
+    0.32 * Math.cos(rad(3 * hBar + 6)) -
+    0.2 * Math.cos(rad(4 * hBar - 63));
+
+  const cBarP7 = cBar ** 7;
+  const rc = 2 * Math.sqrt(cBarP7 / (cBarP7 + 25 ** 7));
+  const sl = 1 + (0.015 * (lBar - 50) ** 2) / Math.sqrt(20 + (lBar - 50) ** 2);
+  const sc = 1 + 0.045 * cBar;
+  const sh = 1 + 0.015 * cBar * t;
+  const rt = -Math.sin(rad(2 * (30 * Math.exp(-(((hBar - 275) / 25) ** 2))))) * rc;
+
+  const dL = dlp / sl;
+  const dC = dcp / sc;
+  const dH = dhpBig / sh;
+  return Math.sqrt(dL * dL + dC * dC + dH * dH + rt * dC * dH);
+}
+
+/**
+ * Perceptual distance between two hex colours, or null if either is unusable.
+ *
+ * Used to rank the candidates `colorsAreSimilar` admits. Eligibility stays the
+ * per-channel box that shipped; this only decides which of several eligible
+ * spools is closest, so no spool becomes usable or unusable because of it.
+ *
+ * It ranks by how far apart the colours *look*, not how far apart their numbers
+ * are. RGB distance overweights blue badly enough to invert the answer: against
+ * a required `#1E4821` green, a purple `#38202F` is the nearer of two eligible
+ * spools by RGB and four times the further once measured perceptually.
+ *
+ * The scale is CIEDE2000 delta-E, where ~1 is a just-noticeable difference —
+ * far smaller numbers than the RGB distances this replaced, and not comparable
+ * against an RGB threshold.
+ */
+export function colorDistance(
+  color1: string | undefined,
+  color2: string | undefined,
+): number | null {
+  const lab1 = hexToLab(color1);
+  const lab2 = hexToLab(color2);
+  if (!lab1 || !lab2) return null;
+  return ciede2000(lab1, lab2);
+}
+
+/**
+ * The closest colour match among `candidates`, or undefined if none is similar
+ * enough to qualify.
+ *
+ * Callers pass candidates in the order they already established — slot order,
+ * or the "prefer lowest remaining" sort. Ties keep the earliest of them, so
+ * that order survives as the tie-break and Prefer Lowest still decides between
+ * two equally close spools, which is the case it was actually for.
+ *
+ * This exists so the four matchers that pick a spool (`autoMatchFilament`,
+ * `computeAmsMapping`, `computeMappingWithOverrides`, `computeMatchDetails`)
+ * share one ranking rule instead of four copies of "first one within
+ * tolerance", which made the winner depend on AMS slot order.
+ */
+export function findNearestSimilar<T>(
+  candidates: T[],
+  requiredColor: string | undefined,
+  getColor: (candidate: T) => string | undefined,
+): T | undefined {
+  let best: T | undefined;
+  let bestDistance = Infinity;
+
+  for (const candidate of candidates) {
+    const color = getColor(candidate);
+    if (!colorsAreSimilar(color, requiredColor)) continue;
+    const distance = colorDistance(color, requiredColor);
+    if (distance === null) continue;
+    // Strict <: an equally close candidate never displaces an earlier one.
+    if (distance < bestDistance) {
+      best = candidate;
+      bestDistance = distance;
+    }
+  }
+
+  return best;
 }
 
 /**
@@ -369,11 +579,12 @@ export function autoMatchFilament(
   );
   const similarMatch = exactMatch
     ? undefined
-    : nozzleFilaments.find(
-        (f) =>
-          !usedTrayIds.has(f.globalTrayId) &&
-          filamentTypesCompatible(f.type, req.type) &&
-          colorsAreSimilar(f.color, req.color)
+    : findNearestSimilar(
+        nozzleFilaments.filter(
+          (f) => !usedTrayIds.has(f.globalTrayId) && filamentTypesCompatible(f.type, req.type),
+        ),
+        req.color,
+        (f) => f.color,
       );
   const typeOnlyMatch =
     exactMatch || similarMatch
@@ -429,10 +640,14 @@ export function installedNozzleDiameters(
  * the machine instead of assuming 0.4mm (#1899).
  *
  * On dual-nozzle printers (H2D) each AMS is bound to one extruder via
- * `ams_extruder_map` (amsId → extruder index, 0=left/primary, 1=right), so we
- * read that nozzle's diameter. Single-nozzle printers have no map entry and
- * fall back to the primary nozzle (index 0). Returns undefined when the printer
- * hasn't reported nozzle hardware yet, letting the caller keep its own default.
+ * `ams_extruder_map` (amsId → extruder index), so we read that nozzle's
+ * diameter. `status.nozzles` is indexed by extruder id -- [0] is the RIGHT
+ * hotend and [1] the left, measured on an H2D fitted with 0.4 left / 0.6 right
+ * -- so indexing it by the extruder is correct. (This comment used to say
+ * "0=left/primary, 1=right", which was backwards; the code was always right.)
+ * Single-nozzle printers have no map entry and fall back to index 0. Returns
+ * undefined when the printer hasn't reported nozzle hardware yet, letting the
+ * caller keep its own default.
  * Diameter is the bare decimal string the status carries, e.g. "0.4" / "0.6".
  */
 export function resolveSlotNozzleDiameter(
@@ -690,6 +905,34 @@ export function resolveLoadedFilamentInfo({
   }
 
   return null;
+}
+
+/**
+ * Does a stored slot preset still describe what is in the slot?
+ *
+ * `slot_preset_mappings` remembers the preset a slot was last configured with,
+ * and the AMS slot card shows that name ahead of anything the printer reports —
+ * which is what lets a slot keep a hand-picked name like "# Bambu PLA Matte
+ * @BBL H2C 0.4 nozzle (Custom)" instead of the plain catalog one. The cost is
+ * that a swapped spool leaves the previous spool's name on the card until the
+ * row is refetched, and until then a cached row outranks live telemetry.
+ *
+ * The printer's own `tray_info_idx` settles it, but only for official Bambu
+ * presets, where the two id forms differ by one letter (setting_id `GFSA01` ↔
+ * filament_id `GFA01`). A user preset genuinely carries two unrelated ids — a
+ * slot configured with `PFUSa3b8b0c664c142` reports `tray_info_idx=P8a85d5a` —
+ * and a local preset (`local_68`) has no printer-side id at all, so neither can
+ * be checked here and both keep the stored name. Same for a slot reporting no
+ * id (generic filament with no tag), which is the case the row exists for.
+ */
+export function slotPresetDescribesTray(
+  presetId: string | null | undefined,
+  trayInfoIdx: string | null | undefined,
+): boolean {
+  const preset = (presetId || '').split('_')[0].toUpperCase();
+  const tray = (trayInfoIdx || '').split('_')[0].toUpperCase();
+  if (!preset.startsWith('GFS') || !tray.startsWith('GF') || tray.startsWith('GFS')) return true;
+  return `GF${preset.slice(3)}` === tray;
 }
 
 export interface AmsTrayLike {

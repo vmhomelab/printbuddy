@@ -13,6 +13,7 @@ the contract for the cases that matter:
 from __future__ import annotations
 
 import json
+import logging
 import zipfile
 from pathlib import Path
 from unittest.mock import patch
@@ -63,6 +64,32 @@ async def _setup_archive_3mf(db_session, tmp_path: Path, filaments: list[dict]) 
     return archive
 
 
+async def _setup_library_3mf(db_session, base_dir: Path, filaments: list[dict], *, absolute: bool = False):
+    """Create a 3MF under ``base_dir`` and a LibraryFile row pointing at it.
+
+    Mirrors production storage: the file lands in
+    ``<base_dir>/archive/library/files/`` and the row stores the path
+    *relative* to base_dir, exactly as ``library.py`` writes it (#2779).
+    """
+    from backend.app.models.library import LibraryFile
+
+    rel_path = Path("archive/library/files/deficit_probe.gcode.3mf")
+    abs_path = base_dir / rel_path
+    abs_path.parent.mkdir(parents=True, exist_ok=True)
+    _write_3mf(abs_path, filaments)
+
+    lib_file = LibraryFile(
+        filename="deficit_probe.gcode.3mf",
+        file_path=str(abs_path) if absolute else str(rel_path),
+        file_type="3mf",
+        file_size=abs_path.stat().st_size,
+    )
+    db_session.add(lib_file)
+    await db_session.commit()
+    await db_session.refresh(lib_file)
+    return lib_file
+
+
 async def _spool(
     db_session,
     *,
@@ -103,10 +130,12 @@ async def _queue_item(
     archive: PrintArchive | None,
     ams_mapping: list[int] | None,
     plate_id: int | None = None,
+    library_file=None,
 ) -> PrintQueueItem:
     item = PrintQueueItem(
         printer_id=printer_id,
         archive_id=archive.id if archive else None,
+        library_file_id=library_file.id if library_file else None,
         ams_mapping=json.dumps(ams_mapping) if ams_mapping is not None else None,
         plate_id=plate_id,
         status="pending",
@@ -225,6 +254,88 @@ class TestFilamentDeficit:
             deficit = await compute_deficit_for_queue_item(db_session, item)
 
         assert deficit == []
+
+    @pytest.mark.asyncio
+    async def test_library_file_with_relative_path_is_checked(self, db_session, printer_factory, tmp_path):
+        """#2779: a Library-backed item stores its path relative to base_dir.
+
+        Resolving it against the process working directory finds nothing, and
+        "no source" is treated as "nothing to verify" — so the check returned
+        no deficit and the scheduler dispatched onto a spool that could not
+        finish the print. Every Slicer Pipeline item and everything queued via
+        the Library's Add to queue is library-backed, so the guard was absent
+        for all of them. Numbers are the reporter's: 20.5 g needed, 9 g left.
+        """
+        printer = await printer_factory()
+        lib_file = await _setup_library_3mf(
+            db_session,
+            tmp_path,
+            [{"id": "1", "type": "PLA", "color": "#FFFFFF", "used_g": "20.5"}],
+        )
+        assert not Path(lib_file.file_path).is_absolute()  # the shape that broke
+
+        spool = await _spool(db_session, label_weight=1000, weight_used=991.0)  # 9g left
+        await _assign(db_session, printer_id=printer.id, spool_id=spool.id, ams_id=0, tray_id=0)
+        item = await _queue_item(
+            db_session, printer_id=printer.id, archive=None, library_file=lib_file, ams_mapping=[0]
+        )
+
+        with patch("backend.app.services.filament_deficit.app_settings.base_dir", tmp_path):
+            deficit = await compute_deficit_for_queue_item(db_session, item)
+
+        assert len(deficit) == 1
+        assert deficit[0].required_grams == 20.5
+        assert deficit[0].remaining_grams == 9.0
+
+    @pytest.mark.asyncio
+    async def test_library_file_with_absolute_path_is_checked(self, db_session, printer_factory, tmp_path):
+        """The other half of the resolver: a row that already holds an absolute
+        path must not be joined onto base_dir a second time."""
+        printer = await printer_factory()
+        lib_file = await _setup_library_3mf(
+            db_session,
+            tmp_path,
+            [{"id": "1", "type": "PLA", "color": "#FFFFFF", "used_g": "100.0"}],
+            absolute=True,
+        )
+        spool = await _spool(db_session, label_weight=1000, weight_used=970.0)  # 30g left
+        await _assign(db_session, printer_id=printer.id, spool_id=spool.id, ams_id=0, tray_id=0)
+        item = await _queue_item(
+            db_session, printer_id=printer.id, archive=None, library_file=lib_file, ams_mapping=[0]
+        )
+
+        # A base_dir the file is NOT under — joining it on would break the path.
+        with patch("backend.app.services.filament_deficit.app_settings.base_dir", tmp_path / "elsewhere"):
+            deficit = await compute_deficit_for_queue_item(db_session, item)
+
+        assert len(deficit) == 1
+        assert deficit[0].required_grams == 100.0
+
+    @pytest.mark.asyncio
+    async def test_missing_source_is_logged_not_just_skipped(self, db_session, printer_factory, caplog):
+        """A source that is configured but absent still dispatches — the upload
+        would fail seconds later anyway, and wedging the queue on a missing
+        file is the worse trade. But it must not pass silently: skipping the
+        check without a trace is what let #2779 go unnoticed for every
+        library-backed item.
+        """
+        printer = await printer_factory()
+        archive = PrintArchive(
+            filename="ghost.3mf",
+            file_path="/nonexistent/ghost.3mf",
+            file_size=0,
+            status="completed",
+        )
+        db_session.add(archive)
+        await db_session.commit()
+        await db_session.refresh(archive)
+        item = await _queue_item(db_session, printer_id=printer.id, archive=archive, ams_mapping=[0])
+
+        with caplog.at_level(logging.WARNING, logger="backend.app.services.filament_deficit"):
+            deficit = await compute_deficit_for_queue_item(db_session, item)
+
+        assert deficit == []
+        assert any("ghost.3mf" in r.getMessage() for r in caplog.records)
 
     @pytest.mark.asyncio
     async def test_returns_empty_when_3mf_missing(self, db_session, printer_factory):
@@ -619,3 +730,494 @@ class TestFilamentDeficitBackupAware:
 
         # Pool (10 + 500 = 510 g) covers 200 g → no deficit.
         assert deficit == []
+
+
+class TestBuildSlotMaterials:
+    """``build_slot_materials`` is the pool the backup accounting draws on, and
+    the payload ``GET /printers/{id}/inventory-remain`` hands the PrintModal.
+
+    The modal used to resolve spools itself and knew nothing about AMS Filament
+    Backup, so it blocked prints the dispatcher would have run — two full eSUN
+    spools in A3/A4, 1441 g needed, "A3: needs 1441g, remaining 1000g". Both
+    sides now group on the keys this builder emits, so the modal's warning and
+    the dispatcher's 409 cannot disagree about what backs what up.
+    """
+
+    @pytest.mark.asyncio
+    async def test_internal_mode_emits_shared_key_for_same_preset_and_colour(self, db_session, printer_factory):
+        """The reporter's slots: same preset, same colour, adjacent trays."""
+        from backend.app.services.filament_deficit import build_slot_materials
+
+        printer = await printer_factory(model="H2D")
+        a3 = await _spool(db_session, label_weight=1000, weight_used=0.0, color="#616777FF", slicer_filament="PFUS6488")
+        a4 = await _spool(db_session, label_weight=1000, weight_used=0.0, color="#616777", slicer_filament="PFUS6488")
+        await _assign(db_session, printer_id=printer.id, spool_id=a3.id, ams_id=0, tray_id=2)
+        await _assign(db_session, printer_id=printer.id, spool_id=a4.id, ams_id=0, tray_id=3)
+
+        patches = TestFilamentDeficitBackupAware._patch_status(printer_id=printer.id, backup_on=True, model="H2D")
+        for p in patches:
+            p.start()
+        try:
+            slots = await build_slot_materials(db_session, printer.id)
+        finally:
+            for p in patches:
+                p.stop()
+
+        by_tray = {s.global_tray_id: s for s in slots}
+        assert set(by_tray) == {2, 3}
+        assert by_tray[2].material_key == by_tray[3].material_key
+        assert by_tray[2].remaining_grams == 1000.0
+        # Pooled, the two cover the 1441 g the modal refused to start.
+        assert sum(s.remaining_grams for s in slots) == 2000.0
+
+    @pytest.mark.asyncio
+    async def test_internal_mode_separates_colours_and_presetless_spools(self, db_session, printer_factory):
+        """Different colour, and no preset at all, must never share a key."""
+        from backend.app.services.filament_deficit import build_slot_materials
+
+        printer = await printer_factory(model="X1C")
+        black = await _spool(db_session, label_weight=1000, weight_used=0.0, color="#000000", slicer_filament="GFA00")
+        white = await _spool(db_session, label_weight=1000, weight_used=0.0, color="#FFFFFF", slicer_filament="GFA00")
+        untagged_a = await _spool(db_session, label_weight=1000, weight_used=0.0, color="#000000")
+        untagged_b = await _spool(db_session, label_weight=1000, weight_used=0.0, color="#000000")
+        for idx, spool in enumerate((black, white, untagged_a, untagged_b)):
+            await _assign(db_session, printer_id=printer.id, spool_id=spool.id, ams_id=0, tray_id=idx)
+
+        patches = TestFilamentDeficitBackupAware._patch_status(printer_id=printer.id, backup_on=True, model="X1C")
+        for p in patches:
+            p.start()
+        try:
+            slots = await build_slot_materials(db_session, printer.id)
+        finally:
+            for p in patches:
+                p.stop()
+
+        keys = [s.material_key for s in sorted(slots, key=lambda s: s.global_tray_id)]
+        assert len(set(keys)) == 4, keys
+
+    @pytest.mark.asyncio
+    async def test_internal_mode_scopes_extruder_on_dual_nozzle(self, db_session, printer_factory):
+        """Same material on opposite sides of an H2D can't back each other up."""
+        from backend.app.services.filament_deficit import build_slot_materials
+
+        printer = await printer_factory(model="H2D")
+        right = await _spool(db_session, label_weight=1000, weight_used=0.0, slicer_filament="GFA00")
+        left = await _spool(db_session, label_weight=1000, weight_used=0.0, slicer_filament="GFA00")
+        await _assign(db_session, printer_id=printer.id, spool_id=right.id, ams_id=0, tray_id=0)
+        await _assign(db_session, printer_id=printer.id, spool_id=left.id, ams_id=1, tray_id=0)
+
+        patches = TestFilamentDeficitBackupAware._patch_status(
+            printer_id=printer.id, backup_on=True, ams_extruder_map={"0": 0, "1": 1}, model="H2D"
+        )
+        for p in patches:
+            p.start()
+        try:
+            slots = await build_slot_materials(db_session, printer.id)
+        finally:
+            for p in patches:
+                p.stop()
+
+        by_tray = {s.global_tray_id: s for s in slots}
+        assert by_tray[0].material_key == by_tray[4].material_key  # same material...
+        assert {by_tray[0].extruder, by_tray[4].extruder} == {0, 1}  # ...different side
+
+    @pytest.mark.asyncio
+    async def test_internal_mode_omits_slots_with_no_usable_weight(self, db_session, printer_factory):
+        """A binding with no label weight is unknown, not empty — omit it so the
+        client can't read a missing slot as a zero-gram one."""
+        from backend.app.services.filament_deficit import build_slot_materials
+
+        printer = await printer_factory(model="X1C")
+        unweighed = await _spool(db_session, label_weight=0, weight_used=0.0, slicer_filament="GFA00")
+        ok = await _spool(db_session, label_weight=1000, weight_used=250.0, slicer_filament="GFA00")
+        await _assign(db_session, printer_id=printer.id, spool_id=unweighed.id, ams_id=0, tray_id=0)
+        await _assign(db_session, printer_id=printer.id, spool_id=ok.id, ams_id=0, tray_id=1)
+
+        patches = TestFilamentDeficitBackupAware._patch_status(printer_id=printer.id, backup_on=True, model="X1C")
+        for p in patches:
+            p.start()
+        try:
+            slots = await build_slot_materials(db_session, printer.id)
+        finally:
+            for p in patches:
+                p.stop()
+
+        assert [(s.global_tray_id, s.remaining_grams) for s in slots] == [(1, 750.0)]
+
+    @pytest.mark.asyncio
+    async def test_external_and_ht_slots_get_the_frontend_tray_numbering(self, db_session, printer_factory):
+        """``global_tray_id`` must match the client's ``getGlobalTrayId`` or the
+        modal looks up the wrong slot: 254+ for external, unit id for AMS-HT."""
+        from backend.app.services.filament_deficit import build_slot_materials
+
+        printer = await printer_factory(model="X1C")
+        ht = await _spool(db_session, label_weight=1000, weight_used=0.0, slicer_filament="GFA00")
+        ext = await _spool(db_session, label_weight=1000, weight_used=0.0, slicer_filament="GFA01")
+        await _assign(db_session, printer_id=printer.id, spool_id=ht.id, ams_id=128, tray_id=0)
+        await _assign(db_session, printer_id=printer.id, spool_id=ext.id, ams_id=255, tray_id=0)
+
+        patches = TestFilamentDeficitBackupAware._patch_status(printer_id=printer.id, backup_on=True, model="X1C")
+        for p in patches:
+            p.start()
+        try:
+            slots = await build_slot_materials(db_session, printer.id)
+        finally:
+            for p in patches:
+                p.stop()
+
+        assert sorted(s.global_tray_id for s in slots) == [128, 254]
+
+    @pytest.mark.asyncio
+    async def test_spoolman_mode_pools_on_filament_id_and_colour(self, db_session, printer_factory):
+        """Spoolman parity: same catalog filament + colour → one pool key."""
+        from unittest.mock import AsyncMock
+
+        from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
+        from backend.app.services.filament_deficit import build_slot_materials
+
+        printer = await printer_factory(model="H2D")
+        db_session.add(Settings(key="spoolman_enabled", value="true"))
+        for tray_id, spool_id in ((2, 68), (3, 69)):
+            db_session.add(
+                SpoolmanSlotAssignment(printer_id=printer.id, ams_id=0, tray_id=tray_id, spoolman_spool_id=spool_id)
+            )
+        await db_session.commit()
+
+        spools = {
+            68: {"id": 68, "remaining_weight": 1000.0, "filament": {"id": 7, "color_hex": "616777"}},
+            # Same catalog entry, colour spelled with alpha, weight via used_weight.
+            69: {"id": 69, "used_weight": 0.0, "filament": {"id": 7, "weight": 1000.0, "color_hex": "616777FF"}},
+        }
+        client = AsyncMock()
+        client.get_spool = AsyncMock(side_effect=lambda sid: spools[sid])
+
+        patches = TestFilamentDeficitBackupAware._patch_status(printer_id=printer.id, backup_on=True, model="H2D")
+        for p in patches:
+            p.start()
+        try:
+            with patch(
+                "backend.app.services.spoolman.get_spoolman_client",
+                AsyncMock(return_value=client),
+            ):
+                slots = await build_slot_materials(db_session, printer.id)
+        finally:
+            for p in patches:
+                p.stop()
+
+        assert len({s.material_key for s in slots}) == 1
+        assert sum(s.remaining_grams for s in slots) == 2000.0
+
+    @pytest.mark.asyncio
+    async def test_spoolman_unreachable_returns_no_slots(self, db_session, printer_factory):
+        """A Spoolman blip must read as "nothing to verify", never as an empty
+        AMS — the modal would otherwise warn on every slot while it's down."""
+        from unittest.mock import AsyncMock
+
+        from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
+        from backend.app.services.filament_deficit import build_slot_materials
+
+        printer = await printer_factory(model="X1C")
+        db_session.add(Settings(key="spoolman_enabled", value="true"))
+        db_session.add(SpoolmanSlotAssignment(printer_id=printer.id, ams_id=0, tray_id=0, spoolman_spool_id=1))
+        await db_session.commit()
+
+        patches = TestFilamentDeficitBackupAware._patch_status(printer_id=printer.id, backup_on=True, model="X1C")
+        for p in patches:
+            p.start()
+        try:
+            with patch(
+                "backend.app.services.spoolman.get_spoolman_client",
+                AsyncMock(return_value=None),
+            ):
+                slots = await build_slot_materials(db_session, printer.id)
+        finally:
+            for p in patches:
+                p.stop()
+
+        assert slots == []
+
+
+class TestSlotSpoolIdentity:
+    """The display half of ``build_slot_materials``.
+
+    A tray record has no brand field, and ``tray_sub_brands`` stays empty for
+    anything that isn't a Bambu spool, so a client naming a slot from telemetry
+    alone has only the type and a colour hex — which it resolves against
+    Bambu's own colour catalogue. The reporter's Devil Design PLA Basic Orange
+    therefore read as "PLA (Sunflower Yellow)" in the print dialog while the
+    printer card, which reads the assignment, named it correctly.
+
+    Descriptive only: nothing here takes part in matching, which stays on the
+    printer's telemetry so the dialog and the dispatcher cannot disagree.
+    """
+
+    @pytest.mark.asyncio
+    async def test_internal_mode_carries_what_the_printer_cannot_say(self, db_session, printer_factory):
+        """Brand and subtype exist nowhere in the telemetry for a third-party spool."""
+        from backend.app.services.filament_deficit import build_slot_materials
+
+        printer = await printer_factory(model="H2C")
+        spool = Spool(
+            brand="Devil Design",
+            material="PLA",
+            subtype="Basic",
+            color_name="Orange",
+            rgba="FEC600FF",
+            label_weight=1000,
+            weight_used=0.0,
+        )
+        db_session.add(spool)
+        await db_session.commit()
+        await db_session.refresh(spool)
+        await _assign(db_session, printer_id=printer.id, spool_id=spool.id, ams_id=2, tray_id=0)
+
+        patches = TestFilamentDeficitBackupAware._patch_status(printer_id=printer.id, backup_on=False, model="H2C")
+        for p in patches:
+            p.start()
+        try:
+            slots = await build_slot_materials(db_session, printer.id)
+        finally:
+            for p in patches:
+                p.stop()
+
+        assert len(slots) == 1
+        identity = slots[0].spool
+        assert identity is not None
+        assert identity.to_dict() == {
+            "brand": "Devil Design",
+            "material": "PLA",
+            "subtype": "Basic",
+            # The hex is FEC600, which is also Bambu's "Sunflower Yellow" —
+            # naming this slot from the hex is exactly the bug.
+            "color_name": "Orange",
+            "rgba": "FEC600FF",
+        }
+
+    @pytest.mark.asyncio
+    async def test_blank_fields_become_null_so_the_client_can_fall_back(self, db_session, printer_factory):
+        """Per-field, not all-or-nothing: an unnamed colour still falls back to
+        the catalogue lookup while the brand and subtype come from the spool."""
+        from backend.app.services.filament_deficit import build_slot_materials
+
+        printer = await printer_factory(model="H2C")
+        spool = Spool(
+            brand="  ",
+            material="PLA",
+            subtype="Silk+",
+            color_name=None,
+            rgba="5F6367FF",
+            label_weight=1000,
+            weight_used=0.0,
+        )
+        db_session.add(spool)
+        await db_session.commit()
+        await db_session.refresh(spool)
+        await _assign(db_session, printer_id=printer.id, spool_id=spool.id, ams_id=0, tray_id=2)
+
+        patches = TestFilamentDeficitBackupAware._patch_status(printer_id=printer.id, backup_on=False, model="H2C")
+        for p in patches:
+            p.start()
+        try:
+            slots = await build_slot_materials(db_session, printer.id)
+        finally:
+            for p in patches:
+                p.stop()
+
+        identity = slots[0].spool
+        assert identity is not None
+        assert identity.brand is None
+        assert identity.color_name is None
+        assert identity.subtype == "Silk+"
+
+    @pytest.mark.asyncio
+    async def test_spoolman_mode_reaches_the_same_shape(self, db_session, printer_factory):
+        """Parity (#1390): brand off the nested vendor, subtype from the
+        filament name with its material prefix stripped. Derived through
+        ``_map_spoolman_spool`` rather than re-read here, which is what stops
+        the two inventory modes drifting apart."""
+        from unittest.mock import AsyncMock
+
+        from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
+        from backend.app.services.filament_deficit import build_slot_materials
+
+        printer = await printer_factory(model="H2C")
+        db_session.add(Settings(key="spoolman_enabled", value="true"))
+        db_session.add(SpoolmanSlotAssignment(printer_id=printer.id, ams_id=2, tray_id=0, spoolman_spool_id=42))
+        await db_session.commit()
+
+        client = AsyncMock()
+        client.get_spool = AsyncMock(
+            return_value={
+                "id": 42,
+                "remaining_weight": 800.0,
+                "extra": {"bambu_color_name": '"Orange"'},
+                "filament": {
+                    "id": 7,
+                    "name": "PLA Basic",
+                    "material": "PLA",
+                    "color_hex": "FEC600",
+                    "weight": 1000,
+                    "vendor": {"id": 3, "name": "Devil Design"},
+                },
+            }
+        )
+
+        patches = TestFilamentDeficitBackupAware._patch_status(printer_id=printer.id, backup_on=False, model="H2C")
+        for p in patches:
+            p.start()
+        try:
+            with patch(
+                "backend.app.services.spoolman.get_spoolman_client",
+                AsyncMock(return_value=client),
+            ):
+                slots = await build_slot_materials(db_session, printer.id)
+        finally:
+            for p in patches:
+                p.stop()
+
+        identity = slots[0].spool
+        assert identity is not None
+        assert identity.brand == "Devil Design"
+        assert identity.material == "PLA"
+        assert identity.subtype == "Basic"
+        assert identity.color_name == "Orange"
+        assert identity.rgba == "FEC600FF"
+
+    @pytest.mark.asyncio
+    async def test_spoolman_synthesised_colour_name_is_dropped(self, db_session, printer_factory):
+        """Spoolman has no colour-name field, so `_map_spoolman_spool` falls
+        back to the subtype when nothing is stored. That reads fine in an
+        inventory list and badly as a colour — "Devil Design PLA Basic
+        (Basic)". Withheld, so the client names the hex as it did before."""
+        from unittest.mock import AsyncMock
+
+        from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
+        from backend.app.services.filament_deficit import build_slot_materials
+
+        printer = await printer_factory(model="H2C")
+        db_session.add(Settings(key="spoolman_enabled", value="true"))
+        db_session.add(SpoolmanSlotAssignment(printer_id=printer.id, ams_id=0, tray_id=0, spoolman_spool_id=9))
+        await db_session.commit()
+
+        client = AsyncMock()
+        # No extra.bambu_color_name and no filament.color_name — the two places
+        # a real one can come from.
+        client.get_spool = AsyncMock(
+            return_value={
+                "id": 9,
+                "remaining_weight": 500.0,
+                "filament": {
+                    "id": 2,
+                    "name": "PLA Basic",
+                    "material": "PLA",
+                    "color_hex": "FEC600",
+                    "vendor": {"id": 1, "name": "Devil Design"},
+                },
+            }
+        )
+
+        patches = TestFilamentDeficitBackupAware._patch_status(printer_id=printer.id, backup_on=False, model="H2C")
+        for p in patches:
+            p.start()
+        try:
+            with patch(
+                "backend.app.services.spoolman.get_spoolman_client",
+                AsyncMock(return_value=client),
+            ):
+                slots = await build_slot_materials(db_session, printer.id)
+        finally:
+            for p in patches:
+                p.stop()
+
+        identity = slots[0].spool
+        assert identity is not None
+        assert identity.subtype == "Basic"
+        assert identity.color_name is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"id": 1, "remaining_weight": 500.0, "filament": "PLA"},
+            {"id": 1, "remaining_weight": 500.0, "filament": {"id": 2}, "extra": "nope"},
+            {"id": 1, "remaining_weight": 500.0, "filament": {"id": 2}, "extra": {"tag": 12345}},
+            {"id": 1, "remaining_weight": 500.0, "filament": {"id": 2, "color_hex": 255}},
+            {"id": 1, "remaining_weight": 500.0, "filament": {"id": 2, "vendor": ["x"]}},
+        ],
+        ids=["filament-not-a-dict", "extra-not-a-dict", "tag-not-a-str", "hex-not-a-str", "vendor-not-a-dict"],
+    )
+    async def test_malformed_spoolman_payload_cannot_break_a_dispatch(self, db_session, printer_factory, payload):
+        """Naming a slot must never cost a queue start.
+
+        ``build_slot_materials`` is on the dispatch path — every queue start
+        runs it through ``compute_deficit_for_queue_item``. The mapper walks a
+        dozen nested wire fields, and each of these arrives as the wrong type
+        and raises AttributeError, not ValueError.
+        """
+        from unittest.mock import AsyncMock
+
+        from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
+        from backend.app.services.filament_deficit import build_slot_materials
+
+        printer = await printer_factory(model="X1C")
+        db_session.add(Settings(key="spoolman_enabled", value="true"))
+        db_session.add(SpoolmanSlotAssignment(printer_id=printer.id, ams_id=0, tray_id=0, spoolman_spool_id=1))
+        await db_session.commit()
+
+        client = AsyncMock()
+        client.get_spool = AsyncMock(return_value=payload)
+
+        patches = TestFilamentDeficitBackupAware._patch_status(printer_id=printer.id, backup_on=False, model="X1C")
+        for p in patches:
+            p.start()
+        try:
+            with patch(
+                "backend.app.services.spoolman.get_spoolman_client",
+                AsyncMock(return_value=client),
+            ):
+                slots = await build_slot_materials(db_session, printer.id)
+        finally:
+            for p in patches:
+                p.stop()
+
+        # The slot keeps its grams — only the name is lost.
+        assert len(slots) == 1
+        assert slots[0].remaining_grams == 500.0
+        assert slots[0].spool is None
+
+    @pytest.mark.asyncio
+    async def test_unreadable_spoolman_spool_keeps_the_slot_but_drops_the_name(self, db_session, printer_factory):
+        """A spool we cannot describe must not cost the slot its place in the
+        pool — the backup accounting still needs its grams. The client falls
+        back to telemetry for the name, exactly as before this existed."""
+        from unittest.mock import AsyncMock
+
+        from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
+        from backend.app.services.filament_deficit import build_slot_materials
+
+        printer = await printer_factory(model="X1C")
+        db_session.add(Settings(key="spoolman_enabled", value="true"))
+        db_session.add(SpoolmanSlotAssignment(printer_id=printer.id, ams_id=0, tray_id=0, spoolman_spool_id=5))
+        await db_session.commit()
+
+        client = AsyncMock()
+        # No id — `_map_spoolman_spool` raises, and only the naming is lost.
+        client.get_spool = AsyncMock(return_value={"remaining_weight": 500.0, "filament": {"id": 1}})
+
+        patches = TestFilamentDeficitBackupAware._patch_status(printer_id=printer.id, backup_on=False, model="X1C")
+        for p in patches:
+            p.start()
+        try:
+            with patch(
+                "backend.app.services.spoolman.get_spoolman_client",
+                AsyncMock(return_value=client),
+            ):
+                slots = await build_slot_materials(db_session, printer.id)
+        finally:
+            for p in patches:
+                p.stop()
+
+        assert len(slots) == 1
+        assert slots[0].remaining_grams == 500.0
+        assert slots[0].spool is None
+        assert slots[0].to_dict()["spool"] is None

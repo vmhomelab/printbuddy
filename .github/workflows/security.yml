@@ -82,8 +82,15 @@ jobs:
       - name: Build Docker image
         run: docker build -t printbuddy:security-scan .
 
+      # Printbuddy tracks Trivy `latest` rather than a pinned release. Old Trivy
+      # releases are deleted upstream — only the last handful of minors are
+      # kept — so a pin a few months stale still resolves as a tag but no
+      # longer has an asset behind it, and the install step exits 1 right
+      # after reporting it found the version (#2844). If you ever switch to a
+      # pin, bump it when it ages: a green run is not evidence the pin still
+      # works, because the binary comes back from the Actions cache.
       - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@v0.35.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: 'printbuddy:security-scan'
           format: 'sarif'
@@ -106,8 +113,9 @@ jobs:
           path: trivy-results.sarif
           retention-days: 30
 
+      # Keep in step with the scan above — see the note there before changing.
       - name: Run Trivy for Dockerfile/IaC
-        uses: aquasecurity/trivy-action@v0.35.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: 'config'
           scan-ref: '.'

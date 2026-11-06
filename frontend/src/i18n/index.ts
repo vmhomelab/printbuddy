@@ -9,12 +9,14 @@ import es from './locales/es';
 import fr from './locales/fr';
 import ja from './locales/ja';
 import it from './locales/it';
+import nl from './locales/nl';
 import ko from './locales/ko';
 import ptBR from './locales/pt-BR';
 import zhCN from './locales/zh-CN';
 import zhTW from './locales/zh-TW';
 import tr from './locales/tr';
 import ru from './locales/ru';
+import uk from './locales/uk';
 
 const resources = {
   en: { translation: en },
@@ -23,15 +25,17 @@ const resources = {
   fr: { translation: fr },
   ja: { translation: ja },
   it: { translation: it },
+  nl: { translation: nl },
   ko: { translation: ko },
   'pt-BR': { translation: ptBR },
   'zh-CN': { translation: zhCN },
   'zh-TW': { translation: zhTW },
   tr: { translation: tr },
   ru: { translation: ru },
+  uk: { translation: uk },
 };
 
-const SUPPORTED_LNGS = ['en', 'de', 'es', 'fr', 'ja', 'it', 'ko', 'pt-BR', 'ru', 'tr', 'zh-CN', 'zh-TW'];
+const SUPPORTED_LNGS = ['en', 'de', 'es', 'fr', 'ja', 'it', 'ko', 'nl', 'pt-BR', 'ru', 'tr', 'uk', 'zh-CN', 'zh-TW'];
 const APPLIANCE_CONSUMED_KEY = 'printbuddy_appliance_locale_consumed';
 
 i18n
@@ -105,9 +109,11 @@ export const availableLanguages = [
   { code: 'ja', name: 'Japanese', nativeName: '日本語' },
   { code: 'it', name: 'Italian', nativeName: 'Italiano' },
   { code: 'ko', name: 'Korean', nativeName: '한국어' },
+  { code: 'nl', name: 'Dutch', nativeName: 'Nederlands' },
   { code: 'pt-BR', name: 'Portuguese (Brazil)', nativeName: 'Português (Brasil)' },
   { code: 'zh-CN', name: 'Chinese (Simplified)', nativeName: '简体中文' },
   { code: 'zh-TW', name: 'Chinese (Traditional)', nativeName: '繁體中文' },
   { code: 'tr', name: 'Turkish', nativeName: 'Türkçe' },
   { code: 'ru', name: 'Russian', nativeName: 'Русский' },
+  { code: 'uk', name: 'Ukrainian', nativeName: 'Українська' },
 ];

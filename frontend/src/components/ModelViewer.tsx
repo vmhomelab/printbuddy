@@ -4,10 +4,49 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import JSZip from 'jszip';
 import { Loader2, RotateCcw, ZoomIn, ZoomOut } from 'lucide-react';
 import { Button } from './Button';
 import { getAuthToken } from '../api/client';
+
+/**
+ * Frame the camera on a bounding box.
+ *
+ * The previous heuristic was `maxDim * 1.8`, which ignores both the camera's
+ * field of view and the viewport's aspect ratio. In a tall, narrow panel the
+ * horizontal field of view is much narrower than the vertical one, so that
+ * distance pushed the model into the middle of the frame with a screenful of
+ * empty space above it. Solving the distance from the bounding *sphere*
+ * against both fields of view fills the frame at any viewport shape.
+ */
+function fitCameraToBox(
+  camera: THREE.PerspectiveCamera,
+  controls: OrbitControls,
+  box: THREE.Box3,
+  padding = 1.15,
+): void {
+  const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
+  // Circumscribed sphere: conservative, so the model never crops on rotation.
+  const radius = Math.max(size.length() / 2, 0.001);
+
+  const vFov = THREE.MathUtils.degToRad(camera.fov);
+  const hFov = 2 * Math.atan(Math.tan(vFov / 2) * camera.aspect);
+  const distance = padding * Math.max(radius / Math.sin(vFov / 2), radius / Math.sin(hFov / 2));
+
+  // Keep the established three-quarter view; only the distance changes.
+  const direction = new THREE.Vector3(0.7, 0.5, 0.7).normalize();
+  camera.position.copy(center).addScaledVector(direction, distance);
+  // Clip planes scaled to the subject, so a small model doesn't z-fight and a
+  // large one isn't sliced by the far plane.
+  camera.near = Math.max(distance / 1000, 0.01);
+  camera.far = distance + radius * 4;
+  camera.updateProjectionMatrix();
+
+  controls.target.copy(center);
+  controls.update();
+}
 
 interface BuildVolume {
   x: number;
@@ -524,14 +563,21 @@ function buildModelGroup(
   const group = new THREE.Group();
 
   // Create materials for each extruder color
-  const getMaterial = (extruder: number): THREE.MeshPhongMaterial => {
+  const getMaterial = (extruder: number): THREE.MeshStandardMaterial => {
     const defaultColor = '#00ae42';
     const colorStr = filamentColors?.[extruder] || defaultColor;
     // Convert hex color string to THREE.js color
     const color = new THREE.Color(colorStr);
-    return new THREE.MeshPhongMaterial({
+    // Matte plastic against the scene's environment map. Phong lit only by
+    // direct lights gave every same-facing surface an identical colour, which
+    // is what flattened models into silhouettes. Roughness is high because
+    // FDM prints are not glossy, but not 1.0 -- a little specular is what
+    // makes layer-scale surface detail legible.
+    return new THREE.MeshStandardMaterial({
       color,
-      shininess: 30,
+      roughness: 0.62,
+      metalness: 0.0,
+      envMapIntensity: 0.55,
       flatShading: false,
     });
   };
@@ -605,6 +651,7 @@ function buildModelGroup(
     if (mergedGeometry) {
       const material = getMaterial(extruder);
       const mesh = new THREE.Mesh(mergedGeometry, material);
+      mesh.castShadow = true;
       group.add(mesh);
     }
 
@@ -632,6 +679,12 @@ export function ModelViewer({
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
+  // Held so the environment map and its generator can be released on unmount;
+  // a PMREM render target is GPU memory the garbage collector cannot reclaim.
+  const pmremRef = useRef<THREE.PMREMGenerator | null>(null);
+  const environmentRef = useRef<THREE.Texture | null>(null);
+  const keyLightRef = useRef<THREE.DirectionalLight | null>(null);
+  const shadowCatcherRef = useRef<THREE.Mesh | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
   const modelGroupRef = useRef<THREE.Group | null>(null);
   const plateRef = useRef<THREE.Mesh | null>(null);
@@ -661,7 +714,18 @@ export function ModelViewer({
     // Renderer
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(width, height);
-    renderer.setPixelRatio(window.devicePixelRatio);
+    // Cap the device pixel ratio: a 3x phone screen quadruples the fragment
+    // load for no visible gain on a model this simple.
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    // Filmic tone mapping keeps the bright side of a saturated filament colour
+    // from clipping to white, which is what made every model read as flat paint.
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    // Deliberately below 1.0: RoomEnvironment is a bright white box, and
+    // anything at or above unity clipped the lit side of a saturated
+    // filament colour to white, draining the hue out of the model.
+    renderer.toneMappingExposure = 0.85;
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     container.appendChild(renderer.domElement);
     rendererRef.current = renderer;
 
@@ -671,17 +735,40 @@ export function ModelViewer({
     controls.dampingFactor = 0.05;
     controlsRef.current = controls;
 
-    // Lights
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
-    scene.add(ambientLight);
+    // Image-based lighting. A generated room gives the model a real light
+    // environment -- soft gradients across curved surfaces, a hint of
+    // reflection -- which is the single biggest difference between this and a
+    // desktop slicer's viewport. Two directional lights on flat ambient could
+    // never produce that; every surface facing the same way got the same
+    // colour, so the model read as a flat silhouette.
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    const environment = pmrem.fromScene(new RoomEnvironment(), 0.04);
+    scene.environment = environment.texture;
+    pmremRef.current = pmrem;
+    environmentRef.current = environment.texture;
 
-    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
-    directionalLight.position.set(100, 100, 100);
-    scene.add(directionalLight);
-
-    const directionalLight2 = new THREE.DirectionalLight(0xffffff, 0.4);
-    directionalLight2.position.set(-100, 50, -100);
-    scene.add(directionalLight2);
+    // One key light on top, purely for the contact shadow and a highlight
+    // direction; the environment supplies the fill.
+    // Mostly overhead. An oblique key threw a long shadow across the whole
+    // bed; a print sitting on a plate wants a contact shadow beneath it.
+    const keyLight = new THREE.DirectionalLight(0xffffff, 0.75);
+    keyLight.position.set(60, 260, 90);
+    keyLight.castShadow = true;
+    keyLight.shadow.mapSize.set(2048, 2048);
+    keyLight.shadow.bias = -0.0005;
+    keyLight.shadow.normalBias = 0.02;
+    // Three's default shadow camera is a +/-5 unit box; on a 256mm bed the
+    // model falls entirely outside it and no shadow is drawn at all.
+    const shadowExtent = Math.max(buildVolume.x, buildVolume.y) * 0.75;
+    keyLight.shadow.camera.left = -shadowExtent;
+    keyLight.shadow.camera.right = shadowExtent;
+    keyLight.shadow.camera.top = shadowExtent;
+    keyLight.shadow.camera.bottom = -shadowExtent;
+    keyLight.shadow.camera.near = 1;
+    keyLight.shadow.camera.far = shadowExtent * 6;
+    keyLight.shadow.camera.updateProjectionMatrix();
+    scene.add(keyLight);
+    keyLightRef.current = keyLight;
 
     // Grid - use the larger dimension for the grid size
     const gridSize = Math.max(buildVolume.x, buildVolume.y);
@@ -703,6 +790,21 @@ export function ModelViewer({
     plate.position.y = -0.5; // Slightly below Y=0 so models sit on top
     scene.add(plate);
     plateRef.current = plate;
+
+    // Dedicated shadow catcher just above the plate. The plate itself is an
+    // unlit MeshBasicMaterial and cannot receive shadows; ShadowMaterial draws
+    // nothing but the shadow, so the tinted plate shows through unchanged.
+    // Without a contact shadow the model reads as pasted onto the background
+    // rather than resting on the bed.
+    const shadowCatcher = new THREE.Mesh(
+      new THREE.PlaneGeometry(buildVolume.x, buildVolume.y),
+      new THREE.ShadowMaterial({ opacity: 0.22 }),
+    );
+    shadowCatcher.rotation.x = -Math.PI / 2;
+    shadowCatcher.position.y = -0.49;
+    shadowCatcher.receiveShadow = true;
+    scene.add(shadowCatcher);
+    shadowCatcherRef.current = shadowCatcher;
 
     // Animation loop - keep it simple for reliability
     let animationId: number;
@@ -787,11 +889,21 @@ export function ModelViewer({
       resizeObserver.disconnect();
       cancelAnimationFrame(animationId);
       controls.dispose();
+      // The environment map is a render target; disposing the renderer alone
+      // leaves it allocated on the GPU, and this viewer is opened and closed
+      // repeatedly from the file manager.
+      environmentRef.current?.dispose();
+      environmentRef.current = null;
+      pmremRef.current?.dispose();
+      pmremRef.current = null;
+      scene.environment = null;
       renderer.dispose();
       container.removeChild(renderer.domElement);
       modelGroupRef.current = null;
       plateRef.current = null;
       gridRef.current = null;
+      keyLightRef.current = null;
+      shadowCatcherRef.current = null;
     };
   }, [url, buildVolume, fileType, t]);
 
@@ -808,8 +920,14 @@ export function ModelViewer({
     const group = isStlModel
       ? (() => {
           const materialColor = filamentColors?.[0] || '#00ae42';
-          const material = new THREE.MeshPhongMaterial({ color: new THREE.Color(materialColor), shininess: 30 });
+          const material = new THREE.MeshStandardMaterial({
+            color: new THREE.Color(materialColor),
+            roughness: 0.62,
+            metalness: 0.0,
+            envMapIntensity: 0.55,
+          });
           const mesh = new THREE.Mesh(stlGeometry!, material);
+          mesh.castShadow = true;
           const stlGroup = new THREE.Group();
           stlGroup.add(mesh);
           return stlGroup;
@@ -872,21 +990,17 @@ export function ModelViewer({
       gridRef.current.position.z = plateCenterZ;
     }
 
+    // Follows the plate, or the shadow lands on empty space beside the bed.
+    if (shadowCatcherRef.current) {
+      shadowCatcherRef.current.position.x = plateCenterX;
+      shadowCatcherRef.current.position.z = plateCenterZ;
+    }
+
     // Recalculate bounding box after positioning
     const finalBox = new THREE.Box3().setFromObject(group);
-    const finalCenter = finalBox.getCenter(new THREE.Vector3());
-    const finalSize = finalBox.getSize(new THREE.Vector3());
 
     // Adjust camera to fit model
-    const maxDim = Math.max(finalSize.x, finalSize.y, finalSize.z);
-    const cameraDistance = maxDim * 1.8;
-    cameraRef.current.position.set(
-      finalCenter.x + cameraDistance * 0.7,
-      finalCenter.y + cameraDistance * 0.5,
-      finalCenter.z + cameraDistance * 0.7
-    );
-    controlsRef.current.target.copy(finalCenter);
-    controlsRef.current.update();
+    fitCameraToBox(cameraRef.current, controlsRef.current, finalBox);
 
     setLoading(false);
   }, [parsedData, stlGeometry, selectedPlateId, filamentColors, buildVolume]);

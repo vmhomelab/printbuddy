@@ -21,6 +21,7 @@ from backend.app.core.auth import (
     RequirePermissionIfAuthEnabled,
     _is_token_fresh,
     _validate_api_key,
+    apikey_effective_permissions,
     authenticate_user,
     authenticate_user_by_email,
     create_access_token,
@@ -30,12 +31,13 @@ from backend.app.core.auth import (
     get_user_by_email,
     get_user_by_username,
     is_jti_revoked,
+    resolve_apikey_owner,
     resolve_session_max_minutes,
     revoke_jti,
     security,
 )
 from backend.app.core.database import async_session, get_db
-from backend.app.core.permissions import ALL_PERMISSIONS
+from backend.app.core.oidc_env import env_bool
 from backend.app.models.auth_ephemeral import AuthEphemeralToken, AuthRateLimitEvent, EventType, TokenType
 from backend.app.models.group import Group
 from backend.app.models.settings import Settings
@@ -67,6 +69,7 @@ from backend.app.services.email_service import (
     save_smtp_settings,
     send_email,
 )
+from backend.app.services.finance_defaults import ensure_user_finance_defaults
 
 _logger = logging.getLogger(__name__)
 
@@ -87,17 +90,47 @@ def _user_to_response(user: User) -> UserResponse:
     )
 
 
-def _api_key_to_user_response(api_key) -> UserResponse:
-    """Create a synthetic admin UserResponse for a valid API key."""
+async def _api_key_to_user_response(db: AsyncSession, api_key) -> UserResponse:
+    """Describe a valid API key as the identity it actually carries (#1894).
+
+    Until 0.2.5 this returned a synthetic admin: ``id=0``, ``role="admin"``,
+    ``is_admin=True`` and every permission in the enum. That was wrong in both
+    directions. A key cannot perform administrative operations at all --
+    ``_check_apikey_permissions`` denies every permission that is not in the
+    scope allowlist -- so a client that builds its UI from this response (which
+    is exactly what a native client does) rendered admin actions that 403 on
+    use, and had no way to learn the id its own prints are filed under.
+
+    Now: identity comes from the key's owner, and ``permissions`` is the set the
+    key can genuinely exercise. ``is_admin`` is always False because no key can
+    reach an administrative route regardless of who owns it.
+
+    Legacy keys predating per-user ownership (``user_id IS NULL``) have no
+    identity to report, so they keep ``id=0`` and the ``api-key:`` username --
+    but they stop claiming admin. ``created_at`` describes the credential in
+    both branches, unchanged.
+    """
+    # Same resolution the permission gate uses, so what is reported here and
+    # what is enforced there cannot drift -- including the 403 when the owner
+    # has been deactivated, which makes the key dead rather than anonymous.
+    owner = await resolve_apikey_owner(db, api_key)
     return UserResponse(
-        id=0,
-        username=f"api-key:{api_key.key_prefix}",
+        id=owner.id if owner else 0,
+        username=owner.username if owner else f"api-key:{api_key.key_prefix}",
+        # Withheld on purpose: the owner's email is not needed to resolve
+        # identity, and this response is reachable by anyone holding the key.
         email=None,
-        role="admin",
+        # Deprecated free-text field; "user" is the existing value meaning
+        # "not an admin". Inventing an "api_key" role here would put a third
+        # value into a field callers compare against string literals.
+        role="user",
         is_active=True,
-        is_admin=True,
+        is_admin=False,
+        auth_source=getattr(owner, "auth_source", "local") if owner else "local",
+        # The key is not a group member -- listing the owner's groups would
+        # imply capabilities the key does not inherit.
         groups=[],
-        permissions=sorted(ALL_PERMISSIONS),
+        permissions=apikey_effective_permissions(api_key, owner),
         created_at=api_key.created_at.isoformat(),
     )
 
@@ -128,8 +161,16 @@ def _local_login_env_bypass() -> bool:
     an install whose SSO provider is unreachable. Accepted truthy values:
     ``true``, ``1``, ``yes`` (case-insensitive).
     """
-    raw = os.environ.get("PRINTBUDDY_LOCAL_LOGIN") or os.environ.get(_LEGACY_LOCAL_LOGIN_ENV, "")
-    return raw.strip().lower() in {"true", "1", "yes"}
+    # strict=False: this runs on the login/forgot-password request path, not at
+    # startup. An unrecognized value must fall back to "off" (the safe default),
+    # never raise -- a 500 on the recovery endpoint is the opposite of what this
+    # bypass is for. The Printbuddy name wins whenever it is set non-blank.
+    key = (
+        "PRINTBUDDY_LOCAL_LOGIN"
+        if (os.environ.get("PRINTBUDDY_LOCAL_LOGIN") or "").strip()
+        else _LEGACY_LOCAL_LOGIN_ENV
+    )
+    return env_bool(key, False, strict=False)
 
 
 def _get_client_ip(request: Request) -> str:
@@ -482,6 +523,9 @@ async def login(raw_request: Request, request: LoginRequest, response: Response,
                     if user and ldap_user:
                         # Update email and group mappings on each login
                         await _sync_ldap_user(db, user, ldap_user, ldap_config)
+                        # Keep finance defaults idempotently in sync for LDAP users
+                        # (wallet + private cost center + self-membership).
+                        await ensure_user_finance_defaults(db, user)
         except Exception as e:  # SEC-AUTH-EXC: LDAP failure sets ldap_user=None, downstream local-auth path runs with its own credential check (no implicit grant)
             import logging
 
@@ -635,8 +679,9 @@ async def get_current_user_info(
     """Get current user information.
 
     Accepts JWT tokens (via Authorization: Bearer header) and API keys
-    (via X-API-Key header or Authorization: Bearer bb_xxx).
-    API keys return a synthetic admin user with all permissions.
+    (via X-API-Key header or Authorization: Bearer bb_xxx). API keys report
+    their owner's identity and the permissions the key can actually exercise
+    -- see ``_api_key_to_user_response``.
     """
     import jwt
     from jwt.exceptions import PyJWTError as JWTError
@@ -645,7 +690,7 @@ async def get_current_user_info(
     if x_api_key:
         api_key = await _validate_api_key(db, x_api_key)
         if api_key:
-            return _api_key_to_user_response(api_key)
+            return await _api_key_to_user_response(db, api_key)
 
     # Check for Bearer token (could be JWT or API key)
     if credentials is not None:
@@ -654,7 +699,7 @@ async def get_current_user_info(
         if token.startswith("bb_"):
             api_key = await _validate_api_key(db, token)
             if api_key:
-                return _api_key_to_user_response(api_key)
+                return await _api_key_to_user_response(db, api_key)
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid API key",
@@ -1343,6 +1388,8 @@ async def _provision_ldap_user(db: AsyncSession, ldap_user, ldap_config) -> User
         new_user.groups = list(groups_result.scalars().all())
 
     db.add(new_user)
+    await db.flush()
+    await ensure_user_finance_defaults(db, new_user)
     await db.commit()
     await db.refresh(new_user)
     logger.info("Auto-provisioned LDAP user: %s (groups: %s)", new_user.username, mapped_group_names)

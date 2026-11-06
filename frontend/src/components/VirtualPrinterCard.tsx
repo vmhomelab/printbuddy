@@ -55,6 +55,7 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
   const [localModel, setLocalModel] = useState(printer.model || '');
   const [localAutoDispatch, setLocalAutoDispatch] = useState(printer.auto_dispatch ?? true);
   const [localQueueForceColorMatch, setLocalQueueForceColorMatch] = useState(printer.queue_force_color_match ?? false);
+  const [localSaveAmsMapping, setLocalSaveAmsMapping] = useState(printer.save_ams_mapping ?? false);
   const [localGcodeInjection, setLocalGcodeInjection] = useState(printer.gcode_injection ?? false);
   const [localTailscaleDisabled, setLocalTailscaleDisabled] = useState(printer.tailscale_disabled ?? true);
   const [showAccessCode, setShowAccessCode] = useState(false);
@@ -101,6 +102,7 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
       setLocalModel(printer.model || '');
       setLocalAutoDispatch(printer.auto_dispatch ?? true);
       setLocalQueueForceColorMatch(printer.queue_force_color_match ?? false);
+      setLocalSaveAmsMapping(printer.save_ams_mapping ?? false);
       setLocalGcodeInjection(printer.gcode_injection ?? false);
       setLocalTailscaleDisabled(printer.tailscale_disabled ?? true);
     }
@@ -133,6 +135,12 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
       setLocalTargetPrinterId(printer.target_printer_id);
       setLocalBindIp(printer.bind_ip || '');
       setLocalTailscaleDisabled(printer.tailscale_disabled ?? true);
+      // Queue-mode behaviour toggles. Without these the switch stays visually
+      // flipped after a failed save, so the card claims a setting the server
+      // never accepted.
+      setLocalQueueForceColorMatch(printer.queue_force_color_match ?? false);
+      setLocalSaveAmsMapping(printer.save_ams_mapping ?? false);
+      setLocalGcodeInjection(printer.gcode_injection ?? false);
       setPendingAction(null);
     },
   });
@@ -247,7 +255,14 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
 
   return (
     <>
-      <Card>
+      {/*
+        Clip at the border as a backstop, so a value longer than anything
+        anticipated above lands inside the card instead of on the page
+        background (#2808). Scoped here rather than added to `Card` itself:
+        half the cards in the app render dropdowns and menus that deliberately
+        paint outside their bounds, and this one has none.
+      */}
+      <Card className="overflow-hidden">
         {/* Collapsed header - always visible, clickable to expand */}
         <div
           className="px-4 py-3 flex items-center gap-3 cursor-pointer select-none"
@@ -260,23 +275,44 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
             }
           </button>
           <span className={`w-2 h-2 rounded-full flex-shrink-0 ${isRunning ? 'bg-green-400 animate-pulse' : 'bg-gray-500'}`} />
-          <span className="text-white font-medium truncate">{printer.name}</span>
-          <span className="text-xs text-bambu-gray flex-shrink-0">{modeLabel}</span>
-          {printer.model_name && (
-            <span className="text-xs text-bambu-gray flex-shrink-0">{printer.model_name}</span>
-          )}
-          {targetPrinterName && (
-            <span className="text-xs text-bambu-gray flex-shrink-0 truncate">
-              {localMode === 'proxy' && <ArrowRightLeft className="w-3 h-3 inline mr-1" />}
-              {targetPrinterName}
-            </span>
-          )}
-          {localBindIp && (
-            <span className="text-[10px] text-bambu-gray flex-shrink-0 font-mono">{localBindIp}</span>
-          )}
-          {localRemoteInterfaceIp && (
-            <span className="text-[10px] text-bambu-gray flex-shrink-0 font-mono">{localRemoteInterfaceIp}</span>
-          )}
+          {/*
+            Metadata wraps rather than overflowing (#2808). Every item in this
+            row used to be flex-shrink-0, so nothing could give and the row was
+            as wide as its contents -- which the Card doesn't clip, so the last
+            IP and the toggle were painted outside the card's border. The name's
+            `truncate` didn't save it either: a flex item defaults to
+            min-width:auto, so it couldn't shrink below its text and the
+            ellipsis never engaged (`flex-shrink-0 truncate` on the target name
+            was self-cancelling for the same reason).
+
+            It needs three things at once to overflow, which is why it took a
+            two-VLAN setup to surface: bind_ip and remote_interface_ip are both
+            set only when Printbuddy and the printer are on different subnets, a
+            printer adopted without a name is called "Printer at <ip>" (25
+            characters of unbreakable text), and the cards sit in a 3-column
+            grid. Wrapping keeps every value readable -- these are the addresses
+            an operator came to this page to check, so truncating them away
+            would trade one bug for a quieter one.
+          */}
+          <div className="flex-1 min-w-0 flex flex-wrap items-center gap-x-3 gap-y-1">
+            <span className="text-white font-medium truncate max-w-full">{printer.name}</span>
+            <span className="text-xs text-bambu-gray flex-shrink-0">{modeLabel}</span>
+            {printer.model_name && (
+              <span className="text-xs text-bambu-gray flex-shrink-0">{printer.model_name}</span>
+            )}
+            {targetPrinterName && (
+              <span className="text-xs text-bambu-gray truncate max-w-full">
+                {localMode === 'proxy' && <ArrowRightLeft className="w-3 h-3 inline mr-1" />}
+                {targetPrinterName}
+              </span>
+            )}
+            {localBindIp && (
+              <span className="text-[10px] text-bambu-gray flex-shrink-0 font-mono">{localBindIp}</span>
+            )}
+            {localRemoteInterfaceIp && (
+              <span className="text-[10px] text-bambu-gray flex-shrink-0 font-mono">{localRemoteInterfaceIp}</span>
+            )}
+          </div>
           <div className="ml-auto flex items-center gap-2 flex-shrink-0" onClick={(e) => e.stopPropagation()}>
             <button
               onClick={handleToggleEnabled}
@@ -432,6 +468,36 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
                     <span
                       className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform ${
                         localQueueForceColorMatch ? 'translate-x-5' : ''
+                      }`}
+                    />
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Save-AMS-mapping toggle - only for queue mode */}
+            {localMode === 'queue' && (
+              <div className="pt-2 border-t border-bambu-dark-tertiary">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-white text-sm font-medium">{t('virtualPrinter.saveAmsMapping.title')}</div>
+                    <div className="text-[10px] text-bambu-gray">{t('virtualPrinter.saveAmsMapping.description')}</div>
+                  </div>
+                  <button
+                    onClick={() => {
+                      const newVal = !localSaveAmsMapping;
+                      setLocalSaveAmsMapping(newVal);
+                      setPendingAction('saveAmsMapping');
+                      updateMutation.mutate({ save_ams_mapping: newVal });
+                    }}
+                    disabled={pendingAction === 'saveAmsMapping'}
+                    className={`relative w-10 h-5 rounded-full transition-colors flex-shrink-0 ${
+                      localSaveAmsMapping ? 'bg-bambu-green' : 'bg-bambu-dark-tertiary'
+                    } ${pendingAction === 'saveAmsMapping' ? 'opacity-50' : ''}`}
+                  >
+                    <span
+                      className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform ${
+                        localSaveAmsMapping ? 'translate-x-5' : ''
                       }`}
                     />
                   </button>

@@ -1,8 +1,9 @@
 """Integration tests for security_headers_middleware (#1191).
 
 Default behaviour is strict: ``X-Frame-Options: SAMEORIGIN`` plus
-``frame-ancestors 'none'`` on the catch-all route, ``frame-ancestors 'self'``
-on /gcode-viewer/. Operators can opt into iframe embedding from trusted
+``frame-ancestors 'none'`` on the catch-all route, and ``frame-ancestors
+'self'`` on the streaming overlay, which the Settings URL builder previews
+same-origin. Operators can opt into iframe embedding from trusted
 origins (e.g. Home Assistant on a different port) via the
 ``TRUSTED_FRAME_ORIGINS`` env var; when set, X-Frame-Options is dropped and
 ``frame-ancestors`` includes the allowlist.
@@ -110,6 +111,43 @@ async def test_default_headers_strict(async_client: AsyncClient, monkeypatch):
     resp = await async_client.get("/api/v1/auth/status")
     assert resp.headers.get("X-Frame-Options") == "SAMEORIGIN"
     assert "frame-ancestors 'none'" in resp.headers.get("Content-Security-Policy", "")
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_overlay_route_allows_same_origin_framing(async_client: AsyncClient, monkeypatch):
+    """#1422 — the overlay is framed same-origin by the URL builder's preview.
+
+    'none' blocks that too, which is why the preview showed Firefox's "will not
+    allow Firefox to display the page if another site has embedded it". 'self'
+    permits only a framer on this origin — Printbuddy's own UI — so a
+    clickjacking page on another host is refused exactly as before.
+    """
+    from backend.app import main as main_module
+
+    monkeypatch.setattr(main_module, "_TRUSTED_FRAME_ORIGINS", ())
+
+    resp = await async_client.get("/overlay/1")
+    csp = resp.headers.get("Content-Security-Policy", "")
+    assert "frame-ancestors 'self';" in csp
+    # The legacy header already permitted same-origin framing; only the CSP was
+    # blocking it. Assert it still says so rather than being dropped.
+    assert resp.headers.get("X-Frame-Options") == "SAMEORIGIN"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_other_spa_routes_still_refuse_all_framing(async_client: AsyncClient, monkeypatch):
+    """The #1422 carve-out is the overlay path only — everything else keeps
+    'none', including paths that merely start with something similar."""
+    from backend.app import main as main_module
+
+    monkeypatch.setattr(main_module, "_TRUSTED_FRAME_ORIGINS", ())
+
+    for path in ("/", "/settings", "/printers", "/overlays", "/camwall"):
+        resp = await async_client.get(path)
+        csp = resp.headers.get("Content-Security-Policy", "")
+        assert "frame-ancestors 'none'" in csp, f"{path} must not be framable"
 
 
 @pytest.mark.asyncio

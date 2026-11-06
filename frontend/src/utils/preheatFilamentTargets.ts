@@ -3,6 +3,8 @@
 // are chamber-temperature recommendations from BambuStudio's bundled filament
 // profiles; users can override the whole map via the Settings → Workflow card.
 
+import { MAX_CHAMBER_TEMP_C } from './printer';
+
 export const DEFAULT_PREHEAT_FILAMENT_TARGETS: Record<string, number> = {
   PLA: 0,
   PETG: 0,
@@ -44,7 +46,7 @@ export function parsePreheatFilamentTargets(raw: string): Record<string, number>
       for (const [key, value] of Object.entries(parsed)) {
         const num = typeof value === 'number' ? value : Number(value);
         if (Number.isFinite(num)) {
-          out[key] = Math.max(0, Math.min(60, Math.round(num)));
+          out[key] = Math.max(0, Math.min(MAX_CHAMBER_TEMP_C, Math.round(num)));
         }
       }
       if (out.default === undefined) out.default = DEFAULT_PREHEAT_FILAMENT_TARGETS.default;
@@ -81,6 +83,11 @@ export function normalizePreheatFilamentType(trayType: string): string {
 // Pick the max chamber target across a list of loaded tray types, falling
 // back to `default` when a type isn't in the map. Returns 0 when nothing
 // is loaded, which short-circuits the chamber phase at dispatch.
+//
+// A filled or foamed variant takes its base material's row when it has none of
+// its own, matching `_derive_chamber_target`: ASA-GF is ASA and wants ASA's 45
+// degrees, not the 0 an unmapped type falls to. The full type is still tried
+// first, so PETG-CF and PA-CF keep their own hotter rows (#2902).
 export function deriveChamberTargetForTrays(
   trayTypes: readonly string[],
   map: Record<string, number>,
@@ -89,7 +96,7 @@ export function deriveChamberTargetForTrays(
   for (const raw of trayTypes) {
     const normalized = normalizePreheatFilamentType(raw);
     if (!normalized) continue;
-    const target = map[normalized] ?? map.default ?? 0;
+    const target = map[normalized] ?? map[normalized.split('-')[0]] ?? map.default ?? 0;
     if (target > best) best = target;
   }
   return best;

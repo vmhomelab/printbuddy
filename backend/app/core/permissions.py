@@ -139,6 +139,12 @@ class Permission(StrEnum):
     STATS_READ = "stats:read"
     STATS_FILTER_BY_USER = "stats:filter_by_user"
 
+    # Cost Centers
+    COST_CENTERS_READ_OWN = "cost_centers:read_own"
+    COST_CENTERS_READ_ALL = "cost_centers:read_all"
+    COST_CENTERS_MODIFY = "cost_centers:modify"
+    COST_CENTERS_CREATE = "cost_centers:create"
+
     # System Info
     SYSTEM_READ = "system:read"
 
@@ -169,6 +175,11 @@ class Permission(StrEnum):
 
     # Users (admin-level)
     USERS_READ = "users:read"
+    # Narrow read: id + username only, no emails/roles/groups/permissions (#1894).
+    # Exists so an id -> name mapping can be resolved without handing out the
+    # full user objects. Pairs with STATS_FILTER_BY_USER, which is useless
+    # without a way to discover the ids it filters on.
+    USERS_READ_SLIM = "users:read_slim"
     USERS_CREATE = "users:create"
     USERS_UPDATE = "users:update"
     USERS_DELETE = "users:delete"
@@ -306,6 +317,12 @@ PERMISSION_CATEGORIES = {
         Permission.STATS_READ,
         Permission.STATS_FILTER_BY_USER,
     ],
+    "Finance": [
+        Permission.COST_CENTERS_READ_OWN,
+        Permission.COST_CENTERS_READ_ALL,
+        Permission.COST_CENTERS_MODIFY,
+        Permission.COST_CENTERS_CREATE,
+    ],
     "System": [
         Permission.SYSTEM_READ,
     ],
@@ -335,6 +352,7 @@ PERMISSION_CATEGORIES = {
     ],
     "User Management": [
         Permission.USERS_READ,
+        Permission.USERS_READ_SLIM,
         Permission.USERS_CREATE,
         Permission.USERS_UPDATE,
         Permission.USERS_DELETE,
@@ -461,6 +479,8 @@ DEFAULT_GROUPS = {
             Permission.PRINTER_SENSOR_HISTORY_READ.value,
             Permission.STATS_READ.value,
             Permission.SYSTEM_READ.value,
+            # Finance - own visibility
+            Permission.COST_CENTERS_READ_OWN.value,
             # Settings - read only
             Permission.SETTINGS_READ.value,
             # Slicer Pipelines - full access

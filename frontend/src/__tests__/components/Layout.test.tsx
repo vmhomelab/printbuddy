@@ -230,6 +230,43 @@ describe('Layout', () => {
     });
   });
 
+  describe('finance nav item', () => {
+    it('stays out of the sidebar while billing is off', async () => {
+      // billing_enabled defaults to false and the Finance page has nothing to
+      // show without it, so the entry must not be there at all.
+      render(<Layout />);
+
+      await waitFor(() => {
+        expect(document.querySelector('aside a[href="/stats"]')).toBeInTheDocument();
+      });
+      expect(document.querySelector('aside a[href="/finance"]')).toBeNull();
+    });
+
+    it('appears between Statistics and Settings once billing is on', async () => {
+      server.use(
+        http.get('/api/v1/settings/', () =>
+          HttpResponse.json({
+            check_updates: false,
+            check_printer_firmware: false,
+            auto_archive: true,
+            billing_enabled: true,
+          }),
+        ),
+      );
+
+      render(<Layout />);
+
+      await waitFor(() => {
+        expect(document.querySelector('aside a[href="/finance"]')).toBeInTheDocument();
+      });
+
+      const sidebar = document.querySelector('aside');
+      const hrefs = Array.from(sidebar?.querySelectorAll('a[href]') ?? []).map((a) => a.getAttribute('href'));
+      expect(hrefs.indexOf('/finance')).toBeGreaterThan(hrefs.indexOf('/stats'));
+      expect(hrefs.indexOf('/finance')).toBeLessThan(hrefs.indexOf('/settings'));
+    });
+  });
+
   describe('version display', () => {
     it('shows the backend version and running repository revision in the sidebar footer', async () => {
       render(<Layout />);

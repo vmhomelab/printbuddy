@@ -3,6 +3,8 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, BeforeValidator, Field, PlainSerializer, model_validator
 
+from backend.app.utils.printer_models import MAX_CHAMBER_TEMP_C
+
 
 # Custom serializer to ensure UTC datetimes have Z suffix
 def serialize_utc_datetime(dt: datetime | None) -> str | None:
@@ -40,6 +42,29 @@ def _coerce_tristate(v: object) -> object:
 # Tri-state calibration option: "auto" (printer decides / skip if recent),
 # "on" (force every print), "off" (never). Mirrors BambuStudio's ops_auto.
 TriState = Annotated[Literal["off", "on", "auto"], BeforeValidator(_coerce_tristate)]
+
+
+class QueueVariantCreate(BaseModel):
+    """One candidate file for a cross-model queue item (#671).
+
+    Per-file rather than per-item because the settings genuinely differ between
+    candidates: an H2C slice is dual-nozzle and will not share slot count, AMS
+    mapping or nozzle mapping with the H2S slice of the same model.
+
+    ``target_model`` is normally omitted and read from the file's own
+    ``sliced_for_model``; supply it only for a legacy 3MF that declares none.
+    """
+
+    library_file_id: int
+    target_model: str | None = None
+    plate_id: int | None = None
+    ams_mapping: list[int] | None = None
+    nozzle_mapping: list[int] | None = None
+    # Which rack position each filament group prints from (#1784), as
+    # {group_id: 1-based position}. The operator's pick, re-checked against the
+    # live rack at dispatch; null means "assign them for me".
+    nozzle_rack_choice: dict[int, int] | None = None
+    filament_overrides: list[dict] | None = None
 
 
 class PrintQueueItemCreate(BaseModel):
@@ -83,7 +108,7 @@ class PrintQueueItemCreate(BaseModel):
     # preheat_enabled setting; 'on' / 'off' force the decision. The chamber
     # target falls through: this override → max(filament-map[loaded tray]) → 0.
     preheat_override: Literal["inherit", "on", "off"] = "inherit"
-    preheat_chamber_target_override: int | None = Field(default=None, ge=0, le=60)
+    preheat_chamber_target_override: int | None = Field(default=None, ge=0, le=MAX_CHAMBER_TEMP_C)
     # Auto-print G-code injection
     gcode_injection: bool = False
     # Batch: create multiple copies (creates a batch if > 1)
@@ -94,9 +119,21 @@ class PrintQueueItemCreate(BaseModel):
     batch_id: int | None = None
     # Project to associate the resulting archive with
     project_id: int | None = None
+    cost_center_id: int | None = None
+    estimated_cost: float | None = None
+    # Which rack position each filament group prints from (#1784), as
+    # {group_id: 1-based position}. The operator's pick, re-checked against the
+    # live rack at dispatch; null means "assign them for me".
+    nozzle_rack_choice: dict[int, int] | None = None
     # Direct printer-card uploads are temporary library files. The scheduler
     # deletes them after creating the durable archive copy.
     cleanup_library_after_dispatch: bool = False
+    # Cross-model alternatives (#671): several sliced files, one job, whichever
+    # printer frees up first. Mutually exclusive with printer_id (a specific
+    # printer defeats the purpose) and with archive_id/library_file_id (the
+    # candidates ARE the files). The scheduler resolves one onto the row at
+    # dispatch, after which the item is an ordinary single-file job.
+    variants: list[QueueVariantCreate] | None = None
 
 
 class PrintQueueItemUpdate(BaseModel):
@@ -121,13 +158,28 @@ class PrintQueueItemUpdate(BaseModel):
     use_ams: bool | None = None
     nozzle_offset_cali: TriState | None = None
     preheat_override: Literal["inherit", "on", "off"] | None = None
-    preheat_chamber_target_override: int | None = Field(default=None, ge=0, le=60)
+    preheat_chamber_target_override: int | None = Field(default=None, ge=0, le=MAX_CHAMBER_TEMP_C)
     # Auto-print G-code injection
     gcode_injection: bool | None = None
+    cost_center_id: int | None = None
+    estimated_cost: float | None = None
     # H2C dual-nozzle-rack slicer pick (#1780). list[int] per-filament
     # physical nozzle position IDs from BambuStudio's project_file MQTT
     # body; sent back to the printer verbatim on dispatch.
     nozzle_mapping: list[int] | None = None
+    # Which rack position each filament group prints from (#1784), as
+    # {group_id: 1-based position}. The operator's pick, re-checked against the
+    # live rack at dispatch; null means "assign them for me".
+    nozzle_rack_choice: dict[int, int] | None = None
+
+
+class QueueVariantSummary(BaseModel):
+    """One candidate on a cross-model queue item, for display (#671)."""
+
+    library_file_id: int
+    filename: str
+    target_model: str
+    position: int
 
 
 class PrintQueueItemResponse(BaseModel):
@@ -140,6 +192,8 @@ class PrintQueueItemResponse(BaseModel):
     waiting_reason: str | None = None  # Why a model-based job hasn't started yet
     archive_id: int | None  # None if library_file_id is set (archive created at print start)
     library_file_id: int | None  # For queue items from library files
+    cost_center_id: int | None = None
+    estimated_cost: float | None = None
     position: int
     scheduled_time: UTCDatetime
     require_previous_success: bool
@@ -197,6 +251,12 @@ class PrintQueueItemResponse(BaseModel):
     # 3MFs: when `plate_id` is set, the value is the matching plate's
     # `curr_bed_type` rather than the archive-level first-plate default.
     bed_type: str | None = None
+    # True when the source archive carries the slicer's own live-resolved
+    # AMS-slot pick (extra_data.slicer_ams_mapping) *and* it was resolved
+    # against this row's own printer — the only case where dispatch actually
+    # reuses that exact physical spool instead of the scheduler re-deriving one
+    # from the file's static type/color.
+    archive_has_slicer_ams_mapping: bool = False
 
     # User tracking (Issue #206)
     created_by_id: int | None = None
@@ -205,6 +265,11 @@ class PrintQueueItemResponse(BaseModel):
     # Batch grouping
     batch_id: int | None = None
     batch_name: str | None = None
+
+    # Cross-model alternatives (#671), in priority order. Empty for every
+    # ordinary item. Present until dispatch resolves one onto the row, after
+    # which library_file_id / target_model name the candidate that actually ran.
+    variants: list[QueueVariantSummary] = []
 
     # Shortest-job-first scheduling
     been_jumped: bool = False
@@ -217,6 +282,10 @@ class PrintQueueItemResponse(BaseModel):
     # "edit print → choose nozzle" UI; null on every model except O1C2
     # uploads from BambuStudio.
     nozzle_mapping: list[int] | None = None
+    # Which rack position each filament group prints from (#1784), as
+    # {group_id: 1-based position}. The operator's pick, re-checked against the
+    # live rack at dispatch; null means "assign them for me".
+    nozzle_rack_choice: dict[int, int] | None = None
 
     class Config:
         from_attributes = True
@@ -284,9 +353,11 @@ class PrintQueueBulkUpdate(BaseModel):
     use_ams: bool | None = None
     nozzle_offset_cali: TriState | None = None
     preheat_override: Literal["inherit", "on", "off"] | None = None
-    preheat_chamber_target_override: int | None = Field(default=None, ge=0, le=60)
+    preheat_chamber_target_override: int | None = Field(default=None, ge=0, le=MAX_CHAMBER_TEMP_C)
     # Auto-print G-code injection
     gcode_injection: bool | None = None
+    cost_center_id: int | None = None
+    estimated_cost: float | None = None
 
 
 class PrintQueueBulkUpdateResponse(BaseModel):
@@ -295,6 +366,20 @@ class PrintQueueBulkUpdateResponse(BaseModel):
     updated_count: int
     skipped_count: int  # Items that were not pending
     message: str
+
+
+class PrintBatchPlateTarget(BaseModel):
+    """How many runs of one plate an order wants (#342).
+
+    ``plate_id`` is the plate index inside the source 3MF, or null for a
+    single-plate file — matching ``PrintQueueItem.plate_id``. A target of 0 is
+    legal and means "this plate is not required (yet)".
+    """
+
+    plate_id: int | None = None
+    plate_name: str | None = None
+    quantity_target: int = Field(default=1, ge=0, le=999)
+    sort_order: int = 0
 
 
 class PrintBatchCreate(BaseModel):
@@ -308,6 +393,41 @@ class PrintBatchCreate(BaseModel):
     # the empty-batch flow (client passes the returned id on subsequent
     # addToQueue calls).
     item_ids: list[int] | None = None
+    # Per-plate targets. Omitted entirely by the pre-#342 flows, which produce
+    # a batch that reports progress but owes nothing.
+    plates: list[PrintBatchPlateTarget] | None = None
+    # Planning metadata. Projects own the heavier fields (BOM, attachments,
+    # tags); these two are the ones that are useless without a Project to
+    # hang them on, so the order carries them directly.
+    project_id: int | None = None
+    due_date: datetime | None = None
+    notes: str | None = None
+
+
+class PrintBatchUpdate(BaseModel):
+    """Edit an order's header or its per-plate targets while it runs.
+
+    Every field is optional; ``plates`` replaces the full target set when
+    given, so a plate omitted from the list has its target row removed.
+    """
+
+    name: str | None = None
+    status: Literal["active", "cancelled"] | None = None
+    plates: list[PrintBatchPlateTarget] | None = None
+    project_id: int | None = None
+    due_date: datetime | None = None
+    notes: str | None = None
+
+
+class PrintBatchDispatchRequest(BaseModel):
+    """Create queue items for the runs an order still owes."""
+
+    # Restrict to one plate. Null is a legitimate plate_id (single-plate file),
+    # so the caller opts in explicitly rather than us inferring from null.
+    plate_id: int | None = None
+    only_plate: bool = False
+    # Cap on how many items to create across all plates. None = everything owed.
+    limit: int | None = Field(default=None, ge=1, le=999)
 
 
 class PrintBatchUngroupResponse(BaseModel):
@@ -315,6 +435,31 @@ class PrintBatchUngroupResponse(BaseModel):
 
     ungrouped_count: int
     message: str
+
+
+class PrintBatchPlateProgress(BaseModel):
+    """Per-plate progress within a batch."""
+
+    plate_id: int | None = None
+    plate_name: str | None = None
+    quantity_target: int = 0
+    dispatched: int = 0
+    remaining: int = 0
+    pending_count: int = 0
+    printing_count: int = 0
+    completed_count: int = 0
+    failed_count: int = 0
+    cancelled_count: int = 0
+    skipped_count: int = 0
+    # Measured from finished runs, never estimated from the file. Null until
+    # at least one run of this plate has produced a cost.
+    actual_cost: float | None = None
+    estimated_remaining_cost: float | None = None
+    filament_used_grams: float | None = None
+    print_time_seconds: int = 0
+    # False when this plate owes runs but has no queue item left to clone
+    # their configuration from, so offering to queue it would only fail.
+    can_dispatch: bool = False
 
 
 class PrintBatchResponse(BaseModel):
@@ -327,14 +472,33 @@ class PrintBatchResponse(BaseModel):
     quantity: int
     status: str
     created_at: UTCDatetime
+    completed_at: UTCDatetime | None = None
     created_by_id: int | None = None
     created_by_username: str | None = None
+    project_id: int | None = None
+    due_date: UTCDatetime | None = None
+    notes: str | None = None
     # Derived counts
     pending_count: int = 0
     printing_count: int = 0
     completed_count: int = 0
     failed_count: int = 0
     cancelled_count: int = 0
+    skipped_count: int = 0
+    # Planning roll-up. has_targets is false for batches created before
+    # per-plate targets existed: they report progress but owe nothing, and the
+    # dispatch endpoint is a no-op for them.
+    has_targets: bool = False
+    target_count: int = 0
+    remaining_count: int = 0
+    # Of ``remaining_count``, how many runs can actually be queued. Lower when
+    # a plate's last queue item was deleted (#2960).
+    dispatchable_count: int = 0
+    actual_cost: float | None = None
+    estimated_remaining_cost: float | None = None
+    filament_used_grams: float | None = None
+    print_time_seconds: int = 0
+    plates: list[PrintBatchPlateProgress] = []
 
     class Config:
         from_attributes = True

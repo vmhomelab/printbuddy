@@ -18,6 +18,52 @@ import pytest
 os.environ["LOG_TO_FILE"] = "false"
 os.environ["DEBUG"] = "false"
 
+# Point the app's own engine at a throwaway database before anything reads
+# DATABASE_URL.
+#
+# The fixtures below build their own SQLite engine, but that is not the only
+# engine in play: `core/config.py` snapshots ``DATABASE_URL`` at import time and
+# `core/database.py` builds a module-level ``engine`` / ``async_session`` from
+# it. Any app code that opens its own session rather than receiving the fixture
+# one therefore talks to whatever database the developer's `.env` names. The
+# clearest example is ``run_with_retry`` (used by the print-completion path),
+# whose sessions come from ``backend.app.core.database`` — so the widespread
+# ``patch("backend.app.main.async_session")`` does not intercept them.
+#
+# Left alone that is not a hypothetical: on a plain checkout it means the suite
+# writes to the developer's real SQLite file, and with a PostgreSQL `.env` it
+# means a live install. A completion test calling ``on_print_complete(1, ...)``
+# closed a queue item belonging to an actual running print that way.
+_TEST_APP_DB_DIR = Path(tempfile.mkdtemp(prefix="printbuddy_test_appdb_"))
+APP_DATABASE_URL = f"sqlite+aiosqlite:///{_TEST_APP_DB_DIR / 'app.db'}"
+os.environ["DATABASE_URL"] = APP_DATABASE_URL
+
+
+def _cleanup_test_app_db_dir():
+    shutil.rmtree(_TEST_APP_DB_DIR, ignore_errors=True)
+
+
+atexit.register(_cleanup_test_app_db_dir)
+
+
+def _assert_disposable_database(url, source: str) -> None:
+    """Abort the run unless *url* is the throwaway database created above.
+
+    A guard rather than a comment because the failure it prevents is silent and
+    destructive: the suite would appear to pass while having mutated real print
+    history. Anything that reintroduces a real ``DATABASE_URL`` — an `.env` read
+    later in the import order, a fixture rebuilding the engine — trips this
+    instead of reaching the database.
+    """
+    database = str(getattr(url, "database", "") or "")
+    if not str(getattr(url, "drivername", "")).startswith("sqlite") or not database.startswith(str(_TEST_APP_DB_DIR)):
+        raise RuntimeError(
+            f"Refusing to run tests: {source} resolves to {url!r}, which is not the "
+            f"disposable SQLite database under {_TEST_APP_DB_DIR}. Tests must never "
+            f"open a session against a real Printbuddy database."
+        )
+
+
 from httpx import ASGITransport, AsyncClient  # noqa: E402
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine  # noqa: E402
 
@@ -25,6 +71,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from backend.app.core.config import settings  # noqa: E402
 
 settings.log_to_file = False
+if settings.database_url != APP_DATABASE_URL:
+    raise RuntimeError(
+        f"Refusing to run tests: settings.database_url is {settings.database_url!r} "
+        f"rather than the disposable test database. Something read DATABASE_URL "
+        f"before conftest could override it."
+    )
 
 # Use a temp directory for plate calibration to avoid deleting real calibration files
 _test_plate_cal_dir = Path(tempfile.mkdtemp(prefix="printbuddy_test_plate_cal_"))
@@ -39,7 +91,11 @@ def _cleanup_test_plate_cal_dir():
 
 atexit.register(_cleanup_test_plate_cal_dir)
 
-from backend.app.core.database import Base  # noqa: E402
+from backend.app.core.database import Base, engine as _app_engine  # noqa: E402
+
+# The engine is built at import time from the URL above, so this catches the
+# case where that override did not take effect for whatever reason.
+_assert_disposable_database(_app_engine.url, "backend.app.core.database.engine")
 
 # Use in-memory SQLite for tests
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
@@ -111,6 +167,33 @@ def reset_auth_enabled_cache():
     invalidate_auth_enabled_cache()
 
 
+@pytest.fixture(autouse=True)
+def disconnect_printers_registered_during_a_test():
+    """Give every test an empty ``printer_manager`` singleton.
+
+    ``POST /api/v1/printers`` really calls ``connect_printer``, so a test that
+    creates a printer through the API parks a live client in the singleton --
+    and the singleton outlives the per-test in-memory database. The next test
+    on the same xdist worker gets a fresh database whose first printer is handed
+    the same primary key, and reads that leftover client as its own live status.
+    ``test_scheduled_drying_routes`` saw exactly that: an "online" printer with
+    no firmware version, so scheduling a dry came back 400 instead of 200.
+
+    Snapshotting the ids at test entry was insufficient: a client leaked by a
+    previous module became part of that snapshot and therefore survived every
+    later cleanup on the same xdist worker. Clear both before and after each
+    test. ``disconnect_printer`` also clears model/printer-info caches and stops
+    any paho thread owned by the leaked client.
+    """
+    from backend.app.services.printer_manager import printer_manager
+
+    for printer_id in list(printer_manager._clients):
+        printer_manager.disconnect_printer(printer_id)
+    yield
+    for printer_id in list(printer_manager._clients):
+        printer_manager.disconnect_printer(printer_id)
+
+
 @pytest.fixture(scope="session")
 def event_loop():
     """Create an instance of the default event loop for each test session."""
@@ -132,6 +215,7 @@ async def test_engine():
 
     # Import all models to register them
     from backend.app.models import (
+        active_print_session,  # noqa: F401
         ams_history,
         ams_label,
         api_key,
@@ -153,6 +237,7 @@ async def test_engine():
         printer,
         project,
         project_bom,
+        scheduled_drying,
         settings,
         slot_preset,
         smart_plug,
@@ -160,6 +245,7 @@ async def test_engine():
         spool,
         spool_assignment,
         spool_catalog,
+        spool_filament_preset,
         spool_k_profile,
         spool_usage_history,
         spoolman_k_profile,
@@ -203,8 +289,17 @@ async def async_client(test_engine, db_session) -> AsyncGenerator[AsyncClient, N
     test_async_session = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
 
     async def override_get_db():
+        # Mirror production get_db (core/database.py): commit on success,
+        # rollback on error. Endpoints that rely on the request-scoped
+        # implicit commit (e.g. create_project, which only flushes) would
+        # otherwise silently lose their writes in tests (#1897).
         async with test_async_session() as session:
-            yield session
+            try:
+                yield session
+                await session.commit()
+            except BaseException:
+                await session.rollback()
+                raise
 
     app.dependency_overrides[get_db] = override_get_db
 
@@ -217,6 +312,9 @@ async def async_client(test_engine, db_session) -> AsyncGenerator[AsyncClient, N
         patch("backend.app.core.database.async_session", test_async_session),
         patch("backend.app.core.auth.async_session", test_async_session),
         patch("backend.app.main.async_session", test_async_session),
+        # Obico endpoints load settings through the service's module-level binding;
+        # without this patch they'd read whatever DB the cwd resolves to (#1546).
+        patch("backend.app.services.obico_detection.async_session", test_async_session),
         patch("backend.app.main.init_printer_connections", mock_init_printer_connections),
     ):
         # Seed default groups for tests that need them
@@ -492,6 +590,32 @@ def printer_factory(db_session):
 
 
 @pytest.fixture
+def location_factory(db_session):
+    _counter = [0]
+
+    async def _create_location(**kwargs):
+        from backend.app.models.location import Location
+
+        _counter[0] += 1
+        counter = _counter[0]
+
+        name = kwargs.pop("name", f"Test Location {counter}")
+        defaults = {
+            "name": name,
+            "name_key": name.strip().lower(),
+        }
+        defaults.update(kwargs)
+
+        location = Location(**defaults)
+        db_session.add(location)
+        await db_session.commit()
+        await db_session.refresh(location)
+        return location
+
+    return _create_location
+
+
+@pytest.fixture
 def notification_provider_factory(db_session):
     """Factory to create test notification providers."""
 
@@ -513,6 +637,7 @@ def notification_provider_factory(db_session):
             "on_print_stopped": True,
             "on_print_progress": False,
             "on_print_missing_spool_assignment": False,
+            "on_billing_charge_failed": True,
             "on_printer_offline": False,
             "on_printer_error": False,
             "on_filament_low": False,

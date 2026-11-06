@@ -12,16 +12,24 @@ from backend.app.core.permissions import Permission
 from backend.app.models.github_backup import GitHubBackupConfig, GitHubBackupLog
 from backend.app.models.user import User
 from backend.app.schemas.github_backup import (
+    REF_PATTERN,
+    CloudAccountCounts,
     GitHubBackupConfigCreate,
     GitHubBackupConfigResponse,
     GitHubBackupConfigUpdate,
     GitHubBackupLogResponse,
     GitHubBackupStatus,
     GitHubBackupTriggerResponse,
+    GitHubCommitListResponse,
+    GitHubRestorePreview,
+    GitHubRestoreRequest,
+    GitHubRestoreResponse,
     GitHubTestConnectionResponse,
     ProviderType,
+    RestoreCategory,
 )
 from backend.app.services.github_backup import github_backup_service
+from backend.app.services.github_restore import github_restore_service
 
 logger = logging.getLogger(__name__)
 
@@ -43,13 +51,54 @@ _UNKNOWN_VISIBILITY_ERROR = (
     "repo API."
 )
 
+# The permission that owns each category's rows, required on top of
+# github:restore. Backup is its own permission group, so without this a role
+# holding only Backup writes — via a restore — rows it cannot write through the
+# endpoint that owns them.
+#
+# Each entry is the permission that endpoint actually gates its writes on:
+#
+#   * SETTINGS   → PUT /api/v1/settings/ (settings:update)
+#   * SPOOLS     → POST/PATCH /api/v1/inventory/spools (inventory:update). Spool
+#     rows and their usage history both restore under this category.
+#   * ARCHIVES   → archives:update_all, not archives:create. A restore writes
+#     rows owned by other users — that is the whole point of carrying
+#     created_by_id — and update_all is the permission that means "may write an
+#     archive that is not yours". create alone would let an operator with
+#     archives:create_own-shaped access seed history onto someone else.
+#   * KPROFILES  → POST /api/v1/printers/{id}/kprofiles (kprofiles:update),
+#     which is what the restore ultimately calls through set_kprofiles_batch.
+#
+# Cloud profiles are absent because they are not a restorable category
+# (RestoreCategory's docstring).
+_CATEGORY_WRITE_PERMISSION = {
+    RestoreCategory.SETTINGS: Permission.SETTINGS_UPDATE,
+    RestoreCategory.SPOOLS: Permission.INVENTORY_UPDATE,
+    RestoreCategory.ARCHIVES: Permission.ARCHIVES_UPDATE_ALL,
+    RestoreCategory.KPROFILES: Permission.KPROFILES_UPDATE,
+}
+
 
 async def _enforce_private_repo(repo_url: str, token: str, provider: str) -> None:
     """Run a test_connection and refuse if the repo is not confirmed private.
 
     Used by POST and PATCH /config so a backup configuration can never be
     saved against a public repository.
+
+    The URL is policy-checked first: the Gitea and Forgejo backends derive
+    their API base from this value (``get_api_base``) and then request it with
+    the supplied token, so an unchecked repository_url is an outbound fetch to
+    an operator-supplied host. A self-hosted Gitea on the LAN is the normal
+    case, so the LAN-service tier applies — this only rules out the targets
+    that are wrong under any topology.
     """
+    from backend.app.api.routes._url_safety import assert_safe_lan_service_url
+
+    try:
+        assert_safe_lan_service_url(repo_url, label="Repository URL")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     result = await github_backup_service.test_connection(repo_url, token, provider=provider)
     if not result.get("success"):
         message = result.get("message") or "Connection test failed"
@@ -59,6 +108,39 @@ async def _enforce_private_repo(repo_url: str, token: str, provider: str) -> Non
         raise HTTPException(status_code=400, detail=_UNKNOWN_VISIBILITY_ERROR)
     if is_private is False:
         raise HTTPException(status_code=400, detail=_PUBLIC_REPO_ERROR)
+
+
+async def _count_cloud_accounts(db: AsyncSession) -> tuple[int, int]:
+    """How many Bambu / Orca accounts a backup would collect from.
+
+    Asks the collector itself rather than re-deriving the rule, so the number
+    the UI gates on can't drift from the number the backup actually uses
+    (#2717). Counts only — never who.
+    """
+    try:
+        bambu, orca = await github_backup_service.cloud_accounts(db)
+        return len(bambu), len(orca)
+    except Exception:
+        # A settings page must still render when a credential store is
+        # unreadable; the toggle simply shows as unavailable.
+        logger.warning("Failed to count connected cloud accounts", exc_info=True)
+        return 0, 0
+
+
+@router.get("/cloud-accounts", response_model=CloudAccountCounts)
+async def get_cloud_accounts(
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.GITHUB_BACKUP),
+):
+    """How many cloud accounts the Cloud Profiles category would collect from.
+
+    Its own endpoint rather than a field on ``/config``, because the settings
+    form needs this before any config exists — ``/config`` answers ``null``
+    until the first save, which would leave the toggle disabled during the
+    very setup it's part of.
+    """
+    bambu, orca = await _count_cloud_accounts(db)
+    return CloudAccountCounts(bambu=bambu, orca=orca)
 
 
 def _config_to_response(config: GitHubBackupConfig) -> dict:
@@ -340,11 +422,99 @@ async def get_status(
         configured=True,
         enabled=config.enabled,
         is_running=github_backup_service.is_running,
-        progress=github_backup_service.progress,
+        restore_running=github_restore_service.is_running,
+        progress=github_backup_service.progress or github_restore_service.progress,
         last_backup_at=config.last_backup_at,
         last_backup_status=config.last_backup_status,
         next_scheduled_run=config.next_scheduled_run,
     )
+
+
+@router.get("/commits", response_model=GitHubCommitListResponse)
+async def list_commits(
+    limit: int = Query(default=20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.GITHUB_RESTORE),
+):
+    """List recent backup commits so the user can pick one to restore from."""
+    result = await db.execute(select(GitHubBackupConfig).limit(1))
+    config = result.scalar_one_or_none()
+
+    if not config:
+        raise HTTPException(status_code=404, detail="No configuration found. Configure backup first.")
+
+    commit_result = await github_restore_service.list_commits(config, limit=limit)
+    return GitHubCommitListResponse(**commit_result)
+
+
+@router.get("/restore/preview", response_model=GitHubRestorePreview)
+async def preview_restore(
+    ref: str = Query(default="HEAD", pattern=REF_PATTERN),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.GITHUB_RESTORE),
+):
+    """Report which categories a given backup commit contains."""
+    result = await db.execute(select(GitHubBackupConfig).limit(1))
+    config = result.scalar_one_or_none()
+
+    if not config:
+        raise HTTPException(status_code=404, detail="No configuration found. Configure backup first.")
+
+    preview = await github_restore_service.preview(db, config, ref=ref)
+    return GitHubRestorePreview(**preview)
+
+
+@router.post("/restore", response_model=GitHubRestoreResponse)
+async def restore_backup(
+    request: GitHubRestoreRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User | None = RequirePermissionIfAuthEnabled(Permission.GITHUB_RESTORE),
+):
+    """Restore selected categories from one backup commit.
+
+    Note there is no private-repo gate here, unlike the config endpoints: that
+    check exists to stop credentials leaving the instance, and this path only
+    reads. A config can only be saved against a private repo anyway.
+
+    Every category needs the permission that owns the rows it writes, on top of
+    ``github:restore`` — see ``_CATEGORY_WRITE_PERMISSION`` and the check below.
+    """
+    if current_user is not None:
+        # Each category rewrites rows some other endpoint already owns, and
+        # Backup is its own permission group — so a role holding only Backup
+        # could otherwise write, through a restore, what it cannot write through
+        # the endpoint that owns them. This module already makes that argument;
+        # it is why the four protected auth keys are refused outright.
+        #
+        # current_user is None only when auth is disabled: github:restore is in
+        # _APIKEY_DENIED_PERMISSIONS, so an API key never gets past the
+        # dependency to reach this line.
+        missing = sorted(
+            {
+                permission.value
+                for category, permission in _CATEGORY_WRITE_PERMISSION.items()
+                if category in request.categories and not current_user.has_all_permissions(permission.value)
+            }
+        )
+        if missing:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Missing required permissions: {', '.join(missing)}",
+            )
+
+    result = await db.execute(select(GitHubBackupConfig).limit(1))
+    config = result.scalar_one_or_none()
+
+    if not config:
+        raise HTTPException(status_code=404, detail="No configuration found. Configure backup first.")
+
+    restore_result = await github_restore_service.run_restore(
+        config.id,
+        ref=request.ref,
+        categories=request.categories,
+        overwrite_existing=request.overwrite_existing,
+    )
+    return GitHubRestoreResponse(**restore_result)
 
 
 @router.get("/logs", response_model=list[GitHubBackupLogResponse])

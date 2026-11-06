@@ -32,6 +32,7 @@ from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.local_preset import LocalPreset
 from backend.app.models.user import User
+from backend.app.schemas.slicer import PresetRef
 from backend.app.schemas.slicer_presets import (
     UnifiedPreset,
     UnifiedPresetsBySlot,
@@ -42,10 +43,15 @@ from backend.app.services.bambu_cloud import (
     BambuCloudError,
     BambuCloudService,
 )
-from backend.app.services.orca_cloud import OrcaCloudAuthError, OrcaCloudError
+from backend.app.services.orca_cloud import (
+    OrcaCloudAuthError,
+    OrcaCloudError,
+)
+from backend.app.services.preset_resolver import resolve_preset_ref
 from backend.app.services.slicer_api import (
     SlicerApiError,
     SlicerApiService,
+    SlicerApiUnavailableError,
 )
 from backend.app.utils.printer_models import PRINTER_MODEL_MAP
 
@@ -267,14 +273,17 @@ async def _fetch_local_presets(db: AsyncSession) -> dict[str, list[UnifiedPreset
             # Precise compatibility link — the slicer's own compatible_printers
             # list, captured at import time. Lets the SliceModal filter the
             # process / filament dropdowns by the selected printer without
-            # falling back to the uploaded-bundle index.
+            # falling back to the @BBL name matcher.
             preset.compatible_printers = _parse_compatible_printers(p.compatible_printers)
         slots[slot].append(preset)
     return slots
 
 
 def _content_compatible_printers(content: dict) -> list[str] | None:
-    """Pull ``compatible_printers`` out of an inline profile content dict.
+    """Pull ``compatible_printers`` out of a profile content dict.
+
+    Serves both callers that have one: an Orca Cloud profile's inline
+    ``content``, and an entry of the sidecar's bundled listing.
 
     Orca profiles carry it as a list of printer-preset names (the same shape
     ``orca_profiles.py`` stores on import); a single-printer profile may store
@@ -295,7 +304,7 @@ def _content_compatible_printers(content: dict) -> list[str] | None:
 def _parse_compatible_printers(raw: str | None) -> list[str] | None:
     """``LocalPreset.compatible_printers`` stores a JSON array of printer-preset
     names. Return the parsed list, or ``None`` on missing / malformed data so
-    the SliceModal falls back to the uploaded-bundle index for that preset."""
+    the SliceModal falls back to the name-based matcher for that preset."""
     if not raw:
         return None
     try:
@@ -368,13 +377,26 @@ async def _fetch_bundled_presets(db: AsyncSession, *, refresh: bool = False) -> 
                 continue
             # Bundled presets are addressed by name (the slicer resolves them
             # by name during the `inherits:` walk), so name doubles as id.
-            extra: dict[str, str | None] = {}
+            preset = UnifiedPreset(id=name, name=name, source="standard")
             if slot == "filament":
-                extra["filament_type"] = entry.get("filament_type")
-                extra["filament_colour"] = entry.get("filament_colour")
-            slots[slot].append(
-                UnifiedPreset(id=name, name=name, source="standard", **extra),
-            )
+                preset.filament_type = entry.get("filament_type")
+                preset.filament_colour = entry.get("filament_colour")
+            if slot in ("process", "filament"):
+                # The slicer's own compatible-printer list, and the only
+                # truthful answer for several Bambu printers: the bundle ships
+                # no process preset named after a P1S, an X1, an X1E or an H2D
+                # Pro -- each one is served by another model's preset that
+                # names it here. Inferring the printer from the preset NAME
+                # instead read all 198 as belonging to the model in their
+                # `@BBL` tag, so a P1S had zero compatible processes, the
+                # dropdown hid every one of them, and the auto-pick landed on
+                # an A1 0.2-nozzle process the CLI then refused (#2982).
+                #
+                # Older sidecars don't report the field. They return None here,
+                # which leaves the SliceModal on the name matcher for the
+                # standard tier -- degraded exactly as before, not broken.
+                preset.compatible_printers = _content_compatible_printers(entry)
+            slots[slot].append(preset)
 
     _bundled_cache = (now, slots)
     return slots
@@ -498,13 +520,75 @@ def list_printer_models() -> dict[str, str]:
     "Bambu Lab <model>" form that appears in 3MF metadata and in slicer
     printer-preset names, values are the normalized short codes used in
     BambuStudio's `@BBL <code>` cloud-preset filenames. The frontend uses this
-    mapping to classify cloud / standard presets against the selected printer
-    when no slicer bundle has been uploaded that covers the preset (#1325
-    follow-up) - avoiding a second, manually-maintained model table on the
+    mapping to classify cloud / standard presets against the selected printer,
+    which carry no ``compatible_printers`` of their own (#1325 follow-up) -
+    avoiding a second, manually-maintained model table on the
     frontend. No auth gate: this is a static reference dictionary, not
     user data.
     """
     return dict(PRINTER_MODEL_MAP)
+
+
+@router.get("/preset-values")
+async def get_preset_values(
+    source: str = Query(..., description="Preset tier: 'local', 'cloud', 'orca_cloud' or 'standard'."),
+    id: str = Query(..., description="Preset id within that tier."),
+    slot: str = Query("process", description="Preset slot. Only 'process' is supported today."),
+    db: AsyncSession = Depends(get_db),
+    current_user: User | None = RequirePermissionIfAuthEnabled(Permission.LIBRARY_UPLOAD),
+) -> dict:
+    """Effective values of a preset, with its ``inherits:`` chain flattened.
+
+    Drives the slice modal's process-settings panel: without this the panel can
+    only show the option schema's compiled-in defaults, so a preset that sets a
+    0.42mm line width appears as the C++ default of 0.
+
+    The flattening is done by the *sidecar*, deliberately. A "Standard" pick is
+    only a ``{inherits: "<name>"}`` stub on our side, and even local/cloud
+    presets are deltas — the values live in the profile tree bundled inside the
+    running sidecar image. Printbuddy's own ``orca_profiles`` resolver walks
+    OrcaSlicer's published tree instead, which can disagree with what actually
+    slices; showing numbers from it would be confidently wrong.
+
+    Returns ``{"resolved": false, "values": {}, "reason": "..."}`` rather than
+    an error whenever the values can't be obtained. ``reason`` is what makes
+    the fallback actionable: a Printbuddy install pulls its sidecar as
+    ``SIDECAR_TAG:-latest`` regardless of its own release channel, so the
+    overwhelmingly common cause is a sidecar older than the endpoint — which
+    the user fixes by pulling a newer image, if we tell them that instead of
+    "could not read the values".
+    """
+    if slot != "process":
+        raise HTTPException(status_code=400, detail="Only the 'process' slot is supported")
+
+    ref = PresetRef(source=source, id=id)
+
+    def unresolved(reason: str) -> dict:
+        return {"resolved": False, "values": {}, "reason": reason}
+
+    try:
+        profile_json = await resolve_preset_ref(db, current_user, ref, slot)
+    except HTTPException:
+        # A preset the caller can't resolve is not a reason to break the panel;
+        # the slice itself will report it properly if they go ahead.
+        logger.info("Could not resolve %s preset %s for value lookup", slot, id)
+        return unresolved("preset_unresolved")
+
+    api_url = await _resolve_slicer_api_url(db)
+    if not api_url:
+        return unresolved("not_configured")
+
+    service = SlicerApiService(api_url)
+    try:
+        resolved = await service.resolve_profile(profile_json, "process")
+    except SlicerApiUnavailableError:
+        return unresolved("sidecar_unavailable")
+    finally:
+        await service.close()
+
+    if resolved.values is None:
+        return unresolved(resolved.reason)
+    return {"resolved": True, "values": resolved.values, "reason": "ok"}
 
 
 @router.get("/presets", response_model=UnifiedPresetsResponse)

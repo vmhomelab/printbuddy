@@ -1,7 +1,7 @@
 """Integration tests for Updates API endpoints."""
 
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, mock_open, patch
 
 import pytest
 from httpx import AsyncClient
@@ -1011,3 +1011,143 @@ class TestUpdatesAPI:
         assert body["update_method"] == "windows_installer"
         assert body["is_windows_installer"] is True
         assert body["installer_download_url"].endswith("printbuddy-999.9.9-windows-x64-setup.exe")
+
+    # --- Compose directory detection (#2664, reporter pchulpjoost) ---
+    # `docker compose pull` only works from the directory holding the compose
+    # file, so the update box's command was unusable until the user remembered
+    # where that was. Compose stamps the answer onto every container it
+    # creates, but reading your own labels needs the Docker socket — a
+    # root-equivalent mount, not worth it for a convenience string. So the
+    # host side of a bind mount in /proc/self/mountinfo is inferred instead.
+
+    def _mountinfo(self, *lines: str):
+        """Patch /proc/self/mountinfo with the given raw lines."""
+        return patch("builtins.open", mock_open(read_data="".join(f"{line}\n" for line in lines)))
+
+    def test_compose_dir_inferred_from_bind_mount(self):
+        """`./data:/app/data` surfaces as the host path; its parent is the
+        compose directory."""
+        from backend.app.api.routes.updates import _compose_dir_from_mountinfo
+
+        with self._mountinfo(
+            "2244 1668 0:137 / / rw,relatime - overlay overlay rw,lowerdir=/x",
+            "1437 2244 0:48 /opt/printbuddy/data /app/data rw,relatime - ext4 /dev/sda1 rw",
+        ):
+            assert _compose_dir_from_mountinfo() == "/opt/printbuddy"
+
+    def test_compose_dir_none_for_named_volume(self):
+        """The shipped compose file uses named volumes, which resolve to
+        /var/lib/docker/volumes/<project>_printbuddy_data/_data. That names the
+        compose *project* and reveals nothing about where the file lives, so
+        the correct answer is "don't know" rather than a plausible guess."""
+        from backend.app.api.routes.updates import _compose_dir_from_mountinfo
+
+        with self._mountinfo(
+            "1290 2246 0:65 /var/lib/docker/volumes/printbuddy_printbuddy_data/_data /app/data rw - ext4 /dev/sda1 rw",
+        ):
+            assert _compose_dir_from_mountinfo() is None
+
+    def test_compose_dir_none_for_relocated_bind_mount(self):
+        """`/mnt/nas/prints:/app/data` is a perfectly ordinary bind mount whose
+        parent is emphatically not a compose directory. The leaf must match the
+        mount point's own name before the parent is trusted."""
+        from backend.app.api.routes.updates import _compose_dir_from_mountinfo
+
+        with self._mountinfo(
+            "1437 2244 0:48 /mnt/nas/prints /app/data rw,relatime - nfs4 nas:/prints rw",
+        ):
+            assert _compose_dir_from_mountinfo() is None
+
+    def test_compose_dir_falls_back_to_logs_mount(self):
+        """A user who bind-mounts only ./logs still gets the directory."""
+        from backend.app.api.routes.updates import _compose_dir_from_mountinfo
+
+        with self._mountinfo(
+            "1290 2246 0:65 /var/lib/docker/volumes/printbuddy_printbuddy_data/_data /app/data rw - ext4 /dev/sda1 rw",
+            "1441 2244 0:48 /srv/printbuddy/logs /app/logs rw,relatime - ext4 /dev/sda1 rw",
+        ):
+            assert _compose_dir_from_mountinfo() == "/srv/printbuddy"
+
+    def test_compose_dir_none_without_mountinfo(self):
+        """Windows and macOS have no /proc; the guess simply doesn't happen."""
+        from backend.app.api.routes.updates import _compose_dir_from_mountinfo
+
+        with patch("builtins.open", side_effect=FileNotFoundError):
+            assert _compose_dir_from_mountinfo() is None
+
+    def test_detect_compose_dir_prefers_env_var(self):
+        """PRINTBUDDY_COMPOSE_DIR is stated rather than inferred, so it wins over
+        a mountinfo guess that would otherwise point somewhere else."""
+        from backend.app.api.routes import updates as updates_module
+
+        with (
+            patch.dict("os.environ", {"PRINTBUDDY_COMPOSE_DIR": "/srv/stacks/printbuddy"}),
+            patch.object(updates_module, "_compose_dir_from_mountinfo", return_value="/opt/wrong"),
+        ):
+            assert updates_module._detect_compose_dir() == "/srv/stacks/printbuddy"
+
+    def test_detect_compose_dir_skips_mountinfo_outside_docker(self):
+        """A native install has no compose file; mountinfo would still show
+        bind mounts on a host that happens to run other containers."""
+        from backend.app.api.routes import updates as updates_module
+
+        with (
+            patch.dict("os.environ", {"PRINTBUDDY_COMPOSE_DIR": ""}),
+            patch.object(updates_module, "_is_docker_environment", return_value=False),
+            patch.object(updates_module, "_compose_dir_from_mountinfo", return_value="/opt/wrong"),
+        ):
+            assert updates_module._detect_compose_dir() is None
+
+    @pytest.mark.asyncio
+    async def test_check_surfaces_compose_dir_only_for_docker(self, async_client: AsyncClient):
+        """The prefill rides along with the Docker branch. A git install must
+        not receive one — there is no compose file to cd into."""
+        import httpx as _httpx
+
+        fake_release = {
+            "tag_name": "v999.9.9",
+            "name": "Far Future Release",
+            "body": "",
+            "html_url": "https://example.invalid/r",
+            "published_at": "2099-01-01T00:00:00Z",
+        }
+
+        class _Resp:
+            status_code = 200
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return [fake_release]
+
+        class _FakeClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_):
+                return None
+
+            async def get(self, *_, **__):
+                return _Resp()
+
+        with (
+            patch.object(_httpx, "AsyncClient", _FakeClient),
+            patch("backend.app.api.routes.updates._is_ha_addon", return_value=False),
+            patch("backend.app.api.routes.updates._is_docker_environment", return_value=True),
+            patch("backend.app.api.routes.updates._detect_compose_dir", return_value="/opt/printbuddy"),
+        ):
+            body = (await async_client.get("/api/v1/updates/check")).json()
+        assert body["update_method"] == "docker"
+        assert body["compose_dir_detected"] == "/opt/printbuddy"
+
+        with (
+            patch.object(_httpx, "AsyncClient", _FakeClient),
+            patch("backend.app.api.routes.updates._is_ha_addon", return_value=False),
+            patch("backend.app.api.routes.updates._is_docker_environment", return_value=False),
+            patch("backend.app.api.routes.updates._is_windows_installer_install", return_value=False),
+            patch("backend.app.api.routes.updates._detect_compose_dir", return_value="/opt/printbuddy"),
+        ):
+            body = (await async_client.get("/api/v1/updates/check")).json()
+        assert body["update_method"] == "git"
+        assert body["compose_dir_detected"] is None

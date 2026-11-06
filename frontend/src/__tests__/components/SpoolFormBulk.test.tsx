@@ -5,7 +5,7 @@
  * - Quick-add toggle appears only in create mode
  * - Quick-add mode shows brand and subtype as optional (no asterisk)
  * - Quick-add mode hides slicer preset field
- * - Quick-add mode hides PA Profile tab
+ * - Quick-add mode hides the Printers tab
  * - Quantity field is only rendered in quick-add mode
  * - Quantity field is hidden in edit mode
  * - Bulk create calls bulkCreateSpools when quantity > 1
@@ -55,6 +55,10 @@ vi.mock('../../api/client', () => ({
     ]),
     updateSpool: vi.fn().mockResolvedValue({ id: 1 }),
     saveSpoolKProfiles: vi.fn().mockResolvedValue([]),
+    getSpoolFilamentPresets: vi.fn().mockResolvedValue([]),
+    saveSpoolFilamentPresets: vi.fn().mockResolvedValue([]),
+    getSpoolmanFilamentPresets: vi.fn().mockResolvedValue([]),
+    saveSpoolmanFilamentPresets: vi.fn().mockResolvedValue([]),
   },
 }));
 
@@ -187,7 +191,7 @@ describe('SpoolFormModal quick-add toggle', () => {
     expect(screen.queryByText('Quick Add (Stock)')).not.toBeInTheDocument();
   });
 
-  it('hides PA Profile tab when quick-add is enabled', async () => {
+  it('hides the Printers tab when quick-add is enabled', async () => {
     render(
       <SpoolFormModal
         isOpen={true}
@@ -201,8 +205,8 @@ describe('SpoolFormModal quick-add toggle', () => {
       expect(screen.getByRole('heading', { name: 'Add Spool' })).toBeInTheDocument();
     });
 
-    // PA Profile tab should be visible initially
-    expect(screen.getByText('PA Profile')).toBeInTheDocument();
+    // Printers tab should be visible initially
+    expect(screen.getByText('Printers')).toBeInTheDocument();
 
     // Toggle quick-add on — the toggle is a button[role="switch"] sibling of the label
     const toggleButtons = screen.getAllByRole('button');
@@ -214,9 +218,9 @@ describe('SpoolFormModal quick-add toggle', () => {
     expect(quickAddToggle).toBeTruthy();
     fireEvent.click(quickAddToggle!);
 
-    // PA Profile tab should be hidden
+    // Printers tab should be hidden
     await waitFor(() => {
-      expect(screen.queryByText('PA Profile')).not.toBeInTheDocument();
+      expect(screen.queryByText('Printers')).not.toBeInTheDocument();
     });
   });
 
@@ -376,6 +380,7 @@ describe('SpoolFormModal Spoolman OFDB creation', () => {
     fireEvent.change(materialInput, { target: { value: 'TESTMAT' } });
     fireEvent.click(await screen.findByText('Use custom material: TESTMAT'));
 
+    fireEvent.click(screen.getByRole('button', { name: /color & cost|colour & cost/i }));
     const emptyWeightInput = await screen.findByPlaceholderText('Leave blank');
     fireEvent.change(emptyWeightInput, { target: { value: '250' } });
 

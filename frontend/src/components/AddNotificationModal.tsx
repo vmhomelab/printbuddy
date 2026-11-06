@@ -43,7 +43,7 @@ interface AddNotificationModalProps {
   onClose: () => void;
 }
 
-const PROVIDER_VALUES: ProviderType[] = ['email', 'telegram', 'discord', 'ntfy', 'pushover', 'callmebot', 'webhook', 'homeassistant', 'notify'];
+const PROVIDER_VALUES: ProviderType[] = ['email', 'telegram', 'discord', 'ntfy', 'pushover', 'bark', 'callmebot', 'webhook', 'homeassistant', 'notify'];
 
 export function AddNotificationModal({ provider, onClose }: AddNotificationModalProps) {
   const { t } = useTranslation();
@@ -74,6 +74,7 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
   const [onPrintStopped, setOnPrintStopped] = useState(provider?.on_print_stopped ?? true);
   const [onPrintProgress, setOnPrintProgress] = useState(provider?.on_print_progress ?? false);
   const [onPrintAlmostDone, setOnPrintAlmostDone] = useState(provider?.on_print_almost_done ?? false);
+  const [onBillingChargeFailed, setOnBillingChargeFailed] = useState(provider?.on_billing_charge_failed ?? true);
   const [onPrinterOffline, setOnPrinterOffline] = useState(provider?.on_printer_offline ?? false);
   const [onPrinterError, setOnPrinterError] = useState(provider?.on_printer_error ?? false);
   const [onAiFailureDetection, setOnAiFailureDetection] = useState(provider?.on_ai_failure_detection ?? false);
@@ -81,7 +82,12 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
   const [onMaintenanceDue, setOnMaintenanceDue] = useState(provider?.on_maintenance_due ?? false);
   const [onStockReorderAlert, setOnStockReorderAlert] = useState(provider?.on_stock_reorder_alert ?? false);
   const [onStockBreakAlert, setOnStockBreakAlert] = useState(provider?.on_stock_break_alert ?? false);
+  const [onPlateClearRequired, setOnPlateClearRequired] = useState(provider?.on_plate_clear_required ?? false);
   const [onBedCooled, setOnBedCooled] = useState(provider?.on_bed_cooled ?? false);
+  const [onHaSensorAlert, setOnHaSensorAlert] = useState(provider?.on_ha_sensor_alert ?? false);
+  const [onLocationHaSensorAlert, setOnLocationHaSensorAlert] = useState(
+    provider?.on_location_ha_sensor_alert ?? false
+  );
   const [onFirstLayerComplete, setOnFirstLayerComplete] = useState(provider?.on_first_layer_complete ?? false);
 
   // Provider-specific config (scalar fields only — event_priorities is split out
@@ -218,10 +224,34 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
       }
     }
 
+    // HA custom service-data must be a JSON object (#1441)
+    if (providerType === 'homeassistant' && config.data?.trim()) {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(config.data);
+      } catch {
+        setError(t('notifications.haDataInvalid'));
+        return;
+      }
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        setError(t('notifications.haDataInvalid'));
+        return;
+      }
+    }
+
     if (providerType === 'notify' && config.live_activity_button_enabled === 'true') {
       const buttonUrl = config.live_activity_button_url?.trim() || '';
       if (!/^https:\/\/[^\s]+$/i.test(buttonUrl)) {
         setError('Live Activity button URL must use HTTPS. Notify does not support custom app links, HTTP, or local IP URLs.');
+        return;
+      }
+    }
+
+    // Telegram forum topic must be a plain integer (#1518) — type="number"
+    // still lets "1e5" and "-" through, and Telegram would 400 on those.
+    if (providerType === 'telegram' && config.message_thread_id?.trim()) {
+      if (!/^\d+$/.test(config.message_thread_id.trim())) {
+        setError(t('notifications.telegramThreadIdInvalid'));
         return;
       }
     }
@@ -252,6 +282,7 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
       on_print_stopped: onPrintStopped,
       on_print_progress: onPrintProgress,
       on_print_almost_done: onPrintAlmostDone,
+      on_billing_charge_failed: onBillingChargeFailed,
       on_printer_offline: onPrinterOffline,
       on_printer_error: onPrinterError,
       on_ai_failure_detection: onAiFailureDetection,
@@ -259,7 +290,10 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
       on_maintenance_due: onMaintenanceDue,
       on_stock_reorder_alert: onStockReorderAlert,
       on_stock_break_alert: onStockBreakAlert,
+      on_plate_clear_required: onPlateClearRequired,
       on_bed_cooled: onBedCooled,
+      on_ha_sensor_alert: onHaSensorAlert,
+      on_location_ha_sensor_alert: onLocationHaSensorAlert,
       on_first_layer_complete: onFirstLayerComplete,
     };
 
@@ -313,8 +347,17 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
       case 'telegram':
         return [
           { key: 'bot_token', label: 'Bot Token', placeholder: 'Bot token from @BotFather', type: 'password', required: true },
-          { key: 'chat_id', label: 'Chat ID', placeholder: 'Your chat or group ID, e.g. -1001234567890', type: 'text', required: true },
-          { key: 'message_thread_id', label: 'Topic / Thread ID', placeholder: 'Optional forum topic ID, e.g. 17585', type: 'text', required: false },
+          { key: 'chat_id', label: 'Chat ID', placeholder: 'Your chat or group ID', type: 'text', required: true },
+          // Optional forum topic (#1518). Left empty, Telegram posts to the
+          // group's General topic exactly as before.
+          {
+            key: 'message_thread_id',
+            label: t('notifications.telegramThreadId'),
+            placeholder: '123',
+            type: 'number',
+            required: false,
+            help: t('notifications.telegramThreadIdHelp'),
+          },
         ];
       case 'email':
         return [
@@ -352,6 +395,21 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
       case 'homeassistant':
         return [
           { key: 'service', label: 'Home Assistant Service', placeholder: 'notify.mobile_app_myphone', type: 'text', required: false },
+          { key: 'data', label: 'Data (JSON, optional)', placeholder: '{"priority": "high", "ttl": 0, "channel": "3D Printing"}', type: 'textarea', required: false },
+        ];
+      case 'bark':
+        return [
+          { key: 'device_key', label: 'Device Key', placeholder: 'Your Bark device key', type: 'text', required: true },
+          { key: 'server', label: 'Server URL', placeholder: 'https://api.day.app', type: 'text', required: false },
+          { key: 'group', label: 'Group', placeholder: 'Printbuddy', type: 'text', required: false },
+          { key: 'sound', label: 'Sound', placeholder: 'minuet', type: 'text', required: false },
+          { key: 'level', label: 'Interruption Level', type: 'select', required: false, options: [
+            { value: '', label: 'Default' },
+            { value: 'active', label: 'Active' },
+            { value: 'timeSensitive', label: 'Time Sensitive' },
+            { value: 'critical', label: 'Critical (bypasses Silent/Focus)' },
+            { value: 'passive', label: 'Passive (no sound)' },
+          ]},
         ];
       case 'notify':
         return [
@@ -520,6 +578,17 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
                       </option>
                     ))}
                   </select>
+                ) : field.type === 'textarea' ? (
+                  <textarea
+                    value={config[field.key] || ''}
+                    onChange={(e) => {
+                      setConfig({ ...config, [field.key]: e.target.value });
+                      setTestResult(null);
+                    }}
+                    placeholder={field.placeholder}
+                    rows={3}
+                    className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none font-mono text-sm"
+                  />
                 ) : (
                   <input
                     id={fieldId}
@@ -535,6 +604,9 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
                 )}
                 {'helperText' in field && field.helperText && (
                   <p className="text-xs text-amber-300 mt-1">{field.helperText}</p>
+                )}
+                {'help' in field && (field as { help?: string }).help && (
+                  <p className="text-xs text-bambu-gray mt-1">{(field as { help?: string }).help}</p>
                 )}
               </div>
                 );
@@ -737,6 +809,20 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
                 </div>
                 <div className="flex items-center justify-between col-span-2">
                   <div>
+                    <span className="text-sm text-white">{t('notifications.billingChargeFailedLabel')}</span>
+                    <span className="text-xs text-bambu-gray ml-1">{t('notifications.billingChargeFailedDescription')}</span>
+                  </div>
+                  <Toggle checked={onBillingChargeFailed} onChange={setOnBillingChargeFailed} />
+                </div>
+                <div className="flex items-center justify-between col-span-2">
+                  <div>
+                    <span className="text-sm text-white">{t('notifications.plateClearRequired')}</span>
+                    <span className="text-xs text-bambu-gray ml-1">{t('notifications.plateClearRequiredDescription')}</span>
+                  </div>
+                  <Toggle checked={onPlateClearRequired} onChange={setOnPlateClearRequired} />
+                </div>
+                <div className="flex items-center justify-between col-span-2">
+                  <div>
                     <span className="text-sm text-white">{t('notifications.bedCooled')}</span>
                     <span className="text-xs text-bambu-gray ml-1">{t('notifications.bedCooledAfterPrint')}</span>
                   </div>
@@ -759,6 +845,20 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
                 <div className="flex items-center justify-between">
                   <span className="text-sm text-white">{t('notifications.offline')}</span>
                   <Toggle checked={onPrinterOffline} onChange={setOnPrinterOffline} />
+                </div>
+                <div className="flex items-center justify-between col-span-2">
+                  <div>
+                    <span className="text-sm text-white">{t('notifications.haSensorAlert')}</span>
+                    <span className="text-xs text-bambu-gray ml-1">{t('notifications.haSensorAlertDescription')}</span>
+                  </div>
+                  <Toggle checked={onHaSensorAlert} onChange={setOnHaSensorAlert} />
+                </div>
+                <div className="flex items-center justify-between col-span-2">
+                  <div>
+                    <span className="text-sm text-white">{t('notifications.locationHaSensorAlert')}</span>
+                    <span className="text-xs text-bambu-gray ml-1">{t('notifications.locationHaSensorAlertDescription')}</span>
+                  </div>
+                  <Toggle checked={onLocationHaSensorAlert} onChange={setOnLocationHaSensorAlert} />
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-sm text-white">{t('notifications.error')}</span>
@@ -809,10 +909,14 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
               if (onPrintStopped) enabledEvents.push({ key: 'on_print_stopped', label: t('notifications.stopped') });
               if (onPrintProgress) enabledEvents.push({ key: 'on_print_progress', label: t('notifications.progress') });
               if (onPrintAlmostDone) enabledEvents.push({ key: 'on_print_almost_done', label: t('notifications.printAlmostDone') });
+              if (onBillingChargeFailed) enabledEvents.push({ key: 'on_billing_charge_failed', label: t('notifications.billingChargeFailedLabel') });
+              if (onPlateClearRequired) enabledEvents.push({ key: 'on_plate_clear_required', label: t('notifications.plateClearRequired') });
               if (onBedCooled) enabledEvents.push({ key: 'on_bed_cooled', label: t('notifications.bedCooled') });
               if (onFirstLayerComplete) enabledEvents.push({ key: 'on_first_layer_complete', label: t('notifications.firstLayerCompleteLabel') });
               if (onPrinterOffline) enabledEvents.push({ key: 'on_printer_offline', label: t('notifications.offline') });
               if (onPrinterError) enabledEvents.push({ key: 'on_printer_error', label: t('notifications.error') });
+              if (onHaSensorAlert) enabledEvents.push({ key: 'on_ha_sensor_alert', label: t('notifications.haSensorAlert') });
+              if (onLocationHaSensorAlert) enabledEvents.push({ key: 'on_location_ha_sensor_alert', label: t('notifications.locationHaSensorAlert') });
               if (onAiFailureDetection) enabledEvents.push({ key: 'on_ai_failure_detection', label: t('notifications.aiFailureDetection') });
               if (onFilamentLow) enabledEvents.push({ key: 'on_filament_low', label: t('notifications.lowFilament') });
               if (onMaintenanceDue) enabledEvents.push({ key: 'on_maintenance_due', label: t('notifications.maintenance') });

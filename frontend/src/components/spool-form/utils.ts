@@ -2,7 +2,7 @@ import { api } from '../../api/client';
 import type { SlicerSetting, LocalPreset, BuiltinFilament } from '../../api/client';
 import { installedNozzleDiameters } from '../../utils/amsHelpers';
 import type { CalibrationProfile, ColorPreset, FilamentOption } from './types';
-import { KNOWN_VARIANTS, DEFAULT_BRANDS, RECENT_COLORS_KEY, MAX_RECENT_COLORS } from './constants';
+import { KNOWN_VARIANTS, DEFAULT_BRANDS, RECENT_COLORS_KEY, MAX_RECENT_COLORS, STANDARD_NOZZLE_DIAMETERS } from './constants';
 
 /**
  * Fetch a printer's K-profiles across every nozzle it actually has installed
@@ -19,11 +19,30 @@ export async function fetchPrinterCalibrations(
   printerId: number,
   status: { nozzles?: { nozzle_diameter?: string }[] } | null | undefined,
 ): Promise<CalibrationProfile[]> {
-  const diameters = installedNozzleDiameters(status);
-  const toFetch = diameters.length > 0 ? diameters : ['0.4'];
-  const responses = await Promise.all(
-    toFetch.map(d => api.getKProfiles(printerId, d).catch(() => null)),
-  );
+  // Every standard size, plus anything unusual the printer reports as fitted --
+  // not just the fitted ones. A K profile is stored on the printer per nozzle
+  // diameter and survives a nozzle swap, so fetching only what is screwed in
+  // right now made a 0.6 profile invisible until a 0.6 was fitted, and left the
+  // user unable to prepare a spool for a nozzle they are about to change to.
+  // A diameter the printer has nothing for answers with an empty list rather
+  // than timing out, so the extra sizes cost a round trip each, not a stall --
+  // provided they are sent one at a time, see below.
+  const installed = installedNozzleDiameters(status);
+  const toFetch = Array.from(new Set([...STANDARD_NOZZLE_DIAMETERS, ...installed]));
+
+  // One diameter at a time, NOT in parallel. H2-series firmware answers only
+  // the first one or two of a concurrent burst of `extrusion_cali_get` and
+  // silently drops the rest, so each dropped request costs a 5s timeout before
+  // it is retried: measured on an H2C and an H2D, four parallel requests took
+  // 11s and 23s respectively, against ~1s when sent one after another. (An X1C
+  // answers all four concurrently, which is why this went unnoticed while only
+  // dual-diameter printers ever sent more than one.) Per-diameter failures are
+  // still swallowed: a printer that doesn't support the endpoint yields no rows
+  // rather than losing the diameters that did answer.
+  const responses = [];
+  for (const diameter of toFetch) {
+    responses.push(await api.getKProfiles(printerId, diameter).catch(() => null));
+  }
   const calibrations: CalibrationProfile[] = [];
   for (const res of responses) {
     if (!res) continue;
@@ -37,6 +56,7 @@ export async function fetchPrinterCalibrations(
         n_coef: parseFloat(p.n_coef) || 0,
         extruder_id: p.extruder_id,
         nozzle_diameter: p.nozzle_diameter,
+        nozzle_id: p.nozzle_id,
       });
     }
   }
@@ -45,23 +65,23 @@ export async function fetchPrinterCalibrations(
 
 // Fallback filament presets when cloud is not available
 const FALLBACK_PRESETS: FilamentOption[] = [
-  { code: 'GFL00', name: 'Bambu PLA Basic', displayName: 'Bambu PLA Basic', isCustom: false, allCodes: ['GFL00'] },
-  { code: 'GFL01', name: 'Bambu PLA Matte', displayName: 'Bambu PLA Matte', isCustom: false, allCodes: ['GFL01'] },
-  { code: 'GFL05', name: 'Generic PLA', displayName: 'Generic PLA', isCustom: false, allCodes: ['GFL05'] },
-  { code: 'GFG00', name: 'Bambu PETG Basic', displayName: 'Bambu PETG Basic', isCustom: false, allCodes: ['GFG00'] },
-  { code: 'GFG05', name: 'Generic PETG', displayName: 'Generic PETG', isCustom: false, allCodes: ['GFG05'] },
-  { code: 'GFB00', name: 'Bambu ABS Basic', displayName: 'Bambu ABS Basic', isCustom: false, allCodes: ['GFB00'] },
-  { code: 'GFB05', name: 'Generic ABS', displayName: 'Generic ABS', isCustom: false, allCodes: ['GFB05'] },
-  { code: 'GFA00', name: 'Bambu ASA Basic', displayName: 'Bambu ASA Basic', isCustom: false, allCodes: ['GFA00'] },
-  { code: 'GFU00', name: 'Bambu TPU 95A', displayName: 'Bambu TPU 95A', isCustom: false, allCodes: ['GFU00'] },
-  { code: 'GFU05', name: 'Generic TPU', displayName: 'Generic TPU', isCustom: false, allCodes: ['GFU05'] },
-  { code: 'GFC00', name: 'Bambu PC Basic', displayName: 'Bambu PC Basic', isCustom: false, allCodes: ['GFC00'] },
-  { code: 'GFN00', name: 'Bambu PA Basic', displayName: 'Bambu PA Basic', isCustom: false, allCodes: ['GFN00'] },
-  { code: 'GFN05', name: 'Generic PA', displayName: 'Generic PA', isCustom: false, allCodes: ['GFN05'] },
-  { code: 'GFS00', name: 'Bambu PLA-CF', displayName: 'Bambu PLA-CF', isCustom: false, allCodes: ['GFS00'] },
-  { code: 'GFT00', name: 'Bambu PETG-CF', displayName: 'Bambu PETG-CF', isCustom: false, allCodes: ['GFT00'] },
-  { code: 'GFNC0', name: 'Bambu PA-CF', displayName: 'Bambu PA-CF', isCustom: false, allCodes: ['GFNC0'] },
-  { code: 'GFV00', name: 'Bambu PVA', displayName: 'Bambu PVA', isCustom: false, allCodes: ['GFV00'] },
+  { code: 'GFL00', name: 'Bambu PLA Basic', displayName: 'Bambu PLA Basic', isCustom: false, allCodes: ['GFL00'], source: 'builtin' },
+  { code: 'GFL01', name: 'Bambu PLA Matte', displayName: 'Bambu PLA Matte', isCustom: false, allCodes: ['GFL01'], source: 'builtin' },
+  { code: 'GFL05', name: 'Generic PLA', displayName: 'Generic PLA', isCustom: false, allCodes: ['GFL05'], source: 'builtin' },
+  { code: 'GFG00', name: 'Bambu PETG Basic', displayName: 'Bambu PETG Basic', isCustom: false, allCodes: ['GFG00'], source: 'builtin' },
+  { code: 'GFG05', name: 'Generic PETG', displayName: 'Generic PETG', isCustom: false, allCodes: ['GFG05'], source: 'builtin' },
+  { code: 'GFB00', name: 'Bambu ABS Basic', displayName: 'Bambu ABS Basic', isCustom: false, allCodes: ['GFB00'], source: 'builtin' },
+  { code: 'GFB05', name: 'Generic ABS', displayName: 'Generic ABS', isCustom: false, allCodes: ['GFB05'], source: 'builtin' },
+  { code: 'GFA00', name: 'Bambu ASA Basic', displayName: 'Bambu ASA Basic', isCustom: false, allCodes: ['GFA00'], source: 'builtin' },
+  { code: 'GFU00', name: 'Bambu TPU 95A', displayName: 'Bambu TPU 95A', isCustom: false, allCodes: ['GFU00'], source: 'builtin' },
+  { code: 'GFU05', name: 'Generic TPU', displayName: 'Generic TPU', isCustom: false, allCodes: ['GFU05'], source: 'builtin' },
+  { code: 'GFC00', name: 'Bambu PC Basic', displayName: 'Bambu PC Basic', isCustom: false, allCodes: ['GFC00'], source: 'builtin' },
+  { code: 'GFN00', name: 'Bambu PA Basic', displayName: 'Bambu PA Basic', isCustom: false, allCodes: ['GFN00'], source: 'builtin' },
+  { code: 'GFN05', name: 'Generic PA', displayName: 'Generic PA', isCustom: false, allCodes: ['GFN05'], source: 'builtin' },
+  { code: 'GFS00', name: 'Bambu PLA-CF', displayName: 'Bambu PLA-CF', isCustom: false, allCodes: ['GFS00'], source: 'builtin' },
+  { code: 'GFT00', name: 'Bambu PETG-CF', displayName: 'Bambu PETG-CF', isCustom: false, allCodes: ['GFT00'], source: 'builtin' },
+  { code: 'GFNC0', name: 'Bambu PA-CF', displayName: 'Bambu PA-CF', isCustom: false, allCodes: ['GFNC0'], source: 'builtin' },
+  { code: 'GFV00', name: 'Bambu PVA', displayName: 'Bambu PVA', isCustom: false, allCodes: ['GFV00'], source: 'builtin' },
 ];
 
 // Parse a slicer preset name to extract brand, material, and variant
@@ -189,6 +209,7 @@ function buildLocalFilamentOptions(localPresets: LocalPreset[]): FilamentOption[
       displayName: preset.name,
       isCustom: false,
       allCodes,
+      source: 'local',
     };
   });
   return options.sort((a, b) => a.displayName.localeCompare(b.displayName));
@@ -204,6 +225,12 @@ export function buildFilamentOptions(
   configuredPrinterModels: Set<string>,
   localPresets?: LocalPreset[],
   builtinFilaments?: BuiltinFilament[],
+  // Which of the cloud presets came from Orca Cloud rather than Bambu Cloud.
+  // The two are merged into one list by the callers (OrcaProfileMeta is
+  // structurally identical to SlicerSetting), so the distinction has to be
+  // carried in rather than derived -- and it is worth carrying, because the
+  // origin badge is the only thing telling a user which cloud a preset is in.
+  orcaSettingIds?: Set<string>,
 ): FilamentOption[] {
   const customPresets: FilamentOption[] = [];
   const defaultPresets: FilamentOption[] = [];
@@ -227,6 +254,7 @@ export function buildFilamentOptions(
           displayName: `${preset.name} (Custom)`,
           isCustom: true,
           allCodes: [preset.setting_id],
+          source: orcaSettingIds?.has(preset.setting_id) ? 'orca_cloud' : 'cloud',
         });
         cloudCodes.add(preset.setting_id);
       }
@@ -237,6 +265,7 @@ export function buildFilamentOptions(
         displayName: preset.name,
         isCustom: false,
         allCodes: [preset.setting_id],
+        source: orcaSettingIds?.has(preset.setting_id) ? 'orca_cloud' : 'cloud',
       });
       cloudCodes.add(preset.setting_id);
     }
@@ -263,6 +292,7 @@ export function buildFilamentOptions(
         displayName: bf.name,
         isCustom: false,
         allCodes: [bf.filament_id, settingId],
+        source: 'builtin',
       });
     }
   }
@@ -302,6 +332,31 @@ export function findPresetOption(
     );
   }
   return option;
+}
+
+// Keep the value a spool already carries selectable in its own dropdown (#1905).
+// A brand or material entered as a custom value isn't part of the color catalog
+// or any slicer preset, so without this the edit form offered no way back to it
+// once the user opened the dropdown.
+export function withCurrentValue(options: string[], current: string): string[] {
+  const trimmed = current.trim();
+  if (!trimmed || options.some(o => o.toLowerCase() === trimmed.toLowerCase())) return options;
+  return [...options, trimmed].sort((a, b) => a.localeCompare(b));
+}
+
+// Brands/materials the catalog and slicer presets pair with the other field's
+// current value (#1905). Used to rank the dropdown, never to filter it — the
+// pairs are incomplete (Elegoo ships ASA even though the catalog only knows its
+// PLA), and hiding the rest made valid entries look impossible.
+export function pairedOptions(
+  options: string[],
+  counterpart: string,
+  pairMap: Map<string, Set<string>>,
+): string[] {
+  if (!counterpart) return [];
+  const keys = pairMap.get(counterpart.toLowerCase());
+  if (!keys || keys.size === 0) return [];
+  return options.filter(o => keys.has(o.toLowerCase()));
 }
 
 // Recent colors management
@@ -353,14 +408,81 @@ export function toFilamentId(id: string | null | undefined): string {
 }
 
 // "GFx99" identifiers (GFL99, GFG99, GFB99, ...) are Bambu's *generic* filament
-// IDs — shared across many different physical filaments. Matching K-profiles
-// by an exact generic ID would over-match, so the id-match path skips them and
-// the caller falls through to name-based matching.
+// IDs — one per material, shared across every physical filament the user hasn't
+// given a specific preset. They still identify a material unambiguously, so an
+// exact generic id match is only ambiguous about *brand*, never about material.
 export function isGenericFilamentId(id: string | null | undefined): boolean {
   return !!id && /^GF[A-Z]99$/i.test(id);
 }
 
+// The material each generic Bambu filament ID stands for. Used to sanity-check
+// a generic id-match against the material the caller already knows (#2710): a
+// PETG spool must never claim GFL99 (generic PLA) profiles just because both
+// sides happen to have stored the same generic id.
+const GENERIC_FILAMENT_MATERIALS: Record<string, string> = {
+  GFB99: 'ABS',
+  GFC99: 'PC',
+  GFG99: 'PETG',
+  GFL99: 'PLA',
+  GFN99: 'PA',
+  GFP99: 'PE',
+  GFR99: 'EVA',
+  GFS99: 'PVA',
+  GFU99: 'TPU',
+};
+
+// Material a generic filament ID stands for ("GFL99" → "PLA"), or '' when the
+// ID isn't a known generic one.
+export function materialForGenericFilamentId(id: string | null | undefined): string {
+  if (!id) return '';
+  return GENERIC_FILAMENT_MATERIALS[id.toUpperCase()] || '';
+}
+
+// Bambu labels nylon "PA"; users routinely type "Nylon". Compare materials
+// through this so the two spellings agree.
+function normaliseMaterial(material: string): string {
+  const upper = material.trim().toUpperCase();
+  return upper === 'NYLON' ? 'PA' : upper;
+}
+
+// True when a generic filament ID may stand in for the given material — i.e.
+// the ID is generic and describes that same material.
+export function genericFilamentIdMatchesMaterial(id: string, material: string): boolean {
+  const generic = materialForGenericFilamentId(id);
+  return !!generic && !!material && normaliseMaterial(generic) === normaliseMaterial(material);
+}
+
 // Check if a calibration matches based on brand, material, and variant
+/**
+ * Key one hotend's K-profile selection: printer, extruder, nozzle diameter.
+ *
+ * All three because that is what both K tables are keyed on -- a K value is
+ * measured on one individual hotend, and cali_idx alone cannot identify one
+ * (the printer numbers its calibration table PER NOZZLE, so index 16 exists on
+ * both hotends of a dual-nozzle machine meaning different things).
+ */
+export function hotendKey(printerId: number, extruder: number, diameter: string): string {
+  return `${printerId}:${extruder}:${diameter}`;
+}
+
+/**
+ * Key one per-printer-model preset override.
+ *
+ * Diameter "" is the model's own default and a bare decimal is a per-hotend
+ * exception, matching the (printer_model, nozzle_diameter) pair the backend
+ * stores. The separator is a NUL because a model name is free text from the
+ * printer ("A1 mini") and must never be able to collide with a diameter.
+ */
+export function presetKey(model: string, diameter: string): string {
+  return `${model}\u0000${diameter}`;
+}
+
+/** Split a `presetKey` back into its model and diameter. */
+export function parsePresetKey(key: string): { model: string; diameter: string } {
+  const [model = '', diameter = ''] = key.split('\u0000');
+  return { model, diameter };
+}
+
 export function isMatchingCalibration(
   cal: { name?: string; filament_id?: string },
   formData: { material: string; brand: string; subtype: string; slicer_filament?: string },
@@ -374,8 +496,23 @@ export function isMatchingCalibration(
   // "GFG98" without going anywhere near parsePresetName.
   const spoolFid = toFilamentId(formData.slicer_filament);
   const calFid = toFilamentId(cal.filament_id);
-  if (spoolFid && calFid && spoolFid === calFid && !isGenericFilamentId(calFid)) {
-    return true;
+  if (spoolFid && calFid && spoolFid === calFid) {
+    if (!isGenericFilamentId(calFid)) {
+      return true;
+    }
+    // Both sides carry the same *generic* id (#2710). That still pins the
+    // material, so the only thing left ambiguous is brand — a printer holds
+    // one flat calibration table per generic id and users routinely name
+    // those entries by colour ("Dark Brown", "Marble"), which no amount of
+    // name parsing can tie back to a material. Accept the match when the
+    // material agrees and the spool claims no brand of its own; a spool that
+    // does name a brand keeps the stricter name-based path below so its
+    // suggestions stay brand-specific.
+    const brand = formData.brand.trim();
+    const brandIsGeneric = !brand || brand.toUpperCase() === 'GENERIC';
+    if (brandIsGeneric && genericFilamentIdMatchesMaterial(calFid, formData.material)) {
+      return true;
+    }
   }
 
   const profileName = cal.name || '';

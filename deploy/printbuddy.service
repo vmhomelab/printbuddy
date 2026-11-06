@@ -62,6 +62,14 @@ StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=printbuddy
 
+# Allow binding to privileged ports (322 RTSP, 990 FTPS) for Virtual Printer
+# mode. Without this the VP's sockets never open and the slicer simply never
+# sees the printer — with no obvious error, since the bind failure is one line
+# in the journal (#2549). Works alongside NoNewPrivileges=true below: systemd
+# raises the ambient set at exec, which is not the privilege escalation that
+# setting forbids.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
 # Security hardening
 NoNewPrivileges=true
 PrivateTmp=true

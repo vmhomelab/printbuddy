@@ -65,6 +65,55 @@ def _looks_like_cloudflare_challenge(response: httpx.Response) -> bool:
     return "just a moment" in body or "cf-chl-bypass" in body or "cf-chl-opt" in body or "challenge-platform" in body
 
 
+def _assert_safe_provider_url(url: str, *, label: str) -> str | None:
+    """Validate a provider URL taken from user-supplied config.
+
+    Returns an error message on rejection, or None when the URL is
+    acceptable — the ``_send_*`` methods return ``tuple[bool, str]`` rather
+    than raising, so a message is more useful here than an exception.
+
+    Uses the LAN-service policy: self-hosting ntfy, Bark, Gotify or a webhook
+    receiver on the home LAN is normal and must keep working, so loopback and
+    RFC-1918 stay permitted. Cloud-metadata endpoints, numeric-encoded IPs and
+    non-HTTP schemes are rejected.
+    """
+    from backend.app.api.routes._url_safety import assert_safe_lan_service_url
+
+    try:
+        assert_safe_lan_service_url(url, label=label)
+    except ValueError as exc:
+        return str(exc)
+    return None
+
+
+def _opaque_http_failure(response: httpx.Response, *, label: str) -> str:
+    """Failure message for a provider whose destination host the user supplies.
+
+    The response body is deliberately **not** returned to the caller. Provider
+    URLs are configurable by anyone holding ``NOTIFICATIONS_CREATE`` — which
+    the default Operators group carries and which does not imply
+    ``SETTINGS_UPDATE`` — and ``POST /notifications/test-config`` accepts a URL
+    straight from the request body without persisting anything. Echoing the
+    response body there turned an intended "does my webhook work?" check into
+    an authenticated read primitive against any host the Printbuddy process can
+    reach, including services that are not exposed to the network at all.
+
+    Providers whose host Printbuddy hardcodes (Pushover, Telegram, CallMeBot)
+    keep returning the upstream body — there is no trust boundary to cross
+    when the destination cannot be influenced.
+
+    The body is logged at debug level, where it stays available to whoever
+    already administers the host without being handed back over the API.
+    """
+    logger.debug(
+        "%s delivery failed with HTTP %s; body: %s",
+        label,
+        response.status_code,
+        (response.text or "")[:200],
+    )
+    return f"HTTP {response.status_code} from the configured {label} (see server logs at debug level for details)"
+
+
 class NotificationService:
     """Service for sending notifications through various providers."""
 
@@ -75,10 +124,20 @@ class NotificationService:
         self._last_digest_check: str = ""  # "HH:MM" to avoid duplicate checks
 
     async def _get_client(self) -> httpx.AsyncClient:
-        """Get or create HTTP client."""
+        """Get or create HTTP client.
+
+        The connect timeout is deliberately far shorter than the rest. A flat
+        30 s meant that when a site's internet went down, every alarm spent a
+        full 30 s inside ``connect`` — longer than SQLite's 15 s
+        ``busy_timeout`` — and any other task that wanted to write during that
+        window failed with "database is locked" (#2770). Reaching a host either
+        works in a couple of seconds or is not going to; sending the body is the
+        part that legitimately takes time, so read/write keep the old 30 s and
+        an image upload on a slow uplink is unaffected.
+        """
         if self._http_client is None or self._http_client.is_closed:
             self._http_client = httpx.AsyncClient(
-                timeout=30.0,
+                timeout=httpx.Timeout(30.0, connect=5.0),
                 headers={"User-Agent": _USER_AGENT},
             )
         return self._http_client
@@ -118,12 +177,18 @@ class NotificationService:
             return False
 
     async def _get_template(self, db: AsyncSession, event_type: str) -> NotificationTemplate | None:
-        """Get a notification template by event type."""
+        """Get a notification template by event type.
+
+        ``no_autoflush`` for the same reason as ``_get_providers_for_event``:
+        this read runs before the provider is contacted, and must not be the
+        thing that opens a write transaction on the caller's session (#2770).
+        """
         # Check cache first
         if event_type in self._template_cache:
             return self._template_cache[event_type]
 
-        result = await db.execute(select(NotificationTemplate).where(NotificationTemplate.event_type == event_type))
+        with db.no_autoflush:
+            result = await db.execute(select(NotificationTemplate).where(NotificationTemplate.event_type == event_type))
         template = result.scalar_one_or_none()
 
         if template:
@@ -230,6 +295,8 @@ class NotificationService:
                 return await self._send_homeassistant(config, title, message, db=db)
             elif provider_type == "notify":
                 return await self._send_notify(config, title, message, event_type="test")
+            elif provider_type == "bark":
+                return await self._send_bark(config, title, message)
             else:
                 return False, f"Unknown provider type: {provider_type}"
         except Exception as e:
@@ -256,6 +323,56 @@ class NotificationService:
         else:
             return False, f"HTTP {response.status_code}: {response.text[:200]}"
 
+    async def _send_bark(self, config: dict, title: str, message: str) -> tuple[bool, str]:
+        """Send notification via Bark, the self-hostable iOS push service (#1495).
+
+        POSTs JSON to {server}/push. Defaults to the official api.day.app
+        relay; a self-hosted bark-server works by overriding the server URL.
+        """
+        server = (config.get("server") or "https://api.day.app").strip().rstrip("/")
+        device_key = (config.get("device_key") or "").strip()
+
+        if not device_key:
+            return False, "Device key is required"
+
+        url_error = _assert_safe_provider_url(server, label="Bark server URL")
+        if url_error:
+            return False, url_error
+
+        payload: dict[str, Any] = {
+            "device_key": device_key,
+            "title": title,
+            "body": message,
+        }
+        group = (config.get("group") or "").strip()
+        if group:
+            payload["group"] = group
+        sound = (config.get("sound") or "").strip()
+        if sound:
+            payload["sound"] = sound
+        level = (config.get("level") or "").strip()
+        if level in ("active", "timeSensitive", "critical", "passive"):
+            payload["level"] = level
+
+        client = await self._get_client()
+        response = await client.post(f"{server}/push", json=payload)
+
+        if response.status_code == 200:
+            # bark-server can report failures inside an HTTP 200 body
+            # ({"code": 400, "message": ...}), so the status alone isn't proof.
+            try:
+                body = response.json()
+            except ValueError:
+                body = None
+            if isinstance(body, dict) and body.get("code") not in (200, None):
+                # Only the numeric code is echoed. A server chosen by the caller
+                # controls this body too, so the free-text message is a (narrow)
+                # read channel of the same kind _opaque_http_failure closes.
+                logger.debug("Bark reported error %s: %s", body.get("code"), str(body.get("message"))[:200])
+                return False, f"Bark error {body.get('code')} (see server logs at debug level for details)"
+            return True, "Message sent successfully"
+        return False, _opaque_http_failure(response, label="Bark server")
+
     async def _send_ntfy(
         self,
         config: dict,
@@ -271,6 +388,10 @@ class NotificationService:
 
         if not topic:
             return False, "Topic is required"
+
+        url_error = _assert_safe_provider_url(server, label="ntfy server URL")
+        if url_error:
+            return False, url_error
 
         url = f"{server}/{topic}"
         # ntfy reads Title/Message from HTTP headers. httpx enforces ASCII
@@ -324,7 +445,7 @@ class NotificationService:
                 "Fight Mode, or front the server with Cloudflare Access using a "
                 "service token. (#1534)"
             )
-        return False, f"HTTP {response.status_code}: {response.text[:200]}"
+        return False, _opaque_http_failure(response, label="ntfy server")
 
     async def _send_pushover(
         self, config: dict, title: str, message: str, image_data: bytes | None = None
@@ -406,10 +527,22 @@ class NotificationService:
         """Send notification via Telegram bot."""
         bot_token = config.get("bot_token", "").strip()
         chat_id = config.get("chat_id", "").strip()
-        thread_id = self._telegram_thread_id(config)
-
         if not bot_token or not chat_id:
             return False, "Bot token and chat ID are required"
+
+        # Optional forum topic (#1518).  Telegram expects message_thread_id as an
+        # integer in the JSON sendMessage body — a string 400s there even though
+        # the multipart sendPhoto call below would happily accept one.  Coerce it
+        # once, up front, so both call sites agree and a bad value fails loudly
+        # instead of silently breaking only the text notifications. The id may
+        # be stored under any of the accepted aliases (thread_id / topic_id).
+        thread_id_raw = self._telegram_thread_id(config) or ""
+        message_thread_id: int | None = None
+        if thread_id_raw:
+            try:
+                message_thread_id = int(thread_id_raw)
+            except ValueError:
+                return False, f"Invalid message thread ID: {thread_id_raw!r} is not a number"
 
         # Escape underscores in the message body so Telegram Markdown
         # parsing doesn't break on job names like "A1_plate_8" or error
@@ -421,30 +554,27 @@ class NotificationService:
             message = f"{title_part}\n{body_part}"
 
         client = await self._get_client()
-        telegram_payload = {"chat_id": chat_id}
-        if thread_id:
-            telegram_payload["message_thread_id"] = thread_id
 
         if image_data:
             # Use sendPhoto to attach the thumbnail with the caption
             url = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
-            data = {
-                **telegram_payload,
-                "caption": message,
-                "parse_mode": "Markdown",
-            }
+            form: dict[str, Any] = {"chat_id": chat_id, "caption": message, "parse_mode": "Markdown"}
+            if message_thread_id is not None:
+                form["message_thread_id"] = message_thread_id
             response = await client.post(
                 url,
-                data=data,
+                data=form,
                 files={"photo": ("photo.jpg", image_data, "image/jpeg")},
             )
         else:
             url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-            data = {
-                **telegram_payload,
+            data: dict[str, Any] = {
+                "chat_id": chat_id,
                 "text": message,
                 "parse_mode": "Markdown",
             }
+            if message_thread_id is not None:
+                data["message_thread_id"] = message_thread_id
             response = await client.post(url, json=data)
 
         if response.status_code == 200:
@@ -646,6 +776,10 @@ class NotificationService:
         if not webhook_url:
             return False, "Webhook URL is required"
 
+        url_error = _assert_safe_provider_url(webhook_url, label="Webhook URL")
+        if url_error:
+            return False, url_error
+
         # Build payload based on format
         if payload_format == "slack":
             # Slack/Mattermost format - just text field
@@ -691,7 +825,7 @@ class NotificationService:
             if response.status_code in (200, 201, 202, 204):
                 return True, "Webhook delivered successfully"
             else:
-                return False, f"HTTP {response.status_code}: {response.text[:200]}"
+                return False, _opaque_http_failure(response, label="webhook endpoint")
         except Exception as e:
             return False, f"Webhook error: {str(e)}"
 
@@ -766,6 +900,24 @@ class NotificationService:
             "message": message,
         }
 
+        # Optional custom service-data (#1441), forwarded as HA's nested "data"
+        # object so mobile-app push options (priority, ttl, channel, group, ...)
+        # reach the notify service. Only included when configured — the default
+        # persistent_notification.create schema rejects unknown keys.
+        raw_data = config.get("data")
+        if raw_data:
+            if isinstance(raw_data, str):
+                try:
+                    parsed_data = json.loads(raw_data)
+                except json.JSONDecodeError as e:
+                    return False, f"Invalid JSON in the Data field: {e}"
+            else:
+                parsed_data = raw_data
+            if not isinstance(parsed_data, dict):
+                return False, 'The Data field must be a JSON object, e.g. {"priority": "high", "ttl": 0}'
+            if parsed_data:
+                payload["data"] = parsed_data
+
         client = await self._get_client()
         response = await client.post(url, json=payload, headers=headers)
 
@@ -774,7 +926,11 @@ class NotificationService:
         elif response.status_code == 401:
             return False, "Home Assistant authentication failed - check your token"
         else:
-            return False, f"HTTP {response.status_code}: {response.text[:200]}"
+            # ha_url comes from global settings (SETTINGS_UPDATE, admin-only), so
+            # this is a narrower channel than the per-request provider URLs — but
+            # it lands in the same NOTIFICATIONS_CREATE-gated test response, so it
+            # gets the same treatment.
+            return False, _opaque_http_failure(response, label="Home Assistant endpoint")
 
     async def _send_notify(
         self,
@@ -813,6 +969,12 @@ class NotificationService:
         if not device_id or not device_token:
             return False, "Device ID and device token are required"
 
+        # base_url is user-configurable (self-hosted Notify relays), so it gets
+        # the same LAN-service guard and opaque failure as ntfy/Bark/webhook.
+        url_error = _assert_safe_provider_url(base_url, label="Notify server URL")
+        if url_error:
+            return False, url_error
+
         url = f"{base_url}/notify-json/{quote(device_id)}?token={quote(device_token)}"
         payload = {
             "title": title,
@@ -828,7 +990,7 @@ class NotificationService:
             return True, "Notification sent via Notify"
         if response.status_code in (401, 403):
             return False, "Notify authentication failed - check your device ID and token"
-        return False, f"HTTP {response.status_code}: {response.text[:200]}"
+        return False, _opaque_http_failure(response, label="Notify server")
 
     async def _send_to_provider(
         self,
@@ -875,6 +1037,8 @@ class NotificationService:
                 return await self._send_homeassistant(config, title, message, db=db)
             elif provider.provider_type == "notify":
                 return await self._send_notify(config, title, message, event_type=event_type)
+            elif provider.provider_type == "bark":
+                return await self._send_bark(config, title, message)
             else:
                 return False, f"Unknown provider type: {provider.provider_type}"
         except Exception as e:
@@ -901,7 +1065,19 @@ class NotificationService:
         event_field: str,
         printer_id: int | None = None,
     ) -> list[NotificationProvider]:
-        """Get all enabled providers that want a specific event type."""
+        """Get all enabled providers that want a specific event type.
+
+        Runs under ``no_autoflush`` (#2770). Callers routinely hold pending
+        writes when they raise an event — the AMS sensor loop does
+        ``db.add(history)`` and only commits after the alarms have gone out — and
+        without this, autoflush satisfies this SELECT by writing those rows,
+        which opens a write transaction on SQLite. The provider is then contacted
+        over the network with that transaction still open, so a site whose
+        internet is down holds the single SQLite writer for the whole connect
+        timeout and unrelated background tasks fail with "database is locked".
+        Deferring the flush costs nothing here: providers are committed rows, so
+        a pending change in the caller's session cannot be one this query wants.
+        """
         # Build the query dynamically based on event field
         query = select(NotificationProvider).where(
             NotificationProvider.enabled.is_(True),
@@ -915,7 +1091,8 @@ class NotificationService:
                 | NotificationProvider.printers.any(id=printer_id)
             )
 
-        result = await db.execute(query)
+        with db.no_autoflush:
+            result = await db.execute(query)
         return list(result.scalars().all())
 
     async def _log_notification(
@@ -1385,6 +1562,39 @@ class NotificationService:
             variables=variables,
         )
 
+    async def on_billing_charge_failed(
+        self,
+        printer_id: int,
+        printer_name: str,
+        filename: str,
+        archive_id: int | None,
+        error: str,
+        db: AsyncSession,
+    ) -> None:
+        """Notify providers that a terminal print could not be charged."""
+        providers = await self._get_providers_for_event(db, "on_billing_charge_failed", printer_id)
+        if not providers:
+            return
+
+        variables = {
+            "printer": printer_name,
+            "filename": self._clean_filename(filename),
+            "archive_id": str(archive_id) if archive_id is not None else "Unknown",
+            "error": error,
+        }
+        title, message = await self._build_message_from_template(db, "billing_charge_failed", variables)
+        await self._send_to_providers(
+            providers,
+            title,
+            message,
+            db,
+            "billing_charge_failed",
+            printer_id,
+            printer_name,
+            force_immediate=True,
+            variables=variables,
+        )
+
     async def on_printer_offline(self, printer_id: int, printer_name: str, db: AsyncSession):
         """Handle printer offline event."""
         providers = await self._get_providers_for_event(db, "on_printer_offline", printer_id)
@@ -1497,6 +1707,39 @@ class NotificationService:
             printer_id,
             printer_name,
             force_immediate=True,
+            variables=variables,
+        )
+
+    async def on_plate_clear_required(
+        self,
+        printer_id: int,
+        printer_name: str,
+        db: AsyncSession,
+    ):
+        """Handle plate-clear-required event — a print ended and the queue is gated (#2525).
+
+        Distinct from ``on_plate_not_empty``, which is the camera check *before* a
+        print starts. This one fires on the rising edge of the Printbuddy-side
+        awaiting-plate-clear flag, i.e. whenever a print reaches a terminal state
+        and the next queued job can't dispatch until someone confirms the bed is
+        free. Off by default on every provider: it lands at the same moment as the
+        print-complete notification, so opting in is a deliberate choice.
+        """
+        providers = await self._get_providers_for_event(db, "on_plate_clear_required", printer_id)
+        if not providers:
+            return
+
+        variables = {"printer": printer_name}
+
+        title, message = await self._build_message_from_template(db, "plate_clear_required", variables)
+        await self._send_to_providers(
+            providers,
+            title,
+            message,
+            db,
+            "plate_clear_required",
+            printer_id,
+            printer_name,
             variables=variables,
         )
 
@@ -1630,6 +1873,47 @@ class NotificationService:
             variables=variables,
         )
 
+    async def on_ams_drying_suspended(
+        self,
+        printer_id: int,
+        printer_name: str,
+        ams_label: str,
+        humidity: float,
+        threshold: float,
+        cycles: int,
+        db: AsyncSession,
+    ):
+        """Handle automatic drying giving up on one AMS unit (#2770).
+
+        Sent immediately rather than folded into a digest: it reports that
+        Printbuddy has STOPPED doing something, and a report of inaction that
+        arrives with tomorrow's summary has already cost the user a day.
+        """
+        providers = await self._get_providers_for_event(db, "on_ams_drying_suspended", printer_id)
+        if not providers:
+            return
+
+        variables = {
+            "printer": printer_name,
+            "ams_label": ams_label,
+            "humidity": f"{humidity:.0f}",
+            "threshold": f"{threshold:.0f}",
+            "cycles": str(cycles),
+        }
+
+        title, message = await self._build_message_from_template(db, "ams_drying_suspended", variables)
+        await self._send_to_providers(
+            providers,
+            title,
+            message,
+            db,
+            "ams_drying_suspended",
+            printer_id,
+            printer_name,
+            force_immediate=True,
+            variables=variables,
+        )
+
     async def on_ams_ht_humidity_high(
         self,
         printer_id: int,
@@ -1726,6 +2010,81 @@ class NotificationService:
         title, message = await self._build_message_from_template(db, "bed_cooled", variables)
         await self._send_to_providers(
             providers, title, message, db, "bed_cooled", printer_id, printer_name, variables=variables
+        )
+
+    async def on_ha_sensor_alert(
+        self,
+        printer_id: int,
+        printer_name: str,
+        sensor_name: str,
+        state: str,
+        db: AsyncSession,
+    ):
+        """A Home Assistant sensor bound to a printer entered its alert state (#1148).
+
+        Sent immediately rather than folded into a digest: the case this exists
+        for is an enclosure door left open, which is only worth telling someone
+        about while they can still act on it.
+        """
+        providers = await self._get_providers_for_event(db, "on_ha_sensor_alert", printer_id)
+        if not providers:
+            return
+
+        variables = {
+            "printer": printer_name,
+            "sensor": sensor_name,
+            "state": state,
+        }
+
+        title, message = await self._build_message_from_template(db, "ha_sensor_alert", variables)
+        await self._send_to_providers(
+            providers,
+            title,
+            message,
+            db,
+            "ha_sensor_alert",
+            printer_id,
+            printer_name,
+            force_immediate=True,
+            variables=variables,
+        )
+
+    async def on_location_ha_sensor_alert(
+        self,
+        location_name: str,
+        sensor_name: str,
+        state: str,
+        db: AsyncSession,
+    ):
+        """A Home Assistant sensor bound to a storage location entered its alert state (#2824).
+
+        Sent immediately rather than folded into a digest, for the same reason
+        as on_ha_sensor_alert above: this is the "drybox went stale" case, only
+        worth acting on while the humidity/temperature is still climbing.
+        """
+        # Own column, not on_ha_sensor_alert (#2824): that one can be scoped to
+        # a single printer via provider.printer_id, and a location alert has no
+        # printer to scope by, so sharing it would leak drybox alerts to a
+        # provider narrowed to one printer's sensors.
+        providers = await self._get_providers_for_event(db, "on_location_ha_sensor_alert", None)
+        if not providers:
+            return
+
+        variables = {
+            "location": location_name,
+            "sensor": sensor_name,
+            "state": state,
+        }
+
+        title, message = await self._build_message_from_template(db, "location_ha_sensor_alert", variables)
+        await self._send_to_providers(
+            providers,
+            title,
+            message,
+            db,
+            "location_ha_sensor_alert",
+            force_immediate=True,
+            variables=variables,
         )
 
     async def on_first_layer_complete(

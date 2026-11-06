@@ -13,13 +13,20 @@ but never used.
 The patch reads support-related fields from the source's
 project_settings.config and overlays them onto the process preset JSON,
 so the source's per-project support intent survives `--load-settings`.
+
+The carry is one-way (#2820): a source can switch supports on, never off.
+The original rule was symmetric, which meant any 3MF that shipped with
+supports disabled -- i.e. nearly every MakerWorld download -- stripped
+them back out of a custom process preset that deliberately enabled them.
 """
 
 import io
 import json
+import logging
 import zipfile
 
-from backend.app.api.routes.library import _patch_process_support_settings
+from backend.app.api.routes.library import _declined_source_keys, _patch_process_support_settings
+from backend.app.services.design_settings import DesignOverride
 
 
 def _make_3mf(project_settings: dict | None) -> bytes:
@@ -65,24 +72,76 @@ class TestPatchProcessSupportSettings:
         assert result["layer_height"] == "0.20"
         assert result["name"] == "0.20mm Standard @BBL H2D"
 
-    def test_source_supports_off_beats_preset_supports_on(self):
-        # Symmetric: a source with supports explicitly disabled must win
-        # over a process preset that happens to have supports on. Rare in
-        # practice (Bambu's presets ship off) but the semantic is "source
-        # wins" regardless of direction — a user who exported without
-        # supports doesn't want a preset accidentally re-enabling them.
+    def test_preset_supports_on_survives_a_source_with_supports_off(self):
+        # #2820: the reporter's own process preset turns supports on with
+        # normal(auto); the MakerWorld source they sliced ships them off
+        # with tree(auto), like nearly every published 3MF. Carrying the
+        # off direction handed them a supportless tree(auto) slice, so the
+        # source is now only allowed to switch supports *on*.
         source = _make_3mf(
             {
                 "enable_support": "0",
                 "support_filament": "0",
                 "support_interface_filament": "0",
+                "support_type": "tree(auto)",
             }
         )
-        preset = json.dumps({"enable_support": "1", "support_filament": "2", "support_interface_filament": "2"})
+        preset = json.dumps(
+            {
+                "name": "Pokeball Fast - Buddy",
+                "enable_support": "1",
+                "support_filament": "2",
+                "support_interface_filament": "2",
+                "support_type": "normal(auto)",
+                "support_style": "snug",
+            }
+        )
         result = json.loads(_patch_process_support_settings(preset, source))
-        assert result["enable_support"] == "0"
-        assert result["support_filament"] == "0"
-        assert result["support_interface_filament"] == "0"
+        assert result["enable_support"] == "1"
+        assert result["support_filament"] == "2"
+        assert result["support_interface_filament"] == "2"
+        assert result["support_type"] == "normal(auto)"
+        assert result["support_style"] == "snug"
+
+    def test_source_without_enable_support_carries_nothing(self):
+        # A source that never declares enable_support gives us no support
+        # intent to act on, so its slot assignments stay out of the preset
+        # — same "supports off" branch, reached via the missing key.
+        source = _make_3mf({"support_filament": "3", "support_interface_filament": "3"})
+        preset = json.dumps({"support_filament": "0", "support_interface_filament": "0"})
+        result = json.loads(_patch_process_support_settings(preset, source))
+        assert result == {"support_filament": "0", "support_interface_filament": "0"}
+
+    def test_non_string_enable_support_still_counts_as_on(self):
+        # Forks and older BambuStudio builds write real booleans / ints
+        # instead of "1" — those must still carry (shared truthiness rule
+        # with extract_support_filament_slots_from_3mf).
+        for enabled in (True, 1, "1", "true"):
+            source = _make_3mf({"enable_support": enabled, "support_interface_filament": "2"})
+            preset = json.dumps({"enable_support": "0", "support_interface_filament": "0"})
+            result = json.loads(_patch_process_support_settings(preset, source))
+            assert result["enable_support"] == enabled, f"failed for {enabled!r}"
+            assert result["support_interface_filament"] == "2"
+
+    def test_carry_is_logged_with_the_keys_it_took(self, caplog):
+        # The slice modal shows the picked preset's values, so a carried
+        # key silently disagrees with what the user saw. #2820's reporter
+        # spent the bug report chasing an unrelated sanitiser line because
+        # this step logged nothing at all.
+        source = _make_3mf({"enable_support": "1", "support_interface_filament": "2"})
+        preset = json.dumps({"enable_support": "0", "support_interface_filament": "0"})
+        with caplog.at_level(logging.INFO, logger="backend.app.api.routes.library"):
+            _patch_process_support_settings(preset, source)
+        assert "Carried support settings" in caplog.text
+        assert "enable_support" in caplog.text
+        assert "support_interface_filament" in caplog.text
+
+    def test_no_log_when_the_source_has_supports_off(self, caplog):
+        source = _make_3mf({"enable_support": "0", "support_type": "tree(auto)"})
+        preset = json.dumps({"enable_support": "1"})
+        with caplog.at_level(logging.INFO, logger="backend.app.api.routes.library"):
+            _patch_process_support_settings(preset, source)
+        assert "Carried support settings" not in caplog.text
 
     def test_only_patches_keys_present_in_source(self):
         # Source with a partial support config (e.g. legacy 3MFs from an
@@ -151,3 +210,112 @@ class TestPatchProcessSupportSettings:
         source = _make_3mf({"enable_support": "1"})
         not_a_dict = json.dumps(["this", "is", "an", "array"])
         assert _patch_process_support_settings(not_a_dict, source) is not_a_dict
+
+
+class TestDeclinedKeysAreNotReinstated:
+    """What the user unticked stays unticked (#2942).
+
+    The slice dialog offers the file's own settings per key and applies only
+    the ones that are on. This carry ran underneath that, unconditionally, so
+    four support keys came out of the file whatever the ticks said -- the
+    reporter's slice took ``enable_support`` and ``support_type`` from a
+    MakerWorld download onto a process preset they had picked deliberately,
+    with the dialog's "Use the file's built-in settings" switched off and
+    nothing on screen able to stop it.
+    """
+
+    def _source(self) -> bytes:
+        return _make_3mf(
+            {
+                "enable_support": "1",
+                "support_filament": "0",
+                "support_interface_filament": "0",
+                "support_type": "normal(auto)",
+            }
+        )
+
+    def _preset(self) -> str:
+        return json.dumps(
+            {
+                "name": "Pokeball Fast - Buddy",
+                "enable_support": "0",
+                "support_type": "tree(auto)",
+                "layer_height": "0.20",
+            }
+        )
+
+    def test_declining_everything_leaves_the_preset_alone(self):
+        result = json.loads(
+            _patch_process_support_settings(
+                self._preset(),
+                self._source(),
+                declined={"enable_support", "support_filament", "support_interface_filament", "support_type"},
+            )
+        )
+        assert result["enable_support"] == "0"
+        assert result["support_type"] == "tree(auto)"
+        assert result["layer_height"] == "0.20"
+
+    def test_declining_one_key_still_carries_the_others(self):
+        # The ticks are per key, so declining the support type is not
+        # declining supports.
+        result = json.loads(_patch_process_support_settings(self._preset(), self._source(), declined={"support_type"}))
+        assert result["enable_support"] == "1"
+        assert result["support_type"] == "tree(auto)"
+
+    def test_declining_nothing_is_the_behaviour_it_always_had(self):
+        # A source that offers no per-key choice -- an OrcaSlicer export has
+        # no `different_settings_to_system` to tick -- keeps #1881 whole.
+        result = json.loads(_patch_process_support_settings(self._preset(), self._source()))
+        assert result["enable_support"] == "1"
+        assert result["support_type"] == "normal(auto)"
+
+    def test_declining_everything_logs_nothing(self, caplog):
+        # The log line exists to name the layer the user can't see coming.
+        # Nothing was carried, so there is nothing to announce.
+        with caplog.at_level(logging.INFO, logger="backend.app.api.routes.library"):
+            _patch_process_support_settings(
+                self._preset(),
+                self._source(),
+                declined={"enable_support", "support_filament", "support_interface_filament", "support_type"},
+            )
+        assert "Carried support settings" not in caplog.text
+
+    def test_declining_a_key_the_source_never_had_changes_nothing(self):
+        result = json.loads(_patch_process_support_settings(self._preset(), self._source(), declined={"wall_loops"}))
+        assert result["enable_support"] == "1"
+        assert result["support_type"] == "normal(auto)"
+
+
+class TestDeclinedSourceKeys:
+    """Reading "the user said no" out of a slice request (#2942)."""
+
+    @staticmethod
+    def _offered(*keys: str) -> list[DesignOverride]:
+        return [DesignOverride(key=key, value="1", printer_coupled=False) for key in keys]
+
+    def test_no_list_at_all_declines_nothing(self):
+        # A client that predates the per-key ticks -- or any API consumer that
+        # never sends the field -- cannot have turned anything down, so the
+        # support carry-over stays exactly as it was.
+        assert _declined_source_keys(self._offered("enable_support"), None) == set()
+
+    def test_an_empty_list_declines_everything_on_offer(self):
+        # Not the same answer as None: the panel was shown, and nothing in it
+        # was ticked.
+        assert _declined_source_keys(self._offered("enable_support", "wall_loops"), []) == {
+            "enable_support",
+            "wall_loops",
+        }
+
+    def test_a_partial_list_declines_only_the_rest(self):
+        offered = self._offered("enable_support", "support_type", "wall_loops")
+        assert _declined_source_keys(offered, ["wall_loops"]) == {"enable_support", "support_type"}
+
+    def test_a_key_that_was_never_offered_is_not_a_decline(self):
+        # Selecting something the file does not list is already ignored when
+        # the values are applied; it must not turn into a phantom refusal.
+        assert _declined_source_keys(self._offered("wall_loops"), ["wall_loops", "layer_height"]) == set()
+
+    def test_a_file_that_offers_nothing_declines_nothing(self):
+        assert _declined_source_keys([], []) == set()

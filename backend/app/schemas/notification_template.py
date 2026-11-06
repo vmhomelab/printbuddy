@@ -17,13 +17,16 @@ class EventType(StrEnum):
     PRINT_PROGRESS = "print_progress"
     PRINT_ALMOST_DONE = "print_almost_done"
     PRINT_MISSING_SPOOL_ASSIGNMENT = "print_missing_spool_assignment"
+    BILLING_CHARGE_FAILED = "billing_charge_failed"
     PRINTER_OFFLINE = "printer_offline"
     PRINTER_ERROR = "printer_error"
     FILAMENT_LOW = "filament_low"
     MAINTENANCE_DUE = "maintenance_due"
     AMS_HUMIDITY_HIGH = "ams_humidity_high"
     AMS_TEMPERATURE_HIGH = "ams_temperature_high"
+    AMS_DRYING_SUSPENDED = "ams_drying_suspended"
     BED_COOLED = "bed_cooled"
+    HA_SENSOR_ALERT = "ha_sensor_alert"
     TEST = "test"
 
 
@@ -72,13 +75,25 @@ EVENT_VARIABLES: dict[str, list[str]] = {
         "timestamp",
         "app_name",
     ],
+    "billing_charge_failed": ["printer", "filename", "archive_id", "error", "timestamp", "app_name"],
     "printer_offline": ["printer", "timestamp", "app_name"],
     "printer_error": ["printer", "error_type", "error_detail", "timestamp", "app_name"],
     "filament_low": ["printer", "slot", "remaining_percent", "color", "timestamp", "app_name"],
     "maintenance_due": ["printer", "items", "timestamp", "app_name"],
     "ams_humidity_high": ["printer", "ams_label", "humidity", "threshold", "timestamp", "app_name"],
     "ams_temperature_high": ["printer", "ams_label", "temperature", "threshold", "timestamp", "app_name"],
+    "ams_drying_suspended": [
+        "printer",
+        "ams_label",
+        "humidity",
+        "threshold",
+        "cycles",
+        "timestamp",
+        "app_name",
+    ],
     "bed_cooled": ["printer", "bed_temp", "threshold", "filename", "timestamp", "app_name"],
+    "ha_sensor_alert": ["printer", "sensor", "state", "timestamp", "app_name"],
+    "location_ha_sensor_alert": ["location", "sensor", "state", "timestamp", "app_name"],
     "test": ["app_name", "timestamp"],
     # Queue notifications
     "queue_job_added": ["job_name", "target", "timestamp", "app_name"],
@@ -166,6 +181,14 @@ SAMPLE_DATA: dict[str, dict[str, str]] = {
         "timestamp": "2024-01-15 14:30",
         "app_name": "Printbuddy",
     },
+    "billing_charge_failed": {
+        "printer": "Bambu X1C",
+        "filename": "Benchy.3mf",
+        "archive_id": "123",
+        "error": "The transaction could not be persisted",
+        "timestamp": "2024-01-15 15:48",
+        "app_name": "Printbuddy",
+    },
     "printer_offline": {
         "printer": "Bambu X1C",
         "timestamp": "2024-01-15 14:30",
@@ -208,11 +231,34 @@ SAMPLE_DATA: dict[str, dict[str, str]] = {
         "timestamp": "2024-01-15 14:30",
         "app_name": "Printbuddy",
     },
+    "ams_drying_suspended": {
+        "printer": "Bambu X1C",
+        "ams_label": "AMS-A",
+        "humidity": "16",
+        "threshold": "14",
+        "cycles": "2",
+        "timestamp": "2024-01-15 14:30",
+        "app_name": "Printbuddy",
+    },
     "bed_cooled": {
         "printer": "Bambu X1C",
         "bed_temp": "34",
         "threshold": "35",
         "filename": "Benchy",
+        "timestamp": "2024-01-15 14:30",
+        "app_name": "Printbuddy",
+    },
+    "ha_sensor_alert": {
+        "printer": "Bambu X1C",
+        "sensor": "Enclosure Door",
+        "state": "open",
+        "timestamp": "2024-01-15 14:30",
+        "app_name": "Printbuddy",
+    },
+    "location_ha_sensor_alert": {
+        "location": "Drybox 1",
+        "sensor": "Drybox 1 Humidity",
+        "state": "68.00 %",
         "timestamp": "2024-01-15 14:30",
         "app_name": "Printbuddy",
     },

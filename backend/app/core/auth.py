@@ -4,6 +4,7 @@ import logging
 import os
 import secrets
 import time
+from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
@@ -49,8 +50,15 @@ logger = logging.getLogger(__name__)
 # The denylist is retained for documentation / drift-detection only — its
 # entries also satisfy "not in the allowlist", so they fail closed regardless.
 #
+# #1894 follow-on: the allowlist is a ceiling, not a grant. A key is also
+# narrowed to what its owner may do, so a user who can create keys cannot mint
+# themselves authority they do not have, and deactivating a user disables their
+# keys. Legacy ownerless keys (``user_id IS NULL``) have no owner to narrow
+# against and remain governed by the scope flags alone.
+#
 # Mapping rationale (see wiki/features/api-keys.md):
 #   can_read_status       → every ``*_READ`` + camera + stats + system + websocket
+#                           + the slim id/username user listing (NOT ``users:read``)
 #   can_queue             → queue write ops + archive reprint
 #   can_control_printer   → physical printer + smart-plug control
 #   can_manage_library    → library upload/own + MakerWorld import (separate
@@ -61,7 +69,13 @@ logger = logging.getLogger(__name__)
 #                           delete of admin resources, settings writes, user/
 #                           group/api-key/backup admin ops, discovery scan,
 #                           cloud auth, library ALL-ownership perms, purges
-_APIKEY_SCOPE_BY_PERMISSION: dict[Permission, str] = {
+#
+# A value may be a tuple of scope flags, in which case ALL of them must be True
+# on the key. That is for the rare permission whose route spans two trust
+# dimensions the operator toggles separately — see ``PIPELINES_RUN`` below.
+# Prefer a single flag; a tuple is a statement that neither flag alone
+# authorises what the route does.
+_APIKEY_SCOPE_BY_PERMISSION: dict[Permission, str | tuple[str, ...]] = {
     # can_read_status — read-only access to status, history, and configuration
     Permission.PRINTERS_READ: "can_read_status",
     # Legacy flat permissions retained for back-compat with custom API keys —
@@ -94,11 +108,23 @@ _APIKEY_SCOPE_BY_PERMISSION: dict[Permission, str] = {
     Permission.PRINTER_SENSOR_HISTORY_READ: "can_read_status",
     Permission.STATS_READ: "can_read_status",
     Permission.STATS_FILTER_BY_USER: "can_read_status",
+    # USERS_READ_SLIM grants no data an API key could not already reach (#1894):
+    # for API-keyed requests the permission deps return None as ``current_user``,
+    # so ``_validate_user_filter_permission`` in routes/archives.py short-circuits
+    # and ``?created_by_id=N`` is already honoured for every N. Without a way to
+    # discover the ids, that filter is only addressable by brute force. The slim
+    # listing makes it usable; the full USERS_READ listing (emails, roles, group
+    # membership, permission sets) stays unmapped = admin-only.
+    Permission.USERS_READ_SLIM: "can_read_status",
     Permission.SYSTEM_READ: "can_read_status",
     # SETTINGS_READ stays allowed via read-status so read-only integrations
     # (dashboards, kiosks) can fetch UI settings such as the language.
     Permission.SETTINGS_READ: "can_read_status",
     Permission.MAKERWORLD_VIEW: "can_read_status",
+    # Pipeline definitions and run history are configuration + status: listing
+    # pipelines, reading a run, and the (write-free) POST check-eligibility
+    # pre-flight. Authoring stays admin-only under PIPELINES_WRITE.
+    Permission.PIPELINES_READ: "can_read_status",
     Permission.WEBSOCKET_CONNECT: "can_read_status",
     # can_queue — queue write ops + reprint (which enqueues an existing archive)
     Permission.QUEUE_CREATE: "can_queue",
@@ -176,6 +202,17 @@ _APIKEY_SCOPE_BY_PERMISSION: dict[Permission, str] = {
     Permission.PROJECTS_CREATE: "can_manage_projects",
     Permission.PROJECTS_UPDATE: "can_manage_projects",
     Permission.PROJECTS_DELETE: "can_manage_projects",
+    # can_queue AND can_manage_library — running a pipeline does two things a
+    # key is separately trusted with. It slices the source into a new library
+    # file (``slice_and_persist``, the same write the direct
+    # ``POST /library/files/{id}/slice`` route gates on LIBRARY_UPLOAD →
+    # can_manage_library), then creates one PrintQueueItem per copy for the
+    # scheduler to dispatch (can_queue). Mapping it to either flag alone would
+    # hand that flag the other one's authority, so both are required. Cancelling
+    # a run is the same permission — whoever may start one may stop it. PR A
+    # parked all three pipeline permissions on the denylist "until the run
+    # dispatch lands"; it landed in PR C (#1425) and this is that follow-up.
+    Permission.PIPELINES_RUN: ("can_queue", "can_manage_library"),
     # can_access_cloud — narrow opt-in scope, gated by the router-level
     # ``_cloud_api_key_gate`` and additionally enforced here so the route-
     # level ``cloud_caller(Permission.CLOUD_AUTH)`` dep also fails closed
@@ -213,6 +250,11 @@ _APIKEY_DENIED_PERMISSIONS: frozenset[Permission] = frozenset(
         Permission.API_KEYS_UPDATE,
         Permission.API_KEYS_DELETE,
         Permission.API_KEYS_READ,
+        # Finance / cost-center data has no dedicated API-key scope.
+        Permission.COST_CENTERS_READ_OWN,
+        Permission.COST_CENTERS_READ_ALL,
+        Permission.COST_CENTERS_MODIFY,
+        Permission.COST_CENTERS_CREATE,
         # GitHub backup admin + firmware OTA.
         Permission.GITHUB_BACKUP,
         Permission.GITHUB_RESTORE,
@@ -262,35 +304,129 @@ _APIKEY_DENIED_PERMISSIONS: frozenset[Permission] = frozenset(
         Permission.SMART_PLUGS_DELETE,
         # Network scanning — operator only (no API-key scope for this).
         Permission.DISCOVERY_SCAN,
-        # Slicer Pipelines (#1425) — admin authoring + the print-spending Run
-        # action. PR A only ships CRUD; PR B / PR C may move PIPELINES_RUN onto
-        # `can_queue` (it queues prints) once the run dispatch lands. PR A keeps
-        # all three denied so they fail closed for any API-key surface.
-        Permission.PIPELINES_READ,
+        # Slicer Pipelines (#1425) — authoring only. PIPELINES_READ and
+        # PIPELINES_RUN moved to the allowlist once PR C landed the run
+        # dispatch; PIPELINES_WRITE stays denied because it creates/edits/
+        # deletes the pipeline definition (slicer settings, target printer,
+        # fanout strategy) and, via `POST /pipeline-runs/clear`, drops run
+        # history. That is admin authoring, matching the other resource-CRUD
+        # entries here — a key that may run a pipeline cannot rewrite what it
+        # does.
         Permission.PIPELINES_WRITE,
-        Permission.PIPELINES_RUN,
     }
 )
 
 
-def _resolve_apikey_scope(perm_string: str) -> str | None:
-    """Return the scope-flag attribute name gating ``perm_string`` for API keys.
+def _required_apikey_scopes(perm_string: str) -> tuple[str, ...] | None:
+    """Return every scope flag a key must hold to exercise ``perm_string``.
 
-    None when the permission is unmapped (= admin-only / not API-key-usable).
+    None when the permission is unmapped (= admin-only / not API-key-usable),
+    which is distinct from an empty tuple — the latter would read as "no flags
+    needed" and must never be produced.
     """
     try:
         perm = Permission(perm_string)
     except ValueError:
         return None
-    return _APIKEY_SCOPE_BY_PERMISSION.get(perm)
+    scopes = _APIKEY_SCOPE_BY_PERMISSION.get(perm)
+    if scopes is None:
+        return None
+    return (scopes,) if isinstance(scopes, str) else tuple(scopes)
 
 
-def _check_apikey_permissions(api_key: APIKey, perm_strings: list[str], *, require_any: bool = False) -> None:
+def apikey_effective_permissions(api_key: APIKey, owner: User | None = None) -> list[str]:
+    """Return the permissions ``api_key`` can actually exercise, sorted.
+
+    This is the exact set ``_check_apikey_permissions`` will let through: every
+    mapped permission whose scope flag is True on the key, further narrowed to
+    what ``owner`` may do. Unmapped permissions are administrative and never
+    resolve for a key, so they are absent.
+
+    ``owner=None`` means a legacy ownerless key, where the scope flags are the
+    whole of the key's authority -- not "skip the owner check". Callers holding
+    an owned key must pass the owner, or ``/auth/me`` will over-report and drift
+    from the gate, which is the defect #1894 was about.
+    """
+
+    def _granted(perm: Permission) -> bool:
+        scopes = _required_apikey_scopes(perm.value)
+        # An unmapped permission cannot occur here (we iterate the mapping
+        # itself), but treat it as denied rather than as "no flags to satisfy",
+        # which ``all(())`` would otherwise report as granted.
+        if not scopes:
+            return False
+        return all(getattr(api_key, flag, False) for flag in scopes)
+
+    return sorted(
+        perm.value
+        for perm in _APIKEY_SCOPE_BY_PERMISSION
+        if _granted(perm) and (owner is None or owner.has_permission(perm.value))
+    )
+
+
+async def resolve_apikey_owner(db: AsyncSession, api_key: APIKey) -> User | None:
+    """Load the owner of ``api_key`` for an authorization decision.
+
+    Distinct from ``_user_from_api_key``, which answers "who is this, if
+    anyone" and returns None for both the legacy and the broken case. Here
+    those two must not be conflated:
+
+    - ``user_id IS NULL`` -- a key predating per-user ownership. There is no
+      owner to narrow against, so the scope flags stand alone. Returns None.
+    - ``user_id`` set but the row is missing or deactivated -- the key's
+      authority came from a user who no longer has any. Raises 403 rather than
+      returning None, because returning None here would fail open: deactivating
+      a user would leave their keys working with full scope authority.
+
+    Groups are eager-loaded because ``has_permission`` walks them, and a lazy
+    load inside the permission check would raise MissingGreenlet.
+    """
+    if api_key.user_id is None:
+        return None
+    result = await db.execute(select(User).where(User.id == api_key.user_id).options(selectinload(User.groups)))
+    owner = result.scalar_one_or_none()
+    if owner is None or not owner.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="API key owner is deactivated or no longer exists",
+        )
+    return owner
+
+
+async def authorize_api_key(
+    db: AsyncSession,
+    api_key: APIKey,
+    perm_strings: list[str],
+    *,
+    require_any: bool = False,
+) -> None:
+    """Resolve the key's owner and run the full permission gate. Raises 403."""
+    owner = await resolve_apikey_owner(db, api_key)
+    _check_apikey_permissions(api_key, perm_strings, owner=owner, require_any=require_any)
+
+
+def _check_apikey_permissions(
+    api_key: APIKey,
+    perm_strings: list[str],
+    *,
+    owner: User | None = None,
+    require_any: bool = False,
+) -> None:
     """Raise 403 unless ``api_key`` is allowed to use ``perm_strings``.
 
     Allowlist semantics: every requested permission MUST be present in
-    ``_APIKEY_SCOPE_BY_PERMISSION`` AND its scope flag must be True on
-    ``api_key``. Unmapped permissions = administrative = 403.
+    ``_APIKEY_SCOPE_BY_PERMISSION`` AND every scope flag it maps to must be
+    True on ``api_key`` (most map to one; a few require several). Unmapped
+    permissions = administrative = 403.
+
+    A key must not out-rank the user it belongs to, so when ``owner`` is given
+    the permission must additionally be one the owner holds. Scope flags are
+    chosen at creation time by whoever holds ``api_keys:create``; that is
+    admin-only in the default groups, but a custom group can grant it, and
+    without this check such a user could mint themselves a key with
+    ``can_control_printer`` and act through it beyond their own permissions.
+    ``owner=None`` is only correct for legacy ownerless keys -- see
+    ``resolve_apikey_owner``.
 
     By default ALL requested permissions must pass (mirrors
     ``require_permission`` / ``require_permission_if_auth_enabled``).
@@ -308,16 +444,25 @@ def _check_apikey_permissions(api_key: APIKey, perm_strings: list[str], *, requi
 
     last_failure: HTTPException | None = None
     for perm_str in perm_strings:
-        scope_attr = _resolve_apikey_scope(perm_str)
-        if scope_attr is None:
+        scopes = _required_apikey_scopes(perm_str)
+        missing = [flag for flag in scopes or () if not getattr(api_key, flag, False)]
+        if not scopes:
             failure = HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="API keys cannot be used for administrative operations",
             )
-        elif not getattr(api_key, scope_attr, False):
+        elif missing:
+            # Name every flag the key is short of, not just the first: a
+            # permission requiring two scopes would otherwise send the operator
+            # round the loop twice, ticking one box per 403.
             failure = HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"API key does not have '{scope_attr}' permission",
+                detail=f"API key does not have {' and '.join(repr(flag) for flag in missing)} permission",
+            )
+        elif owner is not None and not owner.has_permission(perm_str):
+            failure = HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"API key owner does not have '{perm_str}' permission",
             )
         else:
             failure = None
@@ -376,6 +521,12 @@ def require_energy_cost_update():
                         detail="Invalid API key",
                         headers={"WWW-Authenticate": "Bearer"},
                     )
+                # Fails closed if the owner has been deactivated. The scope
+                # flag itself is not narrowed against the owner's permissions
+                # the way the general gate is: this door exists precisely
+                # because no user permission maps to it (SETTINGS_UPDATE stays
+                # denied for keys even when the owner is an administrator).
+                await resolve_apikey_owner(db, api_key)
                 if not api_key.can_update_energy_cost:
                     raise HTTPException(
                         status_code=status.HTTP_403_FORBIDDEN,
@@ -976,6 +1127,15 @@ async def _user_from_api_key(db: AsyncSession, api_key: APIKey) -> User | None:
     return user
 
 
+# The row a successful validation produced for the request in flight. Printer-
+# scoped routes validate the same credential twice -- once in the permission
+# gate, once for the key's printer allowlist -- and a validation is a pbkdf2
+# verify plus a ``last_used`` write, so the second one is pure cost. Keyed by
+# the raw credential so a request carrying two of them can never cross their
+# rows, and held in a ContextVar so it cannot outlive the task that set it.
+_validated_api_key: ContextVar[tuple[str, APIKey] | None] = ContextVar("_validated_api_key", default=None)
+
+
 async def _validate_api_key(db: AsyncSession, api_key_value: str) -> APIKey | None:
     """Validate an API key and return the APIKey object if valid, None otherwise.
 
@@ -1010,6 +1170,7 @@ async def _validate_api_key(db: AsyncSession, api_key_value: str) -> APIKey | No
                 # Update last_used timestamp
                 api_key.last_used = datetime.now(timezone.utc)
                 await db.commit()
+                _validated_api_key.set((api_key_value, api_key))
                 return api_key
     except Exception as e:  # SEC-AUTH-EXC: validation failure returns None; every caller treats None as "invalid key" → 401 (fail-closed)
         logger.warning("API key validation error: %s", e)
@@ -1125,10 +1286,14 @@ async def require_auth_if_enabled(
         if not auth_enabled:
             return None
 
-        # Check for API key first (X-API-Key header)
+        # Check for API key first (X-API-Key header). The owner is resolved
+        # purely for its side effect: a key whose owner has been deactivated
+        # must be dead everywhere, not just on the permission-gated routes.
+        # There is no permission to check here -- this dep is auth-only.
         if x_api_key:
             api_key = await _validate_api_key(db, x_api_key)
             if api_key:
+                await resolve_apikey_owner(db, api_key)
                 return None  # API key valid, allow access
 
         # Check for Bearer token (could be JWT or API key)
@@ -1138,6 +1303,7 @@ async def require_auth_if_enabled(
             if token.startswith("bb_"):
                 api_key = await _validate_api_key(db, token)
                 if api_key:
+                    await resolve_apikey_owner(db, api_key)
                     return None  # API key valid, allow access
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
@@ -1416,6 +1582,35 @@ def check_permission(api_key: APIKey, permission: str) -> None:
         )
 
 
+# The coarse webhook permission names predate the Permission enum. Each maps to
+# the enum member that best represents it, so the owner can be held to the same
+# standard here as on the modern routes.
+_WEBHOOK_PERMISSION_EQUIVALENT: dict[str, Permission] = {
+    "queue": Permission.QUEUE_CREATE,
+    "control_printer": Permission.PRINTERS_CONTROL,
+    "read_status": Permission.PRINTERS_READ,
+}
+
+
+async def check_webhook_permission(db: AsyncSession, api_key: APIKey, permission: str) -> None:
+    """``check_permission`` plus the owner checks the modern routes apply.
+
+    ``/webhook/*`` reaches its scope flags through ``check_permission`` rather
+    than ``_check_apikey_permissions``, so it does not pick up the owner
+    narrowing automatically. Without this it would be the way around the gate:
+    the same key that is refused printer control on ``/printers/{id}/print/stop``
+    could stop the print through ``/webhook/printer/{id}/stop``.
+    """
+    check_permission(api_key, permission)
+    owner = await resolve_apikey_owner(db, api_key)
+    equivalent = _WEBHOOK_PERMISSION_EQUIVALENT.get(permission)
+    if owner is not None and equivalent is not None and not owner.has_permission(equivalent.value):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"API key owner does not have '{equivalent.value}' permission",
+        )
+
+
 def check_printer_access(api_key: APIKey, printer_id: int) -> None:
     """Check if API key has access to the specified printer.
 
@@ -1436,6 +1631,67 @@ def check_printer_access(api_key: APIKey, printer_id: int) -> None:
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"API key does not have access to printer {printer_id}",
         )
+
+
+async def validated_api_key_from_request(
+    credentials: HTTPAuthorizationCredentials | None,
+    x_api_key: str | None,
+) -> APIKey | None:
+    """Return the validated API key carried by a request, if any.
+
+    Permission dependencies intentionally return ``None`` for API-key callers so
+    routes do not mistake a key for a user identity. Printer-bound routes still
+    need the key row to enforce ``printer_ids`` after the normal scope/owner
+    permission gate has run. This helper recognizes both supported transports.
+    """
+
+    candidate = x_api_key
+    if candidate is None and credentials is not None and credentials.credentials.startswith("bb_"):
+        candidate = credentials.credentials
+    if candidate is None:
+        return None
+    cached = _validated_api_key.get()
+    if cached is not None and cached[0] == candidate:
+        return cached[1]
+    async with async_session() as db:
+        api_key = await _validate_api_key(db, candidate)
+        if api_key is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid API key",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        # Touch the JSON-backed value before detaching the row from the session.
+        _ = api_key.printer_ids
+        return api_key
+
+
+async def current_api_key_if_present(
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)] = None,
+    x_api_key: Annotated[str | None, Header(alias="X-API-Key")] = None,
+) -> APIKey | None:
+    """FastAPI dependency exposing only an authenticated API-key principal."""
+
+    return await validated_api_key_from_request(credentials, x_api_key)
+
+
+def require_printer_permission_if_auth_enabled(permission: str | Permission):
+    """Require a permission and enforce an API key's per-printer allowlist."""
+
+    permission_checker = require_permission_if_auth_enabled(permission)
+
+    async def checker(
+        printer_id: int,
+        credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)] = None,
+        x_api_key: Annotated[str | None, Header(alias="X-API-Key")] = None,
+    ) -> User | None:
+        user = await permission_checker(credentials=credentials, x_api_key=x_api_key)
+        api_key = await validated_api_key_from_request(credentials, x_api_key)
+        if api_key is not None:
+            check_printer_access(api_key, printer_id)
+        return user
+
+    return checker
 
 
 # Convenience dependencies - these are functions that return Depends objects
@@ -1473,7 +1729,7 @@ def require_permission(*permissions: str | Permission):
             if x_api_key:
                 api_key = await _validate_api_key(db, x_api_key)
                 if api_key:
-                    _check_apikey_permissions(api_key, perm_strings)
+                    await authorize_api_key(db, api_key, perm_strings)
                     return None  # API key valid, allow access
 
             credentials_exception = HTTPException(
@@ -1490,7 +1746,7 @@ def require_permission(*permissions: str | Permission):
             if token.startswith("bb_"):
                 api_key = await _validate_api_key(db, token)
                 if api_key:
-                    _check_apikey_permissions(api_key, perm_strings)
+                    await authorize_api_key(db, api_key, perm_strings)
                     return None  # API key valid, allow access
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
@@ -1563,7 +1819,7 @@ def require_permission_if_auth_enabled(*permissions: str | Permission):
             if x_api_key:
                 api_key = await _validate_api_key(db, x_api_key)
                 if api_key:
-                    _check_apikey_permissions(api_key, perm_strings)
+                    await authorize_api_key(db, api_key, perm_strings)
                     return None  # API key valid, allow access
 
             # Check for Bearer token (could be JWT or API key)
@@ -1573,7 +1829,7 @@ def require_permission_if_auth_enabled(*permissions: str | Permission):
                 if token.startswith("bb_"):
                     api_key = await _validate_api_key(db, token)
                     if api_key:
-                        _check_apikey_permissions(api_key, perm_strings)
+                        await authorize_api_key(db, api_key, perm_strings)
                         return None  # API key valid, allow access
                     raise HTTPException(
                         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -1647,6 +1903,37 @@ def RequirePermissionIfAuthEnabled(*permissions: str | Permission):
     return Depends(require_permission_if_auth_enabled(*permissions))
 
 
+def RequirePrinterPermissionIfAuthEnabled(permission: str | Permission):
+    """Require a permission plus any API-key ``printer_ids`` restriction."""
+
+    return Depends(require_printer_permission_if_auth_enabled(permission))
+
+
+def probe_permissions_if_auth_enabled(*permissions: str | Permission):
+    """Return permission availability while preserving authentication errors.
+
+    This is for endpoints that can return a useful permission-independent
+    subset. Missing permissions become ``False``; invalid or absent credentials
+    still retain the normal 401 response from the shared permission checker.
+    """
+
+    permission_checker = require_permission_if_auth_enabled(*permissions)
+
+    async def checker(
+        credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)] = None,
+        x_api_key: Annotated[str | None, Header(alias="X-API-Key")] = None,
+    ) -> bool:
+        try:
+            await permission_checker(credentials, x_api_key)
+        except HTTPException as exc:
+            if exc.status_code == status.HTTP_403_FORBIDDEN:
+                return False
+            raise
+        return True
+
+    return checker
+
+
 def require_any_permission_if_auth_enabled(*permissions: str | Permission):
     """Dependency factory that requires AT LEAST ONE of the given permissions when auth is enabled."""
     perm_strings = [p.value if isinstance(p, Permission) else p for p in permissions]
@@ -1666,7 +1953,7 @@ def require_any_permission_if_auth_enabled(*permissions: str | Permission):
                     # GHSA-r2qv-8222-hqg3: previously returned None unconditionally,
                     # letting any valid API key satisfy admin "any-of" route
                     # dependencies. require_any → at-least-one must pass the scope check.
-                    _check_apikey_permissions(api_key, perm_strings, require_any=True)
+                    await authorize_api_key(db, api_key, perm_strings, require_any=True)
                     return None
 
             if credentials is not None:
@@ -1674,7 +1961,7 @@ def require_any_permission_if_auth_enabled(*permissions: str | Permission):
                 if token.startswith("bb_"):
                     api_key = await _validate_api_key(db, token)
                     if api_key:
-                        _check_apikey_permissions(api_key, perm_strings, require_any=True)
+                        await authorize_api_key(db, api_key, perm_strings, require_any=True)
                         return None
                     raise HTTPException(
                         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -1865,7 +2152,7 @@ def require_ownership_permission(
             if x_api_key:
                 api_key = await _validate_api_key(db, x_api_key)
                 if api_key:
-                    _check_apikey_permissions(api_key, [all_perm])
+                    await authorize_api_key(db, api_key, [all_perm])
                     return None, True
 
             # Check for Bearer token (could be JWT or API key)
@@ -1875,7 +2162,7 @@ def require_ownership_permission(
                 if token.startswith("bb_"):
                     api_key = await _validate_api_key(db, token)
                     if api_key:
-                        _check_apikey_permissions(api_key, [all_perm])
+                        await authorize_api_key(db, api_key, [all_perm])
                         return None, True
                     raise HTTPException(
                         status_code=status.HTTP_401_UNAUTHORIZED,

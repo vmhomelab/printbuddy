@@ -22,6 +22,9 @@ from backend.app.models.spoolman_k_profile import SpoolmanKProfile
 from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
 from backend.app.models.user import User
 from backend.app.services.printer_manager import printer_manager
+from backend.app.services.slicer_filament_resolver import resolve_slicer_filament
+from backend.app.services.slot_nozzle import resolve_slot_nozzle
+from backend.app.services.spool_filament_preset import resolve_spoolman_preset
 from backend.app.services.spoolman import (
     SpoolmanClientError,
     SpoolmanNotFoundError,
@@ -32,9 +35,10 @@ from backend.app.services.spoolman import (
 )
 from backend.app.utils.filament_ids import (
     GENERIC_FILAMENT_IDS,
-    MATERIAL_TEMPS,
+    filament_id_to_setting_id,
     normalize_slicer_filament,
 )
+from backend.app.utils.filament_types import nozzle_temp_range, printer_filament_type
 
 logger = logging.getLogger(__name__)
 
@@ -100,14 +104,47 @@ async def get_spoolman_status(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermissionIfAuthEnabled(Permission.FILAMENTS_READ),
 ):
-    """Get Spoolman integration status."""
+    """Get Spoolman integration status.
+
+    ``connected`` answers "does the configured Spoolman respond?", which means
+    asking it. It used to answer "has some earlier request in this process left
+    a client object lying around?" -- and roughly twenty call sites build one
+    lazily, so the answer depended on which page happened to load first rather
+    than on anything about Spoolman.
+
+    That mattered because the UI reads this one flag twice: it offers Connect
+    only while disconnected, and the AMS sync section only while connected.
+    Saving the Settings page initialises a client as a side effect of syncing
+    locations, so enabling Spoolman there reported "connected" without anything
+    having been set up, hiding the Connect button and revealing a sync that then
+    failed on every slot (issue #2903). Registration no longer depends on that
+    button, but the flag was still describing Printbuddy's memory rather than the
+    integration, so it is now resolved the same way every other route resolves
+    it -- including the stale-URL check, so editing the URL is not reported
+    against the old host.
+    """
     sm = await get_spoolman_settings(db)
     enabled, url = sm["enabled"], sm["url"]
 
-    client = await get_spoolman_client()
     connected = False
-    if client:
-        connected = await client.health_check()
+    if enabled and url:
+        client = await get_spoolman_client()
+        if not client or client.base_url != url.rstrip("/"):
+            try:
+                client = await init_spoolman_client(url)
+            except ValueError as exc:
+                logger.warning("Spoolman URL %r rejected by SSRF guard during status check: %s", url, exc)
+                client = None
+            except Exception as exc:
+                # Every remaining way this can fail still answers the question:
+                # replacing a client closes the previous one, and httpx's
+                # aclose() is not guaranteed not to raise. A status poll that
+                # 500s every 30 seconds is worse than one reporting what is
+                # true either way -- that Spoolman could not be reached.
+                logger.warning("Could not open a Spoolman client for %r during status check: %s", url, exc)
+                client = None
+        if client:
+            connected = await client.health_check()
 
     return SpoolmanStatus(
         enabled=enabled,
@@ -904,40 +941,79 @@ async def link_spool(
 
             mqtt_client = printer_manager.get_client(p_id)
             if mqtt_client:
-                tray_type = mapped.get("material") or ""
+                # Spoolman's material is free text, so it arrives as whatever
+                # the user typed there -- "PLA+", "PolyTerra PLA". The sub-brand
+                # keeps that wording; the slot's type has to be one the printer
+                # and the slicer know (issue #2902).
+                material = mapped.get("material") or ""
+                tray_type = printer_filament_type(material)
                 brand = mapped.get("brand") or ""
                 subtype = mapped.get("subtype") or ""
                 if brand:
-                    tray_sub_brands = f"{brand} {tray_type} {subtype}".strip()
+                    tray_sub_brands = f"{brand} {material} {subtype}".strip()
                 elif subtype:
-                    tray_sub_brands = f"{tray_type} {subtype}".strip()
+                    tray_sub_brands = f"{material} {subtype}".strip()
                 else:
-                    tray_sub_brands = tray_type
+                    tray_sub_brands = material
 
                 tray_color = (mapped.get("rgba") or "808080FF").upper()
                 if len(tray_color) == 6:
                     tray_color = tray_color + "FF"
 
-                material_upper = tray_type.upper().strip()
-                tray_info_idx = (
-                    GENERIC_FILAMENT_IDS.get(material_upper)
-                    or GENERIC_FILAMENT_IDS.get(material_upper.split("-")[0].split(" ")[0])
-                    or ""
-                )
-                setting_id = ""
-                temp_defaults = MATERIAL_TEMPS.get(material_upper, (200, 240))
-                temp_min = mapped.get("nozzle_temp_min") or temp_defaults[0]
-                temp_max = temp_defaults[1]
-
                 # Pull printer state via printer_manager (mqtt_client.printer_state
                 # was a non-existent attribute — the hasattr check silently
                 # returned None, defeating every state-based lookup below).
                 state = printer_manager.get_status(p_id)
-                nozzle_diameter = "0.4"
-                if state and state.nozzles:
-                    nd = state.nozzles[0].nozzle_diameter
-                    if nd:
-                        nozzle_diameter = nd
+                slot_nozzle = resolve_slot_nozzle(state, a_id, t_id, printer_manager.get_model(p_id))
+                nozzle_diameter = slot_nozzle.diameter
+
+                # Resolve the spool's own preset before falling back to a
+                # generic material id. This path used to skip that entirely and
+                # configure every linked slot as generic PLA/PETG, so a spool
+                # with a preset set in inventory lost it the moment it was
+                # linked by tag — the same defect #1713 fixed on the assign
+                # path, in the function next door. The per-model override
+                # cascade applies here for the same reason it does there: the
+                # preset is bound to a printer model.
+                slot_slicer_filament, slot_slicer_filament_name = await resolve_spoolman_preset(
+                    db,
+                    spoolman_spool_id=spool_id,
+                    printer_model=printer_manager.get_model(p_id),
+                    nozzle_diameter=nozzle_diameter,
+                    fallback_filament=mapped.get("slicer_filament"),
+                    fallback_name=mapped.get("slicer_filament_name"),
+                )
+                tray_info_idx, setting_id, sub_brand_override, type_override = await resolve_slicer_filament(
+                    db=db,
+                    current_user=None,
+                    slicer_filament=slot_slicer_filament,
+                    slicer_filament_name=slot_slicer_filament_name,
+                    material=material,
+                )
+                if sub_brand_override:
+                    tray_sub_brands = sub_brand_override
+                if type_override:
+                    tray_type = printer_filament_type(type_override)
+
+                # The spool's own wording is tried first and the reduced type
+                # only as a further fallback, so a material that already
+                # resolves keeps resolving to the same id: "PETG HF" has its
+                # own generic preset (GFG96) that reducing it to "PETG" would
+                # trade away for GFG99.
+                material_upper = material.upper().strip()
+                if not tray_info_idx:
+                    tray_info_idx = (
+                        GENERIC_FILAMENT_IDS.get(material_upper)
+                        or GENERIC_FILAMENT_IDS.get(material_upper.split("-")[0].split(" ")[0])
+                        or GENERIC_FILAMENT_IDS.get(tray_type.upper())
+                        or ""
+                    )
+                if tray_info_idx and not setting_id:
+                    setting_id = filament_id_to_setting_id(tray_info_idx)
+
+                temp_defaults = nozzle_temp_range(material, tray_type)
+                temp_min = mapped.get("nozzle_temp_min") or temp_defaults[0]
+                temp_max = temp_defaults[1]
 
                 kp_result = await db.execute(
                     select(SpoolmanKProfile).where(
@@ -946,12 +1022,7 @@ async def link_spool(
                     )
                 )
                 kp_rows = kp_result.scalars().all()
-                slot_extruder = None
-                if state and state.ams_extruder_map:
-                    if a_id == 255:
-                        slot_extruder = 1 - t_id
-                    else:
-                        slot_extruder = state.ams_extruder_map.get(str(a_id))
+                slot_extruder = slot_nozzle.extruder
 
                 # Prefer exact extruder match, fall back to extruder-agnostic kp
                 # for the same nozzle. Hard-skip on extruder mismatch silently
@@ -961,6 +1032,8 @@ async def link_spool(
                 fallback_kp = None
                 for kp in kp_rows:
                     if kp.nozzle_diameter != nozzle_diameter or kp.cali_idx is None:
+                        continue
+                    if not slot_nozzle.flow_matches(kp.nozzle_type):
                         continue
                     if slot_extruder is not None and kp.extruder is not None and kp.extruder == slot_extruder:
                         exact_kp = kp

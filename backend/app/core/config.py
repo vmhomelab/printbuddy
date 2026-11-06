@@ -147,6 +147,22 @@ _INTENTIONAL_UNSETTINGS = {
     "PRINTBUDDY_VP_DUMP_WIRE",  # services/virtual_printer/_debug.py — VP wire dump
     "DISCOVERY_EXTRA_SUBNETS",  # network_utils.py — extra CIDRs for Docker scan UI
     "DISCOVERY_MOONRAKER_PORTS",  # discovery.py — Moonraker scan ports (default 7125,80)
+    "PRINTBUDDY_COMPOSE_DIR",  # api/routes/updates.py — compose dir for update instructions (#2664)
+    # #2593 — core/oidc_env.py reads these directly; they are not Settings
+    # fields because they map to an OIDCProvider row, not to app config.
+    "PRINTBUDDY_OIDC_NAME",
+    "PRINTBUDDY_OIDC_ISSUER_URL",
+    "PRINTBUDDY_OIDC_CLIENT_ID",
+    "PRINTBUDDY_OIDC_CLIENT_SECRET",
+    "PRINTBUDDY_OIDC_SCOPES",
+    "PRINTBUDDY_OIDC_ENABLED",
+    "PRINTBUDDY_OIDC_AUTO_CREATE_USERS",
+    "PRINTBUDDY_OIDC_AUTO_LINK_EXISTING",
+    "PRINTBUDDY_OIDC_EMAIL_CLAIM",
+    "PRINTBUDDY_OIDC_REQUIRE_EMAIL_VERIFIED",
+    "PRINTBUDDY_OIDC_ICON_URL",
+    "PRINTBUDDY_OIDC_AUTOLOGIN",
+    "PRINTBUDDY_OIDC_DEFAULT_GROUP",
 }
 
 _known_settings_fields = {f.upper() for f in settings.model_fields}

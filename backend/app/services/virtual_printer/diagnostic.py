@@ -15,6 +15,7 @@ id + status.
 
 import asyncio
 import logging
+import os
 
 from backend.app.models.virtual_printer import VirtualPrinter
 from backend.app.schemas.printer import DiagnosticCheck
@@ -29,6 +30,41 @@ PORT_BIND = 3002  # bind/detect (TLS) — slicer discovery handshake
 PORT_BIND_PLAIN = 3000  # bind/detect (plain) — legacy / some slicer models
 
 _PORT_PROBE_TIMEOUT = 2.0
+
+# Linux capability number for CAP_NET_BIND_SERVICE (linux/capability.h).
+_CAP_NET_BIND_SERVICE = 10
+
+
+def can_bind_privileged_ports() -> bool | None:
+    """Whether this process is allowed to bind ports below 1024.
+
+    Returns ``None`` when that cannot be determined — no procfs to read and not
+    running as root, i.e. macOS or Windows, where this capability model does not
+    apply and the caller should skip the check rather than guess.
+
+    Reading the effective set covers both ways the permission is granted,
+    because both are visible at runtime: ``AmbientCapabilities`` in the systemd
+    unit (or ``cap_add: [NET_BIND_SERVICE]`` in Docker), and
+    ``setcap cap_net_bind_service=+ep`` on the interpreter binary.
+
+    Note this answers "does the process hold the capability", not "can port 990
+    be bound" — a host with ``net.ipv4.ip_unprivileged_port_start`` lowered can
+    bind it without holding anything. Callers must treat a False here as a
+    *possible* explanation for a port that failed to open, never as proof on its
+    own; the caller in this module only reports it when a probe actually failed.
+    """
+    geteuid = getattr(os, "geteuid", None)
+    if geteuid is not None and geteuid() == 0:
+        return True
+    try:
+        with open("/proc/self/status", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("CapEff:"):
+                    caps = int(line.split(":", 1)[1].strip(), 16)
+                    return bool((caps >> _CAP_NET_BIND_SERVICE) & 1)
+    except (OSError, ValueError):
+        return None
+    return None
 
 
 async def _check_port(ip: str, port: int, timeout: float = _PORT_PROBE_TIMEOUT) -> bool:
@@ -108,6 +144,7 @@ async def run_vp_diagnostic(vp: VirtualPrinter, instance) -> VPDiagnosticResult:
     # bound (port already in use, permission denied) because start errors are
     # logged and swallowed. Probe the bind IP directly.
     bind_ip = vp.bind_ip
+    ftp_ok: bool | None = None
     if not running or not bind_ip:
         for cid, port in (("port_ftps", PORT_FTPS), ("port_mqtt", PORT_MQTT), ("port_bind", PORT_BIND)):
             checks.append(DiagnosticCheck(id=cid, status="skip", params={"port": port}))
@@ -155,6 +192,37 @@ async def run_vp_diagnostic(vp: VirtualPrinter, instance) -> VPDiagnosticResult:
                 params={"port": PORT_BIND, "port_plain": PORT_BIND_PLAIN},
             )
         )
+
+    # --- Privileged port binding ---
+    # 990 (FTPS) and 322 (RTSP) are below 1024, so a service running as a normal
+    # user cannot bind them without CAP_NET_BIND_SERVICE. When it is missing the
+    # sockets never open, and every symptom above is a downstream effect: the
+    # slicer simply never sees the printer. The EACCES is logged by TCPProxy but
+    # that is one line in the journal, and the port checks alone report the same
+    # "nothing is listening" as an ordinary port conflict — which is what sent
+    # the reporter in #2549 to Discord for several days over one missing line in
+    # a unit file.
+    #
+    # Reported only when a privileged port actually failed to answer. The
+    # capability can legitimately be absent on a host that fronts these ports
+    # some other way (an iptables REDIRECT is the documented alternative), and
+    # flagging a working setup would be noise.
+    if not running or ftp_ok is None:
+        checks.append(DiagnosticCheck(id="privileged_ports", status="skip"))
+    else:
+        has_cap = can_bind_privileged_ports()
+        if has_cap is None:
+            # No procfs to read and not obviously root — typically macOS or
+            # Windows, where this whole capability model does not apply.
+            checks.append(DiagnosticCheck(id="privileged_ports", status="skip"))
+        else:
+            checks.append(
+                DiagnosticCheck(
+                    id="privileged_ports",
+                    status="pass" if (has_cap or ftp_ok) else "fail",
+                    params={"port": PORT_FTPS},
+                )
+            )
 
     # --- TLS certificate ---
     # When running, the cert chain must exist on disk for the slicer's TLS

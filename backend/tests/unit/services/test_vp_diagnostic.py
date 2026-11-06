@@ -3,12 +3,15 @@
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, mock_open, patch
 
 import pytest
 
 from backend.app.services.virtual_printer.certificate import CertificateService
-from backend.app.services.virtual_printer.diagnostic import run_vp_diagnostic
+from backend.app.services.virtual_printer.diagnostic import (
+    can_bind_privileged_ports,
+    run_vp_diagnostic,
+)
 
 _DIAG = "backend.app.services.virtual_printer.diagnostic._check_port"
 _FIND_IFACE = "backend.app.services.network_utils.find_interface_for_ip"
@@ -165,3 +168,110 @@ class TestCaCertificateInfo:
             second = service.get_ca_certificate_info()
         assert first["fingerprint_sha256"] == second["fingerprint_sha256"]
         assert "PRIVATE KEY" not in first["pem"]
+
+
+class TestPrivilegedPortsCheck:
+    """#2549: the VP binds 990 (FTPS) and 322 (RTSP), both below 1024.
+
+    Without CAP_NET_BIND_SERVICE those sockets never open and the slicer never
+    sees the printer. The port probes alone report the same "nothing is
+    listening" as an ordinary port conflict, which is what sent the reporter to
+    Discord for days over one missing line in a systemd unit. This check names
+    the cause — but only when a port actually failed, since the capability can
+    legitimately be absent on a host that fronts 990 some other way.
+    """
+
+    _CAP = "backend.app.services.virtual_printer.diagnostic.can_bind_privileged_ports"
+
+    @pytest.mark.asyncio
+    async def test_missing_capability_explains_a_dead_port(self):
+        with (
+            patch(_DIAG, AsyncMock(return_value=False)),
+            patch(_FIND_IFACE, return_value={"name": "eth0", "ip": "192.168.1.50"}),
+            patch(self._CAP, return_value=False),
+        ):
+            result = await run_vp_diagnostic(_vp(), _FakeInstance())
+        assert _checks(result)["privileged_ports"] == "fail"
+
+    @pytest.mark.asyncio
+    async def test_missing_capability_is_not_flagged_when_the_port_answers(self):
+        """An iptables REDIRECT is a documented alternative to the capability.
+        Flagging a setup that demonstrably works would be noise."""
+        with (
+            patch(_DIAG, AsyncMock(return_value=True)),
+            patch(_FIND_IFACE, return_value={"name": "eth0", "ip": "192.168.1.50"}),
+            patch(self._CAP, return_value=False),
+        ):
+            result = await run_vp_diagnostic(_vp(), _FakeInstance())
+        assert _checks(result)["privileged_ports"] == "pass"
+        assert result.overall == "ok"
+
+    @pytest.mark.asyncio
+    async def test_dead_port_with_the_capability_held_is_not_blamed_on_it(self):
+        """The port is down for some other reason — a conflict, a crashed
+        service. Saying "missing capability" here would misdirect the user."""
+        with (
+            patch(_DIAG, AsyncMock(return_value=False)),
+            patch(_FIND_IFACE, return_value={"name": "eth0", "ip": "192.168.1.50"}),
+            patch(self._CAP, return_value=True),
+        ):
+            result = await run_vp_diagnostic(_vp(), _FakeInstance())
+        c = _checks(result)
+        assert c["privileged_ports"] == "pass"
+        assert c["port_ftps"] == "fail"
+
+    @pytest.mark.asyncio
+    async def test_undeterminable_capability_skips(self):
+        """macOS / Windows have no procfs and no such capability model."""
+        with (
+            patch(_DIAG, AsyncMock(return_value=False)),
+            patch(_FIND_IFACE, return_value={"name": "eth0", "ip": "192.168.1.50"}),
+            patch(self._CAP, return_value=None),
+        ):
+            result = await run_vp_diagnostic(_vp(), _FakeInstance())
+        assert _checks(result)["privileged_ports"] == "skip"
+
+    @pytest.mark.asyncio
+    async def test_not_running_skips(self):
+        """Nothing was probed, so there is no failure to explain."""
+        result = await run_vp_diagnostic(_vp(), _FakeInstance(running=False))
+        assert _checks(result)["privileged_ports"] == "skip"
+
+
+class TestCanBindPrivilegedPorts:
+    def test_root_can(self):
+        with patch("os.geteuid", return_value=0):
+            assert can_bind_privileged_ports() is True
+
+    def test_effective_set_with_the_bit_set(self):
+        # CAP_NET_BIND_SERVICE is capability 10, so bit 10 => 0x400.
+        with (
+            patch("os.geteuid", return_value=1000),
+            patch("builtins.open", mock_open(read_data="Name:\tpython3\nCapEff:\t0000000000000400\n")),
+        ):
+            assert can_bind_privileged_ports() is True
+
+    def test_effective_set_without_the_bit_set(self):
+        with (
+            patch("os.geteuid", return_value=1000),
+            patch("builtins.open", mock_open(read_data="Name:\tpython3\nCapEff:\t0000000000000000\n")),
+        ):
+            assert can_bind_privileged_ports() is False
+
+    def test_neighbouring_bits_do_not_count(self):
+        """0x200 is capability 9 (CAP_NET_BROADCAST) and 0x800 is 11
+        (CAP_NET_ADMIN) — neither grants a privileged bind."""
+        with (
+            patch("os.geteuid", return_value=1000),
+            patch("builtins.open", mock_open(read_data="CapEff:\t0000000000000a00\n")),
+        ):
+            assert can_bind_privileged_ports() is False
+
+    def test_no_procfs_is_undeterminable_not_false(self):
+        """Returning False here would put a Linux-only fix instruction in front
+        of a macOS user whose port failed for an unrelated reason."""
+        with (
+            patch("os.geteuid", return_value=1000),
+            patch("builtins.open", side_effect=FileNotFoundError),
+        ):
+            assert can_bind_privileged_ports() is None

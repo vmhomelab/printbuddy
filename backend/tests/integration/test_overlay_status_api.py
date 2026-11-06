@@ -156,6 +156,7 @@ class TestOverlayFeedPayload:
             "layer_num",
             "total_layers",
             "stg_cur_name",
+            "temperatures",
             "time_format",
         }
 
@@ -171,6 +172,56 @@ class TestOverlayFeedPayload:
         assert entry["connected"] is False
         assert entry["state"] is None
         assert entry["current_print"] is None
+        # Present but empty rather than absent (#1422): the overlay reads the
+        # key unconditionally, and an offline printer simply has no readings.
+        assert entry["temperatures"] == {}
+
+    async def test_temperatures_are_filtered_not_passed_through(
+        self, async_client: AsyncClient, printer_row, monkeypatch
+    ):
+        """#1422 — the overlay can draw nozzle/bed/chamber, so the feed carries
+        them. It sends only the readings it draws: `state.temperatures` is also
+        the MQTT client's working memory and holds private bookkeeping and
+        derived heater flags that an overlay token has no business seeing.
+        """
+        from backend.app.services import printer_manager as pm
+
+        class _FakeState:
+            connected = True
+            state = "RUNNING"
+            current_print = "bracket.3mf"
+            gcode_file = "/data/Metadata/plate_1.gcode"
+            progress = 42.0
+            remaining_time = 30
+            layer_num = 10
+            total_layers = 100
+            stg_cur = -1
+            temperatures = {
+                "nozzle": 219.7,
+                "nozzle_target": 220.0,
+                "bed": 60.0,
+                "bed_target": 60.0,
+                "chamber": 38.0,
+                "nozzle_heating": True,
+                "_nozzle_target_set_time": 1754300000.0,
+            }
+
+        monkeypatch.setattr(pm.printer_manager, "get_status", lambda _pid: _FakeState())
+
+        jwt = await _setup_admin(async_client, suffix="_temps")
+        overlay_token = await _mint(async_client, jwt, scope="overlay")
+
+        response = await async_client.get(f"/api/v1/printers/{printer_row.id}/overlay-status?token={overlay_token}")
+        temps = response.json()["temperatures"]
+
+        assert temps["nozzle"] == 219.7
+        assert temps["nozzle_target"] == 220.0
+        assert temps["bed"] == 60.0
+        # The fixture printer is a P1S — no real chamber sensor, so the
+        # meaningless reading is dropped rather than drawn on a live stream.
+        assert "chamber" not in temps
+        assert "nozzle_heating" not in temps
+        assert "_nozzle_target_set_time" not in temps
 
     async def test_unknown_printer_is_404_not_401(self, async_client: AsyncClient):
         """A valid token for a printer id that doesn't exist is a 404 — the token

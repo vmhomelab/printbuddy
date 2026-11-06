@@ -35,6 +35,8 @@ def test_postgres_engine_uses_configurable_pool_settings():
         pool_recycle=345,
         pool_use_lifo=True,
         pool_timeout=12,
+        # Sessions are pinned to UTC so naive DateTime columns read back as UTC.
+        connect_args={"server_settings": {"timezone": "UTC"}},
     )
 
 

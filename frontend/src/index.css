@@ -26,6 +26,38 @@
 /* Enable class-based dark mode for Tailwind v4 */
 @custom-variant dark (&:where(.dark, .dark *));
 
+/* Hover-capable pointer only (#2865).  Tailwind v4 compiles `hover:` AND
+   `group-hover:` inside `@media (hover: hover)`, so on a touch-only device the
+   reveal rule is never applied at all — a control written as
+   `opacity-0 group-hover:opacity-100` stays invisible forever, which is how the
+   project card's action menu became unreachable on a phone.  Gating the HIDING
+   half on this variant is what fixes it: with no hover-capable pointer the
+   element simply keeps its natural opacity.  Same query the history thumbnail
+   preview already uses further down. */
+@custom-variant can-hover (@media (hover: hover) and (pointer: fine));
+
+/* Restore the pointer cursor on interactive controls (#2791).  Tailwind v3's
+   Preflight set `button { cursor: pointer }`; v4 dropped it to match the
+   browser default of `cursor: default`, so every button in the app looked
+   unclickable unless someone remembered to add `cursor-pointer` by hand.
+   Only a handful of the ~930 buttons did, which is why the UI felt
+   inconsistent rather than uniformly wrong.
+
+   This lives in `base`, the lowest of Tailwind's cascade layers, so the
+   `cursor-not-allowed` / `disabled:cursor-*` utilities dotted around the
+   codebase still win.  The `:not(:disabled)` guard covers the elements that
+   are disabled without also carrying such a utility. */
+@layer base {
+  button:not(:disabled),
+  select:not(:disabled),
+  summary,
+  input[type="checkbox"]:not(:disabled),
+  input[type="radio"]:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]) {
+    cursor: pointer;
+  }
+}
+
 @theme {
   /* Accent colors - use CSS variables for theming */
   --color-bambu-green: var(--accent);
@@ -79,6 +111,17 @@ html {
   --card-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
   --glow-color: transparent;
 
+  /* Tell the browser which appearance the page is in, so the parts of a form
+     control it draws itself follow the theme.  Printbuddy themes by
+     swapping CSS variables under a `.dark` class, which the browser cannot
+     see: without this declaration it assumes light and paints every native
+     widget internal that way -- number-input steppers, the date picker's
+     calendar button and its popup, `<select>` dropdowns, scrollbars, the
+     autofill highlight.  That is why the quantity steppers in the print
+     dialog were pale grey chips inside a dark field.  Only the widget
+     internals are affected; anything we set ourselves still wins. */
+  color-scheme: light;
+
   font-family: 'Inter', system-ui, sans-serif;
   line-height: 1.5;
   font-weight: 400;
@@ -90,6 +133,11 @@ html {
 
 /* Dark mode base */
 .dark {
+  /* Pairs with `color-scheme: light` on :root -- see the note there.  This
+     sits on `.dark` rather than on each `.dark.bg-*` palette because every
+     palette is a dark one regardless of which background it picks. */
+  color-scheme: dark;
+
   --bg-primary: #1a1a1a;
   --bg-secondary: #2d2d2d;
   --bg-tertiary: #3d3d3d;
@@ -444,4 +492,30 @@ body {
   .history-thumb-hover:hover .history-thumb-preview {
     opacity: 1;
   }
+}
+
+/* Per-slot filament colour swatch in the slice modal (#2977). A native
+   <input type="color"> paints its value inside a fixed inner padding and its
+   own border, so at 14px the colour reads as a dot inside a pale ring rather
+   than as the round swatch it replaced. These reset both so the element is
+   nothing but the colour. */
+.slice-colour-swatch {
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+  overflow: hidden;
+}
+
+.slice-colour-swatch::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.slice-colour-swatch::-webkit-color-swatch {
+  border: none;
+  border-radius: 999px;
+}
+
+.slice-colour-swatch::-moz-color-swatch {
+  border: none;
+  border-radius: 999px;
 }

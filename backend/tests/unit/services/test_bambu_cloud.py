@@ -7,6 +7,27 @@ import pytest
 from backend.app.services.bambu_cloud import BambuCloudService
 
 
+@pytest.fixture(autouse=True)
+def _stub_csrf_handshake():
+    """Keep the CSRF pre-flight off the network for every test in this module.
+
+    ``verify_totp`` fetches a CSRF token from the ``bambulab.com`` web origin
+    before posting the code (#2696), and returns early without posting when it
+    cannot get one. The tests below patch only ``post``, so that GET went out
+    over the real network: it succeeded on any machine that could reach
+    bambulab.com — which is why this file passed locally — and returned a
+    tokenless 403 on a CI runner, where six tests then failed asserting on a
+    ``post`` that never happened.
+
+    The handshake itself is covered end to end in
+    ``tests/unit/test_cloud_totp_csrf.py``, including the no-token path, so
+    stubbing it here removes a network dependency rather than any coverage.
+    """
+    with patch.object(BambuCloudService, "_fetch_csrf_token", new_callable=AsyncMock) as fetch:
+        fetch.return_value = "csrf-token-for-tests"
+        yield fetch
+
+
 class TestBambuCloudLogin:
     """Test login flow detection (email vs TOTP)."""
 

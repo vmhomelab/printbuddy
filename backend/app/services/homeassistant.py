@@ -1,5 +1,6 @@
 """Service for communicating with Home Assistant via REST API."""
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
@@ -187,17 +188,40 @@ class HomeAssistantService:
 
     @staticmethod
     def _validate_url(url: str) -> str | None:
-        """Validate HA URL scheme and block dangerous destinations."""
+        """Normalise a caller-supplied HA URL, or return None if it is unsafe.
+
+        The stored ``ha_url`` setting is already validated at the schema layer
+        (``LAN_SERVICE_URL_SETTINGS`` in schemas/settings.py), but
+        ``test_connection`` takes its URL straight from the request body, so
+        the same policy has to be applied here.
+
+        Delegates to ``_url_safety.assert_safe_lan_service_url`` rather than
+        the string blocklist this replaces. That blocklist only knew three
+        literal hostnames plus a ``169.254.`` prefix and never parsed the
+        hostname as an IP, so it let through the Alibaba (100.100.100.200)
+        and AWS-IPv6 (fd00:ec2::254) metadata endpoints, numeric-encoded
+        loopback, multicast, and IPv4-mapped IPv6 encodings of the IMDS
+        address it did know about.
+
+        Loopback and RFC-1918 remain permitted — Home Assistant is a
+        LAN-resident service by design, and the shared guard is documented
+        that way.
+        """
+        from backend.app.api.routes._url_safety import assert_safe_lan_service_url
+
         try:
-            parsed = urlparse(url)
+            assert_safe_lan_service_url(url, label="Home Assistant URL")
         except ValueError:
             return None
-        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        # Guard passed, so the scheme is http/https and a hostname is present;
+        # re-parse only to drop query/fragment and normalise the authority.
+        parsed = urlparse(url)
+        if not parsed.hostname:
             return None
-        blocked = ("169.254.169.254", "metadata.google.internal", "0.0.0.0")  # nosec B104
-        if parsed.hostname.lower() in blocked or (parsed.hostname or "").startswith("169.254."):
-            return None
-        return f"{parsed.scheme}://{parsed.hostname}" + (f":{parsed.port}" if parsed.port else "") + (parsed.path or "")
+        # urlparse strips the brackets off an IPv6 literal, so they have to go
+        # back on or the rebuilt URL is unparseable ("http://fd00::1:8123").
+        host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
+        return f"{parsed.scheme.lower()}://{host}" + (f":{parsed.port}" if parsed.port else "") + (parsed.path or "")
 
     async def test_connection(self, url: str, token: str) -> dict:
         """Test connection to Home Assistant.
@@ -340,6 +364,107 @@ class HomeAssistantService:
         except Exception as e:
             logger.warning("Failed to list HA sensor entities: %s", e)
             return []
+
+    async def list_display_entities(self, url: str, token: str, search: str | None = None) -> list[dict]:
+        """List entities that can be bound to a printer for display (#1148, #448).
+
+        Covers every ``binary_sensor.*`` plus the ``sensor.*`` entities that
+        carry a reading. Distinct from ``list_sensor_entities``, which exists
+        for a plug's energy monitoring and therefore only admits power/energy
+        units — an enclosure thermometer is exactly what that one filters out.
+
+        A ``sensor.*`` qualifies when it has a unit or its state parses as a
+        number. That drops the text sensors (``sensor.washing_machine_status``)
+        that the card has no way to render as a value.
+        """
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.get(
+                    f"{url.rstrip('/')}/api/states",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                response.raise_for_status()
+
+                entities = []
+                search_lower = search.lower().strip() if search else None
+
+                for entity in response.json():
+                    entity_id = entity.get("entity_id", "")
+                    domain = entity_id.split(".")[0] if "." in entity_id else ""
+                    if domain not in ("binary_sensor", "sensor"):
+                        continue
+
+                    attrs = entity.get("attributes", {})
+                    unit = attrs.get("unit_of_measurement")
+                    state = entity.get("state")
+
+                    if domain == "sensor" and not unit and as_float(state) is None:
+                        continue
+
+                    friendly_name = attrs.get("friendly_name") or entity_id
+                    if search_lower and (
+                        search_lower not in entity_id.lower() and search_lower not in friendly_name.lower()
+                    ):
+                        continue
+
+                    entities.append(
+                        {
+                            "entity_id": entity_id,
+                            "friendly_name": friendly_name,
+                            "state": state,
+                            "domain": domain,
+                            "device_class": attrs.get("device_class"),
+                            "unit_of_measurement": unit,
+                        }
+                    )
+
+                return sorted(entities, key=lambda x: x["friendly_name"].lower())
+        except Exception as e:
+            logger.warning("Failed to list HA display entities: %s", e)
+            return []
+
+    async def fetch_states(self, entity_ids: list[str]) -> dict[str, dict | None]:
+        """Read several entities in one pass, keyed by entity_id.
+
+        One GET per entity over a shared client rather than a single
+        ``/api/states`` sweep: the poller only ever wants a handful of bound
+        entities, and pulling every state in the user's Home Assistant on a
+        15-second cadence is a lot of payload to throw away.
+
+        A ``None`` value means that entity could not be read — the callers
+        treat that as "no opinion" rather than as a state, so an unreachable
+        Home Assistant never trips an alert or holds a print.
+        """
+        if not entity_ids:
+            return {}
+        if not self.base_url or not self.token:
+            return dict.fromkeys(entity_ids)
+
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+
+            async def _one(entity_id: str) -> tuple[str, dict | None]:
+                try:
+                    response = await client.get(
+                        f"{self.base_url}/api/states/{entity_id}",
+                        headers=self._headers(),
+                    )
+                    response.raise_for_status()
+                    return entity_id, response.json()
+                except Exception as e:
+                    logger.debug("Failed to read HA entity %s: %s", entity_id, e)
+                    return entity_id, None
+
+            results = await asyncio.gather(*(_one(e) for e in entity_ids))
+
+        return dict(results)
+
+
+def as_float(value) -> float | None:
+    """Parse a HA state to a number, or None for "unknown"/"unavailable"/text."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 # Singleton instance

@@ -8,6 +8,9 @@ from sqlalchemy.orm import selectinload
 
 from backend.app.models.spool import Spool
 from backend.app.models.spool_assignment import SpoolAssignment
+from backend.app.schemas.spool import normalize_effect_type
+from backend.app.services.slot_nozzle import resolve_slot_nozzle
+from backend.app.services.spool_filament_preset import printer_safe_filament_id, resolve_spool_preset
 from backend.app.utils.tag_normalization import (
     normalize_tag_uid as _normalize_tag_uid,
     normalize_tray_uuid as _normalize_tray_uuid,
@@ -18,6 +21,13 @@ logger = logging.getLogger(__name__)
 # Zero-value constants for tag validation
 ZERO_TAG_UID = "0000000000000000"
 ZERO_TRAY_UUID = "00000000000000000000000000000000"
+
+# Spool catalog row describing the reusable plastic spool Bambu Lab ships filament
+# on, and the weight to assume when that row is absent. DEFAULT_SPOOL_CATALOG holds
+# three "Bambu Lab%" rows (High Temp 216, Low Temp 250, White 253); this is the one
+# that matches the spool an RFID roll actually arrives on.
+BAMBU_PLASTIC_SPOOL_CATALOG_NAME = "Bambu Lab - Plastic Low Temp"
+BAMBU_PLASTIC_SPOOL_CORE_WEIGHT = 250
 
 
 def is_valid_tag(tag_uid: str, tray_uuid: str) -> bool:
@@ -99,6 +109,8 @@ async def create_spool_from_tray(db: AsyncSession, tray_data: dict) -> Spool:
     # PLA Basic happens to come first in catalog insertion order. See #1227.
     rgba = tray_color if tray_color else None
     color_name = None
+    extra_colors = None
+    effect_type = None
 
     # Transparent filament (#1545): the AMS reports alpha=00 for clear spools.
     # Skip the catalog lookup — the catalog only stores RGB so 000000 would
@@ -124,6 +136,13 @@ async def create_spool_from_tray(db: AsyncSession, tray_data: dict) -> Spool:
         entry = cat_result.scalar_one_or_none()
         if entry:
             color_name = entry.color_name
+            # The same row the spool form's colour picker reads. It hands
+            # `extra_colors` and `effect_type` to the new spool when a user
+            # picks a colour by hand (ColorSection.selectColor), and this path
+            # was taking the name alone -- so a roll added by hand rendered
+            # its gradient and a roll the AMS identified for you did not.
+            extra_colors = entry.extra_colors
+            effect_type = entry.effect_type
 
     # If tray_id_name is a human-readable name (no "-" code), fall back to it.
     if not color_name and tray_id_name and "-" not in tray_id_name:
@@ -136,13 +155,52 @@ async def create_spool_from_tray(db: AsyncSession, tray_data: dict) -> Spool:
         color_name,
     )
 
-    # Look up core weight from spool catalog
-    core_weight = 250  # Default for Bambu Lab plastic spools
-    cat_result = await db.execute(select(SpoolCatalogEntry).where(SpoolCatalogEntry.name.ilike("Bambu Lab%")).limit(10))
-    for entry in cat_result.scalars().all():
-        # Pick the best match (prefer exact, fallback to first Bambu Lab entry)
-        core_weight = entry.weight
-        break
+    # Fall back to the subtype for the swatch's rendering hint. `effect_type`
+    # is a visual variant kept independent of `subtype` so a user can override
+    # how a roll is drawn without touching Bambu's categorical label -- but
+    # nothing had ever set it here, and the shipped colour catalogue carries no
+    # effect on any of its 600-odd rows, so in practice it was always NULL and
+    # every wood, silk, sparkle and gradient roll drew as a flat disc. The
+    # subtype is the answer where the catalogue has none: it is derived above
+    # from what the printer reports, and the two vocabularies already line up
+    # ("Wood", "Silk", "Dual Color" are values of both). A subtype that names
+    # no effect -- Basic, Tough, CF -- leaves it NULL, which is the honest
+    # answer rather than a guessed overlay.
+    # "Silk+" is the same finish as "Silk" with a plus on the product name, so
+    # the trailing sign is dropped on a second attempt rather than costing the
+    # roll its overlay.
+    if effect_type is None and subtype:
+        for candidate in (subtype, subtype.rstrip("+")):
+            try:
+                effect_type = normalize_effect_type(candidate)
+            except ValueError:
+                continue
+            break
+
+    # Look up core weight from the spool catalog by exact name. The previous
+    # "Bambu Lab%" prefix query had no matching step and no ORDER BY, so it took
+    # whichever of the three Bambu Lab rows the database returned first — High Temp
+    # (216 g) on SQLite, undefined on Postgres once the table has seen updates.
+    # core_weight is the tare in a scale weigh flow, so a wrong value here
+    # silently biases every scale weighing of an RFID-created spool. See #2909.
+    #
+    # Falling back to the constant rather than to another catalog row keeps a
+    # missing or renamed entry from reintroducing the arbitrary pick, and matching
+    # by name means a user who has corrected that row to their own measurement gets
+    # their value.
+    core_weight = BAMBU_PLASTIC_SPOOL_CORE_WEIGHT
+    core_weight_catalog_id = None
+    cat_query = (
+        select(SpoolCatalogEntry)
+        .where(func.upper(SpoolCatalogEntry.name) == BAMBU_PLASTIC_SPOOL_CATALOG_NAME.upper())
+        .order_by(SpoolCatalogEntry.id)
+        .limit(1)
+    )
+    cat_result = await db.execute(cat_query)
+    catalog_entry = cat_result.scalar_one_or_none()
+    if catalog_entry:
+        core_weight = catalog_entry.weight
+        core_weight_catalog_id = catalog_entry.id
 
     # Resolve slicer filament name from builtin table
     slicer_filament_name = None
@@ -173,9 +231,12 @@ async def create_spool_from_tray(db: AsyncSession, tray_data: dict) -> Spool:
         subtype=subtype,
         color_name=color_name,
         rgba=rgba,
+        extra_colors=extra_colors,
+        effect_type=effect_type,
         brand="Bambu Lab",
         label_weight=label_weight,
         core_weight=core_weight,
+        core_weight_catalog_id=core_weight_catalog_id,
         weight_used=weight_used,
         slicer_filament=tray_info_idx or None,
         slicer_filament_name=slicer_filament_name,
@@ -507,24 +568,49 @@ async def auto_assign_spool(
     try:
         client = printer_manager.get_client(printer_id)
         if client:
-            # Apply K-profile if available
-            nozzle_diameter = "0.4"
-            if state and state.nozzles:
-                nd = state.nozzles[0].nozzle_diameter
-                if nd:
-                    nozzle_diameter = nd
+            # Which nozzle this slot feeds, resolved the same way every other
+            # slot-configuring path resolves it (services.slot_nozzle).
+            slot_nozzle = resolve_slot_nozzle(state, ams_id, tray_id, printer_manager.get_model(printer_id))
+            nozzle_diameter = slot_nozzle.diameter
 
-            matching_kp = None
+            # Prefer the profile calibrated for THIS hotend, falling back to one
+            # stored for the same nozzle size on the other. Before this the
+            # first row matching (printer, diameter) won outright with no
+            # extruder test at all -- on a dual-nozzle printer that is a coin
+            # toss between the two hotends, on the path that fires unattended
+            # every time an RFID spool is loaded.
+            exact_kp = None
+            fallback_kp = None
             for kp in spool.k_profiles:
-                if kp.printer_id == printer_id and kp.nozzle_diameter == nozzle_diameter:
-                    matching_kp = kp
+                if kp.printer_id != printer_id or kp.nozzle_diameter != nozzle_diameter:
+                    continue
+                if not slot_nozzle.flow_matches(kp.nozzle_type):
+                    continue
+                if slot_nozzle.extruder is not None and kp.extruder == slot_nozzle.extruder:
+                    exact_kp = kp
                     break
+                if fallback_kp is None:
+                    fallback_kp = kp
+            matching_kp = exact_kp or fallback_kp
+
+            # The id sent with extrusion_cali_sel has to name the preset the
+            # profile was calibrated under, and that preset can differ per
+            # printer model -- so it comes from the same cascade the assign
+            # paths use rather than straight off the spool.
+            model_filament, _ = await resolve_spool_preset(
+                db,
+                spool_id=spool.id,
+                printer_model=printer_manager.get_model(printer_id),
+                nozzle_diameter=nozzle_diameter,
+                fallback_filament=spool.slicer_filament,
+                fallback_name=spool.slicer_filament_name,
+            )
 
             if matching_kp and matching_kp.cali_idx is not None:
                 # The filament_id in extrusion_cali_sel must match the filament preset
                 # under which the K-profile was calibrated. Use spool.slicer_filament
                 # (the preset assigned in inventory), falling back to tray's RFID value.
-                cali_filament_id = spool.slicer_filament or tray_info_idx or ""
+                cali_filament_id = printer_safe_filament_id(model_filament, spool.slicer_filament, tray_info_idx)
                 client.extrusion_cali_sel(
                     ams_id=ams_id,
                     tray_id=tray_id,
@@ -551,7 +637,7 @@ async def auto_assign_spool(
                 # so the printer keeps its existing calibration selection.
                 live_cali_idx = tray.get("cali_idx")
                 if live_cali_idx is not None and live_cali_idx >= 0:
-                    cali_filament_id = spool.slicer_filament or tray_info_idx or ""
+                    cali_filament_id = printer_safe_filament_id(model_filament, spool.slicer_filament, tray_info_idx)
                     client.extrusion_cali_sel(
                         ams_id=ams_id,
                         tray_id=tray_id,

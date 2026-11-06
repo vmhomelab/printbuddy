@@ -15,6 +15,7 @@ import {
   useFilamentMapping,
 } from '../../hooks/useFilamentMapping';
 import { effectivePreferLowest } from '../../utils/amsHelpers';
+import { getColorName } from '../../utils/colors';
 import type { PrinterStatus, SpoolAssignment } from '../../api/client';
 
 // Helper to create a minimal printer status with AMS data
@@ -1437,5 +1438,260 @@ describe('useFilamentMapping — no [-1] mapping during a status-load race (#258
     const { result } = renderHook(() => useFilamentMapping(filamentReqs, statusWithPla, {}));
     expect(result.current.amsMapping).toEqual([-1]);
     expect(result.current.hasTypeMismatch).toBe(true);
+  });
+});
+
+describe('colour verdict is independent of how the tray was found (#2687)', () => {
+  // tray_info_idx names the filament *variant*, not an individual spool:
+  // GFA00 = PLA Basic, GFA01 = PLA Matte, GFA17 = PLA Translucent. A user with
+  // exactly one Matte spool loaded therefore idx-matches every Matte
+  // requirement no matter what colour it is.
+  const MATTE_DARK_GREEN = createPrinterStatus([
+    { id: 0, tray: [{ id: 0, tray_type: 'PLA', tray_color: '004225', tray_info_idx: 'GFA01' }] },
+  ]);
+  const wantRedMatte = {
+    filaments: [
+      { slot_id: 1, type: 'PLA', color: '#9D432C', used_grams: 31, tray_info_idx: 'GFA01' },
+    ],
+  };
+
+  it('reports a unique-idx tray of the wrong colour as type_only, not match', () => {
+    const [item] = buildFilamentComparison(
+      wantRedMatte,
+      buildLoadedFilaments(MATTE_DARK_GREEN),
+      {},
+    );
+
+    // The tray is still selected — it is the right variant (#2650) ...
+    expect(item.loaded?.globalTrayId).toBe(0);
+    // ... but red-on-dark-green is not a colour match.
+    expect(item.colorMatch).toBe(false);
+    expect(item.status).toBe('type_only');
+  });
+
+  it('auto and manual agree on the same tray', () => {
+    const loaded = buildLoadedFilaments(MATTE_DARK_GREEN);
+    const auto = buildFilamentComparison(wantRedMatte, loaded, {})[0];
+    const manual = buildFilamentComparison(wantRedMatte, loaded, { 1: 0 })[0];
+
+    // The original report: auto said "match", manually picking that very tray
+    // said "mismatch". Both paths must now reach the same verdict.
+    expect(manual.isManual).toBe(true);
+    expect(auto.status).toBe(manual.status);
+    expect(auto.colorMatch).toBe(manual.colorMatch);
+  });
+
+  it('surfaces the mismatch through the hook so the panel stops saying Ready', () => {
+    const { result } = renderHook(() => useFilamentMapping(wantRedMatte, MATTE_DARK_GREEN, {}));
+    // hasColorMismatch drives the yellow "(Color mismatch)" header; the tray is
+    // still mapped, so this is not a type mismatch.
+    expect(result.current.hasColorMismatch).toBe(true);
+    expect(result.current.hasTypeMismatch).toBe(false);
+    expect(result.current.amsMapping).toEqual([0]);
+  });
+
+  it('still reports a match when the unique-idx tray does carry the right colour', () => {
+    const [item] = buildFilamentComparison(
+      { filaments: [{ slot_id: 1, type: 'PLA', color: '#004225', used_grams: 31, tray_info_idx: 'GFA01' }] },
+      buildLoadedFilaments(MATTE_DARK_GREEN),
+      {},
+    );
+    expect(item.status).toBe('match');
+    expect(item.colorMatch).toBe(true);
+  });
+
+  it('accepts a near-enough shade on the idx path', () => {
+    // Within colorsAreSimilar's per-channel tolerance — the printer reporting a
+    // spool a shade off must not become a mismatch.
+    const [item] = buildFilamentComparison(
+      { filaments: [{ slot_id: 1, type: 'PLA', color: '#0A4A2A', used_grams: 31, tray_info_idx: 'GFA01' }] },
+      buildLoadedFilaments(MATTE_DARK_GREEN),
+      {},
+    );
+    expect(item.status).toBe('match');
+  });
+
+  it('treats a colourless requirement as satisfied by any colour', () => {
+    // 3MFs that omit the colour parse to "" (filament_requirements.py); there is
+    // nothing to disagree with, so this must not read as a colour mismatch.
+    const [item] = buildFilamentComparison(
+      { filaments: [{ slot_id: 1, type: 'PLA', color: '', used_grams: 31, tray_info_idx: 'GFA01' }] },
+      buildLoadedFilaments(MATTE_DARK_GREEN),
+      {},
+    );
+    expect(item.status).toBe('match');
+    expect(item.colorMatch).toBe(true);
+  });
+
+  it('keeps the multi-idx path intact — same idx, several colours picks the right one', () => {
+    // Two Matte spools: the branch that already compared colours must be
+    // unaffected, and the exact-colour tray still wins.
+    const twoMatte = createPrinterStatus([
+      {
+        id: 0,
+        tray: [
+          { id: 0, tray_type: 'PLA', tray_color: '004225', tray_info_idx: 'GFA01' },
+          { id: 1, tray_type: 'PLA', tray_color: '9D432C', tray_info_idx: 'GFA01' },
+        ],
+      },
+    ]);
+    const [item] = buildFilamentComparison(wantRedMatte, buildLoadedFilaments(twoMatte), {});
+    expect(item.loaded?.globalTrayId).toBe(1);
+    expect(item.status).toBe('match');
+  });
+
+  it('a type-only fallback with no idx candidate is still type_only', () => {
+    // Regression guard: the pre-existing "type matches, colour does not" path.
+    const basicOnly = createPrinterStatus([
+      { id: 0, tray: [{ id: 0, tray_type: 'PLA', tray_color: '004225', tray_info_idx: 'GFA00' }] },
+    ]);
+    const [item] = buildFilamentComparison(wantRedMatte, buildLoadedFilaments(basicOnly), {});
+    expect(item.status).toBe('type_only');
+    expect(item.colorMatch).toBe(false);
+  });
+});
+
+describe('filament type equivalence groups reach the matcher', () => {
+  // The scheduler has always canonicalised types before comparing, so PA12-CF
+  // satisfies a PA-CF requirement at dispatch. The interface compared the raw
+  // strings, so it called the same pairing a type mismatch — the badge
+  // contradicted what the printer would actually do, and the manual override
+  // picker (which groups by canonical type) offered the very spool the badge
+  // then rejected. Both sides now use `filamentTypesCompatible`.
+  const wantPaCf = {
+    filaments: [{ slot_id: 1, type: 'PA-CF', color: '#1A1A1A', used_grams: 20 }],
+  };
+  const pa12Loaded = createPrinterStatus([
+    { id: 0, tray: [{ id: 0, tray_type: 'PA12-CF', tray_color: '1A1A1AFF' }] },
+  ]);
+
+  it('matches PA12-CF against a PA-CF requirement', () => {
+    const [item] = buildFilamentComparison(wantPaCf, buildLoadedFilaments(pa12Loaded), {});
+    expect(item.loaded?.globalTrayId).toBe(0);
+    expect(item.status).toBe('match');
+  });
+
+  it('agrees with the mapping the request is built from', () => {
+    expect(
+      buildAmsMapping(buildFilamentComparison(wantPaCf, buildLoadedFilaments(pa12Loaded), {})),
+    ).toEqual([0]);
+  });
+
+  it('still refuses a genuinely different material', () => {
+    const petg = createPrinterStatus([
+      { id: 0, tray: [{ id: 0, tray_type: 'PETG', tray_color: '1A1A1AFF' }] },
+    ]);
+    const [item] = buildFilamentComparison(wantPaCf, buildLoadedFilaments(petg), {});
+    expect(item.status).toBe('mismatch');
+  });
+
+  it('does not treat a product variant as an alias for the base material', () => {
+    // "PLA Silk" dries like PLA but does not print like it, so the matcher
+    // must not substitute one for the other. Matches the backend's rule.
+    const silk = createPrinterStatus([
+      { id: 0, tray: [{ id: 0, tray_type: 'PLA Silk', tray_color: 'FFFFFFFF' }] },
+    ]);
+    const wantPla = {
+      filaments: [{ slot_id: 1, type: 'PLA', color: '#FFFFFF', used_grams: 20 }],
+    };
+    const [item] = buildFilamentComparison(wantPla, buildLoadedFilaments(silk), {});
+    expect(item.status).toBe('mismatch');
+  });
+});
+
+describe('buildLoadedFilaments — naming a slot after its bound spool', () => {
+  /**
+   * The printer cannot describe a third-party spool. Its tray record has no
+   * brand field, `tray_sub_brands` stays empty, and the colour hex gets
+   * resolved against Bambu's own catalogue — so a Devil Design PLA Basic
+   * Orange assigned in Printbuddy read back here as "PLA (Sunflower Yellow)",
+   * because Bambu sell a Sunflower Yellow at the same FEC600. The printer
+   * card names it correctly because it reads the assignment; this is that
+   * same identity, reaching the print dialog.
+   */
+  const devilDesign = {
+    brand: 'Devil Design',
+    material: 'PLA',
+    subtype: 'Basic',
+    color_name: 'Orange',
+    rgba: 'FEC600FF',
+  };
+
+  const c1 = createPrinterStatus([
+    {
+      id: 2,
+      tray: [{ id: 0, tray_type: 'PLA', tray_color: 'FEC600FF', tray_info_idx: 'GFA00', tray_sub_brands: '' }],
+    },
+  ]);
+
+  it('names the slot after the spool instead of the catalogue colour', () => {
+    const [slot] = buildLoadedFilaments(c1, undefined, undefined, new Map([[8, devilDesign]]));
+
+    expect(slot.spoolName).toBe('Devil Design PLA Basic');
+    expect(slot.colorName).toBe('Orange');
+  });
+
+  it('leaves the matching inputs on telemetry', () => {
+    // Auto-assign and the colour-mismatch test have to keep agreeing with the
+    // dispatcher, which only ever sees what the printer reports.
+    const [withSpool] = buildLoadedFilaments(c1, undefined, undefined, new Map([[8, devilDesign]]));
+    const [without] = buildLoadedFilaments(c1);
+
+    expect(withSpool.type).toBe(without.type);
+    expect(withSpool.color).toBe(without.color);
+    expect(withSpool.trayInfoIdx).toBe(without.trayInfoIdx);
+    expect(withSpool.traySubBrands).toBe(without.traySubBrands);
+  });
+
+  it('falls back per field, not all or nothing', () => {
+    // A spool with no colour name still gets its brand and subtype from the
+    // binding while the colour comes from the catalogue lookup as before.
+    const [slot] = buildLoadedFilaments(
+      createPrinterStatus([
+        { id: 0, tray: [{ id: 2, tray_type: 'PLA', tray_color: '5F6367FF', tray_sub_brands: 'PLA Silk+' }] },
+      ]),
+      undefined,
+      undefined,
+      new Map([[2, { brand: 'Bambu Lab', material: 'PLA', subtype: 'Silk+', color_name: null, rgba: '5F6367FF' }]]),
+    );
+
+    expect(slot.spoolName).toBe('Bambu Lab PLA Silk+');
+    expect(slot.colorName).toBe(getColorName('#5F6367FF', 'PLA Silk+'));
+  });
+
+  it('describes an unbound slot exactly as it did before', () => {
+    // Only the bound slot is renamed — an empty map must not blank the rest.
+    const [bound, unbound] = buildLoadedFilaments(
+      createPrinterStatus([
+        {
+          id: 0,
+          tray: [
+            { id: 0, tray_type: 'PLA', tray_color: 'FEC600FF' },
+            { id: 1, tray_type: 'PLA', tray_color: '00FF00FF', tray_sub_brands: 'PLA Matte' },
+          ],
+        },
+      ]),
+      undefined,
+      undefined,
+      new Map([[0, devilDesign]]),
+    );
+
+    expect(bound.spoolName).toBe('Devil Design PLA Basic');
+    expect(unbound.spoolName).toBeUndefined();
+    expect(unbound.colorName).toBe(getColorName('#00FF00FF', 'PLA Matte'));
+  });
+
+  it('names the external spool holder too', () => {
+    // Its global tray id IS the tray id (254 / 255) on both sides.
+    const [slot] = buildLoadedFilaments(
+      createPrinterStatus([], [{ id: 254, tray_type: 'PLA', tray_color: 'FEC600FF' }]),
+      undefined,
+      undefined,
+      new Map([[254, devilDesign]]),
+    );
+
+    expect(slot.isExternal).toBe(true);
+    expect(slot.spoolName).toBe('Devil Design PLA Basic');
+    expect(slot.colorName).toBe('Orange');
   });
 });

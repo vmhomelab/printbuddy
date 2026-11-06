@@ -24,11 +24,6 @@ COPY backend/ ./backend/
 COPY updater/ ./updater/
 COPY pyproject.toml ./
 
-# Embedded GCode viewer assets — required so the @app.get("/gcode-viewer/...")
-# packaging-regression test in tests/integration/test_gcode_viewer.py actually
-# runs instead of pytest-skipping with "index.html not present". Path matches
-# the production Dockerfile (static_dir.parent / "gcode_viewer" = /app/gcode_viewer/).
-COPY gcode_viewer/ ./gcode_viewer/
 
 # Create necessary directories
 RUN mkdir -p /app/data /app/logs /app/archive

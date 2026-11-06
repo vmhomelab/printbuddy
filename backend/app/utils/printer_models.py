@@ -117,6 +117,28 @@ LINEAR_RAIL_MODELS = frozenset(
 )
 
 
+# Models sold with a single nozzle flow variant, so a Standard / High Flow
+# choice on a K-profile is meaningless there. Derived from the slicer's own
+# rule (len(nozzle_volume) // len(nozzle_diameter) > 1 over the bundled Bambu
+# machine presets), not from nozzle count — P1P/P1S/P2S/X1/X1C/X1E/H2S are
+# single-nozzle and all carry two variants. Only the A-series has one.
+SINGLE_NOZZLE_FLOW_MODELS = frozenset(
+    [
+        # Display names (uppercase, no spaces)
+        "A1",
+        "A1MINI",
+        "A2L",
+        # Internal codes
+        "N1",  # A1 Mini
+        "N2S",  # A1
+        "N9",  # A2L
+        "A04",  # A1 Mini (alternate)
+        "A11",  # A1
+        "A12",  # A1 Mini
+    ]
+)
+
+
 # Models without any external storage (MicroSD / SD card slot).
 # The A1 and A1 Mini ship with internal storage only — there is no
 # firmware-side "Store sent files on external storage" toggle and no
@@ -213,6 +235,71 @@ DUAL_NOZZLE_MODELS = frozenset(
 )
 
 
+# Printers with a swappable nozzle rack ("Vortek"): the H2C carries six
+# hotends in a rack and mounts one of them on its right extruder at a time.
+#
+# Why this needs its own set rather than reusing DUAL_NOZZLE_MODELS: on every
+# other dual-nozzle printer the dispatch `nozzle_mapping` values ARE the MQTT
+# extruder indices (0 = right, 1 = left). On a rack model the wire wants the
+# *physical* nozzle position for both carriages: the rack positions the
+# firmware reports as IDs 16-21 — see `device.nozzle.info` handling in
+# bambu_mqtt — and 1 for the fixed hotend, which is not its extruder index.
+# Note the H2C does not follow the 0 = right convention either: extruder
+# index 1 is the rack side, confirmed on hardware in #2800.
+# Sending an extruder index where a physical position is expected makes the
+# printer clean and level with one nozzle and then print with another, at the
+# wrong Z (#2800).
+NOZZLE_RACK_MODELS = frozenset(
+    [
+        # Display names (uppercase, no spaces)
+        "H2C",
+        # Internal codes
+        "O1C",  # H2C
+        "O1C2",  # H2C (dual nozzle variant)
+    ]
+)
+
+
+# Models where Bambu's own firmware/UI names the enclosure fan (big_fan2 /
+# airduct part id 3) "Exhaust" rather than "Chamber". On these the printer's
+# touchscreen and Bambu Studio both call it the exhaust fan, and on the P2S it
+# is an add-on kit rather than built-in hardware. Other enclosed models
+# (X1 / P1S / H2 series) keep the "Chamber" naming.
+EXHAUST_FAN_LABEL_MODELS = frozenset(
+    [
+        # Display names (uppercase, no spaces)
+        "P2S",
+        "X2D",
+        # Internal codes
+        "N7",  # P2S
+        "N6",  # X2D
+    ]
+)
+
+
+def uses_exhaust_fan_label(model: str | None) -> bool:
+    """Return True if this model calls the big_fan2 enclosure fan "Exhaust".
+
+    P2S/X2D name that fan "Exhaust" in Bambu's firmware/UI; everything else
+    enclosed calls it the chamber fan. Used so the UI badge and the API
+    response message agree on what the user sees.
+    """
+    if not model:
+        return False
+    normalized = model.strip().upper().replace(" ", "").replace("-", "")
+    return normalized in EXHAUST_FAN_LABEL_MODELS
+
+
+# Ceiling for every chamber-temperature target the UI and API accept (manual
+# M141, the preheat filament map, the per-item preheat override, the chamber
+# quick-select presets). The H2 series (H2C / H2D / H2D Pro / H2S) and X2D
+# heat the chamber to 65 °C; X1E tops out at 60. We validate against the
+# highest of those and let the firmware clamp on the lower-ceiling models —
+# the preheat filament map is global rather than per printer, so a per-model
+# maximum could not be expressed there anyway.
+MAX_CHAMBER_TEMP_C = 65
+
+
 def has_ethernet(model: str | None) -> bool:
     """Return True if the printer model has an ethernet port."""
     if not model:
@@ -259,6 +346,46 @@ def is_dual_nozzle_model(model: str | None) -> bool:
         return False
     normalized = model.strip().upper().replace(" ", "").replace("-", "")
     return normalized in DUAL_NOZZLE_MODELS
+
+
+def is_nozzle_rack_model(model: str | None) -> bool:
+    """Return True if the model mounts its nozzles from a swappable rack (H2C).
+
+    Accepts both the display name and the internal SSDP code, because
+    ``BambuMQTTClient.model`` carries whichever the printer row happens to
+    hold — the same reason the P2S dispatch tweak checks ``("P2S", "N7")``.
+    """
+    if not model:
+        return False
+    normalized = model.strip().upper().replace(" ", "").replace("-", "")
+    return normalized in NOZZLE_RACK_MODELS
+
+
+def supports_nozzle_flow_type(model: str | None) -> bool:
+    """Return True if the model offers a Standard / High Flow nozzle choice.
+
+    A K-profile is filed under a ``nozzle_id`` of the form ``HS00-0.4``
+    (Standard) or ``HH00-0.4`` (High Flow), so the flow type is part of the
+    profile's identity on any printer where both exist — and meaningless noise
+    on one where only a single variant is sold.
+
+    The split is NOT the nozzle count: P1S, P2S, X1C and H2S are single-nozzle
+    and all offer both flows. BambuStudio/OrcaSlicer derive the same capability
+    from the machine preset — ``support_nozzle_volume()`` is
+    ``len(nozzle_volume) // len(nozzle_diameter) > 1`` — and every bundled
+    Bambu profile evaluated against that formula puts only the A-series on the
+    "one variant" side (A1 and A1 Mini at 1, A2L at 1; everything from P1P
+    upward at 2 or more per extruder).
+
+    Defaults to True for unknown models: offering the choice on a printer that
+    turns out to have one flow type costs the user a redundant dropdown, while
+    hiding it on one that has two makes half its calibration table
+    unreachable.
+    """
+    if not model:
+        return True
+    normalized = model.strip().upper().replace(" ", "").replace("-", "")
+    return normalized not in SINGLE_NOZZLE_FLOW_MODELS
 
 
 def get_rod_type(model: str | None) -> str | None:

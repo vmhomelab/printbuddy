@@ -20,6 +20,18 @@
 # First build pulls the sidecar source over git (~5 min — downloads the
 # BambuStudio AppImage, ~220 MB) and caches the image locally.
 # Subsequent runs reuse the cache. Pin the slicer versions via .env.
+#
+# Updating: `docker compose build` / `up` skip profile-gated services, so a
+# bare rebuild silently leaves bambu-studio-api on its old image (and
+# restart: unless-stopped keeps it serving). Use `--profile bambu` on every
+# command, or name the service: `docker compose build bambu-studio-api`.
+#
+# Both images are linux/amd64 only. OrcaSlicer's ARM64 path is on hold
+# pending an upstream extraction fix; BambuStudio doesn't publish ARM64
+# at all. ARM64 hosts are best served by running the sidecar on a separate
+# x86_64 box; failing that, `docker-compose.arm64.yml` in this directory
+# runs these same images under QEMU emulation — experimental, ~3-6x slower,
+# and it needs binfmt set up on the host. See the README.
 
 services:
   orca-slicer-api:
@@ -38,6 +50,8 @@ services:
     environment:
       NODE_ENV: production
       PORT: "3000"
+      # Largest model accepted for a slice, in MB. See .env.example.
+      MAX_MODEL_UPLOAD_MB: "${MAX_MODEL_UPLOAD_MB:-512}"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
       interval: 30s
@@ -61,6 +75,8 @@ services:
     environment:
       NODE_ENV: production
       PORT: "3000"
+      # Largest model accepted for a slice, in MB. See .env.example.
+      MAX_MODEL_UPLOAD_MB: "${MAX_MODEL_UPLOAD_MB:-512}"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
       interval: 30s
