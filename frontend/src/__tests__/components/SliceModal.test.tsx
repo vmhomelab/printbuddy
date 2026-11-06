@@ -129,6 +129,23 @@ describe('SliceModal', () => {
     mockApi.listSlicerBundles.mockResolvedValue([]);
   });
 
+  it('offers queueing after the slice and remembers the choice', async () => {
+    vi.mocked(window.localStorage.getItem).mockReturnValue(null);
+    const user = userEvent.setup();
+    renderWithTracker({
+      source: { kind: 'libraryFile', id: 100, filename: 'Cube.stl' },
+      onClose: vi.fn(),
+    });
+
+    const checkbox = await screen.findByRole('checkbox', { name: /Add to print queue afterwards/i });
+    expect((checkbox as HTMLInputElement).checked).toBe(false);
+
+    await user.click(checkbox);
+
+    expect((checkbox as HTMLInputElement).checked).toBe(true);
+    expect(window.localStorage.setItem).toHaveBeenCalledWith('printbuddy.slice.queueAfterSlice', '1');
+  });
+
   it('auto-selects the highest-priority tier per slot on first load', async () => {
     renderWithTracker({
       source: { kind: 'libraryFile', id: 100, filename: 'Cube.stl' },
@@ -212,6 +229,86 @@ describe('SliceModal', () => {
     await waitFor(() => expect(screen.getByText('Bambu Lab X1 Carbon 0.4 nozzle')).toBeDefined());
     const selects = screen.getAllByRole('combobox') as HTMLSelectElement[];
     expect(selects[0].value).toBe('standard:Bambu Lab X1 Carbon 0.4 nozzle');
+  });
+
+  it('hides known-incompatible process presets from the selected printer', async () => {
+    mockApi.getSlicerPresets.mockResolvedValue(
+      makeUnified({
+        standard: {
+          printer: [
+            {
+              id: 'p1s',
+              name: 'Bambu Lab P1S 0.4 nozzle - Ethan',
+              source: 'standard',
+            },
+          ],
+          process: [
+            {
+              id: 'p1s-process',
+              name: '0.20mm Standard @BBL P1S',
+              source: 'standard',
+              compatible_printers: ['Bambu Lab P1S 0.4 nozzle - Ethan'],
+            },
+            {
+              id: 'dremel-process',
+              name: '.05mm Super Detail @Dremel 3D40 0.4',
+              source: 'standard',
+              compatible_printers: ['Dremel 3D40 0.4 nozzle'],
+            },
+          ],
+          filament: [{ id: 'pla', name: 'Generic PLA - Silk PLA', source: 'standard' }],
+        },
+      }),
+    );
+    renderWithTracker({
+      source: { kind: 'libraryFile', id: 100, filename: 'Cube.stl' },
+      onClose: vi.fn(),
+    });
+
+    await waitFor(() => expect(screen.getByText('Bambu Lab P1S 0.4 nozzle - Ethan')).toBeDefined());
+    const processSelect = screen.getAllByRole('combobox')[1];
+    expect(within(processSelect).getByText('0.20mm Standard @BBL P1S')).toBeDefined();
+    expect(within(processSelect).queryByText('.05mm Super Detail @Dremel 3D40 0.4')).toBeNull();
+    expect(processSelect.querySelector('optgroup[label="Other printers"]')).toBeNull();
+  });
+
+  it('keeps an Orca Cloud preset selected and sends its source-aware reference', async () => {
+    mockApi.getSlicerPresets.mockResolvedValue(
+      makeUnified({
+        orca_cloud: {
+          printer: [
+            { id: 'orca-p1s', name: 'Bambu Lab P1S 0.4 nozzle - Ethan', source: 'orca_cloud' },
+            { id: 'orca-p1p', name: 'Bambu Lab P1P 0.4 nozzle', source: 'orca_cloud' },
+          ],
+          process: [{ id: 'orca-process', name: 'My P1S Process', source: 'orca_cloud' }],
+          filament: [{ id: 'orca-filament', name: 'My PLA', source: 'orca_cloud' }],
+        },
+      }),
+    );
+    mockApi.sliceLibraryFile.mockResolvedValue({
+      job_id: 42,
+      status: 'pending',
+      status_url: '/api/v1/slice-jobs/42',
+    });
+
+    renderWithTracker({
+      source: { kind: 'libraryFile', id: 100, filename: 'Cube.stl' },
+      onClose: vi.fn(),
+    });
+
+    await waitFor(() => expect(screen.getByText('Bambu Lab P1S 0.4 nozzle - Ethan')).toBeDefined());
+    const user = userEvent.setup();
+    await user.selectOptions(screen.getAllByRole('combobox')[0], 'orca_cloud:orca-p1p');
+    await user.click(screen.getByRole('button', { name: /^Slice$/ }));
+
+    await waitFor(() => {
+      expect(mockApi.sliceLibraryFile).toHaveBeenCalledWith(
+        100,
+        expect.objectContaining({
+          printer_preset: { source: 'orca_cloud', id: 'orca-p1p' },
+        }),
+      );
+    });
   });
 
   it('sends source-aware refs (not legacy bare ints) on submit', async () => {

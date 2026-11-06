@@ -67,6 +67,18 @@ _SLOT_TO_PROFILE_TYPE = {
     "filament": "filament",
 }
 
+# GUI-originated Bambu/Orca profiles use these exact string values as
+# "inherit from parent" sentinels. The desktop UI resolves them before
+# validation; the headless CLI does not. Keep this list deliberately narrow:
+# removing every negative value would corrupt valid offsets and geometry.
+_PROFILE_INHERIT_SENTINEL_KEYS = frozenset(
+    {
+        "raft_first_layer_expansion",
+        "tree_support_wall_count",
+        "prime_tower_brim_width",
+    }
+)
+
 
 async def resolve_preset_ref(
     db: AsyncSession,
@@ -84,17 +96,48 @@ async def resolve_preset_ref(
     preset type, cloud auth failure, network error fetching cloud detail).
     """
     if ref.source == "local":
-        return await _resolve_local(db, ref, slot)
-    if ref.source == "cloud":
-        return await _resolve_cloud(db, user, ref, slot)
-    if ref.source == "orca_cloud":
-        return await _resolve_orca_cloud(db, user, ref, slot)
-    if ref.source == "standard":
-        return _resolve_standard(ref, slot)
-    raise HTTPException(
-        status_code=400,
-        detail=f"Unknown preset source for {slot}: {ref.source!r}",
-    )
+        content = await _resolve_local(db, ref, slot)
+    elif ref.source == "cloud":
+        content = await _resolve_cloud(db, user, ref, slot)
+    elif ref.source == "orca_cloud":
+        content = await _resolve_orca_cloud(db, user, ref, slot)
+    elif ref.source == "standard":
+        content = _resolve_standard(ref, slot)
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown preset source for {slot}: {ref.source!r}",
+        )
+    return _normalise_profile_for_slicer(content, slot)
+
+
+def _normalise_profile_for_slicer(content: str, slot: str) -> str:
+    """Make a profile payload safe for Orca's strict CLI parser.
+
+    Imported local and Bambu Cloud profiles are historical/user-controlled
+    JSON and can omit, or use Bambu's alternate value for, ``type``. Orca's
+    ``--load-settings`` requires its exact vocabulary (machine/process/
+    filament), so establish it from PrintBuddy's already-validated slot.
+    """
+    expected_type = _SLOT_TO_PROFILE_TYPE.get(slot)
+    if expected_type is None:
+        raise HTTPException(status_code=400, detail=f"Unknown slot for slicer profile: {slot!r}")
+    try:
+        profile = json.loads(content)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid {slot} preset JSON") from exc
+    if not isinstance(profile, dict):
+        raise HTTPException(status_code=400, detail=f"Invalid {slot} preset JSON")
+    # Profile JSON from the desktop/cloud APIs can carry the same literal
+    # `"-1"` GUI-inheritance sentinels as an embedded project config. If such
+    # a child profile is merged in the sidecar it overwrites the valid parent
+    # with a CLI-invalid value. Dropping only known sentinel keys lets the
+    # inherited parent/default provide the value without changing valid negative
+    # values (e.g. z_offset).
+    profile = {
+        key: value for key, value in profile.items() if not (key in _PROFILE_INHERIT_SENTINEL_KEYS and value == "-1")
+    }
+    return json.dumps({**profile, "type": expected_type})
 
 
 async def _resolve_local(db: AsyncSession, ref: PresetRef, slot: str) -> str:
@@ -150,9 +193,33 @@ async def _resolve_cloud(db: AsyncSession, user: User | None, ref: PresetRef, sl
         await cloud.close()
 
     # `get_setting_detail` returns the wrapper envelope; the actual preset
-    # JSON lives under `.setting`. The sidecar wants the preset content, not
-    # the envelope.
+    # JSON lives under `.setting`. Read it before identifying public stock
+    # rows because Bambu's detail endpoint may omit the listing fields.
     payload = detail.get("setting") if isinstance(detail, dict) else None
+    payload_name = payload.get("name") if isinstance(payload, dict) else None
+
+    # Bambu's public/stock setting IDs use the GF* namespace; its personal
+    # presets use PFU*/PFUS*. The public Cloud body is designed for the GUI and
+    # can contain parameter encodings the headless CLI does not accept. The
+    # reference ID comes directly from the listing response and is stable even
+    # when its later detail response has no top-level setting_id/name.
+    preset_name = detail.get("name") if isinstance(detail, dict) else None
+    if not isinstance(preset_name, str) or not preset_name.strip():
+        preset_name = payload_name
+    if (
+        isinstance(ref.id, str)
+        and ref.id.upper().startswith("GF")
+        and isinstance(preset_name, str)
+        and preset_name.strip()
+    ):
+        return _resolve_standard(PresetRef(source="standard", id=preset_name), slot)
+
+    # The sidecar wants the preset content, not the envelope.
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid {slot} preset JSON from Bambu Cloud") from exc
     if not isinstance(payload, dict):
         # Some endpoints return the preset at the top level instead of
         # nested under `setting`. Fall back to the whole response in that

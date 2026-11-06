@@ -332,7 +332,13 @@ async def _fetch_bundled_presets(db: AsyncSession) -> dict[str, list[UnifiedPres
                 continue
             # Bundled presets are addressed by name (the slicer resolves them
             # by name during the `inherits:` walk), so name doubles as id.
-            extra: dict[str, str | None] = {}
+            extra: dict[str, object] = {}
+            if slot in ("process", "filament"):
+                compatible = entry.get("compatible_printers")
+                if isinstance(compatible, list):
+                    extra["compatible_printers"] = [
+                        name for name in compatible if isinstance(name, str) and name.strip()
+                    ] or None
             if slot == "filament":
                 extra["filament_type"] = entry.get("filament_type")
                 extra["filament_colour"] = entry.get("filament_colour")
@@ -417,6 +423,18 @@ def _dedupe_by_name(
                 p.filament_type = t
             if p.filament_colour is None and c is not None:
                 p.filament_colour = c
+
+    # Cloud listings carry no compatible_printers either. Bambu's public cloud
+    # presets share their names with the slicer's stock presets, whose
+    # compatibility list is authoritative. The "@BBL <model>" name alone is
+    # not enough: an X2D filament without a nozzle suffix covers only the
+    # 0.6/0.8 mm nozzles, so the SliceModal would offer it for a 0.4 printer
+    # and the slicer would then reject the job.
+    for slot in ("process", "filament"):
+        compat_by_name = {p.name: p.compatible_printers for p in standard[slot] if p.compatible_printers}
+        for p in cloud[slot]:
+            if not p.compatible_printers and p.name in compat_by_name:
+                p.compatible_printers = list(compat_by_name[p.name])
 
     deduped_local = _empty_slots()
     deduped_standard = _empty_slots()

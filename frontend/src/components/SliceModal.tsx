@@ -15,6 +15,7 @@ import {
   type UnifiedPresetsResponse,
 } from '../api/client';
 import { useSliceJobTracker } from '../contexts/SliceJobTrackerContext';
+import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { PlatePickerModal } from './PlatePickerModal';
 import type { PlateFilament } from '../types/plates';
@@ -218,7 +219,7 @@ function fromRefValue(raw: string): PresetRef | null {
   if (idx < 0) return null;
   const source = raw.slice(0, idx) as PresetSource;
   const id = raw.slice(idx + 1);
-  if (source !== 'cloud' && source !== 'local' && source !== 'standard') return null;
+  if (source !== 'orca_cloud' && source !== 'cloud' && source !== 'local' && source !== 'standard') return null;
   return { source, id };
 }
 
@@ -340,6 +341,27 @@ function FilamentAnalysisSpinner({
   );
 }
 
+// Remembered per browser: whether a finished slice should open the
+// add-to-queue dialog. Storage can be unavailable (private mode, blocked
+// site data), so every access is guarded.
+const QUEUE_AFTER_SLICE_KEY = 'printbuddy.slice.queueAfterSlice';
+
+function readQueueAfterSlice(): boolean {
+  try {
+    return window.localStorage.getItem(QUEUE_AFTER_SLICE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function writeQueueAfterSlice(value: boolean): void {
+  try {
+    window.localStorage.setItem(QUEUE_AFTER_SLICE_KEY, value ? '1' : '0');
+  } catch {
+    // Preference only; ignore storage failures.
+  }
+}
+
 function formatElapsed(seconds: number): string {
   const s = Math.max(0, Math.floor(seconds));
   if (s < 60) return `${s}s`;
@@ -354,6 +376,9 @@ function formatElapsed(seconds: number): string {
 export function SliceModal({ source, onClose }: SliceModalProps) {
   const { t } = useTranslation();
   const { trackJob } = useSliceJobTracker();
+  const { hasPermission } = useAuth();
+  const canQueue = hasPermission('queue:create');
+  const [queueAfterSlice, setQueueAfterSlice] = useState(readQueueAfterSlice);
 
   const [printerPreset, setPrinterPreset] = useState<PresetRef | null>(null);
   const [processPreset, setProcessPreset] = useState<PresetRef | null>(null);
@@ -651,7 +676,9 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
       return api.sliceArchive(source.id, body);
     },
     onSuccess: (enqueue) => {
-      trackJob(enqueue.job_id, source.kind, source.filename);
+      trackJob(enqueue.job_id, source.kind, source.filename, {
+        queueAfterSlice: canQueue && queueAfterSlice,
+      });
       onClose();
     },
     onError: (err: unknown) => {
@@ -975,20 +1002,45 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
           >
             {t('common.cancel')}
           </button>
-          {canSliceAll && (
-            <label
-              className="flex items-center gap-2 mr-auto text-sm text-bambu-gray cursor-pointer select-none"
-              title={t('slice.actionAllTitle', { count: totalPlateCount })}
-            >
-              <input
-                type="checkbox"
-                checked={sliceAllPlates}
-                onChange={(e) => setSliceAllPlates(e.target.checked)}
-                disabled={isEnqueuing}
-                className="cursor-pointer"
-              />
-              {t('slice.allPlatesToggle', { count: totalPlateCount })}
-            </label>
+          {(canSliceAll || canQueue) && (
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mr-auto">
+              {canSliceAll && (
+                <label
+                  className="flex items-center gap-2 text-sm text-bambu-gray cursor-pointer select-none"
+                  title={t('slice.actionAllTitle', { count: totalPlateCount })}
+                >
+                  <input
+                    type="checkbox"
+                    checked={sliceAllPlates}
+                    onChange={(e) => setSliceAllPlates(e.target.checked)}
+                    disabled={isEnqueuing}
+                    className="cursor-pointer"
+                  />
+                  {t('slice.allPlatesToggle', { count: totalPlateCount })}
+                </label>
+              )}
+              {canQueue && (
+                <label
+                  className="flex items-center gap-2 text-sm text-bambu-gray cursor-pointer select-none"
+                  title={t(
+                    'slice.queueAfterSliceTitle',
+                    'When slicing finishes, open the add-to-queue dialog for the sliced file.',
+                  )}
+                >
+                  <input
+                    type="checkbox"
+                    checked={queueAfterSlice}
+                    onChange={(e) => {
+                      setQueueAfterSlice(e.target.checked);
+                      writeQueueAfterSlice(e.target.checked);
+                    }}
+                    disabled={isEnqueuing}
+                    className="cursor-pointer"
+                  />
+                  {t('slice.queueAfterSlice', 'Add to print queue afterwards')}
+                </label>
+              )}
+            </div>
           )}
           <button
             type="button"
@@ -1138,12 +1190,10 @@ function PresetDropdown({
 }: PresetDropdownProps) {
   const { t } = useTranslation();
 
-  // Tier sections (imported → cloud → standard), plus — for a process /
-  // filament slot with a selected printer — a trailing group of presets that
-  // resolve to a different printer (#1325). Compatibility-unknown presets
-  // stay in their tier, so a custom / untagged preset is never hidden, and
-  // empty sections collapse out.
-  const { sections, otherEntries } = useMemo(() => {
+  // A confirmed mismatch must not be selectable: running a Dremel process
+  // profile against a P1S is unsafe and invariably fails downstream. Profiles
+  // with no compatibility declaration remain visible as custom/legacy input.
+  const sections = useMemo(() => {
     const tiers: { key: PresetTier; label: string; fallback: string }[] = [
       { key: 'local', label: 'slice.tier.local', fallback: 'Imported' },
       { key: 'orca_cloud', label: 'slice.tier.orcaCloud', fallback: 'Orca Cloud' },
@@ -1152,7 +1202,6 @@ function PresetDropdown({
     ];
     const filterByPrinter = slot !== 'printer';
     const compatSections: { tierLabel: string; entries: UnifiedPreset[] }[] = [];
-    const other: UnifiedPreset[] = [];
     for (const { key, label: lk, fallback } of tiers) {
       const entries = (data[key] ?? { printer: [], process: [], filament: [] })[slot];
       if (!filterByPrinter) {
@@ -1168,10 +1217,8 @@ function PresetDropdown({
             slot as 'process' | 'filament',
             selectedPrinterName ?? null,
             compatIndex ?? EMPTY_COMPATIBILITY_INDEX,
-          ) === 'mismatch'
+          ) !== 'mismatch'
         ) {
-          other.push(p);
-        } else {
           compatible.push(p);
         }
       }
@@ -1179,11 +1226,10 @@ function PresetDropdown({
         compatSections.push({ tierLabel: t(lk, fallback), entries: compatible });
       }
     }
-    return { sections: compatSections, otherEntries: other };
+    return compatSections;
   }, [data, slot, t, selectedPrinterName, compatIndex]);
 
-  const totalEntries =
-    sections.reduce((sum, s) => sum + s.entries.length, 0) + otherEntries.length;
+  const totalEntries = sections.reduce((sum, s) => sum + s.entries.length, 0);
 
   return (
     <label className="block">
@@ -1217,15 +1263,6 @@ function PresetDropdown({
             ))}
           </optgroup>
         ))}
-        {otherEntries.length > 0 && (
-          <optgroup label={t('slice.otherPrinters')}>
-            {otherEntries.map((p) => (
-              <option key={`${p.source}:${p.id}`} value={`${p.source}:${p.id}`}>
-                {p.name}
-              </option>
-            ))}
-          </optgroup>
-        )}
       </select>
     </label>
   );

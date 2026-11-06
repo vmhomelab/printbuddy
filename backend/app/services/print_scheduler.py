@@ -34,6 +34,7 @@ from backend.app.services.printer_manager import printer_manager, supports_dryin
 from backend.app.services.printer_providers.factory import normalize_provider
 from backend.app.services.smart_plug_manager import smart_plug_manager
 from backend.app.utils.printer_models import normalize_printer_model
+from backend.app.utils.sliced_upload import SlicedUploadError, prepare_sliced_upload
 
 logger = logging.getLogger(__name__)
 
@@ -2167,9 +2168,23 @@ class PrintScheduler:
                 logger.warning("Queue item %s: G-code injection failed, using original: %s", item.id, e)
 
         provider = normalize_provider(getattr(printer, "provider", None))
+        # G-code printers cannot read .gcode.3mf projects: upload the queued
+        # plate's G-code instead (Bambu printers get the 3MF).
+        try:
+            upload = prepare_sliced_upload(file_path, filename, provider, item.plate_id)
+        except SlicedUploadError as exc:
+            if injected_path and injected_path.exists():
+                injected_path.unlink(missing_ok=True)
+            item.status = "failed"
+            item.error_message = str(exc)
+            item.completed_at = datetime.now(timezone.utc)
+            await db.commit()
+            logger.error("Queue item %s: %s", item.id, exc)
+            await self._power_off_if_needed(db, item)
+            return
         # Use a provider-correct printer-side name. Bambu keeps the historical
         # 3MF rewrite, while Moonraker/K-series must keep .gcode/.3mf intact.
-        remote_filename = self._remote_filename_for_provider(filename, provider)
+        remote_filename = self._remote_filename_for_provider(upload.filename, provider)
         # Upload to root directory (not /cache/) - the start_print command references
         # files by name only (ftp://{filename}), so they must be in the root
         remote_path = f"/{remote_filename}"
@@ -2203,21 +2218,22 @@ class PrintScheduler:
             logger.debug("Queue item %s: Delete failed (may not exist): %s", item.id, e)
 
         try:
-            uploaded = await self._upload_file_for_provider(
-                printer_id=item.printer_id,
-                provider=provider,
-                printer_name=printer.name,
-                printer_ip=printer.ip_address,
-                printer_access_code=printer.access_code,
-                file_path=file_path,
-                remote_path=remote_path,
-                printer_model=printer.model,
-                ftp_retry_enabled=ftp_retry_enabled,
-                ftp_retry_count=ftp_retry_count,
-                ftp_retry_delay=ftp_retry_delay,
-                ftp_timeout=ftp_timeout,
-                operation_name=f"Upload print to {printer.name}",
-            )
+            async with upload.local_file() as upload_path:
+                uploaded = await self._upload_file_for_provider(
+                    printer_id=item.printer_id,
+                    provider=provider,
+                    printer_name=printer.name,
+                    printer_ip=printer.ip_address,
+                    printer_access_code=printer.access_code,
+                    file_path=upload_path,
+                    remote_path=remote_path,
+                    printer_model=printer.model,
+                    ftp_retry_enabled=ftp_retry_enabled,
+                    ftp_retry_count=ftp_retry_count,
+                    ftp_retry_delay=ftp_retry_delay,
+                    ftp_timeout=ftp_timeout,
+                    operation_name=f"Upload print to {printer.name}",
+                )
         except Exception as e:
             uploaded = False
             logger.error("Queue item %s: upload error: %s (type: %s)", item.id, e, type(e).__name__)

@@ -1475,6 +1475,17 @@ export interface SlicerBundle {
   version: string | null;
 }
 
+/** Safe, documented result of POST /settings/test-slicer-connection. */
+export interface SlicerConnectionTestResult {
+  success: boolean;
+  slicer: 'bambu_studio' | 'orcaslicer';
+  health: {
+    status?: string | null;
+    version?: string | null;
+    capabilities?: string[] | null;
+  } | null;
+}
+
 // GET /api/v1/slicer/presets — unified listing across cloud / local / standard.
 export type SlicerCloudStatus = 'ok' | 'not_authenticated' | 'expired' | 'unreachable';
 export interface UnifiedPreset {
@@ -4754,6 +4765,8 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(data),
     }),
+  testSlicerConnection: () =>
+    request<SlicerConnectionTestResult>('/settings/test-slicer-connection', { method: 'POST' }),
   getMQTTStatus: () => request<MQTTStatus>('/settings/mqtt/status'),
   getPandaBreathStatus: () => request<PandaBreathStatus>('/settings/panda-breath/status'),
   sendPandaBreathCommand: (data: { command: string; value?: string | number | boolean | null; device_id?: string | null }) =>

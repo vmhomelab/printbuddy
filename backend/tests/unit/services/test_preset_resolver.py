@@ -73,6 +73,25 @@ async def test_local_returns_setting_blob():
 
 
 @pytest.mark.asyncio
+async def test_public_resolver_normalizes_local_profile_type_for_sidecar():
+    """Local imports pre-date the API sidecar and can omit `type`, but Orca's
+    --load-settings parser requires the exact slot type (printer → machine)."""
+    db = MagicMock()
+    preset = MagicMock()
+    preset.preset_type = "printer"
+    preset.setting = '{"name": "My P1S", "nozzle_diameter": [0.4]}'
+    db.get = AsyncMock(return_value=preset)
+
+    out = await preset_resolver.resolve_preset_ref(db, None, PresetRef(source="local", id="42"), slot="printer")
+
+    assert json.loads(out) == {
+        "name": "My P1S",
+        "nozzle_diameter": [0.4],
+        "type": "machine",
+    }
+
+
+@pytest.mark.asyncio
 async def test_local_rejects_non_integer_id():
     db = MagicMock()
     db.get = AsyncMock()
@@ -97,6 +116,29 @@ async def test_local_rejects_wrong_preset_type():
 
 
 # --- cloud tier -----------------------------------------------------------
+
+
+def test_normalise_profile_removes_allowlisted_inherit_sentinel_values():
+    """Cloud user presets may serialise GUI-only `-1` inheritance sentinels.
+    They must not override a valid bundled parent while the headless CLI
+    validates the merged profile."""
+    out = preset_resolver._normalise_profile_for_slicer(
+        json.dumps(
+            {
+                "name": "My Bambu process",
+                "inherits": "0.20mm Standard @BBL P1S",
+                "tree_support_wall_count": "-1",
+                "prime_tower_brim_width": "-1",
+            }
+        ),
+        "process",
+    )
+
+    assert json.loads(out) == {
+        "name": "My Bambu process",
+        "inherits": "0.20mm Standard @BBL P1S",
+        "type": "process",
+    }
 
 
 @pytest.mark.asyncio
@@ -159,6 +201,66 @@ async def test_cloud_unwraps_setting_envelope():
     payload = json.loads(out)
     assert payload == {"name": "X1C Custom", "nozzle_diameter": [0.4]}
     cloud_mock.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_cloud_public_stock_setting_resolves_as_a_sidecar_standard_stub():
+    """Bambu Cloud's public GF* preset bodies contain GUI-specific values that
+    differ from the installed slicer resource. For an exact public stock name,
+    route by name to the sidecar-controlled immutable parent instead."""
+    db = MagicMock()
+    user = MagicMock()
+    user.has_permission = MagicMock(return_value=True)
+    cloud_mock = MagicMock()
+    cloud_mock.set_token = MagicMock()
+    cloud_mock.get_setting_detail = AsyncMock(
+        return_value={
+            # The Bambu detail endpoint may omit its listing identifier.
+            "setting": {"name": "Bambu Lab P1P 0.4 nozzle", "type": "printer", "bad_gui_value": "-1"},
+        }
+    )
+    cloud_mock.close = AsyncMock()
+    with (
+        patch.object(preset_resolver, "get_stored_token", AsyncMock(return_value=("tok", "e@x", "global"))),
+        patch.object(preset_resolver, "BambuCloudService", return_value=cloud_mock),
+    ):
+        out = await preset_resolver.resolve_preset_ref(db, user, PresetRef(source="cloud", id="GFPP01"), slot="printer")
+
+    assert json.loads(out) == {
+        "name": "Bambu Lab P1P 0.4 nozzle",
+        "inherits": "Bambu Lab P1P 0.4 nozzle",
+        "from": "system",
+        "type": "machine",
+    }
+
+
+@pytest.mark.asyncio
+async def test_cloud_custom_setting_keeps_its_cloud_payload():
+    """Bambu Cloud may return `setting` as JSON text; resolve it once rather
+    than JSON-encoding the string again and sending a JSON string to the CLI."""
+    db = MagicMock()
+    user = MagicMock()
+    user.has_permission = MagicMock(return_value=True)
+    cloud_mock = MagicMock()
+    cloud_mock.set_token = MagicMock()
+    cloud_mock.get_setting_detail = AsyncMock(
+        return_value={
+            "setting_id": "PFU123",
+            "setting": '{"name":"My P1S process","inherits":"0.20mm Standard @BBL P1S","type":"print"}',
+        }
+    )
+    cloud_mock.close = AsyncMock()
+    with (
+        patch.object(preset_resolver, "get_stored_token", AsyncMock(return_value=("tok", "e@x", "global"))),
+        patch.object(preset_resolver, "BambuCloudService", return_value=cloud_mock),
+    ):
+        out = await preset_resolver.resolve_preset_ref(db, user, PresetRef(source="cloud", id="PFU123"), slot="process")
+
+    assert json.loads(out) == {
+        "name": "My P1S process",
+        "inherits": "0.20mm Standard @BBL P1S",
+        "type": "process",
+    }
 
 
 @pytest.mark.asyncio
@@ -225,7 +327,7 @@ async def test_resolve_preset_ref_dispatches_by_source():
 
     # local
     out = await preset_resolver.resolve_preset_ref(db, user, PresetRef(source="local", id="1"), slot="printer")
-    assert out == '{"local": true}'
+    assert json.loads(out) == {"local": True, "type": "machine"}
 
     # standard
     out = await preset_resolver.resolve_preset_ref(

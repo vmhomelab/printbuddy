@@ -1,0 +1,178 @@
+name: Docker publish slicer sidecars
+
+# Builds the integrated-slicer sidecar images from the sidecar source
+# revision pinned in slicer-api/.env.example and pushes them to Docker Hub:
+#
+#   docker.io/vmhomelabde/printbuddy-bambu-studio-api:<bambu version>-<rev>
+#   docker.io/vmhomelabde/printbuddy-orca-slicer-api:<orca version>-<rev>
+#
+# Published version tags are immutable: a tag that already exists on Docker
+# Hub is not rebuilt unless the workflow is started manually with `force`.
+# `latest` follows main, `dev` follows dev.
+
+on:
+  push:
+    branches:
+      - dev
+      - main
+    paths:
+      - 'slicer-api/**'
+      - 'scripts/slicer_images.py'
+      - '.github/workflows/docker-publish-slicer.yml'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Rebuild and overwrite tags that already exist on Docker Hub
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-publish-slicer-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: Resolve pinned sidecar versions
+    runs-on: ubuntu-latest
+    outputs:
+      sidecar_repo: ${{ steps.pins.outputs.sidecar_repo }}
+      sidecar_revision: ${{ steps.pins.outputs.sidecar_revision }}
+      bambu_version: ${{ steps.pins.outputs.bambu_version }}
+      orca_version: ${{ steps.pins.outputs.orca_version }}
+      bambu_image: ${{ steps.pins.outputs.bambu_image }}
+      orca_image: ${{ steps.pins.outputs.orca_image }}
+      bambu_tag: ${{ steps.pins.outputs.bambu_tag }}
+      orca_tag: ${{ steps.pins.outputs.orca_tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check image references are in sync
+        run: python3 scripts/slicer_images.py --check
+
+      - name: Read pinned versions
+        id: pins
+        run: python3 scripts/slicer_images.py --github-output
+
+  build:
+    name: Build ${{ matrix.slicer }} sidecar
+    needs: resolve
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - slicer: bambu-studio
+            dockerfile: Dockerfile.bambu-studio
+            # Bambu Lab publishes no ARM64 Linux AppImage.
+            platforms: linux/amd64
+          - slicer: orca-slicer
+            dockerfile: Dockerfile
+            platforms: linux/amd64,linux/arm64
+    env:
+      IMAGE: ${{ matrix.slicer == 'bambu-studio' && needs.resolve.outputs.bambu_image || needs.resolve.outputs.orca_image }}
+      TAG: ${{ matrix.slicer == 'bambu-studio' && needs.resolve.outputs.bambu_tag || needs.resolve.outputs.orca_tag }}
+      SLICER_VERSION: ${{ matrix.slicer == 'bambu-studio' && needs.resolve.outputs.bambu_version || needs.resolve.outputs.orca_version }}
+      SIDECAR_REPO: ${{ needs.resolve.outputs.sidecar_repo }}
+      SIDECAR_REVISION: ${{ needs.resolve.outputs.sidecar_revision }}
+    steps:
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Check whether the version tag is already published
+        id: exists
+        env:
+          FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force }}
+        run: |
+          if [ "$FORCE" != "true" ] && docker manifest inspect "${IMAGE}:${TAG}" > /dev/null 2>&1; then
+            echo "${IMAGE}:${TAG} already exists; only moving tags are updated."
+            echo "published=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Point moving tags at the published image
+        if: steps.exists.outputs.published == 'true'
+        run: |
+          case "${GITHUB_REF}" in
+            refs/heads/main) moving=latest ;;
+            refs/heads/dev) moving=dev ;;
+            *) exit 0 ;;
+          esac
+          docker buildx imagetools create --tag "${IMAGE}:${moving}" "${IMAGE}:${TAG}"
+
+      - name: Checkout pinned sidecar source
+        if: steps.exists.outputs.published != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SIDECAR_REPO }}
+          ref: ${{ env.SIDECAR_REVISION }}
+          path: sidecar
+
+      - name: Resolve Bambu Studio AppImage URL
+        id: appimage
+        if: steps.exists.outputs.published != 'true' && matrix.slicer == 'bambu-studio'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          url=$(gh api "repos/bambulab/BambuStudio/releases/tags/v${SLICER_VERSION}" \
+            --jq '.assets[].browser_download_url | select(test("BambuStudio_ubuntu-?22\\.04.*\\.AppImage$"))' | head -n 1)
+          if [ -z "$url" ]; then
+            echo "No Ubuntu 22.04 AppImage in Bambu Studio v${SLICER_VERSION}" >&2
+            exit 1
+          fi
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        if: steps.exists.outputs.published != 'true' && contains(matrix.platforms, 'arm64')
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        if: steps.exists.outputs.published != 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker metadata
+        id: meta
+        if: steps.exists.outputs.published != 'true'
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=raw,value=${{ env.TAG }}
+            type=raw,value=dev,enable=${{ github.ref == 'refs/heads/dev' }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+          labels: |
+            org.opencontainers.image.title=printbuddy-${{ matrix.slicer }}-api
+            org.opencontainers.image.description=PrintBuddy slicer sidecar: HTTP API around the ${{ matrix.slicer == 'bambu-studio' && 'Bambu Studio' || 'OrcaSlicer' }} ${{ env.SLICER_VERSION }} CLI
+            org.opencontainers.image.source=https://github.com/${{ env.SIDECAR_REPO }}
+            org.opencontainers.image.revision=${{ env.SIDECAR_REVISION }}
+            org.opencontainers.image.version=${{ env.TAG }}
+            org.opencontainers.image.licenses=AGPL-3.0
+            org.opencontainers.image.url=https://github.com/${{ github.repository }}/blob/${{ github.sha }}/docs/slicer-sidecar.md
+            io.printbuddy.slicer.name=${{ matrix.slicer == 'bambu-studio' && 'Bambu Studio' || 'OrcaSlicer' }}
+            io.printbuddy.slicer.version=${{ env.SLICER_VERSION }}
+            io.printbuddy.slicer.source=${{ matrix.slicer == 'bambu-studio' && format('https://github.com/bambulab/BambuStudio/tree/v{0}', env.SLICER_VERSION) || format('https://github.com/SoftFever/OrcaSlicer/tree/v{0}', env.SLICER_VERSION) }}
+
+      - name: Build and push
+        if: steps.exists.outputs.published != 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: ./sidecar
+          file: ./sidecar/${{ matrix.dockerfile }}
+          platforms: ${{ matrix.platforms }}
+          push: true
+          pull: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            BAMBU_VERSION=${{ env.SLICER_VERSION }}
+            BAMBU_APPIMAGE_URL=${{ steps.appimage.outputs.url }}
+            ORCA_VERSION=${{ env.SLICER_VERSION }}
+          cache-from: type=gha,scope=slicer-${{ matrix.slicer }}
+          cache-to: type=gha,mode=max,scope=slicer-${{ matrix.slicer }}
