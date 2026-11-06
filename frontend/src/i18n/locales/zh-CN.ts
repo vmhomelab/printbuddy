@@ -1918,6 +1918,11 @@ export default {
     orcaslicerApiUrl: 'OrcaSlicer sidecar URL',
     bambuStudioApiUrl: 'Bambu Studio sidecar URL',
     slicerApiUrlDescription: 'slicer-API sidecar 容器的 URL。留空以使用 SLICER_API_URL / BAMBU_STUDIO_API_URL 环境变量默认值。',
+    testSlicerConnection: '测试切片器连接',
+    testingSlicerConnection: '正在测试切片器连接…',
+    slicerConnectionSuccess: '{{slicer}} 切片器连接成功。',
+    slicerConnectionFailed: '{{slicer}} 切片器连接失败。',
+    slicerConnectionError: '切片器连接失败。',
     slicerBundles: {
       title: '切片器捆绑包',
       description: '导入从 BambuStudio 导出的 Printer Preset Bundle (.bbscfg)（文件 → 导出 → 导出预设捆绑包 → "Printer preset bundle"）。导入后，切片请求可以按名称从捆绑包中选择预设，无需重新上传 JSON 配置三元组。',

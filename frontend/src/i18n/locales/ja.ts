@@ -1917,6 +1917,11 @@ export default {
     orcaslicerApiUrl: 'OrcaSlicer sidecar URL',
     bambuStudioApiUrl: 'Bambu Studio sidecar URL',
     slicerApiUrlDescription: 'slicer-APIサイドカーコンテナのURL。空のままにすると SLICER_API_URL / BAMBU_STUDIO_API_URL 環境変数のデフォルト値が使用されます。',
+    testSlicerConnection: 'スライサー接続をテスト',
+    testingSlicerConnection: 'スライサー接続をテスト中…',
+    slicerConnectionSuccess: '{{slicer}} スライサーへの接続に成功しました。',
+    slicerConnectionFailed: '{{slicer}} スライサーへの接続に失敗しました。',
+    slicerConnectionError: 'スライサーへの接続に失敗しました。',
     slicerBundles: {
       title: 'スライサーバンドル',
       description: 'BambuStudioからエクスポートされたPrinter Preset Bundle（.bbscfg）をインポートします（ファイル → エクスポート → プリセットバンドルをエクスポート → "Printer preset bundle"）。インポート後、スライス要求はJSONプロファイルトリプレットを再アップロードせずにバンドルから名前でプリセットを選択できます。',

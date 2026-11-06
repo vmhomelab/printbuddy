@@ -1920,6 +1920,11 @@ export default {
     orcaslicerApiUrl: 'OrcaSlicer sidecar URL',
     bambuStudioApiUrl: 'Bambu Studio sidecar URL',
     slicerApiUrlDescription: 'URL del contenedor auxiliar de la API del laminador. Déjelo en blanco para usar los valores predeterminados de las variables de entorno SLICER_API_URL / BAMBU_STUDIO_API_URL.',
+    testSlicerConnection: 'Probar conexión del slicer',
+    testingSlicerConnection: 'Probando conexión del slicer…',
+    slicerConnectionSuccess: 'Conexión con el slicer {{slicer}} correcta.',
+    slicerConnectionFailed: 'Error en la conexión con el slicer {{slicer}}.',
+    slicerConnectionError: 'Error en la conexión con el slicer.',
     slicerBundles: {
       title: 'Paquetes del laminador',
       description: 'Importe un paquete de preajustes de impresora (.bbscfg) exportado desde BambuStudio (Archivo → Exportar → Exportar paquete de preajustes → «Paquete de preajustes de impresora»). Una vez importado, las solicitudes de laminado pueden elegir preajustes del paquete por nombre sin volver a subir el trío de perfiles JSON.',

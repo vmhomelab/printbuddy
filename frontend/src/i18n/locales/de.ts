@@ -1918,6 +1918,11 @@ export default {
     orcaslicerApiUrl: 'OrcaSlicer Sidecar-URL',
     bambuStudioApiUrl: 'Bambu Studio Sidecar-URL',
     slicerApiUrlDescription: 'URL des Slicer-API-Sidecar-Containers. Leer lassen, um die SLICER_API_URL- bzw. BAMBU_STUDIO_API_URL-Umgebungsvariablen zu nutzen.',
+    testSlicerConnection: 'Slicer-Verbindung testen',
+    testingSlicerConnection: 'Slicer-Verbindung wird getestet…',
+    slicerConnectionSuccess: 'Verbindung zum {{slicer}}-Slicer erfolgreich.',
+    slicerConnectionFailed: 'Verbindung zum {{slicer}}-Slicer fehlgeschlagen.',
+    slicerConnectionError: 'Verbindung zum Slicer fehlgeschlagen.',
     slicerBundles: {
       title: 'Slicer-Bundles',
       description: 'Importiere ein Drucker-Voreinstellungspaket (.bbscfg), das aus BambuStudio exportiert wurde (Datei → Exportieren → Voreinstellungspaket exportieren → "Drucker-Voreinstellungspaket"). Nach dem Import können Slice-Anfragen Voreinstellungen aus dem Bundle per Name auswählen, ohne das JSON-Profil-Trio erneut hochzuladen.',

@@ -1918,6 +1918,11 @@ export default {
     orcaslicerApiUrl: 'OrcaSlicer sidecar URL',
     bambuStudioApiUrl: 'Bambu Studio sidecar URL',
     slicerApiUrlDescription: 'URL do contêiner sidecar slicer-API. Deixe em branco para usar SLICER_API_URL / BAMBU_STUDIO_API_URL.',
+    testSlicerConnection: 'Testar conexão do slicer',
+    testingSlicerConnection: 'Testando conexão do slicer…',
+    slicerConnectionSuccess: 'Conexão com o slicer {{slicer}} bem-sucedida.',
+    slicerConnectionFailed: 'Falha na conexão com o slicer {{slicer}}.',
+    slicerConnectionError: 'Falha na conexão com o slicer.',
     slicerBundles: {
       title: 'Bundles do fatiador',
       description: 'Importe um Printer Preset Bundle (.bbscfg) exportado do BambuStudio (Arquivo → Exportar → Exportar Bundle de Predefinições → "Printer preset bundle"). Após importado, solicitações de fatiamento podem escolher predefinições do bundle por nome sem re-enviar o triplet de perfis JSON.',

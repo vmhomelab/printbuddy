@@ -1920,6 +1920,11 @@ export default {
     orcaslicerApiUrl: 'OrcaSlicer sidecar URL',
     bambuStudioApiUrl: 'Bambu Studio sidecar URL',
     slicerApiUrlDescription: 'URL of the slicer-API sidecar container. Leave blank to use the SLICER_API_URL / BAMBU_STUDIO_API_URL env var defaults.',
+    testSlicerConnection: 'Test slicer connection',
+    testingSlicerConnection: 'Testing slicer connection…',
+    slicerConnectionSuccess: '{{slicer}} slicer connection succeeded.',
+    slicerConnectionFailed: '{{slicer}} slicer connection failed.',
+    slicerConnectionError: 'Slicer connection failed.',
     slicerBundles: {
       title: 'Slicer Bundles',
       description: 'Import a Printer Preset Bundle (.bbscfg) exported from BambuStudio (File → Export → Export Preset Bundle → "Printer preset bundle"). Once imported, slice requests can pick presets from the bundle by name without re-uploading the JSON profile triplet.',

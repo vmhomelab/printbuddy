@@ -1264,7 +1264,7 @@ export function SettingsPage() {
         );
       }
     } catch {
-      showToast(t('settings.slicerConnectionFailed', 'Slicer connection failed.'), 'error');
+      showToast(t('settings.slicerConnectionError', 'Slicer connection failed.'), 'error');
     } finally {
       setSlicerConnectionTesting(false);
     }
