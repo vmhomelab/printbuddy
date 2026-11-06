@@ -20,7 +20,10 @@ uvicorn[standard]>=0.27.0
 # branch, which NullPool rejects — on <=2.0.37 every SQLite install (and the
 # test suite, which imports the module-level engine) dies at import with
 # "Invalid argument(s) 'pool_size','max_overflow' sent to create_engine()".
-sqlalchemy>=2.0.38
+# Capped below 2.1: the upstream concurrent-dispatch scheduler tests
+# (test_scheduler_concurrent_dispatch) fail on SQLAlchemy 2.1.x and pass on
+# 2.0.x. Lift the cap once the scheduler is verified on 2.1.
+sqlalchemy>=2.0.38,<2.1
 aiosqlite>=0.19.0
 asyncpg>=0.29.0
 greenlet>=3.0.0
