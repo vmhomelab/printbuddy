@@ -44,9 +44,13 @@ Slicer** setting. You can run both and switch in the settings.
 > OrcaSlicer 2.3.2 does not know the X2D and has known problems with many
 > Bambu-authored 3MF files. Use Bambu Studio for Bambu Lab printers.
 
-The image tags have the form `<slicer version>-<sidecar revision>`, for
-example `02.08.02.61-cb44369`. Each PrintBuddy release references the exact
-tag it was tested with.
+Tags:
+
+| Tag | Meaning |
+|---|---|
+| `latest` | Images of the current PrintBuddy `main` release. Used by PrintBuddy's `docker-compose.yml`. |
+| `dev` | Images of the PrintBuddy `dev` branch, for testers. |
+| `<slicer version>-<sidecar revision>`, e.g. `02.08.02.61-cb44369` | Fixed version, never changes. Used by the `slicer-api/` stack. |
 
 ### Option A: add the sidecar to PrintBuddy's Compose file (recommended)
 
@@ -56,7 +60,7 @@ service for your slicer (or both):
 
 ```yaml
   bambu-studio-api:
-    image: docker.io/vmhomelabde/printbuddy-bambu-studio-api:02.08.02.61-cb44369
+    image: docker.io/vmhomelabde/printbuddy-bambu-studio-api:latest
     container_name: bambu-studio-api
     restart: unless-stopped
     ports:
@@ -65,8 +69,8 @@ service for your slicer (or both):
       - ./slicer-data/bambu:/app/data
 ```
 
-Use the exact lines from the `docker-compose.yml` of your PrintBuddy version;
-the tag shown here may be outdated. Then start it next to PrintBuddy:
+If you run PrintBuddy's `dev` branch, use the `:dev` tag instead of
+`:latest`. Then start it next to PrintBuddy:
 
 ```bash
 docker compose up -d
@@ -327,9 +331,9 @@ You can print or queue the result like any other sliced file.
 
 A PrintBuddy release can reference newer sidecar images.
 
-- **Option A** (PrintBuddy's Compose file): after updating PrintBuddy,
-  compare the `image:` lines of the sidecar services with the new
-  `docker-compose.yml` and take over the new tags. Then:
+- **Option A** (PrintBuddy's Compose file, `:latest`): pulling PrintBuddy
+  also pulls the current sidecars. Always update PrintBuddy and the sidecars
+  together:
 
 ```bash
 docker compose pull
@@ -372,7 +376,7 @@ docker compose --profile bambu up -d
 | **Unable to resolve inherited … profile: parent "…" was not found** | The running slicer does not ship the stock profile the selected profile is based on, usually because the printer is newer than the slicer. Use Bambu Studio or raise the version in `.env`. |
 | **Plate 1: Cool Plate does not support filament 1** | Set **Build plate** to the plate you use (for example High Temp or Textured PEI). |
 | **Slicing failed** without details | Look at the sidecar log: `docker logs --tail 100 bambu-studio-api` (or `orca-slicer-api`). |
-| **pull access denied** or **manifest unknown** for a `printbuddy-*-api` image | The tag is not published (yet). Use the tag from the current `docker-compose.yml` / `.env.example`, or build the image yourself (Option C). |
+| **pull access denied** or **manifest unknown** for a `printbuddy-*-api` image | The tag is not published (yet). `latest` exists once a release with the sidecars reached `main`; use `dev` on the dev branch, the tag from the current `.env.example`, or build the image yourself (Option C). |
 | **no matching manifest for linux/arm64** for `printbuddy-bambu-studio-api` | Bambu Studio is only available for AMD64. Use the OrcaSlicer sidecar on ARM64 hosts. |
 | Build stops with **failed to read dockerfile: open Dockerfile.bambu-studio** | Your `.env` points `SLICER_API_BUILD_CONTEXT` at an old sidecar revision. Copy the value from `.env.example`. |
 | Build stops with **No Ubuntu 22.04 AppImage found** | The Bambu Studio version does not exist or GitHub rate-limited the lookup. Open the Bambu Studio release page on GitHub, copy the URL of the `BambuStudio_ubuntu22.04-…AppImage` file, set it as `BAMBU_APPIMAGE_URL` in `.env` and build again. |

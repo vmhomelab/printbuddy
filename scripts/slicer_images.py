@@ -6,6 +6,8 @@ revision (``SLICER_API_BUILD_CONTEXT``) and the bundled slicer versions
 (``BAMBU_VERSION`` / ``ORCA_VERSION``) are pinned. The images published to
 Docker Hub are tagged ``<slicer version>-<short sidecar revision>``, e.g.
 ``docker.io/vmhomelabde/printbuddy-bambu-studio-api:02.08.02.61-cb44369``.
+slicer-api/ pins these exact tags; the main docker-compose.yml tracks
+``:latest`` (moved by pushes to main), like the Printbuddy image itself.
 
 Usage:
   scripts/slicer_images.py --github-output   # write values for GitHub Actions
@@ -102,12 +104,17 @@ def check(values: dict[str, str], env: dict[str, str]) -> list[str]:
                 f"found {sorted(defaults) or 'none'}"
             )
 
+    # The main docker-compose.yml tracks :latest, like the Printbuddy image
+    # itself; only the image names are checked there.
     main_compose = MAIN_COMPOSE.read_text(encoding="utf-8")
-    for image_name, ref in ((BAMBU_IMAGE, values["bambu_ref"]), (ORCA_IMAGE, values["orca_ref"])):
+    for image_name in (BAMBU_IMAGE, ORCA_IMAGE):
+        expected = f"{REGISTRY}/{image_name}:latest"
         found = re.findall(rf"{re.escape(REGISTRY)}/{image_name}:[\w.-]+", main_compose)
         if not found:
             problems.append(f"{MAIN_COMPOSE.relative_to(ROOT)}: no {image_name} image reference found")
-        problems.extend(f"{MAIN_COMPOSE.relative_to(ROOT)}: {other} should be {ref}" for other in found if other != ref)
+        problems.extend(
+            f"{MAIN_COMPOSE.relative_to(ROOT)}: {other} should be {expected}" for other in found if other != expected
+        )
     return problems
 
 
@@ -127,7 +134,10 @@ def main(argv: list[str] | None = None) -> int:
             for problem in problems:
                 print(f"  - {problem}", file=sys.stderr)
             return 1
-        print(f"Slicer sidecar image references match {values['bambu_ref']} and {values['orca_ref']}.")
+        print(
+            f"Slicer sidecar image references match {values['bambu_ref']} and {values['orca_ref']} "
+            "(main docker-compose.yml: :latest)."
+        )
         return 0
 
     if args.github_output:

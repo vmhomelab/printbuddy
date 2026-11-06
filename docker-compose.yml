@@ -167,7 +167,7 @@ services:
   # keep the ports bound to 127.0.0.1. Ports 3000 and 3002 belong to the
   # virtual printers.
   #bambu-studio-api:
-  #  image: docker.io/vmhomelabde/printbuddy-bambu-studio-api:02.08.02.61-cb44369
+  #  image: docker.io/vmhomelabde/printbuddy-bambu-studio-api:latest
   #  container_name: bambu-studio-api
   #  restart: unless-stopped
   #  ports:
@@ -176,7 +176,7 @@ services:
   #    - ./slicer-data/bambu:/app/data
   #
   #orca-slicer-api:
-  #  image: docker.io/vmhomelabde/printbuddy-orca-slicer-api:2.3.2-cb44369
+  #  image: docker.io/vmhomelabde/printbuddy-orca-slicer-api:latest
   #  container_name: orca-slicer-api
   #  restart: unless-stopped
   #  ports:

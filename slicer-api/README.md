@@ -109,11 +109,12 @@ AGPL-3.0). The published images are built from exactly that revision by
 To move to a new sidecar revision or slicer version, change
 `SLICER_API_BUILD_CONTEXT` / `BAMBU_VERSION` / `ORCA_VERSION` in
 `.env.example`, then run `python scripts/slicer_images.py` to get the new
-image tags and update `BAMBU_STUDIO_API_IMAGE` / `ORCA_SLICER_API_IMAGE`,
-the defaults in this `docker-compose.yml` and the commented services in the
-main `docker-compose.yml`. `python scripts/slicer_images.py --check` (also
-run in CI) fails until all references match. Pushing the change to `dev` or
-`main` publishes the new images.
+image tags and update `BAMBU_STUDIO_API_IMAGE` / `ORCA_SLICER_API_IMAGE`
+and the defaults in this `docker-compose.yml`.
+`python scripts/slicer_images.py --check` (also run in CI) fails until all
+references match. Pushing the change to `dev` or `main` publishes the new
+images and moves the `dev` / `latest` tags, which the main
+`docker-compose.yml` uses.
 
 The maintained fork carries the Printbuddy-specific inheritance resolver,
 stock-profile listing, bundle API, and safe slice-progress contract. Once
