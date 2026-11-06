@@ -82,6 +82,53 @@ class TestDedupeByName:
         c, _l, _s = sp._dedupe_by_name(cloud, _slot([]), _slot([]))
         assert [p.name for p in c["printer"]] == ["Z-First", "A-Second", "M-Third"]
 
+    def test_cloud_entries_inherit_stock_compatible_printers(self):
+        """Public cloud presets share names with stock presets; their
+        compatibility list must reach the SliceModal so a 0.6/0.8-only X2D
+        filament is not offered for a 0.4 nozzle printer."""
+        stock_compat = ["Bambu Lab X2D 0.6 nozzle", "Bambu Lab X2D 0.8 nozzle"]
+        cloud = {
+            "printer": [],
+            "process": [],
+            "filament": [
+                UnifiedPreset(id="GFA01", name="Bambu PLA Matte @BBL X2D", source="cloud"),
+                UnifiedPreset(id="PFUS1", name="My PLA", source="cloud"),
+                UnifiedPreset(
+                    id="PFUS2",
+                    name="Bambu PLA Matte @BBL X2D 0.4 nozzle",
+                    source="cloud",
+                    compatible_printers=["Custom printer"],
+                ),
+            ],
+        }
+        standard = {
+            "printer": [],
+            "process": [],
+            "filament": [
+                UnifiedPreset(
+                    id="Bambu PLA Matte @BBL X2D",
+                    name="Bambu PLA Matte @BBL X2D",
+                    source="standard",
+                    compatible_printers=stock_compat,
+                ),
+                UnifiedPreset(
+                    id="Bambu PLA Matte @BBL X2D 0.4 nozzle",
+                    name="Bambu PLA Matte @BBL X2D 0.4 nozzle",
+                    source="standard",
+                    compatible_printers=["Bambu Lab X2D 0.4 nozzle"],
+                ),
+            ],
+        }
+
+        c, _l, s = sp._dedupe_by_name(cloud, _slot([]), standard)
+
+        by_name = {p.name: p.compatible_printers for p in c["filament"]}
+        assert by_name["Bambu PLA Matte @BBL X2D"] == stock_compat
+        assert by_name["My PLA"] is None
+        # An entry that already declares its own list keeps it.
+        assert by_name["Bambu PLA Matte @BBL X2D 0.4 nozzle"] == ["Custom printer"]
+        assert s["filament"] == []
+
     def test_dedupe_is_per_slot(self):
         """A name colliding across DIFFERENT slots must NOT cross-filter —
         a "Custom" filament shouldn't hide a "Custom" printer."""
