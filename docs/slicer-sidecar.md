@@ -50,7 +50,7 @@ Tags:
 |---|---|
 | `latest` | Images of the current PrintBuddy `main` release. Used by PrintBuddy's `docker-compose.yml`. |
 | `dev` | Images of the PrintBuddy `dev` branch, for testers. |
-| `<slicer version>-<sidecar revision>`, e.g. `02.08.02.61-cb44369` | Fixed version, never changes. Used by the `slicer-api/` stack. |
+| `<slicer version>-<sidecar revision>`, e.g. `02.08.02.61-dcb6827` | Fixed version, never changes. Used by the `slicer-api/` stack. |
 
 ### Option A: add the sidecar to PrintBuddy's Compose file (recommended)
 
