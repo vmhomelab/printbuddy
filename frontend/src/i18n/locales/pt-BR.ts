@@ -3464,6 +3464,8 @@ export default {
     actionAll: 'Fatiar todas as {{count}} bandejas',
     actionAllTitle: 'Fatiar todas as bandejas em uma saída multi-bandeja única (um único arquivo). A seleção de filamento cobre cada slot definido pelo projeto.',
     allPlatesToggle: 'Fatiar todas as {{count}} bandejas',
+    queueAfterSlice: 'Adicionar depois à fila de impressão',
+    queueAfterSliceTitle: 'Ao terminar o fatiamento, abre a janela para adicionar o arquivo fatiado à fila de impressão.',
     slicing: 'Fatiando…',
     printer: 'Perfil de impressora',
     process: 'Perfil de processo',

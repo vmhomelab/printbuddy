@@ -3463,6 +3463,8 @@ export default {
     actionAll: '切片全部 {{count}} 個盤面',
     actionAllTitle: '將所有盤面切片為單一的多盤面輸出（單一封存）。線材選擇涵蓋專案定義的每個槽位。',
     allPlatesToggle: '切片全部 {{count}} 個盤面',
+    queueAfterSlice: '切片後加入列印佇列',
+    queueAfterSliceTitle: '切片完成後，開啟將切片檔案加入列印佇列的對話框。',
     slicing: '切片中…',
     printer: '印表機設定檔',
     process: '製程設定檔',

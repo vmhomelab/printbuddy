@@ -3465,6 +3465,8 @@ export default {
     actionAll: 'Slicer les {{count}} plateaux',
     actionAllTitle: "Slicer tous les plateaux dans une sortie multi-plateaux (une seule archive). La sélection de filament couvre chaque emplacement défini par le projet.",
     allPlatesToggle: 'Slicer les {{count}} plateaux',
+    queueAfterSlice: 'Ajouter ensuite à la file d’impression',
+    queueAfterSliceTitle: 'À la fin du slicing, ouvre la fenêtre d’ajout du fichier slicé à la file d’impression.',
     slicing: 'Découpage…',
     printer: 'Profil d\'imprimante',
     process: 'Profil de processus',

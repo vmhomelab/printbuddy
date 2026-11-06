@@ -129,6 +129,23 @@ describe('SliceModal', () => {
     mockApi.listSlicerBundles.mockResolvedValue([]);
   });
 
+  it('offers queueing after the slice and remembers the choice', async () => {
+    vi.mocked(window.localStorage.getItem).mockReturnValue(null);
+    const user = userEvent.setup();
+    renderWithTracker({
+      source: { kind: 'libraryFile', id: 100, filename: 'Cube.stl' },
+      onClose: vi.fn(),
+    });
+
+    const checkbox = await screen.findByRole('checkbox', { name: /Add to print queue afterwards/i });
+    expect((checkbox as HTMLInputElement).checked).toBe(false);
+
+    await user.click(checkbox);
+
+    expect((checkbox as HTMLInputElement).checked).toBe(true);
+    expect(window.localStorage.setItem).toHaveBeenCalledWith('printbuddy.slice.queueAfterSlice', '1');
+  });
+
   it('auto-selects the highest-priority tier per slot on first load', async () => {
     renderWithTracker({
       source: { kind: 'libraryFile', id: 100, filename: 'Cube.stl' },

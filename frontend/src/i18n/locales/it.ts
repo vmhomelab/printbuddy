@@ -3464,6 +3464,8 @@ export default {
     actionAll: 'Slicia tutti i {{count}} piatti',
     actionAllTitle: 'Slicia tutti i piatti in un unico output multi-piatto (un solo archivio). La selezione del filamento copre ogni slot definito dal progetto.',
     allPlatesToggle: 'Slicia tutti i {{count}} piatti',
+    queueAfterSlice: 'Aggiungi poi alla coda di stampa',
+    queueAfterSliceTitle: 'Al termine dello slicing apre la finestra per aggiungere il file alla coda di stampa.',
     slicing: 'Slicing…',
     printer: 'Profilo stampante',
     process: 'Profilo processo',

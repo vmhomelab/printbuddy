@@ -3478,6 +3478,8 @@ export default {
     actionAll: 'Laminar las {{count}} bandejas',
     actionAllTitle: 'Laminar todas las bandejas en una salida única de varias bandejas (un solo archivo). La selección de filamento cubre cada hueco que defina el proyecto.',
     allPlatesToggle: 'Laminar las {{count}} bandejas',
+    queueAfterSlice: 'Añadir después a la cola de impresión',
+    queueAfterSliceTitle: 'Al terminar el laminado, abre el diálogo para añadir el archivo laminado a la cola.',
     slicing: 'Laminando…',
     printer: 'Perfil de impresora',
     process: 'Perfil de proceso',

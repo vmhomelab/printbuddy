@@ -3478,6 +3478,8 @@ export default {
     actionAll: 'Slice all {{count}} plates',
     actionAllTitle: 'Slice every plate into one multi-plate output (single archive). Filament selection covers every slot the project defines.',
     allPlatesToggle: 'Slice all {{count}} plates',
+    queueAfterSlice: 'Add to print queue afterwards',
+    queueAfterSliceTitle: 'When slicing finishes, open the add-to-queue dialog for the sliced file.',
     slicing: 'Slicing…',
     printer: 'Printer profile',
     process: 'Process profile',

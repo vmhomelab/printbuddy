@@ -3476,6 +3476,8 @@ export default {
     actionAll: '{{count}} プレートすべてをスライス',
     actionAllTitle: 'すべてのプレートを 1 つのマルチプレート出力としてスライスします（アーカイブは 1 件）。フィラメントの選択はプロジェクトで定義されたすべてのスロットを対象とします。',
     allPlatesToggle: '{{count}} プレートすべてをスライス',
+    queueAfterSlice: '完了後に印刷キューへ追加',
+    queueAfterSliceTitle: 'スライス完了後、スライス済みファイルを印刷キューに追加するダイアログを開きます。',
     slicing: 'スライス中…',
     printer: 'プリンタープロファイル',
     process: 'プロセスプロファイル',

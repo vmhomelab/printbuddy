@@ -3476,6 +3476,8 @@ export default {
     actionAll: 'Alle {{count}} Plates slicen',
     actionAllTitle: 'Alle Plates in eine einzelne Multi-Plate-Ausgabe slicen (ein Archiv). Die Filamentauswahl gilt für jeden Slot des Projekts.',
     allPlatesToggle: 'Alle {{count}} Plates slicen',
+    queueAfterSlice: 'Danach zur Druckwarteschlange hinzufügen',
+    queueAfterSliceTitle: 'Öffnet nach dem Slicen den Dialog zum Hinzufügen der geslicten Datei zur Druckwarteschlange.',
     slicing: 'Slicen…',
     printer: 'Drucker-Profil',
     process: 'Prozess-Profil',

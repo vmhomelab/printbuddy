@@ -3463,6 +3463,8 @@ export default {
     actionAll: '切片全部 {{count}} 个盘面',
     actionAllTitle: '将所有盘面切片为单个多盘面输出（一个归档）。耗材选择覆盖项目定义的每个槽位。',
     allPlatesToggle: '切片全部 {{count}} 个盘面',
+    queueAfterSlice: '切片后加入打印队列',
+    queueAfterSliceTitle: '切片完成后，打开将切片文件加入打印队列的对话框。',
     slicing: '切片中…',
     printer: '打印机配置',
     process: '工艺配置',
