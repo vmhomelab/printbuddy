@@ -271,7 +271,12 @@ Where the result goes:
   folder.
 - Slicing an **Archive** entry creates a new archive entry.
 
-You can print or queue the result like any other sliced file.
+You can print or queue the result like any other sliced file. Bambu Lab
+printers receive the `.gcode.3mf` as is. For all other printers (Klipper /
+Moonraker, PrusaLink, Prusa Connect, OctoPrint, Elegoo), PrintBuddy uploads
+the G-code of the selected plate as plain `<name>.gcode`
+(`<name>_plate_<N>.gcode` for multi-plate files); the stored file is not
+changed.
 
 ---
 
@@ -310,12 +315,20 @@ You can print or queue the result like any other sliced file.
   P1S, …). The dialog only lists those compatible with the selected printer.
 - Profiles without a nozzle suffix are for the 0.4 mm nozzle.
 
-### Non-Bambu printers (Prusa, Voron, Creality, …)
+### Non-Bambu printers (Prusa, Elegoo, Klipper / Moonraker, …)
 
 - Use the **OrcaSlicer** sidecar. Bambu Studio ships only a few third-party
-  printer profiles.
+  printer profiles (older Prusa and Elegoo models). OrcaSlicer 2.3.2 covers,
+  among others, the Prusa CORE One and MK4S, the Elegoo Neptune series and
+  Centauri Carbon, Voron, RatRig, Sovol, Qidi, Creality and Snapmaker.
 - Pick printer, process and filament profiles of the same vendor (for
-  example all `@MK4S` for a Prusa MK4S).
+  example all `@MK4S` for a Prusa MK4S). For your own or modified printers,
+  import your printer profile from OrcaSlicer.
+- Printing works through the usual **Print** / **Add to queue** dialogs:
+  PrintBuddy sends plain G-code to these printers (see
+  [where the result goes](#4-use-the-slice-dialog)). Each plate is a separate
+  print; queue the plates one by one. Prusa binary G-code (`.bgcode`) is not
+  produced.
 
 ### Filament slots and colours
 
@@ -382,4 +395,5 @@ docker compose --profile bambu up -d
 | Build stops with **No Ubuntu 22.04 AppImage found** | The Bambu Studio version does not exist or GitHub rate-limited the lookup. Open the Bambu Studio release page on GitHub, copy the URL of the `BambuStudio_ubuntu22.04-…AppImage` file, set it as `BAMBU_APPIMAGE_URL` in `.env` and build again. |
 | **address already in use** on 3000 or 3002 | These ports belong to PrintBuddy's virtual printers. Keep the sidecars on 3001 / 3003 or other free ports. |
 | The Slice action is missing | Turn on **Use Slicer API** in **Settings → Slicer**. Slicing in the File Manager also needs the *library: upload* permission. |
+| **Plate N of … is not sliced** / **contains no sliced G-code** when printing on a non-Bambu printer | The file holds no G-code for that plate. Slice that plate (or all plates) first, or pick a sliced plate. |
 | The **Add to print queue afterwards** option is missing | Your user lacks the *queue: create* permission, or PrintBuddy is older than this feature. |

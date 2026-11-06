@@ -32,6 +32,7 @@ from backend.app.services.bambu_ftp import (
     with_ftp_retry,
 )
 from backend.app.services.printer_manager import printer_manager
+from backend.app.utils.sliced_upload import SlicedUploadError, prepare_sliced_upload
 
 logger = logging.getLogger(__name__)
 
@@ -764,7 +765,15 @@ class BackgroundDispatchService:
             if not file_path.exists():
                 raise RuntimeError("Archive file not found")
 
-            remote_filename = self._remote_filename_for_provider(archive.filename, printer_provider)
+            # G-code printers cannot read .gcode.3mf projects: upload the
+            # selected plate's G-code instead (Bambu printers get the 3MF).
+            try:
+                upload = prepare_sliced_upload(
+                    file_path, archive.filename, printer_provider, job.options.get("plate_id")
+                )
+            except SlicedUploadError as exc:
+                raise RuntimeError(str(exc)) from exc
+            remote_filename = self._remote_filename_for_provider(upload.filename, printer_provider)
             remote_path = f"/{remote_filename}"
 
             ftp_retry_enabled, ftp_retry_count, ftp_retry_delay, ftp_timeout = await get_ftp_retry_settings()
@@ -806,22 +815,23 @@ class BackgroundDispatchService:
                             lambda u=uploaded, t=total: asyncio.create_task(self._set_active_upload_progress(job, u, t))
                         )
 
-                uploaded = await self._upload_file_for_provider(
-                    job=job,
-                    provider=printer_provider,
-                    printer_name=printer_name,
-                    printer_ip=printer_ip,
-                    printer_access_code=printer_access_code,
-                    file_path=file_path,
-                    remote_path=remote_path,
-                    printer_model=printer_model,
-                    ftp_retry_enabled=ftp_retry_enabled,
-                    ftp_retry_count=ftp_retry_count,
-                    ftp_retry_delay=ftp_retry_delay,
-                    ftp_timeout=ftp_timeout,
-                    operation_name=f"Upload for reprint to {printer_name}",
-                    progress_callback=upload_progress_callback,
-                )
+                async with upload.local_file() as upload_path:
+                    uploaded = await self._upload_file_for_provider(
+                        job=job,
+                        provider=printer_provider,
+                        printer_name=printer_name,
+                        printer_ip=printer_ip,
+                        printer_access_code=printer_access_code,
+                        file_path=upload_path,
+                        remote_path=remote_path,
+                        printer_model=printer_model,
+                        ftp_retry_enabled=ftp_retry_enabled,
+                        ftp_retry_count=ftp_retry_count,
+                        ftp_retry_delay=ftp_retry_delay,
+                        ftp_timeout=ftp_timeout,
+                        operation_name=f"Upload for reprint to {printer_name}",
+                        progress_callback=upload_progress_callback,
+                    )
 
                 if uploaded:
                     await self._set_active_upload_progress(job, 1, 1)
@@ -951,6 +961,17 @@ class BackgroundDispatchService:
             if not printer_manager.is_connected(job.printer_id):
                 raise RuntimeError("Printer is not connected")
 
+            # G-code printers cannot read .gcode.3mf projects: upload the
+            # selected plate's G-code instead (Bambu printers get the 3MF).
+            # Checked before the archive is created so a file without G-code
+            # for the plate does not leave an archive behind.
+            try:
+                upload = prepare_sliced_upload(
+                    file_path, lib_file.filename, printer_provider, job.options.get("plate_id")
+                )
+            except SlicedUploadError as exc:
+                raise RuntimeError(str(exc)) from exc
+
             await self._set_active_message(job, f"Creating archive for {lib_file.filename}...")
             archive_service = ArchiveService(db)
             archive = await archive_service.archive_print(
@@ -965,7 +986,7 @@ class BackgroundDispatchService:
 
             await db.flush()
 
-            remote_filename = self._remote_filename_for_provider(lib_file.filename, printer_provider)
+            remote_filename = self._remote_filename_for_provider(upload.filename, printer_provider)
             remote_path = f"/{remote_filename}"
 
             ftp_retry_enabled, ftp_retry_count, ftp_retry_delay, ftp_timeout = await get_ftp_retry_settings()
@@ -1007,22 +1028,23 @@ class BackgroundDispatchService:
                             lambda u=uploaded, t=total: asyncio.create_task(self._set_active_upload_progress(job, u, t))
                         )
 
-                uploaded = await self._upload_file_for_provider(
-                    job=job,
-                    provider=printer_provider,
-                    printer_name=printer_name,
-                    printer_ip=printer_ip,
-                    printer_access_code=printer_access_code,
-                    file_path=file_path,
-                    remote_path=remote_path,
-                    printer_model=printer_model,
-                    ftp_retry_enabled=ftp_retry_enabled,
-                    ftp_retry_count=ftp_retry_count,
-                    ftp_retry_delay=ftp_retry_delay,
-                    ftp_timeout=ftp_timeout,
-                    operation_name=f"Upload for print to {printer_name}",
-                    progress_callback=upload_progress_callback,
-                )
+                async with upload.local_file() as upload_path:
+                    uploaded = await self._upload_file_for_provider(
+                        job=job,
+                        provider=printer_provider,
+                        printer_name=printer_name,
+                        printer_ip=printer_ip,
+                        printer_access_code=printer_access_code,
+                        file_path=upload_path,
+                        remote_path=remote_path,
+                        printer_model=printer_model,
+                        ftp_retry_enabled=ftp_retry_enabled,
+                        ftp_retry_count=ftp_retry_count,
+                        ftp_retry_delay=ftp_retry_delay,
+                        ftp_timeout=ftp_timeout,
+                        operation_name=f"Upload for print to {printer_name}",
+                        progress_callback=upload_progress_callback,
+                    )
 
                 if uploaded:
                     await self._set_active_upload_progress(job, 1, 1)
