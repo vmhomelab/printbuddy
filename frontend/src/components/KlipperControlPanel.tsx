@@ -265,11 +265,12 @@ export function KlipperControlPanel({ printer, status, showToast }: Props) {
   }
 
   return (
-    <div className="flex flex-wrap gap-6 p-3 rounded-xl bg-[var(--bg-secondary)] border border-[var(--border-color)]">
-      {/* ── XY jog grid ── */}
-      <div className="flex flex-col gap-1">
-        {/* row 1: Y+ | spacer | Home All */}
-        <div className="flex gap-1">
+    <div className="flex flex-col gap-6 p-3 rounded-xl bg-[var(--bg-secondary)] border border-[var(--border-color)] lg:flex-row">
+      <div data-testid="motion-controls" className="flex flex-wrap gap-6">
+        {/* ── XY jog grid ── */}
+        <div className="flex flex-col gap-1">
+          {/* row 1: Y+ | spacer | Home All */}
+          <div className="flex gap-1">
           <button
             className={joyBtn}
             disabled={busy}
@@ -387,9 +388,10 @@ export function KlipperControlPanel({ printer, status, showToast }: Props) {
         >
           <ArrowDown size={16} />
         </button>
-      </div>
+        </div>
+        </div>
 
-      {/* ── Right panel ── */}
+        {/* ── Right panel ── */}
       <div className="flex flex-col gap-3 min-w-[230px] flex-1">
         {/* Position readout */}
         <div className="grid grid-cols-3 gap-3 p-2 rounded-lg bg-[var(--bg-primary)] border border-[var(--border-color)]">

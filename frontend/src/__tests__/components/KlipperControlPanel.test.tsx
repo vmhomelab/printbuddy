@@ -113,4 +113,12 @@ describe('KlipperControlPanel PrusaLink controls', () => {
 
     await waitFor(() => expect(api.disableSteppers).toHaveBeenCalledWith(7));
   });
+
+  it('keeps XY and Z jog controls in one responsive motion-control group', () => {
+    render(<KlipperControlPanel printer={fluiddPrinter} status={{ connected: true }} showToast={vi.fn()} />);
+
+    const motionControls = screen.getByTestId('motion-controls');
+    expect(motionControls.contains(screen.getByTitle('Y+'))).toBe(true);
+    expect(motionControls.contains(screen.getByTitle('Z+'))).toBe(true);
+  });
 });
