@@ -9,6 +9,7 @@ const ALL_PRINT_OPTIONS: PrintOptionKey[] = [
   'vibration_cali',
   'layer_inspect',
   'timelapse',
+  'nozzle_offset_cali',
 ];
 
 const EMPTY_PRINT_OPTIONS: PrintOptionKey[] = [];
@@ -19,6 +20,7 @@ const EMPTY_PRINT_OPTIONS_VALUE: PrintOptions = {
   vibration_cali: false,
   layer_inspect: false,
   timelapse: false,
+  nozzle_offset_cali: false,
 };
 
 /**

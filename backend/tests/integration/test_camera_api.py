@@ -148,6 +148,39 @@ class TestCameraAPI:
         assert response.status_code == 200
         mock_shutdown.assert_awaited_once_with(f"printer-{printer.id}")
 
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_stop_camera_stream_skips_shutdown_when_subscribers_remain(
+        self, async_client: AsyncClient, printer_factory
+    ):
+        """Reference-count guard: when other viewers are still subscribed to the
+        broadcaster, /camera/stop must NOT force-shutdown — otherwise closing
+        the embedded viewer kills the cam-wall tile of the same printer.
+        Natural cleanup tears it down when the last HTTP connection closes.
+        """
+        printer = await printer_factory()
+
+        mock_shutdown = AsyncMock(return_value=True)
+        mock_process = MagicMock()
+        mock_process.returncode = None
+        mock_process.pid = 88888
+        mock_process.terminate = MagicMock()
+        mock_process.wait = AsyncMock()
+
+        with (
+            patch("backend.app.api.routes.camera.get_subscriber_count", return_value=2),
+            patch("backend.app.api.routes.camera.shutdown_broadcaster", mock_shutdown),
+            patch("backend.app.api.routes.camera._active_streams", {f"{printer.id}-abc": mock_process}),
+        ):
+            response = await async_client.post(f"/api/v1/printers/{printer.id}/camera/stop")
+
+        assert response.status_code == 200
+        result = response.json()
+        assert result["stopped"] == 0
+        assert result.get("skipped") is True
+        mock_shutdown.assert_not_awaited()
+        mock_process.terminate.assert_not_called()
+
     # ========================================================================
     # Camera Test Endpoint
     # ========================================================================

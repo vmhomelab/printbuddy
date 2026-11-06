@@ -6,6 +6,7 @@ import {
   Clock,
   CheckCircle,
   XCircle,
+  Ban,
   DollarSign,
   Target,
   Zap,
@@ -191,14 +192,20 @@ function SuccessRateWidget({
     total_prints: number;
     successful_prints: number;
     failed_prints: number;
+    cancelled_prints?: number;
     prints_by_printer: Record<string, number>;
   } | undefined;
   printerMap: Map<string, string>;
   size?: 1 | 2 | 4;
 }) {
   const { t } = useTranslation();
-  const successRate = stats?.total_prints
-    ? Math.round(((stats.successful_prints || 0) / stats.total_prints) * 100)
+  // Denominator is completed + failed only — a user/system-cancelled print is
+  // neither a quality success nor a quality failure, so including it would
+  // silently lower the rate whenever the user stopped a job. The cancelled
+  // count is still shown in the breakdown below so it doesn't vanish (#1390).
+  const outcomePrints = (stats?.successful_prints || 0) + (stats?.failed_prints || 0);
+  const successRate = outcomePrints
+    ? Math.round(((stats?.successful_prints || 0) / outcomePrints) * 100)
     : 0;
 
   // Scale gauge size based on widget size
@@ -244,6 +251,11 @@ function SuccessRateWidget({
             <XCircle className="w-4 h-4 text-status-error flex-shrink-0" />
             <span className="text-sm text-bambu-gray">{t('stats.failed')}</span>
             <span className="text-sm text-white font-medium">{stats?.failed_prints || 0}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <Ban className="w-4 h-4 text-status-warning flex-shrink-0" />
+            <span className="text-sm text-bambu-gray">{t('stats.cancelled')}</span>
+            <span className="text-sm text-white font-medium">{stats?.cancelled_prints || 0}</span>
           </div>
         </div>
         {/* Show per-printer breakdown when expanded */}
@@ -802,7 +814,9 @@ function FailureAnalysisWidget({ size = 1, dateFrom, dateTo, createdById }: {
             {topReasons.map(([reason, count]) => (
               <div key={reason} className="flex items-center justify-between text-sm">
                 <span className={`text-white truncate ${size === 4 ? 'max-w-[200px]' : 'max-w-[160px]'}`}>
-                  {reason || t('common.unknown')}
+                  {reason
+                    ? t(`editArchive.failureReasons.${reason}`, { defaultValue: reason })
+                    : t('common.unknown')}
                 </span>
                 <span className="text-bambu-gray ml-2">{count}</span>
               </div>

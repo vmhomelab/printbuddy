@@ -123,6 +123,8 @@ _INTENTIONAL_UNSETTINGS = {
     "LOG_DIR",  # config.py (above)
     "LOG_LEVEL",  # main.py logging setup
     "PRINTBUDDY_EXTERNAL_ROOTS",  # config.py field sourced explicitly above
+    "PRINTBUDDY_LOCAL_LOGIN",  # api/routes/auth.py — SSO-only recovery bypass
+    "PRINTBUDDY_VP_DUMP_WIRE",  # services/virtual_printer/_debug.py — VP wire dump
     "DISCOVERY_EXTRA_SUBNETS",  # network_utils.py — extra CIDRs for Docker scan UI
     "DISCOVERY_MOONRAKER_PORTS",  # discovery.py — Moonraker scan ports (default 7125,80)
 }

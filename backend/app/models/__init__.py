@@ -10,6 +10,7 @@ from backend.app.models.group import Group, user_groups
 from backend.app.models.kprofile_note import KProfileNote
 from backend.app.models.library import LibraryFile, LibraryFolder
 from backend.app.models.local_preset import LocalPreset
+from backend.app.models.location import Location
 from backend.app.models.long_lived_token import LongLivedToken
 from backend.app.models.maintenance import MaintenanceHistory, MaintenanceType, PrinterMaintenance
 from backend.app.models.notification import NotificationLog, NotificationProvider, notification_provider_printers
@@ -21,6 +22,7 @@ from backend.app.models.pending_upload import PendingUpload
 from backend.app.models.print_batch import PrintBatch
 from backend.app.models.printer import Printer
 from backend.app.models.printer_fleet_group import PrinterFleetGroup, PrinterFleetGroupMember
+from backend.app.models.printer_sensor_history import PrinterSensorHistory
 from backend.app.models.project import Project
 from backend.app.models.settings import Settings
 from backend.app.models.smart_plug import SmartPlug
@@ -56,11 +58,13 @@ __all__ = [
     "Project",
     "APIKey",
     "AMSSensorHistory",
+    "PrinterSensorHistory",
     "AmsLabel",
     "PendingUpload",
     "PrintBatch",
     "LibraryFolder",
     "LibraryFile",
+    "Location",
     "User",
     "Group",
     "user_groups",

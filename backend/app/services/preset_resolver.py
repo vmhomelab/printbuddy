@@ -164,19 +164,45 @@ async def _resolve_cloud(db: AsyncSession, user: User | None, ref: PresetRef, sl
             slot,
         )
         payload = detail
+    if isinstance(payload, dict):
+        # Bambu Cloud labels presets with `type: "printer"` / `"print"` /
+        # `"filament"`, but the BS / Orca CLI's `--load-settings` parser only
+        # accepts `"machine"` / `"process"` / `"filament"`. Without this
+        # rewrite the CLI exits -5 with `operator(): unknown config type`
+        # and the sidecar surfaces a generic "The input preset file is
+        # invalid and can not be parsed" — see preset_resolver header
+        # comment for the silent-fail history. `from` gets the same
+        # treatment: Bambu Cloud's filament details routinely arrive with
+        # `from: ""` (or no `from` at all) and the CLI rejects either with
+        # `operator(): ... from  unsupported` (same -5 exit). The standard
+        # tier already pins `from: "system"` for exactly this reason; the
+        # cloud tier needs the same pin because it lands at the same `--load-
+        # settings` parser. The sidecar's `normalizeFromField` only rewrites
+        # the `"User"` / `"System"` casings, not empty / missing values.
+        payload = {**payload, "type": _SLOT_TO_PROFILE_TYPE[slot], "from": "system"}
     return json.dumps(payload)
 
 
 async def _resolve_orca_cloud(db: AsyncSession, user: User | None, ref: PresetRef, slot: str) -> str:
-    """Resolve a profile through the user's separately paired, read-only Orca
-    Cloud account. The route builder handles proactive token refresh and atomically
-    persists rotation before this fetch occurs."""
+    """Fetch a single profile from the user's separately paired, read-only
+    Orca Cloud account and return its content JSON.
+
+    The route-layer service builder handles JIT token refresh (atomically
+    persisting rotation before this fetch) and stale-credential cleanup, so any
+    exception here means a genuine fetch / network / not-found problem — never
+    a "stale token" situation the caller could retry through. Permission gate
+    matches the rest of the Orca Cloud surface so a user with
+    ``LIBRARY_UPLOAD`` but no ``ORCA_CLOUD_AUTH`` cannot slice using cloud
+    profiles even if their stored token survived a permission revocation.
+    """
     if user is not None and not user.has_permission(Permission.ORCA_CLOUD_AUTH.value):
         raise HTTPException(
             status_code=403,
             detail=f"Orca Cloud presets require the orca_cloud:auth permission ({slot})",
         )
 
+    # Builder already produces the right user-facing error (401 not
+    # connected, 401 session refresh failed, 502 unreachable).
     svc = await _build_orca_service(db, user)
     try:
         profile = await svc.get_profile(ref.id)
@@ -198,6 +224,10 @@ async def _resolve_orca_cloud(db: AsyncSession, user: User | None, ref: PresetRe
     finally:
         await svc.close()
 
+    # ``profile`` is the ProfileUpsert shape — the inner ``content`` is the
+    # actual slicer-format JSON. Fall back to forwarding the wrapper if the
+    # shape doesn't match what we expect (defensive, in case Orca evolves
+    # the wire format).
     content = profile.get("content") if isinstance(profile, dict) else None
     if not isinstance(content, dict):
         logger.info(
@@ -207,8 +237,14 @@ async def _resolve_orca_cloud(db: AsyncSession, user: User | None, ref: PresetRe
         )
         content = profile
     if isinstance(content, dict):
-        # Orca can contain Bambu-style printer/print labels. Normalize every
-        # source to the CLI's machine/process/filament vocabulary.
+        # Orca natively uses `machine` / `process` / `filament` for `type`,
+        # which is what the CLI wants — but Bambu-imported profiles synced
+        # through Orca Cloud can carry `printer` / `print` instead, and the
+        # CLI's `--load-settings` parser rejects those the same way it does
+        # for the Bambu Cloud tier. Force the slot-appropriate value so the
+        # source tier doesn't decide whether slicing works. `from` gets the
+        # same forced pin to `"system"` for the same reason — see the
+        # Bambu Cloud branch above.
         content = {**content, "type": _SLOT_TO_PROFILE_TYPE[slot], "from": "system"}
     return json.dumps(content)
 

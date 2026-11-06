@@ -74,6 +74,10 @@ def mock_spoolman_client():
     # branch override this on the fly.
     mock_client.is_filament_shared = AsyncMock(return_value=False)
     mock_client.ensure_extra_field = AsyncMock(return_value=True)
+    # list_spools calls maybe_sync_spoolman_locations which invokes
+    # get_distinct_locations on the route-resolved client. Empty list keeps the
+    # mock honest without staging phantom catalog rows.
+    mock_client.get_distinct_locations = AsyncMock(return_value=[])
 
     with (
         patch(
@@ -587,13 +591,13 @@ class TestSpoolmanInventoryCRUD:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_reset_spool_usage(
+    async def test_reset_spool_consumed_counter(
         self,
         async_client: AsyncClient,
         spoolman_settings,
         mock_spoolman_client,
     ):
-        """POST /spoolman/inventory/spools/{id}/reset-usage zeroes used_weight in Spoolman.
+        """POST /spoolman/inventory/spools/{id}/reset-consumed-counter zeroes the displayed counter.
 
         Parity with internal mode (#1390): the InventorySpool response
         carries `weight_used = label - remaining` and
@@ -602,7 +606,7 @@ class TestSpoolmanInventoryCRUD:
         while remaining (= label - weight_used) preserves Spoolman's
         independent remaining_weight field.
         """
-        response = await async_client.post("/api/v1/spoolman/inventory/spools/42/reset-usage")
+        response = await async_client.post("/api/v1/spoolman/inventory/spools/42/reset-consumed-counter")
 
         assert response.status_code == 200
         body = response.json()
@@ -615,15 +619,15 @@ class TestSpoolmanInventoryCRUD:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_bulk_reset_spool_usage(
+    async def test_bulk_reset_spool_consumed_counter(
         self,
         async_client: AsyncClient,
         spoolman_settings,
         mock_spoolman_client,
     ):
-        """Bulk endpoint resets each listed spool and returns the count."""
+        """Bulk endpoint resets each listed spool's counter and returns the count."""
         response = await async_client.post(
-            "/api/v1/spoolman/inventory/spools/reset-usage-bulk",
+            "/api/v1/spoolman/inventory/spools/reset-consumed-counter-bulk",
             json={"spool_ids": [1, 2, 3]},
         )
 
@@ -641,7 +645,7 @@ class TestSpoolmanInventoryCRUD:
     ):
         """Empty list must be rejected — guards against accidental wildcard wipes."""
         response = await async_client.post(
-            "/api/v1/spoolman/inventory/spools/reset-usage-bulk",
+            "/api/v1/spoolman/inventory/spools/reset-consumed-counter-bulk",
             json={"spool_ids": []},
         )
 

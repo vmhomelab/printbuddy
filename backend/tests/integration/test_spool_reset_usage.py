@@ -1,4 +1,9 @@
-"""Reset-usage endpoint regressions (#1390 follow-up).
+"""Reset-consumed-counter endpoint regressions (#1390 follow-up).
+
+Endpoint paths renamed from ``/reset-usage`` to ``/reset-consumed-counter``
+to match what the endpoint actually does (the previous name implied
+``weight_used`` itself would drop to 0, which surprised callers reading
+the JSON response — see the discussion that drove this rename).
 
 The per-spool and bulk reset endpoints stamp `weight_used_baseline =
 weight_used` instead of zeroing `weight_used` directly. This decouples
@@ -60,7 +65,7 @@ class TestResetSpoolUsage:
         """
         spool = await spool_factory(label_weight=1000, weight_used=456.0)
 
-        response = await async_client.post(f"/api/v1/inventory/spools/{spool.id}/reset-usage")
+        response = await async_client.post(f"/api/v1/inventory/spools/{spool.id}/reset-consumed-counter")
 
         assert response.status_code == 200
         body = response.json()
@@ -86,7 +91,7 @@ class TestResetSpoolUsage:
         """
         spool = await spool_factory(weight_used=100.0, weight_locked=False)
 
-        response = await async_client.post(f"/api/v1/inventory/spools/{spool.id}/reset-usage")
+        response = await async_client.post(f"/api/v1/inventory/spools/{spool.id}/reset-consumed-counter")
 
         assert response.status_code == 200
         await db_session.refresh(spool)
@@ -100,7 +105,7 @@ class TestResetSpoolUsage:
         """If the user previously locked the spool, the lock is preserved."""
         spool = await spool_factory(weight_used=500.0, weight_locked=True)
 
-        response = await async_client.post(f"/api/v1/inventory/spools/{spool.id}/reset-usage")
+        response = await async_client.post(f"/api/v1/inventory/spools/{spool.id}/reset-consumed-counter")
 
         assert response.status_code == 200
         await db_session.refresh(spool)
@@ -117,7 +122,7 @@ class TestResetSpoolUsage:
         counter while remaining keeps decrementing normally.
         """
         spool = await spool_factory(label_weight=1000, weight_used=456.0)
-        await async_client.post(f"/api/v1/inventory/spools/{spool.id}/reset-usage")
+        await async_client.post(f"/api/v1/inventory/spools/{spool.id}/reset-consumed-counter")
 
         # Simulate a 50g print (usage_tracker increments weight_used).
         await db_session.refresh(spool)
@@ -133,7 +138,7 @@ class TestResetSpoolUsage:
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_reset_404_for_missing_spool(self, async_client: AsyncClient):
-        response = await async_client.post("/api/v1/inventory/spools/99999/reset-usage")
+        response = await async_client.post("/api/v1/inventory/spools/99999/reset-consumed-counter")
         assert response.status_code == 404
 
 
@@ -149,7 +154,7 @@ class TestBulkResetSpoolUsage:
         untouched = await spool_factory(weight_used=300.0)
 
         response = await async_client.post(
-            "/api/v1/inventory/spools/reset-usage-bulk",
+            "/api/v1/inventory/spools/reset-consumed-counter-bulk",
             json={"spool_ids": [target1.id, target2.id]},
         )
 
@@ -173,7 +178,7 @@ class TestBulkResetSpoolUsage:
     async def test_bulk_reset_rejects_empty_list(self, async_client: AsyncClient):
         """Empty list must be rejected — guards against accidental wildcard wipes."""
         response = await async_client.post(
-            "/api/v1/inventory/spools/reset-usage-bulk",
+            "/api/v1/inventory/spools/reset-consumed-counter-bulk",
             json={"spool_ids": []},
         )
         assert response.status_code == 400
@@ -183,7 +188,7 @@ class TestBulkResetSpoolUsage:
     async def test_bulk_reset_rejects_missing_field(self, async_client: AsyncClient):
         """Missing spool_ids field must be rejected."""
         response = await async_client.post(
-            "/api/v1/inventory/spools/reset-usage-bulk",
+            "/api/v1/inventory/spools/reset-consumed-counter-bulk",
             json={},
         )
         assert response.status_code == 400
@@ -196,7 +201,7 @@ class TestBulkResetSpoolUsage:
         locked = await spool_factory(weight_used=200.0, weight_locked=True)
 
         response = await async_client.post(
-            "/api/v1/inventory/spools/reset-usage-bulk",
+            "/api/v1/inventory/spools/reset-consumed-counter-bulk",
             json={"spool_ids": [unlocked.id, locked.id]},
         )
 

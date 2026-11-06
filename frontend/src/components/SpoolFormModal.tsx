@@ -16,6 +16,10 @@ import { AdditionalSection } from './spool-form/AdditionalSection';
 import { SpoolmanFilamentPicker } from './spool-form/SpoolmanFilamentPicker';
 import { PAProfileSection } from './spool-form/PAProfileSection';
 import { SpoolUsageHistory } from './SpoolUsageHistory';
+import {
+  invalidateInventoryLocations,
+  invalidateSpoolAndLocationQueries,
+} from '../utils/inventoryQueries';
 
 type TabId = 'filament' | 'pa-profile';
 
@@ -52,6 +56,9 @@ export function SpoolFormModal({
   const queryClient = useQueryClient();
   const { showToast } = useToast();
 
+  const refreshSpoolQueries = () =>
+    invalidateSpoolAndLocationQueries(queryClient, spoolsQueryKey);
+
   const isEditing = mode === 'edit';
   const isCopying = mode === 'copy';
 
@@ -60,7 +67,7 @@ export function SpoolFormModal({
   const [errors, setErrors] = useState<Partial<Record<keyof SpoolFormData, string>>>({});
   const [activeTab, setActiveTab] = useState<TabId>('filament');
   const [weightTouched, setWeightTouched] = useState(false);
-  const [storageLocationTouched, setStorageLocationTouched] = useState(false);
+  const [locationIdTouched, setLocationIdTouched] = useState(false);
   const [quickAdd, setQuickAdd] = useState(false);
   const [quantity, setQuantity] = useState(1);
 
@@ -72,6 +79,7 @@ export function SpoolFormModal({
 
   // Spool catalog
   const [spoolCatalog, setSpoolCatalog] = useState<SpoolCatalogEntry[]>([]);
+  const [storageLocations, setStorageLocations] = useState<{ id: number; name: string }[]>([]);
 
   // Local presets (OrcaSlicer imports)
   const [localPresets, setLocalPresets] = useState<LocalPreset[]>([]);
@@ -122,23 +130,51 @@ export function SpoolFormModal({
     setRecentColors(loadRecentColors());
   }, []);
 
-  // Fetch cloud presets and catalog when modal opens
+  // Fetch cloud presets and catalog when modal opens. Fetches Bambu Cloud
+  // and Orca Cloud in parallel; merges Orca filaments into ``cloudPresets``
+  // since ``OrcaProfileMeta`` is structurally identical to ``SlicerSetting``
+  // (same fields, same semantics). ``cloudAuthenticated`` flips on if either
+  // cloud is connected — the UI only uses it to gate "no cloud" hints.
   useEffect(() => {
+    // ``cancelled`` gates every state setter so a fetch that resolves AFTER
+    // the modal closes / unmounts can't fire setState on a torn-down
+    // component. Without this guard the parallel Promise.allSettled chain
+    // can still hit ``setLoadingCloudPresets(false)`` in its ``finally``
+    // after vitest has dismantled the JSDOM window — surfaced as an
+    // "Unhandled Rejection: window is not defined" in CI runs.
+    let cancelled = false;
     if (isOpen) {
       const fetchData = async () => {
         setLoadingCloudPresets(true);
         try {
-          const status = await api.getCloudStatus();
-          setCloudAuthenticated(status.is_authenticated);
-          if (status.is_authenticated) {
-            const presets = await api.getFilamentPresets();
-            setCloudPresets(presets);
-          }
+          const [bambuResult, orcaResult] = await Promise.allSettled([
+            (async () => {
+              const status = await api.getCloudStatus();
+              if (!status.is_authenticated) return { connected: false, presets: [] as SlicerSetting[] };
+              const presets = await api.getFilamentPresets();
+              return { connected: true, presets };
+            })(),
+            (async () => {
+              const status = await api.orcaCloudStatus();
+              if (!status.connected) return { connected: false, presets: [] as SlicerSetting[] };
+              const list = await api.orcaCloudListProfiles();
+              // OrcaProfileMeta is structurally identical to SlicerSetting.
+              return { connected: true, presets: list.filament as unknown as SlicerSetting[] };
+            })(),
+          ]);
+          if (cancelled) return;
+          const bambuConnected = bambuResult.status === 'fulfilled' && bambuResult.value.connected;
+          const orcaConnected = orcaResult.status === 'fulfilled' && orcaResult.value.connected;
+          const bambuPresets = bambuResult.status === 'fulfilled' ? bambuResult.value.presets : [];
+          const orcaPresets = orcaResult.status === 'fulfilled' ? orcaResult.value.presets : [];
+          setCloudAuthenticated(bambuConnected || orcaConnected);
+          setCloudPresets([...bambuPresets, ...orcaPresets]);
         } catch (e) {
+          if (cancelled) return;
           console.error('Failed to fetch cloud presets:', e);
           setCloudAuthenticated(false);
         } finally {
-          setLoadingCloudPresets(false);
+          if (!cancelled) setLoadingCloudPresets(false);
         }
       };
       fetchData();
@@ -148,6 +184,7 @@ export function SpoolFormModal({
       api.getColorCatalog().then(setColorCatalog).catch(console.error);
       api.getLocalPresets().then(r => setLocalPresets(r.filament)).catch(console.error);
       api.getBuiltinFilaments().then(setBuiltinFilaments).catch(console.error);
+      api.getLocations().then((locs) => setStorageLocations(locs.map((l) => ({ id: l.id, name: l.name })))).catch(console.error);
 
       // Fetch printer calibrations if not provided via props
       if (printersWithCalibrations.length === 0) {
@@ -195,6 +232,9 @@ export function SpoolFormModal({
     // "test environment was torn down" errors in vitest. spoolmanMode only
     // gates a single fetch (getSpoolCatalog) which is cheap enough to skip
     // when the modal opens in Spoolman mode.
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, printersWithCalibrations.length]);
 
@@ -332,8 +372,8 @@ export function SpoolFormModal({
           cost_per_kg: spool.cost_per_kg ?? null,
           category: spool.category || '',
           low_stock_threshold_pct: spool.low_stock_threshold_pct ?? null,
-          storage_location: spool.storage_location || '',
           data_origin: spool.data_origin || '',
+          location_id: spool.location_id ?? null,
           spoolman_filament_id: null,
         });
         setPresetInputValue(spool.slicer_filament_name || spool.slicer_filament || '');
@@ -360,9 +400,20 @@ export function SpoolFormModal({
       setErrors({});
       setActiveTab('filament');
       setWeightTouched(false);
-      setStorageLocationTouched(false);
+      setLocationIdTouched(false);
     }
   }, [isOpen, spool, mode, isCopying]);
+
+  // Legacy rows may have storage_location text but no location_id yet — link when catalog loads.
+  useEffect(() => {
+    if (!isOpen || !spool || locationIdTouched || formData.location_id != null) return;
+    const legacy = spool.storage_location?.trim();
+    if (!legacy || storageLocations.length === 0) return;
+    const match = storageLocations.find((l) => l.name.toLowerCase() === legacy.toLowerCase());
+    if (match) {
+      setFormData((prev) => (prev.location_id === match.id ? prev : { ...prev, location_id: match.id }));
+    }
+  }, [isOpen, spool, storageLocations, formData.location_id, locationIdTouched]);
 
   // Expand all printers in PA profile section when calibrations are available
   useEffect(() => {
@@ -389,7 +440,7 @@ export function SpoolFormModal({
         : {}),
     }));
     if (key === 'weight_used') setWeightTouched(true);
-    if (key === 'storage_location') setStorageLocationTouched(true);
+    if (key === 'location_id') setLocationIdTouched(true);
     if (errors[key]) {
       setErrors(prev => ({ ...prev, [key]: undefined }));
     }
@@ -434,7 +485,7 @@ export function SpoolFormModal({
         const ok = await saveKProfiles(newSpool.id);
         if (!ok) return;
       }
-      await queryClient.invalidateQueries({ queryKey: spoolsQueryKey });
+      await refreshSpoolQueries();
       if (onSpoolsCreated) onSpoolsCreated([newSpool]);
       showToast(t('inventory.spoolCreated'), 'success');
       onClose();
@@ -473,7 +524,7 @@ export function SpoolFormModal({
           await saveKProfiles(s.id);
         }
       }
-      await queryClient.invalidateQueries({ queryKey: spoolsQueryKey });
+      await refreshSpoolQueries();
       if (onSpoolsCreated) onSpoolsCreated(createdSpools);
       if (spoolmanResult && spoolmanResult.failed_count > 0) {
         showToast(
@@ -507,7 +558,7 @@ export function SpoolFormModal({
         const ok = await saveKProfiles(spool.id);
         if (!ok) return;
       }
-      await queryClient.invalidateQueries({ queryKey: spoolsQueryKey });
+      await refreshSpoolQueries();
       showToast(t('inventory.spoolUpdated'), 'success');
       onClose();
     },
@@ -528,7 +579,7 @@ export function SpoolFormModal({
       return api.updateSpool(spool!.id, CLEAR_TAG_PAYLOAD as Parameters<typeof api.updateSpool>[1]);
     },
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: spoolsQueryKey });
+      await refreshSpoolQueries();
       showToast(t('inventory.rfidCleared', 'RFID tag cleared'), 'success');
       onClose();
     },
@@ -728,11 +779,10 @@ export function SpoolFormModal({
       data.weight_used = formData.weight_used;
     }
 
-    // Only send storage_location when creating or when explicitly changed by the user.
-    // This prevents the modal round-trip from overwriting the Spoolman location field
-    // with a stale cached value when the user saves without touching this field.
-    if (!isEditing || storageLocationTouched) {
-      data.storage_location = formData.storage_location || null;
+    // Only send location_id when creating or when explicitly changed by the user.
+    // Backend derives storage_location; omitting on untouched edit avoids stale overwrites.
+    if (!isEditing || locationIdTouched) {
+      data.location_id = formData.location_id;
     }
 
     if (isEditing) {
@@ -903,6 +953,23 @@ export function SpoolFormModal({
                   spoolCatalog={spoolCatalog}
                   currencySymbol={currencySymbol}
                   availableCategories={availableCategories}
+                  availableLocations={storageLocations}
+                  onCreateLocation={async (name) => {
+                    try {
+                      const created = await api.createLocation({ name });
+                      setStorageLocations((prev) => [...prev, { id: created.id, name: created.name }].sort((a, b) => a.name.localeCompare(b.name)));
+                      await invalidateInventoryLocations(queryClient);
+                      return { id: created.id, name: created.name };
+                    } catch (e) {
+                      // Surface the backend's actual error so the user can
+                      // distinguish 409 duplicate / 400 validation / 500 from
+                      // a generic "save failed" message.
+                      console.error(e);
+                      const message = e instanceof Error ? e.message : t('locations.saveFailed');
+                      showToast(message || t('locations.saveFailed'), 'error');
+                      return null;
+                    }
+                  }}
                   globalLowStockThreshold={globalLowStockThreshold}
                   spoolmanMode={spoolmanMode}
                   showSpoolmanSpoolWeight={!isEditing}

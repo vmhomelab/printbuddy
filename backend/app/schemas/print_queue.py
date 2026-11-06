@@ -28,7 +28,12 @@ class PrintQueueItemCreate(BaseModel):
     require_previous_success: bool = False
     auto_off_after: bool = False  # Power off printer after print completes
     manual_start: bool = False  # Requires manual trigger to start (staged)
-    skip_filament_check: bool = False  # Persistent Print Anyway acknowledgement
+    insert_at_top: bool = False  # Insert ahead of other pending items in the same queue scope
+    insert_position: int | None = None  # 1-indexed insertion position for priority queueing
+    # Persistent "Print Anyway" acknowledgement (#1698-followup). When set,
+    # PrintModal already showed the deficit warning and the user confirmed,
+    # so the scheduler does not re-flag this item on the next tick.
+    skip_filament_check: bool = False
     # AMS mapping: list of global tray IDs for each filament slot
     # Format: [5, -1, 2, -1] where position = slot_id-1, value = global tray ID (-1 = unused)
     ams_mapping: list[int] | None = None
@@ -42,12 +47,23 @@ class PrintQueueItemCreate(BaseModel):
     layer_inspect: bool = False
     timelapse: bool = False
     use_ams: bool = True
+    # Nozzle offset calibration — dual-nozzle printers only (#1682). Default True
+    # matches BambuStudio's default; the MQTT layer ignores the flag on
+    # single-nozzle printers so the wire value stays "skip" there.
+    nozzle_offset_cali: bool = True
     # Auto-print G-code injection
     gcode_injection: bool = False
     # Batch: create multiple copies (creates a batch if > 1)
     quantity: int = 1
+    # Existing batch to add this item into. When set, the item's batch_id is
+    # populated on insert so the queue UI groups it with its siblings. Used by
+    # the multi-plate auto-batch flow and by the "Group as batch" action.
+    batch_id: int | None = None
     # Project to associate the resulting archive with
     project_id: int | None = None
+    # Direct printer-card uploads are temporary library files. The scheduler
+    # deletes them after creating the durable archive copy.
+    cleanup_library_after_dispatch: bool = False
 
 
 class PrintQueueItemUpdate(BaseModel):
@@ -70,8 +86,13 @@ class PrintQueueItemUpdate(BaseModel):
     layer_inspect: bool | None = None
     timelapse: bool | None = None
     use_ams: bool | None = None
+    nozzle_offset_cali: bool | None = None
     # Auto-print G-code injection
     gcode_injection: bool | None = None
+    # H2C dual-nozzle-rack slicer pick (#1780). list[int] per-filament
+    # physical nozzle position IDs from BambuStudio's project_file MQTT
+    # body; sent back to the printer verbatim on dispatch.
+    nozzle_mapping: list[int] | None = None
 
 
 class PrintQueueItemResponse(BaseModel):
@@ -94,6 +115,8 @@ class PrintQueueItemResponse(BaseModel):
     # (#1496). Display-only — the ▶ click recomputes deficit against live
     # spool state.
     filament_short: bool = False
+    # User has acknowledged "Print Anyway" — scheduler skips the deficit check
+    # for this item (#1698-followup).
     skip_filament_check: bool = False
     ams_mapping: list[int] | None = None
     plate_id: int | None = None  # Plate ID for multi-plate 3MF files
@@ -105,6 +128,7 @@ class PrintQueueItemResponse(BaseModel):
     layer_inspect: bool = False
     timelapse: bool = False
     use_ams: bool = True
+    nozzle_offset_cali: bool = True
     status: Literal["pending", "printing", "completed", "failed", "skipped", "cancelled"]
     started_at: UTCDatetime
     completed_at: UTCDatetime
@@ -131,6 +155,11 @@ class PrintQueueItemResponse(BaseModel):
     layer_height: float | None = None  # e.g. 0.2 (from archive/library file)
     nozzle_diameter: float | None = None  # e.g. 0.4 (from archive/library file)
     sliced_for_model: str | None = None  # e.g. "P1S" (from archive/library file)
+    # Build plate type (e.g. "Textured PEI Plate") so the user knows which
+    # plate to mount on the printer (#1281). Per-plate accurate on multi-plate
+    # 3MFs: when `plate_id` is set, the value is the matching plate's
+    # `curr_bed_type` rather than the archive-level first-plate default.
+    bed_type: str | None = None
 
     # User tracking (Issue #206)
     created_by_id: int | None = None
@@ -145,6 +174,12 @@ class PrintQueueItemResponse(BaseModel):
 
     # Auto-print G-code injection
     gcode_injection: bool = False
+    cleanup_library_after_dispatch: bool = False
+
+    # H2C dual-nozzle-rack slicer pick (#1780). Surface for any future
+    # "edit print → choose nozzle" UI; null on every model except O1C2
+    # uploads from BambuStudio.
+    nozzle_mapping: list[int] | None = None
 
     class Config:
         from_attributes = True
@@ -169,9 +204,25 @@ class PrintQueueReorder(BaseModel):
 
     @model_validator(mode="after")
     def _validate_positions_unique(self) -> "PrintQueueReorder":
-        positions = [item.position for item in self.items]
+        """Reject reorder requests with duplicate positions in the payload
+        (#1625-followup).
+
+        The /reorder route is the drag-drop renumber path on the queue UI;
+        a well-behaved client sends a contiguous renumbering of a single
+        printer's pending queue. A buggy client that sends two items at
+        the same position would leave the queue in an inconsistent state
+        (scheduler's ORDER BY (printer_id, position) ties get broken by
+        physical row order). Fail closed at the schema boundary so the
+        bug is caught before any DB mutation.
+
+        Uniqueness is enforced WITHIN THE PAYLOAD only — cross-printer
+        reorders that intentionally share positions across different
+        printer queues are a non-goal of the drag-drop UI, so this is the
+        right scope.
+        """
+        positions = [it.position for it in self.items]
         if len(positions) != len(set(positions)):
-            duplicates = sorted({pos for pos in positions if positions.count(pos) > 1})
+            duplicates = sorted({p for p in positions if positions.count(p) > 1})
             raise ValueError(f"Duplicate positions in reorder request: {duplicates}")
         return self
 
@@ -194,6 +245,7 @@ class PrintQueueBulkUpdate(BaseModel):
     layer_inspect: bool | None = None
     timelapse: bool | None = None
     use_ams: bool | None = None
+    nozzle_offset_cali: bool | None = None
     # Auto-print G-code injection
     gcode_injection: bool | None = None
 
@@ -203,6 +255,26 @@ class PrintQueueBulkUpdateResponse(BaseModel):
 
     updated_count: int
     skipped_count: int  # Items that were not pending
+    message: str
+
+
+class PrintBatchCreate(BaseModel):
+    """Create a batch, either empty (multi-plate pre-batch flow) or by
+    assigning existing pending queue items into it (manual "Group as batch")."""
+
+    name: str
+    archive_id: int | None = None
+    library_file_id: int | None = None
+    # Existing pending queue items to assign to this batch. None / empty for
+    # the empty-batch flow (client passes the returned id on subsequent
+    # addToQueue calls).
+    item_ids: list[int] | None = None
+
+
+class PrintBatchUngroupResponse(BaseModel):
+    """Response after ungrouping a batch."""
+
+    ungrouped_count: int
     message: str
 
 

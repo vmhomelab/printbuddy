@@ -70,6 +70,22 @@ class PrintQueueItem(Base):
     # never acknowledges the start command.
     dispatch_attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
+    # H2C dual-nozzle-rack slicer pick preservation (#1780). BambuStudio's
+    # project_file MQTT command for rack-swap-capable models (O1C2 today)
+    # carries per-filament physical nozzle position IDs in `nozzle_mapping`,
+    # forwarded verbatim through the queue and replayed by the dispatcher so
+    # the firmware honours the user's pick instead of falling back to
+    # "last matching nozzle type" auto-pick. Stored as opaque JSON string
+    # (list[int]); NULL on every other model. `nozzles_info` is a deprecated
+    # column from the original #1780 attempt — kept nullable so old rows still
+    # load; never written to or read from.
+    nozzle_mapping: Mapped[str | None] = mapped_column(Text, nullable=True)
+    nozzles_info: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Printer-card direct uploads create transient library rows. When this is
+    # true, the scheduler deletes the source row/files after archiving a copy.
+    cleanup_library_after_dispatch: Mapped[bool] = mapped_column(Boolean, default=False)
+
     # Print options
     bed_levelling: Mapped[bool] = mapped_column(Boolean, default=True)
     print_platform_type: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -78,6 +94,8 @@ class PrintQueueItem(Base):
     layer_inspect: Mapped[bool] = mapped_column(Boolean, default=False)
     timelapse: Mapped[bool] = mapped_column(Boolean, default=False)
     use_ams: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Nozzle offset calibration — dual-nozzle printers only, MQTT-gated (#1682)
+    nozzle_offset_cali: Mapped[bool] = mapped_column(Boolean, default=True)
 
     # Status: pending, printing, completed, failed, skipped, cancelled
     status: Mapped[str] = mapped_column(String(20), default="pending")
@@ -87,8 +105,13 @@ class PrintQueueItem(Base):
     # diverge from an in-flight upload.
     dispatching_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
-    # Cleared by a resume-after-failure action so require_previous_success can
-    # skip an acknowledged failed row.
+    # Cleared by the per-printer "Resume after failure" action (#1818) so the
+    # scheduler's `_check_previous_success` lookback skips this row. Without
+    # this, a single `failed` or `aborted` print poisoned every later
+    # `require_previous_success` item on the same printer forever — the
+    # lookback excluded `skipped` but had no way to dismiss the originating
+    # failure. The flag is per-item, not per-printer, so a fresh failure
+    # after a resume re-gates downstream items independently.
     gate_acknowledged: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # Set by the dispatch scheduler when the assigned spool can't satisfy
@@ -99,8 +122,11 @@ class PrintQueueItem(Base):
     filament_short: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # User has acknowledged the filament-shortage warning for this item
-    # ("Print Anyway"). Survives scheduler ticks so the item is not immediately
-    # re-promoted to manual_start after the operator confirms dispatch.
+    # ("Print Anyway"). Set by the start route when the user passes
+    # skip_filament_check=true, or at queue-creation time if PrintModal's
+    # frontend deficit warning was acknowledged. Survives scheduler ticks so
+    # the dispatch no longer bounces between "user said anyway" and
+    # "scheduler re-flagged" (#1698-followup).
     skip_filament_check: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # Tracking

@@ -59,16 +59,19 @@ class UnifiedPresetsBySlot(BaseModel):
 
 
 class UnifiedPresetsResponse(BaseModel):
-    """Each tier carries only the names that didn't appear in a higher tier.
+    """Every tier carries its full preset list — no cross-tier dedup.
 
-    Cloud is the highest priority (user's personal customisations win), then
-    the local imports the user explicitly curated, then the slicer's stock
-    fallback. A name that appears in cloud is filtered out of local and
-    standard; a name that appears in local is filtered out of standard.
+    Priority order: ``local > orca_cloud > cloud > standard``. The order
+    drives auto-pick (first non-empty tier wins, name-lookup walks tiers
+    in this order, filament scoring tiebreaks by per-tier bonus) and
+    determines the visual rendering order of the SliceModal's optgroups,
+    but a name that exists in multiple tiers appears in EACH of their
+    groups so the user can pick any source.
 
-    ``cloud_status`` lets the frontend show a banner explaining why the cloud
-    tier is empty when the user expected to see it (signed out / token
-    expired / network down).
+    ``cloud_status`` / ``orca_cloud_status`` let the frontend show a banner
+    explaining why a cloud tier is empty when the user expected to see it
+    (signed out / token expired / network down). Each tier has its own
+    status because they can fail independently.
     """
 
     orca_cloud: UnifiedPresetsBySlot = UnifiedPresetsBySlot()

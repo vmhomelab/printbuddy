@@ -307,7 +307,7 @@ function LoginForm({ onSuccess, t }: { onSuccess: () => void; t: TFunction }) {
 // FILTER DROPDOWN
 // ============================================================================
 
-function FilterDropdown({
+export function FilterDropdown({
   label,
   value,
   options,
@@ -2973,7 +2973,7 @@ export function ProfilesPage() {
           }`}
         >
           <Cloud className="w-4 h-4" />
-          {t('profiles.tabs.cloud')}
+          {t('profiles.tabs.bambuCloud')}
         </button>
         <button
           onClick={() => setActiveTab('orca_cloud')}
@@ -2984,7 +2984,7 @@ export function ProfilesPage() {
           }`}
         >
           <Cloud className="w-4 h-4" />
-          Orca Cloud
+          {t('profiles.tabs.orcaCloud')}
         </button>
         <button
           onClick={() => setActiveTab('local')}

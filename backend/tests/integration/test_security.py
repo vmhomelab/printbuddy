@@ -1595,7 +1595,16 @@ class TestEncryptionStatusEndpoint:
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_status_returns_503_on_db_error(self, async_client, monkeypatch):
-        """A8: authentication DB failure while checking status fails closed with 503."""
+        """A8: a DB failure during the request must NOT leak internal detail
+        and must NOT silently succeed.
+
+        Post-GHSA-6mf4-q26m-47pv: the auth middleware's ``is_auth_enabled``
+        probe runs its own DB query before the route is dispatched. Patching
+        ``AsyncSession.execute`` to raise trips the middleware first and the
+        request fails closed with 503 — a stronger guarantee than a
+        route-level 500, because under the old fail-open the middleware would
+        have proceeded to dispatch the route unauthenticated.
+        """
         from unittest.mock import AsyncMock
 
         from sqlalchemy.exc import SQLAlchemyError
@@ -1610,6 +1619,10 @@ class TestEncryptionStatusEndpoint:
         resp = await async_client.get(self.STATUS_URL, headers={"Authorization": f"Bearer {token}"})
         assert resp.status_code == 503
         assert "authentication state" in resp.json().get("detail", "").lower()
+        # The error message must not leak the SQLAlchemy details.
+        body = resp.json().get("detail", "").lower()
+        assert "simulated" not in body
+        assert "sqlalchemy" not in body
 
     @pytest.mark.asyncio
     @pytest.mark.integration

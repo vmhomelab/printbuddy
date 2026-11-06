@@ -76,6 +76,7 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
   const [onPrintAlmostDone, setOnPrintAlmostDone] = useState(provider?.on_print_almost_done ?? false);
   const [onPrinterOffline, setOnPrinterOffline] = useState(provider?.on_printer_offline ?? false);
   const [onPrinterError, setOnPrinterError] = useState(provider?.on_printer_error ?? false);
+  const [onAiFailureDetection, setOnAiFailureDetection] = useState(provider?.on_ai_failure_detection ?? false);
   const [onFilamentLow, setOnFilamentLow] = useState(provider?.on_filament_low ?? false);
   const [onMaintenanceDue, setOnMaintenanceDue] = useState(provider?.on_maintenance_due ?? false);
   const [onStockReorderAlert, setOnStockReorderAlert] = useState(provider?.on_stock_reorder_alert ?? false);
@@ -253,6 +254,7 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
       on_print_almost_done: onPrintAlmostDone,
       on_printer_offline: onPrinterOffline,
       on_printer_error: onPrinterError,
+      on_ai_failure_detection: onAiFailureDetection,
       on_filament_low: onFilamentLow,
       on_maintenance_due: onMaintenanceDue,
       on_stock_reorder_alert: onStockReorderAlert,
@@ -745,6 +747,10 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
                   <Toggle checked={onPrinterError} onChange={setOnPrinterError} />
                 </div>
                 <div className="flex items-center justify-between">
+                  <span className="text-sm text-white">{t('notifications.aiFailureDetection')}</span>
+                  <Toggle checked={onAiFailureDetection} onChange={setOnAiFailureDetection} />
+                </div>
+                <div className="flex items-center justify-between">
                   <span className="text-sm text-white">{t('notifications.lowFilament')}</span>
                   <Toggle checked={onFilamentLow} onChange={setOnFilamentLow} />
                 </div>
@@ -789,6 +795,7 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
               if (onFirstLayerComplete) enabledEvents.push({ key: 'on_first_layer_complete', label: t('notifications.firstLayerCompleteLabel') });
               if (onPrinterOffline) enabledEvents.push({ key: 'on_printer_offline', label: t('notifications.offline') });
               if (onPrinterError) enabledEvents.push({ key: 'on_printer_error', label: t('notifications.error') });
+              if (onAiFailureDetection) enabledEvents.push({ key: 'on_ai_failure_detection', label: t('notifications.aiFailureDetection') });
               if (onFilamentLow) enabledEvents.push({ key: 'on_filament_low', label: t('notifications.lowFilament') });
               if (onMaintenanceDue) enabledEvents.push({ key: 'on_maintenance_due', label: t('notifications.maintenance') });
               if (onStockReorderAlert) enabledEvents.push({ key: 'on_stock_reorder_alert', label: t('notifications.stockReorderAlert') });

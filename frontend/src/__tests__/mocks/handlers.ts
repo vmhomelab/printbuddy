@@ -51,6 +51,7 @@ const mockNotificationProviders = [
   on_print_almost_done: false,
     on_printer_offline: false,
     on_printer_error: false,
+    on_ai_failure_detection: false,
     on_filament_low: false,
     on_maintenance_due: false,
     on_ams_humidity_high: false,
@@ -474,6 +475,7 @@ export const handlers = [
   http.get('/api/v1/inventory/assignments', () => HttpResponse.json([])),
   http.get('/api/v1/inventory/catalog', () => HttpResponse.json([])),
   http.get('/api/v1/inventory/colors', () => HttpResponse.json([])),
+  http.get('/api/v1/inventory/locations', () => HttpResponse.json([])),
   http.get('/api/v1/inventory/spools', () => HttpResponse.json([])),
   http.get('/api/v1/library/folders', () => HttpResponse.json([])),
   http.get('/api/v1/library/folders/by-archive/:id', () => HttpResponse.json([])),
@@ -498,7 +500,12 @@ export const handlers = [
     HttpResponse.json({ totp_enabled: false, email_otp_enabled: false, backup_codes_remaining: 0 })
   ),
   http.get('/api/v1/auth/advanced-auth/status', () =>
-    HttpResponse.json({ advanced_auth_enabled: false, smtp_configured: false })
+    HttpResponse.json({
+      advanced_auth_enabled: false,
+      smtp_configured: false,
+      local_login_enabled: true,
+      autologin_provider_id: null,
+    })
   ),
   http.get('/api/v1/auth/ldap/status', () =>
     HttpResponse.json({ ldap_enabled: false, ldap_configured: false })

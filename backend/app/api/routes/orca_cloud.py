@@ -68,10 +68,10 @@ logger = logging.getLogger(__name__)
 # Bambu Cloud router (rejects ownerless legacy keys, requires the
 # ``can_access_cloud`` scope, stashes the owner on ``request.state`` so
 # per-route deps can resolve it as the effective ``current_user``).
-# Without this gate the kiosk's API-keyed requests sail past with
+# Without this gate API-keyed requests sail past with
 # ``current_user=None`` → ``_build_authenticated_service`` falls back to
 # the global Settings table → no Orca token → 401, no presets surfaced.
-# Bambu Cloud works in the same kiosk because its router has this gate.
+# Bambu Cloud works for the same callers because its router has this gate.
 router = APIRouter(prefix="/orca-cloud", tags=["orca-cloud"], dependencies=[Depends(_cloud_api_key_gate)])
 
 # Orca ``content.type`` values map onto Bambu Cloud's preset type vocabulary.

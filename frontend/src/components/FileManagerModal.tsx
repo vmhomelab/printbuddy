@@ -1031,7 +1031,7 @@ export function FileManagerModal({ printerId, printerName, printerProvider, prin
 
       {queuedLibraryFile && (
         <PrintModal
-          mode="add-to-queue"
+          mode="create"
           libraryFileId={queuedLibraryFile.id}
           archiveName={queuedLibraryFile.filename}
           initialSelectedPrinterIds={[printerId]}

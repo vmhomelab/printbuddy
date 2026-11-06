@@ -1202,7 +1202,9 @@ export function GitHubBackupSettings() {
                           refetchLocalStatus();
                         }}
                       />
-                      <p className="text-xs text-bambu-gray-light mt-1">{t('backup.utc')}</p>
+                      <p className="text-xs text-bambu-gray-light mt-1">
+                        {t('backup.localTimeHint', { tz: localBackupStatus?.timezone || 'UTC' })}
+                      </p>
                     </div>
                   )}
                   <div>

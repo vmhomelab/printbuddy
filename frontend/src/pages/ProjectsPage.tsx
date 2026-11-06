@@ -133,15 +133,19 @@ export function ProjectModal({ project, onClose, onSave, isLoading, currencySymb
   };
 
   return (
+    // max-h + flex column on the card + overflow on the fields wrapper so the
+    // modal stays inside the viewport on short screens (#1642). Outer p-4 is
+    // 1rem each side, hence the 2rem subtraction below.
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
-      <div className="bg-bambu-dark-secondary rounded-lg w-full max-w-md border border-bambu-dark-tertiary">
-        <div className="p-4 border-b border-bambu-dark-tertiary">
+      <div className="bg-bambu-dark-secondary rounded-lg w-full max-w-md border border-bambu-dark-tertiary flex flex-col max-h-[calc(100vh-2rem)]">
+        <div className="p-4 border-b border-bambu-dark-tertiary flex-shrink-0">
           <h2 className="text-lg font-semibold text-white">
             {project ? t('projects.editProject') : t('projects.newProject')}
           </h2>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-4 space-y-4">
+        <form onSubmit={handleSubmit} className="flex flex-col flex-1 min-h-0">
+          <div className="p-4 space-y-4 overflow-y-auto flex-1">
           <div>
             <label className="block text-sm font-medium text-white mb-1">
               {t('common.name')}
@@ -374,8 +378,12 @@ export function ProjectModal({ project, onClose, onSave, isLoading, currencySymb
               </select>
             </div>
           )}
+          </div>
 
-          <div className="flex justify-end gap-2 pt-2">
+          {/* Sticky action footer — stays visible regardless of scroll
+              position so Save/Cancel are always reachable on short screens
+              (#1642). Buttons stay inside <form> for type="submit". */}
+          <div className="flex justify-end gap-2 p-4 border-t border-bambu-dark-tertiary flex-shrink-0">
             <Button type="button" variant="secondary" onClick={onClose}>
               {t('common.cancel')}
             </Button>

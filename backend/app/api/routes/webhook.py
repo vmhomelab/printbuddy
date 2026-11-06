@@ -218,6 +218,9 @@ async def webhook_stop_print(
     check_printer_access(api_key, printer_id)
 
     status = printer_manager.get_status(printer_id)
+    # `printer_manager.get_status(...)` returns a ``PrinterState`` dataclass
+    # (see backend/app/services/bambu_mqtt.py), not a dict — `.get(...)` on it
+    # raises AttributeError and surfaces as a generic 500 (#1584).
     if not status or not status.connected:
         raise HTTPException(status_code=503, detail="Printer not connected")
 
@@ -246,6 +249,7 @@ async def webhook_cancel_print(
     check_printer_access(api_key, printer_id)
 
     status = printer_manager.get_status(printer_id)
+    # Same dataclass-not-dict shape as stop_print above (#1584).
     if not status or not status.connected:
         raise HTTPException(status_code=503, detail="Printer not connected")
 
@@ -282,6 +286,10 @@ async def webhook_get_printer_status(
 
     status = printer_manager.get_status(printer_id)
 
+    # `printer_manager.get_status(...)` returns a ``PrinterState`` dataclass —
+    # attribute access, not dict lookup. The previous `.get(...)` calls raised
+    # AttributeError and surfaced as a generic 500 for any printer that
+    # actually had a status row (#1584).
     return PrinterStatusResponse(
         id=printer.id,
         name=printer.name,

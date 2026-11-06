@@ -16,7 +16,7 @@ import json
 import logging
 import time
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,7 +26,7 @@ from backend.app.api.routes.orca_cloud import (
     _build_authenticated_service as _build_orca_service,
     _load_credentials as _load_orca_credentials,
 )
-from backend.app.core.auth import RequirePermissionIfAuthEnabled
+from backend.app.core.auth import RequirePermissionIfAuthEnabled, require_ownership_permission
 from backend.app.core.config import settings as app_settings
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
@@ -44,12 +44,8 @@ from backend.app.services.bambu_cloud import (
 )
 from backend.app.services.orca_cloud import OrcaCloudAuthError, OrcaCloudError
 from backend.app.services.slicer_api import (
-    BundleNotFoundError,
-    BundleSummary,
     SlicerApiError,
     SlicerApiService,
-    SlicerApiUnavailableError,
-    SlicerInputError,
 )
 from backend.app.utils.printer_models import PRINTER_MODEL_MAP
 
@@ -74,7 +70,7 @@ _bundled_cache: tuple[float, dict[str, list[UnifiedPreset]]] | None = None
 # modal open per user".
 _CLOUD_TTL_S = 300.0
 _cloud_cache: dict[tuple[int, str], tuple[float, dict[str, list[UnifiedPreset]]]] = {}
-# Orca follows the same 5-minute, per-user token-fingerprint cache policy.
+# Same shape for Orca Cloud — keyed on (user_id, access_token-fingerprint).
 _orca_cloud_cache: dict[tuple[int, str], tuple[float, dict[str, list[UnifiedPreset]]]] = {}
 
 
@@ -96,7 +92,9 @@ def _empty_slots() -> dict[str, list[UnifiedPreset]]:
     return {"printer": [], "process": [], "filament": []}
 
 
-async def _fetch_cloud_presets(db: AsyncSession, user: User | None) -> tuple[dict[str, list[UnifiedPreset]], str]:
+async def _fetch_cloud_presets(
+    db: AsyncSession, user: User | None, *, refresh: bool = False
+) -> tuple[dict[str, list[UnifiedPreset]], str]:
     """Return (slots, cloud_status). Slots are empty when cloud_status != 'ok'.
 
     Defence-in-depth: even if a stored cloud_token survived a permission
@@ -104,6 +102,12 @@ async def _fetch_cloud_presets(db: AsyncSession, user: User | None) -> tuple[dic
     treated as not-authenticated for this endpoint — the cloud tier never
     surfaces for them. This keeps the per-tier visibility consistent with the
     /cloud/* endpoint suite that already gates on CLOUD_AUTH.
+
+    ``refresh=True`` skips the in-process cache for this call (used by the
+    SliceModal's manual Refresh button so a user who just deleted a preset
+    in Bambu Studio / Handy can pick up the change without waiting for the
+    5-minute TTL to expire). The fresh result is still written back to the
+    cache so subsequent non-refresh callers benefit.
     """
     if user is not None and not user.has_permission(Permission.CLOUD_AUTH.value):
         return _empty_slots(), "not_authenticated"
@@ -115,9 +119,10 @@ async def _fetch_cloud_presets(db: AsyncSession, user: User | None) -> tuple[dic
     user_key = user.id if user is not None else 0
     cache_key = (user_key, _token_fingerprint(token))
     now = time.monotonic()
-    cached = _cloud_cache.get(cache_key)
-    if cached and now - cached[0] < _CLOUD_TTL_S:
-        return cached[1], "ok"
+    if not refresh:
+        cached = _cloud_cache.get(cache_key)
+        if cached and now - cached[0] < _CLOUD_TTL_S:
+            return cached[1], "ok"
 
     cloud = BambuCloudService(region=region)
     cloud.set_token(token)
@@ -160,11 +165,10 @@ async def _fetch_cloud_presets(db: AsyncSession, user: User | None) -> tuple[dic
         # one-by-one trips Bambu's limiter and returns 429 on every request
         # for users with large preset libraries (#1150 follow-up).
         #
-        # The dedup pass (see _dedupe_by_name) compensates: when a cloud entry
-        # wins over a same-named local entry, the cloud entry inherits the
-        # local entry's filament_type / filament_colour. So cloud presets that
-        # also exist locally still get metadata-aware pre-pick in the
-        # SliceModal; cloud-only presets fall back to plain priority order.
+        # The metadata-enrich pass (see _enrich_cloud_metadata) compensates:
+        # a Bambu Cloud entry without its own filament_type/colour inherits
+        # those values from a same-named local / orca_cloud / standard entry
+        # so it can still score for type/colour matches in pickFilamentForSlot.
         _cloud_cache[cache_key] = (now, slots)
         return slots, "ok"
     finally:
@@ -174,11 +178,15 @@ async def _fetch_cloud_presets(db: AsyncSession, user: User | None) -> tuple[dic
 async def _fetch_orca_cloud_presets(
     db: AsyncSession, user: User | None, *, refresh: bool = False
 ) -> tuple[dict[str, list[UnifiedPreset]], str]:
-    """Return a read-only snapshot of the caller's paired Orca Cloud profiles.
+    """Mirror of :func:`_fetch_cloud_presets` but for Orca Cloud. Same status
+    vocabulary (``ok`` / ``not_authenticated`` / ``expired`` / ``unreachable``),
+    same caching shape, same defence-in-depth permission gate
+    (``orca_cloud:auth`` rather than ``cloud:auth``).
 
+    Returns a read-only snapshot of the caller's paired Orca Cloud profiles.
     Orca's pull response already includes each profile's full content, so this
-    tier can expose filament metadata and compatible-printer declarations without
-    per-profile network calls.
+    tier can expose filament metadata (``filament_type`` / ``filament_colour``)
+    and compatible-printer declarations without per-profile network calls.
     """
     if user is not None and not user.has_permission(Permission.ORCA_CLOUD_AUTH.value):
         return _empty_slots(), "not_authenticated"
@@ -204,7 +212,13 @@ async def _fetch_orca_cloud_presets(
         logger.warning("Orca Cloud preset fetch failed for user %s: %s", user_key, exc)
         return _empty_slots(), "unreachable"
     except HTTPException as exc:
+        # ``_build_orca_service`` raises 401 when the token is missing, the
+        # refresh-token rotation failed, or the JIT refresh was rejected; 502
+        # when Orca is unreachable. Translate to the SliceModal's vocabulary.
         return _empty_slots(), "expired" if exc.status_code == 401 else "unreachable"
+    except Exception as exc:  # noqa: BLE001 — defensive: never crash the modal
+        logger.warning("Orca Cloud preset fetch unexpected error for user %s: %s", user_key, exc)
+        return _empty_slots(), "unreachable"
     finally:
         # The builder can fail before assigning svc; only close a constructed
         # per-request service. Shared clients remain managed by application lifespan.
@@ -301,11 +315,15 @@ def _first_scalar(value: object) -> str | None:
     return None
 
 
-async def _fetch_bundled_presets(db: AsyncSession) -> dict[str, list[UnifiedPreset]]:
-    """Standard slicer-bundled profiles via the sidecar's /profiles/bundled."""
+async def _fetch_bundled_presets(db: AsyncSession, *, refresh: bool = False) -> dict[str, list[UnifiedPreset]]:
+    """Standard slicer-bundled profiles via the sidecar's /profiles/bundled.
+
+    ``refresh=True`` skips the in-process cache; see _fetch_cloud_presets for
+    the same shape and rationale.
+    """
     global _bundled_cache
     now = time.monotonic()
-    if _bundled_cache and now - _bundled_cache[0] < _BUNDLED_TTL_S:
+    if not refresh and _bundled_cache and now - _bundled_cache[0] < _BUNDLED_TTL_S:
         return _bundled_cache[1]
 
     api_url = await _resolve_slicer_api_url(db)
@@ -374,7 +392,8 @@ async def _resolve_slicer_api_url(db: AsyncSession) -> str | None:
     return url or None
 
 
-def _dedupe_by_name(
+def _enrich_cloud_metadata(
+    orca_cloud: dict[str, list[UnifiedPreset]],
     cloud: dict[str, list[UnifiedPreset]],
     local: dict[str, list[UnifiedPreset]],
     standard: dict[str, list[UnifiedPreset]],
@@ -382,34 +401,38 @@ def _dedupe_by_name(
     dict[str, list[UnifiedPreset]],
     dict[str, list[UnifiedPreset]],
     dict[str, list[UnifiedPreset]],
+    dict[str, list[UnifiedPreset]],
 ]:
-    """Filter so each preset name appears in exactly one tier (cloud > local > standard).
+    """Backfill Bambu Cloud filament metadata; do NOT dedup tiers.
 
-    Order within each tier is preserved as-is — only "lower-priority duplicates"
-    are dropped. A preset shared across tiers (e.g. "Bambu PLA Basic" in cloud
-    public AND standard bundled) only renders once, in the cloud tier.
+    Every tier surfaces its full list — a name that exists in both ``local``
+    and ``orca_cloud`` shows up in BOTH dropdown groups so the user can pick
+    either source. Tier ORDER (``local > orca_cloud > cloud > standard``)
+    is communicated by the SliceModal's group rendering and by the
+    name-collision fallback in ``findPresetByName``; this function does not
+    enforce it.
 
-    Filament metadata is **merged across tiers** during dedup: when a cloud
-    entry wins over a same-named local entry, the cloud entry inherits the
-    local entry's ``filament_type`` and ``filament_colour`` (cloud entries
-    carry no metadata themselves because we deliberately don't fetch each
-    setting's content — see _fetch_cloud_presets). Without this merge, the
-    SliceModal's metadata-aware pre-pick would silently lose match data for
-    every preset the user has both cloud-synced and locally imported, and
-    fall back to plain priority selection.
+    Filament metadata merge: a Bambu Cloud entry without its own
+    ``filament_type`` / ``filament_colour`` (Bambu Cloud doesn't surface
+    these in the list response for rate-limiting reasons — see
+    :func:`_fetch_cloud_presets`) inherits values from a same-named entry
+    in ``local`` / ``orca_cloud`` / ``standard``. This is the only reason
+    this function exists post-#1712 — without the enrich the Bambu Cloud
+    tier can't score in ``pickFilamentForSlot``.
     """
-    # Build a lookup: filament name → metadata from the highest-quality tier
-    # that has it. Local + standard both expose parsed metadata; cloud
-    # doesn't. Take whichever non-empty entry shows up first.
+    # Build a name → metadata lookup from the tiers that carry it (local,
+    # orca_cloud, standard). Bambu cloud is intentionally skipped — it
+    # doesn't populate filament_type/colour in the list response. Take
+    # whichever non-empty entry shows up first.
     metadata_by_name: dict[str, tuple[str | None, str | None]] = {}
-    for tier in (local, standard):
+    for tier in (local, orca_cloud, standard):
         for p in tier["filament"]:
             if p.name in metadata_by_name:
                 continue
             if p.filament_type or p.filament_colour:
                 metadata_by_name[p.name] = (p.filament_type, p.filament_colour)
 
-    # Backfill cloud entries that don't have their own metadata.
+    # Backfill Bambu Cloud entries that don't have their own metadata.
     for p in cloud["filament"]:
         if (p.filament_type is None or p.filament_colour is None) and p.name in metadata_by_name:
             t, c = metadata_by_name[p.name]
@@ -418,21 +441,7 @@ def _dedupe_by_name(
             if p.filament_colour is None and c is not None:
                 p.filament_colour = c
 
-    deduped_local = _empty_slots()
-    deduped_standard = _empty_slots()
-    for slot in ("printer", "process", "filament"):
-        seen = {p.name for p in cloud[slot]}
-        for p in local[slot]:
-            if p.name in seen:
-                continue
-            deduped_local[slot].append(p)
-            seen.add(p.name)
-        for p in standard[slot]:
-            if p.name in seen:
-                continue
-            deduped_standard[slot].append(p)
-            seen.add(p.name)
-    return cloud, deduped_local, deduped_standard
+    return orca_cloud, cloud, local, standard
 
 
 @router.get("/printer-models")
@@ -457,6 +466,15 @@ async def list_unified_presets(
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermissionIfAuthEnabled(Permission.LIBRARY_UPLOAD),
     api_key_cloud_owner: User | None = Depends(resolve_api_key_cloud_owner),
+    refresh: bool = Query(
+        False,
+        description=(
+            "Bypass the in-process cloud and bundled-preset caches for this "
+            "request. The SliceModal's Refresh button sets this so users who "
+            "deleted a preset in Bambu Studio or Bambu Handy don't have to "
+            "wait for the 5-minute cloud-cache TTL to expire."
+        ),
+    ),
 ) -> UnifiedPresetsResponse:
     """List slicer presets across cloud / local / standard tiers, deduped by name.
 
@@ -473,12 +491,12 @@ async def list_unified_presets(
     too — matching the slice route (#1182 follow-up).
     """
     cloud_token_user = current_user or api_key_cloud_owner
-    orca_cloud, orca_cloud_status = await _fetch_orca_cloud_presets(db, cloud_token_user)
-    cloud, cloud_status = await _fetch_cloud_presets(db, cloud_token_user)
+    orca_cloud, orca_cloud_status = await _fetch_orca_cloud_presets(db, cloud_token_user, refresh=refresh)
+    cloud, cloud_status = await _fetch_cloud_presets(db, cloud_token_user, refresh=refresh)
     local = await _fetch_local_presets(db)
-    standard = await _fetch_bundled_presets(db)
+    standard = await _fetch_bundled_presets(db, refresh=refresh)
 
-    cloud, local, standard = _dedupe_by_name(cloud, local, standard)
+    orca_cloud, cloud, local, standard = _enrich_cloud_metadata(orca_cloud, cloud, local, standard)
 
     return UnifiedPresetsResponse(
         orca_cloud=UnifiedPresetsBySlot(**orca_cloud),
@@ -490,164 +508,16 @@ async def list_unified_presets(
     )
 
 
-def _bundle_summary_to_dict(b: BundleSummary) -> dict:
-    """Serialize a BundleSummary for the JSON response. The frontend uses
-    these arrays to populate the preset dropdowns when a user picks the
-    bundle as the slice source.
-    """
-    return {
-        "id": b.id,
-        "printer_preset_name": b.printer_preset_name,
-        "printer": b.printer,
-        "process": b.process,
-        "filament": b.filament,
-        "version": b.version,
-    }
-
-
-@router.post("/bundles", status_code=201)
-async def import_slicer_bundle(
-    file: UploadFile = File(...),
-    db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.LIBRARY_UPLOAD),
-):
-    """Forward a BambuStudio Printer Preset Bundle (.bbscfg) to the sidecar.
-
-    The user exports their printer's preset bundle from BambuStudio (File
-    -> Export -> Export Preset Bundle, "Printer preset bundle" option).
-    Uploading it here unpacks the bundle on the sidecar and exposes its
-    inner printer / process / filament presets to subsequent slice
-    requests via the bundle-id selector.
-
-    Idempotent: re-uploading the same file yields the same id (sidecar
-    hashes the zip content), so duplicate uploads collapse rather than
-    accumulate.
-    """
-    api_url = await _resolve_slicer_api_url(db)
-    if not api_url:
-        raise HTTPException(status_code=503, detail="No slicer sidecar configured")
-
-    # Multer on the sidecar caps bundle uploads at 50MB. We don't enforce
-    # that here — let the sidecar's filter own the limit so it stays in
-    # one place — but we do reject empty / huge files at the FastAPI
-    # layer to avoid pointlessly streaming them to the sidecar first.
-    contents = await file.read()
-    if not contents:
-        raise HTTPException(status_code=400, detail="Bundle file is empty")
-    filename = file.filename or "bundle.bbscfg"
-
-    try:
-        async with SlicerApiService(base_url=api_url) as svc:
-            summary = await svc.import_bundle(contents, filename=filename)
-    except SlicerInputError as e:
-        # Sidecar's 4xx — most likely a non-.bbscfg upload, a corrupt zip,
-        # or a path-traversal entry that the manifest validator caught.
-        # Log the detail so it lands in the support bundle: the FE-only
-        # toast was leaving us blind during triage (#1312).
-        logger.warning(
-            "Bundle import rejected by sidecar (%s, %d bytes): %s",
-            filename,
-            len(contents),
-            e,
-        )
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except SlicerApiUnavailableError as e:
-        logger.warning("Bundle import: sidecar unreachable (%s): %s", api_url, e)
-        raise HTTPException(status_code=503, detail=str(e)) from e
-    except SlicerApiError as e:
-        logger.warning(
-            "Bundle import: sidecar server error (%s, %d bytes): %s",
-            filename,
-            len(contents),
-            e,
-        )
-        # 5xx from the sidecar's import path is rare — usually a disk
-        # write failure inside DATA_PATH/bundles. 502 (bad gateway) is
-        # closer to the truth than 500 here, since we're proxying.
-        raise HTTPException(status_code=502, detail=str(e)) from e
-    return _bundle_summary_to_dict(summary)
-
-
-@router.get("/bundles")
-async def list_slicer_bundles(
-    db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.LIBRARY_UPLOAD),
-):
-    """List every Printer Preset Bundle currently stored on the sidecar.
-
-    Drives the SliceModal's "Bundle" tier and a Settings panel where
-    users can review / delete imported bundles. Returns ``[]`` when the
-    sidecar has no bundles imported yet.
-    """
-    api_url = await _resolve_slicer_api_url(db)
-    if not api_url:
-        # No sidecar configured: empty list rather than 503 so the modal
-        # renders cleanly. Same shape as the bundled-presets fallback.
-        return []
-    try:
-        async with SlicerApiService(base_url=api_url) as svc:
-            bundles = await svc.list_bundles()
-    except SlicerApiUnavailableError as e:
-        # Sidecar offline: surface as 503 so the frontend can show a
-        # banner. Differs from the bundled-tier behaviour because that
-        # path also has cloud + local fallbacks; bundles is the only
-        # source for its tier.
-        raise HTTPException(status_code=503, detail=str(e)) from e
-    except SlicerApiError as e:
-        raise HTTPException(status_code=502, detail=str(e)) from e
-    return [_bundle_summary_to_dict(b) for b in bundles]
-
-
-@router.get("/bundles/{bundle_id}")
-async def get_slicer_bundle(
-    bundle_id: str,
-    db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.LIBRARY_UPLOAD),
-):
-    """Return one bundle by id. 404 if it doesn't exist on the sidecar."""
-    api_url = await _resolve_slicer_api_url(db)
-    if not api_url:
-        raise HTTPException(status_code=503, detail="No slicer sidecar configured")
-    try:
-        async with SlicerApiService(base_url=api_url) as svc:
-            summary = await svc.get_bundle(bundle_id)
-    except BundleNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-    except SlicerApiUnavailableError as e:
-        raise HTTPException(status_code=503, detail=str(e)) from e
-    except SlicerApiError as e:
-        raise HTTPException(status_code=502, detail=str(e)) from e
-    return _bundle_summary_to_dict(summary)
-
-
-@router.delete("/bundles/{bundle_id}", status_code=204)
-async def delete_slicer_bundle(
-    bundle_id: str,
-    db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.LIBRARY_UPLOAD),
-):
-    """Remove a stored bundle from the sidecar. Future slice requests
-    referencing this id will fail with 404 from the sidecar.
-    """
-    api_url = await _resolve_slicer_api_url(db)
-    if not api_url:
-        raise HTTPException(status_code=503, detail="No slicer sidecar configured")
-    try:
-        async with SlicerApiService(base_url=api_url) as svc:
-            await svc.delete_bundle(bundle_id)
-    except BundleNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-    except SlicerApiUnavailableError as e:
-        raise HTTPException(status_code=503, detail=str(e)) from e
-    except SlicerApiError as e:
-        raise HTTPException(status_code=502, detail=str(e)) from e
-
-
 @router.get("/preview-progress/{request_id}")
 async def get_preview_slice_progress(
     request_id: str,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.LIBRARY_READ),
+    _: tuple[User | None, bool] = Depends(
+        require_ownership_permission(
+            Permission.LIBRARY_READ_ALL,
+            Permission.LIBRARY_READ_OWN,
+        )
+    ),
 ):
     """Proxy to the sidecar's ``GET /slice/progress/:requestId``.
 

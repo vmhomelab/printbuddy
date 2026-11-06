@@ -625,6 +625,84 @@ async def capture_camera_frame_bytes(
         await proxy_server.wait_closed()
 
 
+async def extract_video_last_frame(video_path: Path, output_path: Path) -> bool:
+    """Extract the last frame of `video_path` as JPEG at `output_path`.
+
+    Used to source finish photos from a Bambu timelapse. The Bambu firmware
+    stops timelapse recording AFTER the toolhead parks but BEFORE the bed-drop
+    end-gcode runs, so the last frame frames the finished print correctly.
+    A live camera grab at `gcode_state=FINISH` captures the bed already
+    lowered (#1397).
+
+    Implementation: ``-update 1`` writes each decoded frame to the same
+    output file (overwriting), so the file left on disk after ffmpeg
+    finishes is the LAST frame. This works regardless of how short the
+    video is — a small print's timelapse can be sub-second / sub-30 frames
+    (one frame per layer-change capture), and the earlier ``-sseof -1.0``
+    approach failed there because the seek went before the start of the
+    file and ffmpeg silently returned frame 0 (empty bed at print start).
+    Decoding every frame is fine: Bambu timelapses are short by
+    construction (<1 minute even on hours-long prints).
+
+    Returns False on missing ffmpeg, missing video, subprocess failure or
+    timeout. Never raises.
+    """
+    ffmpeg = get_ffmpeg_path()
+    if not ffmpeg:
+        logger.warning("Cannot extract video last frame: ffmpeg not available")
+        return False
+
+    if not video_path.exists() or video_path.stat().st_size == 0:
+        logger.warning("Cannot extract last frame: %s missing or empty", video_path)
+        return False
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    cmd = [
+        ffmpeg,
+        "-y",
+        "-i",
+        str(video_path),
+        "-q:v",
+        "2",
+        "-update",
+        "1",
+        str(output_path),
+    ]
+
+    process = None
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await asyncio.wait_for(process.communicate(), timeout=15.0)
+        if process.returncode != 0:
+            logger.warning(
+                "ffmpeg failed extracting last frame from %s: %s",
+                video_path,
+                stderr.decode(errors="replace")[:500],
+            )
+            return False
+        if not output_path.exists() or output_path.stat().st_size == 0:
+            logger.warning("ffmpeg produced no output for %s", video_path)
+            return False
+        return True
+    except asyncio.TimeoutError:
+        logger.warning("ffmpeg timed out extracting last frame from %s", video_path)
+        if process is not None:
+            try:
+                process.kill()
+                await process.wait()
+            except ProcessLookupError:
+                pass  # Already exited
+        return False
+    except OSError as e:
+        logger.warning("ffmpeg subprocess error for %s: %s", video_path, e)
+        return False
+
+
 async def capture_finish_photo(
     printer_id: int,
     ip_address: str,
@@ -651,7 +729,9 @@ async def capture_finish_photo(
     # Generate filename with timestamp
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"finish_{timestamp}_{uuid.uuid4().hex[:8]}.jpg"
-    output_path = photos_dir / filename
+    output_path = (
+        photos_dir / filename
+    )  # SEC-PATH-OK: filename = f"finish_{timestamp}_{uuid.uuid4().hex[:8]}.jpg" generated above
 
     success = await capture_camera_frame(
         ip_address=ip_address,

@@ -1,4 +1,4 @@
-import { useState, useRef, type DragEvent } from 'react';
+import { useState, useRef, useEffect, type DragEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   Upload,
@@ -63,9 +63,11 @@ interface FileUploadModalProps {
   uploadNotice?: string;
   /** Show a direct-upload option to start printing immediately after the file lands on printer storage. */
   allowStartPrintAfterUpload?: boolean;
+  /** Pre-seed the modal with files (e.g. from a page-wide drop) on first mount. */
+  initialFiles?: File[];
 }
 
-export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUploaded, autoUpload, validateFile, accept, acceptedFileDescription, uploadTargetPrinterId, directPrinterUploadId, directPrinterProvider, directPrinterModel, directPrinterUploadPath = '/', directPrinterUploadOverwrite = false, uploadNotice, allowStartPrintAfterUpload = false }: FileUploadModalProps) {
+export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUploaded, autoUpload, validateFile, accept, acceptedFileDescription, uploadTargetPrinterId, directPrinterUploadId, directPrinterProvider, directPrinterModel, directPrinterUploadPath = '/', directPrinterUploadOverwrite = false, uploadNotice, allowStartPrintAfterUpload = false, initialFiles }: FileUploadModalProps) {
   const { t } = useTranslation();
   const [files, setFiles] = useState<UploadFile[]>([]);
   const [isDragging, setIsDragging] = useState(false);
@@ -226,6 +228,18 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
   const removeFile = (index: number) => {
     setFiles((prev) => prev.filter((_, i) => i !== index));
   };
+
+  // Seed once on mount when the parent passed initialFiles (page-wide drop).
+  // The ref/list shape means a subsequent re-render with the same files won't
+  // double-add — only the first non-empty initialFiles arg ever flows through.
+  const seededInitialRef = useRef(false);
+  useEffect(() => {
+    if (seededInitialRef.current) return;
+    if (!initialFiles || initialFiles.length === 0) return;
+    seededInitialRef.current = true;
+    addFiles(initialFiles);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const hasZipFiles = files.some((f) => f.isZip && f.status === 'pending');
   const hasStlFiles = files.some((f) => f.file.name.toLowerCase().endsWith('.stl') && f.status === 'pending');

@@ -286,7 +286,7 @@ describe('ProjectDetailPage', () => {
       render(<ProjectDetailPage />);
 
       await waitFor(() => {
-        expect(screen.getByTitle('Print Now')).toBeInTheDocument();
+        expect(screen.getByTitle('Print')).toBeInTheDocument();
       });
     });
 
@@ -300,7 +300,7 @@ describe('ProjectDetailPage', () => {
       render(<ProjectDetailPage />);
 
       await waitFor(() => {
-        expect(screen.getByTitle('Print Now')).toBeInTheDocument();
+        expect(screen.getByTitle('Print')).toBeInTheDocument();
       });
     });
 
@@ -317,7 +317,7 @@ describe('ProjectDetailPage', () => {
         expect(screen.getAllByText('benchy.gcode.bak').length).toBeGreaterThan(0);
       });
 
-      expect(screen.queryByTitle('Print Now')).not.toBeInTheDocument();
+      expect(screen.queryByTitle('Print')).not.toBeInTheDocument();
     });
 
     it('does NOT show print button for .stl files', async () => {
@@ -333,7 +333,7 @@ describe('ProjectDetailPage', () => {
         expect(screen.getAllByText('model.stl').length).toBeGreaterThan(0);
       });
 
-      expect(screen.queryByTitle('Print Now')).not.toBeInTheDocument();
+      expect(screen.queryByTitle('Print')).not.toBeInTheDocument();
     });
   });
 
@@ -396,10 +396,10 @@ describe('ProjectDetailPage', () => {
       render(<ProjectDetailPage />);
 
       await waitFor(() => {
-        expect(screen.getByTitle('Print Now')).toBeInTheDocument();
+        expect(screen.getByTitle('Print')).toBeInTheDocument();
       });
 
-      await user.click(screen.getByTitle('Print Now'));
+      await user.click(screen.getByTitle('Print'));
 
       // PrintModal should open — look for the modal heading "Print"
       await waitFor(() => {
@@ -489,7 +489,7 @@ describe('ProjectDetailPage', () => {
       expect(await screen.findByRole('heading', { name: 'Production Plan' })).toBeInTheDocument();
       await user.click(screen.getByRole('button', { name: /stage gridfinity-bin-plate-02\.gcode\.3mf to queue/i }));
 
-      expect(await screen.findByRole('heading', { name: 'Schedule Print' })).toBeInTheDocument();
+      expect(await screen.findByRole('heading', { name: 'Print' })).toBeInTheDocument();
     });
 
     it('reviews selected dispatch suggestions before opening the staging modal', async () => {
@@ -526,7 +526,7 @@ describe('ProjectDetailPage', () => {
       expect(within(dialog).getByText('gridfinity-bin-plate-03.gcode.3mf')).toBeInTheDocument();
 
       await user.click(within(dialog).getByRole('button', { name: /stage first selected job/i }));
-      expect(await screen.findByRole('heading', { name: 'Schedule Print' })).toBeInTheDocument();
+      expect(await screen.findByRole('heading', { name: 'Print' })).toBeInTheDocument();
     });
 
     it('suggests safe dispatch targets and opens review staging for the suggested printer', async () => {
@@ -574,7 +574,7 @@ describe('ProjectDetailPage', () => {
 
       await user.click(screen.getByRole('button', { name: /review staging for gridfinity-bin-plate-02\.gcode\.3mf on PRA-01/i }));
 
-      expect(await screen.findByRole('heading', { name: 'Schedule Print' })).toBeInTheDocument();
+      expect(await screen.findByRole('heading', { name: 'Print' })).toBeInTheDocument();
     });
   });
 });

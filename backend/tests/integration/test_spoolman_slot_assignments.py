@@ -235,7 +235,9 @@ class TestAssignSpoolmanSlot:
         call_kwargs = mock_client.ams_set_filament_setting.call_args
         assert call_kwargs.kwargs["tray_type"] == "PLA-CF"
         assert call_kwargs.kwargs["tray_info_idx"] == "GFL98"
-        assert call_kwargs.kwargs["setting_id"] == ""
+        # Upstream derives setting_id from the generic tray_info_idx so the
+        # slicer never sees a half-configured slot (GFL98 -> GFSL98).
+        assert call_kwargs.kwargs["setting_id"] == "GFSL98"
         assert call_kwargs.kwargs["nozzle_temp_min"] == 210
         assert call_kwargs.kwargs["nozzle_temp_max"] == 240
 

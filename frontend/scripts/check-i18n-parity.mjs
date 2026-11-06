@@ -142,6 +142,9 @@ function isAlwaysAllowedIdentical(value) {
 const DE_COGNATES = [
   'Name', 'Status', 'Tag', 'Tags', 'Online', 'Offline', 'Standard', 'Modus',
   'Stop', 'Reset', 'Test', 'Code', 'Token', 'Server', 'Port', 'Bug', 'Job',
+  'Bambu Cloud', 'Orca Cloud',  // brand names — same in every locale
+  'AMS Filament Backup',  // Bambu Lab product/firmware feature name
+
   'Pause', 'Power', 'System', 'Problem', 'Designer', 'Extruder', 'Firmware',
   'Material', 'Original', 'Position', 'Webhook', 'Workflow', 'Slicer',
   'Region', 'Normal', 'Orange', 'Branch', 'Budget', 'Commit', 'Global',
@@ -165,10 +168,13 @@ const DE_COGNATES = [
   'Avery 5160 — US Letter sheet (25.4 × 66.7 mm × 30)',
   'China', 'Proxy', 'Start',
   'Diagnose',  // DE: same spelling/meaning as EN — camera diagnostic button label
+  '{{filament}} @ {{temp}}°C',  // drying badge: filament code + universal °C
 ];
 
 // French cognates — many UI labels overlap with English exactly.
 const FR_COGNATES = [
+  'Bambu Cloud', 'Orca Cloud',  // brand names — same in every locale
+  'AMS Filament Backup',  // Bambu Lab product/firmware feature name
   'Status', 'Tag', 'Tags', 'Online', 'Offline', 'Standard', 'Filament',
   'Filaments', 'Software', 'Hardware', 'Stop', 'Reset', 'Test', 'Code',
   'Token', 'Server', 'Port', 'Plate', 'Layer', 'Active', 'Total', 'Avatar',
@@ -192,6 +198,7 @@ const FR_COGNATES = [
   '{{count}} filament', '{{count}} filaments', '{{count}} permissions',
   '{{count}} downloads', '{{count}} item', '{{count}} selected',
   '({{count}} item)', 'Provisioning...', 'Pressure Advance',
+  '{{name}} ({{count}} copies)',  // FR plural of "copie" is also "copies"
   'Box label (62 × 29 mm)',
   'Avery L7160 — A4 sheet (38.1 × 63.5 mm × 21)',
   'Avery 5160 — US Letter sheet (25.4 × 66.7 mm × 30)',
@@ -200,11 +207,16 @@ const FR_COGNATES = [
   'Cancelling upload...', 'Backup in progress...', 'Searching directory...',
   'EC984C,#6CD4BC,A66EB9,D87694',
   'Proxy', 'Navigation', 'Budget', 'Commit', 'Designer',
+  'Compact',  // cam-wall status overlay mode — same word in French
   'ntfy, Pushover, Discord, etc.',
+  '{{filament}} @ {{temp}}°C',  // drying badge: filament code + universal °C
 ];
 
 // Italian cognates.
 const IT_COGNATES = [
+  'Bambu Cloud', 'Orca Cloud',  // brand names — same in every locale
+  'AMS Filament Backup',  // Bambu Lab product/firmware feature name
+  'Email',  // common loanword in Italian, used verbatim in UI labels
   'Status', 'Tag', 'Tags', 'Online', 'Offline', 'Standard', 'Filament',
   'Filaments', 'Software', 'Hardware', 'Stop', 'Reset', 'Test', 'Code',
   'Token', 'Server', 'Port', 'Plate', 'Layer', 'Modal', 'Pin', 'Pro', 'Mini',
@@ -226,22 +238,28 @@ const IT_COGNATES = [
   'Hex: #{{hex}}',
   'EC984C,#6CD4BC,A66EB9,D87694',
   'Proxy', 'Designer',
+  'Off',  // cam-wall status overlay mode — common loanword in Italian UI
+  '{{filament}} @ {{temp}}°C',  // drying badge: filament code + universal °C
 ];
 
 // Japanese: very few cognates because of script difference. Almost
 // everything needs translation. Only true loanwords / proper nouns stay.
 const JA_COGNATES = [
   'OK', 'Bambu', 'Code',
+  'Bambu Cloud', 'Orca Cloud',  // brand names — same in every locale
   'EU (DD/MM/YYYY)', 'US (MM/DD/YYYY)', 'ON, true, 1',
   '({{count}}/8)', 'Custom Headers (JSON)',
   'Box label (62 × 29 mm)',
   'Avery L7160 — A4 sheet (38.1 × 63.5 mm × 21)',
   'Avery 5160 — US Letter sheet (25.4 × 66.7 mm × 30)',
   'EC984C,#6CD4BC,A66EB9,D87694',
+  '{{filament}} @ {{temp}}°C',  // drying badge: filament code + universal °C
 ];
 
 // Portuguese (BR) cognates.
 const PT_BR_COGNATES = [
+  'Bambu Cloud', 'Orca Cloud',  // brand names — same in every locale
+  'AMS Filament Backup',  // Bambu Lab product/firmware feature name
   'Status', 'Tag', 'Tags', 'Online', 'Offline', 'Standard', 'Filament',
   'Software', 'Hardware', 'Stop', 'Reset', 'Test', 'Code', 'Token', 'Server',
   'Port', 'Plate', 'Layer', 'Modal', 'Pin', 'Pro', 'Mini', 'Studio', 'Cache',
@@ -264,29 +282,56 @@ const PT_BR_COGNATES = [
   'Expand dispatch details', 'Collapse dispatch details',
   'e.g., Home Assistant, OctoPrint', 'ntfy, Pushover, Discord, etc.',
   'Proxy', 'total: {{minutes}} min',
+  '{{filament}} @ {{temp}}°C',  // drying badge: filament code + universal °C
 ];
 
 // Chinese (Simplified): very few cognates beyond brand names.
 const ZH_CN_COGNATES = [
   'OK', 'Bambu',
+  'Bambu Cloud', 'Orca Cloud',  // brand names — same in every locale
   '({{count}}/8)', 'Custom Headers (JSON)',
   'Box label (62 × 29 mm)',
   'Avery L7160 — A4 sheet (38.1 × 63.5 mm × 21)',
   'Avery 5160 — US Letter sheet (25.4 × 66.7 mm × 30)',
   'EC984C,#6CD4BC,A66EB9,D87694',
+  '{{filament}} @ {{temp}}°C',  // drying badge: filament code + universal °C
 ];
 
 const ZH_TW_COGNATES = [
   'OK', 'Bambu',
+  'Bambu Cloud', 'Orca Cloud',  // brand names — same in every locale
   '({{count}}/8)', 'Custom Headers (JSON)',
   'Box label (62 × 29 mm)',
   'Avery L7160 — A4 sheet (38.1 × 63.5 mm × 21)',
   'Avery 5160 — US Letter sheet (25.4 × 66.7 mm × 30)',
   'EC984C,#6CD4BC,A66EB9,D87694',
+  '{{filament}} @ {{temp}}°C',  // drying badge: filament code + universal °C
+];
+
+// Korean: script difference means almost nothing is identical.
+// Allow loanwords/acronyms, format strings, and proper nouns that stay verbatim.
+const KO_COGNATES = [
+  'OK', 'Bambu', 'N/A',
+  'Bambu Cloud', 'Orca Cloud',  // brand names — same in every locale
+  '({{count}}/8)', '(25%, 50%, 75%)',
+  'Custom Headers (JSON)',
+  'Box label (62 × 29 mm)',
+  'Avery L7160 — A4 sheet (38.1 × 63.5 mm × 21)',
+  'Avery 5160 — US Letter sheet (25.4 × 66.7 mm × 30)',
+  'EC984C,#6CD4BC,A66EB9,D87694',
+  '{{weight}}g',                                      // unit suffix format string
+  'MakerWorld: {{designer}}',                         // brand + placeholder
+  'email',                                            // OIDC claim name placeholder
+  '{{printer}}: {{error}}',                           // pure placeholders
+  '{{name}} — {{stage}} ({{percent}}%) — {{elapsed}}', // pure placeholders
+  'Obico ML API URL',                                 // product name (Obico)
+  '{{filament}} @ {{temp}}°C',                        // drying badge format
 ];
 
 // Spanish cognates — words/phrases that are genuinely identical in Spanish.
 const ES_COGNATES = [
+  'Bambu Cloud', 'Orca Cloud',  // brand names — same in every locale
+  'AMS Filament Backup',  // Bambu Lab product/firmware feature name
   'Error', 'Firmware', 'General', 'Control', 'Total', 'total', 'Material',
   'Material:', 'Color', 'Hex', 'Local', 'Global', 'China', 'Editable',
   'Normal', 'Metal', 'Multicolor', 'Proxy', 'Host', 'Factor', 'Original',
@@ -299,6 +344,23 @@ const ES_COGNATES = [
   'Box label (62 × 29 mm)',
   'Avery L7160 — A4 sheet (38.1 × 63.5 mm × 21)',
   'Avery 5160 — US Letter sheet (25.4 × 66.7 mm × 30)',
+  '{{filament}} @ {{temp}}°C',  // drying badge: filament code + universal °C
+];
+
+// Turkish cognates — technical UI labels that Turkish speakers use verbatim
+// from English (loanwords + acronyms + format strings). Curated, not a shortcut.
+const TR_COGNATES = [
+  'Filament', 'Firmware', 'Disk', 'Hex', 'Test', 'Port', 'Model', 'Metal',
+  'Bambu Cloud', 'Orca Cloud',  // brand names — same in every locale
+  'AMS Filament Backup',  // Bambu Lab product/firmware feature name
+  'Min', 'Normal', 'Platform', 'Net', 'Trend', 'Commit', 'Global', 'Proxy',
+  'N/A', 'email',
+  'STARTTLS (Port 587)', 'SSL/TLS (Port 465)',
+  '({{count}}/8)', 'Hex: #{{hex}}', 'MakerWorld: {{designer}}',
+  '{{count}} filament', '{{printer}}: {{error}}', '{{weight}}g',
+  'Filament {{index}} ({{type}})',
+  'EC984C,#6CD4BC,A66EB9,D87694',
+  '{{filament}} @ {{temp}}°C',  // drying badge: filament code + universal °C
 ];
 
 const IDENTICAL_TO_EN_ALLOWED = {
@@ -306,10 +368,12 @@ const IDENTICAL_TO_EN_ALLOWED = {
   fr: new Set(FR_COGNATES),
   it: new Set(IT_COGNATES),
   ja: new Set(JA_COGNATES),
+  ko: new Set(KO_COGNATES),
   es: new Set(ES_COGNATES),
   'pt-BR': new Set(PT_BR_COGNATES),
   'zh-CN': new Set(ZH_CN_COGNATES),
   'zh-TW': new Set(ZH_TW_COGNATES),
+  tr: new Set(TR_COGNATES),
 };
 
 // Pure comparison logic, exported so tests can verify each failure mode

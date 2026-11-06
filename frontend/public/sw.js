@@ -1,6 +1,6 @@
 // Printbuddy Service Worker
-const CACHE_NAME = 'printbuddy-v1';
-const STATIC_CACHE = 'printbuddy-static-v1';
+const CACHE_NAME = 'printbuddy-v2';
+const STATIC_CACHE = 'printbuddy-static-v2';
 
 // Static assets to cache on install
 const STATIC_ASSETS = [
@@ -31,23 +31,33 @@ self.addEventListener('install', (event) => {
   self.skipWaiting();
 });
 
-// Activate event - clean up old caches
+// Activate event - clean up old caches and claim existing clients.
+//
+// The forced reload that picks up a new bundle on already-open clients (the
+// kiosk deploy-pickup scenario) lives in sw-register.js via a
+// `controllerchange` listener, gated on whether the page already had a SW
+// controller at load time. That gate distinguishes first-install (where a
+// reload would race the in-flight React mount — observed on every fresh
+// demo subdomain, and in Firefox the activate's waitUntil
+// hung on `client.navigate` until the document load was aborted with a
+// Corrupted-Content error) from upgrade-on-existing-client (where the reload
+// is wanted).
 self.addEventListener('activate', (event) => {
   console.log('[SW] Activating service worker...');
   event.waitUntil(
-    caches.keys().then((cacheNames) => {
-      return Promise.all(
+    (async () => {
+      const cacheNames = await caches.keys();
+      await Promise.all(
         cacheNames
           .filter((name) => name !== CACHE_NAME && name !== STATIC_CACHE)
           .map((name) => {
             console.log('[SW] Deleting old cache:', name);
             return caches.delete(name);
-          })
+          }),
       );
-    })
+      await self.clients.claim();
+    })(),
   );
-  // Take control immediately
-  self.clients.claim();
 });
 
 // Fetch event - network-first for API, cache-first for static

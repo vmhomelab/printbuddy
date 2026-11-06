@@ -36,6 +36,7 @@ from backend.app.services.camera import (
 from backend.app.services.camera_fanout import (
     MjpegBroadcaster,
     get_or_create_broadcaster,
+    get_subscriber_count,
     iter_subscriber,
     shutdown_broadcaster,
 )
@@ -856,17 +857,36 @@ async def stop_camera_stream(
     printer_id: int,
     _: User | None = RequirePermissionIfAuthEnabled(Permission.CAMERA_VIEW),
 ):
-    """Stop all active camera streams for a printer.
+    """Stop active camera streams for a printer.
 
-    This can be called by the frontend when the camera window is closed.
-    Accepts both GET and POST (POST for sendBeacon compatibility).
+    Called by the frontend on viewer unmount (cam-wall tile, embedded viewer,
+    popup window). Accepts both GET and POST (POST for sendBeacon compatibility).
+
+    Reference-count guard: every viewer of a printer subscribes to the same
+    fan-out broadcaster, so a force-shutdown triggered by ONE leaving viewer
+    used to kill the others' streams (cam-wall tile froze when a user opened
+    then closed the embedded viewer). If any subscriber is still attached,
+    skip the force-teardown — the broadcaster's natural grace-shutdown (5 s
+    after subscribers drop to 0) handles cleanup when the leaving viewer's
+    HTTP connection actually closes.
     """
+    broadcaster_key = f"printer-{printer_id}"
+    remaining_subscribers = get_subscriber_count(broadcaster_key)
+    if remaining_subscribers >= 1:
+        logger.info(
+            "Skipping force-shutdown for printer %s: %d subscriber(s) still attached; "
+            "natural cleanup will tear down when last viewer disconnects",
+            printer_id,
+            remaining_subscribers,
+        )
+        return {"stopped": 0, "skipped": True}
+
     stopped = 0
 
     # Tear down the fan-out broadcaster first (#1089). This cleanly notifies
     # all subscribed viewers and asks the upstream generator to stop
     # reconnecting before we fall back to forcefully killing the process below.
-    if await shutdown_broadcaster(f"printer-{printer_id}"):
+    if await shutdown_broadcaster(broadcaster_key):
         logger.info("Shut down camera fan-out broadcaster for printer %s", printer_id)
 
     # Stop ffmpeg/RTSP streams

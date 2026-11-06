@@ -42,11 +42,25 @@ describe('getPrinterImage', () => {
     });
   });
 
-  describe('A2L', () => {
+  describe('A2L (#1684)', () => {
     it('resolves display name and SSDP code to a2l.png', () => {
       expect(getPrinterImage('A2L')).toBe('/img/printers/a2l.png');
       expect(getPrinterImage('N9')).toBe('/img/printers/a2l.png');
       expect(getPrinterImage('Bambu Lab A2L')).toBe('/img/printers/a2l.png');
+    });
+
+    it('resolves case-insensitive variants', () => {
+      expect(getPrinterImage('a2l')).toBe('/img/printers/a2l.png');
+      expect(getPrinterImage(' A2L ')).toBe('/img/printers/a2l.png');
+    });
+
+    it('does not match A2L on unrelated A-series strings', () => {
+      // Regression guard: a hypothetical future "A2M" or similar must not
+      // silently pick up a2l.png until it's explicitly mapped, and "A1" /
+      // "A1 Mini" must still resolve to their own artwork.
+      expect(getPrinterImage('A2M')).toBe('/img/printers/default.png');
+      expect(getPrinterImage('A1')).toBe('/img/printers/a1.png');
+      expect(getPrinterImage('A1 Mini')).toBe('/img/printers/a1mini.png');
     });
   });
 

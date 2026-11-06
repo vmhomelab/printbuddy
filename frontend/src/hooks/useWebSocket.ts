@@ -2,6 +2,8 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useToast } from '../contexts/ToastContext';
 import { useTranslation } from 'react-i18next';
+import { api } from '../api/client';
+import { inventoryLocationsQueryKey } from '../utils/inventoryQueries';
 
 interface WebSocketMessage {
   type: string;
@@ -64,13 +66,34 @@ export function useWebSocket() {
     processNext();
   }, []);
 
-  const connect = useCallback(() => {
+  const connect = useCallback(async () => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       return;
     }
 
+    // GHSA-r2qv follow-up: when auth is enabled, /ws now requires a token
+    // minted by POST /api/v1/auth/ws-token. We use the shared ``api.request``
+    // helper (via ``api.getWebSocketToken``) so the JWT Authorization header
+    // is attached — a raw ``fetch()`` with ``credentials: 'include'`` would
+    // miss it (Printbuddy uses Bearer tokens, not cookies, for JWT auth).
+    // Auth-disabled deployments accept connections without a token, so we
+    // treat a missing/failed token mint as non-fatal here and let the
+    // WebSocket close with code 4401 if the server actually rejects us.
+    let token: string | undefined;
+    try {
+      const resp = await api.getWebSocketToken();
+      token = resp.token;
+    } catch {
+      // Token mint failed — most likely auth is disabled (no JWT to attach,
+      // 401 response) or the user isn't authenticated yet. Fall through and
+      // try the WebSocket anyway. Auth-disabled deployments succeed;
+      // auth-enabled deployments close with 4401 and the reconnect loop
+      // kicks in once the user logs in.
+    }
+
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/api/v1/ws`;
+    const tokenParam = token ? `?token=${encodeURIComponent(token)}` : '';
+    const wsUrl = `${protocol}//${window.location.host}/api/v1/ws${tokenParam}`;
 
     const ws = new WebSocket(wsUrl);
 
@@ -269,6 +292,8 @@ export function useWebSocket() {
       case 'inventory_changed':
         // Spool created/updated/deleted/archived/restored - refresh inventory across all tabs
         debouncedInvalidate('inventory-spools');
+        debouncedInvalidate('spoolman-inventory-spools');
+        debouncedInvalidate(inventoryLocationsQueryKey[0]);
         break;
 
       case 'spool_assignment_changed':
@@ -288,26 +313,37 @@ export function useWebSocket() {
         debouncedInvalidate('inventory-spools');
         break;
 
-      case 'unknown_tag':
-        // Unknown RFID tag detected - dispatch event for UI
+      case 'unknown_tag': {
+        // Unknown RFID tag detected — dispatch event for UI. The backend
+        // ships the slot's current tray data alongside the event so
+        // consumers don't have to look it up from the (frequently stale)
+        // cached printerStatus query.
+        const m = message as unknown as {
+          printer_id?: number;
+          ams_id?: number;
+          tray_id?: number;
+          tag_uid?: string;
+          tray_uuid?: string;
+          tray_type?: string | null;
+          tray_color?: string | null;
+          tray_sub_brands?: string | null;
+          tray_count?: number | null;
+        };
         window.dispatchEvent(new CustomEvent('unknown-tag', {
           detail: {
-            printer_id: (message as unknown as { printer_id?: number }).printer_id,
-            ams_id: (message as unknown as { ams_id?: number }).ams_id,
-            tray_id: (message as unknown as { tray_id?: number }).tray_id,
-            tag_uid: (message as unknown as { tag_uid?: string }).tag_uid,
-            tray_uuid: (message as unknown as { tray_uuid?: string }).tray_uuid,
+            printer_id: m.printer_id,
+            ams_id: m.ams_id,
+            tray_id: m.tray_id,
+            tag_uid: m.tag_uid,
+            tray_uuid: m.tray_uuid,
+            tray_type: m.tray_type,
+            tray_color: m.tray_color,
+            tray_sub_brands: m.tray_sub_brands,
+            tray_count: m.tray_count,
           }
         }));
         break;
-
-      case 'background_dispatch':
-        window.dispatchEvent(
-          new CustomEvent('background-dispatch', {
-            detail: (message as unknown as { data?: Record<string, unknown> }).data || {},
-          })
-        );
-        break;
+      }
 
     }
   }, [queryClient, debouncedInvalidate, throttledPrinterStatusUpdate, showToast, t]);
@@ -318,7 +354,10 @@ export function useWebSocket() {
   }, [handleMessage]);
 
   useEffect(() => {
-    connect();
+    // connect() is async after the GHSA-r2qv fix (mints a ws-token first).
+    // Fire-and-forget at mount; the inner reconnect loop also calls
+    // connect() in the ws.onclose handler.
+    void connect();
 
     return () => {
       if (reconnectTimeoutRef.current) {

@@ -6,7 +6,8 @@ import {
   Plus, Loader2, Trash2, Archive, RotateCcw, Edit2, Package,
   Search, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight,
   TrendingDown, Layers, Printer, AlertTriangle, X, Clock, LayoutGrid, TableProperties, Columns,
-  ArrowUp, ArrowDown, ArrowUpDown, Group, ChevronDown, Check, RefreshCw, TrendingUp, Lock, Copy, Eraser,
+  ArrowUp, ArrowDown, ArrowUpDown, Group, ChevronDown, Check, RefreshCw, TrendingUp, Lock, Copy, Eraser, MapPin,
+  Upload, Download,
 } from 'lucide-react';
 import { ForecastPanel } from '../components/ForecastPanel';
 import { api, ApiError } from '../api/client';
@@ -18,6 +19,9 @@ import {SpoolFormModal, type SpoolFormMode} from '../components/SpoolFormModal';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { ColumnConfigModal, type ColumnConfig } from '../components/ColumnConfigModal';
 import { LabelTemplatePickerModal } from '../components/LabelTemplatePickerModal';
+import { SpoolCsvImportModal } from '../components/SpoolCsvImportModal';
+import { LocationsModal } from '../components/LocationsModal';
+import { BulkEditSpoolsModal } from '../components/BulkEditSpoolsModal';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { resolveSpoolColorName } from '../utils/colors';
@@ -25,6 +29,10 @@ import { getCurrencySymbol } from '../utils/currency';
 import { formatDateInput, parseUTCDate, type DateFormat } from '../utils/date';
 import { formatSlotLabel } from '../utils/amsHelpers';
 import { filterSpoolsByQuery } from '../utils/inventorySearch';
+import {
+  inventoryLocationsQueryKey,
+  invalidateSpoolAndLocationQueries,
+} from '../utils/inventoryQueries';
 import { aggregateGroupSpool } from '../utils/inventoryGrouping';
 import { AssignSpoolIcon } from '../components/icons/AssignSpoolIcon';
 
@@ -37,6 +45,17 @@ type SortState = { column: string; direction: SortDirection } | null;
 type DisplayItem =
   | { type: 'single'; spool: InventorySpool }
   | { type: 'group'; key: string; spools: InventorySpool[]; representative: InventorySpool };
+
+function dedupeAndSort(values: Array<string | null | undefined>): string[] {
+  const set = new Set<string>();
+  for (const v of values) {
+    if (typeof v === 'string') {
+      const trimmed = v.trim();
+      if (trimmed) set.add(trimmed);
+    }
+  }
+  return Array.from(set).sort((a, b) => a.localeCompare(b));
+}
 
 function spoolGroupKey(s: InventorySpool): string {
   // Include extra_colors + effect_type so the "Group similar" toggle does
@@ -470,12 +489,16 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   const [assignPrinterId, setAssignPrinterId] = useState('');
   const deepLinkHandled = useRef(false);
   const [confirmAction, setConfirmAction] = useState<
-    | { type: 'delete' | 'archive' | 'reset-usage'; spoolId: number }
-    | { type: 'reset-all-usage' }
+    | { type: 'delete' | 'archive' | 'reset-consumed-counter'; spoolId: number }
+    | { type: 'reset-all-consumed-counters' }
     | null
   >(null);
   // Label printing (#809). null = closed; otherwise the IDs to print labels for.
   const [labelPickerSpoolIds, setLabelPickerSpoolIds] = useState<number[] | null>(null);
+  // CSV import/export (#1576). Local inventory only — hidden in Spoolman mode.
+  const [csvImportOpen, setCsvImportOpen] = useState(false);
+  const [exportingCsv, setExportingCsv] = useState(false);
+  const [locationsModalOpen, setLocationsModalOpen] = useState(false);
 
   // Filter state
   const [archiveFilter, setArchiveFilter] = useState<ArchiveFilter>('active');
@@ -485,10 +508,6 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   const [categoryFilter, setCategoryFilter] = useState('');
   const [spoolFilter, setSpoolFilter] = useState('');
   const [stockFilter, setStockFilter] = useState<'all' | 'stock' | 'configured'>('all');
-  // #1400: storage-location dropdown. Uses the sentinel `__none__` for the
-  // "no storage location set" group, same pattern as the category filter so
-  // users can find unfiled spools.
-  const [storageLocationFilter, setStorageLocationFilter] = useState('');
   const [search, setSearch] = useState('');
   const [viewMode, setViewMode] = useState<ViewMode>('table');
   const [sortState, setSortState] = useState<SortState>(loadSortState);
@@ -500,6 +519,28 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     } catch { return false; }
   });
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+
+  // Bulk-selection state for batch actions on the spool list (#1795).
+  // Cleared when the user switches filter/tab/page because cross-page selection
+  // produces a confusing toolbar count vs. visible-row count delta.
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [bulkEditOpen, setBulkEditOpen] = useState(false);
+  const [bulkConfirmAction, setBulkConfirmAction] = useState<'delete' | 'archive' | 'restore' | 'reset-consumed-counter' | null>(null);
+  const toggleSelected = useCallback((id: number) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+  const clearSelection = useCallback(() => setSelectedIds(new Set()), []);
+
+  // Clear selection on any filter/tab change so the toolbar count stays
+  // honest vs. what the user is actually looking at.
+  useEffect(() => {
+    setSelectedIds(new Set());
+  }, [archiveFilter, usageFilter, materialFilter, brandFilter, categoryFilter, spoolFilter, stockFilter, search]);
 
   // Pagination state (pageSize persisted to localStorage)
   const [pageIndex, setPageIndex] = useState(0);
@@ -523,6 +564,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
 
   // Query key and fetch function differ based on data source
   const spoolsQueryKey = spoolmanMode ? ['spoolman-inventory-spools'] : ['inventory-spools'];
+  const refreshSpoolQueries = () => invalidateSpoolAndLocationQueries(queryClient, spoolsQueryKey);
   const { data: spools, isLoading } = useQuery({
     queryKey: spoolsQueryKey,
     queryFn: () =>
@@ -534,6 +576,40 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     queryKey: ['printers'],
     queryFn: api.getPrinters,
   });
+
+  // CSV export (#1576) — downloads the active inventory as a CSV file.
+  const handleExportCsv = useCallback(async () => {
+    setExportingCsv(true);
+    try {
+      await api.exportSpoolsCsv();
+    } catch (err) {
+      showToast(
+        err instanceof Error ? err.message : t('inventory.csv.exportError', 'Export failed'),
+        'error',
+      );
+    } finally {
+      setExportingCsv(false);
+    }
+  }, [showToast, t]);
+
+  // Shown as the tooltip on both CSV buttons when they're disabled in Spoolman mode.
+  const spoolmanCsvHint = spoolmanMode
+    ? t('inventory.csv.spoolmanHint', 'In Spoolman mode, use Spoolman\'s built-in CSV import/export.')
+    : undefined;
+
+  const { data: storageLocations = [] } = useQuery({
+    queryKey: inventoryLocationsQueryKey,
+    queryFn: api.getLocations,
+  });
+
+  // Deep-link / filter: ?location_id=<id> or ?location_id=__none__
+  const _rawLocationParam = searchParams.get('location_id');
+  const storageLocationFilter =
+    _rawLocationParam === '__none__'
+      ? '__none__'
+      : _rawLocationParam && /^\d+$/.test(_rawLocationParam) && Number(_rawLocationParam) > 0
+        ? _rawLocationParam
+        : '';
 
   // Deep-link: open edit modal for ?spool=<id>
   // Prefer the already-loaded spool list (no extra API call); fall back to a
@@ -645,7 +721,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     mutationFn: (id: number) =>
       spoolmanMode ? api.deleteSpoolmanInventorySpool(id) : api.deleteSpool(id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: spoolsQueryKey });
+      refreshSpoolQueries();
       showToast(t('inventory.spoolDeleted'), 'success');
     },
     onError: (error: Error) => {
@@ -663,7 +739,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     mutationFn: (id: number) =>
       spoolmanMode ? api.archiveSpoolmanInventorySpool(id) : api.archiveSpool(id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: spoolsQueryKey });
+      refreshSpoolQueries();
       showToast(t('inventory.spoolArchived'), 'success');
     },
     onError: (error: Error) => {
@@ -681,7 +757,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     mutationFn: (id: number) =>
       spoolmanMode ? api.restoreSpoolmanInventorySpool(id) : api.restoreSpool(id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: spoolsQueryKey });
+      refreshSpoolQueries();
       showToast(t('inventory.spoolRestored'), 'success');
     },
     onError: (error: Error) => {
@@ -695,27 +771,146 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     },
   });
 
-  const resetUsageMutation = useMutation({
+  const resetConsumedCounterMutation = useMutation({
     mutationFn: (id: number) =>
-      spoolmanMode ? api.resetSpoolmanInventorySpoolUsage(id) : api.resetSpoolUsage(id),
+      spoolmanMode
+        ? api.resetSpoolmanInventorySpoolConsumedCounter(id)
+        : api.resetSpoolConsumedCounter(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: spoolsQueryKey });
-      showToast(t('inventory.usageReset'), 'success');
+      showToast(t('inventory.consumedCounterReset'), 'success');
     },
     onError: () => {
-      showToast(t('inventory.resetUsageFailed'), 'error');
+      showToast(t('inventory.resetConsumedCounterFailed'), 'error');
     },
   });
 
-  const bulkResetUsageMutation = useMutation({
+  const bulkResetConsumedCounterMutation = useMutation({
     mutationFn: (ids: number[]) =>
-      spoolmanMode ? api.bulkResetSpoolmanInventorySpoolUsage(ids) : api.bulkResetSpoolUsage(ids),
+      spoolmanMode
+        ? api.bulkResetSpoolmanInventorySpoolConsumedCounter(ids)
+        : api.bulkResetSpoolConsumedCounter(ids),
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: spoolsQueryKey });
-      showToast(t('inventory.allUsageReset', { count: data.reset }), 'success');
+      showToast(t('inventory.allConsumedCountersReset', { count: data.reset }), 'success');
+      // Close any open bulk-confirm modal + clear selection so the toolbar
+      // collapses after the action — matches the other three bulk mutations
+      // and stops the confirm dialog from lingering after Reset.
+      setBulkConfirmAction(null);
+      clearSelection();
     },
     onError: () => {
-      showToast(t('inventory.resetUsageFailed'), 'error');
+      showToast(t('inventory.resetConsumedCounterFailed'), 'error');
+    },
+  });
+
+  // Bulk action mutations (#1795). Each invalidates the same query keys as
+  // the per-spool equivalents so the table refreshes with the new state.
+  // Helper: count items that didn't succeed across the two response shapes
+  // (internal mode returns not_found, Spoolman returns errors[]). When the
+  // success count is 0 OR any failures occurred, surface that to the user
+  // instead of the silent green-toast-and-clear flow the first cut shipped.
+  const failedCount = (data: { not_found?: number[]; errors?: Array<{ id: number }> }): number =>
+    (data.not_found?.length ?? 0) + (data.errors?.length ?? 0);
+
+  const bulkUpdateMutation = useMutation({
+    mutationFn: async ({ ids, update }: { ids: number[]; update: Partial<Omit<InventorySpool, 'id' | 'archived_at' | 'created_at' | 'updated_at' | 'k_profiles'>> }): Promise<{ updated: number; not_found?: number[]; errors?: Array<{ id: number; status: number; detail: string }> }> => {
+      if (spoolmanMode) return api.bulkUpdateSpoolmanInventorySpools(ids, update);
+      return api.bulkUpdateSpools(ids, update);
+    },
+    onSuccess: (data) => {
+      refreshSpoolQueries();
+      const failed = failedCount(data);
+      if (data.updated === 0) {
+        showToast(t('inventory.bulk.updateAllFailed', { count: failed }), 'error');
+        return; // keep modal open + selection intact so user can retry
+      }
+      if (failed > 0) {
+        showToast(t('inventory.bulk.updatePartial', { ok: data.updated, failed }), 'warning');
+      } else {
+        showToast(t('inventory.bulk.updateSuccess', { count: data.updated }), 'success');
+      }
+      setBulkEditOpen(false);
+      clearSelection();
+    },
+    onError: (err: Error) => {
+      showToast(err.message || t('inventory.bulk.updateFailed'), 'error');
+    },
+  });
+
+  const bulkDeleteMutation = useMutation({
+    mutationFn: async (ids: number[]): Promise<{ deleted: number; not_found?: number[]; errors?: Array<{ id: number; status: number; detail: string }> }> => {
+      if (spoolmanMode) return api.bulkDeleteSpoolmanInventorySpools(ids);
+      return api.bulkDeleteSpools(ids);
+    },
+    onSuccess: (data) => {
+      refreshSpoolQueries();
+      const failed = failedCount(data);
+      if (data.deleted === 0) {
+        showToast(t('inventory.bulk.deleteAllFailed', { count: failed }), 'error');
+        return;
+      }
+      if (failed > 0) {
+        showToast(t('inventory.bulk.deletePartial', { ok: data.deleted, failed }), 'warning');
+      } else {
+        showToast(t('inventory.bulk.deleteSuccess', { count: data.deleted }), 'success');
+      }
+      setBulkConfirmAction(null);
+      clearSelection();
+    },
+    onError: (err: Error) => {
+      showToast(err.message || t('inventory.bulk.deleteFailed'), 'error');
+    },
+  });
+
+  const bulkArchiveMutation = useMutation({
+    mutationFn: async (ids: number[]): Promise<{ archived: number; already_archived?: number[]; not_found?: number[]; errors?: Array<{ id: number; status: number; detail: string }> }> => {
+      if (spoolmanMode) return api.bulkArchiveSpoolmanInventorySpools(ids);
+      return api.bulkArchiveSpools(ids);
+    },
+    onSuccess: (data) => {
+      refreshSpoolQueries();
+      // already-archived rows are NOT failures — they're correctly idempotent.
+      const failed = failedCount(data);
+      if (data.archived === 0 && failed > 0) {
+        showToast(t('inventory.bulk.archiveAllFailed', { count: failed }), 'error');
+        return;
+      }
+      if (failed > 0) {
+        showToast(t('inventory.bulk.archivePartial', { ok: data.archived, failed }), 'warning');
+      } else {
+        showToast(t('inventory.bulk.archiveSuccess', { count: data.archived }), 'success');
+      }
+      setBulkConfirmAction(null);
+      clearSelection();
+    },
+    onError: (err: Error) => {
+      showToast(err.message || t('inventory.bulk.archiveFailed'), 'error');
+    },
+  });
+
+  const bulkRestoreMutation = useMutation({
+    mutationFn: async (ids: number[]): Promise<{ restored: number; already_active?: number[]; not_found?: number[]; errors?: Array<{ id: number; status: number; detail: string }> }> => {
+      if (spoolmanMode) return api.bulkRestoreSpoolmanInventorySpools(ids);
+      return api.bulkRestoreSpools(ids);
+    },
+    onSuccess: (data) => {
+      refreshSpoolQueries();
+      const failed = failedCount(data);
+      if (data.restored === 0 && failed > 0) {
+        showToast(t('inventory.bulk.restoreAllFailed', { count: failed }), 'error');
+        return;
+      }
+      if (failed > 0) {
+        showToast(t('inventory.bulk.restorePartial', { ok: data.restored, failed }), 'warning');
+      } else {
+        showToast(t('inventory.bulk.restoreSuccess', { count: data.restored }), 'success');
+      }
+      setBulkConfirmAction(null);
+      clearSelection();
+    },
+    onError: (err: Error) => {
+      showToast(err.message || t('inventory.bulk.restoreFailed'), 'error');
     },
   });
 
@@ -941,9 +1136,15 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     // spools that haven't been assigned a storage location yet.
     if (storageLocationFilter) {
       if (storageLocationFilter === '__none__') {
-        filtered = filtered.filter((s) => !s.storage_location?.trim());
+        filtered = filtered.filter((s) => !s.location_id && !s.storage_location?.trim());
       } else {
-        filtered = filtered.filter((s) => s.storage_location?.trim() === storageLocationFilter);
+        const locId = Number(storageLocationFilter);
+        const locName = storageLocations.find((l) => l.id === locId)?.name?.trim().toLowerCase();
+        filtered = filtered.filter((s) => {
+          if (s.location_id != null) return s.location_id === locId;
+          if (locName) return (s.storage_location || '').trim().toLowerCase() === locName;
+          return false;
+        });
       }
     }
 
@@ -960,10 +1161,21 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     }
 
     return filtered;
-  }, [spools, archiveFilter, usageFilter, materialFilter, brandFilter, categoryFilter, spoolFilter, stockFilter, storageLocationFilter, search, lowStockThreshold]);
+  }, [spools, archiveFilter, usageFilter, materialFilter, brandFilter, categoryFilter, spoolFilter, stockFilter, storageLocationFilter, search, lowStockThreshold, storageLocations]);
 
   // Reset page on filter changes
   const resetPage = () => setPageIndex(0);
+
+  const setStorageLocationFilter = useCallback((value: string) => {
+    setSearchParams((prev) => {
+      prev.delete('location_id');
+      if (value) {
+        prev.set('location_id', value);
+      }
+      return prev;
+    }, { replace: true });
+    resetPage();
+  }, [setSearchParams]);
 
   // Unique values for filter dropdowns
   const uniqueMaterials = [...new Set(spools?.map((s) => s.material) || [])].sort();
@@ -977,8 +1189,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   });
   // #1400: storage-location distinct values. `.trim()` so accidental
   // trailing whitespace doesn't show up as a separate option.
-  const uniqueStorageLocations = [...new Set(spools?.map((s) => s.storage_location?.trim()).filter(Boolean) as string[] || [])].sort();
-  const hasUnsetStorageLocation = (spools ?? []).some((s) => !s.storage_location?.trim());
+  const hasUnsetStorageLocation = (spools ?? []).some((s) => !s.location_id && !s.storage_location?.trim());
 
   // Check if any filters are non-default
   const hasActiveFilters = archiveFilter !== 'active' || usageFilter !== 'all' || !!materialFilter || !!brandFilter || !!categoryFilter || !!spoolFilter || !!storageLocationFilter || stockFilter !== 'all' || !!search;
@@ -1104,9 +1315,12 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     setBrandFilter('');
     setCategoryFilter('');
     setSpoolFilter('');
-    setStorageLocationFilter('');
     setStockFilter('all');
     setSearch('');
+    setSearchParams((prev) => {
+      prev.delete('location_id');
+      return prev;
+    }, { replace: true });
     resetPage();
   };
 
@@ -1122,6 +1336,32 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
           <p className="text-bambu-gray mt-1">{t('inventory.subtitle')}</p>
         </div>
         <div className="flex items-center gap-2">
+          {/* CSV import/export (#1576). Operates on Printbuddy's local inventory.
+              In Spoolman mode the buttons stay visible (feature parity) but are
+              disabled with a hint pointing at Spoolman's own CSV export, since
+              Spoolman owns the data store in that mode. */}
+          <Button
+            variant="secondary"
+            disabled={spoolmanMode}
+            onClick={() => setCsvImportOpen(true)}
+            title={spoolmanCsvHint}
+          >
+            <Upload className="w-4 h-4" />
+            {t('inventory.csv.importButton', 'Import CSV')}
+          </Button>
+          <Button
+            variant="secondary"
+            disabled={spoolmanMode || exportingCsv}
+            onClick={handleExportCsv}
+            title={spoolmanCsvHint}
+          >
+            {exportingCsv ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+            {t('inventory.csv.exportButton', 'Export CSV')}
+          </Button>
+          <Button variant="secondary" onClick={() => setLocationsModalOpen(true)}>
+            <MapPin className="w-4 h-4" />
+            {t('locations.manage')}
+          </Button>
           <Button
             variant="secondary"
             disabled={filteredSpools.length === 0}
@@ -1167,10 +1407,10 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
               </div>
               {stats.totalConsumed > 0 && resetableSpoolIds.length > 0 && (
                 <button
-                  onClick={() => setConfirmAction({ type: 'reset-all-usage' })}
+                  onClick={() => setConfirmAction({ type: 'reset-all-consumed-counters' })}
                   className="p-1 text-bambu-gray hover:text-red-400 rounded transition-colors"
-                  title={t('inventory.resetAllUsageTooltip')}
-                  aria-label={t('inventory.resetAllUsage')}
+                  title={t('inventory.resetAllConsumedCountersTooltip')}
+                  aria-label={t('inventory.resetAllConsumedCounters')}
                 >
                   <Eraser className="w-3.5 h-3.5" />
                 </button>
@@ -1548,10 +1788,10 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
         {/* Storage location dropdown chip (#1400) — only render when at
             least one spool carries a storage location, otherwise it's noise
             (matches the category chip pattern). */}
-        {(uniqueStorageLocations.length > 0 || storageLocationFilter) && (
+        {(storageLocations.length > 0 || storageLocationFilter) && (
           <select
             value={storageLocationFilter}
-            onChange={(e) => { setStorageLocationFilter(e.target.value); resetPage(); }}
+            onChange={(e) => { setStorageLocationFilter(e.target.value); }}
             className={`px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors cursor-pointer focus:outline-none ${
               storageLocationFilter
                 ? 'bg-bambu-green/20 text-bambu-green border-bambu-green/30'
@@ -1559,8 +1799,8 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
             }`}
           >
             <option value="">{t('inventory.storageLocation')}</option>
-            {uniqueStorageLocations.map((loc) => (
-              <option key={loc} value={loc}>{loc}</option>
+            {storageLocations.map((loc) => (
+              <option key={loc.id} value={String(loc.id)}>{loc.name}</option>
             ))}
             {hasUnsetStorageLocation && (
               <option value="__none__">{t('inventory.storageLocationNone')}</option>
@@ -1590,6 +1830,54 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
           </span>
         )}
       </div>
+
+      {/* Bulk action toolbar (#1795). Appears as soon as at least one
+          spool is selected; sticky so it stays visible while the user
+          scrolls a long list. */}
+      {selectedIds.size > 0 && viewMode !== 'forecast' && (
+        <div className="sticky top-2 z-10 mb-4 flex items-center gap-2 px-3 py-2 bg-bambu-green/10 border border-bambu-green/30 rounded-lg backdrop-blur-sm">
+          <span className="text-sm text-bambu-green font-medium">
+            {t('inventory.bulk.selectionCount', { count: selectedIds.size })}
+          </span>
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            <Button size="sm" variant="secondary" onClick={() => setBulkEditOpen(true)}>
+              <Edit2 className="w-3.5 h-3.5 mr-1.5" />
+              {t('inventory.bulk.edit')}
+            </Button>
+            <Button size="sm" variant="secondary" onClick={() => setLabelPickerSpoolIds([...selectedIds])}>
+              <Printer className="w-3.5 h-3.5 mr-1.5" />
+              {t('inventory.bulk.printLabels')}
+            </Button>
+            <Button size="sm" variant="secondary" onClick={() => setBulkConfirmAction('reset-consumed-counter')}>
+              <Eraser className="w-3.5 h-3.5 mr-1.5" />
+              {t('inventory.bulk.resetUsage')}
+            </Button>
+            {archiveFilter === 'archived' ? (
+              <Button size="sm" variant="secondary" onClick={() => setBulkConfirmAction('restore')}>
+                <RotateCcw className="w-3.5 h-3.5 mr-1.5" />
+                {t('inventory.bulk.restore')}
+              </Button>
+            ) : (
+              <Button size="sm" variant="secondary" onClick={() => setBulkConfirmAction('archive')}>
+                <Archive className="w-3.5 h-3.5 mr-1.5" />
+                {t('inventory.bulk.archive')}
+              </Button>
+            )}
+            <Button size="sm" variant="danger" onClick={() => setBulkConfirmAction('delete')}>
+              <Trash2 className="w-3.5 h-3.5 mr-1.5" />
+              {t('inventory.bulk.delete')}
+            </Button>
+            <button
+              className="p-1.5 text-bambu-gray hover:text-white rounded transition-colors"
+              onClick={clearSelection}
+              title={t('inventory.bulk.clearSelection')}
+              aria-label={t('inventory.bulk.clearSelection')}
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Content */}
       {isLoading ? (
@@ -1726,6 +2014,34 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
               <table className="w-full">
                 <thead>
                   <tr className="border-b border-bambu-dark-tertiary bg-bambu-dark-tertiary/30">
+                    <th className="w-10 px-3 py-3">
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4 cursor-pointer"
+                        aria-label={t('inventory.bulk.selectAllVisible')}
+                        checked={pagedItems.length > 0 && pagedItems.every((item) => {
+                          const ids = item.type === 'group' ? item.spools.map((s) => s.id) : [item.spool.id];
+                          return ids.every((id) => selectedIds.has(id));
+                        })}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            const next = new Set(selectedIds);
+                            for (const item of pagedItems) {
+                              const ids = item.type === 'group' ? item.spools.map((s) => s.id) : [item.spool.id];
+                              for (const id of ids) next.add(id);
+                            }
+                            setSelectedIds(next);
+                          } else {
+                            const next = new Set(selectedIds);
+                            for (const item of pagedItems) {
+                              const ids = item.type === 'group' ? item.spools.map((s) => s.id) : [item.spool.id];
+                              for (const id of ids) next.delete(id);
+                            }
+                            setSelectedIds(next);
+                          }
+                        }}
+                      />
+                    </th>
                     {visibleColumns.map((colId) => {
                       const sortable = !!columnSortValues[colId];
                       const isActive = sortState?.column === colId;
@@ -1772,6 +2088,18 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
                           pct={pct}
                           isExpanded={isExpanded}
                           onToggle={() => toggleGroupExpand(key)}
+                          selectedIds={selectedIds}
+                          onToggleSelected={toggleSelected}
+                          onToggleGroupSelected={(ids, select) => {
+                            setSelectedIds((prev) => {
+                              const next = new Set(prev);
+                              for (const id of ids) {
+                                if (select) next.add(id);
+                                else next.delete(id);
+                              }
+                              return next;
+                            });
+                          }}
                           onEdit={(s) => setFormModal({ spool: s, mode: 'edit' })}
                           onCopy={(s) => setFormModal({ spool: s, mode: 'copy' })}
                           onArchive={(id) => setConfirmAction({ type: 'archive', spoolId: id })}
@@ -1781,7 +2109,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
                             setAssignModalSpool(spool);
                             setAssignPrinterId('');
                           }}
-                          onResetUsage={(id) => setConfirmAction({ type: 'reset-usage', spoolId: id })}
+                          onResetConsumedCounter={(id) => setConfirmAction({ type: 'reset-consumed-counter', spoolId: id })}
                           visibleColumns={visibleColumns}
                           assignmentMap={assignmentMap}
                           catalogMap={catalogMap}
@@ -1801,6 +2129,8 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
                         spool={spool}
                         remaining={remaining}
                         pct={pct}
+                        isSelected={selectedIds.has(spool.id)}
+                        onToggleSelected={() => toggleSelected(spool.id)}
                         onEdit={() => setFormModal({ spool, mode: 'edit' })}
                         onCopy={() => setFormModal({ spool: spool, mode: 'copy' })}
                         onRestore={() => restoreMutation.mutate(spool.id)}
@@ -1811,7 +2141,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
                           setAssignModalSpool(spool);
                           setAssignPrinterId('');
                         }}
-                        onResetUsage={() => setConfirmAction({ type: 'reset-usage', spoolId: spool.id })}
+                        onResetConsumedCounter={() => setConfirmAction({ type: 'reset-consumed-counter', spoolId: spool.id })}
                         visibleColumns={visibleColumns}
                         assignmentMap={assignmentMap}
                         catalogMap={catalogMap}
@@ -1977,25 +2307,25 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
         />
       )}
 
-      {/* Confirm Modal (delete / archive / reset-usage / reset-all-usage) */}
+      {/* Confirm Modal (delete / archive / reset-consumed-counter / reset-all-consumed-counters) */}
       {confirmAction && (
         <ConfirmModal
           title={
             confirmAction.type === 'delete' ? t('common.delete') :
             confirmAction.type === 'archive' ? t('inventory.archive') :
-            confirmAction.type === 'reset-usage' ? t('inventory.resetUsage') :
-            t('inventory.resetAllUsage')
+            confirmAction.type === 'reset-consumed-counter' ? t('inventory.resetConsumedCounter') :
+            t('inventory.resetAllConsumedCounters')
           }
           message={
             confirmAction.type === 'delete' ? t('inventory.deleteConfirm') :
             confirmAction.type === 'archive' ? t('inventory.archiveConfirm') :
-            confirmAction.type === 'reset-usage' ? t('inventory.resetUsageConfirm') :
-            t('inventory.resetAllUsageConfirm', { count: resetableSpoolIds.length })
+            confirmAction.type === 'reset-consumed-counter' ? t('inventory.resetConsumedCounterConfirm') :
+            t('inventory.resetAllConsumedCountersConfirm', { count: resetableSpoolIds.length })
           }
           confirmText={
             confirmAction.type === 'delete' ? t('common.delete') :
             confirmAction.type === 'archive' ? t('inventory.archive') :
-            t('inventory.resetUsage')
+            t('inventory.resetConsumedCounter')
           }
           variant={confirmAction.type === 'archive' ? 'warning' : 'danger'}
           onConfirm={() => {
@@ -2003,10 +2333,10 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
               deleteMutation.mutate(confirmAction.spoolId);
             } else if (confirmAction.type === 'archive') {
               archiveMutation.mutate(confirmAction.spoolId);
-            } else if (confirmAction.type === 'reset-usage') {
-              resetUsageMutation.mutate(confirmAction.spoolId);
+            } else if (confirmAction.type === 'reset-consumed-counter') {
+              resetConsumedCounterMutation.mutate(confirmAction.spoolId);
             } else {
-              bulkResetUsageMutation.mutate(resetableSpoolIds);
+              bulkResetConsumedCounterMutation.mutate(resetableSpoolIds);
             }
             setConfirmAction(null);
           }}
@@ -2029,6 +2359,76 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
         availableSpools={filteredSpools}
         initialSelectedIds={labelPickerSpoolIds ?? []}
         spoolmanMode={spoolmanMode}
+      />
+
+      <BulkEditSpoolsModal
+        isOpen={bulkEditOpen}
+        selectedCount={selectedIds.size}
+        isPending={bulkUpdateMutation.isPending}
+        availableLocations={storageLocations.map((l) => ({ id: l.id, name: l.name }))}
+        availableMaterials={dedupeAndSort((spools ?? []).map((s) => s.material))}
+        availableSubtypes={dedupeAndSort((spools ?? []).map((s) => s.subtype))}
+        availableBrands={dedupeAndSort((spools ?? []).map((s) => s.brand))}
+        availableCategories={dedupeAndSort((spools ?? []).map((s) => s.category))}
+        availableSlicerFilaments={dedupeAndSort((spools ?? []).map((s) => s.slicer_filament))}
+        availableSlicerFilamentNames={dedupeAndSort((spools ?? []).map((s) => s.slicer_filament_name))}
+        onClose={() => setBulkEditOpen(false)}
+        onApply={(patch) => bulkUpdateMutation.mutate({ ids: [...selectedIds], update: patch })}
+      />
+
+      {bulkConfirmAction && (
+        <ConfirmModal
+          title={
+            bulkConfirmAction === 'delete' ? t('inventory.bulk.deleteTitle') :
+            bulkConfirmAction === 'archive' ? t('inventory.bulk.archiveTitle') :
+            bulkConfirmAction === 'restore' ? t('inventory.bulk.restoreTitle') :
+            t('inventory.bulk.resetUsageTitle')
+          }
+          message={
+            bulkConfirmAction === 'delete' ? t('inventory.bulk.deleteMessage', { count: selectedIds.size }) :
+            bulkConfirmAction === 'archive' ? t('inventory.bulk.archiveMessage', { count: selectedIds.size }) :
+            bulkConfirmAction === 'restore' ? t('inventory.bulk.restoreMessage', { count: selectedIds.size }) :
+            t('inventory.bulk.resetUsageMessage', { count: selectedIds.size })
+          }
+          confirmText={
+            bulkConfirmAction === 'delete' ? t('common.delete') :
+            bulkConfirmAction === 'archive' ? t('inventory.archive') :
+            bulkConfirmAction === 'restore' ? t('inventory.restore') :
+            t('inventory.resetConsumedCounter')
+          }
+          variant={bulkConfirmAction === 'delete' ? 'danger' : 'warning'}
+          isLoading={
+            bulkDeleteMutation.isPending ||
+            bulkArchiveMutation.isPending ||
+            bulkRestoreMutation.isPending ||
+            bulkResetConsumedCounterMutation.isPending
+          }
+          onConfirm={() => {
+            const ids = [...selectedIds];
+            if (bulkConfirmAction === 'delete') bulkDeleteMutation.mutate(ids);
+            else if (bulkConfirmAction === 'archive') bulkArchiveMutation.mutate(ids);
+            else if (bulkConfirmAction === 'restore') bulkRestoreMutation.mutate(ids);
+            else bulkResetConsumedCounterMutation.mutate(ids);
+          }}
+          onCancel={() => setBulkConfirmAction(null)}
+        />
+      )}
+
+      {csvImportOpen && (
+        <SpoolCsvImportModal
+          onClose={() => setCsvImportOpen(false)}
+          onImported={(created) => {
+            setCsvImportOpen(false);
+            queryClient.invalidateQueries({ queryKey: spoolsQueryKey });
+            showToast(t('inventory.csv.importSuccess', '{{count}} spools imported', { count: created }), 'success');
+          }}
+        />
+      )}
+
+      <LocationsModal
+        open={locationsModalOpen}
+        onClose={() => setLocationsModalOpen(false)}
+        onPickLocation={(id) => setStorageLocationFilter(String(id))}
       />
     </div>
   );
@@ -2229,12 +2629,15 @@ function SpoolCard({
 
 /* Single spool row for table view */
 function SpoolTableRow({
-  spool, remaining, pct, onEdit, onCopy, onRestore, onArchive, onDelete, onPrintLabel, onAssignToPrinter, onResetUsage,
+  spool, remaining, pct, isSelected, onToggleSelected,
+  onEdit, onCopy, onRestore, onArchive, onDelete, onPrintLabel, onAssignToPrinter, onResetConsumedCounter,
   visibleColumns, assignmentMap, catalogMap, currencySymbol, dateFormat, t, onSyncWeight,
 }: {
   spool: InventorySpool;
   remaining: number;
   pct: number;
+  isSelected?: boolean;
+  onToggleSelected?: () => void;
   onEdit: () => void;
   onCopy?: () => void;
   onRestore: () => void;
@@ -2242,7 +2645,7 @@ function SpoolTableRow({
   onDelete: () => void;
   onPrintLabel?: () => void;
   onAssignToPrinter?: () => void;
-  onResetUsage?: () => void;
+  onResetConsumedCounter?: () => void;
   visibleColumns: string[];
   assignmentMap: Record<number, LocationDisplay>;
   catalogMap: Record<number, SpoolCatalogEntry>;
@@ -2255,9 +2658,20 @@ function SpoolTableRow({
     <tr
       className={`border-b border-bambu-dark-tertiary/50 hover:bg-bambu-dark-tertiary/30 transition-colors cursor-pointer ${
         spool.archived_at ? 'opacity-50' : ''
-      }`}
+      } ${isSelected ? 'bg-bambu-green/10' : ''}`}
       onClick={onEdit}
     >
+      <td className="w-10 px-3 py-3" onClick={(e) => e.stopPropagation()}>
+        {onToggleSelected && (
+          <input
+            type="checkbox"
+            className="h-4 w-4 cursor-pointer"
+            aria-label={t('inventory.bulk.selectRow')}
+            checked={!!isSelected}
+            onChange={onToggleSelected}
+          />
+        )}
+      </td>
       {visibleColumns.map((colId) => (
         <td key={colId} className="py-3 px-4">
           {columnCells[colId]?.({ spool, remaining, pct, assignmentMap, catalogMap, currencySymbol, dateFormat, t, onSyncWeight })}
@@ -2283,12 +2697,12 @@ function SpoolTableRow({
               <AssignSpoolIcon className="w-4 h-4" />
             </button>
           )}
-          {onResetUsage && spool.weight_used > 0 && (
+          {onResetConsumedCounter && spool.weight_used > 0 && (
             // Eraser also shows on archived spools (#1390 follow-up):
             // archived consumed weight now counts in "Total Consumed", so
             // the user needs a way to zero an archived spool's tracking
             // counter individually without having to un-archive it first.
-            <button onClick={onResetUsage} className="p-1.5 text-bambu-gray hover:text-orange-400 rounded transition-colors" title={t('inventory.resetUsageTooltip')}>
+            <button onClick={onResetConsumedCounter} className="p-1.5 text-bambu-gray hover:text-orange-400 rounded transition-colors" title={t('inventory.resetConsumedCounterTooltip')}>
               <Eraser className="w-4 h-4" />
             </button>
           )}
@@ -2313,8 +2727,9 @@ function SpoolTableRow({
 /* Grouped spool rows for table view */
 function SpoolTableGroup({
   spools, headerSpool, remaining, pct, isExpanded, onToggle,
-  onEdit, onCopy, onArchive, onDelete, onPrintLabel, onAssignToPrinter, onResetUsage,
+  onEdit, onCopy, onArchive, onDelete, onPrintLabel, onAssignToPrinter, onResetConsumedCounter,
   visibleColumns, assignmentMap, catalogMap, currencySymbol, dateFormat, t, onSyncWeight,
+  selectedIds, onToggleSelected, onToggleGroupSelected,
 }: {
   spools: InventorySpool[];
   // Aggregate of all members (summed quantities, shared identity) — rendered
@@ -2330,7 +2745,7 @@ function SpoolTableGroup({
   onDelete: (id: number) => void;
   onPrintLabel?: (spoolId: number) => void;
   onAssignToPrinter?: (spool: InventorySpool) => void;
-  onResetUsage?: (id: number) => void;
+  onResetConsumedCounter?: (id: number) => void;
   visibleColumns: string[];
   assignmentMap: Record<number, LocationDisplay>;
   catalogMap: Record<number, SpoolCatalogEntry>;
@@ -2338,7 +2753,11 @@ function SpoolTableGroup({
   dateFormat: DateFormat;
   t: TFn;
   onSyncWeight?: (spool: InventorySpool) => void;
+  selectedIds?: Set<number>;
+  onToggleSelected?: (id: number) => void;
+  onToggleGroupSelected?: (ids: number[], select: boolean) => void;
 }) {
+  const allMembersSelected = !!selectedIds && spools.every((s) => selectedIds.has(s.id));
   return (
     <>
       {/* Group header row */}
@@ -2346,6 +2765,17 @@ function SpoolTableGroup({
         className="border-b border-bambu-dark-tertiary/50 hover:bg-bambu-dark-tertiary/30 transition-colors cursor-pointer bg-bambu-green/5"
         onClick={onToggle}
       >
+        <td className="w-10 px-3 py-3" onClick={(e) => e.stopPropagation()}>
+          {onToggleGroupSelected && (
+            <input
+              type="checkbox"
+              className="h-4 w-4 cursor-pointer"
+              aria-label={t('inventory.bulk.selectGroup')}
+              checked={allMembersSelected}
+              onChange={(e) => onToggleGroupSelected(spools.map((s) => s.id), e.target.checked)}
+            />
+          )}
+        </td>
         {visibleColumns.map((colId, idx) => (
           <td key={colId} className="py-3 px-4">
             {idx === 0 ? (
@@ -2378,6 +2808,8 @@ function SpoolTableGroup({
             spool={spool}
             remaining={r}
             pct={p}
+            isSelected={selectedIds?.has(spool.id)}
+            onToggleSelected={onToggleSelected ? () => onToggleSelected(spool.id) : undefined}
             onEdit={() => onEdit(spool)}
             onCopy={onCopy ? () => onCopy(spool) : undefined}
             onRestore={() => {}}
@@ -2385,7 +2817,7 @@ function SpoolTableGroup({
             onDelete={() => onDelete(spool.id)}
             onPrintLabel={onPrintLabel ? () => onPrintLabel(spool.id) : undefined}
             onAssignToPrinter={onAssignToPrinter ? () => onAssignToPrinter(spool) : undefined}
-            onResetUsage={onResetUsage ? () => onResetUsage(spool.id) : undefined}
+            onResetConsumedCounter={onResetConsumedCounter ? () => onResetConsumedCounter(spool.id) : undefined}
             visibleColumns={visibleColumns}
             assignmentMap={assignmentMap}
             catalogMap={catalogMap}

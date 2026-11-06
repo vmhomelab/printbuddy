@@ -27,7 +27,7 @@ class ArchiveDuplicate(BaseModel):
 
     id: int
     print_name: str | None
-    created_at: datetime
+    created_at: datetime | None
     match_type: str  # "exact" (hash match) or "similar" (name match)
 
 
@@ -94,7 +94,7 @@ class ArchiveResponse(BaseModel):
     energy_kwh: float | None = None
     energy_cost: float | None = None
 
-    created_at: datetime
+    created_at: datetime | None
 
     # User tracking (Issue #206)
     created_by_id: int | None = None
@@ -137,7 +137,7 @@ class ArchiveSlim(BaseModel):
     completed_at: datetime | None
     cost: float | None
     quantity: int = 1
-    created_at: datetime
+    created_at: datetime | None
 
     class Config:
         from_attributes = True
@@ -147,6 +147,10 @@ class ArchiveStats(BaseModel):
     total_prints: int
     successful_prints: int
     failed_prints: int
+    # User/system-stopped prints (PrintLogEntry.status in stopped/cancelled/
+    # skipped). Defaulted so older clients that don't send this field still
+    # validate against historical fixtures.
+    cancelled_prints: int = 0
     total_print_time_hours: float
     total_filament_grams: float
     total_cost: float
@@ -215,25 +219,3 @@ class ProjectPageUpdate(BaseModel):
     copyright: str | None = None
     profile_title: str | None = None
     profile_description: str | None = None
-
-
-class ReprintRequest(BaseModel):
-    """Request body for reprinting an archive."""
-
-    # Plate selection for multi-plate 3MF files
-    # If not specified, auto-detects from file (legacy behavior for single-plate files)
-    plate_id: int | None = None
-    plate_name: str | None = None
-
-    # AMS slot mapping: list of tray IDs for each filament slot in the 3MF
-    # Global tray ID = (ams_id * 4) + slot_id, external = 254
-    ams_mapping: list[int] | None = None
-
-    # Print options
-    bed_levelling: bool = True
-    print_platform_type: int | None = None
-    flow_cali: bool = False
-    vibration_cali: bool = True
-    layer_inspect: bool = False
-    timelapse: bool = False
-    use_ams: bool = True  # Not exposed in UI, but needed for API

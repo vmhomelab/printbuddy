@@ -202,7 +202,11 @@ describe('QueuePage', () => {
     });
 
     it('shows completed items in history', async () => {
+      const user = userEvent.setup();
       render(<QueuePage />);
+
+      // The History tab now owns the completed/cancelled/failed list.
+      await user.click(await screen.findByRole('button', { name: /^History/ }));
 
       await waitFor(() => {
         expect(screen.getByText('Completed Print')).toBeInTheDocument();
@@ -333,7 +337,10 @@ describe('QueuePage', () => {
     });
 
     it('shows re-queue button for history items', async () => {
+      const user = userEvent.setup();
       render(<QueuePage />);
+
+      await user.click(await screen.findByRole('button', { name: /^History/ }));
 
       await waitFor(() => {
         expect(screen.getByText('Completed Print')).toBeInTheDocument();
@@ -378,12 +385,16 @@ describe('QueuePage', () => {
         }),
       );
 
+      const user = userEvent.setup();
       render(<QueuePage />);
+
+      // History lives in its own tab (upstream layout); server-side paging still applies.
+      await user.click(await screen.findByRole('button', { name: /^History/ }));
 
       await screen.findByText('History Print 1');
       expect(screen.queryByText('History Print 51')).not.toBeInTheDocument();
 
-      await userEvent.click(screen.getByRole('button', { name: /show more/i }));
+      await user.click(screen.getByRole('button', { name: /show more/i }));
 
       await screen.findByText('History Print 51');
     });
@@ -391,7 +402,11 @@ describe('QueuePage', () => {
 
   describe('clear history', () => {
     it('shows clear history button when history exists', async () => {
+      const user = userEvent.setup();
       render(<QueuePage />);
+
+      // Clear History only renders inside the History tab now.
+      await user.click(await screen.findByRole('button', { name: /^History/ }));
 
       await waitFor(() => {
         expect(screen.getByText('Clear History')).toBeInTheDocument();
@@ -401,6 +416,8 @@ describe('QueuePage', () => {
     it('opens confirm modal when clicking clear history', async () => {
       const user = userEvent.setup();
       render(<QueuePage />);
+
+      await user.click(await screen.findByRole('button', { name: /^History/ }));
 
       await waitFor(() => {
         expect(screen.getByText('Clear History')).toBeInTheDocument();

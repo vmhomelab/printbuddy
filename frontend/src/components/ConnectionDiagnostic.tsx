@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
@@ -40,8 +40,12 @@ export function DiagnosticChecklist({ result }: { result: PrinterDiagnosticResul
         : 'bg-red-500/10 border-red-500/30 text-red-300';
 
   const renderCheck = (check: DiagnosticCheck) => {
+    const params =
+      check.id === 'port_rtsps'
+        ? { protocol: 'RTSPS', port: 322, ...check.params }
+        : check.params;
     const detail = t(`diagnostic.check.${check.id}.${check.status}`, {
-      ...check.params,
+      ...params,
       defaultValue: '',
     });
     return (
@@ -55,7 +59,9 @@ export function DiagnosticChecklist({ result }: { result: PrinterDiagnosticResul
           <StatusIcon status={check.status} />
         </div>
         <div className="flex-1 min-w-0">
-          <div className="text-sm text-white">{t(`diagnostic.check.${check.id}.title`)}</div>
+          <div className="text-sm text-white">
+            {t(`diagnostic.check.${check.id}.title`, params)}
+          </div>
           {detail && <div className="text-xs text-bambu-gray mt-0.5">{detail}</div>}
         </div>
       </li>
@@ -77,6 +83,13 @@ type Connection = {
   serial_number?: string;
   access_code?: string;
 };
+
+// Keep in sync with backend `PUBLISH_WAIT_DEFAULT` in
+// backend/app/services/printer_diagnostic.py — that's the upper bound on how
+// long the existing-printer route waits for the printer's first status report
+// after a bridge reconnect. The countdown is purely cosmetic; if the two
+// drift the worst case is the hint text being off by a couple of seconds.
+const PUBLISH_WAIT_DEFAULT_SECONDS = 10;
 
 type ConnectionDiagnosticModalProps = {
   onClose: () => void;
@@ -114,6 +127,24 @@ export function ConnectionDiagnosticModal(props: ConnectionDiagnosticModalProps)
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [onClose]);
 
+  // Tick an elapsed-seconds counter while the diagnostic is running so the
+  // existing-printer flow (which waits up to PUBLISH_WAIT_DEFAULT_SECONDS for
+  // the printer's first status report) doesn't look hung. Resets on each
+  // (re)run. No effect on the pre-add flow other than a ticking counter,
+  // which is still useful feedback.
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  useEffect(() => {
+    if (!diagnose.isPending) {
+      setElapsedSeconds(0);
+      return;
+    }
+    const startedAt = Date.now();
+    const interval = window.setInterval(() => {
+      setElapsedSeconds(Math.floor((Date.now() - startedAt) / 1000));
+    }, 500);
+    return () => window.clearInterval(interval);
+  }, [diagnose.isPending]);
+
   const result = diagnose.data as PrinterDiagnosticResult | undefined;
 
   return (
@@ -140,9 +171,20 @@ export function ConnectionDiagnosticModal(props: ConnectionDiagnosticModalProps)
 
         <div className="p-6 space-y-4 overflow-y-auto">
           {diagnose.isPending && (
-            <div className="flex items-center gap-2 text-bambu-gray">
-              <Loader2 className="w-4 h-4 animate-spin" />
-              <span>{t('diagnostic.running')}</span>
+            <div className="space-y-1.5">
+              <div className="flex items-center gap-2 text-bambu-gray">
+                <Loader2 className="w-4 h-4 animate-spin" />
+                <span>
+                  {elapsedSeconds > 0
+                    ? t('diagnostic.runningElapsed', { elapsed: elapsedSeconds })
+                    : t('diagnostic.running')}
+                </span>
+              </div>
+              {printerId !== undefined && (
+                <p className="text-xs text-bambu-gray-light pl-6">
+                  {t('diagnostic.waitingForReportHint', { max: PUBLISH_WAIT_DEFAULT_SECONDS })}
+                </p>
+              )}
             </div>
           )}
 

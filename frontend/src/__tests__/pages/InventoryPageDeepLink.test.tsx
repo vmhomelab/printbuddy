@@ -78,7 +78,7 @@ const MOCK_SETTINGS = {
   default_printer_id: null,
   virtual_printer_enabled: false,
   virtual_printer_access_code: '',
-  virtual_printer_mode: 'immediate',
+  virtual_printer_mode: 'archive',
   dark_style: 'classic',
   dark_background: 'neutral',
   dark_accent: 'green',
@@ -141,6 +141,7 @@ function setupCommonHandlers(spoolList: object[]) {
     http.get('/api/v1/inventory/color-catalog', () => HttpResponse.json([])),
     http.get('/api/v1/inventory/colors', () => HttpResponse.json([])),
     http.get('/api/v1/inventory/spool-catalog', () => HttpResponse.json([])),
+    http.get('/api/v1/inventory/locations', () => HttpResponse.json([])),
     http.get('/api/v1/printers/', () => HttpResponse.json([])),
   );
 }

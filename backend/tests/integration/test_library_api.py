@@ -46,6 +46,61 @@ class TestLibraryFoldersAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_folder_tree_exposes_latest_activity_at_from_files(
+        self, async_client: AsyncClient, folder_factory, db_session
+    ):
+        """#1770: folder list returns latest_activity_at = MAX(folder.updated_at,
+        MAX(immediate-child file.updated_at)) so the frontend can sort by
+        recent activity. Adding a file with a later updated_at must bubble it.
+        """
+        from datetime import datetime, timedelta
+
+        from backend.app.models.library import LibraryFile
+
+        folder = await folder_factory(name="Active Folder")
+        # File whose updated_at is well after the folder's. Activity should
+        # surface this timestamp, not the folder's stale one.
+        future = datetime.utcnow() + timedelta(hours=24)
+        db_session.add(
+            LibraryFile(
+                folder_id=folder.id,
+                filename="model.3mf",
+                file_path="library/model.3mf",
+                file_type="3mf",
+                file_size=123,
+                updated_at=future,
+            )
+        )
+        await db_session.commit()
+
+        response = await async_client.get("/api/v1/library/folders")
+        assert response.status_code == 200
+        items = response.json()
+        assert len(items) == 1
+        item = items[0]
+        assert item["id"] == folder.id
+        assert item["latest_activity_at"] is not None
+        # latest_activity_at should be at least the future stamp we set.
+        assert item["latest_activity_at"] >= future.isoformat()
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_folder_tree_latest_activity_at_falls_back_to_folder_updated_at(
+        self, async_client: AsyncClient, folder_factory, db_session
+    ):
+        """#1770: a folder with no files reports its own updated_at, not null —
+        otherwise the activity sort would dump every empty folder to one end."""
+        await folder_factory(name="Empty Folder")
+        response = await async_client.get("/api/v1/library/folders")
+        assert response.status_code == 200
+        items = response.json()
+        assert len(items) == 1
+        item = items[0]
+        # latest_activity_at == folder.updated_at when there are no files
+        assert item["latest_activity_at"] is not None
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_create_folder(self, async_client: AsyncClient, db_session):
         """Verify folder can be created."""
         data = {"name": "New Folder"}
@@ -245,6 +300,52 @@ class TestLibraryFilesAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_list_files_internal_only(self, async_client: AsyncClient, folder_factory, file_factory, db_session):
+        """#1621: `internal_only=true` restricts the listing to files in managed
+        storage (`is_external=False`) so a linked NAS with hundreds of files
+        doesn't drown the user's own uploads in the "All Files" sidebar view."""
+        internal_folder = await folder_factory(name="My uploads")
+        external_folder = await folder_factory(name="NAS", is_external=True, external_path="/mnt/nas")
+
+        internal_file = await file_factory(folder_id=internal_folder.id, filename="mine.3mf", is_external=False)
+        await file_factory(folder_id=external_folder.id, filename="nas.3mf", is_external=True)
+        root_file = await file_factory(filename="root.3mf", is_external=False)  # Root-uploaded is always internal.
+
+        response = await async_client.get("/api/v1/library/files?include_root=false&internal_only=true")
+        assert response.status_code == 200
+        ids = {f["id"] for f in response.json()}
+        assert ids == {internal_file.id, root_file.id}
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_list_files_external_only(self, async_client: AsyncClient, folder_factory, file_factory, db_session):
+        """#1621 symmetric: `external_only=true` returns the combined view
+        across every linked external folder so users with several mounts can
+        see all external content in one place without clicking each folder."""
+        internal_folder = await folder_factory(name="My uploads")
+        nas_a = await folder_factory(name="NAS A", is_external=True, external_path="/mnt/a")
+        nas_b = await folder_factory(name="NAS B", is_external=True, external_path="/mnt/b")
+
+        await file_factory(folder_id=internal_folder.id, filename="mine.3mf", is_external=False)
+        ext_a = await file_factory(folder_id=nas_a.id, filename="a.3mf", is_external=True)
+        ext_b = await file_factory(folder_id=nas_b.id, filename="b.3mf", is_external=True)
+
+        response = await async_client.get("/api/v1/library/files?include_root=false&external_only=true")
+        assert response.status_code == 200
+        ids = {f["id"] for f in response.json()}
+        assert ids == {ext_a.id, ext_b.id}
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_list_files_internal_and_external_mutually_exclusive(self, async_client: AsyncClient, db_session):
+        """Both flags together is a caller bug — fail loud (400) rather than
+        silently picking one, so a frontend regression is caught immediately."""
+        response = await async_client.get("/api/v1/library/files?internal_only=true&external_only=true")
+        assert response.status_code == 400
+        assert "mutually exclusive" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_get_file(self, async_client: AsyncClient, file_factory, db_session):
         """Verify single file can be retrieved."""
         lib_file = await file_factory(filename="test.3mf")
@@ -310,22 +411,24 @@ class TestLibraryFilesAPI:
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_rename_file_invalid_path_separator(self, async_client: AsyncClient, file_factory, db_session):
-        """Verify file rename fails with path separators."""
+        """Verify file rename fails with a forward slash (FAT32-illegal, #1540)."""
         lib_file = await file_factory(filename="test.3mf")
         data = {"filename": "path/to/file.3mf"}
         response = await async_client.put(f"/api/v1/library/files/{lib_file.id}", json=data)
         assert response.status_code == 400
-        assert "path separator" in response.json()["detail"].lower()
+        assert "invalid character" in response.json()["detail"].lower()
+        assert "/" in response.json()["detail"]
 
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_rename_file_invalid_backslash(self, async_client: AsyncClient, file_factory, db_session):
-        """Verify file rename fails with backslash."""
+        """Verify file rename fails with a backslash (FAT32-illegal, #1540)."""
         lib_file = await file_factory(filename="test.3mf")
         data = {"filename": "path\\to\\file.3mf"}
         response = await async_client.put(f"/api/v1/library/files/{lib_file.id}", json=data)
         assert response.status_code == 400
-        assert "path separator" in response.json()["detail"].lower()
+        assert "invalid character" in response.json()["detail"].lower()
+        assert "\\" in response.json()["detail"]
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -408,6 +511,139 @@ class TestLibraryFilesAPI:
         assert test_file is not None
         assert test_file["created_by_id"] == user.id
         assert test_file["created_by_username"] == "testuploader"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_list_files_recursive_includes_subfolders(
+        self, async_client: AsyncClient, folder_factory, file_factory
+    ):
+        """#1268: ?recursive=true with folder_id must include every descendant.
+
+        Tree:
+            toys/             ← f_toys, direct file "robot_top.3mf"
+              cars/           ← child of toys, file "robot_car.3mf"
+                race/         ← grandchild, file "robot_race.3mf"
+            other/            ← unrelated, file "robot_other.3mf" (must NOT appear)
+        """
+        toys = await folder_factory(name="toys")
+        cars = await folder_factory(name="cars", parent_id=toys.id)
+        race = await folder_factory(name="race", parent_id=cars.id)
+        other = await folder_factory(name="other")
+
+        top = await file_factory(folder_id=toys.id, filename="robot_top.3mf")
+        mid = await file_factory(folder_id=cars.id, filename="robot_car.3mf")
+        deep = await file_factory(folder_id=race.id, filename="robot_race.3mf")
+        await file_factory(folder_id=other.id, filename="robot_other.3mf")
+
+        # Non-recursive: only the file directly under toys.
+        r = await async_client.get(f"/api/v1/library/files?folder_id={toys.id}")
+        assert r.status_code == 200
+        assert {f["id"] for f in r.json()} == {top.id}
+
+        # Recursive: toys + cars + race files, but NOT other/.
+        r = await async_client.get(f"/api/v1/library/files?folder_id={toys.id}&recursive=true")
+        assert r.status_code == 200
+        assert {f["id"] for f in r.json()} == {top.id, mid.id, deep.id}
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_list_files_recursive_without_folder_id_is_noop(
+        self, async_client: AsyncClient, folder_factory, file_factory
+    ):
+        """recursive=true is meaningful only with folder_id — without it the
+        existing include_root branch handles scoping. Just confirming the new
+        param doesn't shadow that path."""
+        folder = await folder_factory()
+        f_in = await file_factory(folder_id=folder.id)
+        f_root = await file_factory()
+
+        r = await async_client.get("/api/v1/library/files?include_root=false&recursive=true")
+        assert r.status_code == 200
+        assert {f["id"] for f in r.json()} == {f_in.id, f_root.id}
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_get_folder_readme_returns_first_markdown(
+        self, async_client: AsyncClient, folder_factory, file_factory
+    ):
+        """#1268: /folders/{id}/readme reads on-disk content of the first .md."""
+        folder = await folder_factory()
+        with tempfile.NamedTemporaryFile(suffix=".md", delete=False, mode="w", encoding="utf-8") as f:
+            f.write("# Robot\n\nA cute little robot.")
+            md_path = f.name
+        try:
+            await file_factory(
+                folder_id=folder.id,
+                filename="README.md",
+                file_path=md_path,
+                file_type="md",
+                file_size=Path(md_path).stat().st_size,
+            )
+            r = await async_client.get(f"/api/v1/library/folders/{folder.id}/readme")
+            assert r.status_code == 200
+            body = r.json()
+            assert body["filename"] == "README.md"
+            assert body["content"] == "# Robot\n\nA cute little robot."
+            assert body["truncated"] is False
+        finally:
+            import os
+
+            os.unlink(md_path)
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_get_folder_readme_prefers_readme_over_other_md(
+        self, async_client: AsyncClient, folder_factory, file_factory
+    ):
+        """When the folder has multiple .md files, README.md / description.md
+        wins regardless of insertion order or filename case."""
+        folder = await folder_factory()
+        with tempfile.NamedTemporaryFile(suffix=".md", delete=False, mode="w", encoding="utf-8") as f:
+            f.write("notes notes notes")
+            notes_path = f.name
+        with tempfile.NamedTemporaryFile(suffix=".md", delete=False, mode="w", encoding="utf-8") as f:
+            f.write("the real one")
+            readme_path = f.name
+        try:
+            # notes.md inserted FIRST — naive ordering would pick this one.
+            await file_factory(
+                folder_id=folder.id,
+                filename="notes.md",
+                file_path=notes_path,
+                file_type="md",
+            )
+            await file_factory(
+                folder_id=folder.id,
+                filename="readme.md",  # lowercase to confirm case-insensitive match
+                file_path=readme_path,
+                file_type="md",
+            )
+            r = await async_client.get(f"/api/v1/library/folders/{folder.id}/readme")
+            assert r.status_code == 200
+            assert r.json()["filename"] == "readme.md"
+            assert r.json()["content"] == "the real one"
+        finally:
+            import os
+
+            os.unlink(notes_path)
+            os.unlink(readme_path)
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_get_folder_readme_404_when_no_markdown(
+        self, async_client: AsyncClient, folder_factory, file_factory
+    ):
+        """No .md in the folder → 404 so the FE can hide the side panel."""
+        folder = await folder_factory()
+        await file_factory(folder_id=folder.id, filename="model.3mf", file_type="3mf")
+        r = await async_client.get(f"/api/v1/library/folders/{folder.id}/readme")
+        assert r.status_code == 404
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_get_folder_readme_404_when_folder_missing(self, async_client: AsyncClient):
+        r = await async_client.get("/api/v1/library/folders/999999/readme")
+        assert r.status_code == 404
 
 
 class TestLibraryAddToQueueAPI:
@@ -1165,6 +1401,140 @@ class TestLibraryPermissions:
         # Viewers don't have delete_own or delete_all permissions
         assert response.status_code == 403
 
+    # ---------- #1832: API-key curation under can_manage_library ----------
+    #
+    # require_ownership_permission gates API keys on `all_perm`, but the
+    # library deliberately split UPDATE_OWN/DELETE_OWN (allowed under
+    # can_manage_library) from UPDATE_ALL/DELETE_ALL (previously denied).
+    # That made the entire curation surface (DELETE, PUT rename, POST move)
+    # unreachable for API keys, including for files the key's owner uploaded.
+    # The fix folds UPDATE_ALL/DELETE_ALL into can_manage_library so the
+    # checker passes; LIBRARY_PURGE stays admin-only.
+
+    @pytest.fixture
+    async def manage_library_key(self, db_session, auth_setup):
+        """Mint an API key owned by the admin user with can_manage_library."""
+        from backend.app.core.auth import generate_api_key
+        from backend.app.models.api_key import APIKey
+
+        admin = auth_setup["admin_user"]
+        full_key, key_hash, key_prefix = generate_api_key()
+        row = APIKey(
+            name="lib-curation",
+            key_hash=key_hash,
+            key_prefix=key_prefix,
+            user_id=admin.id,
+            can_manage_library=True,
+        )
+        db_session.add(row)
+        await db_session.commit()
+        return full_key
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_apikey_with_manage_library_can_delete_file(
+        self, async_client: AsyncClient, db_session, auth_setup, test_file, manage_library_key
+    ):
+        """Pre-#1832 this 403'd with "administrative operations" because
+        LIBRARY_DELETE_ALL wasn't in _APIKEY_SCOPE_BY_PERMISSION."""
+        from pathlib import Path
+
+        from backend.app.core.config import settings as app_settings
+
+        # Materialise the file on disk so the delete handler doesn't 500 on
+        # the path it tries to unlink.
+        file_path = Path(app_settings.base_dir) / test_file.file_path
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path.write_text("test content")
+
+        response = await async_client.delete(
+            f"/api/v1/library/files/{test_file.id}",
+            headers={"X-API-Key": manage_library_key},
+        )
+        assert response.status_code == 200, response.text
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_apikey_with_manage_library_can_rename_file(
+        self, async_client: AsyncClient, db_session, auth_setup, test_file, manage_library_key
+    ):
+        """PUT /library/files/{id} is gated on LIBRARY_UPDATE_ALL/OWN. Same
+        #1832 path as delete."""
+        response = await async_client.put(
+            f"/api/v1/library/files/{test_file.id}",
+            headers={"X-API-Key": manage_library_key},
+            json={"filename": "renamed.txt"},
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["filename"] == "renamed.txt"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_apikey_with_manage_library_can_move_file(
+        self, async_client: AsyncClient, db_session, auth_setup, test_file, manage_library_key
+    ):
+        """POST /library/files/move (bulk) is gated on LIBRARY_UPDATE_ALL/OWN
+        — same checker, same #1832 path."""
+        # Create a target folder the move can land in.
+        from backend.app.models.library import LibraryFolder
+
+        folder = LibraryFolder(name="target")
+        db_session.add(folder)
+        await db_session.commit()
+        await db_session.refresh(folder)
+
+        response = await async_client.post(
+            "/api/v1/library/files/move",
+            headers={"X-API-Key": manage_library_key},
+            json={"file_ids": [test_file.id], "folder_id": folder.id},
+        )
+        assert response.status_code == 200, response.text
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_apikey_without_manage_library_still_blocked(
+        self, async_client: AsyncClient, db_session, auth_setup, test_file
+    ):
+        """Regression guard: a key WITHOUT can_manage_library must still get
+        403 — the fix widens the allowed-permission set, it doesn't bypass
+        the per-key scope check."""
+        from backend.app.core.auth import generate_api_key
+        from backend.app.models.api_key import APIKey
+
+        admin = auth_setup["admin_user"]
+        full_key, key_hash, key_prefix = generate_api_key()
+        row = APIKey(
+            name="read-only",
+            key_hash=key_hash,
+            key_prefix=key_prefix,
+            user_id=admin.id,
+            can_read_status=True,
+            can_manage_library=False,
+        )
+        db_session.add(row)
+        await db_session.commit()
+
+        response = await async_client.delete(
+            f"/api/v1/library/files/{test_file.id}",
+            headers={"X-API-Key": full_key},
+        )
+        assert response.status_code == 403
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_apikey_with_manage_library_still_cannot_purge(
+        self, async_client: AsyncClient, db_session, auth_setup, manage_library_key
+    ):
+        """LIBRARY_PURGE deliberately stays in _APIKEY_DENIED_PERMISSIONS as
+        a genuinely destructive op that bypasses the soft-delete window.
+        can_manage_library does NOT grant it."""
+        response = await async_client.post(
+            "/api/v1/library/purge",
+            headers={"X-API-Key": manage_library_key},
+            json={"days_in_trash": 30},
+        )
+        assert response.status_code == 403
+
 
 class TestPrintFileUploadValidation:
     """#1401: pre-flight rejection of unprintable uploads at the library +
@@ -1259,6 +1629,89 @@ class TestPrintFileUploadValidation:
         assert response.status_code == 200
         result = response.json()
         assert result["filename"] == "plate_1.gcode.3mf"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_library_upload_classifies_gcode_3mf_as_compound(self, async_client: AsyncClient, db_session):
+        """#1600 follow-up: upload path used to strip to the trailing
+        extension and store ``file_type='3mf'`` for sliced outputs, while
+        the external-folder scan stored ``file_type='gcode.3mf'``. Now
+        every ingest path goes through ``classify_file_type`` and
+        produces the canonical compound name."""
+        files = {
+            "file": (
+                "sliced.gcode.3mf",
+                self._valid_3mf_bytes(),
+                "application/zip",
+            )
+        }
+        response = await async_client.post("/api/v1/library/files", files=files)
+        assert response.status_code == 200
+        assert response.json()["file_type"] == "gcode.3mf"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_library_get_gcode_endpoint_accepts_compound_file_type(self, async_client: AsyncClient, db_session):
+        """#1600 follow-up: pre-fix, ``GET /files/{id}/gcode`` only handled
+        ``file_type`` of ``gcode`` or ``3mf`` and 400'd on a row whose
+        ``file_type`` was ``gcode.3mf`` — exactly the rows the external-
+        folder scan was creating. The gate now treats both as 3MF and
+        unzips the embedded gcode the same way."""
+        from backend.app.models.library import LibraryFile
+
+        # Persist a real `.gcode.3mf` zip under file_type='gcode.3mf' so
+        # the endpoint hits the new branch.
+        with tempfile.NamedTemporaryFile(suffix=".gcode.3mf", delete=False) as tmp:
+            tmp.write(self._valid_3mf_bytes(name="Metadata/plate_1.gcode"))
+            tmp_path = tmp.name
+
+        lib_file = LibraryFile(
+            filename="sliced.gcode.3mf",
+            file_path=tmp_path,
+            file_type="gcode.3mf",
+            file_size=Path(tmp_path).stat().st_size,
+        )
+        db_session.add(lib_file)
+        await db_session.commit()
+        await db_session.refresh(lib_file)
+
+        response = await async_client.get(f"/api/v1/library/files/{lib_file.id}/gcode")
+        assert response.status_code == 200
+        assert b"G28" in response.content
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_library_get_gcode_recovers_legacy_gcode_type_for_3mf(self, async_client: AsyncClient, db_session):
+        """#1709 regression guard. Before the fix, ``slice_and_persist``
+        wrote a `.gcode.3mf` ZIP container to disk but stored the row with
+        ``file_type='gcode'`` — the preview endpoint then streamed the
+        ZIP body as ``text/plain`` and the embedded G-code viewer saw
+        ``PK\\x03\\x04...`` instead of the toolpath. New sliced rows now
+        store ``file_type='gcode.3mf'``; rows already written under the
+        bug self-heal because the endpoint also detects the ZIP via the
+        ``.gcode.3mf`` filename suffix when the column is still legacy."""
+        from backend.app.models.library import LibraryFile
+
+        with tempfile.NamedTemporaryFile(suffix=".gcode.3mf", delete=False) as tmp:
+            tmp.write(self._valid_3mf_bytes(name="Metadata/plate_1.gcode"))
+            tmp_path = tmp.name
+
+        lib_file = LibraryFile(
+            filename="legacy-sliced.gcode.3mf",
+            file_path=tmp_path,
+            file_type="gcode",
+            file_size=Path(tmp_path).stat().st_size,
+        )
+        db_session.add(lib_file)
+        await db_session.commit()
+        await db_session.refresh(lib_file)
+
+        response = await async_client.get(f"/api/v1/library/files/{lib_file.id}/gcode")
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/plain")
+        assert b"G28" in response.content
+        # The whole point of #1709: must NOT be ZIP bytes shoved at the viewer.
+        assert not response.content.startswith(b"PK")
 
     @pytest.mark.asyncio
     @pytest.mark.integration

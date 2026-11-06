@@ -58,6 +58,7 @@ const createMockProvider = (
   on_print_almost_done: false,
   on_printer_offline: false,
   on_printer_error: false,
+  on_ai_failure_detection: false,
   on_filament_low: false,
   on_maintenance_due: false,
   on_ams_humidity_high: false,

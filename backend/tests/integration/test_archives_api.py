@@ -3,6 +3,8 @@
 Tests the full request/response cycle for /api/v1/archives/ endpoints.
 """
 
+from pathlib import Path
+
 import pytest
 from httpx import AsyncClient
 
@@ -294,6 +296,64 @@ class TestArchivesAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_delete_archive_blocked_when_related_queue_item_printing(
+        self, async_client: AsyncClient, archive_factory, printer_factory, db_session
+    ):
+        """#1734: archive delete must 409 when a related queue item is currently
+        mid-print — deleting the archive would strip the dispatcher's metadata
+        trail (filament / plate / ams_mapping) out from under the running print.
+        Both soft and hard delete are gated by the same precondition.
+        """
+        from backend.app.models.print_queue import PrintQueueItem
+
+        printer = await printer_factory()
+        archive = await archive_factory(printer.id)
+        db_session.add(PrintQueueItem(printer_id=printer.id, archive_id=archive.id, status="printing", position=1))
+        await db_session.commit()
+
+        soft = await async_client.delete(f"/api/v1/archives/{archive.id}")
+        assert soft.status_code == 409
+        assert "printing" in soft.json()["detail"].lower()
+
+        hard = await async_client.delete(f"/api/v1/archives/{archive.id}?purge_stats=true")
+        assert hard.status_code == 409
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_archive_delete_impact_reports_counts(
+        self, async_client: AsyncClient, archive_factory, printer_factory, db_session
+    ):
+        """#1734: the delete-impact pre-flight endpoint reports the total
+        number of related queue items AND how many are currently printing,
+        so the frontend can both warn the user before they confirm AND
+        disable the confirm button when the printing count is non-zero.
+        """
+        from backend.app.models.print_queue import PrintQueueItem
+
+        printer = await printer_factory()
+        archive = await archive_factory(printer.id)
+        # Build a mixed-status set the way a Send All upload + later in-flight
+        # dispatch looks at the wire (#1733).
+        db_session.add_all(
+            [
+                PrintQueueItem(printer_id=printer.id, archive_id=archive.id, status="pending", position=1),
+                PrintQueueItem(printer_id=printer.id, archive_id=archive.id, status="pending", position=2),
+                PrintQueueItem(printer_id=printer.id, archive_id=archive.id, status="printing", position=3),
+            ]
+        )
+        # An unrelated archive's queue rows must not bleed into the count.
+        other = await archive_factory(printer.id)
+        db_session.add(PrintQueueItem(printer_id=printer.id, archive_id=other.id, status="pending", position=4))
+        await db_session.commit()
+
+        resp = await async_client.get(f"/api/v1/archives/{archive.id}/delete-impact")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["related_queue_items"] == 3
+        assert body["currently_printing"] == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_soft_delete_preserves_stats_contribution(
         self, async_client: AsyncClient, archive_factory, printer_factory, db_session
     ):
@@ -530,6 +590,369 @@ class TestArchivesAPI:
         # Check for actual stats fields
         assert "total_prints" in result
         assert "successful_prints" in result
+
+
+class TestNo3MFWarning:
+    """`GET /archives/no-3mf-warning` — install step 4 reactive nudge.
+
+    The connection diagnostic's external_storage check only catches the
+    printer-side variant of the setting (newer firmware). For older slicers
+    where the toggle lives only in BambuStudio, the printer never reports
+    it. The fallback path in main.py creates the archive with
+    extra_data.no_3mf_available=True; this endpoint exposes that as a
+    boolean so the frontend can surface a one-time banner.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_returns_true_when_recent_fallback_exists(
+        self, async_client: AsyncClient, archive_factory, printer_factory, db_session
+    ):
+        printer = await printer_factory()
+        await archive_factory(printer.id, extra_data={"no_3mf_available": True})
+
+        response = await async_client.get("/api/v1/archives/no-3mf-warning")
+
+        assert response.status_code == 200
+        assert response.json() == {"has_fallback": True}
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_returns_false_when_no_archives(self, async_client: AsyncClient):
+        response = await async_client.get("/api/v1/archives/no-3mf-warning")
+
+        assert response.status_code == 200
+        assert response.json() == {"has_fallback": False}
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_returns_false_when_only_normal_archives(
+        self, async_client: AsyncClient, archive_factory, printer_factory, db_session
+    ):
+        printer = await printer_factory()
+        # extra_data has other keys but no_3mf_available is absent — normal
+        # archives must not trigger the nudge.
+        await archive_factory(printer.id, extra_data={"makerworld_url": "https://example"})
+        await archive_factory(printer.id, extra_data=None)
+
+        response = await async_client.get("/api/v1/archives/no-3mf-warning")
+
+        assert response.status_code == 200
+        assert response.json() == {"has_fallback": False}
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_ignores_archives_older_than_30_days(
+        self, async_client: AsyncClient, archive_factory, printer_factory, db_session
+    ):
+        from datetime import datetime, timedelta, timezone
+
+        from backend.app.models.archive import PrintArchive
+
+        printer = await printer_factory()
+        archive = await archive_factory(printer.id, extra_data={"no_3mf_available": True})
+        # Backdate past the 30-day window — old fallbacks are forgiven.
+        archive.created_at = datetime.now(timezone.utc) - timedelta(days=45)
+        await db_session.commit()
+
+        response = await async_client.get("/api/v1/archives/no-3mf-warning")
+
+        assert response.status_code == 200
+        assert response.json() == {"has_fallback": False}
+        # Sanity: row really is in the DB, we just don't surface it.
+        assert (await db_session.get(PrintArchive, archive.id)) is not None
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_ignores_soft_deleted_fallbacks(
+        self, async_client: AsyncClient, archive_factory, printer_factory, db_session
+    ):
+        from datetime import datetime, timezone
+
+        printer = await printer_factory()
+        archive = await archive_factory(printer.id, extra_data={"no_3mf_available": True})
+        archive.deleted_at = datetime.now(timezone.utc)
+        await db_session.commit()
+
+        response = await async_client.get("/api/v1/archives/no-3mf-warning")
+
+        assert response.status_code == 200
+        # Soft-deleted fallbacks have been actioned (user clearing the
+        # evidence). Stop nudging.
+        assert response.json() == {"has_fallback": False}
+
+
+class TestPrintLogEntryDelete:
+    """#1687: per-row delete on the Print Log page.
+
+    Pin the route's three contracts: (1) deleting a row drops its filament
+    / cost / count contribution from /archives/stats in the same response
+    cycle; (2) the matching archive (if any) is untouched; (3) missing IDs
+    return 404 rather than 200-silently.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_delete_print_log_entry_drops_from_stats(
+        self, async_client: AsyncClient, archive_factory, printer_factory, db_session
+    ):
+        from sqlalchemy import select
+
+        from backend.app.models.print_log import PrintLogEntry
+
+        printer = await printer_factory()
+        keep = await archive_factory(printer.id, status="completed", filament_used_grams=50.0)
+        drop = await archive_factory(printer.id, status="completed", filament_used_grams=125.0)
+
+        drop_run = (
+            await db_session.execute(select(PrintLogEntry).where(PrintLogEntry.archive_id == drop.id))
+        ).scalar_one()
+
+        resp = await async_client.delete(f"/api/v1/print-log/{drop_run.id}")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "deleted"
+        assert resp.json()["id"] == drop_run.id
+
+        # The linked archive survives — the row was a stats row, not the archive.
+        listing = (await async_client.get("/api/v1/archives/")).json()
+        assert {a["id"] for a in listing} == {keep.id, drop.id}
+
+        # /stats no longer counts the dropped run's filament contribution.
+        stats = (await async_client.get("/api/v1/archives/stats")).json()
+        assert stats["total_prints"] == 1
+        assert stats["total_filament_grams"] == 50.0
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_delete_print_log_entry_404_when_missing(self, async_client: AsyncClient):
+        resp = await async_client.delete("/api/v1/print-log/999999")
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_delete_print_log_entry_does_not_clear_others(
+        self, async_client: AsyncClient, archive_factory, printer_factory, db_session
+    ):
+        """Deleting one row must not touch siblings — guard against an accidental
+        ``delete(PrintLogEntry)`` without a ``where`` clause (cf. clear_print_log
+        which intentionally drops everything)."""
+        from sqlalchemy import select
+
+        from backend.app.models.print_log import PrintLogEntry
+
+        printer = await printer_factory()
+        a = await archive_factory(printer.id, status="completed", filament_used_grams=10.0)
+        b = await archive_factory(printer.id, status="completed", filament_used_grams=20.0)
+        c = await archive_factory(printer.id, status="completed", filament_used_grams=30.0)
+
+        runs = {r.archive_id: r for r in (await db_session.execute(select(PrintLogEntry))).scalars().all()}
+
+        resp = await async_client.delete(f"/api/v1/print-log/{runs[b.id].id}")
+        assert resp.status_code == 200
+
+        survivors = (await db_session.execute(select(PrintLogEntry.archive_id))).scalars().all()
+        assert set(survivors) == {a.id, c.id}
+
+
+class TestPrintLogEntryUpdate:
+    """Tests for ``PATCH /print-log/{entry_id}`` (#1687 part 4).
+
+    Pin the route's contracts: (1) GET serialiser actually surfaces
+    ``failure_reason`` (previously it was silently dropped from the response
+    even when set in the DB); (2) PATCH persists ``failure_reason`` and
+    ``status``; (3) unknown vocabulary returns 400 rather than getting stored
+    as raw garbage; (4) missing IDs return 404.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_get_surfaces_failure_reason(
+        self, async_client: AsyncClient, archive_factory, printer_factory, db_session
+    ):
+        """Pre-fix the GET endpoint built PrintLogEntrySchema without
+        ``failure_reason`` even though the column was populated, so the Print
+        Log table couldn't render what the Failure Analysis widget already
+        groups by. Regression guard for the silent-drop bug.
+        """
+        from sqlalchemy import select
+
+        from backend.app.models.print_log import PrintLogEntry
+
+        printer = await printer_factory()
+        archive = await archive_factory(printer.id, status="failed")
+        entry = (
+            await db_session.execute(select(PrintLogEntry).where(PrintLogEntry.archive_id == archive.id))
+        ).scalar_one()
+        entry.failure_reason = "spaghettiDetached"
+        await db_session.commit()
+
+        body = (await async_client.get("/api/v1/print-log/")).json()
+        match = next(item for item in body["items"] if item["id"] == entry.id)
+        assert match["failure_reason"] == "spaghettiDetached"
+        # archive_id should also flow through so the frontend can tell orphan
+        # entries apart from archive-linked ones.
+        assert match["archive_id"] == archive.id
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_patch_sets_failure_reason(
+        self, async_client: AsyncClient, archive_factory, printer_factory, db_session
+    ):
+        from sqlalchemy import select
+
+        from backend.app.models.print_log import PrintLogEntry
+
+        printer = await printer_factory()
+        archive = await archive_factory(printer.id, status="failed")
+        entry = (
+            await db_session.execute(select(PrintLogEntry).where(PrintLogEntry.archive_id == archive.id))
+        ).scalar_one()
+        assert entry.failure_reason is None
+
+        resp = await async_client.patch(
+            f"/api/v1/print-log/{entry.id}",
+            json={"failure_reason": "cloggedNozzle"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["failure_reason"] == "cloggedNozzle"
+
+        await db_session.refresh(entry)
+        assert entry.failure_reason == "cloggedNozzle"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_patch_can_clear_failure_reason(
+        self, async_client: AsyncClient, archive_factory, printer_factory, db_session
+    ):
+        """Empty-string failure_reason stores back as NULL (the column's
+        nullable=True intent is preserved end-to-end)."""
+        from sqlalchemy import select
+
+        from backend.app.models.print_log import PrintLogEntry
+
+        printer = await printer_factory()
+        archive = await archive_factory(printer.id, status="failed")
+        entry = (
+            await db_session.execute(select(PrintLogEntry).where(PrintLogEntry.archive_id == archive.id))
+        ).scalar_one()
+        entry.failure_reason = "warping"
+        await db_session.commit()
+
+        resp = await async_client.patch(
+            f"/api/v1/print-log/{entry.id}",
+            json={"failure_reason": ""},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["failure_reason"] is None
+
+        await db_session.refresh(entry)
+        assert entry.failure_reason is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_patch_rejects_unknown_failure_reason(
+        self, async_client: AsyncClient, archive_factory, printer_factory, db_session
+    ):
+        """Unknown values must 400 — otherwise the UI would render raw garbage
+        because the i18n layer maps the value back through the canonical
+        vocabulary."""
+        from sqlalchemy import select
+
+        from backend.app.models.print_log import PrintLogEntry
+
+        printer = await printer_factory()
+        archive = await archive_factory(printer.id, status="failed")
+        entry = (
+            await db_session.execute(select(PrintLogEntry).where(PrintLogEntry.archive_id == archive.id))
+        ).scalar_one()
+
+        resp = await async_client.patch(
+            f"/api/v1/print-log/{entry.id}",
+            json={"failure_reason": "completely-made-up"},
+        )
+        assert resp.status_code == 400
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_patch_updates_status(self, async_client: AsyncClient, archive_factory, printer_factory, db_session):
+        from sqlalchemy import select
+
+        from backend.app.models.print_log import PrintLogEntry
+
+        printer = await printer_factory()
+        archive = await archive_factory(printer.id, status="completed")
+        entry = (
+            await db_session.execute(select(PrintLogEntry).where(PrintLogEntry.archive_id == archive.id))
+        ).scalar_one()
+        entry.status = "completed"
+        await db_session.commit()
+
+        resp = await async_client.patch(
+            f"/api/v1/print-log/{entry.id}",
+            json={"status": "failed", "failure_reason": "layerShift"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "failed"
+        assert resp.json()["failure_reason"] == "layerShift"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_patch_rejects_unknown_status(
+        self, async_client: AsyncClient, archive_factory, printer_factory, db_session
+    ):
+        from sqlalchemy import select
+
+        from backend.app.models.print_log import PrintLogEntry
+
+        printer = await printer_factory()
+        archive = await archive_factory(printer.id, status="failed")
+        entry = (
+            await db_session.execute(select(PrintLogEntry).where(PrintLogEntry.archive_id == archive.id))
+        ).scalar_one()
+
+        resp = await async_client.patch(
+            f"/api/v1/print-log/{entry.id}",
+            json={"status": "bogus-status"},
+        )
+        assert resp.status_code == 400
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_patch_404_when_missing(self, async_client: AsyncClient):
+        resp = await async_client.patch(
+            "/api/v1/print-log/999999",
+            json={"failure_reason": "cloggedNozzle"},
+        )
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_patch_works_on_orphan_entry(self, async_client: AsyncClient, printer_factory, db_session):
+        """Orphan log entries (no archive_id) are the actual reason this
+        endpoint exists — the Archive Edit modal can't reach them. Make sure
+        the PATCH works for those rows specifically."""
+        from backend.app.models.print_log import PrintLogEntry
+
+        printer = await printer_factory()
+        orphan = PrintLogEntry(
+            archive_id=None,
+            print_name="failed-before-archive-created",
+            printer_id=printer.id,
+            status="failed",
+            failure_reason=None,
+        )
+        db_session.add(orphan)
+        await db_session.commit()
+        await db_session.refresh(orphan)
+        assert orphan.archive_id is None
+
+        resp = await async_client.patch(
+            f"/api/v1/print-log/{orphan.id}",
+            json={"failure_reason": "powerFailure"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["failure_reason"] == "powerFailure"
+        assert resp.json()["archive_id"] is None
 
 
 class TestArchivesSlimAPI:
@@ -1157,3 +1580,143 @@ class TestArchiveF3DEndpoints:
         response = await async_client.delete("/api/v1/archives/tags/nonexistent-tag")
         assert response.status_code == 200
         assert response.json()["affected"] == 0
+
+
+class TestUploadSourceThreeMF:
+    """Regression for #1531: source-3MF upload on fallback archives."""
+
+    @staticmethod
+    def _minimal_3mf_bytes() -> bytes:
+        """Smallest valid .3mf — the upload path enforces a zip header check."""
+        import io
+        import zipfile
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("[Content_Types].xml", "<types/>")
+        return buf.getvalue()
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_fallback_archive_source_upload_lands_under_base_dir(
+        self, async_client: AsyncClient, archive_factory, printer_factory, monkeypatch, tmp_path
+    ):
+        """Fallback archive (file_path='') must accept a source upload and store it inside base_dir.
+
+        Pre-fix, ``Path(base_dir) / ''`` collapsed to ``base_dir`` and the
+        ``.parent`` walked out of the data volume, sending the file to
+        ``/app/source/...`` and crashing on ``relative_to``.
+        """
+        from backend.app.core.config import settings as app_settings
+
+        monkeypatch.setattr(app_settings, "base_dir", tmp_path)
+
+        printer = await printer_factory()
+        archive = await archive_factory(
+            printer.id,
+            print_name="Cloud Print",
+            file_path="",  # fallback archive — no source 3MF was archived
+            filename="Cloud Print.3mf",
+        )
+
+        files = {"file": ("cloud_print.3mf", self._minimal_3mf_bytes(), "application/octet-stream")}
+        response = await async_client.post(f"/api/v1/archives/{archive.id}/source", files=files)
+
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        rel = payload["source_3mf_path"]
+        # Stored as a relative path inside base_dir.
+        assert not rel.startswith("/"), f"source_3mf_path should be relative, got {rel!r}"
+        # File physically landed under base_dir (NOT escaped to /app/source/).
+        assert (tmp_path / rel).is_file()
+        # Deterministic fallback location keyed off archive id.
+        assert rel == f"archive/no_source/{archive.id}/cloud_print.3mf"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_normal_archive_source_upload_unchanged(
+        self, async_client: AsyncClient, archive_factory, printer_factory, monkeypatch, tmp_path
+    ):
+        """Normal archive (file_path set) still nests the source under <archive>/source/."""
+        from backend.app.core.config import settings as app_settings
+
+        monkeypatch.setattr(app_settings, "base_dir", tmp_path)
+
+        printer = await printer_factory()
+        # archive_factory's default file_path is "archives/test/test_print.gcode.3mf".
+        archive = await archive_factory(printer.id, print_name="Real Print")
+
+        files = {"file": ("real_print.3mf", self._minimal_3mf_bytes(), "application/octet-stream")}
+        response = await async_client.post(f"/api/v1/archives/{archive.id}/source", files=files)
+
+        assert response.status_code == 200, response.text
+        rel = response.json()["source_3mf_path"]
+        assert rel == "archives/test/source/real_print.3mf"
+        assert (tmp_path / rel).is_file()
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_symlinked_data_dir_upload_succeeds(
+        self, async_client: AsyncClient, archive_factory, printer_factory, monkeypatch, tmp_path
+    ):
+        """Regression: DATA_DIR that's a symlink to the real storage must not break the upload.
+
+        Common on TrueNAS / Synology / QNAP storage pools, and any
+        ``-v /symlinked/host/path:/app/data`` mount. The helper resolves
+        only for the containment check and returns literal paths so the
+        caller's ``relative_to(settings.base_dir)`` doesn't trip over a
+        canonical-vs-symlink mismatch.
+        """
+        from backend.app.core.config import settings as app_settings
+
+        real_dir = tmp_path / "real_storage"
+        real_dir.mkdir()
+        symlink_dir = tmp_path / "data_via_symlink"
+        symlink_dir.symlink_to(real_dir)
+        monkeypatch.setattr(app_settings, "base_dir", symlink_dir)
+
+        printer = await printer_factory()
+        archive = await archive_factory(
+            printer.id,
+            print_name="Symlinked Print",
+            file_path="archives/X1C/print.gcode.3mf",
+            filename="print.gcode.3mf",
+        )
+
+        files = {"file": ("print.3mf", self._minimal_3mf_bytes(), "application/octet-stream")}
+        response = await async_client.post(f"/api/v1/archives/{archive.id}/source", files=files)
+
+        assert response.status_code == 200, response.text
+        rel = response.json()["source_3mf_path"]
+        assert rel == "archives/X1C/source/print.3mf"
+        # Reachable via both the symlink and the canonical path.
+        assert (symlink_dir / rel).is_file()
+        assert (real_dir / rel).is_file()
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_absolute_file_path_rejected_with_clear_500(
+        self, async_client: AsyncClient, archive_factory, printer_factory, monkeypatch, tmp_path
+    ):
+        """A row whose file_path is absolute (corrupted by old import / manual edit)
+        must fail with the explicit "outside the data directory" message, not silently
+        write outside base_dir."""
+        from backend.app.core.config import settings as app_settings
+
+        monkeypatch.setattr(app_settings, "base_dir", tmp_path)
+
+        printer = await printer_factory()
+        archive = await archive_factory(
+            printer.id,
+            print_name="Corrupt Path",
+            file_path="/tmp/totally_outside.gcode.3mf",  # nosec B108
+            filename="totally_outside.gcode.3mf",
+        )
+
+        files = {"file": ("totally_outside.3mf", self._minimal_3mf_bytes(), "application/octet-stream")}
+        response = await async_client.post(f"/api/v1/archives/{archive.id}/source", files=files)
+
+        assert response.status_code == 500
+        assert "outside the data directory" in response.json()["detail"]
+        # Did not write anything under the bogus /tmp/source/ either.
+        assert not (Path("/tmp") / "source").exists() or not (Path("/tmp") / "source" / "totally_outside.3mf").exists()  # nosec B108

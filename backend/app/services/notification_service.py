@@ -1,11 +1,13 @@
 """Notification service for sending push notifications via various providers."""
 
 import asyncio
+import html
 import json
 import logging
 import re
 import smtplib
 from datetime import datetime, timedelta, timezone
+from email.mime.image import MIMEImage
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Any
@@ -21,6 +23,47 @@ from backend.app.services.notify_live_activity_service import notify_live_activi
 
 logger = logging.getLogger(__name__)
 
+# Honest User-Agent — matches the convention used by every other outbound
+# httpx client in the codebase (bambu_cloud, makerworld, firmware_check,
+# inventory). Previously this client leaked python-httpx/<version>, which
+# was both inconsistent with the rest of the project and a more obvious
+# bot signature for upstream WAFs.
+_USER_AGENT = "Printbuddy/1.0 (+https://github.com/vmhomelab/Printbuddy)"
+
+
+def _looks_like_cloudflare_challenge(response: httpx.Response) -> bool:
+    """Return True if ``response`` looks like a Cloudflare mitigation
+    interstitial (JS challenge / managed challenge / block page) rather
+    than a legitimate response passed through Cloudflare.
+
+    Self-hosted servers behind Cloudflare (Tunnel, "Bot Fight Mode", or
+    "Under Attack" mode) intercept non-browser clients at the edge and
+    return a challenge HTML page instead of forwarding to the origin —
+    so we never reach the user's actual ntfy / webhook backend.
+    Cloudflare cannot be defeated from a Python client; the user has to
+    add a security-skip rule on their side. We detect the shape so the
+    UI can tell them that, instead of dumping the raw HTML.
+
+    Detection deliberately does NOT rely on ``Server: cloudflare`` alone
+    — Cloudflare adds that header to every response it proxies (success
+    AND legitimate origin errors), so a real 401 "wrong token" from a
+    CF-fronted ntfy would false-positive into a misleading "your CF is
+    blocking" message. Reliable signals: the ``cf-mitigated`` header
+    (set only when CF actively mitigates) and the challenge body shape.
+    """
+    if response.headers.get("cf-mitigated"):
+        return True
+    content_type = (response.headers.get("content-type") or "").lower()
+    if "html" not in content_type:
+        return False
+    body = (response.text or "")[:1024].lower()
+    # "Just a moment..." is Cloudflare's universal challenge-page title
+    # (managed challenge, JS challenge, Under Attack mode). Combined with
+    # an HTML content-type this is unambiguous — no legitimate ntfy or
+    # webhook backend returns HTML with that title. ``cf-chl-*`` and
+    # ``challenge-platform`` cover newer / non-default CF templates.
+    return "just a moment" in body or "cf-chl-bypass" in body or "cf-chl-opt" in body or "challenge-platform" in body
+
 
 class NotificationService:
     """Service for sending notifications through various providers."""
@@ -34,7 +77,10 @@ class NotificationService:
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client."""
         if self._http_client is None or self._http_client.is_closed:
-            self._http_client = httpx.AsyncClient(timeout=30.0)
+            self._http_client = httpx.AsyncClient(
+                timeout=30.0,
+                headers={"User-Agent": _USER_AGENT},
+            )
         return self._http_client
 
     async def close(self):
@@ -269,8 +315,16 @@ class NotificationService:
 
         if response.status_code in (200, 204):
             return True, "Message sent successfully"
-        else:
-            return False, f"HTTP {response.status_code}: {response.text[:200]}"
+        if _looks_like_cloudflare_challenge(response):
+            return False, (
+                f"HTTP {response.status_code} — ntfy server is behind a Cloudflare "
+                "challenge. Printbuddy was served the JS challenge page instead of "
+                "reaching ntfy. Cloudflare cannot be solved from a backend; add a "
+                "Cloudflare security-skip rule for this hostname, disable Bot "
+                "Fight Mode, or front the server with Cloudflare Access using a "
+                "service token. (#1534)"
+            )
+        return False, f"HTTP {response.status_code}: {response.text[:200]}"
 
     async def _send_pushover(
         self, config: dict, title: str, message: str, image_data: bytes | None = None
@@ -383,8 +437,27 @@ class NotificationService:
         else:
             return False, f"HTTP {response.status_code}: {response.text[:200]}"
 
-    async def _send_email(self, config: dict, subject: str, body: str) -> tuple[bool, str]:
-        """Send notification via email (SMTP)."""
+    async def _send_email(
+        self,
+        config: dict,
+        subject: str,
+        body: str,
+        image_data: bytes | None = None,
+        finish_photo_url: str | None = None,
+    ) -> tuple[bool, str]:
+        """Send notification via email (SMTP).
+
+        Inline finish-photo embed is opt-in via the template: when the rendered
+        ``body`` contains the substituted ``{finish_photo_url}`` value AND the
+        finish-photo bytes are present, the message is built as
+        ``multipart/related`` wrapping a ``multipart/alternative`` (plain + HTML)
+        plus an inline ``MIMEImage`` with ``Content-ID: <printbuddy-finish-photo>``.
+        The HTML part replaces the URL with ``<img src="cid:...">``; the plain-
+        text part keeps the URL as a clickable link. When the template doesn't
+        reference ``{finish_photo_url}`` (or image bytes aren't available), the
+        original single-part text shape is used — no attachment, no surprise
+        inline image (#1792).
+        """
         smtp_server = config.get("smtp_server", "").strip()
         smtp_port = int(config.get("smtp_port", 587))
         username = config.get("username", "").strip()
@@ -402,12 +475,48 @@ class NotificationService:
         if auth_enabled and not all([username, password]):
             return False, "Username and password are required when authentication is enabled"
 
+        # Template-driven: only inline-embed when the user's template explicitly
+        # referenced {finish_photo_url} (so the URL appears in the rendered body)
+        # AND the photo bytes are available. Falls back to text-only otherwise.
+        inline_photo = bool(image_data and finish_photo_url and finish_photo_url in body)
+
         try:
-            msg = MIMEMultipart()
-            msg["From"] = from_email
-            msg["To"] = to_email
-            msg["Subject"] = f"[Printbuddy] {subject}"
-            msg.attach(MIMEText(body, "plain"))
+            if inline_photo:
+                # multipart/related → (multipart/alternative → text, html) + inline image
+                msg = MIMEMultipart("related")
+                msg["From"] = from_email
+                msg["To"] = to_email
+                msg["Subject"] = f"[Printbuddy] {subject}"
+
+                alt = MIMEMultipart("alternative")
+                alt.attach(MIMEText(body, "plain"))
+                # Build HTML body: escape the rendered body, then swap the
+                # escaped URL substring for an inline <img> referencing the
+                # MIMEImage we attach below. Done AFTER escape so the cid: URL
+                # we inject isn't re-escaped.
+                escaped_body = html.escape(body).replace("\n", "<br>\n")
+                escaped_url = html.escape(finish_photo_url)
+                img_tag = (
+                    '<img src="cid:printbuddy-finish-photo" '
+                    'alt="Printer camera snapshot" '
+                    'style="max-width:100%;height:auto;border:1px solid #ddd;border-radius:4px;">'
+                )
+                html_body = f"<html><body><p>{escaped_body.replace(escaped_url, img_tag)}</p></body></html>"
+                alt.attach(MIMEText(html_body, "html"))
+                msg.attach(alt)
+
+                img = MIMEImage(image_data, _subtype="jpeg")
+                # Angle-bracketed Content-ID per RFC 2392, referenced from HTML
+                # without the brackets via ``cid:printbuddy-finish-photo``.
+                img.add_header("Content-ID", "<printbuddy-finish-photo>")
+                img.add_header("Content-Disposition", "inline", filename="finish-photo.jpg")
+                msg.attach(img)
+            else:
+                msg = MIMEMultipart()
+                msg["From"] = from_email
+                msg["To"] = to_email
+                msg["Subject"] = f"[Printbuddy] {subject}"
+                msg.attach(MIMEText(body, "plain"))
 
             if security == "ssl":
                 # Direct SSL connection (typically port 465)
@@ -709,7 +818,13 @@ class NotificationService:
             elif provider.provider_type == "telegram":
                 return await self._send_telegram(config, f"*{title}*\n{message}", image_data=image_data)
             elif provider.provider_type == "email":
-                return await self._send_email(config, title, message)
+                # finish_photo_url is pulled from the rendered template variables
+                # so _send_email can detect whether the template referenced the
+                # URL and inline-embed the photo only in that case.
+                finish_photo_url = (variables or {}).get("finish_photo_url")
+                return await self._send_email(
+                    config, title, message, image_data=image_data, finish_photo_url=finish_photo_url
+                )
             elif provider.provider_type == "discord":
                 return await self._send_discord(config, title, message, image_data=image_data)
             elif provider.provider_type == "webhook":
@@ -1270,6 +1385,45 @@ class NotificationService:
             message,
             db,
             "printer_error",
+            printer_id,
+            printer_name,
+            image_data=image_data,
+            variables=variables,
+        )
+
+    async def on_ai_failure_detection(
+        self,
+        printer_id: int,
+        printer_name: str,
+        task_name: str,
+        confidence: float,
+        action: str,
+        db: AsyncSession,
+        image_data: bytes | None = None,
+    ):
+        """Handle AI failure-detection event (Obico spaghetti / print-failure ML).
+
+        Split out of on_printer_error (#1794) so a user can subscribe to AI
+        alerts without also being paged for every HMS hardware code.
+        """
+        providers = await self._get_providers_for_event(db, "on_ai_failure_detection", printer_id)
+        if not providers:
+            return
+
+        variables = {
+            "printer": printer_name,
+            "task_name": task_name or "current job",
+            "confidence": f"{confidence:.2f}",
+            "action": action,
+        }
+
+        title, message = await self._build_message_from_template(db, "ai_failure_detection", variables)
+        await self._send_to_providers(
+            providers,
+            title,
+            message,
+            db,
+            "ai_failure_detection",
             printer_id,
             printer_name,
             image_data=image_data,

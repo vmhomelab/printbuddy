@@ -236,6 +236,20 @@ def active_broadcaster_keys() -> list[str]:
     return [k for k, bc in _broadcasters.items() if not bc.stopped]
 
 
+def get_subscriber_count(key: str) -> int:
+    """Return the number of live subscribers attached to ``key``, or 0.
+
+    Used by ``/camera/stop`` to decide whether to force-shutdown the broadcaster
+    or defer to natural cleanup. Other viewers (cam-wall tile, embedded viewer,
+    popup window) all subscribe to the same broadcaster, so a force-shutdown
+    triggered by one leaving viewer would kill the others' streams.
+    """
+    bc = _broadcasters.get(key)
+    if bc is None or bc.stopped:
+        return 0
+    return bc.subscriber_count
+
+
 # ---------------------------------------------------------------------------
 # AsyncGenerator helper — turns a subscriber queue into an async generator
 # that yields MJPEG chunks until the upstream signals it's gone.

@@ -53,7 +53,7 @@ const baseSettings = {
   default_printer_id: null,
   virtual_printer_enabled: false,
   virtual_printer_access_code: '',
-  virtual_printer_mode: 'immediate',
+  virtual_printer_mode: 'archive',
   dark_style: 'classic',
   dark_background: 'neutral',
   dark_accent: 'green',
@@ -179,7 +179,7 @@ describe('InventoryPage — Total Consumed includes archived (#1390 follow-up)',
     });
   });
 
-  it('Reset-usage eraser is rendered for archived spools too', async () => {
+  it('Reset-consumed-counter eraser is rendered for archived spools too', async () => {
     // The per-card eraser is gated on weight_used > 0, NOT on archived_at,
     // so the archived spool above (weight_used=500) must render an eraser
     // button matching the localized tooltip. Multiple erasers exist on the
@@ -191,19 +191,19 @@ describe('InventoryPage — Total Consumed includes archived (#1390 follow-up)',
     // surface archived spools first; the easiest assertion that doesn't
     // depend on chip clicks is via the bulk-reset wiring: when archived
     // are included in the resetable set, the total is non-zero — i.e.
-    // the "Reset all usage" button stays visible. The CHANGELOG entry
+    // the "Reset all counters" button stays visible. The CHANGELOG entry
     // walks through the per-card flow.
     render(<InventoryPageRouter />);
 
     await waitFor(() => {
-      // Reset-all-usage button is gated on `totalConsumed > 0 &&
+      // Reset-all-consumed-counters button is gated on `totalConsumed > 0 &&
       // resetableSpoolIds.length > 0`. resetableSpoolIds now includes
       // archived spools — so even if every active spool had its baseline
       // == weight_used (consumed = 0), the button must remain visible
       // as long as ANY spool (archived included) still has unreset usage.
       // The 800g assertion already proves totalConsumed > 0; here we
       // just check the bulk-reset button rendered.
-      expect(screen.getByRole('button', { name: /reset all spool usage/i })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /reset all counters/i })).toBeInTheDocument();
     });
   });
 });

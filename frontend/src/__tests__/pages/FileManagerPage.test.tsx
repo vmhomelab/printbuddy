@@ -566,8 +566,15 @@ describe('FileManagerPage', () => {
     });
   });
 
-  describe('schedule print', () => {
-    it('shows schedule print button when one sliced file is selected', async () => {
+  describe('bulk-action print button', () => {
+    // PR #1625 consolidated print actions: the old single-file-selected
+    // "Schedule" button now opens the unified PrintModal (which carries
+    // schedule options inside). The bulk-action toolbar shows a single
+    // "Print" button only when exactly one sliced file is selected, and
+    // hides it for multi-selection. The button is targeted by its accessible
+    // name ("Print") + role to disambiguate from the file-card dropdown's
+    // own Print entry, which stays collapsed unless its kebab is opened.
+    it('shows a Print button in the bulk toolbar when one sliced file is selected', async () => {
       const user = userEvent.setup();
       render(<FileManagerPage />);
 
@@ -582,11 +589,11 @@ describe('FileManagerPage', () => {
       }
 
       await waitFor(() => {
-        expect(screen.getByText(/Schedule/)).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: /^Print$/ })).toBeInTheDocument();
       });
     });
 
-    it('hides schedule print button when multiple files are selected', async () => {
+    it('hides the bulk Print button when multiple files are selected', async () => {
       const user = userEvent.setup();
       render(<FileManagerPage />);
 
@@ -598,8 +605,7 @@ describe('FileManagerPage', () => {
       await user.click(screen.getByText('Select All'));
 
       await waitFor(() => {
-        // Schedule button should not be present when multiple files are selected
-        expect(screen.queryByText(/Schedule/)).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: /^Print$/ })).not.toBeInTheDocument();
       });
     });
   });
@@ -1023,6 +1029,97 @@ describe('FileManagerPage', () => {
         expect(screen.getByText('Brackets')).toBeInTheDocument();
       });
       expect(setItemMock).toHaveBeenCalledWith('library-collapse-folders', 'false');
+    });
+  });
+
+  describe('Internal / External top-level views (#1621)', () => {
+    const externalMockFolders = [
+      ...mockFolders,
+      {
+        id: 99,
+        name: 'NAS Library',
+        parent_id: null,
+        file_count: 200,
+        project_id: null,
+        archive_id: null,
+        project_name: null,
+        archive_name: null,
+        is_external: true,
+        external_readonly: false,
+        external_path: '/mnt/nas',
+        children: [],
+      },
+    ];
+
+    it('shows the External sidebar entry only when at least one external folder is linked', async () => {
+      // Default mockFolders have no is_external entries → no External row.
+      const { unmount } = render(<FileManagerPage />);
+      await waitFor(() => {
+        expect(screen.getByText('All Files')).toBeInTheDocument();
+      });
+      expect(screen.queryByText('External')).not.toBeInTheDocument();
+      unmount();
+
+      // With an external folder linked, the row appears.
+      server.use(
+        http.get('/api/v1/library/folders', () => HttpResponse.json(externalMockFolders)),
+      );
+      render(<FileManagerPage />);
+      await waitFor(() => {
+        expect(screen.getByText('External')).toBeInTheDocument();
+      });
+    });
+
+    it('sends internal_only=true by default ("All Files" = managed storage only)', async () => {
+      const scopes: string[] = [];
+      server.use(
+        http.get('/api/v1/library/folders', () => HttpResponse.json(externalMockFolders)),
+        http.get('/api/v1/library/files', ({ request }) => {
+          const url = new URL(request.url);
+          scopes.push(
+            url.searchParams.get('internal_only') === 'true'
+              ? 'internal'
+              : url.searchParams.get('external_only') === 'true'
+                ? 'external'
+                : 'all',
+          );
+          return HttpResponse.json(mockFiles);
+        }),
+      );
+
+      render(<FileManagerPage />);
+      await waitFor(() => {
+        expect(scopes).toContain('internal');
+      });
+    });
+
+    it('switches to external_only=true when the External sidebar entry is clicked', async () => {
+      const scopes: string[] = [];
+      server.use(
+        http.get('/api/v1/library/folders', () => HttpResponse.json(externalMockFolders)),
+        http.get('/api/v1/library/files', ({ request }) => {
+          const url = new URL(request.url);
+          scopes.push(
+            url.searchParams.get('internal_only') === 'true'
+              ? 'internal'
+              : url.searchParams.get('external_only') === 'true'
+                ? 'external'
+                : 'all',
+          );
+          return HttpResponse.json([]);
+        }),
+      );
+
+      const { default: userEvent } = await import('@testing-library/user-event');
+      const user = userEvent.setup();
+      render(<FileManagerPage />);
+      await waitFor(() => expect(screen.getByText('External')).toBeInTheDocument());
+
+      await user.click(screen.getByText('External'));
+
+      await waitFor(() => {
+        expect(scopes).toContain('external');
+      });
     });
   });
 

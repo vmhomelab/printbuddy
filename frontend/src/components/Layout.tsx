@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
-import { Printer, Archive, ListOrdered, BarChart3, Cloud, Settings, Sun, Moon, ChevronLeft, ChevronRight, Keyboard, Github, GripVertical, ArrowUpCircle, Wrench, FolderKanban, FolderOpen, X, Menu, Info, Plug, Bug, LogOut, Key, Loader2, Disc3, ShieldAlert, Bell, Globe, Monitor, PanelLeftClose, type LucideIcon } from 'lucide-react';
+import { Printer, Archive, ListOrdered, BarChart3, Cloud, Settings, Sun, Moon, Monitor, ChevronLeft, ChevronRight, Keyboard, Github, ArrowUpCircle, Wrench, FolderKanban, FolderOpen, X, Menu, Info, Plug, Bug, LogOut, Key, Loader2, Disc3, ShieldAlert, Bell, Globe, PanelLeftClose, type LucideIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useTheme } from '../contexts/ThemeContext';
 import { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
@@ -11,6 +11,8 @@ import { api, supportApi, pendingUploadsApi, type Permission } from '../api/clie
 import { getIconByName } from './IconPicker';
 import { useIsSidebarCompact } from '../hooks/useIsSidebarCompact';
 import { useColorCatalogVersion } from '../hooks/useColorCatalogVersion';
+import { useUnknownTagPrompt } from '../hooks/useUnknownTagPrompt';
+import { UnknownSpoolModal } from './UnknownSpoolModal';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { Card, CardHeader, CardContent } from './Card';
@@ -18,6 +20,14 @@ import { parseUTCDate } from '../utils/date';
 import { Button } from './Button';
 import { BugReportBubble } from './BugReportBubble';
 import { appAssetPath } from '../utils/assetPaths';
+import {
+  getHiddenSidebarSystemItemIds,
+  getSidebarOrder,
+  isExternalSidebarItemId,
+  saveHiddenSidebarSystemItemIds,
+  saveSidebarOrder,
+  SIDEBAR_LAYOUT_CHANGED_EVENT,
+} from '../utils/sidebarLayout';
 
 const SOURCE_CODE_URL = 'https://github.com/vmhomelab/Printbuddy';
 
@@ -45,53 +55,31 @@ export const defaultNavItems: NavItem[] = [
   { id: 'settings', to: '/settings', icon: Settings, labelKey: 'nav.settings' },
 ];
 
-// Get unified sidebar order from localStorage
-function getSidebarOrder(): string[] {
-  const stored = localStorage.getItem('sidebarOrder');
-  if (stored) {
-    try {
-      return JSON.parse(stored);
-    } catch {
-      return defaultNavItems.map(i => i.id);
-    }
-  }
-  return defaultNavItems.map(i => i.id);
-}
+// Legacy Printbuddy key for user-hidden sidebar items. Hidden items now live
+// in the shared sidebar layout store (utils/sidebarLayout); migrate once so
+// previously hidden entries stay hidden after the upgrade.
+const LEGACY_SIDEBAR_HIDDEN_ITEMS_KEY = 'sidebarHiddenItems';
 
-// Save unified sidebar order to localStorage
-function saveSidebarOrder(order: string[]) {
-  localStorage.setItem('sidebarOrder', JSON.stringify(order));
-}
-
-const SIDEBAR_HIDDEN_ITEMS_KEY = 'sidebarHiddenItems';
-export const SIDEBAR_VISIBILITY_CHANGED_EVENT = 'sidebarVisibilityChanged';
-
-// Sidebar visibility is a personal UI preference. Settings is deliberately
-// excluded so users always retain a route to restore hidden menu entries.
-export function getSidebarHiddenItems(): string[] {
-  const stored = localStorage.getItem(SIDEBAR_HIDDEN_ITEMS_KEY);
-  if (!stored) return [];
-
+function loadHiddenSidebarItemIds(): string[] {
+  const hiddenIds = getHiddenSidebarSystemItemIds();
+  const stored = localStorage.getItem(LEGACY_SIDEBAR_HIDDEN_ITEMS_KEY);
+  if (!stored) return hiddenIds;
+  let merged = hiddenIds;
   try {
     const parsed = JSON.parse(stored);
-    return Array.isArray(parsed)
-      ? parsed.filter((id): id is string => typeof id === 'string' && id !== 'settings')
-      : [];
+    if (Array.isArray(parsed)) {
+      const validIds = new Set(defaultNavItems.map(item => item.id));
+      const legacyIds = parsed.filter((id): id is string => typeof id === 'string' && validIds.has(id) && id !== 'settings');
+      if (legacyIds.length > 0) {
+        merged = Array.from(new Set([...hiddenIds, ...legacyIds]));
+        saveHiddenSidebarSystemItemIds(merged);
+      }
+    }
   } catch {
-    return [];
+    // Ignore malformed legacy data; it is removed below.
   }
-}
-
-export function saveSidebarHiddenItems(hiddenItems: string[]) {
-  const validIds = new Set(defaultNavItems.map(item => item.id));
-  const sanitized = [...new Set(hiddenItems)].filter(id => validIds.has(id) && id !== 'settings');
-  localStorage.setItem(SIDEBAR_HIDDEN_ITEMS_KEY, JSON.stringify(sanitized));
-  window.dispatchEvent(new Event(SIDEBAR_VISIBILITY_CHANGED_EVENT));
-}
-
-// Check if an ID is an external link
-function isExternalLinkId(id: string): boolean {
-  return id.startsWith('ext-');
+  localStorage.removeItem(LEGACY_SIDEBAR_HIDDEN_ITEMS_KEY);
+  return merged;
 }
 
 // Get default view from localStorage
@@ -107,9 +95,14 @@ export function setDefaultView(path: string) {
 export function Layout() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { mode, toggleMode } = useTheme();
+  const { mode, resolvedMode, toggleMode } = useTheme();
   const { t } = useTranslation();
   const isSidebarCompact = useIsSidebarCompact();
+
+  // Theme toggle: mode → icon and tooltip
+  const ThemeIcon = { dark: Sun, light: Monitor, system: Moon }[mode];
+  const themeSwitchTitle = t({ dark: 'nav.switchToLight', light: 'nav.switchToSystem', system: 'nav.switchToDark' }[mode]);
+
   // Re-render Layout (and the page rendered inside <Outlet />) whenever the
   // backend color catalog is (re)populated, so pages that mounted before the
   // catalog fetched — and cached HSL-fallback color names during their first
@@ -128,10 +121,9 @@ export function Layout() {
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [showSwitchbar, setShowSwitchbar] = useState(false);
-  const [sidebarOrder, setSidebarOrder] = useState<string[]>(getSidebarOrder);
-  const [sidebarHiddenItems, setSidebarHiddenItems] = useState<string[]>(getSidebarHiddenItems);
-  const [draggedId, setDraggedId] = useState<string | null>(null);
-  const [dragOverId, setDragOverId] = useState<string | null>(null);
+  const defaultSidebarOrder = useMemo(() => defaultNavItems.map(i => i.id), []);
+  const [sidebarOrder, setSidebarOrder] = useState<string[]>(() => getSidebarOrder(defaultNavItems.map(i => i.id)));
+  const [hiddenSystemItemIds, setHiddenSystemItemIds] = useState<string[]>(loadHiddenSidebarItemIds);
   const hasRedirected = useRef(false);
   const [dismissedUpdateVersion, setDismissedUpdateVersion] = useState<string | null>(() =>
     sessionStorage.getItem('dismissedUpdateVersion')
@@ -155,6 +147,10 @@ export function Layout() {
     staleTime: 5 * 60 * 1000, // 5 minutes
   });
 
+  // Unknown-spool prompt — surfaces a confirmation modal when the AMS reports a
+  // tag with no inventory match (only when `auto_add_unknown_rfid` is off).
+  const unknownSpool = useUnknownTagPrompt();
+
   // Fetch default sidebar order via a public endpoint (no settings:read needed)
   const { data: defaultSidebarData } = useQuery({
     queryKey: ['default-sidebar-order'],
@@ -177,10 +173,16 @@ export function Layout() {
       if (!Array.isArray(orderArr) || orderArr.length === 0) return;
       // Filter to valid sidebar item IDs only
       const validIds = new Set(defaultNavItems.map(i => i.id));
-      const filtered = orderArr.filter((id: string) => typeof id === 'string' && (validIds.has(id) || isExternalLinkId(id)));
+      const filtered = orderArr.filter((id: string) => typeof id === 'string' && (validIds.has(id) || isExternalSidebarItemId(id)));
       if (filtered.length > 0) {
         setSidebarOrder(filtered);
         saveSidebarOrder(filtered);
+        const hiddenIds = Array.isArray(parsed) ? [] : parsed.hiddenSystemItemIds;
+        if (Array.isArray(hiddenIds)) {
+          const filteredHiddenIds = hiddenIds.filter((id: string) => typeof id === 'string' && validIds.has(id) && id !== 'settings');
+          setHiddenSystemItemIds(filteredHiddenIds);
+          saveHiddenSidebarSystemItemIds(filteredHiddenIds);
+        }
         localStorage.setItem(appliedKey, '1');
       }
     } catch (e) {
@@ -188,7 +190,8 @@ export function Layout() {
     }
   }, [defaultSidebarData?.default_sidebar_order, setSidebarOrder, user, authEnabled]);
 
-  // Check advanced auth status for conditional nav items
+  // Check advanced auth status — the notifications nav item is gated on it
+  // (rendered only when authEnabled && advanced_auth_enabled && user_notifications_enabled).
   const { data: advancedAuthStatus } = useQuery({
     queryKey: ['advancedAuthStatus'],
     queryFn: api.getAdvancedAuthStatus,
@@ -286,12 +289,6 @@ export function Layout() {
     }
   }, [sidebarHidden]);
 
-  useEffect(() => {
-    const syncSidebarVisibility = () => setSidebarHiddenItems(getSidebarHiddenItems());
-    window.addEventListener(SIDEBAR_VISIBILITY_CHANGED_EVENT, syncSidebarVisibility);
-    return () => window.removeEventListener(SIDEBAR_VISIBILITY_CHANGED_EVENT, syncSidebarVisibility);
-  }, []);
-
   // Calculate debug duration client-side for real-time updates
   const [debugDuration, setDebugDuration] = useState<number | null>(null);
   useEffect(() => {
@@ -318,24 +315,39 @@ export function Layout() {
     const result: string[] = [];
     const seen = new Set<string>();
 
-    // Map nav item IDs to the permission required to see them
-    const navPermissions: Record<string, Permission> = {
-      archives: 'archives:read',
-      queue: 'queue:read',
+    // Map nav item IDs to the permission(s) required to see them. Resources
+    // that ship in three tiers (legacy `*:read` + granular `*:read_own` /
+    // `*:read_all`) list all three: the default Operators group is seeded
+    // with `_own` only, so gating on the legacy alone hides the entry from
+    // every non-admin user even though the underlying API accepts their
+    // request (#1755).
+    const navPermissions: Record<string, Permission | Permission[]> = {
+      archives: ['archives:read', 'archives:read_own', 'archives:read_all'],
+      queue: ['queue:read', 'queue:read_own', 'queue:read_all'],
       stats: 'stats:read',
       profiles: 'kprofiles:read',
       maintenance: 'maintenance:read',
       projects: 'projects:read',
       inventory: 'inventory:read',
-      files: 'library:read',
+      files: ['library:read', 'library:read_own', 'library:read_all'],
       makerworld: 'makerworld:view',
       settings: 'settings:read',
       notifications: 'notifications:user_email',
     };
 
     const isHidden = (id: string) => {
-      if (sidebarHiddenItems.includes(id)) return true;
-      if (authEnabled && id in navPermissions && !hasPermission(navPermissions[id])) return true;
+      // User-toggled hide (#1673) wins first — cheapest check, explicit intent.
+      if (hiddenSystemItemIds.includes(id)) return true;
+      // Permission gate accepts Permission | Permission[] so resources with
+      // granular `*:read_own` / `*:read_all` tiers (default Operators group)
+      // don't get hidden from users who only hold the granular variant (#1755).
+      if (authEnabled && id in navPermissions) {
+        const required = navPermissions[id];
+        const granted = Array.isArray(required)
+          ? required.some((p) => hasPermission(p))
+          : hasPermission(required);
+        if (!granted) return true;
+      }
       // notifications nav item also requires advanced auth to be enabled and user_notifications_enabled setting
       if (id === 'notifications' && (!authEnabled || !advancedAuthStatus?.advanced_auth_enabled || (settings?.user_notifications_enabled === false))) return true;
       return false;
@@ -371,58 +383,6 @@ export function Layout() {
     return result;
   })();
 
-  // Unified drag handlers
-  const handleDragStart = (e: React.DragEvent, id: string) => {
-    setDraggedId(id);
-    e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('text/plain', id);
-  };
-
-  const handleDragOver = (e: React.DragEvent, id: string) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-    setDragOverId(id);
-  };
-
-  const handleDragLeave = () => {
-    setDragOverId(null);
-  };
-
-  const handleDrop = (e: React.DragEvent, targetId: string) => {
-    e.preventDefault();
-    if (draggedId === null || draggedId === targetId) {
-      setDraggedId(null);
-      setDragOverId(null);
-      return;
-    }
-
-    const currentOrder = [...orderedSidebarIds];
-    const draggedIndex = currentOrder.indexOf(draggedId);
-    const targetIndex = currentOrder.indexOf(targetId);
-
-    if (draggedIndex === -1 || targetIndex === -1) {
-      setDraggedId(null);
-      setDragOverId(null);
-      return;
-    }
-
-    // Reorder
-    currentOrder.splice(draggedIndex, 1);
-    currentOrder.splice(targetIndex, 0, draggedId);
-
-    // Save to localStorage and update state
-    setSidebarOrder(currentOrder);
-    saveSidebarOrder(currentOrder);
-
-    setDraggedId(null);
-    setDragOverId(null);
-  };
-
-  const handleDragEnd = () => {
-    setDraggedId(null);
-    setDragOverId(null);
-  };
-
   // Show update banner if update available and not dismissed for this version.
   // Suppressed when running as a Home Assistant addon — HA Supervisor surfaces
   // its own update notification in the HA UI, so the in-app banner is duplicate
@@ -453,6 +413,19 @@ export function Layout() {
   useEffect(() => {
     localStorage.setItem('sidebarExpanded', String(sidebarExpanded));
   }, [sidebarExpanded]);
+
+  useEffect(() => {
+    const refreshSidebarLayout = () => {
+      setSidebarOrder(getSidebarOrder(defaultSidebarOrder));
+      setHiddenSystemItemIds(getHiddenSidebarSystemItemIds());
+    };
+    window.addEventListener(SIDEBAR_LAYOUT_CHANGED_EVENT, refreshSidebarLayout);
+    window.addEventListener('storage', refreshSidebarLayout);
+    return () => {
+      window.removeEventListener(SIDEBAR_LAYOUT_CHANGED_EVENT, refreshSidebarLayout);
+      window.removeEventListener('storage', refreshSidebarLayout);
+    };
+  }, [defaultSidebarOrder]);
 
   // Close compact drawer on navigation
   useEffect(() => {
@@ -495,7 +468,7 @@ export function Layout() {
         const id = orderedSidebarIds[keyNum - 1];
         e.preventDefault();
 
-        if (isExternalLinkId(id)) {
+        if (isExternalSidebarItemId(id)) {
           // External link
           const extLink = extLinksMap.get(id);
           if (extLink?.open_in_new_tab) {
@@ -532,8 +505,8 @@ export function Layout() {
   }, [handleKeyDown]);
 
   const sidebarBrandImagePath = !isSidebarCompact && !sidebarExpanded
-    ? (mode === 'dark' ? '/img/printbuddy_icon_dark.png' : '/img/printbuddy_icon.png')
-    : (mode === 'dark' ? '/img/printbuddy_logo_dark.png' : '/img/printbuddy_logo_light.png');
+    ? (resolvedMode === 'dark' ? '/img/printbuddy_icon_dark.png' : '/img/printbuddy_icon.png')
+    : (resolvedMode === 'dark' ? '/img/printbuddy_logo_dark.png' : '/img/printbuddy_logo_light.png');
 
   return (
     <div className="flex min-h-screen">
@@ -567,7 +540,7 @@ export function Layout() {
             className="ml-3 flex h-full items-center rounded px-1 cursor-pointer focus:outline-none focus:ring-2 focus:ring-bambu-green"
           >
             <img
-              src={appAssetPath(mode === 'dark' ? '/img/printbuddy_logo_dark.png' : '/img/printbuddy_logo_light.png')}
+              src={appAssetPath(resolvedMode === 'dark' ? '/img/printbuddy_logo_dark.png' : '/img/printbuddy_logo_light.png')}
               alt="Printbuddy"
               className="h-8"
             />
@@ -615,7 +588,7 @@ export function Layout() {
         <nav className="flex-1 p-2 overflow-y-auto">
           <ul className="space-y-2">
             {orderedSidebarIds.map((id) => {
-              const isExternal = isExternalLinkId(id);
+              const isExternal = isExternalSidebarItemId(id);
 
               if (isExternal) {
                 // Render external link
@@ -624,22 +597,7 @@ export function Layout() {
 
                 const LinkIcon = link.custom_icon ? null : getIconByName(link.icon);
                 return (
-                  <li
-                    key={id}
-                    draggable
-                    onDragStart={(e) => handleDragStart(e, id)}
-                    onDragOver={(e) => handleDragOver(e, id)}
-                    onDragLeave={handleDragLeave}
-                    onDrop={(e) => handleDrop(e, id)}
-                    onDragEnd={handleDragEnd}
-                    className={`relative ${
-                      draggedId === id ? 'opacity-50' : ''
-                    } ${
-                      dragOverId === id && draggedId !== id
-                        ? 'before:absolute before:left-0 before:right-0 before:top-0 before:h-0.5 before:bg-bambu-green'
-                        : ''
-                    }`}
-                  >
+                  <li key={id}>
                     {link.open_in_new_tab ? (
                       <a
                         href={link.url}
@@ -648,9 +606,6 @@ export function Layout() {
                         className={`flex items-center ${isSidebarCompact || sidebarExpanded ? 'gap-3 px-4' : 'justify-center px-2'} py-3 rounded-lg transition-colors group text-bambu-gray-light hover:bg-bambu-dark-tertiary hover:text-white`}
                         title={!isSidebarCompact && !sidebarExpanded ? link.name : undefined}
                       >
-                        {sidebarExpanded && !isSidebarCompact && (
-                          <GripVertical className="w-4 h-4 flex-shrink-0 opacity-0 group-hover:opacity-50 cursor-grab active:cursor-grabbing -ml-1" />
-                        )}
                         {link.custom_icon ? (
                           <img
                             src={api.getExternalLinkIconUrl(link.id)}
@@ -674,9 +629,6 @@ export function Layout() {
                         }
                         title={!isSidebarCompact && !sidebarExpanded ? link.name : undefined}
                       >
-                        {sidebarExpanded && !isSidebarCompact && (
-                          <GripVertical className="w-4 h-4 flex-shrink-0 opacity-0 group-hover:opacity-50 cursor-grab active:cursor-grabbing -ml-1" />
-                        )}
                         {link.custom_icon ? (
                           <img
                             src={api.getExternalLinkIconUrl(link.id)}
@@ -704,22 +656,7 @@ export function Layout() {
                 const showClearPlateDot = id === 'printers' && needsClearPlate;
 
                 return (
-                  <li
-                    key={id}
-                    draggable
-                    onDragStart={(e) => handleDragStart(e, id)}
-                    onDragOver={(e) => handleDragOver(e, id)}
-                    onDragLeave={handleDragLeave}
-                    onDrop={(e) => handleDrop(e, id)}
-                    onDragEnd={handleDragEnd}
-                    className={`relative ${
-                      draggedId === id ? 'opacity-50' : ''
-                    } ${
-                      dragOverId === id && draggedId !== id
-                        ? 'before:absolute before:left-0 before:right-0 before:top-0 before:h-0.5 before:bg-bambu-green'
-                        : ''
-                    }`}
-                  >
+                  <li key={id}>
                     <NavLink
                       to={to}
                       className={({ isActive }) =>
@@ -731,9 +668,6 @@ export function Layout() {
                       }
                       title={!isSidebarCompact && !sidebarExpanded ? t(labelKey) : undefined}
                     >
-                      {sidebarExpanded && !isSidebarCompact && (
-                        <GripVertical className="w-4 h-4 flex-shrink-0 opacity-0 group-hover:opacity-50 cursor-grab active:cursor-grabbing -ml-1" />
-                      )}
                       <div className="relative">
                         <Icon className="w-5 h-5 flex-shrink-0" />
                         {showClearPlateDot && (
@@ -855,9 +789,9 @@ export function Layout() {
                 <button
                   onClick={toggleMode}
                   className="p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors text-bambu-gray-light hover:text-white"
-                  title={mode === 'dark' ? t('nav.switchToLight') : t('nav.switchToDark')}
+                  title={themeSwitchTitle}
                 >
-                  {mode === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
+                  <ThemeIcon className="w-5 h-5" />
                 </button>
                 {authEnabled && user && (
                   <>
@@ -961,9 +895,9 @@ export function Layout() {
               <button
                 onClick={toggleMode}
                 className="p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors text-bambu-gray-light hover:text-white"
-                title={mode === 'dark' ? t('nav.switchToLight') : t('nav.switchToDark')}
+                title={themeSwitchTitle}
               >
-                {mode === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
+                <ThemeIcon className="w-5 h-5" />
               </button>
               {authEnabled && user && (
                 <>
@@ -1063,12 +997,19 @@ export function Layout() {
         <Outlet />
       </main>
 
+      <UnknownSpoolModal
+        prompt={unknownSpool.prompt}
+        isPending={unknownSpool.isPending}
+        onConfirm={unknownSpool.confirm}
+        onCancel={unknownSpool.cancel}
+      />
+
       {/* Keyboard Shortcuts Modal */}
       {showShortcuts && (
         <KeyboardShortcutsModal
           onClose={() => setShowShortcuts(false)}
           sidebarItems={orderedSidebarIds.map(id => {
-            if (isExternalLinkId(id)) {
+            if (isExternalSidebarItemId(id)) {
               const extLink = extLinksMap.get(id);
               return extLink ? { type: 'external' as const, label: extLink.name } : null;
             } else {
