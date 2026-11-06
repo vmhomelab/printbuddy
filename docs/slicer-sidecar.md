@@ -29,15 +29,14 @@ This guide covers:
   [Network and security](#network-and-security) if your setup differs.
 - An AMD64 (x86-64) host for the Bambu Studio sidecar. Bambu Lab publishes no
   ARM64 Linux build. The OrcaSlicer sidecar also runs on ARM64.
-- About 2 GB of disk space per sidecar image, and internet access while
-  building (GitHub, Docker Hub, Ubuntu and NodeSource package mirrors).
+- About 2 GB of disk space per sidecar image.
 
 ### Choose the slicer
 
-| Sidecar | Port | Default version | Use it for |
+| Sidecar | Port | Image | Use it for |
 |---|---|---|---|
-| `bambu-studio-api` | 3001 | Bambu Studio 02.08.02.61 | **Bambu Lab printers.** Required for newer models such as the **X2D**. |
-| `orca-slicer-api` | 3003 | OrcaSlicer 2.3.2 | Non-Bambu printers (Prusa, Voron, Creality, …) and older Bambu models. |
+| `bambu-studio-api` | 3001 | `docker.io/vmhomelabde/printbuddy-bambu-studio-api` (Bambu Studio 02.08.02.61, AMD64) | **Bambu Lab printers.** Required for newer models such as the **X2D**. |
+| `orca-slicer-api` | 3003 | `docker.io/vmhomelabde/printbuddy-orca-slicer-api` (OrcaSlicer 2.3.2, AMD64 and ARM64) | Non-Bambu printers (Prusa, Voron, Creality, …) and older Bambu models. |
 
 PrintBuddy always slices with the sidecar that matches the **Preferred
 Slicer** setting. You can run both and switch in the settings.
@@ -45,16 +44,47 @@ Slicer** setting. You can run both and switch in the settings.
 > OrcaSlicer 2.3.2 does not know the X2D and has known problems with many
 > Bambu-authored 3MF files. Use Bambu Studio for Bambu Lab printers.
 
-### Get the `slicer-api` folder
+The image tags have the form `<slicer version>-<sidecar revision>`, for
+example `02.08.02.61-cb44369`. Each PrintBuddy release references the exact
+tag it was tested with.
 
-The sidecar's Compose files live in the `slicer-api/` folder of the PrintBuddy
-repository.
+### Option A: add the sidecar to PrintBuddy's Compose file (recommended)
+
+PrintBuddy's `docker-compose.yml` contains commented-out `bambu-studio-api`
+and `orca-slicer-api` services, next to the optional updater. Uncomment the
+service for your slicer (or both):
+
+```yaml
+  bambu-studio-api:
+    image: docker.io/vmhomelabde/printbuddy-bambu-studio-api:02.08.02.61-cb44369
+    container_name: bambu-studio-api
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3001:3000"
+    volumes:
+      - ./slicer-data/bambu:/app/data
+```
+
+Use the exact lines from the `docker-compose.yml` of your PrintBuddy version;
+the tag shown here may be outdated. Then start it next to PrintBuddy:
+
+```bash
+docker compose up -d
+```
+
+The sidecar images are pulled from Docker Hub; nothing is built locally.
+
+### Option B: separate Compose stack in `slicer-api/`
+
+Use this if you prefer to manage the sidecars separately, or want to build
+the images yourself (Option C). The `slicer-api/` folder of the PrintBuddy
+repository contains its own `docker-compose.yml`.
 
 - **PrintBuddy installed from the Git repository** (native install or Docker
   "build from source"): the folder is already there and is updated together
   with PrintBuddy.
-- **PrintBuddy installed from the prebuilt Docker image**: the folder is not
-  part of the image. Download its three files once, on the PrintBuddy host:
+- **PrintBuddy installed from the prebuilt Docker image**: download the
+  folder's files once, on the PrintBuddy host:
 
 ```bash
 mkdir -p ~/printbuddy-slicer && cd ~/printbuddy-slicer
@@ -66,42 +96,61 @@ for f in docker-compose.yml .env.example README.md; do curl -fsSL -o "$f" "https
 
 Replace `main` with the branch you run PrintBuddy from if it is not `main`.
 
-### Configure and start
-
 Create your configuration from the template:
 
 ```bash
 cp .env.example .env
 ```
 
-The defaults work for most setups. `.env` contains:
-
 | Variable | Meaning |
 |---|---|
-| `SLICER_API_BUILD_CONTEXT` | Exact source revision of the sidecar. Keep the value from `.env.example`. |
+| `BAMBU_STUDIO_API_IMAGE` / `ORCA_SLICER_API_IMAGE` | Images to run. Keep the values from `.env.example`. |
 | `BAMBU_API_PORT` / `ORCA_API_PORT` | Host ports (3001 / 3003). Do not use 3000 or 3002: PrintBuddy's virtual printers need them. |
-| `BAMBU_VERSION` / `ORCA_VERSION` | Slicer versions. Bambu Studio must be 02.08.x or newer. |
-| `BAMBU_APPIMAGE_URL` | Leave empty. Only needed if the build cannot look up the Bambu Studio download (see [Troubleshooting](#7-troubleshooting)). |
+| `SLICER_API_BUILD_CONTEXT`, `BAMBU_VERSION`, `ORCA_VERSION`, `BAMBU_APPIMAGE_URL` | Only used when building the images yourself (Option C). |
 
-Start the Bambu Studio and OrcaSlicer sidecars:
+Start Bambu Studio and OrcaSlicer:
 
 ```bash
-docker compose --profile bambu up -d --build
+docker compose --profile bambu up -d
 ```
 
 To start **only OrcaSlicer**, leave out `--profile bambu`:
 
 ```bash
-docker compose up -d --build
+docker compose up -d
 ```
 
-> A plain `docker compose up -d` never starts Bambu Studio. This is the most
-> common reason for "Slicer sidecar unreachable".
+> In this stack a plain `docker compose up -d` never starts Bambu Studio.
+> This is a common reason for "Slicer sidecar unreachable".
 
-The first build downloads the slicer (about 220 MB for Bambu Studio, 110 MB
-for OrcaSlicer) and takes 3–8 minutes per sidecar. Later starts are instant.
+### Option C: build the images yourself
 
-Check that the sidecars answer:
+Only needed for other slicer versions or your own sidecar changes. In the
+`slicer-api/` folder, set `BAMBU_VERSION` / `ORCA_VERSION` (and
+`SLICER_API_BUILD_CONTEXT` for another sidecar revision) in `.env`, and give
+the images local names so the published tags are not overwritten, for
+example:
+
+```ini
+BAMBU_STUDIO_API_IMAGE=printbuddy-bambu-studio-api:local
+ORCA_SLICER_API_IMAGE=printbuddy-orca-slicer-api:local
+```
+
+Then build and start:
+
+```bash
+docker compose --profile bambu build --no-cache --pull
+```
+
+```bash
+docker compose --profile bambu up -d
+```
+
+The build downloads the slicer (about 220 MB for Bambu Studio, 110 MB for
+OrcaSlicer) and takes 3–8 minutes per sidecar. Bambu Studio must be 02.08.x
+or newer.
+
+### Check the sidecar
 
 ```bash
 curl http://localhost:3001/health
@@ -276,20 +325,35 @@ You can print or queue the result like any other sliced file.
 
 ## 6. Update the sidecar
 
-After a PrintBuddy update, compare your `.env` with `.env.example`
-(especially `SLICER_API_BUILD_CONTEXT`, `BAMBU_VERSION` and `ORCA_VERSION`).
-If the files are not part of your PrintBuddy checkout, download them again as
-in [Get the `slicer-api` folder](#get-the-slicer-api-folder). Then rebuild:
+A PrintBuddy release can reference newer sidecar images.
+
+- **Option A** (PrintBuddy's Compose file): after updating PrintBuddy,
+  compare the `image:` lines of the sidecar services with the new
+  `docker-compose.yml` and take over the new tags. Then:
 
 ```bash
-docker compose --profile bambu build --no-cache --pull
+docker compose pull
+```
+
+```bash
+docker compose up -d
+```
+
+- **Option B** (`slicer-api/` stack): compare your `.env` with the new
+  `.env.example` (download it again if the folder is not part of your
+  PrintBuddy checkout) and take over `BAMBU_STUDIO_API_IMAGE`,
+  `ORCA_SLICER_API_IMAGE` and `SLICER_API_BUILD_CONTEXT`. Then:
+
+```bash
+docker compose --profile bambu pull
 ```
 
 ```bash
 docker compose --profile bambu up -d
 ```
 
-`--no-cache` is required because the slicer is downloaded during the build.
+- **Option C** (self-built): rebuild with
+  `docker compose --profile bambu build --no-cache --pull`.
 
 > **Important:** sidecar revisions before `cb44369` could resolve stock
 > profiles against another vendor's base profiles and write a wrong filament
@@ -303,11 +367,13 @@ docker compose --profile bambu up -d
 
 | Message | Cause and fix |
 |---|---|
-| **Slicer sidecar unreachable: All connection attempts failed** | PrintBuddy cannot reach the sidecar of the preferred slicer. Check with `docker ps` that it runs (Bambu Studio needs `--profile bambu`), that `curl http://localhost:3001/health` (or `3003`) works on the host, and that PrintBuddy uses host networking. Then click **Test slicer connection** again. |
+| **Slicer sidecar unreachable: All connection attempts failed** | PrintBuddy cannot reach the sidecar of the preferred slicer. Check with `docker ps` that it runs (in the `slicer-api/` stack Bambu Studio needs `--profile bambu`), that `curl http://localhost:3001/health` (or `3003`) works on the host, and that PrintBuddy uses host networking. Then click **Test slicer connection** again. |
 | **Filament profile "…" is not compatible with printer "…"** | The filament profile belongs to another printer or nozzle size. Pick the variant for your printer and nozzle (for the X2D 0.4 mm: `… @BBL X2D 0.4 nozzle`). |
 | **Unable to resolve inherited … profile: parent "…" was not found** | The running slicer does not ship the stock profile the selected profile is based on, usually because the printer is newer than the slicer. Use Bambu Studio or raise the version in `.env`. |
 | **Plate 1: Cool Plate does not support filament 1** | Set **Build plate** to the plate you use (for example High Temp or Textured PEI). |
 | **Slicing failed** without details | Look at the sidecar log: `docker logs --tail 100 bambu-studio-api` (or `orca-slicer-api`). |
+| **pull access denied** or **manifest unknown** for a `printbuddy-*-api` image | The tag is not published (yet). Use the tag from the current `docker-compose.yml` / `.env.example`, or build the image yourself (Option C). |
+| **no matching manifest for linux/arm64** for `printbuddy-bambu-studio-api` | Bambu Studio is only available for AMD64. Use the OrcaSlicer sidecar on ARM64 hosts. |
 | Build stops with **failed to read dockerfile: open Dockerfile.bambu-studio** | Your `.env` points `SLICER_API_BUILD_CONTEXT` at an old sidecar revision. Copy the value from `.env.example`. |
 | Build stops with **No Ubuntu 22.04 AppImage found** | The Bambu Studio version does not exist or GitHub rate-limited the lookup. Open the Bambu Studio release page on GitHub, copy the URL of the `BambuStudio_ubuntu22.04-…AppImage` file, set it as `BAMBU_APPIMAGE_URL` in `.env` and build again. |
 | **address already in use** on 3000 or 3002 | These ports belong to PrintBuddy's virtual printers. Keep the sidecars on 3001 / 3003 or other free ports. |

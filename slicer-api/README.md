@@ -7,6 +7,10 @@ these to slice models server-side, no desktop slicer required.
 For a step-by-step user guide, including what to pick in the Slice dialog
 for each printer, see [docs/slicer-sidecar.md](../docs/slicer-sidecar.md).
 
+The same sidecars can also run from PrintBuddy's main `docker-compose.yml`
+(commented-out `bambu-studio-api` / `orca-slicer-api` services). This
+folder is for running them as a separate stack or building them yourself.
+
 This folder is **optional**. Printbuddy works without it — Slice falls back
 to opening the model in the user's local desktop slicer via URI scheme.
 Enable the API path by:
@@ -19,7 +23,7 @@ Enable the API path by:
 
 ```bash
 cd slicer-api/
-cp .env.example .env       # edit ports / versions if you like
+cp .env.example .env       # edit ports if you like
 
 # OrcaSlicer only (default profile):
 docker compose up -d
@@ -31,9 +35,23 @@ curl http://localhost:3001/health   # bambu-studio-api
 curl http://localhost:3003/health   # orca-slicer-api
 ```
 
-First build downloads the slicer's AppImage (~110 MB OrcaSlicer, ~220 MB
-BambuStudio) and compiles the Node wrapper. Takes 3–8 minutes per service.
-Subsequent runs reuse the local image — instant start.
+`up` pulls the prebuilt images from Docker Hub
+(`docker.io/vmhomelabde/printbuddy-bambu-studio-api` and
+`docker.io/vmhomelabde/printbuddy-orca-slicer-api`, tagged
+`<slicer version>-<sidecar revision>`). The tags are set by
+`BAMBU_STUDIO_API_IMAGE` / `ORCA_SLICER_API_IMAGE` in `.env`.
+
+To build the images yourself (other slicer versions, own sidecar changes),
+give them local names in `.env` (e.g. `printbuddy-bambu-studio-api:local`)
+so the published tags are not overwritten, then:
+
+```bash
+docker compose --profile bambu build --no-cache --pull
+docker compose --profile bambu up -d
+```
+
+A build downloads the slicer's AppImage (~110 MB OrcaSlicer, ~220 MB
+Bambu Studio) and takes 3–8 minutes per service.
 
 ### Which slicer for which printer
 
@@ -82,10 +100,20 @@ Leaving the URL field blank uses the `SLICER_API_URL` /
 ## Where the source lives
 
 Both images build from the immutable Git revision configured by
-`SLICER_API_BUILD_CONTEXT` in `.env`. Docker pulls that exact source revision,
-so deployments are reproducible. Update the revision only after the fork
-change has been tested and published; do not point production at a moving
-branch name.
+`SLICER_API_BUILD_CONTEXT` in `.env` (source:
+[vmhomelab/orca-slicer-api](https://github.com/vmhomelab/orca-slicer-api),
+AGPL-3.0). The published images are built from exactly that revision by
+`.github/workflows/docker-publish-slicer.yml`, and carry it in their
+`org.opencontainers.image.revision` label.
+
+To move to a new sidecar revision or slicer version, change
+`SLICER_API_BUILD_CONTEXT` / `BAMBU_VERSION` / `ORCA_VERSION` in
+`.env.example`, then run `python scripts/slicer_images.py` to get the new
+image tags and update `BAMBU_STUDIO_API_IMAGE` / `ORCA_SLICER_API_IMAGE`,
+the defaults in this `docker-compose.yml` and the commented services in the
+main `docker-compose.yml`. `python scripts/slicer_images.py --check` (also
+run in CI) fails until all references match. Pushing the change to `dev` or
+`main` publishes the new images.
 
 The maintained fork carries the Printbuddy-specific inheritance resolver,
 stock-profile listing, bundle API, and safe slice-progress contract. Once
@@ -94,17 +122,18 @@ image or immutable upstream revision.
 
 ## Updating
 
-Update the versions or `SLICER_API_BUILD_CONTEXT` in `.env` (compare
-with `.env.example` after a PrintBuddy update), then:
+After a PrintBuddy update, compare your `.env` with `.env.example` and take
+over `BAMBU_STUDIO_API_IMAGE`, `ORCA_SLICER_API_IMAGE` and
+`SLICER_API_BUILD_CONTEXT`, then:
 
 ```bash
-docker compose --profile bambu build --no-cache --pull
+docker compose --profile bambu pull
 docker compose --profile bambu up -d
 ```
 
+Self-built images: rebuild with `docker compose --profile bambu build --no-cache --pull`.
 `--no-cache` is needed because the Dockerfile downloads the AppImage
-inline; Docker won't re-fetch it on a version change otherwise. `--pull`
-refreshes the base images.
+inline; Docker won't re-fetch it on a version change otherwise.
 
 ## Troubleshooting
 

@@ -14,23 +14,28 @@
 #
 # Usage:
 #   cd slicer-api/
-#   docker compose up -d                       # starts OrcaSlicer only
-#   docker compose --profile bambu up -d       # starts both
+#   cp .env.example .env
+#   docker compose up -d                       # OrcaSlicer only
+#   docker compose --profile bambu up -d       # Bambu Studio and OrcaSlicer
 #
-# First build pulls the sidecar source over git (~5 min — downloads the
-# BambuStudio AppImage, ~220 MB) and caches the image locally.
-# The source revision and slicer versions are pinned in .env. The ports bind
-# to loopback only: Printbuddy runs in host-network mode and reaches them via
-# localhost, while the unauthenticated sidecar must not be exposed to the LAN.
+# `up` pulls the prebuilt images from Docker Hub (BAMBU_STUDIO_API_IMAGE /
+# ORCA_SLICER_API_IMAGE in .env). To build them yourself from the pinned
+# sidecar source instead, run `docker compose --profile bambu build` first;
+# that downloads the slicer AppImage (~220 MB for Bambu Studio) and takes a
+# few minutes.
+#
+# The ports bind to loopback only: Printbuddy runs in host-network mode and
+# reaches them via localhost, while the unauthenticated sidecar must not be
+# exposed to the LAN.
 
 services:
   orca-slicer-api:
     build:
-      context: "${SLICER_API_BUILD_CONTEXT}"
+      context: "${SLICER_API_BUILD_CONTEXT:-https://github.com/vmhomelab/orca-slicer-api.git#cb443690f3d567627b3c5e1749b5fb54efdb3af6}"
       dockerfile: Dockerfile
       args:
         ORCA_VERSION: "${ORCA_VERSION:-2.3.2}"
-    image: printbuddy-orca-slicer-api:orca${ORCA_VERSION:-2.3.2}
+    image: "${ORCA_SLICER_API_IMAGE:-docker.io/vmhomelabde/printbuddy-orca-slicer-api:2.3.2-cb44369}"
     container_name: orca-slicer-api
     restart: unless-stopped
     ports:
@@ -49,12 +54,12 @@ services:
 
   bambu-studio-api:
     build:
-      context: "${SLICER_API_BUILD_CONTEXT}"
+      context: "${SLICER_API_BUILD_CONTEXT:-https://github.com/vmhomelab/orca-slicer-api.git#cb443690f3d567627b3c5e1749b5fb54efdb3af6}"
       dockerfile: Dockerfile.bambu-studio
       args:
         BAMBU_VERSION: "${BAMBU_VERSION:-02.08.02.61}"
         BAMBU_APPIMAGE_URL: "${BAMBU_APPIMAGE_URL:-}"
-    image: printbuddy-bambu-studio-api:bambu${BAMBU_VERSION:-02.08.02.61}
+    image: "${BAMBU_STUDIO_API_IMAGE:-docker.io/vmhomelabde/printbuddy-bambu-studio-api:02.08.02.61-cb44369}"
     container_name: bambu-studio-api
     restart: unless-stopped
     ports:
