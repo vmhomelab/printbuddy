@@ -7,6 +7,7 @@ authenticates with the configured access code, and logs print commands.
 import asyncio
 import json
 import logging
+import socket
 import ssl
 from collections.abc import Callable
 from pathlib import Path
@@ -444,13 +445,17 @@ class SimpleMQTTServer:
         logger.info("%sMQTT client connected: %s", self._log_prefix, client_id)
 
         authenticated = False
+        # Reap TCP/TLS sessions that never send CONNECT. After authentication,
+        # match Bambu firmware: idle Orca sessions are not application-timed
+        # out; TCP keepalive detects genuinely dead peers instead.
+        read_timeout: float | None = 60.0
 
         try:
             while self._running:
                 # Read MQTT fixed header
                 try:
-                    header = await asyncio.wait_for(reader.read(1), timeout=60)
-                except TimeoutError:
+                    header = await asyncio.wait_for(reader.readexactly(1), timeout=read_timeout)
+                except (asyncio.IncompleteReadError, TimeoutError):
                     break
 
                 if not header:
@@ -463,14 +468,31 @@ class SimpleMQTTServer:
                 if remaining_length is None:
                     break
 
-                # Read payload
-                payload = await reader.read(remaining_length) if remaining_length > 0 else b""
+                # Read payload. StreamReader.read(n) may return fewer than n
+                # bytes; dispatching such a fragment corrupts the next frame.
+                try:
+                    payload = await reader.readexactly(remaining_length) if remaining_length > 0 else b""
+                except asyncio.IncompleteReadError:
+                    break
 
                 # Handle packet types
                 if packet_type == 1:  # CONNECT
-                    authenticated = await self._handle_connect(payload, writer)
+                    authenticated, keep_alive = await self._handle_connect(payload, writer)
                     if not authenticated:
                         break
+                    read_timeout = None
+                    logger.info(
+                        "%sMQTT client %s authenticated (negotiated keepalive=%ds, idle disconnect disabled)",
+                        self._log_prefix,
+                        client_id,
+                        keep_alive,
+                    )
+                    client_socket = writer.get_extra_info("socket")
+                    if client_socket is not None:
+                        try:
+                            client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+                        except OSError as e:
+                            logger.debug("%sFailed to enable TCP keepalive for %s: %s", self._log_prefix, client_id, e)
                     # Register client for periodic status pushes; start with
                     # self.serial as the fallback until we learn the slicer's
                     # preferred serial from the first SUBSCRIBE/PUBLISH.
@@ -510,23 +532,21 @@ class SimpleMQTTServer:
 
         for _ in range(4):
             try:
-                byte = await reader.read(1)
-                if not byte:
-                    return None
+                byte = await reader.readexactly(1)
                 encoded = byte[0]
                 value += (encoded & 127) * multiplier
                 if (encoded & 128) == 0:
                     return value
                 multiplier *= 128
-            except OSError:
+            except (asyncio.IncompleteReadError, OSError):
                 return None
 
         return None
 
-    async def _handle_connect(self, payload: bytes, writer: asyncio.StreamWriter) -> bool:
-        """Handle MQTT CONNECT packet.
+    async def _handle_connect(self, payload: bytes, writer: asyncio.StreamWriter) -> tuple[bool, int]:
+        """Handle an MQTT CONNECT packet.
 
-        Returns True if authentication successful.
+        Returns authentication status and the negotiated keepalive in seconds.
         """
         try:
             # Parse CONNECT packet
@@ -539,7 +559,9 @@ class SimpleMQTTServer:
             # connect_flags = payload[idx + 1]
             idx += 2
 
-            # Skip keepalive
+            # Keepalive is a two-byte, big-endian value. It is retained for
+            # diagnostics but deliberately not enforced after authentication.
+            keep_alive = (payload[idx] << 8) | payload[idx + 1]
             idx += 2
 
             # Read client ID
@@ -568,20 +590,20 @@ class SimpleMQTTServer:
 
                 # Send immediate status report after auth - slicer expects this
                 await self._send_status_report(writer)
-                return True
+                return True, keep_alive
             else:
                 # Send CONNACK with auth failure
                 writer.write(bytes([0x20, 0x02, 0x00, 0x05]))  # Not authorized
                 await writer.drain()
                 logger.warning("%sMQTT auth failed for user '%s' (access code mismatch)", self._log_prefix, username)
-                return False
+                return False, 0
 
         except (IndexError, ValueError) as e:
             logger.debug("MQTT CONNECT parse error: %s", e)
             # Send CONNACK with error
             writer.write(bytes([0x20, 0x02, 0x00, 0x02]))  # Protocol error
             await writer.drain()
-            return False
+            return False, 0
 
     async def _handle_subscribe(self, payload: bytes, writer: asyncio.StreamWriter, client_id: str) -> None:
         """Handle MQTT SUBSCRIBE packet."""
