@@ -1131,6 +1131,7 @@ async def get_printer_status(
         door_open=state.door_open,
         nozzles=nozzles,
         nozzle_rack=nozzle_rack,
+        tool_slots=(state.raw_data.get("tool_slots") or []) if isinstance(state.raw_data, dict) else [],
         position=position,
         z_offset=z_offset,
         print_options=print_options,

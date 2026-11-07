@@ -608,6 +608,42 @@ class TestPrintersAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_get_moonraker_printer_status_returns_generic_tool_slots(
+        self, async_client: AsyncClient, printer_factory
+    ):
+        """Multi-tool Klipper slots must survive the REST fallback poll, not only WebSocket pushes."""
+        from backend.app.services.printer_providers.moonraker import MoonrakerPrinterState
+
+        printer = await printer_factory(
+            provider="klipper",
+            model="WonderMaker ZR_ULTRA",
+            api_url="http://zr-ultra.local:7125",
+            serial_number="KLIPPER-ZR-ULTRA",
+        )
+        tool_slots = [
+            {
+                "id": index,
+                "extruder": "extruder" if index == 0 else f"extruder{index}",
+                "nozzle_diameter": "0.4",
+                "active": index == 0,
+                "filament_present": index < 2,
+                "docked": index >= 2,
+                "path_present": None,
+            }
+            for index in range(4)
+        ]
+        state = MoonrakerPrinterState(connected=True, state="IDLE", raw_data={"tool_slots": tool_slots})
+
+        with patch("backend.app.api.routes.printers.printer_manager") as mock_pm:
+            mock_pm.get_status = MagicMock(return_value=state)
+            mock_pm.is_awaiting_plate_clear = MagicMock(return_value=False)
+            response = await async_client.get(f"/api/v1/printers/{printer.id}/status")
+
+        assert response.status_code == 200
+        assert response.json()["tool_slots"] == tool_slots
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_get_moonraker_printer_status_returns_creality_cfs_units(
         self, async_client: AsyncClient, printer_factory
     ):
