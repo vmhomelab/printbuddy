@@ -1,9 +1,11 @@
 import io
 import logging
 import os
+import re
 import zipfile
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
@@ -81,6 +83,9 @@ class SlicerConnectionTestResponse(BaseModel):
     success: bool
     slicer: str
     health: SlicerHealthPayload | None = None
+    # Which slicer actually answered, inferred from the reported CLI version.
+    # Lets the UI warn when the URL points at the other sidecar (wrong port).
+    detected_slicer: Literal["bambu_studio", "orcaslicer"] | None = None
 
 
 # Sensitive credential fields blanked for API-key callers
@@ -126,13 +131,47 @@ async def get_setting(db: AsyncSession, key: str) -> str | None:
     return setting.value if setting else None
 
 
+_BAMBU_STUDIO_VERSION = re.compile(r"^0\d\.\d{2}\.\d{2}\.\d+$")
+_ORCASLICER_VERSION = re.compile(r"^\d+\.\d+\.\d+(?:[-.][0-9A-Za-z.]+)?$")
+
+
+def _health_version(payload: dict) -> str | None:
+    """CLI version from a sidecar health response.
+
+    The slicer-API wrapper reports it under ``checks.<name>.version`` (the
+    check is named ``orcaslicer`` for both sidecars); a top-level ``version``
+    is accepted too. ``"unknown"`` means the wrapper could not parse it.
+    """
+    candidates: list[object] = [payload.get("version")]
+    checks = payload.get("checks")
+    if isinstance(checks, dict):
+        candidates.extend(check.get("version") for check in checks.values() if isinstance(check, dict))
+    for value in candidates:
+        if isinstance(value, str) and value.strip() and value.strip().lower() != "unknown":
+            return value.strip()[:200]
+    return None
+
+
+def detect_sidecar_slicer(version: str | None) -> str | None:
+    """Tell Bambu Studio (``02.08.02.61``) from OrcaSlicer (``2.3.2``) by version."""
+    if not version:
+        return None
+    if _BAMBU_STUDIO_VERSION.match(version):
+        return "bambu_studio"
+    if _ORCASLICER_VERSION.match(version):
+        return "orcaslicer"
+    return None
+
+
 def sanitize_slicer_health_payload(payload: dict) -> dict:
     """Return only safe, documented fields from an untrusted sidecar response."""
     safe: dict[str, str | list[str]] = {}
-    for key in ("status", "version"):
-        value = payload.get(key)
-        if isinstance(value, str):
-            safe[key] = value[:200]
+    status = payload.get("status")
+    if isinstance(status, str):
+        safe["status"] = status[:200]
+    version = _health_version(payload)
+    if version:
+        safe["version"] = version
 
     capabilities = payload.get("capabilities")
     if isinstance(capabilities, list):
@@ -392,10 +431,12 @@ async def test_slicer_connection(
         logger.info("Configured %s slicer sidecar is unavailable or returned invalid health data", slicer)
         return SlicerConnectionTestResponse(success=False, slicer=slicer)
 
+    safe_health = sanitize_slicer_health_payload(health)
     return SlicerConnectionTestResponse(
         success=True,
         slicer=slicer,
-        health=sanitize_slicer_health_payload(health),
+        health=safe_health,
+        detected_slicer=detect_sidecar_slicer(safe_health.get("version")),
     )
 
 

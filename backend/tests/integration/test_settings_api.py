@@ -82,6 +82,7 @@ class TestSettingsAPI:
                 "version": "2.4.1",
                 "capabilities": ["slice", "profiles"],
             },
+            "detected_slicer": "orcaslicer",
         }
         service.assert_called_once_with("http://orca-sidecar:3003")
 
@@ -106,6 +107,7 @@ class TestSettingsAPI:
             "success": False,
             "slicer": "bambu_studio",
             "health": None,
+            "detected_slicer": None,
         }
 
     @pytest.mark.asyncio
@@ -127,6 +129,7 @@ class TestSettingsAPI:
             "success": False,
             "slicer": "bambu_studio",
             "health": None,
+            "detected_slicer": None,
         }
 
     @pytest.mark.asyncio

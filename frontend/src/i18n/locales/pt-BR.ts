@@ -1917,7 +1917,8 @@ export default {
     embeddedOverlay: 'Sobreposição Incorporada',
     preferredSlicer: 'Fatiador Preferido',
     preferredSlicerDescription: 'Escolha qual aplicativo de fatiamento abrirá os arquivos',
-    orcaslicerKnownIssuesWarning: 'OrcaSlicer 2.3.2 / 2.4.0-dev têm bugs CLI conhecidos que bloqueiam o fatiamento de muitos 3MFs criados pela Bambu — veja issues upstream #12426 (segfault em arquivos multi-extrusor pintados) e #13386 (rejeição de validação estrita de intervalos de parâmetros). Bambu Studio é recomendado até as correções upstream chegarem.',
+    orcaslicerKnownIssuesWarning: 'Use o OrcaSlicer para impressoras de outras marcas (Prusa, Elegoo, Klipper, …). Para impressoras Bambu Lab, o Bambu Studio é recomendado: o OrcaSlicer 2.3.2 não tem perfis para os modelos mais novos como a X2D e pode travar com 3MFs multicoloridos pintados da Bambu (upstream #12426).',
+    bambuStudioSlicerHint: 'O Bambu Studio é recomendado para impressoras Bambu Lab. Ele traz poucos perfis de outras marcas; use o OrcaSlicer para Prusa, Elegoo, Klipper e outras impressoras.',
     useSlicerApi: 'Usar API do fatiador',
     useSlicerApiDescription: 'Quando ativo, as ações "Slice" abrem o modal do fatiador interno e chamam o sidecar slicer-API. Quando inativo (padrão), redirecionam ao fatiador desktop via esquema URI.',
     slicerCard: 'Fatiador',
@@ -1927,6 +1928,8 @@ export default {
     testSlicerConnection: 'Testar conexão do slicer',
     testingSlicerConnection: 'Testando conexão do slicer…',
     slicerConnectionSuccess: 'Conexão com o slicer {{slicer}} bem-sucedida.',
+    slicerConnectionSuccessVersion: 'Conectado ao {{slicer}} {{version}}.',
+    slicerConnectionMismatch: 'Nesta URL está rodando {{detected}} {{version}}, mas {{slicer}} está selecionado. Verifique a URL e a porta do sidecar.',
     slicerConnectionFailed: 'Falha na conexão com o slicer {{slicer}}.',
     slicerConnectionError: 'Falha na conexão com o slicer.',
     slicerBundles: {

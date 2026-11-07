@@ -1253,8 +1253,30 @@ export function SettingsPage() {
     setSlicerConnectionTesting(true);
     try {
       const result = await api.testSlicerConnection();
-      const slicerName = result.slicer === 'orcaslicer' ? 'OrcaSlicer' : 'Bambu Studio';
-      if (result.success) {
+      const nameOf = (slicer: 'bambu_studio' | 'orcaslicer') =>
+        slicer === 'orcaslicer' ? 'OrcaSlicer' : 'Bambu Studio';
+      const slicerName = nameOf(result.slicer);
+      const version = result.health?.version ?? '';
+      if (result.success && result.detected_slicer && result.detected_slicer !== result.slicer) {
+        // The URL answers, but with the other sidecar — typically a swapped
+        // port (3001 Bambu Studio / 3003 OrcaSlicer).
+        showToast(
+          t(
+            'settings.slicerConnectionMismatch',
+            'The sidecar at this URL runs {{detected}} {{version}}, but {{slicer}} is selected. Check the sidecar URL and port.',
+            { detected: nameOf(result.detected_slicer), version, slicer: slicerName },
+          ),
+          'warning',
+        );
+      } else if (result.success && version) {
+        showToast(
+          t('settings.slicerConnectionSuccessVersion', 'Connected to {{slicer}} {{version}}.', {
+            slicer: slicerName,
+            version,
+          }),
+          'success',
+        );
+      } else if (result.success) {
         showToast(
           t('settings.slicerConnectionSuccess', '{{slicer}} slicer connection succeeded.', { slicer: slicerName }),
           'success',
@@ -4730,25 +4752,23 @@ export function SettingsPage() {
                 <p className="text-xs text-bambu-gray mt-1">
                   {t('settings.preferredSlicerDescription')}
                 </p>
-                {/* Upstream OrcaSlicer 2.3.2 / 2.4.0-dev have two known
-                    CLI bugs that block slicing many Bambu-authored 3MFs:
-                    a SIGSEGV on painted multi-extruder 3MFs (#12426) and
-                    a strict range-check on sentinel parameter values
-                    BambuStudio writes by default. Until the upstream
-                    fixes land, surface a clear warning when a user has
-                    OrcaSlicer selected so they know what to expect; we
-                    don't auto-switch them in case they're testing. */}
-                {(localSettings.preferred_slicer ?? 'bambu_studio') === 'orcaslicer' && (
-                  <div
-                    role="alert"
-                    className="text-xs text-amber-200 bg-amber-900/20 border border-amber-700/40 rounded p-2 mt-2"
-                  >
-                    {t(
-                      'settings.orcaslicerKnownIssuesWarning',
-                      'OrcaSlicer 2.3.2 / 2.4.0-dev have known CLI bugs that block slicing many Bambu-authored 3MFs — see upstream issues #12426 (segfault on painted multi-extruder files) and #13386 (parameter-range strict-validation reject). Bambu Studio is recommended until the upstream fixes land.',
-                    )}
-                  </div>
-                )}
+                {/* Which sidecar fits which printer. Bambu Studio ships profiles
+                    for Bambu Lab printers (incl. the newest, e.g. X2D) but few
+                    others; OrcaSlicer covers most other vendors but lacks the
+                    newest Bambu models and can crash on painted multi-colour
+                    Bambu 3MFs (upstream #12426). The "-1" range-check rejects
+                    (#13386) are handled by the sidecar since 9ff0c6e. */}
+                <p className="text-xs text-bambu-gray bg-bambu-dark border border-bambu-dark-tertiary/40 rounded p-2 mt-2">
+                  {(localSettings.preferred_slicer ?? 'bambu_studio') === 'orcaslicer'
+                    ? t(
+                        'settings.orcaslicerKnownIssuesWarning',
+                        'Use OrcaSlicer for non-Bambu printers (Prusa, Elegoo, Klipper, …). For Bambu Lab printers Bambu Studio is recommended: OrcaSlicer 2.3.2 has no profiles for the newest models such as the X2D and can crash on painted multi-colour Bambu 3MFs (upstream #12426).',
+                      )
+                    : t(
+                        'settings.bambuStudioSlicerHint',
+                        'Bambu Studio is recommended for Bambu Lab printers. It ships only a few profiles for other brands; use OrcaSlicer for Prusa, Elegoo, Klipper and other printers.',
+                      )}
+                </p>
               </div>
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0">

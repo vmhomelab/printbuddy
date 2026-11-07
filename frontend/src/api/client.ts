@@ -1485,6 +1485,8 @@ export interface SlicerConnectionTestResult {
     version?: string | null;
     capabilities?: string[] | null;
   } | null;
+  /** Slicer that actually answered, inferred from its version; null if unknown. */
+  detected_slicer?: 'bambu_studio' | 'orcaslicer' | null;
 }
 
 // GET /api/v1/slicer/presets — unified listing across cloud / local / standard.

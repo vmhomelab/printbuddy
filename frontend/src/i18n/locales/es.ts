@@ -1919,7 +1919,8 @@ export default {
     embeddedOverlay: 'Superposición integrada',
     preferredSlicer: 'Laminador preferido',
     preferredSlicerDescription: 'Elija con qué aplicación de laminado abrir los archivos',
-    orcaslicerKnownIssuesWarning: 'OrcaSlicer 2.3.2 / 2.4.0-dev tienen errores conocidos de la CLI que impiden laminar muchos 3MF creados con Bambu — consulte las incidencias del proyecto original #12426 (cierre inesperado en archivos multiextrusor pintados) y #13386 (rechazo por validación estricta del rango de parámetros). Se recomienda Bambu Studio hasta que lleguen las correcciones.',
+    orcaslicerKnownIssuesWarning: 'Usa OrcaSlicer para impresoras de otras marcas (Prusa, Elegoo, Klipper, …). Para impresoras Bambu Lab se recomienda Bambu Studio: OrcaSlicer 2.3.2 no tiene perfiles para los modelos más nuevos como la X2D y puede fallar con 3MF de Bambu multicolor pintados (upstream #12426).',
+    bambuStudioSlicerHint: 'Se recomienda Bambu Studio para impresoras Bambu Lab. Solo incluye pocos perfiles de otras marcas; usa OrcaSlicer para Prusa, Elegoo, Klipper y otras impresoras.',
     useSlicerApi: 'Usar la API del laminador',
     useSlicerApiDescription: 'Cuando está activado, las acciones de «Laminar» abren la ventana del laminador integrada en la aplicación y llaman al contenedor auxiliar de la API del laminador. Cuando está desactivado (predeterminado), delegan en el laminador de escritorio mediante un esquema de URI.',
     slicerCard: 'Laminador',
@@ -1929,6 +1930,8 @@ export default {
     testSlicerConnection: 'Probar conexión del slicer',
     testingSlicerConnection: 'Probando conexión del slicer…',
     slicerConnectionSuccess: 'Conexión con el slicer {{slicer}} correcta.',
+    slicerConnectionSuccessVersion: 'Conectado a {{slicer}} {{version}}.',
+    slicerConnectionMismatch: 'En esta URL se ejecuta {{detected}} {{version}}, pero está seleccionado {{slicer}}. Revisa la URL y el puerto del sidecar.',
     slicerConnectionFailed: 'Error en la conexión con el slicer {{slicer}}.',
     slicerConnectionError: 'Error en la conexión con el slicer.',
     slicerBundles: {

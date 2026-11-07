@@ -197,7 +197,10 @@ In PrintBuddy open **Settings → Slicer**:
    for Bambu Studio, `http://localhost:3003` for OrcaSlicer), or enter your
    own URL.
 4. Click **Test slicer connection**. It checks the sidecar of the preferred
-   slicer and must report success before slicing can work.
+   slicer and reports which slicer and version answered, e.g. *Connected to
+   Bambu Studio 02.08.02.61*. If the URL points at the other sidecar (for
+   example port 3003 while Bambu Studio is selected), it warns about the
+   mismatch — fix the URL or port before slicing.
 
 ---
 

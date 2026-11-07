@@ -1916,7 +1916,8 @@ export default {
     embeddedOverlay: '埋め込みオーバーレイ',
     preferredSlicer: '優先スライサー',
     preferredSlicerDescription: 'ファイルを開くスライサーアプリケーションを選択',
-    orcaslicerKnownIssuesWarning: 'OrcaSlicer 2.3.2 / 2.4.0-devには、Bambu作成の3MFの多くをスライスできない既知のCLIバグがあります — 上流イシュー#12426（ペイント済みマルチエクストルーダーファイルでのsegfault）および#13386（パラメータ範囲の厳格検証拒否）を参照。上流の修正がリリースされるまで、Bambu Studioを推奨します。',
+    orcaslicerKnownIssuesWarning: 'Bambu 以外のプリンター（Prusa、Elegoo、Klipper など）には OrcaSlicer を使用してください。Bambu Lab のプリンターには Bambu Studio を推奨します。OrcaSlicer 2.3.2 には X2D などの最新モデルのプロファイルがなく、ペイントされたマルチカラーの Bambu 3MF でクラッシュすることがあります（upstream #12426）。',
+    bambuStudioSlicerHint: 'Bambu Lab のプリンターには Bambu Studio を推奨します。他社製のプロファイルはわずかしか含まれていないため、Prusa、Elegoo、Klipper などには OrcaSlicer を使用してください。',
     useSlicerApi: 'スライサーAPIを使用',
     useSlicerApiDescription: 'オンの場合、「Slice」アクションはアプリ内スライサーモーダルを開き、slicer-APIサイドカーを呼び出します。オフ（デフォルト）の場合、URIスキーム経由でデスクトップスライサーに引き継がれます。',
     slicerCard: 'スライサー',
@@ -1926,6 +1927,8 @@ export default {
     testSlicerConnection: 'スライサー接続をテスト',
     testingSlicerConnection: 'スライサー接続をテスト中…',
     slicerConnectionSuccess: '{{slicer}} スライサーへの接続に成功しました。',
+    slicerConnectionSuccessVersion: '{{slicer}} {{version}} に接続しました。',
+    slicerConnectionMismatch: 'この URL では {{detected}} {{version}} が動作していますが、{{slicer}} が選択されています。サイドカーの URL とポートを確認してください。',
     slicerConnectionFailed: '{{slicer}} スライサーへの接続に失敗しました。',
     slicerConnectionError: 'スライサーへの接続に失敗しました。',
     slicerBundles: {

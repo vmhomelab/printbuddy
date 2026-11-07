@@ -234,7 +234,8 @@ describe('SettingsPage', () => {
           return HttpResponse.json({
             success: true,
             slicer: 'bambu_studio',
-            health: { status: 'ok', version: '2.4.1', capabilities: ['slice'] },
+            health: { status: 'healthy', version: '02.08.02.61' },
+            detected_slicer: 'bambu_studio',
           });
         }),
       );
@@ -248,9 +249,36 @@ describe('SettingsPage', () => {
       completeRequest?.();
 
       await waitFor(() => {
-        expect(screen.getByText('Bambu Studio slicer connection succeeded.')).toBeInTheDocument();
+        expect(screen.getByText('Connected to Bambu Studio 02.08.02.61.')).toBeInTheDocument();
       });
       expect(button).not.toBeDisabled();
+    });
+
+    it('warns when the sidecar at the configured URL is the other slicer', async () => {
+      const user = userEvent.setup();
+      server.use(
+        http.get('/api/v1/settings/', () => HttpResponse.json({ ...mockSettings, use_slicer_api: true })),
+        http.post('/api/v1/settings/test-slicer-connection', () =>
+          HttpResponse.json({
+            success: true,
+            slicer: 'bambu_studio',
+            health: { status: 'healthy', version: '2.3.2' },
+            detected_slicer: 'orcaslicer',
+          }),
+        ),
+      );
+      render(<SettingsPage />);
+
+      await user.click(await screen.findByText('Workflow'));
+      await user.click(await screen.findByRole('button', { name: 'Test slicer connection' }));
+
+      await waitFor(() => {
+        expect(
+          screen.getByText(
+            'The sidecar at this URL runs OrcaSlicer 2.3.2, but Bambu Studio is selected. Check the sidecar URL and port.',
+          ),
+        ).toBeInTheDocument();
+      });
     });
 
     it('marks default print options as Bambu Lab only with a provider warning', async () => {

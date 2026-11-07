@@ -1917,7 +1917,8 @@ export default {
     embeddedOverlay: 'Overlay incorporato',
     preferredSlicer: 'Slicer preferito',
     preferredSlicerDescription: 'Scegli quale applicazione slicer usare per aprire i file',
-    orcaslicerKnownIssuesWarning: 'OrcaSlicer 2.3.2 / 2.4.0-dev hanno bug CLI noti che bloccano lo slicing di molti 3MF creati da Bambu — vedi le issue upstream #12426 (segfault su file multi-estrusore dipinti) e #13386 (rifiuto della validazione rigorosa dei range di parametri). Bambu Studio è raccomandato finché non arrivano le correzioni upstream.',
+    orcaslicerKnownIssuesWarning: 'Usa OrcaSlicer per stampanti di altre marche (Prusa, Elegoo, Klipper, …). Per le stampanti Bambu Lab è consigliato Bambu Studio: OrcaSlicer 2.3.2 non ha profili per i modelli più recenti come la X2D e può bloccarsi con 3MF Bambu multicolore dipinti (upstream #12426).',
+    bambuStudioSlicerHint: 'Bambu Studio è consigliato per le stampanti Bambu Lab. Include pochi profili di altre marche; usa OrcaSlicer per Prusa, Elegoo, Klipper e altre stampanti.',
     useSlicerApi: 'Usa Slicer API',
     useSlicerApiDescription: 'Se attivo, le azioni "Slice" aprono il modale slicer integrato e chiamano il sidecar slicer-API. Se disattivo (predefinito), inoltrano al slicer desktop tramite schema URI.',
     slicerCard: 'Slicer',
@@ -1927,6 +1928,8 @@ export default {
     testSlicerConnection: 'Verifica connessione slicer',
     testingSlicerConnection: 'Verifica della connessione slicer…',
     slicerConnectionSuccess: 'Connessione allo slicer {{slicer}} riuscita.',
+    slicerConnectionSuccessVersion: 'Connesso a {{slicer}} {{version}}.',
+    slicerConnectionMismatch: 'A questo URL è in esecuzione {{detected}} {{version}}, ma è selezionato {{slicer}}. Controlla URL e porta del sidecar.',
     slicerConnectionFailed: 'Connessione allo slicer {{slicer}} non riuscita.',
     slicerConnectionError: 'Connessione allo slicer non riuscita.',
     slicerBundles: {

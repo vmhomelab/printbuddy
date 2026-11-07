@@ -1917,7 +1917,8 @@ export default {
     embeddedOverlay: 'Superposition intégrée',
     preferredSlicer: 'Slicer préféré',
     preferredSlicerDescription: 'Application pour ouvrir les fichiers',
-    orcaslicerKnownIssuesWarning: 'OrcaSlicer 2.3.2 / 2.4.0-dev ont des bugs CLI connus qui bloquent le découpage de nombreux 3MF créés par Bambu — voir les issues amont #12426 (segfault sur fichiers multi-extrudeurs peints) et #13386 (rejet de validation stricte des plages de paramètres). Bambu Studio est recommandé jusqu\'à ce que les correctifs amont arrivent.',
+    orcaslicerKnownIssuesWarning: 'Utilisez OrcaSlicer pour les imprimantes d’autres marques (Prusa, Elegoo, Klipper, …). Pour les imprimantes Bambu Lab, Bambu Studio est recommandé : OrcaSlicer 2.3.2 n’a pas de profils pour les modèles les plus récents comme la X2D et peut planter sur les 3MF Bambu multicolores peints (upstream #12426).',
+    bambuStudioSlicerHint: 'Bambu Studio est recommandé pour les imprimantes Bambu Lab. Il ne fournit que peu de profils pour d’autres marques ; utilisez OrcaSlicer pour Prusa, Elegoo, Klipper et les autres imprimantes.',
     useSlicerApi: 'Utiliser l\'API Slicer',
     useSlicerApiDescription: 'Lorsque activé, les actions "Slice" ouvrent le slicer intégré et appellent le sidecar slicer-API. Lorsque désactivé (par défaut), elles redirigent vers le slicer desktop via le schéma URI.',
     slicerCard: 'Slicer',
@@ -1927,6 +1928,8 @@ export default {
     testSlicerConnection: 'Tester la connexion au slicer',
     testingSlicerConnection: 'Test de la connexion au slicer…',
     slicerConnectionSuccess: 'Connexion au slicer {{slicer}} réussie.',
+    slicerConnectionSuccessVersion: 'Connecté à {{slicer}} {{version}}.',
+    slicerConnectionMismatch: 'L’URL indiquée exécute {{detected}} {{version}}, mais {{slicer}} est sélectionné. Vérifiez l’URL et le port du sidecar.',
     slicerConnectionFailed: 'Échec de la connexion au slicer {{slicer}}.',
     slicerConnectionError: 'Échec de la connexion au slicer.',
     slicerBundles: {

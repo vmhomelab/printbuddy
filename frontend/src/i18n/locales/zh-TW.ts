@@ -1917,7 +1917,8 @@ export default {
     embeddedOverlay: '嵌入式疊加層',
     preferredSlicer: '首選切片軟體',
     preferredSlicerDescription: '選擇要用於開啟檔案的切片軟體',
-    orcaslicerKnownIssuesWarning: 'OrcaSlicer 2.3.2 / 2.4.0-dev 存在已知 CLI 錯誤，無法切片許多 Bambu 建立的 3MF — 見上游 issue #12426（繪製的多擠出機檔案 segfault）和 #13386（參數範圍嚴格驗證拒絕）。在上游修復發布之前，推薦使用 Bambu Studio。',
+    orcaslicerKnownIssuesWarning: '非 Bambu 印表機（Prusa、Elegoo、Klipper 等）請使用 OrcaSlicer。Bambu Lab 印表機建議使用 Bambu Studio：OrcaSlicer 2.3.2 沒有 X2D 等最新機型的設定檔，且可能在已塗色的多色 Bambu 3MF 上當機（upstream #12426）。',
+    bambuStudioSlicerHint: 'Bambu Lab 印表機建議使用 Bambu Studio。它只附帶少量其他品牌的設定檔；Prusa、Elegoo、Klipper 等印表機請使用 OrcaSlicer。',
     useSlicerApi: '使用切片器 API',
     useSlicerApiDescription: '開啟時，「切片」操作開啟應用程式內切片器對話框並呼叫 slicer-API sidecar。關閉時（預設），透過 URI 方案交給桌面切片器。',
     slicerCard: '切片器',
@@ -1927,6 +1928,8 @@ export default {
     testSlicerConnection: '測試切片器連線',
     testingSlicerConnection: '正在測試切片器連線…',
     slicerConnectionSuccess: '{{slicer}} 切片器連線成功。',
+    slicerConnectionSuccessVersion: '已連線到 {{slicer}} {{version}}。',
+    slicerConnectionMismatch: '此 URL 上執行的是 {{detected}} {{version}}，但目前選擇的是 {{slicer}}。請檢查 sidecar 的 URL 和連接埠。',
     slicerConnectionFailed: '{{slicer}} 切片器連線失敗。',
     slicerConnectionError: '切片器連線失敗。',
     slicerBundles: {
