@@ -1387,6 +1387,7 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
     )
     bed_temp = round(temps.get("bed", 0))
     chamber_temp = round(temps.get("chamber", 0)) if "chamber" in temps else ""
+    chamber_target = round(temps.get("chamber_target", 0)) if "chamber_target" in temps else ""
 
     # Persist the actual number of reported toolheads. This keeps dual-nozzle
     # Bambu behavior intact while allowing U1-style four-nozzle printers (and
@@ -1449,7 +1450,7 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
     )
     status_key = (
         f"{state.connected}:{state.state}:{state.progress}:{state.layer_num}:"
-        f"{nozzle_temperatures}:{bed_temp}:{chamber_temp}:"
+        f"{nozzle_temperatures}:{bed_temp}:{chamber_temp}:{chamber_target}:"
         f"{state.stg_cur}:{bed_target}:{nozzle_target}:"
         f"{state.cooling_fan_speed}:{state.big_fan1_speed}:{state.big_fan2_speed}:"
         f"{state.chamber_light}:{state.active_extruder}:{state.tray_now}:{vt_tray_key}:"
