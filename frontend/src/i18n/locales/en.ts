@@ -1573,6 +1573,12 @@ export default {
     // Notifications
     notificationLanguage: 'Notification Language',
     notificationLanguageDescription: 'Language for push notifications',
+    progressMilestoneMode: 'Progress milestones',
+    progressMilestoneModeDescription: 'When the 25%, 50% and 75% notifications are sent',
+    progressMilestoneModePrintProgress: 'Overall progress (like Notify)',
+    progressMilestoneModeLayers: 'Layer progress',
+    progressMilestoneModePrintProgressInfo: 'Uses the printer\'s overall progress – the same value Notify and Printbuddy display. The 25% message arrives when the island also shows 25%.',
+    progressMilestoneModeLayersInfo: 'Uses printed layers relative to the total layer count. May differ from the displayed progress because layers take different amounts of time.',
     bedCooledThreshold: 'Bed Cooled Threshold',
     bedCooledThresholdDescription: 'Temperature below which the bed is considered cooled after a print',
     userNotificationsEnabled: 'User Notifications',

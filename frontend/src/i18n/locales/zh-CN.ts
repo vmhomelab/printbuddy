@@ -1571,6 +1571,12 @@ export default {
     // Notifications
     notificationLanguage: '通知语言',
     notificationLanguageDescription: '推送通知的语言',
+    progressMilestoneMode: '进度里程碑',
+    progressMilestoneModeDescription: '何时发送 25%、50% 和 75% 通知',
+    progressMilestoneModePrintProgress: '整体进度（与 Notify 一致）',
+    progressMilestoneModeLayers: '层进度',
+    progressMilestoneModePrintProgressInfo: '使用打印机的整体进度，与 Notify 和 Printbuddy 显示的数值相同。当灵动岛显示 25% 时才会收到 25% 通知。',
+    progressMilestoneModeLayersInfo: '使用已打印层数占总层数的比例。由于每层耗时不同，可能与显示的进度不一致。',
     bedCooledThreshold: '热床冷却阈值',
     bedCooledThresholdDescription: '打印后热床被视为已冷却的温度',
     userNotificationsEnabled: '用户通知',

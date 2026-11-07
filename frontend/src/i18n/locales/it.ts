@@ -1571,6 +1571,12 @@ export default {
     // Notifications
     notificationLanguage: 'Lingua notifiche',
     notificationLanguageDescription: 'Lingua per notifiche push',
+    progressMilestoneMode: 'Traguardi di avanzamento',
+    progressMilestoneModeDescription: 'Quando vengono inviate le notifiche al 25%, 50% e 75%',
+    progressMilestoneModePrintProgress: 'Avanzamento generale (come Notify)',
+    progressMilestoneModeLayers: 'Avanzamento per layer',
+    progressMilestoneModePrintProgressInfo: 'Usa l\'avanzamento generale della stampante, lo stesso valore mostrato da Notify e Printbuddy. Il messaggio del 25% arriva quando anche l\'isola mostra 25%.',
+    progressMilestoneModeLayersInfo: 'Usa i layer stampati rispetto al totale. Può differire dall\'avanzamento mostrato perché i layer richiedono tempi diversi.',
     bedCooledThreshold: 'Soglia raffreddamento piatto',
     bedCooledThresholdDescription: 'Temperatura sotto la quale il piatto è considerato raffreddato dopo una stampa',
     userNotificationsEnabled: 'Notifiche utente',

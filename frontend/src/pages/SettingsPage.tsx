@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Loader2, Plus, Plug, AlertTriangle, RotateCcw, Bell, Download, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, Unlock, ChevronDown, Save, Mail, Flame, Layers, ListOrdered, Code, Search, Settings as SettingsIcon, ScanEye, Cog } from 'lucide-react';
+import { Loader2, Plus, Plug, AlertTriangle, RotateCcw, Bell, Download, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, Unlock, ChevronDown, Save, Mail, Flame, Layers, ListOrdered, Code, Search, Settings as SettingsIcon, ScanEye, Cog, Info } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
@@ -1082,6 +1082,7 @@ export function SettingsPage() {
       (settings.include_beta_updates ?? false) !== (localSettings.include_beta_updates ?? false) ||
       settings.notification_language !== localSettings.notification_language ||
       (settings.bed_cooled_threshold ?? 35) !== (localSettings.bed_cooled_threshold ?? 35) ||
+      (settings.progress_milestone_mode ?? 'layers') !== (localSettings.progress_milestone_mode ?? 'layers') ||
       settings.ams_humidity_good !== localSettings.ams_humidity_good ||
       settings.ams_humidity_fair !== localSettings.ams_humidity_fair ||
       settings.ams_temp_good !== localSettings.ams_temp_good ||
@@ -1171,6 +1172,7 @@ export function SettingsPage() {
         include_beta_updates: localSettings.include_beta_updates,
         notification_language: localSettings.notification_language,
         bed_cooled_threshold: localSettings.bed_cooled_threshold,
+        progress_milestone_mode: localSettings.progress_milestone_mode ?? 'layers',
         ams_humidity_good: localSettings.ams_humidity_good,
         ams_humidity_fair: localSettings.ams_humidity_fair,
         ams_temp_good: localSettings.ams_temp_good,
@@ -3813,6 +3815,36 @@ export function SettingsPage() {
                       </option>
                     ))}
                   </select>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Progress Milestone Mode Setting */}
+            <Card className="mb-4">
+              <CardContent className="py-3">
+                <div>
+                  <p className="text-white text-sm font-medium">{t('settings.progressMilestoneMode')}</p>
+                  <p className="text-xs text-bambu-gray">{t('settings.progressMilestoneModeDescription')}</p>
+                </div>
+                <div className="mt-2">
+                  <select
+                    value={localSettings.progress_milestone_mode ?? 'layers'}
+                    onChange={(e) =>
+                      updateSetting('progress_milestone_mode', e.target.value as 'layers' | 'print_progress')
+                    }
+                    className="w-full px-2 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-bambu-green"
+                  >
+                    <option value="print_progress">{t('settings.progressMilestoneModePrintProgress')}</option>
+                    <option value="layers">{t('settings.progressMilestoneModeLayers')}</option>
+                  </select>
+                </div>
+                <div className="mt-2 flex items-start gap-2 rounded bg-bambu-dark px-3 py-2 text-xs text-bambu-gray">
+                  <Info className="w-4 h-4 mt-0.5 shrink-0 text-bambu-green" />
+                  <span>
+                    {(localSettings.progress_milestone_mode ?? 'layers') === 'print_progress'
+                      ? t('settings.progressMilestoneModePrintProgressInfo')
+                      : t('settings.progressMilestoneModeLayersInfo')}
+                  </span>
                 </div>
               </CardContent>
             </Card>

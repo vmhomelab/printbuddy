@@ -97,7 +97,7 @@ from backend.app.services.mqtt_smart_plug import mqtt_smart_plug_service
 from backend.app.services.notification_service import notification_service
 from backend.app.services.notify_live_activity_service import notify_live_activity_service
 from backend.app.services.obico_detection import obico_detection_service
-from backend.app.services.print_progress import effective_print_progress, live_activity_progress
+from backend.app.services.print_progress import live_activity_progress, milestone_progress
 from backend.app.services.print_scheduler import scheduler as print_scheduler
 from backend.app.services.printer_manager import (
     init_printer_connections,
@@ -1274,6 +1274,43 @@ def _provider_name_for_progress(printer_id: int) -> str:
         return ""
 
 
+_PROGRESS_MILESTONE_MODE_TTL_SECONDS = 30.0
+_progress_milestone_mode_cache: tuple[float, str] | None = None
+
+
+def invalidate_progress_milestone_mode_cache() -> None:
+    """Drop the cached milestone mode so the next status update re-reads it."""
+    global _progress_milestone_mode_cache
+    _progress_milestone_mode_cache = None
+
+
+async def _get_progress_milestone_mode() -> str:
+    """Return the configured milestone source ('layers' or 'print_progress').
+
+    Status callbacks fire many times per second, so cache the setting briefly
+    instead of hitting the database on every update.
+    """
+    global _progress_milestone_mode_cache
+    now = time.monotonic()
+    cached = _progress_milestone_mode_cache
+    if cached and now - cached[0] < _PROGRESS_MILESTONE_MODE_TTL_SECONDS:
+        return cached[1]
+    mode = "layers"
+    try:
+        from backend.app.api.routes.settings import get_setting
+
+        async with async_session() as db:
+            value = await get_setting(db, "progress_milestone_mode")
+        if value in ("layers", "print_progress"):
+            mode = value
+    except Exception:
+        logging.getLogger(__name__).debug("Could not read progress_milestone_mode", exc_info=True)
+        if cached:
+            mode = cached[1]
+    _progress_milestone_mode_cache = (now, mode)
+    return mode
+
+
 def _should_send_print_almost_done(printer_id: int, progress: float) -> bool:
     """Return whether this print just crossed the almost-done threshold."""
 
@@ -1435,7 +1472,7 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
     # Check for progress milestone notifications (25%, 50%, 75%)
     logger = logging.getLogger(__name__)
     raw_progress = state.progress or 0
-    progress = effective_print_progress(state)
+    progress = milestone_progress(state, await _get_progress_milestone_mode())
     activity_progress = live_activity_progress(state)
     is_printing = bool(state.connected) and state.state in ("RUNNING", "PRINTING")
     provider = _provider_name_for_progress(printer_id)

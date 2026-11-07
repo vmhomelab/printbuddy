@@ -1571,6 +1571,12 @@ export default {
     // Notifications
     notificationLanguage: 'Langue des notifications',
     notificationLanguageDescription: 'Langue pour les notifications push',
+    progressMilestoneMode: 'Étapes de progression',
+    progressMilestoneModeDescription: 'Quand les notifications à 25 %, 50 % et 75 % sont envoyées',
+    progressMilestoneModePrintProgress: 'Progression globale (comme Notify)',
+    progressMilestoneModeLayers: 'Progression par couches',
+    progressMilestoneModePrintProgressInfo: 'Utilise la progression globale de l\'imprimante, la même valeur qu\'affichent Notify et Printbuddy. Le message à 25 % arrive quand l\'île affiche aussi 25 %.',
+    progressMilestoneModeLayersInfo: 'Utilise les couches imprimées par rapport au total. Peut différer de la progression affichée, car les couches n\'ont pas toutes la même durée.',
     bedCooledThreshold: 'Seuil de refroidissement du plateau',
     bedCooledThresholdDescription: 'Température en dessous de laquelle le plateau est considéré comme refroidi',
     userNotificationsEnabled: 'Notifications utilisateur',

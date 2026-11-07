@@ -1570,6 +1570,12 @@ export default {
     // Notifications
     notificationLanguage: '通知の言語',
     notificationLanguageDescription: 'プッシュ通知の言語',
+    progressMilestoneMode: '進捗マイルストーン',
+    progressMilestoneModeDescription: '25%・50%・75%の通知を送るタイミング',
+    progressMilestoneModePrintProgress: '全体の進捗（Notifyと同じ）',
+    progressMilestoneModeLayers: 'レイヤー進捗',
+    progressMilestoneModePrintProgressInfo: 'プリンターの全体進捗を使用します。NotifyとPrintbuddyに表示される値と同じなので、アイランドが25%を表示したときに25%の通知が届きます。',
+    progressMilestoneModeLayersInfo: '総レイヤー数に対する印刷済みレイヤーを使用します。レイヤーごとに所要時間が異なるため、表示される進捗とずれることがあります。',
     bedCooledThreshold: 'ベッド冷却しきい値',
     bedCooledThresholdDescription: '印刷後にベッドが冷却されたと見なす温度',
     userNotificationsEnabled: 'ユーザー通知',

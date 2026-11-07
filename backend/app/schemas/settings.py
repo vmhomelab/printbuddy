@@ -2,6 +2,8 @@ import json
 
 from pydantic import BaseModel, Field, field_validator
 
+PROGRESS_MILESTONE_MODES = ("layers", "print_progress")
+
 
 class AppSettings(BaseModel):
     """Application settings schema."""
@@ -60,6 +62,15 @@ class AppSettings(BaseModel):
     # Language
     language: str = Field(default="en", description="UI language (en, de, fr, ja, it, pt-BR)")
     notification_language: str = Field(default="en", description="Language for push notifications (en, de)")
+
+    # Progress milestone notifications (25/50/75 %)
+    progress_milestone_mode: str = Field(
+        default="layers",
+        description=(
+            "Source for 25/50/75% milestone notifications: 'layers' (layer count) or "
+            "'print_progress' (overall printer progress, same value as the Notify Live Activity)"
+        ),
+    )
 
     # Bed cooled notification threshold
     bed_cooled_threshold: float = Field(
@@ -383,6 +394,7 @@ class AppSettingsUpdate(BaseModel):
     include_beta_updates: bool | None = None
     language: str | None = None
     notification_language: str | None = None
+    progress_milestone_mode: str | None = None
     bed_cooled_threshold: float | None = None
     ams_humidity_good: int | None = None
     ams_humidity_fair: int | None = None
@@ -521,6 +533,15 @@ class AppSettingsUpdate(BaseModel):
             return v
         if v not in ("low", "medium", "high"):
             raise ValueError("obico_sensitivity must be 'low', 'medium', or 'high'")
+        return v
+
+    @field_validator("progress_milestone_mode")
+    @classmethod
+    def validate_progress_milestone_mode(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        if v not in PROGRESS_MILESTONE_MODES:
+            raise ValueError("progress_milestone_mode must be 'layers' or 'print_progress'")
         return v
 
     @field_validator("obico_action")

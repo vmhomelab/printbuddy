@@ -53,3 +53,30 @@ def test_live_activity_progress_stays_zero_during_pre_print_stage():
     state = SimpleNamespace(progress=14, layer_num=0, total_layers=895, stg_cur=2)
 
     assert live_activity_progress(state) == 0
+
+
+def test_milestone_progress_layers_mode_uses_layer_progress():
+    from backend.app.services.print_progress import milestone_progress
+
+    state = SimpleNamespace(progress=40, layer_num=10, total_layers=100, stg_cur=0)
+
+    assert milestone_progress(state, "layers") == 10
+    # Unknown/missing setting keeps the existing layer-based behaviour.
+    assert milestone_progress(state, None) == 10
+
+
+def test_milestone_progress_print_progress_mode_matches_live_activity():
+    from backend.app.services.print_progress import milestone_progress
+
+    state = SimpleNamespace(progress=40, layer_num=10, total_layers=100, stg_cur=0)
+
+    assert milestone_progress(state, "print_progress") == 40
+    assert milestone_progress(state, "print_progress") == live_activity_progress(state)
+
+
+def test_milestone_progress_print_progress_mode_ignores_pre_print_stage():
+    from backend.app.services.print_progress import milestone_progress
+
+    state = SimpleNamespace(progress=25, layer_num=0, total_layers=100, stg_cur=2)
+
+    assert milestone_progress(state, "print_progress") == 0

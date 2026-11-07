@@ -323,6 +323,11 @@ async def update_settings(
     # Expire all objects to ensure fresh reads after commit
     db.expire_all()
 
+    if "progress_milestone_mode" in update_data:
+        from backend.app.main import invalidate_progress_milestone_mode_cache
+
+        invalidate_progress_milestone_mode_cache()
+
     # Reconfigure MQTT relay if any MQTT settings changed
     if mqtt_updated:
         try:

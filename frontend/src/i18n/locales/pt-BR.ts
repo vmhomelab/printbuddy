@@ -1571,6 +1571,12 @@ export default {
     // Notifications
     notificationLanguage: 'Idioma das Notificações',
     notificationLanguageDescription: 'Idioma para notificações push',
+    progressMilestoneMode: 'Marcos de progresso',
+    progressMilestoneModeDescription: 'Quando as notificações de 25%, 50% e 75% são enviadas',
+    progressMilestoneModePrintProgress: 'Progresso geral (como o Notify)',
+    progressMilestoneModeLayers: 'Progresso por camadas',
+    progressMilestoneModePrintProgressInfo: 'Usa o progresso geral da impressora, o mesmo valor exibido pelo Notify e pelo Printbuddy. A mensagem de 25% chega quando a ilha também mostra 25%.',
+    progressMilestoneModeLayersInfo: 'Usa as camadas impressas em relação ao total. Pode diferir do progresso exibido porque as camadas levam tempos diferentes.',
     bedCooledThreshold: 'Limite de Resfriamento da Cama',
     bedCooledThresholdDescription: 'Temperatura abaixo da qual a cama é considerada resfriada após uma impressão',
     userNotificationsEnabled: 'Notificações do Usuário',

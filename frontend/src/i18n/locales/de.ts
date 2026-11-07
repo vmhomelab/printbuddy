@@ -1571,6 +1571,12 @@ export default {
     // Notifications
     notificationLanguage: 'Benachrichtigungssprache',
     notificationLanguageDescription: 'Sprache für Push-Benachrichtigungen',
+    progressMilestoneMode: 'Fortschritts-Meilensteine',
+    progressMilestoneModeDescription: 'Wann die Benachrichtigungen bei 25 %, 50 % und 75 % gesendet werden',
+    progressMilestoneModePrintProgress: 'Gesamtfortschritt (wie Notify)',
+    progressMilestoneModeLayers: 'Layer-Fortschritt',
+    progressMilestoneModePrintProgressInfo: 'Nutzt den Gesamtfortschritt des Druckers – denselben Wert, den Notify und Printbuddy anzeigen. Die 25-%-Nachricht kommt, wenn auch das Island 25 % zeigt.',
+    progressMilestoneModeLayersInfo: 'Nutzt die gedruckten Layer im Verhältnis zur Gesamtzahl. Kann vom angezeigten Fortschritt abweichen, da Layer unterschiedlich lange dauern.',
     bedCooledThreshold: 'Bett-Abkühlung Schwellenwert',
     bedCooledThresholdDescription: 'Temperatur, unter der das Bett nach einem Druck als abgekühlt gilt',
     userNotificationsEnabled: 'Benutzerbenachrichtigungen',

@@ -1088,6 +1088,7 @@ export interface AppSettings {
   include_beta_updates: boolean;
   language: string;
   notification_language: string;
+  progress_milestone_mode?: 'layers' | 'print_progress';
   // AMS threshold settings
   ams_humidity_good: number;  // <= this is green
   ams_humidity_fair: number;  // <= this is orange, > is red
