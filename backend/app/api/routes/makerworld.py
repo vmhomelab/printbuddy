@@ -44,14 +44,18 @@ from backend.app.api.routes.library import (
     to_relative_path,
 )
 from backend.app.core.auth import (
+    ApiKeyActor,
+    RequestActor,
     RequirePermissionIfAuthEnabled,
+    require_actor_still_exists,
     require_auth_if_enabled,
     require_permission_if_auth_enabled,
     security,
 )
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
-from backend.app.models.library import LibraryFile, LibraryFolder
+from backend.app.core.row_visibility import owned_row_clauses
+from backend.app.models.library import LibraryFile
 from backend.app.models.user import User
 from backend.app.schemas.makerworld import (
     MakerWorldImportRequest,
@@ -62,6 +66,7 @@ from backend.app.schemas.makerworld import (
     MakerWorldSourceArchiveResult,
     MakerWorldStatus,
 )
+from backend.app.services.library_folder_access import default_import_folder, get_writable_folder
 from backend.app.services.model_providers import makerworld_provider, registry
 from backend.app.services.model_providers.base import (
     ModelProvider,
@@ -357,10 +362,17 @@ def _provider_for_source(source_type: str) -> ModelProvider:
     is the *repr* of its argument and would ship the quotes to the client.
     """
     try:
-        return registry.get(source_type)
+        provider = registry.get(source_type)
     except KeyError as exc:
         msg = f"No model provider registered for source_type {source_type!r}"
         raise HTTPException(status_code=400, detail=msg) from exc
+    # A provider that claims no pasted URLs (Manyfold, #1471) is browsed
+    # through routes of its own, which apply its own checks; it must not be
+    # importable through this pasted-URL flow as well.
+    if not provider.host_patterns:
+        msg = f"Model provider {source_type!r} is not imported through this route"
+        raise HTTPException(status_code=400, detail=msg)
+    return provider
 
 
 async def _authorize_for_provider(
@@ -471,7 +483,7 @@ async def proxy_thumbnail(
 
 @router.get("/status", response_model=MakerWorldStatus)
 async def get_status(
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
     current_user: User | None = RequirePermissionIfAuthEnabled(makerworld_provider.view_permission),
     api_key_cloud_owner: User | None = Depends(resolve_api_key_cloud_owner),
 ):
@@ -511,10 +523,11 @@ async def get_status(
 )
 async def resolve_url(
     body: MakerWorldResolveRequest,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
     x_api_key: str | None = Header(default=None, alias="X-API-Key"),
     api_key_cloud_owner: User | None = Depends(resolve_api_key_cloud_owner),
+    actor: User | ApiKeyActor | None = RequestActor,
 ):
     """Resolve a MakerWorld URL to full model metadata + plate list.
 
@@ -547,13 +560,18 @@ async def resolve_url(
     # the provider's :meth:`source_url_filter` owns what "belongs" means
     # (whole-model key, per-plate keys, ...). The frontend surfaces the ids
     # to mark imported plates in the instance picker.
-    existing_q = await db.execute(
-        select(LibraryFile.id).where(
-            provider.source_url_filter(LibraryFile.source_url, str(model_id)),
-            LibraryFile.deleted_at.is_(None),
+    # Only rows the caller may open in the File Manager.
+    readable = owned_row_clauses(LibraryFile, actor, Permission.LIBRARY_READ_ALL, Permission.LIBRARY_READ_OWN)
+    already_imported = []
+    if readable is not None:
+        existing_q = await db.execute(
+            select(LibraryFile.id).where(
+                provider.source_url_filter(LibraryFile.source_url, str(model_id)),
+                LibraryFile.deleted_at.is_(None),
+                *readable,
+            )
         )
-    )
-    already_imported = [row[0] for row in existing_q.all()]
+        already_imported = [row[0] for row in existing_q.all()]
 
     return MakerWorldResolvedModel(
         model_id=model_id,
@@ -573,10 +591,11 @@ async def resolve_url(
 )
 async def import_instance(
     body: MakerWorldImportRequest,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
     x_api_key: str | None = Header(default=None, alias="X-API-Key"),
     api_key_cloud_owner: User | None = Depends(resolve_api_key_cloud_owner),
+    actor: User | ApiKeyActor | None = RequestActor,
 ):
     """Download a specific MakerWorld instance (plate configuration) and save
     the 3MF into the library.
@@ -595,10 +614,8 @@ async def import_instance(
     current_user = await _authorize_for_provider(provider, provider.import_permission, credentials, x_api_key)
 
     if body.folder_id is not None:
-        folder_q = await db.execute(select(LibraryFolder).where(LibraryFolder.id == body.folder_id))
-        target_folder = folder_q.scalar_one_or_none()
-        if target_folder is None:
-            raise HTTPException(status_code=404, detail="Folder not found")
+        # Only into a folder the user may write to (#3201).
+        target_folder = await get_writable_folder(db, body.folder_id, actor)
         if target_folder.is_external and target_folder.external_readonly:
             raise HTTPException(
                 status_code=403,
@@ -618,27 +635,15 @@ async def import_instance(
         if default_folder_name is None:
             effective_folder_id = None
         else:
-            default_folder_q = await db.execute(
-                select(LibraryFolder).where(
-                    LibraryFolder.name == default_folder_name,
-                    LibraryFolder.parent_id.is_(None),
-                    LibraryFolder.is_external.is_(False),
-                )
-            )
-            default_folder = default_folder_q.scalar_one_or_none()
-            if default_folder is None:
-                default_folder = LibraryFolder(name=default_folder_name, parent_id=None)
-                db.add(default_folder)
-                await db.flush()
+            default_folder = await default_import_folder(db, default_folder_name, actor)
             effective_folder_id = default_folder.id
 
     service = await _build_service(db, provider, current_user, api_key_cloud_owner)
 
-    # YASTL#51's iot-service endpoint needs the *alphanumeric* modelId
-    # (e.g. "US2bb73b106683e5"), not the integer design id from /models/{N} —
-    # resolving that, preferring the per-instance download endpoint, and
-    # picking a default profile when the frontend didn't specify one, lives
-    # inside ``get_download``. The route only orchestrates dedupe +
+    # Finding the download link (the instance behind the profile, or the
+    # profile endpoint with the alphanumeric modelId as a fallback, #3447),
+    # plus picking a default profile when the frontend didn't specify one,
+    # lives inside ``get_download``. The route only orchestrates dedupe +
     # persistence (+ the optional MakerWorld source archive) so every
     # provider shares those concerns here.
     ref = ProviderResourceRef(
@@ -649,12 +654,6 @@ async def import_instance(
     # Source archival reads MakerWorld-specific design/gallery fields, so it is
     # only offered for MakerWorld; other providers import without it.
     archive_details = body.archive_details and provider.source_type == _SOURCE_TYPE
-
-    # API-keyed callers carry identity on the key, not in current_user (#1777);
-    # this collapse stays route-side solely so the library row is attributed
-    # to the key's owner rather than NULL. Credential identity is resolved
-    # inside the provider.
-    cloud_token_user = current_user or api_key_cloud_owner
 
     try:
         try:
@@ -672,11 +671,17 @@ async def import_instance(
         except ProviderError as exc:
             raise _map_service_error(exc) from exc
 
-        # Dedupe check upfront so we don't burn bandwidth re-downloading. An
+        # Dedupe check upfront so we don't burn bandwidth re-downloading. A copy
+        # the caller cannot open is no copy for them: they get their own. An
         # explicitly requested source archive may still enrich an older row that
         # predates this feature without re-downloading its 3MF.
-        existing_q = await db.execute(LibraryFile.active().where(LibraryFile.source_url == source_url).limit(1))
-        existing_row = existing_q.scalar_one_or_none()
+        readable = owned_row_clauses(LibraryFile, actor, Permission.LIBRARY_READ_ALL, Permission.LIBRARY_READ_OWN)
+        existing_row = None
+        if readable is not None:
+            existing_q = await db.execute(
+                LibraryFile.active().where(LibraryFile.source_url == source_url, *readable).limit(1)
+            )
+            existing_row = existing_q.scalar_one_or_none()
         if existing_row is not None:
             # Materialise response fields before best-effort archival. A failed
             # snapshot transaction rolls back (and expires ORM attributes), but
@@ -750,6 +755,10 @@ async def import_instance(
         # there as on the manifest-supplied name.
         filename = suggested_name if suggested_name.endswith(".3mf") else unquote(download.filename)
 
+        # Not saved for a user deleted during the download (SQLite reuses the id).
+        await require_actor_still_exists(db, actor)
+        # Credited to the key's owner for an API key. Credential identity is
+        # resolved inside the provider.
         library_file, was_existing = await save_3mf_bytes_to_library(
             db,
             file_bytes=download.file_bytes,
@@ -757,7 +766,8 @@ async def import_instance(
             folder_id=effective_folder_id,
             source_type=provider.source_type,
             source_url=source_url,
-            owner_id=cloud_token_user.id if cloud_token_user else None,
+            owner_id=actor.id if actor else None,
+            dedupe_within=readable,
         )
 
         # Capture the committed import response before the optional snapshot
@@ -792,10 +802,11 @@ async def import_instance(
 @router.get("/recent-imports", response_model=list[MakerWorldRecentImport])
 async def recent_imports(
     limit: int = 10,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
     current_user: User | None = RequirePermissionIfAuthEnabled(makerworld_provider.view_permission),
+    actor: User | ApiKeyActor | None = RequestActor,
 ):
-    """Last N MakerWorld imports, newest first.
+    """Last N MakerWorld imports the caller may open, newest first.
 
     Surfaces files whose ``source_type`` is ``"makerworld"`` so the MakerWorld
     page can show a 'Recent imports' sidebar that persists across resolves.
@@ -806,9 +817,12 @@ async def recent_imports(
     _ = current_user  # permission gate only
     capped = max(1, min(50, int(limit)))
 
+    readable = owned_row_clauses(LibraryFile, actor, Permission.LIBRARY_READ_ALL, Permission.LIBRARY_READ_OWN)
+    if readable is None:
+        return []
     result = await db.execute(
         LibraryFile.active()
-        .where(LibraryFile.source_type == makerworld_provider.source_type)
+        .where(LibraryFile.source_type == makerworld_provider.source_type, *readable)
         .order_by(LibraryFile.created_at.desc())
         .limit(capped)
     )

@@ -273,8 +273,12 @@ async def report_inventory_usage(
     if spool is None:
         return []
 
-    spool.weight_used = (spool.weight_used or 0) + weight_used
-    spool.last_used = datetime.now(timezone.utc)
+    # Added in the database itself, as for every print (usage_tracker WU-4):
+    # a weight set by hand meanwhile is kept, a spool deleted meanwhile skipped.
+    from backend.app.services.usage_tracker import _charge_spool
+
+    if not await _charge_spool(db, spool, weight_used):
+        return []
     percent_used = int(round((weight_used / spool.label_weight) * 100)) if spool.label_weight else 0
     cost = metadata.estimated_cost if metadata.estimated_cost is not None else None
     if cost is None:

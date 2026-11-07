@@ -15,6 +15,7 @@ def test_postgres_engine_uses_configurable_pool_settings():
         db_pool_timeout=12,
         db_pool_recycle=345,
         db_pool_use_lifo=None,
+        db_pool_pre_ping=None,
     )
 
     with (
@@ -29,6 +30,7 @@ def test_postgres_engine_uses_configurable_pool_settings():
     create_engine.assert_called_once_with(
         fake_settings.database_url,
         echo=False,
+        hide_parameters=True,
         pool_size=33,
         max_overflow=44,
         pool_pre_ping=True,
@@ -43,8 +45,8 @@ def test_postgres_engine_uses_configurable_pool_settings():
 def test_sqlite_engine_keeps_sqlite_specific_pool_defaults():
     from backend.app.core import database
 
-    # No DB_POOL_* overrides set: SQLite keeps its 20 + 200 defaults and gets
-    # no server-socket pre-ping / recycle / LIFO options (#2572).
+    # No DB_POOL_* overrides set: SQLite keeps its 10 + 90 defaults (#2883) and
+    # gets no server-socket pre-ping / recycle / LIFO options (#2572).
     fake_settings = SimpleNamespace(
         database_url="sqlite+aiosqlite:///tmp/printbuddy.db",
         debug=True,
@@ -53,6 +55,7 @@ def test_sqlite_engine_keeps_sqlite_specific_pool_defaults():
         db_pool_timeout=None,
         db_pool_recycle=None,
         db_pool_use_lifo=None,
+        db_pool_pre_ping=None,
     )
 
     with (
@@ -67,7 +70,8 @@ def test_sqlite_engine_keeps_sqlite_specific_pool_defaults():
     create_engine.assert_called_once_with(
         fake_settings.database_url,
         echo=True,
-        pool_size=20,
-        max_overflow=200,
+        hide_parameters=True,
+        pool_size=10,
+        max_overflow=90,
     )
     listen.assert_called_once()

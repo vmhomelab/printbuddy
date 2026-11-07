@@ -77,9 +77,11 @@ class Settings(BaseSettings):
     external_roots: str = os.environ.get("PRINTBUDDY_EXTERNAL_ROOTS", "")
 
     # Database connection pool sizing. ``None`` = use the built-in, dialect-aware
-    # default (PostgreSQL: pool_size 20 + max_overflow 60; SQLite: 20 + 200).
+    # default (PostgreSQL: pool_size 20 + max_overflow 60; SQLite: 10 + 90).
     # Large PostgreSQL printer farms can raise these via the DB_POOL_SIZE /
     # DB_MAX_OVERFLOW / DB_POOL_TIMEOUT / DB_POOL_RECYCLE env vars (issue #2572).
+    # A large farm still on SQLite can raise DB_MAX_OVERFLOW, but is better
+    # served by moving to PostgreSQL (#2883).
     # Make sure PostgreSQL ``max_connections`` comfortably exceeds
     # (pool_size + max_overflow) x number of app worker processes.
     db_pool_size: int | None = Field(default=None, gt=0)
@@ -91,6 +93,14 @@ class Settings(BaseSettings):
     # overflow connections age out via pool_recycle instead of churning the whole
     # pool. Override with DB_POOL_USE_LIFO. No effect on SQLite. (#2572)
     db_pool_use_lifo: bool | None = Field(default=None)
+    # pool_pre_ping (PostgreSQL default on): every checkout first runs a liveness
+    # ping, which SQLAlchemy's asyncpg dialect wraps in its own transaction, so
+    # each pooled session costs an extra ``BEGIN; ROLLBACK`` round-trip that
+    # shows up in ``pg_stat_database.xact_rollback``. Set DB_POOL_PRE_PING=false
+    # to skip it; ``pool_recycle`` then bounds how long a dead connection can
+    # survive, but a connection dropped by the server or a proxy in between is
+    # no longer replaced transparently. No effect on SQLite.
+    db_pool_pre_ping: bool | None = Field(default=None)
 
     # Logging
     log_level: str = "INFO"  # Override with LOG_LEVEL env var or DEBUG=true

@@ -18,6 +18,7 @@ import { http, HttpResponse } from 'msw';
 import { render } from '../utils';
 import { server } from '../mocks/server';
 import { AddNotificationModal } from '../../components/AddNotificationModal';
+import { NotificationProviderCard } from '../../components/NotificationProviderCard';
 import type { NotificationProvider } from '../../api/client';
 
 afterEach(() => {
@@ -454,6 +455,75 @@ describe('AddNotificationModal — Notify Live Activity display', () => {
   });
 });
 
+describe('AddNotificationModal — Gotify (#2743)', () => {
+  const gotifyProvider = () =>
+    buildProvider({
+      name: 'My Gotify',
+      provider_type: 'gotify',
+      config: { server: 'https://gotify.example.com', app_token: 'Atoken' },
+    });
+
+  it('shows the server and token fields, with the token masked', async () => {
+    render(<AddNotificationModal provider={gotifyProvider()} onClose={() => undefined} />);
+
+    expect(await screen.findByDisplayValue('https://gotify.example.com')).toBeInTheDocument();
+    const token = screen.getByDisplayValue('Atoken');
+    expect(token).toHaveAttribute('type', 'password');
+  });
+
+  it('renders its own priority section and saves event_priorities', async () => {
+    let captured: unknown = null;
+    server.use(
+      http.patch('*/api/v1/notifications/1', async ({ request }) => {
+        captured = await request.json();
+        return HttpResponse.json({ id: 1 });
+      }),
+    );
+
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    render(<AddNotificationModal provider={gotifyProvider()} onClose={onClose} />);
+
+    const sectionHeader = await screen.findByText(/gotify priority/i);
+    expect(screen.queryByText(/ntfy priority/i)).not.toBeInTheDocument();
+    const sectionRoot = sectionHeader.closest('div')!;
+    const failedRow = within(sectionRoot).getByText('Failed').closest('div')!;
+    await user.selectOptions(within(failedRow).getByRole('combobox'), '4');
+
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    const payload = captured as { config: Record<string, unknown> };
+    expect(payload.config).toMatchObject({
+      server: 'https://gotify.example.com',
+      app_token: 'Atoken',
+      event_priorities: { on_print_failed: 4 },
+    });
+  });
+});
+
+describe('AddNotificationModal — provider type list', () => {
+  it('lists the providers alphabetically by their label', async () => {
+    render(<AddNotificationModal onClose={() => undefined} />);
+
+    const select = (await screen.findByDisplayValue('Email')) as HTMLSelectElement;
+    const labels = Array.from(select.options).map((o) => o.textContent);
+
+    expect(labels).toEqual([
+      'Bark',
+      'CallMeBot/WhatsApp',
+      'Discord',
+      'Email',
+      'Gotify',
+      'Home Assistant',
+      'Notify!',
+      'ntfy',
+      'Pushover',
+      'Telegram',
+      'Webhook',
+    ]);
+  });
+});
 
 describe('AddNotificationModal — plate clear required (#2525)', () => {
   it('renders the toggle off by default', async () => {
@@ -942,5 +1012,50 @@ describe('AddNotificationModal — Telegram forum topic (#1518)', () => {
     expect(await screen.findByText(/forum topic id must be a number/i)).toBeInTheDocument();
     expect(patched).toBe(false);
     expect(onClose).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('AddNotificationModal — Notify photo gate', () => {
+  const notifyProvider = (deviceId: string) => buildProvider({
+    name: 'My Notify',
+    provider_type: 'notify',
+    config: {
+      recipients: [{ id: 'r1', name: 'Group', device_id: deviceId, device_token: 'notify-secret', enabled: true, live_activities_enabled: false }],
+    },
+  });
+
+  const photoSwitch = () => screen.getAllByRole('switch').find(
+    (toggle) => toggle.parentElement?.textContent?.includes('Attach Photo'),
+  )!;
+
+  it.each(['GRP12345678901234', 'WB12345678901234'])('saves a %s recipient with photo attachments disabled', async (deviceId) => {
+    let captured: Record<string, unknown> | null = null;
+    server.use(http.patch('*/api/v1/notifications/1', async ({ request }) => {
+      captured = await request.json() as Record<string, unknown>;
+      return HttpResponse.json({ id: 1 });
+    }));
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    render(<AddNotificationModal provider={notifyProvider(deviceId)} onClose={onClose} />);
+    expect(photoSwitch()).toBeDisabled();
+    expect(photoSwitch()).toHaveAttribute('aria-checked', 'false');
+    expect(screen.getByText(/Browser and group recipients support text notifications only/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(captured).toMatchObject({ attach_photo: false });
+  });
+
+  it('keeps photo attachments available for an iOS recipient', () => {
+    render(<AddNotificationModal provider={notifyProvider('IO12345678901234')} onClose={() => undefined} />);
+    expect(photoSwitch()).toBeEnabled();
+  });
+
+  it.each(['GRP12345678901234', 'WB12345678901234'])('disables photo attachments in the provider card for a %s recipient', async (deviceId) => {
+    const user = userEvent.setup();
+    render(<NotificationProviderCard provider={notifyProvider(deviceId)} onEdit={() => undefined} />);
+    await user.click(screen.getByRole('button', { name: /event settings/i }));
+    expect(photoSwitch()).toBeDisabled();
+    expect(photoSwitch()).toHaveAttribute('aria-checked', 'false');
   });
 });

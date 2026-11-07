@@ -19,4 +19,4 @@ async def test_auth_middleware_returns_503_when_auth_state_probe_fails(async_cli
         response = await async_client.get("/api/v1/filament-catalog/")
 
     assert response.status_code == 503
-    assert response.json()["detail"] == "Authentication state unavailable"
+    assert response.json()["detail"] == "Authentication service temporarily unavailable"

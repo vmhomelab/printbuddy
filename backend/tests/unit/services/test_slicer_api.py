@@ -32,12 +32,13 @@ class TestSlicerApiIdentity:
 
         def handler(request: httpx.Request) -> httpx.Response:
             captured["user_agent"] = request.headers.get("user-agent", "")
-            return httpx.Response(status_code=200, json={"ok": True})
+            return httpx.Response(status_code=200, json={"printer": [], "process": [], "filament": []})
 
         client = _mock_client(handler)
         service = SlicerApiService("http://slicer.local", client=client)
 
-        await service.health()
+        # Any request: health() went with upstream's dead-code cleanup.
+        await service.list_bundled_profiles()
         await client.aclose()
 
         assert captured["user_agent"].startswith("Printbuddy/")
@@ -589,29 +590,6 @@ class TestSliceOutputValidation:
                 model_filename="Cube.stl",
                 export_3mf=True,
             )
-
-
-class TestHealth:
-    @pytest.mark.asyncio
-    async def test_health_returns_body(self):
-        def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(
-                status_code=200,
-                json={"status": "healthy", "checks": {"orcaslicer": {"available": True}}},
-            )
-
-        service = SlicerApiService("http://sidecar:3000", client=_mock_client(handler))
-        body = await service.health()
-        assert body["status"] == "healthy"
-
-    @pytest.mark.asyncio
-    async def test_health_unreachable_raises(self):
-        def handler(request: httpx.Request) -> httpx.Response:
-            raise httpx.ConnectError("no route")
-
-        service = SlicerApiService("http://sidecar:3000", client=_mock_client(handler))
-        with pytest.raises(SlicerApiUnavailableError):
-            await service.health()
 
 
 class TestSliceWithProfilesProgress:

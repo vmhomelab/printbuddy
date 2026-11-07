@@ -22,7 +22,9 @@ Bambu Lab, and not intended to circumvent any access control.
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
+import zipfile
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from typing import Any
@@ -90,17 +92,14 @@ _SIGN_IN_EXPIRED_MESSAGE = (
 )
 
 
-def _instance_id_for_profile(instances: Any, profile_id: int) -> int | None:
-    """Return ``instances[].id`` for the entry whose ``profileId`` matches."""
-    if not isinstance(instances, list):
-        return None
-    for instance in instances:
-        if not isinstance(instance, dict) or instance.get("profileId") != profile_id:
-            continue
-        candidate_id = instance.get("id")
-        if isinstance(candidate_id, int) and candidate_id > 0:
-            return candidate_id
-    return None
+def _is_readable_zip(data: bytes) -> bool:
+    """Whether ``data`` is a zip whose directory can be read."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            archive.namelist()
+        return True
+    except (zipfile.BadZipFile, ValueError, OSError, EOFError):
+        return False
 
 
 class MakerWorldService(ProviderService):
@@ -201,12 +200,12 @@ class MakerWorldService(ProviderService):
         compatible with H2D, P1S" before the user picks a plate."""
         model_id = int(ref.external_id)
         design = await self.get_design(model_id)
-        instances_envelope = await self.get_design_instances(model_id)
+        envelope = await self.get_design_instances(model_id)
 
         # MakerWorld's instances payload is ``{"total": N, "hits": [...]}``;
         # normalise the null case to an empty list so the frontend doesn't
         # have to handle null vs [] both ways.
-        instances = instances_envelope.get("hits") or []
+        instances = envelope.get("hits") or []
         if not isinstance(instances, list):
             instances = []
 
@@ -240,19 +239,22 @@ class MakerWorldService(ProviderService):
     async def get_download(self, ref: ProviderResourceRef) -> ProviderDownloadInfo:
         """Resolve the signed 3MF download for a specific MakerWorld profile.
 
-        Picks a default profile when the caller didn't specify one, then asks
-        the design-service *instance* endpoint (keyed by ``instances[].id``)
-        for the signed URL. The legacy iot-service profile endpoint — which
-        needs the *alphanumeric* ``modelId`` (e.g. ``"US2bb73b106683e5"``),
-        not the integer design id, and may answer 200 without a URL — is kept
-        as the fallback. Enriches ``ref.sub_id`` with the actual profile used
-        so the route can build the per-plate dedupe key.
+        Picks a default profile when the caller didn't specify one, and
+        enriches ``ref.sub_id`` with the actual profile used so the route can
+        build the per-plate dedupe key.
+
+        The link comes from the design-service instance endpoint, which takes
+        the *instance* behind the profile (#3447, #3448): since 2026-11-03 the
+        iot-service profile endpoint answers "success" with an empty ``url``.
+        That one is still asked when the instance gives no link, or when no
+        instance is found for the profile; it needs the *alphanumeric*
+        ``modelId`` (e.g. ``"US2bb73b106683e5"``), not the integer design id.
         """
         model_id = int(ref.external_id)
         design = await self.get_design(model_id)
 
         profile_id = int(ref.sub_id) if ref.sub_id else None
-        instances_envelope: dict[str, Any] | None = None
+        envelope: dict[str, Any] | None = None
         if profile_id is None:
             for instance in design.get("instances") or []:
                 pid = instance.get("profileId") if isinstance(instance, dict) else None
@@ -260,8 +262,8 @@ class MakerWorldService(ProviderService):
                     profile_id = pid
                     break
             if profile_id is None:
-                instances_envelope = await self.get_design_instances(model_id)
-                for hit in instances_envelope.get("hits") or []:
+                envelope = await self.get_design_instances(model_id)
+                for hit in envelope.get("hits") or []:
                     pid = hit.get("profileId") if isinstance(hit, dict) else None
                     if isinstance(pid, int) and pid > 0:
                         profile_id = pid
@@ -269,19 +271,10 @@ class MakerWorldService(ProviderService):
             if profile_id is None:
                 raise MakerWorldUnavailableError("MakerWorld returned no instances for this model")
 
-        # Find the instance behind the selected profile. Older design responses
-        # can omit ``instances[].id``, so use the instances envelope as a
-        # second source before falling back to the legacy profile endpoint.
-        instance_id = _instance_id_for_profile(design.get("instances"), profile_id)
-        if instance_id is None:
-            if instances_envelope is None:
-                instances_envelope = await self.get_design_instances(model_id)
-            instance_id = _instance_id_for_profile(instances_envelope.get("hits"), profile_id)
-
         manifest: dict[str, Any] = {}
+        instance_id = await self._instance_id_for_profile(model_id, design, profile_id, envelope)
         if instance_id is not None:
             manifest = await self.get_instance_download(instance_id)
-
         signed_url = manifest.get("url")
         if not signed_url or not isinstance(signed_url, str):
             alphanumeric_model_id = design.get("modelId")
@@ -289,7 +282,6 @@ class MakerWorldService(ProviderService):
                 raise MakerWorldUnavailableError("MakerWorld design metadata missing the modelId field")
             manifest = await self.get_profile_download(profile_id, alphanumeric_model_id)
             signed_url = manifest.get("url")
-
         if not signed_url or not isinstance(signed_url, str):
             raise MakerWorldUnavailableError("MakerWorld did not return a download URL")
 
@@ -307,6 +299,10 @@ class MakerWorldService(ProviderService):
     async def download(self, info: ProviderDownloadInfo) -> ProviderDownload:
         """Fetch the 3MF bytes for a signed URL, returning ``(bytes, filename)``."""
         file_bytes, download_filename = await self.download_3mf(info.url)
+        # A 3MF is a zip. A truncated body or an error page served with 200
+        # would otherwise be stored, and kept, as the model's file.
+        if not _is_readable_zip(file_bytes):
+            raise MakerWorldUnavailableError("MakerWorld sent a file that is not a valid 3MF")
         return ProviderDownload(file_bytes=file_bytes, filename=download_filename)
 
     # ---------------------------------------------------------------- endpoints
@@ -436,10 +432,30 @@ class MakerWorldService(ProviderService):
     async def get_profile_download(self, profile_id: int, model_id: str) -> dict[str, Any]:
         """Fetch the legacy signed 3MF URL for a MakerWorld profile.
 
-        The iot-service endpoint requires MakerWorld's alphanumeric ``modelId``
-        rather than the numeric design ID. Since it may return a successful
-        response with no URL, :meth:`get_instance_download` is preferred by
-        the import route and this method is retained as a fallback.
+        Note on ``model_id`` — this is MakerWorld's internal alphanumeric
+        identifier (e.g. ``"US2bb73b106683e5"``), **not** the integer
+        ``designId`` that appears in the ``/models/{N}`` URL. Callers must
+        fetch the design first (``get_design(design_id)``) and pass the
+        ``modelId`` field from the response.
+
+
+        Returns ``{"url": "https://makerworld.bblmw.com/...?at=<unix>
+        &exp=<unix>&key=<hmac>&uid=<int>", ...}``. URL is short-lived (~5
+        min); download immediately.
+
+        Hits ``api.bambulab.com/v1/iot-service/api/user/profile/{profileId}
+        ?model_id={modelId}`` with the stored Bambu Cloud bearer. This is the
+        endpoint Pr0zak/YASTL#51 reverse-engineered — it lives on the
+        ``api.bambulab.com`` backend (not Cloudflare-protected
+        ``makerworld.com``), accepts the same long-lived bearer users already
+        sign in with, and mints the signed CDN URL that the browser would
+        otherwise fetch via session cookies. The ``/design-service/``
+        endpoints on ``makerworld.com`` are cookie-gated; the instance one on
+        ``api.bambulab.com`` is the other non-cookie path.
+
+        Since 2026-11-03 it answers "success" with an empty ``url`` (#3447,
+        #3448); ``get_download`` asks ``get_instance_download`` first and this
+        only when that gives no link.
         """
         return await self._get_bambu_api_json(
             f"https://api.bambulab.com/v1/iot-service/api/user/profile/{int(profile_id)}",
@@ -449,23 +465,47 @@ class MakerWorldService(ProviderService):
         )
 
     async def get_instance_download(self, instance_id: int) -> dict[str, Any]:
-        """Fetch the signed 3MF URL for a specific MakerWorld instance.
+        """Fetch the signed 3MF download URL for a MakerWorld instance.
 
-        Bambu Lab's design-service instance endpoint accepts the existing
-        Bambu Cloud bearer token and is the primary source for signed download
-        URLs. ``instance_id`` is ``instances[].id``, not ``profileId``.
+        Hits ``api.bambulab.com/v1/design-service/instance/{instanceId}/f3mf
+        ?type=download`` with the stored Bambu Cloud bearer; anonymously it
+        answers with an error. Returns ``{"name": "<file>.3mf", "url":
+        "https://makerworld.bblmw.com/...", "highCompression": ...}``
+        (measured 2026-11-04); without a sign-in it answers 403 "Please log
+        in to download models.", like a model the account can't download.
+        The instance id is the ``id`` of an entry in
+        the design's ``instances``, not its ``profileId``.
         """
         return await self._get_bambu_api_json(
-            f"{MAKERWORLD_API_BASE}/instance/{int(instance_id)}/f3mf",
+            f"https://api.bambulab.com/v1/design-service/instance/{int(instance_id)}/f3mf",
             {"type": "download"},
             "instance",
             instance_id,
         )
 
+    async def _instance_id_for_profile(
+        self, model_id: int, design: dict[str, Any], profile_id: int, envelope: dict[str, Any] | None = None
+    ) -> int | None:
+        """The instance behind *profile_id*: from the design's ``instances``,
+        else from the ``/design/{id}/instances`` envelope (*envelope* when the
+        caller already has it). None when neither lists it."""
+        for instance in design.get("instances") or []:
+            if isinstance(instance, dict) and instance.get("profileId") == profile_id:
+                if isinstance(instance.get("id"), int):
+                    return instance["id"]
+        if envelope is None:
+            envelope = await self.get_design_instances(model_id)
+        for hit in envelope.get("hits") or []:
+            if isinstance(hit, dict) and hit.get("profileId") == profile_id and isinstance(hit.get("id"), int):
+                return hit["id"]
+        return None
+
     async def _get_bambu_api_json(
-        self, url: str, params: dict[str, str], resource_kind: str, resource_id: int
+        self, url: str, params: dict[str, str], kind: str, resource_id: int
     ) -> dict[str, Any]:
-        """Call an authenticated Bambu API endpoint and map errors consistently."""
+        """GET a Bambu Lab API download endpoint with the stored bearer,
+        mapping its status to the MakerWorld errors. *kind* and *resource_id*
+        name the resource in the messages ("profile 123")."""
         if not self._auth_token:
             raise MakerWorldAuthError("Downloading files from MakerWorld requires a Bambu Cloud login")
 
@@ -473,7 +513,12 @@ class MakerWorldService(ProviderService):
         headers["Authorization"] = f"Bearer {self._auth_token}"
 
         try:
-            response = await self._client.get(url, headers=headers, params=params, timeout=30.0)
+            response = await self._client.get(
+                url,
+                headers=headers,
+                params=params,
+                timeout=30.0,
+            )
         except httpx.TimeoutException as exc:
             raise MakerWorldUnavailableError(f"Bambu Lab API request timed out: {exc}") from exc
         except httpx.HTTPError as exc:
@@ -484,24 +529,20 @@ class MakerWorldService(ProviderService):
             raise MakerWorldAuthError(_SIGN_IN_EXPIRED_MESSAGE)
         if response.status_code == 403:
             upstream = _extract_upstream_error(response)
-            raise MakerWorldForbiddenError(upstream or f"Bambu Lab refused access to {resource_kind} {resource_id}")
+            raise MakerWorldForbiddenError(upstream or f"Bambu Lab refused access to {kind} {resource_id}")
         if response.status_code == 404:
-            raise MakerWorldNotFoundError(f"MakerWorld {resource_kind} not found: {resource_id}")
+            raise MakerWorldNotFoundError(f"MakerWorld {kind} not found: {resource_id}")
         if response.status_code != 200:
             raise MakerWorldUnavailableError(
-                f"Bambu Lab API unexpected status {response.status_code} for {resource_kind} {resource_id}"
+                f"Bambu Lab API unexpected status {response.status_code} for {kind} {resource_id}"
             )
 
         try:
             data = response.json()
         except ValueError as exc:
-            raise MakerWorldUnavailableError(
-                f"Bambu Lab API returned non-JSON for {resource_kind} {resource_id}"
-            ) from exc
+            raise MakerWorldUnavailableError(f"Bambu Lab API returned non-JSON for {kind} {resource_id}") from exc
         if not isinstance(data, dict):
-            raise MakerWorldUnavailableError(
-                f"Bambu Lab API returned unexpected JSON shape for {resource_kind} {resource_id}"
-            )
+            raise MakerWorldUnavailableError(f"Bambu Lab API returned unexpected JSON shape for {kind} {resource_id}")
         return data
 
     async def download_3mf(self, signed_url: str) -> tuple[bytes, str]:

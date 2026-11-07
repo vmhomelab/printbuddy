@@ -522,13 +522,17 @@ class TestImport:
         svc = _fake_service()
         svc.get_download = AsyncMock(side_effect=RuntimeError("unexpected upstream failure"))
 
-        with patch("backend.app.api.routes.makerworld._build_service", AsyncMock(return_value=svc)):
-            resp = await async_client.post(
+        # An error in a route is the 500 it is, not an auth outage (503): the
+        # auth middleware guards only its own probe. The test client re-raises it.
+        with (
+            patch("backend.app.api.routes.makerworld._build_service", AsyncMock(return_value=svc)),
+            pytest.raises(RuntimeError, match="unexpected upstream failure"),
+        ):
+            await async_client.post(
                 "/api/v1/makerworld/import",
                 json={"model_id": 1400373, "profile_id": 298919107},
             )
 
-        assert resp.status_code == 503
         svc.close.assert_awaited_once()
 
     @pytest.mark.asyncio

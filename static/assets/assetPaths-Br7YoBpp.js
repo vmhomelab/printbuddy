@@ -1,0 +1,1 @@
+function e(){return typeof window>`u`?``:window.location.pathname.match(/^(.*\/api\/hassio_ingress\/[^/]+)(?:\/|$)/)?.[1]??``}function t(t){if(!t.startsWith(`/`)||t.startsWith(`//`))return t;let n=e();return n?`${n}${t}`:t}export{e as n,t};

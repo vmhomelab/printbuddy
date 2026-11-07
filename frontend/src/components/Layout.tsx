@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { Suspense, useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { PageLoading } from './PageLoading';
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { Printer, Archive, ListOrdered, BarChart3, Cloud, Settings, Sun, Moon, Monitor, ChevronLeft, ChevronRight, Keyboard, Github, ArrowUpCircle, Wrench, FolderKanban, FolderOpen, X, Menu, Info, Plug, Bug, LogOut, Key, Loader2, Disc3, ShieldAlert, Bell, Globe, PanelLeftClose, Receipt, type LucideIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -6,6 +7,7 @@ import { useTheme } from '../contexts/ThemeContext';
 import { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
 import { InstallAppButton } from './InstallAppButton';
 import { SwitchbarPopover } from './SwitchbarPopover';
+import { CameraLauncher } from './CameraLauncher';
 import { useQuery, useQueries } from '@tanstack/react-query';
 import { api, supportApi, pendingUploadsApi, type Permission } from '../api/client';
 import { getIconByName } from './IconPicker';
@@ -21,6 +23,7 @@ import { parseUTCDate } from '../utils/date';
 import { Button } from './Button';
 import { BugReportBubble } from './BugReportBubble';
 import { appAssetPath } from '../utils/assetPaths';
+import { plateCheckFailureText } from '../utils/plateCheck';
 import {
   getHiddenSidebarSystemItemIds,
   getSidebarOrder,
@@ -46,7 +49,8 @@ export const defaultNavItems: NavItem[] = [
   { id: 'queue', to: '/queue', icon: ListOrdered, labelKey: 'nav.queue' },
   { id: 'projects', to: '/projects', icon: FolderKanban, labelKey: 'nav.projects' },
   { id: 'files', to: '/files', icon: FolderOpen, labelKey: 'nav.files' },
-  { id: 'makerworld', to: '/makerworld', icon: Globe, labelKey: 'nav.makerworld' },
+  // Id kept from when the page was MakerWorld-only, so saved sidebar orders and hidden items still apply.
+  { id: 'makerworld', to: '/model-sources', icon: Globe, labelKey: 'nav.modelSources' },
   { id: 'profiles', to: '/profiles', icon: Cloud, labelKey: 'nav.profiles' },
   { id: 'maintenance', to: '/maintenance', icon: Wrench, labelKey: 'nav.maintenance' },
   { id: 'stats', to: '/stats', icon: BarChart3, labelKey: 'nav.stats' },
@@ -120,6 +124,9 @@ export function Layout() {
   // floating disc shows that itself; the compact header's button and the
   // debug-logging banner need telling.
   const [bugReportLogging, setBugReportLogging] = useState(false);
+  // The camera list (#2737), also opened with the C key: from the Printers row
+  // of the sidebar, or from the compact header when the sidebar is a drawer.
+  const [cameraListOpen, setCameraListOpen] = useState(false);
 
   // Theme toggle: mode → icon and tooltip
   const ThemeIcon = { dark: Sun, light: Monitor, system: Moon }[mode];
@@ -158,6 +165,8 @@ export function Layout() {
   // Post-print outcome confirmation (#1898): archive waiting for a verdict,
   // set by the print_confirm_request WebSocket event.
   const [confirmOutcomeArchiveId, setConfirmOutcomeArchiveId] = useState<number | null>(null);
+  // The run the prompt asks about (a plate of the archive), when it names one.
+  const [confirmOutcomeRunId, setConfirmOutcomeRunId] = useState<number | null>(null);
 
   // Check for updates
   const { data: versionInfo } = useQuery({
@@ -243,6 +252,8 @@ export function Layout() {
   const { data: externalLinks } = useQuery({
     queryKey: ['external-links'],
     queryFn: api.getExternalLinks,
+    // Like the queue badge: apps behind the links report counts.
+    refetchInterval: 30_000,
   });
 
   // Fetch smart plugs to check for switchbar items
@@ -363,7 +374,7 @@ export function Layout() {
       inventory: 'inventory:read',
       finance: 'cost_centers:read_own',
       files: ['library:read', 'library:read_own', 'library:read_all'],
-      makerworld: 'makerworld:view',
+      makerworld: ['makerworld:view', 'manyfold:view'],
       settings: 'settings:read',
       // The user-email-preferences API requires notifications:user_email, so
       // gate the nav item on the same permission (both default groups —
@@ -498,6 +509,26 @@ export function Layout() {
     return () => window.removeEventListener('plate-not-empty', handlePlateNotEmpty);
   }, [hasPermission]);
 
+  // A plate check that could not run (no camera image, ...) does not hold the
+  // print, but it is not an empty plate either: say so to those who can act.
+  useEffect(() => {
+    const handlePlateCheckFailed = (event: Event) => {
+      if (!hasPermission('printers:control')) {
+        return;
+      }
+      const detail = (event as CustomEvent).detail ?? {};
+      showToast(
+        t('printers.plateDetection.couldNotRun', {
+          printer: detail.printer_name ?? '',
+          reason: plateCheckFailureText(t, detail.reason),
+        }),
+        'warning',
+      );
+    };
+    window.addEventListener('plate-check-failed', handlePlateCheckFailed);
+    return () => window.removeEventListener('plate-check-failed', handlePlateCheckFailed);
+  }, [hasPermission, showToast, t]);
+
   // A completed print asked for its outcome verdict (#1898). Same CustomEvent
   // relay as plate-not-empty, and gated the same way: the PATCH route decides
   // who may record a verdict, so a user who cannot should not be handed a
@@ -511,6 +542,7 @@ export function Layout() {
       const detail = (event as CustomEvent).detail;
       if (typeof detail?.archive_id === 'number') {
         setConfirmOutcomeArchiveId(detail.archive_id);
+        setConfirmOutcomeRunId(typeof detail.run_id === 'number' ? detail.run_id : null);
       }
     };
     window.addEventListener('print-confirm-request', handleConfirmRequest);
@@ -529,8 +561,11 @@ export function Layout() {
     if (!confirmId || !/^\d+$/.test(confirmId)) {
       return;
     }
+    const runId = params.get('run');
     setConfirmOutcomeArchiveId(Number(confirmId));
+    setConfirmOutcomeRunId(runId && /^\d+$/.test(runId) ? Number(runId) : null);
     params.delete('confirm');
+    params.delete('run');
     const rest = params.toString();
     navigate({ pathname: location.pathname, search: rest ? `?${rest}` : '' }, { replace: true });
   }, [location.pathname, location.search, navigate]);
@@ -573,6 +608,11 @@ export function Layout() {
         case '?':
           e.preventDefault();
           setShowShortcuts(true);
+          break;
+        case 'c':
+        case 'C':
+          e.preventDefault();
+          setCameraListOpen(open => !open);
           break;
         case 'Escape':
           setShowShortcuts(false);
@@ -627,11 +667,15 @@ export function Layout() {
               className="h-8"
             />
           </NavLink>
+          {/* A camera from any page (#2737), beside the bug report. */}
+          <div className="ml-auto">
+            <CameraLauncher placement="down" open={cameraListOpen} onOpenChange={setCameraListOpen} />
+          </div>
           {/* Bug report — the compact-layout home of the floating bubble. */}
           {location.pathname !== '/farm-monitor' && (
             <button
               onClick={() => setBugReportOpen(true)}
-              className={`ml-auto p-2 -mr-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors ${
+              className={`p-2 -mr-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors ${
                 bugReportLogging ? 'text-amber-500' : 'text-red-500'
               }`}
               title={bugReportLogging ? t('bugReport.resumeReport') : t('bugReport.title')}
@@ -691,6 +735,29 @@ export function Layout() {
                 if (!link) return null;
 
                 const LinkIcon = link.custom_icon ? null : getIconByName(link.icon);
+                // A count the app behind the link reports (Printbuddy Orders' To do).
+                const linkBadge = link.badge_count ?? 0;
+                const linkIcon = (
+                  <div className="relative">
+                    {link.custom_icon ? (
+                      <img
+                        src={api.getExternalLinkIconUrl(link.id)}
+                        alt=""
+                        className="w-5 h-5 flex-shrink-0"
+                      />
+                    ) : (
+                      LinkIcon && <LinkIcon className="w-5 h-5 flex-shrink-0" />
+                    )}
+                    {linkBadge > 0 && (
+                      <span
+                        data-testid={`external-link-badge-${link.id}`}
+                        className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 flex items-center justify-center text-[10px] font-bold rounded-full bg-yellow-500 text-black"
+                      >
+                        {linkBadge > 99 ? '99+' : linkBadge}
+                      </span>
+                    )}
+                  </div>
+                );
                 return (
                   <li key={id}>
                     {link.open_in_new_tab ? (
@@ -701,15 +768,7 @@ export function Layout() {
                         className={`flex items-center ${isSidebarCompact || sidebarExpanded ? 'gap-3 px-4' : 'justify-center px-2'} py-3 rounded-lg transition-colors group text-bambu-gray-light hover:bg-bambu-dark-tertiary hover:text-white`}
                         title={!isSidebarCompact && !sidebarExpanded ? link.name : undefined}
                       >
-                        {link.custom_icon ? (
-                          <img
-                            src={api.getExternalLinkIconUrl(link.id)}
-                            alt=""
-                            className="w-5 h-5 flex-shrink-0"
-                          />
-                        ) : (
-                          LinkIcon && <LinkIcon className="w-5 h-5 flex-shrink-0" />
-                        )}
+                        {linkIcon}
                         {(isSidebarCompact || sidebarExpanded) && <span>{link.name}</span>}
                       </a>
                     ) : (
@@ -724,15 +783,7 @@ export function Layout() {
                         }
                         title={!isSidebarCompact && !sidebarExpanded ? link.name : undefined}
                       >
-                        {link.custom_icon ? (
-                          <img
-                            src={api.getExternalLinkIconUrl(link.id)}
-                            alt=""
-                            className="w-5 h-5 flex-shrink-0"
-                          />
-                        ) : (
-                          LinkIcon && <LinkIcon className="w-5 h-5 flex-shrink-0" />
-                        )}
+                        {linkIcon}
                         {(isSidebarCompact || sidebarExpanded) && <span>{link.name}</span>}
                       </NavLink>
                     )}
@@ -750,8 +801,31 @@ export function Layout() {
                 const showBadge = showQueueBadge || showArchiveBadge;
                 const showClearPlateDot = id === 'printers' && needsClearPlate;
 
+                const expanded = isSidebarCompact || sidebarExpanded;
+                // The camera list from any page (#2737), on the row of the page
+                // the cameras belong to. The drawer's copy is not the one the C
+                // key opens: in the compact layout that is the header's.
+                const cameraLauncher = id === 'printers' && (
+                  // Collapsed, the row is 48px wide and the nav clips anything
+                  // past it: a 16px corner button, shown on hover or focus.
+                  <div
+                    className={`absolute ${
+                      expanded
+                        ? 'right-2 top-1/2 -translate-y-1/2'
+                        : `right-0 top-0.5 ${cameraListOpen ? '' : 'opacity-0 group-hover/printers:opacity-100 focus-within:opacity-100'}`
+                    }`}
+                  >
+                    <CameraLauncher
+                      placement="side"
+                      size={expanded ? 'sm' : 'xs'}
+                      onAccent={location.pathname === '/'}
+                      {...(isSidebarCompact ? {} : { open: cameraListOpen, onOpenChange: setCameraListOpen })}
+                    />
+                  </div>
+                );
+
                 return (
-                  <li key={id}>
+                  <li key={id} className={id === 'printers' ? 'relative group/printers' : undefined}>
                     <NavLink
                       to={to}
                       className={({ isActive }) =>
@@ -778,6 +852,7 @@ export function Layout() {
                       </div>
                       {(isSidebarCompact || sidebarExpanded) && <span>{t(labelKey)}</span>}
                     </NavLink>
+                    {cameraLauncher}
                   </li>
                 );
               }
@@ -1036,7 +1111,7 @@ export function Layout() {
                 )}
               </span>
               {/* A run started from the bug-report panel ends at that panel's
-                  Stop & Submit button, so send the user back there rather than
+                  Stop Logging button, so send the user back there rather than
                   to the System page's raw toggle, which would drop the logs
                   and the description they already wrote (#2847). */}
               {bugReportLogging && (
@@ -1101,7 +1176,10 @@ export function Layout() {
             </button>
           </div>
         )}
-        <Outlet />
+        {/* Pages load on first open (#3175); the sidebar stays meanwhile. */}
+        <Suspense fallback={<PageLoading />}>
+          <Outlet />
+        </Suspense>
       </main>
 
       <UnknownSpoolModal
@@ -1167,6 +1245,7 @@ export function Layout() {
       {canConfirmOutcome && confirmOutcomeArchiveId !== null && (
         <ConfirmOutcomeDialog
           archiveId={confirmOutcomeArchiveId}
+          runId={confirmOutcomeRunId}
           onClose={() => setConfirmOutcomeArchiveId(null)}
         />
       )}

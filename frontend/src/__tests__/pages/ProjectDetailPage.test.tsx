@@ -275,6 +275,25 @@ describe('ProjectDetailPage', () => {
     );
   });
 
+  describe('archive tiles', () => {
+    it('open the archive on the Archives page, marked (#3336)', async () => {
+      server.use(
+        http.get('/api/v1/projects/:id/archives', () =>
+          HttpResponse.json([{ id: 42, print_name: 'Bracket', status: 'completed', thumbnail_path: null }]),
+        ),
+        http.get('/api/v1/library/files', () => HttpResponse.json([])),
+      );
+
+      render(<ProjectDetailPage />);
+
+      // ?search= was never read by the Archives page. The name also appears in
+      // Printbuddy's production plan table, so pick the tile's own link.
+      const names = await screen.findAllByText('Bracket');
+      const tile = names.map((name) => name.closest('a')).find((link) => link !== null);
+      expect(tile).toHaveAttribute('href', '/archives?highlight=42');
+    });
+  });
+
   describe('isSlicedFilename — conditional print button', () => {
     it('shows print button for .gcode files', async () => {
       server.use(
@@ -466,7 +485,8 @@ describe('ProjectDetailPage', () => {
 
       expect(await screen.findByRole('heading', { name: 'Production Plan' })).toBeInTheDocument();
       await waitFor(() => expect(screen.getByText('Printing on PRA-01')).toBeInTheDocument());
-      expect(screen.getByText('68%')).toBeInTheDocument();
+      // Printer statuses arrive through the batched bulk read, a beat after the page.
+      expect(await screen.findByText('68%')).toBeInTheDocument();
     });
 
     it('opens add-to-queue modal from a production plan project file', async () => {
