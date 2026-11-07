@@ -44,6 +44,11 @@ class MoonrakerPrinterState:
     airduct_mode: int = 0
     speed_level: int = 2
     chamber_light: bool = False
+    # Capability flags discovered from Moonraker objects (None/False = not present)
+    chamber_light_supported: bool = False
+    chamber_temp_supported: bool = False
+    chamber_heater_supported: bool = False
+    chamber_temp_max: float | None = None
     active_extruder: int = 0
     tray_now: int = 255
     ams_status_main: int = 0
@@ -329,6 +334,30 @@ def _snapmaker_u1_filament_metadata(values: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+_CHAMBER_FAN_MARKERS = ("chamber", "cavity", "exhaust", "filter", "enclosure", "circulation")
+_AUX_FAN_MARKERS = ("aux", "auxiliary", "side", "boost")
+_PART_FAN_MARKERS = ("cooling", "part", "model", "print")
+_CHAMBER_MARKERS = ("chamber", "cavity", "enclosure")
+_LIGHT_MARKERS = ("caselight", "case_light", "chamber_light", "chamberlight", "light", "led")
+
+
+def _classify_generic_fan(fan_name: str) -> str | None:
+    """Classify a ``fan_generic`` by name into a Printbuddy fan role.
+
+    Order matters: chamber and auxiliary markers are checked before the part
+    cooling markers so names such as ``auxiliary_cooling_fan`` (QIDI) map to
+    the auxiliary fan, while ``cooling_fan`` maps to part cooling.
+    """
+    name = fan_name.lower()
+    if any(marker in name for marker in _CHAMBER_FAN_MARKERS):
+        return "chamber"
+    if any(marker in name for marker in _AUX_FAN_MARKERS):
+        return "aux"
+    if any(marker in name for marker in _PART_FAN_MARKERS):
+        return "part"
+    return None
+
+
 def _apply_moonraker_fans(state: MoonrakerPrinterState, status: dict[str, Any]) -> None:
     """Map reported Klipper/Moonraker fan objects onto Printbuddy fan badges.
 
@@ -340,6 +369,7 @@ def _apply_moonraker_fans(state: MoonrakerPrinterState, status: dict[str, Any]) 
     state.big_fan1_speed = None
     state.big_fan2_speed = None
     state.heatbreak_fan_speed = None
+    has_standard_part_fan = False
 
     for name, values in status.items():
         percent = _moonraker_fan_percent(values)
@@ -348,7 +378,9 @@ def _apply_moonraker_fans(state: MoonrakerPrinterState, status: dict[str, Any]) 
 
         normalized = name.lower()
         if normalized == "fan":
+            # The standard Klipper [fan] always wins over a fan_generic part fan.
             state.cooling_fan_speed = percent
+            has_standard_part_fan = True
         elif normalized.startswith("heater_fan "):
             fan_name = normalized.removeprefix("heater_fan ")
             if state.heatbreak_fan_speed is None or any(
@@ -356,11 +388,13 @@ def _apply_moonraker_fans(state: MoonrakerPrinterState, status: dict[str, Any]) 
             ):
                 state.heatbreak_fan_speed = percent
         elif normalized.startswith("fan_generic "):
-            fan_name = normalized.removeprefix("fan_generic ")
-            if any(marker in fan_name for marker in ("chamber", "cavity", "exhaust", "filter", "enclosure")):
+            role = _classify_generic_fan(normalized.removeprefix("fan_generic "))
+            if role == "chamber":
                 state.big_fan2_speed = percent
-            elif any(marker in fan_name for marker in ("aux", "auxiliary", "side", "boost")):
+            elif role == "aux":
                 state.big_fan1_speed = percent
+            elif role == "part" and not has_standard_part_fan:
+                state.cooling_fan_speed = percent
 
 
 def _remaining_minutes(print_stats: dict[str, Any], progress: float) -> int:
@@ -552,6 +586,7 @@ class MoonrakerPrinterClient:
         self.printer_model = printer_model or ""
         self._gcodes_path_prefixes: list[str] | None = None
         self.state = MoonrakerPrinterState()
+        self._chamber_max_temp_cache: dict[str, float] = {}
         self.on_state_change = on_state_change
         self.on_print_start = on_print_start
         self.on_print_complete = on_print_complete
@@ -667,28 +702,114 @@ class MoonrakerPrinterClient:
     def _target_fan_object(self, fan: str) -> str | None:
         """Return the Klipper fan object to control for a Printbuddy fan role."""
         normalized_fan = fan.strip().lower().replace("-", "_")
-        available = [name.lower() for name in self._available_fan_objects()]
-        if normalized_fan in {"part", "model", "model_fan", "cooling"}:
-            return "fan" if "fan" in available else None
-
-        marker_sets = {
-            "aux": ("aux", "auxiliary", "side", "boost"),
-            "auxiliary": ("aux", "auxiliary", "side", "boost"),
-            "auxiliary_fan": ("aux", "auxiliary", "side", "boost"),
-            "chamber": ("chamber", "cavity", "exhaust", "filter", "enclosure"),
-            "box": ("chamber", "cavity", "exhaust", "filter", "enclosure"),
-            "box_fan": ("chamber", "cavity", "exhaust", "filter", "enclosure"),
+        available = self._available_fan_objects()
+        role_aliases = {
+            "part": "part",
+            "model": "part",
+            "model_fan": "part",
+            "cooling": "part",
+            "aux": "aux",
+            "auxiliary": "aux",
+            "auxiliary_fan": "aux",
+            "chamber": "chamber",
+            "box": "chamber",
+            "box_fan": "chamber",
         }
-        markers = marker_sets.get(normalized_fan)
-        if not markers:
+        role = role_aliases.get(normalized_fan)
+        if role is None:
             return None
+        if role == "part" and "fan" in available:
+            return "fan"
         for object_name in available:
             if not object_name.startswith("fan_generic "):
                 continue
-            fan_name = object_name.removeprefix("fan_generic ")
-            if any(marker in fan_name for marker in markers):
+            if _classify_generic_fan(object_name.removeprefix("fan_generic ")) == role:
                 return object_name
         return None
+
+    @staticmethod
+    def _chamber_heater_object(available: list[str]) -> str | None:
+        for name in available:
+            if name.startswith("heater_generic ") and any(
+                marker in name.removeprefix("heater_generic ").lower() for marker in _CHAMBER_MARKERS
+            ):
+                return name
+        return None
+
+    @staticmethod
+    def _chamber_sensor_object(available: list[str]) -> str | None:
+        candidates = [
+            name
+            for name in available
+            if name.startswith(("temperature_sensor ", "temperature_fan "))
+            and any(marker in name.split(" ", 1)[1].lower() for marker in _CHAMBER_MARKERS)
+        ]
+        # Prefer a plain chamber sensor over safety/protection sensors.
+        candidates.sort(key=lambda name: "protect" in name.lower())
+        return candidates[0] if candidates else None
+
+    @staticmethod
+    def _chamber_light_object(available: list[str]) -> str | None:
+        for name in available:
+            if name.startswith("output_pin ") and any(
+                marker in name.removeprefix("output_pin ").lower() for marker in _LIGHT_MARKERS
+            ):
+                return name
+        return None
+
+    def _chamber_objects(self, available: list[str]) -> list[str]:
+        heater = self._chamber_heater_object(available)
+        sensor = None if heater else self._chamber_sensor_object(available)
+        light = self._chamber_light_object(available)
+        return [name for name in (heater, sensor, light) if name]
+
+    def _query_chamber_status(self, available: list[str] | None = None) -> dict[str, Any]:
+        try:
+            if available is None:
+                available = self._available_objects()
+            objects = self._chamber_objects(available)
+            if not objects:
+                return {}
+            return self._query_objects(objects)
+        except Exception:  # noqa: BLE001 - chamber/light objects are optional
+            return {}
+
+    def _chamber_max_temperature(self, heater_object: str) -> float | None:
+        """Return the configured max_temp of the chamber heater (cached)."""
+        cached = self._chamber_max_temp_cache.get(heater_object)
+        if cached is not None:
+            return cached
+        try:
+            config = self._query_objects(["configfile"]).get("configfile", {})
+            settings = config.get("settings", {}) if isinstance(config, dict) else {}
+            section = settings.get(heater_object.lower()) or settings.get(heater_object) or {}
+            max_temp = _safe_float(section.get("max_temp")) if isinstance(section, dict) else None
+        except Exception:  # noqa: BLE001 - limits are best effort
+            return None
+        if max_temp is not None:
+            self._chamber_max_temp_cache[heater_object] = max_temp
+        return max_temp
+
+    def _apply_chamber_status(self, status: dict[str, Any], available: list[str]) -> None:
+        heater = self._chamber_heater_object(available)
+        sensor = None if heater else self._chamber_sensor_object(available)
+        light = self._chamber_light_object(available)
+
+        self.state.chamber_heater_supported = heater is not None
+        self.state.chamber_temp_max = self._chamber_max_temperature(heater) if heater else None
+
+        values = status.get(heater) if heater else status.get(sensor) if sensor else None
+        if isinstance(values, dict) and "chamber" not in self.state.temperatures:
+            self.state.temperatures["chamber"] = _heater_temperature(values)
+            if heater:
+                self.state.temperatures["chamber_target"] = _heater_target(values)
+                self.state.temperatures["chamber_heating"] = _is_heating(values)
+        self.state.chamber_temp_supported = "chamber" in self.state.temperatures
+
+        self.state.chamber_light_supported = light is not None
+        light_values = status.get(light) if light else None
+        if isinstance(light_values, dict) and "value" in light_values:
+            self.state.chamber_light = (_safe_float(light_values.get("value")) or 0.0) > 0
 
     def _available_cfs_objects(self, available: list[str] | None = None) -> list[str]:
         if available is None:
@@ -1314,6 +1435,9 @@ class MoonrakerPrinterClient:
         snapmaker_u1_status = self._query_snapmaker_u1_status(available_objects)
         if snapmaker_u1_status:
             status.update(snapmaker_u1_status)
+        chamber_status = self._query_chamber_status(available_objects)
+        if chamber_status:
+            status.update(chamber_status)
         self.state.connected = True
         self.state.raw_status = status
         self.state.raw_data = status
@@ -1352,6 +1476,7 @@ class MoonrakerPrinterClient:
             self.state.remaining_time = _remaining_minutes(print_stats, self.state.progress)
         self.state.temperatures = _moonraker_temperatures(status)
         self._apply_snapmaker_u1_status(status)
+        self._apply_chamber_status(status, available_objects)
         _apply_moonraker_fans(self.state, status)
         self._emit_status_callbacks(previous_state)
         self._last_state = self.state.state
@@ -1407,6 +1532,41 @@ class MoonrakerPrinterClient:
             klipper_fan_name = target_object.removeprefix("fan_generic ")
             return self.send_gcode(f"SET_FAN_SPEED FAN={klipper_fan_name} SPEED={clamped_speed / 100:.2f}")
         raise ValueError(f"Fan '{fan}' is not controllable through Moonraker")
+
+    def set_chamber_temperature(self, target: int | float) -> bool:
+        """Set the chamber heater target; 0 turns the heater off.
+
+        Uses the printer's own ``M141`` macro when defined (QIDI clamps the
+        target there), otherwise ``SET_HEATER_TEMPERATURE``. The target is
+        always clamped to the heater's configured ``max_temp``.
+        """
+        available = self._available_objects()
+        heater = self._chamber_heater_object(available)
+        if heater is None:
+            raise ValueError("This Moonraker printer has no chamber heater")
+        max_temp = self._chamber_max_temperature(heater)
+        clamped = max(0, int(target))
+        if max_temp is not None:
+            clamped = min(clamped, int(max_temp))
+        macros = {name.lower() for name in available if name.lower().startswith("gcode_macro ")}
+        if "gcode_macro m141" in macros:
+            sent = self.send_gcode(f"M141 S{clamped}")
+        else:
+            heater_name = heater.removeprefix("heater_generic ")
+            sent = self.send_gcode(f"SET_HEATER_TEMPERATURE HEATER={heater_name} TARGET={clamped}")
+        if sent:
+            self.state.temperatures["chamber_target"] = float(clamped)
+        return sent
+
+    def set_chamber_light(self, on: bool) -> bool:
+        light = self._chamber_light_object(self._available_objects())
+        if light is None:
+            return False
+        pin_name = light.removeprefix("output_pin ")
+        sent = self.send_gcode(f"SET_PIN PIN={pin_name} VALUE={1 if on else 0}")
+        if sent:
+            self.state.chamber_light = bool(on)
+        return sent
 
     def home_axes(self, axes: list[str] | None = None) -> bool:
         script = ("G28 " + " ".join(a.upper() for a in axes)) if axes else "G28"

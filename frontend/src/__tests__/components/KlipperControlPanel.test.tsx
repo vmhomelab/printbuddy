@@ -19,6 +19,7 @@ vi.mock('../../api/client', async (importOriginal) => {
       klipperExtrude: vi.fn(),
       setNozzleTemperature: vi.fn(),
       setBedTemperature: vi.fn(),
+      setChamberTemperature: vi.fn(),
       disableSteppers: vi.fn(),
     },
   };
@@ -90,5 +91,48 @@ describe('KlipperControlPanel PrusaLink controls', () => {
     await user.click(screen.getByRole('button', { name: /disable steppers/i }));
 
     await waitFor(() => expect(api.disableSteppers).toHaveBeenCalledWith(7));
+  });
+});
+
+describe('KlipperControlPanel chamber heater controls', () => {
+  const qidiPrinter = { ...fluiddPrinter, id: 9, name: 'QIDI Q2', model: 'Generic Klipper Printer', provider: 'klipper' } as Printer;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api.setChamberTemperature).mockResolvedValue({ success: true, message: 'ok' });
+  });
+
+  it('hides the chamber row when no chamber heater is detected', () => {
+    render(<KlipperControlPanel printer={qidiPrinter} status={{ connected: true }} showToast={vi.fn()} />);
+
+    expect(screen.queryByLabelText('Chamber temperature target')).not.toBeInTheDocument();
+  });
+
+  it('sets the chamber target and rejects values above the printer limit', async () => {
+    const user = userEvent.setup();
+    const showToast = vi.fn();
+    render(
+      <KlipperControlPanel
+        printer={qidiPrinter}
+        status={{
+          connected: true,
+          chamber_heater_supported: true,
+          chamber_temp_max: 70,
+          temperatures: { nozzle: 25, bed: 24, chamber: 31, chamber_target: 0 },
+        }}
+        showToast={showToast}
+      />
+    );
+
+    const input = screen.getByLabelText('Chamber temperature target');
+    await user.type(input, '90');
+    await user.click(screen.getByRole('button', { name: 'Chamber' }));
+    expect(api.setChamberTemperature).not.toHaveBeenCalled();
+    expect(showToast).toHaveBeenCalledWith(expect.any(String), 'error');
+
+    await user.clear(input);
+    await user.type(input, '0');
+    await user.click(screen.getByRole('button', { name: 'Chamber' }));
+    await waitFor(() => expect(api.setChamberTemperature).toHaveBeenCalledWith(9, 0));
   });
 });

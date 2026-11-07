@@ -4012,6 +4012,9 @@ function PrinterCard({
                       <p className="text-[9px] text-bambu-gray">{t('printers.temperatures.chamber')}</p>
                       <p className="text-[11px] text-white">
                         {Math.round(status.temperatures.chamber || 0)}°C
+                        {status.chamber_heater_supported && status.temperatures.chamber_target
+                          ? ` / ${Math.round(status.temperatures.chamber_target)}°`
+                          : ''}
                       </p>
                     </div>
                   )}
@@ -4214,7 +4217,7 @@ function PrinterCard({
                         );
                       })}
 
-                      {isElegooSDCPProvider && (
+                      {(isElegooSDCPProvider || (isMoonrakerProvider && status.chamber_light_supported === true)) && (
                         <button
                           type="button"
                           onClick={() => chamberLightMutation.mutate(!status.chamber_light)}

@@ -458,6 +458,11 @@ export interface PrinterStatus {
   speed_level: number;
   // Chamber light on/off
   chamber_light: boolean;
+  // Provider-detected chamber capabilities (e.g. Moonraker objects).
+  // null/undefined = provider does not report the capability explicitly.
+  chamber_light_supported?: boolean | null;
+  chamber_heater_supported?: boolean;
+  chamber_temp_max?: number | null;
   // Active extruder for dual nozzle (0=right, 1=left)
   active_extruder: number;
   // AMS mapping - which AMS is connected to which nozzle
@@ -3743,6 +3748,11 @@ export const api = {
   setBedTemperature: (printerId: number, target: number) =>
     request<{ success: boolean; message: string }>(
       `/printers/${printerId}/temperature/bed?target=${target}`,
+      { method: 'POST' }
+    ),
+  setChamberTemperature: (printerId: number, target: number) =>
+    request<{ success: boolean; message: string }>(
+      `/printers/${printerId}/temperature/chamber?target=${target}`,
       { method: 'POST' }
     ),
   homeAxes: (printerId: number, axes: 'x' | 'y' | 'z' | 'xy' | 'all' = 'all') =>

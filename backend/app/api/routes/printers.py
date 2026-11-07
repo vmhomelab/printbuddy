@@ -50,10 +50,11 @@ from backend.app.services.bambu_ftp import (
 )
 from backend.app.services.printer_diagnostic import run_connection_diagnostic
 from backend.app.services.printer_manager import (
+    chamber_capabilities,
+    chamber_temp_available,
     get_derived_status_name,
     printer_manager,
     resolve_plate_id,
-    supports_chamber_temp,
     supports_drying,
 )
 from backend.app.services.printer_providers.factory import create_printer_client, normalize_provider
@@ -849,7 +850,7 @@ async def get_printer_status(
     # Filter out chamber temp for models that don't have a real sensor
     # P1P, P1S, A1, A1Mini report meaningless chamber_temper values
     temperatures = state.temperatures
-    if not supports_chamber_temp(printer.model):
+    if not chamber_temp_available(printer.model, state):
         temperatures = {
             k: v for k, v in temperatures.items() if k not in ("chamber", "chamber_target", "chamber_heating")
         }
@@ -908,6 +909,7 @@ async def get_printer_status(
         airduct_mode=state.airduct_mode,
         speed_level=state.speed_level,
         chamber_light=state.chamber_light,
+        **chamber_capabilities(state),
         active_extruder=state.active_extruder,
         ams_mapping=ams_mapping,
         ams_extruder_map=ams_extruder_map,
@@ -3600,6 +3602,40 @@ async def set_bed_temperature(
     if not set_temp(target):
         raise HTTPException(500, "Failed to set bed temperature")
     return {"success": True, "message": f"Bed target set to {target}°C"}
+
+
+@router.post("/{printer_id}/temperature/chamber")
+async def set_chamber_temperature(
+    printer_id: int,
+    target: int = Query(..., description="Chamber target temperature in °C; 0 turns heater off"),
+    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_CONTROL),
+    db: AsyncSession = Depends(get_db),
+):
+    """Set chamber heater target temperature (clamped to the printer's limit)."""
+    if target < 0 or target > 100:
+        raise HTTPException(400, "Chamber temperature must be 0-100°C")
+
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+
+    client = printer_manager.get_client(printer_id)
+    if not client:
+        raise HTTPException(400, "Printer not connected")
+    set_temp = getattr(client, "set_chamber_temperature", None)
+    if not callable(set_temp):
+        raise HTTPException(400, "Printer provider does not support chamber temperature control")
+    max_temp = getattr(getattr(client, "state", None), "chamber_temp_max", None)
+    if max_temp is not None and target > max_temp:
+        raise HTTPException(400, f"Chamber temperature must be 0-{int(max_temp)}°C for this printer")
+    try:
+        success = set_temp(target)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if not success:
+        raise HTTPException(500, "Failed to set chamber temperature")
+    return {"success": True, "message": f"Chamber target set to {target}°C"}
 
 
 @router.post("/{printer_id}/home-axes")

@@ -95,6 +95,29 @@ def supports_chamber_temp(model: str | None) -> bool:
     return model_upper in CHAMBER_TEMP_SUPPORTED_MODELS
 
 
+def chamber_temp_available(model: str | None, state: object = None) -> bool:
+    """Return True when chamber temperatures should be exposed for a printer.
+
+    Bambu/Elegoo models are allow-listed by model. Providers that detect a real
+    chamber sensor themselves (e.g. Moonraker ``heater_generic chamber``) set
+    ``state.chamber_temp_supported``.
+    """
+    if supports_chamber_temp(model):
+        return True
+    return getattr(state, "chamber_temp_supported", False) is True
+
+
+def chamber_capabilities(state: object) -> dict[str, object]:
+    """Provider-detected chamber capability flags, safe for JSON serialization."""
+    light = getattr(state, "chamber_light_supported", None)
+    max_temp = getattr(state, "chamber_temp_max", None)
+    return {
+        "chamber_light_supported": light if isinstance(light, bool) else None,
+        "chamber_heater_supported": getattr(state, "chamber_heater_supported", False) is True,
+        "chamber_temp_max": float(max_temp) if isinstance(max_temp, (int, float)) else None,
+    }
+
+
 def has_stg_cur_idle_bug(model: str | None) -> bool:
     """Check if a printer model may incorrectly report stg_cur=0 when idle.
 
@@ -1015,7 +1038,7 @@ def printer_state_to_dict(state: PrinterState, printer_id: int | None = None, mo
     # Filter out chamber temp for models that don't have a real sensor
     # P1P, P1S, A1, A1Mini report meaningless chamber_temper values
     temperatures = state.temperatures
-    if not supports_chamber_temp(model):
+    if not chamber_temp_available(model, state):
         temperatures = {
             k: v for k, v in temperatures.items() if k not in ("chamber", "chamber_target", "chamber_heating")
         }
@@ -1060,6 +1083,7 @@ def printer_state_to_dict(state: PrinterState, printer_id: int | None = None, mo
         "heatbreak_fan_speed": state.heatbreak_fan_speed,
         # Chamber light state
         "chamber_light": state.chamber_light,
+        **chamber_capabilities(state),
         # Active extruder for dual-nozzle printers (0=right, 1=left)
         "active_extruder": state.active_extruder,
         # Print speed mode (1=silent, 2=standard, 3=sport, 4=ludicrous)

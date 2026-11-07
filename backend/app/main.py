@@ -1328,6 +1328,7 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
     bed_temp = round(temps.get("bed", 0))
     nozzle_2_temp = round(temps.get("nozzle_2", 0)) if "nozzle_2" in temps else ""
     chamber_temp = round(temps.get("chamber", 0)) if "chamber" in temps else ""
+    chamber_target = round(temps.get("chamber_target", 0)) if "chamber_target" in temps else ""
 
     # Auto-detect dual-nozzle printers from MQTT temperature data
     if "nozzle_2" in temps and printer_id not in _nozzle_count_updated:
@@ -1378,7 +1379,7 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
     )
     status_key = (
         f"{state.connected}:{state.state}:{state.progress}:{state.layer_num}:"
-        f"{nozzle_temp}:{bed_temp}:{nozzle_2_temp}:{chamber_temp}:"
+        f"{nozzle_temp}:{bed_temp}:{nozzle_2_temp}:{chamber_temp}:{chamber_target}:"
         f"{state.stg_cur}:{bed_target}:{nozzle_target}:"
         f"{state.cooling_fan_speed}:{state.big_fan1_speed}:{state.big_fan2_speed}:"
         f"{state.chamber_light}:{state.active_extruder}:{state.tray_now}:{vt_tray_key}:"

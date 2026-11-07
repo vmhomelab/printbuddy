@@ -12,7 +12,7 @@ from backend.app.models.print_log import PrintLogEntry
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer import Printer
 from backend.app.models.settings import Settings
-from backend.app.services.printer_manager import printer_manager, supports_chamber_temp
+from backend.app.services.printer_manager import chamber_temp_available, printer_manager
 
 router = APIRouter(tags=["metrics"])
 
@@ -278,9 +278,9 @@ async def get_metrics(
     lines.append("# TYPE printbuddy_chamber_temp_celsius gauge")
     for printer in printers:
         # Only report chamber temp for models that have a real sensor
-        if not supports_chamber_temp(printer.model):
-            continue
         status = all_statuses.get(printer.id)
+        if not chamber_temp_available(printer.model, status):
+            continue
         temp = status.temperatures.get("chamber", 0) if status else 0
         labels = format_labels(
             printer_id=str(printer.id),

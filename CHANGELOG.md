@@ -7,6 +7,9 @@ The historical upstream changelog is preserved after that section for fork/upstr
 
 ### Unreleased
 
+#### Added
+- Klipper/Moonraker: chamber heater, chamber light and `fan_generic` part cooling fans are now detected from Moonraker objects (e.g. QIDI Q2: `heater_generic chamber`, `output_pin caselight`, `fan_generic cooling_fan`). The printer card shows chamber temperature and target, a chamber light toggle and part/aux/chamber fan controls, and the Klipper control panel gets a chamber target input limited by the heater's configured `max_temp`. New endpoint `POST /printers/{id}/temperature/chamber`. (#35)
+
 #### Changed
 - Swept residual upstream identity strings from code, config, docs, tests, install scripts, workflow metadata, and committed frontend assets. Added a repository-wide regression test so the old project/user strings cannot reappear in tracked text files.
 - Added prominent `Source code` links to the authenticated sidebar footer and unauthenticated login flows so network users can reach Printbuddy's complete corresponding source from the UI for AGPL-3.0 section 13.

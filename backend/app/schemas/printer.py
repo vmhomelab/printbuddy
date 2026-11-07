@@ -423,6 +423,11 @@ class PrinterStatus(BaseModel):
     speed_level: int = 2
     # Chamber light on/off
     chamber_light: bool = False
+    # Capability flags (provider-detected, e.g. from Moonraker objects).
+    # None = provider does not report the capability explicitly.
+    chamber_light_supported: bool | None = None
+    chamber_heater_supported: bool = False
+    chamber_temp_max: float | None = None
     # Active extruder for dual nozzle (0=right, 1=left)
     active_extruder: int = 0
     # AMS mapping for dual nozzle: which AMS is connected to which nozzle
