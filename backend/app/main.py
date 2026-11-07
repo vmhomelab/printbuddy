@@ -10489,6 +10489,11 @@ PUBLIC_API_PATTERNS = [
     # Images and media
     "/photos/",  # /archives/{id}/photos/{filename}
     "/project-image/",  # /archives/{id}/project-image/{path}
+    # Source-snapshot images are shown via <img>, which cannot send a JWT. The
+    # route validates the ``?token=`` media token and file ownership itself
+    # (#3025); without this entry the middleware 401'd the request first, so
+    # the "Source details" photos broke whenever auth was enabled.
+    "/source-assets/",  # /library/files/{id}/source-assets/{name}
     "/qrcode",  # /archives/{id}/qrcode
     "/timelapse",  # /archives/{id}/timelapse (video)
     "/cover",  # /printers/{id}/cover
