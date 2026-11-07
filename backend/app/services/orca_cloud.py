@@ -37,6 +37,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -447,6 +448,38 @@ class OrcaCloudService:
         using an injected or app-shared client (those are managed elsewhere)."""
         if self._owns_client:
             await self._client.aclose()
+
+
+_ORCA_QUOTED_ITEM = re.compile(r'"((?:[^"\\]|\\.)*)"')
+
+
+def parse_orca_string_list(value: object) -> list[str]:
+    """Normalise an Orca string-vector option (e.g. ``compatible_printers``).
+
+    Orca Cloud returns such options in OrcaSlicer's serialised config form,
+    where every item is double-quoted and items are ``;``-separated, either as
+    one string (``'"Printer A";"Printer B"'``) or as a list of quoted items
+    (``['"Printer A"']``). Plain lists and plain strings are accepted too.
+    Returns the bare, non-empty names.
+    """
+    raw_items: list[str]
+    if isinstance(value, str):
+        raw_items = [value]
+    elif isinstance(value, list):
+        raw_items = [item for item in value if isinstance(item, str)]
+    else:
+        return []
+
+    names: list[str] = []
+    for item in raw_items:
+        text = item.strip()
+        quoted = _ORCA_QUOTED_ITEM.findall(text) if text.startswith('"') else []
+        if quoted:
+            parts = [re.sub(r"\\(.)", r"\1", part) for part in quoted]
+        else:
+            parts = text.split(";")
+        names.extend(part.strip() for part in parts if part.strip())
+    return names
 
 
 def _error_code(resp: httpx.Response) -> str | None:

@@ -40,7 +40,7 @@ from backend.app.services.bambu_cloud import (
     BambuCloudError,
     BambuCloudService,
 )
-from backend.app.services.orca_cloud import OrcaCloudAuthError, OrcaCloudError
+from backend.app.services.orca_cloud import OrcaCloudAuthError, OrcaCloudError, parse_orca_string_list
 
 logger = logging.getLogger(__name__)
 
@@ -277,6 +277,11 @@ async def _resolve_orca_cloud(db: AsyncSession, user: User | None, ref: PresetRe
         # Orca can contain Bambu-style printer/print labels. Normalize every
         # source to the CLI's machine/process/filament vocabulary.
         content = {**content, "type": _SLOT_TO_PROFILE_TYPE[slot], "from": "system"}
+        # Orca Cloud serialises compatible_printers with quoted items
+        # ('"Printer"'). The sidecar compares bare preset names, so a quoted
+        # list would make it reject every printer.
+        if "compatible_printers" in content:
+            content["compatible_printers"] = parse_orca_string_list(content["compatible_printers"])
     return json.dumps(content)
 
 

@@ -42,7 +42,7 @@ from backend.app.services.bambu_cloud import (
     BambuCloudError,
     BambuCloudService,
 )
-from backend.app.services.orca_cloud import OrcaCloudAuthError, OrcaCloudError
+from backend.app.services.orca_cloud import OrcaCloudAuthError, OrcaCloudError, parse_orca_string_list
 from backend.app.services.slicer_api import (
     BundleNotFoundError,
     BundleSummary,
@@ -225,12 +225,9 @@ async def _fetch_orca_cloud_presets(
         if slot == "filament":
             preset.filament_type = _first_scalar(content.get("filament_type"))
             preset.filament_colour = _first_scalar(content.get("default_filament_colour"))
-        compatible = content.get("compatible_printers")
-        if slot in ("process", "filament") and isinstance(compatible, str):
-            preset.compatible_printers = [compatible]
-        elif slot in ("process", "filament") and isinstance(compatible, list):
-            values = [value.strip() for value in compatible if isinstance(value, str) and value.strip()]
-            preset.compatible_printers = values or None
+        if slot in ("process", "filament"):
+            # Orca serialises string vectors with quoted items ('"Printer"').
+            preset.compatible_printers = parse_orca_string_list(content.get("compatible_printers")) or None
         slots[slot].append(preset)
 
     _orca_cloud_cache[cache_key] = (now, slots)
