@@ -12,12 +12,13 @@ from backend.app.models.library import LibraryFile
 from backend.app.services.library_trash import LibraryTrashService
 
 
-def test_source_asset_endpoint_accepts_browser_stream_token_auth():
+def test_source_asset_endpoint_accepts_browser_media_token_auth():
+    """Source-snapshot images are <img> URLs, so they take the media token in
+    ``?token=`` and are ownership-gated like the file itself (#3025)."""
     from backend.app.api.routes.library import get_file_source_asset
-    from backend.app.core.auth import RequireCameraStreamTokenIfAuthEnabled
 
-    dependency = inspect.signature(get_file_source_asset).parameters["_"].default
-    assert dependency is RequireCameraStreamTokenIfAuthEnabled
+    dependency = inspect.signature(get_file_source_asset).parameters["auth_result"].default
+    assert dependency.dependency.__qualname__.startswith("require_media_token_ownership.")
 
 
 def test_hard_delete_cleanup_includes_source_snapshot(tmp_path, monkeypatch):

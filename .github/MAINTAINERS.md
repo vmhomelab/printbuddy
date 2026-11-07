@@ -89,7 +89,7 @@ npm run lint -- --fix
 **Frontend type errors:**
 ```bash
 cd frontend
-npx tsc --noEmit
+npm run typecheck
 # Fix the errors shown
 ```
 

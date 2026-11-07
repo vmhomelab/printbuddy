@@ -1,4 +1,5 @@
 import type { InventorySpool } from '../api/client';
+import { resolveSpoolColorName } from './colors';
 
 /**
  * Return true when spool matches the search query across all searchable text fields.
@@ -18,7 +19,13 @@ export function spoolMatchesQuery(spool: InventorySpool, query: string): boolean
     String(spool.id),
     spool.material,
     spool.brand,
+    // Both the stored name and the displayed one. They differ often: a Bambu
+    // tag may carry no colour name or an internal code, and Spoolman has no
+    // such field, so what the list shows is usually resolved from the swatch's
+    // hex. Searching only the stored value means typing what you can plainly
+    // read finds nothing (#3090).
     spool.color_name,
+    resolveSpoolColorName(spool.color_name, spool.rgba, spool.color_name_is_synthesized),
     spool.subtype,
     spool.note,
     spool.slicer_filament_name,

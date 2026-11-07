@@ -2867,20 +2867,28 @@ export function ArchivesPage() {
     setNo3MFWarningDismissed(true);
   };
   // Why the 3MF was missing decides what to tell the user, and the original
-  // single wording is wrong for three of the four cases: it sends H2-series and
+  // single wording is wrong for five of the six cases: it sends H2-series and
   // P2S owners to switch on a setting that is already on and would not have
   // helped, it blames the slicer when the real answer is an empty card slot
-  // (#2780), and it blames a slicer that was never involved when the print was
-  // started from a file already on the printer (#1820). An unknown/absent
-  // reason keeps the original text.
+  // (#2780), it blames a slicer that was never involved when the print was
+  // started from a file already on the printer (#1820), it blames the
+  // slicer again when the printer's own file service refused the TLS handshake
+  // and no lookup was ever attempted (#2957, surfaced by #2780), and it blames
+  // it a third time when the file was on the card, was served, and the transfer
+  // simply ran out of time (#3063). An unknown/absent reason keeps the original
+  // text.
   const no3MFVariant =
-    no3MFWarning?.reason === 'internal_storage'
-      ? 'InternalStorage'
-      : no3MFWarning?.reason === 'no_external_storage'
-        ? 'NoExternalStorage'
-        : no3MFWarning?.reason === 'internal_history'
-          ? 'InternalHistory'
-          : '';
+    no3MFWarning?.reason === 'ftps_cooloff'
+      ? 'FtpsCooloff'
+      : no3MFWarning?.reason === 'ftp_transfer_failed'
+        ? 'FtpTransferFailed'
+        : no3MFWarning?.reason === 'internal_storage'
+          ? 'InternalStorage'
+          : no3MFWarning?.reason === 'no_external_storage'
+            ? 'NoExternalStorage'
+            : no3MFWarning?.reason === 'internal_history'
+              ? 'InternalHistory'
+              : '';
   // Nothing to link for the empty-slot case — "put a card in" is the whole fix.
   const no3MFDocsHref =
     no3MFWarning?.reason === 'no_external_storage'
@@ -3716,7 +3724,9 @@ export function ArchivesPage() {
                   >
                     {t(
                       no3MFWarning?.reason === 'internal_storage' ||
-                        no3MFWarning?.reason === 'internal_history'
+                        no3MFWarning?.reason === 'internal_history' ||
+                        no3MFWarning?.reason === 'ftps_cooloff' ||
+                        no3MFWarning?.reason === 'ftp_transfer_failed'
                         ? 'archives.no3mfBanner.docsLinkInternalStorage'
                         : 'archives.no3mfBanner.docsLink',
                     )}

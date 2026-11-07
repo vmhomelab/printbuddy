@@ -4702,8 +4702,10 @@ class TestStartPrintUniqueIdentityFields:
         assert cmd["url"] == "ftp://test.3mf"
         assert cmd["file"] == "test.3mf"
         assert cmd["profile_id"] == "0"
-        assert cmd["cfg"] == "0"
         assert cmd["subtask_name"] == "test"
+        # The device-config bitmask is not a per-job field and is no longer
+        # sent; the printer echoed it back and we read it as telemetry (#3040).
+        assert "cfg" not in cmd
 
 
 class TestDeleteKProfileDualNozzleDetection:
@@ -4973,23 +4975,26 @@ class TestStaleReconnect:
 
         Proxy VP startup calls disconnect(timeout=1) to free the printer's single
         MQTT slot before opening the slicer proxy. If the printer/paho thread
-        does not deliver on_disconnect promptly, we must break the socket before
-        loop_stop() joins the network thread; otherwise the API request can hang
-        while enabling proxy mode.
+        does not deliver on_disconnect promptly, we break the socket and hand the
+        client to ``retire_paho_client``, whose own thread runs loop_stop() — the
+        API request never joins paho's network thread (#3068).
         """
+        import threading
         from unittest.mock import MagicMock
 
         mqtt_client._client = MagicMock()
         original = mqtt_client._client
         sock = MagicMock()
         original.socket.return_value = sock
+        loop_stopped = threading.Event()
+        original.loop_stop.side_effect = lambda: loop_stopped.set()
         mqtt_client._disconnection_event = None
 
         mqtt_client.disconnect(timeout=0.01)
 
-        original.disconnect.assert_called_once()
+        assert original.disconnect.called
         sock.close.assert_called_once()
-        original.loop_stop.assert_called_once()
+        assert loop_stopped.wait(timeout=5), "the retired client's loop was never stopped"
         assert mqtt_client._client is None
         assert mqtt_client.state.connected is False
 
@@ -6977,6 +6982,82 @@ class TestAmsFilamentBackupHoldTimer:
         assert mqtt_client.state.ams_filament_backup is True
         # Hold timer still armed — sub-second push didn't reset it.
         assert mqtt_client._xcam_hold_start["print_option_auto_switch_filament"] == before_hold
+
+
+class TestCommandAckIsNotTelemetry:
+    """Regression (#3040): a printer's command acknowledgement echoes the
+    fields Printbuddy sent, so ingesting one as status reads our own request
+    back as the printer's state.
+
+    Printbuddy used to put ``"cfg": "0"`` in every project_file. The ack came
+    back carrying it, bit 18 read as "AMS Filament Backup OFF", and on the
+    families that don't repeat ``cfg`` in their periodic frames (P1S, A1,
+    A1 Mini, A2L) the wrong value stuck until the user toggled it — which
+    silently disabled the prefer-lowest-remaining gate for the rest of the day.
+    """
+
+    @pytest.fixture
+    def mqtt_client(self):
+        from unittest.mock import MagicMock
+
+        from backend.app.services.bambu_mqtt import BambuMQTTClient
+
+        client = BambuMQTTClient(
+            ip_address="192.168.1.100",
+            serial_number="TEST123",
+            access_code="12345678",
+        )
+        client.state.connected = True
+        client._client = MagicMock()
+        return client
+
+    def test_project_file_ack_does_not_clear_backup_state(self, mqtt_client):
+        mqtt_client.state.ams_filament_backup = True
+
+        mqtt_client._process_message(
+            {"print": {"command": "project_file", "sequence_id": "20000", "cfg": "0", "result": "success"}}
+        )
+
+        assert mqtt_client.state.ams_filament_backup is True
+
+    def test_project_file_ack_leaves_unknown_backup_unknown(self, mqtt_client):
+        """A1 / A1 Mini never report cfg, so the state must stay None ("unknown")
+        — the value the prefer-lowest gate reads as "preserve old behaviour"."""
+        assert mqtt_client.state.ams_filament_backup is None
+
+        mqtt_client._process_message({"print": {"command": "project_file", "cfg": "0"}})
+
+        assert mqtt_client.state.ams_filament_backup is None
+
+    def test_push_status_still_updates_backup_state(self, mqtt_client):
+        mqtt_client.state.ams_filament_backup = True
+
+        mqtt_client._process_message({"print": {"command": "push_status", "cfg": "C0340BC219"}})  # bit18=0
+
+        assert mqtt_client.state.ams_filament_backup is False
+
+    def test_status_frame_without_command_still_updates_backup_state(self, mqtt_client):
+        """Some firmwares omit `command` on a status frame; those stay trusted."""
+        mqtt_client.state.ams_filament_backup = False
+
+        mqtt_client._process_message({"print": {"cfg": "C0340FC219"}})  # bit18=1
+
+        assert mqtt_client.state.ams_filament_backup is True
+
+    def test_project_file_ack_does_not_clear_timelapse_state(self, mqtt_client):
+        """The ack echoes the per-job timelapse request, not the recorder."""
+        mqtt_client.state.timelapse = True
+
+        mqtt_client._process_message({"print": {"command": "project_file", "timelapse": False}})
+
+        assert mqtt_client.state.timelapse is True
+
+    def test_push_status_still_updates_timelapse_state(self, mqtt_client):
+        mqtt_client.state.timelapse = True
+
+        mqtt_client._process_message({"print": {"command": "push_status", "timelapse": False}})
+
+        assert mqtt_client.state.timelapse is False
 
 
 # ---------------------------------------------------------------------------
