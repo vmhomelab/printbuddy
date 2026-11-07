@@ -13,6 +13,8 @@ import httpx
 
 from backend.app.services.bambu_mqtt import FilaSwitchState, NozzleInfo, PrintOptions
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class MoonrakerPrinterState:
@@ -212,6 +214,131 @@ def _list_value(values: Any, index: int, default: Any = None) -> Any:
     if isinstance(values, list) and 0 <= index < len(values):
         return values[index]
     return default
+
+
+def _split_metadata_list(value: Any) -> list[str]:
+    """Split Moonraker multi-extruder metadata (``"PLA;PETG"`` or a list) into items."""
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item or "").strip()]
+    if isinstance(value, str):
+        return [item.strip() for item in value.replace(",", ";").split(";") if item.strip()]
+    return []
+
+
+def _largest_moonraker_thumbnail(thumbnails: Any) -> str | None:
+    """Return the ``relative_path`` of the largest thumbnail Moonraker extracted."""
+    best_path: str | None = None
+    best_area = -1
+    for thumb in thumbnails if isinstance(thumbnails, list) else []:
+        if not isinstance(thumb, dict):
+            continue
+        relative_path = str(thumb.get("relative_path") or "").strip()
+        if not relative_path:
+            continue
+        area = (_safe_int(thumb.get("width")) or 0) * (_safe_int(thumb.get("height")) or 0)
+        if area > best_area:
+            best_area = area
+            best_path = relative_path
+    return best_path
+
+
+def normalize_moonraker_file_metadata(meta: Any, filename: str | None = None) -> dict[str, Any]:
+    """Map Moonraker ``/server/files/metadata`` to Printbuddy's canonical fields.
+
+    Moonraker parses slicer comments from every uploaded G-code file
+    (PrusaSlicer, SuperSlicer, OrcaSlicer, Cura, ...). Moonraker archives are
+    G-code based, so this replaces the 3MF parsing Bambu archives get.
+    ``filament_total`` is a length in millimetres and is kept as length; grams
+    are only taken from the slicer's own ``filament_weight_total``.
+    """
+    if not isinstance(meta, dict) or not meta:
+        return {}
+
+    raw_filename = str(meta.get("filename") or filename or "").strip().lstrip("/")
+    normalized: dict[str, Any] = {
+        "source": "moonraker_file_metadata",
+        "raw_filename": raw_filename,
+        "raw_metadata": meta,
+    }
+
+    estimated_time = _safe_float(meta.get("estimated_time"))
+    if estimated_time is not None and estimated_time > 0:
+        normalized["print_time_seconds"] = int(estimated_time)
+
+    layer_height = _safe_float(meta.get("layer_height"))
+    if layer_height is not None and layer_height > 0:
+        normalized["layer_height"] = layer_height
+        layer_count = _safe_int(meta.get("layer_count"))
+        object_height = _safe_float(meta.get("object_height"))
+        if layer_count is not None and layer_count > 0:
+            normalized["total_layers"] = layer_count
+        elif object_height is not None and object_height > 0:
+            normalized["total_layers"] = max(1, round(object_height / layer_height))
+
+    filament_total = _safe_float(meta.get("filament_total"))
+    if filament_total is not None and filament_total > 0:
+        normalized["filament_total_mm"] = filament_total
+
+    grams = _safe_float(meta.get("filament_weight_total"))
+    if grams is not None and grams > 0:
+        normalized["filament_used_grams"] = round(grams, 2)
+
+    filament_types = _split_metadata_list(meta.get("filament_type"))
+    if filament_types:
+        normalized["filament_type"] = filament_types[0]
+        if len(set(filament_types)) > 1:
+            normalized["filament_types"] = filament_types
+
+    filament_name = str(meta.get("filament_name") or "").strip()
+    if filament_name:
+        normalized["filament_name"] = filament_name
+
+    colors = [
+        color if color.startswith("#") else f"#{color}" for color in _split_metadata_list(meta.get("filament_colors"))
+    ]
+    if colors:
+        normalized["filament_colors"] = colors
+
+    nozzle_diameter = _safe_float(meta.get("nozzle_diameter"))
+    if nozzle_diameter is not None and nozzle_diameter > 0:
+        normalized["nozzle_diameter"] = nozzle_diameter
+
+    for source_key, target_key in (
+        ("first_layer_extr_temp", "nozzle_temperature"),
+        ("first_layer_bed_temp", "bed_temperature"),
+    ):
+        value = _safe_int(meta.get(source_key))
+        if value is not None and value > 0:
+            normalized[target_key] = value
+
+    weights = meta.get("filament_weights")
+    if isinstance(weights, list):
+        slots: list[dict[str, Any]] = []
+        for idx, raw_weight in enumerate(weights):
+            weight = _safe_float(raw_weight)
+            if weight is None or weight <= 0:
+                continue
+            slot: dict[str, Any] = {"slot_id": idx + 1, "used_g": round(weight, 2)}
+            if idx < len(filament_types):
+                slot["type"] = filament_types[idx]
+            if idx < len(colors):
+                slot["color"] = colors[idx]
+            slots.append(slot)
+        if len(slots) > 1:
+            normalized["filament_slots"] = slots
+
+    for key in ("slicer", "thumbnails"):
+        value = meta.get(key)
+        if value:
+            normalized[key] = value
+
+    thumbnail = _largest_moonraker_thumbnail(meta.get("thumbnails"))
+    if thumbnail:
+        # Thumbnail paths are relative to the G-code file's directory.
+        parent = str(Path(raw_filename).parent) if raw_filename else ""
+        normalized["thumbnail_path"] = f"{parent}/{thumbnail}" if parent not in {"", "."} else thumbnail
+
+    return normalized
 
 
 def _normalize_creality_cfs_color(value: Any) -> str | None:
@@ -669,6 +796,8 @@ class MoonrakerPrinterClient:
         self._has_status_sample = False
         self._last_bed_temp: float | None = None
         self._current_print_started_at: float | None = None
+        self._current_file_metadata: dict[str, Any] = {}
+        self._current_file_metadata_name: str | None = None
 
     @property
     def _headers(self) -> dict[str, str]:
@@ -683,49 +812,6 @@ class MoonrakerPrinterClient:
         if isinstance(data, dict) and isinstance(data.get("result"), dict):
             return data["result"]
         return data if isinstance(data, dict) else {"value": data}
-
-    def refresh_current_file_metadata(self) -> dict[str, Any]:
-        """Return normalized Moonraker metadata for the active G-code file.
-
-        Moonraker archives are G-code based; they must not depend on Bambu's
-        separate 3MF transport. ``filament_total`` is a length in millimetres,
-        so it is retained as length rather than guessed into grams.
-        """
-        filename = str(self.state.gcode_file or "").strip().lstrip("/")
-        if not filename:
-            raw_data = self.state.raw_data if isinstance(self.state.raw_data, dict) else {}
-            virtual_sdcard = raw_data.get("virtual_sdcard") if isinstance(raw_data.get("virtual_sdcard"), dict) else {}
-            print_stats = raw_data.get("print_stats") if isinstance(raw_data.get("print_stats"), dict) else {}
-            filename = str(virtual_sdcard.get("file_path") or print_stats.get("filename") or "").strip().lstrip("/")
-        if not filename:
-            return {}
-
-        metadata = self._get(f"server/files/metadata?filename={quote(filename, safe='')}")
-        if not isinstance(metadata, dict) or not metadata:
-            return {}
-
-        result: dict[str, Any] = {
-            "source": "moonraker_file_metadata",
-            "raw_filename": str(metadata.get("filename") or filename),
-            "raw_metadata": metadata,
-        }
-        estimated_time = _safe_float(metadata.get("estimated_time"))
-        if estimated_time is not None and estimated_time > 0:
-            result["print_time_seconds"] = int(estimated_time)
-        layer_height = _safe_float(metadata.get("layer_height"))
-        if layer_height is not None and layer_height > 0:
-            result["layer_height"] = layer_height
-            object_height = _safe_float(metadata.get("object_height"))
-            if object_height is not None and object_height > 0:
-                result["total_layers"] = max(1, round(object_height / layer_height))
-        filament_total = _safe_float(metadata.get("filament_total"))
-        if filament_total is not None and filament_total > 0:
-            result["filament_total_mm"] = filament_total
-        for key in ("slicer", "thumbnails"):
-            value = metadata.get(key)
-            if value:
-                result[key] = value
-        return result
 
     def _query_objects(self, object_names: list[str]) -> dict[str, Any]:
         query = "printer/objects/query?" + "&".join(quote(name, safe="") for name in object_names)
@@ -1486,9 +1572,55 @@ class MoonrakerPrinterClient:
             self.state.connected = False
         return self.state.connected
 
+    def _active_gcode_filename(self) -> str:
+        filename = str(self.state.gcode_file or "").strip().lstrip("/")
+        if filename:
+            return filename
+        raw_data = self.state.raw_data if isinstance(self.state.raw_data, dict) else {}
+        virtual_sdcard = raw_data.get("virtual_sdcard") if isinstance(raw_data.get("virtual_sdcard"), dict) else {}
+        print_stats = raw_data.get("print_stats") if isinstance(raw_data.get("print_stats"), dict) else {}
+        return str(virtual_sdcard.get("file_path") or print_stats.get("filename") or "").strip().lstrip("/")
+
+    def get_file_metadata(self, filename: str) -> dict[str, Any]:
+        """Fetch and normalize Moonraker's slicer metadata for a G-code file."""
+        normalized_name = self._normalize_gcodes_path(filename)
+        if not normalized_name:
+            return {}
+        raw = self._get(f"server/files/metadata?filename={quote(normalized_name, safe='')}")
+        return normalize_moonraker_file_metadata(raw, normalized_name)
+
+    def refresh_current_file_metadata(self) -> dict[str, Any]:
+        """Return normalized Moonraker metadata for the active G-code file.
+
+        Fetched once per print and cached for the completion payload. Never
+        raises so archive/notification paths are not interrupted by a metadata
+        hiccup.
+        """
+        filename = self._active_gcode_filename()
+        if not filename:
+            return {}
+        if self._current_file_metadata_name == filename and self._current_file_metadata:
+            return dict(self._current_file_metadata)
+        try:
+            metadata = self.get_file_metadata(filename)
+        except Exception as exc:  # noqa: BLE001 - metadata is best-effort
+            logger.debug("Moonraker file metadata lookup failed for %s: %s", filename, exc)
+            return {}
+        self._current_file_metadata = metadata
+        self._current_file_metadata_name = filename
+        return dict(metadata)
+
+    def download_thumbnail(self, thumbnail_path: str) -> bytes | None:
+        """Download a slicer thumbnail extracted by Moonraker (``.thumbs/...``)."""
+        try:
+            return self.download_file(thumbnail_path)
+        except Exception as exc:  # noqa: BLE001 - thumbnail is best-effort
+            logger.debug("Moonraker thumbnail download failed for %s: %s", thumbnail_path, exc)
+            return None
+
     def _build_lifecycle_payload(self) -> dict[str, Any]:
         filename = self.state.subtask_name or self.state.current_print or self.state.gcode_file or "Unknown"
-        return {
+        payload: dict[str, Any] = {
             "filename": filename,
             "subtask_name": filename,
             "progress": self.state.progress,
@@ -1496,6 +1628,15 @@ class MoonrakerPrinterClient:
             "status": self.state.state,
             "raw_data": self.state.raw_data,
         }
+        metadata = self.refresh_current_file_metadata() if filename != "Unknown" else {}
+        if metadata:
+            payload["file_metadata"] = metadata
+        print_stats = self.state.raw_data.get("print_stats") if isinstance(self.state.raw_data, dict) else None
+        if isinstance(print_stats, dict):
+            used_mm = _safe_float(print_stats.get("filament_used"))
+            if used_mm is not None and used_mm >= 0:
+                payload["actual_filament_used_mm"] = round(used_mm, 2)
+        return payload
 
     def _emit_status_callbacks(self, previous_state: str | None) -> None:
         if self.on_state_change:
@@ -1516,6 +1657,9 @@ class MoonrakerPrinterClient:
         # owns that case; this edge detector is for new Moonraker transitions.
         if previous_state is not None and not previous_running and current_running:
             self._current_print_started_at = time.monotonic()
+            # A re-uploaded file may reuse the old name; fetch fresh metadata per print.
+            self._current_file_metadata = {}
+            self._current_file_metadata_name = None
             if self.on_print_start:
                 self.on_print_start(self._build_lifecycle_payload())
         elif previous_running and not current_running:

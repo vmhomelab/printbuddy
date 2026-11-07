@@ -903,6 +903,7 @@ def test_moonraker_refreshes_active_gcode_metadata(monkeypatch):
         "filament_total_mm": 4567.8,
         "slicer": "OrcaSlicer",
         "thumbnails": [{"width": 320, "height": 240, "relative_path": ".thumbs/cube.png"}],
+        "thumbnail_path": "models/.thumbs/cube.png",
         "raw_metadata": {
             "filename": "models/cube.gcode",
             "estimated_time": 1234.5,

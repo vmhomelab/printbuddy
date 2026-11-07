@@ -28,7 +28,7 @@ from backend.app.models.user import User
 from backend.app.schemas.archive import ArchiveResponse, ArchiveSlim, ArchiveStats, ArchiveUpdate, ReprintRequest
 from backend.app.schemas.print_log import PrintLogResponse
 from backend.app.schemas.slicer import SliceRequest
-from backend.app.services.archive import ArchiveService
+from backend.app.services.archive import ArchiveService, resolve_archive_dir, resolve_archive_photo_path
 from backend.app.utils.http import build_content_disposition
 from backend.app.utils.threemf_tools import (
     extract_embedded_presets_from_3mf,
@@ -2420,10 +2420,10 @@ async def upload_photo(
     if not file.filename or not file.filename.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
         raise HTTPException(400, "File must be an image (.jpg, .jpeg, .png, .webp)")
 
-    # Get archive directory
-    archive_dir = settings.base_dir / Path(archive.file_path).parent
+    # Get archive directory (fileless fallback archives get their own folder)
+    archive_dir = resolve_archive_dir(archive)
     photos_dir = archive_dir / "photos"
-    photos_dir.mkdir(exist_ok=True)
+    photos_dir.mkdir(parents=True, exist_ok=True)
 
     # Generate unique filename
     import uuid
@@ -2463,8 +2463,7 @@ async def get_photo(
     if not archive:
         raise HTTPException(404, "Archive not found")
 
-    archive_dir = settings.base_dir / Path(archive.file_path).parent
-    photo_path = archive_dir / "photos" / filename
+    photo_path = resolve_archive_photo_path(archive, filename)
 
     if not photo_path.exists():
         raise HTTPException(404, "Photo not found")
@@ -2499,8 +2498,7 @@ async def delete_photo(
         raise HTTPException(404, "Photo not found")
 
     # Delete file
-    archive_dir = settings.base_dir / Path(archive.file_path).parent
-    photo_path = archive_dir / "photos" / filename
+    photo_path = resolve_archive_photo_path(archive, filename)
     if photo_path.exists():
         photo_path.unlink()
 

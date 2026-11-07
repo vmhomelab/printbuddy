@@ -1275,3 +1275,45 @@ async def test_delayed_prusalink_metadata_refresh_updates_printing_archive(
     assert archive.filament_type == "PETG"
     assert archive.cost == 1.26
     assert archive.extra_data["file_metadata"]["source"] == "prusalink_file_meta"
+
+
+@pytest.mark.asyncio
+async def test_moonraker_archive_estimate_scales_by_actual_extruded_length(
+    db_session, printer_factory, archive_factory
+):
+    """Cancelled Klipper prints charge the spool by print_stats.filament_used, not progress."""
+    from backend.app.models.spool import Spool
+    from backend.app.models.spool_assignment import SpoolAssignment
+
+    printer = await printer_factory(provider="klipper", model="Voron 2.4")
+    spool = Spool(material="PLA", label_weight=1000, weight_used=0, cost_per_kg=20.0, rgba="FF6600FF")
+    db_session.add(spool)
+    await db_session.commit()
+    await db_session.refresh(spool)
+    db_session.add(SpoolAssignment(printer_id=printer.id, spool_id=spool.id, ams_id=-1, tray_id=0))
+    archive = await archive_factory(
+        printer.id,
+        with_run=False,
+        filename="benchy.gcode",
+        file_path="",
+        file_size=0,
+        status="printing",
+        filament_type="PLA",
+        filament_used_grams=20.0,
+        extra_data={"file_metadata": {"source": "moonraker_file_metadata", "filament_total_mm": 6000.0}},
+    )
+
+    results = await _track_from_archive_estimate(
+        printer.id,
+        archive.id,
+        "cancelled",
+        "benchy.gcode",
+        db_session,
+        progress=0.0,  # Moonraker reports 0 progress once the print left RUNNING
+        default_filament_cost=20.0,
+        actual_filament_used_mm=1500.0,
+    )
+
+    assert len(results) == 1
+    assert results[0]["weight_used"] == pytest.approx(5.0)
+    assert spool.weight_used == pytest.approx(5.0)

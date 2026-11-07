@@ -41,6 +41,39 @@ def _copy_and_fsync(src: Path, dst: Path, chunk_size: int = 1024 * 1024) -> None
     shutil.copystat(src, dst)
 
 
+FILELESS_ARCHIVE_FOLDER = "_fileless"
+
+
+def resolve_archive_dir(archive) -> Path:
+    """Return the on-disk directory that holds an archive's side files.
+
+    Archives with a stored print file keep photos, thumbnails and timelapses
+    next to that file. Fallback archives without a file (non-Bambu providers
+    such as Moonraker/Klipper, or Bambu prints whose 3MF could not be fetched)
+    have ``file_path == ""``; for those a dedicated per-archive folder is used.
+    The folder lives under ``_fileless`` so it can never collide with the
+    per-printer folders (``archive/<printer_id>/...``).
+    """
+    file_path = (getattr(archive, "file_path", None) or "").strip()
+    if file_path:
+        return settings.base_dir / Path(file_path).parent
+    return settings.archive_dir / FILELESS_ARCHIVE_FOLDER / str(archive.id)
+
+
+def resolve_archive_photo_path(archive, filename: str) -> Path:
+    """Return the path of a stored archive photo.
+
+    Older versions wrote photos of fileless archives to ``archive/<id>/photos``
+    while every reader looked elsewhere; keep those photos reachable.
+    """
+    photo_path = resolve_archive_dir(archive) / "photos" / filename
+    if not photo_path.exists() and not (getattr(archive, "file_path", None) or "").strip():
+        legacy_path = settings.archive_dir / str(archive.id) / "photos" / filename
+        if legacy_path.exists():
+            return legacy_path
+    return photo_path
+
+
 def resolve_display_stem(filename: str) -> str:
     """Return a clean human-readable stem from a 3MF/gcode filename.
 
@@ -1407,10 +1440,11 @@ class ArchiveService:
 
                 dir_to_delete = archive_dir
         else:
-            logger.error(
-                f"SECURITY: Refusing to delete files for archive {archive_id} - "
-                f"file_path is empty or invalid: '{archive.file_path}'"
-            )
+            # Fileless fallback archive: only its dedicated side-file folder
+            # (photos, thumbnail, timelapse) may be removed.
+            fileless_dir = resolve_archive_dir(archive)
+            if fileless_dir.is_dir():
+                dir_to_delete = fileless_dir
 
         # NULL stale thumbnail_path on linked PrintLogEntries before the FK
         # SET-NULL cascade fires. The on-disk file is about to be removed by
@@ -1447,9 +1481,9 @@ class ArchiveService:
         if not archive:
             return False
 
-        # Get archive directory
-        file_path = settings.base_dir / archive.file_path
-        archive_dir = file_path.parent
+        # Get archive directory (fileless fallback archives get their own folder)
+        archive_dir = resolve_archive_dir(archive)
+        await asyncio.to_thread(archive_dir.mkdir, parents=True, exist_ok=True)
 
         # Save timelapse - use thread pool to avoid blocking event loop
         # (timelapse files can be 100MB+, sync write blocks for seconds)
