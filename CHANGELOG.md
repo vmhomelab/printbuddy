@@ -12,6 +12,8 @@ The historical upstream changelog is preserved after that section for fork/upstr
 
 - OctoPrint printers are configured by their OctoPrint URL only: the Add and Edit dialogs show a single "OctoPrint URL" field (``http://`` is added if missing) and the host is stored as the printer's address, so changing the URL keeps both in sync.
 
+- Klipper/Moonraker: chamber heater, chamber light and `fan_generic` part cooling fans are now detected from Moonraker objects (e.g. QIDI Q2: `heater_generic chamber`, `output_pin caselight`, `fan_generic cooling_fan`). The printer card shows chamber temperature and target, a chamber light toggle and part/aux/chamber fan controls, and the Klipper control panel gets a chamber target input limited by the heater's configured `max_temp`. New endpoint `POST /printers/{id}/temperature/chamber`. (#35)
+
 #### Fixed
 - Changing a printer's API URL now reconnects the printer, like changing its IP address already did.
 - Post-print SD-card cleanup no longer tries Bambu FTP for non-Bambu printers (PrusaLink, Moonraker, Elegoo, OctoPrint), which delayed print-complete handling by about 8 seconds per print.
