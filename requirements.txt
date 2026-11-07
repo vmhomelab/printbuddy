@@ -34,6 +34,7 @@ pywebpush>=2.0.0
 
 # Utilities
 python-multipart>=0.0.27
+aiohttp>=3.10.11  # External camera streams/snapshots (imported directly, not only via pywebpush)
 aiofiles>=23.0.0
 
 # QR Code generation
