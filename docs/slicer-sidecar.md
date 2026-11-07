@@ -50,7 +50,7 @@ Tags:
 |---|---|
 | `latest` | Images of the current PrintBuddy `main` release. Used by PrintBuddy's `docker-compose.yml`. |
 | `dev` | Images of the PrintBuddy `dev` branch, for testers. |
-| `<slicer version>-<sidecar revision>`, e.g. `02.08.02.61-dcb6827` | Fixed version, never changes. Used by the `slicer-api/` stack. |
+| `<slicer version>-<sidecar revision>`, e.g. `02.08.02.61-9ff0c6e` | Fixed version, never changes. Used by the `slicer-api/` stack. |
 
 ### Option A: add the sidecar to PrintBuddy's Compose file (recommended)
 
@@ -387,6 +387,7 @@ docker compose --profile bambu up -d
 | **Slicer sidecar unreachable: All connection attempts failed** | PrintBuddy cannot reach the sidecar of the preferred slicer. Check with `docker ps` that it runs (in the `slicer-api/` stack Bambu Studio needs `--profile bambu`), that `curl http://localhost:3001/health` (or `3003`) works on the host, and that PrintBuddy uses host networking. Then click **Test slicer connection** again. |
 | **Filament profile "…" is not compatible with printer "…"** | The filament profile belongs to another printer or nozzle size. Pick the variant for your printer and nozzle (for the X2D 0.4 mm: `… @BBL X2D 0.4 nozzle`). |
 | **Unable to resolve inherited … profile: parent "…" was not found** | The running slicer does not ship the stock profile the selected profile is based on, usually because the printer is newer than the slicer. Use Bambu Studio or raise the version in `.env`. |
+| **Invalid parameter value(s) included in the 3mf file** | The project file contains settings the slicer rejects. Inherit placeholders (`-1`) written by the desktop slicers are removed automatically and the slice is retried; values that remain invalid are listed after *Rejected values:*. Open the project in Bambu Studio / OrcaSlicer, fix those settings and save it again, or slice the plain model (STL) instead. |
 | **Plate 1: Cool Plate does not support filament 1** | Set **Build plate** to the plate you use (for example High Temp or Textured PEI). |
 | **Slicing failed** without details | Look at the sidecar log: `docker logs --tail 100 bambu-studio-api` (or `orca-slicer-api`). |
 | **pull access denied** or **manifest unknown** for a `printbuddy-*-api` image | The tag is not published (yet). `latest` exists once a release with the sidecars reached `main`; use `dev` on the dev branch, the tag from the current `.env.example`, or build the image yourself (Option C). |
