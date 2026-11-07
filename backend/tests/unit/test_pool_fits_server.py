@@ -63,7 +63,7 @@ async def _run_check(*, pool_size, max_overflow, max_conn, reserved, in_use=0, s
 @pytest.mark.asyncio
 @pytest.mark.unit
 async def test_warns_when_the_ceiling_exceeds_what_the_server_allows(caplog):
-    """Printbuddy's own PostgreSQL default against a stock server: 100 vs 100-3."""
+    """A 100-connection ceiling against a stock server: 100 vs 100-3."""
     with caplog.at_level(logging.WARNING, logger="backend.app.core.database"):
         await _run_check(pool_size=20, max_overflow=80, max_conn=100, reserved=3)
 
@@ -72,6 +72,27 @@ async def test_warns_when_the_ceiling_exceeds_what_the_server_allows(caplog):
     # The numbers an operator needs, and the knobs to change.
     for expected in ("100", "97", "DB_POOL_SIZE", "DB_MAX_OVERFLOW", "max_connections"):
         assert expected in msg, f"warning omits {expected!r}"
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_the_postgres_default_fits_a_stock_server(caplog, monkeypatch):
+    """Without DB_POOL_* set, a stock server (100, 3 reserved) must not warn.
+
+    The default was 20 + 80, one over the 97 a stock server leaves, so every
+    PostgreSQL install that didn't size its pool logged this at each start.
+    """
+    from backend.app.core import database
+
+    for attr in ("db_pool_size", "db_max_overflow", "db_pool_timeout", "db_pool_recycle"):
+        monkeypatch.setattr(database.settings, attr, None, raising=False)
+    monkeypatch.setattr(database, "is_sqlite", lambda: False)
+    kwargs = database._resolve_pool_kwargs()
+
+    with caplog.at_level(logging.WARNING, logger="backend.app.core.database"):
+        await _run_check(pool_size=kwargs["pool_size"], max_overflow=kwargs["max_overflow"], max_conn=100, reserved=3)
+
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
 
 @pytest.mark.asyncio

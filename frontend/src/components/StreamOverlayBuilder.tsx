@@ -13,6 +13,7 @@ import { useTranslation } from 'react-i18next';
 import { Copy, ExternalLink, Eye, EyeOff } from 'lucide-react';
 import { api, type Printer } from '../api/client';
 import { useToast } from '../contexts/ToastContext';
+import { NumberInput } from './NumberInput';
 
 type OverlaySize = 'small' | 'medium' | 'large';
 
@@ -20,6 +21,7 @@ type OverlaySize = 'small' | 'medium' | 'large';
 // checkbox list reads as a preview of the result.
 const FIELDS = [
   { key: 'printer', labelKey: 'streamOverlay.builder.fieldPrinter', fallback: 'Printer name' },
+  { key: 'model', labelKey: 'streamOverlay.builder.fieldModel', fallback: 'Printer model' },
   { key: 'filename', labelKey: 'streamOverlay.builder.fieldFilename', fallback: 'File name' },
   { key: 'status', labelKey: 'streamOverlay.builder.fieldStatus', fallback: 'Status' },
   { key: 'progress', labelKey: 'streamOverlay.builder.fieldProgress', fallback: 'Progress bar' },
@@ -45,6 +47,9 @@ export function StreamOverlayBuilder() {
   const [fields, setFields] = useState<string[]>(DEFAULT_FIELDS);
   const [size, setSize] = useState<OverlaySize>('medium');
   const [fps, setFps] = useState(DEFAULT_FPS);
+  // '1' is the original overlay; the renderer is picked by version, not by a
+  // name like "updated" that stops being true once there's a newer one.
+  const [artwork, setArtwork] = useState<'1' | '2'>('1');
   const [showCamera, setShowCamera] = useState(true);
   const [token, setToken] = useState('');
   const [preview, setPreview] = useState(false);
@@ -78,10 +83,11 @@ export function StreamOverlayBuilder() {
     params.set('show', selected.join(','));
     if (size !== 'medium') params.set('size', size);
     if (fps !== DEFAULT_FPS) params.set('fps', String(fps));
+    if (artwork !== '1') params.set('artwork', artwork);
     if (!showCamera) params.set('camera', 'false');
     if (token.trim()) params.set('token', token.trim());
     return `${window.location.origin}/overlay/${id}?${params.toString()}`;
-  }, [printerId, fields, size, fps, showCamera, token]);
+  }, [printerId, fields, size, fps, showCamera, token, artwork]);
 
   const toggleField = (key: string) => {
     setFields((prev) => (prev.includes(key) ? prev.filter((f) => f !== key) : [...prev, key]));
@@ -161,16 +167,31 @@ export function StreamOverlayBuilder() {
         </div>
 
         <div>
+          <label htmlFor="overlay-builder-artwork" className="block text-sm font-medium text-white mb-1">
+            {t('streamOverlay.builder.artwork', 'Artwork')}
+          </label>
+          <select
+            id="overlay-builder-artwork"
+            value={artwork}
+            onChange={(e) => setArtwork(e.target.value as '1' | '2')}
+            className="w-full px-3 py-2 bg-bambu-dark rounded-md text-white border border-bambu-dark-tertiary focus:border-bambu-green focus:outline-none"
+          >
+            <option value="1">{t('streamOverlay.builder.artworkClassic', 'Classic')}</option>
+            <option value="2">{t('streamOverlay.builder.artworkV2', 'Version 2')}</option>
+          </select>
+        </div>
+
+        <div>
           <label htmlFor="overlay-builder-fps" className="block text-sm font-medium text-white mb-1">
             {t('streamOverlay.builder.fps', 'Frame rate')}
           </label>
-          <input
+          <NumberInput
             id="overlay-builder-fps"
-            type="number"
             min={1}
             max={30}
             value={fps}
-            onChange={(e) => setFps(Math.min(Math.max(Number(e.target.value) || 1, 1), 30))}
+            onChange={setFps}
+            fallback={1}
             className="w-full px-3 py-2 bg-bambu-dark rounded-md text-white border border-bambu-dark-tertiary focus:border-bambu-green focus:outline-none"
           />
           <p className="text-xs text-bambu-gray mt-1">

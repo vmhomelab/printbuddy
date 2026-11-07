@@ -137,6 +137,24 @@ async def test_overlay_route_allows_same_origin_framing(async_client: AsyncClien
 
 @pytest.mark.asyncio
 @pytest.mark.integration
+async def test_connect_authorize_allows_same_origin_framing(async_client: AsyncClient, monkeypatch):
+    """A connected app opened from the sidebar signs in inside Printbuddy's iframe.
+
+    Its "Sign in with Printbuddy" navigates that iframe to /connect/authorize;
+    with 'none' the browser refused to render the consent page there. 'self'
+    still refuses any foreign framer.
+    """
+    from backend.app import main as main_module
+
+    monkeypatch.setattr(main_module, "_TRUSTED_FRAME_ORIGINS", ())
+
+    resp = await async_client.get("/connect/authorize?client_id=x")
+    assert "frame-ancestors 'self';" in resp.headers.get("Content-Security-Policy", "")
+    assert resp.headers.get("X-Frame-Options") == "SAMEORIGIN"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
 async def test_other_spa_routes_still_refuse_all_framing(async_client: AsyncClient, monkeypatch):
     """The #1422 carve-out is the overlay path only — everything else keeps
     'none', including paths that merely start with something similar."""
@@ -144,7 +162,16 @@ async def test_other_spa_routes_still_refuse_all_framing(async_client: AsyncClie
 
     monkeypatch.setattr(main_module, "_TRUSTED_FRAME_ORIGINS", ())
 
-    for path in ("/", "/settings", "/printers", "/overlays", "/camwall"):
+    for path in (
+        "/",
+        "/settings",
+        "/printers",
+        "/overlays",
+        "/camwall",
+        "/connect",
+        "/connect/authorize/x",
+        "/connect/other",
+    ):
         resp = await async_client.get(path)
         csp = resp.headers.get("Content-Security-Policy", "")
         assert "frame-ancestors 'none'" in csp, f"{path} must not be framable"
@@ -287,6 +314,84 @@ async def test_spa_csp_nonce_changes_per_request(async_client: AsyncClient):
     # 5 random 16-byte tokens collide with probability ~0 — anything less
     # than all-5-distinct means we're handing out a stale/global nonce.
     assert len(nonces) == 5, f"nonces should be per-request, got {nonces!r}"
+
+
+# ─── #2976: WebAssembly is confined to the two preview workers ───────────
+
+
+def _script_src_tokens(resp) -> list[str]:
+    """The script-src directive of a response's CSP, split into whole tokens.
+
+    Whole tokens, because 'wasm-unsafe-eval' contains the text "unsafe-eval"
+    and a substring check would read as a pass either way.
+    """
+    csp = resp.headers.get("Content-Security-Policy", "")
+    directive = next(
+        (d.strip() for d in csp.split(";") if d.strip().startswith("script-src")),
+        "",
+    )
+    return directive.split()
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_spa_csp_permits_no_kind_of_eval(async_client: AsyncClient):
+    """The document policy allows neither wasm compilation nor JS eval (#2976).
+
+    Nothing on the main thread compiles WebAssembly: the STEP preview and
+    pdf.js's image decoders both run in dedicated workers, which get their own
+    policies below. So the SPA document stays exactly as strict as it was
+    before the previews landed.
+    """
+    resp = await async_client.get("/api/v1/auth/status")
+    tokens = _script_src_tokens(resp)
+
+    assert tokens, "the SPA response must carry a script-src directive"
+    assert "'wasm-unsafe-eval'" not in tokens, f"document must not compile wasm: {tokens!r}"
+    assert "'unsafe-eval'" not in tokens, f"document must not allow JS eval: {tokens!r}"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_step_worker_asset_csp_relaxes_eval_only_for_that_file(async_client: AsyncClient):
+    """Only the STEP worker script's own response may carry 'unsafe-eval' (#2976).
+
+    The occt-import-js embind glue generates invokers with `new Function`,
+    so the dedicated worker needs an eval-permitting policy. Per CSP3 a
+    worker is governed by the policy delivered with its own script response,
+    which confines eval to that DOM-less context. Any other asset — and the
+    SPA document itself — must stay nonce-strict. Both requests 404 in the
+    test checkout; the security middleware stamps headers regardless.
+    """
+    worker = await async_client.get("/assets/stepPreview.worker-Ck9aB12c.js")
+    assert "'unsafe-eval'" in _script_src_tokens(worker), "step worker script must be allowed to eval"
+
+    other = await async_client.get("/assets/index-Ck9aB12c.js")
+    assert "'unsafe-eval'" not in _script_src_tokens(other), "ordinary assets must stay eval-free"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_pdf_worker_asset_csp_allows_wasm_without_eval(async_client: AsyncClient):
+    """pdf.js's worker may compile wasm, and nothing more (#2976).
+
+    Its JPEG2000/JBIG2/ICC decoders are WebAssembly fetched from
+    /assets/pdfjs/wasm/; without 'wasm-unsafe-eval' on the worker script's own
+    response they fail to compile and those images and colour spaces silently
+    drop out. JS eval stays blocked — unlike the STEP worker, pdf.js needs
+    none.
+    """
+    worker = await async_client.get("/assets/pdf.worker.min-Ck9aB12c.js")
+    tokens = _script_src_tokens(worker)
+
+    assert "'wasm-unsafe-eval'" in tokens, f"pdf worker must be allowed to compile wasm: {tokens!r}"
+    assert "'unsafe-eval'" not in tokens, f"pdf worker must not be allowed to eval JS: {tokens!r}"
+
+    # Only the worker: pdf.js's own chunk and the modal that loads it run on
+    # the page, whose policy stays wasm-free.
+    for path in ("/assets/pdf-Ck9aB12c.js", "/assets/PdfPreviewModal-Ck9aB12c.js"):
+        other = await async_client.get(path)
+        assert "'wasm-unsafe-eval'" not in _script_src_tokens(other), f"{path} must not get the worker's policy"
 
 
 # ─── #1460: HEAD on PWA bootstrap routes (manifest / sw / sw-register) ───

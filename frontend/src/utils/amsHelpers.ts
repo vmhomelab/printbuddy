@@ -327,6 +327,32 @@ export function findNearestSimilar<T>(
   return best;
 }
 
+/** Classify an empty AMS slot for UI rendering (#1322 follow-up).
+ *
+ *  "physical" — firmware positively confirmed no spool (state 9 or 10). The
+ *  bambu_mqtt handler now promotes tray_exist_bits=0 slots to state=9, so
+ *  every empty-by-bitmask slot lands here regardless of firmware payload
+ *  shape.
+ *
+ *  "reset" — tray_type is missing/empty but firmware hasn't confirmed
+ *  emptiness (state is null, 3, or any non-9/10 value). Typically a slot
+ *  the user cleared with "Reset Slot" where a physical spool may still be
+ *  loaded but unassigned.
+ *
+ *  Returns null when the slot is loaded (tray_type is present).
+ */
+export function getEmptySlotKind(tray: { tray_type?: string | null; state?: number | null; exists?: boolean | null } | null | undefined): 'physical' | 'reset' | null {
+  if (tray?.tray_type) return null;
+  // tray_exist_bits is firmware's authoritative presence signal: a non-RFID
+  // spool the firmware can't identify is physically present (exists === true)
+  // but carries no tray_type, so it must read as "?" (loaded, unconfigured),
+  // never "Empty" (#2527). BambuStudio draws it the same way. Only fall back to
+  // the state=9/10 heuristic when the bitmask was unavailable (exists == null).
+  if (tray?.exists === true) return 'reset';
+  if (tray?.exists === false) return 'physical';
+  return (tray?.state === 9 || tray?.state === 10) ? 'physical' : 'reset';
+}
+
 /**
  * Format slot label for display in the UI.
  * @param amsId - AMS unit ID (0-3 for regular AMS, 128+ for AMS-HT)
@@ -924,13 +950,22 @@ export function resolveLoadedFilamentInfo({
  * and a local preset (`local_68`) has no printer-side id at all, so neither can
  * be checked here and both keep the stored name. Same for a slot reporting no
  * id (generic filament with no tag), which is the case the row exists for.
+ *
+ * Rows written since #3216 also record the filament id the slot was given
+ * with the preset (`presetTrayInfoIdx`). That settles every kind of preset:
+ * once the printer reports a different id, something else — the slicer's
+ * Device tab, the printer's screen — re-configured the slot, and the row no
+ * longer describes it.
  */
 export function slotPresetDescribesTray(
   presetId: string | null | undefined,
   trayInfoIdx: string | null | undefined,
+  presetTrayInfoIdx?: string | null,
 ): boolean {
   const preset = (presetId || '').split('_')[0].toUpperCase();
   const tray = (trayInfoIdx || '').split('_')[0].toUpperCase();
+  const recorded = (presetTrayInfoIdx || '').split('_')[0].toUpperCase();
+  if (recorded && tray) return recorded === tray;
   if (!preset.startsWith('GFS') || !tray.startsWith('GF') || tray.startsWith('GFS')) return true;
   return `GF${preset.slice(3)}` === tray;
 }

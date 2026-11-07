@@ -28,16 +28,22 @@ PRINTER_MODEL_MAP = {
 }
 
 # Map from printer_model_id (internal codes in slice_info.config) to short names
-# These are the codes Bambu Studio uses internally
+# These are the codes Bambu Studio uses internally, and the same codes the
+# printers announce over SSDP (DevModel), so Printer.model can hold them too.
+# A real P1P 3MF carries printer_model_id "C11" next to "Bambu Lab P1P"; the
+# X1 Carbon's code is "BL-P001", not a C-code.
 PRINTER_MODEL_ID_MAP = {
     # X1 series
-    "C11": "X1C",
-    "C12": "X1",
+    "BL-P001": "X1C",
+    "BL-P002": "X1",
     "C13": "X1E",
     # P1 series
+    "C11": "P1P",
+    "C12": "P1S",
     "P1P": "P1P",
     "P1S": "P1S",
     # P2 series
+    "N7": "P2S",
     "P2S": "P2S",
     # X2 series
     "N6": "X2D",
@@ -72,10 +78,12 @@ CARBON_ROD_MODELS = frozenset(
         "X1E",
         "P1P",
         "P1S",
-        # Internal codes
-        "C11",  # X1C
-        "C12",  # X1
+        # Internal codes (dashes stripped, as the lookup strips them)
+        "BLP001",  # X1C (BL-P001)
+        "BLP002",  # X1 (BL-P002)
         "C13",  # X1E
+        "C11",  # P1P
+        "C12",  # P1S
     ]
 )
 
@@ -177,6 +185,9 @@ NO_REMOTE_STORAGE_TOGGLE_MODELS = frozenset(
         # Display names (uppercase, no spaces)
         "P1S",
         "P1P",
+        # Internal codes
+        "C11",  # P1P
+        "C12",  # P1S
     ]
 )
 
@@ -195,11 +206,12 @@ ETHERNET_MODELS = frozenset(
         "H2DPRO",
         "H2C",
         "H2S",
-        # Internal codes
-        "C11",  # X1C
+        # Internal codes (dashes stripped, as the lookup strips them)
+        "BLP001",  # X1C (BL-P001)
         "C13",  # X1E
         "N6",  # X2D
-        "P1S",  # P1S
+        "C12",  # P1S
+        "N7",  # P2S
         "O1D",  # H2D
         "O1E",  # H2D Pro
         "O2D",  # H2D Pro (alternate)
@@ -386,6 +398,20 @@ def supports_nozzle_flow_type(model: str | None) -> bool:
         return True
     normalized = model.strip().upper().replace(" ", "").replace("-", "")
     return normalized not in SINGLE_NOZZLE_FLOW_MODELS
+
+
+# Models whose firmware predates Bambu's newer MQTT protocol, so Bambu Studio
+# re-reads an AMS tag on them with the M620 R gcode rather than ams_get_rfid
+# (#3206). Short display names (uppercase, no spaces).
+LEGACY_RFID_REFRESH_MODELS = frozenset(["X1", "X1C", "X1E", "P1P", "P1S", "A1", "A1MINI"])
+
+
+def uses_legacy_rfid_refresh(model: str | None) -> bool:
+    """True for models that may need M620 R instead of ams_get_rfid (#3206)."""
+    if not model:
+        return False
+    short = PRINTER_MODEL_ID_MAP.get(model.strip(), model)
+    return short.strip().upper().replace(" ", "") in LEGACY_RFID_REFRESH_MODELS
 
 
 def get_rod_type(model: str | None) -> str | None:

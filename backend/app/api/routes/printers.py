@@ -42,7 +42,6 @@ from backend.app.schemas.printer import (
     ExtruderSlotResponse,
     FilaSwitchResponse,
     HmsActionBody,
-    HMSErrorResponse,
     NozzleInfoResponse,
     NozzleRackSlot,
     PrinterCreate,
@@ -54,11 +53,12 @@ from backend.app.schemas.printer import (
     PrinterStatus,
     PrinterUpdate,
     PrintOptionsResponse,
+    hms_error_responses,
     host_from_url,
     normalize_external_camera_update,
     normalize_octoprint_url,
 )
-from backend.app.services import direct_print_tracking, drying_preflight
+from backend.app.services import direct_print_tracking, drying_preflight, kprofile_drift
 from backend.app.services.bambu_ftp import (
     cache_3mf_download,
     delete_file_async,
@@ -100,7 +100,7 @@ from backend.app.services.printer_media import (
 )
 from backend.app.services.printer_providers.factory import create_printer_client, normalize_provider
 from backend.app.services.printer_providers.moonraker import create_moonraker_client
-from backend.app.services.slicer_filament_resolver import _ORCA_PROFILE_ID
+from backend.app.services.slicer_filament_resolver import _ORCA_PROFILE_ID, lookup_orca_filament_id
 from backend.app.services.slot_nozzle import resolve_slot_nozzle
 from backend.app.utils.ams_humidity import ams_humidity_percent
 from backend.app.utils.filament_ids import (
@@ -996,20 +996,7 @@ async def get_printer_status(
     if state.state in ("RUNNING", "PAUSE") and state.gcode_file:
         cover_url = f"/api/v1/printers/{printer_id}/cover"
 
-    # Convert HMS errors to response format
-    hms_errors = [
-        HMSErrorResponse(
-            code=e.code,
-            attr=e.attr,
-            module=e.module,
-            severity=e.severity,
-            actions=e.actions,
-            job_id=e.job_id,
-            full_code=e.full_code,
-            description=e.description,
-        )
-        for e in (state.hms_errors or [])
-    ]
+    hms_errors = hms_error_responses(state.hms_errors)
 
     # Parse AMS data from raw_data
     ams_units = []
@@ -1117,6 +1104,7 @@ async def get_printer_status(
                     sw_ver=str(ams_data.get("sw_ver") or ""),
                     # Drying: dry_time > 0 means drying is active (minutes remaining)
                     dry_time=int(ams_data.get("dry_time") or 0),
+                    dry_countdown_stalled=bool(ams_data.get("dry_countdown_stalled") or False),
                     dry_target_temp=dry_target_temp,
                     dry_filament=dry_filament,
                     module_type=str(ams_data.get("module_type") or ""),
@@ -1378,7 +1366,7 @@ async def get_overlay_status(
 
     A token-authenticated sibling of ``get_printer_status`` for embeds with no
     login session — OBS loads ``/overlay/{id}?token=...`` and this feeds it.
-    Deliberately flat and minimal (name, camera rotation, live print state, and
+    Deliberately flat and minimal (name, model, camera rotation, live print state, and
     the one setting the overlay reads) rather than the full ``PrinterStatus``:
     a token holder gets exactly the fields the overlay renders, nothing more.
 
@@ -1402,6 +1390,7 @@ async def get_overlay_status(
         return {
             "id": printer_id,
             "name": printer.name,
+            "model": printer.model,
             "camera_rotation": printer.camera_rotation or 0,
             "connected": False,
             "state": None,
@@ -1419,6 +1408,7 @@ async def get_overlay_status(
     return {
         "id": printer_id,
         "name": printer.name,
+        "model": printer.model,
         "camera_rotation": printer.camera_rotation or 0,
         "connected": state.connected,
         "state": state.state,
@@ -3415,6 +3405,7 @@ async def get_slot_presets(
             "tray_id": mapping.tray_id,
             "preset_id": mapping.preset_id,
             "preset_name": mapping.preset_name,
+            "tray_info_idx": mapping.tray_info_idx,
         }
         for mapping in mappings
     }
@@ -3446,6 +3437,7 @@ async def get_slot_preset(
         "tray_id": mapping.tray_id,
         "preset_id": mapping.preset_id,
         "preset_name": mapping.preset_name,
+        "tray_info_idx": mapping.tray_info_idx,
     }
 
 
@@ -3457,10 +3449,20 @@ async def save_slot_preset(
     preset_id: str,
     preset_name: str,
     preset_source: str = "cloud",
+    tray_info_idx: str | None = None,
     _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_UPDATE),
     db: AsyncSession = Depends(get_db),
 ):
-    """Save a preset mapping for a specific slot."""
+    """Save a preset mapping for a specific slot.
+
+    ``tray_info_idx`` is the filament id the slot was configured with (what
+    ``configure`` returns). Recording it lets the slot card notice a later
+    re-configuration from elsewhere and stop showing this preset (#3216).
+    Omitted, it is cleared, so a stale id never outlives the preset it came with.
+    """
+    # Longer than the column is not an id the printer holds: record nothing,
+    # which keeps the row shown, rather than refuse the whole save.
+    tray_info_idx = tray_info_idx if tray_info_idx and len(tray_info_idx) <= 32 else None
     # Check printer exists
     result = await db.execute(select(Printer).where(Printer.id == printer_id))
     if not result.scalar_one_or_none():
@@ -3481,6 +3483,7 @@ async def save_slot_preset(
         mapping.preset_id = preset_id
         mapping.preset_name = preset_name
         mapping.preset_source = preset_source
+        mapping.tray_info_idx = tray_info_idx
     else:
         # Create new
         mapping = SlotPresetMapping(
@@ -3490,6 +3493,7 @@ async def save_slot_preset(
             preset_id=preset_id,
             preset_name=preset_name,
             preset_source=preset_source,
+            tray_info_idx=tray_info_idx,
         )
         db.add(mapping)
 
@@ -3502,6 +3506,7 @@ async def save_slot_preset(
         "preset_id": mapping.preset_id,
         "preset_name": mapping.preset_name,
         "preset_source": mapping.preset_source,
+        "tray_info_idx": mapping.tray_info_idx,
     }
 
 
@@ -3630,6 +3635,46 @@ async def get_slot_spool_defaults(
     }
 
 
+# Generic Bambu filament ids by material, as the Configure dialog has always
+# picked them for a preset without an id of its own (#3216 moved the Orca case
+# here). Wider than configure_ams_slot's own table: Silk, High Speed, PCTG, PE
+# and PP have generics of their own.
+_ORCA_GENERIC_IDS = {
+    "PLA": "GFL99",
+    "PLA-CF": "GFL98",
+    "PLA SILK": "GFL96",
+    "PLA HIGH SPEED": "GFL95",
+    "PETG": "GFG99",
+    "PETG HF": "GFG96",
+    "PETG-CF": "GFG98",
+    "PCTG": "GFG97",
+    "ABS": "GFB99",
+    "ASA": "GFB98",
+    "PC": "GFC99",
+    "PA": "GFN99",
+    "PA-CF": "GFN98",
+    "NYLON": "GFN99",
+    "TPU": "GFU99",
+    "PVA": "GFS99",
+    "HIPS": "GFS98",
+    "PE": "GFP99",
+    "PP": "GFP97",
+}
+
+
+def _orca_generic_filament_id(material: str) -> str:
+    """The generic for a material, tried as given, without a CF suffix, without
+    a trailing "+", then by its first word -- the dialog's order."""
+    material = (material or "").upper().strip()
+    return (
+        _ORCA_GENERIC_IDS.get(material)
+        or _ORCA_GENERIC_IDS.get(re.sub(r"[-\s]?CF$", "", material))
+        or _ORCA_GENERIC_IDS.get(re.sub(r"\+$", "", material))
+        or _ORCA_GENERIC_IDS.get(re.split(r"[-\s]", material)[0])
+        or ""
+    )
+
+
 @router.post("/{printer_id}/slots/{ams_id}/{tray_id}/configure")
 async def configure_ams_slot(
     printer_id: int,
@@ -3647,8 +3692,9 @@ async def configure_ams_slot(
     kprofile_filament_id: str = Query(""),
     kprofile_setting_id: str = Query(""),
     k_value: float = Query(0.0),
+    orca_profile_id: str = Query(""),
     db: AsyncSession = Depends(get_db),
-    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_CONTROL),
+    current_user: User | None = RequirePermissionIfAuthEnabled(Permission.PRINTERS_CONTROL),
 ):
     """Configure an AMS slot with a specific filament setting and K profile.
 
@@ -3671,6 +3717,9 @@ async def configure_ams_slot(
         setting_id: Full setting ID with version (e.g., "GFSL05_07") - optional
         kprofile_filament_id: K profile's filament_id for proper K profile linking
         k_value: Direct K value to set (0.0 to skip direct K value setting)
+        orca_profile_id: Orca Cloud profile the slot is being set to. With no
+            tray_info_idx, the profile's own filament id is looked up here
+            (#3216); the response says when none was found.
     """
     logger = logging.getLogger(__name__)
     logger.info("[configure_ams_slot] printer_id=%s, ams_id=%s, tray_id=%s", printer_id, ams_id, tray_id)
@@ -3738,6 +3787,40 @@ async def configure_ams_slot(
             setting_id = tray_info_idx
         tray_info_idx = ""
 
+    # An Orca Cloud profile: look up the filament id it puts in the slot. It is
+    # the one value OrcaSlicer's "Sync filaments" matches a slot by, so a
+    # generic here is what turned every Orca custom filament into "Generic
+    # <material>" in the slicer (#3216). Done here rather than in the browser so
+    # the outcome is in the log, and so a failure can be reported back.
+    orca_fallback_reason = ""
+    if orca_profile_id and not tray_info_idx:
+        orca_lookup = await lookup_orca_filament_id(db, current_user, orca_profile_id)
+        found = orca_lookup.filament_id
+        reason = orca_lookup.reason
+        if found and (
+            found.startswith("PFUS")
+            or found.startswith("PFCN")
+            or _ORCA_PROFILE_ID.fullmatch(found)
+            or is_material_name(found)
+        ):
+            # Same refusal as the guard above: never put an id the printer
+            # cannot store in the slot.
+            found, reason = "", "no_filament_id"
+        if found:
+            tray_info_idx = found
+        else:
+            orca_fallback_reason = reason or "no_filament_id"
+            # The generic the Configure dialog picked for an Orca profile before
+            # the lookup moved here -- its table, not the shorter one below, so
+            # PLA Silk, PCTG, PP and PE keep their own generics.
+            tray_info_idx = _orca_generic_filament_id(requested_tray_type)
+        logger.info(
+            "[configure_ams_slot] Orca profile %r → tray_info_idx=%r (%s)",
+            orca_profile_id,
+            tray_info_idx,
+            orca_lookup.source or orca_fallback_reason,
+        )
+
     # Resolve tray_info_idx for the MQTT command.
     # Priority:
     #   1. Use the provided tray_info_idx if set, once the guard above has had
@@ -3795,7 +3878,11 @@ async def configure_ams_slot(
                     current_tray_type = cur_tray.get("tray_type", "")
 
         if (
-            current_tray_info_idx
+            # An Orca profile without an id must not inherit whatever specific
+            # filament the slot held before: that would put the previous spool's
+            # preset in front of the slicer. It gets the generic for its material.
+            not orca_profile_id
+            and current_tray_info_idx
             and current_tray_info_idx not in _GENERIC_ID_VALUES
             and current_tray_type
             and current_tray_type.upper() == effective_tray_type.upper()
@@ -3842,11 +3929,13 @@ async def configure_ams_slot(
     # valid tray_info_idx (GF* official, P* local — not PFUS* cloud-user
     # which the slicer rejects in tray_info_idx).
     effective_setting_id = setting_id
+    realigned_to_kprofile = False
     if (
         kprofile_filament_id
         and kprofile_filament_id != effective_tray_info_idx
         and not kprofile_filament_id.startswith("PFUS")
     ):
+        realigned_to_kprofile = True
         logger.info(
             "[configure_ams_slot] realigning slot filament context to kp: tray_info_idx %r → %r, setting_id %r → %r",
             effective_tray_info_idx,
@@ -3900,6 +3989,9 @@ async def configure_ams_slot(
         filament_id=filament_id_for_kprofile,
         nozzle_diameter=nozzle_diameter,
     )
+    # A deliberate Default pick must not be "restored" to the spool's stored
+    # profile by the lost-selection check (#3219).
+    kprofile_drift.note_slot_configured(printer_id, ams_id, tray_id, cali_idx)
 
     # Method 2: Only send extrusion_cali_set when NO existing profile was selected
     # (cali_idx == -1). When cali_idx >= 0, extrusion_cali_sel already selected the
@@ -4104,6 +4196,13 @@ async def configure_ams_slot(
     return {
         "success": True,
         "message": f"Configured AMS {ams_id} tray {tray_id} with {tray_sub_brands}",
+        # What the slot was actually given, for the slot preset row (#3216).
+        "tray_info_idx": effective_tray_info_idx,
+        # Set when an Orca profile's own filament id could not be used, so the
+        # slicer will see the generic for the material: "no_filament_id",
+        # "lookup_failed" or "no_permission". Cleared when a K-profile realigned
+        # the slot to its own specific filament after all.
+        "orca_fallback_reason": "" if realigned_to_kprofile else orca_fallback_reason,
     }
 
 
@@ -4423,6 +4522,21 @@ async def clear_plate(
         )
 
     printer_manager.set_awaiting_plate_clear(printer_id, False)
+
+    # #1898: releasing the plate without answering the outcome prompt can
+    # count as "good" (opt-in setting) — this is the moment the operator
+    # moves on, so an unanswered prompt would otherwise linger unconfirmed.
+    from backend.app.api.routes.settings import get_setting, setting_is_true
+
+    # setting_is_true rather than a comparison of our own: one reader deciding
+    # for itself what "on" spells is how two parts of the app end up
+    # disagreeing about the same row.
+    if setting_is_true(await get_setting(db, "confirm_default_good_on_plate_clear")):
+        from backend.app.services.print_confirmation import resolve_pending_confirmation_as_good
+
+        resolved = await resolve_pending_confirmation_as_good(db, printer_id)
+        if resolved is not None:
+            await db.commit()
 
     return {"success": True, "message": "Plate cleared, next print will start shortly"}
 
@@ -5347,7 +5461,7 @@ async def refresh_ams_slot(
     if not client:
         raise HTTPException(400, "Printer not connected")
 
-    success, message = client.ams_refresh_tray(ams_id, slot_id)
+    success, message = await client.ams_refresh_tray(ams_id, slot_id)
     if not success:
         raise HTTPException(400, message)
 

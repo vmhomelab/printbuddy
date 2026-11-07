@@ -1,11 +1,14 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Layers, Clock, Timer, Printer, Flame, Square, Box } from 'lucide-react';
+import { UpdatedStreamOverlay } from '../components/UpdatedStreamOverlay';
 import { api, ApiError, withStreamToken } from '../api/client';
 import { formatDuration, formatETA, type TimeFormat } from '../utils/date';
 import { appAssetPath } from '../utils/assetPaths';
+import { mapModelCode } from '../utils/printerModel';
+import { useOverlayCameraRecovery } from '../hooks/useOverlayCameraRecovery';
 
 type TFunction = (key: string, options?: Record<string, unknown>) => string;
 
@@ -13,6 +16,7 @@ type OverlaySize = 'small' | 'medium' | 'large';
 
 interface OverlayConfig {
   size: OverlaySize;
+  updatedArtwork: boolean;
   fps: number;
   showCamera: boolean;
   showProgress: boolean;
@@ -21,6 +25,7 @@ interface OverlayConfig {
   showFilename: boolean;
   showStatus: boolean;
   showPrinter: boolean;
+  showModel: boolean;
   showNozzle: boolean;
   showBed: boolean;
   showChamber: boolean;
@@ -53,6 +58,7 @@ function parseConfig(params: URLSearchParams): OverlayConfig {
   return {
     size: (params.get('size') as OverlaySize) || 'medium',
     fps,
+    updatedArtwork: params.get('artwork') === '2',
     showCamera,
     showProgress: show.includes('progress'),
     showLayers: show.includes('layers'),
@@ -60,6 +66,7 @@ function parseConfig(params: URLSearchParams): OverlayConfig {
     showFilename: show.includes('filename'),
     showStatus: show.includes('status'),
     showPrinter: show.includes('printer'),
+    showModel: show.includes('model'),
     showNozzle: show.includes('nozzle'),
     showBed: show.includes('bed'),
     showChamber: show.includes('chamber'),
@@ -163,7 +170,6 @@ export function StreamOverlayPage() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const id = parseInt(printerId || '0', 10);
-  const [imageKey, setImageKey] = useState(Date.now());
 
   const config = useMemo(() => parseConfig(searchParams), [searchParams]);
   const sizes = getSizeClasses(config.size);
@@ -210,11 +216,16 @@ export function StreamOverlayPage() {
   const printer = useMemo(
     () =>
       kiosk
-        ? overlay && { name: overlay.name, camera_rotation: overlay.camera_rotation }
+        ? overlay && { name: overlay.name, model: overlay.model, camera_rotation: overlay.camera_rotation }
         : printerData,
     [kiosk, overlay, printerData],
   );
+  const printerIdentity = [
+    config.showPrinter ? printer?.name : null,
+    config.showModel ? mapModelCode(printer?.model ?? null) : null,
+  ].filter(Boolean).join(' · ');
   const status = kiosk ? overlay : statusData;
+  const { imageKey, handleStreamError } = useOverlayCameraRecovery(id > 0 && config.showCamera && status != null);
   const timeFormat: TimeFormat = (kiosk ? overlay?.time_format : settings?.time_format) || 'system';
 
   // WebSocket for real-time updates (JWT-authenticated; skipped in kiosk mode,
@@ -282,13 +293,6 @@ export function StreamOverlayPage() {
       document.title = 'Printbuddy';
     };
   }, [printer, t]);
-
-  // Refresh stream on error
-  const handleStreamError = () => {
-    setTimeout(() => {
-      setImageKey(Date.now());
-    }, 3000);
-  };
 
   if (!id) {
     return (
@@ -374,6 +378,26 @@ export function StreamOverlayPage() {
     ? `${camPath}&token=${encodeURIComponent(token)}`
     : withStreamToken(camPath);
 
+  if (config.updatedArtwork) {
+    const active = status.connected && isPrinting;
+    const remainingTime = status.remaining_time;
+    const hasRemaining = active && config.showEta && remainingTime != null && remainingTime > 0;
+    return <UpdatedStreamOverlay
+      size={config.size}
+      camera={config.showCamera ? { url: streamUrl, rotation: printer?.camera_rotation ?? 0, onError: handleStreamError } : null}
+      name={config.showPrinter ? printer?.name ?? null : null}
+      model={config.showModel ? mapModelCode(printer?.model ?? null) || null : null}
+      filename={config.showFilename && status.current_print ? formatPrintName(status.current_print.replace(/\.gcode\.3mf$|\.3mf$|\.gcode$/i, ''), status.gcode_file, t) : null}
+      status={config.showStatus ? (status.connected ? getStatusText(status, t) : t('streamOverlay.printerOffline')) : null}
+      state={status.connected ? status.state : null}
+      progress={active && config.showProgress ? Math.min(100, Math.max(0, Number.isFinite(progress) ? progress : 0)) : null}
+      layers={active && config.showLayers && status.layer_num != null && status.total_layers != null && status.total_layers > 0 ? `${status.layer_num} / ${status.total_layers}` : null}
+      remaining={hasRemaining ? formatDuration(remainingTime * 60) : null}
+      eta={hasRemaining ? formatETA(remainingTime, timeFormat, t) : null}
+      temperatures={status.connected ? tempReadings : []}
+    />;
+  }
+
   return (
     <div className="min-h-screen bg-black relative overflow-hidden">
       {/* Camera feed - fullscreen background (optional) */}
@@ -405,11 +429,11 @@ export function StreamOverlayPage() {
       {/* Status overlay - bottom */}
       <div className="absolute bottom-0 left-0 right-0 z-10 bg-gradient-to-t from-black/80 via-black/60 to-transparent">
         <div className={`${sizes.container}`}>
-          {/* Printer name */}
-          {config.showPrinter && printer && (
+          {/* Printer name and model can each be selected independently. */}
+          {printerIdentity && (
             <div className={`flex items-center ${sizes.gap} mb-2`}>
-              <Printer className={`${sizes.icon} text-white/70`} />
-              <span className={`${sizes.text} text-white font-medium`}>{printer.name}</span>
+              <Printer className={`${sizes.icon} shrink-0 text-white/70`} />
+              <span className={`${sizes.text} min-w-0 truncate text-white font-medium`}>{printerIdentity}</span>
             </div>
           )}
 

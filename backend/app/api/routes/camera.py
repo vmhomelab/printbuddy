@@ -8,6 +8,7 @@ import subprocess
 import sys
 import time
 import uuid
+import zlib
 from collections.abc import AsyncGenerator
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -75,6 +76,23 @@ _FFMPEG_TERM_TIMEOUT = 2.0
 # cleanup_orphaned_streams' /proc scan reaps any Bambu ffmpeg not attached to
 # an active stream on its next pass.
 _FFMPEG_KILL_TIMEOUT = 2.0
+
+# How long an RTSP stream may keep emitting byte-identical JPEGs before the
+# ffmpeg behind it is restarted (#3218). A dead upstream can leave ffmpeg
+# repeating its last frame indefinitely: measured on a P2S, ~29 fps of one
+# frame for two hours with no socket to the printer left at all, while every
+# check that counts frames saw a healthy stream. A live camera practically
+# never repeats a frame byte for byte -- sensor noise changes every one (2262
+# of 2262 distinct on an idle X1C chamber, #3189) -- so a run this long means
+# the picture is frozen.
+_RTSP_FROZEN_SECONDS = 20.0
+# "Practically never" is not never: a dark, idle chamber can encode to the same
+# frame every time. When the first frame after such a restart is the frozen one
+# again, the camera really is showing that picture, and the stream only
+# re-checks at this much longer interval until the picture changes -- so a
+# still scene costs one reconnect every few minutes instead of every 20 s, and a
+# real freeze on it is still recovered.
+_RTSP_STILL_RECHECK_SECONDS = 300.0
 
 # Track active ffmpeg processes for cleanup
 _active_streams: dict[str, asyncio.subprocess.Process] = {}
@@ -655,6 +673,11 @@ async def generate_rtsp_mjpeg_stream(
     process = None
     stderr_tail: _FfmpegStderrTail | None = None
     got_any_frames = False
+    # Across sessions (#3218): the frame a session froze on, and whether the
+    # next session showed the very same picture -- a still scene, not a
+    # frozen ffmpeg.
+    frozen_crc: int | None = None
+    still_scene = False
 
     try:
         while reconnect_count <= profile.rtsp_reconnect_max:
@@ -670,7 +693,14 @@ async def generate_rtsp_mjpeg_stream(
                     ip_address,
                     stream_id,
                 )
-                await asyncio.sleep(profile.rtsp_reconnect_delay)
+                # Fast after a session that delivered frames (reconnect_count
+                # is 1 then), backing off while the printer keeps refusing.
+                await asyncio.sleep(
+                    min(
+                        profile.rtsp_reconnect_delay * 2 ** (reconnect_count - 1),
+                        profile.rtsp_reconnect_backoff_max,
+                    )
+                )
                 if disconnect_event and disconnect_event.is_set():
                     break
 
@@ -718,6 +748,14 @@ async def generate_rtsp_mjpeg_stream(
             buffer = b""
             stream_ended = False
             client_gone = False
+            session_got_frames = False
+            # A frame that differs from the one before, not any frame, is what
+            # shows the picture is live: ffmpeg can repeat its last one
+            # forever (#3218).
+            last_frame_crc: int | None = None
+            last_change = time.time()
+            identical_frames = 0
+            frozen = False
 
             while True:
                 if disconnect_event and disconnect_event.is_set():
@@ -755,12 +793,40 @@ async def generate_rtsp_mjpeg_stream(
                         frame = buffer[: end_idx + 2]
                         buffer = buffer[end_idx + 2 :]
                         got_any_frames = True
+                        session_got_frames = True
+
+                        now = time.time()
+                        frame_crc = zlib.crc32(frame)
+                        if last_frame_crc is None:
+                            # First frame of this session. The same frame the
+                            # last session froze on means the camera really
+                            # shows that picture (see _RTSP_STILL_RECHECK_SECONDS).
+                            still_scene = frozen_crc is not None and frame_crc == frozen_crc
+                            if still_scene:
+                                logger.info(
+                                    "RTSP picture unchanged after restart for %s (stream_id=%s): "
+                                    "treating it as a still scene, re-checking every %.0fs",
+                                    ip_address,
+                                    stream_id,
+                                    _RTSP_STILL_RECHECK_SECONDS,
+                                )
+                            last_frame_crc = frame_crc
+                            last_change = now
+                        elif frame_crc != last_frame_crc:
+                            last_frame_crc = frame_crc
+                            last_change = now
+                            identical_frames = 0
+                            # The picture moves: back to the normal check.
+                            still_scene = False
+                            frozen_crc = None
+                        else:
+                            identical_frames += 1
 
                         if printer_id is not None:
                             _last_frames[printer_id] = frame
-                            _last_frame_times[printer_id] = time.time()
+                            _last_frame_times[printer_id] = now
                             if stream_id:
-                                _stream_last_frame_times[stream_id] = time.time()
+                                _stream_last_frame_times[stream_id] = now
 
                         yield (
                             b"--frame\r\n"
@@ -768,6 +834,33 @@ async def generate_rtsp_mjpeg_stream(
                             b"Content-Length: " + str(len(frame)).encode() + b"\r\n"
                             b"\r\n" + frame + b"\r\n"
                         )
+
+                        if now - last_change > (_RTSP_STILL_RECHECK_SECONDS if still_scene else _RTSP_FROZEN_SECONDS):
+                            frozen = True
+                            frozen_crc = last_frame_crc
+                            break
+
+                    if frozen:
+                        if still_scene:
+                            logger.info(
+                                "RTSP still-scene re-check for %s (stream_id=%s), restarting ffmpeg",
+                                ip_address,
+                                stream_id,
+                            )
+                        else:
+                            stderr_text = await _read_ffmpeg_stderr(process)
+                            if stderr_text:
+                                logger.warning("ffmpeg stderr (stream_id=%s): %s", stream_id, stderr_text)
+                            logger.warning(
+                                "RTSP output frozen for %s (stream_id=%s): %d identical frames over %.0fs, "
+                                "restarting ffmpeg",
+                                ip_address,
+                                stream_id,
+                                identical_frames,
+                                time.time() - last_change,
+                            )
+                        stream_ended = True
+                        break
 
                 except TimeoutError:
                     stderr_text = await _read_ffmpeg_stderr(process)
@@ -804,6 +897,13 @@ async def generate_rtsp_mjpeg_stream(
                 break
 
             if stream_ended:
+                # The budget is for failures in a row. A session that
+                # delivered video was a success, however it ended -- a stock
+                # X1C ends every session after about a minute, which under a
+                # lifetime count stopped the live view for good after half an
+                # hour.
+                if session_got_frames:
+                    reconnect_count = 0
                 reconnect_count += 1
                 continue
 
@@ -812,7 +912,7 @@ async def generate_rtsp_mjpeg_stream(
 
         if reconnect_count > profile.rtsp_reconnect_max:
             logger.error(
-                "RTSP max reconnects (%d) reached for %s (stream_id=%s)",
+                "RTSP max consecutive reconnects (%d) reached for %s (stream_id=%s)",
                 profile.rtsp_reconnect_max,
                 ip_address,
                 stream_id,

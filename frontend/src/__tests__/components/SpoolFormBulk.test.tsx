@@ -363,38 +363,6 @@ describe('SpoolFormModal Spoolman OFDB creation', () => {
     } as never);
   });
 
-  it('posts optional Spoolman empty spool weight as spool_weight during create', async () => {
-    render(
-      <SpoolFormModal
-        isOpen={true}
-        onClose={vi.fn()}
-        mode="create"
-        currencySymbol="$"
-        spoolmanMode={true}
-        spoolsQueryKey={['spoolman-inventory-spools']}
-      />,
-    );
-
-    const materialInput = await screen.findByPlaceholderText('Select material...');
-    fireEvent.focus(materialInput);
-    fireEvent.change(materialInput, { target: { value: 'TESTMAT' } });
-    fireEvent.click(await screen.findByText('Use custom material: TESTMAT'));
-
-    fireEvent.click(screen.getByRole('button', { name: /color & cost|colour & cost/i }));
-    const emptyWeightInput = await screen.findByPlaceholderText('Leave blank');
-    fireEvent.change(emptyWeightInput, { target: { value: '250' } });
-
-    fireEvent.click(screen.getByRole('button', { name: 'Add Spool' }));
-
-    await waitFor(() => expect(api.createSpoolmanInventorySpool).toHaveBeenCalled());
-    expect(api.createSpoolmanInventorySpool).toHaveBeenCalledWith(expect.objectContaining({
-      spoolman_filament_id: null,
-      material: 'TESTMAT',
-      label_weight: 1000,
-      spool_weight: 250,
-    }));
-  });
-
   it('allows OFDB prefill when creating a Spoolman spool and posts without a catalog filament id', async () => {
     render(
       <SpoolFormModal

@@ -37,10 +37,12 @@ def _resolve_pool_kwargs() -> dict:
     """Build the pool kwargs for ``create_async_engine`` (issue #2572).
 
     Dialect-aware defaults, each overridable via env (``DB_POOL_SIZE`` etc.):
-      - PostgreSQL: pool_size 20 + max_overflow 80, ``pool_pre_ping`` (recover
+      - PostgreSQL: pool_size 20 + max_overflow 60, ``pool_pre_ping`` (recover
         server-dropped connections instead of erroring the request) and
         ``pool_recycle`` 1800s. The old hard-coded 10 + 20 exhausted on large
-        farms while printer callbacks held connections.
+        farms while printer callbacks held connections. The 80-connection
+        ceiling fits a stock server (max_connections 100, 3 reserved for
+        superusers); 20 + 80 did not, and tripped the startup pool check.
       - SQLite: pool_size 20 + max_overflow 200 (unchanged); no pre-ping /
         recycle — the connection is a local file, not a server socket.
     """
@@ -50,7 +52,7 @@ def _resolve_pool_kwargs() -> dict:
         kwargs = {"pool_size": pool_size, "max_overflow": max_overflow}
     else:
         pool_size = settings.db_pool_size if settings.db_pool_size is not None else 20
-        max_overflow = settings.db_max_overflow if settings.db_max_overflow is not None else 80
+        max_overflow = settings.db_max_overflow if settings.db_max_overflow is not None else 60
         kwargs = {
             "pool_size": pool_size,
             "max_overflow": max_overflow,
@@ -293,6 +295,7 @@ async def init_db():
         auth_ephemeral,
         bug_report,
         color_catalog,
+        connected_app,
         external_link,
         filament,
         filament_sku_settings,
@@ -1704,6 +1707,31 @@ _LEGACY_FAILURE_REASON_LABELS: dict[str, str] = {
 }
 
 
+async def _table_has_column(conn, table: str, column: str) -> bool:
+    """Whether ``table`` has ``column``, on either dialect.
+
+    ``table`` is interpolated into the SQLite PRAGMA (it cannot be bound), so
+    callers pass literals only.
+    """
+    from sqlalchemy import text
+
+    if is_sqlite():
+        result = await conn.execute(text(f"PRAGMA table_info({table})"))
+        return any(row[1] == column for row in result)
+    result = await conn.execute(
+        text("SELECT 1 FROM information_schema.columns WHERE table_name = :table AND column_name = :col"),
+        {"table": table, "col": column},
+    )
+    return result.first() is not None
+
+
+async def _sqlite_table_exists(conn, name: str) -> bool:
+    from sqlalchemy import text
+
+    result = await conn.execute(text("SELECT 1 FROM sqlite_master WHERE name = :name"), {"name": name})
+    return result.first() is not None
+
+
 async def _migrate_failure_reason_vocabulary(conn):
     """Fold historical failure-reason labels onto the canonical keys (#2974).
 
@@ -1736,6 +1764,8 @@ async def _migrate_failure_reason_vocabulary(conn):
         if label != key:
             by_key[key].append(label)
 
+    all_labels = [label for labels in by_key.values() for label in labels]
+
     total = 0
     async with conn.begin_nested():
         # nosec B608 — the only interpolated fragment is `table`, which the loop
@@ -1743,6 +1773,30 @@ async def _migrate_failure_reason_vocabulary(conn):
         # Both the key and the label list are bound parameters. A table name
         # cannot be expressed as one, which is why it is interpolated at all.
         for table in ("print_archives", "print_log_entries"):
+            # A database older than #1378 has no print_log_entries.failure_reason
+            # yet (a later ALTER in run_migrations adds it). Such a table cannot
+            # hold a legacy label, and querying it crashed startup with "no such
+            # column: failure_reason".
+            if not await _table_has_column(conn, table, "failure_reason"):
+                continue
+            has_work = (
+                await conn.execute(
+                    text(
+                        f"SELECT 1 FROM {table} WHERE failure_reason IN :labels LIMIT 1"  # noqa: S608  # nosec B608
+                    ).bindparams(bindparam("labels", expanding=True)),
+                    {"labels": all_labels},
+                )
+            ).first() is not None
+            if not has_work:
+                continue
+            if table == "print_archives" and is_sqlite() and await _sqlite_table_exists(conn, "archive_fts"):
+                # Same trap as the plate_id backfill further down: archives
+                # created before the external-content FTS index existed were
+                # never indexed, and the AFTER UPDATE trigger's FTS 'delete' on
+                # such a row fails with "database disk image is malformed".
+                # Rebuild first so every row is present. Only when there is
+                # work, since a rebuild re-reads every archive.
+                await conn.execute(text("INSERT INTO archive_fts(archive_fts) VALUES('rebuild')"))
             for key, labels in by_key.items():
                 result = await conn.execute(
                     text(
@@ -1800,6 +1854,17 @@ async def run_migrations(conn):
 
     # Migration: Add is_favorite column to print_archives
     await _safe_execute(conn, "ALTER TABLE print_archives ADD COLUMN is_favorite BOOLEAN DEFAULT 0")
+
+    # Migration: Add OIDC group sync columns (#3107). group_claim defaults to
+    # 'groups'; group_mapping defaults to '{}' (empty JSON object = sync off,
+    # the pre-#3107 behaviour). NOT NULL DEFAULT explicitly so an upgraded
+    # database matches what create_all builds on a fresh install (the model
+    # columns are non-nullable with server defaults) — a bare DEFAULT would
+    # leave the column nullable on the ALTER path and the two installs would
+    # disagree on the schema. Existing rows backfill the default on both
+    # SQLite and PostgreSQL.
+    await _safe_execute(conn, "ALTER TABLE oidc_providers ADD COLUMN group_claim VARCHAR(64) NOT NULL DEFAULT 'groups'")
+    await _safe_execute(conn, "ALTER TABLE oidc_providers ADD COLUMN group_mapping JSON NOT NULL DEFAULT '{}'")
 
     # Migration: Add wallet_charge_skipped column to print_archives so deleted print charges stay deleted
     if is_sqlite():
@@ -5003,6 +5068,12 @@ async def run_migrations(conn):
         conn, "ALTER TABLE notification_providers ADD COLUMN on_ams_drying_suspended BOOLEAN DEFAULT TRUE"
     )
 
+    # Migration: user link + photos on library files (#3077), the same trio
+    # print_archives carries (external_url / photos). Photos are stored under
+    # <archive_dir>/library/photos/<file_id>/ — the column only holds the names.
+    await _safe_execute(conn, "ALTER TABLE library_files ADD COLUMN external_url VARCHAR(500)")
+    await _safe_execute(conn, "ALTER TABLE library_files ADD COLUMN photos JSON")
+
     # Migration: storage location sensor alerts (#2824), own column rather than
     # reusing on_ha_sensor_alert. That column can be scoped to one printer
     # (printer_id), and a location alert has no printer to scope by — sharing
@@ -5010,6 +5081,86 @@ async def run_migrations(conn):
     # also received every drybox alert, with no toggle to separate the two.
     await _safe_execute(
         conn, "ALTER TABLE notification_providers ADD COLUMN on_location_ha_sensor_alert BOOLEAN DEFAULT FALSE"
+    )
+
+    # Migration: post-print outcome confirmation (#1898). VARCHAR and the
+    # BOOLEAN DEFAULT FALSE/TRUE spellings are identical on SQLite and
+    # Postgres (see the on_ha_sensor_alert note above for why not DEFAULT 0).
+    await _safe_execute(conn, "ALTER TABLE print_archives ADD COLUMN user_verdict VARCHAR(10)")
+    await _safe_execute(conn, "ALTER TABLE print_archives ADD COLUMN confirm_requested BOOLEAN DEFAULT FALSE")
+    await _safe_execute(conn, "ALTER TABLE print_archives ADD COLUMN confirm_token VARCHAR(64)")
+    await _safe_execute(conn, "ALTER TABLE print_archives ADD COLUMN user_verdict_source VARCHAR(16)")
+    # ``DATETIME`` is a SQLite-only alias; PostgreSQL rejects it and
+    # _safe_execute would swallow the error, leaving the column missing.
+    if is_sqlite():
+        await _safe_execute(conn, "ALTER TABLE print_archives ADD COLUMN confirm_token_used_at DATETIME")
+    else:
+        await _safe_execute(conn, "ALTER TABLE print_archives ADD COLUMN confirm_token_used_at TIMESTAMP")
+    # When the verdict on file was recorded (#1898): the "already answered"
+    # page dates the verdict by this, not by the moment the one-tap token was
+    # spent, so a verdict changed later in the app reads correctly.
+    if is_sqlite():
+        await _safe_execute(conn, "ALTER TABLE print_archives ADD COLUMN user_verdict_at DATETIME")
+    else:
+        await _safe_execute(conn, "ALTER TABLE print_archives ADD COLUMN user_verdict_at TIMESTAMP")
+    await _safe_execute(conn, "ALTER TABLE print_log_entries ADD COLUMN user_verdict VARCHAR(10)")
+    await _safe_execute(conn, "ALTER TABLE print_queue ADD COLUMN confirm_outcome BOOLEAN DEFAULT FALSE")
+    await _safe_execute(
+        conn, "ALTER TABLE notification_providers ADD COLUMN on_print_confirm_request BOOLEAN DEFAULT TRUE"
+    )
+    # The one-tap verdict route looks archives up by this token and runs with no
+    # authentication, so an upgraded install needs the index too — without it
+    # every tap, and every unauthenticated request carrying a bogus token, is a
+    # sequential scan of print_archives.
+    await _safe_execute(
+        conn,
+        "CREATE UNIQUE INDEX IF NOT EXISTS ix_print_archives_confirm_token ON print_archives (confirm_token)",
+    )
+    # Migration: take the capability URLs out of the outcome prompt's body
+    # (#1898). Seeding only ever inserts a template that is missing, so an
+    # install that already ran an earlier build of this feature would keep
+    # sending the verdict links as body text for every channel.
+    await _migrate_confirm_prompt_body_template(conn)
+
+    # Migration: Telegram verdict-by-reaction (#3046). Per-provider mode plus
+    # the table of delivered prompts the reaction poller matches updates
+    # against. create_all covers fresh installs; this covers upgrades.
+    await _safe_execute(
+        conn, "ALTER TABLE notification_providers ADD COLUMN telegram_verdict_mode VARCHAR(16) DEFAULT 'buttons'"
+    )
+    await _safe_execute(
+        conn,
+        """
+        CREATE TABLE IF NOT EXISTS telegram_pending_verdicts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            provider_id INTEGER NOT NULL REFERENCES notification_providers(id) ON DELETE CASCADE,
+            chat_id VARCHAR(64) NOT NULL,
+            message_id INTEGER NOT NULL,
+            archive_id INTEGER NOT NULL REFERENCES print_archives(id) ON DELETE CASCADE,
+            confirm_token VARCHAR(64),
+            has_caption BOOLEAN DEFAULT FALSE,
+            message_text TEXT,
+            created_at DATETIME
+        )
+        """
+        if is_sqlite()
+        else """
+        CREATE TABLE IF NOT EXISTS telegram_pending_verdicts (
+            id SERIAL PRIMARY KEY,
+            provider_id INTEGER NOT NULL REFERENCES notification_providers(id) ON DELETE CASCADE,
+            chat_id VARCHAR(64) NOT NULL,
+            message_id INTEGER NOT NULL,
+            archive_id INTEGER NOT NULL REFERENCES print_archives(id) ON DELETE CASCADE,
+            confirm_token VARCHAR(64),
+            has_caption BOOLEAN DEFAULT FALSE,
+            message_text TEXT,
+            created_at TIMESTAMP
+        )
+        """,
+    )
+    await _safe_execute(
+        conn,
+        "CREATE INDEX IF NOT EXISTS ix_telegram_pending_verdicts_created_at ON telegram_pending_verdicts (created_at)",
     )
 
     # Migration: rename the ha_sensor_alert template (#2824). "Home Assistant
@@ -5027,6 +5178,22 @@ async def run_migrations(conn):
     # on fresh installs only — this covers databases whose table predates it.
     await _migrate_location_ha_sensor_unique_binding(conn)
 
+    # Migration: the stock alert templates name the colour and subtype (#2955).
+    # The forecast groups by colour, so two colours of one product would
+    # otherwise send the same message. A plain UPDATE guarded on the old text, so
+    # a template an admin has edited is left alone.
+    await _migrate_stock_alert_template_sku_variables(conn)
+
+    # Migration: supplier master list + spool assignments (#2988).
+    # create_all() covers fresh installs; this covers upgrades.
+    await _migrate_create_supplier_tables(conn)
+
+    # Migration: Add material_number to spool (#2870). Nullable free text —
+    # the internal purchasing/article number a business costs by, shared by
+    # all spools of the same product. VARCHAR(64) is spelled identically on
+    # SQLite and Postgres.
+    await _safe_execute(conn, "ALTER TABLE spool ADD COLUMN material_number VARCHAR(64)")
+
     # Migration: repair the tare of spools the RFID auto-add gave the wrong
     # Bambu spool row (#2909). Runs last so the spool catalogue it reads is
     # whatever this database actually holds.
@@ -5035,6 +5202,281 @@ async def run_migrations(conn):
     # Migration: drop the AMS slot markers an older Printbuddy wrote into
     # Spoolman and the location sync then imported as storage locations.
     await _migrate_drop_ams_slot_locations(conn)
+
+    # Migration: link a batch to the external record that asked for it (a shop
+    # order an integration turned into prints). The unique index is what makes
+    # a retried create safe; both columns are new, so no row can violate it.
+    await _safe_execute(conn, "ALTER TABLE print_batches ADD COLUMN external_source VARCHAR(32)")
+    await _safe_execute(conn, "ALTER TABLE print_batches ADD COLUMN external_ref VARCHAR(255)")
+    await _safe_execute(
+        conn,
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_print_batches_external ON print_batches (external_source, external_ref)",
+    )
+
+    # Migration: messages from other applications through the notification
+    # channels. Both flags default off, so no channel starts delivering them and
+    # no existing API key gains the right to send them on upgrade. BOOLEAN
+    # DEFAULT FALSE is accepted by SQLite and PostgreSQL alike. The backfill
+    # covers a table create_all() already gave the column (the ALTER is then
+    # swallowed as a duplicate and existing rows keep NULL; see the stock alert
+    # flags above).
+    await _safe_execute(conn, "ALTER TABLE notification_providers ADD COLUMN on_app_message BOOLEAN DEFAULT FALSE")
+    await _safe_execute(conn, "ALTER TABLE api_keys ADD COLUMN can_send_notifications BOOLEAN DEFAULT FALSE")
+    async with conn.begin_nested():
+        await conn.execute(
+            text("UPDATE notification_providers SET on_app_message = :off WHERE on_app_message IS NULL"), {"off": False}
+        )
+        await conn.execute(
+            text("UPDATE api_keys SET can_send_notifications = :off WHERE can_send_notifications IS NULL"),
+            {"off": False},
+        )
+
+    # Migration: a code for why a scheduled drying failed, so the card can show
+    # the reason in the user's language. Nullable: rows that failed before this
+    # keep showing their English error_message.
+    await _safe_execute(conn, "ALTER TABLE scheduled_dryings ADD COLUMN error_code VARCHAR(32)")
+
+    # Migration: per-provider photo attachment opt-out. Defaults TRUE so
+    # existing providers keep attaching snapshots exactly as before. The
+    # backfill covers a table create_all() already gave the column (the ALTER
+    # is then swallowed and existing rows keep NULL, which reads as off).
+    await _safe_execute(conn, "ALTER TABLE notification_providers ADD COLUMN attach_photo BOOLEAN DEFAULT TRUE")
+    async with conn.begin_nested():
+        await conn.execute(
+            text("UPDATE notification_providers SET attach_photo = :on WHERE attach_photo IS NULL"), {"on": True}
+        )
+
+    # Migration: the filament id a slot preset was written with, so the slot
+    # card can tell when something else re-configured the slot (#3216).
+    # Nullable: existing rows have none and keep being shown as before.
+    await _safe_execute(conn, "ALTER TABLE slot_preset_mappings ADD COLUMN tray_info_idx VARCHAR(32)")
+
+
+async def _migrate_confirm_prompt_body_template(conn) -> None:
+    """Replace the one-tap verdict URLs in the outcome prompt's body (#1898).
+
+    The first shape of this template put ``{good_url}`` and ``{reject_url}``
+    into the message body, where a link unfurler, a mail gateway or a proxy
+    reaches them and spends the single-use token before the operator has read
+    the question. The body now carries ``{confirm_url}``, which only opens the
+    archive in Printbuddy; the capability links travel in the ntfy action buttons
+    and the Telegram inline keyboard instead.
+
+    Rewrites only a body that is still the old default verbatim — an admin who
+    edited the template keeps their own text. Same shape as the two template
+    renames below.
+    """
+    from sqlalchemy import text
+
+    await conn.execute(
+        text("UPDATE notification_templates SET body_template = :new WHERE event_type = :et AND body_template = :old"),
+        {
+            "new": "{printer}: {filename}\nConfirm: {confirm_url}",
+            "et": "print_confirm_request",
+            "old": "{printer}: {filename}\nGood: {good_url}\nReject: {reject_url}",
+        },
+    )
+
+
+async def _migrate_create_supplier_tables(conn) -> None:
+    """Create the supplier tables on databases that predate #2988.
+
+    ``Base.metadata.create_all()`` covers fresh installs; upgrades get the
+    tables here, following the ``_migrate_create_finance_tables`` shape.
+    ``spool_suppliers`` deliberately has NO ON DELETE CASCADE on the supplier
+    side — the API refuses to delete a referenced supplier (409) so
+    assignments can never silently orphan.
+    """
+    if is_sqlite():
+        statements = [
+            """
+            CREATE TABLE IF NOT EXISTS suppliers (
+                id INTEGER PRIMARY KEY,
+                name VARCHAR(200) NOT NULL,
+                name_key VARCHAR(200) NOT NULL,
+                website VARCHAR(500),
+                customer_number VARCHAR(100),
+                note VARCHAR(500),
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS spool_suppliers (
+                id INTEGER PRIMARY KEY,
+                spool_id INTEGER NOT NULL REFERENCES spool(id) ON DELETE CASCADE,
+                supplier_id INTEGER NOT NULL REFERENCES suppliers(id),
+                supplier_article_number VARCHAR(100),
+                quoted_price_per_kg FLOAT,
+                is_purchase_source BOOLEAN NOT NULL DEFAULT 0,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT uq_spool_suppliers_spool_supplier UNIQUE (spool_id, supplier_id)
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS spoolman_spool_suppliers (
+                id INTEGER PRIMARY KEY,
+                spoolman_spool_id INTEGER NOT NULL,
+                supplier_id INTEGER NOT NULL REFERENCES suppliers(id),
+                supplier_article_number VARCHAR(100),
+                quoted_price_per_kg FLOAT,
+                is_purchase_source BOOLEAN NOT NULL DEFAULT 0,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT uq_spoolman_spool_suppliers_pair UNIQUE (spoolman_spool_id, supplier_id)
+            )
+            """,
+        ]
+    else:
+        statements = [
+            """
+            CREATE TABLE IF NOT EXISTS suppliers (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(200) NOT NULL,
+                name_key VARCHAR(200) NOT NULL,
+                website VARCHAR(500),
+                customer_number VARCHAR(100),
+                note VARCHAR(500),
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS spool_suppliers (
+                id SERIAL PRIMARY KEY,
+                spool_id INTEGER NOT NULL REFERENCES spool(id) ON DELETE CASCADE,
+                supplier_id INTEGER NOT NULL REFERENCES suppliers(id),
+                supplier_article_number VARCHAR(100),
+                quoted_price_per_kg FLOAT,
+                is_purchase_source BOOLEAN NOT NULL DEFAULT FALSE,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT uq_spool_suppliers_spool_supplier UNIQUE (spool_id, supplier_id)
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS spoolman_spool_suppliers (
+                id SERIAL PRIMARY KEY,
+                spoolman_spool_id INTEGER NOT NULL,
+                supplier_id INTEGER NOT NULL REFERENCES suppliers(id),
+                supplier_article_number VARCHAR(100),
+                quoted_price_per_kg FLOAT,
+                is_purchase_source BOOLEAN NOT NULL DEFAULT FALSE,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT uq_spoolman_spool_suppliers_pair UNIQUE (spoolman_spool_id, supplier_id)
+            )
+            """,
+        ]
+    for statement in statements:
+        await _safe_execute(conn, statement)
+    # The model declares index=True on these; fresh installs get them from
+    # create_all(), migrated databases need them spelled out.
+    await _safe_execute(conn, "CREATE INDEX IF NOT EXISTS ix_suppliers_name ON suppliers (name)")
+    await _migrate_supplier_name_key(conn)
+    await _safe_execute(conn, "CREATE INDEX IF NOT EXISTS ix_spool_suppliers_spool_id ON spool_suppliers (spool_id)")
+    await _safe_execute(
+        conn, "CREATE INDEX IF NOT EXISTS ix_spool_suppliers_supplier_id ON spool_suppliers (supplier_id)"
+    )
+    await _safe_execute(
+        conn,
+        "CREATE INDEX IF NOT EXISTS ix_spoolman_spool_suppliers_spoolman_spool_id"
+        " ON spoolman_spool_suppliers (spoolman_spool_id)",
+    )
+    await _safe_execute(
+        conn,
+        "CREATE INDEX IF NOT EXISTS ix_spoolman_spool_suppliers_supplier_id ON spoolman_spool_suppliers (supplier_id)",
+    )
+
+
+async def _migrate_supplier_name_key(conn) -> None:
+    """Backfill ``suppliers.name_key`` and collapse case-insensitive duplicates (#2988).
+
+    The unique index cannot simply be created: a database written by an
+    earlier build of this branch is allowed to hold two suppliers whose names
+    differ only in case, and ``CREATE UNIQUE INDEX`` refuses to build over
+    them. ``_safe_execute`` re-raises that IntegrityError, which would abort
+    startup with no route to recovery from the UI — the same trap
+    ``_migrate_location_ha_sensor_unique_binding`` clears first.
+
+    Colliding rows are merged rather than deleted, because a supplier is
+    referenced: the oldest row wins (it is the one assignments and the CSV
+    import already resolved to), its empty fields are filled from the
+    duplicate, every assignment is re-pointed to it, and only then is the
+    duplicate dropped. An assignment the surviving row already holds for the
+    same spool is dropped instead of re-pointed — the (spool, supplier) pair
+    is unique.
+    """
+    from sqlalchemy import text
+
+    from backend.app.models.supplier import supplier_name_key
+
+    # Only a table written by an earlier build of this branch lacks the column
+    # (the CREATE TABLE above declares it NOT NULL). ADD COLUMN cannot carry
+    # NOT NULL without a default, so it is added nullable, backfilled below and
+    # tightened afterwards where the database can do that in place.
+    await _safe_execute(conn, "ALTER TABLE suppliers ADD COLUMN name_key VARCHAR(200)")
+
+    async with conn.begin_nested():
+        rows = (
+            await conn.execute(
+                text("SELECT id, name, name_key, website, customer_number, note FROM suppliers ORDER BY id")
+            )
+        ).fetchall()
+        kept: dict[str, int] = {}
+        for row in rows:
+            key = supplier_name_key(row.name or "")
+            winner_id = kept.get(key)
+            if winner_id is None:
+                kept[key] = row.id
+                if row.name_key != key:
+                    await conn.execute(
+                        text("UPDATE suppliers SET name_key = :key WHERE id = :id"),
+                        {"key": key, "id": row.id},
+                    )
+                continue
+            params = {"keep": winner_id, "drop": row.id}
+            await conn.execute(
+                text(
+                    "DELETE FROM spool_suppliers WHERE supplier_id = :drop AND spool_id IN "
+                    "(SELECT spool_id FROM spool_suppliers WHERE supplier_id = :keep)"
+                ),
+                params,
+            )
+            await conn.execute(text("UPDATE spool_suppliers SET supplier_id = :keep WHERE supplier_id = :drop"), params)
+            await conn.execute(
+                text(
+                    "DELETE FROM spoolman_spool_suppliers WHERE supplier_id = :drop AND spoolman_spool_id IN "
+                    "(SELECT spoolman_spool_id FROM spoolman_spool_suppliers WHERE supplier_id = :keep)"
+                ),
+                params,
+            )
+            await conn.execute(
+                text("UPDATE spoolman_spool_suppliers SET supplier_id = :keep WHERE supplier_id = :drop"), params
+            )
+            await conn.execute(
+                text(
+                    "UPDATE suppliers SET website = COALESCE(website, :website), "
+                    "customer_number = COALESCE(customer_number, :customer_number), "
+                    "note = COALESCE(note, :note) WHERE id = :keep"
+                ),
+                {
+                    "website": row.website,
+                    "customer_number": row.customer_number,
+                    "note": row.note,
+                    "keep": winner_id,
+                },
+            )
+            await conn.execute(text("DELETE FROM suppliers WHERE id = :drop"), {"drop": row.id})
+            logger.info("Merged duplicate supplier %r (id=%s) into id=%s", row.name, row.id, winner_id)
+
+    # Superseded by ix_suppliers_name_key: lower(name) folds ASCII only, so it
+    # never enforced the rule for non-ASCII names in the first place.
+    await _safe_execute(conn, "DROP INDEX IF EXISTS uq_suppliers_name_lower")
+    await _safe_execute(conn, "CREATE UNIQUE INDEX IF NOT EXISTS ix_suppliers_name_key ON suppliers (name_key)")
+    # NULLs never collide in a unique index, so the guarantee belongs in the
+    # schema, as create_all() declares it on fresh installs. Every row has a
+    # key by now. SQLite cannot alter a column in place; there the ORM hook on
+    # Supplier.name is what writes it.
+    if not is_sqlite():
+        await _safe_execute(conn, "ALTER TABLE suppliers ALTER COLUMN name_key SET NOT NULL")
 
 
 async def _migrate_rename_ha_sensor_alert_template(conn) -> None:
@@ -5049,6 +5491,35 @@ async def _migrate_rename_ha_sensor_alert_template(conn) -> None:
         text("UPDATE notification_templates SET name = :new WHERE event_type = :et AND name = :old"),
         {"new": "Printer Sensor Alert", "et": "ha_sensor_alert", "old": "Home Assistant Sensor Alert"},
     )
+
+
+_STOCK_ALERT_TEMPLATE_BODIES = {
+    "stock_reorder_alert": (
+        "{material} ({brand}) has reached the reorder point.\nStock: {stock_g}g | Rate: {rate_g_day}g/day | Days left: {days_left}d\nReorder now to avoid a stock break.",
+        "{material} {subtype} {color} ({brand}) has reached the reorder point.\nStock: {stock_g}g | Rate: {rate_g_day}g/day | Days left: {days_left}d\nReorder now to avoid a stock break.",
+    ),
+    "stock_break_alert": (
+        "{material} ({brand}) will run out before replenishment arrives.\nStock: {stock_g}g | Rate: {rate_g_day}g/day | Lead time: {lead_time_days}d\nOnly {days_left}d of stock remaining — order immediately.",
+        "{material} {subtype} {color} ({brand}) will run out before replenishment arrives.\nStock: {stock_g}g | Rate: {rate_g_day}g/day | Lead time: {lead_time_days}d\nOnly {days_left}d of stock remaining — order immediately.",
+    ),
+}
+
+
+async def _migrate_stock_alert_template_sku_variables(conn) -> None:
+    """Give the stock alert templates {subtype} and {color} (#2955).
+
+    Updates a body only while it is still the shipped default, so an admin's own
+    wording is kept.
+    """
+    from sqlalchemy import text
+
+    for event_type, (old, new) in _STOCK_ALERT_TEMPLATE_BODIES.items():
+        await conn.execute(
+            text(
+                "UPDATE notification_templates SET body_template = :new WHERE event_type = :et AND body_template = :old"
+            ),
+            {"new": new, "et": event_type, "old": old},
+        )
 
 
 async def _migrate_location_ha_sensor_unique_binding(conn) -> None:

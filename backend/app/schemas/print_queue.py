@@ -80,7 +80,7 @@ class PrintQueueItemCreate(BaseModel):
     require_previous_success: bool = False
     auto_off_after: bool = False  # Power off printer after print completes
     manual_start: bool = False  # Requires manual trigger to start (staged)
-    insert_at_top: bool = False  # Insert ahead of other pending items in the same queue scope
+    insert_at_top: bool = False  # Insert ahead of other pending items (one queue order across all printers, #3200)
     insert_position: int | None = None  # 1-indexed insertion position for priority queueing
     # Persistent "Print Anyway" acknowledgement (#1698-followup). When set,
     # PrintModal already showed the deficit warning and the user confirmed,
@@ -104,6 +104,8 @@ class PrintQueueItemCreate(BaseModel):
     # Nozzle offset calibration — dual-nozzle printers only (#1682). The MQTT
     # layer ignores the value on single-nozzle printers so the wire stays "skip".
     nozzle_offset_cali: TriState = "auto"
+    # Ask for a post-print outcome verdict when this job completes (#1898)
+    confirm_outcome: bool = False
     # Preheat / heat-soak per-item override (#1468). 'inherit' uses the global
     # preheat_enabled setting; 'on' / 'off' force the decision. The chamber
     # target falls through: this override → max(filament-map[loaded tray]) → 0.
@@ -157,6 +159,7 @@ class PrintQueueItemUpdate(BaseModel):
     timelapse: bool | None = None
     use_ams: bool | None = None
     nozzle_offset_cali: TriState | None = None
+    confirm_outcome: bool | None = None
     preheat_override: Literal["inherit", "on", "off"] | None = None
     preheat_chamber_target_override: int | None = Field(default=None, ge=0, le=MAX_CHAMBER_TEMP_C)
     # Auto-print G-code injection
@@ -218,6 +221,7 @@ class PrintQueueItemResponse(BaseModel):
     timelapse: bool = False
     use_ams: bool = True
     nozzle_offset_cali: TriState = "auto"
+    confirm_outcome: bool = False
     preheat_override: Literal["inherit", "on", "off"] = "inherit"
     preheat_chamber_target_override: int | None = None
     status: Literal["pending", "printing", "completed", "failed", "skipped", "cancelled"]
@@ -352,6 +356,7 @@ class PrintQueueBulkUpdate(BaseModel):
     timelapse: bool | None = None
     use_ams: bool | None = None
     nozzle_offset_cali: TriState | None = None
+    confirm_outcome: bool | None = None
     preheat_override: Literal["inherit", "on", "off"] | None = None
     preheat_chamber_target_override: int | None = Field(default=None, ge=0, le=MAX_CHAMBER_TEMP_C)
     # Auto-print G-code injection
@@ -402,6 +407,19 @@ class PrintBatchCreate(BaseModel):
     project_id: int | None = None
     due_date: datetime | None = None
     notes: str | None = None
+    # The external record this batch fulfils, for integrations. ``external_ref``
+    # is unique within ``external_source``: creating a second batch with the
+    # same pair is a 409, which makes a retried create safe.
+    external_source: str | None = Field(default=None, min_length=1, max_length=32, pattern=r"^[a-z0-9_-]+$")
+    external_ref: str | None = Field(default=None, min_length=1, max_length=255)
+
+    @model_validator(mode="after")
+    def _external_link_is_complete(self) -> "PrintBatchCreate":
+        # A ref without its source can't be looked up, and a source without a
+        # ref would escape the uniqueness guarantee (NULLs never collide).
+        if (self.external_source is None) != (self.external_ref is None):
+            raise ValueError("external_source and external_ref must be given together")
+        return self
 
 
 class PrintBatchUpdate(BaseModel):
@@ -478,6 +496,8 @@ class PrintBatchResponse(BaseModel):
     project_id: int | None = None
     due_date: UTCDatetime | None = None
     notes: str | None = None
+    external_source: str | None = None
+    external_ref: str | None = None
     # Derived counts
     pending_count: int = 0
     printing_count: int = 0

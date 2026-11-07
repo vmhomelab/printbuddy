@@ -38,7 +38,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from backend.app.api.routes._spoolman_helpers import _map_spoolman_spool
+from backend.app.api.routes._spoolman_helpers import _map_spoolman_spool, spoolman_net_weight
 from backend.app.core.config import settings as app_settings
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.spool_assignment import SpoolAssignment
@@ -144,15 +144,15 @@ async def _spoolman_remaining_grams(spoolman_spool_id: int) -> float | None:
         return None
 
     # Spoolman exposes either an absolute remaining_weight, or used_weight +
-    # filament.weight. Either is sufficient — prefer remaining_weight when
-    # present (the user may have overridden it).
+    # the spool's net weight (initial_weight, else filament.weight; #3194).
+    # Either is sufficient — prefer remaining_weight when present (the user
+    # may have overridden it).
     remaining = spool.get("remaining_weight")
     if isinstance(remaining, (int, float)) and remaining >= 0:
         return float(remaining)
 
     used = spool.get("used_weight")
-    filament = spool.get("filament") or {}
-    total = filament.get("weight")
+    total = spoolman_net_weight(spool)
     if isinstance(used, (int, float)) and isinstance(total, (int, float)) and total > 0:
         return max(0.0, float(total) - float(used))
 
@@ -342,6 +342,15 @@ class SlotSpoolIdentity:
     subtype: str | None
     color_name: str | None
     rgba: str | None
+    # The rest of the spool's colour, for drawing it rather than naming it
+    # (#3159). A tray record carries one hex and nothing else, so a two-tone
+    # or glittery spool renders as its base colour unless the binding says
+    # otherwise -- and on a farm of third-party spools that is exactly the
+    # swatch somebody is comparing against the slicer's colour. Same shape the
+    # inventory row stores: ``extra_colors`` a comma-separated hex list,
+    # ``effect_type`` one of the client's FilamentEffect names.
+    extra_colors: str | None = None
+    effect_type: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -350,6 +359,8 @@ class SlotSpoolIdentity:
             "subtype": self.subtype,
             "color_name": self.color_name,
             "rgba": self.rgba,
+            "extra_colors": self.extra_colors,
+            "effect_type": self.effect_type,
         }
 
 
@@ -367,6 +378,8 @@ def _identity_from_internal(spool) -> SlotSpoolIdentity:
         subtype=_clean(spool.subtype),
         color_name=_clean(spool.color_name),
         rgba=_clean(spool.rgba),
+        extra_colors=_clean(spool.extra_colors),
+        effect_type=_clean(spool.effect_type),
     )
 
 
@@ -408,6 +421,11 @@ def _identity_from_spoolman(spool_dict: dict) -> SlotSpoolIdentity | None:
         subtype=_clean(mapped.get("subtype")),
         color_name=color_name,
         rgba=_clean(mapped.get("rgba")),
+        # `_map_spoolman_spool` builds `extra_colors` from Spoolman's own
+        # multi-colour hexes and pins `effect_type` to None, because Spoolman
+        # has no field for it -- see the note there.
+        extra_colors=_clean(mapped.get("extra_colors")),
+        effect_type=_clean(mapped.get("effect_type")),
     )
 
 
@@ -507,7 +525,7 @@ async def build_slot_materials(db: AsyncSession, printer_id: int) -> list[SlotMa
                 remaining = float(rw)
             else:
                 used = spool_dict.get("used_weight")
-                total = (spool_dict.get("filament") or {}).get("weight")
+                total = spoolman_net_weight(spool_dict)
                 if isinstance(used, (int, float)) and isinstance(total, (int, float)) and total > 0:
                     remaining = max(0.0, float(total) - float(used))
             if remaining is None:
@@ -686,7 +704,7 @@ async def compute_deficit_for_queue_item(
                     remaining = float(rw)
                 else:
                     used = spool_dict.get("used_weight")
-                    total = (spool_dict.get("filament") or {}).get("weight")
+                    total = spoolman_net_weight(spool_dict)
                     if isinstance(used, (int, float)) and isinstance(total, (int, float)) and total > 0:
                         remaining = max(0.0, float(total) - float(used))
         else:

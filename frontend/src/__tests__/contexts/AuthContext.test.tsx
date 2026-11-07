@@ -39,6 +39,64 @@ function createWrapper() {
 }
 
 describe('AuthContext', () => {
+  describe('streaming URL tokens', () => {
+    beforeEach(() => {
+      setAuthToken(null);
+      server.use(http.get('/api/v1/auth/status', () =>
+        HttpResponse.json({ auth_enabled: true, requires_setup: false })
+      ));
+    });
+
+    afterEach(() => {
+      window.history.replaceState({}, '', '/');
+      setAuthToken(null);
+    });
+
+    it.each(['/overlay/2', '/overlay/2/', '/camwall', '/camwall/'])(
+      'preserves the scoped token across remounts on %s', async (path) => {
+        const url = `${path}?artwork=2&token=streaming-token#preview`;
+        window.history.replaceState({}, '', url);
+        const authMe = vi.fn(() => HttpResponse.json({}, { status: 401 }));
+        server.use(http.get('/api/v1/auth/me', authMe));
+        for (let load = 0; load < 2; load++) {
+          const { result, unmount } = renderHook(() => useAuth(), { wrapper: createWrapper() });
+          await waitFor(() => expect(result.current.loading).toBe(false));
+          expect(window.location.pathname + window.location.search + window.location.hash).toBe(url);
+          expect(getAuthToken()).toBeNull();
+          expect(sessionStorage.getItem('auth_token')).toBeNull();
+          unmount();
+        }
+        expect(authMe).not.toHaveBeenCalled();
+      }
+    );
+
+    it.each(['/overlay/2', '/camwall'])('does not replace an existing login on %s', async (path) => {
+      setAuthToken('valid-token', 'persistent');
+      window.history.replaceState({}, '', `${path}?token=streaming-token`);
+      server.use(http.get('/api/v1/auth/me', () => HttpResponse.json({
+        id: 1, username: 'alice', is_active: true, permissions: [], groups: [],
+      })));
+      const { result } = renderHook(() => useAuth(), { wrapper: createWrapper() });
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      expect(getAuthToken()).toBe('valid-token');
+      expect(sessionStorage.getItem('auth_token')).toBe('valid-token');
+      expect(result.current.user?.username).toBe('alice');
+    });
+
+    it('still bootstraps and removes a URL login token', async () => {
+      window.history.replaceState({}, '', '/printers?token=kiosk-api-key&view=ams#top');
+      server.use(http.get('/api/v1/auth/me', () => HttpResponse.json({
+        id: 1, username: 'kiosk', is_active: true, permissions: [], groups: [],
+      })));
+      const { result } = renderHook(() => useAuth(), { wrapper: createWrapper() });
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      expect(getAuthToken()).toBe('kiosk-api-key');
+      expect(localStorage.setItem).toHaveBeenCalledWith('auth_token', 'kiosk-api-key');
+      expect(window.location.search).toBe('?view=ams');
+      expect(window.location.hash).toBe('#top');
+    });
+  });
+
   describe('when auth is disabled', () => {
     beforeEach(() => {
       server.use(

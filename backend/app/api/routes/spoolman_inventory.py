@@ -26,10 +26,14 @@ from backend.app.api.routes._spoolman_helpers import (
     NormalizedFilament,
     NormalizedVendorRef,
     _map_spoolman_spool,
-    _safe_float,
     _safe_int,
     _safe_optional_float,
     assert_safe_spoolman_url,
+    cost_per_kg_to_spoolman_price,
+    spoolman_cost_per_kg,
+    spoolman_net_weight,
+    spoolman_price_weight,
+    spoolman_tare,
 )
 from backend.app.core.auth import RequirePermissionIfAuthEnabled
 from backend.app.core.database import get_db
@@ -41,9 +45,12 @@ from backend.app.models.settings import Settings
 from backend.app.models.spool_filament_preset import SpoolmanFilamentPreset
 from backend.app.models.spoolman_k_profile import SpoolmanKProfile
 from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
+from backend.app.models.supplier import SpoolmanSpoolSupplier, Supplier
 from backend.app.models.user import User
 from backend.app.schemas.spool import SpoolFilamentPresetBase, SpoolKProfileBase
 from backend.app.schemas.spoolman import SpoolmanFilamentPatch, SpoolmanSlotAssignmentEnriched
+from backend.app.schemas.supplier import SpoolSupplierLinkInput
+from backend.app.services import slot_unlink_grace
 from backend.app.services.location_service import (
     enrich_spool_dicts_with_location_id,
     maybe_sync_spoolman_locations,
@@ -260,6 +267,9 @@ def _raise_if_partial_failure(spools: list[dict], results: list, operation: str)
 async def _apply_price_if_set(client: SpoolmanClient, spool: dict, cost_per_kg: float | None) -> tuple[dict, list[str]]:
     """Patch the spool price; return (updated_spool, warnings).
 
+    Spoolman's spool price is what the whole spool cost, so the per-kg rate is
+    converted at the net weight of the spool Spoolman just created (#3194).
+
     Returns the original spool and a non-empty warnings list when the price
     update fails, so the caller can return HTTP 207 instead of silently
     discarding the price.
@@ -268,7 +278,9 @@ async def _apply_price_if_set(client: SpoolmanClient, spool: dict, cost_per_kg: 
         return spool, []
     try:
         async with _translate_spoolman_errors():
-            updated = await client.update_spool_full(spool["id"], price=cost_per_kg)
+            updated = await client.update_spool_full(
+                spool["id"], price=cost_per_kg_to_spoolman_price(cost_per_kg, spoolman_price_weight(spool))
+            )
         return updated, []
     except HTTPException as exc:
         if exc.status_code >= 500:
@@ -316,12 +328,25 @@ class SpoolmanInventoryCreate(BaseModel):
     color_name: str | None = Field(None, max_length=64)
     rgba: str | None = Field(None, max_length=8, description="6-digit hex (RRGGBB) or 8-digit (RRGGBBAA)")
     label_weight: int = Field(1000, ge=1, le=100_000)
-    core_weight: int = Field(
-        250, ge=0, le=10_000
-    )  # Accepted for schema parity; Spoolman-native writes use spool_weight below.
-    # Optional Spoolman-native per-spool empty weight. When omitted, Spoolman
-    # falls back to the filament/manufacturer empty weight.
+    # Persisted to the Spoolman spool's own `spool_weight` (tare), which takes
+    # priority over the filament-level value both in _map_spoolman_spool and in
+    # the weigh endpoint. Only written when the request actually sets it: the
+    # 250 default is the display fallback, and writing it on every create would
+    # stamp an explicit tare on spools that should keep inheriting one (#2908).
+    core_weight: int = Field(250, ge=0, le=10_000)
+    # Optional Spoolman-native per-spool empty weight (Printbuddy spool form).
+    # Takes precedence over core_weight when both are sent. When neither is
+    # set, Spoolman falls back to the filament/manufacturer empty weight.
     spool_weight: float | None = Field(None, ge=0.0, le=10_000.0)
+
+    def create_tare(self) -> float | None:
+        """The per-spool tare to write on create, or None to inherit."""
+        if self.spool_weight is not None:
+            return self.spool_weight
+        if "core_weight" in self.model_fields_set:
+            return float(self.core_weight)
+        return None
+
     weight_used: float = Field(0.0, ge=0.0, le=100_000.0)
     note: str | None = Field(None, max_length=1000)
     cost_per_kg: float | None = Field(None, ge=0.0, le=1_000_000.0)
@@ -360,9 +385,11 @@ class SpoolmanInventoryUpdate(BaseModel):
     color_name: str | None = Field(None, max_length=64)
     rgba: str | None = Field(None, max_length=8, description="6-digit hex (RRGGBB) or 8-digit (RRGGBBAA)")
     label_weight: int | None = Field(None, ge=1, le=100_000)
-    core_weight: int | None = Field(
-        None, ge=0, le=10_000
-    )  # Accepted for schema parity but not persisted to Spoolman (stored on filament type, not spool)
+    # Persisted to the spool's own `spool_weight` (see the Create schema).
+    # Omitted / null leaves the current value alone, as with every other field
+    # here. There is no per-spool "go back to inheriting" through this route;
+    # the filament-level route already owns that decision (#2908).
+    core_weight: int | None = Field(None, ge=0, le=10_000)
     weight_used: float | None = Field(None, ge=0.0, le=100_000.0)
     note: str | None = Field(None, max_length=1000)
     cost_per_kg: float | None = Field(None, ge=0.0, le=1_000_000.0)
@@ -510,6 +537,19 @@ async def list_spools(
         for m in mapped:
             m["k_profiles"] = kp_by_spool.get(m["id"], [])
 
+        # Supplier assignments (#2988) live Printbuddy-side even for Spoolman
+        # spools, so the list carries them in both modes identically.
+        link_result = await db.execute(
+            select(SpoolmanSpoolSupplier)
+            .options(selectinload(SpoolmanSpoolSupplier.supplier))
+            .where(SpoolmanSpoolSupplier.spoolman_spool_id.in_(spool_ids))
+        )
+        links_by_spool: dict[int, list[dict]] = {}
+        for link in link_result.scalars().all():
+            links_by_spool.setdefault(link.spoolman_spool_id, []).append(_supplier_link_to_dict(link))
+        for m in mapped:
+            m["suppliers"] = links_by_spool.get(m["id"], [])
+
     await enrich_spool_dicts_with_location_id(db, mapped)
     return mapped
 
@@ -532,6 +572,12 @@ async def get_spool(
 
     kp_result = await db.execute(select(SpoolmanKProfile).where(SpoolmanKProfile.spoolman_spool_id == spool_id))
     mapped["k_profiles"] = [_k_profile_to_dict(kp) for kp in kp_result.scalars().all()]
+    link_result = await db.execute(
+        select(SpoolmanSpoolSupplier)
+        .options(selectinload(SpoolmanSpoolSupplier.supplier))
+        .where(SpoolmanSpoolSupplier.spoolman_spool_id == spool_id)
+    )
+    mapped["suppliers"] = [_supplier_link_to_dict(link) for link in link_result.scalars().all()]
     await enrich_spool_dicts_with_location_id(db, [mapped])
     return mapped
 
@@ -589,9 +635,13 @@ async def create_spool(
             spool = await client.create_spool(
                 filament_id=filament_id,
                 remaining_weight=remaining,
-                spool_weight=data.spool_weight,
                 comment=data.note or None,
                 location=storage_location or None,
+                spool_weight=data.create_tare(),
+                # Only a label weight the caller gave: left off, Spoolman uses
+                # the filament's weight, which is the right size for a caller
+                # that didn't say (#3194).
+                initial_weight=(float(data.label_weight) if "label_weight" in data.model_fields_set else None),
             )
     except HTTPException as exc:
         if exc.status_code == 404 and data.spoolman_filament_id is not None:
@@ -679,9 +729,13 @@ async def bulk_create_spools(
             spool = await client.create_spool(
                 filament_id=filament_id,
                 remaining_weight=remaining,
-                spool_weight=data.spool_weight,
                 comment=data.note or None,
                 location=storage_location or None,
+                spool_weight=data.create_tare(),
+                # Only a label weight the caller gave: left off, Spoolman uses
+                # the filament's weight, which is the right size for a caller
+                # that didn't say (#3194).
+                initial_weight=(float(data.label_weight) if "label_weight" in data.model_fields_set else None),
             )
         except (SpoolmanUnavailableError, SpoolmanClientError, SpoolmanNotFoundError) as exc:
             logger.warning("Bulk spool creation: one spool failed: %s", exc)
@@ -761,7 +815,17 @@ async def update_spool(
     # straight back off by `spoolman_color_hex` below, so the two paths landed on
     # the same string and the append only obscured which shape was in hand (#2912).
     rgba = data.rgba if data.rgba is not None else cur_color
-    label_weight = data.label_weight if data.label_weight is not None else int(cur_filament.get("weight") or 1000)
+    # The label weight is the spool's own net weight (initial_weight), not the
+    # filament's: one filament can have spools of different sizes (#3194).
+    # The form shows it in whole grams, so it only counts as changed when it
+    # differs from that; the exact stored value is otherwise left alone. A
+    # spool with no size at either level takes the one it is given: Spoolman
+    # refuses a remaining_weight until the spool has one.
+    cur_net_weight = spoolman_net_weight(current)
+    cur_has_size = cur_net_weight is not None and cur_net_weight > 0
+    cur_label_weight = _safe_int(cur_net_weight, 1000) or 1000
+    label_weight = data.label_weight if data.label_weight is not None else cur_label_weight
+    label_weight_changed = data.label_weight is not None and (not cur_has_size or data.label_weight != cur_label_weight)
     # Default weight_used from the synthetic mapping (label - remaining) so an
     # edit that doesn't touch the weight field preserves Spoolman's real
     # remaining_weight after a "Reset usage to 0" — the previous code read
@@ -807,14 +871,16 @@ async def update_spool(
     # alpha-only edit invisible so the change never lands (#2912).
     cur_color_norm = spoolman_color_hex(cur_filament.get("color_hex")) or ""
     cur_vendor_name = (cur_vendor.get("name") or "").strip()
-    cur_weight_int = int(cur_filament.get("weight") or 0)
+    # The label weight is not part of this: it is written to the spool's
+    # initial_weight below. Comparing it against the filament's weight PATCHed
+    # the filament for every spool of another size, or on a shared filament
+    # relinked the spool to a new duplicate one (#3194).
     metadata_unchanged = (
         cur_filament_id
         and (cur_filament.get("name") or "").strip() == desired_name
         and (cur_filament.get("material") or "").upper() == material.upper()
         and cur_color_norm == (color_hex or "").upper()
         and cur_vendor_name.lower() == ((brand or "").strip().lower())
-        and cur_weight_int == int(label_weight)
     )
 
     if metadata_unchanged:
@@ -832,7 +898,6 @@ async def update_spool(
                 "name": desired_name,
                 "material": material,
                 "color_hex": color_hex,
-                "weight": float(label_weight),
             }
             if brand:
                 vendor_id = await client.find_or_create_vendor(brand)
@@ -857,6 +922,25 @@ async def update_spool(
         raise HTTPException(status_code=500, detail="Failed to find or create filament in Spoolman")
 
     remaining = max(0.0, label_weight - weight_used)
+
+    # The spool's size lives on the spool (initial_weight), never the filament
+    # (#3194). A relink also sends the current size: Spoolman stamps the new
+    # filament's weight on a spool without an initial_weight of its own.
+    new_initial_weight: float | None = None
+    if label_weight_changed:
+        new_initial_weight = float(label_weight)
+    elif filament_id != cur_filament_id and cur_has_size:
+        new_initial_weight = cur_net_weight
+
+    # Spoolman's price is per spool, the form's per kg (#3194). An unchanged
+    # rate on an unchanged size is not written, so a no-op edit cannot move the
+    # price by rounding. On a resize the rate is kept, as in internal mode.
+    cur_cost_per_kg = spoolman_cost_per_kg(current)
+    cost_per_kg = data.cost_per_kg if data.cost_per_kg is not None else cur_cost_per_kg
+    new_price: float | None = None
+    if cost_per_kg is not None and (label_weight_changed or cost_per_kg != cur_cost_per_kg):
+        price_weight = float(label_weight) if label_weight_changed else spoolman_price_weight(current)
+        new_price = cost_per_kg_to_spoolman_price(cost_per_kg, price_weight)
 
     # Tag removal: clear only the "tag" key so other custom Spoolman extra fields
     # set outside Printbuddy are preserved.
@@ -889,12 +973,20 @@ async def update_spool(
             updated = await client.update_spool_full(
                 spool_id=spool_id,
                 filament_id=filament_id,
-                remaining_weight=remaining,
+                # Without a size Spoolman rejects the whole PATCH (HTTP 400),
+                # so a spool that still has none gets no remaining_weight.
+                remaining_weight=(remaining if new_initial_weight is not None or cur_has_size else None),
                 comment=note or "",
-                price=data.cost_per_kg,
+                price=new_price,
+                initial_weight=new_initial_weight,
                 extra=extra,
                 location=storage_location or None,
                 clear_location=storage_location_changed and not storage_location,
+                # No model_fields_set guard here, unlike create: this schema
+                # already defaults core_weight to None, and None is what
+                # update_spool_full reads as "leave the tare alone". A guard
+                # would be a second spelling of the same condition.
+                spool_weight=data.core_weight,
             )
 
     # Persist BambuStudio slicer preset AND color_name under spool.extra.
@@ -931,6 +1023,22 @@ async def update_spool(
     return _map_spoolman_spool(updated)
 
 
+async def _purge_local_rows_for_spool(db: AsyncSession, spool_id: int) -> None:
+    """Drop the Printbuddy-side rows a deleted Spoolman spool leaves behind.
+
+    Spoolman owns the spool; Printbuddy owns the K profiles, the filament preset
+    overrides and the supplier assignments, each keyed by the remote id with no
+    foreign key that could cascade. The K-profile and preset leaks are inert,
+    but a leaked ``spoolman_spool_suppliers`` row keeps the supplier's
+    reference count non-zero, so deleting that supplier answers 409 forever
+    with no way for the user to find the phantom reference (#2988).
+
+    The caller commits.
+    """
+    for model in (SpoolmanKProfile, SpoolmanFilamentPreset, SpoolmanSpoolSupplier):
+        await db.execute(delete(model).where(model.spoolman_spool_id == spool_id))
+
+
 @router.delete("/spools/{spool_id}")
 async def delete_spool(
     spool_id: int = Path(..., gt=0),
@@ -941,6 +1049,8 @@ async def delete_spool(
     client = await _get_client(db)
     async with _translate_spoolman_errors():
         await client.delete_spool(spool_id)
+    await _purge_local_rows_for_spool(db, spool_id)
+    await db.commit()
     await ws_manager.broadcast({"type": "inventory_changed"})
     return {"status": "deleted"}
 
@@ -991,18 +1101,21 @@ async def reset_spool_consumed_counter(
 ) -> dict:
     """Zero the displayed "Total Consumed" counter for a Spoolman spool.
 
-    Spoolman doesn't have a native "baseline" field, so the implementation
-    reaches for the closest equivalent: PATCH `used_weight=0` upstream.
-    The read mapping in ``_map_spoolman_spool`` then derives Printbuddy's
-    `weight_used = label - remaining_weight` and `baseline = weight_used -
-    real_used_weight`, so the Inventory page's `weight_used - baseline`
-    display lands at 0 while remaining (= label - weight_used) is preserved
-    — parity with the internal-mode endpoint (#1390, see also
+    Spoolman has no native baseline field, so the baseline lives in
+    ``spool.extra`` — the same mechanism internal mode uses for its
+    ``weight_used_baseline`` column. ``_map_spoolman_spool`` folds it back in,
+    so the Inventory page's ``weight_used - baseline`` reads 0 while every
+    native Spoolman field is left exactly as it was.
+
+    It used to PATCH ``used_weight = 0`` upstream, which is not the same thing:
+    Spoolman recomputes ``remaining_weight`` from initial minus used, so the
+    spool jumped back to full and the measured remaining filament was gone
+    (#2906). Parity with the internal-mode endpoint (#1644, #1390, see also
     ``backend/app/api/routes/inventory.py::reset_spool_consumed_counter``).
     """
     client = await _get_client(db)
     async with _translate_spoolman_errors():
-        spool = await client.reset_spool_usage(spool_id)
+        spool = await client.reset_spool_consumed_counter(spool_id)
     try:
         mapped = _map_spoolman_spool(spool)
     except ValueError as exc:
@@ -1068,6 +1181,7 @@ async def bulk_delete_spools(
         try:
             async with _translate_spoolman_errors():
                 await client.delete_spool(sid)
+            await _purge_local_rows_for_spool(db, sid)
             deleted += 1
         except HTTPException as exc:
             errors.append({"id": sid, "status": exc.status_code, "detail": exc.detail})
@@ -1075,6 +1189,7 @@ async def bulk_delete_spools(
             logger.exception("Spoolman bulk-delete failed for spool %s", sid)
             errors.append({"id": sid, "status": 500, "detail": str(exc)})
     if deleted:
+        await db.commit()
         await ws_manager.broadcast({"type": "inventory_changed"})
     return {"deleted": deleted, "errors": errors}
 
@@ -1153,7 +1268,7 @@ async def bulk_reset_spool_consumed_counter(
     for spool_id in spool_ids:
         try:
             async with _translate_spoolman_errors():
-                await client.reset_spool_usage(spool_id)
+                await client.reset_spool_consumed_counter(spool_id)
             reset_count += 1
         except HTTPException as exc:
             logger.warning("Spoolman reset-consumed-counter failed for spool %s: %s", spool_id, exc.detail)
@@ -1172,25 +1287,21 @@ async def sync_spool_weight(
 ) -> dict:
     """Update a spool's remaining weight from a measured gross weight.
 
-    Computes remaining = gross_weight - tare, where tare = spool.spool_weight
-    if set, else filament.spool_weight; falls back to 250 g when both unset.
+    Computes remaining = gross_weight - tare, with the tare resolved the way
+    Spoolman does it (spool, filament, vendor, then 250 g; see spoolman_tare).
     """
     client = await _get_client(db)
 
     async with _translate_spoolman_errors():
         current = await client.get_spool(spool_id)
 
-    cur_filament = current.get("filament") or {}
-    spool_tare = current.get("spool_weight")
-    raw_tare = spool_tare if spool_tare is not None else cur_filament.get("spool_weight")
-    core_weight = _safe_float(raw_tare, 250.0)
+    core_weight, _source = spoolman_tare(current)
     remaining = max(0.0, data.weight_grams - core_weight)
 
     async with _translate_spoolman_errors():
         updated = await client.update_spool_full(spool_id=spool_id, remaining_weight=remaining)
 
-    upd_filament = updated.get("filament") or {}
-    label_weight = _safe_int(upd_filament.get("weight"), 1000)
+    label_weight = _safe_int(spoolman_net_weight(updated), 1000)
     weight_used = max(0.0, label_weight - remaining)
     await ws_manager.broadcast({"type": "inventory_changed"})
     return {"status": "ok", "weight_used": weight_used}
@@ -1396,7 +1507,7 @@ async def sync_spoolman_ams_weights(
             skipped += 1
             continue
 
-        label_weight = _safe_int((spool_dict.get("filament") or {}).get("weight"), 1000)
+        label_weight = _safe_int(spoolman_net_weight(spool_dict), 1000)
         if label_weight <= 0:
             logger.debug("Spoolman AMS sync: spool %d has no label_weight, skipping", assignment.spoolman_spool_id)
             skipped += 1
@@ -1524,6 +1635,7 @@ async def assign_spoolman_slot(
             },
         )
         await db.commit()
+        slot_unlink_grace.forget_slot(body.printer_id, body.ams_id, body.tray_id)
     except Exception as exc:
         await db.rollback()
         logger.error("Failed to persist slot assignment: %s", exc)
@@ -2053,7 +2165,8 @@ async def patch_spoolman_filament(
     """Update a Spoolman filament's name and/or spool_weight.
 
     When spool_weight changes, Option A (keep_existing_spools=True) stamps the old
-    weight onto spools currently inheriting it (spool.spool_weight is None) so their
+    weight (the filament's, or its vendor's empty_spool_weight when the filament had
+    none) onto spools currently inheriting it (spool.spool_weight is None) so their
     tare calculations are unaffected by the filament change.
     Option B (keep_existing_spools=False, the default): when spool_weight is a
     concrete value, stamps it onto every affected spool explicitly; when spool_weight
@@ -2081,7 +2194,13 @@ async def patch_spoolman_filament(
 
         if affected_spools:
             if body.keep_existing_spools:
+                # What the inheriting spools weigh against today: the filament's
+                # own value, or when it has none, its vendor's (#3195). With
+                # neither they sit on the 250 g fallback, which is Printbuddy's
+                # alone, so there is nothing real to keep.
                 old_weight = _safe_optional_float(current.get("spool_weight"))
+                if old_weight is None:
+                    old_weight = _safe_optional_float((current.get("vendor") or {}).get("empty_spool_weight"))
                 if old_weight is not None:
                     spools_to_fix = [s for s in affected_spools if s.get("spool_weight") is None]
                     if spools_to_fix:
@@ -2110,7 +2229,7 @@ async def patch_spoolman_filament(
                     _raise_if_partial_failure(affected_spools, results, "spool_weight stamp (option B)")
                 else:
                     # Filament weight is being cleared — remove any per-spool override
-                    # so spools fall back to whatever the filament now provides.
+                    # so spools fall back to the vendor's empty_spool_weight, or 250 g.
                     spools_to_clear = [s for s in affected_spools if s.get("spool_weight") is not None]
                     if spools_to_clear:
                         async with _translate_spoolman_errors():
@@ -2184,3 +2303,77 @@ async def save_spoolman_k_profiles(
         await db.refresh(obj)
 
     return [_k_profile_to_dict(p) for p in saved]
+
+
+def _supplier_link_to_dict(link: SpoolmanSpoolSupplier) -> dict:
+    """Same shape as ``SpoolSupplierResponse`` so the frontend renders both
+    inventories with one component."""
+    return {
+        "id": link.id,
+        "supplier_id": link.supplier_id,
+        "supplier_name": link.supplier_name,
+        "supplier_article_number": link.supplier_article_number,
+        "quoted_price_per_kg": link.quoted_price_per_kg,
+        "is_purchase_source": link.is_purchase_source,
+    }
+
+
+@router.get("/spools/{spool_id}/suppliers")
+async def get_spoolman_spool_suppliers(
+    spool_id: int = Path(..., gt=0),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_READ),
+) -> list[dict]:
+    """Supplier assignments for a Spoolman spool (#2988, Printbuddy-side rows)."""
+    await _get_client(db)
+    result = await db.execute(
+        select(SpoolmanSpoolSupplier)
+        .options(selectinload(SpoolmanSpoolSupplier.supplier))
+        .where(SpoolmanSpoolSupplier.spoolman_spool_id == spool_id)
+    )
+    return [_supplier_link_to_dict(link) for link in result.scalars().all()]
+
+
+@router.put("/spools/{spool_id}/suppliers")
+async def save_spoolman_spool_suppliers(
+    spool_id: int = Path(..., gt=0),
+    links: list[SpoolSupplierLinkInput] = Body(...),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_UPDATE),
+) -> list[dict]:
+    """Replace a Spoolman spool's supplier assignments (#2988).
+
+    Mirror of the built-in inventory's replace-all endpoint — Spoolman owns
+    the spool, Printbuddy owns the assignment (``SpoolmanKProfile`` precedent),
+    so the rows are local and the spool is only verified to exist remotely.
+    """
+    client = await _get_client(db)
+    async with _translate_spoolman_errors():
+        await client.get_spool(spool_id)
+
+    supplier_ids = [link.supplier_id for link in links]
+    if len(set(supplier_ids)) != len(supplier_ids):
+        raise HTTPException(400, "Duplicate supplier in assignment list")
+    if sum(1 for link in links if link.is_purchase_source) > 1:
+        raise HTTPException(400, "Only one assignment can be the purchase source")
+    if supplier_ids:
+        found = await db.execute(select(Supplier.id).where(Supplier.id.in_(supplier_ids)))
+        missing = set(supplier_ids) - {row[0] for row in found.all()}
+        if missing:
+            raise HTTPException(404, f"Supplier(s) not found: {sorted(missing)}")
+
+    await db.execute(delete(SpoolmanSpoolSupplier).where(SpoolmanSpoolSupplier.spoolman_spool_id == spool_id))
+    saved: list[SpoolmanSpoolSupplier] = []
+    for link in links:
+        row = SpoolmanSpoolSupplier(spoolman_spool_id=spool_id, **link.model_dump())
+        db.add(row)
+        saved.append(row)
+    await db.commit()
+    refreshed = await db.execute(
+        select(SpoolmanSpoolSupplier)
+        .options(selectinload(SpoolmanSpoolSupplier.supplier))
+        .where(SpoolmanSpoolSupplier.id.in_([row.id for row in saved]))
+        .order_by(SpoolmanSpoolSupplier.id)
+    )
+    await ws_manager.broadcast({"type": "inventory_changed"})
+    return [_supplier_link_to_dict(link) for link in refreshed.scalars().all()]

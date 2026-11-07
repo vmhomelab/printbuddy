@@ -16,6 +16,7 @@ from backend.app.core.auth import RequirePermissionIfAuthEnabled
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.printer import Printer
+from backend.app.models.settings import Settings
 from backend.app.models.user import User
 from backend.app.services.firmware_check import get_firmware_service
 from backend.app.services.firmware_update import (
@@ -70,6 +71,37 @@ class LatestFirmwareInfo(BaseModel):
     release_notes: str | None = None
 
 
+async def _checks_enabled(db: AsyncSession) -> bool:
+    """The "Check printer firmware" setting (default on).
+
+    Enforced here and not only in the UI: the printers page asks before its
+    settings have loaded, so a check switched off still went out to bambulab.com
+    once per printer on every page load.
+    """
+    value = (
+        await db.execute(select(Settings.value).where(Settings.key == "check_printer_firmware"))
+    ).scalar_one_or_none()
+    return (value or "true").lower() != "false"
+
+
+def _current_version(printer_id: int) -> str | None:
+    mqtt_client = printer_manager.get_client(printer_id)
+    if mqtt_client and mqtt_client.state:
+        return getattr(mqtt_client.state, "firmware_version", None)
+    return None
+
+
+def _not_checked(printer: Printer) -> FirmwareUpdateInfo:
+    return FirmwareUpdateInfo(
+        printer_id=printer.id,
+        printer_name=printer.name,
+        model=printer.model or "Unknown",
+        current_version=_current_version(printer.id),
+        latest_version=None,
+        update_available=False,
+    )
+
+
 @router.get("/updates", response_model=FirmwareUpdatesResponse)
 async def check_firmware_updates(
     db: AsyncSession = Depends(get_db),
@@ -89,6 +121,9 @@ async def check_firmware_updates(
     # Get all printers from database
     result = await db.execute(select(Printer).where(Printer.is_active.is_(True)))
     printers = result.scalars().all()
+
+    if not await _checks_enabled(db):
+        return FirmwareUpdatesResponse(updates=[_not_checked(p) for p in printers], updates_available=0)
 
     updates = []
     updates_available = 0
@@ -159,11 +194,11 @@ async def check_printer_firmware(
             available_versions=[],
         )
 
+    if not await _checks_enabled(db):
+        return _not_checked(printer)
+
     # Get current firmware version from MQTT state
-    current_version = None
-    mqtt_client = printer_manager.get_client(printer.id)
-    if mqtt_client and mqtt_client.state:
-        current_version = getattr(mqtt_client.state, "firmware_version", None)
+    current_version = _current_version(printer.id)
 
     # Check for update
     update_info = await firmware_service.check_for_update(model, current_version or "")

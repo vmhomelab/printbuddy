@@ -50,14 +50,20 @@ export function PrintOptionsPanel({
     { key: 'layer_inspect', label: t('settings.defaultLayerInspect'), desc: t('settings.defaultLayerInspectDesc') },
     { key: 'timelapse', label: t('settings.defaultTimelapse'), desc: t('settings.defaultTimelapseDesc') },
     { key: 'nozzle_offset_cali', label: t('settings.defaultNozzleOffsetCali'), desc: t('settings.defaultNozzleOffsetCaliDesc'), dualNozzleOnly: true, tristate: true },
+    // Post-print outcome confirmation (#1898) — same settings.default* reuse.
+    { key: 'confirm_outcome', label: t('settings.defaultConfirmOutcome'), desc: t('settings.defaultConfirmOutcomeDesc') },
   ];
 
   // Provider capability filter (Printbuddy): non-Bambu providers ignore these
-  // firmware flags, so only show the keys every selected printer supports.
+  // firmware flags, so only show the keys every selected printer supports. The
+  // outcome prompt is Printbuddy-side and not provider-gated, but it only joins
+  // the panel when the panel has firmware flags to show; otherwise the
+  // "Ask for outcome" pill above the panel is its only control.
   const visibleOptions = printOptionsConfig.filter(
     (o) =>
       (!o.dualNozzleOnly || showDualNozzleOptions) &&
-      (!supportedOptions || supportedOptions.includes(o.key)),
+      (!supportedOptions ||
+        (o.key === 'confirm_outcome' ? supportedOptions.length > 0 : supportedOptions.includes(o.key))),
   );
 
   const handleToggle = (key: keyof PrintOptionsType, value: boolean) => {

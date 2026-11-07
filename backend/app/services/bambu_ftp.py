@@ -1275,7 +1275,14 @@ class BambuFTPClient:
             return False
         except (OSError, ftplib.Error) as e:
             logger.error("FTP upload failed for %s: %s (type: %s)", remote_path, e, type(e).__name__)
-            self.last_failure = FtpFailure(FtpFailureKind.NETWORK, str(e), _ftp_reply_code(e))
+            code = _ftp_reply_code(e)
+            # 452 is "insufficient storage" -- a 4xx, so ftplib raises it as
+            # error_temp rather than error_perm, but it is the printer talking
+            # about its card just as 552/553 are. As NETWORK it would read as a
+            # connection problem, and the queue would retry it forever (#3210).
+            is_storage = isinstance(e, ftplib.Error) and code == "452"
+            kind = FtpFailureKind.STORAGE if is_storage else FtpFailureKind.NETWORK
+            self.last_failure = FtpFailure(kind, str(e), code)
             return False
 
     def upload_bytes(self, data: bytes, remote_path: str) -> bool:

@@ -400,22 +400,10 @@ async def _dispatch_failing_with(dispatch_case, failure: FtpFailure | None):
 
 
 class TestWhatTheQueueEntrySays:
-    async def test_a_handshake_failure_does_not_send_anyone_to_the_sd_card(self, dispatch_case):
-        """The report's own case: a TLS failure, answered with card advice.
-
-        The reporter acted on it and restarted the printer. Nothing in that
-        path reaches the printer's filesystem, and the cool-off that made the
-        next dispatch fail identically lives in Printbuddy's memory, where
-        power-cycling a printer does not reach.
-        """
-        message, reason = await _dispatch_failing_with(
-            dispatch_case, FtpFailure(FtpFailureKind.HANDSHAKE, "WRONG_VERSION_NUMBER")
-        )
-
-        assert "inserted" not in message, message
-        assert "FAT32" not in message, message
-        assert "not with TLS" in message, message
-        assert reason == message
+    # A handshake failure used to be this class's lead case. Since #3210 it no
+    # longer fails the item at all -- the file never reached the printer, so the
+    # item goes back in the queue (test_scheduler_upload_requeue_3210.py). Its
+    # wording is still pinned by TestTheWording above.
 
     async def test_a_553_still_gets_the_card_advice(self, dispatch_case):
         """The advice was written for this case and belongs to it.

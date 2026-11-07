@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 from typing import Any
 
 from sqlalchemy import select
@@ -32,8 +33,11 @@ logger = logging.getLogger(__name__)
 # Mirrors the IPv4 pattern in services.log_reader.sanitize_log_content. Kept as
 # a literal here (not imported) so a refactor of that module's internals can't
 # silently change snapshot sanitization. Skips firmware-version-shaped strings
-# (leading-zero octets like "01.09.01.00") via the [1-9]\d|\d alternations.
-_IPV4_RE = re.compile(r"\b(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)\b")
+# (leading-zero octets like "01.09.01.00") via the [1-9]\d|\d alternations,
+# and four-number runs inside a longer dotted number such as an OID.
+_IPV4_RE = re.compile(
+    r"(?<!\d\.)\b(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)\b(?!\.\d)"
+)
 
 # Per-diagnostic wall-clock cap. Each underlying probe carries its own (smaller)
 # TCP / HTTP timeouts; this is the outer guard so a hung interface or a wedged
@@ -54,6 +58,8 @@ async def _run_connection_for(printer) -> dict:
     from backend.app.services.printer_diagnostic import run_connection_diagnostic
 
     base = {"printer_id": printer.id, "printer_name": printer.name}
+    progress: dict[str, Any] = {}
+    started = time.monotonic()
     try:
         result = await asyncio.wait_for(
             run_connection_diagnostic(
@@ -61,12 +67,22 @@ async def _run_connection_for(printer) -> dict:
                 printer=printer,
                 serial_number=printer.serial_number,
                 access_code=printer.access_code,
+                progress=progress,
             ),
             timeout=_PER_DIAGNOSTIC_TIMEOUT_SECONDS,
         )
         return {**base, "result": _serialize(result)}
     except asyncio.TimeoutError:
-        return {**base, "error": "timed_out"}
+        # Name the step that hung and keep the checks that finished before it.
+        # Without them a bundle from a farm whose every printer overran said
+        # only "timed_out" fourteen times, and nothing about why (#3164).
+        return {
+            **base,
+            "error": "timed_out",
+            "stalled_in": progress.get("stage"),
+            "elapsed_s": round(time.monotonic() - started, 1),
+            "checks": [_serialize(c) for c in progress.get("checks", [])],
+        }
     except Exception as e:
         # Log with traceback so the bundle generation isn't silent about
         # a broken probe, but never propagate.

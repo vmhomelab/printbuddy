@@ -1,5 +1,5 @@
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
-import { AlertCircle, AlertTriangle, Loader2, Pencil, Printer, X } from 'lucide-react';
+import { AlertCircle, AlertTriangle, Loader2, Pencil, Printer, ThumbsUp, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { CostCenterSummary, PrintQueueItemCreate, PrintQueueItemUpdate, SlotMaterial } from '../../api/client';
@@ -48,6 +48,7 @@ import type {
   ScheduleType,
 } from './types';
 import { DEFAULT_PRINT_OPTIONS, DEFAULT_SCHEDULE_OPTIONS } from './types';
+import { NumberInput } from '../NumberInput';
 
 /** Same filament: type ignoring case, colour as RRGGBB ignoring `#`, case and alpha. */
 function isSameFilament(a: { type: string; color: string }, b: { type: string; color: string }): boolean {
@@ -183,6 +184,7 @@ export function PrintModal({
         layer_inspect: queueItem.layer_inspect ?? DEFAULT_PRINT_OPTIONS.layer_inspect,
         timelapse: queueItem.timelapse ?? DEFAULT_PRINT_OPTIONS.timelapse,
         nozzle_offset_cali: queueItem.nozzle_offset_cali ?? DEFAULT_PRINT_OPTIONS.nozzle_offset_cali,
+        confirm_outcome: queueItem.confirm_outcome ?? DEFAULT_PRINT_OPTIONS.confirm_outcome,
         preheat_override: queueItem.preheat_override ?? DEFAULT_PRINT_OPTIONS.preheat_override,
         preheat_chamber_target_override: queueItem.preheat_chamber_target_override ?? DEFAULT_PRINT_OPTIONS.preheat_chamber_target_override,
       };
@@ -339,6 +341,7 @@ export function PrintModal({
       layer_inspect: settings.default_layer_inspect ?? DEFAULT_PRINT_OPTIONS.layer_inspect,
       timelapse: settings.default_timelapse ?? DEFAULT_PRINT_OPTIONS.timelapse,
       nozzle_offset_cali: settings.default_nozzle_offset_cali ?? DEFAULT_PRINT_OPTIONS.nozzle_offset_cali,
+      confirm_outcome: settings.default_confirm_outcome ?? DEFAULT_PRINT_OPTIONS.confirm_outcome,
       preheat_override: DEFAULT_PRINT_OPTIONS.preheat_override,
       preheat_chamber_target_override: DEFAULT_PRINT_OPTIONS.preheat_chamber_target_override,
     });
@@ -1304,19 +1307,17 @@ export function PrintModal({
       }
     }
 
-    const asapInsertionCounts = new Map<string, number>();
+    // ASAP items go to the top of the queue in the order this submit creates
+    // them. One counter for the whole submit: positions are a single sequence
+    // across every printer and model (#3200), so a per-printer counter would put
+    // each printer's first item at position 1 and shuffle them.
+    let asapInserted = 0;
 
-    const applyAsapInsertion = (
-      queueData: PrintQueueItemCreate,
-      printerId: number | null,
-      itemCount = 1,
-    ) => {
+    const applyAsapInsertion = (queueData: PrintQueueItemCreate, itemCount = 1) => {
       if (scheduleOptions.scheduleType !== 'asap') return;
-      const scopeKey = printerId !== null ? `printer:${printerId}` : 'unassigned';
-      const insertPosition = (asapInsertionCounts.get(scopeKey) ?? 0) + 1;
       queueData.insert_at_top = true;
-      queueData.insert_position = insertPosition;
-      asapInsertionCounts.set(scopeKey, insertPosition + itemCount - 1);
+      queueData.insert_position = asapInserted + 1;
+      asapInserted += itemCount;
     };
 
     // Common queue data for create and edit modes
@@ -1405,7 +1406,7 @@ export function PrintModal({
             const queueData = getQueueData(null, plateId);
             const plateQuantity = quantityForPlate(plateId);
             if (plateQuantity > 1) queueData.quantity = plateQuantity;
-            applyAsapInsertion(queueData, null, plateQuantity);
+            applyAsapInsertion(queueData, plateQuantity);
             await addToQueueMutation.mutateAsync(queueData);
           }
           results.success++;
@@ -1476,7 +1477,7 @@ export function PrintModal({
               const queueData = getQueueData(printerId, plateId);
               const plateQuantity = quantityForPlate(plateId);
               if (plateQuantity > 1) queueData.quantity = plateQuantity;
-              applyAsapInsertion(queueData, printerId, plateQuantity);
+              applyAsapInsertion(queueData, plateQuantity);
               // Apply stagger offset for groups after the first
               if (useStagger) {
                 const groupIndex = Math.floor(i / scheduleOptions.staggerGroupSize);
@@ -2033,13 +2034,13 @@ export function PrintModal({
                 <label htmlFor="printQuantity" className="text-sm text-bambu-gray whitespace-nowrap">
                   {t('queue.quantity', 'Quantity')}
                 </label>
-                <input
+                <NumberInput
                   id="printQuantity"
-                  type="number"
                   min={1}
                   max={999}
                   value={quantity}
-                  onChange={(e) => setQuantity(Math.max(1, Math.min(999, parseInt(e.target.value) || 1)))}
+                  onChange={setQuantity}
+                  fallback={1}
                   className="w-20 px-2 py-1 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded text-white focus:outline-none focus:ring-1 focus:ring-bambu-green"
                 />
                 {quantity > 1 && (
@@ -2061,6 +2062,24 @@ export function PrintModal({
               printerCount={selectedPrinters.length}
               hasGcodeSnippets={!!settings?.gcode_snippets}
             />
+
+            {/* Outcome prompt (#1898) sits outside the collapsed Print Options
+                panel so it is discoverable; it edits the same printOptions
+                field as the row inside the panel. */}
+            <button
+              type="button"
+              aria-pressed={printOptions.confirm_outcome}
+              title={t('printModal.askForOutcomeTitle')}
+              onClick={() => setPrintOptions((prev) => ({ ...prev, confirm_outcome: !prev.confirm_outcome }))}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-sm transition-colors ${
+                printOptions.confirm_outcome
+                  ? 'bg-bambu-green/20 border-bambu-green text-bambu-green'
+                  : 'bg-bambu-dark border-bambu-dark-tertiary text-bambu-gray hover:text-white'
+              }`}
+            >
+              <ThumbsUp className="w-4 h-4" />
+              {t('printModal.askForOutcome')}
+            </button>
 
             {/* Error message */}
             {updateQueueMutation.isError && (

@@ -2,8 +2,12 @@ import type { Printer } from '../../api/client';
 import type { PrintOptions } from './types';
 
 // Provider-gated Bambu print-start flags. The per-item preheat override is a
-// scheduler stage, not a firmware flag, so it is not part of this list.
-export type PrintOptionKey = Exclude<keyof PrintOptions, 'preheat_override' | 'preheat_chamber_target_override'>;
+// scheduler stage and the post-print outcome prompt (#1898) is Printbuddy-side
+// state, not firmware flags, so neither is part of this list.
+export type PrintOptionKey = Exclude<
+  keyof PrintOptions,
+  'preheat_override' | 'preheat_chamber_target_override' | 'confirm_outcome'
+>;
 
 const ALL_PRINT_OPTIONS: PrintOptionKey[] = [
   'bed_levelling',

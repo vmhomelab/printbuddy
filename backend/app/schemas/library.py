@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # ============ Folder Schemas ============
 
@@ -122,6 +122,20 @@ class FileUpdate(BaseModel):
     folder_id: int | None = None
     project_id: int | None = None
     notes: str | None = None
+    # Empty string clears the link, like ``notes`` (#3077).
+    external_url: str | None = Field(None, max_length=500)
+
+    @field_validator("external_url")
+    @classmethod
+    def validate_external_url(cls, v: str | None) -> str | None:
+        # The link is rendered as an href for every reader of the library, so
+        # only web URLs are accepted (no javascript:/data: schemes).
+        if v is None:
+            return None
+        v = v.strip()
+        if v and not v.lower().startswith(("http://", "https://")):
+            raise ValueError("external_url must start with http:// or https://")
+        return v
 
 
 class FileDuplicate(BaseModel):
@@ -157,6 +171,11 @@ class FileResponse(BaseModel):
     last_printed_at: datetime | None
 
     notes: str | None
+    # User link + photos of the printed result (#3077); ``source_url`` is the
+    # read-only import provenance (MakerWorld) shown next to it.
+    external_url: str | None = None
+    photos: list[str] = []
+    source_url: str | None = None
 
     source_type: str | None = None
     source_url: str | None = None
@@ -235,6 +254,12 @@ class FileListResponse(BaseModel):
     variant_group_id: int | None = None
     variant_count: int = 0
 
+    # Metadata indicators (#3077). The list never ships the notes text itself —
+    # ``has_notes`` is enough for the card badge; the details modal loads the rest.
+    external_url: str | None = None
+    has_notes: bool = False
+    photo_count: int = 0
+
     class Config:
         from_attributes = True
 
@@ -307,6 +332,26 @@ class FileUploadResponse(BaseModel):
     thumbnail_path: str | None
     duplicate_of: int | None = None  # ID of existing file with same hash
     metadata: dict | None = None
+
+
+# ============ Combine ============
+
+
+class CombineItem(BaseModel):
+    """One source model in a combine request."""
+
+    file_id: int
+    copies: int = Field(default=1, ge=1, le=100)
+
+
+class CombineFilesRequest(BaseModel):
+    """Combine STL library files into one multi-object 3MF on a single plate."""
+
+    items: list[CombineItem] = Field(..., min_length=1, max_length=100)
+    # Name of the new library file; ``.3mf`` is appended when missing.
+    filename: str = Field(..., min_length=1, max_length=255)
+    # Destination folder; None = library root.
+    folder_id: int | None = None
 
 
 # ============ Bulk Operations ============
@@ -419,6 +464,16 @@ class BatchThumbnailResponse(BaseModel):
     succeeded: int
     failed: int
     results: list[BatchThumbnailResult]
+
+
+class ClientThumbnailResponse(BaseModel):
+    """Schema for the client-rendered preview thumbnail upload response (#2976).
+
+    ``updated`` is false when the file already had a thumbnail — the upload is
+    skipped so a stored thumbnail is never silently replaced.
+    """
+
+    updated: bool
 
 
 # ============ Variant Group Schemas (#671 / #2570) ============

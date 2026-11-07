@@ -20,6 +20,10 @@ interface ContextMenuProps {
   y: number;
   items: ContextMenuItem[];
   onClose: () => void;
+  // The element that opened the menu. A mousedown on it is not "outside":
+  // without this the anchor's click handler runs after the menu has already
+  // been dismissed and cannot act as a close toggle.
+  anchorRef?: React.RefObject<HTMLElement | null>;
 }
 
 interface SubmenuPanelProps {
@@ -114,7 +118,7 @@ function SubmenuPanel({
   );
 }
 
-export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
+export function ContextMenu({ x, y, items, onClose, anchorRef }: ContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
   const [activeSubmenu, setActiveSubmenu] = useState<number | null>(null);
   const submenuTimeoutRef = useRef<number | null>(null);
@@ -124,9 +128,9 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        onClose();
-      }
+      const target = e.target as Node;
+      if (menuRef.current?.contains(target) || anchorRef?.current?.contains(target)) return;
+      onClose();
     };
 
     const handleEscape = (e: KeyboardEvent) => {
@@ -156,7 +160,7 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
         clearTimeout(submenuTimeoutRef.current);
       }
     };
-  }, [onClose]);
+  }, [onClose, anchorRef]);
 
   // Adjust position to keep menu in viewport - use useLayoutEffect for synchronous measurement
   useLayoutEffect(() => {

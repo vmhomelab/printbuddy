@@ -34,9 +34,6 @@ export interface SpoolFormData {
   label_weight: number;
   core_weight: number;
   core_weight_catalog_id: number | null;
-  // Spoolman-native per-spool empty weight. Null means leave Spoolman's
-  // spool_weight empty and let it fall back to the filament/manufacturer value.
-  spoolman_spool_weight: number | null;
   weight_used: number;
   slicer_filament: string;
   nozzle_temp_min: number | null;
@@ -47,6 +44,9 @@ export interface SpoolFormData {
   category: string;
   low_stock_threshold_pct: number | null;
   data_origin: string;
+  // Internal material / article number (#2870) — the purchasing identifier
+  // shared by all spools of the same product. Free text.
+  material_number: string;
   location_id: number | null;
   // When set the spool is linked to a specific Spoolman filament catalog entry;
   // the backend skips find_or_create_filament() and uses this ID directly.
@@ -64,7 +64,6 @@ export const defaultFormData: SpoolFormData = {
   label_weight: 1000,
   core_weight: 250,
   core_weight_catalog_id: null,
-  spoolman_spool_weight: null,
   weight_used: 0,
   slicer_filament: '',
   nozzle_temp_min: null,
@@ -74,6 +73,7 @@ export const defaultFormData: SpoolFormData = {
   category: '',
   low_stock_threshold_pct: null,
   data_origin: '',
+  material_number: '',
   location_id: null,
   spoolman_filament_id: null,
 };
@@ -219,15 +219,18 @@ export interface AdditionalSectionProps extends SectionProps {
   // datalist so users naturally re-use existing names instead of creating
   // near-duplicates ("Production" vs "production" vs "prod"). #729
   availableCategories: string[];
+  // Material numbers already used on other spools — same autocomplete idea
+  // as availableCategories, for the internal article number (#2870).
+  availableMaterialNumbers: string[];
   // Global low-stock threshold (%); shown as placeholder on the per-spool
   // override input so users see what they're overriding. #729
   globalLowStockThreshold: number;
   availableLocations?: { id: number; name: string }[];
   onCreateLocation?: (name: string) => Promise<{ id: number; name: string } | null>;
-  // When true the empty-spool weight is managed by Spoolman.
+  // When true the material number input is hidden: in Spoolman mode the
+  // number is Spoolman's filament-level article_number, maintained in
+  // Spoolman itself and shown read-only in the list (#2870).
   spoolmanMode?: boolean;
-  // Show the optional Spoolman spool-specific empty-weight input during create/copy.
-  showSpoolmanSpoolWeight?: boolean;
 }
 
 // PA Profile section props

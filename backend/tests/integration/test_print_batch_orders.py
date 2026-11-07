@@ -498,10 +498,15 @@ class TestBatchOrderDispatch:
             # from under the rest of the order.
             assert clone.cleanup_library_after_dispatch is False
 
-    async def test_clones_land_in_their_own_printer_queue(
+    async def test_clones_land_at_the_end_of_the_queue(
         self, async_client, printer_factory, archive_factory, db_session
     ):
-        """Positions are per-printer sequences — a global MAX would scramble them."""
+        """Positions are one sequence across every printer (#3200).
+
+        The queue page shows and reorders pending items as one list and the
+        scheduler dispatches in that order, so clones go after everything
+        already queued, and the whole queue stays free of gaps and duplicates.
+        """
         printer_a = await printer_factory()
         printer_b = await printer_factory()
         archive = await archive_factory()
@@ -510,35 +515,34 @@ class TestBatchOrderDispatch:
             archive.id,
             [{"plate_id": 1, "quantity_target": 3}, {"plate_id": 2, "quantity_target": 2}],
         )
-        # Pad printer B's queue so a global MAX would push plate 1's clones
-        # past the end of printer A's much shorter queue.
         for _ in range(5):
             await async_client.post("/api/v1/queue/", json={"printer_id": printer_b.id, "archive_id": archive.id})
         await _queue_item(async_client, printer_a.id, archive.id, order["id"], plate_id=1)
         await _queue_item(async_client, printer_b.id, archive.id, order["id"], plate_id=2)
 
-        response = await async_client.post(f"/api/v1/queue/batches/{order['id']}/dispatch", json={})
-        assert response.status_code == 200
-
         from sqlalchemy import select
 
         from backend.app.models.print_queue import PrintQueueItem
 
-        for printer in (printer_a, printer_b):
-            rows = (
-                (
-                    await db_session.execute(
-                        select(PrintQueueItem)
-                        .where(PrintQueueItem.printer_id == printer.id)
-                        .where(PrintQueueItem.status == "pending")
-                    )
-                )
+        async def pending():
+            return (
+                (await db_session.execute(select(PrintQueueItem).where(PrintQueueItem.status == "pending")))
                 .scalars()
                 .all()
             )
-            positions = sorted(r.position for r in rows)
-            assert len(positions) == len(set(positions)), f"duplicate positions on printer {printer.id}"
-            assert positions == list(range(1, len(rows) + 1)), f"gap in printer {printer.id} queue"
+
+        before_ids = {r.id for r in await pending()}
+        last_before = max(r.position for r in await pending())
+
+        response = await async_client.post(f"/api/v1/queue/batches/{order['id']}/dispatch", json={})
+        assert response.status_code == 200
+
+        rows = await pending()
+        positions = sorted(r.position for r in rows)
+        assert positions == list(range(1, len(rows) + 1)), "queue positions have a gap or a duplicate"
+        clones = [r for r in rows if r.id not in before_ids]
+        assert len(clones) == 3
+        assert all(r.position > last_before for r in clones)
 
     async def test_clone_differs_from_its_source_only_in_lifecycle_state(
         self, async_client, printer_factory, archive_factory, db_session
@@ -1028,3 +1032,74 @@ class TestOrderSourcePreservation:
         assert deleted.json()["deleted"] is True
         db_session.expire_all()
         assert await db_session.get(PrintQueueItem, stray["id"]) is None
+
+
+class TestBatchExternalLink:
+    """A batch can carry the external record (e.g. a shop order) it fulfils."""
+
+    async def test_link_round_trips_and_filters(self, async_client, archive_factory):
+        archive = await archive_factory()
+        order = await _create_order(
+            async_client,
+            archive.id,
+            [{"plate_id": 1, "quantity_target": 2}],
+            external_source="shopify",
+            external_ref="shop.example/orders/1042/file/7",
+        )
+        assert order["external_source"] == "shopify"
+        assert order["external_ref"] == "shop.example/orders/1042/file/7"
+        await _create_order(async_client, archive.id, [{"plate_id": 1, "quantity_target": 1}])
+
+        by_source = (await async_client.get("/api/v1/queue/batches", params={"external_source": "shopify"})).json()
+        assert [b["id"] for b in by_source] == [order["id"]]
+        by_ref = (
+            await async_client.get(
+                "/api/v1/queue/batches",
+                params={"external_source": "shopify", "external_ref": "shop.example/orders/1042/file/7"},
+            )
+        ).json()
+        assert [b["id"] for b in by_ref] == [order["id"]]
+
+    async def test_second_create_for_the_same_record_is_refused(self, async_client, archive_factory):
+        """A retried create must not produce a second batch printing the order twice."""
+        archive = await archive_factory()
+        link = {"external_source": "shopify", "external_ref": "shop.example/orders/1042/file/7"}
+        await _create_order(async_client, archive.id, [{"plate_id": 1, "quantity_target": 1}], **link)
+
+        response = await async_client.post(
+            "/api/v1/queue/batches",
+            json={"name": "Retry", "archive_id": archive.id, "plates": [{"plate_id": 1, "quantity_target": 1}], **link},
+        )
+        assert response.status_code == 409
+        listed = (await async_client.get("/api/v1/queue/batches", params=link)).json()
+        assert len(listed) == 1
+
+    async def test_same_ref_under_another_source_is_a_different_record(self, async_client, archive_factory):
+        archive = await archive_factory()
+        plates = [{"plate_id": 1, "quantity_target": 1}]
+        await _create_order(async_client, archive.id, plates, external_source="shopify", external_ref="1042")
+        await _create_order(async_client, archive.id, plates, external_source="etsy", external_ref="1042")
+
+    async def test_unlinked_batches_never_collide(self, async_client, archive_factory):
+        """NULL pairs are exempt from the unique index."""
+        archive = await archive_factory()
+        plates = [{"plate_id": 1, "quantity_target": 1}]
+        await _create_order(async_client, archive.id, plates)
+        await _create_order(async_client, archive.id, plates)
+
+    @pytest.mark.parametrize(
+        "link",
+        [
+            {"external_source": "shopify"},
+            {"external_ref": "1042"},
+            {"external_source": "Shop ify", "external_ref": "1042"},
+            {"external_source": "shopify", "external_ref": ""},
+        ],
+    )
+    async def test_incomplete_or_malformed_link_is_rejected(self, async_client, archive_factory, link):
+        archive = await archive_factory()
+        response = await async_client.post(
+            "/api/v1/queue/batches",
+            json={"name": "Order", "archive_id": archive.id, "plates": [{"plate_id": 1, "quantity_target": 1}], **link},
+        )
+        assert response.status_code == 422

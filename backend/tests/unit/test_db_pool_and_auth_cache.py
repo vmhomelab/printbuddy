@@ -27,7 +27,7 @@ class TestPoolConfiguration:
         assert "pool_recycle" not in kwargs
 
     def test_postgres_defaults_raise_the_old_limits(self, monkeypatch):
-        """Postgres default is now 20 + 80 (was 10 + 20) with pre-ping + recycle."""
+        """Postgres default is 20 + 60 (was 10 + 20) with pre-ping + recycle."""
         from backend.app.core import database
 
         for attr in ("db_pool_size", "db_max_overflow", "db_pool_timeout", "db_pool_recycle"):
@@ -36,7 +36,7 @@ class TestPoolConfiguration:
 
         kwargs = database._resolve_pool_kwargs()
         assert kwargs["pool_size"] == 20
-        assert kwargs["max_overflow"] == 80
+        assert kwargs["max_overflow"] == 60
         assert kwargs["pool_pre_ping"] is True
         assert kwargs["pool_recycle"] == 1800
 

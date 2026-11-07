@@ -18,7 +18,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile
 from fastapi.responses import FileResponse as FastAPIFileResponse
-from sqlalchemy import distinct, func, select
+from sqlalchemy import distinct, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from starlette.background import BackgroundTask
@@ -51,6 +51,8 @@ from backend.app.schemas.library import (
     BatchThumbnailResult,
     BulkDeleteRequest,
     BulkDeleteResponse,
+    ClientThumbnailResponse,
+    CombineFilesRequest,
     ExternalFolderCreate,
     FileDuplicate,
     FileListResponse,
@@ -77,7 +79,9 @@ from backend.app.services.design_settings import (
     overrides_from_config,
 )
 from backend.app.services.filament_requirements import annotate_rack_groups
+from backend.app.services.pdf_thumbnail import generate_pdf_thumbnail
 from backend.app.services.plate_thumbnail import inject_plate_thumbnails_if_missing
+from backend.app.services.print_confirmation import confirm_outcome_for_new_queue_item
 from backend.app.services.process_overrides import apply_process_overrides
 from backend.app.services.slice_output_check import (
     missing_start_gcode_message,
@@ -92,6 +96,7 @@ from backend.app.utils.filename import (
     safe_path_component,
     validate_print_filename,
 )
+from backend.app.utils.library_paths import library_photos_dir, remove_library_photos_dir
 from backend.app.utils.printer_models import is_gcode_compatible
 from backend.app.utils.safe_path import PathTraversalError, assert_under, safe_join_under
 from backend.app.utils.threemf_tools import (
@@ -661,8 +666,10 @@ async def save_3mf_bytes_to_library(
     thumbnail_path: str | None = None
     if ext == ".3mf":
         try:
+            # Off the event loop: the parser still decompresses the whole model
+            # entry, which for a combined plate is hundreds of MB (#3162).
             parser = ThreeMFParser(str(file_path))
-            raw_metadata = parser.parse()
+            raw_metadata = await asyncio.to_thread(parser.parse)
             thumb_data = raw_metadata.get("_thumbnail_data")
             thumb_ext = raw_metadata.get("_thumbnail_ext", ".png")
             if thumb_data:
@@ -853,9 +860,42 @@ def create_image_thumbnail(file_path: Path, thumbnails_dir: Path, max_size: int 
 # Supported image extensions for thumbnails
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".tif"}
 
+# File types whose thumbnails are rendered client-side and uploaded back
+# (#2976). The server has no renderer for STEP (that would need OpenCascade)
+# or the spreadsheet types, so the browser posts its first preview render to
+# POST /files/{id}/preview-thumbnail instead. PDF is rendered server-side with
+# PDFium when it lands and stays here for a PDF that renderer cannot read.
+# Kept to exactly these types so the endpoint can never overwrite a
+# server-generated STL/3MF/G-code/image thumbnail.
+CLIENT_THUMBNAIL_TYPES = {"step", "stp", "pdf", "csv", "xlsx", "ods"}
 
-async def _backfill_external_stl_thumbnails(folder_ids: list[int]) -> None:
-    """Generate STL thumbnails for an external folder tree in the background.
+# Photos of the printed result (#3077): same allowlist and naming as the
+# archive photo routes. 10 MB is ample for a phone camera JPEG.
+PHOTO_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp")
+PHOTO_MEDIA_TYPES = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+}
+MAX_PHOTO_BYTES = 10 * 1024 * 1024
+
+# Upper bound for an uploaded client-rendered thumbnail. The FE sends a
+# 256px PNG (a few tens of KB); anything near this limit is not a thumbnail.
+MAX_CLIENT_THUMBNAIL_BYTES = 2 * 1024 * 1024
+
+# Upper bound on the *decoded* size, checked against the header before any
+# pixels are allocated: a few-KB PNG can declare 12000x7000 and still be under
+# PIL's own decompression-bomb limit, which would be ~340 MB of RGBA.
+MAX_CLIENT_THUMBNAIL_EDGE = 2048
+
+# What the endpoint stores. The grid renders at ~256px, so anything larger is
+# downscaled rather than kept.
+STORED_CLIENT_THUMBNAIL_EDGE = 512
+
+
+async def _backfill_external_thumbnails(folder_ids: list[int]) -> None:
+    """Generate STL and PDF thumbnails for an external folder tree in the background.
 
     Spawned via ``asyncio.create_task`` from ``scan_external_folder`` so the
     HTTP request can return as soon as the filesystem walk + folder/file rows
@@ -863,7 +903,9 @@ async def _backfill_external_stl_thumbnails(folder_ids: list[int]) -> None:
     the request open for many minutes (each file triggers a ``trimesh.load``
     + matplotlib render, ~1-5s each) and the FE modal times out before the
     final ``db.commit()`` runs — causing the original symptom in #1299 where
-    subdirectories never showed up because nothing got committed.
+    subdirectories never showed up because nothing got committed. PDFs are
+    faster (a PDFium page render) but a share holding hundreds of them would
+    still hold the request open, so they are rendered here too.
 
     Opens its own session because the request session is closed by the time
     this task starts running. Commits per-file so a worker restart mid-run
@@ -877,21 +919,29 @@ async def _backfill_external_stl_thumbnails(folder_ids: list[int]) -> None:
         result = await db.execute(
             LibraryFile.active().where(
                 LibraryFile.folder_id.in_(folder_ids),
-                LibraryFile.file_type == "stl",
+                LibraryFile.file_type.in_(("stl", "pdf")),
                 LibraryFile.thumbnail_path.is_(None),
             )
         )
-        stl_files = result.scalars().all()
-        if not stl_files:
+        target_files = result.scalars().all()
+        if not target_files:
             return
         logger.info(
-            "Backfilling STL thumbnails: %d file(s) across %d folder(s)",
-            len(stl_files),
+            "Backfilling STL/PDF thumbnails: %d file(s) across %d folder(s)",
+            len(target_files),
             len(folder_ids),
         )
-        for stl_file in stl_files:
-            abs_path = to_absolute_path(stl_file.file_path)
+        for target_file in target_files:
+            abs_path = to_absolute_path(target_file.file_path)
             if not abs_path or not abs_path.exists():
+                continue
+            if target_file.file_type == "pdf":
+                # generate_pdf_thumbnail never raises; an unreadable PDF
+                # returns None and keeps the browser-preview fallback.
+                thumb_path = await asyncio.to_thread(generate_pdf_thumbnail, abs_path, thumbnails_dir)
+                if thumb_path:
+                    target_file.thumbnail_path = to_relative_path(Path(thumb_path))
+                    await db.commit()
                 continue
             # Pre-skip files too small to contain even a single triangle.
             # Bulk-uploaded ZIPs of stub STLs would otherwise trigger one
@@ -907,7 +957,7 @@ async def _backfill_external_stl_thumbnails(folder_ids: list[int]) -> None:
                 logger.debug("STL thumbnail backfill skipped %s: %s", abs_path, exc)
                 continue
             if thumb_path:
-                stl_file.thumbnail_path = to_relative_path(Path(thumb_path))
+                target_file.thumbnail_path = to_relative_path(Path(thumb_path))
                 await db.commit()
 
 
@@ -1539,6 +1589,8 @@ async def delete_folder(
 
     await delete_dependent_variants(db, doomed_file_ids)
     await release_queue_references(db, doomed_file_ids)
+    for doomed_id in doomed_file_ids:
+        remove_library_photos_dir(doomed_id)
 
     # Delete folder (cascade will handle files and subfolders)
     await db.delete(folder)
@@ -1645,6 +1697,12 @@ _SCANNABLE_EXTENSIONS = {
     ".webp",
     ".svg",
     ".md",
+    # Documents that ship alongside a job folder and now have in-app
+    # previews (#2976): drawings/datasheets and part lists.
+    ".pdf",
+    ".csv",
+    ".xlsx",
+    ".ods",
 }
 
 
@@ -2011,8 +2069,8 @@ async def scan_external_folder(
                 except Exception as e:
                     logger.debug("Failed to extract metadata from external 3mf %s: %s", filepath, e)
 
-            # STL thumbnails are deferred to a background task spawned after
-            # the scan's db.commit() — see _backfill_external_stl_thumbnails.
+            # STL and PDF thumbnails are deferred to a background task spawned
+            # after the scan's db.commit() — see _backfill_external_thumbnails.
             # Doing them inline would block the HTTP request for minutes on a
             # large NAS mount (#1299).
 
@@ -2068,6 +2126,10 @@ async def scan_external_folder(
                         abs_thumb.unlink()
                 except OSError:
                     pass
+            # The row is gone for good — external files skip the trash — so
+            # its photos go with it rather than being orphaned under an id
+            # nothing points at any more (#3077).
+            remove_library_photos_dir(db_file.id)
             await db.delete(db_file)
             removed += 1
 
@@ -2108,17 +2170,17 @@ async def scan_external_folder(
 
     await db.commit()
 
-    # Spawn STL thumbnail backfill in the background — the scan endpoint
+    # Spawn STL/PDF thumbnail backfill in the background — the scan endpoint
     # returns immediately so the FE modal closes and subdirectories are
     # visible right away; thumbnails fill in over the following seconds /
-    # minutes as the task processes each STL file. Survives FE refresh —
+    # minutes as the task processes each file. Survives FE refresh —
     # the task lives in the FastAPI event loop, not the request scope.
     # folder_cache.values() covers the root + every pre-existing subfolder
     # + every subfolder created during this scan. all_folder_ids on its own
     # would miss the newly-created ones (it's snapshotted before the walk).
     spawn_background_task(
-        _backfill_external_stl_thumbnails(list(set(folder_cache.values()))),
-        name=f"stl-backfill-folder-{folder_id}",
+        _backfill_external_thumbnails(list(set(folder_cache.values()))),
+        name=f"thumbnail-backfill-folder-{folder_id}",
     )
 
     return {"status": "success", "added": added, "removed": removed}
@@ -2293,6 +2355,9 @@ async def list_files(
                 tags=[TagSummary(id=t.id, name=t.name) for t in f.tags],
                 variant_group_id=f.variant_group_id,
                 variant_count=variant_counts.get(f.variant_group_id, 0) if f.variant_group_id else 0,
+                external_url=f.external_url,
+                has_notes=bool(f.notes),
+                photo_count=len(f.photos or []),
             )
         )
 
@@ -2435,6 +2500,11 @@ async def upload_file(
         elif ext.lower() in IMAGE_EXTENSIONS:
             # For image files, create a thumbnail from the image itself
             thumbnail_path = create_image_thumbnail(file_path, thumbnails_dir)
+
+        elif ext.lower() == ".pdf":
+            # Page one, rendered server-side; the browser preview's own
+            # render (POST /preview-thumbnail) remains the fallback.
+            thumbnail_path = await asyncio.to_thread(generate_pdf_thumbnail, file_path, thumbnails_dir)
 
         elif ext == ".stl":
             # Generate STL thumbnail if enabled. Same MIN_USABLE_STL_BYTES
@@ -2708,6 +2778,9 @@ async def extract_zip_file(
                     elif ext.lower() in IMAGE_EXTENSIONS:
                         thumbnail_path = create_image_thumbnail(file_path, thumbnails_dir)
 
+                    elif ext.lower() == ".pdf":
+                        thumbnail_path = await asyncio.to_thread(generate_pdf_thumbnail, file_path, thumbnails_dir)
+
                     elif ext == ".stl":
                         # Generate STL thumbnail if enabled. Pre-skip files
                         # below MIN_USABLE_STL_BYTES — they can't contain
@@ -2778,29 +2851,45 @@ async def extract_zip_file(
 async def batch_generate_stl_thumbnails(
     request: BatchThumbnailRequest,
     db: AsyncSession = Depends(get_db),
-    _: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_UPDATE_ALL)),
+    auth_result: tuple[User | None, bool] = Depends(
+        require_ownership_permission(
+            Permission.LIBRARY_UPDATE_ALL,
+            Permission.LIBRARY_UPDATE_OWN,
+        )
+    ),
 ):
-    """Generate thumbnails for STL files in batch.
+    """Generate thumbnails for STL and PDF files in batch.
 
-    Note: Requires library:update_all permission since this is a batch operation
-    that may affect files owned by different users.
+    With library:update_all this covers every matching file; with only
+    library:update_own it is narrowed to the caller's own files, the same
+    rule as update_file. The File Manager offers the toolbar button and the
+    per-file "Generate Thumbnail" entry to update_own users, and both land
+    here.
+
+    PDFs are included so the ones added before server-side PDF thumbnails
+    existed can be backfilled without opening each preview. The route keeps
+    its name for API compatibility.
 
     Can generate thumbnails for:
     - Specific file IDs (file_ids)
-    - All STL files in a folder (folder_id)
-    - All STL files missing thumbnails (all_missing=True)
+    - All STL/PDF files in a folder (folder_id)
+    - All STL/PDF files missing thumbnails (all_missing=True)
     """
     thumbnails_dir = get_library_thumbnails_dir()
     results: list[BatchThumbnailResult] = []
 
     # Build query based on request
-    query = LibraryFile.active().where(LibraryFile.file_type == "stl")
+    query = LibraryFile.active().where(LibraryFile.file_type.in_(("stl", "pdf")))
+
+    user, can_modify_all = auth_result
+    if not can_modify_all:
+        query = query.where(LibraryFile.created_by_id == user.id)
 
     if request.file_ids:
         # Specific files
         query = query.where(LibraryFile.id.in_(request.file_ids))
     elif request.folder_id is not None:
-        # All STL files in a specific folder
+        # All STL/PDF files in a specific folder
         query = query.where(LibraryFile.folder_id == request.folder_id)
         if not request.all_missing:
             # If not specifically asking for missing thumbnails, get all
@@ -2808,7 +2897,7 @@ async def batch_generate_stl_thumbnails(
         else:
             query = query.where(LibraryFile.thumbnail_path.is_(None))
     elif request.all_missing:
-        # All STL files without thumbnails
+        # All STL/PDF files without thumbnails
         query = query.where(LibraryFile.thumbnail_path.is_(None))
     else:
         # No criteria specified - return empty
@@ -2820,19 +2909,19 @@ async def batch_generate_stl_thumbnails(
         )
 
     result = await db.execute(query)
-    stl_files = result.scalars().all()
+    target_files = result.scalars().all()
 
     succeeded = 0
     failed = 0
 
-    for stl_file in stl_files:
-        file_path = to_absolute_path(stl_file.file_path)
+    for target_file in target_files:
+        file_path = to_absolute_path(target_file.file_path)
 
         if not file_path or not file_path.exists():
             results.append(
                 BatchThumbnailResult(
-                    file_id=stl_file.id,
-                    filename=stl_file.filename,
+                    file_id=target_file.id,
+                    filename=target_file.filename,
                     success=False,
                     error="File not found on disk",
                 )
@@ -2841,16 +2930,19 @@ async def batch_generate_stl_thumbnails(
             continue
 
         try:
-            thumbnail_path = generate_stl_thumbnail(file_path, thumbnails_dir)
+            if target_file.file_type == "pdf":
+                thumbnail_path = await asyncio.to_thread(generate_pdf_thumbnail, file_path, thumbnails_dir)
+            else:
+                thumbnail_path = generate_stl_thumbnail(file_path, thumbnails_dir)
 
             if thumbnail_path:
                 # Update database with relative path
-                stl_file.thumbnail_path = to_relative_path(thumbnail_path)
+                target_file.thumbnail_path = to_relative_path(thumbnail_path)
                 await db.flush()
                 results.append(
                     BatchThumbnailResult(
-                        file_id=stl_file.id,
-                        filename=stl_file.filename,
+                        file_id=target_file.id,
+                        filename=target_file.filename,
                         success=True,
                     )
                 )
@@ -2858,19 +2950,19 @@ async def batch_generate_stl_thumbnails(
             else:
                 results.append(
                     BatchThumbnailResult(
-                        file_id=stl_file.id,
-                        filename=stl_file.filename,
+                        file_id=target_file.id,
+                        filename=target_file.filename,
                         success=False,
                         error="Thumbnail generation failed",
                     )
                 )
                 failed += 1
         except Exception as e:
-            logger.error("Failed to generate thumbnail for %s: %s", stl_file.filename, e)
+            logger.error("Failed to generate thumbnail for %s: %s", target_file.filename, e)
             results.append(
                 BatchThumbnailResult(
-                    file_id=stl_file.id,
-                    filename=stl_file.filename,
+                    file_id=target_file.id,
+                    filename=target_file.filename,
                     success=False,
                     error=str(e),
                 )
@@ -2880,7 +2972,7 @@ async def batch_generate_stl_thumbnails(
     await db.commit()
 
     return BatchThumbnailResponse(
-        processed=len(stl_files),
+        processed=len(target_files),
         succeeded=succeeded,
         failed=failed,
         results=results,
@@ -2901,6 +2993,90 @@ def is_sliced_file(filename: str) -> bool:
     """
     lower = filename.lower()
     return lower.endswith((".bgcode", ".gcode", ".gcode.3mf"))
+
+
+@router.post("/files/combine", response_model=FileUploadResponse)
+async def combine_files(
+    request: CombineFilesRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_UPLOAD)),
+):
+    """Combine STL library files into one multi-object 3MF.
+
+    The slicer sidecar takes one model per slice, so putting several separate
+    STLs (or several copies of one, #2999) on one plate means building that
+    file first. The result is a new library file that slices like any other
+    3MF; with auto-arrange on, the slicer lays the objects out on the bed.
+    The sources are left untouched.
+    """
+    from backend.app.services.mesh_combine import CombinePart, MeshCombineError, combine_parts_to_3mf
+
+    filename = request.filename.strip()
+    if not filename.lower().endswith(".3mf"):
+        filename = f"{filename}.3mf"
+    try:
+        validate_print_filename(filename)
+    except InvalidFilenameError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    if request.folder_id is not None:
+        folder = (
+            await db.execute(select(LibraryFolder).where(LibraryFolder.id == request.folder_id))
+        ).scalar_one_or_none()
+        if folder is None:
+            raise HTTPException(status_code=404, detail="Folder not found")
+
+    # Same per-row visibility the slice route applies: a READ_OWN caller must
+    # not be able to pull another user's model into their own file by raw id.
+    can_read_all = current_user is None or current_user.has_permission(Permission.LIBRARY_READ_ALL.value)
+
+    # The same file listed twice is one object with the copies added up, so
+    # its mesh is loaded and stored once. Order follows first appearance.
+    copies_by_id: dict[int, int] = {}
+    for item in request.items:
+        copies_by_id[item.file_id] = copies_by_id.get(item.file_id, 0) + item.copies
+
+    rows = (await db.execute(LibraryFile.active().where(LibraryFile.id.in_(copies_by_id)))).scalars().all()
+    by_id = {row.id: row for row in rows}
+
+    # Gate every source before touching any of them on disk, so the answer for
+    # a file the caller can't see is the same 404 whatever else is in the list.
+    sources = [_ensure_library_file_visible(by_id.get(file_id), current_user, can_read_all) for file_id in copies_by_id]
+
+    parts: list[CombinePart] = []
+    for lib_file in sources:
+        if not lib_file.filename.lower().endswith(".stl"):
+            raise HTTPException(status_code=400, detail=f"Only STL files can be combined: {lib_file.filename}")
+        src_path = _resolve_source_disk_path(lib_file)
+        if src_path is None or not src_path.exists():
+            raise HTTPException(status_code=404, detail=f"Source file missing on disk: {lib_file.filename}")
+        parts.append(CombinePart(name=lib_file.filename, path=src_path, copies=copies_by_id[lib_file.id]))
+
+    try:
+        content = await asyncio.to_thread(combine_parts_to_3mf, parts)
+    except MeshCombineError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    # The preview is embedded as Metadata/thumbnail.png by combine_parts_to_3mf,
+    # so ThreeMFParser picks it up here like any other 3MF's thumbnail. Loading
+    # the combined file back to render one would expand every copy.
+    library_file, _ = await save_3mf_bytes_to_library(
+        db,
+        file_bytes=content,
+        filename=filename,
+        folder_id=request.folder_id,
+        source_type="combined",
+        owner_id=current_user.id if current_user else None,
+    )
+
+    return FileUploadResponse(
+        id=library_file.id,
+        filename=library_file.filename,
+        file_type=library_file.file_type,
+        file_size=library_file.file_size,
+        thumbnail_path=library_file.thumbnail_path,
+        metadata=library_file.file_metadata,
+    )
 
 
 @router.post("/files/add-to-queue", response_model=AddToQueueResponse)
@@ -2982,6 +3158,10 @@ async def add_files_to_queue(
     # Get max position for queue ordering
     pos_result = await db.execute(select(func.coalesce(func.max(PrintQueueItem.position), 0)))
     max_position = pos_result.scalar() or 0
+
+    # There is no per-job ask-for-outcome toggle on a bulk add, so the rows take
+    # the same default the print dialog seeds itself from (#1898).
+    confirm_outcome = await confirm_outcome_for_new_queue_item(db)
 
     for file_id in request.file_ids:
         lib_file = files.get(file_id)
@@ -3076,6 +3256,7 @@ async def add_files_to_queue(
                 or (folder_projects.get(lib_file.folder_id) if lib_file.folder_id is not None else None),
                 position=max_position,
                 status="pending",
+                confirm_outcome=confirm_outcome,
                 # Without this the row is ownerless, and `queue:read_own` filters
                 # on `created_by_id` — so the user who queued the file could not
                 # see it in their own queue.
@@ -5189,6 +5370,8 @@ async def get_file(
         print_count=file.print_count,
         last_printed_at=file.last_printed_at,
         notes=file.notes,
+        external_url=file.external_url,
+        photos=list(file.photos or []),
         source_type=file.source_type,
         source_url=file.source_url,
         source_snapshot_available=bool(file.source_snapshot_path),
@@ -5267,6 +5450,9 @@ async def update_file(
     if data.notes is not None:
         file.notes = data.notes if data.notes else None
 
+    if data.external_url is not None:
+        file.external_url = data.external_url.strip() or None
+
     await db.commit()
     await db.refresh(file)
 
@@ -5321,6 +5507,7 @@ async def delete_file(
 
         await delete_dependent_variants(db, [file.id])
         await release_queue_references(db, [file.id])
+        remove_library_photos_dir(file.id)
         await db.delete(file)
         await db.commit()
         return {"status": "success", "message": "File deleted", "trashed": False}
@@ -5580,6 +5767,242 @@ async def get_thumbnail(
     return FastAPIFileResponse(str(abs_thumb_path), media_type=media_type)
 
 
+@router.post("/files/{file_id}/preview-thumbnail", response_model=ClientThumbnailResponse)
+async def upload_preview_thumbnail(
+    file_id: int,
+    thumbnail: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    auth_result: tuple[User | None, bool] = Depends(
+        require_ownership_permission(
+            Permission.LIBRARY_UPDATE_ALL,
+            Permission.LIBRARY_UPDATE_OWN,
+        )
+    ),
+):
+    """Store a client-rendered preview thumbnail for a file (#2976).
+
+    STEP, PDF and spreadsheet previews are rendered in the browser; the FE
+    posts its first render here so the grid gets a thumbnail without the
+    server needing OpenCascade. A PDF normally has its PDFium thumbnail from
+    upload already, so for PDFs this only fills the gap for a file PDFium
+    could not read. Only file types in ``CLIENT_THUMBNAIL_TYPES`` are
+    accepted, and only while the file has no thumbnail yet — a stored
+    thumbnail is never replaced by this route.
+    """
+    user, can_modify_all = auth_result
+
+    result = await db.execute(LibraryFile.active().where(LibraryFile.id == file_id))
+    file = result.scalar_one_or_none()
+
+    if not file:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    # Ownership check (same shape as update_file)
+    if not can_modify_all:
+        if file.created_by_id != user.id:
+            raise HTTPException(status_code=403, detail="You can only update your own files")
+
+    if file.file_type not in CLIENT_THUMBNAIL_TYPES:
+        raise HTTPException(status_code=400, detail="File type does not accept client-rendered thumbnails")
+
+    if file.thumbnail_path:
+        return ClientThumbnailResponse(updated=False)
+
+    content = await thumbnail.read(MAX_CLIENT_THUMBNAIL_BYTES + 1)
+    if len(content) > MAX_CLIENT_THUMBNAIL_BYTES:
+        raise HTTPException(status_code=413, detail="Thumbnail too large")
+
+    # Decode and re-encode through PIL: validates the bytes are a real PNG
+    # and strips anything that isn't pixel data before it lands on disk.
+    import io
+
+    from PIL import Image, UnidentifiedImageError
+
+    try:
+        # Image.open() reads the header only. Both checks below happen before
+        # load(), so a declared-but-never-delivered canvas is refused rather
+        # than allocated. DecompressionBombError derives straight from
+        # Exception, so it has to be named explicitly — open() itself raises
+        # it once the declared size passes PIL's own limit.
+        with Image.open(io.BytesIO(content)) as source:
+            if source.format != "PNG":
+                raise HTTPException(status_code=400, detail="Thumbnail must be a PNG image")
+            if max(source.size) > MAX_CLIENT_THUMBNAIL_EDGE:
+                raise HTTPException(status_code=400, detail="Thumbnail image dimensions too large")
+            source.load()
+            img = source.convert("RGBA") if source.mode not in ("RGB", "RGBA") else source.copy()
+    except HTTPException:
+        raise
+    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as e:
+        raise HTTPException(status_code=400, detail="Invalid thumbnail image") from e
+
+    if max(img.size) > STORED_CLIENT_THUMBNAIL_EDGE:
+        img.thumbnail((STORED_CLIENT_THUMBNAIL_EDGE, STORED_CLIENT_THUMBNAIL_EDGE), Image.Resampling.LANCZOS)
+
+    thumbnails_dir = get_library_thumbnails_dir()
+    thumb_filename = f"{uuid.uuid4().hex}.png"
+    thumb_path = thumbnails_dir / thumb_filename  # SEC-PATH-OK: thumb_filename = uuid.uuid4().hex + ".png"
+    # Outside the decode guard on purpose: a full disk or an unwritable
+    # thumbnail directory is ours, not "Invalid thumbnail image".
+    try:
+        img.save(thumb_path, "PNG", optimize=True)
+    except OSError as e:
+        logger.error("Failed to store preview thumbnail for file %s: %s", file_id, e)
+        raise HTTPException(status_code=500, detail="Failed to store thumbnail") from e
+
+    # Two previews of the same file can reach this point together; the loser
+    # of the UPDATE takes its PNG back off disk instead of orphaning it.
+    result = await db.execute(
+        update(LibraryFile)
+        .where(LibraryFile.id == file_id, LibraryFile.thumbnail_path.is_(None))
+        .values(thumbnail_path=to_relative_path(thumb_path))
+    )
+    await db.commit()
+    if result.rowcount == 0:
+        thumb_path.unlink(missing_ok=True)
+        return ClientThumbnailResponse(updated=False)
+
+    return ClientThumbnailResponse(updated=True)
+
+
+# ============ Photo Endpoints (#3077) ============
+
+
+@router.post("/files/{file_id}/photos")
+async def upload_file_photo(
+    file_id: int,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    auth_result: tuple[User | None, bool] = Depends(
+        require_ownership_permission(
+            Permission.LIBRARY_UPDATE_ALL,
+            Permission.LIBRARY_UPDATE_OWN,
+        )
+    ),
+):
+    """Attach a photo of the printed result to a library file.
+
+    Photos are Printbuddy-side metadata, so external files take them too. Same
+    shape as the archive photo upload: extension allowlist, uuid-named on
+    disk, and the ``photos`` list re-assigned so SQLAlchemy sees the change.
+    """
+    user, can_modify_all = auth_result
+
+    result = await db.execute(LibraryFile.active().where(LibraryFile.id == file_id))
+    library_file = result.scalar_one_or_none()
+
+    if not library_file:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    # Ownership check (same shape as update_file)
+    if not can_modify_all:
+        if library_file.created_by_id != user.id:
+            raise HTTPException(status_code=403, detail="You can only update your own files")
+
+    if not file.filename or not file.filename.lower().endswith(PHOTO_EXTENSIONS):
+        raise HTTPException(status_code=400, detail="File must be an image (.jpg, .jpeg, .png, .webp)")
+
+    content = await file.read(MAX_PHOTO_BYTES + 1)
+    if len(content) > MAX_PHOTO_BYTES:
+        raise HTTPException(status_code=413, detail="Photo too large (max 10 MB)")
+
+    photos_dir = library_photos_dir(library_file.id)
+    photos_dir.mkdir(parents=True, exist_ok=True)
+
+    ext = Path(file.filename).suffix.lower()
+    photo_filename = f"{uuid.uuid4().hex[:8]}{ext}"
+    photo_path = photos_dir / photo_filename  # SEC-PATH-OK: photo_filename = uuid.uuid4().hex[:8] + ext
+    photo_path.write_bytes(content)
+
+    photos = list(library_file.photos or [])
+    photos.append(photo_filename)
+    library_file.photos = photos
+
+    await db.commit()
+    await db.refresh(library_file)
+
+    return {"status": "uploaded", "filename": photo_filename, "photos": library_file.photos}
+
+
+@router.get("/files/{file_id}/photos/{filename}")
+async def get_file_photo(
+    file_id: int,
+    filename: str,
+    db: AsyncSession = Depends(get_db),
+    auth_result: tuple[User | None, bool] = Depends(
+        require_media_token_ownership(
+            Permission.LIBRARY_READ_ALL,
+            Permission.LIBRARY_READ_OWN,
+        )
+    ),
+):
+    """Serve one photo. Media-token auth like the thumbnail route (#3025)."""
+    user, can_read_all = auth_result
+    result = await db.execute(LibraryFile.active().where(LibraryFile.id == file_id))
+    library_file = _ensure_library_file_visible(result.scalar_one_or_none(), user, can_read_all)
+
+    # Membership check first: names are uuid-generated on upload, so anything
+    # not in the stored list is not a photo, whatever is on disk.
+    if not library_file.photos or filename not in library_file.photos:
+        raise HTTPException(status_code=404, detail="Photo not found")
+
+    try:
+        photo_path = safe_join_under(library_photos_dir(library_file.id), filename, http=False)
+    except PathTraversalError:
+        raise HTTPException(status_code=404, detail="Photo not found") from None
+    if not photo_path.is_file():
+        raise HTTPException(status_code=404, detail="Photo not found")
+
+    media_type = PHOTO_MEDIA_TYPES.get(Path(filename).suffix.lower(), "image/jpeg")
+    return FastAPIFileResponse(str(photo_path), media_type=media_type)
+
+
+@router.delete("/files/{file_id}/photos/{filename}")
+async def delete_file_photo(
+    file_id: int,
+    filename: str,
+    db: AsyncSession = Depends(get_db),
+    auth_result: tuple[User | None, bool] = Depends(
+        require_ownership_permission(
+            Permission.LIBRARY_UPDATE_ALL,
+            Permission.LIBRARY_UPDATE_OWN,
+        )
+    ),
+):
+    """Remove a photo from a library file."""
+    user, can_modify_all = auth_result
+
+    result = await db.execute(LibraryFile.active().where(LibraryFile.id == file_id))
+    library_file = result.scalar_one_or_none()
+
+    if not library_file:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    if not can_modify_all:
+        if library_file.created_by_id != user.id:
+            raise HTTPException(status_code=403, detail="You can only update your own files")
+
+    if not library_file.photos or filename not in library_file.photos:
+        raise HTTPException(status_code=404, detail="Photo not found")
+
+    try:
+        photo_path = safe_join_under(library_photos_dir(library_file.id), filename, http=False)
+    except PathTraversalError:
+        raise HTTPException(status_code=404, detail="Photo not found") from None
+    if photo_path.is_file():
+        try:
+            photo_path.unlink()
+        except OSError as e:
+            logger.warning("Failed to delete photo from disk: %s", e)
+
+    photos = [p for p in library_file.photos if p != filename]
+    library_file.photos = photos if photos else None
+
+    await db.commit()
+
+    return {"status": "deleted", "photos": library_file.photos or []}
+
+
 @router.get("/files/{file_id}/gcode")
 async def get_gcode(
     file_id: int,
@@ -5810,6 +6233,7 @@ async def bulk_delete(
         await delete_dependent_variants(db, hard_deleted_ids)
         await release_queue_references(db, hard_deleted_ids)
         for file in hard_deleted:
+            remove_library_photos_dir(file.id)
             await db.delete(file)
 
     # Delete folders (cascade will handle contents). Folders have no ownership
@@ -5832,6 +6256,10 @@ async def bulk_delete(
             tree_file_ids = await _folder_tree_file_ids(db, folder_id)
             await delete_dependent_variants(db, tree_file_ids)
             await release_queue_references(db, tree_file_ids)
+            # The cascade hard-deletes every row in the subtree, so their
+            # photos go with them — same as DELETE /folders/{id} (#3077).
+            for doomed_id in tree_file_ids:
+                remove_library_photos_dir(doomed_id)
             await db.delete(folder)
             deleted_folders += 1
 

@@ -129,6 +129,25 @@ describe('PrintersPage - drying start modes', () => {
     );
   });
 
+  it('lets the temperature be retyped instead of snapping to the 45 °C minimum (#3182)', async () => {
+    const user = userEvent.setup();
+    render(<PrintersPage />);
+    await openDryingPopover(user);
+
+    const temp = screen
+      .getAllByRole('spinbutton')
+      .find((el) => el.getAttribute('min') === '45') as HTMLInputElement;
+    await user.clear(temp);
+    await user.keyboard('6');
+    expect(temp.value).toBe('6');
+    await user.keyboard('0');
+    expect(temp.value).toBe('60');
+
+    await user.tab();
+    expect(temp.value).toBe('60');
+    expect((screen.getAllByRole('slider')[0] as HTMLInputElement).value).toBe('60');
+  });
+
   it('reveals the delay chips when After delay is selected, with 2h preselected', async () => {
     const user = userEvent.setup();
     render(<PrintersPage />);
@@ -245,6 +264,51 @@ describe('PrintersPage - drying start modes', () => {
     );
     render(<PrintersPage />);
     expect(await screen.findByText('Connect AMS power adapter to enable drying')).toBeInTheDocument();
+  });
+
+  it('shows a failed run by its error code, translated, not the backend English text', async () => {
+    server.use(
+      http.get('/api/v1/scheduled-dryings', () =>
+        HttpResponse.json([
+          {
+            ...PENDING_ROW,
+            status: 'failed',
+            error_code: 'did_not_start',
+            // Deliberately different from the translation, so the test shows
+            // which of the two was rendered.
+            error_message: 'backend English text',
+            completed_at: '2026-07-25T23:25:00',
+          },
+        ])
+      ),
+    );
+    render(<PrintersPage />);
+    expect(
+      await screen.findByText(
+        'Scheduled drying failed: The printer accepted the command, but the AMS did not start drying'
+      )
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/backend English text/)).not.toBeInTheDocument();
+  });
+
+  it('falls back to the error message for an unknown error code', async () => {
+    server.use(
+      http.get('/api/v1/scheduled-dryings', () =>
+        HttpResponse.json([
+          {
+            ...PENDING_ROW,
+            status: 'failed',
+            error_code: 'something_new',
+            error_message: 'A reason this frontend has no key for',
+            completed_at: '2026-07-25T23:25:00',
+          },
+        ])
+      ),
+    );
+    render(<PrintersPage />);
+    expect(
+      await screen.findByText('Scheduled drying failed: A reason this frontend has no key for')
+    ).toBeInTheDocument();
   });
 
   it('shows a run that failed at dispatch, with a dismiss that clears it', async () => {

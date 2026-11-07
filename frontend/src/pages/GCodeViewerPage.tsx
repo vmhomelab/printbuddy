@@ -124,7 +124,7 @@ export function GCodeViewerPage() {
   // pattern the File Manager page uses, with `min-h` keeping the toolbar
   // reachable on short screens where a hard height would clip it.
   return (
-    <div className="flex flex-col min-h-[calc(100vh-64px)] lg:h-[calc(100vh-64px)]">
+    <div className="flex flex-col min-h-[calc(100vh-64px)] lg:h-screen">
       <div className="flex-shrink-0 px-4 py-2 border-b border-bambu-dark-tertiary flex flex-wrap items-center gap-x-4 gap-y-2">
         <button
           type="button"

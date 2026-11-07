@@ -43,6 +43,9 @@ export type SliceSource =
 interface SliceModalProps {
   source: SliceSource;
   onClose: () => void;
+  // Start with auto-arrange ticked. Set when the source was just built by
+  // "Combine to 3MF": its objects only become a sensible plate once arranged.
+  defaultAutoArrange?: boolean;
 }
 
 type PresetTier = 'local' | 'orca_cloud' | 'cloud' | 'standard';
@@ -243,7 +246,7 @@ function colourInputValue(raw: string | null | undefined): string {
     : SLICER_DEFAULT_COLOUR;
 }
 
-export function SliceModal({ source, onClose }: SliceModalProps) {
+export function SliceModal({ source, onClose, defaultAutoArrange = false }: SliceModalProps) {
   const { t } = useTranslation();
   const { trackJob } = useSliceJobTracker();
   const queryClient = useQueryClient();
@@ -304,7 +307,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   // enabled in embedded mode, unlike the process-level options around
   // them — these act on the geometry, whichever config drives the slice.
   const [autoOrient, setAutoOrient] = useState(false);
-  const [autoArrange, setAutoArrange] = useState(false);
+  const [autoArrange, setAutoArrange] = useState(defaultAutoArrange);
 
   // #2622: process settings the designer changed away from the stock preset,
   // carried onto the picked process profile so a cross-printer re-slice keeps
@@ -807,7 +810,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
       }}
     >
       <div
-        className="w-full max-w-xl lg:max-w-5xl max-h-[85vh] flex flex-col rounded-lg bg-bambu-dark-secondary border border-bambu-dark-tertiary/60"
+        className="w-full max-w-xl lg:max-w-5xl xl:max-w-7xl 2xl:max-w-[96rem] max-h-[85vh] flex flex-col rounded-lg bg-bambu-dark-secondary border border-bambu-dark-tertiary/60"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -882,8 +885,11 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
                   "what am I slicing with" decisions together; the right gives
                   the process-settings panel a column of its own, which is the
                   only way 348 options are comfortable to work through. Below
-                  lg both collapse back into the original single stack. */}
-              <div className="lg:grid lg:grid-cols-[minmax(0,20rem)_minmax(0,1fr)] lg:gap-5 lg:items-start">
+                  lg both collapse back into the original single stack. The
+                  left column grows with the modal: fixed at 20rem it cut
+                  preset names off and wrapped every filament label while the
+                  settings panel sat half empty. */}
+              <div className="lg:grid lg:grid-cols-[minmax(20rem,2fr)_minmax(0,3fr)] lg:gap-5 lg:items-start">
                 <div className="space-y-4 min-w-0">
               {/* Slicer Pipelines (#1425): apply a saved preset bundle to all
                   four slots, or save the current selection as a pipeline.

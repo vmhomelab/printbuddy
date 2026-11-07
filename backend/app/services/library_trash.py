@@ -29,6 +29,7 @@ from backend.app.core.database import async_session
 from backend.app.models.library import LibraryFile
 from backend.app.models.print_queue import PrintQueueItem, PrintQueueVariant
 from backend.app.models.settings import Settings
+from backend.app.utils.library_paths import remove_library_photos_dir
 from backend.app.utils.local_time import utcnow_naive
 
 logger = logging.getLogger(__name__)
@@ -364,7 +365,7 @@ class LibraryTrashService:
 
     @staticmethod
     def _unlink_on_disk(row: LibraryFile) -> None:
-        """Best-effort cleanup of managed file, thumbnail, and source snapshot."""
+        """Best-effort cleanup of the file, thumbnail, photos (#3077) and source snapshot on disk."""
         for rel in (row.file_path, row.thumbnail_path):
             abs_path = _to_absolute_path(rel)
             if abs_path is None:
@@ -374,6 +375,7 @@ class LibraryTrashService:
                     abs_path.unlink()
             except OSError as e:
                 logger.warning("Trash sweep: failed to unlink %s: %s", abs_path, e)
+        remove_library_photos_dir(row.id)
 
         snapshot_path = _to_absolute_path(row.source_snapshot_path)
         if snapshot_path is None:

@@ -7,6 +7,7 @@ import type { FilamentSectionProps, FilamentOption } from './types';
 import { KNOWN_VARIANTS } from './constants';
 import { parsePresetName } from './utils';
 import { PresetSourceBadge } from './PresetPicker';
+import { NumberInput } from '../NumberInput';
 
 // The identity fields a slicer preset can auto-fill.
 type PresetFilledField = 'material' | 'brand' | 'subtype';
@@ -63,8 +64,6 @@ export function FilamentSection({
   const [materialSearch, setMaterialSearch] = useState('');
   const [labelInput, setLabelInput] = useState(String(formData.label_weight));
   const [isLabelFocused, setIsLabelFocused] = useState(false);
-  const [quantityInput, setQuantityInput] = useState(String(quantity));
-  const [isQuantityFocused, setIsQuantityFocused] = useState(false);
   const [ofdbBrandQuery, setOfdbBrandQuery] = useState('');
   const [ofdbBrands, setOfdbBrands] = useState<OpenFilamentDatabaseBrandSummary[]>([]);
   const [ofdbMaterials, setOfdbMaterials] = useState<OpenFilamentDatabaseMaterialSummary[]>([]);
@@ -167,12 +166,6 @@ export function FilamentSection({
       setLabelInput(String(formData.label_weight));
     }
   }, [formData.label_weight, isLabelFocused]);
-
-  useEffect(() => {
-    if (!isQuantityFocused) {
-      setQuantityInput(String(quantity));
-    }
-  }, [quantity, isQuantityFocused]);
 
   // Handle preset selection
   const handlePresetSelect = (option: FilamentOption) => {
@@ -887,33 +880,14 @@ export function FilamentSection({
       {showQuantity && (
         <div>
           <label className="block text-sm font-medium text-bambu-gray mb-1">{t('inventory.quantity')}</label>
-          <input
-            type="number"
+          <NumberInput
             aria-label={t('inventory.quantity')}
             className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green"
-            value={quantityInput}
+            value={quantity}
             min={1}
             max={100}
-            onFocus={() => setIsQuantityFocused(true)}
-            onChange={(e) => {
-              const raw = e.target.value;
-              if (!/^\d*$/.test(raw)) return;
-              setQuantityInput(raw);
-              if (raw === '') return;
-              const parsed = Number(raw);
-              if (Number.isFinite(parsed)) {
-                onQuantityChange(Math.max(1, Math.min(100, parsed)));
-              }
-            }}
-            onBlur={() => {
-              setIsQuantityFocused(false);
-              const parsed = Number(quantityInput);
-              const next = Number.isFinite(parsed) && quantityInput.trim() !== ''
-                ? Math.max(1, Math.min(100, parsed))
-                : 1;
-              onQuantityChange(next);
-              setQuantityInput(String(next));
-            }}
+            onChange={onQuantityChange}
+            fallback={1}
           />
         </div>
       )}

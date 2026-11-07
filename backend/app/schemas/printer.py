@@ -346,7 +346,7 @@ class HMSErrorResponse(BaseModel):
     code: str
     attr: int = 0  # Attribute value for constructing wiki URL
     module: int
-    severity: int  # 1=fatal, 2=serious, 3=common, 4=info
+    severity: int  # Bambu alert level: 1 error (stopped), 2 warning (paused), 3 notification, 0 invalid
     actions: list[str] = []  # List of user-facing action keys (e.g. "CHECK_FILAMENT")
     job_id: str | None = None  # Optional job ID for actions that require it (e.g. "CHECK_ASSISTANT")
     # Canonical hex identifier the firmware uses to match HMS-related commands.
@@ -359,12 +359,33 @@ class HMSErrorResponse(BaseModel):
     # The bundled catalogue's sentence for this fault, so a client does not have
     # to carry its own copy of the same table to tell a user why a print halted
     # (#2926). English only and not localized — the catalogue ships one language.
-    # None when the catalogue does not cover the code, which is common for
-    # `hms[]`-array faults: those resolve through a lossy collapse of their
-    # 16-char identifier and many land on no key at all (#2728). A client should
-    # treat null as "no text available", never as "no fault" — `full_code` is
-    # what identifies the fault, and it is always present.
+    # Generated from Bambu Studio's HMS files, keyed by `full_code` and the
+    # printer model (#2728). None when Bambu publishes no text for the code,
+    # which it does for some codes it lists. A client should treat null as "no
+    # text available", never as "no fault" — `full_code` is what identifies the
+    # fault, and it is always present.
     description: str | None = None
+
+
+def hms_error_responses(errors) -> list[HMSErrorResponse]:
+    """A printer's live HMS faults (``PrinterState.hms_errors``) as API rows.
+
+    Shared by the printer status route and the webhook status route, so a
+    fault reads the same to the UI and to an API-key client (#2919).
+    """
+    return [
+        HMSErrorResponse(
+            code=e.code,
+            attr=e.attr,
+            module=e.module,
+            severity=e.severity,
+            actions=e.actions,
+            job_id=e.job_id,
+            full_code=e.full_code,
+            description=e.description,
+        )
+        for e in (errors or [])
+    ]
 
 
 class AMSTray(BaseModel):
@@ -400,6 +421,10 @@ class AMSUnit(BaseModel):
     serial_number: str = ""  # AMS unit serial number (sn from MQTT)
     sw_ver: str = ""  # AMS firmware version (from get_version info.module)
     dry_time: int = 0  # Minutes remaining (0 = not drying, >0 = drying active)
+    # True when dry_time > 0 but the countdown has not ticked for over
+    # DRY_COUNTDOWN_STALL_SECONDS with no active dry_status phase: the timer is
+    # set but no cycle is running (never started, or paused partway).
+    dry_countdown_stalled: bool = False
     dry_status: int = 0  # 0=Off, 1=Checking, 2=Drying, 3=Cooling, 4=Stopping, 5=Error
     dry_sub_status: int = 0  # 0=Off, 1=Heating, 2=Dehumidify
     dry_sf_reason: list[int] = []  # Cannot-dry reasons from firmware (see CannotDryReason)

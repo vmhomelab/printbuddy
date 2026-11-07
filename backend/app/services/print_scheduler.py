@@ -5,6 +5,7 @@ import json
 import logging
 import time
 import uuid
+import zipfile
 from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -29,8 +30,9 @@ from backend.app.models.settings import Settings
 from backend.app.models.smart_plug import SmartPlug
 from backend.app.models.spool_assignment import SpoolAssignment
 from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
-from backend.app.services import drying_preflight, print_dispatch_context
+from backend.app.services import drying_preflight, kprofile_drift, print_dispatch_context, stock_forecast
 from backend.app.services.bambu_ftp import (
+    FtpFailureKind,
     FtpFailureReport,
     UploadCancelled,
     cache_3mf_download,
@@ -60,10 +62,17 @@ from backend.app.services.printer_manager import (
 )
 from backend.app.services.printer_providers.factory import normalize_provider
 from backend.app.services.smart_plug_manager import smart_plug_manager
+from backend.app.services.spool_assignment_notifications import (
+    _global_tray_from_assignment,
+    _slot_label_from_global_tray,
+)
+from backend.app.utils.ams_drying import is_countdown_parked
 from backend.app.utils.ams_humidity import ams_humidity_percent
+from backend.app.utils.archive_paths import archive_photos_dir
 from backend.app.utils.color_utils import perceptual_color_distance
 from backend.app.utils.filament_types import canonical_filament_type
 from backend.app.utils.filename import derive_remote_filename
+from backend.app.utils.library_paths import move_library_photos
 from backend.app.utils.local_time import utcnow_naive
 from backend.app.utils.printer_models import (
     is_dual_nozzle_model,
@@ -72,11 +81,65 @@ from backend.app.utils.printer_models import (
     normalize_printer_model,
 )
 from backend.app.utils.threemf_tools import (
+    default_plate_number,
     extract_rack_plan_from_3mf,
     extract_slot_extruders_from_3mf,
+    select_plate_gcode_name,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _ams_slot_label(ams_id: int, tray_id: int) -> str:
+    """Human slot name for an assignment tuple, in the spelling already in use.
+
+    Composed from the notification side's own pair rather than spelled out again
+    here. The hand-rolled version this replaces got three real slot kinds wrong:
+    ams_id 254 fell into its ``>= 128`` branch and came out as ``HT-`` plus
+    ``chr(191)``; both externals collapsed to one label, because an external
+    assignment stores ams_id 255 with tray_id picking left or right
+    (inventory.py:1771, ``ext_id = data.tray_id + 254``); and an A2L AMS-Lite,
+    normalised to unit 6, read as ``AMS-G`` instead of ``Lite-``.
+
+    Naming the same slot two ways is its own defect once an alert and the
+    Inventory page are meant to be talking about the same tray, so this defers
+    rather than adding a fifth spelling.
+    """
+    return _slot_label_from_global_tray(_global_tray_from_assignment(ams_id, tray_id))
+
+
+# Minimum seconds between low-filament checks. Matches the scheduler's idle
+# interval: the fast path runs every 3 s while an upload is in flight, and a
+# low spool does not need answering at that resolution (#2913).
+_FILAMENT_LOW_MIN_INTERVAL = 30.0
+
+# Minimum seconds between stock forecast checks (#2955). The forecast is in whole
+# days, so a finer check would only repeat the same answer.
+_STOCK_FORECAST_MIN_INTERVAL = 3600.0
+
+# The settings row that holds which stock alerts have already been sent (#2955).
+_STOCK_ALERTS_SETTING_KEY = "stock_alerts_notified"
+
+# The Inventory page asks for this many usage records and the forecast panel
+# builds its rates from them; the alert reads the same window so the two agree.
+_STOCK_FORECAST_HISTORY_LIMIT = 5000
+
+
+def _remaining_percent(label_weight: int | float | None, weight_used: float | None) -> float | None:
+    """Remaining filament as a percentage of the label weight.
+
+    The same arithmetic the Inventory page's Low Stock count uses, and it works
+    unchanged in both inventory modes: internal spools store ``weight_used``
+    directly, and ``_map_spoolman_spool`` derives it from Spoolman's
+    ``remaining_weight`` so the shape matches. Returns None when there is no
+    label weight to be a percentage of -- a spool that cannot say how full it
+    started cannot say how empty it is.
+    """
+    if not label_weight or label_weight <= 0:
+        return None
+    remaining = max(0.0, float(label_weight) - float(weight_used or 0.0))
+    return remaining / float(label_weight) * 100.0
+
 
 # Dispatch-toast progress throttling (#1625 follow-up). Mirrors the legacy
 # background_dispatch.py upload_progress_callback (200 ms time gate + 256 KB
@@ -193,6 +256,13 @@ class _KeepWarmEntry:
 # manual or firmware-run dry is untouched.
 AUTO_DRY_REARM_COOLDOWN_SECONDS = 30 * 60
 AUTO_DRY_MAX_UNPRODUCTIVE_CYCLES = 2
+# Sustained-humidity wait (#2518): an above-threshold streak is only
+# "continuous" if some pass observed it within the gap ceiling. A unit that
+# goes unobserved longer (print running, printer disconnected, sensor silent)
+# restarts its streak rather than inheriting a stale one. The ceiling is
+# derived from the scheduler cadence — four missed passes — with this floor so
+# a fast-polling configuration does not void streaks on a single hiccup.
+AUTO_DRY_SUSTAINED_GAP_FLOOR_SECONDS = 120
 
 # How long a finished scheduled drying row is kept before it is pruned.
 SCHEDULED_DRYING_RETENTION_DAYS = 7
@@ -282,6 +352,35 @@ _ACTIVE_PRINT_STATES: frozenset[str] = frozenset({"PREPARE", "SLICING", "RUNNING
 # force-reconnect on the very next attempt — while still bounding the loop.
 DISPATCH_MAX_ATTEMPTS = 3
 
+# Upload failures that mean the file never reached the printer's storage: the
+# file service refused or never answered (#3210). These put the item back in
+# the queue instead of failing it, because nothing about the job is wrong --
+# and failing it left the printer idle, so the next pass handed it the next
+# item, which failed the same way. One P2S whose file service was out of
+# connection slots ate 43 queued jobs in ten minutes that way.
+#
+# Not here: AUTH (a wrong access code needs the user), STORAGE (a full or
+# missing card does too), NOT_FOUND (a Printbuddy-side path problem), UNKNOWN,
+# and an upload that overran its deadline -- each of those would fail the same
+# way on every retry.
+_UPLOAD_REQUEUE_KINDS: frozenset[FtpFailureKind] = frozenset(
+    {FtpFailureKind.HANDSHAKE, FtpFailureKind.COOLOFF, FtpFailureKind.TIMEOUT, FtpFailureKind.NETWORK}
+)
+
+# How long a printer whose upload was put back stays out of dispatch (#3210).
+# The first window matches the FTP client's own handshake cool-off, so the
+# retry lands after the client would talk to the printer again anyway. Each
+# further refusal in a row doubles it, up to the cap: #3210's printer refused
+# for some 40 hours, and every retry costs a preheat cycle where preheat is on,
+# five connection attempts and a page of log. A successful upload resets it.
+UPLOAD_FAILURE_BACKOFF_SECONDS = 300
+UPLOAD_FAILURE_BACKOFF_MAX_SECONDS = 3600
+
+
+def _upload_backoff_seconds(refusals: int) -> int:
+    """Backoff after the *refusals*-th refused upload in a row (1-based)."""
+    return min(UPLOAD_FAILURE_BACKOFF_SECONDS * 2 ** max(refusals - 1, 0), UPLOAD_FAILURE_BACKOFF_MAX_SECONDS)
+
 
 @dataclass(slots=True)
 class _ModelCandidate:
@@ -351,6 +450,27 @@ def _filament_constraints(candidate: _ModelCandidate) -> tuple[list[str] | None,
             effective_types = sorted(set(required_types or []) | set(override_types))
 
     return effective_types, filament_overrides
+
+
+def _could_take_printer(item: PrintQueueItem, printer_id: int, printer_model: str | None) -> bool:
+    """Whether ``item`` was competing for the printer another item just took.
+
+    The SJF starvation guard marks a job as jumped when a shorter one lower in
+    the queue takes a printer it wanted. A pinned job and an "Any <model>" job
+    compete for the same printer, so the guard has to look across both lanes
+    (#3200); looking only inside the dispatched item's own lane let a stream of
+    short model-based jobs hold a longer pinned job back indefinitely.
+
+    Location filters are not checked: over-marking only lifts an item that was
+    going to wait anyway, while under-marking is the starvation this prevents.
+    """
+    if item.printer_id is not None:
+        return item.printer_id == printer_id
+    if not printer_model:
+        return False
+    wanted = (normalize_printer_model(printer_model) or printer_model).lower()
+    models = [v.target_model for v in item.variants] if item.variants else [item.target_model]
+    return any(m and (normalize_printer_model(m) or m).lower() == wanted for m in models)
 
 
 def _candidates_for(item: PrintQueueItem) -> list[_ModelCandidate]:
@@ -844,6 +964,77 @@ def _unmatched_filament_message(required: list[dict], loaded: list[dict]) -> str
     )
 
 
+def _effective_plate_id(explicit_plate_id: int | None, file_path: Path) -> int:
+    """The plate to dispatch, resolved once in ``_start_print`` and reused at
+    every call site below it: G-code injection, usage registration, rack-plan
+    lookup, slot-extruder lookup, the external-spool check, and the actual
+    print command.
+
+    A positive explicit ``plate_id`` on the queue item always wins. A
+    non-positive one is treated as "not set" and resolved from the archive,
+    the way the rest of the queue code already reads it (``if item.plate_id:``
+    in ``api/routes/print_queue.py``): the schemas put no lower bound on the
+    field, and passing a 0 straight through would build a print command for
+    ``Metadata/plate_0.gcode``, which is the same wedge this function exists
+    to prevent. The ``item.plate_id or 1`` this replaced mapped 0 to 1.
+
+    Falling back to a bare ``1`` instead of reading the archive assumes a
+    single-plate file's one G-code is numbered 1, which only holds for a
+    plate exported on its own: one cut out of a larger project keeps its
+    ORIGINAL plate number, so a printer asked to print "plate 1" of a file
+    whose only G-code is ``plate_2.gcode`` accepts the command, can't find
+    the file, throws an HMS error, and sits wedged in IDLE until
+    power-cycled (#2947).
+
+    The call sites agreed on a fallback only by accident before this:
+    with G-code injection on, ``inject_gcode_into_3mf`` already falls back to
+    the archive's own default plate internally whenever the plate id it's
+    handed isn't in the file, so it could silently inject into a different
+    plate than the one the print command itself asked for.
+
+    Falls back to 1 when the archive can't be read, holds no G-code member at
+    all, or its default member doesn't follow the ``plate_N`` naming
+    convention (a slicer that doesn't use it has no number to dispatch).
+
+    An explicit plate the archive doesn't hold is logged and then sent
+    anyway. It wedges the printer exactly like #2947 did, but redirecting it
+    to a plate that is in the file would print a model nobody asked for,
+    which is the worse of the two.
+    """
+    try:
+        with zipfile.ZipFile(file_path, "r") as zf:
+            names = zf.namelist()
+    except (OSError, zipfile.BadZipFile) as exc:
+        logger.warning(
+            "Dispatch plate: cannot read %s (%s), so the archive's own plate numbering "
+            "is unavailable; dispatching plate %s",
+            file_path,
+            exc,
+            explicit_plate_id if explicit_plate_id is not None and explicit_plate_id > 0 else 1,
+        )
+        names = None
+
+    if explicit_plate_id is not None and explicit_plate_id > 0:
+        if (
+            names is not None
+            and default_plate_number(names) is not None
+            and select_plate_gcode_name(names, explicit_plate_id) is None
+        ):
+            logger.warning(
+                "Dispatch plate: %s was queued for plate %s but holds no G-code for it "
+                "(it has %s). Sending plate %s as asked; expect the printer to reject the "
+                "file, since printing a different plate would print the wrong model (#2947)",
+                file_path,
+                explicit_plate_id,
+                ", ".join(sorted(n for n in names if n.endswith(".gcode"))),
+                explicit_plate_id,
+            )
+        return explicit_plate_id
+
+    resolved = default_plate_number(names) if names is not None else None
+    return resolved if resolved is not None else 1
+
+
 class PrintScheduler:
     """Background scheduler that processes the print queue."""
 
@@ -893,6 +1084,20 @@ class PrintScheduler:
         # moment it connects.
         self._wake_failures: dict[int, float] = {}
         self._wake_failure_cooloff = 600  # seconds
+        # Printers whose last upload never reached them, mapped to the monotonic
+        # time they may be dispatched to again (#3210). Same expire-on-read shape
+        # as `_wake_failures`. Without it, a printer that cannot take files is
+        # idle on every pass, so it is picked on every pass.
+        self._upload_backoff: dict[int, float] = {}
+        # Refused uploads in a row per printer, which sets the next backoff
+        # window. Cleared by a successful upload to that printer.
+        self._upload_refusals: dict[int, int] = {}
+        # Printers whose current run of refusals has already sent its one
+        # "job waiting" notification. Each retry clears the item's waiting
+        # reason and the next refusal sets it again, which `hold_item` reads as
+        # a new reason; without this, every retry would notify. Cleared with
+        # `_upload_refusals`.
+        self._upload_refusal_notified: set[int] = set()
         # Track which printers are currently auto-drying (printer_id -> start timestamp)
         self._drying_in_progress: dict[int, float] = {}
         # Per-AMS memory of the auto-drying cycles WE armed, keyed by
@@ -905,6 +1110,45 @@ class PrintScheduler:
         #                  still above the threshold
         #   suspended    — we have stopped arming this unit and said so
         self._auto_dry_units: dict[tuple[int, int], dict[str, object]] = {}
+        # Sustained-humidity streaks for the ambient-drying wait (#2518). Keyed
+        # like _auto_dry_units but deliberately a SEPARATE dict: membership in
+        # _auto_dry_units means "Printbuddy armed a cycle on this unit", and the
+        # print-takes-priority stop, the manual-cycle adoption guard, and the
+        # arming setdefault all act on that meaning -- a unit that is merely
+        # waiting out its streak must not become stoppable or judgeable.
+        #   since -- monotonic stamp when the current continuous above-threshold
+        #            streak began
+        #   last  -- monotonic stamp of the last pass that observed the streak
+        self._auto_dry_above: dict[tuple[int, int], dict[str, float]] = {}
+        # Slots already notified as low on filament:
+        # {(printer_id, ams_id, tray_id, spool_id)}.
+        # Cleared when the slot goes back above its threshold rather than on a
+        # timer, mirroring _notified_hms_errors — a spool hovering at the
+        # boundary must not produce an alert on every pass, and a slot that has
+        # been refilled has to be able to alert again. See #2913.
+        #
+        # The spool id is part of the key because the slot alone cannot clear
+        # itself. Pull a low spool and put a different part-used one in the same
+        # slot: the key survives the pass where the slot resolves to nothing --
+        # deliberately, so a brief Spoolman outage does not re-alert everything
+        # when it returns -- and the replacement never goes above the threshold,
+        # so it can never re-arm. Keyed with the spool, the new spool is simply a
+        # different key and the stale one is inert.
+        self._notified_filament_low: set[tuple[int, int, int, int]] = set()
+        # Earliest monotonic time the next low-filament check may run (#2913).
+        self._filament_low_next_check: float = 0.0
+        # SKU key -> (condition, events told) for a SKU that is alerting (#2955): the
+        # condition is "reorder" or "break", the events are those that had a
+        # subscriber when it was sent. Absent means not alerting. Cleared when the
+        # condition clears, so it can alert again, and when nobody wants either
+        # event. Mirrored to one settings row (_STOCK_ALERTS_SETTING_KEY), because the
+        # first check runs as soon as Printbuddy starts and a restart would otherwise
+        # re-send one message per SKU that is still low.
+        self._notified_stock_alerts: dict[stock_forecast.SkuKey, tuple[str, frozenset[str]]] = {}
+        # The JSON last read from or written to that row; None until it has been read.
+        self._stock_alerts_persisted: str | None = None
+        # Earliest monotonic time the next stock forecast check may run (#2955).
+        self._stock_forecast_next_check: float = 0.0
         # Printers with a "running" scheduled drying row (#2638). Rebuilt from the
         # DB on every _check_scheduled_dryings call so route-side cancels show up.
         # Auto-drying's stop-all branches must not stop or untrack these printers;
@@ -1151,11 +1395,17 @@ class PrintScheduler:
             # Check if shortest-job-first scheduling is enabled
             sjf_enabled = await self._get_bool_setting(db, "queue_shortest_first")
 
-            # Get all pending items, ordered by printer and position (or SJF order)
+            # Get all pending items in the one order the queue page shows them
+            # in (#3200). The first eligible item takes a printer, so this order
+            # decides who wins a printer that a pinned job and an "Any <model>"
+            # job both want. It used to start with ``printer_id``, which made the
+            # lane outrank the position: SQLite sorts NULL first, so model-based
+            # jobs always won; PostgreSQL sorts it last, so pinned jobs did.
+            # Neither is what the user dragged into place.
             if sjf_enabled:
-                # SJF: group by printer (and target_model for model-based jobs),
-                # then items already jumped get top priority (starvation guard),
-                # then sort by print_time ascending. Items with no print time go last.
+                # SJF: items already jumped get top priority (starvation guard),
+                # then sort by print_time ascending. Items with no print time go
+                # last, and position breaks ties.
                 result = await db.execute(
                     select(PrintQueueItem)
                     .where(PrintQueueItem.status == "pending")
@@ -1176,11 +1426,10 @@ class PrintScheduler:
                         selectinload(PrintQueueItem.variants).selectinload(PrintQueueVariant.library_file),
                     )
                     .order_by(
-                        PrintQueueItem.printer_id,
-                        PrintQueueItem.target_model,
                         PrintQueueItem.been_jumped.desc(),
                         PrintQueueItem.print_time_seconds.asc().nullslast(),
                         PrintQueueItem.position,
+                        PrintQueueItem.id,
                     )
                 )
             else:
@@ -1197,7 +1446,7 @@ class PrintScheduler:
                         # raise in async.
                         selectinload(PrintQueueItem.variants).selectinload(PrintQueueVariant.library_file),
                     )
-                    .order_by(PrintQueueItem.printer_id, PrintQueueItem.position)
+                    .order_by(PrintQueueItem.position, PrintQueueItem.id)
                 )
             items = list(result.scalars().all())
 
@@ -1238,6 +1487,8 @@ class PrintScheduler:
                 self._sweep_keep_warm(active_candidates=set(), dispatched=set())
                 inflight_printers = {pid for (_task, pid) in self._inflight.values() if pid is not None}
                 await self._check_auto_drying(db, [], inflight_printers)
+                await self._check_filament_low(db)
+                await self._check_stock_forecast(db)
                 return bool(self._inflight)
 
             logger.info(
@@ -1420,6 +1671,34 @@ class PrintScheduler:
             # generalises that workaround instead of repeating it per case.
             dispatching_printers: set[int] = set(busy_printers)
 
+            # Printers whose last upload never reached them (#3210). After the
+            # snapshot above on purpose: such a printer is idle, not about to
+            # print, and auto-drying must keep treating it as idle.
+            now_mono = time.monotonic()
+            # In backoff this pass. Kept apart from busy_printers so keep-warm
+            # can leave them out: there is no print to keep a bed warm for.
+            backoff_printers: set[int] = set()
+            # In backoff, and the "job waiting" notification for this run of
+            # refusals has gone out already. Their holds are written silently.
+            silent_hold_printers: set[int] = set()
+            for backoff_pid, retry_at in list(self._upload_backoff.items()):
+                if now_mono >= retry_at:
+                    del self._upload_backoff[backoff_pid]
+                    continue
+                backoff_printers.add(backoff_pid)
+                if backoff_pid in self._upload_refusal_notified:
+                    silent_hold_printers.add(backoff_pid)
+                else:
+                    self._upload_refusal_notified.add(backoff_pid)
+                mark_busy(
+                    backoff_pid,
+                    f"its file service refused the last upload; retrying in {retry_at - now_mono:.0f}s",
+                )
+                item_hold_reasons.setdefault(
+                    backoff_pid,
+                    f"{printer_label(backoff_pid)} is not accepting files — Printbuddy will retry automatically",
+                )
+
             # Printers held by a Home Assistant sensor interlock (#1148) — an
             # enclosure door left open, say. The fixed-printer branch turns
             # this into a waiting_reason the user can act on; the model-based
@@ -1556,6 +1835,7 @@ class PrintScheduler:
                         await hold_item(
                             item,
                             item_hold_reasons.get(item.printer_id) or f"Busy: {printer_label(item.printer_id)}",
+                            notify=item.printer_id not in silent_hold_printers,
                         )
                         continue
 
@@ -1623,8 +1903,12 @@ class PrintScheduler:
                     # Drying blocks the queue, if the user asked it to. A hold
                     # is a skip like any other, so it belongs here with the
                     # rest of the availability checks.
-                    if self._drying_in_progress.get(item.printer_id) and await self._get_bool_setting(
-                        db, "queue_drying_block"
+                    # A parked timer (#2896) never ends, so it must not hold the
+                    # queue; it stays tracked so the stop paths still reach it.
+                    if (
+                        self._drying_in_progress.get(item.printer_id)
+                        and not self._drying_is_only_parked(item.printer_id)
+                        and await self._get_bool_setting(db, "queue_drying_block")
                     ):
                         # Busy-shaped on purpose: the cycle ends on its own and
                         # the job goes out, so there is nothing to alert about.
@@ -1729,11 +2013,13 @@ class PrintScheduler:
 
                     # SJF starvation guard: mark items that were jumped
                     if sjf_enabled and item.print_time_seconds is not None:
+                        pinned_model = pinned_printers.get(item.printer_id, ("", ""))[1]
                         for other in items:
                             if (
                                 other.id != item.id
+                                and other.id not in dispatch_ids
                                 and other.status == "pending"
-                                and other.printer_id == item.printer_id
+                                and _could_take_printer(other, item.printer_id, pinned_model)
                                 and not other.been_jumped
                                 and other.position < item.position
                                 and (
@@ -1933,15 +2219,14 @@ class PrintScheduler:
                         dispatch_ids.append(item.id)
                         claim_printer(printer_id)
 
-                        # SJF starvation guard: mark model-based items that were jumped
+                        # SJF starvation guard: mark items that were jumped
                         if sjf_enabled and item.print_time_seconds is not None:
                             for other in items:
                                 if (
                                     other.id != item.id
+                                    and other.id not in dispatch_ids
                                     and other.status == "pending"
-                                    and other.printer_id is None
-                                    and other.target_model
-                                    and other.target_model.upper() == item.target_model.upper()
+                                    and _could_take_printer(other, printer_id, item.target_model)
                                     and not other.been_jumped
                                     and other.position < item.position
                                     and (
@@ -1985,7 +2270,9 @@ class PrintScheduler:
             # auxiliary check wedge the queue. The bed simply stays wherever it
             # was, and the next tick tries again.
             try:
-                await self._apply_keep_warm(db, items, dispatch_ids, busy_printers, require_plate_clear)
+                await self._apply_keep_warm(
+                    db, items, dispatch_ids, busy_printers - backoff_printers, require_plate_clear
+                )
             except Exception as e:
                 logger.warning("Keep-warm pass failed, continuing with dispatch: %s", e, exc_info=True)
 
@@ -2011,6 +2298,16 @@ class PrintScheduler:
 
             # Auto-drying: start drying on idle printers that have no pending queue items
             await self._check_auto_drying(db, items, dispatching_printers)
+
+            # Low filament: alert on assigned spools that have crossed their
+            # low-stock threshold (#2913). Runs on both paths out of this method
+            # for the same reason auto-drying does — an empty queue does not mean
+            # the spools in the printers stopped mattering.
+            await self._check_filament_low(db)
+
+            # Stock forecast: alert when a filament SKU reaches its reorder point or
+            # is about to run out before a replenishment could arrive (#2955).
+            await self._check_stock_forecast(db)
 
             # Keep the loop on the fast interval while any upload is in flight so
             # a slot freed mid-tick refills within seconds rather than after the
@@ -2165,6 +2462,59 @@ class PrintScheduler:
                 # upload. A row left pending (e.g. busy-printer deferral) becomes
                 # dispatchable again on the next tick.
                 await self._clear_dispatch_claim(item_db, item_id)
+
+    async def _requeue_after_upload_refused(
+        self,
+        db: AsyncSession,
+        item: PrintQueueItem,
+        printer: Printer,
+        error_msg: str,
+        toast_uid: int | None,
+    ) -> None:
+        """Put an item back in the queue after its file never reached the printer (#3210).
+
+        The item keeps its printer. Its AMS mapping was computed against that
+        printer's trays, and nothing on the row says whether a mapping was
+        computed or set by the user, so moving it to a sibling could print from
+        the wrong slots. The printer goes into `_upload_backoff` instead, which
+        keeps every other item away from it; this one waits there and is the
+        only thing that knocks again, once per backoff window. The window
+        grows with each refusal in a row; see ``_upload_backoff_seconds``.
+
+        `dispatch_attempts` is not charged: that budget bounds a printer that
+        takes the file and then never starts, which this is not.
+        """
+        refusals = self._upload_refusals.get(printer.id, 0) + 1
+        self._upload_refusals[printer.id] = refusals
+        backoff = _upload_backoff_seconds(refusals)
+        self._upload_backoff[printer.id] = time.monotonic() + backoff
+        # The row is still `pending` -- it only moves to `printing` after a
+        # successful upload -- so there is no status to write back. Writing one
+        # anyway would undo a cancel that landed during the upload.
+        if item.error_message:
+            item.error_message = None
+            await db.commit()
+        logger.warning(
+            "Queue item %s: upload to printer %s (%s) never reached it — %s Kept in the queue; "
+            "refusal %d in a row, so the printer is out of dispatch for %ds.",
+            item.id,
+            printer.id,
+            printer.name,
+            error_msg,
+            refusals,
+            backoff,
+        )
+        try:
+            # Closes the dispatch toast for this attempt. Without it the toast
+            # keeps spinning on an upload that has ended.
+            await ws_manager.send_queue_item_failed(
+                user_id=toast_uid,
+                queue_item_id=item.id,
+                printer_id=item.printer_id,
+                reason="upload_failed",
+            )
+        except Exception:
+            pass  # toast is best-effort
 
     def _rollback_unconfirmed_expected_print(self, item_id: int) -> None:
         """Drop an expectation for a print command that was never sent.
@@ -4148,6 +4498,500 @@ class PrintScheduler:
             return None
         return (min_temp, max_hours or 12, filament_type)
 
+    async def _check_filament_low(self, db: AsyncSession) -> None:
+        """Alert on AMS slots whose assigned spool has crossed its low-stock threshold (#2913).
+
+        ``on_filament_low`` has had a column, a schema field, a route, a template
+        and a UI toggle since the notification system was built, and no caller --
+        so the toggle could be switched on and could never fire. This is the
+        producer.
+
+        No new setting. ``low_stock_threshold`` (default 20%) with the per-spool
+        ``low_stock_threshold_pct`` override is already exactly this decision:
+        already configurable, already surfaced, already driving the Inventory
+        page's Low Stock count. The AMS ``remain`` percentage is deliberately not
+        consulted -- it has been measured up to 56 points out against a scale,
+        which is not a number to page someone on.
+
+        Only slots with an assigned spool produce an event. A slot Printbuddy
+        cannot resolve to a spool has no remaining weight it can stand behind,
+        and guessing one is how the remain percentage would have got in.
+        """
+        from backend.app.models.spool import Spool
+
+        # Time-gated rather than run on every pass. run() sleeps
+        # _fast_check_interval -- 3 seconds -- on any productive pass, and the
+        # early-return path counts as productive while an upload is in flight
+        # (#2602), so an unthrottled check would re-read the whole spool
+        # collection every 3 seconds for the length of a batch drain. In
+        # Spoolman mode that is a request storm against a third-party service,
+        # which is the thing this producer's design note argues against; and
+        # when Spoolman is down, _get_with_retry burns ~16 s inside
+        # check_queue holding the scheduler's session, so the outage would
+        # throttle the print queue itself. A low spool is not a 3-second
+        # concern -- the idle interval is the natural resolution.
+        now = time.monotonic()
+        if now < self._filament_low_next_check:
+            return
+        self._filament_low_next_check = now + _FILAMENT_LOW_MIN_INTERVAL
+
+        try:
+            # on_filament_low defaults to off on every provider, so on most
+            # installs nobody wants this alert. Without this the check would
+            # still read every assigned spool each interval -- the whole
+            # collection over HTTP in Spoolman mode -- for an event that is
+            # switched off. One query against the provider table settles it
+            # before any spool work, the same guard the bed-cooled waiter uses.
+            # No printer_id: this asks whether any provider wants the event at
+            # all; per-printer scoping is applied when the event is sent.
+            #
+            # While nobody wants it, no pass sees a slot go back above its
+            # threshold, so nothing can re-arm; a spool refilled under the same
+            # id in that time would stay silenced until a restart. Forgetting
+            # what was sent is right anyway: whoever switches the event back on
+            # is told about the spools that are low now.
+            if not await notification_service._get_providers_for_event(db, "on_filament_low"):
+                self._notified_filament_low.clear()
+                return
+
+            global_threshold = await self._get_low_stock_threshold(db)
+            spoolman_on = await self._get_bool_setting(db, "spoolman_enabled")
+
+            # (printer_id, ams_id, tray_id, spool_id) -> (remaining_pct, threshold, colour name)
+            slots: dict[tuple[int, int, int, int], tuple[float, float, str | None]] = {}
+
+            if spoolman_on:
+                slots = await self._filament_low_slots_spoolman(db, global_threshold)
+            else:
+                rows = (
+                    await db.execute(
+                        select(SpoolAssignment, Spool)
+                        .join(Spool, SpoolAssignment.spool_id == Spool.id)
+                        # An archived spool is not stock. The Inventory page's
+                        # Low Stock count skips them (InventoryPage.tsx:1089)
+                        # and get_all_spools without allow_archived already
+                        # excludes them in Spoolman mode, so without this the
+                        # internal path is the only one that alerts on them.
+                        .where(Spool.archived_at.is_(None))
+                    )
+                ).all()
+                for assignment, spool in rows:
+                    pct = _remaining_percent(spool.label_weight, spool.weight_used)
+                    if pct is None:
+                        continue
+                    threshold = float(spool.low_stock_threshold_pct or global_threshold)
+                    slots[(assignment.printer_id, assignment.ams_id, assignment.tray_id, spool.id)] = (
+                        pct,
+                        threshold,
+                        spool.color_name,
+                    )
+
+            if not slots:
+                # Nothing resolvable this pass. Deliberately not clearing the
+                # notified set: a Spoolman that is briefly unreachable would
+                # otherwise re-alert on every spool as soon as it came back.
+                return
+
+            await self._emit_filament_low(db, slots)
+        except Exception as e:
+            logger.warning("Low-filament check failed: %s", e, exc_info=True)
+
+    async def _get_low_stock_threshold(self, db: AsyncSession) -> float:
+        """The global low-stock percentage, defaulting to the schema's 20.0."""
+        raw = (await db.execute(select(Settings).where(Settings.key == "low_stock_threshold"))).scalar_one_or_none()
+        if raw is None or raw.value is None:
+            return 20.0
+        try:
+            value = float(raw.value)
+        except (TypeError, ValueError):
+            return 20.0
+        return value if 0 < value <= 100 else 20.0
+
+    async def _filament_low_slots_spoolman(
+        self, db: AsyncSession, global_threshold: float
+    ) -> dict[tuple[int, int, int, int], tuple[float, float, str | None]]:
+        """Resolve Spoolman-mode slots to (remaining %, threshold, colour name).
+
+        Spoolman spools carry no per-spool override -- ``low_stock_threshold_pct``
+        is a column on Printbuddy's own spool table and has no Spoolman equivalent,
+        so the global threshold is the only one that applies here. That matches
+        what the Inventory page already does in this mode.
+
+        One ``get_all_spools`` call covers every slot rather than a request per
+        spool. Archived spools do not appear -- ``get_all_spools`` excludes them
+        without ``allow_archived`` -- which is the behaviour the internal path
+        has to ask for explicitly.
+
+        An unreachable Spoolman returns no slots rather than raising. It is an
+        ordinary state for a third-party service, not an error in this pass: the
+        caller's "nothing resolvable" branch already leaves the notified set
+        alone, which is exactly right here, whereas letting it reach the broad
+        ``except`` would write a full traceback every time the check runs.
+        """
+        from backend.app.api.routes._spoolman_helpers import _map_spoolman_spool
+        from backend.app.services.spoolman import SpoolmanUnavailableError, get_spoolman_client
+
+        assignments = (await db.execute(select(SpoolmanSlotAssignment))).scalars().all()
+        if not assignments:
+            return {}
+
+        client = await get_spoolman_client()
+        if client is None:
+            return {}
+
+        try:
+            all_spools = await client.get_all_spools()
+        except SpoolmanUnavailableError as e:
+            logger.debug("Low-filament check skipped, Spoolman unreachable: %s", e)
+            return {}
+
+        by_id: dict[int, dict] = {}
+        for raw in all_spools:
+            raw_id = raw.get("id")
+            if isinstance(raw_id, int):
+                by_id[raw_id] = raw
+
+        slots: dict[tuple[int, int, int, int], tuple[float, float, str | None]] = {}
+        for assignment in assignments:
+            raw = by_id.get(assignment.spoolman_spool_id)
+            if raw is None:
+                continue
+            try:
+                mapped = _map_spoolman_spool(raw)
+            except ValueError:
+                continue
+            pct = _remaining_percent(mapped.get("label_weight"), mapped.get("weight_used"))
+            if pct is None:
+                continue
+            key = (assignment.printer_id, assignment.ams_id, assignment.tray_id, assignment.spoolman_spool_id)
+            slots[key] = (pct, global_threshold, mapped.get("color_name"))
+        return slots
+
+    async def _emit_filament_low(
+        self, db: AsyncSession, slots: dict[tuple[int, int, int, int], tuple[float, float, str | None]]
+    ) -> None:
+        """Send one notification per slot that has newly crossed its threshold."""
+        printer_names: dict[int, str] = {}
+        for key, (pct, threshold, color) in slots.items():
+            printer_id, ams_id, tray_id, _spool_id = key
+            if pct >= threshold:
+                # Back above the line: re-arm rather than expire on a timer, so a
+                # refilled slot can alert again and a spool sitting just under the
+                # threshold stays quiet.
+                self._notified_filament_low.discard(key)
+                continue
+            if key in self._notified_filament_low:
+                continue
+            # Marked before sending, which is a choice rather than the only
+            # option, and it is the opposite failure mode from the one the
+            # debounce argues against: one transient provider failure loses this
+            # alert until the spool goes back above the threshold and crosses it
+            # again. Marking after a successful send would trade that for
+            # re-alerting on every pass while a provider is down -- which is the
+            # repetition the whole debounce exists to prevent, and the louder of
+            # the two failures. A spool that is low stays low, so the next real
+            # signal is not far away; a provider stuck retrying is a signal that
+            # never stops.
+            self._notified_filament_low.add(key)
+
+            if printer_id not in printer_names:
+                printer = (await db.execute(select(Printer).where(Printer.id == printer_id))).scalar_one_or_none()
+                if printer is None:
+                    continue
+                printer_names[printer_id] = printer.name
+            try:
+                await notification_service.on_filament_low(
+                    printer_id,
+                    printer_names[printer_id],
+                    _ams_slot_label(ams_id, tray_id),
+                    int(pct),
+                    db,
+                    color=color,
+                )
+            except Exception as e:
+                logger.warning("Low-filament notification failed for slot %s: %s", key, e)
+
+    async def _check_stock_forecast(self, db: AsyncSession) -> None:
+        """Alert when a filament SKU reaches its reorder point or is about to break (#2955).
+
+        ``on_stock_reorder_alert`` and ``on_stock_break_alert`` have had a column,
+        a schema field, a template and a UI toggle, and nothing that computes the
+        condition -- the Forecast panel does it in the browser, so with no page
+        open nothing could ever alert. This runs the same arithmetic
+        (``stock_forecast``) from the scheduler loop.
+
+        An alert is sent when a SKU *moves into* a condition, once, and again
+        after the condition has cleared. A SKU that worsens from reorder to break
+        alerts again as a break, because the panel treats the two as exclusive; one
+        that eases from break back to reorder does not alert again.
+        A SKU with alerts snoozed is treated as not alerting, so un-snoozing it
+        while it is still low tells you.
+
+        Time-gated to hourly for the reasons ``_check_filament_low`` is gated: the
+        loop runs every 3 s while an upload is in flight, and the whole spool
+        collection is read over HTTP in Spoolman mode. Both events default to off
+        on every provider, so nothing is read unless a provider wants one.
+        """
+        now = time.monotonic()
+        if now < self._stock_forecast_next_check:
+            return
+        self._stock_forecast_next_check = now + _STOCK_FORECAST_MIN_INTERVAL
+
+        try:
+            if self._stock_alerts_persisted is None:
+                await self._load_stock_alerts(db)
+            wanted = {
+                "reorder": bool(await notification_service._get_providers_for_event(db, "on_stock_reorder_alert")),
+                "break": bool(await notification_service._get_providers_for_event(db, "on_stock_break_alert")),
+            }
+            if not any(wanted.values()):
+                # Nobody wants either event. Forget what was sent, so whoever
+                # switches one on is told about the SKUs that are low now.
+                self._notified_stock_alerts.clear()
+                await self._save_stock_alerts(db)
+                return
+
+            forecasts = await self._stock_forecasts(db)
+            if forecasts is None:
+                # Spoolman unreachable. Deliberately not clearing the notified
+                # set: a brief outage would otherwise re-alert every SKU when it
+                # came back.
+                return
+
+            await self._emit_stock_alerts(db, forecasts, wanted)
+            await self._save_stock_alerts(db)
+        except Exception as e:
+            logger.warning("Stock forecast check failed: %s", e, exc_info=True)
+
+    def _serialize_stock_alerts(self) -> str:
+        """The notified set as JSON, in a fixed order so an unchanged set compares equal."""
+        rows = sorted([list(key), kind, sorted(events)] for key, (kind, events) in self._notified_stock_alerts.items())
+        return json.dumps(rows)
+
+    async def _load_stock_alerts(self, db: AsyncSession) -> None:
+        """Read the notified set saved by the last run, once per process.
+
+        A missing or unreadable row is an empty set: the worst that does is one
+        repeat of what a restart used to cause every time.
+        """
+        raw = (await db.execute(select(Settings).where(Settings.key == _STOCK_ALERTS_SETTING_KEY))).scalar_one_or_none()
+        loaded: dict[stock_forecast.SkuKey, tuple[str, frozenset[str]]] = {}
+        if raw and raw.value:
+            try:
+                for key, kind, events in json.loads(raw.value):
+                    if len(key) == 4 and kind in ("reorder", "break"):
+                        loaded[tuple(str(part) for part in key)] = (kind, frozenset(str(e) for e in events))
+            except (ValueError, TypeError):
+                logger.warning("Ignoring unreadable %s setting", _STOCK_ALERTS_SETTING_KEY)
+                loaded = {}
+        self._notified_stock_alerts = loaded
+        self._stock_alerts_persisted = self._serialize_stock_alerts()
+
+    async def _save_stock_alerts(self, db: AsyncSession) -> None:
+        """Write the notified set to its settings row if it changed since it was last read or written."""
+        serialized = self._serialize_stock_alerts()
+        if serialized == self._stock_alerts_persisted:
+            return
+        from backend.app.core.db_dialect import upsert_setting
+
+        await upsert_setting(db, Settings, _STOCK_ALERTS_SETTING_KEY, serialized)
+        await db.commit()
+        self._stock_alerts_persisted = serialized
+
+    async def _stock_forecasts(self, db: AsyncSession) -> stock_forecast.ForecastMap | None:
+        """Forecast every active SKU in whichever inventory mode is on. None if it cannot be read."""
+        from backend.app.models.filament_sku_settings import FilamentSkuSettings
+
+        global_lead_time = max(0, await self._get_int_setting(db, "forecast_global_lead_time_days", default=0))
+        sku_rows = (await db.execute(select(FilamentSkuSettings))).scalars().all()
+        sku_settings = {
+            stock_forecast.sku_key(row.material, row.subtype, row.brand, row.color_name): stock_forecast.SkuSettings(
+                lead_time_days=row.lead_time_days,
+                safety_margin_value=row.safety_margin_value,
+                safety_margin_unit=row.safety_margin_unit,
+                alerts_snoozed=bool(row.alerts_snoozed),
+            )
+            for row in sku_rows
+        }
+
+        if await self._get_bool_setting(db, "spoolman_enabled"):
+            spools = await self._stock_spools_spoolman()
+            if spools is None:
+                return None
+            # Spoolman owns the usage in this mode and Printbuddy's own history
+            # table holds nothing for those spools, so the rate is always the
+            # delta rate. Printbuddy's table is deliberately not consulted: its ids
+            # are local spool ids, and a Spoolman id that happens to match one
+            # (left over from before Spoolman was switched on) would borrow an
+            # unrelated spool's history.
+            history: dict[int, list[stock_forecast.UsageRecord]] = {}
+        else:
+            spools = await self._stock_spools_internal(db)
+            history = await self._stock_usage_history(db)
+
+        return stock_forecast.forecast_all(spools, history, sku_settings, global_lead_time, utcnow_naive())
+
+    async def _stock_spools_internal(self, db: AsyncSession) -> list[stock_forecast.StockSpool]:
+        from backend.app.models.spool import Spool
+
+        rows = (await db.execute(select(Spool).where(Spool.archived_at.is_(None)))).scalars().all()
+        return [
+            stock_forecast.StockSpool(
+                id=spool.id,
+                material=spool.material,
+                subtype=spool.subtype,
+                brand=spool.brand,
+                color_name=spool.color_name,
+                label_weight=float(spool.label_weight or 0),
+                weight_used=float(spool.weight_used or 0),
+                weight_used_baseline=float(spool.weight_used_baseline or 0),
+                created_at=spool.created_at,
+            )
+            for spool in rows
+        ]
+
+    async def _stock_usage_history(self, db: AsyncSession) -> dict[int, list[stock_forecast.UsageRecord]]:
+        from backend.app.models.spool_usage_history import SpoolUsageHistory
+
+        rows = (
+            await db.execute(
+                select(SpoolUsageHistory.spool_id, SpoolUsageHistory.created_at, SpoolUsageHistory.weight_used)
+                .order_by(SpoolUsageHistory.created_at.desc())
+                .limit(_STOCK_FORECAST_HISTORY_LIMIT)
+            )
+        ).all()
+        history: dict[int, list[stock_forecast.UsageRecord]] = {}
+        for spool_id, created_at, weight_used in rows:
+            if created_at is None:
+                continue
+            history.setdefault(spool_id, []).append(stock_forecast.UsageRecord(created_at, float(weight_used or 0)))
+        return history
+
+    async def _stock_spools_spoolman(self) -> list[stock_forecast.StockSpool] | None:
+        """Spoolman's spools in the forecast's shape, or None when Spoolman cannot be reached.
+
+        ``get_all_spools`` leaves archived spools out unless asked, which is the
+        exclusion the internal query applies explicitly. ``_map_spoolman_spool``
+        is the same mapping the Inventory page (and so the panel) reads.
+        """
+        from backend.app.api.routes._spoolman_helpers import _map_spoolman_spool
+        from backend.app.services.spoolman import SpoolmanUnavailableError, get_spoolman_client
+
+        client = await get_spoolman_client()
+        if client is None:
+            logger.debug("Stock forecast skipped, no Spoolman client (spoolman_enabled without a URL?)")
+            return None
+        try:
+            raw_spools = await client.get_all_spools()
+        except SpoolmanUnavailableError as e:
+            logger.debug("Stock forecast skipped, Spoolman unreachable: %s", e)
+            return None
+
+        spools: list[stock_forecast.StockSpool] = []
+        for raw in raw_spools:
+            try:
+                mapped = _map_spoolman_spool(raw)
+            except ValueError:
+                continue
+            created_at = None
+            if mapped.get("created_at"):
+                try:
+                    created_at = datetime.fromisoformat(str(mapped["created_at"]).replace("Z", "+00:00"))
+                except ValueError:
+                    created_at = None
+            spools.append(
+                stock_forecast.StockSpool(
+                    id=mapped["id"],
+                    material=mapped["material"],
+                    subtype=mapped.get("subtype"),
+                    brand=mapped.get("brand"),
+                    color_name=mapped.get("color_name"),
+                    label_weight=float(mapped.get("label_weight") or 0),
+                    weight_used=float(mapped.get("weight_used") or 0),
+                    weight_used_baseline=float(mapped.get("weight_used_baseline") or 0),
+                    created_at=created_at,
+                    color_name_is_synthesized=bool(mapped.get("color_name_is_synthesized")),
+                )
+            )
+        return spools
+
+    async def _emit_stock_alerts(
+        self,
+        db: AsyncSession,
+        forecasts: stock_forecast.ForecastMap,
+        wanted: dict[str, bool],
+    ) -> None:
+        """Send the notifications for each SKU that has moved into a stock alert condition.
+
+        A SKU in break has also reached its reorder point, so both events apply to
+        it: the break event goes to providers that have it on, and the reorder event
+        to the providers that have only that one on. A provider with both on gets the
+        break and no second message.
+
+        What is remembered per SKU is the condition and which events had a
+        subscriber when it was sent. An event with no subscriber is forgotten, so
+        switching it on later reports the SKUs already in that condition.
+        """
+        active_events = {event for event, on in wanted.items() if on}
+        for key, (forecast, spool) in forecasts.items():
+            kind: str | None = None
+            if not forecast.snoozed:
+                if forecast.stock_break_alert:
+                    kind = "break"
+                elif forecast.reorder_alert:
+                    kind = "reorder"
+            applicable = {"break": {"break", "reorder"}, "reorder": {"reorder"}}.get(kind or "", set())
+            events = applicable & active_events
+            if not events:
+                self._notified_stock_alerts.pop(key, None)
+                continue
+
+            previous = self._notified_stock_alerts.get(key)
+            told = (previous[1] & active_events) if previous else frozenset()
+            # Trimmed to the events this condition can send. That is what makes easing from
+            # break back to reorder silent (the reorder event was told with the break) and
+            # worsening again news again (the break event is no longer remembered).
+            self._notified_stock_alerts[key] = (kind, frozenset((told | events) & applicable))
+            # Recorded before sending, for the reason _emit_filament_low gives: a
+            # provider that is down should lose this alert, not repeat it every hour.
+            to_send = events - told
+
+            # Both flags imply a positive rate and so a day count.
+            days_left = forecast.days_remaining if forecast.days_remaining is not None else 0
+            rate = forecast.daily_rate_g if forecast.daily_rate_g is not None else 0.0
+            color = None if spool.color_name_is_synthesized else spool.color_name
+            try:
+                if "break" in to_send:
+                    await notification_service.on_stock_break_alert(
+                        spool.material,
+                        spool.brand,
+                        forecast.remaining_g,
+                        rate,
+                        days_left,
+                        forecast.effective_lead_time_days,
+                        db,
+                        subtype=spool.subtype,
+                        color=color,
+                    )
+                if "reorder" in to_send:
+                    await notification_service.on_stock_reorder_alert(
+                        spool.material,
+                        spool.brand,
+                        forecast.remaining_g,
+                        rate,
+                        days_left,
+                        db,
+                        subtype=spool.subtype,
+                        color=color,
+                        skip_break_subscribers=kind == "break",
+                    )
+            except Exception as e:
+                logger.warning("Stock %s notification failed for %s: %s", kind, key, e)
+
+        # A SKU with no spools left is no longer alerting.
+        for key in [k for k in self._notified_stock_alerts if k not in forecasts]:
+            del self._notified_stock_alerts[key]
+
     async def _check_auto_drying(
         self,
         db: AsyncSession,
@@ -4167,6 +5011,17 @@ class PrintScheduler:
         queue_drying_enabled = await self._get_bool_setting(db, "queue_drying_enabled")
         ambient_drying_enabled = await self._get_bool_setting(db, "ambient_drying_enabled")
         print_drying_enabled = await self._get_bool_setting(db, "print_drying_enabled")
+        sustained_minutes = await self._get_int_setting(db, "ambient_drying_sustained_minutes", default=0)
+        # The wait belongs to ambient drying: the settings UI only shows it while
+        # ambient drying is on, so a value left behind when ambient is turned off
+        # must not keep delaying the one path that still reaches the wait gate
+        # without it (a mid-print start under print_drying).
+        sustained_wait_active = sustained_minutes > 0 and ambient_drying_enabled
+        # Clear every streak as soon as the wait is inactive. An early return (or
+        # an already-drying unit) may otherwise skip the per-unit cleanup and let
+        # a quick toggle-on inherit an old streak.
+        if not sustained_wait_active:
+            self._auto_dry_above.clear()
         if not queue_drying_enabled and not ambient_drying_enabled:
             # Stop active drying on all printers if both features disabled
             if self._drying_in_progress:
@@ -4351,6 +5206,11 @@ class PrintScheduler:
                 # values from reading as progress every other cycle.
                 if unit_state is not None and unit_state.pop("running", False):
                     unit_state["ended_at"] = time.monotonic()
+                    # The streak that armed this cycle is spent; the next one
+                    # starts fresh (and accumulates through the re-arm cooldown
+                    # below, so the wait overlaps the cooldown, never stacks on
+                    # top of it).
+                    self._auto_dry_above.pop(unit_key, None)
                     if humidity is not None and humidity > humidity_threshold:
                         best = unit_state.get("best_end_humidity")
                         if isinstance(best, int) and humidity < best:
@@ -4401,6 +5261,24 @@ class PrintScheduler:
                         unit_state.pop("suspended", None)
                         unit_state.pop("unproductive", None)
                         unit_state.pop("best_end_humidity", None)
+                    # A real below-threshold reading ends any sustained-wait
+                    # streak (#2518) -- "continuously above" means exactly that.
+                    # An absent reading (humidity is None) is no-information and
+                    # leaves the streak alone; the observation-gap guard handles
+                    # a prolonged sensor silence.
+                    if humidity is not None:
+                        _above = self._auto_dry_above.pop(unit_key, None)
+                        if _above is not None and sustained_wait_active:
+                            logger.info(
+                                "Auto-drying: printer %d AMS %d — humidity fell back to %s%% after "
+                                "%.0fs of the required %dm above the %d%% threshold; not drying",
+                                pid,
+                                ams_id,
+                                humidity,
+                                time.monotonic() - _above["since"],
+                                sustained_minutes,
+                                humidity_threshold,
+                            )
                     logger.debug(
                         "Auto-drying: printer %d AMS %d skipped — humidity %s <= threshold %d",
                         pid,
@@ -4409,6 +5287,42 @@ class PrintScheduler:
                         humidity_threshold,
                     )
                     continue
+
+                # Sustained-humidity streak (#2518): updated on every pass that
+                # observes the reading above the threshold, BEFORE the
+                # suspension/cooldown gates below -- a suspended or cooling-down
+                # unit still accumulates streak time, so the wait overlaps those
+                # gates instead of stacking after them. Inert when the feature
+                # is off: no entries are written, and an entry left over from a
+                # toggle-off is dropped so it cannot seed a stale streak later.
+                if sustained_wait_active:
+                    _now = time.monotonic()
+                    # Four missed scheduler passes, floored: a single slow pass
+                    # must not void a streak, but the ceiling has to scale with
+                    # the cadence or a slow loop silently restarts every streak.
+                    _gap_ceiling = max(4 * self._check_interval, AUTO_DRY_SUSTAINED_GAP_FLOOR_SECONDS)
+                    _above = self._auto_dry_above.get(unit_key)
+                    if _above is None:
+                        self._auto_dry_above[unit_key] = {"since": _now, "last": _now}
+                    elif _now - _above["last"] > _gap_ceiling:
+                        # Restart, and say so at the same level as the dip
+                        # reset: a silent restart voids the streak invisibly,
+                        # and a user who set a long wait and never gets a dry
+                        # has no way to see why.
+                        logger.info(
+                            "Auto-drying: printer %d AMS %d — sustained-humidity streak restarted after a "
+                            "%.0fs observation gap (ceiling %ds); the %dm wait starts over",
+                            pid,
+                            ams_id,
+                            _now - _above["last"],
+                            _gap_ceiling,
+                            sustained_minutes,
+                        )
+                        self._auto_dry_above[unit_key] = {"since": _now, "last": _now}
+                    else:
+                        _above["last"] = _now
+                else:
+                    self._auto_dry_above.pop(unit_key, None)
 
                 if unit_state is not None:
                     if unit_state.get("suspended"):
@@ -4451,7 +5365,9 @@ class PrintScheduler:
                         )
                         continue
 
-                # Check cannot-dry reasons (power constraints etc.)
+                # Check cannot-dry reasons (power constraints etc.). Sits
+                # ahead of the sustained wait so a unit the firmware refuses
+                # to dry never logs a wait it was never going to cash in.
                 sf_reasons = ams_data.get("dry_sf_reason", [])
                 if sf_reasons:
                     logger.debug(
@@ -4461,6 +5377,32 @@ class PrintScheduler:
                         sf_reasons,
                     )
                     continue
+
+                # Sustained-humidity wait (#2518): ambient-triggered starts
+                # wait; only a printer with a scheduled queue item pending
+                # keeps the instant behavior, because that drying has a real
+                # deadline. Mid-print is deliberately NOT exempt while ambient
+                # drying is on: a humidity start on a printer that happens to be
+                # printing is as vulnerable to a lid-open spike as one on an idle
+                # printer (proven live: a 2-point threshold crossing mid-print
+                # bought a parked 12h command). Inactive when ambient drying is
+                # off: print_drying then still starts mid-print cycles on its own
+                # (#1816, "regardless of queue state"), and those stay instant.
+                if sustained_wait_active and pid not in printers_with_scheduled:
+                    _above = self._auto_dry_above.get(unit_key)
+                    _waited = time.monotonic() - _above["since"] if _above else 0.0
+                    if _waited < sustained_minutes * 60:
+                        logger.debug(
+                            "Auto-drying: printer %d AMS %d waiting — humidity %s%% above the %d%% "
+                            "threshold for %.0fs of the required %dm",
+                            pid,
+                            ams_id,
+                            humidity,
+                            humidity_threshold,
+                            _waited,
+                            sustained_minutes,
+                        )
+                        continue
 
                 # Get conservative drying params for mixed filaments
                 params = self._get_conservative_drying_params(trays, module_type, presets)
@@ -4558,6 +5500,9 @@ class PrintScheduler:
         if state is not None:
             state.pop("running", None)
             state["ended_at"] = time.monotonic()
+        # A stopped cycle spends the streak that armed it, same as a completed
+        # one (#2518).
+        self._auto_dry_above.pop((printer_id, ams_id), None)
 
     def _sync_drying_state(self):
         """Drop printers from ``_drying_in_progress`` that are no longer drying.
@@ -4592,6 +5537,31 @@ class PrintScheduler:
         # inherit a suspension it never earned.
         for key in [k for k in self._auto_dry_units if printer_manager.get_status(k[0]) is None]:
             self._auto_dry_units.pop(key, None)
+        # Same for sustained-wait streaks (#2518): a deleted-and-re-added
+        # printer starts a fresh wait, and vanished printers do not leak
+        # entries.
+        for key in [k for k in self._auto_dry_above if printer_manager.get_status(k[0]) is None]:
+            self._auto_dry_above.pop(key, None)
+
+    @staticmethod
+    def _drying_is_only_parked(printer_id: int) -> bool:
+        """True when every AMS unit with a drying timer on this printer is parked.
+
+        A parked timer (#2896: the command was taken but the countdown never
+        runs) does not end on its own, so nothing may wait on it. False when no
+        unit reports a timer yet -- a command just sent that the firmware has not
+        reported back is real drying about to begin.
+        """
+        state = printer_manager.get_status(printer_id)
+        units = [a for a in ((state.raw_data or {}).get("ams") or [] if state else []) if isinstance(a, dict)]
+        timed = []
+        for unit in units:
+            try:
+                if int(unit.get("dry_time") or 0) > 0:
+                    timed.append(unit)
+            except (TypeError, ValueError):
+                continue
+        return bool(timed) and all(is_countdown_parked(unit) for unit in timed)
 
     async def _drying_may_continue_through_print(self, db: AsyncSession, printer_id: int) -> bool:
         """True when a running cycle can be left alone while the next print runs.
@@ -4722,11 +5692,14 @@ class PrintScheduler:
             if unsupported:
                 row.status = "failed"
                 row.error_message = unsupported
+                row.error_code = drying_preflight.DETAIL_CODES.get(unsupported)
                 row.completed_at = now
                 logger.warning("Scheduled drying %d: %s", row.id, unsupported)
                 continue
 
-            if self._drying_in_progress.get(row.printer_id) or row.printer_id in running_printer_ids:
+            if (
+                self._drying_in_progress.get(row.printer_id) and not self._drying_is_only_parked(row.printer_id)
+            ) or row.printer_id in running_printer_ids:
                 row.waiting_reason = "already_drying"
                 continue
             if not self._is_printer_idle(row.printer_id, require_plate_clear=False):
@@ -4818,6 +5791,34 @@ class PrintScheduler:
             dry_time = int(target.get("dry_time") or 0) if target else 0
         except (TypeError, ValueError):
             dry_time = 0
+        if dry_time > 0 and is_countdown_parked(target):
+            # The printer took the command but the countdown is not running
+            # (#2896) and will never reach 0, so the run would stay "running"
+            # forever. A print in progress is the likely cause (the power budget
+            # is spent), so re-queue it like any interruption; the next start
+            # waits for the printer to be idle. Parked on an idle printer is a
+            # refusal, not something a retry fixes. The timer itself is left on
+            # the printer: it may yet start once power frees up.
+            if not self._is_printer_idle(row.printer_id, require_plate_clear=False):
+                logger.info(
+                    "Scheduled drying %d: AMS %d countdown is not running during a print; re-queued",
+                    row.id,
+                    row.ams_id,
+                )
+                row.status = "pending"
+                row.started_at = None
+                row.waiting_reason = "interrupted"
+            else:
+                logger.warning(
+                    "Scheduled drying %d: printer accepted the command but AMS %d never started drying",
+                    row.id,
+                    row.ams_id,
+                )
+                row.status = "failed"
+                row.error_message = drying_preflight.DID_NOT_START_DETAIL
+                row.error_code = drying_preflight.DETAIL_CODES[drying_preflight.DID_NOT_START_DETAIL]
+                row.completed_at = now
+            return
         if dry_time > 0:
             return
 
@@ -6555,6 +7556,10 @@ class PrintScheduler:
         file_path = None
         filename = None
         cleanup_disk_paths: list[Path] = []
+        # Set when a dispatch consumes its library file, so the photos can be
+        # carried over after the commit that removes the row (#3077).
+        consumed_library_file_id: int | None = None
+        consumed_photos: list[str] = []
 
         if item.archive_id:
             # Print from archive
@@ -6576,6 +7581,12 @@ class PrintScheduler:
             # queue row.
             if archive.plate_id is None and item.plate_id is not None:
                 archive.plate_id = item.plate_id
+
+            # Ask-for-outcome opt-in rides from the queue item to the archive
+            # the same way (#1898); never cleared here so a reprint of an
+            # archive that already asked keeps asking.
+            if item.confirm_outcome:
+                archive.confirm_requested = True
 
             file_path = settings.base_dir / archive.file_path
             filename = archive.filename
@@ -6637,6 +7648,8 @@ class PrintScheduler:
                 )
                 if archive:
                     item.archive_id = archive.id
+                    if item.confirm_outcome:
+                        archive.confirm_requested = True  # ask-for-outcome opt-in (#1898)
                     if budget_reservation is not None:
                         budget_reservation.print_archive_id = archive.id
                     if item.cleanup_library_after_dispatch and not library_file.is_external:
@@ -6656,6 +7669,9 @@ class PrintScheduler:
                             archive_id=archive.id,
                             dispatched_item_id=item.id,
                         )
+                        # Read while the row is still here; the photos move
+                        # below, once the delete has actually committed.
+                        consumed_photos = list(library_file.photos or [])
                         await db.delete(library_file)
                         file_path = settings.base_dir / archive.file_path
                         filename = archive.filename
@@ -6696,6 +7712,68 @@ class PrintScheduler:
                 logger.error("Queue item %s: Archive creation from library file returned no archive", item.id)
                 await self._power_off_if_needed(db, item)
                 return
+
+            # The photos follow the file into the archive that replaces it, for
+            # the same reason the siblings do (#3077). After the commit above,
+            # never before it: that commit can fail ("database is locked",
+            # #1853) and roll the library row back, and photos already moved
+            # would leave it naming a directory that no longer exists. The
+            # file and thumbnail unlinks are deferred for the same reason.
+            if consumed_library_file_id is not None and consumed_photos:
+                # Held as a plain int, read here while the session is still
+                # healthy, because the handler below may not touch an ORM
+                # instance at all. The commit it exists for fails inside the
+                # FLUSH, not at COMMIT: SQLite takes the write lock at the
+                # first DML statement, so a busy writer surfaces as "database
+                # is locked" on the UPDATE (#1853). SQLAlchemy rolls that back
+                # internally through safe_reraise before re-raising, which
+                # expires every loaded instance and leaves the session in
+                # pending-rollback state -- so `archive.id` inside the except
+                # would itself raise PendingRollbackError and the rollback
+                # below would never be reached.
+                archive_id = archive.id
+                try:
+                    carried_photos = move_library_photos(
+                        consumed_library_file_id,
+                        consumed_photos,
+                        archive_photos_dir(archive),
+                    )
+                    if carried_photos:
+                        archive.photos = list(archive.photos or []) + carried_photos
+                        await db.commit()
+                except Exception as e:
+                    # The archive and the delete are already committed; the
+                    # print goes ahead either way. Worst case the pictures sit
+                    # unnamed in the archive's own directory.
+                    #
+                    # Ints only until the rollback has run, per the note above,
+                    # which is why this logs queue_item_id and not item.id --
+                    # the sibling handler forty lines up does the same.
+                    logger.warning(
+                        "Queue item %s: failed to carry library photos into archive %s: %s",
+                        queue_item_id,
+                        archive_id,
+                        e,
+                    )
+                    await db.rollback()
+                    # rollback() expires every loaded instance, and in async
+                    # SQLAlchemy the next plain attribute read is lazy IO
+                    # outside the greenlet -- MissingGreenlet, which would turn
+                    # this cosmetic failure into a dispatch crash in exactly the
+                    # "database is locked" case the block exists for (#1853).
+                    # The nozzle guard, the upload and the start all keep
+                    # reading item, archive and printer, so all three go back
+                    # into the session before falling through.
+                    item = await db.get(PrintQueueItem, queue_item_id)
+                    archive = await db.get(PrintArchive, archive_id)
+                    printer = await db.get(Printer, item.printer_id) if item else None
+                    if not item or not archive or not printer:
+                        logger.error(
+                            "Queue item %s: item, archive %s or printer gone after the photo rollback",
+                            queue_item_id,
+                            archive_id,
+                        )
+                        return
 
         else:
             # Neither archive nor library file specified
@@ -6784,6 +7862,10 @@ class PrintScheduler:
                 logger.info("Queue item %s: dispatch abandoned — cancelled during preheat", item.id)
                 return
 
+        # See `_effective_plate_id` for why this is resolved once here rather
+        # than each site below repeating `item.plate_id or 1`.
+        effective_plate_id = _effective_plate_id(item.plate_id, file_path)
+
         # G-code injection for auto-print systems (#422)
         injected_path = None
         # #2547: tracked separately from `injected_path`, which is also set when
@@ -6802,7 +7884,7 @@ class PrintScheduler:
                         from backend.app.utils.threemf_tools import inject_gcode_into_3mf
 
                         injected_path = inject_gcode_into_3mf(
-                            file_path, item.plate_id or 1, start_gc or None, end_gc or None
+                            file_path, effective_plate_id, start_gc or None, end_gc or None
                         )
                         if injected_path:
                             file_path = injected_path
@@ -6952,6 +8034,10 @@ class PrintScheduler:
             # way to say so here, so the card got named even for a TLS
             # handshake that never reached the printer's filesystem (#2899).
             error_msg = upload_error or describe_upload_failure(upload_failure.failure)
+            failure = upload_failure.failure
+            if upload_error is None and failure is not None and failure.kind in _UPLOAD_REQUEUE_KINDS:
+                await self._requeue_after_upload_refused(db, item, printer, error_msg, toast_uid)
+                return
             item.status = "failed"
             item.error_message = error_msg
             item.completed_at = datetime.now(timezone.utc)
@@ -6983,6 +8069,11 @@ class PrintScheduler:
             await self._power_off_if_needed(db, item)
             return
 
+        # The printer took a file, so any run of refused uploads is over: the
+        # next refusal starts again at the shortest backoff, and notifies (#3210).
+        self._upload_refusals.pop(printer.id, None)
+        self._upload_refusal_notified.discard(printer.id)
+
         # Parse AMS mapping if stored
         ams_mapping = None
         if item.ams_mapping:
@@ -7003,7 +8094,11 @@ class PrintScheduler:
                 ams_mapping=ams_mapping,
                 created_by_id=item.created_by_id,
                 cost_center_id=item.cost_center_id,
-                plate_id=item.plate_id,
+                # The plate actually dispatched, not the queue item's raw
+                # column: on None, `register_expected_print` stores nothing,
+                # and `extract_filament_usage_from_3mf` then books every
+                # filament in the file rather than the one plate that printed.
+                plate_id=effective_plate_id,
             )
             # Registration happens before the print command by necessity (the
             # printer can report the print before the send returns), so record
@@ -7119,6 +8214,16 @@ class PrintScheduler:
 
         # Clear the awaiting-plate-clear flag now that we're starting a new print
         printer_manager.set_awaiting_plate_clear(item.printer_id, False)
+
+        # #1898: with the opt-in default-good setting, moving on to the next
+        # print resolves the previous print's unanswered outcome prompt as
+        # "good" — this path also covers the camera-based plate detection,
+        # which releases the gate by allowing dispatch rather than by an
+        # explicit acknowledgment. Rides on the dispatch transaction.
+        if await self._get_bool_setting(db, "confirm_default_good_on_plate_clear", default=False):
+            from backend.app.services.print_confirmation import resolve_pending_confirmation_as_good
+
+            await resolve_pending_confirmation_as_good(db, item.printer_id)
         logger.info("Queue item %s: Status set to 'printing', sending print command...", item.id)
 
         # Capture state before dispatch so the watchdog can detect whether the
@@ -7173,7 +8278,7 @@ class PrintScheduler:
         # rack as it stands right now, after the upload, not at queue time.
         resolved_nozzle_mapping = None
         if not item.nozzle_mapping and file_path is not None and is_nozzle_rack_model(printer.model):
-            rack_plan = extract_rack_plan_from_3mf(file_path, plate_id=item.plate_id or 1)
+            rack_plan = extract_rack_plan_from_3mf(file_path, plate_id=effective_plate_id)
             if rack_plan is not None:
                 try:
                     stored_choice = json.loads(item.nozzle_rack_choice) if item.nozzle_rack_choice else {}
@@ -7272,7 +8377,7 @@ class PrintScheduler:
             and file_path is not None
             and is_nozzle_rack_model(printer.model)
         ):
-            slot_extruders = extract_slot_extruders_from_3mf(file_path, plate_id=item.plate_id or 1)
+            slot_extruders = extract_slot_extruders_from_3mf(file_path, plate_id=effective_plate_id)
             if slot_extruders:
                 nozzle_slot_extruders = json.dumps(slot_extruders)
 
@@ -7312,7 +8417,7 @@ class PrintScheduler:
             from backend.app.services.filament_requirements import extract_filament_requirements
 
             consumed = _consumed_mapping_entries(
-                ams_mapping, extract_filament_requirements(file_path, plate_id=item.plate_id or 1)
+                ams_mapping, extract_filament_requirements(file_path, plate_id=effective_plate_id)
             )
             if consumed and all(_is_external_tray(t) for t in consumed):
                 effective_use_ams = False
@@ -7320,9 +8425,19 @@ class PrintScheduler:
                     "Queue item %s: every filament plate %s prints is on the external spool "
                     "(mapping %s) — dispatching with use_ams=False (#3087)",
                     item.id,
-                    item.plate_id or 1,
+                    effective_plate_id,
                     ams_mapping,
                 )
+
+        # A slot that lost its K-profile selection (a power cycle resets every
+        # slot to the default K) would print on the default. The idle check in
+        # the status handler normally restores it first, but nothing guarantees
+        # it ran before this dispatch (#3219). Unthrottled: once per job.
+        # Never allowed to stop the print it is protecting.
+        try:
+            await kprofile_drift.reapply_lost_kprofiles(item.printer_id, _used_global_tray_ids(item), throttle=False)
+        except Exception:
+            logger.exception("Queue item %s: K-profile check before dispatch failed", item.id)
 
         # Start the print with AMS mapping, plate_id and print options.
         # nozzle_mapping rides through verbatim — JSON string captured from
@@ -7333,7 +8448,7 @@ class PrintScheduler:
         started = printer_manager.start_print(
             item.printer_id,
             remote_filename,
-            plate_id=item.plate_id or 1,
+            plate_id=effective_plate_id,
             ams_mapping=ams_mapping,
             bed_levelling=bed_levelling_opt,
             print_platform_type=item.print_platform_type,

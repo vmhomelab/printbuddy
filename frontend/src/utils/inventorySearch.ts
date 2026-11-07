@@ -30,6 +30,8 @@ export function spoolMatchesQuery(spool: InventorySpool, query: string): boolean
     spool.note,
     spool.slicer_filament_name,
     spool.storage_location,
+    spool.material_number,
+    ...(spool.suppliers ?? []).flatMap((link) => [link.supplier_name, link.supplier_article_number]),
     spool.data_origin,
     ...(spool.data_origin === 'openfilamentdatabase'
       ? ['ofdb', 'open filament database', 'openfilamentdatabase']
@@ -38,7 +40,16 @@ export function spoolMatchesQuery(spool: InventorySpool, query: string): boolean
     .filter((value): value is string => Boolean(value))
     .map((value) => value.toLowerCase());
 
-  return terms.every((term) => searchableValues.some((value) => value.includes(term)));
+  return terms.every((term) => {
+    // A hash-prefixed number is an explicit spool ID lookup. Keep plain numeric
+    // searches backwards-compatible ("3" can still match #3, #13, #30, ...),
+    // while "#3" selects only the physical spool whose label says #3 (#2978).
+    const exactIdQuery = term.match(/^#(\d+)$/);
+    if (exactIdQuery) {
+      return spool.id === Number(exactIdQuery[1]);
+    }
+    return searchableValues.some((value) => value.includes(term));
+  });
 }
 
 /** Filter a spool list by a free-text search query. */

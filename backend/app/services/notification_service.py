@@ -17,9 +17,17 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.models.notification import NotificationDigestQueue, NotificationLog, NotificationProvider
+from backend.app.models.archive import PrintArchive
+from backend.app.models.notification import (
+    NotificationDigestQueue,
+    NotificationLog,
+    NotificationProvider,
+    TelegramPendingVerdict,
+)
 from backend.app.models.notification_template import NotificationTemplate
 from backend.app.services.notify_live_activity_service import notify_live_activity_service
+from backend.app.services.print_confirmation import one_tap_url
+from backend.app.utils.notification_photos import save_notification_photo
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +37,23 @@ logger = logging.getLogger(__name__)
 # was both inconsistent with the rest of the project and a more obvious
 # bot signature for upstream WAFs.
 _USER_AGENT = "Printbuddy/1.0 (+https://github.com/vmhomelab/Printbuddy)"
+
+# Appended to a Telegram outcome prompt in reaction mode (#3046); the message
+# itself carries no buttons there, so the user needs telling how to answer.
+TELEGRAM_REACTION_HINT = "React with \U0001f44d or \U0001f44e to record the outcome."
+
+
+def telegram_markdown_escape(message: str) -> str:
+    """Escape underscores in the message body so Telegram Markdown parsing
+    doesn't break on job names like "A1_plate_8" or error codes like
+    "0300_0001". The title is already wrapped in *bold* markers, so only
+    escape after the first newline. Shared with the reaction poller, which
+    re-sends the stored body when it edits the prompt (#3046)."""
+    if "\n" in message:
+        title_part, body_part = message.split("\n", 1)
+        body_part = body_part.replace("_", "\\_")
+        return f"{title_part}\n{body_part}"
+    return message
 
 
 def _looks_like_cloudflare_challenge(response: httpx.Response) -> bool:
@@ -112,6 +137,41 @@ def _opaque_http_failure(response: httpx.Response, *, label: str) -> str:
         (response.text or "")[:200],
     )
     return f"HTTP {response.status_code} from the configured {label} (see server logs at debug level for details)"
+
+
+_sample_notification_image: bytes | None = None
+_sample_notification_image_loaded = False
+
+
+def _load_sample_notification_image() -> bytes | None:
+    """Render the bundled app screenshot as a small JPEG.
+
+    Stands in for a real camera snapshot on Test Configuration / test-all,
+    since there's no live print to capture one from. Cached after the first
+    call so we're not re-reading and resizing the file on every click.
+    """
+    global _sample_notification_image, _sample_notification_image_loaded
+    if _sample_notification_image_loaded:
+        return _sample_notification_image
+    _sample_notification_image_loaded = True
+    try:
+        from io import BytesIO
+
+        from PIL import Image
+
+        from backend.app.core.config import settings
+
+        source_path = settings.static_dir / "img" / "screenshot-desktop.png"
+        with Image.open(source_path) as img:
+            resized = img.convert("RGB")
+            resized.thumbnail((640, 640))
+            buffer = BytesIO()
+            resized.save(buffer, format="JPEG", quality=85)
+            _sample_notification_image = buffer.getvalue()
+    except Exception as e:
+        logger.warning("Failed to build sample notification image: %s", e)
+        _sample_notification_image = None
+    return _sample_notification_image
 
 
 class NotificationService:
@@ -267,36 +327,53 @@ class NotificationService:
         return title, body
 
     async def send_test_notification(
-        self, provider_type: str, config: dict[str, Any], db: AsyncSession | None = None
+        self,
+        provider_type: str,
+        config: dict[str, Any],
+        db: AsyncSession | None = None,
+        attach_photo: bool = True,
     ) -> tuple[bool, str]:
-        """Send a test notification to verify configuration."""
+        """Send a test notification to verify configuration.
+
+        attach_photo mirrors the provider's own toggle (see _send_to_provider)
+        — when set, a bundled sample image stands in for a real snapshot.
+        """
         if db:
             title, message = await self._build_message_from_template(db, "test", {})
         else:
             title = "Printbuddy Test"
             message = "This is a test notification. If you see this, notifications are working!"
 
+        image_data = await asyncio.to_thread(_load_sample_notification_image) if attach_photo else None
+
         try:
             if provider_type == "callmebot":
                 return await self._send_callmebot(config, f"{title}\n{message}")
             elif provider_type == "ntfy":
-                return await self._send_ntfy(config, title, message)
+                return await self._send_ntfy(config, title, message, image_data=image_data)
             elif provider_type == "pushover":
-                return await self._send_pushover(config, title, message)
+                return await self._send_pushover(config, title, message, image_data=image_data)
             elif provider_type == "telegram":
-                return await self._send_telegram(config, f"*{title}*\n{message}")
+                return await self._send_telegram(config, f"*{title}*\n{message}", image_data=image_data)
             elif provider_type == "email":
-                return await self._send_email(config, title, message)
+                return await self._send_email(config, title, message, image_data=image_data)
             elif provider_type == "discord":
-                return await self._send_discord(config, title, message)
+                return await self._send_discord(config, title, message, image_data=image_data)
             elif provider_type == "webhook":
-                return await self._send_webhook(config, title, message)
+                photo_url = None
+                if attach_photo and (config.get("payload_format") or "generic").strip() == "slack":
+                    photo_url = await self._get_or_build_photo_url(db, image_data, "test")
+                return await self._send_webhook(
+                    config, title, message, image_data=image_data, event_type="test", image_url=photo_url
+                )
             elif provider_type == "homeassistant":
-                return await self._send_homeassistant(config, title, message, db=db)
+                photo_url = await self._get_or_build_photo_url(db, image_data, "test") if attach_photo else None
+                return await self._send_homeassistant(config, title, message, db=db, image_url=photo_url)
             elif provider_type == "notify":
                 return await self._send_notify(config, title, message, event_type="test")
             elif provider_type == "bark":
-                return await self._send_bark(config, title, message)
+                photo_url = await self._get_or_build_photo_url(db, image_data, "test") if attach_photo else None
+                return await self._send_bark(config, title, message, image_url=photo_url)
             else:
                 return False, f"Unknown provider type: {provider_type}"
         except Exception as e:
@@ -323,11 +400,15 @@ class NotificationService:
         else:
             return False, f"HTTP {response.status_code}: {response.text[:200]}"
 
-    async def _send_bark(self, config: dict, title: str, message: str) -> tuple[bool, str]:
+    async def _send_bark(
+        self, config: dict, title: str, message: str, url: str | None = None, image_url: str | None = None
+    ) -> tuple[bool, str]:
         """Send notification via Bark, the self-hostable iOS push service (#1495).
 
         POSTs JSON to {server}/push. Defaults to the official api.day.app
         relay; a self-hosted bark-server works by overriding the server URL.
+        ``url`` opens on tap — the outcome confirmation (#1898) deep-links
+        into the archive's confirmation dialog with it.
         """
         server = (config.get("server") or "https://api.day.app").strip().rstrip("/")
         device_key = (config.get("device_key") or "").strip()
@@ -353,6 +434,12 @@ class NotificationService:
         level = (config.get("level") or "").strip()
         if level in ("active", "timeSensitive", "critical", "passive"):
             payload["level"] = level
+        if url:
+            payload["url"] = url
+        if image_url:
+            # Closest thing Bark has to a photo attachment — shows as a
+            # round icon on iOS.
+            payload["icon"] = image_url
 
         client = await self._get_client()
         response = await client.post(f"{server}/push", json=payload)
@@ -380,8 +467,14 @@ class NotificationService:
         message: str,
         image_data: bytes | None = None,
         event_type: str | None = None,
+        actions: str | None = None,
     ) -> tuple[bool, str]:
-        """Send notification via ntfy."""
+        """Send notification via ntfy.
+
+        ``actions`` is a pre-built value for ntfy's Actions header (simple
+        format), used by the outcome-confirmation event (#1898) to put
+        one-tap Good/Reject buttons directly into the push notification.
+        """
         server = config.get("server", "https://ntfy.sh").rstrip("/")
         topic = config.get("topic", "").strip()
         auth_token = config.get("auth_token", "").strip()
@@ -425,6 +518,9 @@ class NotificationService:
         if auth_token:
             headers["Authorization"] = f"Bearer {auth_token}"
 
+        if actions:
+            headers["Actions"] = actions
+
         client = await self._get_client()
 
         if image_data:
@@ -457,7 +553,13 @@ class NotificationService:
         return False, _opaque_http_failure(response, label="ntfy server")
 
     async def _send_pushover(
-        self, config: dict, title: str, message: str, image_data: bytes | None = None
+        self,
+        config: dict,
+        title: str,
+        message: str,
+        image_data: bytes | None = None,
+        url: str | None = None,
+        url_title: str | None = None,
     ) -> tuple[bool, str]:
         """Send notification via Pushover.
 
@@ -466,6 +568,8 @@ class NotificationService:
             title: Notification title
             message: Notification body
             image_data: Optional JPEG image bytes to attach (max 2.5MB)
+            url: Optional supplementary URL shown under the message
+            url_title: Optional label for that URL
         """
         user_key = config.get("user_key", "").strip()
         app_token = config.get("app_token", "").strip()
@@ -477,7 +581,7 @@ class NotificationService:
         if not user_key or not app_token:
             return False, "User key and app token are required"
 
-        url = "https://api.pushover.net/1/messages.json"
+        api_url = "https://api.pushover.net/1/messages.json"
         data = {
             "token": app_token,
             "user": user_key,
@@ -485,6 +589,10 @@ class NotificationService:
             "message": message,
             "priority": priority,
         }
+        if url:
+            data["url"] = url
+            if url_title:
+                data["url_title"] = url_title
 
         # Emergency priority (2) keeps re-alerting until acknowledged, so
         # Pushover *requires* retry (how often, >= 30s) and expire (when to
@@ -507,9 +615,9 @@ class NotificationService:
         if image_data:
             # Pushover supports image attachments via multipart form-data
             files = {"attachment": ("photo.jpg", image_data, "image/jpeg")}
-            response = await client.post(url, data=data, files=files)
+            response = await client.post(api_url, data=data, files=files)
         else:
-            response = await client.post(url, data=data)
+            response = await client.post(api_url, data=data)
 
         if response.status_code == 200:
             return True, "Message sent successfully"
@@ -534,10 +642,45 @@ class NotificationService:
 
     async def _send_telegram(self, config: dict, message: str, image_data: bytes | None = None) -> tuple[bool, str]:
         """Send notification via Telegram bot."""
+
+    async def _send_telegram(
+        self,
+        config: dict,
+        message: str,
+        image_data: bytes | None = None,
+        buttons: list[dict] | None = None,
+        link_preview: bool = True,
+    ) -> tuple[bool, str]:
+        """Send notification via Telegram bot.
+
+        ``buttons`` is one row of inline URL buttons (``{"text", "url"}``
+        entries), used by the outcome-confirmation event (#1898) to put
+        one-tap Good/Reject under the message. ``link_preview=False`` asks
+        Telegram not to fetch the first URL in the text for a preview card.
+        """
+        ok, status, _ = await self._send_telegram_message(
+            config, message, image_data=image_data, buttons=buttons, link_preview=link_preview
+        )
+        return ok, status
+
+    async def _send_telegram_message(
+        self,
+        config: dict,
+        message: str,
+        image_data: bytes | None = None,
+        buttons: list[dict] | None = None,
+        link_preview: bool = True,
+    ) -> tuple[bool, str, dict | None]:
+        """Send via Telegram and also hand back the Bot API ``result`` (the sent Message).
+
+        The outcome confirmation in reaction mode (#3046) needs the
+        ``message_id`` from it to recognise the reaction later; every other
+        caller goes through ``_send_telegram`` and ignores it.
+        """
         bot_token = config.get("bot_token", "").strip()
         chat_id = config.get("chat_id", "").strip()
         if not bot_token or not chat_id:
-            return False, "Bot token and chat ID are required"
+            return False, "Bot token and chat ID are required", None
 
         # Optional forum topic (#1518).  Telegram expects message_thread_id as an
         # integer in the JSON sendMessage body — a string 400s there even though
@@ -551,49 +694,139 @@ class NotificationService:
             try:
                 message_thread_id = int(thread_id_raw)
             except ValueError:
-                return False, f"Invalid message thread ID: {thread_id_raw!r} is not a number"
+                return False, f"Invalid message thread ID: {thread_id_raw!r} is not a number", None
 
-        # Escape underscores in the message body so Telegram Markdown
-        # parsing doesn't break on job names like "A1_plate_8" or error
-        # codes like "0300_0001".  The title is already wrapped in *bold*
-        # markers, so only escape after the first newline.
-        if "\n" in message:
-            title_part, body_part = message.split("\n", 1)
-            body_part = body_part.replace("_", "\\_")
-            message = f"{title_part}\n{body_part}"
+        message = telegram_markdown_escape(message)
 
         client = await self._get_client()
 
-        if image_data:
-            # Use sendPhoto to attach the thumbnail with the caption
-            url = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
-            form: dict[str, Any] = {"chat_id": chat_id, "caption": message, "parse_mode": "Markdown"}
-            if message_thread_id is not None:
-                form["message_thread_id"] = message_thread_id
-            response = await client.post(
-                url,
-                data=form,
-                files={"photo": ("photo.jpg", image_data, "image/jpeg")},
-            )
-        else:
+        async def _post(with_buttons: bool):
+            if image_data:
+                # Use sendPhoto to attach the thumbnail with the caption
+                url = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
+                form: dict[str, Any] = {"chat_id": chat_id, "caption": message, "parse_mode": "Markdown"}
+                if message_thread_id is not None:
+                    form["message_thread_id"] = message_thread_id
+                if with_buttons:
+                    # Multipart form fields are strings — reply_markup goes JSON-encoded.
+                    form["reply_markup"] = json.dumps({"inline_keyboard": [buttons]})
+                return await client.post(
+                    url,
+                    data=form,
+                    files={"photo": ("photo.jpg", image_data, "image/jpeg")},
+                )
+
             url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-            data: dict[str, Any] = {
+            payload: dict[str, Any] = {
                 "chat_id": chat_id,
                 "text": message,
                 "parse_mode": "Markdown",
             }
+            if not link_preview:
+                payload["disable_web_page_preview"] = True
             if message_thread_id is not None:
-                data["message_thread_id"] = message_thread_id
-            response = await client.post(url, json=data)
+                payload["message_thread_id"] = message_thread_id
+            if with_buttons:
+                payload["reply_markup"] = {"inline_keyboard": [buttons]}
+            return await client.post(url, json=payload)
 
-        if response.status_code == 200:
-            result = response.json()
+        def _failure(resp) -> str | None:
+            """What Telegram objected to, or None when the send went through."""
+            if resp.status_code != 200:
+                return f"HTTP {resp.status_code}: {resp.text[:200]}"
+            result = resp.json()
             if result.get("ok"):
-                return True, "Message sent successfully"
-            else:
-                return False, f"Telegram error: {result.get('description', 'Unknown error')}"
-        else:
-            return False, f"HTTP {response.status_code}: {response.text[:200]}"
+                return None
+            return f"Telegram error: {result.get('description', 'Unknown error')}"
+
+        response = await _post(bool(buttons))
+        failure = _failure(response)
+        if failure and buttons:
+            # Telegram validates every inline-keyboard URL and refuses the whole
+            # send when one of them is not a URL it accepts — which is what an
+            # install without a public external_url produces for the #1898
+            # verdict links. Dropping the buttons is survivable; dropping the
+            # message the user is waiting for is not.
+            logger.warning("Telegram refused the message with inline buttons (%s); retrying without them", failure)
+            response = await _post(False)
+            failure = _failure(response)
+
+        if failure:
+            return False, failure, None
+        sent = response.json().get("result")
+        return True, "Message sent successfully", sent if isinstance(sent, dict) else None
+
+    async def _send_telegram_confirm_request(
+        self,
+        provider: NotificationProvider,
+        config: dict,
+        message: str,
+        db: AsyncSession | None,
+        image_data: bytes | None,
+        buttons: list[dict] | None,
+        archive_id: int | None,
+    ) -> tuple[bool, str]:
+        """Deliver the outcome prompt the way the provider's verdict mode asks (#3046).
+
+        "buttons" is the plain #1898 delivery. In "reactions" the inline
+        keyboard is dropped and the user answers with a thumbs-up/down on the
+        message itself; "both" keeps the keyboard as well. In either of those
+        the sent message is remembered in telegram_pending_verdicts, together
+        with the confirm token its links carry, so the reaction poller can map
+        the reaction back to the archive for as long as that token is live.
+        """
+        mode = provider.telegram_verdict_mode or "buttons"
+        # Telegram's servers GET the first URL in the text to build a preview
+        # card. An outcome prompt whose edited body still carries {good_url}
+        # would have that fetch answer the question before the operator saw
+        # it, so the preview is off for the prompt in every mode.
+        if mode == "buttons":
+            return await self._send_telegram(
+                config, message, image_data=image_data, buttons=buttons, link_preview=False
+            )
+
+        if mode == "reactions":
+            buttons = None
+        message = f"{message}\n\n{TELEGRAM_REACTION_HINT}"
+        ok, status, sent = await self._send_telegram_message(
+            config, message, image_data=image_data, buttons=buttons, link_preview=False
+        )
+        if not ok:
+            return ok, status
+
+        message_id = (sent or {}).get("message_id")
+        if not isinstance(message_id, int) or message_id <= 0:
+            logger.warning("Telegram did not return a message_id for the outcome prompt; reactions cannot be matched")
+            return ok, status
+        if db is None or archive_id is None:
+            return ok, status
+
+        try:
+            # dispatch_outcome_confirmation mints a live token right before
+            # sending. Without one the prompt's links are dead too, and a
+            # reaction must not outlive them, so there is nothing to remember.
+            archive = await db.get(PrintArchive, archive_id)
+            if archive is None or not archive.confirm_token or archive.confirm_token_used_at is not None:
+                logger.warning("Outcome prompt for archive %s went out without a live confirm token", archive_id)
+                return ok, status
+            db.add(
+                TelegramPendingVerdict(
+                    provider_id=provider.id,
+                    chat_id=str(((sent or {}).get("chat") or {}).get("id") or config.get("chat_id", "")).strip(),
+                    message_id=message_id,
+                    archive_id=archive_id,
+                    confirm_token=archive.confirm_token,
+                    has_caption=image_data is not None,
+                    message_text=message,
+                )
+            )
+            await db.commit()
+        except Exception as e:
+            # The prompt went out; losing the reaction mapping is a degraded
+            # outcome, not a failed notification.
+            logger.warning("Failed to record the Telegram outcome prompt for reactions: %s", e)
+            await db.rollback()
+        return ok, status
 
     async def _send_email(
         self,
@@ -771,6 +1004,7 @@ class NotificationService:
         image_data: bytes | None = None,
         event_type: str | None = None,
         variables: dict | None = None,
+        image_url: str | None = None,
     ) -> tuple[bool, str]:
         """Send notification via generic webhook (POST JSON).
 
@@ -791,8 +1025,26 @@ class NotificationService:
 
         # Build payload based on format
         if payload_format == "slack":
-            # Slack/Mattermost format - just text field
+            # Incoming webhooks can't take a byte upload, so a photo has to
+            # be a URL Slack/Mattermost fetch themselves.
             data = {"text": f"*{title}*\n{message}"}
+            if event_type == "print_confirm_request":
+                # Slack and Mattermost fetch every URL in the text to build
+                # preview cards, and the outcome prompt (#1898) is the one
+                # message whose links are single-use capabilities — that fetch
+                # would be a machine answering the operator's question. Off
+                # here for the same reason Telegram's preview is.
+                #
+                # Only here: the slack payload never attaches image bytes (the
+                # base64 attach below is generic-format only), so unfurling is
+                # the only way a {finish_photo_url} in a print_complete body
+                # can render as a photo in the channel. Switching it off for
+                # every event would quietly take that away with no setting to
+                # get it back.
+                data["unfurl_links"] = False
+                data["unfurl_media"] = False
+            if image_url:
+                data["attachments"] = [{"fallback": title, "image_url": image_url}]
         else:
             # Generic format with custom field names
             custom_field_title = config.get("field_title", "title").strip() or "title"
@@ -839,7 +1091,12 @@ class NotificationService:
             return False, f"Webhook error: {str(e)}"
 
     async def _send_homeassistant(
-        self, config: dict, title: str, message: str, db: AsyncSession | None = None
+        self,
+        config: dict,
+        title: str,
+        message: str,
+        db: AsyncSession | None = None,
+        image_url: str | None = None,
     ) -> tuple[bool, str]:
         """Send notification via Home Assistant.
 
@@ -914,6 +1171,7 @@ class NotificationService:
         # reach the notify service. Only included when configured — the default
         # persistent_notification.create schema rejects unknown keys.
         raw_data = config.get("data")
+        data_payload: dict = {}
         if raw_data:
             if isinstance(raw_data, str):
                 try:
@@ -924,8 +1182,19 @@ class NotificationService:
                 parsed_data = raw_data
             if not isinstance(parsed_data, dict):
                 return False, 'The Data field must be a JSON object, e.g. {"priority": "high", "ttl": 0}'
-            if parsed_data:
-                payload["data"] = parsed_data
+            data_payload = parsed_data
+
+        if image_url and service:
+            # HA's notify.* services fetch data.image themselves. Gated on a
+            # custom service being set: the default persistent_notification
+            # .create has a strict schema and 400s on fields it doesn't
+            # recognize, so we'd break plain notifications for anyone who
+            # never asked for a photo. setdefault so a user's own "image"
+            # key still wins.
+            data_payload.setdefault("image", image_url)
+
+        if data_payload:
+            payload["data"] = data_payload
 
         client = await self._get_client()
         response = await client.post(url, json=payload, headers=headers)
@@ -1001,6 +1270,54 @@ class NotificationService:
             return False, "Notify authentication failed - check your device ID and token"
         return False, _opaque_http_failure(response, label="Notify server")
 
+    async def _get_or_build_photo_url(
+        self,
+        db: AsyncSession | None,
+        image_data: bytes | None,
+        event_type: str | None,
+        photo_cache: dict | None = None,
+    ) -> str | None:
+        """Return a URL for a notification photo, for providers that fetch it themselves.
+
+        Writes *image_data* under an unguessable filename and builds the URL
+        from the ``external_url`` setting. The filename is the only credential
+        (see notification_photos.py), so the URL opens this one photo and
+        nothing else -- no camera token, which would open every printer's live
+        stream. Print Complete goes through here too rather than reusing the
+        archive's ``finish_photo_url``: that route needs a media token, so with
+        auth on HA/Bark/Slack would get a 401.
+
+        Returns None with no photo or no ``external_url`` set: HA and Bark
+        fetch this URL themselves, so a relative path does them no good.
+
+        *photo_cache* is shared by every provider in one send, so only the
+        first HA/Bark/Slack provider pays for the disk write. It's kept apart
+        from the template variables so the URL never lands in a generic
+        webhook's payload.
+        """
+        if photo_cache is not None and "url" in photo_cache:
+            return photo_cache["url"]
+
+        if not image_data or db is None:
+            return None
+
+        from backend.app.api.routes.settings import get_setting
+
+        external_url = (await get_setting(db, "external_url") or "").strip()
+        if not external_url:
+            return None
+
+        try:
+            filename = await asyncio.to_thread(save_notification_photo, image_data, event_type or "event")
+        except Exception as e:
+            logger.warning("Failed to persist notification photo: %s", e)
+            return None
+
+        url = f"{external_url.rstrip('/')}/api/v1/notifications/photos/{filename}"
+        if photo_cache is not None:
+            photo_cache["url"] = url
+        return url
+
     async def _send_to_provider(
         self,
         provider: NotificationProvider,
@@ -1010,8 +1327,13 @@ class NotificationService:
         image_data: bytes | None = None,
         event_type: str | None = None,
         variables: dict | None = None,
+        photo_cache: dict | None = None,
     ) -> tuple[bool, str]:
-        """Send notification to a specific provider."""
+        """Send notification to a specific provider.
+
+        *photo_cache* lets the providers of one send share a single persisted
+        photo URL (see _get_or_build_photo_url).
+        """
         # Check quiet hours
         if self._is_in_quiet_hours(provider):
             logger.info("Skipping notification to %s - quiet hours active", provider.name)
@@ -1019,14 +1341,94 @@ class NotificationService:
 
         config = json.loads(provider.config) if isinstance(provider.config, str) else provider.config
 
+        # attach_photo is a per-provider opt-out. Clearing image_data covers
+        # the byte-upload providers below; HA/Bark/Slack get their own check
+        # further down too, since they could otherwise get the URL an earlier
+        # provider in the same send left in photo_cache.
+        if not provider.attach_photo:
+            image_data = None
+
         try:
             if provider.provider_type == "callmebot":
                 return await self._send_callmebot(config, f"{title}\n{message}")
             elif provider.provider_type == "ntfy":
-                return await self._send_ntfy(config, title, message, image_data=image_data, event_type=event_type)
+                # Outcome confirmation (#1898): render the verdict capability
+                # links as one-tap buttons on the notification itself. http so
+                # no browser needs to open; POST because that is the method
+                # that records — a GET only opens the confirmation page, which
+                # is what keeps unfurlers from answering the prompt.
+                # clear=true dismisses the notification once a button was tapped.
+                ntfy_actions = None
+                good_url = (variables or {}).get("good_url")
+                reject_url = (variables or {}).get("reject_url")
+                # Buttons need absolute URLs; without a configured external_url
+                # the links are relative, and the body's deep link into the
+                # archive has to do.
+                if (
+                    event_type == "print_confirm_request"
+                    and good_url
+                    and reject_url
+                    and good_url.startswith("http")
+                    and reject_url.startswith("http")
+                ):
+                    ntfy_actions = (
+                        f"http, Good, {good_url}, method=POST, clear=true; "
+                        f"http, Reject, {reject_url}, method=POST, clear=true"
+                    )
+                return await self._send_ntfy(
+                    config, title, message, image_data=image_data, event_type=event_type, actions=ntfy_actions
+                )
             elif provider.provider_type == "pushover":
-                return await self._send_pushover(config, title, message, image_data=image_data)
+                # Outcome confirmation (#1898): Pushover has no arbitrary
+                # buttons, but supports one supplementary URL — deep-link into
+                # the archive's confirmation dialog.
+                supplement_url = None
+                supplement_url_title = None
+                _confirm_url = (variables or {}).get("confirm_url")
+                if event_type == "print_confirm_request" and _confirm_url and _confirm_url.startswith("http"):
+                    supplement_url = _confirm_url
+                    supplement_url_title = "Confirm print outcome"
+                return await self._send_pushover(
+                    config, title, message, image_data=image_data, url=supplement_url, url_title=supplement_url_title
+                )
             elif provider.provider_type == "telegram":
+                if event_type == "print_confirm_request":
+                    # Outcome confirmation (#1898): inline URL buttons under
+                    # the message — one tap records the verdict via the
+                    # capability link. Same absolute-URL requirement as the
+                    # ntfy actions. Telegram has no way to POST, so this is the
+                    # one affordance that opens a browser, and it is the one
+                    # that gets the one-tap marker: the page submits itself
+                    # only for a URL that came off a button. Telegram does not
+                    # fetch inline-keyboard URLs and nothing else can read
+                    # them, so the marker never reaches a scanner — which is
+                    # the difference between this and trusting the User-Agent.
+                    tg_buttons = None
+                    _tg_good = (variables or {}).get("good_url")
+                    _tg_reject = (variables or {}).get("reject_url")
+                    if _tg_good and _tg_reject and _tg_good.startswith("http") and _tg_reject.startswith("http"):
+                        tg_buttons = [
+                            {"text": "\U0001f44d Good", "url": one_tap_url(_tg_good)},
+                            {"text": "\U0001f44e Reject", "url": one_tap_url(_tg_reject)},
+                        ]
+                    # Telegram verdict mode (#3046): buttons, a reaction on
+                    # the message, or both. The link preview is off in all of
+                    # them (see _send_telegram_confirm_request).
+                    _archive_id = (variables or {}).get("archive_id")
+                    return await self._send_telegram_confirm_request(
+                        provider,
+                        config,
+                        f"*{title}*\n{message}",
+                        db,
+                        image_data,
+                        tg_buttons,
+                        _archive_id if isinstance(_archive_id, int) else None,
+                    )
+                # Every other event keeps Telegram's link preview, for the same
+                # reason as the Slack unfurl in _send_webhook: when the finish
+                # photo is too large to attach, the preview is how a
+                # {finish_photo_url} in a print_complete body still shows up as
+                # a photo in the chat.
                 return await self._send_telegram(config, f"*{title}*\n{message}", image_data=image_data)
             elif provider.provider_type == "email":
                 # finish_photo_url is pulled from the rendered template variables
@@ -1039,15 +1441,42 @@ class NotificationService:
             elif provider.provider_type == "discord":
                 return await self._send_discord(config, title, message, image_data=image_data)
             elif provider.provider_type == "webhook":
+                # Only Slack format needs a URL — generic format gets the
+                # base64 image field instead.
+                photo_url = None
+                if provider.attach_photo and (config.get("payload_format") or "generic").strip() == "slack":
+                    photo_url = await self._get_or_build_photo_url(db, image_data, event_type, photo_cache)
                 return await self._send_webhook(
-                    config, title, message, image_data=image_data, event_type=event_type, variables=variables
+                    config,
+                    title,
+                    message,
+                    image_data=image_data,
+                    event_type=event_type,
+                    variables=variables,
+                    image_url=photo_url,
                 )
             elif provider.provider_type == "homeassistant":
-                return await self._send_homeassistant(config, title, message, db=db)
+                photo_url = (
+                    await self._get_or_build_photo_url(db, image_data, event_type, photo_cache)
+                    if provider.attach_photo
+                    else None
+                )
+                return await self._send_homeassistant(config, title, message, db=db, image_url=photo_url)
             elif provider.provider_type == "notify":
                 return await self._send_notify(config, title, message, event_type=event_type)
             elif provider.provider_type == "bark":
-                return await self._send_bark(config, title, message)
+                # Outcome confirmation (#1898): Bark opens one URL on tap —
+                # deep-link into the confirmation dialog, like Pushover.
+                bark_url = None
+                _bark_confirm = (variables or {}).get("confirm_url")
+                if event_type == "print_confirm_request" and _bark_confirm and _bark_confirm.startswith("http"):
+                    bark_url = _bark_confirm
+                photo_url = (
+                    await self._get_or_build_photo_url(db, image_data, event_type, photo_cache)
+                    if provider.attach_photo
+                    else None
+                )
+                return await self._send_bark(config, title, message, url=bark_url, image_url=photo_url)
             else:
                 return False, f"Unknown provider type: {provider.provider_type}"
         except Exception as e:
@@ -1152,11 +1581,19 @@ class NotificationService:
         All notifications are always sent immediately. If digest mode is enabled,
         the notification is ALSO queued for the daily digest summary.
         """
+        photo_cache: dict = {}
         for provider in providers:
             try:
                 # Always send notification immediately
                 success, error = await self._send_to_provider(
-                    provider, title, message, db, image_data=image_data, event_type=event_type, variables=variables
+                    provider,
+                    title,
+                    message,
+                    db,
+                    image_data=image_data,
+                    event_type=event_type,
+                    variables=variables,
+                    photo_cache=photo_cache,
                 )
 
                 # Also queue for digest if enabled (digest is a summary, not a queue)
@@ -1200,6 +1637,30 @@ class NotificationService:
                     printer_id=printer_id,
                     printer_name=printer_name,
                 )
+
+    async def on_app_message(
+        self,
+        db: AsyncSession,
+        *,
+        sender: str,
+        title: str,
+        message: str,
+        url: str | None = None,
+    ) -> int:
+        """A message another application sends through Printbuddy.
+
+        Goes to every enabled channel with "Messages from connected apps" on,
+        through the same path as Printbuddy's own events: quiet hours, the daily
+        digest and the log (whose event type names the sender). The text is
+        the app's own; a link, when given, is appended so every channel type
+        carries it. Returns how many channels it was handed to.
+        """
+        providers = await self._get_providers_for_event(db, "on_app_message")
+        if not providers:
+            return 0
+        body = f"{message}\n{url}" if url else message
+        await self._send_to_providers(providers, title, body, db, event_type=f"app:{sender}"[:50])
+        return len(providers)
 
     async def on_print_start(
         self,
@@ -1414,6 +1875,66 @@ class NotificationService:
             message,
             db,
             event_type,
+            printer_id,
+            printer_name,
+            image_data=image_data,
+            variables=variables,
+        )
+
+    async def on_print_confirm_request(
+        self,
+        printer_id: int,
+        printer_name: str,
+        data: dict,
+        db: AsyncSession,
+        archive_data: dict | None = None,
+        good_url: str | None = None,
+        reject_url: str | None = None,
+        confirm_url: str | None = None,
+        archive_id: int | None = None,
+    ):
+        """Ask for a post-print outcome verdict (#1898).
+
+        Fires only for completed prints whose queue item opted in — the
+        provider-level toggle exists to mute a channel, not to enable the
+        feature. good_url / reject_url are the one-tap capability links
+        (rendered as ntfy action buttons), confirm_url deep-links into the
+        archive's confirmation dialog in the web UI. archive_id lets a Telegram
+        provider in reaction mode (#3046) tie the sent message to the archive.
+        """
+        providers = await self._get_providers_for_event(db, "on_print_confirm_request", printer_id)
+        if not providers:
+            return
+
+        subtask_name = data.get("subtask_name")
+        if subtask_name:
+            filename = subtask_name.replace("_", " ")
+        else:
+            filename = self._clean_filename(data.get("filename", "Unknown"))
+
+        variables = {"printer": printer_name, "filename": filename}
+        if good_url:
+            variables["good_url"] = good_url
+        if reject_url:
+            variables["reject_url"] = reject_url
+        if confirm_url:
+            variables["confirm_url"] = confirm_url
+        if archive_id is not None:
+            variables["archive_id"] = archive_id
+
+        image_data = None
+        if archive_data:
+            if archive_data.get("finish_photo_url"):
+                variables["finish_photo_url"] = archive_data["finish_photo_url"]
+            image_data = archive_data.get("image_data")
+
+        title, message = await self._build_message_from_template(db, "print_confirm_request", variables)
+        await self._send_to_providers(
+            providers,
+            title,
+            message,
+            db,
+            "print_confirm_request",
             printer_id,
             printer_name,
             image_data=image_data,
@@ -1695,6 +2216,7 @@ class NotificationService:
         printer_name: str,
         db: AsyncSession,
         difference_percent: float | None = None,
+        image_data: bytes | None = None,
     ):
         """Handle plate not empty event - objects detected on build plate before print."""
         providers = await self._get_providers_for_event(db, "on_plate_not_empty", printer_id)
@@ -1716,6 +2238,7 @@ class NotificationService:
             printer_id,
             printer_name,
             force_immediate=True,
+            image_data=image_data,
             variables=variables,
         )
 
@@ -1756,7 +2279,7 @@ class NotificationService:
         self,
         printer_id: int,
         printer_name: str,
-        slot: int,
+        slot: str,
         remaining_percent: int,
         db: AsyncSession,
         color: str | None = None,
@@ -1768,7 +2291,7 @@ class NotificationService:
 
         variables = {
             "printer": printer_name,
-            "slot": str(slot),
+            "slot": slot,
             "remaining_percent": str(remaining_percent),
             "color": color or "",
         }
@@ -2140,6 +2663,8 @@ class NotificationService:
         printer_name: str,
         filename: str,
         db: AsyncSession,
+        image_data: bytes | None = None,
+        finish_photo_url: str | None = None,
     ) -> None:
         """Send a print event email notification to the user who submitted the job.
 
@@ -2149,6 +2674,10 @@ class NotificationService:
             printer_name: Name of the printer
             filename: Raw filename or subtask name
             db: Database session
+            image_data: Camera snapshot bytes, if one was captured for the event.
+            finish_photo_url: The same snapshot's public URL — only used so the
+                template can reference {finish_photo_url}, which is what opts
+                the email into inlining the photo (see send_user_print_notification).
         """
         if created_by_id is None:
             logger.debug("[EMAIL] Skipping user print email (%s): no created_by_id", event_type)
@@ -2234,6 +2763,8 @@ class NotificationService:
                 "printer": printer_name,
                 "filename": self._clean_filename(filename),
             }
+            if finish_photo_url:
+                variables["finish_photo_url"] = finish_photo_url
 
             # Send the email
             await send_user_print_notification(
@@ -2242,6 +2773,7 @@ class NotificationService:
                 user_email=user.email,
                 username=user.username,
                 variables=variables,
+                image_data=image_data,
             )
             logger.info("[EMAIL] User print email sent: event=%s → %s", event_type, user.email)
         except Exception as e:
@@ -2420,15 +2952,31 @@ class NotificationService:
         rate_g_day: float,
         days_left: int,
         db: AsyncSession,
+        *,
+        subtype: str | None = None,
+        color: str | None = None,
+        skip_break_subscribers: bool = False,
     ):
-        """Fire when an inventory SKU reaches its reorder point."""
+        """Fire when an inventory SKU reaches its reorder point.
+
+        ``subtype`` and ``color`` are what tell apart the messages for two colours of one
+        product, which the forecast (grouped by colour as well) reports separately.
+
+        A SKU in stock break has also reached its reorder point. ``skip_break_subscribers``
+        leaves out the providers that have the break alert on, so the producer can send
+        the reorder event for a break SKU without telling those providers twice.
+        """
         providers = await self._get_providers_for_event(db, "on_stock_reorder_alert", None)
+        if skip_break_subscribers:
+            providers = [p for p in providers if not p.on_stock_break_alert]
         if not providers:
             return
 
         variables = {
             "material": material,
+            "subtype": subtype or "",
             "brand": brand or "",
+            "color": color or "",
             "stock_g": f"{stock_g:.0f}",
             "rate_g_day": f"{rate_g_day:.1f}",
             "days_left": str(days_left),
@@ -2446,15 +2994,23 @@ class NotificationService:
         days_left: int,
         lead_time_days: int,
         db: AsyncSession,
+        *,
+        subtype: str | None = None,
+        color: str | None = None,
     ):
-        """Fire when a stock break is detected (stock runs out before lead time)."""
+        """Fire when a stock break is detected (stock runs out before lead time).
+
+        ``subtype`` and ``color`` as for :meth:`on_stock_reorder_alert`.
+        """
         providers = await self._get_providers_for_event(db, "on_stock_break_alert", None)
         if not providers:
             return
 
         variables = {
             "material": material,
+            "subtype": subtype or "",
             "brand": brand or "",
+            "color": color or "",
             "stock_g": f"{stock_g:.0f}",
             "rate_g_day": f"{rate_g_day:.1f}",
             "days_left": str(days_left),

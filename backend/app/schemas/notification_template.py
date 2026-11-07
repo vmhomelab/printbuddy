@@ -78,6 +78,9 @@ EVENT_VARIABLES: dict[str, list[str]] = {
     "billing_charge_failed": ["printer", "filename", "archive_id", "error", "timestamp", "app_name"],
     "printer_offline": ["printer", "timestamp", "app_name"],
     "printer_error": ["printer", "error_type", "error_detail", "timestamp", "app_name"],
+    "ai_failure_detection": ["printer", "task_name", "confidence", "action", "timestamp", "app_name"],
+    "plate_not_empty": ["printer", "difference_percent", "timestamp", "app_name"],
+    "plate_clear_required": ["printer", "timestamp", "app_name"],
     "filament_low": ["printer", "slot", "remaining_percent", "color", "timestamp", "app_name"],
     "maintenance_due": ["printer", "items", "timestamp", "app_name"],
     "ams_humidity_high": ["printer", "ams_label", "humidity", "threshold", "timestamp", "app_name"],
@@ -94,6 +97,7 @@ EVENT_VARIABLES: dict[str, list[str]] = {
     "bed_cooled": ["printer", "bed_temp", "threshold", "filename", "timestamp", "app_name"],
     "ha_sensor_alert": ["printer", "sensor", "state", "timestamp", "app_name"],
     "location_ha_sensor_alert": ["location", "sensor", "state", "timestamp", "app_name"],
+    "first_layer_complete": ["printer", "filename", "total_layers", "timestamp", "app_name"],
     "test": ["app_name", "timestamp"],
     # Queue notifications
     "queue_job_added": ["job_name", "target", "timestamp", "app_name"],
@@ -103,14 +107,55 @@ EVENT_VARIABLES: dict[str, list[str]] = {
     "queue_job_skipped": ["printer", "job_name", "reason", "timestamp", "app_name"],
     "queue_job_failed": ["printer", "job_name", "reason", "timestamp", "app_name"],
     "queue_completed": ["completed_count", "timestamp", "app_name"],
+    "stock_reorder_alert": [
+        "material",
+        "subtype",
+        "brand",
+        "color",
+        "stock_g",
+        "rate_g_day",
+        "days_left",
+        "timestamp",
+        "app_name",
+    ],
+    "stock_break_alert": [
+        "material",
+        "subtype",
+        "brand",
+        "color",
+        "stock_g",
+        "rate_g_day",
+        "days_left",
+        "lead_time_days",
+        "timestamp",
+        "app_name",
+    ],
     # User management notifications
     "user_created": ["username", "password", "login_url", "app_name", "timestamp"],
     "password_reset": ["username", "password", "login_url", "app_name", "timestamp"],
     # User email print notifications
     "user_print_start": ["username", "printer", "filename", "timestamp", "app_name"],
-    "user_print_complete": ["username", "printer", "filename", "timestamp", "app_name"],
-    "user_print_failed": ["username", "printer", "filename", "timestamp", "app_name"],
-    "user_print_stopped": ["username", "printer", "filename", "timestamp", "app_name"],
+    "user_print_complete": ["username", "printer", "filename", "finish_photo_url", "timestamp", "app_name"],
+    "user_print_failed": ["username", "printer", "filename", "finish_photo_url", "timestamp", "app_name"],
+    "user_print_stopped": ["username", "printer", "filename", "finish_photo_url", "timestamp", "app_name"],
+}
+
+# Events whose real notification can carry a camera snapshot — mirrors which
+# NotificationService.on_* methods accept image_data.
+PHOTO_CAPABLE_EVENTS: set[str] = {
+    "print_start",
+    "print_complete",
+    "print_failed",
+    "print_stopped",
+    "print_progress",
+    "printer_error",
+    "ai_failure_detection",
+    "plate_not_empty",
+    "first_layer_complete",
+    "user_print_complete",
+    "user_print_failed",
+    "user_print_stopped",
+    "test",
 }
 
 # Sample data for previewing templates
@@ -201,6 +246,25 @@ SAMPLE_DATA: dict[str, dict[str, str]] = {
         "timestamp": "2024-01-15 14:30",
         "app_name": "Printbuddy",
     },
+    "ai_failure_detection": {
+        "printer": "Bambu X1C",
+        "task_name": "Benchy.3mf",
+        "confidence": "0.87",
+        "action": "pause",
+        "timestamp": "2024-01-15 15:10",
+        "app_name": "Printbuddy",
+    },
+    "plate_not_empty": {
+        "printer": "Bambu X1C",
+        "difference_percent": "12.4",
+        "timestamp": "2024-01-15 09:00",
+        "app_name": "Printbuddy",
+    },
+    "plate_clear_required": {
+        "printer": "Bambu X1C",
+        "timestamp": "2024-01-15 15:48",
+        "app_name": "Printbuddy",
+    },
     "filament_low": {
         "printer": "Bambu X1C",
         "slot": "1",
@@ -262,6 +326,13 @@ SAMPLE_DATA: dict[str, dict[str, str]] = {
         "timestamp": "2024-01-15 14:30",
         "app_name": "Printbuddy",
     },
+    "first_layer_complete": {
+        "printer": "Bambu X1C",
+        "filename": "Benchy.3mf",
+        "total_layers": "184",
+        "timestamp": "2024-01-15 14:35",
+        "app_name": "Printbuddy",
+    },
     "test": {
         "app_name": "Printbuddy",
         "timestamp": "2024-01-15 14:30",
@@ -314,6 +385,29 @@ SAMPLE_DATA: dict[str, dict[str, str]] = {
         "timestamp": "2024-01-15 18:30",
         "app_name": "Printbuddy",
     },
+    "stock_reorder_alert": {
+        "material": "PLA",
+        "subtype": "Matte",
+        "brand": "Bambu Lab",
+        "color": "Charcoal",
+        "stock_g": "420",
+        "rate_g_day": "18.5",
+        "days_left": "22",
+        "timestamp": "2024-01-15 14:30",
+        "app_name": "Printbuddy",
+    },
+    "stock_break_alert": {
+        "material": "PLA",
+        "subtype": "Matte",
+        "brand": "Bambu Lab",
+        "color": "Charcoal",
+        "stock_g": "160",
+        "rate_g_day": "18.5",
+        "days_left": "8",
+        "lead_time_days": "14",
+        "timestamp": "2024-01-15 14:30",
+        "app_name": "Printbuddy",
+    },
     # User management notifications
     "user_created": {
         "username": "john_doe",
@@ -341,6 +435,7 @@ SAMPLE_DATA: dict[str, dict[str, str]] = {
         "username": "john_doe",
         "printer": "Bambu X1C",
         "filename": "Benchy.3mf",
+        "finish_photo_url": "/api/v1/archives/123/photos/finish_20240115_154800_abc12345.jpg",
         "timestamp": "2024-01-15 15:48",
         "app_name": "Printbuddy",
     },
@@ -348,6 +443,7 @@ SAMPLE_DATA: dict[str, dict[str, str]] = {
         "username": "john_doe",
         "printer": "Bambu X1C",
         "filename": "Benchy.3mf",
+        "finish_photo_url": "/api/v1/archives/123/photos/finish_20240115_151500_def67890.jpg",
         "timestamp": "2024-01-15 15:15",
         "app_name": "Printbuddy",
     },
@@ -355,6 +451,7 @@ SAMPLE_DATA: dict[str, dict[str, str]] = {
         "username": "john_doe",
         "printer": "Bambu X1C",
         "filename": "Benchy.3mf",
+        "finish_photo_url": "/api/v1/archives/123/photos/finish_20240115_150000_ghi11223.jpg",
         "timestamp": "2024-01-15 15:15",
         "app_name": "Printbuddy",
     },
@@ -402,6 +499,7 @@ class EventVariablesResponse(BaseModel):
     event_type: str
     event_name: str
     variables: list[str]
+    supports_photo: bool = False
 
 
 class TemplatePreviewRequest(BaseModel):

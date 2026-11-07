@@ -1,7 +1,7 @@
 """Pydantic schemas for notification providers."""
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -30,6 +30,9 @@ class NotificationProviderBase(BaseModel):
     provider_type: ProviderType = Field(..., description="Type of notification provider")
     enabled: bool = Field(default=True, description="Whether notifications are enabled")
     config: dict[str, Any] = Field(..., description="Provider-specific configuration")
+    attach_photo: bool = Field(
+        default=True, description="Attach a camera snapshot to this provider's notifications when one is available"
+    )
 
     # Event triggers - print lifecycle
     on_print_start: bool = Field(default=False, description="Notify on print start")
@@ -84,11 +87,25 @@ class NotificationProviderBase(BaseModel):
         default=False, description="Notify when a finished print is waiting for plate-clear confirmation"
     )
 
+    # Event triggers - Post-print outcome confirmation (#1898)
+    on_print_confirm_request: bool = Field(
+        default=True,
+        description="Notify with one-tap verdict links when a print that opted in asks for its outcome",
+    )
+    # How a Telegram provider collects the verdict (#3046). Ignored elsewhere.
+    telegram_verdict_mode: Literal["buttons", "reactions", "both"] = Field(
+        default="buttons",
+        description="Telegram only: answer the outcome prompt via inline buttons, a thumbs reaction, or both",
+    )
+
     # Event triggers - Bed cooled
     on_bed_cooled: bool = Field(default=False, description="Notify when bed cools after print")
 
     # Event triggers - First layer complete
     on_first_layer_complete: bool = Field(default=False, description="Notify when first layer completes")
+
+    # Messages from connected apps (POST /notifications/app-message)
+    on_app_message: bool = Field(default=False, description="Deliver messages other applications send")
 
     # Event triggers - Inventory stock alerts
     # Missing from this schema until now, so every payload naming them was
@@ -158,6 +175,7 @@ class NotificationProviderUpdate(BaseModel):
     provider_type: ProviderType | None = None
     enabled: bool | None = None
     config: dict[str, Any] | None = None
+    attach_photo: bool | None = None
 
     # Event triggers - print lifecycle
     on_print_start: bool | None = None
@@ -195,11 +213,18 @@ class NotificationProviderUpdate(BaseModel):
     on_plate_not_empty: bool | None = None
     on_plate_clear_required: bool | None = None
 
+    # Event triggers - Post-print outcome confirmation (#1898)
+    on_print_confirm_request: bool | None = None
+    telegram_verdict_mode: Literal["buttons", "reactions", "both"] | None = None
+
     # Event triggers - Bed cooled
     on_bed_cooled: bool | None = None
 
     # Event triggers - First layer complete
     on_first_layer_complete: bool | None = None
+
+    # Messages from connected apps
+    on_app_message: bool | None = None
 
     # Event triggers - Inventory stock alerts
     on_stock_reorder_alert: bool | None = None
@@ -278,11 +303,50 @@ class NotificationProviderResponse(NotificationProviderBase):
         from_attributes = True
 
 
+class AppMessage(BaseModel):
+    """A message another application sends through Printbuddy's notification channels."""
+
+    title: str = Field(min_length=1, max_length=120)
+    message: str = Field(min_length=1, max_length=2000)
+    url: str | None = Field(default=None, max_length=500, description="A link the message points to (http or https)")
+
+    @field_validator("title", "message")
+    @classmethod
+    def _plain_text(cls, value: str) -> str:
+        # Plain text: no control characters beyond line breaks and tabs.
+        cleaned = "".join(ch for ch in value if ch in "\n\t" or ch.isprintable()).strip()
+        if not cleaned:
+            raise ValueError("must not be empty")
+        return cleaned
+
+    @field_validator("url")
+    @classmethod
+    def _http_url(cls, value: str | None) -> str | None:
+        if value is None or value.strip() == "":
+            return None
+        value = value.strip()
+        if not value.lower().startswith(("http://", "https://")) or any(c.isspace() for c in value):
+            raise ValueError("must be an http or https address")
+        return value
+
+
+class AppMessageResult(BaseModel):
+    channels: int = Field(description="How many channels the message was handed to")
+
+
+class AppMessageChannel(BaseModel):
+    name: str
+    provider_type: str
+
+
 class NotificationTestRequest(BaseModel):
     """Schema for testing notification configuration."""
 
     provider_type: ProviderType
     config: dict[str, Any]
+    attach_photo: bool = Field(
+        default=True, description="Include a sample photo in the test, mirroring the provider's own toggle"
+    )
 
 
 class NotificationTestResponse(BaseModel):

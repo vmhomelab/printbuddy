@@ -1,6 +1,6 @@
-import { useState, useRef, useCallback, useMemo, useEffect } from 'react';
+import { useState, useRef, useCallback, useMemo, useEffect, lazy, Suspense } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueries, useMutation, useQueryClient, type UseQueryResult } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
   FolderOpen,
@@ -45,6 +45,16 @@ import {
   Lock,
   FolderSymlink,
   Tag as TagIcon,
+  FileText,
+  FileSpreadsheet,
+  Info,
+  Globe,
+  StickyNote,
+  Camera,
+  Eye,
+  Combine,
+  Columns,
+  ChevronRight as ChevronRightIcon,
 } from 'lucide-react';
 import { api } from '../api/client';
 import type {
@@ -63,11 +73,13 @@ import { ContextMenu, type ContextMenuItem } from '../components/ContextMenu';
 import { PrintModal } from '../components/PrintModal';
 import { ModelViewerModal } from '../components/ModelViewerModal';
 import { SliceModal } from '../components/SliceModal';
+import { CombineFilesModal } from '../components/CombineFilesModal';
 import { RunWithPipelineModal } from '../components/RunWithPipelineModal';
 import { BulkTagsPickerModal } from '../components/BulkTagsPickerModal';
 import { FileUploadModal } from '../components/FileUploadModal';
 import { FolderReadmePanel } from '../components/FolderReadmePanel';
 import { LibraryTagsModal } from '../components/LibraryTagsModal';
+import { LibraryFileDetailsModal } from '../components/LibraryFileDetailsModal';
 import { PurgeOldFilesModal } from '../components/PurgeOldFilesModal';
 import { SourceSnapshotModal } from '../components/SourceSnapshotModal';
 import { useToast } from '../contexts/ToastContext';
@@ -82,6 +94,189 @@ import { isSlicedLibraryFile, isSliceableLibraryFile } from '../utils/libraryFil
 type SortField = 'name' | 'date' | 'size' | 'type' | 'prints';
 type SortDirection = 'asc' | 'desc';
 type TFunction = (key: string, options?: Record<string, unknown>) => string;
+
+// Document previews (#2976) are code-split: pdf.js and the spreadsheet
+// parsers only load when a preview is actually opened.
+const PdfPreviewModal = lazy(() =>
+  import('../components/PdfPreviewModal').then((m) => ({ default: m.PdfPreviewModal }))
+);
+const SpreadsheetPreviewModal = lazy(() =>
+  import('../components/SpreadsheetPreviewModal').then((m) => ({ default: m.SpreadsheetPreviewModal }))
+);
+const ImagePreviewModal = lazy(() =>
+  import('../components/ImagePreviewModal').then((m) => ({ default: m.ImagePreviewModal }))
+);
+
+function isSpreadsheetType(fileType: string): boolean {
+  return fileType === 'csv' || fileType === 'xlsx' || fileType === 'ods';
+}
+
+function isStepType(fileType: string): boolean {
+  return fileType === 'step' || fileType === 'stp';
+}
+
+// Mirrors IMAGE_EXTENSIONS in routes/library.py — the types the server both
+// stores and renders a thumbnail for, and so the ones that get an image icon.
+const IMAGE_TYPES = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'tiff', 'tif']);
+
+// The subset ImagePreviewModal can actually show: it hands the bytes to an
+// <img>, and outside Safari no browser decodes TIFF. Offering the preview
+// would download up to 50 MB only to report "cannot be previewed", so TIFF
+// keeps its server-rendered thumbnail and no preview (#2976).
+const PREVIEWABLE_IMAGE_TYPES = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp']);
+
+function isImageType(fileType: string): boolean {
+  return IMAGE_TYPES.has(fileType.toLowerCase());
+}
+
+function isPreviewableImageType(fileType: string): boolean {
+  return PREVIEWABLE_IMAGE_TYPES.has(fileType.toLowerCase());
+}
+
+// The icon a file without a thumbnail shows. Shared by the grid card, the list
+// row and the columns view so the three never disagree about a type.
+function FileTypePlaceholderIcon({ fileType, className }: { fileType: string; className: string }) {
+  const Icon =
+    fileType === 'pdf'
+      ? FileText
+      : isSpreadsheetType(fileType)
+        ? FileSpreadsheet
+        : isImageType(fileType)
+          ? Image
+          : FileBox;
+  return <Icon className={className} />;
+}
+
+/**
+ * The columns view's per-level file queries, plus every file they hold — the
+ * files a tick in an earlier column can point at (#3020). Module-level, so its
+ * reference is stable and useQueries hands back the same value until a query
+ * actually changes.
+ */
+function combineColumnFileQueries(results: UseQueryResult<LibraryFileListItem[]>[]) {
+  return { results, files: results.flatMap((result) => result.data ?? []) };
+}
+
+// Which files have a preview at all: what a double-click opens, and what the
+// toolbar's Preview button appears for (#2976). Sliced files go to the
+// full-page gcode viewer, everything else to a modal.
+function isPreviewableLibraryFile(file: LibraryFileListItem): boolean {
+  const type = file.file_type;
+  return (
+    isSlicedLibraryFile(file) ||
+    type === '3mf' ||
+    type === 'stl' ||
+    isStepType(type) ||
+    type === 'pdf' ||
+    isSpreadsheetType(type) ||
+    isPreviewableImageType(type)
+  );
+}
+
+// Spread onto a card/row subtree that is not "the row": its own controls must
+// neither toggle the selection nor open the preview. `dblclick` is a separate
+// native event from `click`, so stopping the click alone still lets the second
+// click of a double-click reach the row's onDoubleClick (#2976).
+const stopRowActivation = {
+  onClick: (e: React.MouseEvent) => e.stopPropagation(),
+  onDoubleClick: (e: React.MouseEvent) => e.stopPropagation(),
+};
+
+// Whether the preview is the 3D one, which has its own menu label.
+function isModelPreview(file: LibraryFileListItem): boolean {
+  return isSlicedLibraryFile(file) || file.file_type === '3mf' || file.file_type === 'stl' || isStepType(file.file_type);
+}
+
+function documentPreviewIcon(fileType: string) {
+  if (fileType === 'pdf') return <FileText className="w-4 h-4" />;
+  if (isSpreadsheetType(fileType)) return <FileSpreadsheet className="w-4 h-4" />;
+  return <Image className="w-4 h-4" />;
+}
+
+// Types the server renders a thumbnail for on request, STL through trimesh
+// and PDF through PDFium (#2976), so the per-file "Generate thumbnail" action
+// applies to them. Mirrors the file types batch_generate_stl_thumbnails in
+// routes/library.py selects.
+function hasServerThumbnail(fileType: string): boolean {
+  return fileType === 'stl' || fileType === 'pdf';
+}
+
+// Type badge colours shared by the list row and the columns view. Sliced
+// output shares the gcode blue so users see at a glance that the file is
+// already sliced and ready to print (#1543).
+function fileTypeBadgeClass(fileType: string): string {
+  if (fileType === '3mf') return 'bg-bambu-green/20 text-bambu-green';
+  if (fileType === 'gcode' || fileType === 'gcode.3mf') return 'bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-400';
+  if (fileType === 'stl') return 'bg-purple-100 dark:bg-purple-500/20 text-purple-700 dark:text-purple-400';
+  if (isStepType(fileType)) return 'bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400';
+  if (fileType === 'pdf') return 'bg-red-100 dark:bg-red-500/20 text-red-700 dark:text-red-400';
+  if (isSpreadsheetType(fileType)) return 'bg-teal-100 dark:bg-teal-500/20 text-teal-700 dark:text-teal-400';
+  return 'bg-bambu-gray/20 text-bambu-gray';
+}
+
+// Search / type / user filtering plus the sort, shared by the main listing and
+// by each Miller column's file list so a column never sorts differently from
+// the pane beside it. `query` matches the filename and the embedded print name.
+function filterAndSortFiles(
+  files: LibraryFileListItem[],
+  opts: {
+    query?: string;
+    filterType: string;
+    filterUsername: string;
+    sortField: SortField;
+    sortDirection: SortDirection;
+  },
+): LibraryFileListItem[] {
+  let result = [...files];
+
+  const query = opts.query?.trim().toLowerCase();
+  if (query) {
+    result = result.filter(
+      (f) =>
+        f.filename.toLowerCase().includes(query) ||
+        (f.print_name && f.print_name.toLowerCase().includes(query))
+    );
+  }
+
+  if (opts.filterType !== 'all') {
+    result = result.filter((f) => f.file_type === opts.filterType);
+  }
+
+  const userQuery = opts.filterUsername.trim().toLowerCase();
+  if (userQuery) {
+    result = result.filter(
+      (f) => f.created_by_username && f.created_by_username.toLowerCase().includes(userQuery)
+    );
+  }
+
+  result.sort((a, b) => {
+    let comparison = 0;
+    switch (opts.sortField) {
+      case 'name':
+        comparison = (a.print_name || a.filename).localeCompare(b.print_name || b.filename);
+        break;
+      case 'date':
+        // #2680: sort by real on-disk mtime (matches `ls -t`), falling back to
+        // the DB created_at for managed uploads that have no filesystem mtime.
+        comparison =
+          (parseUTCDate(a.fs_modified_at ?? a.created_at)?.getTime() ?? 0) -
+          (parseUTCDate(b.fs_modified_at ?? b.created_at)?.getTime() ?? 0);
+        break;
+      case 'size':
+        comparison = a.file_size - b.file_size;
+        break;
+      case 'type':
+        comparison = a.file_type.localeCompare(b.file_type);
+        break;
+      case 'prints':
+        comparison = a.print_count - b.print_count;
+        break;
+    }
+    return opts.sortDirection === 'asc' ? comparison : -comparison;
+  });
+
+  return result;
+}
 
 // New Folder Modal
 interface NewFolderModalProps {
@@ -573,9 +768,37 @@ interface FolderTreeItemProps {
   t: TFunction;
 }
 
-function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, onRename, depth = 0, wrapNames = false, defaultExpanded = true, showModified = false, hasPermission, t }: FolderTreeItemProps) {
-  const [expanded, setExpanded] = useState(defaultExpanded);
-  const [showActions, setShowActions] = useState(false);
+// Folder kebab: Rename / Link / Delete. Shared by the tree sidebar and the
+// columns view so both offer exactly the same entries and permission gates.
+// Rendered through `ContextMenu` (position: fixed, anchored to the button)
+// rather than an absolutely positioned dropdown, because both hosts scroll —
+// a dropdown inside an overflow-y-auto column gets clipped at its edge.
+interface FolderActionsMenuProps {
+  folder: LibraryFolderTree;
+  onDelete: (id: number) => void;
+  onLink: (folder: LibraryFolderTree) => void;
+  onRename: (folder: LibraryFolderTree) => void;
+  hasPermission: (permission: Permission) => boolean;
+  // Hide the kebab until its `group` row is hovered or focused — only for
+  // pointers that can hover (#2865). The menu is a DOM descendant, so the
+  // wrapper stays opaque while it is open: browsers that don't focus a button
+  // on click (Safari) would otherwise fade the open menu out with the row.
+  revealOnHover?: boolean;
+  tabIndex?: number;
+  t: TFunction;
+}
+
+function FolderActionsMenu({ folder, onDelete, onLink, onRename, hasPermission, revealOnHover = false, tabIndex, t }: FolderActionsMenuProps) {
+  const [menuAnchor, setMenuAnchor] = useState<{ x: number; y: number } | null>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const closeMenu = () => {
+    setMenuAnchor(null);
+    // A menu entry activated by Enter unmounts with the menu; hand focus back
+    // to the kebab rather than letting it drop to <body>. Focus that already
+    // moved elsewhere (click-outside, the columns pane) is left alone.
+    if (rootRef.current?.contains(document.activeElement)) buttonRef.current?.focus();
+  };
   const hasChildren = folder.children.length > 0;
   const isLinked = folder.project_id || folder.archive_id;
   const isExternal = folder.is_external;
@@ -590,6 +813,75 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
     : hasPermission('library:delete_own') && !isExternal && !isLinked
       ? t('fileManager.onlyEmptyFoldersDeletable')
       : t('fileManager.noPermissionDeleteFolder');
+  const canRename = hasPermission('library:update_all');
+
+  const items: ContextMenuItem[] = [
+    {
+      label: t('common.rename'),
+      icon: <Pencil className="w-3.5 h-3.5" />,
+      onClick: () => onRename(folder),
+      disabled: !canRename,
+      title: !canRename ? t('fileManager.noPermissionRenameFolder') : undefined,
+    },
+    {
+      label: isLinked ? t('fileManager.changeLink') : t('fileManager.linkTo'),
+      icon: <Link2 className="w-3.5 h-3.5" />,
+      onClick: () => onLink(folder),
+      disabled: !canRename,
+      title: !canRename ? t('fileManager.noPermissionLinkFolder') : undefined,
+    },
+    {
+      label: t('common.delete'),
+      icon: <Trash2 className="w-3.5 h-3.5" />,
+      onClick: () => onDelete(folder.id),
+      danger: true,
+      disabled: !canDeleteFolder,
+      title: deleteDisabledTooltip,
+    },
+  ];
+
+  return (
+    <div
+      ref={rootRef}
+      className={`relative flex-shrink-0 flex items-center transition-opacity ${
+        revealOnHover && !menuAnchor ? 'can-hover:opacity-0 group-hover:opacity-100 group-focus-within:opacity-100' : ''
+      }`}
+      data-folder-actions
+      onClick={(e) => e.stopPropagation()}
+      onKeyDown={(e) => {
+        // The menu has no arrow-key navigation; Up/Down mean "leave it".
+        if (menuAnchor && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) closeMenu();
+      }}
+    >
+      <button
+        ref={buttonRef}
+        type="button"
+        tabIndex={tabIndex}
+        onClick={(e) => {
+          if (menuAnchor) {
+            closeMenu();
+            return;
+          }
+          const rect = e.currentTarget.getBoundingClientRect();
+          setMenuAnchor({ x: rect.left, y: rect.bottom + 4 });
+        }}
+        className="p-1 rounded hover:bg-bambu-dark-tertiary"
+        title={t('common.actions')}
+      >
+        <MoreVertical className="w-3.5 h-3.5 text-bambu-gray" />
+      </button>
+      {menuAnchor && (
+        <ContextMenu x={menuAnchor.x} y={menuAnchor.y} items={items} onClose={closeMenu} anchorRef={buttonRef} />
+      )}
+    </div>
+  );
+}
+
+function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, onRename, depth = 0, wrapNames = false, defaultExpanded = true, showModified = false, hasPermission, t }: FolderTreeItemProps) {
+  const [expanded, setExpanded] = useState(defaultExpanded);
+  const hasChildren = folder.children.length > 0;
+  const isLinked = folder.project_id || folder.archive_id;
+  const isExternal = folder.is_external;
 
   return (
     <div>
@@ -668,56 +960,15 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
             <Link2 className="w-3.5 h-3.5 text-bambu-gray hover:text-bambu-green" />
           </button>
         )}
-        <div className={`flex-shrink-0 flex items-center gap-0.5 transition-opacity ${wrapNames ? '' : 'can-hover:opacity-0 group-hover:opacity-100 group-focus-within:opacity-100'}`} onClick={(e) => e.stopPropagation()}>
-          <div className="relative">
-            <button
-              onClick={() => setShowActions(!showActions)}
-              className="p-1 rounded hover:bg-bambu-dark-tertiary"
-            >
-              <MoreVertical className="w-3.5 h-3.5 text-bambu-gray" />
-            </button>
-            {showActions && (
-              <>
-                <div className="fixed inset-0 z-10" onClick={() => setShowActions(false)} />
-                <div className="absolute right-0 top-full mt-1 z-20 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl py-1 min-w-[120px]">
-                <button
-                  className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
-                    hasPermission('library:update_all') ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
-                  }`}
-                  onClick={() => { if (hasPermission('library:update_all')) { onRename(folder); setShowActions(false); } }}
-                  disabled={!hasPermission('library:update_all')}
-                  title={!hasPermission('library:update_all') ? t('fileManager.noPermissionRenameFolder') : undefined}
-                >
-                  <Pencil className="w-3.5 h-3.5" />
-                  {t('common.rename')}
-                </button>
-                <button
-                  className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
-                    hasPermission('library:update_all') ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
-                  }`}
-                  onClick={() => { if (hasPermission('library:update_all')) { onLink(folder); setShowActions(false); } }}
-                  disabled={!hasPermission('library:update_all')}
-                  title={!hasPermission('library:update_all') ? t('fileManager.noPermissionLinkFolder') : undefined}
-                >
-                  <Link2 className="w-3.5 h-3.5" />
-                  {isLinked ? t('fileManager.changeLink') : t('fileManager.linkTo')}
-                </button>
-                <button
-                  className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
-                    canDeleteFolder ? 'text-red-700 dark:text-red-400 hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
-                  }`}
-                  onClick={() => { if (canDeleteFolder) { onDelete(folder.id); setShowActions(false); } }}
-                  disabled={!canDeleteFolder}
-                  title={deleteDisabledTooltip}
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                  {t('common.delete')}
-                </button>
-              </div>
-              </>
-            )}
-          </div>
-        </div>
+        <FolderActionsMenu
+          folder={folder}
+          onDelete={onDelete}
+          onLink={onLink}
+          onRename={onRename}
+          hasPermission={hasPermission}
+          revealOnHover={!wrapNames}
+          t={t}
+        />
       </div>
       {hasChildren && expanded && (
         <div>
@@ -761,8 +1012,9 @@ interface FileCardProps {
   // (#3029), so offering one there would only ever fail.
   desktopSlicer: SlicerType;
   canSlice?: boolean;
-  onPreview3d?: (file: LibraryFileListItem) => void;
+  onPreview?: (file: LibraryFileListItem) => void;
   onRename?: (file: LibraryFileListItem) => void;
+  onDetails?: (file: LibraryFileListItem) => void;
   onGenerateThumbnail?: (file: LibraryFileListItem) => void;
   onSourceDetails?: (file: LibraryFileListItem) => void;
   onTagClick?: (tagId: number) => void;
@@ -774,7 +1026,7 @@ interface FileCardProps {
   t: TFunction;
 }
 
-function FileCard({ file, isSelected, onSelect, onDelete, onDownload, onPrint, onSlice, onOpenInSlicer, onRunPipeline, useSlicerApi, desktopSlicer, canSlice, onPreview3d, onRename, onGenerateThumbnail, onSourceDetails, onTagClick, thumbnailVersion, hasPermission, canModify, authEnabled, showModified, t }: FileCardProps) {
+function FileCard({ file, isSelected, onSelect, onDelete, onDownload, onPrint, onSlice, onOpenInSlicer, onRunPipeline, useSlicerApi, desktopSlicer, canSlice, onPreview, onRename, onDetails, onGenerateThumbnail, onSourceDetails, onTagClick, thumbnailVersion, hasPermission, canModify, authEnabled, showModified, t }: FileCardProps) {
   // Viewport coordinates rather than a flag, because the menu is rendered by
   // `ContextMenu` at `position: fixed` and anchored to the button (#2846). The
   // card it belongs to is only ~270px tall for a bare STL, which is shorter
@@ -816,11 +1068,12 @@ function FileCard({ file, isSelected, onSelect, onDelete, onDownload, onPrint, o
       title: !hasPermission('pipelines:run') ? t('library.runWithPipeline.noPermission') : undefined,
     });
   }
-  if (onPreview3d && (file.file_type === '3mf' || file.file_type === 'gcode' || file.file_type === 'stl' || file.file_type === 'gcode.3mf')) {
+  if (onPreview && isPreviewableLibraryFile(file)) {
+    const modelPreview = isModelPreview(file);
     menuItems.push({
-      label: t('fileManager.preview3d'),
-      icon: <Box className="w-4 h-4" />,
-      onClick: () => onPreview3d(file),
+      label: modelPreview ? t('fileManager.preview3d') : t('fileManager.preview.open'),
+      icon: modelPreview ? <Box className="w-4 h-4" /> : documentPreviewIcon(file.file_type),
+      onClick: () => onPreview(file),
       disabled: !canPreview3d,
       title: !canPreview3d ? t('fileManager.noPermissionPreview') : undefined,
     });
@@ -849,7 +1102,25 @@ function FileCard({ file, isSelected, onSelect, onDelete, onDownload, onPrint, o
       title: !canRename ? t('fileManager.noPermissionRenameFile') : undefined,
     });
   }
-  if (onGenerateThumbnail && file.file_type === 'stl') {
+  if (onDetails) {
+    menuItems.push({
+      label: t('fileManager.details.title'),
+      icon: <Info className="w-4 h-4" />,
+      onClick: () => onDetails(file),
+      disabled: !canPreview3d,
+      title: !canPreview3d ? t('fileManager.noPermissionPreview') : undefined,
+    });
+  }
+  if (file.external_url) {
+    menuItems.push({
+      label: t('fileManager.details.openLink'),
+      icon: <Globe className="w-4 h-4" />,
+      // The URL is stored by whoever owns the file, so the opened page must
+      // not get a handle on this window (#3077).
+      onClick: () => window.open(file.external_url!, '_blank', 'noopener,noreferrer'),
+    });
+  }
+  if (onGenerateThumbnail && hasServerThumbnail(file.file_type)) {
     menuItems.push({
       label: t('fileManager.generateThumbnail'),
       icon: <Image className="w-4 h-4" />,
@@ -875,6 +1146,9 @@ function FileCard({ file, isSelected, onSelect, onDelete, onDownload, onPrint, o
           : 'border-bambu-dark-tertiary hover:border-bambu-green/50'
       }`}
       onClick={() => onSelect(file.id)}
+      // Double-click opens the preview (#2976). The two clicks that precede it
+      // toggle the selection twice, so the selection is left as it was.
+      onDoubleClick={() => onPreview?.(file)}
     >
       {/* Thumbnail */}
       <div className="aspect-square bg-bambu-dark flex items-center justify-center overflow-hidden rounded-t-lg">
@@ -885,7 +1159,7 @@ function FileCard({ file, isSelected, onSelect, onDelete, onDownload, onPrint, o
             className="w-full h-full object-cover"
           />
         ) : (
-          <FileBox className="w-12 h-12 text-bambu-gray/30" />
+          <FileTypePlaceholderIcon fileType={file.file_type} className="w-12 h-12 text-bambu-gray/30" />
         )}
         {/* File metadata badges */}
         <div className="absolute top-2 right-2 flex items-center gap-1">
@@ -900,6 +1174,9 @@ function FileCard({ file, isSelected, onSelect, onDelete, onDownload, onPrint, o
             // that the file is already sliced and ready to print (#1543).
             : file.file_type === 'gcode' || file.file_type === 'gcode.3mf' ? 'bg-blue-500/90 text-white'
             : file.file_type === 'stl' ? 'bg-purple-500/90 text-white'
+            : isStepType(file.file_type) ? 'bg-amber-500/90 text-white'
+            : file.file_type === 'pdf' ? 'bg-red-500/90 text-white'
+            : isSpreadsheetType(file.file_type) ? 'bg-teal-500/90 text-white'
             : 'bg-bambu-gray/90 text-white'
           }`}>
             {file.file_type.toUpperCase()}
@@ -940,6 +1217,47 @@ function FileCard({ file, isSelected, onSelect, onDelete, onDownload, onPrint, o
             {t('fileManager.printedCount', { count: file.print_count })}
           </div>
         )}
+        {/* Metadata indicators (#3077): link, notes, photos. The link opens in
+            a new tab like the archive card's globe; the others open Details. */}
+        {(file.external_url || file.has_notes || (file.photo_count ?? 0) > 0) && (
+          <div className="mt-1 flex items-center gap-2 text-xs text-bambu-gray" {...stopRowActivation}>
+            {file.external_url && (
+              <a
+                href={file.external_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="p-0.5 rounded hover:text-bambu-green"
+                title={t('fileManager.details.openLink')}
+                aria-label={t('fileManager.details.openLink')}
+              >
+                <Globe className="w-3.5 h-3.5" />
+              </a>
+            )}
+            {file.has_notes && (
+              <button
+                type="button"
+                onClick={() => onDetails?.(file)}
+                className="p-0.5 rounded hover:text-bambu-green"
+                title={t('fileManager.details.hasNotes')}
+                aria-label={t('fileManager.details.hasNotes')}
+              >
+                <StickyNote className="w-3.5 h-3.5" />
+              </button>
+            )}
+            {(file.photo_count ?? 0) > 0 && (
+              <button
+                type="button"
+                onClick={() => onDetails?.(file)}
+                className="flex items-center gap-0.5 p-0.5 rounded hover:text-bambu-green"
+                title={t('fileManager.details.photoCount', { count: file.photo_count })}
+                aria-label={t('fileManager.details.photoCount', { count: file.photo_count })}
+              >
+                <Camera className="w-3.5 h-3.5" />
+                <span>{file.photo_count}</span>
+              </button>
+            )}
+          </div>
+        )}
         {authEnabled && file.created_by_username && (
           <div className="mt-1 text-xs text-bambu-gray flex items-center gap-1">
             <User className="w-3 h-3" />
@@ -955,7 +1273,7 @@ function FileCard({ file, isSelected, onSelect, onDelete, onDownload, onPrint, o
           </div>
         )}
         {(file.tags?.length ?? 0) > 0 && (
-          <div className="mt-2 flex flex-wrap gap-1" onClick={(e) => e.stopPropagation()}>
+          <div className="mt-2 flex flex-wrap gap-1" {...stopRowActivation}>
             {file.tags!.map((tg) => (
               <button
                 key={tg.id}
@@ -973,7 +1291,7 @@ function FileCard({ file, isSelected, onSelect, onDelete, onDownload, onPrint, o
       </div>
 
       {/* Actions - hover-revealed with a mouse, always there without one (#2865) */}
-      <div className="absolute bottom-2 right-2 transition-opacity can-hover:opacity-0 group-hover:opacity-100 group-focus-within:opacity-100" onClick={(e) => e.stopPropagation()}>
+      <div className="absolute bottom-2 right-2 transition-opacity can-hover:opacity-0 group-hover:opacity-100 group-focus-within:opacity-100" {...stopRowActivation}>
         <button
           onClick={(e) => {
             // No open/close toggle: the menu's own outside-mousedown handler
@@ -998,6 +1316,279 @@ function FileCard({ file, isSelected, onSelect, onDelete, onDownload, onPrint, o
           : 'border-white/30 bg-black/30 can-hover:opacity-0 group-hover:opacity-100 group-focus-within:opacity-100'
       }`}>
         {isSelected && <div className="w-2 h-2 bg-white rounded-sm" />}
+      </div>
+    </div>
+  );
+}
+
+// Per-file icon strip: Print, Slice, Run with pipeline, Preview, Download,
+// Details, Rename, Generate thumbnail, Delete. The list row and the columns view render
+// the same strip so the two stay identical in order, icons and gating; the
+// grid card packs the same actions into its kebab menu instead.
+interface FileActionStripProps {
+  file: LibraryFileListItem;
+  onPrint: (file: LibraryFileListItem) => void;
+  onSlice: (file: LibraryFileListItem) => void;
+  onOpenInSlicer: (file: LibraryFileListItem) => void;
+  onRunPipeline: (file: LibraryFileListItem) => void;
+  useSlicerApi: boolean;
+  desktopSlicer: SlicerType;
+  canSlice: boolean;
+  onPreview: (file: LibraryFileListItem) => void;
+  onDetails: (file: LibraryFileListItem) => void;
+  // Imported-source provenance snapshot (MakerWorld etc.), when one was kept.
+  onSourceDetails?: (file: LibraryFileListItem) => void;
+  onDownload: (id: number) => void;
+  onRename: (file: LibraryFileListItem) => void;
+  onGenerateThumbnail: (file: LibraryFileListItem) => void;
+  thumbnailPending: boolean;
+  onDelete: (id: number) => void;
+  hasPermission: (permission: Permission) => boolean;
+  canModify: (resource: 'queue' | 'archives' | 'library', action: 'update' | 'delete' | 'reprint', createdById: number | null | undefined) => boolean;
+  // Roving tabindex for the columns view: only the focused row's buttons take
+  // part in the Tab order, so Tab from the pane lands on that row's actions.
+  tabIndex?: number;
+  t: TFunction;
+}
+
+function FileActionStrip({ file, onPrint, onSlice, onOpenInSlicer, onRunPipeline, useSlicerApi, desktopSlicer, canSlice, onPreview, onDetails, onSourceDetails, onDownload, onRename, onGenerateThumbnail, thumbnailPending, onDelete, hasPermission, canModify, tabIndex, t }: FileActionStripProps) {
+  const canRename = canModify('library', 'update', file.created_by_id);
+  const canDelete = canModify('library', 'delete', file.created_by_id);
+  return (
+    <div className="flex items-center gap-1" data-file-actions {...stopRowActivation}>
+      {isSlicedLibraryFile(file) && (
+        <button
+          tabIndex={tabIndex}
+          onClick={() => hasPermission('queue:create') && onPrint(file)}
+          className={`p-1.5 rounded transition-colors ${
+            hasPermission('queue:create')
+              ? 'hover:bg-bambu-dark text-bambu-gray hover:text-bambu-green'
+              : 'text-bambu-gray/50 cursor-not-allowed'
+          }`}
+          title={hasPermission('queue:create') ? t('common.print') : t('fileManager.noPermissionAddToQueue')}
+          disabled={!hasPermission('queue:create')}
+        >
+          <Printer className="w-4 h-4" />
+        </button>
+      )}
+      {isSliceableLibraryFile(file, useSlicerApi, desktopSlicer) && (
+        <button
+          tabIndex={tabIndex}
+          onClick={() => {
+            if (!canSlice) return;
+            (useSlicerApi ? onSlice : onOpenInSlicer)(file);
+          }}
+          className={`p-1.5 rounded transition-colors ${
+            canSlice
+              ? 'hover:bg-bambu-dark text-bambu-gray hover:text-bambu-green'
+              : 'text-bambu-gray/50 cursor-not-allowed'
+          }`}
+          title={canSlice ? t('slice.action') : (useSlicerApi ? t('fileManager.noPermissionSlice') : t('fileManager.noPermissionDownload'))}
+          disabled={!canSlice}
+        >
+          {useSlicerApi ? <Cog className="w-4 h-4" /> : <ExternalLink className="w-4 h-4" />}
+        </button>
+      )}
+      {useSlicerApi && isSliceableLibraryFile(file, true, desktopSlicer) && (
+        <button
+          tabIndex={tabIndex}
+          onClick={() => hasPermission('pipelines:run') && onRunPipeline(file)}
+          className={`p-1.5 rounded transition-colors ${
+            hasPermission('pipelines:run')
+              ? 'hover:bg-bambu-dark text-bambu-gray hover:text-bambu-green'
+              : 'text-bambu-gray/50 cursor-not-allowed'
+          }`}
+          title={hasPermission('pipelines:run') ? t('library.runWithPipeline.actionLabel') : t('library.runWithPipeline.noPermission')}
+          disabled={!hasPermission('pipelines:run')}
+        >
+          <Play className="w-4 h-4" />
+        </button>
+      )}
+      {isModelPreview(file) && (
+        <button
+          tabIndex={tabIndex}
+          onClick={() => hasPermission('library:read') && onPreview(file)}
+          className={`p-1.5 rounded transition-colors ${
+            hasPermission('library:read')
+              ? 'hover:bg-bambu-dark text-bambu-gray hover:text-bambu-green'
+              : 'text-bambu-gray/50 cursor-not-allowed'
+          }`}
+          title={hasPermission('library:read') ? t('fileManager.preview3d') : t('fileManager.noPermissionPreview')}
+          disabled={!hasPermission('library:read')}
+        >
+          <Box className="w-4 h-4" />
+        </button>
+      )}
+      {!isModelPreview(file) && isPreviewableLibraryFile(file) && (
+        <button
+          tabIndex={tabIndex}
+          onClick={() => hasPermission('library:read') && onPreview(file)}
+          className={`p-1.5 rounded transition-colors ${
+            hasPermission('library:read')
+              ? 'hover:bg-bambu-dark text-bambu-gray hover:text-bambu-green'
+              : 'text-bambu-gray/50 cursor-not-allowed'
+          }`}
+          title={hasPermission('library:read') ? t('fileManager.preview.open') : t('fileManager.noPermissionPreview')}
+          disabled={!hasPermission('library:read')}
+        >
+          {documentPreviewIcon(file.file_type)}
+        </button>
+      )}
+      {file.source_snapshot_available && onSourceDetails && (
+        <button
+          tabIndex={tabIndex}
+          onClick={() => hasPermission('library:read') && onSourceDetails(file)}
+          className={`p-1.5 rounded transition-colors ${
+            hasPermission('library:read')
+              ? 'hover:bg-bambu-dark text-bambu-gray hover:text-bambu-green'
+              : 'text-bambu-gray/50 cursor-not-allowed'
+          }`}
+          title={t('fileManager.sourceDetails')}
+          aria-label={t('fileManager.sourceDetails')}
+          disabled={!hasPermission('library:read')}
+        >
+          <Link2 className="w-4 h-4" />
+        </button>
+      )}
+      <button
+        tabIndex={tabIndex}
+        onClick={() => hasPermission('library:read') && onDownload(file.id)}
+        className={`p-1.5 rounded transition-colors ${
+          hasPermission('library:read')
+            ? 'hover:bg-bambu-dark text-bambu-gray hover:text-white'
+            : 'text-bambu-gray/50 cursor-not-allowed'
+        }`}
+        title={hasPermission('library:read') ? t('common.download') : t('fileManager.noPermissionDownload')}
+        disabled={!hasPermission('library:read')}
+      >
+        <Download className="w-4 h-4" />
+      </button>
+      <button
+        tabIndex={tabIndex}
+        onClick={() => hasPermission('library:read') && onDetails(file)}
+        className={`p-1.5 rounded transition-colors ${
+          hasPermission('library:read')
+            ? 'hover:bg-bambu-dark text-bambu-gray hover:text-white'
+            : 'text-bambu-gray/50 cursor-not-allowed'
+        }`}
+        title={hasPermission('library:read') ? t('fileManager.details.title') : t('fileManager.noPermissionPreview')}
+        disabled={!hasPermission('library:read')}
+      >
+        <Info className="w-4 h-4" />
+      </button>
+      <button
+        tabIndex={tabIndex}
+        onClick={() => canRename && onRename(file)}
+        className={`p-1.5 rounded transition-colors ${
+          canRename
+            ? 'hover:bg-bambu-dark text-bambu-gray hover:text-white'
+            : 'text-bambu-gray/50 cursor-not-allowed'
+        }`}
+        title={canRename ? t('common.rename') : t('fileManager.noPermissionRenameFile')}
+        disabled={!canRename}
+      >
+        <Pencil className="w-4 h-4" />
+      </button>
+      {hasServerThumbnail(file.file_type) && (
+        <button
+          tabIndex={tabIndex}
+          onClick={() => canRename && onGenerateThumbnail(file)}
+          className={`p-1.5 rounded transition-colors ${
+            canRename
+              ? 'hover:bg-bambu-dark text-bambu-gray hover:text-bambu-green'
+              : 'text-bambu-gray/50 cursor-not-allowed'
+          }`}
+          title={canRename ? t('fileManager.generateThumbnail') : t('fileManager.noPermissionGenerateThumbnail')}
+          disabled={thumbnailPending || !canRename}
+        >
+          <Image className="w-4 h-4" />
+        </button>
+      )}
+      <button
+        tabIndex={tabIndex}
+        onClick={() => canDelete && onDelete(file.id)}
+        className={`p-1.5 rounded transition-colors ${
+          canDelete
+            ? 'hover:bg-bambu-dark text-bambu-gray hover:text-red-700 dark:hover:text-red-400'
+            : 'text-bambu-gray/50 cursor-not-allowed'
+        }`}
+        title={canDelete ? t('common.delete') : t('fileManager.noPermissionDeleteFile')}
+        disabled={!canDelete}
+      >
+        <Trash2 className="w-4 h-4" />
+      </button>
+    </div>
+  );
+}
+
+// One row of a Miller column's file list. Extracted so every column renders
+// its files with the same markup, action strip and double-click behaviour the
+// selected folder's pane has always used.
+interface ColumnFileRowProps {
+  file: LibraryFileListItem;
+  isSelected: boolean;
+  isFocused: boolean;
+  showModified: boolean;
+  thumbnailVersion?: number;
+  onSelect: (file: LibraryFileListItem) => void;
+  onOpen: (file: LibraryFileListItem) => void;
+  actionProps: Omit<FileActionStripProps, 'file' | 'tabIndex'>;
+  t: TFunction;
+}
+
+function ColumnFileRow({ file, isSelected, isFocused, showModified, thumbnailVersion, onSelect, onOpen, actionProps, t }: ColumnFileRowProps) {
+  const thumbnailUrl = api.getLibraryFileThumbnailUrl(file.id);
+  return (
+    <div
+      data-file-id={file.id}
+      onClick={() => onSelect(file)}
+      onDoubleClick={() => onOpen(file)}
+      className={`group flex items-center gap-3 px-3 py-2 cursor-pointer transition-colors ${
+        isSelected ? 'bg-bambu-green/10' : 'hover:bg-bambu-dark'
+      } ${isFocused ? 'ring-1 ring-inset ring-bambu-green/60' : ''}`}
+      title={file.print_name || file.filename}
+    >
+      <div className={`w-4 h-4 rounded border-2 flex-shrink-0 flex items-center justify-center ${
+        isSelected ? 'bg-bambu-green border-bambu-green' : 'border-bambu-gray/50'
+      }`}>
+        {isSelected && <div className="w-1.5 h-1.5 bg-white rounded-sm" />}
+      </div>
+      <div className="w-10 h-10 rounded bg-bambu-dark flex-shrink-0 overflow-hidden flex items-center justify-center">
+        {file.thumbnail_path ? (
+          <img
+            src={`${thumbnailUrl}${thumbnailVersion ? ((thumbnailUrl.includes('?') ? '&' : '?') + `v=${thumbnailVersion}`) : ''}`}
+            alt=""
+            className="w-full h-full object-cover"
+          />
+        ) : (
+          <FileTypePlaceholderIcon fileType={file.file_type} className="w-5 h-5 text-bambu-gray/50" />
+        )}
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="text-sm text-white truncate">{file.print_name || file.filename}</div>
+        <div className="mt-0.5 flex items-center gap-2 text-xs text-bambu-gray">
+          <span className={`px-1.5 py-px rounded font-medium ${fileTypeBadgeClass(file.file_type)}`}>
+            {file.file_type.toUpperCase()}
+          </span>
+          <span>{formatFileSize(file.file_size)}</span>
+          {file.print_count > 0 && <span>{file.print_count}x</span>}
+          {showModified && (
+            <span className="flex items-center gap-1 truncate" title={t('fileManager.lastModified')}>
+              <CalendarClock className="w-3 h-3 flex-shrink-0" />
+              {formatDate(file.fs_modified_at ?? file.created_at)}
+            </span>
+          )}
+        </div>
+      </div>
+      {/* Same strip as the list row. Hover-revealed with a mouse, always there
+          without one (#2865) and on the focused / selected row so the keyboard
+          can reach it. */}
+      <div
+        className={`flex-shrink-0 transition-opacity ${
+          isFocused || isSelected ? '' : 'can-hover:opacity-0 group-hover:opacity-100 group-focus-within:opacity-100'
+        }`}
+      >
+        <FileActionStrip file={file} {...actionProps} tabIndex={isFocused ? 0 : -1} />
       </div>
     </div>
   );
@@ -1039,15 +1630,28 @@ export function FileManagerPage() {
   const [deleteConfirm, setDeleteConfirm] = useState<{ type: 'file' | 'folder' | 'bulk'; id: number; count?: number } | null>(null);
   const [printFile, setPrintFile] = useState<LibraryFileListItem | null>(null);
   const [sliceFile, setSliceFile] = useState<LibraryFileListItem | null>(null);
+  const [showCombineModal, setShowCombineModal] = useState(false);
+  // A file just built by "Combine to 3MF", handed straight to the SliceModal.
+  const [sliceCombined, setSliceCombined] = useState<{ id: number; filename: string } | null>(null);
   // Slicer Pipelines (#1425 PR B) — file gets "Run with pipeline" action.
   const [runPipelineFile, setRunPipelineFile] = useState<LibraryFileListItem | null>(null);
   const [renameItem, setRenameItem] = useState<{ type: 'file' | 'folder'; id: number; name: string } | null>(null);
   const [thumbnailVersions, setThumbnailVersions] = useState<Record<number, number>>({});
   const [viewerFile, setViewerFile] = useState<LibraryFileListItem | null>(null);
   const [sourceDetailsFile, setSourceDetailsFile] = useState<LibraryFileListItem | null>(null);
-  const [viewMode, setViewMode] = useState<'grid' | 'list'>(() => {
-    return (localStorage.getItem('library-view-mode') as 'grid' | 'list') || 'grid';
+  const [pdfPreviewFile, setPdfPreviewFile] = useState<LibraryFileListItem | null>(null);
+  const [sheetPreviewFile, setSheetPreviewFile] = useState<LibraryFileListItem | null>(null);
+  const [detailsFile, setDetailsFile] = useState<LibraryFileListItem | null>(null);
+  const [imagePreviewFile, setImagePreviewFile] = useState<LibraryFileListItem | null>(null);
+  const [viewMode, setViewMode] = useState<'grid' | 'list' | 'columns'>(() => {
+    return (localStorage.getItem('library-view-mode') as 'grid' | 'list' | 'columns') || 'grid';
   });
+  // Miller-columns keyboard navigation (#3020): the pane itself is focusable
+  // and arrow keys walk the hierarchy. The focused file is tracked separately
+  // from the checkbox selection so Space can toggle a file without the arrow
+  // keys hijacking multi-select.
+  const columnsViewRef = useRef<HTMLDivElement>(null);
+  const [columnsFocusedFileId, setColumnsFocusedFileId] = useState<number | null>(null);
   const [wrapFolderNames, setWrapFolderNames] = useState(() => {
     return localStorage.getItem('library-wrap-folders') === 'true';
   });
@@ -1279,17 +1883,29 @@ export function FileManagerPage() {
     );
   }, []);
 
+  // While a search or tag filter is active the file list spans every matching
+  // descendant folder, so per-level folder columns would lie about scope —
+  // hide them and let the files pane take the full width.
+  const columnsFilterActive = searchQuery.trim().length > 0 || selectedTagIds.length > 0;
+
+  // In the columns view the pane beside the root column is that level's own
+  // list, the files in no folder, like every other column's. Grid and list keep
+  // "All Files", and so does a search or tag filter, whose results span every
+  // folder.
+  const paneRootOnly = viewMode === 'columns' && selectedFolderId === null && !columnsFilterActive;
+
   const { data: files, isLoading: filesLoading } = useQuery({
-    queryKey: ['library-files', selectedFolderId, topLevelView, searchExpandsSubfolders, tagFilterKey],
+    queryKey: ['library-files', selectedFolderId, topLevelView, searchExpandsSubfolders, tagFilterKey, paneRootOnly],
     // When a specific folder is selected we list its contents directly; when
     // no folder is selected the topLevelView pseudo-node decides whether the
     // server scopes the result to internal-managed-storage files or to the
-    // union of every external folder (#1621). include_root stays false so the
-    // listing still descends into subfolders (regression guard from #1499).
+    // union of every external folder (#1621). include_root is false outside
+    // the columns view's root level, so "All Files" still descends into
+    // subfolders (regression guard from #1499).
     queryFn: () =>
       api.getLibraryFiles(
         selectedFolderId,
-        false,
+        paneRootOnly,
         undefined,
         selectedFolderId === null ? topLevelView : undefined,
         searchExpandsSubfolders,
@@ -1316,63 +1932,17 @@ export function FileManagerPage() {
   }, [files]);
 
   // Filter and sort files
-  const filteredAndSortedFiles = useMemo(() => {
-    if (!files) return [];
-
-    let result = [...files];
-
-    // Apply search filter
-    if (searchQuery.trim()) {
-      const query = searchQuery.toLowerCase();
-      result = result.filter(
-        (f) =>
-          f.filename.toLowerCase().includes(query) ||
-          (f.print_name && f.print_name.toLowerCase().includes(query))
-      );
-    }
-
-    // Apply type filter
-    if (filterType !== 'all') {
-      result = result.filter((f) => f.file_type === filterType);
-    }
-
-    // Apply username filter
-    if (filterUsername.trim()) {
-      const query = filterUsername.toLowerCase();
-      result = result.filter(
-        (f) => f.created_by_username && f.created_by_username.toLowerCase().includes(query)
-      );
-    }
-
-    // Apply sorting
-    result.sort((a, b) => {
-      let comparison = 0;
-      switch (sortField) {
-        case 'name':
-          comparison = (a.print_name || a.filename).localeCompare(b.print_name || b.filename);
-          break;
-        case 'date':
-          // #2680: sort by real on-disk mtime (matches `ls -t`), falling back to
-          // the DB created_at for managed uploads that have no filesystem mtime.
-          comparison =
-            (parseUTCDate(a.fs_modified_at ?? a.created_at)?.getTime() ?? 0) -
-            (parseUTCDate(b.fs_modified_at ?? b.created_at)?.getTime() ?? 0);
-          break;
-        case 'size':
-          comparison = a.file_size - b.file_size;
-          break;
-        case 'type':
-          comparison = a.file_type.localeCompare(b.file_type);
-          break;
-        case 'prints':
-          comparison = a.print_count - b.print_count;
-          break;
-      }
-      return sortDirection === 'asc' ? comparison : -comparison;
-    });
-
-    return result;
-  }, [files, searchQuery, filterType, filterUsername, sortField, sortDirection]);
+  const filteredAndSortedFiles = useMemo(
+    () =>
+      filterAndSortFiles(files ?? [], {
+        query: searchQuery,
+        filterType,
+        filterUsername,
+        sortField,
+        sortDirection,
+      }),
+    [files, searchQuery, filterType, filterUsername, sortField, sortDirection],
+  );
 
   // Check if disk space is low
   const isDiskSpaceLow = useMemo(() => {
@@ -1591,41 +2161,25 @@ export function FileManagerPage() {
     onError: (error: Error) => showToast(error.message, 'error'),
   });
 
-  // Get sliced files from selection
-  const selectedSlicedFiles = useMemo(() => {
-    if (!files) return [];
-    return files.filter(f => selectedFiles.includes(f.id) && isSlicedLibraryFile(f));
-  }, [files, selectedFiles]);
-
-  // The clicked file's variant group, so printing one member offers the rest
-  // without the user re-selecting them (#2570).
-  const { data: printFileGroup } = useQuery({
-    queryKey: ['variant-group', printFile?.variant_group_id],
-    queryFn: () => api.getVariantGroup(printFile!.variant_group_id!),
-    enabled: !!printFile?.variant_group_id,
-  });
-
-  // Candidates for a cross-model print (#671), or undefined for an ordinary one.
-  // An explicit multi-selection wins over the group: the user just said, in this
-  // action, which files they meant.
-  const printVariantFiles = useMemo(() => {
-    if (!printFile) return undefined;
-    if (selectedSlicedFiles.length > 1) {
-      return selectedSlicedFiles.map(f => ({
-        id: f.id,
-        filename: f.filename,
-        sliced_for_model: f.sliced_for_model,
-      }));
+  // The one way into a preview (#2976): the kebab entry, the action-strip
+  // icon, a double-click on the card or row, and the toolbar button all end
+  // up here. Sliced files open the full-page gcode viewer the archive card
+  // uses; everything else opens the modal for its type. A file with no
+  // preview does nothing.
+  const openPreview = useCallback((file: LibraryFileListItem) => {
+    if (!hasPermission('library:read')) return;
+    if (isSlicedLibraryFile(file)) {
+      navigate(`/gcode-viewer?library_file=${file.id}`);
+    } else if (file.file_type === '3mf' || file.file_type === 'stl' || isStepType(file.file_type)) {
+      setViewerFile(file);
+    } else if (file.file_type === 'pdf') {
+      setPdfPreviewFile(file);
+    } else if (isSpreadsheetType(file.file_type)) {
+      setSheetPreviewFile(file);
+    } else if (isPreviewableImageType(file.file_type)) {
+      setImagePreviewFile(file);
     }
-    if (printFileGroup && printFileGroup.members.length > 1) {
-      return printFileGroup.members.map(m => ({
-        id: m.library_file_id,
-        filename: m.filename,
-        sliced_for_model: m.target_model,
-      }));
-    }
-    return undefined;
-  }, [printFile, selectedSlicedFiles, printFileGroup]);
+  }, [hasPermission, navigate]);
 
   // Handlers
   const handleFileSelect = useCallback((id: number) => {
@@ -1635,11 +2189,21 @@ export function FileManagerPage() {
     });
   }, []);
 
+  // In the columns view Select all adds the pane's files to what is ticked, so
+  // a file ticked in an earlier column (still on screen) stays ticked (#3020).
+  // Grid and list replace the selection: a file a search has hidden must not
+  // stay ticked behind the user's back, or a bulk Delete would remove it.
   const handleSelectAll = useCallback(() => {
     if (filteredAndSortedFiles.length > 0) {
-      setSelectedFiles(filteredAndSortedFiles.map((f) => f.id));
+      const paneIds = filteredAndSortedFiles.map((f) => f.id);
+      setSelectedFiles((prev) => (viewMode === 'columns' ? [...new Set([...prev, ...paneIds])] : paneIds));
     }
-  }, [filteredAndSortedFiles]);
+  }, [filteredAndSortedFiles, viewMode]);
+
+  // "Deselect all" once every file of the pane is ticked. The pane's own ids,
+  // not a count: ticks in earlier columns count towards the selection too.
+  const allPaneFilesSelected =
+    filteredAndSortedFiles.length > 0 && filteredAndSortedFiles.every((f) => selectedFiles.includes(f.id));
 
   const handleDeselectAll = useCallback(() => {
     setSelectedFiles([]);
@@ -1664,6 +2228,30 @@ export function FileManagerPage() {
       setShowUploadModal(true);
     },
   });
+
+  // Returns the snapshot callback the preview components call with their
+  // first render, or undefined when nothing should be persisted — the file
+  // already has a thumbnail, or the user may not update it (#2976).
+  const previewSnapshotHandler = useCallback(
+    (file: LibraryFileListItem): ((blob: Blob) => void) | undefined => {
+      if (file.thumbnail_path) return undefined;
+      if (!canModify('library', 'update', file.created_by_id)) return undefined;
+      return (blob: Blob) => {
+        api
+          .uploadLibraryPreviewThumbnail(file.id, blob)
+          .then((res) => {
+            if (res.updated) {
+              setThumbnailVersions((prev) => ({ ...prev, [file.id]: (prev[file.id] || 0) + 1 }));
+              queryClient.invalidateQueries({ queryKey: ['library-files'] });
+            }
+          })
+          .catch(() => {
+            // Thumbnail persistence is best-effort; the preview already rendered.
+          });
+      };
+    },
+    [canModify, queryClient]
+  );
 
   const handleDownload = (id: number) => {
     api.downloadLibraryFile(id).catch((err) => {
@@ -1703,9 +2291,31 @@ export function FileManagerPage() {
 
   const isDeleting = deleteFolderMutation.isPending || deleteFileMutation.isPending || bulkDeleteMutation.isPending;
 
-  const handleViewModeChange = (mode: 'grid' | 'list') => {
+  const handleViewModeChange = (mode: 'grid' | 'list' | 'columns') => {
     setViewMode(mode);
     localStorage.setItem('library-view-mode', mode);
+  };
+
+  // Shared by the list row and the columns view (see FileActionStrip).
+  const fileActionProps = {
+    onPrint: setPrintFile,
+    onSlice: setSliceFile,
+    onOpenInSlicer: handleOpenInSlicer,
+    onRunPipeline: setRunPipelineFile,
+    useSlicerApi: settings?.use_slicer_api ?? false,
+    desktopSlicer: preferredSlicer,
+    canSlice: canSlice(),
+    onPreview: openPreview,
+    onDetails: setDetailsFile,
+    onSourceDetails: setSourceDetailsFile,
+    onDownload: handleDownload,
+    onRename: (f: LibraryFileListItem) => setRenameItem({ type: 'file', id: f.id, name: f.filename }),
+    onGenerateThumbnail: (f: LibraryFileListItem) => singleThumbnailMutation.mutate(f.id),
+    thumbnailPending: singleThumbnailMutation.isPending,
+    onDelete: (id: number) => setDeleteConfirm({ type: 'file', id }),
+    hasPermission,
+    canModify,
+    t,
   };
 
   const isLoading = foldersLoading || filesLoading;
@@ -1724,9 +2334,374 @@ export function FileManagerPage() {
     return findFolder(folders);
   }, [selectedFolderId, folders]);
 
+  // The chain of folders from a top-level folder down to the selected one.
+  // Selection is the single source of truth — clicking a folder anywhere just
+  // moves selectedFolderId, and the path (and with it the path bar and the set
+  // of visible columns) is re-derived from the sorted tree.
+  const folderPath = useMemo(() => {
+    if (!sortedFolders || selectedFolderId === null) return [] as LibraryFolderTree[];
+    const path: LibraryFolderTree[] = [];
+    const walk = (items: LibraryFolderTree[]): boolean => {
+      for (const item of items) {
+        path.push(item);
+        if (item.id === selectedFolderId) return true;
+        if (walk(item.children)) return true;
+        path.pop();
+      }
+      return false;
+    };
+    walk(sortedFolders);
+    return path;
+  }, [sortedFolders, selectedFolderId]);
+
+  // Which half of the tree the current location lives in: the selected path's
+  // bucket when there is one, otherwise the sidebar's top-level choice. Drives
+  // both the path bar's root crumb and the columns view's first column.
+  const currentBucketIsExternal =
+    folderPath.length > 0 ? Boolean(folderPath[0].is_external) : topLevelView === 'external';
+
+  // One column per level: the top-level bucket, then the children of each
+  // folder along the path. `folderId` is the folder the column is the inside
+  // of (null = the library root), which is what its file list is keyed on.
+  // Leaf folders contribute no column — the files pane to the right is their
+  // content.
+  const folderColumns = useMemo(() => {
+    const rootItems = (sortedFolders ?? []).filter((f) => Boolean(f.is_external) === currentBucketIsExternal);
+    const cols: { key: string; folderId: number | null; items: LibraryFolderTree[]; activeId: number | null }[] = [
+      { key: 'root', folderId: null, items: rootItems, activeId: folderPath[0]?.id ?? null },
+    ];
+    folderPath.forEach((node, i) => {
+      if (node.children.length > 0) {
+        cols.push({
+          key: `folder-${node.id}`,
+          folderId: node.id,
+          items: node.children,
+          activeId: folderPath[i + 1]?.id ?? null,
+        });
+      }
+    });
+    return cols;
+  }, [sortedFolders, folderPath, currentBucketIsExternal]);
+
+  // Every column lists its own level's files, not just the rightmost pane: a
+  // folder that holds files and no subfolders used to look empty until it was
+  // the selection. One query per rendered level, keyed on that level's folder
+  // id so walking back up a path is instant. Only levels the view actually
+  // renders are fetched, and the level that IS the current selection is
+  // skipped — the pane on the right already lists exactly those files.
+  const columnFileLevels = useMemo(() => {
+    if (viewMode !== 'columns' || columnsFilterActive) return [];
+    return folderColumns
+      .filter((col) => col.folderId !== selectedFolderId)
+      .map((col) => ({
+        key: col.key,
+        folderId: col.folderId,
+        scope:
+          col.folderId === null
+            ? currentBucketIsExternal
+              ? ('external' as const)
+              : ('internal' as const)
+            : undefined,
+      }));
+  }, [viewMode, columnsFilterActive, folderColumns, selectedFolderId, currentBucketIsExternal]);
+
+  const columnFileQueries = useQueries({
+    combine: combineColumnFileQueries,
+    queries: columnFileLevels.map((level) => ({
+      queryKey: ['library-files', 'column', level.folderId, level.scope ?? null],
+      // include_root only means anything for the root column, where "this
+      // level's files" are the ones that sit in no folder at all. Under a
+      // folder id the server already answers with that folder's own files.
+      queryFn: () =>
+        api.getLibraryFiles(level.folderId, level.folderId === null, undefined, level.scope, false, []),
+    })),
+  });
+
+  // Keyed by column so the render stays a lookup. Deliberately not memoised:
+  // useQueries hands back a fresh array every render, so a memo would recompute
+  // anyway.
+  const columnFiles = new Map<string, { files: LibraryFileListItem[]; loading: boolean }>();
+  columnFileLevels.forEach((level, i) => {
+    const query = columnFileQueries.results[i];
+    columnFiles.set(level.key, {
+      files: filterAndSortFiles(query?.data ?? [], { filterType, filterUsername, sortField, sortDirection }),
+      loading: Boolean(query?.isPending),
+    });
+  });
+
+  // Every file a tick can point at: the pane plus the files of every column
+  // the view has loaded, since a file can be ticked in an earlier column
+  // (#3020). The toolbar's actions resolve the selection against this.
+  const selectableFiles = useMemo(() => {
+    const byId = new Map<number, LibraryFileListItem>();
+    for (const file of [...(files ?? []), ...columnFileQueries.files]) byId.set(file.id, file);
+    return byId;
+  }, [files, columnFileQueries.files]);
+
+  // The toolbar's Preview button acts on one file, so it is offered only for
+  // a single previewable selection.
+  const previewSelection = useMemo(() => {
+    if (selectedFiles.length !== 1) return null;
+    const file = selectableFiles.get(selectedFiles[0]);
+    return file && isPreviewableLibraryFile(file) ? file : null;
+  }, [selectableFiles, selectedFiles]);
+
+  // The sliced files among the selection, in the order they were ticked.
+  const selectedSlicedFiles = useMemo(
+    () =>
+      selectedFiles
+        .map((id) => selectableFiles.get(id))
+        .filter((f): f is LibraryFileListItem => !!f && isSlicedLibraryFile(f)),
+    [selectableFiles, selectedFiles],
+  );
+
+  // "Combine to 3MF" is offered only when every selected file is an STL, so
+  // the action never silently drops part of the selection. Resolved like the
+  // rest, so an STL ticked in an earlier column counts too.
+  const selectedStlFiles = useMemo(() => {
+    const stls = selectedFiles
+      .map((id) => selectableFiles.get(id))
+      .filter((f): f is LibraryFileListItem => !!f && f.filename.toLowerCase().endsWith('.stl'));
+    return stls.length === selectedFiles.length ? stls : [];
+  }, [selectableFiles, selectedFiles]);
+
+  // The clicked file's variant group, so printing one member offers the rest
+  // without the user re-selecting them (#2570).
+  const { data: printFileGroup } = useQuery({
+    queryKey: ['variant-group', printFile?.variant_group_id],
+    queryFn: () => api.getVariantGroup(printFile!.variant_group_id!),
+    enabled: !!printFile?.variant_group_id,
+  });
+
+  // Candidates for a cross-model print (#671), or undefined for an ordinary one.
+  // An explicit multi-selection wins over the group: the user just said, in this
+  // action, which files they meant.
+  const printVariantFiles = useMemo(() => {
+    if (!printFile) return undefined;
+    if (selectedSlicedFiles.length > 1) {
+      return selectedSlicedFiles.map(f => ({
+        id: f.id,
+        filename: f.filename,
+        sliced_for_model: f.sliced_for_model,
+      }));
+    }
+    if (printFileGroup && printFileGroup.members.length > 1) {
+      return printFileGroup.members.map(m => ({
+        id: m.library_file_id,
+        filename: m.filename,
+        sliced_for_model: m.target_model,
+      }));
+    }
+    return undefined;
+  }, [printFile, selectedSlicedFiles, printFileGroup]);
+
+  // The list the arrow keys walk: the one that actually holds the focused
+  // file, which may be an intermediate column rather than the selected
+  // folder's pane.
+  const focusedFileColumnList =
+    columnsFocusedFileId === null
+      ? undefined
+      : columnFileLevels
+          .map((level) => columnFiles.get(level.key)?.files)
+          .find((list) => list?.some((f) => f.id === columnsFocusedFileId));
+  const focusedFileList = focusedFileColumnList ?? filteredAndSortedFiles;
+
+  // Focus the columns pane when the view opens so arrow keys work right away,
+  // and drop the file focus whenever the folder (and with it the file list)
+  // changes. A modal or the search box taking focus naturally mutes the
+  // pane's key handling — no explicit guards needed.
+  useEffect(() => {
+    if (viewMode === 'columns') columnsViewRef.current?.focus({ preventScroll: true });
+  }, [viewMode]);
+  useEffect(() => {
+    setColumnsFocusedFileId(null);
+  }, [selectedFolderId, viewMode]);
+  // A selection belongs to the folder it was made in. Every column can tick a
+  // file, so a selection that survived a folder change would leave Move and
+  // Delete pointing at rows that are no longer anywhere on screen (#3020).
+  useEffect(() => {
+    setSelectedFiles([]);
+  }, [selectedFolderId]);
+  // Keep the keyboard-driven selection scrolled into view. Deliberately an
+  // effect keyed on the ids, NOT per-render ref callbacks: those re-run on
+  // every commit and would snap a manually scrolled column back to the
+  // highlighted row whenever anything re-renders. scrollIntoView is guarded
+  // because jsdom doesn't implement it.
+  useEffect(() => {
+    if (viewMode !== 'columns' || selectedFolderId === null) return;
+    columnsViewRef.current?.querySelector(`[data-folder-id="${selectedFolderId}"]`)?.scrollIntoView?.({ block: 'nearest' });
+  }, [selectedFolderId, viewMode]);
+  useEffect(() => {
+    if (viewMode !== 'columns' || columnsFocusedFileId === null) return;
+    columnsViewRef.current?.querySelector(`[data-file-id="${columnsFocusedFileId}"]`)?.scrollIntoView?.({ block: 'nearest' });
+  }, [columnsFocusedFileId, viewMode]);
+
+  // Finder-style keys: Up/Down move within the current column, Right descends
+  // (into the first child folder, then into the files), Left ascends, Enter
+  // opens the focused file's preview, Space toggles its selection.
+  //
+  // Actions: the focused file's icon strip is the only one in the Tab order
+  // (roving tabindex), so Tab from the pane lands on it; the context-menu
+  // key (or Shift+F10) jumps there directly, or opens the selected folder's
+  // kebab while no file is focused. Inside a strip Left/Right walk the
+  // buttons, Enter/Space activate one natively and Escape returns to the pane.
+  const focusColumnsActions = () => {
+    const root = columnsViewRef.current;
+    if (!root) return;
+    if (columnsFocusedFileId !== null) {
+      root
+        .querySelector<HTMLButtonElement>(`[data-file-id="${columnsFocusedFileId}"] [data-file-actions] button:not([disabled])`)
+        ?.focus();
+    } else if (selectedFolderId !== null) {
+      const kebab = root.querySelector<HTMLButtonElement>(`[data-folder-id="${selectedFolderId}"] [data-folder-actions] button`);
+      // Focus first so Tab continues into the menu that the click opens.
+      kebab?.focus();
+      kebab?.click();
+    }
+  };
+  const handleColumnsKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    const target = e.target as HTMLElement;
+    if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT' || target.isContentEditable) return;
+    if (target.closest('[data-folder-actions]')) {
+      // A folder kebab (and the menu it opens) handles its own keys, except
+      // that Escape and Up/Down hand focus back to the pane — otherwise the
+      // arrows are dead until the user clicks or Shift+Tabs out of the kebab.
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        columnsViewRef.current?.focus({ preventScroll: true });
+        return;
+      }
+      if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+      columnsViewRef.current?.focus({ preventScroll: true });
+    }
+    const strip = target.closest<HTMLElement>('[data-file-actions]');
+    if (strip) {
+      if (e.key === 'Enter' || e.key === ' ') return;
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+        e.preventDefault();
+        const buttons = Array.from(strip.querySelectorAll<HTMLButtonElement>('button:not([disabled])'));
+        buttons[buttons.indexOf(target as HTMLButtonElement) + (e.key === 'ArrowRight' ? 1 : -1)]?.focus();
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        columnsViewRef.current?.focus({ preventScroll: true });
+        return;
+      }
+      // Up/Down move the row focus below; DOM focus must leave the old row's
+      // strip with it, or the next Enter would fire that row's button.
+      if (e.key === 'ArrowUp' || e.key === 'ArrowDown') columnsViewRef.current?.focus({ preventScroll: true });
+    }
+    if (e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey)) {
+      e.preventDefault();
+      focusColumnsActions();
+      return;
+    }
+    const inFiles = columnsFocusedFileId !== null;
+    const selectedNode = folderPath[folderPath.length - 1];
+    switch (e.key) {
+      case 'ArrowDown':
+      case 'ArrowUp': {
+        e.preventDefault();
+        const dir = e.key === 'ArrowDown' ? 1 : -1;
+        if (inFiles || columnsFilterActive) {
+          // findIndex yields -1 for a vanished focus id — ArrowDown then
+          // lands on index 0, ArrowUp on -2 → no-op, both intended.
+          const idx = focusedFileList.findIndex((f) => f.id === columnsFocusedFileId);
+          const next = focusedFileList[idx + dir];
+          if (next) setColumnsFocusedFileId(next.id);
+          else if (dir === -1 && idx === 0 && focusedFileColumnList) {
+            // Off the top of a column's files: back onto that same column's
+            // folders, which is where ArrowDown came from.
+            setColumnsFocusedFileId(null);
+          }
+        } else if (selectedFolderId === null) {
+          if (dir === 1 && folderColumns[0].items.length > 0) {
+            setSelectedFolderId(folderColumns[0].items[0].id);
+          }
+        } else {
+          const col = folderColumns[folderPath.length - 1];
+          const idx = col ? col.items.findIndex((f) => f.id === selectedFolderId) : -1;
+          const next = idx === -1 ? undefined : col.items[idx + dir];
+          if (next) setSelectedFolderId(next.id);
+          else if (dir === 1 && idx !== -1) {
+            // Past the last folder the column's own files continue the list,
+            // exactly as they read on screen: the only way a keyboard
+            // reaches an intermediate column's rows at all.
+            const colFiles = col ? columnFiles.get(col.key)?.files : undefined;
+            if (colFiles?.length) setColumnsFocusedFileId(colFiles[0].id);
+          }
+        }
+        break;
+      }
+      case 'ArrowRight': {
+        e.preventDefault();
+        if (inFiles) break;
+        if (!columnsFilterActive && selectedNode && selectedNode.children.length > 0) {
+          setSelectedFolderId(selectedNode.children[0].id);
+        } else if (filteredAndSortedFiles.length > 0) {
+          setColumnsFocusedFileId(filteredAndSortedFiles[0].id);
+        }
+        break;
+      }
+      case 'ArrowLeft': {
+        e.preventDefault();
+        if (inFiles) {
+          setColumnsFocusedFileId(null);
+          break;
+        }
+        // With a filter active the folder columns are hidden — don't move a
+        // selection the user can't see.
+        if (columnsFilterActive) break;
+        if (folderPath.length > 1) {
+          setSelectedFolderId(folderPath[folderPath.length - 2].id);
+        } else if (folderPath.length === 1) {
+          // Ascending past the top level: keep the bucket the user was
+          // navigating — the tree can select a folder from either bucket
+          // without touching topLevelView, and falling back to a stale one
+          // would teleport the root column to the other folder set.
+          setTopLevelView(folderPath[0].is_external ? 'external' : 'internal');
+          setSelectedFolderId(null);
+        } else if (selectedFolderId !== null) {
+          // Selection not in the tree (e.g. a deep link to a deleted
+          // folder): give the keyboard an escape hatch back to the root.
+          setSelectedFolderId(null);
+        }
+        break;
+      }
+      // Enter and Space preventDefault BEFORE the inFiles check: DOM focus
+      // may still sit on the last-clicked folder button, and the browser's
+      // default activation would re-click it — snapping the selection back
+      // to a folder the arrows have long left (Space would scroll the page).
+      case 'Enter': {
+        e.preventDefault();
+        if (!inFiles) {
+          // Enter means "open the selected thing": on a folder that is
+          // descending, exactly like ArrowRight.
+          if (!columnsFilterActive && selectedNode && selectedNode.children.length > 0) {
+            setSelectedFolderId(selectedNode.children[0].id);
+          } else if (filteredAndSortedFiles.length > 0) {
+            setColumnsFocusedFileId(filteredAndSortedFiles[0].id);
+          }
+          break;
+        }
+        const file = focusedFileList.find((f) => f.id === columnsFocusedFileId);
+        if (file) openPreview(file);
+        break;
+      }
+      case ' ': {
+        e.preventDefault();
+        if (!inFiles) break;
+        if (columnsFocusedFileId !== null) handleFileSelect(columnsFocusedFileId);
+        break;
+      }
+    }
+  };
+
   return (
     <div
-      className="p-4 md:p-8 min-h-[calc(100vh-64px)] lg:h-[calc(100vh-64px)] flex flex-col relative"
+      className="p-4 md:p-8 min-h-[calc(100vh-64px)] lg:h-screen flex flex-col relative"
       {...dragHandlers}
     >
       {/* Drag & Drop Overlay — page-wide file upload (#1510) */}
@@ -1771,6 +2746,15 @@ export function FileManagerPage() {
               title={t('fileManager.listView')}
             >
               <List className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => handleViewModeChange('columns')}
+              className={`p-1.5 rounded transition-colors ${
+                viewMode === 'columns' ? 'bg-bambu-dark-secondary text-white' : 'text-bambu-gray hover:text-white'
+              }`}
+              title={t('fileManager.columnsView')}
+            >
+              <Columns className="w-4 h-4" />
             </button>
           </div>
           <Button
@@ -1933,6 +2917,7 @@ export function FileManagerPage() {
         {/* Folder sidebar - resizable, hidden on mobile */}
         <div
           ref={sidebarRef}
+          data-testid="folder-sidebar"
           className="hidden lg:flex flex-shrink-0 bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary overflow-hidden flex-col relative"
           style={{ width: `${sidebarWidth}px` }}
         >
@@ -2290,11 +3275,14 @@ export function FileManagerPage() {
             </div>
           )}
 
-          {/* Selection toolbar - sticky on mobile below search bar */}
-          {filteredAndSortedFiles.length > 0 && (
+          {/* Selection toolbar - sticky on mobile below search bar. It stays
+              while anything is selected, even with the selected folder's own
+              pane empty: a file ticked in an intermediate column of the
+              columns view still needs its count and actions (#3020). */}
+          {(filteredAndSortedFiles.length > 0 || selectedFiles.length > 0) && (
             <div className="flex flex-wrap items-center gap-2 mb-4 p-2 bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary sticky top-[52px] z-10 lg:static">
               {/* Select all / Deselect all */}
-              {selectedFiles.length === filteredAndSortedFiles.length && selectedFiles.length > 0 ? (
+              {allPaneFilesSelected ? (
                 <Button
                   variant="secondary"
                   size="sm"
@@ -2321,6 +3309,18 @@ export function FileManagerPage() {
                   </span>
                   <div className="hidden sm:block flex-1" />
                   <div className="w-full sm:w-auto flex flex-wrap items-center gap-2 mt-2 sm:mt-0">
+                    {previewSelection && (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => openPreview(previewSelection)}
+                        disabled={!hasPermission('library:read')}
+                        title={!hasPermission('library:read') ? t('fileManager.noPermissionPreview') : undefined}
+                      >
+                        <Eye className="w-4 h-4 sm:mr-1" />
+                        <span className="hidden sm:inline">{t('fileManager.preview.open')}</span>
+                      </Button>
+                    )}
                     {/* Print used to disappear the moment a second sliced file was
                         selected. Selecting several is now how you say "same job,
                         different printers" (#671) — one queue item, whichever
@@ -2354,6 +3354,18 @@ export function FileManagerPage() {
                       >
                         <Layers className="w-4 h-4 sm:mr-1" />
                         <span className="hidden sm:inline">{t('fileManager.variants.groupAction')}</span>
+                      </Button>
+                    )}
+                    {selectedStlFiles.length >= 1 && (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => setShowCombineModal(true)}
+                        disabled={!hasPermission('library:upload')}
+                        title={t('fileManager.combine.tooltip')}
+                      >
+                        <Combine className="w-4 h-4 sm:mr-1" />
+                        <span className="hidden sm:inline">{t('fileManager.combine.action')}</span>
                       </Button>
                     )}
                     <Button
@@ -2416,12 +3428,183 @@ export function FileManagerPage() {
             </div>
           )}
 
-          {/* File grid/list */}
-          {isLoading ? (
+          {/* File grid/list. The columns view is exempt from the full-pane
+              loading swap: every keyboard descent into an uncached folder
+              flips filesLoading for one round-trip, and replacing the pane
+              would strip its tabindex mid-keystroke — the focus-fixup rule
+              then drops focus to <body> and kills keyboard navigation. The
+              pane stays mounted and only its files pane shows the spinner. */}
+          {isLoading && viewMode !== 'columns' ? (
             <div className="flex-1 flex items-center justify-center">
               <div className="flex flex-col items-center gap-3">
                 <Loader2 className="w-8 h-8 animate-spin text-bambu-green" />
                 <p className="text-sm text-bambu-gray">{t('fileManager.loadingFiles')}</p>
+              </div>
+            </div>
+          ) : viewMode === 'columns' ? (
+            /* Miller columns (macOS-Finder style): one column per folder level,
+               the rightmost pane lists the selected folder's files. Unlike the
+               grid/list branches this renders even for an "empty" folder — an
+               empty files pane next to navigable folder columns is the whole
+               point of the view. */
+            <div
+              ref={columnsViewRef}
+              tabIndex={0}
+              aria-label={t('fileManager.columnsView')}
+              onKeyDown={handleColumnsKeyDown}
+              className="flex-1 min-h-0 bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary overflow-x-auto outline-none focus-visible:ring-1 focus-visible:ring-bambu-green/50"
+              data-testid="columns-view"
+            >
+              <div className="h-full min-h-[16rem] flex divide-x divide-bambu-dark-tertiary">
+                {!columnsFilterActive && folderColumns.map((col) => {
+                  const level = columnFiles.get(col.key);
+                  // A column carrying file rows needs the room the files pane
+                  // has: checkbox, thumbnail and the seven-icon action strip
+                  // leave nothing for the name at the folder-only width. A
+                  // column that only lists folders keeps that narrow width.
+                  const wide = Boolean(level && (level.loading || level.files.length > 0));
+                  return (
+                  <div
+                    key={col.key}
+                    data-testid={`columns-level-${col.key}`}
+                    className={`${wide ? 'w-[26rem]' : 'w-64'} flex-shrink-0 overflow-y-auto py-1`}
+                  >
+                    {col.items.map((folder) => {
+                      const isSelectedFolder = selectedFolderId === folder.id;
+                      return (
+                        /* The row is a div, not the button itself: the kebab
+                           is a button of its own and buttons don't nest. */
+                        <div
+                          key={folder.id}
+                          data-folder-id={folder.id}
+                          className={`group flex items-center pr-1.5 transition-colors ${
+                            col.activeId === folder.id
+                              ? 'bg-bambu-green/20 text-bambu-green'
+                              : isSelectedFolder
+                                ? 'bg-bambu-green/10 text-white'
+                                : 'text-white hover:bg-bambu-dark'
+                          }`}
+                        >
+                          <button
+                            type="button"
+                            // Roving tabindex: the pane is the keyboard surface
+                            // (arrows walk the folders), so Tab skips the names
+                            // and goes straight to the selected row's kebab and
+                            // on to the focused file's actions.
+                            tabIndex={-1}
+                            onClick={() => {
+                              // Clear the file focus here too: re-clicking the
+                              // already-selected folder bails out of the state
+                              // update, so the clearing effect would not run and
+                              // the arrow keys would stay stuck in the files pane.
+                              setColumnsFocusedFileId(null);
+                              setSelectedFolderId(folder.id);
+                            }}
+                            className="flex-1 min-w-0 flex items-center gap-2 pl-3 pr-1 py-2.5 text-left text-sm"
+                            title={folder.name}
+                          >
+                            {folder.is_external ? (
+                              <FolderSymlink className="w-5 h-5 flex-shrink-0 text-purple-600 dark:text-purple-400" />
+                            ) : (
+                              <FolderOpen className="w-5 h-5 flex-shrink-0 text-bambu-green" />
+                            )}
+                            <span className="flex-1 truncate">{folder.name}</span>
+                            {(folder.project_id || folder.archive_id) && (
+                              <Link2 className="w-3.5 h-3.5 flex-shrink-0 text-blue-700 dark:text-blue-400" />
+                            )}
+                            {folder.is_external && folder.external_readonly && (
+                              <Lock className="w-3.5 h-3.5 flex-shrink-0 text-amber-600 dark:text-amber-400" />
+                            )}
+                            {folder.file_count > 0 && (
+                              <span className="text-xs text-bambu-gray flex-shrink-0">{folder.file_count}</span>
+                            )}
+                            {folder.children.length > 0 && (
+                              <ChevronRightIcon className="w-4 h-4 flex-shrink-0 text-bambu-gray" />
+                            )}
+                          </button>
+                          {/* Kebab: hover-revealed with a mouse, always there
+                              without one (#2865) and on the selected row. */}
+                          <FolderActionsMenu
+                            folder={folder}
+                            onDelete={(id) => setDeleteConfirm({ type: 'folder', id })}
+                            onLink={setLinkFolder}
+                            onRename={(f) => setRenameItem({ type: 'folder', id: f.id, name: f.name })}
+                            hasPermission={hasPermission}
+                            revealOnHover={!isSelectedFolder}
+                            tabIndex={isSelectedFolder ? 0 : -1}
+                            t={t}
+                          />
+                        </div>
+                      );
+                    })}
+                    {level?.loading && (
+                      <div className="px-3 py-2 text-sm text-bambu-gray" aria-hidden="true">…</div>
+                    )}
+                    {level && !level.loading && level.files.map((file) => (
+                      <ColumnFileRow
+                        key={file.id}
+                        file={file}
+                        isSelected={selectedFiles.includes(file.id)}
+                        isFocused={columnsFocusedFileId === file.id}
+                        showModified={showModified}
+                        thumbnailVersion={thumbnailVersions[file.id]}
+                        onSelect={(f) => {
+                          // Focusing a file in an intermediate column must not
+                          // move the folder selection out from under it.
+                          setColumnsFocusedFileId(f.id);
+                          handleFileSelect(f.id);
+                        }}
+                        onOpen={openPreview}
+                        actionProps={fileActionProps}
+                        t={t}
+                      />
+                    ))}
+                  </div>
+                  );
+                })}
+                {/* Files pane — still the selected folder's contents, so a
+                    leaf folder's column layout is exactly what it was. */}
+                <div className="flex-1 min-w-[28rem] overflow-y-auto py-1" data-testid="columns-files-pane">
+                  {filesLoading ? (
+                    <div className="h-full flex items-center justify-center">
+                      <Loader2 className="w-5 h-5 animate-spin text-bambu-green" />
+                    </div>
+                  ) : filteredAndSortedFiles.length === 0 ? (
+                    <div className="h-full flex items-center justify-center px-4 text-sm text-bambu-gray text-center">
+                      {(files?.length ?? 0) > 0
+                        ? t('fileManager.noMatchingFiles')
+                        : selectedFolderId !== null
+                          ? t('fileManager.folderIsEmpty')
+                          // At the root the pane lists only the files in no
+                          // folder, so with folders beside it "No files yet"
+                          // would be wrong (and an external bucket never has
+                          // unfiled files at all).
+                          : paneRootOnly && folderColumns[0].items.length > 0
+                            ? t('fileManager.noFilesOutsideFolders')
+                          : topLevelView === 'external'
+                            ? t('fileManager.externalIsEmpty')
+                            : t('fileManager.noFilesYet')}
+                    </div>
+                  ) : (
+                    filteredAndSortedFiles.map((file) => (
+                      <ColumnFileRow
+                        key={file.id}
+                        file={file}
+                        isSelected={selectedFiles.includes(file.id)}
+                        isFocused={columnsFocusedFileId === file.id}
+                        showModified={showModified}
+                        thumbnailVersion={thumbnailVersions[file.id]}
+                        onSelect={(f) => {
+                          setColumnsFocusedFileId(f.id);
+                          handleFileSelect(f.id);
+                        }}
+                        onOpen={openPreview}
+                        actionProps={fileActionProps}
+                        t={t}
+                      />
+                    ))
+                  )}
+                </div>
               </div>
             </div>
           ) : files?.length === 0 ? (
@@ -2484,18 +3667,9 @@ export function FileManagerPage() {
                     onRunPipeline={setRunPipelineFile}
                     useSlicerApi={settings?.use_slicer_api ?? false}
                     canSlice={canSlice()}
-                    onPreview3d={(f) => {
-                      // Sliced files (.gcode / .gcode.3mf) open the same
-                      // full-page gcode viewer the archive card uses, so
-                      // the two paths feel consistent. STL / source 3MF
-                      // continue to use the in-app 3D model viewer modal.
-                      if (isSlicedLibraryFile(f)) {
-                        navigate(`/gcode-viewer?library_file=${f.id}`);
-                      } else {
-                        setViewerFile(f);
-                      }
-                    }}
+                    onPreview={openPreview}
                     onRename={(f) => setRenameItem({ type: 'file', id: f.id, name: f.filename })}
+                    onDetails={setDetailsFile}
                     onGenerateThumbnail={(f) => singleThumbnailMutation.mutate(f.id)}
                     onSourceDetails={setSourceDetailsFile}
                     onTagClick={toggleTagFilter}
@@ -2540,6 +3714,8 @@ export function FileManagerPage() {
                       selectedFiles.includes(file.id) ? 'bg-bambu-green/10' : ''
                     }`}
                     onClick={() => handleFileSelect(file.id)}
+                    // Double-click opens the preview (#2976), as in the grid.
+                    onDoubleClick={() => openPreview(file)}
                   >
                     {/* Checkbox */}
                     <div className={`w-5 h-5 rounded border-2 flex items-center justify-center ${
@@ -2561,7 +3737,7 @@ export function FileManagerPage() {
                             />
                           ) : (
                             <div className="w-full h-full flex items-center justify-center">
-                              <FileBox className="w-5 h-5 text-bambu-gray/50" />
+                              <FileTypePlaceholderIcon fileType={file.file_type} className="w-5 h-5 text-bambu-gray/50" />
                             </div>
                           )}
                         </div>
@@ -2579,7 +3755,34 @@ export function FileManagerPage() {
                         )}
                       </div>
                       <div className="min-w-0">
-                        <div className="text-sm text-white truncate">{file.print_name || file.filename}</div>
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span className="text-sm text-white truncate">{file.print_name || file.filename}</span>
+                          {/* Metadata indicators (#3077), same set as the card. */}
+                          {file.external_url && (
+                            <a
+                              href={file.external_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              {...stopRowActivation}
+                              className="flex-shrink-0 text-bambu-gray hover:text-bambu-green"
+                              title={t('fileManager.details.openLink')}
+                              aria-label={t('fileManager.details.openLink')}
+                            >
+                              <Globe className="w-3.5 h-3.5" />
+                            </a>
+                          )}
+                          {file.has_notes && (
+                            <span className="flex-shrink-0 text-bambu-gray" title={t('fileManager.details.hasNotes')} aria-label={t('fileManager.details.hasNotes')}>
+                              <StickyNote className="w-3.5 h-3.5" />
+                            </span>
+                          )}
+                          {(file.photo_count ?? 0) > 0 && (
+                            <span className="flex-shrink-0 flex items-center gap-0.5 text-xs text-bambu-gray" title={t('fileManager.details.photoCount', { count: file.photo_count })}>
+                              <Camera className="w-3.5 h-3.5" />
+                              {file.photo_count}
+                            </span>
+                          )}
+                        </div>
                         {/* #2680: last-modified date under the name, toggled from
                             the toolbar. Real on-disk mtime when known, else created_at. */}
                         {showModified && (
@@ -2605,12 +3808,7 @@ export function FileManagerPage() {
                     )}
                     {/* Type */}
                     <div>
-                      <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
-                        file.file_type === '3mf' ? 'bg-bambu-green/20 text-bambu-green'
-                        : (file.file_type === 'gcode' || file.file_type === 'gcode.3mf') ? 'bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-400'
-                        : file.file_type === 'stl' ? 'bg-purple-100 dark:bg-purple-500/20 text-purple-700 dark:text-purple-400'
-                        : 'bg-bambu-gray/20 text-bambu-gray'
-                      }`}>
+                      <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${fileTypeBadgeClass(file.file_type)}`}>
                         {file.file_type.toUpperCase()}
                       </span>
                     </div>
@@ -2622,7 +3820,7 @@ export function FileManagerPage() {
                         filter; minmax(0,200px) on the column lets the cell
                         shrink/wrap on narrow viewports without pushing the
                         Actions cell off-screen. */}
-                    <div className="min-w-0" onClick={(e) => e.stopPropagation()}>
+                    <div className="min-w-0" {...stopRowActivation}>
                       {!file.tags || file.tags.length === 0 ? (
                         <span className="text-xs text-bambu-gray/50">-</span>
                       ) : (
@@ -2643,141 +3841,7 @@ export function FileManagerPage() {
                       )}
                     </div>
                     {/* Actions */}
-                    <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
-                      {isSlicedLibraryFile(file) && (
-                        <>
-                          <button
-                            onClick={() => hasPermission('queue:create') && setPrintFile(file)}
-                            className={`p-1.5 rounded transition-colors ${
-                              hasPermission('queue:create')
-                                ? 'hover:bg-bambu-dark text-bambu-gray hover:text-bambu-green'
-                                : 'text-bambu-gray/50 cursor-not-allowed'
-                            }`}
-                            title={hasPermission('queue:create') ? t('common.print') : t('fileManager.noPermissionAddToQueue')}
-                            disabled={!hasPermission('queue:create')}
-                          >
-                            <Printer className="w-4 h-4" />
-                          </button>
-                        </>
-                      )}
-                      {isSliceableLibraryFile(file, !!settings?.use_slicer_api, preferredSlicer) && (
-                        <button
-                          onClick={() => {
-                            if (!canSlice()) return;
-                            (settings?.use_slicer_api ? setSliceFile : handleOpenInSlicer)(file);
-                          }}
-                          className={`p-1.5 rounded transition-colors ${
-                            canSlice()
-                              ? 'hover:bg-bambu-dark text-bambu-gray hover:text-bambu-green'
-                              : 'text-bambu-gray/50 cursor-not-allowed'
-                          }`}
-                          title={canSlice() ? t('slice.action') : (settings?.use_slicer_api ? t('fileManager.noPermissionSlice') : t('fileManager.noPermissionDownload'))}
-                          disabled={!canSlice()}
-                        >
-                          {settings?.use_slicer_api ? <Cog className="w-4 h-4" /> : <ExternalLink className="w-4 h-4" />}
-                        </button>
-                      )}
-                      {(settings?.use_slicer_api ?? false) && isSliceableLibraryFile(file, true, preferredSlicer) && (
-                        <button
-                          onClick={() => hasPermission('pipelines:run') && setRunPipelineFile(file)}
-                          className={`p-1.5 rounded transition-colors ${
-                            hasPermission('pipelines:run')
-                              ? 'hover:bg-bambu-dark text-bambu-gray hover:text-bambu-green'
-                              : 'text-bambu-gray/50 cursor-not-allowed'
-                          }`}
-                          title={hasPermission('pipelines:run') ? t('library.runWithPipeline.actionLabel', 'Run with pipeline') : t('library.runWithPipeline.noPermission', 'You do not have permission to run pipelines')}
-                          disabled={!hasPermission('pipelines:run')}
-                        >
-                          <Play className="w-4 h-4" />
-                        </button>
-                      )}
-                      {(file.file_type === '3mf' || file.file_type === 'gcode' || file.file_type === 'gcode.3mf' || file.file_type === 'stl') && (
-                        <button
-                          onClick={() => {
-                            if (!hasPermission('library:read')) return;
-                            if (isSlicedLibraryFile(file)) {
-                              navigate(`/gcode-viewer?library_file=${file.id}`);
-                            } else {
-                              setViewerFile(file);
-                            }
-                          }}
-                          className={`p-1.5 rounded transition-colors ${
-                            hasPermission('library:read')
-                              ? 'hover:bg-bambu-dark text-bambu-gray hover:text-bambu-green'
-                              : 'text-bambu-gray/50 cursor-not-allowed'
-                          }`}
-                          title={hasPermission('library:read') ? '3D Preview' : 'You do not have permission to preview files'}
-                          disabled={!hasPermission('library:read')}
-                        >
-                          <Box className="w-4 h-4" />
-                        </button>
-                      )}
-                      {file.source_snapshot_available && (
-                        <button
-                          onClick={() => hasPermission('library:read') && setSourceDetailsFile(file)}
-                          className={`p-1.5 rounded transition-colors ${
-                            hasPermission('library:read')
-                              ? 'hover:bg-bambu-dark text-bambu-gray hover:text-bambu-green'
-                              : 'text-bambu-gray/50 cursor-not-allowed'
-                          }`}
-                          title={t('fileManager.sourceDetails')}
-                          aria-label={t('fileManager.sourceDetails')}
-                          disabled={!hasPermission('library:read')}
-                        >
-                          <Link2 className="w-4 h-4" />
-                        </button>
-                      )}
-                      <button
-                        onClick={() => hasPermission('library:read') && handleDownload(file.id)}
-                        className={`p-1.5 rounded transition-colors ${
-                          hasPermission('library:read')
-                            ? 'hover:bg-bambu-dark text-bambu-gray hover:text-white'
-                            : 'text-bambu-gray/50 cursor-not-allowed'
-                        }`}
-                        title={hasPermission('library:read') ? t('common.download') : t('fileManager.noPermissionDownload')}
-                        disabled={!hasPermission('library:read')}
-                      >
-                        <Download className="w-4 h-4" />
-                      </button>
-                      <button
-                        onClick={() => canModify('library', 'update', file.created_by_id) && setRenameItem({ type: 'file', id: file.id, name: file.filename })}
-                        className={`p-1.5 rounded transition-colors ${
-                          canModify('library', 'update', file.created_by_id)
-                            ? 'hover:bg-bambu-dark text-bambu-gray hover:text-white'
-                            : 'text-bambu-gray/50 cursor-not-allowed'
-                        }`}
-                        title={canModify('library', 'update', file.created_by_id) ? t('common.rename') : t('fileManager.noPermissionRenameFile')}
-                        disabled={!canModify('library', 'update', file.created_by_id)}
-                      >
-                        <Pencil className="w-4 h-4" />
-                      </button>
-                      {file.file_type === 'stl' && (
-                        <button
-                          onClick={() => canModify('library', 'update', file.created_by_id) && singleThumbnailMutation.mutate(file.id)}
-                          className={`p-1.5 rounded transition-colors ${
-                            canModify('library', 'update', file.created_by_id)
-                              ? 'hover:bg-bambu-dark text-bambu-gray hover:text-bambu-green'
-                              : 'text-bambu-gray/50 cursor-not-allowed'
-                          }`}
-                          title={canModify('library', 'update', file.created_by_id) ? t('fileManager.generateThumbnail') : t('fileManager.noPermissionGenerateThumbnail')}
-                          disabled={singleThumbnailMutation.isPending || !canModify('library', 'update', file.created_by_id)}
-                        >
-                          <Image className="w-4 h-4" />
-                        </button>
-                      )}
-                      <button
-                        onClick={() => canModify('library', 'delete', file.created_by_id) && setDeleteConfirm({ type: 'file', id: file.id })}
-                        className={`p-1.5 rounded transition-colors ${
-                          canModify('library', 'delete', file.created_by_id)
-                            ? 'hover:bg-bambu-dark text-bambu-gray hover:text-red-700 dark:hover:text-red-400'
-                            : 'text-bambu-gray/50 cursor-not-allowed'
-                        }`}
-                        title={canModify('library', 'delete', file.created_by_id) ? t('common.delete') : t('fileManager.noPermissionDeleteFile')}
-                        disabled={!canModify('library', 'delete', file.created_by_id)}
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
+                    <FileActionStrip file={file} {...fileActionProps} />
                   </div>
                 ))}
               </div>
@@ -2922,6 +3986,30 @@ export function FileManagerPage() {
         />
       )}
 
+      {showCombineModal && selectedStlFiles.length > 0 && (
+        <CombineFilesModal
+          files={selectedStlFiles}
+          folderId={selectedFolderId}
+          // canSlice() also covers the desktop-slicer handoff; "open the
+          // slicer next" means the in-app SliceModal, so the sidecar must be on.
+          canSlice={!!settings?.use_slicer_api && canSlice()}
+          onClose={() => setShowCombineModal(false)}
+          onCombined={(result, sliceNext) => {
+            setShowCombineModal(false);
+            setSelectedFiles([]);
+            if (sliceNext) setSliceCombined({ id: result.id, filename: result.filename });
+          }}
+        />
+      )}
+
+      {sliceCombined && (
+        <SliceModal
+          source={{ kind: 'libraryFile', id: sliceCombined.id, filename: sliceCombined.filename }}
+          onClose={() => setSliceCombined(null)}
+          defaultAutoArrange
+        />
+      )}
+
       {runPipelineFile && (
         <RunWithPipelineModal
           source={{ kind: 'libraryFile', id: runPipelineFile.id, filename: runPipelineFile.filename }}
@@ -2935,6 +4023,9 @@ export function FileManagerPage() {
           title={viewerFile.print_name || viewerFile.filename}
           fileType={viewerFile.file_type}
           onClose={() => setViewerFile(null)}
+          // STEP has no server-side renderer; persist the first client render
+          // as the grid thumbnail (#2976).
+          onSnapshot={isStepType(viewerFile.file_type) ? previewSnapshotHandler(viewerFile) : undefined}
           onSliceWithPrintbuddy={
             // Only offer in-app slicing on files the SliceModal can actually
             // handle (matches the file-row Cog visibility check at :2127).
@@ -2954,6 +4045,46 @@ export function FileManagerPage() {
           fileId={sourceDetailsFile.id}
           fallbackTitle={sourceDetailsFile.print_name || sourceDetailsFile.filename}
           onClose={() => setSourceDetailsFile(null)}
+        />
+      )}
+
+      {(pdfPreviewFile || sheetPreviewFile || imagePreviewFile) && (
+        <Suspense fallback={null}>
+          {pdfPreviewFile && (
+            <PdfPreviewModal
+              libraryFileId={pdfPreviewFile.id}
+              filename={pdfPreviewFile.print_name || pdfPreviewFile.filename}
+              fileSize={pdfPreviewFile.file_size}
+              onClose={() => setPdfPreviewFile(null)}
+              onSnapshot={previewSnapshotHandler(pdfPreviewFile)}
+            />
+          )}
+          {sheetPreviewFile && (
+            <SpreadsheetPreviewModal
+              libraryFileId={sheetPreviewFile.id}
+              filename={sheetPreviewFile.print_name || sheetPreviewFile.filename}
+              fileType={sheetPreviewFile.file_type}
+              fileSize={sheetPreviewFile.file_size}
+              onClose={() => setSheetPreviewFile(null)}
+              onSnapshot={previewSnapshotHandler(sheetPreviewFile)}
+            />
+          )}
+          {imagePreviewFile && (
+            <ImagePreviewModal
+              libraryFileId={imagePreviewFile.id}
+              filename={imagePreviewFile.print_name || imagePreviewFile.filename}
+              fileSize={imagePreviewFile.file_size}
+              onClose={() => setImagePreviewFile(null)}
+            />
+          )}
+        </Suspense>
+      )}
+
+      {detailsFile && (
+        <LibraryFileDetailsModal
+          file={detailsFile}
+          canEdit={canModify('library', 'update', detailsFile.created_by_id)}
+          onClose={() => setDetailsFile(null)}
         />
       )}
 

@@ -95,11 +95,13 @@ describe('GCodeViewerPage', () => {
     // has a definite height. `h-full` did not provide one -- it resolves against
     // `<main>`, whose height comes from `flex-1` under a `min-h-screen` root, so
     // the percentage fell through to content and the canvas grew the page it was
-    // measured against, without limit.
+    // measured against, without limit. `lg:h-screen` and not `100vh-64px`: there
+    // is no top bar on desktop, so subtracting one left an empty band under the
+    // page (#3215).
     visit('?archive=82');
     const column = screen.getByTestId('toolpath-viewer').parentElement as HTMLElement;
     expect(column.className).not.toContain('h-full');
-    expect(column.className).toContain('h-[calc(100vh-64px)]');
+    expect(column.className).toContain('lg:h-screen');
   });
 
   it('offers a way back to where the file came from', () => {

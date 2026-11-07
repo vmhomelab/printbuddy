@@ -52,6 +52,7 @@ def _state(connected: bool, state: str = "IDLE") -> SimpleNamespace:
         state=state,
         progress=0,
         layer_num=0,
+        total_layers=0,
         temperatures={},
         nozzles=[],
         raw_data={},
@@ -299,6 +300,8 @@ class TestProgressMilestoneSessionHygiene:
         # Printbuddy's milestone/Live Activity path also reads these.
         st.subtask_id = "job-1"
         st.total_layers = 100
+        # Past layer 1, so the #3211 preparation gate does not hold the milestone back.
+        st.layer_num = 25
         return st
 
     @pytest.mark.asyncio

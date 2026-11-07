@@ -250,22 +250,19 @@ describe('ConfigureAmsSlotModal', () => {
     expect(payload.setting_id).toBe('PFUScd84f663d2c2ef');
   });
 
-  it('uses an Orca Cloud profile\'s own filament_id instead of a generic (#3003)', async () => {
-    // Orca profile ids are UUIDs the printer cannot hold, so this branch used
-    // to skip the lookup entirely and send a generic — every Orca custom
-    // filament reached the slicer as "Generic PLA". The profile's slicer JSON
-    // carries a filament_id of exactly the storable shape; use it.
+  it('has the backend resolve an Orca Cloud profile\'s own filament_id (#3003, #3216)', async () => {
+    // OrcaSlicer's "Sync filaments" matches a slot by filament_id alone, so a
+    // generic here turns the profile into "Generic PLA" in the slicer. The
+    // lookup used to run here and fall back silently; it now runs in configure,
+    // which logs the outcome and reports a fallback.
     const ORCA_ID = '3f2a9c1e-4b7d-4a02-9f61-8c5e2d1a7b30';
     (api.orcaCloudListProfiles as ReturnType<typeof vi.fn>).mockResolvedValue({
       filament: [{ setting_id: ORCA_ID, name: 'Overture Matte PLA @Orca', type: 'filament', is_custom: true }],
       printer: [],
       process: [],
     });
-    (api.orcaCloudGetProfile as ReturnType<typeof vi.fn>).mockResolvedValue({
-      setting_id: ORCA_ID,
-      name: 'Overture Matte PLA @Orca',
-      type: 'filament',
-      setting: { filament_id: 'P56e1be0', filament_type: ['PLA'] },
+    (api.configureAmsSlot as ReturnType<typeof vi.fn>).mockResolvedValue({
+      success: true, tray_info_idx: 'P56e1be0', orca_fallback_reason: '',
     });
 
     const slotInfo = { ...defaultProps.slotInfo, savedPresetId: ORCA_ID };
@@ -278,27 +275,32 @@ describe('ConfigureAmsSlotModal', () => {
     fireEvent.click(screen.getByRole('button', { name: /Configure Slot/i }));
 
     await waitFor(() => {
-      expect(api.configureAmsSlot).toHaveBeenCalled();
+      expect(api.saveSlotPreset).toHaveBeenCalled();
     });
 
     const payload = (api.configureAmsSlot as ReturnType<typeof vi.fn>).mock.calls[0][3];
-    expect(payload.tray_info_idx).toBe('P56e1be0');
+    expect(payload.orca_profile_id).toBe(ORCA_ID);
+    expect(payload.tray_info_idx).toBe('');
     // The UUID is what the slicer cannot resolve; it goes in neither field.
     expect(payload.setting_id).toBe('');
+    expect(api.orcaCloudGetProfile).not.toHaveBeenCalled();
+    // The slot preset row records the id the slot was actually given, so the
+    // slot card notices when the Device tab re-configures the slot.
+    const saveArgs = (api.saveSlotPreset as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(saveArgs[5]).toBe('orca_cloud');
+    expect(saveArgs[6]).toBe('P56e1be0');
+    expect(screen.queryByText(/OrcaSlicer will see this slot as Generic/)).not.toBeInTheDocument();
   });
 
-  it('falls back to a generic when an Orca profile has no filament_id (#3003)', async () => {
+  it('warns when an Orca profile went into the slot as a generic (#3216)', async () => {
     const ORCA_ID = '3f2a9c1e-4b7d-4a02-9f61-8c5e2d1a7b30';
     (api.orcaCloudListProfiles as ReturnType<typeof vi.fn>).mockResolvedValue({
       filament: [{ setting_id: ORCA_ID, name: 'Homebrew PLA @Orca', type: 'filament', is_custom: true }],
       printer: [],
       process: [],
     });
-    (api.orcaCloudGetProfile as ReturnType<typeof vi.fn>).mockResolvedValue({
-      setting_id: ORCA_ID,
-      name: 'Homebrew PLA @Orca',
-      type: 'filament',
-      setting: {},
+    (api.configureAmsSlot as ReturnType<typeof vi.fn>).mockResolvedValue({
+      success: true, tray_info_idx: 'GFL99', orca_fallback_reason: 'no_filament_id',
     });
 
     const slotInfo = { ...defaultProps.slotInfo, savedPresetId: ORCA_ID };
@@ -310,13 +312,11 @@ describe('ConfigureAmsSlotModal', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Configure Slot/i }));
 
-    await waitFor(() => {
-      expect(api.configureAmsSlot).toHaveBeenCalled();
-    });
-
-    const payload = (api.configureAmsSlot as ReturnType<typeof vi.fn>).mock.calls[0][3];
-    expect(payload.tray_info_idx).toBe('GFL99');
-    expect(payload.setting_id).toBe('');
+    expect(
+      await screen.findByText(
+        'This Orca profile has no filament ID of its own, so OrcaSlicer will see this slot as Generic PLA.',
+      ),
+    ).toBeInTheDocument();
   });
 
   it('uses the filament_id nested under setting when the envelope has none (#3003)', async () => {
@@ -632,6 +632,63 @@ describe('ConfigureAmsSlotModal', () => {
     await waitFor(() => {
       expect(screen.getByRole('option', { name: /unrelated-petg-tune/ })).toBeInTheDocument();
     });
+  });
+
+  it("does not carry the slot's K-profile over to a different filament (#3216)", async () => {
+    // X1C slot on Devil Design PLA with its K-profile active, re-configured for
+    // Azurefilm PLA Wood. The active profile used to join Azurefilm's list and
+    // win the auto-select; the backend then realigned the slot to that
+    // profile's filament, so the printer -- and OrcaSlicer -- stayed on Devil
+    // Design. Only a slot reset first made it work.
+    const DEVIL = '0ed901cd-6700-5772-80b2-25ed659df0d1';
+    const AZURE = '2161df52-3d0e-579a-b4b6-dfbc62b93b76';
+    (api.orcaCloudListProfiles as ReturnType<typeof vi.fn>).mockResolvedValue({
+      filament: [
+        { setting_id: DEVIL, name: 'Devil Design PLA @Orca', type: 'filament', is_custom: true },
+        { setting_id: AZURE, name: 'Azurefilm PLA Wood @Orca', type: 'filament', is_custom: true },
+      ],
+      printer: [],
+      process: [],
+    });
+    const kp = (slot_id: number, name: string, filament_id: string, setting_id: string) => ({
+      slot_id, extruder_id: 0, nozzle_id: 'HS00-0.4', nozzle_diameter: '0.4', filament_id, name,
+      k_value: '0.020', n_coef: '0', ams_id: 0, tray_id: 0, setting_id,
+    });
+    (api.getKProfiles as ReturnType<typeof vi.fn>).mockResolvedValue({
+      profiles: [
+        kp(7, 'Devil Design PLA', 'P4d64437', 'PFUSedbf16b803ff3e'),
+        kp(9, 'Azurefilm PLA Wood', 'P285e239', 'PFUS220b72bdc39f90'),
+      ],
+    });
+    const slotInfo = {
+      ...defaultProps.slotInfo,
+      savedPresetId: `orca_${DEVIL}`,
+      trayInfoIdx: 'P4d64437',
+      caliIdx: 7,
+      extruderId: 0,
+    };
+    render(<ConfigureAmsSlotModal {...defaultProps} slotInfo={slotInfo} />);
+
+    // Reopening on the slot's own filament still shows its active profile.
+    await waitFor(() => {
+      expect(screen.getByRole('option', { name: /Devil Design PLA/ })).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByText('Azurefilm PLA Wood @Orca'));
+    // Azurefilm's own profile is offered and picked; Devil Design's is not.
+    await waitFor(() => {
+      expect(screen.getByRole('option', { name: /Azurefilm PLA Wood/ })).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /Configure Slot/i }));
+    await waitFor(() => {
+      expect(api.configureAmsSlot).toHaveBeenCalled();
+    });
+
+    const payload = (api.configureAmsSlot as ReturnType<typeof vi.fn>).mock.calls[0][3];
+    expect(payload.orca_profile_id).toBe(AZURE);
+    expect(payload.kprofile_filament_id).toBe('P285e239');
+    expect(payload.cali_idx).toBe(9);
   });
 
   it("surfaces the slot's active K-profile when no preset is resolvable (#1689 follow-up)", async () => {

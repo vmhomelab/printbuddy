@@ -2378,6 +2378,36 @@ describe('PrintersPage', () => {
       expect(screen.queryByText('01.08.00.00')).not.toBeInTheDocument();
     });
 
+    it('never asks for firmware when the check is off, not even before preferences load', async () => {
+      // The page used to decide on `undefined` while the preferences were still
+      // loading, so a check switched off still went out once per printer.
+      let firmwareRequests = 0;
+      let releasePreferences: () => void = () => {};
+      const preferencesHeld = new Promise<void>((resolve) => {
+        releasePreferences = resolve;
+      });
+      server.use(
+        http.get('/api/v1/firmware/updates/:id', () => {
+          firmwareRequests += 1;
+          return HttpResponse.json(firmwareUpdateAvailable);
+        }),
+        http.get('/api/v1/settings/ui-preferences', async () => {
+          await preferencesHeld;
+          return HttpResponse.json({ check_printer_firmware: false });
+        })
+      );
+
+      render(<PrintersPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('X1 Carbon')).toBeInTheDocument();
+      });
+      releasePreferences();
+      // Long enough for a query that was going to fire to have fired.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(firmwareRequests).toBe(0);
+    });
+
     it('hides badge when API has no firmware data for the model', async () => {
       const firmwareNoData = {
         printer_id: 1,

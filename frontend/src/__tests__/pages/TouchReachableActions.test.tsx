@@ -132,5 +132,47 @@ describe('actions that were hover-only (#2865)', () => {
       expect(actions.className).not.toMatch(UNCONDITIONALLY_HIDDEN);
       expect(actions.className).toContain('can-hover:opacity-0');
     });
+
+    // #3020 follow-up: the columns view reveals its folder kebab and its
+    // per-file icon strip on hover, under the same rule.
+    it('does not hide the columns view folder and file actions from a pointer that cannot hover', async () => {
+      server.use(
+        http.get('/api/v1/library/files', () =>
+          HttpResponse.json([
+            {
+              id: 1,
+              filename: 'benchy.gcode.3mf',
+              file_path: '/library/benchy.gcode.3mf',
+              file_size: 1048576,
+              file_type: 'gcode.3mf',
+              folder_id: null,
+              thumbnail_path: null,
+              print_name: 'Benchy',
+              print_time_seconds: 3600,
+              print_count: 0,
+              duplicate_count: 0,
+              created_at: '2024-01-01T00:00:00Z',
+            },
+          ]),
+        ),
+      );
+      render(<FileManagerPage />);
+      await waitFor(() => expect(screen.getByText('Brackets')).toBeInTheDocument());
+
+      const user = userEvent.setup();
+      await user.click(screen.getByTitle('Column view'));
+      const columns = within(screen.getByTestId('columns-view'));
+
+      const folderKebab = within(columns.getByText('Brackets').closest('[data-folder-id]') as HTMLElement).getByTitle('Actions');
+      const folderActions = folderKebab.closest('div.flex-shrink-0')!;
+      expect(folderActions.className).not.toMatch(UNCONDITIONALLY_HIDDEN);
+      expect(folderActions.className).toContain('can-hover:opacity-0');
+
+      const fileRow = columns.getByText('Benchy').closest('[data-file-id]') as HTMLElement;
+      const fileActions = fileRow.querySelector('[data-file-actions]')!.parentElement!;
+      expect(fileActions.className).not.toMatch(UNCONDITIONALLY_HIDDEN);
+      expect(fileActions.className).toContain('can-hover:opacity-0');
+      expect(within(fileRow).getByTitle('Rename')).toBeInTheDocument();
+    });
   });
 });

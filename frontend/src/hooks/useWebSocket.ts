@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useToast } from '../contexts/ToastContext';
 import { useTranslation } from 'react-i18next';
 import { api, ApiError } from '../api/client';
-import { inventoryLocationsQueryKey } from '../utils/inventoryQueries';
+import { inventoryLocationsQueryKey, inventorySuppliersQueryKey } from '../utils/inventoryQueries';
 
 // The only auth-failure close code /api/v1/ws emits (websocket.py
 // _WS_CLOSE_UNAUTHORIZED). A 4401 means the ws-token was missing / invalid /
@@ -356,6 +356,17 @@ export function useWebSocket() {
         debouncedInvalidate('archiveStats');
         break;
 
+      case 'print_confirm_request': {
+        // #1898: a completed print asked for its outcome verdict. Handed to
+        // the globally mounted ConfirmOutcomeDialog in Layout via the same
+        // CustomEvent relay plate_not_empty uses.
+        const detail = (message as unknown as { data?: { archive_id?: number; print_name?: string } }).data;
+        if (detail?.archive_id != null) {
+          window.dispatchEvent(new CustomEvent('print-confirm-request', { detail }));
+        }
+        break;
+      }
+
       case 'kill_switch_triggered': {
         const printer = message.printer_name || `Printer ${message.printer_id ?? '?'}`;
         const filename = message.filename || t('common.unknown');
@@ -400,6 +411,9 @@ export function useWebSocket() {
         debouncedInvalidate('inventory-spools');
         debouncedInvalidate('spoolman-inventory-spools');
         debouncedInvalidate(inventoryLocationsQueryKey[0]);
+        debouncedInvalidate(inventorySuppliersQueryKey[0]);
+        // The per-material-number aggregate is derived from the same rows (#2870).
+        debouncedInvalidate('material-number-stats');
         break;
 
       case 'spool_assignment_changed':

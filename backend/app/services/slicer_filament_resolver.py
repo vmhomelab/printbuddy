@@ -36,6 +36,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from dataclasses import dataclass
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -57,28 +58,80 @@ logger = logging.getLogger(__name__)
 _ORCA_PROFILE_ID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 
 
-async def _orca_filament_id(
+@dataclass(frozen=True)
+class OrcaFilamentLookup:
+    """Outcome of resolving an Orca Cloud profile to a printer filament id.
+
+    ``filament_id`` is empty when nothing usable was found; ``reason`` then says
+    why, so a caller in front of a user can say so instead of quietly sending
+    a generic id (#3216). ``source`` is ``"own"`` for the profile's own id,
+    ``"inherited"`` for one taken from a parent.
+    """
+
+    filament_id: str = ""
+    name: str | None = None
+    filament_type: str | None = None
+    source: str = ""
+    reason: str = ""
+
+
+# How many ``inherits`` hops to follow before giving up. Orca presets are one
+# or two deep in practice; the cap only guards against a cycle in hand-edited
+# profiles.
+_MAX_INHERITS_DEPTH = 5
+
+
+def _content_filament_id(content: dict) -> str:
+    raw = content.get("filament_id")
+    if isinstance(raw, list):
+        raw = raw[0] if raw else None
+    return raw.strip() if isinstance(raw, str) else ""
+
+
+def _catalog_filament_id(preset_name: str) -> str:
+    """Bambu catalog id for a Bambu system preset name, or ``""``.
+
+    An Orca profile that inherits a system preset ("Bambu PLA Basic @BBL H2D")
+    carries no id of its own. Its parent's id is the one the printer and the
+    slicer both know -- OrcaSlicer since 2.5 translates the Bambu catalog ids
+    at the printer boundary -- so it beats a generic for the material.
+    """
+    from backend.app.api.routes.cloud import _BUILTIN_FILAMENT_NAMES
+
+    base = preset_name.split("@")[0].strip().lstrip("#").strip().lower()
+    if not base:
+        return ""
+    for fid, fname in _BUILTIN_FILAMENT_NAMES.items():
+        if fname.lower() == base:
+            return fid
+    return ""
+
+
+async def lookup_orca_filament_id(
     db: AsyncSession,
     current_user: User | None,
     profile_id: str,
-) -> tuple[str, str | None, str | None]:
-    """Look up an Orca Cloud profile's own filament_id.
+) -> OrcaFilamentLookup:
+    """Look up the filament id an Orca Cloud profile puts in an AMS slot.
 
-    Returns ``(filament_id, name, filament_type)`` -- all empty/None when the
-    profile cannot be fetched or carries no id of its own, which leaves the
-    caller on its generic fallback.
+    OrcaSlicer resolves a slot to a preset by ``filament_id`` alone, so this is
+    the value that decides whether "Sync filaments" finds the user's profile or
+    falls back to Generic (#3216). Tried in order: the profile's own id; the
+    nearest parent among the user's Orca profiles that has one; the Bambu
+    catalog id of a Bambu system parent.
 
-    Best-effort by construction: this runs inside spool assignment, not a user
-    request, so a missing pairing, a revoked token or a lapsed permission must
-    degrade to the fallback rather than fail the assignment. That is also why
-    ``clear_on_auth_failure=False`` -- Orca reports every refresh rejection with
-    one composite reason, so a background caller cannot tell a real revocation
-    from a lost rotation race and must not wipe a working pairing on it. The
-    route path hits the same failure in front of a user and clears there.
+    Best-effort by construction: this runs inside spool assignment and slot
+    configuration, so a missing pairing, a revoked token or a lapsed permission
+    must degrade to the caller's fallback rather than fail the request. That is
+    also why ``clear_on_auth_failure=False`` -- Orca reports every refresh
+    rejection with one composite reason, so this caller cannot tell a real
+    revocation from a lost rotation race and must not wipe a working pairing on
+    it. The Orca Cloud routes hit the same failure in front of a user and clear
+    there.
     """
     if current_user is not None and not current_user.has_permission(Permission.ORCA_CLOUD_AUTH.value):
-        logger.debug("Orca filament lookup skipped for %r: caller lacks orca_cloud:auth", profile_id)
-        return ("", None, None)
+        logger.info("Orca filament lookup skipped for %r: caller lacks orca_cloud:auth", profile_id)
+        return OrcaFilamentLookup(reason="no_permission")
 
     svc = None
     try:
@@ -86,9 +139,70 @@ async def _orca_filament_id(
 
         svc = await _build_authenticated_service(db, current_user, clear_on_auth_failure=False)
         profile = await svc.get_profile(profile_id)
+        content = profile.get("content") if isinstance(profile, dict) else None
+        if not isinstance(content, dict):
+            logger.info("Orca filament lookup for %r: profile has no content", profile_id)
+            return OrcaFilamentLookup(reason="no_filament_id")
+        raw_name = profile.get("name")
+        name = raw_name if isinstance(raw_name, str) and raw_name else None
+        filament_type = _preset_filament_type(content.get("filament_type"))
+
+        own = _content_filament_id(content)
+        if own:
+            logger.info("Orca filament lookup for %r: own filament_id %r", profile_id, own)
+            return OrcaFilamentLookup(own, name, filament_type, source="own")
+
+        parent = content.get("inherits")
+        parent = parent.strip() if isinstance(parent, str) else ""
+        by_name: dict[str, dict] | None = None
+        for _ in range(_MAX_INHERITS_DEPTH):
+            if not parent:
+                break
+            if by_name is None:
+                # One more pull, only for a profile that needs its parent. A
+                # failure here keeps the name and type already read, as the
+                # lookup returned them before it followed parents.
+                by_name = {}
+                try:
+                    entries = await svc.list_profiles()
+                except Exception as e:
+                    logger.info("Orca filament lookup for %r: could not read its parents: %s", profile_id, e)
+                    return OrcaFilamentLookup(name=name, filament_type=filament_type, reason="lookup_failed")
+                for entry in entries:
+                    entry_content = entry.get("content") if isinstance(entry, dict) else None
+                    if not isinstance(entry_content, dict):
+                        continue
+                    for key in (entry.get("name"), entry_content.get("name")):
+                        if isinstance(key, str) and key:
+                            by_name.setdefault(key, entry_content)
+            parent_content = by_name.get(parent)
+            if parent_content is None:
+                catalog = _catalog_filament_id(parent)
+                if catalog:
+                    logger.info(
+                        "Orca filament lookup for %r: catalog filament_id %r of system parent %r",
+                        profile_id,
+                        catalog,
+                        parent,
+                    )
+                    return OrcaFilamentLookup(catalog, name, filament_type, source="inherited")
+                break
+            inherited = _content_filament_id(parent_content)
+            if inherited:
+                logger.info(
+                    "Orca filament lookup for %r: filament_id %r inherited from %r", profile_id, inherited, parent
+                )
+                return OrcaFilamentLookup(inherited, name, filament_type, source="inherited")
+            next_parent = parent_content.get("inherits")
+            parent = next_parent.strip() if isinstance(next_parent, str) else ""
+
+        logger.info("Orca filament lookup for %r: no filament_id on the profile or its parents", profile_id)
+        return OrcaFilamentLookup(name=name, filament_type=filament_type, reason="no_filament_id")
     except Exception as e:
-        logger.debug("Orca filament lookup failed for %r: %s", profile_id, e)
-        return ("", None, None)
+        # INFO, not DEBUG: this is the line that explains a slot coming out as
+        # Generic in a support bundle (#3216).
+        logger.info("Orca filament lookup failed for %r: %s", profile_id, e)
+        return OrcaFilamentLookup(reason="lookup_failed")
     finally:
         # A raise in `finally` escapes the `except` above, so guard it: closing
         # an httpx client must never be what fails a spool assignment.
@@ -98,17 +212,17 @@ async def _orca_filament_id(
             except Exception as e:  # noqa: BLE001 - close() is best-effort
                 logger.debug("Orca client close failed after lookup of %r: %s", profile_id, e)
 
-    content = profile.get("content") if isinstance(profile, dict) else None
-    if not isinstance(content, dict):
-        return ("", None, None)
-    raw_fid = content.get("filament_id")
-    filament_id = raw_fid.strip() if isinstance(raw_fid, str) else ""
-    name = profile.get("name") if isinstance(profile, dict) else None
-    return (
-        filament_id,
-        name if isinstance(name, str) and name else None,
-        _preset_filament_type(content.get("filament_type")),
-    )
+
+async def _orca_filament_id(
+    db: AsyncSession,
+    current_user: User | None,
+    profile_id: str,
+) -> tuple[str, str | None, str | None]:
+    """``(filament_id, name, filament_type)`` for the spool resolver below --
+    all empty/None when nothing was found, which leaves it on its generic
+    fallback. See ``lookup_orca_filament_id``."""
+    found = await lookup_orca_filament_id(db, current_user, profile_id)
+    return (found.filament_id, found.name, found.filament_type)
 
 
 def _preset_filament_type(raw: object) -> str | None:

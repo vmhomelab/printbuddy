@@ -1,6 +1,4 @@
 import logging
-from dataclasses import asdict, is_dataclass
-from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -13,7 +11,10 @@ from backend.app.models.api_key import APIKey
 from backend.app.models.archive import PrintArchive
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer import Printer
+from backend.app.schemas.printer import HMSErrorResponse, hms_error_responses
+from backend.app.services.print_confirmation import confirm_outcome_for_new_queue_item
 from backend.app.services.printer_manager import printer_manager
+from backend.app.services.queue_position import next_queue_position
 
 logger = logging.getLogger(__name__)
 
@@ -42,16 +43,28 @@ class QueueAddResponse(BaseModel):
 class PrinterStatusResponse(BaseModel):
     id: int
     name: str
+    # The printer's own serial, so a client can tell printers apart by what
+    # they report rather than by Printbuddy's row id (#2919).
+    serial_number: str
     connected: bool
     state: str | None
     current_print: str | None
     progress: float | None
+    # Minutes, as the printer reports it. Kept for existing clients;
+    # remaining_seconds is the same estimate in seconds, the unit the
+    # notification pipeline uses (#2919).
     remaining_time: int | None
+    remaining_seconds: int | None = None
     layer_num: int | None = None
     total_layers: int | None = None
-    hms_errors: list[dict[str, Any]] | None = None
+    # Bambu's id for the running job. A new value marks a new print, even when
+    # two prints of the same file run back to back between two polls. None
+    # when the job has no id: Bambu reports "0" or "" for local prints (for
+    # example one started on the printer), the same reading main.py uses.
     subtask_id: str | None = None
-    serial_number: str | None = None
+    # Live HMS faults, in the same shape as GET /printers/{id}/status. They
+    # tell a filament runout apart from someone pressing pause.
+    hms_errors: list[HMSErrorResponse] = []
 
 
 class QueueStatusResponse(BaseModel):
@@ -62,19 +75,32 @@ class QueueStatusResponse(BaseModel):
     items: list[dict]
 
 
-def _serialize_hms_errors(errors: Any) -> list[dict[str, Any]]:
-    """Convert provider HMS error objects to API-safe dictionaries."""
-    serialized: list[dict[str, Any]] = []
+def _hms_rows(errors) -> list[HMSErrorResponse]:
+    """Live HMS faults as API rows, for any provider.
+
+    Bambu reports ``HMSError`` objects (``hms_error_responses``); a provider
+    state may instead carry plain dicts, which are validated as rows with the
+    fields they lack defaulted rather than turning the poll into a 500.
+    """
+    rows: list[HMSErrorResponse] = []
     for error in errors or []:
         if isinstance(error, dict):
-            serialized.append(error)
-        elif is_dataclass(error):
-            serialized.append(asdict(error))
+            rows.append(HMSErrorResponse.model_validate({"module": 0, **error}))
         else:
-            serialized.append(
-                {key: getattr(error, key) for key in ("code", "attr", "module", "severity") if hasattr(error, key)}
-            )
-    return serialized
+            rows.extend(hms_error_responses([error]))
+    return rows
+
+
+def _job_id(subtask_id) -> str | None:
+    """The printer's job id as text, or None when the job has none.
+
+    Stored as the printer sent it, so coerce: a numeric id would fail
+    validation and turn a status poll into a 500.
+    """
+    if subtask_id is None:
+        return None
+    value = str(subtask_id).strip()
+    return None if value in ("", "0") else value
 
 
 # Webhook endpoints
@@ -105,18 +131,9 @@ async def webhook_add_to_queue(
     if not printer:
         raise HTTPException(status_code=404, detail="Printer not found")
 
-    # Get next position
-    result = await db.execute(
-        select(PrintQueueItem.position)
-        .where(
-            PrintQueueItem.printer_id == data.printer_id,
-            PrintQueueItem.status == "pending",
-        )
-        .order_by(PrintQueueItem.position.desc())
-        .limit(1)
-    )
-    max_position = result.scalar()
-    next_position = (max_position or 0) + 1
+    # Append to the end of the queue: positions are one sequence across all
+    # pending items, not one per printer (#3200).
+    next_position = await next_queue_position(db)
 
     # Parse scheduled time if provided
     scheduled_time = None
@@ -137,6 +154,9 @@ async def webhook_add_to_queue(
         scheduled_time=scheduled_time,
         require_previous_success=data.require_previous_success,
         auto_off_after=data.auto_off_after,
+        # No dialog to pick this per job, so the install-wide default decides
+        # whether the finished print asks for a verdict (#1898).
+        confirm_outcome=await confirm_outcome_for_new_queue_item(db),
         # Attribute to the key's owner so the item shows up under `queue:read_own`
         # for the person whose key it is. Legacy keys predating per-user ownership
         # have no `user_id`, and those rows stay ownerless.
@@ -296,19 +316,33 @@ async def webhook_get_printer_status(
     # attribute access, not dict lookup. The previous `.get(...)` calls raised
     # AttributeError and surfaced as a generic 500 for any printer that
     # actually had a status row (#1584).
+    if status is None:
+        return PrinterStatusResponse(
+            id=printer.id,
+            name=printer.name,
+            serial_number=printer.serial_number,
+            connected=False,
+            state=None,
+            current_print=None,
+            progress=None,
+            remaining_time=None,
+        )
     return PrinterStatusResponse(
         id=printer.id,
         name=printer.name,
-        connected=status.connected if status else False,
-        state=status.state if status else None,
-        current_print=status.current_print if status else None,
-        progress=status.progress if status else None,
-        remaining_time=status.remaining_time if status else None,
-        layer_num=getattr(status, "layer_num", None) if status else None,
-        total_layers=getattr(status, "total_layers", None) if status else None,
-        hms_errors=_serialize_hms_errors(getattr(status, "hms_errors", None)) if status else None,
-        subtask_id=getattr(status, "subtask_id", None) if status else None,
         serial_number=printer.serial_number,
+        connected=status.connected,
+        state=status.state,
+        current_print=status.current_print,
+        progress=status.progress,
+        remaining_time=status.remaining_time,
+        remaining_seconds=status.remaining_time * 60 if status.remaining_time is not None else None,
+        # Bambu-only state fields: read defensively so a non-Bambu provider's
+        # state object without them still answers instead of raising a 500.
+        layer_num=getattr(status, "layer_num", None),
+        total_layers=getattr(status, "total_layers", None),
+        subtask_id=_job_id(getattr(status, "subtask_id", None)),
+        hms_errors=_hms_rows(getattr(status, "hms_errors", None)),
     )
 
 

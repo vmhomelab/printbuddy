@@ -10,7 +10,7 @@ Post-fix they split into OWN/ALL. The migration in seed_default_groups must:
   3. Backfill `_own` variants for Operators and Viewers so they keep read access
      even if their stored row didn't carry the legacy flag.
 
-These regressions are the failure shape Maziggy hit on a live upgrade — the
+These regressions are the failure shape the maintainer hit on a live upgrade — the
 admin role ended up missing queue:read_own AND queue:read after migration.
 """
 
@@ -89,7 +89,7 @@ class TestReadPermissionMigration:
     async def test_administrators_backfill_adds_all_six_read_flags(self, async_client: AsyncClient):
         """Even with NO legacy flags present, Administrators ends up with both
         OWN and ALL variants for archives / library / queue after the backfill
-        pass. This is the case Maziggy hit — admin missing `queue:read_own`
+        pass. This is the case the maintainer hit — admin missing `queue:read_own`
         after upgrade."""
         await seed_default_groups()
         await _strip_and_set("Administrators")

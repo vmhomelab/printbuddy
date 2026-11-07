@@ -36,11 +36,17 @@ async def upsert_slot_preset(
     preset_id: str,
     preset_name: str,
     preset_source: str = "cloud",
+    configured_tray_info_idx: str | None = None,
 ) -> None:
     """Primitive upsert. No-op when ``preset_id`` is empty (the column is
     NOT NULL on the model, and an empty string isn't a useful key to
     overwrite by). Soft-fails on DB errors so a broken upsert never
     cascades into the surrounding spool-assign flow.
+
+    ``configured_tray_info_idx`` is the filament id the slot was given along
+    with this preset, when the caller knows it; the slot card stops trusting
+    the row once the printer reports a different one (#3216). It is replaced
+    on every write, so a stale id never outlives the preset it came with.
     """
     if not preset_id:
         return
@@ -57,6 +63,7 @@ async def upsert_slot_preset(
             mapping.preset_id = preset_id
             mapping.preset_name = preset_name
             mapping.preset_source = preset_source
+            mapping.tray_info_idx = configured_tray_info_idx or None
         else:
             mapping = SlotPresetMapping(
                 printer_id=printer_id,
@@ -65,6 +72,7 @@ async def upsert_slot_preset(
                 preset_id=preset_id,
                 preset_name=preset_name,
                 preset_source=preset_source,
+                tray_info_idx=configured_tray_info_idx or None,
             )
             db.add(mapping)
         await db.commit()
@@ -89,6 +97,7 @@ async def upsert_slot_preset_for_spool(
     tray_sub_brands: str = "",
     tray_type: str = "",
     setting_id: str = "",
+    configured_tray_info_idx: str | None = None,
 ) -> None:
     """Convenience wrapper for internal-mode call sites — derives the
     (preset_id, preset_name, preset_source) triple from a ``Spool`` ORM object,
@@ -120,6 +129,7 @@ async def upsert_slot_preset_for_spool(
         preset_id=preset_id,
         preset_name=preset_name,
         preset_source=preset_source,
+        configured_tray_info_idx=configured_tray_info_idx,
     )
 
 
@@ -155,4 +165,6 @@ async def upsert_slot_preset_for_spoolman_spool(
         preset_id=preset_id,
         preset_name=preset_name or "",
         preset_source="cloud",
+        # The AMS-reported id this row was derived from.
+        configured_tray_info_idx=tray_info_idx,
     )

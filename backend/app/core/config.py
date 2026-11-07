@@ -77,7 +77,7 @@ class Settings(BaseSettings):
     external_roots: str = os.environ.get("PRINTBUDDY_EXTERNAL_ROOTS", "")
 
     # Database connection pool sizing. ``None`` = use the built-in, dialect-aware
-    # default (PostgreSQL: pool_size 20 + max_overflow 80; SQLite: 20 + 200).
+    # default (PostgreSQL: pool_size 20 + max_overflow 60; SQLite: 20 + 200).
     # Large PostgreSQL printer farms can raise these via the DB_POOL_SIZE /
     # DB_MAX_OVERFLOW / DB_POOL_TIMEOUT / DB_POOL_RECYCLE env vars (issue #2572).
     # Make sure PostgreSQL ``max_connections`` comfortably exceeds
@@ -160,6 +160,8 @@ _INTENTIONAL_UNSETTINGS = {
     "PRINTBUDDY_OIDC_AUTO_LINK_EXISTING",
     "PRINTBUDDY_OIDC_EMAIL_CLAIM",
     "PRINTBUDDY_OIDC_REQUIRE_EMAIL_VERIFIED",
+    "PRINTBUDDY_OIDC_GROUP_CLAIM",
+    "PRINTBUDDY_OIDC_GROUP_MAPPING",
     "PRINTBUDDY_OIDC_ICON_URL",
     "PRINTBUDDY_OIDC_AUTOLOGIN",
     "PRINTBUDDY_OIDC_DEFAULT_GROUP",

@@ -67,4 +67,25 @@ describe('slotPresetDescribesTray', () => {
       expect(slotPresetDescribesTray(undefined, undefined)).toBe(true);
     });
   });
+
+  describe('with the filament id recorded alongside the row (#3216)', () => {
+    it('keeps an Orca preset while the slot still holds its id', () => {
+      expect(slotPresetDescribesTray('orca_34d8f588-860b-5be1-bcbe-c0d46d96324b', 'Pfc74047', 'Pfc74047')).toBe(true);
+    });
+
+    it('drops it once the slicer\'s Device tab re-configured the slot', () => {
+      // The reporter's case: Printbuddy's row said Generic PVA while the slot
+      // held the Orca filament OrcaSlicer had just written.
+      expect(slotPresetDescribesTray('GFSS99', 'Pfc74047', 'GFS99')).toBe(false);
+      expect(slotPresetDescribesTray('local_68', 'GFA00', 'P56e1be0')).toBe(false);
+    });
+
+    it('compares case-insensitively and without a version suffix', () => {
+      expect(slotPresetDescribesTray('PFUSa3b8b0c664c142', 'P8A85D5A', 'p8a85d5a')).toBe(true);
+    });
+
+    it('cannot judge a slot reporting no id, so keeps the row', () => {
+      expect(slotPresetDescribesTray('local_68', '', 'P56e1be0')).toBe(true);
+    });
+  });
 });
