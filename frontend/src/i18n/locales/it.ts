@@ -3502,9 +3502,12 @@ export default {
       standard: 'Standard',
     },
     cloud: {
-      notAuthenticated: 'Accedi a Bambu Cloud (Impostazioni → Profili → Cloud) per vedere i preset cloud.',
       expired: 'Sessione Bambu Cloud scaduta – accedi di nuovo per aggiornare i preset cloud.',
       unreachable: 'Bambu Cloud non è raggiungibile. I preset locali e standard funzionano ancora.',
+    },
+    orcaCloud: {
+      expired: 'Sessione Orca Cloud scaduta: ricollegala in Profili → Orca Cloud per vedere i tuoi profili Orca Cloud.',
+      unreachable: 'Orca Cloud non è raggiungibile al momento. Gli altri profili funzionano ancora.',
     },
     bedType: {
       label: 'Piano di stampa',

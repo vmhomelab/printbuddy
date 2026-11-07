@@ -3501,9 +3501,12 @@ export default {
       standard: '标准',
     },
     cloud: {
-      notAuthenticated: '登录 Bambu Cloud（设置 → 配置文件 → 云端）以查看云端预设。',
       expired: 'Bambu Cloud 会话已过期 — 请重新登录以刷新云端预设。',
       unreachable: '目前无法访问 Bambu Cloud。本地和标准预设仍可使用。',
+    },
+    orcaCloud: {
+      expired: 'Orca Cloud 会话已过期——请在 配置文件 → Orca Cloud 中重新连接以查看 Orca Cloud 预设。',
+      unreachable: 'Orca Cloud 当前无法访问。其他预设仍可使用。',
     },
     bedType: {
       label: '打印板',

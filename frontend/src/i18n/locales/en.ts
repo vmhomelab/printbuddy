@@ -3516,9 +3516,12 @@ export default {
       standard: 'Standard',
     },
     cloud: {
-      notAuthenticated: 'Sign in to Bambu Cloud (Settings → Profiles → Cloud) to see your cloud presets.',
       expired: 'Bambu Cloud session expired — sign in again to refresh your cloud presets.',
       unreachable: 'Bambu Cloud is unreachable right now. Local and standard presets still work.',
+    },
+    orcaCloud: {
+      expired: 'Orca Cloud session expired — reconnect it under Profiles → Orca Cloud to see your Orca Cloud presets.',
+      unreachable: 'Orca Cloud is unreachable right now. Other presets still work.',
     },
     bedType: {
       label: 'Build plate',

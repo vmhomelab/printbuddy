@@ -489,10 +489,11 @@ describe('SliceModal', () => {
     });
   });
 
-  it('renders a "sign in" banner when cloud_status is not_authenticated', async () => {
+  it('shows no cloud banner when the user is simply not signed in to a cloud', async () => {
     mockApi.getSlicerPresets.mockResolvedValue(
       makeUnified({
         cloud_status: 'not_authenticated',
+        orca_cloud_status: 'not_authenticated',
         local: fullThreeTier.local,
         standard: fullThreeTier.standard,
       }),
@@ -502,8 +503,24 @@ describe('SliceModal', () => {
       onClose: vi.fn(),
     });
 
+    await waitFor(() => expect(screen.getByText('Imported X1C 0.4')).toBeDefined());
+    expect(screen.queryByRole('status')).toBeNull();
+  });
+
+  it('renders an Orca Cloud banner when the Orca Cloud session expired', async () => {
+    mockApi.getSlicerPresets.mockResolvedValue(
+      makeUnified({
+        orca_cloud_status: 'expired',
+        local: fullThreeTier.local,
+      }),
+    );
+    renderWithTracker({
+      source: { kind: 'libraryFile', id: 100, filename: 'Cube.stl' },
+      onClose: vi.fn(),
+    });
+
     await waitFor(() => {
-      expect(screen.getByRole('status')).toHaveTextContent(/Sign in to Bambu Cloud/i);
+      expect(screen.getByRole('status')).toHaveTextContent(/Orca Cloud session expired/i);
     });
   });
 
