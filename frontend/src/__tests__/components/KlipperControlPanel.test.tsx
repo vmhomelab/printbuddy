@@ -121,4 +121,40 @@ describe('KlipperControlPanel PrusaLink controls', () => {
     expect(motionControls.contains(screen.getByTitle('Y+'))).toBe(true);
     expect(motionControls.contains(screen.getByTitle('Z+'))).toBe(true);
   });
+
+  it.each([
+    ['Klipper', fluiddPrinter],
+    ['PrusaLink', prusaPrinter],
+  ])('lays out %s jog controls as XY cross, home column and Z column', (_name, printer) => {
+    render(<KlipperControlPanel printer={printer} status={{ connected: true }} showToast={vi.fn()} />);
+
+    const cross = screen.getByTestId('xy-cross');
+    const titles = (el: HTMLElement) => Array.from(el.querySelectorAll('button')).map((b) => b.getAttribute('title'));
+    expect(titles(cross)).toEqual(['Y+', 'X−', 'Home XY', 'X+', 'Y−']);
+    expect(screen.getByTitle('Home XY').className).toContain('col-start-2 row-start-2');
+    expect(titles(screen.getByTestId('home-column'))).toEqual(['Home All', 'Home X', 'Home Y']);
+    expect(titles(screen.getByTestId('z-column'))).toEqual(['Z+', 'Home Z', 'Z−']);
+  });
+
+  it('shows the reported toolhead position and Z offset once per axis', () => {
+    render(
+      <KlipperControlPanel
+        printer={fluiddPrinter}
+        status={{ connected: true, position: { x: 117.5, y: 42.25, z: 0.4 }, z_offset: -0.035 }}
+        showToast={vi.fn()}
+      />,
+    );
+
+    expect(screen.getAllByText('117.50')).toHaveLength(1);
+    expect(screen.getByText('42.25')).toBeInTheDocument();
+    expect(screen.getByText('0.40')).toBeInTheDocument();
+    expect(screen.getByText('-0.035 mm')).toBeInTheDocument();
+  });
+
+  it('shows dashes instead of 0.00 when no position is reported', () => {
+    render(<KlipperControlPanel printer={fluiddPrinter} status={{ connected: true }} showToast={vi.fn()} />);
+
+    expect(screen.queryByText('0.00')).not.toBeInTheDocument();
+    expect(screen.getAllByText('—').length).toBeGreaterThanOrEqual(4);
+  });
 });

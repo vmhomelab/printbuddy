@@ -890,6 +890,24 @@ def resolve_plate_id(state) -> int | None:
     return parse_plate_id(state.gcode_file)
 
 
+def toolhead_motion(state) -> tuple[dict[str, float] | None, float | None]:
+    """Toolhead position and Z offset reported by providers that expose them.
+
+    Moonraker stores both in ``raw_data``; PrusaConnect keeps a partial
+    ``position`` on its state object.
+    """
+    raw_data = state.raw_data if isinstance(getattr(state, "raw_data", None), dict) else {}
+    position = raw_data.get("position")
+    if not isinstance(position, dict):
+        position = getattr(state, "position", None)
+    if not isinstance(position, dict) or not position:
+        position = None
+    z_offset = raw_data.get("z_offset")
+    if not isinstance(z_offset, (int, float)) or isinstance(z_offset, bool):
+        z_offset = None
+    return position, z_offset
+
+
 def printer_state_to_dict(state: PrinterState, printer_id: int | None = None, model: str | None = None) -> dict:
     """Convert PrinterState to a JSON-serializable dict.
 
@@ -1057,6 +1075,7 @@ def printer_state_to_dict(state: PrinterState, printer_id: int | None = None, mo
             k: v for k, v in temperatures.items() if k not in ("chamber", "chamber_target", "chamber_heating")
         }
 
+    position, z_offset = toolhead_motion(state)
     result = {
         "connected": state.connected,
         "state": state.state,
@@ -1118,6 +1137,9 @@ def printer_state_to_dict(state: PrinterState, printer_id: int | None = None, mo
             for n in (state.nozzle_rack or [])
         ],
         "tool_slots": state.raw_data.get("tool_slots", []) if isinstance(state.raw_data, dict) else [],
+        # Toolhead position / Z offset for the manual controls (Klipper, PrusaConnect)
+        "position": position,
+        "z_offset": z_offset,
         # AMS drying support
         "supports_drying": supports_drying(model, state.firmware_version),
         # 1-indexed plate number parsed from gcode_file (e.g. /Metadata/plate_2.gcode).

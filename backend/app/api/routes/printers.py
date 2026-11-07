@@ -59,6 +59,7 @@ from backend.app.services.printer_manager import (
     resolve_plate_id,
     supports_chamber_temp,
     supports_drying,
+    toolhead_motion,
 )
 from backend.app.services.printer_providers.factory import create_printer_client, normalize_provider
 from backend.app.services.printer_providers.moonraker import create_moonraker_client
@@ -1100,6 +1101,8 @@ async def get_printer_status(
             )
             current_archive_id = archive_row.scalar_one_or_none()
 
+    position, z_offset = toolhead_motion(state)
+
     return PrinterStatus(
         id=printer_id,
         name=printer.name,
@@ -1127,6 +1130,8 @@ async def get_printer_status(
         door_open=state.door_open,
         nozzles=nozzles,
         nozzle_rack=nozzle_rack,
+        position=position,
+        z_offset=z_offset,
         print_options=print_options,
         stg_cur=state.stg_cur,
         stg_cur_name=get_derived_status_name(state, printer.model),

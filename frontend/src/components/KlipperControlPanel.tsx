@@ -22,8 +22,8 @@ const Z_OFFSET_STEPS = [0.005, 0.01, 0.025, 0.05];
 
 type ControlPanelStatus = Partial<PrinterStatus> & {
   temperatures?: PrinterStatus['temperatures'];
-  position?: { x?: number; y?: number; z?: number };
-  z_offset?: number;
+  position?: { x?: number; y?: number; z?: number } | null;
+  z_offset?: number | null;
 };
 
 interface Props {
@@ -100,8 +100,10 @@ export function KlipperControlPanel({ printer, status, showToast }: Props) {
     onError,
   });
 
-  const pos = status?.position ?? {};
-  const zOffset = status?.z_offset ?? 0;
+  const pos: Record<string, number | undefined> = status?.position ?? {};
+  const zOffset = status?.z_offset;
+  // Providers that do not report a position/offset show a dash instead of a fake 0.00.
+  const formatAxis = (value: number | undefined) => (typeof value === 'number' ? value.toFixed(2) : '—');
   const temps = status?.temperatures ?? {};
   const busy = moveMut.isPending || homeMut.isPending;
 
@@ -125,8 +127,77 @@ export function KlipperControlPanel({ printer, status, showToast }: Props) {
   const panelLayout =
     'flex flex-col gap-4 p-3 rounded-xl bg-[var(--bg-secondary)] border border-[var(--border-color)] @xl:flex-row @xl:items-start @xl:gap-6';
   const motionGroup = 'flex flex-col gap-2 items-center shrink-0 @xl:items-start';
-  const motionPads = 'flex flex-wrap justify-center gap-4';
-  const stepRow = 'flex flex-wrap justify-center gap-1 max-w-[232px] @xl:justify-start';
+  const stepRow = 'flex flex-wrap justify-center gap-1 max-w-[244px] @xl:justify-start';
+  const axisHomeBtn = `${homeBtn} w-12`;
+
+  // Fixed jog layout, identical for every provider:
+  //   [ ] [Y+] [ ]   [⌂ ALL]   [Z+]
+  //   [X-] [⌂] [X+]  [⌂ X]     [⌂ Z]
+  //   [ ] [Y-] [ ]   [⌂ Y]     [Z-]
+  // followed by the step sizes underneath.
+  const renderMotionControls = (isBusy: boolean) => (
+    <div data-testid="motion-controls" className={motionGroup}>
+      <div className="flex gap-3">
+        {/* ── XY cross with Home XY in the centre ── */}
+        <div data-testid="xy-cross" className="grid grid-cols-[repeat(3,2.5rem)] grid-rows-[repeat(3,2.5rem)] gap-1">
+          <button className={`${joyBtn} col-start-2 row-start-1`} disabled={isBusy} onClick={() => moveMut.mutate({ axis: 'y', distance: xyStep })} title="Y+">
+            <ArrowUp size={16} />
+          </button>
+          <button className={`${joyBtn} col-start-1 row-start-2`} disabled={isBusy} onClick={() => moveMut.mutate({ axis: 'x', distance: -xyStep })} title="X−">
+            <ArrowLeft size={16} />
+          </button>
+          <button className={`${homeBtn} col-start-2 row-start-2`} disabled={isBusy} onClick={() => homeMut.mutate(['x', 'y'])} title="Home XY">
+            <Home size={14} />
+          </button>
+          <button className={`${joyBtn} col-start-3 row-start-2`} disabled={isBusy} onClick={() => moveMut.mutate({ axis: 'x', distance: xyStep })} title="X+">
+            <ArrowRight size={16} />
+          </button>
+          <button className={`${joyBtn} col-start-2 row-start-3`} disabled={isBusy} onClick={() => moveMut.mutate({ axis: 'y', distance: -xyStep })} title="Y−">
+            <ArrowDown size={16} />
+          </button>
+        </div>
+
+        {/* ── Homing: all / X / Y ── */}
+        <div data-testid="home-column" className="flex flex-col gap-1">
+          <button className={axisHomeBtn} disabled={isBusy} onClick={() => homeMut.mutate(undefined)} title="Home All">
+            <Home size={13} />
+            <span>ALL</span>
+          </button>
+          <button className={axisHomeBtn} disabled={isBusy} onClick={() => homeMut.mutate(['x'])} title="Home X">
+            <Home size={13} />
+            <span>X</span>
+          </button>
+          <button className={axisHomeBtn} disabled={isBusy} onClick={() => homeMut.mutate(['y'])} title="Home Y">
+            <Home size={13} />
+            <span>Y</span>
+          </button>
+        </div>
+
+        {/* ── Z: up / home / down ── */}
+        <div data-testid="z-column" className="flex flex-col gap-1">
+          <button className={joyBtn} disabled={isBusy} onClick={() => moveMut.mutate({ axis: 'z', distance: xyStep })} title="Z+">
+            <ArrowUp size={16} />
+          </button>
+          <button className={`${homeBtn} w-10`} disabled={isBusy} onClick={() => homeMut.mutate(['z'])} title="Home Z">
+            <Home size={13} />
+            <span>Z</span>
+          </button>
+          <button className={joyBtn} disabled={isBusy} onClick={() => moveMut.mutate({ axis: 'z', distance: -xyStep })} title="Z−">
+            <ArrowDown size={16} />
+          </button>
+        </div>
+      </div>
+
+      {/* Step sizes (XY and Z) */}
+      <div className={stepRow}>
+        {XY_STEPS.map((s) => (
+          <button key={s} className={stepBtnClass(xyStep === s)} onClick={() => setXyStep(s)}>
+            {s}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
   const rightPanel = 'flex flex-col gap-3 flex-1 min-w-0 w-full';
   const inputClass =
     'w-16 shrink-0 rounded px-2 py-1 text-sm bg-[var(--bg-primary)] border border-[var(--border-color)] focus:outline-none focus:border-[var(--accent)]';
@@ -137,74 +208,7 @@ export function KlipperControlPanel({ printer, status, showToast }: Props) {
     return (
       <div className={panelContainer}>
       <div className={panelLayout}>
-        <div data-testid="motion-controls" className={motionGroup}>
-        <div className={motionPads}>
-        {/* ── XY jog grid ── */}
-        <div className="flex flex-col gap-1">
-          <div className="flex gap-1">
-            <button className={joyBtn} disabled={prusaBusy} onClick={() => moveMut.mutate({ axis: 'y', distance: xyStep })} title="Y+">
-              <ArrowUp size={16} />
-            </button>
-            <div className="w-10" />
-            <button className={homeBtn} disabled={prusaBusy} onClick={() => homeMut.mutate(undefined)} title="Home All">
-              <Home size={13} />
-              <span>ALL</span>
-            </button>
-          </div>
-
-          <div className="flex gap-1">
-            <button className={joyBtn} disabled={prusaBusy} onClick={() => moveMut.mutate({ axis: 'x', distance: -xyStep })} title="X−">
-              <ArrowLeft size={16} />
-            </button>
-            <button className={homeBtn} disabled={prusaBusy} onClick={() => homeMut.mutate(['x', 'y'])} title="Home XY">
-              <Home size={13} />
-            </button>
-            <button className={joyBtn} disabled={prusaBusy} onClick={() => moveMut.mutate({ axis: 'x', distance: xyStep })} title="X+">
-              <ArrowRight size={16} />
-            </button>
-            <button className={homeBtn} disabled={prusaBusy} onClick={() => homeMut.mutate(['x'])} title="Home X">
-              <Home size={13} />
-              <span>X</span>
-            </button>
-          </div>
-
-          <div className="flex gap-1">
-            <button className={joyBtn} disabled={prusaBusy} onClick={() => moveMut.mutate({ axis: 'y', distance: -xyStep })} title="Y−">
-              <ArrowDown size={16} />
-            </button>
-            <div className="w-10" />
-            <div className="w-10" />
-            <button className={homeBtn} disabled={prusaBusy} onClick={() => homeMut.mutate(['y'])} title="Home Y">
-              <Home size={13} />
-              <span>Y</span>
-            </button>
-          </div>
-
-        </div>
-
-        {/* ── Z jog ── */}
-        <div className="flex flex-col items-center gap-1">
-          <button className={joyBtn} disabled={prusaBusy} onClick={() => moveMut.mutate({ axis: 'z', distance: xyStep })} title="Z+">
-            <ArrowUp size={16} />
-          </button>
-          <button className={homeBtn} disabled={prusaBusy} onClick={() => homeMut.mutate(['z'])} title="Home Z">
-            <Home size={13} />
-            <span>Z</span>
-          </button>
-          <button className={joyBtn} disabled={prusaBusy} onClick={() => moveMut.mutate({ axis: 'z', distance: -xyStep })} title="Z−">
-            <ArrowDown size={16} />
-          </button>
-        </div>
-        </div>
-
-        <div className={stepRow}>
-          {XY_STEPS.map((s) => (
-            <button key={s} className={stepBtnClass(xyStep === s)} onClick={() => setXyStep(s)}>
-              {s}
-            </button>
-          ))}
-        </div>
-        </div>
+        {renderMotionControls(prusaBusy)}
 
         {/* ── Right panel ── */}
         <div className={rightPanel}>
@@ -212,10 +216,10 @@ export function KlipperControlPanel({ printer, status, showToast }: Props) {
             {(['x', 'y', 'z'] as const).map((axis) => (
               <div key={axis} className="flex flex-col min-w-0">
                 <span className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider truncate">
-                  {axis.toUpperCase()} [{((pos as Record<string, number>)[axis] ?? 0).toFixed(2)}]
+                  {axis.toUpperCase()}
                 </span>
                 <span className="text-sm font-mono font-semibold tabular-nums truncate">
-                  {((pos as Record<string, number>)[axis] ?? 0).toFixed(2)}
+                  {formatAxis(pos[axis])}
                 </span>
               </div>
             ))}
@@ -284,133 +288,7 @@ export function KlipperControlPanel({ printer, status, showToast }: Props) {
   return (
     <div className={panelContainer}>
     <div className={panelLayout}>
-      <div data-testid="motion-controls" className={motionGroup}>
-        <div className={motionPads}>
-        {/* ── XY jog grid ── */}
-        <div className="flex flex-col gap-1">
-          {/* row 1: Y+ | spacer | Home All */}
-          <div className="flex gap-1">
-          <button
-            className={joyBtn}
-            disabled={busy}
-            onClick={() => moveMut.mutate({ axis: 'y', distance: xyStep })}
-            title="Y+"
-          >
-            <ArrowUp size={16} />
-          </button>
-          <div className="w-10" />
-          <button
-            className={homeBtn}
-            disabled={busy}
-            onClick={() => homeMut.mutate(undefined)}
-            title="Home All"
-          >
-            <Home size={13} />
-            <span>ALL</span>
-          </button>
-        </div>
-
-        {/* row 2: X- | Home XY | X+ | Home X */}
-        <div className="flex gap-1">
-          <button
-            className={joyBtn}
-            disabled={busy}
-            onClick={() => moveMut.mutate({ axis: 'x', distance: -xyStep })}
-            title="X−"
-          >
-            <ArrowLeft size={16} />
-          </button>
-          <button
-            className={homeBtn}
-            disabled={busy}
-            onClick={() => homeMut.mutate(['x', 'y'])}
-            title="Home XY"
-          >
-            <Home size={13} />
-          </button>
-          <button
-            className={joyBtn}
-            disabled={busy}
-            onClick={() => moveMut.mutate({ axis: 'x', distance: xyStep })}
-            title="X+"
-          >
-            <ArrowRight size={16} />
-          </button>
-          <button
-            className={homeBtn}
-            disabled={busy}
-            onClick={() => homeMut.mutate(['x'])}
-            title="Home X"
-          >
-            <Home size={13} />
-            <span>X</span>
-          </button>
-        </div>
-
-        {/* row 3: Y- | spacer | Home Y */}
-        <div className="flex gap-1">
-          <button
-            className={joyBtn}
-            disabled={busy}
-            onClick={() => moveMut.mutate({ axis: 'y', distance: -xyStep })}
-            title="Y−"
-          >
-            <ArrowDown size={16} />
-          </button>
-          <div className="w-10" />
-          <div className="w-10" />
-          <button
-            className={homeBtn}
-            disabled={busy}
-            onClick={() => homeMut.mutate(['y'])}
-            title="Home Y"
-          >
-            <Home size={13} />
-            <span>Y</span>
-          </button>
-        </div>
-
-      </div>
-
-      {/* ── Z jog ── */}
-      <div className="flex flex-col items-center gap-1">
-        <button
-          className={joyBtn}
-          disabled={busy}
-          onClick={() => moveMut.mutate({ axis: 'z', distance: xyStep })}
-          title="Z+"
-        >
-          <ArrowUp size={16} />
-        </button>
-        <button
-          className={homeBtn}
-          disabled={busy}
-          onClick={() => homeMut.mutate(['z'])}
-          title="Home Z"
-        >
-          <Home size={13} />
-          <span>Z</span>
-        </button>
-        <button
-          className={joyBtn}
-          disabled={busy}
-          onClick={() => moveMut.mutate({ axis: 'z', distance: -xyStep })}
-          title="Z−"
-        >
-          <ArrowDown size={16} />
-        </button>
-        </div>
-        </div>
-
-        {/* XY / Z step sizes */}
-        <div className={stepRow}>
-          {XY_STEPS.map((s) => (
-            <button key={s} className={stepBtnClass(xyStep === s)} onClick={() => setXyStep(s)}>
-              {s}
-            </button>
-          ))}
-        </div>
-      </div>
+      {renderMotionControls(busy)}
 
       {/* ── Right panel ── */}
       <div className={rightPanel}>
@@ -419,10 +297,10 @@ export function KlipperControlPanel({ printer, status, showToast }: Props) {
           {(['x', 'y', 'z'] as const).map((axis) => (
             <div key={axis} className="flex flex-col min-w-0">
               <span className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider truncate">
-                {axis.toUpperCase()} [{((pos as Record<string, number>)[axis] ?? 0).toFixed(2)}]
+                {axis.toUpperCase()}
               </span>
               <span className="text-sm font-mono font-semibold tabular-nums truncate">
-                {((pos as Record<string, number>)[axis] ?? 0).toFixed(2)}
+                {formatAxis(pos[axis])}
               </span>
             </div>
           ))}
@@ -554,7 +432,9 @@ export function KlipperControlPanel({ printer, status, showToast }: Props) {
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-xs text-[var(--text-muted)] flex-1 min-w-0">
               {t('printers.klipper.zOffset', 'Z-Offset')}{' '}
-              <span className="font-mono tabular-nums whitespace-nowrap">{zOffset.toFixed(3)} mm</span>
+              <span className="font-mono tabular-nums whitespace-nowrap">
+                {typeof zOffset === 'number' ? `${zOffset.toFixed(3)} mm` : '—'}
+              </span>
             </span>
             <div className="flex gap-1 ml-auto">
               <button

@@ -914,3 +914,61 @@ def test_moonraker_refreshes_active_gcode_metadata(monkeypatch):
         },
     }
     assert requested == ["server/files/metadata?filename=models%2Fcube.gcode"]
+
+
+def test_moonraker_motion_prefers_gcode_position_and_reads_z_offset():
+    from backend.app.services.printer_providers.moonraker import _moonraker_motion
+
+    position, z_offset = _moonraker_motion(
+        {
+            "toolhead": {"position": [1.0, 2.0, 3.0, 0.0]},
+            "gcode_move": {"gcode_position": [117.5, 42.25, 0.4, 12.0], "homing_origin": [0.0, 0.0, -0.035, 0.0]},
+        }
+    )
+    assert position == {"x": 117.5, "y": 42.25, "z": 0.4}
+    assert z_offset == -0.035
+
+
+def test_moonraker_motion_falls_back_to_toolhead_and_tolerates_missing_data():
+    from backend.app.services.printer_providers.moonraker import _moonraker_motion
+
+    assert _moonraker_motion({"toolhead": {"position": [10, 20, 5, 0]}}) == ({"x": 10.0, "y": 20.0, "z": 5.0}, None)
+    assert _moonraker_motion({}) == (None, None)
+    assert _moonraker_motion({"gcode_move": {"gcode_position": [None, 1, 2]}}) == (None, None)
+
+
+def test_moonraker_status_update_exposes_position_and_z_offset(monkeypatch):
+    client = MoonrakerPrinterClient("http://moonraker.local:7125", printer_model="Generic Klipper Printer")
+    base_status = {
+        "print_stats": {"state": "standby"},
+        "virtual_sdcard": {},
+        "display_status": {},
+        "extruder": {"temperature": 25.0, "target": 0.0},
+        "heater_bed": {"temperature": 24.0, "target": 0.0},
+    }
+    motion_status = {
+        "toolhead": {"extruder": "extruder", "position": [0, 0, 0, 0]},
+        "gcode_move": {"gcode_position": [100.0, 50.0, 10.0, 0.0], "homing_origin": [0.0, 0.0, 0.05, 0.0]},
+    }
+
+    def query(object_names):
+        if "gcode_move" in object_names:
+            return {name: motion_status[name] for name in object_names if name in motion_status}
+        return dict(base_status)
+
+    monkeypatch.setattr(client, "_available_objects", lambda: ["toolhead", "gcode_move", "extruder", "heater_bed"])
+    monkeypatch.setattr(client, "_query_objects", query)
+    monkeypatch.setattr(client, "_query_cfs_status", lambda *args, **kwargs: {})
+    monkeypatch.setattr(client, "_query_fan_status", lambda *args, **kwargs: {})
+    monkeypatch.setattr(client, "_query_snapmaker_u1_status", lambda *args, **kwargs: {})
+
+    assert client.request_status_update() is True
+
+    assert client.state.raw_data["position"] == {"x": 100.0, "y": 50.0, "z": 10.0}
+    assert client.state.raw_data["z_offset"] == 0.05
+
+    from backend.app.services.printer_manager import printer_state_to_dict
+
+    payload = printer_state_to_dict(client.state)
+    assert payload["position"] == {"x": 100.0, "y": 50.0, "z": 10.0}
+    assert payload["z_offset"] == 0.05

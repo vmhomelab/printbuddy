@@ -139,6 +139,34 @@ def _safe_float(value: Any) -> float | None:
 _GENERIC_KLIPPER_EXTRUDER_RE = re.compile(r"^extruder(\d*)$")
 
 
+def _moonraker_motion(status: dict[str, Any]) -> tuple[dict[str, float] | None, float | None]:
+    """Return the toolhead position (``{"x", "y", "z"}``) and the active Z offset.
+
+    ``gcode_move.gcode_position`` is the position in G-code coordinates, i.e. the
+    value Mainsail/Fluidd show and the one manual jogs refer to. ``toolhead.position``
+    is the fallback for firmware that does not expose ``gcode_move``. The Z offset
+    (babystepping / ``SET_GCODE_OFFSET``) lives in ``gcode_move.homing_origin``.
+    """
+    gcode_move = status.get("gcode_move") if isinstance(status.get("gcode_move"), dict) else {}
+    toolhead = status.get("toolhead") if isinstance(status.get("toolhead"), dict) else {}
+
+    position: dict[str, float] | None = None
+    for raw in (gcode_move.get("gcode_position"), toolhead.get("position")):
+        if isinstance(raw, (list, tuple)) and len(raw) >= 3:
+            values = [_safe_float(v) for v in raw[:3]]
+            if all(v is not None for v in values):
+                position = {axis: round(v, 3) for axis, v in zip(("x", "y", "z"), values, strict=True)}  # type: ignore[arg-type]
+                break
+
+    z_offset: float | None = None
+    homing_origin = gcode_move.get("homing_origin")
+    if isinstance(homing_origin, (list, tuple)) and len(homing_origin) >= 3:
+        z = _safe_float(homing_origin[2])
+        if z is not None:
+            z_offset = round(z, 4)
+    return position, z_offset
+
+
 def _generic_moonraker_tool_slots(status: dict[str, Any]) -> list[dict[str, Any]]:
     """Normalize generic multi-tool Klipper state without replacing real feeders."""
     if not isinstance(status, dict) or any(key.startswith("filament_feed ") for key in status):
@@ -1407,7 +1435,7 @@ class MoonrakerPrinterClient:
             name
             for name in available_objects
             if _GENERIC_KLIPPER_EXTRUDER_RE.fullmatch(name)
-            or name == "toolhead"
+            or name in {"toolhead", "gcode_move"}
             or re.fullmatch(r"filament_switch_sensor (?:filament|docked|path_?)\d+", name)
         ]
         if generic_tool_objects:
@@ -1460,6 +1488,15 @@ class MoonrakerPrinterClient:
             self.state.nozzles = [NozzleInfo(nozzle_diameter=slot["nozzle_diameter"]) for slot in tool_slots]
         else:
             self.state.raw_data.pop("tool_slots", None)
+        position, z_offset = _moonraker_motion(status)
+        if position is not None:
+            self.state.raw_data["position"] = position
+        else:
+            self.state.raw_data.pop("position", None)
+        if z_offset is not None:
+            self.state.raw_data["z_offset"] = z_offset
+        else:
+            self.state.raw_data.pop("z_offset", None)
         _apply_moonraker_fans(self.state, status)
         self._emit_status_callbacks(previous_state)
         self._last_state = self.state.state

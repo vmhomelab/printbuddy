@@ -453,6 +453,8 @@ class PrinterStatus(BaseModel):
     nozzles: list[NozzleInfoResponse] = []  # Nozzle hardware info (index 0=left/primary, 1=right)
     nozzle_rack: list[NozzleRackSlot] = []  # H2C 6-nozzle tool-changer rack
     tool_slots: list[dict] = []  # Generic multi-tool Klipper local spool slots
+    position: dict[str, float] | None = None  # Toolhead position {x, y, z} (Klipper/PrusaConnect)
+    z_offset: float | None = None  # Active G-code Z offset in mm (Klipper)
     print_options: PrintOptionsResponse | None = None  # AI detection and print options
     # Calibration stage tracking
     stg_cur: int = -1  # Current stage number (-1 = not calibrating)
