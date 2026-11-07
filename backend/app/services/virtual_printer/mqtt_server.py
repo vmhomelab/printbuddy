@@ -452,8 +452,10 @@ class SimpleMQTTServer:
                 if remaining_length is None:
                     break
 
-                # Read payload
-                payload = await reader.read(remaining_length) if remaining_length > 0 else b""
+                # Read payload. readexactly, not read(n): over TLS read(n) can
+                # return a partial packet, which desyncs MQTT framing for larger
+                # publishes (e.g. the slicer's project_file after an upload).
+                payload = await reader.readexactly(remaining_length) if remaining_length > 0 else b""
 
                 # Handle packet types
                 if packet_type == 1:  # CONNECT
@@ -550,6 +552,10 @@ class SimpleMQTTServer:
 
         except asyncio.CancelledError:
             pass  # Expected when server is shutting down and cancels client tasks
+        except asyncio.IncompleteReadError:
+            # Client closed the socket in the middle of a packet: a normal
+            # disconnect, not an error worth surfacing.
+            logger.debug("%sMQTT client %s closed mid-packet", self._log_prefix, client_id)
         except Exception as e:
             # Outer handler — inner handlers already absorb expected parser
             # / IO failures at debug. Anything reaching here is unexpected
