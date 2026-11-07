@@ -3508,9 +3508,12 @@ export default {
       standard: 'Padrão',
     },
     cloud: {
-      notAuthenticated: 'Faça login no Bambu Cloud (Configurações → Perfis → Nuvem) para ver as predefinições.',
       expired: 'Sessão do Bambu Cloud expirou – faça login novamente para atualizar as predefinições.',
       unreachable: 'Bambu Cloud está inacessível agora. Predefinições locais e padrão ainda funcionam.',
+    },
+    orcaCloud: {
+      expired: 'A sessão do Orca Cloud expirou — reconecte em Perfis → Orca Cloud para ver seus perfis do Orca Cloud.',
+      unreachable: 'O Orca Cloud está inacessível no momento. Os outros perfis continuam funcionando.',
     },
     bedType: {
       label: 'Mesa de impressão',

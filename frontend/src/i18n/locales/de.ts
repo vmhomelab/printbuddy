@@ -3520,9 +3520,12 @@ export default {
       standard: 'Standard',
     },
     cloud: {
-      notAuthenticated: 'In Bambu Cloud anmelden (Einstellungen → Profile → Cloud), um deine Cloud-Profile zu sehen.',
       expired: 'Bambu-Cloud-Sitzung abgelaufen — erneut anmelden, um die Cloud-Profile zu aktualisieren.',
       unreachable: 'Bambu Cloud ist gerade nicht erreichbar. Lokale und Standard-Profile funktionieren weiterhin.',
+    },
+    orcaCloud: {
+      expired: 'Orca-Cloud-Sitzung abgelaufen — unter Profile → Orca Cloud erneut verbinden, um die Orca-Cloud-Profile zu sehen.',
+      unreachable: 'Orca Cloud ist gerade nicht erreichbar. Die übrigen Profile funktionieren weiterhin.',
     },
     bedType: {
       label: 'Druckbett',

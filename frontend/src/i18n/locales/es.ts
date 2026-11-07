@@ -3522,9 +3522,12 @@ export default {
       standard: 'Estándar',
     },
     cloud: {
-      notAuthenticated: 'Inicie sesión en Bambu Cloud (Ajustes → Perfiles → Nube) para ver sus preajustes de la nube.',
       expired: 'La sesión de Bambu Cloud ha caducado — inicie sesión de nuevo para actualizar sus preajustes de la nube.',
       unreachable: 'Bambu Cloud no es accesible en este momento. Los preajustes locales y estándar siguen funcionando.',
+    },
+    orcaCloud: {
+      expired: 'La sesión de Orca Cloud ha caducado: vuelve a conectarla en Perfiles → Orca Cloud para ver tus perfiles de Orca Cloud.',
+      unreachable: 'Orca Cloud no está disponible ahora mismo. Los demás perfiles siguen funcionando.',
     },
     bedType: {
       label: 'Cama de impresión',

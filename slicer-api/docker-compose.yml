@@ -31,11 +31,11 @@
 services:
   orca-slicer-api:
     build:
-      context: "${SLICER_API_BUILD_CONTEXT:-https://github.com/vmhomelab/orca-slicer-api.git#dcb68272a77f4b0ea07fcfe81e029e5fea9d4d84}"
+      context: "${SLICER_API_BUILD_CONTEXT:-https://github.com/vmhomelab/orca-slicer-api.git#9ff0c6e3ea02771b028ba29680d3f29e05e181fd}"
       dockerfile: Dockerfile
       args:
         ORCA_VERSION: "${ORCA_VERSION:-2.3.2}"
-    image: "${ORCA_SLICER_API_IMAGE:-docker.io/vmhomelabde/printbuddy-orca-slicer-api:2.3.2-dcb6827}"
+    image: "${ORCA_SLICER_API_IMAGE:-docker.io/vmhomelabde/printbuddy-orca-slicer-api:2.3.2-9ff0c6e}"
     container_name: orca-slicer-api
     restart: unless-stopped
     ports:
@@ -54,12 +54,12 @@ services:
 
   bambu-studio-api:
     build:
-      context: "${SLICER_API_BUILD_CONTEXT:-https://github.com/vmhomelab/orca-slicer-api.git#dcb68272a77f4b0ea07fcfe81e029e5fea9d4d84}"
+      context: "${SLICER_API_BUILD_CONTEXT:-https://github.com/vmhomelab/orca-slicer-api.git#9ff0c6e3ea02771b028ba29680d3f29e05e181fd}"
       dockerfile: Dockerfile.bambu-studio
       args:
         BAMBU_VERSION: "${BAMBU_VERSION:-02.08.02.61}"
         BAMBU_APPIMAGE_URL: "${BAMBU_APPIMAGE_URL:-}"
-    image: "${BAMBU_STUDIO_API_IMAGE:-docker.io/vmhomelabde/printbuddy-bambu-studio-api:02.08.02.61-dcb6827}"
+    image: "${BAMBU_STUDIO_API_IMAGE:-docker.io/vmhomelabde/printbuddy-bambu-studio-api:02.08.02.61-9ff0c6e}"
     container_name: bambu-studio-api
     restart: unless-stopped
     ports:

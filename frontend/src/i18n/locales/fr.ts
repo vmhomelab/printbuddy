@@ -3509,9 +3509,12 @@ export default {
       standard: 'Standard',
     },
     cloud: {
-      notAuthenticated: 'Connectez-vous à Bambu Cloud (Paramètres → Profils → Cloud) pour voir vos préréglages cloud.',
       expired: 'Session Bambu Cloud expirée – reconnectez-vous pour actualiser vos préréglages cloud.',
       unreachable: 'Bambu Cloud est inaccessible. Les préréglages locaux et standards fonctionnent encore.',
+    },
+    orcaCloud: {
+      expired: 'Session Orca Cloud expirée — reconnectez-la dans Profils → Orca Cloud pour voir vos profils Orca Cloud.',
+      unreachable: 'Orca Cloud est injoignable pour le moment. Les autres profils fonctionnent toujours.',
     },
     bedType: {
       label: 'Plateau d\'impression',

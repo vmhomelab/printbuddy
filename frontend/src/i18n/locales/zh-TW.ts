@@ -3507,9 +3507,12 @@ export default {
       standard: '標準',
     },
     cloud: {
-      notAuthenticated: '登入 Bambu Cloud（設定 → 設定檔 → 雲端）以查看雲端預設。',
       expired: 'Bambu Cloud 工作階段已過期 — 請重新登入以重新整理雲端預設。',
       unreachable: '目前無法存取 Bambu Cloud。本機和標準預設仍可使用。',
+    },
+    orcaCloud: {
+      expired: 'Orca Cloud 工作階段已過期——請在 設定檔 → Orca Cloud 中重新連線以查看 Orca Cloud 預設。',
+      unreachable: 'Orca Cloud 目前無法連線。其他預設仍可使用。',
     },
     bedType: {
       label: '列印板',

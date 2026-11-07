@@ -5,7 +5,7 @@
 revision (``SLICER_API_BUILD_CONTEXT``) and the bundled slicer versions
 (``BAMBU_VERSION`` / ``ORCA_VERSION``) are pinned. The images published to
 Docker Hub are tagged ``<slicer version>-<short sidecar revision>``, e.g.
-``docker.io/vmhomelabde/printbuddy-bambu-studio-api:02.08.02.61-dcb6827``.
+``docker.io/vmhomelabde/printbuddy-bambu-studio-api:02.08.02.61-9ff0c6e``.
 slicer-api/ pins these exact tags; the main docker-compose.yml tracks
 ``:latest`` (moved by pushes to main), like the Printbuddy image itself.
 

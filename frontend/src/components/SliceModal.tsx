@@ -1,4 +1,4 @@
-import { Cloud, CloudOff, Cog, Loader2, Package, X } from 'lucide-react';
+import { CloudOff, Cog, Loader2, Package, X } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useMutation, useQuery } from '@tanstack/react-query';
@@ -825,7 +825,8 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
 
           {presetsQuery.data && (
             <>
-              <CloudStatusBanner status={presetsQuery.data.cloud_status} />
+              <CloudStatusBanner provider="bambu" status={presetsQuery.data.cloud_status} />
+              <CloudStatusBanner provider="orca" status={presetsQuery.data.orca_cloud_status} />
               {/* Bundle picker — only renders when at least one .bbscfg has
                   been imported via Settings → Slicer Bundles. Lets the user
                   trade the cloud/local/standard tier for a single curated
@@ -1072,37 +1073,43 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   );
 }
 
-function CloudStatusBanner({ status }: { status: SlicerCloudStatus }) {
+function CloudStatusBanner({ provider, status }: { provider: 'bambu' | 'orca'; status?: SlicerCloudStatus }) {
   const { t } = useTranslation();
-  if (status === 'ok') return null;
+  // Both clouds are optional preset sources, so not being signed in is not
+  // worth a banner. Only a session that stopped working is: the user expects
+  // those presets and would otherwise just see them disappear.
+  if (status !== 'expired' && status !== 'unreachable') return null;
 
-  // Map each non-ok status to the appropriate icon + tone. None of these are
-  // hard errors — the user can still slice using local + standard presets,
-  // so we use info / warn styling rather than error red.
-  const config: Record<Exclude<SlicerCloudStatus, 'ok'>, { tone: string; icon: typeof Cloud; key: string; fallback: string }> = {
-    not_authenticated: {
-      tone: 'border-bambu-dark-tertiary/40 bg-bambu-dark text-bambu-gray',
-      icon: Cloud,
-      key: 'slice.cloud.notAuthenticated',
-      fallback: 'Sign in to Bambu Cloud (Settings → Profiles → Cloud) to see your cloud presets.',
+  const messages = {
+    bambu: {
+      expired: {
+        key: 'slice.cloud.expired',
+        fallback: 'Bambu Cloud session expired — sign in again to refresh your cloud presets.',
+      },
+      unreachable: {
+        key: 'slice.cloud.unreachable',
+        fallback: 'Bambu Cloud is unreachable right now. Local and standard presets still work.',
+      },
     },
-    expired: {
-      tone: 'border-amber-700/40 bg-amber-900/20 text-amber-200',
-      icon: CloudOff,
-      key: 'slice.cloud.expired',
-      fallback: 'Bambu Cloud session expired — sign in again to refresh your cloud presets.',
-    },
-    unreachable: {
-      tone: 'border-bambu-dark-tertiary/40 bg-bambu-dark text-bambu-gray',
-      icon: CloudOff,
-      key: 'slice.cloud.unreachable',
-      fallback: 'Bambu Cloud is unreachable right now. Local and standard presets still work.',
+    orca: {
+      expired: {
+        key: 'slice.orcaCloud.expired',
+        fallback: 'Orca Cloud session expired — reconnect it under Profiles → Orca Cloud to see your Orca Cloud presets.',
+      },
+      unreachable: {
+        key: 'slice.orcaCloud.unreachable',
+        fallback: 'Orca Cloud is unreachable right now. Other presets still work.',
+      },
     },
   };
-  const { tone, icon: Icon, key, fallback } = config[status];
+  const tone =
+    status === 'expired'
+      ? 'border-amber-700/40 bg-amber-900/20 text-amber-200'
+      : 'border-bambu-dark-tertiary/40 bg-bambu-dark text-bambu-gray';
+  const { key, fallback } = messages[provider][status];
   return (
     <div className={`flex items-start gap-2 text-xs rounded-md border p-2 ${tone}`} role="status">
-      <Icon className="w-4 h-4 flex-shrink-0 mt-0.5" />
+      <CloudOff className="w-4 h-4 flex-shrink-0 mt-0.5" />
       <span>{t(key, fallback)}</span>
     </div>
   );

@@ -3520,9 +3520,12 @@ export default {
       standard: '標準',
     },
     cloud: {
-      notAuthenticated: 'Bambu Cloudにサインイン（設定 → プロファイル → クラウド）してクラウドプリセットを表示。',
       expired: 'Bambu Cloudセッションの有効期限切れ – クラウドプリセットを更新するには再ログインしてください。',
       unreachable: 'Bambu Cloudに接続できません。ローカルと標準のプリセットは引き続き使用できます。',
+    },
+    orcaCloud: {
+      expired: 'Orca Cloud のセッションが期限切れです。プロファイル → Orca Cloud で再接続すると Orca Cloud のプリセットが表示されます。',
+      unreachable: '現在 Orca Cloud に接続できません。その他のプリセットは引き続き使用できます。',
     },
     bedType: {
       label: 'ビルドプレート',
