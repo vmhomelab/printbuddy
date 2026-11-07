@@ -6427,16 +6427,18 @@ async def auth_middleware(request, call_next):
             from backend.app.core.auth import is_auth_enabled
 
             auth_enabled = await is_auth_enabled(db)
-
-        if not auth_enabled:
-            # Auth disabled, allow all requests
-            return await call_next(request)
     except Exception:
         logging.getLogger(__name__).exception("Failed to determine authentication state; denying request")
         return JSONResponse(
             status_code=503,
             content={"detail": "Authentication state unavailable"},
         )
+
+    if not auth_enabled:
+        # Auth disabled, allow all requests. Kept outside the try above so an
+        # error raised by the route itself is not misreported as an auth
+        # failure (and turned into a 503).
+        return await call_next(request)
 
     # Auth is enabled - require valid token
     auth_header = request.headers.get("Authorization")

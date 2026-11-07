@@ -1281,6 +1281,14 @@ export function SettingsPage() {
           t('settings.slicerConnectionSuccess', '{{slicer}} slicer connection succeeded.', { slicer: slicerName }),
           'success',
         );
+      } else if (result.error === 'invalid_response') {
+        showToast(
+          t(
+            'settings.slicerConnectionInvalidResponse',
+            'The URL answers, but not with the slicer API. A desktop slicer (e.g. an OrcaSlicer web GUI on port 3000) cannot be used here: point it at the slicer-API sidecar (OrcaSlicer default port 3003).',
+          ),
+          'error',
+        );
       } else {
         showToast(
           t('settings.slicerConnectionFailed', '{{slicer}} slicer connection failed.', { slicer: slicerName }),

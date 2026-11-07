@@ -1931,6 +1931,7 @@ export default {
     slicerConnectionSuccessVersion: '已連線到 {{slicer}} {{version}}。',
     slicerConnectionMismatch: '此 URL 上執行的是 {{detected}} {{version}}，但目前選擇的是 {{slicer}}。請檢查 sidecar 的 URL 和連接埠。',
     slicerConnectionFailed: '{{slicer}} 切片器連線失敗。',
+    slicerConnectionInvalidResponse: '此 URL 有回應，但不是切片器 API。此處無法使用桌面切片器（例如連接埠 3000 上的 OrcaSlicer 網頁介面）：請填入切片器 API sidecar 的位址（OrcaSlicer 預設連接埠 3003）。',
     slicerConnectionError: '切片器連線失敗。',
     slicerBundles: {
       title: '切片器捆綁包',

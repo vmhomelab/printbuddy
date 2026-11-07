@@ -1492,6 +1492,8 @@ export interface SlicerConnectionTestResult {
   } | null;
   /** Slicer that actually answered, inferred from its version; null if unknown. */
   detected_slicer?: 'bambu_studio' | 'orcaslicer' | null;
+  /** Why the test failed; `invalid_response` = the URL is not the slicer API. */
+  error?: 'unreachable' | 'invalid_response' | null;
 }
 
 // GET /api/v1/slicer/presets — unified listing across cloud / local / standard.

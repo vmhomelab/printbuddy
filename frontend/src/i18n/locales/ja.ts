@@ -1930,6 +1930,7 @@ export default {
     slicerConnectionSuccessVersion: '{{slicer}} {{version}} に接続しました。',
     slicerConnectionMismatch: 'この URL では {{detected}} {{version}} が動作していますが、{{slicer}} が選択されています。サイドカーの URL とポートを確認してください。',
     slicerConnectionFailed: '{{slicer}} スライサーへの接続に失敗しました。',
+    slicerConnectionInvalidResponse: 'URL は応答していますが、スライサー API ではありません。デスクトップ版スライサー（例: ポート 3000 の OrcaSlicer Web GUI）はここでは使用できません。スライサー API サイドカーを指定してください（OrcaSlicer の既定ポートは 3003）。',
     slicerConnectionError: 'スライサーへの接続に失敗しました。',
     slicerBundles: {
       title: 'スライサーバンドル',

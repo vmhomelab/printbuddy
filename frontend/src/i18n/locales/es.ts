@@ -1933,6 +1933,7 @@ export default {
     slicerConnectionSuccessVersion: 'Conectado a {{slicer}} {{version}}.',
     slicerConnectionMismatch: 'En esta URL se ejecuta {{detected}} {{version}}, pero está seleccionado {{slicer}}. Revisa la URL y el puerto del sidecar.',
     slicerConnectionFailed: 'Error en la conexión con el slicer {{slicer}}.',
+    slicerConnectionInvalidResponse: 'La URL responde, pero no con la API del slicer. Aquí no se puede usar un slicer de escritorio (p. ej., una GUI web de OrcaSlicer en el puerto 3000): indica el sidecar de la API del slicer (puerto predeterminado de OrcaSlicer: 3003).',
     slicerConnectionError: 'Error en la conexión con el slicer.',
     slicerBundles: {
       title: 'Paquetes del laminador',

@@ -1933,6 +1933,7 @@ export default {
     slicerConnectionSuccessVersion: 'Connected to {{slicer}} {{version}}.',
     slicerConnectionMismatch: 'The sidecar at this URL runs {{detected}} {{version}}, but {{slicer}} is selected. Check the sidecar URL and port.',
     slicerConnectionFailed: '{{slicer}} slicer connection failed.',
+    slicerConnectionInvalidResponse: 'The URL answers, but not with the slicer API. A desktop slicer (e.g. an OrcaSlicer web GUI on port 3000) cannot be used here: point it at the slicer-API sidecar (OrcaSlicer default port 3003).',
     slicerConnectionError: 'Slicer connection failed.',
     slicerBundles: {
       title: 'Slicer Bundles',

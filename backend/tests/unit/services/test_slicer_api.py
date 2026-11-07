@@ -10,6 +10,7 @@ import pytest
 from backend.app.services.slicer_api import (
     BundleNotFoundError,
     BundleSummary,
+    SlicerApiInvalidResponseError,
     SlicerApiServerError,
     SlicerApiService,
     SlicerApiUnavailableError,
@@ -828,3 +829,48 @@ class TestSliceWithBundle:
                 process_name="pr",
                 filament_names=["f"],
             )
+
+
+class TestNonSlicerApiUrl:
+    """A URL that answers with HTML (e.g. a desktop-slicer web GUI on port
+    3000) must surface as a clear "not the slicer API" error, not a raw
+    JSONDecodeError that turns into a 500."""
+
+    @staticmethod
+    def _html_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            status_code=200,
+            content=b"<!DOCTYPE html><html><body>KasmVNC</body></html>",
+            headers={"content-type": "text/html"},
+        )
+
+    @pytest.mark.asyncio
+    async def test_list_bundles_html_raises_invalid_response(self):
+        client = _mock_client(self._html_handler)
+        service = SlicerApiService("http://192.168.1.5:3000", client=client)
+        with pytest.raises(SlicerApiInvalidResponseError, match="does not look like the slicer-API sidecar"):
+            await service.list_bundles()
+        await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_invalid_response_is_still_an_unavailable_error(self):
+        client = _mock_client(self._html_handler)
+        service = SlicerApiService("http://192.168.1.5:3000", client=client)
+        for call in (service.health, service.list_bundled_profiles, lambda: service.get_bundle("abc")):
+            with pytest.raises(SlicerApiUnavailableError):
+                await call()
+        await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_slice_html_page_is_rejected(self):
+        client = _mock_client(self._html_handler)
+        service = SlicerApiService("http://192.168.1.5:3000", client=client)
+        with pytest.raises(SlicerApiInvalidResponseError):
+            await service.slice_with_profiles(
+                model_bytes=b"solid Cube\n",
+                model_filename="Cube.stl",
+                printer_profile_json='{"name": "p"}',
+                process_profile_json='{"name": "pr"}',
+                filament_profile_jsons=['{"name": "f"}'],
+            )
+        await client.aclose()

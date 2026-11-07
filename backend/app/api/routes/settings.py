@@ -20,7 +20,11 @@ from backend.app.core.permissions import Permission
 from backend.app.models.settings import Settings
 from backend.app.models.user import User
 from backend.app.schemas.settings import AppSettings, AppSettingsUpdate
-from backend.app.services.slicer_api import SlicerApiService, SlicerApiUnavailableError
+from backend.app.services.slicer_api import (
+    SlicerApiInvalidResponseError,
+    SlicerApiService,
+    SlicerApiUnavailableError,
+)
 
 MANUAL_BACKUP_FILENAME_PREFIX = "printbuddy-backup-"
 BACKUP_DATABASE_FILENAME = "printbuddy.db"
@@ -86,6 +90,10 @@ class SlicerConnectionTestResponse(BaseModel):
     # Which slicer actually answered, inferred from the reported CLI version.
     # Lets the UI warn when the URL points at the other sidecar (wrong port).
     detected_slicer: Literal["bambu_studio", "orcaslicer"] | None = None
+    # Why the test failed: "unreachable" (no answer / HTTP error) or
+    # "invalid_response" (the URL answered, but not with the slicer API, e.g.
+    # a desktop-slicer web GUI). None on success.
+    error: Literal["unreachable", "invalid_response"] | None = None
 
 
 # Sensitive credential fields blanked for API-key callers
@@ -427,9 +435,12 @@ async def test_slicer_connection(
     try:
         async with SlicerApiService(sidecar_url) as service:
             health = await service.health()
-    except (SlicerApiUnavailableError, ValueError):
-        logger.info("Configured %s slicer sidecar is unavailable or returned invalid health data", slicer)
-        return SlicerConnectionTestResponse(success=False, slicer=slicer)
+    except (SlicerApiInvalidResponseError, ValueError):
+        logger.info("Configured %s slicer sidecar URL did not answer with the slicer API", slicer)
+        return SlicerConnectionTestResponse(success=False, slicer=slicer, error="invalid_response")
+    except SlicerApiUnavailableError:
+        logger.info("Configured %s slicer sidecar is unavailable", slicer)
+        return SlicerConnectionTestResponse(success=False, slicer=slicer, error="unreachable")
 
     safe_health = sanitize_slicer_health_payload(health)
     return SlicerConnectionTestResponse(
