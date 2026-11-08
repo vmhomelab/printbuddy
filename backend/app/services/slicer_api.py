@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 # and tested against. Must equal the revision pinned in slicer-api/.env.example
 # (scripts/slicer_images.py --check). The sidecar reports its own revision in
 # GET /health; the connection test warns when the two differ.
-EXPECTED_SIDECAR_REVISION = "7922ad5379c9bfa00aa42572e888652e1a83dde2"
+EXPECTED_SIDECAR_REVISION = "661cd475085b7699280ac6307dbb5d06af41b04f"
 
 
 class SlicerApiError(Exception):

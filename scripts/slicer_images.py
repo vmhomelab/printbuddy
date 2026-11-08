@@ -5,7 +5,7 @@
 revision (``SLICER_API_BUILD_CONTEXT``) and the bundled slicer versions
 (``BAMBU_VERSION`` / ``ORCA_VERSION``) are pinned. The images published to
 Docker Hub are tagged ``<slicer version>-<short sidecar revision>``, e.g.
-``docker.io/vmhomelabde/printbuddy-bambu-studio-api:02.08.02.61-7922ad5``.
+``docker.io/vmhomelabde/printbuddy-bambu-studio-api:02.08.02.61-661cd47``.
 Both compose files use the moving ``:latest`` tag (moved by pushes to main),
 like the Printbuddy image itself, so ``docker compose pull`` and the in-app
 updater keep the sidecar current. The backend's
