@@ -441,14 +441,44 @@ class TestSliceWithProfilesProgress:
             printer_profile_json="{}",
             process_profile_json="{}",
             filament_profile_jsons=["{}"],
-            request_id="abc-123",
+            request_id="0b6d3f6e-3c7a-4f0e-9a51-2f1c4d8e7a10",
             on_progress=lambda _snap: None,
         )
         # The form field name on the wire is `requestId` (camelCase) to
         # match the sidecar's SlicingSettings shape.
         body = captured["body"].decode("utf-8", errors="ignore")
         assert "requestId" in body
-        assert "abc-123" in body
+        assert "0b6d3f6e-3c7a-4f0e-9a51-2f1c4d8e7a10" in body
+
+    @pytest.mark.asyncio
+    async def test_non_uuid_request_id_is_not_forwarded(self):
+        """The sidecar rejects the whole slice with 400 for a non-UUID
+        requestId; drop it (losing only live progress) instead."""
+        captured: dict = {}
+        paths: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            paths.append(request.url.path)
+            if request.url.path == "/slice":
+                captured["body"] = request.content
+                return httpx.Response(
+                    status_code=200,
+                    content=b"PK\x03\x04 fake",
+                    headers={"x-print-time-seconds": "1", "x-filament-used-g": "0", "x-filament-used-mm": "0"},
+                )
+            return httpx.Response(status_code=404, json={"error": "not_found"})
+
+        service = SlicerApiService("http://sidecar:3000", client=_mock_client(handler))
+        await service.slice_without_profiles(
+            model_bytes=b"x",
+            model_filename="Cube.3mf",
+            request_id="library-11-p1-abc",
+            on_progress=lambda _snap: None,
+        )
+        body = captured["body"].decode("utf-8", errors="ignore")
+        assert "requestId" not in body
+        assert "library-11-p1-abc" not in body
+        assert paths == ["/slice"]
 
     @pytest.mark.asyncio
     async def test_on_progress_called_with_snapshots(self):
@@ -473,7 +503,7 @@ class TestSliceWithProfilesProgress:
                 # coroutine — but the simpler path is to drive completion
                 # via the captured event below.
                 pass
-            if request.url.path == "/slice/progress/req-1":
+            if request.url.path == "/slice/progress/5f2a9c1e-8b4d-4e6f-a7c3-1d9e0b2f6a84":
                 return httpx.Response(
                     status_code=200,
                     json={
@@ -514,7 +544,7 @@ class TestSliceWithProfilesProgress:
                 printer_profile_json="{}",
                 process_profile_json="{}",
                 filament_profile_jsons=["{}"],
-                request_id="req-1",
+                request_id="5f2a9c1e-8b4d-4e6f-a7c3-1d9e0b2f6a84",
                 on_progress=lambda snap: snapshots.append(snap),
             )
         finally:

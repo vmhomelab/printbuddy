@@ -10,6 +10,7 @@ under the hood, response body is raw G-code or 3MF with metadata in the
 
 import asyncio
 import logging
+import uuid
 from collections.abc import Callable
 from typing import NamedTuple
 
@@ -47,6 +48,25 @@ class SlicerApiInvalidResponseError(SlicerApiUnavailableError):
     subclass of ``SlicerApiUnavailableError`` so existing callers keep
     treating it as "sidecar offline".
     """
+
+
+def _sidecar_request_id(request_id: str | None) -> str | None:
+    """Return ``request_id`` if the sidecar accepts it, else ``None``.
+
+    The sidecar rejects the whole slice with 400 "requestId must be a UUID"
+    for anything else. Older frontends sent ids like
+    ``library-11-p1-<uuid>`` (or a timestamp when the browser lacked
+    ``crypto.randomUUID``), which broke the preview slice. Dropping the id
+    only loses live progress for that request.
+    """
+    if request_id is None:
+        return None
+    try:
+        uuid.UUID(request_id)
+    except (ValueError, AttributeError, TypeError):
+        logger.debug("Not forwarding non-UUID slice requestId %r to the sidecar", request_id)
+        return None
+    return request_id
 
 
 def _reject_html_slice_output(response: httpx.Response) -> None:
@@ -437,6 +457,7 @@ class SlicerApiService:
             # field when we want the flag on, so default-off callers exactly
             # match the previous wire payload.
             data["arrange"] = "true"
+        request_id = _sidecar_request_id(request_id)
         if request_id is not None:
             data["requestId"] = request_id
 
@@ -551,6 +572,7 @@ class SlicerApiService:
             # yet recognise the field — the user's slice still runs with the
             # bundle's default plate, no crash.
             data["bedType"] = bed_type
+        request_id = _sidecar_request_id(request_id)
         if request_id is not None:
             data["requestId"] = request_id
 
@@ -625,6 +647,7 @@ class SlicerApiService:
             data["plate"] = str(plate)
         if export_3mf:
             data["exportType"] = "3mf"
+        request_id = _sidecar_request_id(request_id)
         if request_id is not None:
             data["requestId"] = request_id
 

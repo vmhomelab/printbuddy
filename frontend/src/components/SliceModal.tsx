@@ -20,6 +20,7 @@ import { useToast } from '../contexts/ToastContext';
 import { PlatePickerModal } from './PlatePickerModal';
 import type { PlateFilament } from '../types/plates';
 import { normalizeColorForCompare, colorsAreSimilar } from '../utils/amsHelpers';
+import { uuidV4 } from '../utils/random';
 import {
   presetCompatibility,
   buildCompatibilityIndex,
@@ -445,16 +446,13 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   // preview-slice and the FilamentAnalysisSpinner's progress poll share
   // the same id. useMemo keeps it stable across renders within the same
   // pair; switching plates regenerates so a stale poll doesn't bleed
-  // progress between plates.
-  const previewRequestId = useMemo(() => {
-    const random =
-      typeof crypto !== 'undefined' && 'randomUUID' in crypto
-        ? crypto.randomUUID()
-        : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    // Tag the id with the (source, plate) so logs/Network panel show which
-    // pair owns the poll. Also lets the lint rule see the deps in use.
-    return `${source.kind}-${source.id}-p${effectivePlateId}-${random}`;
-  }, [source.kind, source.id, effectivePlateId]);
+  // progress between plates. The sidecar only accepts a bare UUID as
+  // requestId, so the id carries no (source, plate) tag.
+  const previewRequestId = useMemo(
+    () => uuidV4(),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- regenerate per (source, plate) pair
+    [source.kind, source.id, effectivePlateId],
+  );
   const filamentReqsQuery = useQuery({
     queryKey: ['sliceFilamentReqs', source.kind, source.id, effectivePlateId],
     queryFn: async () => {
