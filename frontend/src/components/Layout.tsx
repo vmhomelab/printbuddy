@@ -507,7 +507,8 @@ export function Layout() {
 
   return (
     <div className="flex min-h-screen">
-      {showChristmas && <ChristmasScene />}
+      {/* The Command Center brings its own workshop scene and covers the page */}
+      {showChristmas && location.pathname !== '/farm-command-center' && <ChristmasScene />}
 
       {/* Hidden sidebar restore control */}
       {sidebarHidden && (

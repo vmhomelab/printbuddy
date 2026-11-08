@@ -9,6 +9,7 @@ The historical upstream changelog is preserved after that section for fork/upstr
 
 #### Added
 - Added an opt-in Christmas theme. Settings → Appearance now offers a "Christmas" background, a Christmas red accent and a "Christmas (snowfall)" style for dark and light mode. The style adds falling snow, fairy lights along the top edge, a Santa hat on the Printbuddy logo (sidebar and login) and a snowy village with a decorated tree and Santa's sleigh. The sleigh flies behind the content in a lane free of text and controls, and is hidden on pages without one. Animations respect reduced-motion. Defaults are unchanged, so new installs and updates keep the regular theme until the Christmas options are picked.
+- The Christmas style also dresses up the Farm Command Center and its TV mode as "Santa's Factory": a fir garland with fairy lights on top, Santa's workshop with printers on a conveyor belt along the bottom, green progress, red actions, gold-tinted frames, "Gifts today" instead of "Parts today", and a Santa hat on the TV mode logo. Without the Christmas style both dashboards look exactly as before.
 
 #### Changed
 - Swept residual upstream identity strings from code, config, docs, tests, install scripts, workflow metadata, and committed frontend assets. Added a repository-wide regression test so the old project/user strings cannot reappear in tracked text files.

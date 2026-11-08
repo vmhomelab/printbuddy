@@ -8,6 +8,7 @@ import {
   CheckCircle2,
   CirclePause,
   Clock3,
+  Gift,
   Layers,
   PackageOpen,
   PauseCircle,
@@ -35,6 +36,9 @@ import { classifyPrinterStatus } from '../utils/printerStatus';
 import { appAssetPath } from '../utils/assetPaths';
 import { resolveLoadedFilamentInfo, type ResolvedLoadedFilamentInfo, type SpoolmanSlotAssignmentLike } from '../utils/amsHelpers';
 import { useTheme } from '../contexts/ThemeContext';
+import { useIsChristmasStyle } from '../hooks/useIsChristmasStyle';
+import { ChristmasHat } from '../components/ChristmasHat';
+import { ChristmasGarland, ChristmasWorkshop } from '../components/ChristmasWorkshop';
 
 interface MonitorPrinter {
   printer: Printer;
@@ -505,6 +509,7 @@ function ActiveProjectsPanel({ projects, theme }: { projects: ProjectListItem[];
 export function PrintFarmMonitorPage() {
   const [now, setNow] = useState(() => new Date());
   const { mode } = useTheme();
+  const festive = useIsChristmasStyle();
   const theme = useMemo(() => getMonitorTheme(mode), [mode]);
 
   useEffect(() => {
@@ -563,8 +568,9 @@ export function PrintFarmMonitorPage() {
   const utilizationStyle = { background: `conic-gradient(var(--accent) ${utilization * 3.6}deg, var(--bg-tertiary) 0deg)` };
 
   return (
-    <main className={`min-h-screen overflow-x-hidden ${theme.page}`} data-monitor-theme={mode}>
-      <div className={`min-h-screen w-full max-w-full p-3 sm:p-4 xl:p-5 ${theme.backdrop}`}>
+    <main className={`min-h-screen overflow-x-hidden ${theme.page} ${festive ? 'fcc-festive' : ''}`} data-monitor-theme={mode}>
+      {festive && <ChristmasGarland />}
+      <div className={`min-h-screen w-full max-w-full p-3 sm:p-4 xl:p-5 ${theme.backdrop} ${festive ? 'pt-16 sm:pt-16 xl:pt-16' : ''}`}>
         <header className={`mb-4 flex min-w-0 flex-col gap-4 border-b pb-4 xl:flex-row xl:items-center xl:justify-between ${theme.divider}`}>
           <div className="flex min-w-0 flex-wrap items-center gap-3 sm:gap-5">
             <Link
@@ -575,13 +581,23 @@ export function PrintFarmMonitorPage() {
               <ArrowLeft className="h-5 w-5" />
             </Link>
             <div className={`flex items-center gap-3 border-r pr-4 sm:pr-8 ${theme.divider}`}>
-              <img src={appAssetPath(theme.logoPath)} alt="Printbuddy" className="h-12 w-auto" />
+              <span className="relative inline-flex">
+                <img src={appAssetPath(theme.logoPath)} alt="Printbuddy" className="h-12 w-auto" />
+                {festive && <ChristmasHat variant="logo" />}
+              </span>
             </div>
-            <h1 className={`min-w-0 truncate text-2xl font-bold tracking-tight sm:text-3xl ${theme.text}`}>Print Farm Monitor</h1>
+            {festive ? (
+              <div className="min-w-0">
+                <h1 className={`flex items-center gap-2 truncate text-2xl font-extrabold tracking-tight sm:text-3xl ${theme.text}`}>Santa's Factory <Gift className="h-7 w-7 shrink-0 text-amber-300" aria-hidden="true" /></h1>
+                <p className={`text-sm ${theme.muted}`}>Print Farm Monitor</p>
+              </div>
+            ) : (
+              <h1 className={`min-w-0 truncate text-2xl font-bold tracking-tight sm:text-3xl ${theme.text}`}>Print Farm Monitor</h1>
+            )}
           </div>
           <div className="flex min-w-0 flex-col gap-3 xl:items-end">
             <div className="text-left xl:text-right">
-              <div className="font-mono text-2xl font-bold tracking-wider text-blue-300 sm:text-3xl">{formatHeaderTime(now)}</div>
+              <div className="font-mono text-2xl font-bold tracking-wider text-fcc-300 sm:text-3xl">{formatHeaderTime(now)}</div>
               <div className={`text-xs ${theme.muted}`}>{formatHeaderDate(now)}</div>
             </div>
             <div className="grid w-full min-w-0 grid-cols-[repeat(auto-fit,minmax(min(100%,9.5rem),1fr))] gap-3 xl:min-w-[50rem]">
@@ -636,7 +652,9 @@ export function PrintFarmMonitorPage() {
           </aside>
         </div>
 
-        <footer className={`mt-4 flex flex-col gap-3 rounded-xl border px-6 py-4 md:flex-row md:items-center md:justify-between ${theme.footer}`}>
+        {festive && <ChristmasWorkshop />}
+
+        <footer className={`${festive ? 'mt-0' : 'mt-4'} flex flex-col gap-3 rounded-xl border px-6 py-4 md:flex-row md:items-center md:justify-between ${theme.footer}`}>
           <div className="flex items-center gap-3"><RefreshCw className="h-5 w-5" /> Last refreshed: {formatClock(now)} · every {refreshSeconds}s</div>
           <div className="flex items-center gap-3 text-emerald-300"><CheckCircle2 className="h-6 w-6" /> PrintBuddy is operational</div>
           <div className="flex flex-wrap items-center gap-6"><span className="flex items-center gap-2"><Server className="h-5 w-5" /> Printbuddy&nbsp; {version?.display_version ?? version?.version ? `v${version?.display_version ?? version?.version}` : ''}</span><span>{now.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })} • {formatClock(now)}</span></div>

@@ -269,4 +269,22 @@ describe('FarmCommandCenterPage', () => {
     expect(localStorage.setItem).not.toHaveBeenCalledWith('printbuddy.commandCenterPrinterGroups', expect.any(String));
     expect(printerFleetGroups[0]).toMatchObject({ name: 'Prototype Lab', printer_ids: [1] });
   });
+
+  it('dresses up as Santa\'s Factory only while the Christmas style is selected', async () => {
+    server.use(http.get('/api/v1/settings/', () => HttpResponse.json({ dark_style: 'christmas' })));
+    render(<FarmCommandCenterPage />);
+
+    expect(await screen.findByRole('heading', { name: /santa's factory/i })).toBeInTheDocument();
+    expect(screen.getByText(/^Farm Command Center ·/)).toBeInTheDocument();
+    expect(screen.getByText('Gifts today')).toBeInTheDocument();
+    expect(screen.queryByText('Parts today')).not.toBeInTheDocument();
+  });
+
+  it('keeps the regular look without the Christmas style', async () => {
+    render(<FarmCommandCenterPage />);
+
+    expect(await screen.findByRole('heading', { name: 'Farm Command Center' })).toBeInTheDocument();
+    expect(screen.getByText('Parts today')).toBeInTheDocument();
+    expect(screen.queryByText('Gifts today')).not.toBeInTheDocument();
+  });
 });

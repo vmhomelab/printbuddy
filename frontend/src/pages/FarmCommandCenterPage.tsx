@@ -6,6 +6,7 @@ import {
   Boxes,
   CheckCircle2,
   ChevronRight,
+  Gift,
   Grid3X3,
   Layers,
   Monitor,
@@ -15,6 +16,7 @@ import {
   Printer as PrinterIcon,
   Search,
   Server,
+  Snowflake,
   Wrench,
   X,
 } from 'lucide-react';
@@ -30,6 +32,8 @@ import {
   type PrinterStatus,
 } from '../api/client';
 import { classifyPrinterStatus } from '../utils/printerStatus';
+import { useIsChristmasStyle } from '../hooks/useIsChristmasStyle';
+import { ChristmasGarland, ChristmasWorkshop } from '../components/ChristmasWorkshop';
 
 interface FleetPrinter {
   printer: Printer;
@@ -197,13 +201,14 @@ function completedToday(queue: PrintQueueItem[], now: Date): number {
   return queue.filter((item) => item.status === 'completed' && item.completed_at && new Date(item.completed_at).toDateString() === today).length;
 }
 
-function StatCard({ icon: Icon, value, label, sub, tone, to, onClick }: { icon: typeof PrinterIcon; value: number | string; label: string; sub: string; tone: 'blue' | 'green' | 'gray' | 'amber' | 'purple'; to?: string; onClick?: () => void }) {
+function StatCard({ icon: Icon, value, label, sub, tone, to, onClick }: { icon: typeof PrinterIcon; value: number | string; label: string; sub: string; tone: 'blue' | 'green' | 'gray' | 'amber' | 'purple' | 'red'; to?: string; onClick?: () => void }) {
   const tones = {
-    blue: 'bg-blue-500/15 text-blue-300 shadow-blue-500/10',
+    blue: 'bg-fcc-500/15 text-fcc-300 shadow-fcc-500/10',
     green: 'bg-emerald-500/15 text-emerald-300 shadow-emerald-500/10',
     gray: 'bg-slate-500/15 text-slate-300 shadow-slate-500/10',
     amber: 'bg-amber-500/15 text-amber-300 shadow-amber-500/10',
     purple: 'bg-purple-500/15 text-purple-300 shadow-purple-500/10',
+    red: 'bg-red-500/15 text-red-300 shadow-red-500/10',
   };
   const content = (
     <>
@@ -225,7 +230,7 @@ function StatCard({ icon: Icon, value, label, sub, tone, to, onClick }: { icon: 
 
   if (to) {
     return (
-      <Link to={to} className="group relative block rounded-2xl border border-bambu-dark-tertiary bg-bambu-dark-secondary/80 p-4 shadow-[var(--card-shadow)] transition hover:border-blue-500 hover:bg-bambu-dark-secondary focus:outline-none focus:ring-2 focus:ring-blue-500">
+      <Link to={to} className="group relative block rounded-2xl border border-bambu-dark-tertiary bg-bambu-dark-secondary/80 p-4 shadow-[var(--card-shadow)] transition hover:border-fcc-500 hover:bg-bambu-dark-secondary focus:outline-none focus:ring-2 focus:ring-fcc-500">
         {content}
       </Link>
     );
@@ -233,7 +238,7 @@ function StatCard({ icon: Icon, value, label, sub, tone, to, onClick }: { icon: 
 
   if (onClick) {
     return (
-      <button type="button" onClick={onClick} className="group relative block w-full rounded-2xl border border-bambu-dark-tertiary bg-bambu-dark-secondary/80 p-4 text-left shadow-[var(--card-shadow)] transition hover:border-blue-500 hover:bg-bambu-dark-secondary focus:outline-none focus:ring-2 focus:ring-blue-500">
+      <button type="button" onClick={onClick} className="group relative block w-full rounded-2xl border border-bambu-dark-tertiary bg-bambu-dark-secondary/80 p-4 text-left shadow-[var(--card-shadow)] transition hover:border-fcc-500 hover:bg-bambu-dark-secondary focus:outline-none focus:ring-2 focus:ring-fcc-500">
         {content}
       </button>
     );
@@ -247,10 +252,11 @@ function StatCard({ icon: Icon, value, label, sub, tone, to, onClick }: { icon: 
 }
 
 function FleetTile({ item }: { item: FleetPrinter }) {
+  const festive = useIsChristmasStyle();
   const state = normalizeState(item.status);
   const progress = item.status?.progress === null || item.status?.progress === undefined ? null : Math.min(100, Math.max(0, Math.round(item.status.progress)));
   const classes = {
-    printing: 'border-blue-500/70 bg-blue-500/15 text-blue-200',
+    printing: 'border-fcc-500/70 bg-fcc-500/15 text-fcc-200',
     paused: 'border-emerald-500/70 bg-emerald-500/15 text-emerald-200',
     idle: 'border-bambu-dark-tertiary bg-bambu-dark-secondary text-bambu-gray-light',
     alert: 'border-red-500/70 bg-red-500/15 text-red-200',
@@ -264,11 +270,15 @@ function FleetTile({ item }: { item: FleetPrinter }) {
           <div className="truncate text-sm font-bold text-white">{item.printer.name}</div>
           <div className="mt-1 text-xs">{label}</div>
         </div>
-        <span className="text-xs text-bambu-gray-light">{progress !== null ? `${progress}%` : '—'}</span>
+        <span className="flex items-center gap-1 text-xs text-bambu-gray-light">
+          {festive && state === 'printing' && <Snowflake className="h-3.5 w-3.5 text-sky-200" aria-hidden="true" />}
+          {festive && state === 'idle' && <Gift className="h-3.5 w-3.5 text-amber-300" aria-hidden="true" />}
+          {progress !== null ? `${progress}%` : '—'}
+        </span>
       </div>
       {state === 'printing' && (
         <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-bambu-dark-tertiary">
-          <div className="h-full rounded-full bg-blue-400" style={{ width: `${progress ?? 0}%` }} />
+          <div className="h-full rounded-full bg-fcc-400" style={{ width: `${progress ?? 0}%` }} />
         </div>
       )}
     </div>
@@ -276,17 +286,18 @@ function FleetTile({ item }: { item: FleetPrinter }) {
 }
 
 function ActiveProjectCard({ project, workItems }: { project: ProjectListItem; workItems: ActiveProjectWorkItem[] }) {
+  const festive = useIsChristmasStyle();
   const progress = projectProgress(project);
   const printingItems = workItems.filter((item) => item.state === 'printing');
   const queuedItems = workItems.filter((item) => item.state === 'queued');
   return (
-    <Link to={`/projects/${project.id}`} className="block rounded-2xl border border-bambu-dark-tertiary bg-bambu-dark-secondary/80 p-4 shadow-[var(--card-shadow)] transition hover:border-blue-500 hover:bg-bambu-dark-secondary focus:outline-none focus:ring-2 focus:ring-blue-500">
+    <Link to={`/projects/${project.id}`} className="block rounded-2xl border border-bambu-dark-tertiary bg-bambu-dark-secondary/80 p-4 shadow-[var(--card-shadow)] transition hover:border-fcc-500 hover:bg-bambu-dark-secondary focus:outline-none focus:ring-2 focus:ring-fcc-500">
       <div className="flex gap-4">
         <div className="flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-bambu-dark-tertiary bg-bambu-dark">
           {project.cover_image_filename ? (
             <img src={api.getProjectCoverImageUrl(project.id)} alt="" className="h-full w-full object-cover" />
           ) : (
-            <PackageOpen className="h-9 w-9 text-bambu-gray" />
+            festive ? <Gift className="h-9 w-9 text-red-400" /> : <PackageOpen className="h-9 w-9 text-bambu-gray" />
           )}
         </div>
         <div className="min-w-0 flex-1">
@@ -302,18 +313,18 @@ function ActiveProjectCard({ project, workItems }: { project: ProjectListItem; w
           </div>
         </div>
         <div className="w-20 shrink-0 text-right">
-          <div className="text-2xl font-bold text-blue-400">{progress !== null ? `${progress}%` : '-'}</div>
+          <div className="text-2xl font-bold text-fcc-400">{progress !== null ? `${progress}%` : '-'}</div>
           <div className="text-xs text-bambu-gray-light">Complete</div>
         </div>
       </div>
       <div className="mt-4 h-2 overflow-hidden rounded-full bg-bambu-dark-tertiary">
-        <div className="h-full rounded-full bg-blue-500" style={{ width: `${progress ?? 0}%` }} />
+        <div className="h-full rounded-full bg-fcc-500" style={{ width: `${progress ?? 0}%` }} />
       </div>
       {workItems.length > 0 && (
         <div className="mt-4 grid gap-3 text-xs md:grid-cols-2">
           {printingItems.length > 0 && (
-            <div className="rounded-lg border border-blue-500/30 bg-blue-500/10 p-3">
-              <div className="mb-2 font-bold uppercase tracking-wide text-blue-300">Printing now</div>
+            <div className="rounded-lg border border-fcc-500/30 bg-fcc-500/10 p-3">
+              <div className="mb-2 font-bold uppercase tracking-wide text-fcc-300">Printing now</div>
               <div className="space-y-1 text-bambu-gray-light">
                 {printingItems.map((item) => <div key={item.id}>{item.label}</div>)}
               </div>
@@ -350,13 +361,13 @@ function DispatchSuggestionPanel({ projects }: { projects: ProjectListItem[] }) 
             Review {reviewableProjects.length} active project{reviewableProjects.length === 1 ? '' : 's'} with {queued} queued job{queued === 1 ? '' : 's'} and {failed} failed job{failed === 1 ? '' : 's'}.
           </p>
         </div>
-        <Link to={`/projects/${firstProject.id}`} aria-label={`Review ${firstProject.name} dispatch`} className="inline-flex items-center gap-2 rounded-lg border border-blue-500/60 bg-blue-500/10 px-3 py-2 text-sm font-semibold text-blue-300 transition hover:bg-blue-500/20 hover:text-white">
+        <Link to={`/projects/${firstProject.id}`} aria-label={`Review ${firstProject.name} dispatch`} className="inline-flex items-center gap-2 rounded-lg border border-fcc-500/60 bg-fcc-500/10 px-3 py-2 text-sm font-semibold text-fcc-300 transition hover:bg-fcc-500/20 hover:text-white">
           Review dispatch <ChevronRight className="h-4 w-4" />
         </Link>
       </div>
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
         {reviewableProjects.slice(0, 3).map((project) => (
-          <Link key={project.id} to={`/projects/${project.id}`} className="rounded-xl border border-bambu-dark-tertiary bg-bambu-dark-secondary/80 p-3 transition hover:border-blue-500">
+          <Link key={project.id} to={`/projects/${project.id}`} className="rounded-xl border border-bambu-dark-tertiary bg-bambu-dark-secondary/80 p-3 transition hover:border-fcc-500">
             <div className="font-semibold text-white">{project.name}</div>
             <div className="mt-1 text-xs text-bambu-gray-light">{project.queue_count} queued · {project.failed_count} failed · {projectTargetSummary(project)}</div>
           </Link>
@@ -370,7 +381,7 @@ function AlertsDialog({ alerts, onClose }: { alerts: CommandCenterAlert[]; onClo
   const toneClasses = {
     red: 'border-red-500/40 bg-red-500/10 text-red-200',
     amber: 'border-amber-500/40 bg-amber-500/10 text-amber-200',
-    blue: 'border-blue-500/40 bg-blue-500/10 text-blue-200',
+    blue: 'border-fcc-500/40 bg-fcc-500/10 text-fcc-200',
   };
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" role="dialog" aria-modal="true" aria-labelledby="command-center-alerts-title">
@@ -426,7 +437,7 @@ function PrinterGroupsDialog({ printers, groups, onSave, onClose }: { printers: 
         </div>
         <label className="mb-4 block text-sm font-semibold text-bambu-gray-light">
           Group name
-          <input value={name} onChange={(event) => setName(event.target.value)} className="mt-2 w-full rounded-lg border border-bambu-dark-tertiary bg-bambu-dark px-3 py-2 text-white focus:border-blue-500 focus:outline-none" />
+          <input value={name} onChange={(event) => setName(event.target.value)} className="mt-2 w-full rounded-lg border border-bambu-dark-tertiary bg-bambu-dark px-3 py-2 text-white focus:border-fcc-500 focus:outline-none" />
         </label>
         <div className="mb-4 grid gap-2 sm:grid-cols-2">
           {printers.map((printer) => (
@@ -445,7 +456,7 @@ function PrinterGroupsDialog({ printers, groups, onSave, onClose }: { printers: 
         )}
         <div className="flex justify-end gap-2">
           <button type="button" onClick={onClose} className="rounded-lg border border-bambu-dark-tertiary px-4 py-2 text-sm font-semibold text-bambu-gray-light hover:text-white">Cancel</button>
-          <button type="button" onClick={saveGroup} disabled={!name.trim() || selectedPrinterIds.length === 0} className="rounded-lg bg-blue-500 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50">Save Group</button>
+          <button type="button" onClick={saveGroup} disabled={!name.trim() || selectedPrinterIds.length === 0} className="rounded-lg bg-fcc-500 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50">Save Group</button>
         </div>
       </div>
     </div>
@@ -458,6 +469,7 @@ export function FarmCommandCenterPage() {
   const [groupFilter, setGroupFilter] = useState('all');
   const [showAlerts, setShowAlerts] = useState(false);
   const [showGroups, setShowGroups] = useState(false);
+  const festive = useIsChristmasStyle();
   const queryClient = useQueryClient();
 
   useEffect(() => {
@@ -525,30 +537,38 @@ export function FarmCommandCenterPage() {
 
   return (
     <div className="min-h-full bg-bambu-dark p-4 text-white xl:p-6">
-      <div className="mx-auto max-w-[1700px] rounded-2xl border border-bambu-dark-tertiary bg-gradient-to-br from-bambu-dark-secondary/95 via-bambu-dark-secondary/80 to-bambu-dark p-5 shadow-[var(--card-shadow)]">
+      <div className={`mx-auto max-w-[1700px] rounded-2xl border border-bambu-dark-tertiary bg-gradient-to-br from-bambu-dark-secondary/95 via-bambu-dark-secondary/80 to-bambu-dark p-5 shadow-[var(--card-shadow)] ${festive ? 'fcc-festive overflow-hidden pb-0 pt-16' : ''}`}>
+        {festive && <ChristmasGarland />}
         <header className="mb-5 flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-          <div className="border-l-4 border-blue-500 pl-4">
-            <h1 className="text-2xl font-bold tracking-tight text-white">Farm Command Center</h1>
-            <p className="text-sm text-bambu-gray-light">Real-time overview of your 3D printing operation</p>
-          </div>
+          {festive ? (
+            <div className="border-l-4 border-fcc-cta pl-4">
+              <h1 className="flex items-center gap-2 text-3xl font-extrabold tracking-tight text-white">Santa's Factory <Gift className="h-7 w-7 text-amber-300" aria-hidden="true" /></h1>
+              <p className="text-sm text-bambu-gray-light">Farm Command Center · Real-time overview of your 3D printing operation</p>
+            </div>
+          ) : (
+            <div className="border-l-4 border-fcc-500 pl-4">
+              <h1 className="text-2xl font-bold tracking-tight text-white">Farm Command Center</h1>
+              <p className="text-sm text-bambu-gray-light">Real-time overview of your 3D printing operation</p>
+            </div>
+          )}
           <div className="flex flex-col gap-3 xl:items-end">
             <div className="flex items-center gap-4">
               <span className="text-xs font-semibold uppercase tracking-[0.22em] text-bambu-gray">Fleet Utilization</span>
-              <span className="text-3xl font-bold text-blue-400">{utilization}%</span>
+              <span className="text-3xl font-bold text-fcc-400">{utilization}%</span>
               <div className="h-2 w-28 overflow-hidden rounded-full bg-bambu-dark-tertiary">
-                <div className="h-full rounded-full bg-blue-500" style={{ width: `${utilization}%` }} />
+                <div className="h-full rounded-full bg-fcc-500" style={{ width: `${utilization}%` }} />
               </div>
               <span className="text-xs text-bambu-gray-light">({stateCounts.printing} / {fleet.length})</span>
             </div>
             <div className="flex flex-wrap items-center justify-end gap-3">
               <div className="text-right">
-                <div className="font-mono text-3xl font-bold tracking-wider text-blue-300">{formatTime(now)}</div>
+                <div className="font-mono text-3xl font-bold tracking-wider text-fcc-300">{formatTime(now)}</div>
                 <div className="text-xs text-bambu-gray-light">{formatDate(now)}</div>
               </div>
               <span className="inline-flex items-center gap-2 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark px-3 py-2 text-xs font-bold uppercase text-emerald-300">
                 <span className="h-2 w-2 rounded-full bg-emerald-400" /> Live
               </span>
-              <Link to="/farm-monitor" className="inline-flex items-center gap-2 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark px-3 py-2 text-sm font-semibold text-bambu-gray-light hover:border-blue-500 hover:text-white">
+              <Link to="/farm-monitor" className="inline-flex items-center gap-2 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark px-3 py-2 text-sm font-semibold text-bambu-gray-light hover:border-fcc-500 hover:text-white">
                 <Monitor className="h-4 w-4" /> TV Mode
               </Link>
             </div>
@@ -560,7 +580,11 @@ export function FarmCommandCenterPage() {
           <StatCard icon={PrinterIcon} value={stateCounts.idle} label="Idle" sub={`${fleet.length ? Math.round((stateCounts.idle / fleet.length) * 100) : 0}% of fleet`} tone="gray" />
           <StatCard icon={Pause} value={stateCounts.paused} label="Paused" sub={`${fleet.length ? Math.round((stateCounts.paused / fleet.length) * 100) : 0}% of fleet`} tone="green" />
           <StatCard icon={AlertTriangle} value={alertCount} label="Alerts" sub="Printers, stock, maintenance" tone="amber" onClick={() => setShowAlerts(true)} />
-          <StatCard icon={Layers} value={todayParts} label="Parts today" sub={`${queue.length} queue items tracked`} tone="purple" />
+          {festive ? (
+            <StatCard icon={Gift} value={todayParts} label="Gifts today" sub={`${queue.length} queue items tracked`} tone="red" />
+          ) : (
+            <StatCard icon={Layers} value={todayParts} label="Parts today" sub={`${queue.length} queue items tracked`} tone="purple" />
+          )}
         </section>
 
         <section className="mb-5 rounded-2xl border border-bambu-dark-tertiary bg-bambu-dark/50 p-4">
@@ -573,22 +597,22 @@ export function FarmCommandCenterPage() {
                   value={search}
                   onChange={(event) => setSearch(event.target.value)}
                   placeholder="Search printers..."
-                  className="w-full rounded-lg border border-bambu-dark-tertiary bg-bambu-dark py-2 pl-9 pr-3 text-sm text-white placeholder-bambu-gray focus:border-blue-500 focus:outline-none sm:w-64"
+                  className="w-full rounded-lg border border-bambu-dark-tertiary bg-bambu-dark py-2 pl-9 pr-3 text-sm text-white placeholder-bambu-gray focus:border-fcc-500 focus:outline-none sm:w-64"
                 />
               </label>
               <select
                 value={groupFilter}
                 onChange={(event) => setGroupFilter(event.target.value)}
-                className="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none"
+                className="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark px-3 py-2 text-sm text-white focus:border-fcc-500 focus:outline-none"
               >
                 <option value="all">All Groups</option>
                 {groupedFleet.map((group) => <option key={group.name} value={group.name}>{group.name}</option>)}
               </select>
-              <button type="button" onClick={() => setShowGroups(true)} className="inline-flex items-center justify-center gap-2 rounded-lg border border-blue-500/60 bg-blue-500/10 px-3 py-2 text-sm font-semibold text-blue-300 transition hover:bg-blue-500/20 hover:text-white">
+              <button type="button" onClick={() => setShowGroups(true)} className={`inline-flex items-center justify-center gap-2 rounded-lg border px-3 py-2 text-sm font-semibold transition hover:text-white ${festive ? 'border-fcc-cta bg-fcc-cta/80 text-white hover:bg-fcc-cta' : 'border-fcc-500/60 bg-fcc-500/10 text-fcc-300 hover:bg-fcc-500/20'}`}>
                 <Plus className="h-4 w-4" /> Create Group
               </button>
               <div className="flex rounded-lg border border-bambu-dark-tertiary bg-bambu-dark p-1 text-bambu-gray-light">
-                <span className="rounded bg-blue-500 px-3 py-1 text-white"><Grid3X3 className="h-4 w-4" /></span>
+                <span className="rounded bg-fcc-cta px-3 py-1 text-white"><Grid3X3 className="h-4 w-4" /></span>
                 <span className="px-3 py-1"><Server className="h-4 w-4" /></span>
               </div>
             </div>
@@ -621,7 +645,7 @@ export function FarmCommandCenterPage() {
 
           <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-bambu-dark-tertiary pt-4 text-sm text-bambu-gray-light">
             <div className="flex flex-wrap gap-4">
-              <span className="flex items-center gap-2"><span className="h-2 w-2 rounded bg-blue-500" /> Printing</span>
+              <span className="flex items-center gap-2"><span className="h-2 w-2 rounded bg-fcc-500" /> Printing</span>
               <span className="flex items-center gap-2"><span className="h-2 w-2 rounded bg-emerald-500" /> Paused</span>
               <span className="flex items-center gap-2"><span className="h-2 w-2 rounded bg-slate-400" /> Idle</span>
               <span className="flex items-center gap-2"><span className="h-2 w-2 rounded bg-red-500" /> Alert</span>
@@ -638,7 +662,7 @@ export function FarmCommandCenterPage() {
         <section className="mb-5 rounded-2xl border border-bambu-dark-tertiary bg-bambu-dark/50 p-4">
           <div className="mb-4 flex items-center justify-between">
             <h2 className="text-sm font-semibold uppercase tracking-[0.22em] text-bambu-gray-light">Active Projects</h2>
-            <Link to="/projects" className="inline-flex items-center gap-1 text-sm font-semibold text-blue-400 hover:text-blue-300">View all projects <ChevronRight className="h-4 w-4" /></Link>
+            <Link to="/projects" className="inline-flex items-center gap-1 text-sm font-semibold text-fcc-400 hover:text-fcc-300">View all projects <ChevronRight className="h-4 w-4" /></Link>
           </div>
           <div className="grid gap-4 xl:grid-cols-2">
             {visibleProjects.map((project) => <ActiveProjectCard key={project.id} project={project} workItems={activeProjectWork.get(project.id) || []} />)}
@@ -649,22 +673,23 @@ export function FarmCommandCenterPage() {
         <DispatchSuggestionPanel projects={activeProjects} />
 
         <section className="grid gap-4 xl:grid-cols-3">
-          <Link to="/notifications" className="group flex items-center gap-4 rounded-2xl border border-bambu-dark-tertiary bg-bambu-dark-secondary/80 p-4 transition hover:border-blue-500 hover:bg-bambu-dark-secondary focus:outline-none focus:ring-2 focus:ring-blue-500">
+          <Link to="/notifications" className="group flex items-center gap-4 rounded-2xl border border-bambu-dark-tertiary bg-bambu-dark-secondary/80 p-4 transition hover:border-fcc-500 hover:bg-bambu-dark-secondary focus:outline-none focus:ring-2 focus:ring-fcc-500">
             <div className="flex h-12 w-12 items-center justify-center rounded-full bg-emerald-500/15 text-emerald-300"><CheckCircle2 className="h-7 w-7" /></div>
             <div className="min-w-0 flex-1"><div className="font-bold text-white">{alertCount === 0 ? 'All Systems Operational' : `${alertCount} item${alertCount === 1 ? '' : 's'} need attention`}</div><div className="text-sm text-bambu-gray-light">{alertCount === 0 ? 'No active system issues' : 'Open alerts and notification settings'}</div></div>
             <ChevronRight className="h-5 w-5 text-bambu-gray transition-transform group-hover:translate-x-0.5 group-hover:text-white" />
           </Link>
-          <Link to="/inventory" className="group flex items-center gap-4 rounded-2xl border border-bambu-dark-tertiary bg-bambu-dark-secondary/80 p-4 transition hover:border-blue-500 hover:bg-bambu-dark-secondary focus:outline-none focus:ring-2 focus:ring-blue-500">
+          <Link to="/inventory" className="group flex items-center gap-4 rounded-2xl border border-bambu-dark-tertiary bg-bambu-dark-secondary/80 p-4 transition hover:border-fcc-500 hover:bg-bambu-dark-secondary focus:outline-none focus:ring-2 focus:ring-fcc-500">
             <div className="flex h-12 w-12 items-center justify-center rounded-full bg-bambu-dark-tertiary text-bambu-gray-light"><PackageOpen className="h-7 w-7" /></div>
             <div className="min-w-0 flex-1"><div className="font-bold text-white">Filament Stock</div><div className="text-sm text-bambu-gray-light">{lowStock} spool{lowStock === 1 ? '' : 's'} low in stock</div></div>
             <ChevronRight className="h-5 w-5 text-bambu-gray transition-transform group-hover:translate-x-0.5 group-hover:text-white" />
           </Link>
-          <Link to="/maintenance" className="group flex items-center gap-4 rounded-2xl border border-bambu-dark-tertiary bg-bambu-dark-secondary/80 p-4 transition hover:border-blue-500 hover:bg-bambu-dark-secondary focus:outline-none focus:ring-2 focus:ring-blue-500">
+          <Link to="/maintenance" className="group flex items-center gap-4 rounded-2xl border border-bambu-dark-tertiary bg-bambu-dark-secondary/80 p-4 transition hover:border-fcc-500 hover:bg-bambu-dark-secondary focus:outline-none focus:ring-2 focus:ring-fcc-500">
             <div className="flex h-12 w-12 items-center justify-center rounded-full bg-red-500/15 text-red-300"><Wrench className="h-7 w-7" /></div>
             <div className="min-w-0 flex-1"><div className="font-bold text-white">Maintenance</div><div className="text-sm text-bambu-gray-light">{maintenanceDue} maintenance item{maintenanceDue === 1 ? '' : 's'} require attention</div></div>
             <ChevronRight className="h-5 w-5 text-bambu-gray transition-transform group-hover:translate-x-0.5 group-hover:text-white" />
           </Link>
         </section>
+        {festive && <ChristmasWorkshop />}
       </div>
       {showAlerts && <AlertsDialog alerts={commandCenterAlerts} onClose={() => setShowAlerts(false)} />}
       {showGroups && <PrinterGroupsDialog printers={printers} groups={printerGroups} onSave={savePrinterGroups} onClose={() => setShowGroups(false)} />}

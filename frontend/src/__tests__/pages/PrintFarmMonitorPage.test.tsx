@@ -428,4 +428,14 @@ describe('PrintFarmMonitorPage', () => {
     expect(monitor).toHaveClass('bg-bambu-dark');
     expect(screen.getByAltText('Printbuddy')).toHaveAttribute('src', '/img/printbuddy_logo_light.png');
   });
+
+  it('shows Santa\'s Factory with the workshop decorations in the Christmas style', async () => {
+    server.use(http.get('/api/v1/settings/', () => HttpResponse.json({ dark_style: 'christmas' })));
+    render(<PrintFarmMonitorPage />);
+
+    const heading = await screen.findByRole('heading', { name: /santa's factory/i });
+    expect(heading.closest('main')).toHaveClass('fcc-festive');
+    expect(screen.getByText('Print Farm Monitor')).toBeInTheDocument();
+    expect(screen.getByTestId('christmas-hat')).toBeInTheDocument();
+  });
 });
