@@ -86,6 +86,7 @@ describe('SpoolmanSettings wiring', () => {
           spoolman_disable_weight_sync: 'false',
           spoolman_report_partial_usage: 'true',
           auto_add_unknown_rfid: 'true',
+          spoolman_sync_location: 'true',
         });
       },
       { timeout: 3000 },

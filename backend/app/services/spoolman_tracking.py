@@ -788,6 +788,7 @@ async def release_archived_slot_rows(printer_id: int) -> None:
                 if spool.get("id") is not None and not spool.get("archived")
             }
             freed: list[tuple[int, int]] = []
+            released: set[int] = set()
             for row in rows:
                 if row.spoolman_spool_id in live:
                     continue
@@ -804,9 +805,14 @@ async def release_archived_slot_rows(printer_id: int) -> None:
                 )
                 if result.rowcount:
                     freed.append((row.ams_id, row.tray_id))
+                    released.add(row.spoolman_spool_id)
             if not freed:
                 return
             await db.commit()
+            # An archived spool gets its storage place back; a deleted one is gone.
+            from backend.app.services.spoolman_location_sync import sync_spool_locations
+
+            await sync_spool_locations(released, db=db, client=client)
         for ams_id, tray_id in freed:
             await ws_manager.broadcast(
                 {"type": "spool_assignment_changed", "printer_id": printer_id, "ams_id": ams_id, "tray_id": tray_id}

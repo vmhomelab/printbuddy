@@ -4996,6 +4996,8 @@ export default {
     disableWeightSyncDesc: 'Uppdatera inte återstående kapacitet från AMS-uppskattningar. Använd detta om du föredrar Spoolmans användningsspårning framför AMS-procentbaserade uppskattningar. Nya rullar kommer fortfarande att använda AMS-uppskattningen som sin initiala vikt.',
     reportPartialUsage: 'Rapportera partiell användning för misslyckade utskrifter',
     reportPartialUsageDesc: 'När en utskrift misslyckas eller avbryts, rapportera den uppskattade filamentanvändningen fram till den punkten baserat på skiktförloppet.',
+    syncLocation: 'Visa skrivaren som plats i Spoolman',
+    syncLocationDesc: 'Så länge en spole är tilldelad en plats sätts dess plats i Spoolman till skrivarens namn. När tilldelningen tas bort återställs den tidigare platsen (eller rensas om den saknades).',
   },
 
   locations: {

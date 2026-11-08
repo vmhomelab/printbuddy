@@ -4979,6 +4979,8 @@ export default {
     disableWeightSyncDesc: 'AMS tahminlerinden kalan kapasiteyi güncelleme. AMS yüzde tabanlı tahminler yerine Spoolman\'ın kullanım takibini tercih ediyorsanız bunu kullanın. Yeni makaralar yine de başlangıç ağırlığı olarak AMS tahminini kullanacak.',
     reportPartialUsage: 'Başarısız Baskılar için Kısmi Kullanımı Bildir',
     reportPartialUsageDesc: 'Bir baskı başarısız olduğunda veya iptal edildiğinde, katman ilerlemesine göre o noktaya kadar kullanılan tahmini filamenti bildir.',
+    syncLocation: 'Yazıcıyı Spoolman konumu olarak göster',
+    syncLocationDesc: 'Bir makara bir yuvaya atandığı sürece Spoolman konumu yazıcının adı olarak ayarlanır. Atama kaldırıldığında önceki konumu geri yüklenir (yoksa konum temizlenir).',
   },
 
   locations: {

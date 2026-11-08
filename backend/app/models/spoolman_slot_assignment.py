@@ -10,8 +10,9 @@ class SpoolmanSlotAssignment(Base):
     """Assignment of a Spoolman spool to a specific AMS slot on a printer.
 
     Tracks which Spoolman spool ID occupies a given (printer, ams, tray) slot.
-    This is the source of truth for Spoolman slot assignments — Spoolman's own
-    ``spool.location`` field is NOT managed by Printbuddy and is left for the user.
+    This is the source of truth for Spoolman slot assignments. Spoolman's own
+    ``spool.location`` only mirrors it (the printer's name) when the
+    ``spoolman_sync_location`` setting is on; see ``spoolman_location_sync``.
     """
 
     __tablename__ = "spoolman_slot_assignments"

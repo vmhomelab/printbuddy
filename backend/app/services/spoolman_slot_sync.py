@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.core.websocket import ws_manager
 from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
 from backend.app.services import slot_unlink_grace, spool_swaps
+from backend.app.services.spoolman_location_sync import spools_in_slots, sync_spool_locations
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,7 @@ async def write_slot_results(
         return await _write_unconditionally(db, synced, emptied)
     changed: list[Slot] = []
     assigned: list[Slot] = []
+    touched: set[int] = set()  # spools whose Spoolman location may have to follow
     for printer_id, ams_id, tray_id, spool_id in synced:
         slot = (printer_id, ams_id, tray_id)
         before = read.get(slot)
@@ -76,6 +78,7 @@ async def write_slot_results(
         if cast(CursorResult, await db.execute(statement)).rowcount:
             changed.append(slot)
             assigned.append(slot)
+            touched.update({spool_id, before} - {None})
             await spool_swaps.record_assignment(db, printer_id, ams_id, tray_id, spool_id, spool_swaps.SPOOLMAN)
     for slot in emptied:
         # A slot the sync read without a spool matches no row below: there is
@@ -97,15 +100,21 @@ async def write_slot_results(
         )
         if result.rowcount:
             changed.append(slot)
+            touched.update({before} - {None})
     await db.commit()
     await _announce(assigned, changed)
     await _release_elsewhere(synced, assigned)
+    await sync_spool_locations(touched, db=db)
     return changed
 
 
 async def _write_unconditionally(
     db: AsyncSession, synced: Iterable[tuple[int, int, int, int]], emptied: Iterable[Slot]
 ) -> list[Slot]:
+    synced, emptied = list(synced), list(emptied)
+    # No snapshot to say what each slot held: read it, for the locations.
+    touched = await spools_in_slots(db, [(p, a, t) for p, a, t, _ in synced] + emptied)
+    touched |= {spool_id for *_, spool_id in synced}
     assigned: list[Slot] = []
     for printer_id, ams_id, tray_id, spool_id in synced:
         await db.execute(
@@ -134,6 +143,7 @@ async def _write_unconditionally(
     changed = assigned + removed
     await _announce(assigned, changed)
     await _release_elsewhere(synced, assigned)
+    await sync_spool_locations(touched, db=db)
     return changed
 
 

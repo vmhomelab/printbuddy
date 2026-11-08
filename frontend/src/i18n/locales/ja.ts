@@ -4962,6 +4962,8 @@ export default {
     disableWeightSyncDesc: 'AMS推定値から残量を更新しません。AMSの割合ベースの推定よりもSpoolmanの使用量追跡を優先する場合に使用してください。新しいスプールは引き続きAMS推定値を初期重量として使用します。',
     reportPartialUsage: '失敗した印刷の部分使用量を報告',
     reportPartialUsageDesc: '印刷が失敗またはキャンセルされた場合、レイヤー進捗に基づいてその時点までの推定フィラメント使用量を報告します。',
+    syncLocation: 'プリンターを Spoolman の保管場所として表示',
+    syncLocationDesc: 'スプールがスロットに割り当てられている間、Spoolman の保管場所をプリンター名に設定します。割り当てを解除すると、以前の保管場所に戻します（なかった場合は空にします）。',
   },
 
   locations: {

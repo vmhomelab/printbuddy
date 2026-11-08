@@ -4948,6 +4948,8 @@ export default {
     disableWeightSyncDesc: 'Non aggiornare la capacità rimanente dalle stime AMS. Usalo se preferisci il tracciamento di Spoolman rispetto alle stime AMS. Le nuove bobine useranno comunque la stima AMS come peso iniziale.',
     reportPartialUsage: 'Segnala uso parziale per stampe fallite',
     reportPartialUsageDesc: 'Quando una stampa fallisce o viene annullata, segnala il filamento stimato usato fino a quel punto in base all\'avanzamento layer.',
+    syncLocation: 'Mostra la stampante come posizione in Spoolman',
+    syncLocationDesc: 'Finché una bobina è assegnata a uno slot, la sua posizione in Spoolman diventa il nome della stampante. Quando viene rimossa l\'assegnazione, viene ripristinata la posizione precedente (o cancellata se non ne aveva una).',
   },
 
   locations: {

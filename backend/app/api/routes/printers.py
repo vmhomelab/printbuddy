@@ -778,12 +778,20 @@ async def update_printer(
             update_data["plate_detection_roi_h"] = None
 
     ip_changed = "ip_address" in update_data and update_data["ip_address"] != printer.ip_address
+    old_name = printer.name
 
     for field, value in update_data.items():
         setattr(printer, field, value)
 
     await db.commit()
     await db.refresh(printer)
+
+    if printer.name != old_name:
+        # Spoolman spools loaded in it show its name as their location
+        # (spoolman_sync_location): they follow the rename.
+        from backend.app.services.spoolman_location_sync import rename_printer_location
+
+        await rename_printer_location(old_name, printer.name, db=db)
 
     if access_moved:
         await ws_manager.refresh_printer_scopes()
@@ -909,7 +917,15 @@ async def delete_printer(
         await db.execute(update(PrintArchive).where(PrintArchive.printer_id == printer_id).values(printer_id=None))
 
     # Delete slot assignments for this printer (SQLite doesn't enforce FK cascades)
-    await db.execute(sql_delete(SpoolmanSlotAssignment).where(SpoolmanSlotAssignment.printer_id == printer_id))
+    unloaded_spools = set(
+        (
+            await db.execute(
+                sql_delete(SpoolmanSlotAssignment)
+                .where(SpoolmanSlotAssignment.printer_id == printer_id)
+                .returning(SpoolmanSlotAssignment.spoolman_spool_id)
+            )
+        ).scalars()
+    )
 
     # Delete scheduled drying runs for this printer (SQLite doesn't enforce FK cascades)
     await db.execute(sql_delete(ScheduledDrying).where(ScheduledDrying.printer_id == printer_id))
@@ -956,8 +972,14 @@ async def delete_printer(
         upload_dirs.append(await drop_virtual_printer(db, vp_id))
 
     custom_image_filename = printer.custom_image_filename
+    printer_name = printer.name
     await db.delete(printer)
     await db.commit()
+    if unloaded_spools:
+        # Its spools get their storage place back in Spoolman.
+        from backend.app.services.spoolman_location_sync import sync_spool_locations
+
+        await sync_spool_locations(unloaded_spools, db=db, also_printer_names=[printer_name])
     _remove_custom_image_file(custom_image_filename, printer_id)
     await after_providers_deleted()
     for upload_dir in upload_dirs:

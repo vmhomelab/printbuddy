@@ -4948,6 +4948,8 @@ export default {
     disableWeightSyncDesc: '不從 AMS 估計值更新剩餘容量。如果您更喜歡 Spoolman 的用量追蹤而非 AMS 百分比估計，請使用此選項。新耗材仍將使用 AMS 估計值作為初始重量。',
     reportPartialUsage: '報告失敗列印的部分用量',
     reportPartialUsageDesc: '當列印失敗或被取消時，根據層進度報告估計的耗材使用量。',
+    syncLocation: '將印表機顯示為 Spoolman 位置',
+    syncLocationDesc: '線軸分配到槽位期間，其 Spoolman 位置設為印表機名稱。取消分配後，還原先前的位置（若先前沒有則清空）。',
   },
 
   locations: {

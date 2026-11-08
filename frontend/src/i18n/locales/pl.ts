@@ -4999,6 +4999,8 @@ export default {
     disableWeightSyncDesc: "Nie aktualizuj pozostałej ilości na podstawie szacunków AMS. Użyj tej opcji, jeśli wolisz śledzenie zużycia w Spoolman od procentowych szacunków AMS. Nowe szpule nadal użyją szacunku AMS jako wagi początkowej.",
     reportPartialUsage: 'Zgłaszaj częściowe zużycie dla nieudanych wydruków',
     reportPartialUsageDesc: 'Gdy wydruk się nie powiedzie lub zostanie anulowany, zgłoś szacowaną ilość filamentu zużytego do tego momentu na podstawie postępu warstw.',
+    syncLocation: 'Pokazuj drukarkę jako lokalizację w Spoolman',
+    syncLocationDesc: 'Dopóki szpula jest przypisana do slotu, jej lokalizacja w Spoolman jest ustawiana na nazwę drukarki. Po usunięciu przypisania przywracana jest poprzednia lokalizacja (lub jest czyszczona, jeśli jej nie było).',
   },
 
   locations: {

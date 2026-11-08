@@ -76,6 +76,7 @@ from backend.app.services.spoolman import (
     get_spoolman_client,
     init_spoolman_client,
 )
+from backend.app.services.spoolman_location_sync import spools_in_slots, sync_spool_locations
 from backend.app.services.spoolman_tracking import get_fallback_spool_tag_for_slot, is_slot_fallback_tag
 from backend.app.services.tag_conflict import tag_already_linked
 from backend.app.utils.color_utils import spoolman_color_hex
@@ -1239,6 +1240,8 @@ async def archive_spool(
     # An archived spool gives its slots up, as in the built-in inventory.
     freed = await _release_spool_slots(db, spool_id, keep_tracked=True)
     await db.commit()
+    if freed:
+        spool = (await sync_spool_locations([spool_id], db=db, client=client)).get(spool_id) or spool
     await ws_manager.broadcast({"type": "inventory_changed"})
     await _announce_freed_slots(freed)
     try:
@@ -1382,12 +1385,16 @@ async def bulk_archive_spools(
     client = await _get_client(db)
     archived = 0
     freed: list[tuple[int, int, int]] = []
+    released: set[int] = set()
     errors: list[dict] = []
     for sid in payload.ids:
         try:
             async with _translate_spoolman_errors():
                 await client.set_spool_archived(sid, archived=True)
-            freed += await _release_spool_slots(db, sid, keep_tracked=True)
+            spool_freed = await _release_spool_slots(db, sid, keep_tracked=True)
+            freed += spool_freed
+            if spool_freed:
+                released.add(sid)
             archived += 1
         except HTTPException as exc:
             errors.append({"id": sid, "status": exc.status_code, "detail": exc.detail})
@@ -1396,6 +1403,7 @@ async def bulk_archive_spools(
             errors.append({"id": sid, "status": 500, "detail": str(exc)})
     if archived:
         await db.commit()
+        await sync_spool_locations(released, db=db, client=client)
         await ws_manager.broadcast({"type": "inventory_changed"})
         await _announce_freed_slots(freed)
     return {"archived": archived, "errors": errors}
@@ -1952,10 +1960,12 @@ async def assign_spoolman_slot(
     current_user: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_UPDATE),
     printer_scope: PrinterScope = RequestPrinterScope,
 ) -> dict:
-    """Assign a Spoolman spool to a printer AMS slot (stored in local DB only).
+    """Assign a Spoolman spool to a printer AMS slot (stored in local DB).
 
     Raises 404 if the printer does not exist or the spool is not found in Spoolman.
-    Spoolman's own ``spool.location`` field is NOT touched — it is user-managed.
+    With ``spoolman_sync_location`` on (the default), the spool's Spoolman
+    location becomes the printer's name, and a spool this displaces from the
+    slot gets its previous location back (``spoolman_location_sync``).
     """
 
     client = await _get_client(db)
@@ -1988,6 +1998,7 @@ async def assign_spoolman_slot(
     if (in_scope := printer_scope.where_strict(SpoolmanSlotAssignment.printer_id)) is not None:
         others.append(in_scope)
     vacated: list[tuple[int, int, int]] = []
+    displaced: set[int] = set()
     cleared_tag: str | None = None
     async with get_spool_move_lock("spoolman", body.spoolman_spool_id) if body.move else nullcontext():
         if body.move:
@@ -1999,6 +2010,7 @@ async def assign_spoolman_slot(
         # Spool confirmed in Spoolman — upsert into local slot-assignment table
         # assigned_at is intentionally not refreshed on re-assign (original timestamp preserved)
         try:
+            displaced = await spools_in_slots(db, [target]) - {body.spoolman_spool_id}
             if body.move:
                 # Every other slot of the spool, not only those read above: a
                 # link or the AMS sync may have given it one more meanwhile.
@@ -2065,6 +2077,9 @@ async def assign_spoolman_slot(
     # left, and the one it went to. After the tag clean-up above, which the
     # pages read back with the slot rows (#3402).
     await _announce_freed_slots([*vacated, target])
+
+    located = await sync_spool_locations({body.spoolman_spool_id, *displaced}, db=db, client=client)
+    spool = located.get(body.spoolman_spool_id) or spool
 
     mapped = _map_spoolman_spool(spool)
 
@@ -2376,7 +2391,8 @@ async def unassign_spoolman_slot(
 ) -> dict:
     """Remove the local slot assignment for a Spoolman spool.
 
-    Spoolman's own ``spool.location`` field is NOT touched — it is user-managed.
+    With ``spoolman_sync_location`` on (the default), the spool's Spoolman
+    location goes back to what it was before it was assigned.
     """
     client = await _get_client(db)
 
@@ -2399,6 +2415,8 @@ async def unassign_spoolman_slot(
     # Other tabs and other clients' pages follow slot
     # changes over the websocket (#3402).
     await _announce_freed_slots(freed)
+    if freed:
+        await sync_spool_locations([spoolman_spool_id], db=db, client=client)
 
     # Fetch the spool from Spoolman to return in InventorySpool format.
     # If the spool no longer exists in Spoolman, the local unassignment still succeeded.

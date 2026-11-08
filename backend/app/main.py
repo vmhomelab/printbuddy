@@ -3993,6 +3993,7 @@ async def _expire_spoolman_empty_slots(printer_id: int, ams_data: list, printing
             )
             held: set[tuple] = set()
             expired: list[tuple[int, int]] = []
+            expired_spools: set[int] = set()
             for row in rows:
                 tray = trays.get((row.ams_id, row.tray_id))
                 if tray is None or printing_now:
@@ -4004,6 +4005,7 @@ async def _expire_spoolman_empty_slots(printer_id: int, ams_data: list, printing
                     continue
                 if slot_unlink_grace.removal_confirmed(printer_id, hold_key):
                     expired.append((row.ams_id, row.tray_id))
+                    expired_spools.add(row.spoolman_spool_id)
                 else:
                     held.add(hold_key)
             slot_unlink_grace.settle(printer_id, "spoolman", held)
@@ -4022,6 +4024,9 @@ async def _expire_spoolman_empty_slots(printer_id: int, ams_data: list, printing
                 )
             await db.commit()
             logger.info("Unlinked %d Spoolman slot(s) that stayed empty for printer %d", len(expired), printer_id)
+            from backend.app.services.spoolman_location_sync import sync_spool_locations
+
+            await sync_spool_locations(expired_spools, db=db)
             for ams_id, tray_id in expired:
                 await ws_manager.broadcast(
                     {

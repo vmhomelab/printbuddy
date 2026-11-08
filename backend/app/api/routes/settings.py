@@ -220,6 +220,7 @@ _BOOL_SETTING_KEYS = frozenset(
         "spoolman_enabled",
         "spoolman_disable_weight_sync",
         "spoolman_report_partial_usage",
+        "spoolman_sync_location",
         "auto_add_unknown_rfid",
         "disable_filament_warnings",
         "prefer_lowest_filament",
@@ -851,6 +852,7 @@ async def get_spoolman_settings(
     spoolman_sync_mode = await get_setting(db, "spoolman_sync_mode") or "auto"
     spoolman_disable_weight_sync = await get_setting(db, "spoolman_disable_weight_sync") or "false"
     spoolman_report_partial_usage = await get_setting(db, "spoolman_report_partial_usage") or "true"
+    spoolman_sync_location = await get_setting(db, "spoolman_sync_location") or "true"
     auto_add_unknown_rfid = await get_setting(db, "auto_add_unknown_rfid") or "true"
 
     return {
@@ -859,6 +861,7 @@ async def get_spoolman_settings(
         "spoolman_sync_mode": spoolman_sync_mode,
         "spoolman_disable_weight_sync": spoolman_disable_weight_sync,
         "spoolman_report_partial_usage": spoolman_report_partial_usage,
+        "spoolman_sync_location": spoolman_sync_location,
         "auto_add_unknown_rfid": auto_add_unknown_rfid,
     }
 
@@ -905,7 +908,12 @@ async def update_spoolman_settings(
         await set_setting(
             db, "spoolman_sync_mode", normalize_str_setting("spoolman_sync_mode", settings["spoolman_sync_mode"])
         )
-    for bool_key in ("spoolman_disable_weight_sync", "spoolman_report_partial_usage", "auto_add_unknown_rfid"):
+    for bool_key in (
+        "spoolman_disable_weight_sync",
+        "spoolman_report_partial_usage",
+        "spoolman_sync_location",
+        "auto_add_unknown_rfid",
+    ):
         if bool_key in settings:
             await set_setting(db, bool_key, normalize_bool_setting(bool_key, settings[bool_key]))
 

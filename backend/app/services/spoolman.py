@@ -1184,8 +1184,11 @@ class SpoolmanClient:
         # free-text label a user is free to change in Spoolman's UI.
         return {f["key"] for f in fields if isinstance(f, dict) and isinstance(f.get("key"), str)}
 
-    async def ensure_extra_field(self, name: str, field_type: str = "text") -> bool:
+    async def ensure_extra_field(self, name: str, field_type: str = "text", display_name: str | None = None) -> bool:
         """Register a custom extra field in Spoolman if not present.
+
+        ``name`` is the field's key; ``display_name``, when given, is the label
+        Spoolman shows for a field this creates (the key otherwise).
 
         Spoolman rejects PATCH requests that include unknown extra-dict keys
         with HTTP 400 ('Unknown extra field <name>.'), so any custom field
@@ -1226,7 +1229,7 @@ class SpoolmanClient:
 
             client = await self._get_client()
             field_data = {
-                "name": name,
+                "name": display_name or name,
                 "field_type": field_type,
                 "default_value": None,
             }

@@ -4949,6 +4949,8 @@ export default {
     disableWeightSyncDesc: 'Ne pas utiliser les estimations AMS. Utile si vous préférez le suivi Spoolman.',
     reportPartialUsage: 'Rapporter consommation partielle pour échecs',
     reportPartialUsageDesc: 'Si l\'impression échoue, rapporte le filament consommé selon les couches.',
+    syncLocation: 'Afficher l\'imprimante comme emplacement Spoolman',
+    syncLocationDesc: 'Tant qu\'une bobine est assignée à un emplacement, son emplacement Spoolman prend le nom de l\'imprimante. Lorsqu\'elle est désassignée, son emplacement précédent est restauré (ou effacé s\'il n\'y en avait pas).',
   },
 
   locations: {

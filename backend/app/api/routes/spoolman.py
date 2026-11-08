@@ -43,6 +43,7 @@ from backend.app.services.spoolman import (
     get_spoolman_client,
     init_spoolman_client,
 )
+from backend.app.services.spoolman_location_sync import spools_in_slots, sync_spool_locations
 from backend.app.services.spoolman_slot_sync import write_slot_results
 from backend.app.utils.filament_ids import (
     GENERIC_FILAMENT_IDS,
@@ -899,8 +900,9 @@ async def link_spool(
 
     spool_tag = spool_tag.upper()
 
-    # Validate printer context when provided, but do NOT write spool.location —
-    # that field is user-managed in Spoolman. Slot assignment is stored locally.
+    # Validate printer context when provided. Slot assignment is stored locally;
+    # spool.location follows it only through spoolman_location_sync (setting
+    # spoolman_sync_location), after the assignment is committed.
     printer_context: tuple[int, int, int] | None = None
     if request.printer_id is not None and request.ams_id is not None and request.tray_id is not None:
         printer_scope.ensure(request.printer_id)
@@ -953,9 +955,11 @@ async def link_spool(
         raise HTTPException(status_code=503, detail="Spoolman is not reachable")
 
     # Upsert slot assignment locally when printer context was supplied
+    displaced: set[int] = set()
     if printer_context:
         p_id, a_id, t_id = printer_context
         try:
+            displaced = await spools_in_slots(db, [printer_context]) - {spool_id}
             await db.execute(
                 text(
                     "INSERT INTO spoolman_slot_assignments"
@@ -1009,6 +1013,7 @@ async def link_spool(
     await ws_manager.broadcast({"type": "inventory_changed"})
     if printer_context:
         await _announce_freed_slots([printer_context])
+        await sync_spool_locations({spool_id, *displaced}, db=db, client=client)
 
     # Auto-configure AMS slot via MQTT (best-effort; tag link and slot assignment already persisted)
     if printer_context:
@@ -1311,6 +1316,8 @@ async def unlink_spool(
         raise HTTPException(status_code=500, detail="Failed to remove local slot assignment")
 
     logger.info("Unlinked Spoolman spool %s", spool_id)
+    if freed:
+        await sync_spool_locations([spool_id], db=db, client=client)
     await ws_manager.broadcast({"type": "inventory_changed"})
     await _announce_freed_slots(freed)
     return {"success": True, "message": f"Spool {spool_id} unlinked from AMS"}
@@ -1406,8 +1413,10 @@ async def create_spool_from_slot(
     # If this fails, surface a 500 — silently returning success while the
     # binding rolled back leaves the user thinking the spool was added,
     # then watching the modal re-fire on the next MQTT push.
+    displaced: set[int] = set()
     if sync_result.get("id"):
         try:
+            displaced = await spools_in_slots(db, [(req.printer_id, req.ams_id, req.tray_id)]) - {sync_result["id"]}
             await db.execute(
                 text(
                     "INSERT INTO spoolman_slot_assignments"
@@ -1437,6 +1446,7 @@ async def create_spool_from_slot(
             ) from exc
 
     if sync_result.get("id"):
+        await sync_spool_locations({sync_result["id"], *displaced}, db=db, client=client)
         await ws_manager.broadcast({"type": "inventory_changed"})
         await _announce_freed_slots([(req.printer_id, req.ams_id, req.tray_id)])
     return {"success": True, "spool_id": sync_result.get("id")}

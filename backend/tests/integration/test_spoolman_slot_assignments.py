@@ -6,8 +6,9 @@ Tests for:
   GET    /api/v1/spoolman/inventory/slot-assignments?printer_id=&ams_id=&tray_id=
   GET    /api/v1/spoolman/inventory/slot-assignments/all[?printer_id=]
 
-Slot assignments are now stored in the local ``spoolman_slot_assignments`` table.
-Spoolman's ``spool.location`` field is NOT touched by any of these endpoints.
+Slot assignments are stored in the local ``spoolman_slot_assignments`` table.
+Spoolman's ``spool.location`` follows them only with ``spoolman_sync_location``
+on (see test_spoolman_location_sync.py); these tests turn it off.
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -45,6 +46,7 @@ async def slot_settings(db_session):
 
     db_session.add(Settings(key="spoolman_enabled", value="true"))
     db_session.add(Settings(key="spoolman_url", value="http://localhost:7912"))
+    db_session.add(Settings(key="spoolman_sync_location", value="false"))
     await db_session.commit()
 
 
@@ -209,7 +211,7 @@ class TestAssignSpoolmanSlot:
     async def test_assign_does_not_call_update_spool(
         self, async_client: AsyncClient, slot_settings, test_printer, mock_client
     ):
-        """POST /slot-assignments must NOT write to Spoolman's location field."""
+        """With spoolman_sync_location off, POST /slot-assignments must NOT write to Spoolman's location field."""
         response = await async_client.post(
             "/api/v1/spoolman/inventory/slot-assignments",
             json={
@@ -222,6 +224,7 @@ class TestAssignSpoolmanSlot:
 
         assert response.status_code == 200
         mock_client.update_spool.assert_not_called()
+        mock_client.update_spool_full.assert_not_called()
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -427,11 +430,12 @@ class TestUnassignSpoolmanSlot:
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_unassign_does_not_call_update_spool(self, async_client: AsyncClient, slot_settings, mock_client):
-        """DELETE /slot-assignments/{id} must NOT touch Spoolman's location field."""
+        """With spoolman_sync_location off, DELETE /slot-assignments/{id} must NOT touch Spoolman's location field."""
         response = await async_client.delete("/api/v1/spoolman/inventory/slot-assignments/10")
 
         assert response.status_code == 200
         mock_client.update_spool.assert_not_called()
+        mock_client.update_spool_full.assert_not_called()
 
     @pytest.mark.asyncio
     @pytest.mark.integration

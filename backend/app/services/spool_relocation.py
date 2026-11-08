@@ -145,6 +145,9 @@ async def release_other_slots(inventory: str, spool_id: int, keep: Slot) -> list
                 await db.commit()
                 if inventory == SPOOLMAN and vacated:
                     await _clear_fallback_tag(db, spool_id, vacated)
+                    from backend.app.services.spoolman_location_sync import sync_spool_locations
+
+                    await sync_spool_locations([spool_id], db=db)
         break
 
     if vacated:

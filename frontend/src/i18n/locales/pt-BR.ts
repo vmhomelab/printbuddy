@@ -4948,6 +4948,8 @@ export default {
     disableWeightSyncDesc: 'Não atualize a capacidade restante a partir das estimativas do AMS. Use isso se preferir o rastreamento de uso do Spoolman em vez das estimativas baseadas em porcentagem do AMS. Novos carretéis ainda usarão a estimativa do AMS como seu peso inicial.',
     reportPartialUsage: 'Relatar Uso Parcial para Impressões Falhadas',
     reportPartialUsageDesc: 'Quando uma impressão falha ou é cancelada, relate o filamento estimado usado até aquele ponto com base no progresso das camadas.',
+    syncLocation: 'Mostrar a impressora como local no Spoolman',
+    syncLocationDesc: 'Enquanto um carretel estiver atribuído a um slot, seu local no Spoolman passa a ser o nome da impressora. Ao remover a atribuição, o local anterior é restaurado (ou limpo, se não havia nenhum).',
   },
 
   locations: {

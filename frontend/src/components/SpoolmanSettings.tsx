@@ -19,6 +19,7 @@ export function SpoolmanSettings() {
   const [localDisableWeightSync, setLocalDisableWeightSync] = useState(false);
   const [localReportPartialUsage, setLocalReportPartialUsage] = useState(true);
   const [localAutoAddUnknownRfid, setLocalAutoAddUnknownRfid] = useState(true);
+  const [localSyncLocation, setLocalSyncLocation] = useState(true);
   const [selectedPrinterId, setSelectedPrinterId] = useState<number | 'all'>('all');
   const [isInitialized, setIsInitialized] = useState(false);
   const [showAllSkipped, setShowAllSkipped] = useState(false);
@@ -54,6 +55,7 @@ export function SpoolmanSettings() {
       setLocalDisableWeightSync(settings.spoolman_disable_weight_sync === 'true');
       setLocalReportPartialUsage(settings.spoolman_report_partial_usage !== 'false');
       setLocalAutoAddUnknownRfid(settings.auto_add_unknown_rfid !== 'false');
+      setLocalSyncLocation(settings.spoolman_sync_location !== 'false');
       setIsInitialized(true);
     }
   }, [settings]);
@@ -69,7 +71,8 @@ export function SpoolmanSettings() {
       (settings.spoolman_sync_mode || 'auto') !== localSyncMode ||
       (settings.spoolman_disable_weight_sync === 'true') !== localDisableWeightSync ||
       (settings.spoolman_report_partial_usage !== 'false') !== localReportPartialUsage ||
-      (settings.auto_add_unknown_rfid !== 'false') !== localAutoAddUnknownRfid;
+      (settings.auto_add_unknown_rfid !== 'false') !== localAutoAddUnknownRfid ||
+      (settings.spoolman_sync_location !== 'false') !== localSyncLocation;
 
     if (hasChanges) {
       const timeoutId = setTimeout(() => {
@@ -78,7 +81,7 @@ export function SpoolmanSettings() {
       return () => clearTimeout(timeoutId);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [localEnabled, localUrl, localSyncMode, localDisableWeightSync, localReportPartialUsage, localAutoAddUnknownRfid, isInitialized]);
+  }, [localEnabled, localUrl, localSyncMode, localDisableWeightSync, localReportPartialUsage, localAutoAddUnknownRfid, localSyncLocation, isInitialized]);
 
   // Save mutation
   const saveMutation = useMutation({
@@ -90,6 +93,7 @@ export function SpoolmanSettings() {
         spoolman_disable_weight_sync: localDisableWeightSync ? 'true' : 'false',
         spoolman_report_partial_usage: localReportPartialUsage ? 'true' : 'false',
         auto_add_unknown_rfid: localAutoAddUnknownRfid ? 'true' : 'false',
+        spoolman_sync_location: localSyncLocation ? 'true' : 'false',
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['spoolman-settings'] });
@@ -448,6 +452,26 @@ export function SpoolmanSettings() {
                 </label>
               </div>
             )}
+
+            {/* Sync spool location: the printer's name while a spool is in one of its slots */}
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-white">{t('spoolman.syncLocation')}</p>
+                <p className="text-sm text-bambu-gray">
+                  {t('spoolman.syncLocationDesc')}
+                </p>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input
+                  type="checkbox"
+                  aria-label={t('spoolman.syncLocation')}
+                  checked={localSyncLocation}
+                  onChange={(e) => setLocalSyncLocation(e.target.checked)}
+                  className="sr-only peer"
+                />
+                <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+              </label>
+            </div>
 
             {/* Connection status */}
             <div className="pt-2 border-t border-bambu-dark-tertiary">

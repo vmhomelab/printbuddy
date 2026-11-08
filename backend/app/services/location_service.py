@@ -277,6 +277,14 @@ async def sync_locations_from_spoolman(db: AsyncSession, client) -> bool:
         logger.warning("location sync from Spoolman failed: %s", exc)
         return False
 
+    # A printer's name is where a loaded spool is (spoolman_sync_location), not
+    # a place to put one away: skipped like the slot markers.
+    from backend.app.models.printer import Printer
+
+    printer_names = {
+        location_name_key(name) for name in (await db.execute(select(Printer.name))).scalars() if (name or "").strip()
+    }
+
     # Collapse case variants before insert — Spoolman may return both
     # "Drybox 1" and "DRYBOX 1" in the same payload.
     by_key: dict[str, str] = {}
@@ -284,8 +292,8 @@ async def sync_locations_from_spoolman(db: AsyncSession, client) -> bool:
         name = (raw or "").strip()
         if not name:
             continue
-        if is_ams_slot_location(name):
-            logger.debug("Skipping AMS slot marker %r from the Spoolman location import", name)
+        if is_ams_slot_location(name) or location_name_key(name) in printer_names:
+            logger.debug("Skipping printer slot marker %r from the Spoolman location import", name)
             continue
         key = location_name_key(name)
         if key not in by_key:

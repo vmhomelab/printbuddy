@@ -4962,6 +4962,8 @@ export default {
     disableWeightSyncDesc: 'Verbleibende Kapazität nicht aus AMS-Schätzungen aktualisieren. Verwenden Sie dies, wenn Sie die Verbrauchserfassung von Spoolman gegenüber den prozentualen AMS-Schätzungen bevorzugen. Neue Spulen verwenden weiterhin die AMS-Schätzung als Anfangsgewicht.',
     reportPartialUsage: 'Teilverbrauch bei fehlgeschlagenen Drucken melden',
     reportPartialUsageDesc: 'Wenn ein Druck fehlschlägt oder abgebrochen wird, den geschätzten Filamentverbrauch bis zu diesem Zeitpunkt basierend auf dem Schichtfortschritt melden.',
+    syncLocation: 'Drucker als Spoolman-Lagerort anzeigen',
+    syncLocationDesc: 'Solange eine Spule einem Slot zugewiesen ist, wird ihr Spoolman-Lagerort auf den Namen des Druckers gesetzt. Wird die Zuweisung aufgehoben, wird der vorherige Lagerort wiederhergestellt (oder geleert, falls keiner gesetzt war).',
   },
 
   locations: {

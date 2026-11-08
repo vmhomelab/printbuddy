@@ -4999,6 +4999,8 @@ export default {
     disableWeightSyncDesc: "Don't update remaining capacity from AMS estimates. Use this if you prefer Spoolman's usage tracking over AMS percentage-based estimates. New spools will still use the AMS estimate as their initial weight.",
     reportPartialUsage: 'Report Partial Usage for Failed Prints',
     reportPartialUsageDesc: 'When a print fails or is cancelled, report the estimated filament used up to that point based on layer progress.',
+    syncLocation: 'Show printer as Spoolman location',
+    syncLocationDesc: 'While a spool is assigned to a slot, set its Spoolman location to the printer\'s name. When it is unassigned, its previous location is restored (or cleared if it had none).',
   },
 
   locations: {

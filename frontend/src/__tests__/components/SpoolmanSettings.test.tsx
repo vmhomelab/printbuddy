@@ -322,6 +322,53 @@ describe('SpoolmanSettings', () => {
     });
   });
 
+  describe('sync location toggle', () => {
+    const spoolmanOn = {
+      spoolman_enabled: 'true',
+      spoolman_url: 'http://localhost:7912',
+      spoolman_sync_mode: 'auto',
+      spoolman_disable_weight_sync: 'false',
+      spoolman_report_partial_usage: 'true',
+    };
+
+    it('is on by default when the setting was never saved', async () => {
+      vi.mocked(api.getSpoolmanSettings).mockResolvedValue(spoolmanOn);
+
+      render(<SpoolmanSettings />);
+
+      const toggle = await screen.findByRole('checkbox', { name: 'Show printer as Spoolman location' });
+      expect(toggle).toBeChecked();
+    });
+
+    it('saves spoolman_sync_location=false when switched off', async () => {
+      const user = userEvent.setup();
+      vi.mocked(api.getSpoolmanSettings).mockResolvedValue({ ...spoolmanOn, spoolman_sync_location: 'true' });
+
+      render(<SpoolmanSettings />);
+
+      const toggle = await screen.findByRole('checkbox', { name: 'Show printer as Spoolman location' });
+      await user.click(toggle);
+
+      await waitFor(
+        () => {
+          expect(api.updateSpoolmanSettings).toHaveBeenCalledWith(
+            expect.objectContaining({ spoolman_sync_location: 'false' }),
+          );
+        },
+        { timeout: 2000 },
+      );
+    });
+
+    it('is not shown in built-in inventory mode', async () => {
+      render(<SpoolmanSettings />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Built-in Inventory')).toBeInTheDocument();
+      });
+      expect(screen.queryByText('Show printer as Spoolman location')).not.toBeInTheDocument();
+    });
+  });
+
   describe('mode switching', () => {
     it('can switch to Spoolman mode', async () => {
       const user = userEvent.setup();
