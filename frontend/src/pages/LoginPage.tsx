@@ -11,7 +11,8 @@ import { Button } from '../components/Button';
 import { appAssetPath } from '../utils/assetPaths';
 import { ChristmasHat } from '../components/ChristmasHat';
 import { ChristmasScene } from '../components/ChristmasScene';
-import { useIsChristmasStyle } from '../hooks/useIsChristmasStyle';
+import { useChristmasVariant } from '../hooks/useIsChristmasStyle';
+import { ChristmasWorkshop } from '../components/ChristmasWorkshop';
 
 type LoginStep = 'credentials' | '2fa' | 'reset-password';
 
@@ -96,7 +97,15 @@ function OIDCProviderButton({
 }
 
 export function LoginPage() {
-  const showChristmas = useIsChristmasStyle();
+  const christmasVariant = useChristmasVariant();
+  const showChristmas = christmasVariant !== null;
+  const christmasBackdrop = christmasVariant === 'realistic' ? (
+    <div className="christmas-login-backdrop">
+      <ChristmasWorkshop realistic />
+    </div>
+  ) : (
+    <ChristmasScene />
+  );
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const { t } = useTranslation();
@@ -377,7 +386,7 @@ export function LoginPage() {
 
     return (
       <div className={`min-h-screen flex items-center justify-center ${showChristmas ? 'bg-transparent' : 'bg-bambu-dark'} p-4`}>
-        {showChristmas && <ChristmasScene />}
+        {showChristmas && christmasBackdrop}
         <div className={`max-w-md w-full space-y-8 p-8 bg-gradient-to-br from-bambu-card to-bambu-dark-secondary rounded-xl border border-bambu-dark-tertiary shadow-lg ${showChristmas ? 'relative bg-bambu-dark-secondary' : ''}`}>
           <div className="text-center">
             <div className="flex items-center justify-center mb-4">
@@ -458,7 +467,7 @@ export function LoginPage() {
   if (step === '2fa') {
     return (
       <div className={`min-h-screen flex items-center justify-center ${showChristmas ? 'bg-transparent' : 'bg-bambu-dark'} p-4`}>
-        {showChristmas && <ChristmasScene />}
+        {showChristmas && christmasBackdrop}
         <div className={`max-w-md w-full space-y-8 p-8 bg-gradient-to-br from-bambu-card to-bambu-dark-secondary rounded-xl border border-bambu-dark-tertiary shadow-lg ${showChristmas ? 'relative bg-bambu-dark-secondary' : ''}`}>
           <div className="text-center">
             <div className="flex items-center justify-center mb-4">
@@ -621,7 +630,7 @@ export function LoginPage() {
   // ---- Render: credentials step ----
   return (
     <div className={`min-h-screen flex items-center justify-center ${showChristmas ? 'bg-transparent' : 'bg-bambu-dark'} p-4`}>
-      {showChristmas && <ChristmasScene />}
+      {showChristmas && christmasBackdrop}
       <div className={`max-w-md w-full space-y-8 p-8 bg-gradient-to-br from-bambu-card to-bambu-dark-secondary rounded-xl border border-bambu-dark-tertiary shadow-lg ${showChristmas ? 'relative bg-bambu-dark-secondary' : ''}`}>
         <div className="text-center">
           <div className="flex items-center justify-center gap-3 mb-6" aria-label="Printbuddy">

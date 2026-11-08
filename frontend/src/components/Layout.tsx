@@ -18,7 +18,7 @@ import { parseUTCDate } from '../utils/date';
 import { Button } from './Button';
 import { BugReportBubble } from './BugReportBubble';
 import { ChristmasHat } from './ChristmasHat';
-import { useIsChristmasStyle } from '../hooks/useIsChristmasStyle';
+import { useChristmasVariant } from '../hooks/useIsChristmasStyle';
 import { ChristmasScene } from './ChristmasScene';
 import { appAssetPath } from '../utils/assetPaths';
 
@@ -85,7 +85,8 @@ export function Layout() {
   const navigate = useNavigate();
   const location = useLocation();
   const { mode, toggleMode } = useTheme();
-  const showChristmas = useIsChristmasStyle();
+  const christmasVariant = useChristmasVariant();
+  const showChristmas = christmasVariant !== null;
   const { t } = useTranslation();
   const isSidebarCompact = useIsSidebarCompact();
   // Re-render Layout (and the page rendered inside <Outlet />) whenever the
@@ -507,8 +508,9 @@ export function Layout() {
 
   return (
     <div className="flex min-h-screen">
-      {/* The Command Center brings its own workshop scene and covers the page */}
-      {showChristmas && location.pathname !== '/farm-command-center' && <ChristmasScene />}
+      {/* The realistic style decorates the sidebar instead; the Command Center
+          brings its own workshop scene and covers the page */}
+      {christmasVariant === 'simple' && location.pathname !== '/farm-command-center' && <ChristmasScene />}
 
       {/* Hidden sidebar restore control */}
       {sidebarHidden && (
@@ -593,7 +595,7 @@ export function Layout() {
         </div>
 
         {/* Navigation */}
-        <nav className="flex-1 p-2 overflow-y-auto">
+        <nav className="flex flex-1 flex-col p-2 overflow-y-auto">
           <ul className="space-y-2">
             {orderedSidebarIds.map((id) => {
               const isExternal = isExternalLinkId(id);
@@ -735,6 +737,10 @@ export function Layout() {
               }
             })}
           </ul>
+          {/* Sits at the bottom when there is room; otherwise it scrolls below the items */}
+          {christmasVariant === 'realistic' && (isSidebarCompact || sidebarExpanded) && (
+            <img src={appAssetPath('/img/christmas/sidebar-tree.webp')} alt="" aria-hidden="true" className="christmas-sidebar-decor" />
+          )}
         </nav>
 
         {/* Collapse / hide toggles */}

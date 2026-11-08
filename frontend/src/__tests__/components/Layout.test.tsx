@@ -517,4 +517,22 @@ describe('Layout', () => {
       });
     });
   });
+
+  describe('Christmas styles', () => {
+    it('draws the village in the simple style', async () => {
+      server.use(http.get('/api/v1/settings/', () => HttpResponse.json({ dark_style: 'christmas' })));
+      render(<Layout />);
+
+      await waitFor(() => expect(document.querySelector('.christmas-scene')).toBeInTheDocument());
+      expect(document.querySelector('.christmas-sidebar-decor')).not.toBeInTheDocument();
+    });
+
+    it('decorates the sidebar instead of drawing the village in the realistic style', async () => {
+      server.use(http.get('/api/v1/settings/', () => HttpResponse.json({ dark_style: 'christmas-realistic' })));
+      render(<Layout />);
+
+      await waitFor(() => expect(document.querySelector('.christmas-sidebar-decor')).toHaveAttribute('src', '/img/christmas/sidebar-tree.webp'));
+      expect(document.querySelector('.christmas-scene')).not.toBeInTheDocument();
+    });
+  });
 });

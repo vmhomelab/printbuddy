@@ -521,6 +521,66 @@ html {
   border-radius: 0.75rem;
 }
 
+/* Realistic style across the app: the painted garland replaces the string
+   of lights along the top (the farm dashboards hang their own), green for
+   navigation and progress as in a workshop, gold-tinted frames, and a tree
+   with gifts at the bottom of the sidebar. */
+.style-christmas-realistic body::after {
+  height: 36px;
+  z-index: 29; /* below the sidebar, above the page */
+  background-image: url('/img/christmas/garland.webp');
+  background-size: auto 36px;
+  background-repeat: repeat-x;
+  filter: none;
+  animation: none;
+}
+
+.style-christmas-realistic body:has(.fcc-festive)::after {
+  display: none;
+}
+
+.style-christmas-realistic main {
+  padding-top: 1.25rem;
+}
+
+.style-christmas-realistic.accent-christmas {
+  --accent: #22c55e;
+  --accent-light: #4ade80;
+  --accent-dark: #16a34a;
+}
+
+.style-christmas-realistic .border-bambu-dark-tertiary {
+  border-color: var(--fcc-frame);
+}
+
+.christmas-sidebar-decor {
+  display: block;
+  flex: none;
+  width: calc(100% - 0.5rem);
+  margin: auto auto 0;
+  padding-top: 0.5rem;
+  border-radius: 0.5rem;
+  pointer-events: none;
+  mask-image: linear-gradient(to bottom, transparent, #000 30%);
+}
+
+.style-christmas:not(.dark) .christmas-sidebar-decor {
+  mask-image: none;
+}
+
+.christmas-login-backdrop {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: -1;
+  pointer-events: none;
+}
+
+.christmas-login-backdrop .christmas-workshop {
+  margin-top: 0;
+}
+
 /* Puffs rise from the chimney top (x 961, y 40 of the 1600x260 drawing) */
 .christmas-workshop-smoke {
   position: absolute;
