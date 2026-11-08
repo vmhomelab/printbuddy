@@ -97,6 +97,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command in COMMANDS:
         logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+        # Load the database module before any service: it imports the models in
+        # the order they need. A service imported first (e.g. location sync ->
+        # models.printer) hits a circular import when run from the command line.
+        import backend.app.core.database  # noqa: F401
+
         return asyncio.run(COMMANDS[args.command][0]())
     parser.print_help()
     return 0
