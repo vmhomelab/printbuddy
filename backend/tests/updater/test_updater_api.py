@@ -72,6 +72,7 @@ async def test_update_starts_allowlisted_compose_job(monkeypatch):
     assert recorded == [
         ["docker", "compose", "-p", "printbuddy", "-f", str(job.compose_file), "pull", "printbuddy"],
         ["docker", "compose", "-p", "printbuddy", "-f", str(job.compose_file), "up", "-d", "printbuddy"],
+        ["docker", "compose", "-p", "printbuddy", "-f", str(job.compose_file), "config", "--format", "json"],
     ]
 
 
@@ -121,6 +122,7 @@ async def test_update_with_target_image_pulls_beta_and_retags_compose_service(mo
             "--force-recreate",
             "printbuddy",
         ],
+        ["docker", "compose", "-p", "printbuddy", "-f", str(job.compose_file), "config", "--format", "json"],
     ]
 
 
@@ -165,3 +167,88 @@ async def test_failed_command_marks_job_failed(monkeypatch):
     assert body["exit_code"] == 1
     assert "secret-token" not in body["safe_log_tail"]
     assert "[REDACTED]" in body["safe_log_tail"]
+
+
+COMPOSE_WITH_SIDECARS = (
+    '{"services":{'
+    '"printbuddy":{"image":"docker.io/vmhomelabde/printbuddy:latest"},'
+    '"orca-slicer-api":{"image":"docker.io/vmhomelabde/printbuddy-orca-slicer-api:latest"},'
+    '"bambu-studio-api":{"image":"vmhomelabde/printbuddy-bambu-studio-api:dev"},'
+    '"postgres":{"image":"postgres:16"},'
+    '"lookalike":{"image":"docker.io/evil/printbuddy-orca-slicer-api:latest"}'
+    "}}"
+)
+
+
+@pytest.mark.asyncio
+async def test_update_also_pulls_and_recreates_slicer_sidecars(monkeypatch):
+    recorded = []
+
+    async def fake_run_command(argv, *, timeout_seconds):
+        recorded.append(argv)
+        if argv[-2:] == ["--format", "json"]:
+            return 0, COMPOSE_WITH_SIDECARS, ""
+        return 0, "ok", ""
+
+    monkeypatch.setattr("updater.app.jobs.run_command", fake_run_command)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post("/update", headers={"Authorization": "Bearer secret-token"})
+
+    job = get_job_store().get(response.json()["job_id"])
+    await job.task
+    base = ["docker", "compose", "-p", "printbuddy", "-f", str(job.compose_file)]
+    assert job.status == "completed"
+    assert job.message == "Container recreated"
+    # Printbuddy first, then only the allowlisted sidecar images.
+    assert recorded == [
+        [*base, "pull", "printbuddy"],
+        [*base, "up", "-d", "printbuddy"],
+        [*base, "config", "--format", "json"],
+        [*base, "pull", "bambu-studio-api"],
+        [*base, "up", "-d", "bambu-studio-api"],
+        [*base, "pull", "orca-slicer-api"],
+        [*base, "up", "-d", "orca-slicer-api"],
+    ]
+    assert [step.status for step in job.steps] == ["completed"] * 7
+
+
+@pytest.mark.asyncio
+async def test_sidecar_failure_does_not_fail_the_printbuddy_update(monkeypatch):
+    async def fake_run_command(argv, *, timeout_seconds):
+        if argv[-2:] == ["--format", "json"]:
+            return 0, COMPOSE_WITH_SIDECARS, ""
+        if argv[-2:] == ["pull", "bambu-studio-api"]:
+            return 1, "", "manifest unknown"
+        return 0, "ok", ""
+
+    monkeypatch.setattr("updater.app.jobs.run_command", fake_run_command)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post("/update", headers={"Authorization": "Bearer secret-token"})
+
+    job = get_job_store().get(response.json()["job_id"])
+    await job.task
+    assert job.status == "completed"
+    assert job.message == "Container recreated; slicer sidecar update failed"
+    assert job.steps[-1].name == "docker compose pull bambu-studio-api"
+    assert job.steps[-1].status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_sidecar_update_can_be_disabled(monkeypatch, isolated_settings):
+    isolated_settings.update_slicer_sidecars = False
+    recorded = []
+
+    async def fake_run_command(argv, *, timeout_seconds):
+        recorded.append(argv)
+        return 0, COMPOSE_WITH_SIDECARS, ""
+
+    monkeypatch.setattr("updater.app.jobs.run_command", fake_run_command)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post("/update", headers={"Authorization": "Bearer secret-token"})
+
+    job = get_job_store().get(response.json()["job_id"])
+    await job.task
+    assert [argv[-1] for argv in recorded] == ["printbuddy", "printbuddy"]

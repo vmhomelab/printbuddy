@@ -123,14 +123,17 @@ image or immutable upstream revision.
 
 ## Updating
 
-After a PrintBuddy update, compare your `.env` with `.env.example` and take
-over `BAMBU_STUDIO_API_IMAGE`, `ORCA_SLICER_API_IMAGE` and
-`SLICER_API_BUILD_CONTEXT`, then:
+The images default to the moving `:latest` tag (`:dev` for PrintBuddy's dev
+branch), so after a PrintBuddy update just pull and restart:
 
 ```bash
 docker compose --profile bambu pull
 docker compose --profile bambu up -d
 ```
+
+PrintBuddy's **Test slicer connection** warns when the sidecar is not the
+revision this PrintBuddy version expects. If your `.env` still pins a fixed tag
+(e.g. `…:2.3.2-9ff0c6e`), switch it to `:latest` once.
 
 Self-built images: rebuild with `docker compose --profile bambu build --no-cache --pull`.
 `--no-cache` is needed because the Dockerfile downloads the AppImage

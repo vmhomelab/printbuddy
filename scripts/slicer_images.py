@@ -5,9 +5,13 @@
 revision (``SLICER_API_BUILD_CONTEXT``) and the bundled slicer versions
 (``BAMBU_VERSION`` / ``ORCA_VERSION``) are pinned. The images published to
 Docker Hub are tagged ``<slicer version>-<short sidecar revision>``, e.g.
-``docker.io/vmhomelabde/printbuddy-bambu-studio-api:02.08.02.61-9ff0c6e``.
-slicer-api/ pins these exact tags; the main docker-compose.yml tracks
-``:latest`` (moved by pushes to main), like the Printbuddy image itself.
+``docker.io/vmhomelabde/printbuddy-bambu-studio-api:02.08.02.61-f225d76``.
+Both compose files use the moving ``:latest`` tag (moved by pushes to main),
+like the Printbuddy image itself, so ``docker compose pull`` and the in-app
+updater keep the sidecar current. The backend's
+``EXPECTED_SIDECAR_REVISION`` must equal the pinned revision: Printbuddy
+compares it with the revision a running sidecar reports and warns when the
+sidecar is outdated.
 
 Usage:
   scripts/slicer_images.py --github-output   # write values for GitHub Actions
@@ -27,6 +31,7 @@ ROOT = Path(__file__).resolve().parents[1]
 ENV_EXAMPLE = ROOT / "slicer-api" / ".env.example"
 SLICER_COMPOSE = ROOT / "slicer-api" / "docker-compose.yml"
 MAIN_COMPOSE = ROOT / "docker-compose.yml"
+SLICER_API_SERVICE = ROOT / "backend" / "app" / "services" / "slicer_api.py"
 
 REGISTRY = "docker.io/vmhomelabde"
 BAMBU_IMAGE = "printbuddy-bambu-studio-api"
@@ -81,18 +86,19 @@ def derive(env: dict[str, str]) -> dict[str, str]:
 def check(values: dict[str, str], env: dict[str, str]) -> list[str]:
     """Return mismatches between the derived image refs and their references."""
     problems: list[str] = []
-    expected_env = {
-        "BAMBU_STUDIO_API_IMAGE": values["bambu_ref"],
-        "ORCA_SLICER_API_IMAGE": values["orca_ref"],
+    latest = {
+        "BAMBU_STUDIO_API_IMAGE": f"{REGISTRY}/{BAMBU_IMAGE}:latest",
+        "ORCA_SLICER_API_IMAGE": f"{REGISTRY}/{ORCA_IMAGE}:latest",
     }
-    for key, ref in expected_env.items():
+    for key, ref in latest.items():
         if env.get(key) != ref:
             problems.append(f"{ENV_EXAMPLE.relative_to(ROOT)}: {key} should be {ref}, is {env.get(key)!r}")
 
     slicer_compose = SLICER_COMPOSE.read_text(encoding="utf-8")
     compose_defaults = {
-        **expected_env,
+        **latest,
         "SLICER_API_BUILD_CONTEXT": env["SLICER_API_BUILD_CONTEXT"],
+        "SIDECAR_REVISION": values["sidecar_revision"],
         "BAMBU_VERSION": values["bambu_version"],
         "ORCA_VERSION": values["orca_version"],
     }
@@ -103,6 +109,14 @@ def check(values: dict[str, str], env: dict[str, str]) -> list[str]:
                 f"{SLICER_COMPOSE.relative_to(ROOT)}: every ${{{key}:-...}} default should be {value}, "
                 f"found {sorted(defaults) or 'none'}"
             )
+
+    service = SLICER_API_SERVICE.read_text(encoding="utf-8")
+    expected = re.findall(r'^EXPECTED_SIDECAR_REVISION = "([0-9a-f]+)"$', service, re.MULTILINE)
+    if expected != [values["sidecar_revision"]]:
+        problems.append(
+            f"{SLICER_API_SERVICE.relative_to(ROOT)}: EXPECTED_SIDECAR_REVISION should be "
+            f"{values['sidecar_revision']}, found {expected or 'none'}"
+        )
 
     # The main docker-compose.yml tracks :latest, like the Printbuddy image
     # itself; only the image names are checked there.
@@ -135,8 +149,8 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  - {problem}", file=sys.stderr)
             return 1
         print(
-            f"Slicer sidecar image references match {values['bambu_ref']} and {values['orca_ref']} "
-            "(main docker-compose.yml: :latest)."
+            f"Slicer sidecar references match revision {values['sidecar_revision_short']} "
+            f"(published as {values['bambu_ref']} and {values['orca_ref']}; compose files use :latest)."
         )
         return 0
 

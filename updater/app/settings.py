@@ -13,6 +13,14 @@ class Settings(BaseSettings):
     compose_project: str = Field(default="printbuddy", validation_alias="PRINTBUDDY_COMPOSE_PROJECT")
     service_name: str = Field(default="printbuddy", validation_alias="PRINTBUDDY_SERVICE_NAME")
     allowed_image: str = Field(default="docker.io/vmhomelabde/printbuddy", validation_alias="PRINTBUDDY_ALLOWED_IMAGE")
+    # Slicer sidecars in the same compose project are pulled and recreated
+    # after Printbuddy, so they stay in step with the revision Printbuddy
+    # expects. Only services running one of these images are touched.
+    update_slicer_sidecars: bool = Field(default=True, validation_alias="PRINTBUDDY_UPDATE_SLICER_SIDECARS")
+    allowed_sidecar_images: str = Field(
+        default="docker.io/vmhomelabde/printbuddy-orca-slicer-api,docker.io/vmhomelabde/printbuddy-bambu-studio-api",
+        validation_alias="PRINTBUDDY_ALLOWED_SIDECAR_IMAGES",
+    )
     updater_port: int = Field(default=8787, validation_alias="PRINTBUDDY_UPDATER_PORT")
     command_timeout_seconds: int = Field(default=600, validation_alias="PRINTBUDDY_UPDATE_TIMEOUT_SECONDS")
 

@@ -53,6 +53,8 @@ services:
       - PRINTBUDDY_COMPOSE_PROJECT=${COMPOSE_PROJECT_NAME:-printbuddy}
       - PRINTBUDDY_SERVICE_NAME=printbuddy
       - PRINTBUDDY_ALLOWED_IMAGE=docker.io/vmhomelabde/printbuddy
+      # Also update the slicer sidecars of this compose project (default true).
+      - PRINTBUDDY_UPDATE_SLICER_SIDECARS=true
       - PRINTBUDDY_UPDATER_PORT=8787
     restart: unless-stopped
 ```
@@ -72,7 +74,7 @@ docker compose -p "$PRINTBUDDY_COMPOSE_PROJECT" -f "$PRINTBUDDY_COMPOSE_FILE" pu
 docker compose -p "$PRINTBUDDY_COMPOSE_PROJECT" -f "$PRINTBUDDY_COMPOSE_FILE" up -d "$PRINTBUDDY_SERVICE_NAME"
 ```
 
-Only the configured service is recreated. The updater does not run `docker compose up -d` for the full stack so it does not restart itself mid-job.
+Only the configured service is recreated, plus the slicer sidecars described below. The updater does not run `docker compose up -d` for the full stack so it does not restart itself mid-job.
 
 When the in-app update checker selected a specific release tag, including a beta tag such as `v0.2.5.1b13`, Printbuddy passes that target image to the sidecar. The sidecar then:
 
@@ -84,6 +86,27 @@ docker compose -p "$PRINTBUDDY_COMPOSE_PROJECT" -f "$PRINTBUDDY_COMPOSE_FILE" up
 ```
 
 That extra retag step is intentional: it lets a compose file that tracks `docker.io/vmhomelabde/printbuddy:latest` install an explicitly selected beta release without rewriting the mounted compose file.
+
+### Slicer sidecars
+
+After Printbuddy itself, the updater also updates the slicer sidecars
+(`bambu-studio-api`, `orca-slicer-api`) of the same Compose project, so they
+match the sidecar revision the new Printbuddy expects:
+
+```bash
+docker compose -p "$PRINTBUDDY_COMPOSE_PROJECT" -f "$PRINTBUDDY_COMPOSE_FILE" config --format json
+docker compose -p "$PRINTBUDDY_COMPOSE_PROJECT" -f "$PRINTBUDDY_COMPOSE_FILE" pull <sidecar service>
+docker compose -p "$PRINTBUDDY_COMPOSE_PROJECT" -f "$PRINTBUDDY_COMPOSE_FILE" up -d <sidecar service>
+```
+
+Only services whose image is listed in `PRINTBUDDY_ALLOWED_SIDECAR_IMAGES`
+(default: `docker.io/vmhomelabde/printbuddy-orca-slicer-api` and
+`docker.io/vmhomelabde/printbuddy-bambu-studio-api`) are touched. A failed
+sidecar step does not fail the update: Printbuddy is already running the new
+version, and **Settings → Slicer → Test slicer connection** reports a sidecar
+that is still outdated. Set `PRINTBUDDY_UPDATE_SLICER_SIDECARS=false` to
+update only Printbuddy. Sidecars in a separate Compose project (the
+`slicer-api/` stack) are not reached; update those by hand.
 
 ## Troubleshooting
 

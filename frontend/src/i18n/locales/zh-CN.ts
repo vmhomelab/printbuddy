@@ -1932,6 +1932,8 @@ export default {
     slicerConnectionMismatch: '该 URL 上运行的是 {{detected}} {{version}}，但当前选择的是 {{slicer}}。请检查 sidecar 的 URL 和端口。',
     slicerConnectionFailed: '{{slicer}} 切片器连接失败。',
     slicerConnectionInvalidResponse: '该 URL 有响应，但不是切片器 API。此处不能使用桌面切片器（例如端口 3000 上的 OrcaSlicer Web 界面）：请填写切片器 API sidecar 的地址（OrcaSlicer 默认端口 3003）。',
+    slicerSidecarOutdated: '已连接到 {{slicer}}，但 sidecar 镜像不是此 Printbuddy 版本所需的版本（运行中：{{running}}，预期：{{expected}}）。请更新：docker compose pull && docker compose up -d。',
+    slicerSidecarRevisionOld: '较旧的构建',
     slicerConnectionError: '切片器连接失败。',
     slicerBundles: {
       title: '切片器捆绑包',

@@ -174,5 +174,6 @@ jobs:
             BAMBU_VERSION=${{ env.SLICER_VERSION }}
             BAMBU_APPIMAGE_URL=${{ steps.appimage.outputs.url }}
             ORCA_VERSION=${{ env.SLICER_VERSION }}
+            SIDECAR_REVISION=${{ env.SIDECAR_REVISION }}
           cache-from: type=gha,scope=slicer-${{ matrix.slicer }}
           cache-to: type=gha,mode=max,scope=slicer-${{ matrix.slicer }}

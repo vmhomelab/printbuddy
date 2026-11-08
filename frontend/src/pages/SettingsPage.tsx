@@ -1268,6 +1268,22 @@ export function SettingsPage() {
           ),
           'warning',
         );
+      } else if (result.success && result.sidecar_up_to_date === false) {
+        // The sidecar answers but runs another revision than this Printbuddy
+        // expects (or one too old to report it): fixes and API changes the
+        // slice flow relies on may be missing.
+        showToast(
+          t(
+            'settings.slicerSidecarOutdated',
+            'Connected to {{slicer}}, but the sidecar image is not the version this Printbuddy expects (running {{running}}, expected {{expected}}). Update it: docker compose pull && docker compose up -d.',
+            {
+              slicer: slicerName,
+              running: result.sidecar_revision?.slice(0, 7) ?? t('settings.slicerSidecarRevisionOld', 'an older build'),
+              expected: (result.expected_sidecar_revision ?? '').slice(0, 7),
+            },
+          ),
+          'warning',
+        );
       } else if (result.success && version) {
         showToast(
           t('settings.slicerConnectionSuccessVersion', 'Connected to {{slicer}} {{version}}.', {

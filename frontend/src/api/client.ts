@@ -1494,6 +1494,12 @@ export interface SlicerConnectionTestResult {
   detected_slicer?: 'bambu_studio' | 'orcaslicer' | null;
   /** Why the test failed; `invalid_response` = the URL is not the slicer API. */
   error?: 'unreachable' | 'invalid_response' | null;
+  /** Commit the sidecar reports; null when it reports none or "unknown". */
+  sidecar_revision?: string | null;
+  /** Commit this Printbuddy version expects. */
+  expected_sidecar_revision?: string;
+  /** false = other (or too old to report a) revision; null = cannot tell. */
+  sidecar_up_to_date?: boolean | null;
 }
 
 // GET /api/v1/slicer/presets — unified listing across cloud / local / standard.

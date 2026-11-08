@@ -18,6 +18,12 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+# Sidecar (vmhomelab/orca-slicer-api) commit this Printbuddy version is built
+# and tested against. Must equal the revision pinned in slicer-api/.env.example
+# (scripts/slicer_images.py --check). The sidecar reports its own revision in
+# GET /health; the connection test warns when the two differ.
+EXPECTED_SIDECAR_REVISION = "f225d76b536317a6e72ef0a0107c2c01c9cbe618"
+
 
 class SlicerApiError(Exception):
     """Base error from the slicer API sidecar."""

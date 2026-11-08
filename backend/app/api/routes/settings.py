@@ -21,6 +21,7 @@ from backend.app.models.settings import Settings
 from backend.app.models.user import User
 from backend.app.schemas.settings import AppSettings, AppSettingsUpdate
 from backend.app.services.slicer_api import (
+    EXPECTED_SIDECAR_REVISION,
     SlicerApiInvalidResponseError,
     SlicerApiService,
     SlicerApiUnavailableError,
@@ -94,6 +95,13 @@ class SlicerConnectionTestResponse(BaseModel):
     # "invalid_response" (the URL answered, but not with the slicer API, e.g.
     # a desktop-slicer web GUI). None on success.
     error: Literal["unreachable", "invalid_response"] | None = None
+    # Sidecar commit the running image reports (None when it reports none or
+    # "unknown") and the one this Printbuddy version expects.
+    sidecar_revision: str | None = None
+    expected_sidecar_revision: str = EXPECTED_SIDECAR_REVISION
+    # False when the sidecar runs another revision than expected (also for
+    # sidecars too old to report one), None when it cannot be told.
+    sidecar_up_to_date: bool | None = None
 
 
 # Sensitive credential fields blanked for API-key callers
@@ -186,6 +194,25 @@ def sanitize_slicer_health_payload(payload: dict) -> dict:
         safe_capabilities = [capability[:100] for capability in capabilities if isinstance(capability, str)][:50]
         safe["capabilities"] = safe_capabilities
     return safe
+
+
+_REVISION = re.compile(r"^[0-9a-f]{7,40}$")
+
+
+def sidecar_revision_status(payload: dict) -> tuple[str | None, bool | None]:
+    """Return ``(reported revision, up to date?)`` from a sidecar health body.
+
+    Sidecars report ``revision`` since the build that introduced it; one that
+    reports nothing at all predates it and is therefore outdated. "unknown"
+    (a self-built image without the build arg) cannot be judged.
+    """
+    if "revision" not in payload:
+        return None, False
+    raw = payload.get("revision")
+    revision = raw.strip().lower() if isinstance(raw, str) else ""
+    if not _REVISION.match(revision):
+        return None, None
+    return revision, EXPECTED_SIDECAR_REVISION.startswith(revision) or revision.startswith(EXPECTED_SIDECAR_REVISION)
 
 
 async def _resolve_effective_slicer_sidecar(db: AsyncSession) -> tuple[str, str]:
@@ -443,11 +470,14 @@ async def test_slicer_connection(
         return SlicerConnectionTestResponse(success=False, slicer=slicer, error="unreachable")
 
     safe_health = sanitize_slicer_health_payload(health)
+    revision, up_to_date = sidecar_revision_status(health)
     return SlicerConnectionTestResponse(
         success=True,
         slicer=slicer,
         health=safe_health,
         detected_slicer=detect_sidecar_slicer(safe_health.get("version")),
+        sidecar_revision=revision,
+        sidecar_up_to_date=up_to_date,
     )
 
 

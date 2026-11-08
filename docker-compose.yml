@@ -156,6 +156,9 @@ services:
   #    - PRINTBUDDY_COMPOSE_PROJECT=${COMPOSE_PROJECT_NAME:-printbuddy}
   #    - PRINTBUDDY_SERVICE_NAME=printbuddy
   #    - PRINTBUDDY_ALLOWED_IMAGE=docker.io/vmhomelabde/printbuddy
+  #    # Also pull + recreate the slicer sidecars below (if enabled) after
+  #    # Printbuddy, so they match the revision Printbuddy expects.
+  #    - PRINTBUDDY_UPDATE_SLICER_SIDECARS=true
   #    - PRINTBUDDY_UPDATER_PORT=8787
   #  restart: unless-stopped
 

@@ -1934,6 +1934,8 @@ export default {
     slicerConnectionMismatch: 'En esta URL se ejecuta {{detected}} {{version}}, pero está seleccionado {{slicer}}. Revisa la URL y el puerto del sidecar.',
     slicerConnectionFailed: 'Error en la conexión con el slicer {{slicer}}.',
     slicerConnectionInvalidResponse: 'La URL responde, pero no con la API del slicer. Aquí no se puede usar un slicer de escritorio (p. ej., una GUI web de OrcaSlicer en el puerto 3000): indica el sidecar de la API del slicer (puerto predeterminado de OrcaSlicer: 3003).',
+    slicerSidecarOutdated: 'Conectado a {{slicer}}, pero la imagen del sidecar no es la versión que espera esta versión de Printbuddy (en ejecución: {{running}}, esperada: {{expected}}). Actualízala: docker compose pull && docker compose up -d.',
+    slicerSidecarRevisionOld: 'una compilación anterior',
     slicerConnectionError: 'Error en la conexión con el slicer.',
     slicerBundles: {
       title: 'Paquetes del laminador',

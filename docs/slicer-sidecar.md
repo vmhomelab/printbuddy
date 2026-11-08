@@ -50,7 +50,10 @@ Tags:
 |---|---|
 | `latest` | Images of the current PrintBuddy `main` release. Used by PrintBuddy's `docker-compose.yml`. |
 | `dev` | Images of the PrintBuddy `dev` branch, for testers. |
-| `<slicer version>-<sidecar revision>`, e.g. `02.08.02.61-9ff0c6e` | Fixed version, never changes. Used by the `slicer-api/` stack. |
+| `<slicer version>-<sidecar revision>`, e.g. `02.08.02.61-f225d76` | Fixed version, never changes. Use it only if you want to freeze the sidecar; you then update it by hand. |
+
+Both Compose setups use `latest` by default, so the sidecars are updated
+together with PrintBuddy (see [Update the sidecar](#6-update-the-sidecar)).
 
 ### Option A: add the sidecar to PrintBuddy's Compose file (recommended)
 
@@ -108,7 +111,7 @@ cp .env.example .env
 
 | Variable | Meaning |
 |---|---|
-| `BAMBU_STUDIO_API_IMAGE` / `ORCA_SLICER_API_IMAGE` | Images to run. Keep the values from `.env.example`. |
+| `BAMBU_STUDIO_API_IMAGE` / `ORCA_SLICER_API_IMAGE` | Images to run. `:latest` (default) follows PrintBuddy's releases; use `:dev` on PrintBuddy's dev branch, or a fixed tag to freeze the version. |
 | `BAMBU_API_PORT` / `ORCA_API_PORT` | Host ports (3001 / 3003). Do not use 3000 or 3002: PrintBuddy's virtual printers need them. |
 | `SLICER_API_BUILD_CONTEXT`, `BAMBU_VERSION`, `ORCA_VERSION`, `BAMBU_APPIMAGE_URL` | Only used when building the images yourself (Option C). |
 
@@ -345,11 +348,12 @@ changed.
 
 ## 6. Update the sidecar
 
-A PrintBuddy release can reference newer sidecar images.
+A PrintBuddy release can need a newer sidecar. Each PrintBuddy version knows
+the sidecar revision it was tested with: **Settings → Slicer → Test slicer
+connection** warns when the running sidecar is a different (or older) build.
 
-- **Option A** (PrintBuddy's Compose file, `:latest`): pulling PrintBuddy
-  also pulls the current sidecars. Always update PrintBuddy and the sidecars
-  together:
+- **Option A** (PrintBuddy's Compose file, `:latest`): updating PrintBuddy
+  also updates the sidecars:
 
 ```bash
 docker compose pull
@@ -359,10 +363,12 @@ docker compose pull
 docker compose up -d
 ```
 
-- **Option B** (`slicer-api/` stack): compare your `.env` with the new
-  `.env.example` (download it again if the folder is not part of your
-  PrintBuddy checkout) and take over `BAMBU_STUDIO_API_IMAGE`,
-  `ORCA_SLICER_API_IMAGE` and `SLICER_API_BUILD_CONTEXT`. Then:
+  The in-app **Update now** button ([self-update sidecar](self-update-sidecar.md))
+  does this for you: after PrintBuddy it pulls and recreates the slicer
+  sidecars of the same Compose project.
+
+- **Option B** (`slicer-api/` stack): with the default `:latest` images, pull
+  and restart the stack after updating PrintBuddy:
 
 ```bash
 docker compose --profile bambu pull
@@ -372,7 +378,13 @@ docker compose --profile bambu pull
 docker compose --profile bambu up -d
 ```
 
-- **Option C** (self-built): rebuild with
+  If your `.env` still has a fixed tag such as `…:2.3.2-9ff0c6e` (older
+  `.env.example`), change `BAMBU_STUDIO_API_IMAGE` and `ORCA_SLICER_API_IMAGE`
+  to `:latest` once, or set the fixed tag from the current `.env.example`
+  comments by hand. The in-app updater cannot reach this separate stack.
+
+- **Option C** (self-built): take over `SLICER_API_BUILD_CONTEXT` from the new
+  `.env.example`, then rebuild with
   `docker compose --profile bambu build --no-cache --pull`.
 
 > **Important:** sidecar revisions before `cb44369` could resolve stock

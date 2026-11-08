@@ -132,6 +132,75 @@ def _compose_service_image(config_stdout: str, settings: Settings) -> str:
     return image
 
 
+def _image_name(image: str) -> str:
+    """Image reference without tag or digest, registry-normalised."""
+    name = _normalized_image_name(image).split("@", 1)[0]
+    last_slash = name.rfind("/")
+    colon = name.rfind(":")
+    return name[:colon] if colon > last_slash else name
+
+
+def _sidecar_services(config_stdout: str, settings: Settings) -> list[str]:
+    """Compose services that run an allowlisted slicer-sidecar image."""
+    allowed = {_image_name(image) for image in settings.allowed_sidecar_images.split(",") if image.strip()}
+    services = json.loads(config_stdout).get("services", {})
+    found = []
+    for name, service in services.items():
+        if name == settings.service_name or not isinstance(service, dict):
+            continue
+        image = service.get("image")
+        if isinstance(image, str) and _image_name(image) in allowed:
+            found.append(name)
+    return sorted(found)
+
+
+async def _run_step(job: UpdateJob, settings: Settings, step: Step, argv: list[str]) -> tuple[int, str]:
+    job.steps.append(step)
+    job.message = step.name
+    step.status = "running"
+    code, stdout, stderr = await run_command(argv, timeout_seconds=settings.command_timeout_seconds)
+    job.safe_log_tail = sanitize_log("\n".join(part for part in [stdout, stderr] if part), settings)
+    step.status = "completed" if code == 0 else "failed"
+    return code, stdout
+
+
+async def _update_slicer_sidecars(job: UpdateJob, settings: Settings, compose_base: list[str]) -> bool:
+    """Pull and recreate the slicer sidecars of the compose project.
+
+    Runs after Printbuddy itself is updated. Failures are reported on the
+    step but do not fail the job: Printbuddy is already running the new
+    version, and it warns about an outdated sidecar on its own. Returns
+    False when a sidecar step failed.
+    """
+    if not settings.update_slicer_sidecars:
+        return True
+    job.status = "checking"
+    code, stdout = await _run_step(
+        job, settings, Step("docker compose config (slicer sidecars)"), [*compose_base, "config", "--format", "json"]
+    )
+    if code != 0:
+        return False
+    try:
+        services = _sidecar_services(stdout, settings)
+    except (ValueError, AttributeError):
+        job.steps[-1].status = "failed"
+        return False
+    for service in services:
+        job.status = "pulling"
+        code, _ = await _run_step(
+            job, settings, Step(f"docker compose pull {service}"), [*compose_base, "pull", service]
+        )
+        if code != 0:
+            return False
+        job.status = "recreating"
+        code, _ = await _run_step(
+            job, settings, Step(f"docker compose up -d {service}"), [*compose_base, "up", "-d", service]
+        )
+        if code != 0:
+            return False
+    return True
+
+
 async def run_update_job(job: UpdateJob, settings: Settings) -> None:
     compose_base = ["docker", "compose", "-p", settings.compose_project, "-f", str(settings.compose_file)]
     commands = [
@@ -163,9 +232,10 @@ async def run_update_job(job: UpdateJob, settings: Settings) -> None:
                 job.message = f"{job.steps[idx].name} failed"
                 return
             job.steps[idx].status = "completed"
+        sidecars_ok = await _update_slicer_sidecars(job, settings, compose_base)
         job.status = "completed"
         job.exit_code = 0
-        job.message = "Container recreated"
+        job.message = "Container recreated" if sidecars_ok else "Container recreated; slicer sidecar update failed"
     except Exception as exc:  # defensive: keep API status useful if subprocess setup blows up
         job.status = "failed"
         job.exit_code = 1

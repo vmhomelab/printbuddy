@@ -1932,6 +1932,8 @@ export default {
     slicerConnectionMismatch: 'L’URL indiquée exécute {{detected}} {{version}}, mais {{slicer}} est sélectionné. Vérifiez l’URL et le port du sidecar.',
     slicerConnectionFailed: 'Échec de la connexion au slicer {{slicer}}.',
     slicerConnectionInvalidResponse: 'L’URL répond, mais pas avec l’API du slicer. Un slicer de bureau (p. ex. une interface web OrcaSlicer sur le port 3000) ne peut pas être utilisé ici : indiquez le sidecar de l’API du slicer (port par défaut d’OrcaSlicer : 3003).',
+    slicerSidecarOutdated: 'Connecté à {{slicer}}, mais l’image du sidecar n’est pas la version attendue par cette version de Printbuddy (en cours : {{running}}, attendue : {{expected}}). Mettez-la à jour : docker compose pull && docker compose up -d.',
+    slicerSidecarRevisionOld: 'une version plus ancienne',
     slicerConnectionError: 'Échec de la connexion au slicer.',
     slicerBundles: {
       title: 'Bundles de slicer',

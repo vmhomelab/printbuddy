@@ -9,6 +9,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from httpx import AsyncClient
 
+from backend.app.services.slicer_api import EXPECTED_SIDECAR_REVISION
+
 
 class TestSettingsAPI:
     """Integration tests for /api/v1/settings/ endpoints."""
@@ -84,6 +86,11 @@ class TestSettingsAPI:
             },
             "detected_slicer": "orcaslicer",
             "error": None,
+            # This health body carries no `revision`: a sidecar from before
+            # revision reporting, hence outdated.
+            "sidecar_revision": None,
+            "expected_sidecar_revision": EXPECTED_SIDECAR_REVISION,
+            "sidecar_up_to_date": False,
         }
         service.assert_called_once_with("http://orca-sidecar:3003")
 
@@ -110,6 +117,9 @@ class TestSettingsAPI:
             "health": None,
             "detected_slicer": None,
             "error": "unreachable",
+            "sidecar_revision": None,
+            "expected_sidecar_revision": EXPECTED_SIDECAR_REVISION,
+            "sidecar_up_to_date": None,
         }
 
     @pytest.mark.asyncio
@@ -133,6 +143,9 @@ class TestSettingsAPI:
             "health": None,
             "detected_slicer": None,
             "error": "invalid_response",
+            "sidecar_revision": None,
+            "expected_sidecar_revision": EXPECTED_SIDECAR_REVISION,
+            "sidecar_up_to_date": None,
         }
 
     @pytest.mark.asyncio

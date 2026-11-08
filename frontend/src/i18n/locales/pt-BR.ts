@@ -1932,6 +1932,8 @@ export default {
     slicerConnectionMismatch: 'Nesta URL está rodando {{detected}} {{version}}, mas {{slicer}} está selecionado. Verifique a URL e a porta do sidecar.',
     slicerConnectionFailed: 'Falha na conexão com o slicer {{slicer}}.',
     slicerConnectionInvalidResponse: 'A URL responde, mas não com a API do slicer. Um slicer de desktop (por exemplo, uma GUI web do OrcaSlicer na porta 3000) não pode ser usado aqui: aponte para o sidecar da API do slicer (porta padrão do OrcaSlicer: 3003).',
+    slicerSidecarOutdated: 'Conectado ao {{slicer}}, mas a imagem do sidecar não é a versão que esta versão do Printbuddy espera (em execução: {{running}}, esperada: {{expected}}). Atualize-a: docker compose pull && docker compose up -d.',
+    slicerSidecarRevisionOld: 'uma versão mais antiga',
     slicerConnectionError: 'Falha na conexão com o slicer.',
     slicerBundles: {
       title: 'Bundles do fatiador',
