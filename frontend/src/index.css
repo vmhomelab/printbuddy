@@ -556,16 +556,11 @@ html {
 .christmas-sidebar-decor {
   display: block;
   flex: none;
-  width: calc(100% - 0.5rem);
+  width: calc(100% - 1.5rem);
+  max-width: 170px;
   margin: auto auto 0;
-  padding-top: 0.5rem;
-  border-radius: 0.5rem;
+  padding-top: 0.75rem;
   pointer-events: none;
-  mask-image: linear-gradient(to bottom, transparent, #000 30%);
-}
-
-.style-christmas:not(.dark) .christmas-sidebar-decor {
-  mask-image: none;
 }
 
 .christmas-login-backdrop {
