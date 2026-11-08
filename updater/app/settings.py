@@ -21,6 +21,19 @@ class Settings(BaseSettings):
         default="docker.io/vmhomelabde/printbuddy-orca-slicer-api,docker.io/vmhomelabde/printbuddy-bambu-studio-api",
         validation_alias="PRINTBUDDY_ALLOWED_SIDECAR_IMAGES",
     )
+    # Update this updater too: after Printbuddy and the sidecars, pull its own
+    # image and restart onto it through a short-lived helper container.
+    update_self: bool = Field(default=True, validation_alias="PRINTBUDDY_UPDATE_SELF")
+    updater_service_name: str = Field(default="printbuddy-updater", validation_alias="PRINTBUDDY_UPDATER_SERVICE_NAME")
+    allowed_updater_image: str = Field(
+        default="docker.io/vmhomelabde/printbuddy-updater", validation_alias="PRINTBUDDY_ALLOWED_UPDATER_IMAGE"
+    )
+    # Host directory of the compose project. Detected from the compose labels
+    # of the running Printbuddy container; set it only if detection fails.
+    compose_project_dir: str = Field(default="", validation_alias="PRINTBUDDY_COMPOSE_PROJECT_DIR")
+    # The host's .env, so ${VARS} in the compose file keep their values when
+    # services are recreated. Mount the project directory (".:/host:ro").
+    compose_env_file: Path = Field(default=Path("/host/.env"), validation_alias="PRINTBUDDY_COMPOSE_ENV_FILE")
     updater_port: int = Field(default=8787, validation_alias="PRINTBUDDY_UPDATER_PORT")
     command_timeout_seconds: int = Field(default=600, validation_alias="PRINTBUDDY_UPDATE_TIMEOUT_SECONDS")
 

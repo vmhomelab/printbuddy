@@ -149,7 +149,9 @@ services:
   #  network_mode: host
   #  volumes:
   #    - /var/run/docker.sock:/var/run/docker.sock
-  #    - ./docker-compose.yml:/host/docker-compose.yml:ro
+  #    # The whole project directory (read-only): the compose file plus .env,
+  #    # so ${VARS} keep their values when the updater recreates services.
+  #    - ./:/host:ro
   #  environment:
   #    - PRINTBUDDY_UPDATER_TOKEN=${PRINTBUDDY_UPDATER_TOKEN}
   #    - PRINTBUDDY_COMPOSE_FILE=/host/docker-compose.yml
@@ -159,6 +161,8 @@ services:
   #    # Also pull + recreate the slicer sidecars below (if enabled) after
   #    # Printbuddy, so they match the revision Printbuddy expects.
   #    - PRINTBUDDY_UPDATE_SLICER_SIDECARS=true
+  #    # Also update this updater itself (via a short-lived helper container).
+  #    - PRINTBUDDY_UPDATE_SELF=true
   #    - PRINTBUDDY_UPDATER_PORT=8787
   #  restart: unless-stopped
 

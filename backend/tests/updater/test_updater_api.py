@@ -9,7 +9,7 @@ from updater.app.settings import Settings, get_settings
 
 
 @pytest.fixture(autouse=True)
-def isolated_settings(tmp_path):
+def isolated_settings(tmp_path, monkeypatch):
     settings = Settings(
         updater_token="secret-token",
         compose_file=tmp_path / "docker-compose.yml",
@@ -18,6 +18,12 @@ def isolated_settings(tmp_path):
         allowed_image="docker.io/vmhomelabde/printbuddy",
     )
     settings.compose_file.write_text("services:\n  printbuddy:\n    image: docker.io/vmhomelabde/printbuddy:dev\n")
+
+    # Compose-label discovery talks to Docker; tests opt in explicitly.
+    async def no_labels(_settings):
+        return None
+
+    monkeypatch.setattr("updater.app.jobs._compose_labels", no_labels)
     app.dependency_overrides[get_settings] = lambda: settings
     get_job_store().reset()
     yield settings
@@ -251,7 +257,9 @@ async def test_sidecar_update_can_be_disabled(monkeypatch, isolated_settings):
 
     job = get_job_store().get(response.json()["job_id"])
     await job.task
-    assert [argv[-1] for argv in recorded] == ["printbuddy", "printbuddy"]
+    touched = {argv[-1] for argv in recorded}
+    assert "orca-slicer-api" not in touched
+    assert "bambu-studio-api" not in touched
 
 
 @pytest.mark.asyncio
@@ -358,3 +366,149 @@ def test_release_tag(target, tag):
     from updater.app.jobs import release_tag
 
     assert release_tag(target) == tag
+
+
+HOST_LABELS = {
+    "com.docker.compose.project": "printbuddy",
+    "com.docker.compose.project.working_dir": "/srv/printbuddy",
+    "com.docker.compose.project.config_files": "/srv/printbuddy/docker-compose.yml",
+}
+
+COMPOSE_WITH_UPDATER = (
+    '{"services":{'
+    '"printbuddy":{"image":"docker.io/vmhomelabde/printbuddy:latest"},'
+    '"printbuddy-updater":{"image":"docker.io/vmhomelabde/printbuddy-updater:latest"}'
+    "}}"
+)
+
+
+def _with_host_labels(monkeypatch):
+    async def labels(_settings):
+        return HOST_LABELS
+
+    monkeypatch.setattr("updater.app.jobs._compose_labels", labels)
+
+
+@pytest.mark.asyncio
+async def test_compose_runs_from_the_host_project_directory(monkeypatch, isolated_settings):
+    """Relative bind mounts (./slicer-data/...) and ${VARS} from the host's
+    .env must resolve as on the host, not under the in-container /host."""
+    _with_host_labels(monkeypatch)
+    env_file = isolated_settings.compose_file.parent / ".env"
+    env_file.write_text("PRINTBUDDY_UPDATER_TOKEN=x\n")
+    isolated_settings.compose_env_file = env_file
+    isolated_settings.update_self = False
+    recorded = []
+
+    async def fake_run_command(argv, *, timeout_seconds):
+        recorded.append(argv)
+        if argv[-2:] == ["--format", "json"]:
+            return 0, COMPOSE_WITH_SIDECARS, ""
+        return 0, "ok", ""
+
+    monkeypatch.setattr("updater.app.jobs.run_command", fake_run_command)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post("/update", headers={"Authorization": "Bearer secret-token"})
+
+    job = get_job_store().get(response.json()["job_id"])
+    await job.task
+    compose_calls = [argv for argv in recorded if argv[:2] == ["docker", "compose"]]
+    assert compose_calls
+    for argv in compose_calls:
+        assert argv[6:10] == ["--project-directory", "/srv/printbuddy", "--env-file", str(env_file)]
+
+
+@pytest.mark.asyncio
+async def test_updater_restarts_itself_onto_a_new_image(monkeypatch):
+    _with_host_labels(monkeypatch)
+    recorded = []
+
+    async def fake_run_command(argv, *, timeout_seconds):
+        recorded.append(argv)
+        if argv[-2:] == ["--format", "json"]:
+            return 0, COMPOSE_WITH_UPDATER, ""
+        if argv[-3:] == ["ps", "-q", "printbuddy-updater"]:
+            return 0, "abc123\n", ""
+        if argv[:2] == ["docker", "inspect"]:
+            return 0, "sha256:old\n", ""
+        if argv[:3] == ["docker", "image", "inspect"]:
+            return 0, "sha256:new\n", ""
+        return 0, "ok", ""
+
+    monkeypatch.setattr("updater.app.jobs.run_command", fake_run_command)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post("/update", headers={"Authorization": "Bearer secret-token"})
+
+    job = get_job_store().get(response.json()["job_id"])
+    await job.task
+    assert job.status == "completed"
+    assert job.message == "Container recreated; updater restarts with the new version"
+    helper = recorded[-1]
+    assert helper[:4] == ["docker", "run", "-d", "--rm"]
+    assert "/srv/printbuddy:/srv/printbuddy:ro" in helper
+    assert "docker.io/vmhomelabde/printbuddy-updater:latest" in helper
+    # The helper recreates only the updater, from the host's compose file.
+    assert helper[-11:] == [
+        "docker",
+        "compose",
+        "-p",
+        "printbuddy",
+        "-f",
+        "/srv/printbuddy/docker-compose.yml",
+        "up",
+        "-d",
+        "--force-recreate",
+        "--no-deps",
+        "printbuddy-updater",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_updater_does_not_restart_when_its_image_is_current(monkeypatch):
+    _with_host_labels(monkeypatch)
+    recorded = []
+
+    async def fake_run_command(argv, *, timeout_seconds):
+        recorded.append(argv)
+        if argv[-2:] == ["--format", "json"]:
+            return 0, COMPOSE_WITH_UPDATER, ""
+        if argv[-3:] == ["ps", "-q", "printbuddy-updater"]:
+            return 0, "abc123\n", ""
+        if argv[:2] == ["docker", "inspect"] or argv[:3] == ["docker", "image", "inspect"]:
+            return 0, "sha256:same\n", ""
+        return 0, "ok", ""
+
+    monkeypatch.setattr("updater.app.jobs.run_command", fake_run_command)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post("/update", headers={"Authorization": "Bearer secret-token"})
+
+    job = get_job_store().get(response.json()["job_id"])
+    await job.task
+    assert job.message == "Container recreated"
+    assert not any(argv[:2] == ["docker", "run"] for argv in recorded)
+
+
+@pytest.mark.asyncio
+async def test_updater_self_update_needs_the_host_project_paths(monkeypatch):
+    """Without the compose labels the helper could not recreate the updater
+    with its real mounts, so the self-update is skipped."""
+    recorded = []
+
+    async def fake_run_command(argv, *, timeout_seconds):
+        recorded.append(argv)
+        if argv[-2:] == ["--format", "json"]:
+            return 0, COMPOSE_WITH_UPDATER, ""
+        return 0, "ok", ""
+
+    monkeypatch.setattr("updater.app.jobs.run_command", fake_run_command)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post("/update", headers={"Authorization": "Bearer secret-token"})
+
+    job = get_job_store().get(response.json()["job_id"])
+    await job.task
+    assert job.message == "Container recreated"
+    assert not any("printbuddy-updater" in argv for argv in recorded)
