@@ -1017,7 +1017,7 @@ class MoonrakerPrinterClient:
     def _available_cfs_objects(self, available: list[str] | None = None) -> list[str]:
         if available is None:
             available = self._available_objects()
-        wanted = ["box", "filament_rack", "filament_switch_sensor filament_sensor"]
+        wanted = ["box", "box_cfs_runtime", "filament_rack", "filament_switch_sensor filament_sensor"]
         return [name for name in wanted if name in available]
 
     def _query_cfs_status(self, available: list[str] | None = None) -> dict[str, Any]:
@@ -1086,7 +1086,19 @@ class MoonrakerPrinterClient:
             return False
         return self.send_gcode(macro)
 
+    def is_k2_openhost_cfs(self) -> bool:
+        """True for a K2 running K2-OpenHost (Kalico) with its own CFS "Box" driver.
+
+        That driver has its own commands (BOX_SELECT_SLOT, BOX_PRINT_MAP, ...)
+        and no Creality M8200, so the Creality load/unload/print-slot paths
+        must not run against it.
+        """
+        cfs = self.state.raw_data.get("cfs")
+        return isinstance(cfs, dict) and cfs.get("type") == "k2_openhost_cfs"
+
     def _has_creality_cfs(self) -> bool:
+        if self.is_k2_openhost_cfs():
+            return False
         if isinstance(self.state.raw_data.get("cfs"), dict):
             return True
         for ams_unit in self.state.raw_data.get("ams") or []:
@@ -1257,9 +1269,134 @@ class MoonrakerPrinterClient:
                 normalized.append(candidate)
         return normalized
 
+    def _apply_k2_openhost_box(self, box: dict[str, Any]) -> None:
+        """Map the K2-OpenHost (Kalico) CFS state to Printbuddy's AMS units.
+
+        The driver reports one flat ``slots`` list (global ``index``, ``present``,
+        ``loaded``, ``material``, ``color``, ``brand``, ``name``,
+        ``rfid_percent``, ``external``) and ``boxes`` (``address``, ``online``,
+        the ``slots`` indices of that unit, ``temp_c``, ``humidity_pct``).
+        Each box becomes one 4-tray unit; the external spool holder becomes
+        the virtual tray 254.
+        """
+        slots_by_index: dict[int, dict[str, Any]] = {}
+        external: dict[str, Any] | None = None
+        for slot in box.get("slots") or []:
+            if not isinstance(slot, dict):
+                continue
+            if slot.get("external"):
+                external = slot
+                continue
+            index = _safe_int(slot.get("index"))
+            if index is not None and index >= 0:
+                slots_by_index[index] = slot
+
+        boxes = [unit for unit in box.get("boxes") or [] if isinstance(unit, dict)]
+        if not boxes:
+            # Older driver revisions: group the slots in fours.
+            boxes = [
+                {"address": group + 1, "online": True, "slots": [i for i in sorted(slots_by_index) if i // 4 == group]}
+                for group in sorted({i // 4 for i in slots_by_index})
+            ]
+
+        loaded_slot = _safe_int(box.get("loaded_slot"))
+        self.state.tray_now = 255
+        ams_units: list[dict[str, Any]] = []
+        active_slots: list[str] = []
+        # Printbuddy tray id (unit * 4 + position) -> driver slot index; the
+        # CFS controls address slots by the driver's index.
+        slot_index_by_tray: dict[int, int] = {}
+
+        for unit in boxes:
+            if unit.get("online") is False:
+                continue
+            ams_id = (_safe_int(unit.get("address")) or 1) - 1
+            if ams_id < 0 or ams_id > 3:
+                continue
+            trays: list[dict[str, Any]] = []
+            for position, raw_index in enumerate((unit.get("slots") or [])[:4]):
+                index = _safe_int(raw_index)
+                slot = slots_by_index.get(index) if index is not None else None
+                tray_id = ams_id * 4 + position
+                name = _creality_cfs_slot_name(tray_id) or f"T{ams_id + 1}{position + 1}"
+                if index is not None:
+                    slot_index_by_tray[tray_id] = index
+                present = bool(slot and slot.get("present"))
+                is_active = present and index is not None and index == loaded_slot
+                if is_active:
+                    active_slots.append(name)
+                    self.state.tray_now = tray_id
+                trays.append(
+                    {
+                        "id": position,
+                        "slot": name,
+                        "tray_type": str(slot.get("material") or "") if present else "",
+                        "tray_sub_brands": str(slot.get("name") or "") if present else "",
+                        "tray_color": _normalize_creality_cfs_color(slot.get("color")) if present else None,
+                        "remain": _safe_int(slot.get("rfid_percent")) if present else None,
+                        "active": is_active,
+                        # 11 = spool present, 9 = empty slot (Bambu tray states)
+                        "state": 11 if present else 9,
+                        "tray_uuid": name,
+                        "tag_uid": "",
+                        "vendor": str(slot.get("brand") or "") if present else "",
+                    }
+                )
+            if trays:
+                ams_units.append(
+                    {
+                        "id": ams_id,
+                        "name": f"CFS T{ams_id + 1}",
+                        "module_type": "cfs",
+                        "humidity_raw": _safe_int(unit.get("humidity_pct", box.get("humidity_pct"))),
+                        "temp": _safe_int(unit.get("temp_c", box.get("temp_c"))),
+                        "state": unit.get("state"),
+                        "tray": trays,
+                    }
+                )
+
+        if not ams_units:
+            return
+        self.state.raw_data["ams"] = ams_units
+        if external and external.get("present"):
+            self.state.raw_data["vt_tray"] = [
+                {
+                    "id": 254,
+                    "tray_type": str(external.get("material") or ""),
+                    "tray_sub_brands": str(external.get("name") or ""),
+                    "tray_color": _normalize_creality_cfs_color(external.get("color")),
+                    "remain": _safe_int(external.get("rfid_percent")),
+                    "tag_uid": "",
+                    "tray_uuid": "",
+                }
+            ]
+            if external.get("loaded"):
+                self.state.tray_now = 254
+        self.state.raw_data["cfs"] = {
+            "type": "k2_openhost_cfs",
+            "api_version": box.get("api_version"),
+            "api_revision": box.get("api_revision"),
+            "state": box.get("state"),
+            "status": box.get("status"),
+            "loaded_slot": loaded_slot,
+            "active_slots": active_slots,
+            "slot_index_by_tray": slot_index_by_tray,
+            "print_mapping": box.get("print_mapping"),
+            "print_info": box.get("print_info"),
+            "filament_detected": box.get("filament_detected"),
+            "runout_swap_enabled": box.get("runout_swap_enabled"),
+        }
+        self.state.raw_data["box"] = box
+
     def _apply_creality_cfs_box(self, status: dict[str, Any]) -> None:
         box = status.get("box") if isinstance(status, dict) else None
         if not isinstance(box, dict):
+            return
+        runtime = status.get("box_cfs_runtime") if isinstance(status, dict) else None
+        if isinstance(box.get("slots"), list) or (
+            isinstance(runtime, dict) and runtime.get("firmware_family") == "k2oh"
+        ):
+            self._apply_k2_openhost_box(box)
             return
 
         filament_rack = status.get("filament_rack") if isinstance(status, dict) else None
@@ -1866,12 +2003,16 @@ class MoonrakerPrinterClient:
 
     def ams_load_filament(self, tray_id: int, extruder_id: int | None = None) -> bool:  # noqa: ARG002
         """Load/select a Creality CFS slot using the hardware-verified M8200 path."""
+        if self.is_k2_openhost_cfs():
+            return False  # K2-OpenHost has no M8200; its BOX_* control is not wired up yet
         if _creality_cfs_slot_name(tray_id) is None:
             return False
         return self.send_gcode(f"M8200 P\nM8200 L I={int(tray_id)}\nM8200 O")
 
     def ams_unload_filament(self, tray_id: int | None = None) -> bool:
         """Unload the currently loaded Creality CFS filament using M8200."""
+        if self.is_k2_openhost_cfs():
+            return False  # K2-OpenHost has no M8200; its BOX_* control is not wired up yet
         if tray_id is not None and _creality_cfs_slot_name(int(tray_id)) is None:
             return False
         return self.send_gcode("M8200 P\nM8200 C\nM8200 R\nM8200 O")

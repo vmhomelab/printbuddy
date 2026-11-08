@@ -4493,6 +4493,8 @@ async def ams_load(
 
     success = client.ams_load_filament(tray_id)
     if not success:
+        if getattr(client, "is_k2_openhost_cfs", lambda: False)() is True:
+            raise HTTPException(400, "CFS load is not supported yet for K2-OpenHost (Kalico) firmware")
         provider = str(getattr(printer, "provider", "") or "").lower()
         model = str(getattr(printer, "model", "") or "").lower()
         if provider in {"klipper", "mainsail", "fluidd"} and "creality k2" in model and tray_id in range(16):
@@ -4537,6 +4539,8 @@ async def ams_unload(
     else:
         success = client.ams_unload_filament()
     if not success:
+        if getattr(client, "is_k2_openhost_cfs", lambda: False)() is True:
+            raise HTTPException(400, "CFS unload is not supported yet for K2-OpenHost (Kalico) firmware")
         model = str(getattr(printer, "model", "") or "").lower()
         if (
             provider in {"klipper", "mainsail", "fluidd"}

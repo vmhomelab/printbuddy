@@ -4590,7 +4590,7 @@ function PrinterCard({
                     {regularAms.length > 0 && (
                       <div className="grid grid-cols-2 gap-3">
                         {regularAms.map((ams) => {
-                        const isK2CfsLikeUnit = isCrealityK2Moonraker && ams.tray.length === 4;
+                        const isK2CfsLikeUnit = (isCrealityK2Moonraker && ams.tray.length === 4) || ams.module_type === 'cfs';
                         const isSnapmakerU1Unit = ams.module_type === 'snapmaker_u1';
                         const mappedExtruderId = amsExtruderMap[String(ams.id)];
                         const normalizedId = ams.id >= 128 ? ams.id - 128 : ams.id;
