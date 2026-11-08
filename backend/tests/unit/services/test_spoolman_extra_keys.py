@@ -44,7 +44,23 @@ def test_only_the_two_slicer_keys_are_renamed():
     assert FIELD_NAMES[SLICER_FILAMENT_KEY] == "Slicer filament"
     assert FIELD_NAMES[SLICER_FILAMENT_NAME_KEY] == "Slicer filament name"
     assert FIELD_NAMES["printbuddy_slot"] == "Slot"
-    assert FIELD_NAMES["printbuddy_prev_location"] == "Previous location"
+    assert "printbuddy_prev_location" not in FIELD_NAMES
+
+
+@pytest.mark.asyncio
+async def test_the_retired_previous_location_field_is_deleted_once():
+    client = FakeSpoolman(_spools())
+    client.fields.add("printbuddy_prev_location")
+    client.spools[4]["extra"]["printbuddy_prev_location"] = json.dumps("Box")
+
+    result = await migrate_legacy_extra_fields(client)
+
+    assert "printbuddy_prev_location" in client.deleted
+    assert result["fields_deleted"] == 3
+    assert "printbuddy_prev_location" not in client.spools[4]["extra"]
+    assert {"tag", "nfc_id", "card_uids", "last_dried", "bambu_color_name"} <= client.fields
+    again = await migrate_legacy_extra_fields(client)
+    assert again["fields_deleted"] == 0
 
 
 @pytest.mark.parametrize(

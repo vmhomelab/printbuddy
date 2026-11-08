@@ -5000,7 +5000,7 @@ export default {
     reportPartialUsage: 'Zgłaszaj częściowe zużycie dla nieudanych wydruków',
     reportPartialUsageDesc: 'Gdy wydruk się nie powiedzie lub zostanie anulowany, zgłoś szacowaną ilość filamentu zużytego do tego momentu na podstawie postępu warstw.',
     syncLocation: 'Pokazuj drukarkę jako lokalizację w Spoolman',
-    syncLocationDesc: 'Dopóki szpula jest przypisana do slotu, jej lokalizacja w Spoolman jest ustawiana na nazwę drukarki. Po usunięciu przypisania przywracana jest poprzednia lokalizacja (lub jest czyszczona, jeśli jej nie było).',
+    syncLocationDesc: 'Dopóki szpula jest przypisana do slotu, jej lokalizacja w Spoolman to nazwa drukarki, a pole Slot wskazuje slot. Po usunięciu przypisania oba pola są czyszczone.',
   },
 
   locations: {

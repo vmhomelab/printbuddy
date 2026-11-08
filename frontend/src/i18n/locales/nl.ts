@@ -4998,7 +4998,7 @@ export default {
     reportPartialUsage: 'Gedeeltelijk verbruik rapporteren voor mislukte afdrukken',
     reportPartialUsageDesc: 'Wanneer een afdruk mislukt of wordt geannuleerd, rapporteer dan het geschatte filamentverbruik tot dat moment op basis van de laagvoortgang.',
     syncLocation: 'Printer als Spoolman-locatie tonen',
-    syncLocationDesc: 'Zolang een spoel aan een slot is toegewezen, wordt de Spoolman-locatie ingesteld op de naam van de printer. Wordt de toewijzing opgeheven, dan wordt de vorige locatie hersteld (of gewist als er geen was).',
+    syncLocationDesc: 'Zolang een spoel aan een slot is toegewezen, wordt de Spoolman-locatie ingesteld op de naam van de printer en het veld Slot op het slot. Wordt de toewijzing opgeheven, dan worden beide leeggemaakt.',
   },
 
   locations: {

@@ -4949,7 +4949,7 @@ export default {
     reportPartialUsage: 'Relatar Uso Parcial para Impressões Falhadas',
     reportPartialUsageDesc: 'Quando uma impressão falha ou é cancelada, relate o filamento estimado usado até aquele ponto com base no progresso das camadas.',
     syncLocation: 'Mostrar a impressora como local no Spoolman',
-    syncLocationDesc: 'Enquanto um carretel estiver atribuído a um slot, seu local no Spoolman passa a ser o nome da impressora. Ao remover a atribuição, o local anterior é restaurado (ou limpo, se não havia nenhum).',
+    syncLocationDesc: 'Enquanto um carretel estiver atribuído a um slot, seu local no Spoolman passa a ser o nome da impressora e o campo Slot indica o slot. Ao remover a atribuição, ambos são limpos.',
   },
 
   locations: {

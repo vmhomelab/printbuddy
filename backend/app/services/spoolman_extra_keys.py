@@ -14,6 +14,7 @@ which Printbuddy does not own and never touches. The remaining ``bambu_*`` keys
 (colour name, consumed baseline, last drying) keep their names.
 
 Every field Printbuddy creates in Spoolman gets a readable name (``FIELD_NAMES``).
+Retired keys (``RETIRED_KEYS``) have their definitions deleted by the migration.
 """
 
 from __future__ import annotations
@@ -32,7 +33,10 @@ LAST_DRIED_AT_KEY = "bambu_last_dried_at"
 LAST_DRIED_TEMP_KEY = "bambu_last_dried_temp"
 LAST_DRIED_HOURS_KEY = "bambu_last_dried_hours"
 SLOT_KEY = "printbuddy_slot"
-PREV_LOCATION_KEY = "printbuddy_prev_location"
+
+# Keys Printbuddy no longer uses. The migration deletes their field
+# definitions (Spoolman drops the values with them) and nothing else.
+RETIRED_KEYS: tuple[str, ...] = ("printbuddy_prev_location",)
 
 # New key -> the key the same value was stored under before. The migration
 # reads, moves and deletes these old keys and nothing else.
@@ -52,7 +56,6 @@ FIELD_NAMES: dict[str, str] = {
     LAST_DRIED_TEMP_KEY: "Last drying temperature",
     LAST_DRIED_HOURS_KEY: "Last drying hours",
     SLOT_KEY: "Slot",
-    PREV_LOCATION_KEY: "Previous location",
 }
 
 
@@ -99,7 +102,7 @@ def legacy_values_to_move(extra: dict | None) -> dict[str, str]:
 
 
 async def migrate_legacy_extra_fields(client) -> dict[str, int]:
-    """Move every spool's values off the old slicer keys, drop their definitions, name Printbuddy's fields.
+    """Move every spool's values off the old slicer keys, drop old and retired definitions, name fields.
 
     Idempotent: a second run finds nothing to move, and definitions already
     gone are skipped. A definition is only deleted when every spool that had a
@@ -126,7 +129,7 @@ async def migrate_legacy_extra_fields(client) -> dict[str, int]:
             blocked |= {key for key in patch if key not in LEGACY_KEYS}  # the old keys
             logger.warning("Could not move Spoolman spool %s to the new extra keys: %s", spool.get("id"), e)
     deleted = 0
-    for old in LEGACY_KEYS.values():
+    for old in (*LEGACY_KEYS.values(), *RETIRED_KEYS):
         if old in blocked:
             continue
         try:

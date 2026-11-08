@@ -4963,7 +4963,7 @@ export default {
     reportPartialUsage: '失敗した印刷の部分使用量を報告',
     reportPartialUsageDesc: '印刷が失敗またはキャンセルされた場合、レイヤー進捗に基づいてその時点までの推定フィラメント使用量を報告します。',
     syncLocation: 'プリンターを Spoolman の保管場所として表示',
-    syncLocationDesc: 'スプールがスロットに割り当てられている間、Spoolman の保管場所をプリンター名に設定します。割り当てを解除すると、以前の保管場所に戻します（なかった場合は空にします）。',
+    syncLocationDesc: 'スプールがスロットに割り当てられている間、Spoolman の保管場所をプリンター名に、Slot フィールドをスロットに設定します。割り当てを解除すると、両方とも空になります。',
   },
 
   locations: {

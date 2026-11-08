@@ -4949,7 +4949,7 @@ export default {
     reportPartialUsage: 'Segnala uso parziale per stampe fallite',
     reportPartialUsageDesc: 'Quando una stampa fallisce o viene annullata, segnala il filamento stimato usato fino a quel punto in base all\'avanzamento layer.',
     syncLocation: 'Mostra la stampante come posizione in Spoolman',
-    syncLocationDesc: 'Finché una bobina è assegnata a uno slot, la sua posizione in Spoolman diventa il nome della stampante. Quando viene rimossa l\'assegnazione, viene ripristinata la posizione precedente (o cancellata se non ne aveva una).',
+    syncLocationDesc: 'Finché una bobina è assegnata a uno slot, la sua posizione in Spoolman diventa il nome della stampante e il campo Slot indica lo slot. Quando l\'assegnazione viene rimossa, entrambi vengono svuotati.',
   },
 
   locations: {

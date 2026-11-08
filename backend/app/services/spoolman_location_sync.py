@@ -4,8 +4,9 @@ A Printbuddy addition, on by default (setting ``spoolman_sync_location``) and
 only in Spoolman mode. While a spool is assigned to a slot, its Spoolman
 location is the name of that slot's printer, so Spoolman shows which printer a
 spool is loaded in, and its ``extra.printbuddy_slot`` names the printer and
-slot ("3DP-039-006 · AMS 1 · Slot 2", so Spoolman can group by it). The location the spool had before is kept in its
-``extra.printbuddy_prev_location`` and put back once no slot holds the spool.
+slot ("3DP-039-006 · AMS 1 · Slot 2", so Spoolman can group by it). Once no
+slot holds the spool, both are cleared: the spool has no location until the
+user gives it one. Nothing remembers where it was before.
 
 Callers do not say what changed, only which spools a write touched, after the
 write is committed: ``sync_spool_locations`` reads each spool's slots as they
@@ -16,14 +17,10 @@ backfill all share it, and two calls for one spool cannot leave a stale result.
 Rules, per spool:
 
 - Assigned (to any slot; the most recently assigned one wins): the location
-  becomes that printer's name and ``printbuddy_slot`` "<printer> · <slot>". The
-  current location is stored as the previous one only when it is not already a
-  printer location, so a move from printer A to printer B, or between two slots
-  of one printer, keeps the original storage place.
-- Not assigned: when the location is still a printer location, the stored
-  previous location is restored, or the location cleared when there is none.
-  A location the user changed by hand meanwhile is left alone. The stored
-  previous location and the slot label are cleared either way.
+  becomes that printer's name and ``printbuddy_slot`` "<printer> · <slot>".
+- Not assigned: when the location is still a printer location, it is cleared.
+  A location the user changed by hand meanwhile is left alone. The slot label
+  is cleared either way.
 
 A "printer location" is the name of any printer in Printbuddy, or a slot marker
 such as "<printer> - AMS A1" that older tools wrote (``is_ams_slot_location``).
@@ -47,7 +44,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.printer import Printer
 from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
-from backend.app.services.spoolman_extra_keys import PREV_LOCATION_KEY, SLOT_KEY
+from backend.app.services.spoolman_extra_keys import SLOT_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -240,7 +237,6 @@ async def _sync_one(client, db: AsyncSession, spool_id: int, printer_names: list
     spool = await client.get_spool(spool_id)
     current = (spool.get("location") or "").strip()
     extra = spool.get("extra") if isinstance(spool.get("extra"), dict) else {}
-    stored = _decode_extra(extra.get(PREV_LOCATION_KEY))
     current_slot = _decode_extra(extra.get(SLOT_KEY))
     at_printer = is_printer_location(current, printer_names)
 
@@ -252,18 +248,11 @@ async def _sync_one(client, db: AsyncSession, spool_id: int, printer_names: list
         location, label = target
         if current != location:
             kwargs["location"] = location
-            if not at_printer:
-                new_extra[PREV_LOCATION_KEY] = json.dumps(current)
         if current_slot != label:
             new_extra[SLOT_KEY] = json.dumps(label)
     else:
         if at_printer:
-            if stored:
-                kwargs["location"] = stored
-            else:
-                kwargs["clear_location"] = True
-        if stored:
-            new_extra[PREV_LOCATION_KEY] = json.dumps("")
+            kwargs["clear_location"] = True
         if current_slot:
             new_extra[SLOT_KEY] = json.dumps("")
     if not kwargs and not new_extra:

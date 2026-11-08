@@ -96,7 +96,7 @@ class AppSettings(BaseModel):
     )
     spoolman_sync_location: bool = Field(
         default=True,
-        description="Set a Spoolman spool's location to the printer's name while it is assigned to a slot, and restore its previous location when it is unassigned.",
+        description="Set a Spoolman spool's location to the printer's name while it is assigned to a slot, and clear it when the spool is unassigned.",
     )
     auto_add_unknown_rfid: bool = Field(
         default=True,

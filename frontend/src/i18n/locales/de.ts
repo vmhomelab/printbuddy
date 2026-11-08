@@ -4963,7 +4963,7 @@ export default {
     reportPartialUsage: 'Teilverbrauch bei fehlgeschlagenen Drucken melden',
     reportPartialUsageDesc: 'Wenn ein Druck fehlschlägt oder abgebrochen wird, den geschätzten Filamentverbrauch bis zu diesem Zeitpunkt basierend auf dem Schichtfortschritt melden.',
     syncLocation: 'Drucker als Spoolman-Lagerort anzeigen',
-    syncLocationDesc: 'Solange eine Spule einem Slot zugewiesen ist, wird ihr Spoolman-Lagerort auf den Namen des Druckers gesetzt. Wird die Zuweisung aufgehoben, wird der vorherige Lagerort wiederhergestellt (oder geleert, falls keiner gesetzt war).',
+    syncLocationDesc: 'Solange eine Spule einem Slot zugewiesen ist, wird ihr Spoolman-Lagerort auf den Namen des Druckers und ihr Feld „Slot“ auf den Slot gesetzt. Wird die Zuweisung aufgehoben, werden beide geleert.',
   },
 
   locations: {

@@ -4964,7 +4964,7 @@ export default {
     reportPartialUsage: '실패한 인쇄물에 대한 부분 사용량 보고',
     reportPartialUsageDesc: '인쇄가 실패하거나 취소될 때 레이어 진행률을 기반으로 해당 시점까지 사용된 예상 필라멘트를 보고합니다.',
     syncLocation: '프린터를 Spoolman 위치로 표시',
-    syncLocationDesc: '스풀이 슬롯에 할당되어 있는 동안 Spoolman 위치를 프린터 이름으로 설정합니다. 할당이 해제되면 이전 위치로 복원합니다(이전 위치가 없으면 비웁니다).',
+    syncLocationDesc: '스풀이 슬롯에 할당되어 있는 동안 Spoolman 위치를 프린터 이름으로, Slot 필드를 슬롯으로 설정합니다. 할당이 해제되면 둘 다 비워집니다.',
   },
 
   locations: {

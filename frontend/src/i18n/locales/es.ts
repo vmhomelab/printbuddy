@@ -4964,7 +4964,7 @@ export default {
     reportPartialUsage: 'Informar del uso parcial en las impresiones fallidas',
     reportPartialUsageDesc: 'Cuando una impresión falla o se cancela, informar del filamento estimado usado hasta ese punto según el progreso de las capas.',
     syncLocation: 'Mostrar la impresora como ubicación en Spoolman',
-    syncLocationDesc: 'Mientras una bobina está asignada a una ranura, su ubicación en Spoolman pasa a ser el nombre de la impresora. Al desasignarla, se restaura su ubicación anterior (o se borra si no tenía ninguna).',
+    syncLocationDesc: 'Mientras una bobina está asignada a una ranura, su ubicación en Spoolman pasa a ser el nombre de la impresora y su campo Slot, la ranura. Al desasignarla, ambos se vacían.',
   },
 
   locations: {

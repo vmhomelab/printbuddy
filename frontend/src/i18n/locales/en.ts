@@ -5000,7 +5000,7 @@ export default {
     reportPartialUsage: 'Report Partial Usage for Failed Prints',
     reportPartialUsageDesc: 'When a print fails or is cancelled, report the estimated filament used up to that point based on layer progress.',
     syncLocation: 'Show printer as Spoolman location',
-    syncLocationDesc: 'While a spool is assigned to a slot, set its Spoolman location to the printer\'s name. When it is unassigned, its previous location is restored (or cleared if it had none).',
+    syncLocationDesc: 'While a spool is assigned to a slot, set its Spoolman location to the printer\'s name and its Slot field to the slot. When it is unassigned, both are cleared.',
   },
 
   locations: {

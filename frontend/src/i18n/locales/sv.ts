@@ -4997,7 +4997,7 @@ export default {
     reportPartialUsage: 'Rapportera partiell användning för misslyckade utskrifter',
     reportPartialUsageDesc: 'När en utskrift misslyckas eller avbryts, rapportera den uppskattade filamentanvändningen fram till den punkten baserat på skiktförloppet.',
     syncLocation: 'Visa skrivaren som plats i Spoolman',
-    syncLocationDesc: 'Så länge en spole är tilldelad en plats sätts dess plats i Spoolman till skrivarens namn. När tilldelningen tas bort återställs den tidigare platsen (eller rensas om den saknades).',
+    syncLocationDesc: 'Så länge en spole är tilldelad en plats sätts dess plats i Spoolman till skrivarens namn och fältet Slot till platsen. När tilldelningen tas bort töms båda.',
   },
 
   locations: {

@@ -4949,7 +4949,7 @@ export default {
     reportPartialUsage: '報告失敗列印的部分用量',
     reportPartialUsageDesc: '當列印失敗或被取消時，根據層進度報告估計的耗材使用量。',
     syncLocation: '將印表機顯示為 Spoolman 位置',
-    syncLocationDesc: '線軸分配到槽位期間，其 Spoolman 位置設為印表機名稱。取消分配後，還原先前的位置（若先前沒有則清空）。',
+    syncLocationDesc: '線軸分配到槽位期間，其 Spoolman 位置設為印表機名稱，Slot 欄位設為該槽位。取消分配後，兩者都會清空。',
   },
 
   locations: {

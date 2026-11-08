@@ -4980,7 +4980,7 @@ export default {
     reportPartialUsage: 'Başarısız Baskılar için Kısmi Kullanımı Bildir',
     reportPartialUsageDesc: 'Bir baskı başarısız olduğunda veya iptal edildiğinde, katman ilerlemesine göre o noktaya kadar kullanılan tahmini filamenti bildir.',
     syncLocation: 'Yazıcıyı Spoolman konumu olarak göster',
-    syncLocationDesc: 'Bir makara bir yuvaya atandığı sürece Spoolman konumu yazıcının adı olarak ayarlanır. Atama kaldırıldığında önceki konumu geri yüklenir (yoksa konum temizlenir).',
+    syncLocationDesc: 'Bir makara bir yuvaya atandığı sürece Spoolman konumu yazıcının adı, Slot alanı da yuva olarak ayarlanır. Atama kaldırıldığında ikisi de temizlenir.',
   },
 
   locations: {

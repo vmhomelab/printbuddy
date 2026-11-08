@@ -1966,7 +1966,7 @@ async def assign_spoolman_slot(
     Raises 404 if the printer does not exist or the spool is not found in Spoolman.
     With ``spoolman_sync_location`` on (the default), the spool's Spoolman
     location becomes the printer's name, and a spool this displaces from the
-    slot gets its previous location back (``spoolman_location_sync``).
+    slot has its location cleared (``spoolman_location_sync``).
     """
 
     client = await _get_client(db)

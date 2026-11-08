@@ -4950,7 +4950,7 @@ export default {
     reportPartialUsage: 'Rapporter consommation partielle pour échecs',
     reportPartialUsageDesc: 'Si l\'impression échoue, rapporte le filament consommé selon les couches.',
     syncLocation: 'Afficher l\'imprimante comme emplacement Spoolman',
-    syncLocationDesc: 'Tant qu\'une bobine est assignée à un emplacement, son emplacement Spoolman prend le nom de l\'imprimante. Lorsqu\'elle est désassignée, son emplacement précédent est restauré (ou effacé s\'il n\'y en avait pas).',
+    syncLocationDesc: 'Tant qu\'une bobine est assignée à un emplacement, son emplacement Spoolman prend le nom de l\'imprimante et son champ Slot indique l\'emplacement. Lorsqu\'elle est désassignée, les deux sont vidés.',
   },
 
   locations: {
