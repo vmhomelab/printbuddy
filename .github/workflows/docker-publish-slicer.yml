@@ -8,13 +8,19 @@ name: Docker publish slicer sidecars
 #
 # Published version tags are immutable: a tag that already exists on Docker
 # Hub is not rebuilt unless the workflow is started manually with `force`.
-# `latest` follows main, `dev` follows dev.
+# `latest` follows main, `dev` follows dev. A Printbuddy release tag (v*.*.*,
+# betas included) also tags the sidecar images with that release tag, e.g.
+# printbuddy-orca-slicer-api:v0.2.5.4b5: the self-update sidecar installs
+# exactly these when updating to a specific (beta) release.
 
 on:
   push:
     branches:
       - dev
       - main
+    # Path filters only apply to branch pushes; tag pushes always run.
+    tags:
+      - 'v*.*.*'
     paths:
       - 'slicer-api/**'
       - 'scripts/slicer_images.py'
@@ -103,6 +109,7 @@ jobs:
           case "${GITHUB_REF}" in
             refs/heads/main) moving=latest ;;
             refs/heads/dev) moving=dev ;;
+            refs/tags/v*) moving="${GITHUB_REF_NAME}" ;;
             *) exit 0 ;;
           esac
           docker buildx imagetools create --tag "${IMAGE}:${moving}" "${IMAGE}:${TAG}"
@@ -147,6 +154,7 @@ jobs:
             type=raw,value=${{ env.TAG }}
             type=raw,value=dev,enable=${{ github.ref == 'refs/heads/dev' }}
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=ref,event=tag
           labels: |
             org.opencontainers.image.title=printbuddy-${{ matrix.slicer }}-api
             org.opencontainers.image.description=PrintBuddy slicer sidecar: HTTP API around the ${{ matrix.slicer == 'bambu-studio' && 'Bambu Studio' || 'OrcaSlicer' }} ${{ env.SLICER_VERSION }} CLI

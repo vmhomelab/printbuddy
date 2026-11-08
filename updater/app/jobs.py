@@ -140,8 +140,8 @@ def _image_name(image: str) -> str:
     return name[:colon] if colon > last_slash else name
 
 
-def _sidecar_services(config_stdout: str, settings: Settings) -> list[str]:
-    """Compose services that run an allowlisted slicer-sidecar image."""
+def _sidecar_services(config_stdout: str, settings: Settings) -> list[tuple[str, str]]:
+    """``(service, image)`` of compose services running an allowlisted slicer-sidecar image."""
     allowed = {_image_name(image) for image in settings.allowed_sidecar_images.split(",") if image.strip()}
     services = json.loads(config_stdout).get("services", {})
     found = []
@@ -150,8 +150,38 @@ def _sidecar_services(config_stdout: str, settings: Settings) -> list[str]:
             continue
         image = service.get("image")
         if isinstance(image, str) and _image_name(image) in allowed:
-            found.append(name)
+            found.append((name, image))
     return sorted(found)
+
+
+_RELEASE_TAG = re.compile(r"^v\d[\w.-]*$")
+
+
+def release_tag(target_image: str | None) -> str | None:
+    """Release tag of an explicit target image (``…/printbuddy:v0.2.5.4b5``).
+
+    The slicer-sidecar images are published under the same release tag, so a
+    targeted (e.g. beta) update installs the sidecars built for that release.
+    """
+    if not target_image:
+        return None
+    name = target_image.split("@", 1)[0]
+    last_slash = name.rfind("/")
+    colon = name.rfind(":")
+    if colon <= last_slash:
+        return None
+    tag = name[colon + 1 :]
+    return tag if _RELEASE_TAG.match(tag) else None
+
+
+def _with_tag(image: str, tag: str) -> str:
+    """``image`` with its tag (or digest) replaced by ``tag``."""
+    name = image.split("@", 1)[0]
+    last_slash = name.rfind("/")
+    colon = name.rfind(":")
+    if colon > last_slash:
+        name = name[:colon]
+    return f"{name}:{tag}"
 
 
 async def _run_step(job: UpdateJob, settings: Settings, step: Step, argv: list[str]) -> tuple[int, str]:
@@ -185,7 +215,14 @@ async def _update_slicer_sidecars(job: UpdateJob, settings: Settings, compose_ba
     except (ValueError, AttributeError):
         job.steps[-1].status = "failed"
         return False
-    for service in services:
+    tag = release_tag(job.target_image)
+    for service, image in services:
+        if tag:
+            result = await _install_release_sidecar(job, settings, compose_base, service, image, tag)
+            if result == "failed":
+                return False
+            if result == "installed":
+                continue
         job.status = "pulling"
         code, _ = await _run_step(
             job, settings, Step(f"docker compose pull {service}"), [*compose_base, "pull", service]
@@ -199,6 +236,39 @@ async def _update_slicer_sidecars(job: UpdateJob, settings: Settings, compose_ba
         if code != 0:
             return False
     return True
+
+
+async def _install_release_sidecar(
+    job: UpdateJob, settings: Settings, compose_base: list[str], service: str, image: str, tag: str
+) -> str:
+    """Install the sidecar image published for release ``tag``.
+
+    Mirrors the targeted Printbuddy update: pull ``<sidecar image>:<tag>`` and
+    retag it as the image the compose service declares, so a compose file on
+    ``:latest`` runs the sidecar that belongs to the selected (beta) release.
+    Returns "installed", "failed", or "unavailable" when no such image exists
+    (releases published before the sidecars got release tags); the caller
+    then falls back to a plain pull.
+    """
+    target = _with_tag(image, tag)
+    job.status = "pulling"
+    code, _ = await _run_step(job, settings, Step(f"docker pull {target}"), ["docker", "pull", target])
+    if code != 0:
+        job.steps[-1].status = "skipped"
+        return "unavailable"
+    if target != image:
+        job.status = "tagging"
+        code, _ = await _run_step(job, settings, Step(f"docker tag {target} {image}"), ["docker", "tag", target, image])
+        if code != 0:
+            return "failed"
+    job.status = "recreating"
+    code, _ = await _run_step(
+        job,
+        settings,
+        Step(f"docker compose up -d --force-recreate {service}"),
+        [*compose_base, "up", "-d", "--force-recreate", service],
+    )
+    return "installed" if code == 0 else "failed"
 
 
 async def run_update_job(job: UpdateJob, settings: Settings) -> None:

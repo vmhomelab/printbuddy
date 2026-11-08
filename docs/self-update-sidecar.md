@@ -99,6 +99,20 @@ docker compose -p "$PRINTBUDDY_COMPOSE_PROJECT" -f "$PRINTBUDDY_COMPOSE_FILE" pu
 docker compose -p "$PRINTBUDDY_COMPOSE_PROJECT" -f "$PRINTBUDDY_COMPOSE_FILE" up -d <sidecar service>
 ```
 
+When the update targets a specific release (for example a beta such as
+`v0.2.5.4b5`), the sidecars get the images published for that same release,
+just like Printbuddy itself:
+
+```bash
+docker pull "docker.io/vmhomelabde/printbuddy-orca-slicer-api:<selected-release-tag>"
+docker tag "docker.io/vmhomelabde/printbuddy-orca-slicer-api:<selected-release-tag>" "<image declared by the sidecar service>"
+docker compose -p "$PRINTBUDDY_COMPOSE_PROJECT" -f "$PRINTBUDDY_COMPOSE_FILE" up -d --force-recreate <sidecar service>
+```
+
+So a compose file on `:latest` runs the sidecar that belongs to the installed
+beta. Releases published before sidecar images carried release tags fall back
+to the plain `pull` / `up -d` above.
+
 Only services whose image is listed in `PRINTBUDDY_ALLOWED_SIDECAR_IMAGES`
 (default: `docker.io/vmhomelabde/printbuddy-orca-slicer-api` and
 `docker.io/vmhomelabde/printbuddy-bambu-studio-api`) are touched. A failed

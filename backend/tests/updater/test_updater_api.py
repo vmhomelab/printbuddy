@@ -252,3 +252,109 @@ async def test_sidecar_update_can_be_disabled(monkeypatch, isolated_settings):
     job = get_job_store().get(response.json()["job_id"])
     await job.task
     assert [argv[-1] for argv in recorded] == ["printbuddy", "printbuddy"]
+
+
+@pytest.mark.asyncio
+async def test_targeted_release_installs_the_sidecars_of_that_release(monkeypatch):
+    recorded = []
+
+    async def fake_run_command(argv, *, timeout_seconds):
+        recorded.append(argv)
+        if argv[-2:] == ["--format", "json"]:
+            return 0, COMPOSE_WITH_SIDECARS, ""
+        return 0, "ok", ""
+
+    monkeypatch.setattr("updater.app.jobs.run_command", fake_run_command)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/update",
+            headers={"Authorization": "Bearer secret-token"},
+            json={"target_image": "docker.io/vmhomelabde/printbuddy:v0.2.5.4b5"},
+        )
+
+    job = get_job_store().get(response.json()["job_id"])
+    await job.task
+    base = ["docker", "compose", "-p", "printbuddy", "-f", str(job.compose_file)]
+    assert job.status == "completed"
+    assert job.message == "Container recreated"
+    # After Printbuddy's four targeted steps: each sidecar gets the image
+    # published for the same release, retagged as its compose image.
+    assert recorded[4:] == [
+        [*base, "config", "--format", "json"],
+        ["docker", "pull", "vmhomelabde/printbuddy-bambu-studio-api:v0.2.5.4b5"],
+        [
+            "docker",
+            "tag",
+            "vmhomelabde/printbuddy-bambu-studio-api:v0.2.5.4b5",
+            "vmhomelabde/printbuddy-bambu-studio-api:dev",
+        ],
+        [*base, "up", "-d", "--force-recreate", "bambu-studio-api"],
+        ["docker", "pull", "docker.io/vmhomelabde/printbuddy-orca-slicer-api:v0.2.5.4b5"],
+        [
+            "docker",
+            "tag",
+            "docker.io/vmhomelabde/printbuddy-orca-slicer-api:v0.2.5.4b5",
+            "docker.io/vmhomelabde/printbuddy-orca-slicer-api:latest",
+        ],
+        [*base, "up", "-d", "--force-recreate", "orca-slicer-api"],
+    ]
+
+
+@pytest.mark.asyncio
+async def test_targeted_release_without_sidecar_tags_falls_back_to_compose_pull(monkeypatch):
+    """Releases published before the sidecars got release tags."""
+    recorded = []
+
+    async def fake_run_command(argv, *, timeout_seconds):
+        recorded.append(argv)
+        if argv[-2:] == ["--format", "json"]:
+            return 0, COMPOSE_WITH_SIDECARS, ""
+        if argv[:2] == ["docker", "pull"] and argv[2].endswith(":v0.2.5.1b13") and "printbuddy-" in argv[2]:
+            return 1, "", "manifest unknown"
+        return 0, "ok", ""
+
+    monkeypatch.setattr("updater.app.jobs.run_command", fake_run_command)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/update",
+            headers={"Authorization": "Bearer secret-token"},
+            json={"target_image": "docker.io/vmhomelabde/printbuddy:v0.2.5.1b13"},
+        )
+
+    job = get_job_store().get(response.json()["job_id"])
+    await job.task
+    base = ["docker", "compose", "-p", "printbuddy", "-f", str(job.compose_file)]
+    assert job.status == "completed"
+    assert job.message == "Container recreated"
+    assert recorded[5:] == [
+        ["docker", "pull", "vmhomelabde/printbuddy-bambu-studio-api:v0.2.5.1b13"],
+        [*base, "pull", "bambu-studio-api"],
+        [*base, "up", "-d", "bambu-studio-api"],
+        ["docker", "pull", "docker.io/vmhomelabde/printbuddy-orca-slicer-api:v0.2.5.1b13"],
+        [*base, "pull", "orca-slicer-api"],
+        [*base, "up", "-d", "orca-slicer-api"],
+    ]
+    skipped = [step.name for step in job.steps if step.status == "skipped"]
+    assert skipped == [
+        "docker pull vmhomelabde/printbuddy-bambu-studio-api:v0.2.5.1b13",
+        "docker pull docker.io/vmhomelabde/printbuddy-orca-slicer-api:v0.2.5.1b13",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("target", "tag"),
+    [
+        ("docker.io/vmhomelabde/printbuddy:v0.2.5.4b5", "v0.2.5.4b5"),
+        ("vmhomelabde/printbuddy:v1.0.0", "v1.0.0"),
+        ("docker.io/vmhomelabde/printbuddy:latest", None),
+        ("docker.io/vmhomelabde/printbuddy", None),
+        ("localhost:5000/printbuddy", None),
+        (None, None),
+    ],
+)
+def test_release_tag(target, tag):
+    from updater.app.jobs import release_tag
+
+    assert release_tag(target) == tag
