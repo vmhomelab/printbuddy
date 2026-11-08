@@ -43,6 +43,7 @@ from backend.app.services.spoolman import (
     get_spoolman_client,
     init_spoolman_client,
 )
+from backend.app.services.spoolman_extra_keys import SLICER_FILAMENT_KEY, SLICER_FILAMENT_NAME_KEY
 from backend.app.services.spoolman_location_sync import spools_in_slots, sync_spool_locations
 from backend.app.services.spoolman_slot_sync import write_slot_results
 from backend.app.utils.filament_ids import (
@@ -201,7 +202,7 @@ async def connect_spoolman(
         if not field_ok:
             logger.error("Spoolman tag extra field registration failed — NFC tag links may not persist")
         # Register slicer-preset extra fields (Spoolman rejects unknown extra keys).
-        for field_name in ("bambu_slicer_filament", "bambu_slicer_filament_name"):
+        for field_name in (SLICER_FILAMENT_KEY, SLICER_FILAMENT_NAME_KEY):
             if not await client.ensure_extra_field(field_name):
                 logger.warning(
                     "Spoolman extra field %r registration failed — spool slicer-preset edits will return 502",

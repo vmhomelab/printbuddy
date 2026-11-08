@@ -14,6 +14,16 @@ from typing import Any
 from typing_extensions import TypedDict
 
 from backend.app.api.routes._url_safety import assert_safe_lan_service_url
+from backend.app.services.spoolman_extra_keys import (
+    COLOR_NAME_KEY,
+    LAST_DRIED_AT_KEY,
+    LAST_DRIED_HOURS_KEY,
+    LAST_DRIED_TEMP_KEY,
+    SLICER_FILAMENT_KEY,
+    SLICER_FILAMENT_NAME_KEY,
+    WEIGHT_USED_BASELINE_KEY,
+    extra_raw,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -259,9 +269,10 @@ def _extract_extra_str(extra: dict, key: str) -> str:
     Spoolman stores extra values as JSON-stringified text — a stored string
     "GFL05" appears as `'"GFL05"'` (six chars including the quotes). This
     unwraps that, returning the bare string. Returns "" for missing keys,
-    non-strings, or invalid JSON.
+    non-strings, or invalid JSON. A Printbuddy key the spool lacks is read from
+    its old ``bambu_*`` name (``spoolman_extra_keys.extra_raw``).
     """
-    raw = extra.get(key)
+    raw = extra_raw(extra, key)
     if not isinstance(raw, str):
         return ""
     try:
@@ -276,15 +287,15 @@ def _extract_extra_str(extra: dict, key: str) -> str:
 # used_weight had when the user last pressed "Reset usage to 0". Displayed
 # consumed is used_weight minus this, which is what internal mode has always
 # done with its own weight_used_baseline column (#1644). See #2906.
-BAMBU_WEIGHT_USED_BASELINE_KEY = "bambu_weight_used_baseline"
+BAMBU_WEIGHT_USED_BASELINE_KEY = WEIGHT_USED_BASELINE_KEY
 
 
 # Spool.extra keys holding when the spool was last dried, the target °C and the
 # hours the cycle ran (#2863). Written by services/spool_drying.py and the
 # spool update route; an empty string means unknown or cleared.
-BAMBU_LAST_DRIED_AT_KEY = "bambu_last_dried_at"
-BAMBU_LAST_DRIED_TEMP_KEY = "bambu_last_dried_temp"
-BAMBU_LAST_DRIED_HOURS_KEY = "bambu_last_dried_hours"
+BAMBU_LAST_DRIED_AT_KEY = LAST_DRIED_AT_KEY
+BAMBU_LAST_DRIED_TEMP_KEY = LAST_DRIED_TEMP_KEY
+BAMBU_LAST_DRIED_HOURS_KEY = LAST_DRIED_HOURS_KEY
 
 
 def _extract_extra_float(extra: dict, key: str) -> float | None:
@@ -294,9 +305,9 @@ def _extract_extra_float(extra: dict, key: str) -> float | None:
     extra values as JSON text, so 250.0 is stored as ``"250.0"``. Returns
     ``None`` for missing keys, non-finite values, or anything that does not
     decode to a number, so the caller can tell "no baseline recorded" from
-    "a baseline of zero".
+    "a baseline of zero". Old ``bambu_*`` keys are read as for strings.
     """
-    raw = extra.get(key)
+    raw = extra_raw(extra, key)
     if raw is None:
         return None
     if isinstance(raw, (int, float)) and not isinstance(raw, bool):
@@ -482,7 +493,7 @@ def _map_spoolman_spool(spool: dict) -> MappedSpoolFields:
     # never actually persisted from the user's edits.
     #
     # We persist it ourselves under spool.extra.bambu_color_name (JSON-encoded
-    # string, same pattern as bambu_slicer_filament). Read order:
+    # string, same pattern as printbuddy_slicer_filament). Read order:
     #   1. spool.extra.bambu_color_name (the canonical store)
     #   2. filament.color_name (forward-compat — picks up the value if a
     #      future Spoolman release adds the field, or if an admin populated
@@ -493,7 +504,7 @@ def _map_spoolman_spool(spool: dict) -> MappedSpoolFields:
     # color_name_is_synthesized = True only when we fell back to subtype.
     # The edit form uses it to leave the input blank, so the user doesn't
     # round-trip the synth value back as if they had set it.
-    extra_color_name = _extract_extra_str(extra, "bambu_color_name") or None
+    extra_color_name = _extract_extra_str(extra, COLOR_NAME_KEY) or None
     stored_color_name = extra_color_name or (filament.get("color_name") or None)
     color_name: str | None = stored_color_name or subtype or None
     color_name_is_synthesized: bool = stored_color_name is None and color_name is not None
@@ -525,12 +536,12 @@ def _map_spoolman_spool(spool: dict) -> MappedSpoolFields:
         "last_scale_weight": None,
         "last_weighed_at": None,
         # BambuStudio slicer preset — Spoolman has no native field, so the
-        # update endpoint persists these under bambu_slicer_filament[_name]
+        # update endpoint persists these under printbuddy_slicer_filament[_name]
         # in the spool's extra dict. Values are JSON-encoded strings; an
         # empty string ("") means cleared. Falls back to Spoolman's
         # filament_name for slicer_filament_name when nothing is stored.
-        "slicer_filament": (_extract_extra_str(extra, "bambu_slicer_filament") or None),
-        "slicer_filament_name": (_extract_extra_str(extra, "bambu_slicer_filament_name") or (filament_name or None)),
+        "slicer_filament": (_extract_extra_str(extra, SLICER_FILAMENT_KEY) or None),
+        "slicer_filament_name": (_extract_extra_str(extra, SLICER_FILAMENT_NAME_KEY) or (filament_name or None)),
         "nozzle_temp_min": nozzle_temp_min,
         "nozzle_temp_max": None,
         "note": spool.get("comment") or None,

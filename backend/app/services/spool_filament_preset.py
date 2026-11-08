@@ -128,7 +128,7 @@ async def resolve_spoolman_preset(
     return _pick(list(result.scalars().all()), printer_model, nozzle_diameter, (fallback_filament, fallback_name))
 
 
-# A Spoolman spool's own preset lives in Spoolman (extra.bambu_slicer_filament),
+# A Spoolman spool's own preset lives in Spoolman (extra.printbuddy_slicer_filament),
 # so reading it costs a request. Kept briefly per spool: the K-profile drift
 # check asks on AMS pushes, and a preset changed in Spoolman itself applies
 # within a minute. Printbuddy's own edits drop the entry at once.

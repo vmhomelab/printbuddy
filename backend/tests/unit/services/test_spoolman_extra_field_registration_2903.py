@@ -312,10 +312,10 @@ class TestEveryWritePathThatCarriesExtra:
 
         await client.merge_spool_extra(
             spool["id"],
-            {"bambu_slicer_filament": json.dumps("GFA00"), "bambu_color_name": json.dumps("Black")},
+            {"printbuddy_slicer_filament": json.dumps("GFA00"), "bambu_color_name": json.dumps("Black")},
         )
 
-        assert {"bambu_slicer_filament", "bambu_color_name"} <= fake.registered
+        assert {"printbuddy_slicer_filament", "bambu_color_name"} <= fake.registered
 
 
 class TestWhenRegistrationItselfFails:

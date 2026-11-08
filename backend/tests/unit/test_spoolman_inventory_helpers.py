@@ -599,7 +599,7 @@ class TestMapSpoolmanSpoolSlicerFilament:
     """slicer_filament round-trip via Spoolman extra dict.
 
     Spoolman has no native slicer_filament field, so we persist BambuStudio
-    presets under bambu_slicer_filament[_name] keys in the spool's extra
+    presets under printbuddy_slicer_filament[_name] keys in the spool's extra
     dict (JSON-encoded strings, like every Spoolman extra value). The map
     function unwraps those values and exposes them as slicer_filament /
     slicer_filament_name on the InventorySpool shape. Without this round-trip
@@ -610,8 +610,8 @@ class TestMapSpoolmanSpoolSlicerFilament:
         spool = {
             **MINIMAL_SPOOL,
             "extra": {
-                "bambu_slicer_filament": '"PFUSf543b298f8ea66"',
-                "bambu_slicer_filament_name": '"Devil Design PLA Basic @Bambu Lab H2D 0.4 nozzle (Custom)"',
+                "printbuddy_slicer_filament": '"PFUSf543b298f8ea66"',
+                "printbuddy_slicer_filament_name": '"Devil Design PLA Basic @Bambu Lab H2D 0.4 nozzle (Custom)"',
             },
         }
         result = _map_spoolman_spool(spool)
@@ -619,7 +619,7 @@ class TestMapSpoolmanSpoolSlicerFilament:
         assert result["slicer_filament_name"] == "Devil Design PLA Basic @Bambu Lab H2D 0.4 nozzle (Custom)"
 
     def test_slicer_filament_falls_back_to_filament_name(self):
-        # Spool has no bambu_slicer_filament_name override → use Spoolman's filament.name
+        # Spool has no printbuddy_slicer_filament_name override → use Spoolman's filament.name
         spool = {**MINIMAL_SPOOL, "extra": {}}
         result = _map_spoolman_spool(spool)
         assert result["slicer_filament"] is None
@@ -630,8 +630,8 @@ class TestMapSpoolmanSpoolSlicerFilament:
         spool = {
             **MINIMAL_SPOOL,
             "extra": {
-                "bambu_slicer_filament": '""',
-                "bambu_slicer_filament_name": '""',
+                "printbuddy_slicer_filament": '""',
+                "printbuddy_slicer_filament_name": '""',
             },
         }
         result = _map_spoolman_spool(spool)
@@ -644,7 +644,7 @@ class TestMapSpoolmanSpoolSlicerFilament:
         # (older data, manual writes via Spoolman UI, etc.)
         spool = {
             **MINIMAL_SPOOL,
-            "extra": {"bambu_slicer_filament": "GFL05"},
+            "extra": {"printbuddy_slicer_filament": "GFL05"},
         }
         result = _map_spoolman_spool(spool)
         assert result["slicer_filament"] == "GFL05"

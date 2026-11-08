@@ -16,6 +16,7 @@ from sqlalchemy import delete, select, update
 from backend.app.models.settings import Settings
 from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
 from backend.app.services.spoolman import SpoolmanNotFoundError
+from backend.app.services.spoolman_extra_keys import FIELD_NAMES
 from backend.app.services.spoolman_location_sync import (
     PREV_LOCATION_KEY,
     SLOT_KEY,
@@ -170,7 +171,7 @@ async def test_a_non_bambu_slot_is_labelled_from_the_live_units(db_session, prin
         await sync_spool_locations([1], db=db_session, client=client)
 
     assert client.location(1) == "K2 Plus"
-    assert client.extra(1, SLOT_KEY) == "CFS T2A"
+    assert client.extra(1, SLOT_KEY) == "K2 Plus · CFS T2A"
 
 
 async def test_printer_location_is_the_trimmed_printer_name():
@@ -207,8 +208,8 @@ async def test_assign_sets_printer_name_and_slot_and_keeps_previous(db_session, 
 
     assert client.location(1) == "3DP-039-006"
     assert client.extra(1, PREV_LOCATION_KEY) == "Dry Box"
-    assert client.extra(1, SLOT_KEY) == "AMS 1 · Slot 2"
-    assert client.fields[SLOT_KEY] == "Slot"
+    assert client.extra(1, SLOT_KEY) == "3DP-039-006 · AMS 1 · Slot 2"
+    assert FIELD_NAMES[SLOT_KEY] == "Slot"
 
     await _unassign(db_session, 1)
     await sync_spool_locations([1], db=db_session, client=client)
@@ -225,7 +226,7 @@ async def test_unassign_without_previous_location_clears_it(db_session, printer_
     await _assign(db_session, printer.id, 2, ams_id=255, tray_id=0)
     await sync_spool_locations([2], db=db_session, client=client)
     assert client.location(2) == "impresore"
-    assert client.extra(2, SLOT_KEY) == "External"
+    assert client.extra(2, SLOT_KEY) == "impresore · External"
 
     await _unassign(db_session, 2)
     await sync_spool_locations([2], db=db_session, client=client)
@@ -265,7 +266,7 @@ async def test_move_between_printers_keeps_the_original_location(db_session, pri
 
     assert client.location(1) == "impresore"
     assert client.extra(1, PREV_LOCATION_KEY) == "Dry Box"
-    assert client.extra(1, SLOT_KEY) == "External"
+    assert client.extra(1, SLOT_KEY) == "impresore · External"
 
     await _unassign(db_session, 1)
     await sync_spool_locations([1], db=db_session, client=client)
@@ -288,7 +289,7 @@ async def test_another_slot_of_the_same_printer_keeps_the_location(db_session, p
 
     assert client.location(1) == "3DP-039-006"
     assert client.extra(1, PREV_LOCATION_KEY) == "Dry Box"
-    assert client.extra(1, SLOT_KEY) == "AMS 1 · Slot 1"
+    assert client.extra(1, SLOT_KEY) == "3DP-039-006 · AMS 1 · Slot 1"
 
 
 async def test_an_older_slot_marker_is_not_kept_as_previous_location(db_session, printer_factory):
@@ -358,8 +359,21 @@ async def test_backfill_writes_each_assigned_spool_once(db_session, printer_fact
     assert await backfill_spool_locations(db=db_session, client=client) == 3
     assert [client.location(i) for i in (1, 2, 3)] == ["3DP-039-006", "3DP-039-006", "impresore"]
     assert [client.extra(i, PREV_LOCATION_KEY) for i in (1, 2, 3)] == ["Dry Box", None, "Box"]
-    assert client.extra(2, SLOT_KEY) == "AMS 1 · Slot 2"
+    assert client.extra(2, SLOT_KEY) == "3DP-039-006 · AMS 1 · Slot 2"
 
+    assert await backfill_spool_locations(db=db_session, client=client) == 0
+
+
+async def test_backfill_rewrites_slot_values_without_the_printer_name(db_session, printer_factory):
+    await _settings(db_session)
+    printer = await printer_factory(name="voron", provider="klipper")
+    client = FakeSpoolman(s1="voron")
+    client.spools[1]["extra"] = {SLOT_KEY: json.dumps("AMS 1 · Slot 1"), PREV_LOCATION_KEY: json.dumps("Box")}
+    await _assign(db_session, printer.id, 1, ams_id=0, tray_id=0)
+
+    assert await backfill_spool_locations(db=db_session, client=client) == 1
+    assert client.extra(1, SLOT_KEY) == "voron · Slot 1"  # offline Klipper: no unit to name it
+    assert client.extra(1, PREV_LOCATION_KEY) == "Box"
     assert await backfill_spool_locations(db=db_session, client=client) == 0
 
 
@@ -430,7 +444,7 @@ async def test_assign_and_unassign_routes(async_client: AsyncClient, db_session,
     )
     assert response.status_code == 200
     assert response.json()["storage_location"] == "3DP-039-006"
-    assert route_client.extra(10, SLOT_KEY) == "AMS 1 · Slot 3"
+    assert route_client.extra(10, SLOT_KEY) == "3DP-039-006 · AMS 1 · Slot 3"
 
     # Another spool takes the slot: the first one goes back to its box.
     response = await async_client.post(
@@ -491,6 +505,8 @@ async def test_renaming_a_printer_renames_the_spoolman_location(
     assert response.status_code == 200
     assert route_client.renames == [("3DP-039-006", "3DP-039-007")]
     assert route_client.location(10) == "3DP-039-007"
+    assert route_client.extra(10, SLOT_KEY) == "3DP-039-007 · AMS 1 · Slot 1"
+    assert route_client.extra(10, PREV_LOCATION_KEY) == "Dry Box"
     assert route_client.location(11) == "Box"
 
 

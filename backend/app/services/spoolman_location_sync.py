@@ -3,8 +3,8 @@
 A Printbuddy addition, on by default (setting ``spoolman_sync_location``) and
 only in Spoolman mode. While a spool is assigned to a slot, its Spoolman
 location is the name of that slot's printer, so Spoolman shows which printer a
-spool is loaded in, and its ``extra.printbuddy_slot`` names the slot ("AMS 1 ·
-Slot 2"). The location the spool had before is kept in its
+spool is loaded in, and its ``extra.printbuddy_slot`` names the printer and
+slot ("3DP-039-006 · AMS 1 · Slot 2", so Spoolman can group by it). The location the spool had before is kept in its
 ``extra.printbuddy_prev_location`` and put back once no slot holds the spool.
 
 Callers do not say what changed, only which spools a write touched, after the
@@ -16,7 +16,7 @@ backfill all share it, and two calls for one spool cannot leave a stale result.
 Rules, per spool:
 
 - Assigned (to any slot; the most recently assigned one wins): the location
-  becomes that printer's name and ``printbuddy_slot`` that slot's label. The
+  becomes that printer's name and ``printbuddy_slot`` "<printer> · <slot>". The
   current location is stored as the previous one only when it is not already a
   printer location, so a move from printer A to printer B, or between two slots
   of one printer, keeps the original storage place.
@@ -47,14 +47,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.printer import Printer
 from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
+from backend.app.services.spoolman_extra_keys import PREV_LOCATION_KEY, SLOT_KEY
 
 logger = logging.getLogger(__name__)
 
 SETTING_KEY = "spoolman_sync_location"
-PREV_LOCATION_KEY = "printbuddy_prev_location"
-SLOT_KEY = "printbuddy_slot"
-# Names Spoolman shows for the extra fields, when they are created.
-_FIELD_NAMES = {PREV_LOCATION_KEY: "Printbuddy previous location", SLOT_KEY: "Slot"}
 
 Slot = tuple[int, int, int]  # (printer_id, ams_id, tray_id)
 
@@ -103,7 +100,7 @@ def slot_label(
     unit: dict | None = None,
     tray: dict | None = None,
 ) -> str:
-    """A slot as the printer's card names it, for ``extra.printbuddy_slot``.
+    """A slot as the printer's card names it; ``slot_value`` prefixes the printer.
 
     Bambu: "AMS 1 · Slot 2", "AMS HT 1", "External", "External 2". Other
     providers by their own terms, read from the unit and tray they report
@@ -117,6 +114,11 @@ def slot_label(
     else:
         label = _other_slot_label(ams_id, tray_id, unit, tray)
     return label or f"Slot {(max(ams_id, 0) * 4) + tray_id + 1}"
+
+
+def slot_value(printer_name: str | None, label: str) -> str:
+    """The stored ``printbuddy_slot``: "<printer> · <slot label>", so slots group across printers."""
+    return f"{printer_location(printer_name)} · {label}"
 
 
 def _live_unit_tray(printer_id: int, ams_id: int, tray_id: int) -> tuple[dict | None, dict | None]:
@@ -173,9 +175,9 @@ def _lock(spool_id: int) -> asyncio.Lock:
 
 
 async def _ensure_fields(client, extra: dict) -> None:
-    """Register the extra fields a write carries, under a readable name."""
+    """Register the extra fields a write carries (named from ``FIELD_NAMES``)."""
     for key in extra:
-        await client.ensure_extra_field(key, display_name=_FIELD_NAMES.get(key))
+        await client.ensure_extra_field(key)
 
 
 async def is_enabled(db: AsyncSession) -> bool:
@@ -228,7 +230,8 @@ async def _target(db: AsyncSession, spool_id: int) -> tuple[str, str] | None:
     unit, tray = (
         (None, None) if (provider or "bambu").lower() == "bambu" else _live_unit_tray(printer_id, ams_id, tray_id)
     )
-    return printer_location(name), slot_label(ams_id, tray_id, provider=provider, unit=unit, tray=tray)
+    label = slot_label(ams_id, tray_id, provider=provider, unit=unit, tray=tray)
+    return printer_location(name), slot_value(name, label)
 
 
 async def _sync_one(client, db: AsyncSession, spool_id: int, printer_names: list[str]) -> dict | None:
@@ -349,8 +352,15 @@ async def backfill_spool_locations(*, db: AsyncSession | None = None, client=Non
         return len(await sync_spool_locations(await _assigned(own_db), db=own_db, client=client))
 
 
-async def rename_printer_location(old_name: str | None, new_name: str | None, *, db: AsyncSession, client=None) -> None:
-    """Move the Spoolman spools at a renamed printer's old name to its new one. Never raises."""
+async def rename_printer_location(
+    printer_id: int, old_name: str | None, new_name: str | None, *, db: AsyncSession, client=None
+) -> None:
+    """Follow a printer rename in Spoolman. Never raises.
+
+    Spools whose location is the old name get the new one (Spoolman's bulk
+    location rename), and the spools assigned to the printer get their slot
+    value rewritten, as it starts with the printer's name.
+    """
     old, new = printer_location(old_name), printer_location(new_name)
     if not old or not new or old == new:
         return
@@ -363,7 +373,16 @@ async def rename_printer_location(old_name: str | None, new_name: str | None, *,
             client = await get_spoolman_client()
         if client is None:
             return
-        await client.rename_location(old, new)
-        logger.info("Renamed Spoolman location %r to %r after the printer was renamed", old, new)
+        try:
+            await client.rename_location(old, new)
+            logger.info("Renamed Spoolman location %r to %r after the printer was renamed", old, new)
+        except Exception as e:  # noqa: BLE001 — the per-spool sync below still moves the loaded ones
+            logger.warning("Could not rename Spoolman location %r to %r: %s", old, new, e)
+        loaded = (
+            await db.execute(
+                select(SpoolmanSlotAssignment.spoolman_spool_id).where(SpoolmanSlotAssignment.printer_id == printer_id)
+            )
+        ).scalars()
+        await sync_spool_locations(set(loaded), db=db, client=client, also_printer_names=[old])
     except Exception as e:  # noqa: BLE001 — the rename itself is already saved
-        logger.warning("Could not rename Spoolman location %r to %r: %s", old, new, e)
+        logger.warning("Could not follow the rename of printer %s in Spoolman: %s", printer_id, e)

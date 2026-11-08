@@ -791,7 +791,7 @@ async def update_printer(
         # (spoolman_sync_location): they follow the rename.
         from backend.app.services.spoolman_location_sync import rename_printer_location
 
-        await rename_printer_location(old_name, printer.name, db=db)
+        await rename_printer_location(printer_id, old_name, printer.name, db=db)
 
     if access_moved:
         await ws_manager.refresh_printer_scopes()

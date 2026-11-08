@@ -56,8 +56,8 @@ class TestAutoCreate:
     async def test_a_bambu_tray_s_preset_is_stored_with_its_name(self, client):
         create, fill = await _create(client, _tray())
         extra = create.call_args.kwargs["extra"]
-        assert extra["bambu_slicer_filament"] == json.dumps("GFA00")
-        assert extra["bambu_slicer_filament_name"] == json.dumps("Bambu PLA Basic")
+        assert extra["printbuddy_slicer_filament"] == json.dumps("GFA00")
+        assert extra["printbuddy_slicer_filament_name"] == json.dumps("Bambu PLA Basic")
         # The tag's preset is the spool's, so a profile default's is not applied.
         assert fill.call_args.kwargs["include_slicer"] is False
 
@@ -65,14 +65,14 @@ class TestAutoCreate:
     async def test_an_unlisted_preset_is_named_by_the_sub_brand(self, client):
         create, _ = await _create(client, _tray(preset="GFZ77", sub_brands="PLA Something"))
         extra = create.call_args.kwargs["extra"]
-        assert extra["bambu_slicer_filament"] == json.dumps("GFZ77")
-        assert extra["bambu_slicer_filament_name"] == json.dumps("PLA Something")
+        assert extra["printbuddy_slicer_filament"] == json.dumps("GFZ77")
+        assert extra["printbuddy_slicer_filament_name"] == json.dumps("PLA Something")
 
     @pytest.mark.asyncio
     async def test_a_third_party_tag_gets_no_preset(self, client):
         create, fill = await _create(client, _tray(preset="", uuid="0" * 32, tag="0A1B2C3D4E5F6071"))
         extra = create.call_args.kwargs["extra"]
-        assert "bambu_slicer_filament" not in extra
+        assert "printbuddy_slicer_filament" not in extra
         assert fill.call_args.kwargs["include_slicer"] is True
 
 
@@ -93,17 +93,20 @@ class TestExistingSpool:
         merge, _, _ = await self._sync(client, {"id": 6, "extra": {"tag": json.dumps(UUID)}})
         merge.assert_awaited_once_with(
             6,
-            {"bambu_slicer_filament": json.dumps("GFA00"), "bambu_slicer_filament_name": json.dumps("Bambu PLA Basic")},
+            {
+                "printbuddy_slicer_filament": json.dumps("GFA00"),
+                "printbuddy_slicer_filament_name": json.dumps("Bambu PLA Basic"),
+            },
         )
 
     @pytest.mark.asyncio
     async def test_an_empty_preset_counts_as_none(self, client):
-        merge, _, _ = await self._sync(client, {"id": 6, "extra": {"bambu_slicer_filament": json.dumps("")}})
+        merge, _, _ = await self._sync(client, {"id": 6, "extra": {"printbuddy_slicer_filament": json.dumps("")}})
         merge.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_a_preset_set_by_hand_stays(self, client):
-        merge, _, _ = await self._sync(client, {"id": 6, "extra": {"bambu_slicer_filament": json.dumps("GFA01")}})
+        merge, _, _ = await self._sync(client, {"id": 6, "extra": {"printbuddy_slicer_filament": json.dumps("GFA01")}})
         merge.assert_not_awaited()
 
     @pytest.mark.asyncio

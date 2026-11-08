@@ -1,6 +1,6 @@
 """A Spoolman spool's own slicer preset is used for its slot.
 
-The spool keeps its preset in Spoolman (extra.bambu_slicer_filament). Configure
+The spool keeps its preset in Spoolman (extra.printbuddy_slicer_filament). Configure
 AMS Slot and the K-profile lookup passed no fallback for a Spoolman spool, so
 one without a per-model override opened with no preset and the K-profile
 matched against the tray's own filament id. Read from Spoolman, remembered for
@@ -23,8 +23,8 @@ SPOOL = {
     "used_weight": 200.0,
     "archived": False,
     "extra": {
-        "bambu_slicer_filament": '"GFA01"',
-        "bambu_slicer_filament_name": '"Bambu PLA Matte @BBL X1C"',
+        "printbuddy_slicer_filament": '"GFA01"',
+        "printbuddy_slicer_filament_name": '"Bambu PLA Matte @BBL X1C"',
     },
 }
 
@@ -153,7 +153,7 @@ async def test_the_k_profile_filament_id_is_the_one_the_printer_takes(
     by its number, which only the slicer resolver turns into a filament id."""
     from backend.app.services.slot_kprofile import find_slot_kprofile_for_extruder
 
-    spoolman.get_spool = AsyncMock(return_value={**SPOOL, "extra": {"bambu_slicer_filament": stored}})
+    spoolman.get_spool = AsyncMock(return_value={**SPOOL, "extra": {"printbuddy_slicer_filament": stored}})
 
     profile = await find_slot_kprofile_for_extruder(db_session, spoolman_slot, 0, 0, 0, "0.4", "X1C", None)
 

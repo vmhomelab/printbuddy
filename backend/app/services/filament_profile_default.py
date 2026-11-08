@@ -27,6 +27,7 @@ from backend.app.models.spool import Spool
 from backend.app.models.spool_filament_preset import SpoolFilamentPreset, SpoolmanFilamentPreset
 from backend.app.models.spool_k_profile import SpoolKProfile
 from backend.app.models.spoolman_k_profile import SpoolmanKProfile
+from backend.app.services.spoolman_extra_keys import SLICER_FILAMENT_KEY, SLICER_FILAMENT_NAME_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -358,9 +359,9 @@ async def fill_auto_added_spoolman_spool(spool: dict, client=None, *, include_sl
             if await fill_spoolman_rows(db, mapped["id"], resolved):
                 await db.commit()
         if include_slicer and client is not None and resolved.slicer_filament and not mapped["slicer_filament"]:
-            extra = {"bambu_slicer_filament": json.dumps(resolved.slicer_filament)}
+            extra = {SLICER_FILAMENT_KEY: json.dumps(resolved.slicer_filament)}
             if resolved.slicer_filament_name:
-                extra["bambu_slicer_filament_name"] = json.dumps(resolved.slicer_filament_name)
+                extra[SLICER_FILAMENT_NAME_KEY] = json.dumps(resolved.slicer_filament_name)
             for name in extra:
                 await client.ensure_extra_field(name)
             await client.merge_spool_extra(mapped["id"], extra)

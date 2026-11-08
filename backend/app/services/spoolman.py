@@ -13,6 +13,14 @@ import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.services.color_catalog_lookup import CatalogColor, best_product_line_match, resolve_bambu_color
+from backend.app.services.spoolman_extra_keys import (
+    COLOR_NAME_KEY,
+    FIELD_NAMES,
+    SLICER_FILAMENT_KEY,
+    SLICER_FILAMENT_NAME_KEY,
+    WEIGHT_USED_BASELINE_KEY,
+    extra_raw,
+)
 from backend.app.utils.color_utils import color_match_key, spoolman_color_hex
 
 logger = logging.getLogger(__name__)
@@ -26,11 +34,11 @@ TAG_API_RECHECK_SECONDS = 600
 # Spoolman is still picked up without a restart.
 TAG_REFUSAL_RETRY_SECONDS = 600
 
-# Spool.extra key holding the consumed-counter baseline. Defined here rather
-# than imported from the routes package so the client does not depend on it;
-# _spoolman_helpers declares the same name for the read side (#2906), and
-# test_spoolman_reset_baseline_2906.py asserts the two are equal.
-BAMBU_WEIGHT_USED_BASELINE_KEY = "bambu_weight_used_baseline"
+# Spool.extra key holding the consumed-counter baseline. Taken from
+# spoolman_extra_keys rather than the routes package so the client does not
+# depend on it; _spoolman_helpers declares the same name for the read side
+# (#2906), and test_spoolman_reset_baseline_2906.py asserts the two are equal.
+BAMBU_WEIGHT_USED_BASELINE_KEY = WEIGHT_USED_BASELINE_KEY
 
 
 @dataclass
@@ -84,9 +92,9 @@ def _tray_preset_extra(tray: AMSTray) -> dict:
     except Exception:  # noqa: BLE001 - a display name; the preset is what counts
         name = None
     name = name or (tray.tray_sub_brands or "").strip() or None
-    fields = {"bambu_slicer_filament": json.dumps(preset)}
+    fields = {SLICER_FILAMENT_KEY: json.dumps(preset)}
     if name:
-        fields["bambu_slicer_filament_name"] = json.dumps(name)
+        fields[SLICER_FILAMENT_NAME_KEY] = json.dumps(name)
     return fields
 
 
@@ -132,6 +140,8 @@ class SpoolmanClient:
         # Without it a client registering three brand-new fields re-read the
         # whole listing before each one.
         self._extra_fields_listed = False
+        # The listing's field definitions by key, as last read.
+        self._extra_field_defs: dict[str, dict] = {}
         self._ensure_extra_lock = asyncio.Lock()
         # Whether this server links tags natively (Spoolman 0.27+), None until asked.
         # Per instance like the field cache above: a client for another URL asks again.
@@ -744,7 +754,7 @@ class SpoolmanClient:
                 # would never land. It has to be right the first time:
                 # add_or_update_extra_field refuses to change a field's type
                 # afterwards, so one numeric write would pin the key to text on
-                # that install permanently. tag, bambu_color_name and both
+                # that install permanently. tag, the colour name and both
                 # slicer keys already store the string form for this reason.
                 BAMBU_WEIGHT_USED_BASELINE_KEY: json.dumps(str(baseline)),
             }
@@ -815,7 +825,7 @@ class SpoolmanClient:
         if not fields:
             return
         extra = spool.get("extra") or {}
-        current = extra.get("bambu_slicer_filament") if isinstance(extra, dict) else None
+        current = extra_raw(extra, SLICER_FILAMENT_KEY)
         try:
             if isinstance(current, str) and json.loads(current):
                 return
@@ -1182,13 +1192,74 @@ class SpoolmanClient:
         # Match on `key`, not `name`: `key` is the identifier the extra dict is
         # written under and the one Printbuddy cares about, while `name` is the
         # free-text label a user is free to change in Spoolman's UI.
-        return {f["key"] for f in fields if isinstance(f, dict) and isinstance(f.get("key"), str)}
+        self._extra_field_defs = {f["key"]: f for f in fields if isinstance(f, dict) and isinstance(f.get("key"), str)}
+        return set(self._extra_field_defs)
+
+    async def name_default_named_fields(self) -> int:
+        """Give Printbuddy's fields that still carry their key as name a readable one.
+
+        Only a field whose name is still its key, which is what Printbuddy used
+        to create, is renamed: a name the user chose in Spoolman stays (#2983).
+        Spoolman's POST is an upsert, so the definition is sent back whole --
+        same key, type, default and choices -- with only the name changed; no
+        spool value is touched. Run once at start, with the key migration.
+        Best effort; returns how many were named.
+        """
+        if await self._load_existing_extra_field_keys() is None:
+            return 0
+        named = 0
+        client = await self._get_client()
+        for key, label in FIELD_NAMES.items():
+            field = self._extra_field_defs.get(key)
+            # Without its type the definition cannot be sent back unchanged,
+            # and Spoolman refuses a type change anyway: leave it.
+            if not field or field.get("name") != key or not field.get("field_type"):
+                continue
+            body = {
+                k: field[k]
+                for k in ("order", "unit", "field_type", "default_value", "choices", "multi_choice")
+                if field.get(k) is not None
+            }
+            body["name"] = label
+            try:
+                response = await client.post(f"{self.api_url}/field/spool/{key}", json=body)
+                if response.status_code in (200, 201):
+                    field["name"] = label
+                    named += 1
+                    logger.info("Named Spoolman extra field %r %r", key, label)
+                else:
+                    logger.debug("Spoolman refused naming extra field %r: %s", key, response.status_code)
+            except Exception as e:  # noqa: BLE001 — a label only
+                logger.debug("Could not name Spoolman extra field %r: %s", key, e)
+        return named
+
+    async def delete_extra_field(self, key: str) -> bool:
+        """Delete a spool extra field definition (and its values); True when one was deleted.
+
+        Nothing is sent for a field Spoolman does not list, so a second call is
+        free. False also when Spoolman answers 404/405 (nothing to delete, or a
+        server without the endpoint).
+        """
+        existing = await self._load_existing_extra_field_keys()
+        if existing is None or key not in existing:
+            return False
+        client = await self._get_client()
+        response = await client.delete(f"{self.api_url}/field/spool/{key}")
+        if response.status_code in (404, 405):
+            return False
+        response.raise_for_status()
+        self._ensured_extra_fields.discard(key)
+        self._extra_field_defs.pop(key, None)
+        logger.info("Deleted Spoolman extra field %r", key)
+        return True
 
     async def ensure_extra_field(self, name: str, field_type: str = "text", display_name: str | None = None) -> bool:
         """Register a custom extra field in Spoolman if not present.
 
-        ``name`` is the field's key; ``display_name``, when given, is the label
-        Spoolman shows for a field this creates (the key otherwise).
+        ``name`` is the field's key; ``display_name`` is the label Spoolman
+        shows for a field this creates: by default the name ``FIELD_NAMES``
+        gives Printbuddy's own keys, else the key. A field that exists is never
+        sent again here (see below); ``name_default_named_fields`` names those.
 
         Spoolman rejects PATCH requests that include unknown extra-dict keys
         with HTTP 400 ('Unknown extra field <name>.'), so any custom field
@@ -1229,7 +1300,7 @@ class SpoolmanClient:
 
             client = await self._get_client()
             field_data = {
-                "name": display_name or name,
+                "name": display_name or FIELD_NAMES.get(name) or name,
                 "field_type": field_type,
                 "default_value": None,
             }
@@ -1266,7 +1337,7 @@ class SpoolmanClient:
         endpoint reads that as "connected" (issue #2903).
 
         Keying off the payload instead removes the chance to forget: a write
-        that carries a key is a write that registers it. ``bambu_color_name``
+        that carries a key is a write that registers it. The colour name key
         is the cautionary case -- it never made it into the connect or startup
         lists, and only works today because two call sites remembered to
         register it by hand.
@@ -1490,7 +1561,7 @@ class SpoolmanClient:
             # ended up in filament.name and the product line fell out of subtype.
             # _ensure_extra_fields registers the key from the payload (#2903).
             if catalog_color is not None:
-                extra["bambu_color_name"] = json.dumps(catalog_color.name)
+                extra[COLOR_NAME_KEY] = json.dumps(catalog_color.name)
             # The tag's filament preset, as an internal RFID spool keeps it as
             # slicer_filament (#3433). Without it a slot this spool is later
             # assigned to -- the external one has no reader -- got the generic

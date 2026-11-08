@@ -58,7 +58,7 @@ class FakeSpoolman:
         self.fields: dict[str, str] = {
             "tag": "text",
             "bambu_color_name": "text",
-            "bambu_slicer_filament_id": "text",
+            "printbuddy_slicer_filament_id": "text",
             "bambu_slicer_setting_id": "text",
         }
         self.log: list[str] = []

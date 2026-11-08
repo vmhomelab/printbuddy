@@ -870,7 +870,7 @@ class TestSpoolmanInventorySlicerFilament:
     """slicer_filament persistence via Spoolman extra dict.
 
     Spoolman has no native slicer_filament field — Printbuddy persists the
-    BambuStudio preset under bambu_slicer_filament[_name] keys in the
+    BambuStudio preset under printbuddy_slicer_filament[_name] keys in the
     spool's extra dict and unwraps them in _map_spoolman_spool. Without
     this round-trip the user's slicer-preset selection on the spool form
     is silently dropped (#1114).
@@ -884,7 +884,7 @@ class TestSpoolmanInventorySlicerFilament:
         spoolman_settings,
         mock_spoolman_client,
     ):
-        """PATCH with slicer_filament writes bambu_slicer_filament to extra.
+        """PATCH with slicer_filament writes printbuddy_slicer_filament to extra.
 
         Spoolman's PATCH MERGES extra keys, so we send via merge_spool_extra
         not update_spool_full. Values are JSON-encoded strings.
@@ -907,14 +907,16 @@ class TestSpoolmanInventorySlicerFilament:
         assert response.status_code == 200
         # Field registration is idempotent — must be called for each key
         ensure_calls = [c.args[0] for c in mock_spoolman_client.ensure_extra_field.call_args_list]
-        assert "bambu_slicer_filament" in ensure_calls
-        assert "bambu_slicer_filament_name" in ensure_calls
+        assert "printbuddy_slicer_filament" in ensure_calls
+        assert "printbuddy_slicer_filament_name" in ensure_calls
         # Values must be JSON-encoded so read-side can json.loads + .strip('"')
         mock_spoolman_client.merge_spool_extra.assert_called_once_with(
             42,
             {
-                "bambu_slicer_filament": _json.dumps("PFUSf543b298f8ea66"),
-                "bambu_slicer_filament_name": _json.dumps("Devil Design PLA Basic @Bambu Lab H2D 0.4 nozzle (Custom)"),
+                "printbuddy_slicer_filament": _json.dumps("PFUSf543b298f8ea66"),
+                "printbuddy_slicer_filament_name": _json.dumps(
+                    "Devil Design PLA Basic @Bambu Lab H2D 0.4 nozzle (Custom)"
+                ),
             },
         )
         assert 42 not in spool_filament_preset._spoolman_own_presets
@@ -964,8 +966,8 @@ class TestSpoolmanInventorySlicerFilament:
         mock_spoolman_client.merge_spool_extra.assert_called_once_with(
             42,
             {
-                "bambu_slicer_filament": _json.dumps(""),
-                "bambu_slicer_filament_name": _json.dumps(""),
+                "printbuddy_slicer_filament": _json.dumps(""),
+                "printbuddy_slicer_filament_name": _json.dumps(""),
             },
         )
 
@@ -1437,7 +1439,7 @@ class TestColorNamePassthrough:
 
     Spoolman 0.23.1 has no `color_name` field on Filament, so Printbuddy owns
     the round-trip via the spool's extra dict — same shape as the existing
-    bambu_slicer_filament storage. These tests pin that the create/update
+    printbuddy_slicer_filament storage. These tests pin that the create/update
     routes register the extra field and write to merge_spool_extra, NOT to
     find_or_create_filament's color_name parameter.
     """

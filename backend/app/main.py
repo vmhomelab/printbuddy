@@ -13287,13 +13287,23 @@ async def lifespan(app: FastAPI):
                     # spool-edit / assign flow. Spoolman rejects PATCHes with
                     # unknown extra keys, so these must exist before any update
                     # that touches them.
-                    for field_name in ("bambu_slicer_filament", "bambu_slicer_filament_name"):
+                    from backend.app.services.spoolman_extra_keys import (
+                        SLICER_FILAMENT_KEY,
+                        SLICER_FILAMENT_NAME_KEY,
+                        migrate_legacy_extra_fields,
+                    )
+
+                    for field_name in (SLICER_FILAMENT_KEY, SLICER_FILAMENT_NAME_KEY):
                         if not await client.ensure_extra_field(field_name):
                             logging.warning(
                                 "Spoolman extra field %r registration failed — "
                                 "spool slicer-preset edits will return 502",
                                 field_name,
                             )
+                    # Spools still carrying the old bambu_* extra keys move to
+                    # the printbuddy_* ones; a no-op once done. In the
+                    # background: it walks every spool.
+                    spawn_background_task(migrate_legacy_extra_fields(client), name="spoolman-migrate-extra-fields")
                 else:
                     logging.warning("Spoolman at %s is not reachable", spoolman_url)
             except Exception as e:

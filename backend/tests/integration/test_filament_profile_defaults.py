@@ -367,7 +367,7 @@ class TestSpoolman:
         assert response.status_code == 200, response.text
         assert response.json()["slicer_filament"] == "PFUS00"
         extra = spoolman_client.merge_spool_extra.call_args.args[1]
-        assert extra["bambu_slicer_filament"] == '"PFUS00"'
+        assert extra["printbuddy_slicer_filament"] == '"PFUS00"'
         assert extra["bambu_color_name"] == '"Jade White"'
         assert await _spoolman_rows(db_session, 100) == ([5], ["PFUS01"])
 
@@ -383,7 +383,7 @@ class TestSpoolman:
         written = {c.args[0]: c.args[1] for c in spoolman_client.merge_spool_extra.call_args_list}
         assert set(written) == {100, 101}
         assert all(e["bambu_color_name"] == '"Jade White"' for e in written.values())
-        assert all(e["bambu_slicer_filament"] == '"PFUS00"' for e in written.values())
+        assert all(e["printbuddy_slicer_filament"] == '"PFUS00"' for e in written.values())
         for spool_id in (100, 101):
             assert (await _spoolman_rows(db_session, spool_id))[0] == [5]
 
@@ -393,7 +393,7 @@ class TestSpoolman:
         spoolman_client.get_all_spools = AsyncMock(
             return_value=[
                 _spoolman_spool(1, extra={"bambu_color_name": '"Jade White"'}),
-                _spoolman_spool(2, extra={"bambu_slicer_filament": '"GFA00"'}),
+                _spoolman_spool(2, extra={"printbuddy_slicer_filament": '"GFA00"'}),
                 _spoolman_spool(3, name="PLA Matte"),
                 _spoolman_spool(4, archived=True),
             ]
@@ -581,7 +581,7 @@ class TestReviewFixes:
         await fill_auto_added_spoolman_spool(_spoolman_spool(56), client, include_slicer=include_slicer)
         if include_slicer:
             client.merge_spool_extra.assert_awaited_once()
-            assert client.merge_spool_extra.call_args.args[1]["bambu_slicer_filament"] == '"PFUS00"'
+            assert client.merge_spool_extra.call_args.args[1]["printbuddy_slicer_filament"] == '"PFUS00"'
         else:
             client.merge_spool_extra.assert_not_awaited()
 

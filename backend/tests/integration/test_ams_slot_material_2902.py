@@ -43,7 +43,7 @@ def _status(ams_data=None):
 def _spoolman_spool(material, spool_id=11, slicer_filament=None):
     extra = {}
     if slicer_filament is not None:
-        extra["bambu_slicer_filament"] = json.dumps(str(slicer_filament))
+        extra["printbuddy_slicer_filament"] = json.dumps(str(slicer_filament))
     return {
         "id": spool_id,
         "filament": {

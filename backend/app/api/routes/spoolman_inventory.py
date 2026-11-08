@@ -76,6 +76,7 @@ from backend.app.services.spoolman import (
     get_spoolman_client,
     init_spoolman_client,
 )
+from backend.app.services.spoolman_extra_keys import COLOR_NAME_KEY, SLICER_FILAMENT_KEY, SLICER_FILAMENT_NAME_KEY
 from backend.app.services.spoolman_location_sync import spools_in_slots, sync_spool_locations
 from backend.app.services.spoolman_tracking import get_fallback_spool_tag_for_slot, is_slot_fallback_tag
 from backend.app.services.tag_conflict import tag_already_linked
@@ -404,7 +405,7 @@ class SpoolmanInventoryCreate(BaseModel):
     storage_location: str | None = Field(None, max_length=255)
     location_id: int | None = Field(None, gt=0)
     # BambuStudio slicer preset for this spool. Spoolman has no native field
-    # for this, so we persist it under the bambu_slicer_filament[_name] keys
+    # for this, so we persist it under the printbuddy_slicer_filament[_name] keys
     # in the spool's extra dict and read it back in _map_spoolman_spool.
     slicer_filament: str | None = Field(None, max_length=128)
     slicer_filament_name: str | None = Field(None, max_length=255)
@@ -716,11 +717,11 @@ async def _finish_created_spool(
 
     new_extra: dict = {}
     if slicer_filament is not None:
-        new_extra["bambu_slicer_filament"] = json.dumps(slicer_filament)
+        new_extra[SLICER_FILAMENT_KEY] = json.dumps(slicer_filament)
     if slicer_filament_name is not None:
-        new_extra["bambu_slicer_filament_name"] = json.dumps(slicer_filament_name)
+        new_extra[SLICER_FILAMENT_NAME_KEY] = json.dumps(slicer_filament_name)
     if data.color_name is not None:
-        new_extra["bambu_color_name"] = json.dumps(data.color_name)
+        new_extra[COLOR_NAME_KEY] = json.dumps(data.color_name)
     if new_extra:
         try:
             async with _translate_spoolman_errors():
@@ -1130,18 +1131,18 @@ async def update_spool(
         # Ensure extra fields are registered (Spoolman rejects PATCHes with
         # unknown keys with HTTP 400). Idempotent if startup already ran this.
         if sf_set:
-            await client.ensure_extra_field("bambu_slicer_filament")
+            await client.ensure_extra_field(SLICER_FILAMENT_KEY)
         if sfn_set:
-            await client.ensure_extra_field("bambu_slicer_filament_name")
+            await client.ensure_extra_field(SLICER_FILAMENT_NAME_KEY)
         if cn_set:
-            await client.ensure_extra_field("bambu_color_name")
+            await client.ensure_extra_field(COLOR_NAME_KEY)
         new_extra: dict = {}
         if sf_set:
-            new_extra["bambu_slicer_filament"] = json.dumps(data.slicer_filament or "")
+            new_extra[SLICER_FILAMENT_KEY] = json.dumps(data.slicer_filament or "")
         if sfn_set:
-            new_extra["bambu_slicer_filament_name"] = json.dumps(data.slicer_filament_name or "")
+            new_extra[SLICER_FILAMENT_NAME_KEY] = json.dumps(data.slicer_filament_name or "")
         if cn_set:
-            new_extra["bambu_color_name"] = json.dumps(data.color_name or "")
+            new_extra[COLOR_NAME_KEY] = json.dumps(data.color_name or "")
         if dried_set:
             # A hand-set date is not the AMS cycle the temperature and hours
             # describe, so they are cleared with it, as in internal mode.
@@ -2802,14 +2803,14 @@ async def apply_profile_default_to_spoolman_spools(
             continue
         changed = await profile_defaults.fill_spoolman_rows(db, mapped["id"], resolved)
         if resolved.slicer_filament and not mapped["slicer_filament"]:
-            new_extra = {"bambu_slicer_filament": json.dumps(resolved.slicer_filament)}
+            new_extra = {SLICER_FILAMENT_KEY: json.dumps(resolved.slicer_filament)}
             if resolved.slicer_filament_name:
-                new_extra["bambu_slicer_filament_name"] = json.dumps(resolved.slicer_filament_name)
+                new_extra[SLICER_FILAMENT_NAME_KEY] = json.dumps(resolved.slicer_filament_name)
             try:
                 async with _translate_spoolman_errors():
                     if not slicer_field_ready:
-                        await client.ensure_extra_field("bambu_slicer_filament")
-                        await client.ensure_extra_field("bambu_slicer_filament_name")
+                        await client.ensure_extra_field(SLICER_FILAMENT_KEY)
+                        await client.ensure_extra_field(SLICER_FILAMENT_NAME_KEY)
                         slicer_field_ready = True
                     await client.merge_spool_extra(mapped["id"], new_extra)
                 forget_spoolman_spool_own_preset(mapped["id"])

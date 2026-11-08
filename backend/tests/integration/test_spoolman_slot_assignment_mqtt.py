@@ -906,7 +906,7 @@ class TestAssignSpoolmanSlotKProfileRealignment:
 # Spoolman route was never ported.
 #
 # These tests pin the parity: an assign of a Spoolman spool whose
-# bambu_slicer_filament extra-field points at a real preset must publish that
+# printbuddy_slicer_filament extra-field points at a real preset must publish that
 # preset's tray_info_idx + setting_id, not the generic-material bucket.
 
 
@@ -923,7 +923,7 @@ class TestSlicerFilamentResolutionParity:
         through ``normalize_slicer_filament`` — the simplest path and the
         most common shape for users who picked their preset in the slicer."""
         mock_spoolman_client.get_spool = AsyncMock(
-            return_value={**SAMPLE_SPOOL, "extra": {"bambu_slicer_filament": '"GFA01"'}}
+            return_value={**SAMPLE_SPOOL, "extra": {"printbuddy_slicer_filament": '"GFA01"'}}
         )
 
         mqtt_mock = MagicMock()
@@ -983,13 +983,13 @@ class TestSlicerFilamentResolutionParity:
         await db_session.commit()
         await db_session.refresh(lp)
 
-        # Spoolman spool whose bambu_slicer_filament points at this LocalPreset
+        # Spoolman spool whose printbuddy_slicer_filament points at this LocalPreset
         # by integer id (the shape the inventory UI persists when the user
         # picks a local preset in the filament dropdown).
         mock_spoolman_client.get_spool = AsyncMock(
             return_value={
                 **SAMPLE_SPOOL,
-                "extra": {"bambu_slicer_filament": json.dumps(str(lp.id))},
+                "extra": {"printbuddy_slicer_filament": json.dumps(str(lp.id))},
             }
         )
 
@@ -1027,7 +1027,7 @@ class TestSlicerFilamentResolutionParity:
         generic-material fallback so the slot is at least minimally
         configured. Guards against the resolver path swallowing the empty
         case and leaving tray_info_idx empty."""
-        # extra dict has no bambu_slicer_filament key
+        # extra dict has no printbuddy_slicer_filament key
         mock_spoolman_client.get_spool = AsyncMock(return_value={**SAMPLE_SPOOL, "extra": {}})
 
         mqtt_mock = MagicMock()
@@ -1181,7 +1181,7 @@ class TestSpoolWithoutPresetKeepsTheSlotsFilament:
     async def test_the_spools_own_preset_still_wins(
         self, async_client: AsyncClient, slot_settings, test_printer, mock_spoolman_client
     ):
-        with_preset = {**SAMPLE_SPOOL, "extra": {"bambu_slicer_filament": json.dumps("GFA01")}}
+        with_preset = {**SAMPLE_SPOOL, "extra": {"printbuddy_slicer_filament": json.dumps("GFA01")}}
         raw = {"ams": [{"id": "0", "tray": [{"id": "1", "tray_type": "PLA", "tray_info_idx": "GFA00"}]}]}
         tray_info_idx = await self._assign(
             async_client,

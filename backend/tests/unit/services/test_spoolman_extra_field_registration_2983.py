@@ -26,7 +26,7 @@ import pytest
 
 from backend.app.services.spoolman import SpoolmanClient
 
-BAMBU_FIELDS = ("tag", "bambu_slicer_filament", "bambu_slicer_filament_name", "bambu_color_name")
+BAMBU_FIELDS = ("tag", "printbuddy_slicer_filament", "printbuddy_slicer_filament_name", "bambu_color_name")
 
 
 def _response(status: int, payload=None, text: str = "") -> MagicMock:
@@ -113,7 +113,7 @@ class TestTheExistenceCheck:
         (url,), kwargs = http.post.call_args
         assert url == "http://spoolman.test/api/v1/field/spool/bambu_color_name"
         assert kwargs["json"] == {
-            "name": "bambu_color_name",
+            "name": "Color name",  # FIELD_NAMES gives Printbuddy's fields a readable name
             "field_type": "text",
             "default_value": None,
         }
