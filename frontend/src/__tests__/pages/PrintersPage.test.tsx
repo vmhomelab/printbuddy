@@ -1068,6 +1068,57 @@ describe('PrintersPage', () => {
       expect(screen.getByRole('button', { name: /^Assign$/i })).toBeInTheDocument();
     });
 
+    it('renders multi-tool Klipper toolheads as AMS-style tiles', async () => {
+      const user = userEvent.setup();
+      const toolSlots = [0, 1, 2, 3].map((id) => ({
+        id,
+        extruder: id === 0 ? 'extruder' : `extruder${id}`,
+        nozzle_diameter: '0.4',
+        active: id === 0,
+        filament_present: id !== 3,
+        docked: id >= 2,
+        path_present: null,
+      }));
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          ...mockPrinters[0],
+          name: 'Slash',
+          provider: 'klipper',
+          model: 'WonderMaker ZR_ULTRA',
+        }])),
+        http.get('/api/v1/printers/:id/status', () => HttpResponse.json({
+          ...mockPrinterStatus,
+          ams: [],
+          vt_tray: [],
+          tool_slots: toolSlots,
+        })),
+        http.get('/api/v1/inventory/assignments', () => HttpResponse.json([{
+          id: 7,
+          printer_id: 1,
+          ams_id: -1,
+          tray_id: 0,
+          spool_id: 55,
+          spool: { id: 55, brand: 'Sunlu', material: 'PETG', color_name: 'Black', rgba: '#111111', label_weight: 1000, weight_used: 150 },
+        }])),
+      );
+
+      render(<PrintersPage />);
+
+      const active = await screen.findByTestId('tool-slot-0');
+      expect(active).toHaveTextContent('T0');
+      expect(active).toHaveTextContent('1');
+      expect(active).toHaveTextContent('PETG');
+      expect(active).toHaveTextContent('Sunlu · Black');
+      expect(active.className).toContain('ring-bambu-green');
+      expect(screen.getByTestId('tool-slot-1')).toHaveTextContent('Assign');
+      expect(screen.getByTestId('tool-slot-3')).toHaveTextContent('Empty');
+      expect(screen.queryByText('Loaded spool')).not.toBeInTheDocument();
+
+      await user.click(active);
+      expect(screen.getByRole('button', { name: /Change spool/ })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /Clear assignment/ })).toBeInTheDocument();
+    });
+
     it('groups add-printer model choices by vendor and includes common Klipper machines', async () => {
       const user = userEvent.setup();
 

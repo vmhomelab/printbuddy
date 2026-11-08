@@ -14,6 +14,7 @@
  *                the user cleared the assignment but the firmware hasn't
  *                positively confirmed emptiness. Ignored when isEmpty is false.
  *   slotNumber - 1-based slot number to display inside the circle.
+ *   size       - "sm" (default, AMS slot grid) or "lg" (larger toolhead tiles).
  */
 
 interface FilamentSlotCircleProps {
@@ -22,6 +23,7 @@ interface FilamentSlotCircleProps {
   isEmpty: boolean;
   emptyKind?: 'physical' | 'reset' | null;
   slotNumber: number;
+  size?: 'sm' | 'lg';
 }
 
 function isLightFilamentColor(hex: string): boolean {
@@ -32,14 +34,14 @@ function isLightFilamentColor(hex: string): boolean {
   return (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.6;
 }
 
-export function FilamentSlotCircle({ trayColor, trayType, isEmpty, emptyKind, slotNumber }: FilamentSlotCircleProps) {
+export function FilamentSlotCircle({ trayColor, trayType, isEmpty, emptyKind, slotNumber, size = 'sm' }: FilamentSlotCircleProps) {
   // Reset slots get a quieter border than physical-empty so they read as
   // "cleared but possibly still has a spool the firmware hasn't confirmed
   // gone" rather than "definitely no spool".
   const emptyBorderColor = emptyKind === 'reset' ? '#3d3d3d' : '#666';
   return (
     <div
-      className="w-3.5 h-3.5 rounded-full mx-auto mb-0.5 border-2 flex items-center justify-center"
+      className={`${size === 'lg' ? 'w-6 h-6 mb-1' : 'w-3.5 h-3.5 mb-0.5'} rounded-full mx-auto border-2 flex items-center justify-center`}
       style={{
         backgroundColor: trayColor ? `#${trayColor}` : (trayType ? '#333' : 'transparent'),
         borderColor: isEmpty ? emptyBorderColor : 'rgba(255,255,255,0.1)',
@@ -47,7 +49,7 @@ export function FilamentSlotCircle({ trayColor, trayType, isEmpty, emptyKind, sl
       }}
     >
       <span
-        className="text-[6px] font-bold leading-none select-none"
+        className={`${size === 'lg' ? 'text-[11px]' : 'text-[6px]'} font-bold leading-none select-none`}
         style={{ color: trayColor && isLightFilamentColor(trayColor) ? '#000' : '#fff' }}
       >
         {slotNumber}
