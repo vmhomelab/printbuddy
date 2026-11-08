@@ -2127,7 +2127,8 @@ export default {
     styleClassic: 'Classic',
     styleGlow: 'Glow',
     styleVibrant: 'Vibrant',
-    styleChristmas: 'Christmas (snowfall)',
+    styleChristmas: 'Christmas (simple)',
+    styleChristmasRealistic: 'Christmas (realistic)',
     themeToggleHint: 'Toggle between dark and light mode using the sun/moon icon in the sidebar.',
     // Archive
     autoArchivePrints: 'Auto-archive prints',

@@ -287,7 +287,7 @@ class TestSettingsAPI:
             "dark_style": "christmas",
             "dark_background": "christmas",
             "dark_accent": "christmas",
-            "light_style": "christmas",
+            "light_style": "christmas-realistic",
             "light_background": "christmas",
             "light_accent": "christmas",
         }

@@ -287,4 +287,13 @@ describe('FarmCommandCenterPage', () => {
     expect(screen.getByText('Parts today')).toBeInTheDocument();
     expect(screen.queryByText('Gifts today')).not.toBeInTheDocument();
   });
+
+  it('uses the painted workshop artwork in the realistic Christmas style', async () => {
+    server.use(http.get('/api/v1/settings/', () => HttpResponse.json({ dark_style: 'christmas-realistic' })));
+    const { container } = render(<FarmCommandCenterPage />);
+
+    expect(await screen.findByRole('heading', { name: /santa's factory/i })).toBeInTheDocument();
+    expect(container.querySelector('.christmas-workshop-realistic img')).toHaveAttribute('src', '/img/christmas/workshop.webp');
+    expect(container.querySelector('.christmas-garland-realistic')).toBeInTheDocument();
+  });
 });

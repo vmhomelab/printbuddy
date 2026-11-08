@@ -2127,7 +2127,8 @@ export default {
     styleClassic: 'Clásico',
     styleGlow: 'Resplandor',
     styleVibrant: 'Vibrante',
-    styleChristmas: 'Navideño (nieve)',
+    styleChristmas: 'Navideño (sencillo)',
+    styleChristmasRealistic: 'Navideño (realista)',
     themeToggleHint: 'Alterne entre el modo oscuro y claro con el icono del sol/luna en la barra lateral.',
     // Archive
     autoArchivePrints: 'Archivar impresiones automáticamente',

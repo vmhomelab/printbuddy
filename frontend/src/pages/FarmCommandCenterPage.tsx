@@ -32,7 +32,8 @@ import {
   type PrinterStatus,
 } from '../api/client';
 import { classifyPrinterStatus } from '../utils/printerStatus';
-import { useIsChristmasStyle } from '../hooks/useIsChristmasStyle';
+import { appAssetPath } from '../utils/assetPaths';
+import { useChristmasVariant } from '../hooks/useIsChristmasStyle';
 import { ChristmasGarland, ChristmasWorkshop } from '../components/ChristmasWorkshop';
 
 interface FleetPrinter {
@@ -252,7 +253,8 @@ function StatCard({ icon: Icon, value, label, sub, tone, to, onClick }: { icon: 
 }
 
 function FleetTile({ item }: { item: FleetPrinter }) {
-  const festive = useIsChristmasStyle();
+  const christmas = useChristmasVariant();
+  const festive = christmas !== null;
   const state = normalizeState(item.status);
   const progress = item.status?.progress === null || item.status?.progress === undefined ? null : Math.min(100, Math.max(0, Math.round(item.status.progress)));
   const classes = {
@@ -286,7 +288,8 @@ function FleetTile({ item }: { item: FleetPrinter }) {
 }
 
 function ActiveProjectCard({ project, workItems }: { project: ProjectListItem; workItems: ActiveProjectWorkItem[] }) {
-  const festive = useIsChristmasStyle();
+  const christmas = useChristmasVariant();
+  const festive = christmas !== null;
   const progress = projectProgress(project);
   const printingItems = workItems.filter((item) => item.state === 'printing');
   const queuedItems = workItems.filter((item) => item.state === 'queued');
@@ -297,7 +300,9 @@ function ActiveProjectCard({ project, workItems }: { project: ProjectListItem; w
           {project.cover_image_filename ? (
             <img src={api.getProjectCoverImageUrl(project.id)} alt="" className="h-full w-full object-cover" />
           ) : (
-            festive ? <Gift className="h-9 w-9 text-red-400" /> : <PackageOpen className="h-9 w-9 text-bambu-gray" />
+            christmas === 'realistic' ? (
+              <img src={appAssetPath(project.id % 2 ? '/img/christmas/project-gift.webp' : '/img/christmas/project-village.webp')} alt="" className="h-full w-full object-cover" />
+            ) : festive ? <Gift className="h-9 w-9 text-red-400" /> : <PackageOpen className="h-9 w-9 text-bambu-gray" />
           )}
         </div>
         <div className="min-w-0 flex-1">
@@ -469,7 +474,8 @@ export function FarmCommandCenterPage() {
   const [groupFilter, setGroupFilter] = useState('all');
   const [showAlerts, setShowAlerts] = useState(false);
   const [showGroups, setShowGroups] = useState(false);
-  const festive = useIsChristmasStyle();
+  const christmas = useChristmasVariant();
+  const festive = christmas !== null;
   const queryClient = useQueryClient();
 
   useEffect(() => {
@@ -538,7 +544,7 @@ export function FarmCommandCenterPage() {
   return (
     <div className="min-h-full bg-bambu-dark p-4 text-white xl:p-6">
       <div className={`mx-auto max-w-[1700px] rounded-2xl border border-bambu-dark-tertiary bg-gradient-to-br from-bambu-dark-secondary/95 via-bambu-dark-secondary/80 to-bambu-dark p-5 shadow-[var(--card-shadow)] ${festive ? 'fcc-festive overflow-hidden pb-0 pt-16' : ''}`}>
-        {festive && <ChristmasGarland />}
+        {festive && <ChristmasGarland realistic={christmas === 'realistic'} />}
         <header className="mb-5 flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
           {festive ? (
             <div className="border-l-4 border-fcc-cta pl-4">
@@ -689,7 +695,7 @@ export function FarmCommandCenterPage() {
             <ChevronRight className="h-5 w-5 text-bambu-gray transition-transform group-hover:translate-x-0.5 group-hover:text-white" />
           </Link>
         </section>
-        {festive && <ChristmasWorkshop />}
+        {festive && <ChristmasWorkshop realistic={christmas === 'realistic'} />}
       </div>
       {showAlerts && <AlertsDialog alerts={commandCenterAlerts} onClose={() => setShowAlerts(false)} />}
       {showGroups && <PrinterGroupsDialog printers={printers} groups={printerGroups} onSave={savePrinterGroups} onClose={() => setShowGroups(false)} />}

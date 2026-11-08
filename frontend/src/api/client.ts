@@ -1108,11 +1108,11 @@ export interface AppSettings {
   // Default printer
   default_printer_id: number | null;
   // Dark mode theme settings
-  dark_style: 'classic' | 'glow' | 'vibrant' | 'christmas';
+  dark_style: 'classic' | 'glow' | 'vibrant' | 'christmas' | 'christmas-realistic';
   dark_background: 'neutral' | 'warm' | 'cool' | 'oled' | 'slate' | 'forest' | 'christmas';
   dark_accent: 'green' | 'teal' | 'blue' | 'orange' | 'purple' | 'red' | 'christmas';
   // Light mode theme settings
-  light_style: 'classic' | 'glow' | 'vibrant' | 'christmas';
+  light_style: 'classic' | 'glow' | 'vibrant' | 'christmas' | 'christmas-realistic';
   light_background: 'neutral' | 'warm' | 'cool' | 'christmas';
   light_accent: 'green' | 'teal' | 'blue' | 'orange' | 'purple' | 'red' | 'christmas';
   // FTP retry settings

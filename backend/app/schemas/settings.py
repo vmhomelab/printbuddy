@@ -132,7 +132,9 @@ class AppSettings(BaseModel):
     )
 
     # Dark mode theme settings
-    dark_style: str = Field(default="vibrant", description="Dark mode style: classic, glow, vibrant, christmas")
+    dark_style: str = Field(
+        default="vibrant", description="Dark mode style: classic, glow, vibrant, christmas, christmas-realistic"
+    )
     dark_background: str = Field(
         default="cool", description="Dark mode background: neutral, warm, cool, oled, slate, forest, christmas"
     )
@@ -141,7 +143,9 @@ class AppSettings(BaseModel):
     )
 
     # Light mode theme settings
-    light_style: str = Field(default="classic", description="Light mode style: classic, glow, vibrant, christmas")
+    light_style: str = Field(
+        default="classic", description="Light mode style: classic, glow, vibrant, christmas, christmas-realistic"
+    )
     light_background: str = Field(
         default="neutral", description="Light mode background: neutral, warm, cool, christmas"
     )

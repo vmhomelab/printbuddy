@@ -3,7 +3,7 @@ import { api } from '../api/client';
 import { appAssetPath } from '../utils/assetPaths';
 
 type ThemeMode = 'light' | 'dark';
-type ThemeStyle = 'classic' | 'glow' | 'vibrant' | 'christmas';
+type ThemeStyle = 'classic' | 'glow' | 'vibrant' | 'christmas' | 'christmas-realistic';
 type DarkBackground = 'neutral' | 'warm' | 'cool' | 'oled' | 'slate' | 'forest' | 'christmas';
 type LightBackground = 'neutral' | 'warm' | 'cool' | 'christmas';
 type ThemeAccent = 'green' | 'teal' | 'blue' | 'orange' | 'purple' | 'red' | 'christmas';
@@ -30,6 +30,11 @@ interface ThemeContextType {
 }
 
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
+
+// The realistic Christmas style builds on the simple one, so it carries both classes
+function styleClasses(style: ThemeStyle): string[] {
+  return style === 'christmas-realistic' ? ['style-christmas', 'style-christmas-realistic'] : [`style-${style}`];
+}
 
 const BRAND_ICONS = {
   light: {
@@ -152,7 +157,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     // Remove all theme classes
     root.classList.remove(
       'dark',
-      'style-classic', 'style-glow', 'style-vibrant', 'style-christmas',
+      'style-classic', 'style-glow', 'style-vibrant', 'style-christmas', 'style-christmas-realistic',
       'bg-neutral', 'bg-warm', 'bg-cool', 'bg-oled', 'bg-slate', 'bg-forest', 'bg-christmas',
       'accent-green', 'accent-teal', 'accent-blue', 'accent-orange', 'accent-purple', 'accent-red', 'accent-christmas'
     );
@@ -160,11 +165,11 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     // Apply based on current mode
     if (mode === 'dark') {
       root.classList.add('dark');
-      root.classList.add(`style-${darkStyle}`);
+      root.classList.add(...styleClasses(darkStyle));
       root.classList.add(`bg-${darkBackground}`);
       root.classList.add(`accent-${darkAccent}`);
     } else {
-      root.classList.add(`style-${lightStyle}`);
+      root.classList.add(...styleClasses(lightStyle));
       root.classList.add(`bg-${lightBackground}`);
       root.classList.add(`accent-${lightAccent}`);
     }

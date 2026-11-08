@@ -499,6 +499,28 @@ html {
   height: auto;
 }
 
+/* Realistic variant: painted artwork instead of the drawings */
+.christmas-garland-realistic {
+  height: 58px;
+  background-repeat: repeat-x;
+  background-size: auto 58px;
+  filter: none;
+}
+
+.christmas-workshop-realistic img {
+  display: block;
+  width: 100%;
+  height: auto;
+  /* The painting has its own night sky; let it fade into the page */
+  mask-image: linear-gradient(to bottom, transparent, #000 35%);
+}
+
+/* On light backgrounds the night scene sits in its own rounded panel */
+.style-christmas:not(.dark) .christmas-workshop-realistic img {
+  mask-image: none;
+  border-radius: 0.75rem;
+}
+
 /* Puffs rise from the chimney top (x 961, y 40 of the 1600x260 drawing) */
 .christmas-workshop-smoke {
   position: absolute;

@@ -1839,6 +1839,7 @@ export function SettingsPage() {
                       <option value="glow">{t('settings.styleGlow')}</option>
                       <option value="vibrant">{t('settings.styleVibrant')}</option>
                       <option value="christmas">{t('settings.styleChristmas')}</option>
+                      <option value="christmas-realistic">{t('settings.styleChristmasRealistic')}</option>
                     </select>
                   </div>
                 </div>
@@ -1891,6 +1892,7 @@ export function SettingsPage() {
                       <option value="glow">{t('settings.styleGlow')}</option>
                       <option value="vibrant">{t('settings.styleVibrant')}</option>
                       <option value="christmas">{t('settings.styleChristmas')}</option>
+                      <option value="christmas-realistic">{t('settings.styleChristmasRealistic')}</option>
                     </select>
                   </div>
                 </div>

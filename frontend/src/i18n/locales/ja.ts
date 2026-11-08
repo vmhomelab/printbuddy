@@ -2124,7 +2124,8 @@ export default {
     styleClassic: 'クラシック',
     styleGlow: 'グロー',
     styleVibrant: 'ビビッド',
-    styleChristmas: 'クリスマス（降雪）',
+    styleChristmas: 'クリスマス（シンプル）',
+    styleChristmasRealistic: 'クリスマス（リアル）',
     themeToggleHint: 'サイドバーの太陽/月アイコンでダークモードとライトモードを切り替えます。',
     // Archive
     autoArchivePrints: '印刷を自動アーカイブ',

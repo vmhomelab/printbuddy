@@ -36,7 +36,7 @@ import { classifyPrinterStatus } from '../utils/printerStatus';
 import { appAssetPath } from '../utils/assetPaths';
 import { resolveLoadedFilamentInfo, type ResolvedLoadedFilamentInfo, type SpoolmanSlotAssignmentLike } from '../utils/amsHelpers';
 import { useTheme } from '../contexts/ThemeContext';
-import { useIsChristmasStyle } from '../hooks/useIsChristmasStyle';
+import { useChristmasVariant } from '../hooks/useIsChristmasStyle';
 import { ChristmasHat } from '../components/ChristmasHat';
 import { ChristmasGarland, ChristmasWorkshop } from '../components/ChristmasWorkshop';
 
@@ -509,7 +509,8 @@ function ActiveProjectsPanel({ projects, theme }: { projects: ProjectListItem[];
 export function PrintFarmMonitorPage() {
   const [now, setNow] = useState(() => new Date());
   const { mode } = useTheme();
-  const festive = useIsChristmasStyle();
+  const christmas = useChristmasVariant();
+  const festive = christmas !== null;
   const theme = useMemo(() => getMonitorTheme(mode), [mode]);
 
   useEffect(() => {
@@ -569,7 +570,7 @@ export function PrintFarmMonitorPage() {
 
   return (
     <main className={`min-h-screen overflow-x-hidden ${theme.page} ${festive ? 'fcc-festive' : ''}`} data-monitor-theme={mode}>
-      {festive && <ChristmasGarland />}
+      {festive && <ChristmasGarland realistic={christmas === 'realistic'} />}
       <div className={`min-h-screen w-full max-w-full p-3 sm:p-4 xl:p-5 ${theme.backdrop} ${festive ? 'pt-16 sm:pt-16 xl:pt-16' : ''}`}>
         <header className={`mb-4 flex min-w-0 flex-col gap-4 border-b pb-4 xl:flex-row xl:items-center xl:justify-between ${theme.divider}`}>
           <div className="flex min-w-0 flex-wrap items-center gap-3 sm:gap-5">
@@ -652,7 +653,7 @@ export function PrintFarmMonitorPage() {
           </aside>
         </div>
 
-        {festive && <ChristmasWorkshop />}
+        {festive && <ChristmasWorkshop realistic={christmas === 'realistic'} />}
 
         <footer className={`${festive ? 'mt-0' : 'mt-4'} flex flex-col gap-3 rounded-xl border px-6 py-4 md:flex-row md:items-center md:justify-between ${theme.footer}`}>
           <div className="flex items-center gap-3"><RefreshCw className="h-5 w-5" /> Last refreshed: {formatClock(now)} · every {refreshSeconds}s</div>

@@ -51,4 +51,17 @@ describe('ThemeProvider defaults', () => {
     expect(root).not.toHaveClass('bg-christmas');
     expect(root).not.toHaveClass('accent-christmas');
   });
+
+  it('applies the realistic Christmas style on top of the simple one', () => {
+    vi.mocked(localStorage.getItem).mockImplementation((key: string) => (key === 'dark-style' ? 'christmas-realistic' : null));
+    render(
+      <ThemeProvider>
+        <ThemeProbe />
+      </ThemeProvider>
+    );
+
+    const root = document.documentElement;
+    expect(root).toHaveClass('style-christmas');
+    expect(root).toHaveClass('style-christmas-realistic');
+  });
 });

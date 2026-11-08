@@ -2125,7 +2125,8 @@ export default {
     styleClassic: 'Klassisch',
     styleGlow: 'Leuchtend',
     styleVibrant: 'Lebendig',
-    styleChristmas: 'Weihnachtlich (Schneefall)',
+    styleChristmas: 'Weihnachtlich (einfach)',
+    styleChristmasRealistic: 'Weihnachtlich (realistisch)',
     themeToggleHint: 'Zwischen Hell- und Dunkelmodus mit dem Sonnen-/Mondsymbol in der Seitenleiste wechseln.',
     // Archive
     autoArchivePrints: 'Drucke automatisch archivieren',

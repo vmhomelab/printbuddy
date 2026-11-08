@@ -1,3 +1,5 @@
+import { appAssetPath } from '../utils/assetPaths';
+
 /**
  * Decorations for the farm dashboards (Farm Command Center and TV mode) while
  * the Christmas theme style is active: a fir garland with fairy lights along
@@ -5,6 +7,10 @@
  * print trees and gifts, along the bottom.  Purely decorative (aria-hidden,
  * pointer-events disabled) and static apart from the chimney smoke, which
  * moves by transform so it never repaints the drawing.
+ *
+ * With `realistic` both use painted artwork from /img/christmas instead of
+ * the drawn versions: a fir garland strip that repeats across the width and
+ * a panorama of the workshop at night.
  */
 
 const GARLAND_TILE = 240;
@@ -28,7 +34,16 @@ const GARLAND_LIGHTS = [0.08, 0.24, 0.41, 0.59, 0.76, 0.92].map((t, i) => ({
   color: LIGHT_COLORS[i % LIGHT_COLORS.length],
 }));
 
-export function ChristmasGarland() {
+export function ChristmasGarland({ realistic = false }: { realistic?: boolean }) {
+  if (realistic) {
+    return (
+      <div
+        className="christmas-garland christmas-garland-realistic"
+        aria-hidden="true"
+        style={{ backgroundImage: `url(${appAssetPath('/img/christmas/garland.webp')})` }}
+      />
+    );
+  }
   return (
     <svg className="christmas-garland" aria-hidden="true" preserveAspectRatio="none">
       <defs>
@@ -128,7 +143,14 @@ function FirTree({ x, base, h, lights = true }: { x: number; base: number; h: nu
   );
 }
 
-export function ChristmasWorkshop() {
+export function ChristmasWorkshop({ realistic = false }: { realistic?: boolean }) {
+  if (realistic) {
+    return (
+      <div className="christmas-workshop christmas-workshop-realistic" aria-hidden="true">
+        <img src={appAssetPath('/img/christmas/workshop.webp')} alt="" />
+      </div>
+    );
+  }
   const GROUND = 236;
   return (
     <div className="christmas-workshop" aria-hidden="true">
