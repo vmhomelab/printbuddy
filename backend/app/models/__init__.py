@@ -22,6 +22,7 @@ from backend.app.models.print_batch import PrintBatch
 from backend.app.models.printer import Printer
 from backend.app.models.printer_fleet_group import PrinterFleetGroup, PrinterFleetGroupMember
 from backend.app.models.project import Project
+from backend.app.models.project_plan import ProjectPlanItem
 from backend.app.models.settings import Settings
 from backend.app.models.smart_plug import SmartPlug
 from backend.app.models.smart_plug_energy_snapshot import SmartPlugEnergySnapshot
@@ -54,6 +55,7 @@ __all__ = [
     "notification_provider_printers",
     "NotificationLiveActivity",
     "Project",
+    "ProjectPlanItem",
     "APIKey",
     "AMSSensorHistory",
     "AmsLabel",

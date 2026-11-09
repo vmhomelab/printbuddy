@@ -48,6 +48,8 @@ class PrintQueueItemCreate(BaseModel):
     quantity: int = 1
     # Project to associate the resulting archive with
     project_id: int | None = None
+    # Project plan row ("job" plate) this item is queued for
+    plan_item_id: int | None = None
 
 
 class PrintQueueItemUpdate(BaseModel):
@@ -138,6 +140,9 @@ class PrintQueueItemResponse(BaseModel):
 
     # Batch grouping
     batch_id: int | None = None
+    # Project "job" plan row this item belongs to
+    project_id: int | None = None
+    plan_item_id: int | None = None
     batch_name: str | None = None
 
     # Shortest-job-first scheduling

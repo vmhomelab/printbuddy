@@ -202,6 +202,7 @@ async def init_db():
         printer_fleet_group,
         project,
         project_bom,
+        project_plan,
         settings,
         shopping_list,
         slot_preset,
@@ -2759,6 +2760,39 @@ async def run_migrations(conn):
     # Data migration: drop the embedded 3MF Title (`print_name`) from library
     # file metadata so the FileManager displays the filename, not the title (#1489).
     await _migrate_drop_library_print_name(conn)
+
+    # Migration: project "jobs" — order number on projects plus plan-item
+    # links on queue items and archives. The project_plan_items table itself
+    # is created by create_all(). Plain ANSI ALTER TABLE works on SQLite and
+    # PostgreSQL; _safe_execute swallows the duplicate-column error on rerun.
+    if is_sqlite():
+        await _safe_execute(conn, "ALTER TABLE projects ADD COLUMN order_number VARCHAR(100)")
+        await _safe_execute(
+            conn,
+            "ALTER TABLE print_queue ADD COLUMN plan_item_id INTEGER "
+            "REFERENCES project_plan_items(id) ON DELETE SET NULL",
+        )
+        await _safe_execute(
+            conn,
+            "ALTER TABLE print_archives ADD COLUMN plan_item_id INTEGER "
+            "REFERENCES project_plan_items(id) ON DELETE SET NULL",
+        )
+    else:
+        await _safe_execute(conn, "ALTER TABLE projects ADD COLUMN IF NOT EXISTS order_number VARCHAR(100)")
+        await _safe_execute(
+            conn,
+            "ALTER TABLE print_queue ADD COLUMN IF NOT EXISTS plan_item_id INTEGER "
+            "REFERENCES project_plan_items(id) ON DELETE SET NULL",
+        )
+        await _safe_execute(
+            conn,
+            "ALTER TABLE print_archives ADD COLUMN IF NOT EXISTS plan_item_id INTEGER "
+            "REFERENCES project_plan_items(id) ON DELETE SET NULL",
+        )
+    await _safe_execute(conn, "CREATE INDEX IF NOT EXISTS ix_print_queue_plan_item_id ON print_queue (plan_item_id)")
+    await _safe_execute(
+        conn, "CREATE INDEX IF NOT EXISTS ix_print_archives_plan_item_id ON print_archives (plan_item_id)"
+    )
 
 
 def _repair_default_notification_template(existing_template, template_data: dict) -> bool:

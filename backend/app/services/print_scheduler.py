@@ -2108,6 +2108,7 @@ class PrintScheduler:
                     original_filename=filename,
                     created_by_id=item.created_by_id,
                     project_id=item.project_id,
+                    plan_item_id=item.plan_item_id,
                 )
                 if archive:
                     item.archive_id = archive.id

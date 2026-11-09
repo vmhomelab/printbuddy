@@ -123,6 +123,7 @@ async def test_engine():
         printer,
         project,
         project_bom,
+        project_plan,
         settings,
         slot_preset,
         smart_plug,

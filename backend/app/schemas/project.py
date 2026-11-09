@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 
 def _validate_project_url(value: str | None) -> str | None:
@@ -33,6 +33,7 @@ class ProjectCreate(BaseModel):
     budget: float | None = None
     parent_id: int | None = None  # For sub-projects
     url: str | None = None
+    order_number: str | None = None  # External order / tracking number (e.g. Etsy)
 
     @field_validator("url")
     @classmethod
@@ -56,6 +57,7 @@ class ProjectUpdate(BaseModel):
     budget: float | None = None
     parent_id: int | None = None
     url: str | None = None
+    order_number: str | None = None
 
     @field_validator("url")
     @classmethod
@@ -86,6 +88,19 @@ class ProjectStats(BaseModel):
     bom_total_items: int = 0
     bom_completed_items: int = 0
     bom_cost: float = 0.0  # Total cost of BOM items (sum of unit_price * quantity_needed)
+    # Planned totals: from the project plan ("job") when it has rows, else
+    # from the slice metadata of files in folders linked to the project.
+    planned_source: str | None = None  # "plan" | "files" | None
+    planned_print_time_hours: float = 0.0
+    planned_filament_grams: float = 0.0
+    # Job plan progress (only when the project has plan rows)
+    plan_total_plates: int = 0
+    plan_completed_plates: int = 0
+    plan_queued_plates: int = 0
+    plan_printing_plates: int = 0
+    plan_failed_plates: int = 0
+    plan_remaining_plates: int = 0
+    plan_progress_percent: float | None = None
 
 
 class ProjectChildPreview(BaseModel):
@@ -124,6 +139,7 @@ class ProjectResponse(BaseModel):
     stats: ProjectStats | None = None
     url: str | None = None
     cover_image_filename: str | None = None
+    order_number: str | None = None
 
     class Config:
         from_attributes = True
@@ -164,6 +180,10 @@ class ProjectListResponse(BaseModel):
     # #1155: card-level metadata
     url: str | None = None
     cover_image_filename: str | None = None
+    order_number: str | None = None
+    # Job plan progress (plates), present when the project has plan rows
+    plan_total_plates: int = 0
+    plan_completed_plates: int = 0
 
     class Config:
         from_attributes = True
@@ -294,3 +314,124 @@ class ProjectImport(BaseModel):
     budget: float | None = None
     bom_items: list[BOMItemExport] = []
     linked_folders: list[LinkedFolderExport] = []
+
+
+# Project plan ("Job") schemas — every planned plate of a project
+class PlanFilament(BaseModel):
+    """Material/colour for one filament slot of a planned plate."""
+
+    slot_id: int = 1
+    type: str = ""
+    color: str = ""  # hex, e.g. "#000000"
+    color_name: str | None = None
+    used_grams: float | None = None  # per copy
+    original_type: str | None = None  # as sliced in the 3MF
+    original_color: str | None = None
+
+
+class PlanItemCreate(BaseModel):
+    library_file_id: int | None = None
+    plate_id: int | None = None
+    name: str | None = None  # defaults to plate / file name
+    group_label: str | None = None
+    quantity: int = Field(default=1, ge=1, le=1000)
+    # When omitted, filaments + estimates are filled from the file's slice data
+    filaments: list[PlanFilament] | None = None
+    est_print_time_seconds: int | None = Field(default=None, ge=0)
+    est_filament_grams: float | None = Field(default=None, ge=0)
+    printer_id: int | None = None
+    target_model: str | None = None
+    notes: str | None = None
+
+
+class PlanItemUpdate(BaseModel):
+    plate_id: int | None = None
+    name: str | None = None
+    group_label: str | None = None
+    quantity: int | None = Field(default=None, ge=1, le=1000)
+    filaments: list[PlanFilament] | None = None
+    est_print_time_seconds: int | None = Field(default=None, ge=0)
+    est_filament_grams: float | None = Field(default=None, ge=0)
+    printer_id: int | None = None  # 0 = clear
+    target_model: str | None = None  # "" = clear
+    notes: str | None = None
+    sort_order: int | None = None
+
+
+class PlanItemProgress(BaseModel):
+    completed: int = 0
+    printing: int = 0
+    queued: int = 0
+    failed: int = 0
+    remaining: int = 0  # still to be queued: quantity - completed - printing - queued
+    percent: float = 0.0
+
+
+class PlanItemResponse(BaseModel):
+    id: int
+    project_id: int
+    library_file_id: int | None
+    library_file_name: str | None = None
+    library_file_missing: bool = False
+    is_sliced: bool = False
+    thumbnail_url: str | None = None
+    plate_id: int | None
+    name: str
+    group_label: str | None
+    quantity: int
+    filaments: list[PlanFilament] = []
+    est_print_time_seconds: int | None
+    est_filament_grams: float | None
+    printer_id: int | None
+    printer_name: str | None = None
+    target_model: str | None
+    notes: str | None
+    sort_order: int
+    progress: PlanItemProgress
+    created_at: datetime
+    updated_at: datetime
+
+
+class PlanMaterialTotal(BaseModel):
+    type: str
+    color: str
+    color_name: str | None = None
+    planned_grams: float = 0.0
+    completed_grams: float = 0.0
+    remaining_grams: float = 0.0
+
+
+class PlanSummary(BaseModel):
+    total_plates: int = 0
+    completed_plates: int = 0
+    printing_plates: int = 0
+    queued_plates: int = 0
+    failed_plates: int = 0
+    remaining_plates: int = 0  # not yet queued
+    progress_percent: float | None = None
+    planned_print_time_seconds: int = 0
+    remaining_print_time_seconds: int = 0  # plates not completed yet
+    planned_filament_grams: float = 0.0
+    remaining_filament_grams: float = 0.0
+    unestimated_items: int = 0  # rows without print-time / filament estimates
+    materials: list[PlanMaterialTotal] = []
+
+
+class PlanEnqueueRequest(BaseModel):
+    item_ids: list[int] | None = None  # None = every plan row with copies left to queue
+    manual_start: bool = False  # stage items (require manual start)
+
+
+class PlanEnqueueResult(BaseModel):
+    plan_item_id: int
+    queued: int = 0
+    error: str | None = None
+
+
+class PlanEnqueueResponse(BaseModel):
+    queued_total: int = 0
+    results: list[PlanEnqueueResult] = []
+
+
+class PlanReorder(BaseModel):
+    item_ids: list[int]

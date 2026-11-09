@@ -53,6 +53,7 @@ from backend.app.api.routes import (
     print_queue,
     printer_fleet_groups,
     printers,
+    project_plan,
     projects,
     settings as settings_routes,
     slice_jobs,
@@ -6716,6 +6717,7 @@ app.include_router(maintenance.router, prefix=app_settings.api_prefix)
 app.include_router(camera.router, prefix=app_settings.api_prefix)
 app.include_router(external_links.router, prefix=app_settings.api_prefix)
 app.include_router(projects.router, prefix=app_settings.api_prefix)
+app.include_router(project_plan.router, prefix=app_settings.api_prefix)
 app.include_router(library.router, prefix=app_settings.api_prefix)
 app.include_router(library_trash.router, prefix=app_settings.api_prefix)
 app.include_router(slice_jobs.router, prefix=app_settings.api_prefix)
