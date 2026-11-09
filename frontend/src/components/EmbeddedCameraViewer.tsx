@@ -9,6 +9,7 @@ import { ChamberLight } from './icons/ChamberLight';
 import { SkipObjectsModal, SkipObjectsIcon } from './SkipObjectsModal';
 import { CameraDiagnoseModal } from './CameraDiagnoseModal';
 import { useStreamImgRef } from '../hooks/useStreamImgRef';
+import { useCommitted } from '../hooks/useCommitted';
 import { useCameraViewerId } from '../hooks/useCameraViewerId';
 import { isSideways, useSidewaysBox } from '../hooks/useSidewaysBox';
 import { isStandaloneWebApp, openCameraWindow } from '../utils/camera';
@@ -141,6 +142,8 @@ export function EmbeddedCameraViewer({ printerId, printerName, viewerIndex = 0, 
   // On its stream and its /camera/stop: the stop ends this viewer's stream only.
   const viewerId = useCameraViewerId();
   const attachImg = useStreamImgRef(imgRef);
+  // No stream until committed: a render React throws away must not open one.
+  const committed = useCommitted();
   const reconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
   const countdownIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const stallCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -788,7 +791,7 @@ export function EmbeddedCameraViewer({ printerId, printerName, viewerIndex = 0, 
           <img
             ref={attachImg}
             key={imageKey}
-            src={streamUrl}
+            src={committed ? streamUrl : undefined}
             alt="Camera stream"
             className="max-w-full max-h-full object-contain select-none"
             style={{

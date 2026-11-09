@@ -4,6 +4,7 @@ import { AlertTriangle, VideoOff, WifiOff } from 'lucide-react';
 import { getAuthToken, withStreamToken } from '../api/client';
 import { formatDuration } from '../utils/date';
 import { useStreamImgRef } from '../hooks/useStreamImgRef';
+import { useCommitted } from '../hooks/useCommitted';
 import { useCameraViewerId } from '../hooks/useCameraViewerId';
 import { isSideways, useSidewaysBox } from '../hooks/useSidewaysBox';
 
@@ -100,6 +101,8 @@ export function CameraTile({
   // On its stream and its /camera/stop: the stop ends this tile's stream only.
   const viewerId = useCameraViewerId();
   const attachImg = useStreamImgRef(imgRef);
+  // No stream until committed: a render React throws away must not open one.
+  const committed = useCommitted();
   // 'renewed': the current img is a renewal not yet showing a frame; 'retried':
   // it is the one retry of a renewal that failed.
   const renewalRef = useRef<'none' | 'renewed' | 'retried'>('none');
@@ -292,7 +295,7 @@ export function CameraTile({
         <img
           ref={attachImg}
           key={`${mode}-${bust}`}
-          src={reopening ? undefined : mode === 'live' ? liveUrl : snapshotUrl}
+          src={reopening || !committed ? undefined : mode === 'live' ? liveUrl : snapshotUrl}
           alt={printerName}
           draggable={false}
           loading="lazy"
