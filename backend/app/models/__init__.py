@@ -36,6 +36,7 @@ from backend.app.models.printer_ha_sensor import PrinterHASensor
 from backend.app.models.printer_location import PrinterLocation
 from backend.app.models.printer_sensor_history import PrinterSensorHistory
 from backend.app.models.project import Project
+from backend.app.models.project_plan import ProjectPlanItem
 from backend.app.models.scheduled_drying import ScheduledDrying
 from backend.app.models.settings import Settings
 from backend.app.models.slicer_pipeline import SlicerPipeline
@@ -74,6 +75,7 @@ __all__ = [
     "notification_provider_printers",
     "NotificationLiveActivity",
     "Project",
+    "ProjectPlanItem",
     "APIKey",
     "AMSSensorHistory",
     "PrinterSensorHistory",

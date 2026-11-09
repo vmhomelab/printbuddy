@@ -44,6 +44,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { RichTextEditor } from '../components/RichTextEditor';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { PrintModal } from '../components/PrintModal';
+import { ProjectPlanSection } from '../components/ProjectPlanSection';
 
 // Project edit modal (reused from ProjectsPage)
 import { ProjectModal } from './ProjectsPage';
@@ -383,10 +384,10 @@ function ProductionPlan({ bomItems, archives, files, fileStates, onStageFile }: 
                       <tr key={`file-${file.id}`}>
                         <td className="px-3 py-2 text-white">{file.print_name || file.filename}</td>
                         <td className="px-3 py-2"><ProductionStateBadge state={fileStates.get(file.id)} /></td>
+                        <td className="px-3 py-2 text-bambu-gray-light">{file.filament_type || '-'}</td>
+                        <td className="px-3 py-2 text-bambu-gray-light">{file.sliced_for_model || '-'}</td>
                         <td className="px-3 py-2 text-bambu-gray-light">-</td>
-                        <td className="px-3 py-2 text-bambu-gray-light">-</td>
-                        <td className="px-3 py-2 text-bambu-gray-light">-</td>
-                        <td className="px-3 py-2 text-bambu-gray-light">-</td>
+                        <td className="px-3 py-2 text-bambu-gray-light">{[formatProductionFilament(file.filament_used_grams), formatProductionDuration(file.print_time_seconds)].filter(Boolean).join(' · ') || '-'}</td>
                         <td className="px-3 py-2 text-right">
                           {isSlicedLibraryFile(file) ? (
                             <button
@@ -1008,7 +1009,14 @@ export function ProjectDetailPage() {
               style={{ backgroundColor: project.color || '#6b7280' }}
             />
             <div>
-              <h1 className="text-2xl font-bold text-white">{project.name}</h1>
+              <h1 className="text-2xl font-bold text-white flex flex-wrap items-center gap-2">
+                {project.name}
+                {project.order_number && (
+                  <span className="rounded bg-bambu-dark-tertiary px-2 py-0.5 text-sm font-medium text-bambu-gray-light" title={t('projectDetail.orderNumber')}>
+                    #{project.order_number}
+                  </span>
+                )}
+              </h1>
               {project.description && (
                 <p className="text-bambu-gray mt-1">{project.description}</p>
               )}
@@ -1150,16 +1158,37 @@ export function ProjectDetailPage() {
             icon={Clock}
             label={t('projectDetail.stats.printTime')}
             value={formatDurationFromHours(stats.total_print_time_hours)}
+            subValue={stats.planned_source && stats.planned_print_time_hours ? t('projectDetail.stats.planned', { value: formatDurationFromHours(stats.planned_print_time_hours) }) : undefined}
+            hint={stats.planned_source === 'files' ? t('projectDetail.stats.plannedFromFiles') : stats.planned_source === 'plan' ? t('projectDetail.stats.plannedFromPlan') : undefined}
             color="text-yellow-600 dark:text-yellow-400"
           />
           <StatCard
             icon={Printer}
             label={t('projectDetail.stats.filamentUsed')}
             value={formatFilament(stats.total_filament_grams)}
+            subValue={stats.planned_source && stats.planned_filament_grams ? t('projectDetail.stats.planned', { value: formatFilament(stats.planned_filament_grams) }) : undefined}
+            hint={stats.planned_source === 'files' ? t('projectDetail.stats.plannedFromFiles') : stats.planned_source === 'plan' ? t('projectDetail.stats.plannedFromPlan') : undefined}
             color="text-purple-600 dark:text-purple-400"
           />
+          {(stats.plan_total_plates ?? 0) > 0 && (
+            <StatCard
+              icon={ListTodo}
+              label={t('projectDetail.stats.jobPlates')}
+              value={`${stats.plan_completed_plates ?? 0} / ${stats.plan_total_plates}`}
+              subValue={t('projectDetail.progress.percentComplete', { percent: (stats.plan_progress_percent ?? 0).toFixed(0) })}
+              color="text-bambu-green"
+            />
+          )}
         </div>
       )}
+
+      <ProjectPlanSection
+        projectId={projectId}
+        projectFiles={allProjectFiles || []}
+        printers={printers}
+        canEdit={hasPermission('projects:update')}
+        canQueue={hasPermission('queue:create')}
+      />
 
       <ProductionPlan bomItems={bomItems || []} archives={archives || []} files={allProjectFiles || []} fileStates={productionFileStates} onStageFile={(file) => { setSchedulePrinterIds([]); setScheduleFile(file); }} />
       <DispatchSuggestions suggestions={dispatchSuggestions} onReview={(suggestion) => { setSchedulePrinterIds(suggestion.printer ? [suggestion.printer.id] : []); setScheduleFile(suggestion.file); }} />

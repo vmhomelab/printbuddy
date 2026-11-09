@@ -198,7 +198,6 @@ export function MakerworldPage({ embedded = false }: { embedded?: boolean } = {}
     settingsQuery.data?.makerworld_archive_details_default ?? false;
   const makerworldCoverThumbnailDefault =
     settingsQuery.data?.makerworld_cover_thumbnail_default ?? false;
-  const canUpdateSettings = hasPermission('settings:update');
 
   useEffect(() => {
     const useCoverThumbnail = makerworldCoverThumbnailDefault;
@@ -206,25 +205,6 @@ export function MakerworldPage({ embedded = false }: { embedded?: boolean } = {}
     setUseCoverAsThumbnail(useCoverThumbnail);
   }, [makerworldArchiveDetailsDefault, makerworldCoverThumbnailDefault]);
 
-  const importDefaultsMutation = useMutation({
-    mutationFn: (defaults: {
-      makerworld_archive_details_default: boolean;
-      makerworld_cover_thumbnail_default: boolean;
-    }) => api.updateSettings(defaults),
-    onSuccess: (settings) => {
-      queryClient.setQueryData(['settings'], settings);
-      showToast(t('makerworld.importDefaultsSaved'), 'success');
-    },
-    onError: (err: Error) => showToast(err.message || t('makerworld.importDefaultsSaveFailed'), 'error'),
-  });
-
-  const updateImportDefaults = (archiveByDefault: boolean, coverByDefault: boolean) => {
-    if (!canUpdateSettings) return;
-    importDefaultsMutation.mutate({
-      makerworld_archive_details_default: archiveByDefault || coverByDefault,
-      makerworld_cover_thumbnail_default: coverByDefault,
-    });
-  };
   // MakerWorld plates are unsliced project files
   // Slice-via-API modal source. When set, the SliceModal is shown for the
   // referenced library file; it covers MakerWorld's "Slice in <Slicer>" /
@@ -992,60 +972,6 @@ export function MakerworldPage({ embedded = false }: { embedded?: boolean } = {}
             reachable while browsing long plate lists. Vertical list here,
             not the horizontal scroll we used in the bottom-of-page layout. */}
         <aside className="lg:sticky lg:top-6 lg:self-start min-w-0 space-y-4">
-          <Card>
-            <CardHeader>
-              <h2 className="text-base font-semibold">{t('makerworld.importDefaults')}</h2>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-3 text-sm">
-                <p className="text-xs text-gray-500 dark:text-gray-400">
-                  {t('makerworld.importDefaultsDescription')}
-                </p>
-                <label className="flex cursor-pointer items-start gap-3">
-                  <input
-                    type="checkbox"
-                    aria-label={t('makerworld.archiveDetailsDefaultControl')}
-                    checked={makerworldArchiveDetailsDefault}
-                    onChange={(event) =>
-                      updateImportDefaults(
-                        event.target.checked,
-                        event.target.checked ? makerworldCoverThumbnailDefault : false,
-                      )
-                    }
-                    disabled={!canUpdateSettings || importDefaultsMutation.isPending}
-                    className="mt-0.5 h-4 w-4 rounded border-gray-400 text-bambu-green focus:ring-bambu-green"
-                  />
-                  <span>
-                    <span className="block font-medium">{t('makerworld.archiveDetailsByDefault')}</span>
-                    <span className="block text-xs text-gray-500 dark:text-gray-400">
-                      {t('makerworld.archiveDetailsByDefaultDescription')}
-                    </span>
-                  </span>
-                </label>
-                <label className="flex cursor-pointer items-start gap-3">
-                  <input
-                    type="checkbox"
-                    aria-label={t('makerworld.coverThumbnailDefaultControl')}
-                    checked={makerworldCoverThumbnailDefault}
-                    onChange={(event) =>
-                      updateImportDefaults(
-                        makerworldArchiveDetailsDefault,
-                        event.target.checked,
-                      )
-                    }
-                    disabled={!canUpdateSettings || importDefaultsMutation.isPending}
-                    className="mt-0.5 h-4 w-4 rounded border-gray-400 text-bambu-green focus:ring-bambu-green"
-                  />
-                  <span>
-                    <span className="block font-medium">{t('makerworld.useCoverAsThumbnailByDefault')}</span>
-                    <span className="block text-xs text-gray-500 dark:text-gray-400">
-                      {t('makerworld.useCoverAsThumbnailByDefaultDescription')}
-                    </span>
-                  </span>
-                </label>
-              </div>
-            </CardContent>
-          </Card>
           {recentQuery.data && recentQuery.data.length > 0 && (
             <Card>
               <CardHeader>

@@ -2457,7 +2457,11 @@ async def assign_spool(
         raise HTTPException(400, "Cannot assign an archived spool")
 
     is_local_tool_assignment = data.ams_id == -1 and data.tray_id >= 0
-    is_cfs_slot = False
+    printer_result = await db.execute(select(Printer).where(Printer.id == data.printer_id))
+    printer = printer_result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+    is_assignment_only_slot = (printer.model or "").strip().lower() == "snapmaker u1"
 
     # 2. Get current AMS tray state for fingerprint + existing filament ID.
     # tray_state: Bambu firmware reports 11=loaded, 9=empty, 10=spool present
@@ -2516,8 +2520,8 @@ async def assign_spool(
                     unit_id = int(ams_unit.get("id", -999))
                 except (TypeError, ValueError):
                     continue
-                if unit_id == data.ams_id and ams_unit.get("module_type") == "cfs":
-                    is_cfs_slot = True
+                if unit_id == data.ams_id and ams_unit.get("module_type") in ("cfs", "k2oh_cfs"):
+                    is_assignment_only_slot = True
                     break
             if tray:
                 fingerprint_color = tray.get("tray_color", "")
@@ -2606,7 +2610,7 @@ async def assign_spool(
             ", ".join(f"printer {p} AMS{a}-T{t}" for p, a, t in vacated),
         )
 
-    if is_local_tool_assignment or is_cfs_slot:
+    if is_local_tool_assignment or is_assignment_only_slot:
         result = await db.execute(
             select(SpoolAssignment)
             .options(

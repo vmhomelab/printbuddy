@@ -37,6 +37,12 @@ const GroupEditPage = lazyPage(() => import('./pages/GroupEditPage'), 'GroupEdit
 const PrinterLocationsPage = lazyPage(() => import('./pages/PrinterLocationsPage'), 'PrinterLocationsPage');
 const InventoryPage = lazyPage(() => import('./pages/InventoryPage'), 'default');
 const ModelSourcesPage = lazyPage(() => import('./pages/ModelSourcesPage'), 'ModelSourcesPage');
+
+/** /import?source=<tab> (the short-lived "Model import" page) to its Model Sources tab. */
+function ImportRedirect() {
+  const source = new URLSearchParams(useLocation().search).get('source');
+  return <Navigate to={source ? `/model-sources?tab=${encodeURIComponent(source)}` : '/model-sources'} replace />;
+}
 const SystemInfoPage = lazyPage(() => import('./pages/SystemInfoPage'), 'SystemInfoPage');
 const LoginPage = lazyPage(() => import('./pages/LoginPage'), 'LoginPage');
 const ConnectAuthorizePage = lazyPage(() => import('./pages/ConnectAuthorizePage'), 'ConnectAuthorizePage');
@@ -239,9 +245,11 @@ function App() {
                   <Route path="inventory" element={<InventoryPage />} />
                   <Route path="files" element={<FileManagerPage />} />
                   <Route path="files/trash" element={<LibraryTrashPage />} />
-                  <Route path="model-sources" element={<PermissionRoute permission={['makerworld:view', 'manyfold:view']}><ModelSourcesPage /></PermissionRoute>} />
-                  {/* The page was MakerWorld-only until Manyfold joined it (#1471); old links and bookmarks still land on that tab. */}
+                  <Route path="model-sources" element={<PermissionRoute permission={['makerworld:view', 'manyfold:view', 'library:read', 'settings:read']}><ModelSourcesPage /></PermissionRoute>} />
+                  {/* The page was MakerWorld-only until Manyfold joined it (#1471), and briefly "Model import" (/import?source=); old links and bookmarks still land on their tab. */}
                   <Route path="makerworld" element={<Navigate to="/model-sources?tab=makerworld" replace />} />
+                  <Route path="gyroidvault" element={<Navigate to="/model-sources?tab=gyroidvault" replace />} />
+                  <Route path="import" element={<ImportRedirect />} />
                   <Route path="settings" element={<PermissionRoute permission="settings:read"><SettingsPage /></PermissionRoute>} />
                   <Route path="groups/new" element={<PermissionRoute permission="groups:create"><GroupEditPage /></PermissionRoute>} />
                   <Route path="groups/:id/edit" element={<PermissionRoute permission="groups:update"><GroupEditPage /></PermissionRoute>} />

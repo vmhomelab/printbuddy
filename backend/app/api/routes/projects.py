@@ -40,6 +40,7 @@ from backend.app.models.print_log import PrintLogEntry
 from backend.app.models.print_queue import PrintQueueItem, PrintQueueVariant
 from backend.app.models.project import PROJECT_PRIORITIES, PROJECT_STATUSES, Project
 from backend.app.models.project_bom import ProjectBOMItem
+from backend.app.models.project_plan import ProjectPlanItem
 from backend.app.models.user import User
 from backend.app.schemas.project import (
     ArchivePreview,
@@ -59,6 +60,7 @@ from backend.app.schemas.project import (
     TimelineEvent,
 )
 from backend.app.services.library_folder_access import load_folder_index, visible_folder_ids
+from backend.app.services.project_plan import detach_plan_items, linked_files_estimate, load_plan, summarize_plan
 from backend.app.utils.http import build_content_disposition
 from backend.app.utils.safe_path import PathTraversalError, safe_join_under
 
@@ -290,7 +292,37 @@ async def compute_project_stats(
     figures of anyone who had already nested projects over the API.
     """
     totals = (await _load_totals(db, [project_id]))[project_id]
-    return _stats_from_totals(totals, target_count, target_parts_count)
+    # Planned totals + job progress from the project plan; fall back to the
+    # slice estimates of files in linked folders when there is no plan yet.
+    plan_summary = summarize_plan(await load_plan(db, project_id))
+    planned_source = None
+    planned_time_s = 0
+    planned_grams = 0.0
+    if plan_summary["total_plates"] > 0:
+        planned_source = "plan"
+        planned_time_s = plan_summary["planned_print_time_seconds"]
+        planned_grams = plan_summary["planned_filament_grams"]
+    else:
+        files_time_s, files_grams, files_count = await linked_files_estimate(db, project_id)
+        if files_count > 0:
+            planned_source = "files"
+            planned_time_s = files_time_s
+            planned_grams = files_grams
+
+    return _stats_from_totals(totals, target_count, target_parts_count).model_copy(
+        update={
+            "planned_source": planned_source,
+            "planned_print_time_hours": round(planned_time_s / 3600, 2),
+            "planned_filament_grams": round(planned_grams, 2),
+            "plan_total_plates": plan_summary["total_plates"],
+            "plan_completed_plates": plan_summary["completed_plates"],
+            "plan_queued_plates": plan_summary["queued_plates"],
+            "plan_printing_plates": plan_summary["printing_plates"],
+            "plan_failed_plates": plan_summary["failed_plates"],
+            "plan_remaining_plates": plan_summary["remaining_plates"],
+            "plan_progress_percent": plan_summary["progress_percent"],
+        }
+    )
 
 
 def _descendants_of(children: dict[int, list[int]], root_id: int) -> list[int]:
@@ -510,6 +542,11 @@ async def list_projects(
         if project.target_count and project.target_count > 0:
             progress_percent = round((archive_count / project.target_count) * 100, 1)
 
+        # Job plan progress wins over the manual target when a plan exists
+        plan_summary = summarize_plan(await load_plan(db, project.id))
+        if plan_summary["total_plates"] > 0:
+            progress_percent = plan_summary["progress_percent"]
+
         # Get archive previews (up to 6 most recent)
         archives = []
         if preview_scope is not None:
@@ -555,8 +592,11 @@ async def list_projects(
                 progress_percent=progress_percent,
                 parent_id=project.parent_id,
                 child_count=child_counts.get(project.id, 0),
+                plan_total_plates=plan_summary["total_plates"],
+                plan_completed_plates=plan_summary["completed_plates"],
                 archives=archive_previews,
                 url=project.url,
+                order_number=project.order_number,
                 cover_image_filename=project.cover_image_filename,
             )
         )
@@ -597,8 +637,25 @@ async def create_project(
         budget=data.budget,
         parent_id=data.parent_id,
         url=data.url,
+        order_number=(data.order_number or "").strip() or None,
     )
+
+    # Optional File Manager folders to link right away (validated before insert)
+    folders: list[LibraryFolder] = []
+    if data.folder_ids:
+        folder_ids = list(dict.fromkeys(data.folder_ids))
+        folder_result = await db.execute(select(LibraryFolder).where(LibraryFolder.id.in_(folder_ids)))
+        folders = list(folder_result.scalars().all())
+        if len(folders) != len(folder_ids):
+            raise HTTPException(status_code=400, detail="Folder not found")
+
     db.add(project)
+    await db.flush()
+    for folder in folders:
+        # A folder links to one project or archive at a time (same as the
+        # File Manager's link dialog) — linking moves it to this project.
+        folder.project_id = project.id
+        folder.archive_id = None
     await db.flush()
     await db.refresh(project)
 
@@ -616,6 +673,7 @@ async def create_project(
         notes=project.notes,
         attachments=project.attachments,
         url=project.url,
+        order_number=project.order_number,
         cover_image_filename=project.cover_image_filename,
         tags=project.tags,
         due_date=project.due_date,
@@ -672,6 +730,7 @@ async def list_templates(
                 progress_percent=None,
                 archives=[],
                 url=project.url,
+                order_number=project.order_number,
                 cover_image_filename=project.cover_image_filename,
             )
         )
@@ -733,6 +792,8 @@ async def create_project_from_template(
         )
         db.add(new_item)
 
+    await _copy_plan_items(db, template_id, project.id)
+
     await db.flush()
     await db.refresh(project)
 
@@ -750,6 +811,7 @@ async def create_project_from_template(
         notes=project.notes,
         attachments=project.attachments,
         url=project.url,
+        order_number=project.order_number,
         cover_image_filename=project.cover_image_filename,
         tags=project.tags,
         due_date=project.due_date,
@@ -767,6 +829,33 @@ async def create_project_from_template(
 
 
 # ============ Dynamic {project_id} Routes ============
+
+
+async def _copy_plan_items(db: AsyncSession, source_project_id: int, target_project_id: int) -> None:
+    """Copy plan rows (without progress) — used for templates."""
+    result = await db.execute(
+        select(ProjectPlanItem)
+        .where(ProjectPlanItem.project_id == source_project_id)
+        .order_by(ProjectPlanItem.sort_order, ProjectPlanItem.id)
+    )
+    for item in result.scalars().all():
+        db.add(
+            ProjectPlanItem(
+                project_id=target_project_id,
+                library_file_id=item.library_file_id,
+                plate_id=item.plate_id,
+                name=item.name,
+                group_label=item.group_label,
+                quantity=item.quantity,
+                filaments=[dict(f) for f in (item.filaments or []) if isinstance(f, dict)],
+                est_print_time_seconds=item.est_print_time_seconds,
+                est_filament_grams=item.est_filament_grams,
+                printer_id=item.printer_id,
+                target_model=item.target_model,
+                notes=item.notes,
+                sort_order=item.sort_order,
+            )
+        )
 
 
 @router.get("/{project_id}", response_model=ProjectResponse)
@@ -804,6 +893,7 @@ async def get_project(
         notes=project.notes,
         attachments=project.attachments,
         url=project.url,
+        order_number=project.order_number,
         cover_image_filename=project.cover_image_filename,
         tags=project.tags,
         due_date=project.due_date,
@@ -873,6 +963,8 @@ async def update_project(
     if "url" in data.model_fields_set:
         # Pydantic validator already guarantees http(s) prefix or None.
         project.url = data.url
+    if "order_number" in data.model_fields_set:
+        project.order_number = (data.order_number or "").strip()[:100] or None
     if data.parent_id is not None:
         # Verify parent exists and prevent circular reference
         if data.parent_id == project_id:
@@ -916,6 +1008,7 @@ async def update_project(
         notes=project.notes,
         attachments=project.attachments,
         url=project.url,
+        order_number=project.order_number,
         cover_image_filename=project.cover_image_filename,
         tags=project.tags,
         due_date=project.due_date,
@@ -952,6 +1045,8 @@ async def delete_project(
     # the tree by one instead of scattering a branch (#1264). Left to the ORM
     # this would null their parent_id instead, which loses the grandparent.
     await db.execute(update(Project).where(Project.parent_id == project_id).values(parent_id=project.parent_id))
+    plan_ids_result = await db.execute(select(ProjectPlanItem.id).where(ProjectPlanItem.project_id == project_id))
+    await detach_plan_items(db, list(plan_ids_result.scalars().all()))
 
     await db.delete(project)
 
@@ -1615,6 +1710,8 @@ async def create_template_from_project(
         )
         db.add(new_item)
 
+    await _copy_plan_items(db, project_id, template.id)
+
     await db.flush()
     await db.refresh(template)
 
@@ -2042,6 +2139,7 @@ async def import_project(
         notes=project.notes,
         attachments=project.attachments,
         url=project.url,
+        order_number=project.order_number,
         cover_image_filename=project.cover_image_filename,
         tags=project.tags,
         due_date=project.due_date,
@@ -2201,6 +2299,7 @@ async def import_project_file(
         notes=project.notes,
         attachments=project.attachments,
         url=project.url,
+        order_number=project.order_number,
         cover_image_filename=project.cover_image_filename,
         tags=project.tags,
         due_date=project.due_date,

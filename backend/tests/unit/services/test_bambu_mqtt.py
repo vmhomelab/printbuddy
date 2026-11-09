@@ -4222,7 +4222,6 @@ class TestVtTrayNormalization:
         assert isinstance(stored, list)
         assert stored[0]["tray_type"] == "ABS"
 
-
     # The P1S full status (pushall) for a configured external spool, and the
     # incremental push it sent next after Printbuddy configured the slot.
     P1S_EXTERNAL = {
@@ -4242,7 +4241,9 @@ class TestVtTrayNormalization:
         must not wipe its type, filament id and colour (the slot read as empty
         and the UI showed "assigned, not configured yet" until a reload)."""
         mqtt_client._process_message({"print": {"command": "push_status", "vt_tray": dict(self.P1S_EXTERNAL)}})
-        mqtt_client._process_message({"print": {"command": "push_status", "vt_tray": {"id": "254", "nozzle_temp_max": "270"}}})
+        mqtt_client._process_message(
+            {"print": {"command": "push_status", "vt_tray": {"id": "254", "nozzle_temp_max": "270"}}}
+        )
 
         (slot,) = mqtt_client.state.raw_data["vt_tray"]
         assert slot["tray_type"] == "ABS"
@@ -4289,6 +4290,7 @@ class TestMergeVtTray:
         assert merge_vt_tray([{"id": "254", "tray_type": "ABS"}], [{"id": "255", "tray_type": "TPU"}]) == [
             {"id": "255", "tray_type": "TPU"}
         ]
+
 
 class TestSendDryingCommand:
     """Tests for send_drying_command MQTT payload construction."""

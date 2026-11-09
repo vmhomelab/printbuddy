@@ -14,6 +14,7 @@ import {
   type UnifiedPresetsBySlot,
   type UnifiedPresetsResponse,
 } from '../api/client';
+import { useAuth } from '../contexts/AuthContext';
 import { useSliceJobTracker } from '../contexts/SliceJobTrackerContext';
 import { useToast } from '../contexts/ToastContext';
 import { useIsWideLayout } from '../hooks/useIsWideLayout';
@@ -47,6 +48,27 @@ import {
   printerProfileModel,
   printersOfModel,
 } from '../utils/sliceLoadedSpools';
+
+// Remembered per browser: whether a finished slice should open the
+// add-to-queue dialog. Storage can be unavailable (private mode, blocked
+// site data), so every access is guarded.
+const QUEUE_AFTER_SLICE_KEY = 'printbuddy.slice.queueAfterSlice';
+
+function readQueueAfterSlice(): boolean {
+  try {
+    return window.localStorage.getItem(QUEUE_AFTER_SLICE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function writeQueueAfterSlice(value: boolean): void {
+  try {
+    window.localStorage.setItem(QUEUE_AFTER_SLICE_KEY, value ? '1' : '0');
+  } catch {
+    // Preference only; ignore storage failures.
+  }
+}
 
 // The Slice dialog's two filters (#3172), remembered per browser. Off unless
 // the user turned them on.
@@ -336,6 +358,9 @@ export function SliceModal({ source, onClose, defaultAutoArrange = false }: Slic
   const { t } = useTranslation();
   const { trackJob } = useSliceJobTracker();
   const queryClient = useQueryClient();
+  const { hasPermission } = useAuth();
+  const canQueue = hasPermission('queue:create');
+  const [queueAfterSlice, setQueueAfterSlice] = useState(readQueueAfterSlice);
 
   const [printerPreset, setPrinterPreset] = useState<PresetRef | null>(null);
   const [processPreset, setProcessPreset] = useState<PresetRef | null>(null);
@@ -915,7 +940,9 @@ export function SliceModal({ source, onClose, defaultAutoArrange = false }: Slic
       return api.sliceArchive(source.id, body);
     },
     onSuccess: (enqueue) => {
-      trackJob(enqueue.job_id, source.kind, source.filename);
+      trackJob(enqueue.job_id, source.kind, source.filename, {
+        queueAfterSlice: canQueue && queueAfterSlice,
+      });
       onClose();
     },
     onError: (err: unknown) => {
@@ -1541,20 +1568,45 @@ export function SliceModal({ source, onClose, defaultAutoArrange = false }: Slic
           >
             {t('common.cancel')}
           </button>
-          {canSliceAll && (
-            <label
-              className="flex items-center gap-2 mr-auto text-sm text-bambu-gray cursor-pointer select-none"
-              title={t('slice.actionAllTitle', { count: totalPlateCount })}
-            >
-              <input
-                type="checkbox"
-                checked={sliceAllPlates}
-                onChange={(e) => setSliceAllPlates(e.target.checked)}
-                disabled={isEnqueuing}
-                className="cursor-pointer"
-              />
-              {t('slice.allPlatesToggle', { count: totalPlateCount })}
-            </label>
+          {(canSliceAll || canQueue) && (
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mr-auto">
+              {canSliceAll && (
+                <label
+                  className="flex items-center gap-2 text-sm text-bambu-gray cursor-pointer select-none"
+                  title={t('slice.actionAllTitle', { count: totalPlateCount })}
+                >
+                  <input
+                    type="checkbox"
+                    checked={sliceAllPlates}
+                    onChange={(e) => setSliceAllPlates(e.target.checked)}
+                    disabled={isEnqueuing}
+                    className="cursor-pointer"
+                  />
+                  {t('slice.allPlatesToggle', { count: totalPlateCount })}
+                </label>
+              )}
+              {canQueue && (
+                <label
+                  className="flex items-center gap-2 text-sm text-bambu-gray cursor-pointer select-none"
+                  title={t(
+                    'slice.queueAfterSliceTitle',
+                    'When slicing finishes, open the add-to-queue dialog for the sliced file.',
+                  )}
+                >
+                  <input
+                    type="checkbox"
+                    checked={queueAfterSlice}
+                    onChange={(e) => {
+                      setQueueAfterSlice(e.target.checked);
+                      writeQueueAfterSlice(e.target.checked);
+                    }}
+                    disabled={isEnqueuing}
+                    className="cursor-pointer"
+                  />
+                  {t('slice.queueAfterSlice', 'Add to print queue afterwards')}
+                </label>
+              )}
+            </div>
           )}
           <button
             type="button"

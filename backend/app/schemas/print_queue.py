@@ -151,6 +151,8 @@ class PrintQueueItemCreate(BaseModel):
     # candidates ARE the files). The scheduler resolves one onto the row at
     # dispatch, after which the item is an ordinary single-file job.
     variants: list[QueueVariantCreate] | None = None
+    # Project plan row ("job" plate) this item is queued for
+    plan_item_id: int | None = None
 
 
 class PrintQueueItemUpdate(IgnoresNullForRequiredColumns):
@@ -297,6 +299,9 @@ class PrintQueueItemResponse(BaseModel):
 
     # Batch grouping
     batch_id: int | None = None
+    # Project "job" plan row this item belongs to
+    project_id: int | None = None
+    plan_item_id: int | None = None
     batch_name: str | None = None
 
     # Cross-model alternatives (#671), in priority order. Empty for every

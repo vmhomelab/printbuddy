@@ -4,11 +4,13 @@ Tests the full request/response cycle for /api/v1/settings/ endpoints.
 """
 
 import os
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from httpx import AsyncClient
 
 from backend.app.api.routes.settings import get_homeassistant_settings, get_setting
+from backend.app.services.slicer_api import EXPECTED_SIDECAR_REVISION
 
 
 class TestSettingsAPI:
@@ -216,6 +218,106 @@ class TestSettingsAPI:
     # ========================================================================
     # Update settings
     # ========================================================================
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_test_slicer_connection_uses_preferred_sidecar_and_returns_safe_health(
+        self,
+        async_client: AsyncClient,
+    ):
+        """Health checks use the configured sidecar, never a client-supplied URL."""
+        await async_client.put(
+            "/api/v1/settings/",
+            json={
+                "preferred_slicer": "orcaslicer",
+                "orcaslicer_api_url": "http://orca-sidecar:3003",
+            },
+        )
+
+        with patch("backend.app.api.routes.settings.SlicerApiService") as service:
+            service.return_value.__aenter__.return_value.health = AsyncMock(
+                return_value={
+                    "status": "ok",
+                    "version": "2.4.1",
+                    "capabilities": ["slice", "profiles"],
+                    "url": "http://orca-sidecar:3003/health?token=secret",
+                },
+            )
+
+            response = await async_client.post("/api/v1/settings/test-slicer-connection")
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "success": True,
+            "slicer": "orcaslicer",
+            "health": {
+                "status": "ok",
+                "version": "2.4.1",
+                "capabilities": ["slice", "profiles"],
+            },
+            "detected_slicer": "orcaslicer",
+            "error": None,
+            # This health body carries no `revision`: a sidecar from before
+            # revision reporting, hence outdated.
+            "sidecar_revision": None,
+            "expected_sidecar_revision": EXPECTED_SIDECAR_REVISION,
+            "sidecar_up_to_date": False,
+        }
+        service.assert_called_once_with("http://orca-sidecar:3003")
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_test_slicer_connection_reports_unavailable_sidecar_without_url(
+        self,
+        async_client: AsyncClient,
+    ):
+        """Failure output is safe for the browser and does not expose the sidecar URL."""
+        from backend.app.services.slicer_api import SlicerApiUnavailableError
+
+        with patch("backend.app.api.routes.settings.SlicerApiService") as service:
+            service.return_value.__aenter__.return_value.health = AsyncMock(
+                side_effect=SlicerApiUnavailableError("Slicer sidecar unreachable: http://secret-host:3001"),
+            )
+
+            response = await async_client.post("/api/v1/settings/test-slicer-connection")
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "success": False,
+            "slicer": "bambu_studio",
+            "health": None,
+            "detected_slicer": None,
+            "error": "unreachable",
+            "sidecar_revision": None,
+            "expected_sidecar_revision": EXPECTED_SIDECAR_REVISION,
+            "sidecar_up_to_date": None,
+        }
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_test_slicer_connection_treats_invalid_sidecar_health_as_unavailable(
+        self,
+        async_client: AsyncClient,
+    ):
+        """A malformed health response must not turn the UI check into a 500."""
+        with patch("backend.app.api.routes.settings.SlicerApiService") as service:
+            service.return_value.__aenter__.return_value.health = AsyncMock(
+                side_effect=ValueError("sidecar returned invalid JSON"),
+            )
+
+            response = await async_client.post("/api/v1/settings/test-slicer-connection")
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "success": False,
+            "slicer": "bambu_studio",
+            "health": None,
+            "detected_slicer": None,
+            "error": "invalid_response",
+            "sidecar_revision": None,
+            "expected_sidecar_revision": EXPECTED_SIDECAR_REVISION,
+            "sidecar_up_to_date": None,
+        }
 
     @pytest.mark.asyncio
     @pytest.mark.integration

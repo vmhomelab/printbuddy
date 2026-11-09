@@ -38,6 +38,7 @@ from backend.app.models.print_batch import PrintBatch, PrintBatchPlate
 from backend.app.models.print_queue import PrintQueueItem, PrintQueueVariant
 from backend.app.models.printer import Printer
 from backend.app.models.project import Project
+from backend.app.models.project_plan import ProjectPlanItem
 from backend.app.models.user import User
 from backend.app.schemas.print_queue import (
     ColorSubstitution,
@@ -542,6 +543,9 @@ def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
         # Batch grouping
         "batch_id": item.batch_id,
         "batch_name": item.batch.name if item.batch else None,
+        # Project "job" tracking
+        "project_id": item.project_id,
+        "plan_item_id": item.plan_item_id,
         # SJF scheduling
         "been_jumped": item.been_jumped,
         # Auto-print G-code injection
@@ -1397,6 +1401,13 @@ async def add_to_queue(
     # The type list below stays model-only; it gates which printer of a model is
     # eligible, which a printer-targeted job has already settled.
     filament_overrides_json = None
+    if data.filament_overrides and data.plan_item_id and not target_model_norm and data.printer_id is None:
+        # A project-plan item carries per-slot material/colour choices even
+        # before a printer is picked; the scheduler applies them when it
+        # computes the AMS mapping for the printer it lands on.
+        filament_overrides_json = json.dumps(
+            overrides_for_plate(data.filament_overrides, file_path, data.plate_id) or data.filament_overrides
+        )
     if data.filament_overrides and (target_model_norm or data.printer_id is not None):
         plate_overrides = overrides_for_plate(data.filament_overrides, file_path, data.plate_id)
         if plate_overrides:
@@ -1501,6 +1512,13 @@ async def add_to_queue(
         if not project_result.scalar_one_or_none():
             raise HTTPException(status_code=404, detail="Project not found")
 
+    if data.plan_item_id is not None:
+        plan_result = await db.execute(select(ProjectPlanItem).where(ProjectPlanItem.id == data.plan_item_id))
+        plan_item = plan_result.scalar_one_or_none()
+        if not plan_item:
+            raise HTTPException(status_code=404, detail="Plan item not found")
+        if data.project_id is not None and plan_item.project_id != data.project_id:
+            raise HTTPException(status_code=400, detail="Plan item belongs to a different project")
     # Security boundary: the browser's estimated_cost is only a display hint.
     # Budget enforcement and the persisted reservation value must be derived
     # from the server-owned archive/library metadata and spool assignments.
@@ -1609,6 +1627,7 @@ async def add_to_queue(
             gcode_injection=data.gcode_injection,
             cleanup_library_after_dispatch=data.cleanup_library_after_dispatch,
             project_id=data.project_id,
+            plan_item_id=data.plan_item_id,
             position=start_position + i,
             status="pending",
             created_by_id=actor.id if actor else None,

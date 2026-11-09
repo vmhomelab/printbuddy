@@ -53,6 +53,9 @@ jobs:
       - name: Run ruff format check
         run: ruff format --check backend/
 
+      - name: Check slicer sidecar image references
+        run: python scripts/slicer_images.py --check
+
   backend-typecheck:
     name: Backend Type Check
     runs-on: ubuntu-latest

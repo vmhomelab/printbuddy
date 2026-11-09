@@ -86,6 +86,7 @@ from backend.app.utils.printer_models import (
     is_nozzle_rack_model,
     normalize_printer_model,
 )
+from backend.app.utils.sliced_upload import SlicedUploadError, prepare_sliced_upload
 from backend.app.utils.threemf_tools import (
     default_plate_number,
     extract_rack_plan_from_3mf,
@@ -9309,6 +9310,8 @@ class PrintScheduler:
                     reused_archive = True
                     if archive.library_file_id is None:
                         archive.library_file_id = item.library_file_id
+                    if archive.plan_item_id is None:
+                        archive.plan_item_id = item.plan_item_id
                     # This run's, as a new archive would have them: the
                     # archive shows its latest run's plate, and a print
                     # without a queue item falls back to the archive's plate
@@ -9331,6 +9334,7 @@ class PrintScheduler:
                         cost_center_id=item.cost_center_id,
                         library_file_id=item.library_file_id,  # per-file project progress (#1897)
                         plate_id=item.plate_id,  # selected plate → Print History (#2603)
+                        plan_item_id=item.plan_item_id,  # project job progress
                     )
                 if archive:
                     self._hold_archive(item.id, archive.id)
@@ -9581,10 +9585,24 @@ class PrintScheduler:
                 logger.warning("Queue item %s: G-code injection failed, using original: %s", item.id, e)
 
         provider = normalize_provider(getattr(printer, "provider", None))
+        # G-code printers cannot read .gcode.3mf projects: upload the queued
+        # plate's G-code instead (Bambu printers get the 3MF).
+        try:
+            upload = prepare_sliced_upload(file_path, filename, provider, item.plate_id)
+        except SlicedUploadError as exc:
+            if injected_path and injected_path.exists():
+                injected_path.unlink(missing_ok=True)
+            item.status = "failed"
+            item.error_message = str(exc)
+            item.completed_at = datetime.now(timezone.utc)
+            await db.commit()
+            logger.error("Queue item %s: %s", item.id, exc)
+            await self._power_off_if_needed(db, item)
+            return
         # Use a provider-correct printer-side name. Bambu keeps the historical
         # 3MF rewrite (via derive_remote_filename, #1542), while Moonraker/K-series,
         # PrusaLink (.bgcode) and Elegoo CC1 must keep .gcode/.bgcode intact.
-        remote_filename = self._remote_filename_for_provider(filename, provider)
+        remote_filename = self._remote_filename_for_provider(upload.filename, provider)
 
         # #2547: the finish-photo path can't learn from telemetry that this print
         # ends with user End G-code — which means the plate may be gone by the
@@ -9675,27 +9693,28 @@ class PrintScheduler:
         upload_failure = FtpFailureReport()
 
         try:
-            uploaded = await self._upload_file_for_provider(
-                printer_id=item.printer_id,
-                provider=provider,
-                printer_name=printer.name,
-                printer_ip=printer.ip_address,
-                printer_access_code=printer.access_code,
-                file_path=file_path,
-                remote_path=remote_path,
-                printer_model=printer.model,
-                ftp_retry_enabled=ftp_retry_enabled,
-                ftp_retry_count=ftp_retry_count,
-                ftp_retry_delay=ftp_retry_delay,
-                ftp_timeout=ftp_timeout,
-                operation_name=f"Upload print to {printer.name}",
-                progress_callback=progress_bridge,
-                # Bounded, user-initiated unit with the delete above: never
-                # skip on the handshake cool-off (#2898), and record why an
-                # upload failed straight from the client (#2899).
-                respect_handshake_cooloff=False,
-                failure=upload_failure,
-            )
+            async with upload.local_file() as upload_path:
+                uploaded = await self._upload_file_for_provider(
+                    printer_id=item.printer_id,
+                    provider=provider,
+                    printer_name=printer.name,
+                    printer_ip=printer.ip_address,
+                    printer_access_code=printer.access_code,
+                    file_path=upload_path,
+                    remote_path=remote_path,
+                    printer_model=printer.model,
+                    ftp_retry_enabled=ftp_retry_enabled,
+                    ftp_retry_count=ftp_retry_count,
+                    ftp_retry_delay=ftp_retry_delay,
+                    ftp_timeout=ftp_timeout,
+                    operation_name=f"Upload print to {printer.name}",
+                    progress_callback=progress_bridge,
+                    # Bounded, user-initiated unit with the delete above: never
+                    # skip on the handshake cool-off (#2898), and record why an
+                    # upload failed straight from the client (#2899).
+                    respect_handshake_cooloff=False,
+                    failure=upload_failure,
+                )
         except UploadCancelled as e:
             uploaded = False
             upload_error = (

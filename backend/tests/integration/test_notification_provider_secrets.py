@@ -432,9 +432,7 @@ async def test_notify_recipients_saved_back_as_shown_keep_their_tokens(async_cli
     ]
 
 
-async def test_a_legacy_notify_device_keeps_its_token_when_saved_as_a_recipient(
-    async_client: AsyncClient, db_session
-):
+async def test_a_legacy_notify_device_keeps_its_token_when_saved_as_a_recipient(async_client: AsyncClient, db_session):
     admin = await _admin(async_client)
     created = await _create(async_client, admin, "notify", {"device_id": "IO9999", "device_token": "legacy-tok"})
     # The edit dialog shows the legacy device as recipient "legacy".

@@ -2,9 +2,11 @@ import io
 import json
 import logging
 import os
+import re
 import zipfile
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
@@ -31,6 +33,12 @@ from backend.app.models.user import User
 from backend.app.schemas.settings import ADMIN_ONLY_SETTING_KEYS, AppSettings, AppSettingsUpdate
 from backend.app.services import camera_light
 from backend.app.services.secret_fields import SETTINGS_SECRETS, SecretConfigError, mask_fields, merge_partial
+from backend.app.services.slicer_api import (
+    EXPECTED_SIDECAR_REVISION,
+    SlicerApiInvalidResponseError,
+    SlicerApiService,
+    SlicerApiUnavailableError,
+)
 
 MANUAL_BACKUP_FILENAME_PREFIX = "printbuddy-backup-"
 BACKUP_DATABASE_FILENAME = "printbuddy.db"
@@ -79,6 +87,40 @@ DEFAULT_SETTINGS = AppSettings()
 # Sensitive credential fields blanked for API-key callers. Everyone else sees
 # them as the placeholder (write-only secrets, see services/secret_fields).
 _SENSITIVE_FIELDS_FOR_API_KEY = (*SETTINGS_SECRETS, "octoeverywhere_api_key")
+
+
+class SlicerHealthPayload(BaseModel):
+    """Safe, documented subset of a slicer sidecar's health response."""
+
+    status: str | None = None
+    version: str | None = None
+    capabilities: list[str] | None = None
+
+
+class SlicerConnectionTestResponse(BaseModel):
+    """Result of testing the selected slicer sidecar connection.
+
+    The endpoint resolves the target only from persisted settings and app
+    configuration; it deliberately accepts no URL or request body.
+    """
+
+    success: bool
+    slicer: str
+    health: SlicerHealthPayload | None = None
+    # Which slicer actually answered, inferred from the reported CLI version.
+    # Lets the UI warn when the URL points at the other sidecar (wrong port).
+    detected_slicer: Literal["bambu_studio", "orcaslicer"] | None = None
+    # Why the test failed: "unreachable" (no answer / HTTP error) or
+    # "invalid_response" (the URL answered, but not with the slicer API, e.g.
+    # a desktop-slicer web GUI). None on success.
+    error: Literal["unreachable", "invalid_response"] | None = None
+    # Sidecar commit the running image reports (None when it reports none or
+    # "unknown") and the one this Printbuddy version expects.
+    sidecar_revision: str | None = None
+    expected_sidecar_revision: str = EXPECTED_SIDECAR_REVISION
+    # False when the sidecar runs another revision than expected (also for
+    # sidecars too old to report one), None when it cannot be told.
+    sidecar_up_to_date: bool | None = None
 
 
 async def get_setting(db: AsyncSession, key: str) -> str | None:
@@ -186,6 +228,90 @@ async def get_external_base_url(db: AsyncSession) -> str:
     return os.environ.get("APP_URL", "http://localhost:5173").rstrip("/")
 
 
+_BAMBU_STUDIO_VERSION = re.compile(r"^0\d\.\d{2}\.\d{2}\.\d+$")
+_ORCASLICER_VERSION = re.compile(r"^\d+\.\d+\.\d+(?:[-.][0-9A-Za-z.]+)?$")
+
+
+def _health_version(payload: dict) -> str | None:
+    """CLI version from a sidecar health response.
+
+    The slicer-API wrapper reports it under ``checks.<name>.version`` (the
+    check is named ``orcaslicer`` for both sidecars); a top-level ``version``
+    is accepted too. ``"unknown"`` means the wrapper could not parse it.
+    """
+    candidates: list[object] = [payload.get("version")]
+    checks = payload.get("checks")
+    if isinstance(checks, dict):
+        candidates.extend(check.get("version") for check in checks.values() if isinstance(check, dict))
+    for value in candidates:
+        if isinstance(value, str) and value.strip() and value.strip().lower() != "unknown":
+            return value.strip()[:200]
+    return None
+
+
+def detect_sidecar_slicer(version: str | None) -> str | None:
+    """Tell Bambu Studio (``02.08.02.61``) from OrcaSlicer (``2.3.2``) by version."""
+    if not version:
+        return None
+    if _BAMBU_STUDIO_VERSION.match(version):
+        return "bambu_studio"
+    if _ORCASLICER_VERSION.match(version):
+        return "orcaslicer"
+    return None
+
+
+def sanitize_slicer_health_payload(payload: dict) -> dict:
+    """Return only safe, documented fields from an untrusted sidecar response."""
+    safe: dict[str, str | list[str]] = {}
+    status = payload.get("status")
+    if isinstance(status, str):
+        safe["status"] = status[:200]
+    version = _health_version(payload)
+    if version:
+        safe["version"] = version
+
+    capabilities = payload.get("capabilities")
+    if isinstance(capabilities, list):
+        safe_capabilities = [capability[:100] for capability in capabilities if isinstance(capability, str)][:50]
+        safe["capabilities"] = safe_capabilities
+    return safe
+
+
+_REVISION = re.compile(r"^[0-9a-f]{7,40}$")
+
+
+def sidecar_revision_status(payload: dict) -> tuple[str | None, bool | None]:
+    """Return ``(reported revision, up to date?)`` from a sidecar health body.
+
+    Sidecars report ``revision`` since the build that introduced it; one that
+    reports nothing at all predates it and is therefore outdated. "unknown"
+    (a self-built image without the build arg) cannot be judged.
+    """
+    if "revision" not in payload:
+        return None, False
+    raw = payload.get("revision")
+    revision = raw.strip().lower() if isinstance(raw, str) else ""
+    if not _REVISION.match(revision):
+        return None, None
+    return revision, EXPECTED_SIDECAR_REVISION.startswith(revision) or revision.startswith(EXPECTED_SIDECAR_REVISION)
+
+
+async def _resolve_effective_slicer_sidecar(db: AsyncSession) -> tuple[str, str]:
+    """Resolve the selected slicer and sidecar URL using the normal precedence."""
+    preferred = (await get_setting(db, "preferred_slicer")) or "bambu_studio"
+    if preferred == "orcaslicer":
+        configured = await get_setting(db, "orcaslicer_api_url")
+        url = (configured or app_settings.slicer_api_url).strip()
+    elif preferred == "bambu_studio":
+        configured = await get_setting(db, "bambu_studio_api_url")
+        url = (configured or app_settings.bambu_studio_api_url).strip()
+    else:
+        raise ValueError("Invalid preferred slicer configuration")
+    if not url:
+        raise ValueError("No slicer sidecar is configured")
+    return preferred, url
+
+
 async def get_external_login_url(db: AsyncSession) -> str:
     """Get the external URL for the login page.
 
@@ -258,6 +384,7 @@ _BOOL_SETTING_KEYS = frozenset(
         "ldap_auto_provision",
         "makerworld_archive_details_default",
         "makerworld_cover_thumbnail_default",
+        "gyroidvault_enabled",
         "local_login_enabled",
         "preheat_enabled",
         "queue_keep_bed_warm",
@@ -563,6 +690,10 @@ async def update_settings(
             await db.commit()
         except Exception as e:
             logger.warning("Could not read the electricity price after saving its source: %s", e)
+    if "progress_milestone_mode" in update_data:
+        from backend.app.main import invalidate_progress_milestone_mode_cache
+
+        invalidate_progress_milestone_mode_cache()
 
     # Reconfigure MQTT relay if any MQTT settings changed
     if mqtt_updated:
@@ -603,6 +734,44 @@ async def patch_settings(
 ):
     """Partially update application settings (same as PUT, for REST compatibility)."""
     return await update_settings(settings_update, db, _)
+
+
+@router.post("/test-slicer-connection", response_model=SlicerConnectionTestResponse)
+async def test_slicer_connection(
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_UPDATE),
+):
+    """Health-check the effective configured slicer sidecar.
+
+    The URL is resolved server-side from the selected slicer setting and its
+    DB-or-environment configuration. No caller-controlled URL is accepted.
+    """
+    try:
+        slicer, sidecar_url = await _resolve_effective_slicer_sidecar(db)
+    except ValueError:
+        logger.warning("Slicer connection test could not resolve the selected sidecar")
+        return SlicerConnectionTestResponse(success=False, slicer="bambu_studio")
+
+    try:
+        async with SlicerApiService(sidecar_url) as service:
+            health = await service.health()
+    except (SlicerApiInvalidResponseError, ValueError):
+        logger.info("Configured %s slicer sidecar URL did not answer with the slicer API", slicer)
+        return SlicerConnectionTestResponse(success=False, slicer=slicer, error="invalid_response")
+    except SlicerApiUnavailableError:
+        logger.info("Configured %s slicer sidecar is unavailable", slicer)
+        return SlicerConnectionTestResponse(success=False, slicer=slicer, error="unreachable")
+
+    safe_health = sanitize_slicer_health_payload(health)
+    revision, up_to_date = sidecar_revision_status(health)
+    return SlicerConnectionTestResponse(
+        success=True,
+        slicer=slicer,
+        health=safe_health,
+        detected_slicer=detect_sidecar_slicer(safe_health.get("version")),
+        sidecar_revision=revision,
+        sidecar_up_to_date=up_to_date,
+    )
 
 
 class ElectricityPriceUpdate(BaseModel):

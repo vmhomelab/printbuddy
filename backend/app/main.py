@@ -44,6 +44,7 @@ from backend.app.api.routes import (
     firmware,
     github_backup,
     groups,
+    gyroidvault,
     ha_sensors,
     inventory,
     kprofiles,
@@ -76,6 +77,7 @@ from backend.app.api.routes import (
     printer_locations,
     printer_sensor_history,
     printers,
+    project_plan,
     projects,
     scheduled_dryings,
     settings as settings_routes,
@@ -142,7 +144,7 @@ from backend.app.services.obico_detection import obico_detection_service
 from backend.app.services.octoeverywhere_detection import octoeverywhere_detection_service
 from backend.app.services.plug_energy import get_plug_energy as _get_plug_energy
 from backend.app.services.print_cost_estimate import plate_scoped_run_estimate as _plate_scoped_run_estimate
-from backend.app.services.print_progress import effective_print_progress, live_activity_progress
+from backend.app.services.print_progress import live_activity_progress, milestone_progress
 from backend.app.services.print_scheduler import scheduler as print_scheduler
 from backend.app.services.print_storage import (
     REASON_FTP_TRANSFER_FAILED,
@@ -1881,13 +1883,15 @@ def _filename_filament_metadata(filename: str | None) -> dict:
 def _file_metadata_for_archive(printer, data: dict) -> dict:
     """Return normalized file metadata for provider fallback archives.
 
-    PrusaLink can expose real file metadata. K2/Moonraker currently does not
-    expose weight in `/server/files/metadata`, but Creality/Orca filenames often
-    include material, duration, and grams.
+    PrusaLink can expose real file metadata. Moonraker exposes slicer metadata
+    via ``/server/files/metadata`` (attached by the provider as
+    ``file_metadata``). Some firmwares (Creality K2) omit the weight there, but
+    Creality/Orca filenames often include material, duration, and grams.
     """
     provider = getattr(printer, "provider", None)
     raw_data = data.get("raw_data") if isinstance(data.get("raw_data"), dict) else {}
-    if provider in {"klipper", "mainsail", "fluidd"}:
+    is_moonraker = provider in {"klipper", "mainsail", "fluidd"}
+    if is_moonraker:
         k2_metadata = _k2_cur_print_data_metadata(data)
         if k2_metadata:
             data["file_metadata"] = k2_metadata
@@ -1895,9 +1899,10 @@ def _file_metadata_for_archive(printer, data: dict) -> dict:
 
     metadata = data.get("file_metadata")
     if isinstance(metadata, dict) and metadata:
-        return metadata
+        if not is_moonraker or _metadata_float(metadata.get("filament_used_grams")):
+            return metadata
 
-    if provider in {"klipper", "mainsail", "fluidd"}:
+    if is_moonraker:
         for raw_name in (
             data.get("filename"),
             data.get("gcode_file"),
@@ -1905,11 +1910,22 @@ def _file_metadata_for_archive(printer, data: dict) -> dict:
             raw_data.get("filename"),
             raw_data.get("gcode_file"),
         ):
-            metadata = _filename_filament_metadata(str(raw_name) if raw_name else None)
-            if metadata:
-                data["file_metadata"] = metadata
-                return metadata
+            filename_metadata = _filename_filament_metadata(str(raw_name) if raw_name else None)
+            if filename_metadata:
+                if isinstance(metadata, dict) and metadata:
+                    # Moonraker metadata without weight: keep its details and
+                    # take grams/material/time from the filename.
+                    merged = dict(metadata)
+                    for key, value in filename_metadata.items():
+                        if key == "source" or merged.get(key) in (None, "", 0):
+                            merged[key] = value
+                    merged["source"] = metadata.get("source") or filename_metadata.get("source")
+                    filename_metadata = merged
+                data["file_metadata"] = filename_metadata
+                return filename_metadata
 
+    if isinstance(metadata, dict) and metadata:
+        return metadata
     return {}
 
 
@@ -1924,7 +1940,22 @@ def _refresh_file_metadata_for_archive(printer_id: int, printer, data: dict, log
     if metadata:
         return metadata
     provider = getattr(printer, "provider", None)
-    if provider not in {"prusalink", "klipper", "mainsail", "fluidd"}:
+    if provider in {"klipper", "mainsail", "fluidd"}:
+        # Payloads built outside the provider's lifecycle edge (e.g. restart
+        # recovery) carry no file_metadata; ask Moonraker once for it.
+        client = printer_manager.get_client(printer_id)
+        refresh = getattr(client, "refresh_current_file_metadata", None)
+        if callable(refresh):
+            try:
+                refreshed = refresh()
+            except Exception as exc:
+                logger.debug("[FILE-META] Moonraker metadata refresh failed for printer %s: %s", printer_id, exc)
+                refreshed = {}
+            if isinstance(refreshed, dict) and refreshed:
+                data["file_metadata"] = refreshed
+                return _file_metadata_for_archive(printer, data)
+        return {}
+    if provider != "prusalink":
         return {}
 
     client = printer_manager.get_client(printer_id)
@@ -1948,6 +1979,67 @@ def _refresh_file_metadata_for_archive(printer_id: int, printer, data: dict, log
     return {}
 
 
+def _apply_moonraker_details_to_archive(archive, metadata: dict | None) -> bool:
+    """Copy Moonraker slicer details (layer height, temps, colors...) onto a fileless archive.
+
+    Returns True when any archive field changed.
+    """
+    if not isinstance(metadata, dict) or metadata.get("source") != "moonraker_file_metadata":
+        return False
+    changed = False
+    for key in ("layer_height", "nozzle_diameter"):
+        value = _metadata_float(metadata.get(key))
+        if value and not getattr(archive, key, None):
+            setattr(archive, key, value)
+            changed = True
+    for key in ("total_layers", "nozzle_temperature", "bed_temperature"):
+        value = _metadata_float(metadata.get(key))
+        if value and not getattr(archive, key, None):
+            setattr(archive, key, int(value))
+            changed = True
+    colors = metadata.get("filament_colors")
+    if isinstance(colors, list) and colors and not archive.filament_color:
+        archive.filament_color = ",".join(str(c) for c in colors)[:200]
+        changed = True
+    filament_types = metadata.get("filament_types")
+    if isinstance(filament_types, list) and filament_types:
+        archive.filament_type = ", ".join(dict.fromkeys(str(t) for t in filament_types))[:50]
+        changed = True
+    elif metadata.get("filament_type") and not archive.filament_type:
+        archive.filament_type = str(metadata["filament_type"])[:50]
+        changed = True
+    return changed
+
+
+async def _store_moonraker_thumbnail(printer_id: int, archive, metadata: dict, logger) -> bool:
+    """Download the slicer thumbnail Moonraker extracted and attach it to the archive."""
+    if archive.thumbnail_path:
+        return False
+    thumbnail_path = metadata.get("thumbnail_path")
+    client = printer_manager.get_client(printer_id)
+    download = getattr(client, "download_thumbnail", None)
+    if not thumbnail_path or not callable(download):
+        return False
+    data = await asyncio.to_thread(download, str(thumbnail_path))
+    if not data:
+        return False
+
+    from pathlib import Path
+
+    from backend.app.utils.archive_paths import archive_dir as resolve_archive_dir
+
+    archive_dir = resolve_archive_dir(archive)
+    await asyncio.to_thread(archive_dir.mkdir, parents=True, exist_ok=True)
+    suffix = Path(str(thumbnail_path)).suffix.lower()
+    if suffix not in {".png", ".jpg", ".jpeg", ".webp"}:
+        suffix = ".png"
+    thumb_file = archive_dir / f"thumbnail{suffix}"
+    await asyncio.to_thread(thumb_file.write_bytes, data)
+    archive.thumbnail_path = str(thumb_file.relative_to(app_settings.base_dir))
+    logger.info("[MOONRAKER] Stored slicer thumbnail for archive %s (%s bytes)", archive.id, len(data))
+    return True
+
+
 async def _apply_file_metadata_to_archive(db, printer_id: int, printer, archive, data: dict, logger) -> bool:
     """Populate a no-3MF fallback archive from provider metadata when needed."""
     if not archive or archive.file_path or archive.filament_used_grams:
@@ -1965,6 +2057,8 @@ async def _apply_file_metadata_to_archive(db, printer_id: int, printer, archive,
         if metadata_cost is None:
             metadata_cost = await _calculate_loaded_spool_cost(db, printer_id, grams)
         archive.cost = metadata_cost if metadata_cost is not None else archive.cost
+        updated = True
+    if _apply_moonraker_details_to_archive(archive, metadata):
         updated = True
     metadata_print_time_raw = _metadata_float(metadata.get("print_time_seconds"))
     if metadata_print_time_raw is not None and not archive.print_time_seconds:
@@ -2499,6 +2593,43 @@ def _provider_name_for_progress(printer_id: int) -> str:
         return ""
 
 
+_PROGRESS_MILESTONE_MODE_TTL_SECONDS = 30.0
+_progress_milestone_mode_cache: tuple[float, str] | None = None
+
+
+def invalidate_progress_milestone_mode_cache() -> None:
+    """Drop the cached milestone mode so the next status update re-reads it."""
+    global _progress_milestone_mode_cache
+    _progress_milestone_mode_cache = None
+
+
+async def _get_progress_milestone_mode() -> str:
+    """Return the configured milestone source ('layers' or 'print_progress').
+
+    Status callbacks fire many times per second, so cache the setting briefly
+    instead of hitting the database on every update.
+    """
+    global _progress_milestone_mode_cache
+    now = time.monotonic()
+    cached = _progress_milestone_mode_cache
+    if cached and now - cached[0] < _PROGRESS_MILESTONE_MODE_TTL_SECONDS:
+        return cached[1]
+    mode = "layers"
+    try:
+        from backend.app.api.routes.settings import get_setting
+
+        async with async_session() as db:
+            value = await get_setting(db, "progress_milestone_mode")
+        if value in ("layers", "print_progress"):
+            mode = value
+    except Exception:
+        logging.getLogger(__name__).debug("Could not read progress_milestone_mode", exc_info=True)
+        if cached:
+            mode = cached[1]
+    _progress_milestone_mode_cache = (now, mode)
+    return mode
+
+
 def _should_send_print_almost_done(printer_id: int, progress: float) -> bool:
     """Return whether this print just crossed the almost-done threshold."""
 
@@ -2896,6 +3027,7 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
     )
     bed_temp = round(temps.get("bed", 0))
     chamber_temp = round(temps.get("chamber", 0)) if "chamber" in temps else ""
+    chamber_target = round(temps.get("chamber_target", 0)) if "chamber_target" in temps else ""
 
     # Persist the actual number of reported toolheads. This keeps dual-nozzle
     # Bambu behavior intact while allowing U1-style four-nozzle printers (and
@@ -3022,7 +3154,7 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
     )
     status_key = (
         f"{state.connected}:{state.state}:{state.progress}:{state.layer_num}:"
-        f"{nozzle_temperatures}:{bed_temp}:{chamber_temp}:"
+        f"{nozzle_temperatures}:{bed_temp}:{chamber_temp}:{chamber_target}:"
         f"{state.stg_cur}:{bed_target}:{nozzle_target}:"
         f"{state.cooling_fan_speed}:{state.big_fan1_speed}:{state.big_fan2_speed}:"
         f"{state.chamber_light}:{state.active_extruder}:{state.tray_now}:{vt_tray_key}:"
@@ -3159,7 +3291,7 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
     # Check for progress milestone notifications (25%, 50%, 75%)
     logger = logging.getLogger(__name__)
     raw_progress = state.progress or 0
-    progress = effective_print_progress(state)
+    progress = milestone_progress(state, await _get_progress_milestone_mode())
     activity_progress = live_activity_progress(state)
     is_printing = bool(state.connected) and state.state in ("RUNNING", "PRINTING")
     provider = _provider_name_for_progress(printer_id)
@@ -7293,6 +7425,8 @@ async def on_print_start(printer_id: int, data: dict):
                     extra_data=extra_data,
                 )
 
+                _apply_moonraker_details_to_archive(fallback_archive, file_metadata)
+
                 db.add(fallback_archive)
                 try:
                     await db.commit()
@@ -7308,6 +7442,13 @@ async def on_print_start(printer_id: int, data: dict):
 
                 if await _drop_archive_of_deleted_printer(db, printer_id, fallback_archive.id):
                     return
+                if file_metadata.get("source") == "moonraker_file_metadata" and file_metadata.get("thumbnail_path"):
+                    try:
+                        if await _store_moonraker_thumbnail(printer_id, fallback_archive, file_metadata, logger):
+                            await db.commit()
+                    except Exception as e:
+                        logger.debug("[MOONRAKER] Thumbnail for archive %s failed: %s", fallback_archive.id, e)
+
                 if printer.provider == "prusalink" and not fallback_archive.filament_used_grams:
                     asyncio.create_task(
                         _refresh_prusalink_archive_metadata_later(printer_id, fallback_archive.id, dict(data))
@@ -7694,6 +7835,12 @@ async def _list_timelapse_videos(printer) -> tuple[list[dict], str | None]:
 
     logger = logging.getLogger(__name__)
 
+    # Timelapse files are only reachable over Bambu FTP. Other providers
+    # (Moonraker/Klipper, PrusaLink, OctoPrint, Elegoo) must not be probed —
+    # it only produces FTP connection errors against the printer.
+    if not _should_attempt_bambu_ftp_archive(printer):
+        return [], None
+
     # No card in the slot means no /timelapse to walk — four connections that
     # can only fail, on a path whose failures are swallowed and so would go on
     # costing time silently forever (#2780).
@@ -7749,6 +7896,12 @@ async def _capture_timelapse_baseline_at_start(
     (#2704). Only baselines taken at print start are persisted — one taken at
     completion already contains the new video and would poison a later scan.
     """
+    if not _should_attempt_bambu_ftp_archive(printer):
+        logger.debug(
+            "[TIMELAPSE] Skipping timelapse baseline for non-Bambu provider %s", getattr(printer, "provider", None)
+        )
+        return
+
     names: set[str] | None = None
     unread = False
     _timelapse_baselines_unread.discard(printer_id)
@@ -8035,6 +8188,16 @@ async def _scan_for_timelapse_with_retries(
                 stored_baseline, stored_unread = run.timelapse_baseline, bool(run.timelapse_baseline_unread)
             elif archive.started_at == run_started_at:
                 stored_baseline, stored_unread = archive.timelapse_baseline, archive.timelapse_baseline_unread
+
+            provider_result = await db.execute(select(Printer).where(Printer.id == archive.printer_id))
+            provider_printer = provider_result.scalar_one_or_none()
+            if provider_printer and not _should_attempt_bambu_ftp_archive(provider_printer):
+                logger.info(
+                    "[TIMELAPSE] Skipping printer timelapse scan for non-Bambu provider %s (archive %s)",
+                    getattr(provider_printer, "provider", None),
+                    archive_id,
+                )
+                return
 
             if baseline_names is not None and baseline_unread and stored_baseline is not None and not stored_unread:
                 # The card was read at print start, and the in-memory copy is
@@ -10019,6 +10182,12 @@ async def _cleanup_sd_card_after_print(
         logger.warning("SD card file cleanup failed for printer %s: %s", printer_id, e)
 
 
+# Statuses that end a print: they get an archive completed_at timestamp and
+# raise the plate-clear gate. "stopped" comes from polled providers
+# (PrusaLink/OctoPrint) and needs both, like "aborted" (PB-2).
+TERMINAL_PRINT_STATUSES = ("completed", "failed", "aborted", "cancelled", "stopped")
+
+
 async def on_print_complete(printer_id: int, data: dict):
     """Handle print completion - update the archive status.
 
@@ -10120,7 +10289,7 @@ async def _close_out_print(printer_id: int, data: dict):
     # after a touchscreen-abort (#1171). Persisted to DB so the gate survives
     # Auto Off power cycles and Printbuddy restarts.
     _final_status = data.get("status", "completed")
-    if _final_status in ("completed", "failed", "aborted", "cancelled"):
+    if _final_status in TERMINAL_PRINT_STATUSES:
         printer_manager.set_awaiting_plate_clear(printer_id, True)
 
     # MQTT relay - publish print complete
@@ -10619,6 +10788,24 @@ async def _close_out_print(printer_id: int, data: dict):
 
     log_timing("Filament usage tracking")
 
+    # GyroidVault: add finished prints of imported models to their GyroidVault
+    # print history. Background + best effort; it checks the settings itself.
+    try:
+        from backend.app.services.gyroidvault_reporter import report_print_completion
+
+        _gv_printer = printer_manager.get_printer(printer_id)
+        asyncio.create_task(
+            report_print_completion(
+                printer_id=printer_id,
+                status=data.get("status"),
+                archive_id=archive_id,
+                queue_item_id=queue_item_id,
+                printer_name=_gv_printer.name if _gv_printer else None,
+            )
+        )
+    except Exception as e:
+        logger.debug("[GYROIDVAULT] Could not schedule print report: %s", e)
+
     if not archive_id:
         # The printer's own calibration run has no archive by design, so this
         # arrives here every time one finishes. Returning before the no-archive
@@ -10790,7 +10977,7 @@ async def _close_out_print(printer_id: int, data: dict):
                     # A reconciled completed print ended at an estimated time,
                     # not at the reconnect (#3310).
                     data.get("_reconciled_completed_at") or datetime.now(timezone.utc)
-                    if status in ("completed", "failed", "aborted", "cancelled")
+                    if status in TERMINAL_PRINT_STATUSES
                     else None
                 ),
                 failure_reason=failure_reason,
@@ -14069,6 +14256,7 @@ app.include_router(camera.router, prefix=app_settings.api_prefix)
 app.include_router(camwall.router, prefix=app_settings.api_prefix)
 app.include_router(external_links.router, prefix=app_settings.api_prefix)
 app.include_router(projects.router, prefix=app_settings.api_prefix)
+app.include_router(project_plan.router, prefix=app_settings.api_prefix)
 app.include_router(library.router, prefix=app_settings.api_prefix)
 app.include_router(library_tags.router, prefix=app_settings.api_prefix)
 app.include_router(library_trash.router, prefix=app_settings.api_prefix)
@@ -14081,6 +14269,7 @@ app.include_router(slicer_presets.router, prefix=app_settings.api_prefix)
 app.include_router(archive_purge.router, prefix=app_settings.api_prefix)
 app.include_router(makerworld.router, prefix=app_settings.api_prefix)
 app.include_router(manyfold.router, prefix=app_settings.api_prefix)
+app.include_router(gyroidvault.router, prefix=app_settings.api_prefix)
 app.include_router(api_keys.router, prefix=app_settings.api_prefix)
 app.include_router(connected_apps.router, prefix=app_settings.api_prefix)
 app.include_router(webhook.router, prefix=app_settings.api_prefix)

@@ -20,6 +20,9 @@ class Project(Base):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     color: Mapped[str | None] = mapped_column(String(20), nullable=True)  # Hex color for UI
     status: Mapped[str] = mapped_column(String(20), default="active")  # active, completed, archived
+    # Optional external order / tracking number (e.g. an Etsy order number)
+    # for projects used as print "jobs".
+    order_number: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
     # External link rendered as a clickable icon next to the project name (#1155).
     url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
@@ -81,8 +84,12 @@ class Project(Base):
         foreign_keys="Project.parent_id",
     )
     bom_items: Mapped[list["ProjectBOMItem"]] = relationship(back_populates="project", cascade="all, delete-orphan")
+    plan_items: Mapped[list["ProjectPlanItem"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan", order_by="ProjectPlanItem.sort_order"
+    )
 
 
 from backend.app.models.archive import PrintArchive  # noqa: E402
 from backend.app.models.print_queue import PrintQueueItem  # noqa: E402
 from backend.app.models.project_bom import ProjectBOMItem  # noqa: E402
+from backend.app.models.project_plan import ProjectPlanItem  # noqa: E402

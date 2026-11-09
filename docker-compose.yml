@@ -161,10 +161,12 @@ services:
       # PRINTBUDDY_EXTERNAL_ROOTS=/mnt/prints:/srv/print-library
       #- PRINTBUDDY_EXTERNAL_ROOTS=
       #
-      # Slicer API sidecar (optional — Settings → "Use Slicer API" toggles this on).
-      # Default points at the OrcaSlicer sidecar on the docker host; change if you
-      # run the sidecar on a different host/port. The matching docker-compose.yml
-      # for the sidecars lives under slicer-api/ in this repository.
+      # Slicer API sidecars (optional — Settings → Slicer → "Use Slicer API").
+      # Enable the bambu-studio-api / orca-slicer-api services below. The
+      # defaults (Bambu Studio http://localhost:3001, OrcaSlicer
+      # http://localhost:3003) match them; the URLs can also be set in
+      # Settings → Slicer. See docs/slicer-sidecar.md.
+      #- BAMBU_STUDIO_API_URL=http://localhost:3001
       #- SLICER_API_URL=http://localhost:3003
       #
       # MFA at-rest encryption key (#1219). Auto-generated to
@@ -211,15 +213,47 @@ services:
   #  network_mode: host
   #  volumes:
   #    - /var/run/docker.sock:/var/run/docker.sock
-  #    - ./docker-compose.yml:/host/docker-compose.yml:ro
+  #    # The whole project directory (read-only): the compose file plus .env,
+  #    # so ${VARS} keep their values when the updater recreates services.
+  #    - ./:/host:ro
   #  environment:
   #    - PRINTBUDDY_UPDATER_TOKEN=${PRINTBUDDY_UPDATER_TOKEN}
   #    - PRINTBUDDY_COMPOSE_FILE=/host/docker-compose.yml
   #    - PRINTBUDDY_COMPOSE_PROJECT=${COMPOSE_PROJECT_NAME:-printbuddy}
   #    - PRINTBUDDY_SERVICE_NAME=printbuddy
   #    - PRINTBUDDY_ALLOWED_IMAGE=docker.io/vmhomelabde/printbuddy
+  #    # Also pull + recreate the slicer sidecars below (if enabled) after
+  #    # Printbuddy, so they match the revision Printbuddy expects.
+  #    - PRINTBUDDY_UPDATE_SLICER_SIDECARS=true
+  #    # Also update this updater itself (via a short-lived helper container).
+  #    - PRINTBUDDY_UPDATE_SELF=true
   #    - PRINTBUDDY_UPDATER_PORT=8787
   #  restart: unless-stopped
+
+  # Optional integrated slicer (see docs/slicer-sidecar.md). Uncomment the
+  # sidecar for your slicer, then enable Settings → Slicer → "Use Slicer API"
+  # in Printbuddy. Bambu Studio is recommended for Bambu Lab printers and
+  # required for newer models such as the X2D (AMD64 hosts only); OrcaSlicer
+  # covers most other printers. The sidecar API has no authentication, so
+  # keep the ports bound to 127.0.0.1. Ports 3000 and 3002 belong to the
+  # virtual printers.
+  #bambu-studio-api:
+  #  image: docker.io/vmhomelabde/printbuddy-bambu-studio-api:latest
+  #  container_name: bambu-studio-api
+  #  restart: unless-stopped
+  #  ports:
+  #    - "127.0.0.1:3001:3000"
+  #  volumes:
+  #    - ./slicer-data/bambu:/app/data
+  #
+  #orca-slicer-api:
+  #  image: docker.io/vmhomelabde/printbuddy-orca-slicer-api:latest
+  #  container_name: orca-slicer-api
+  #  restart: unless-stopped
+  #  ports:
+  #    - "127.0.0.1:3003:3000"
+  #  volumes:
+  #    - ./slicer-data/orca:/app/data
 
   # Optional: External PostgreSQL database
   # Uncomment to run Postgres alongside Printbuddy (or use an external Postgres host)

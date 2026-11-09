@@ -87,6 +87,8 @@ from backend.app.services.printer_diagnostic import run_connection_diagnostic
 from backend.app.services.printer_file_cache import printer_file_cache
 from backend.app.services.printer_manager import (
     ams_units_to_dicts,
+    chamber_capabilities,
+    chamber_temp_available,
     display_temperatures,
     drying_screen_only,
     get_derived_status_name,
@@ -96,9 +98,9 @@ from backend.app.services.printer_manager import (
     resolve_expected_tray,
     resolve_plate_id,
     supports_chamber_heater,
-    supports_chamber_temp,
     supports_drying,
     supports_drying_while_printing,
+    toolhead_motion,
     vt_trays_to_dicts,
 )
 from backend.app.services.printer_media import (
@@ -1279,7 +1281,7 @@ async def _printer_status(db: AsyncSession, printer: Printer) -> PrinterStatus:
     # Filter out chamber temp for models that don't have a real sensor
     # P1P, P1S, A1, A1Mini report meaningless chamber_temper values
     temperatures = state.temperatures
-    if not supports_chamber_temp(printer.model):
+    if not chamber_temp_available(printer.model, state):
         temperatures = {
             k: v for k, v in temperatures.items() if k not in ("chamber", "chamber_target", "chamber_heating")
         }
@@ -1298,6 +1300,8 @@ async def _printer_status(db: AsyncSession, printer: Printer) -> PrinterStatus:
 
         archive = await running_print_archive(db, printer_id, state, printing_only=False, by_name=True)
         current_archive_id = archive.id if archive is not None else None
+
+    position, z_offset = toolhead_motion(state)
 
     return PrinterStatus(
         id=printer_id,
@@ -1326,6 +1330,9 @@ async def _printer_status(db: AsyncSession, printer: Printer) -> PrinterStatus:
         door_open=state.door_open,
         nozzles=nozzles,
         nozzle_rack=nozzle_rack,
+        tool_slots=(state.raw_data.get("tool_slots") or []) if isinstance(state.raw_data, dict) else [],
+        position=position,
+        z_offset=z_offset,
         print_options=print_options,
         stg_cur=state.stg_cur,
         stg_cur_name=get_derived_status_name(state, printer.model),
@@ -1333,6 +1340,7 @@ async def _printer_status(db: AsyncSession, printer: Printer) -> PrinterStatus:
         airduct_mode=state.airduct_mode,
         speed_level=state.speed_level,
         chamber_light=state.chamber_light,
+        **chamber_capabilities(state),
         active_extruder=state.active_extruder,
         ams_mapping=ams_mapping,
         ams_extruder_map=ams_extruder_map,
@@ -2449,6 +2457,9 @@ async def start_printer_file(
         success = printer_manager.start_print(printer_id, path)
 
     if not success:
+        reason = getattr(provider_client, "last_error", None) if provider_client is not None else None
+        if isinstance(reason, str) and reason:
+            raise HTTPException(400, f"Failed to start print: {reason}")
         raise HTTPException(500, f"Failed to start print: {path}")
 
     if direct_file_info:
@@ -3459,6 +3470,16 @@ def _slot_preset_key(ams_id: int, tray_id: int) -> int:
     return ams_id * 4 + tray_id
 
 
+def _is_snapmaker_u1_printer(printer: Printer | None) -> bool:
+    """Return whether a persisted printer is a Snapmaker U1.
+
+    This capability is deliberately determined from the saved model rather than
+    transient Moonraker status, which may be unavailable while the printer is
+    offline.
+    """
+    return bool(printer and (printer.model or "").strip().lower() == "snapmaker u1")
+
+
 @router.get("/{printer_id}/slot-presets")
 async def get_slot_presets(
     printer_id: int,
@@ -3792,6 +3813,16 @@ async def configure_ams_slot(
     effective_tray_type = printer_filament_type(requested_tray_type)
     if effective_tray_type != tray_type:
         logger.info("[configure_ams_slot] tray_type %r → %r", tray_type, effective_tray_type)
+
+    printer_result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = printer_result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(status_code=404, detail="Printer not found")
+    if _is_snapmaker_u1_printer(printer):
+        raise HTTPException(
+            status_code=409,
+            detail="Snapmaker U1 filament configuration is managed on the printer; use Assign Spool to link inventory.",
+        )
 
     # Get MQTT client for this printer
     client = printer_manager.get_client(printer_id)
@@ -4286,6 +4317,16 @@ async def reset_ams_slot(
 
     This clears the filament configuration from the slot.
     """
+    printer_result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = printer_result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(status_code=404, detail="Printer not found")
+    if _is_snapmaker_u1_printer(printer):
+        raise HTTPException(
+            status_code=409,
+            detail="Snapmaker U1 filament configuration is managed on the printer; use Assign Spool to link inventory.",
+        )
+
     # Get MQTT client for this printer
     client = printer_manager.get_client(printer_id)
     if not client:
@@ -4728,14 +4769,25 @@ async def set_chamber_temperature(
     if not printer:
         raise HTTPException(404, "Printer not found")
 
-    if not supports_chamber_heater(printer.model):
+    if _is_bambu_printer(printer) and not supports_chamber_heater(printer.model):
         raise HTTPException(400, f"Model {printer.model or 'unknown'} does not have an active chamber heater")
 
     client = printer_manager.get_client(printer_id)
     if not client:
         raise HTTPException(400, "Printer not connected")
 
-    success = client.set_chamber_temperature(target)
+    set_temp = getattr(client, "set_chamber_temperature", None)
+    if not callable(set_temp):
+        raise HTTPException(400, "Printer provider does not support chamber temperature control")
+    # Non-Bambu providers declare their heater by capability (QIDI Q2 on
+    # Moonraker) and report their own limit.
+    max_temp = getattr(getattr(client, "state", None), "chamber_temp_max", None)
+    if max_temp is not None and target > max_temp:
+        raise HTTPException(400, f"Chamber temperature must be 0-{int(max_temp)}°C for this printer")
+    try:
+        success = set_temp(target)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     if not success:
         raise HTTPException(500, "Failed to set chamber temperature")
 
@@ -5780,6 +5832,8 @@ async def ams_load(
 
     success = client.ams_load_filament(tray_id, extruder_id=extruder_id)
     if not success:
+        if getattr(client, "is_k2_openhost_cfs", lambda: False)() is True:
+            raise HTTPException(400, getattr(client, "last_error", None) or "CFS load failed")
         provider = str(getattr(printer, "provider", "") or "").lower()
         model = str(getattr(printer, "model", "") or "").lower()
         if provider in {"klipper", "mainsail", "fluidd"} and "creality k2" in model and tray_id in range(16):
@@ -5834,6 +5888,8 @@ async def ams_unload(
     provider = str(getattr(printer, "provider", "") or "").lower()
     success = client.ams_unload_filament(tray_id)
     if not success:
+        if getattr(client, "is_k2_openhost_cfs", lambda: False)() is True:
+            raise HTTPException(400, getattr(client, "last_error", None) or "CFS unload failed")
         model = str(getattr(printer, "model", "") or "").lower()
         if (
             provider in {"klipper", "mainsail", "fluidd"}

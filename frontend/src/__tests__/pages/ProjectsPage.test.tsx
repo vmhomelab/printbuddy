@@ -131,6 +131,51 @@ describe('ProjectsPage', () => {
     });
   });
 
+  describe('link folder on create', () => {
+    it('sends the chosen File Manager folder with the new project', async () => {
+      let createBody: Record<string, unknown> | undefined;
+      server.use(
+        http.get('/api/v1/library/folders', () =>
+          HttpResponse.json([
+            {
+              id: 7, name: 'Desk Organizer', parent_id: null, project_id: null, archive_id: null,
+              project_name: null, archive_name: null, is_external: false, external_path: null,
+              external_readonly: false, file_count: 5,
+              children: [
+                {
+                  id: 8, name: 'Accessories', parent_id: 7, project_id: 2, archive_id: null,
+                  project_name: 'Art Collection', archive_name: null, is_external: false, external_path: null,
+                  external_readonly: false, file_count: 2, children: [],
+                },
+              ],
+            },
+          ]),
+        ),
+        http.post('/api/v1/projects/', async ({ request }) => {
+          createBody = (await request.json()) as Record<string, unknown>;
+          return HttpResponse.json({ id: 3, name: 'Job', color: '#00ae42', archive_count: 0 });
+        }),
+      );
+      const user = userEvent.setup();
+      render(<ProjectsPage />);
+
+      await user.click(await screen.findByText('New Project'));
+      await user.type(screen.getByPlaceholderText('e.g., Voron 2.4 Build'), 'Job');
+
+      const select = await screen.findByLabelText(/link file manager folder/i);
+      await waitFor(() => expect(screen.getByRole('option', { name: /Desk Organizer \(5\)/ })).toBeInTheDocument());
+      // Folder linked elsewhere is labelled and warns that it will be moved
+      await user.selectOptions(select, '8');
+      expect(screen.getByText(/linked to "Art Collection" and will be moved/i)).toBeInTheDocument();
+
+      await user.selectOptions(select, '7');
+      await user.click(screen.getByRole('button', { name: 'Create' }));
+
+      await waitFor(() => expect(createBody?.folder_ids).toEqual([7]));
+      expect(createBody?.name).toBe('Job');
+    });
+  });
+
   describe('empty state', () => {
     it('shows empty state when no projects', async () => {
       server.use(

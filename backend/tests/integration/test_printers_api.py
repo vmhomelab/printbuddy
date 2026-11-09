@@ -863,6 +863,42 @@ class TestPrintersAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_get_moonraker_printer_status_returns_generic_tool_slots(
+        self, async_client: AsyncClient, printer_factory
+    ):
+        """Multi-tool Klipper slots must survive the REST fallback poll, not only WebSocket pushes."""
+        from backend.app.services.printer_providers.moonraker import MoonrakerPrinterState
+
+        printer = await printer_factory(
+            provider="klipper",
+            model="WonderMaker ZR_ULTRA",
+            api_url="http://zr-ultra.local:7125",
+            serial_number="KLIPPER-ZR-ULTRA",
+        )
+        tool_slots = [
+            {
+                "id": index,
+                "extruder": "extruder" if index == 0 else f"extruder{index}",
+                "nozzle_diameter": "0.4",
+                "active": index == 0,
+                "filament_present": index < 2,
+                "docked": index >= 2,
+                "path_present": None,
+            }
+            for index in range(4)
+        ]
+        state = MoonrakerPrinterState(connected=True, state="IDLE", raw_data={"tool_slots": tool_slots})
+
+        with patch("backend.app.api.routes.printers.printer_manager") as mock_pm:
+            mock_pm.get_status = MagicMock(return_value=state)
+            mock_pm.is_awaiting_plate_clear = MagicMock(return_value=False)
+            response = await async_client.get(f"/api/v1/printers/{printer.id}/status")
+
+        assert response.status_code == 200
+        assert response.json()["tool_slots"] == tool_slots
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_get_moonraker_printer_status_returns_creality_cfs_units(
         self, async_client: AsyncClient, printer_factory
     ):
@@ -1952,6 +1988,52 @@ class TestAMSLoadUnloadAPI:
 
 class TestConfigureAMSSlotAPI:
     """Integration tests for AMS slot configure endpoint — tray_info_idx resolution."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_snapmaker_u1_configure_returns_capability_error_without_bambu_command(
+        self, async_client: AsyncClient, printer_factory
+    ):
+        """U1 slot state is printer-owned and must never reach Bambu MQTT methods."""
+        printer = await printer_factory(name="Snapmaker U1", provider="moonraker", model="Snapmaker U1")
+        client = MagicMock()
+
+        with patch("backend.app.api.routes.printers.printer_manager") as mock_pm:
+            mock_pm.get_client.return_value = None
+            mock_pm.get_status.return_value = None
+            response = await async_client.post(
+                f"/api/v1/printers/{printer.id}/slots/0/0/configure",
+                params={
+                    "tray_info_idx": "GFL99",
+                    "tray_type": "PLA",
+                    "tray_sub_brands": "PLA Basic",
+                    "tray_color": "FF0000FF",
+                    "nozzle_temp_min": 190,
+                    "nozzle_temp_max": 230,
+                },
+            )
+
+        assert response.status_code == 409
+        assert "snapmaker" in response.json()["detail"].lower()
+        client.ams_set_filament_setting.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_snapmaker_u1_reset_returns_capability_error_without_bambu_command(
+        self, async_client: AsyncClient, printer_factory
+    ):
+        """Reset Slot is a Bambu AMS operation and is unavailable on the U1."""
+        printer = await printer_factory(name="Snapmaker U1", provider="moonraker", model="Snapmaker U1")
+        client = MagicMock()
+
+        with patch("backend.app.api.routes.printers.printer_manager") as mock_pm:
+            mock_pm.get_client.return_value = None
+            mock_pm.get_status.return_value = None
+            response = await async_client.post(f"/api/v1/printers/{printer.id}/ams/0/tray/0/reset")
+
+        assert response.status_code == 409
+        assert "snapmaker" in response.json()["detail"].lower()
+        client.reset_ams_slot.assert_not_called()
 
     @pytest.mark.asyncio
     @pytest.mark.integration

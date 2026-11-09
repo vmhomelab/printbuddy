@@ -80,6 +80,18 @@ def live_activity_progress(state: Any) -> float:
     return round(min(max(_number(progress, default=0), 0), 100), 2)
 
 
+def milestone_progress(state: Any, mode: str | None) -> float:
+    """Return the progress value used for 25/50/75% milestone notifications.
+
+    ``print_progress`` follows the overall printer progress, i.e. the same value
+    the Notify Live Activity and the Printbuddy UI show, so milestone messages
+    stay in sync with the island. Any other value keeps the layer-based default.
+    """
+    if mode == "print_progress":
+        return live_activity_progress(state)
+    return effective_print_progress(state)
+
+
 def is_pre_print_stage(state: Any) -> bool:
     """Return whether state is in a known Bambu pre-print preparation stage."""
     stage = _optional_int(_get(state, "stg_cur"))

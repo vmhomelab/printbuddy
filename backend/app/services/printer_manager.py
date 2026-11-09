@@ -218,6 +218,29 @@ def supports_airduct(model: str | None) -> bool:
     return _normalize_model(model) in CHAMBER_AIRDUCT_MODELS
 
 
+def chamber_temp_available(model: str | None, state: object = None) -> bool:
+    """Return True when chamber temperatures should be exposed for a printer.
+
+    Bambu/Elegoo models are allow-listed by model. Providers that detect a real
+    chamber sensor themselves (e.g. Moonraker ``heater_generic chamber``) set
+    ``state.chamber_temp_supported``.
+    """
+    if supports_chamber_temp(model):
+        return True
+    return getattr(state, "chamber_temp_supported", False) is True
+
+
+def chamber_capabilities(state: object) -> dict[str, object]:
+    """Provider-detected chamber capability flags, safe for JSON serialization."""
+    light = getattr(state, "chamber_light_supported", None)
+    max_temp = getattr(state, "chamber_temp_max", None)
+    return {
+        "chamber_light_supported": light if isinstance(light, bool) else None,
+        "chamber_heater_supported": getattr(state, "chamber_heater_supported", False) is True,
+        "chamber_temp_max": float(max_temp) if isinstance(max_temp, (int, float)) else None,
+    }
+
+
 def has_stg_cur_idle_bug(model: str | None) -> bool:
     """Check if a printer model may incorrectly report stg_cur=0 when idle.
 
@@ -1704,6 +1727,24 @@ def vt_trays_to_dicts(raw: object, resolve_slot_k: Callable) -> list[dict]:
     return vt_tray
 
 
+def toolhead_motion(state) -> tuple[dict[str, float] | None, float | None]:
+    """Toolhead position and Z offset reported by providers that expose them.
+
+    Moonraker stores both in ``raw_data``; PrusaConnect keeps a partial
+    ``position`` on its state object.
+    """
+    raw_data = state.raw_data if isinstance(getattr(state, "raw_data", None), dict) else {}
+    position = raw_data.get("position")
+    if not isinstance(position, dict):
+        position = getattr(state, "position", None)
+    if not isinstance(position, dict) or not position:
+        position = None
+    z_offset = raw_data.get("z_offset")
+    if not isinstance(z_offset, (int, float)) or isinstance(z_offset, bool):
+        z_offset = None
+    return position, z_offset
+
+
 def printer_state_to_dict(
     state: PrinterState,
     printer_id: int | None = None,
@@ -1744,11 +1785,12 @@ def printer_state_to_dict(
     # Filter out chamber temp for models that don't have a real sensor
     # P1P, P1S, A1, A1Mini report meaningless chamber_temper values
     temperatures = state.temperatures
-    if not supports_chamber_temp(model):
+    if not chamber_temp_available(model, state):
         temperatures = {
             k: v for k, v in temperatures.items() if k not in ("chamber", "chamber_target", "chamber_heating")
         }
 
+    position, z_offset = toolhead_motion(state)
     result = {
         "connected": state.connected,
         "state": state.state,
@@ -1897,6 +1939,7 @@ def printer_state_to_dict(
         "exhaust_fan_present": getattr(state, "exhaust_fan_present", False),
         # Chamber light state
         "chamber_light": state.chamber_light,
+        **chamber_capabilities(state),
         # Active extruder for dual-nozzle printers (0=right, 1=left)
         "active_extruder": state.active_extruder,
         # Print speed mode (1=silent, 2=standard, 3=sport, 4=ludicrous)
@@ -1924,6 +1967,9 @@ def printer_state_to_dict(
             for n in (state.nozzle_rack or [])
         ],
         "tool_slots": state.raw_data.get("tool_slots", []) if isinstance(state.raw_data, dict) else [],
+        # Toolhead position / Z offset for the manual controls (Klipper, PrusaConnect)
+        "position": position,
+        "z_offset": z_offset,
         # AMS drying support
         "supports_drying": supports_drying(model, state.firmware_version),
         "supports_drying_while_printing": supports_drying_while_printing(model, state.firmware_version),

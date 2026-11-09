@@ -248,16 +248,40 @@ describe('Layout', () => {
 
     it('migrates legacy user-hidden sidebar items but keeps Settings available', async () => {
       vi.mocked(localStorage.getItem).mockImplementation((key: string) => (
-        key === 'sidebarHiddenItems' ? JSON.stringify(['makerworld']) : null
+        key === 'sidebarHiddenItems' ? JSON.stringify(['model-import']) : null
       ));
 
       render(<Layout />);
 
       await waitFor(() => {
         expect(document.querySelector('aside')).toBeInTheDocument();
-        expect(document.querySelector('aside a[href="/makerworld"]')).not.toBeInTheDocument();
+        expect(document.querySelector('aside a[href="/model-sources"]')).not.toBeInTheDocument();
         expect(document.querySelector('aside a[href="/settings"]')).toBeInTheDocument();
       });
+    });
+
+    it('shows one Model Sources entry instead of MakerWorld, GyroidVault or Model import', async () => {
+      render(<Layout />);
+
+      await waitFor(() => {
+        expect(document.querySelector('aside a[href="/model-sources"]')).toBeInTheDocument();
+      });
+      expect(document.querySelector('aside a[href="/import"]')).not.toBeInTheDocument();
+      expect(document.querySelector('aside a[href="/makerworld"]')).not.toBeInTheDocument();
+      expect(document.querySelector('aside a[href="/gyroidvault"]')).not.toBeInTheDocument();
+    });
+
+    it('keeps the old hidden MakerWorld preference for the merged Model Sources entry', async () => {
+      vi.mocked(localStorage.getItem).mockImplementation((key: string) => (
+        key === 'sidebarHiddenItems' ? JSON.stringify(['makerworld']) : null
+      ));
+
+      render(<Layout />);
+
+      await waitFor(() => {
+        expect(document.querySelector('aside a[href="/settings"]')).toBeInTheDocument();
+      });
+      expect(document.querySelector('aside a[href="/model-sources"]')).not.toBeInTheDocument();
     });
 
     it('links the sidebar to Farm Command Center instead of the TV monitor route', async () => {
@@ -906,32 +930,34 @@ describe('Layout', () => {
       return document.querySelector('aside a[href="/model-sources"]');
     };
 
-    it('hides the Model Sources nav entry when the user has neither source permission', async () => {
-      // Standard user without the MakerWorld permission. Every other
-      // permission they hold (library:read, etc.) is irrelevant here — the
-      // gate is per-entry and the MakerWorld entry must not render.
-      enableAuthWithUser(['library:read', 'archives:read', 'queue:read']);
+    it('hides the Model Sources nav entry when the user can reach none of its tabs', async () => {
+      // No makerworld:view, manyfold:view, library:read (GyroidVault) or
+      // settings:read (the Settings tab): no tab, so no entry.
+      enableAuthWithUser(['library:read_own', 'archives:read', 'queue:read']);
 
       render(<Layout />);
 
       await waitFor(() => {
-        // Wait for the auth resolution + sidebar render. Some other nav
-        // entry (Files / Archives) confirms the sidebar finished mounting.
         const sidebar = document.querySelector('aside');
         expect(sidebar).toBeInTheDocument();
-        expect(sidebar?.querySelector('a[href="/files"]')).toBeInTheDocument();
+        expect(sidebar?.querySelector('a[href="/archives"]')).toBeInTheDocument();
       });
 
       await waitFor(() => expect(findMakerWorldNavLink()).toBeNull());
     });
 
-    it('shows the MakerWorld nav entry when the user has makerworld:view', async () => {
-      enableAuthWithUser([
-        'library:read',
-        'archives:read',
-        'queue:read',
-        'makerworld:view',
-      ]);
+    it('shows the Model Sources nav entry with makerworld:view only', async () => {
+      enableAuthWithUser(['archives:read', 'queue:read', 'makerworld:view']);
+
+      render(<Layout />);
+
+      await waitFor(() => {
+        expect(findMakerWorldNavLink()).toBeInTheDocument();
+      });
+    });
+
+    it('shows the Model Sources nav entry with library:read alone (GyroidVault tab)', async () => {
+      enableAuthWithUser(['library:read']);
 
       render(<Layout />);
 

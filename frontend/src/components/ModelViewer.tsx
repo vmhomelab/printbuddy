@@ -6,9 +6,10 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import JSZip from 'jszip';
-import { Loader2, RotateCcw, ZoomIn, ZoomOut } from 'lucide-react';
+import { Box, Loader2, RotateCcw, Scan, Shapes, ZoomIn, ZoomOut } from 'lucide-react';
 import { Button } from './Button';
 import { getAuthToken } from '../api/client';
+import { applyShadingMode, type ShadingMode } from '../utils/modelShading';
 import type { StepWorkerMesh, StepWorkerResponse } from '../workers/stepPreview.worker';
 
 // STEP triangulation runs in a dedicated worker (#2976): OpenCascade-as-WASM
@@ -834,6 +835,10 @@ export function ModelViewer({
   useEffect(() => {
     onSnapshotRef.current = onSnapshot;
   });
+  const [shadingMode, setShadingMode] = useState<ShadingMode>('solid');
+  // Read by the model-build effect so a rebuild (plate / colour change) keeps
+  // the chosen mode without that effect depending on it.
+  const shadingModeRef = useRef<ShadingMode>('solid');
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -1106,6 +1111,7 @@ export function ModelViewer({
       : stepMeshes
         ? buildStepGroup(stepMeshes, filamentColors)
         : buildModelGroup(parsedData!, selectedPlateId ?? null, filamentColors);
+    applyShadingMode(group, shadingModeRef.current);
     modelGroupRef.current = group;
     sceneRef.current.add(group);
 
@@ -1209,6 +1215,17 @@ export function ModelViewer({
     }
   }, [parsedData, stlGeometry, stepMeshes, selectedPlateId, filamentColors, buildVolume]);
 
+  useEffect(() => {
+    shadingModeRef.current = shadingMode;
+    if (modelGroupRef.current) applyShadingMode(modelGroupRef.current, shadingMode);
+  }, [shadingMode]);
+
+  const shadingOptions: { mode: ShadingMode; icon: typeof Box }[] = [
+    { mode: 'solid', icon: Box },
+    { mode: 'wireframe', icon: Shapes },
+    { mode: 'xray', icon: Scan },
+  ];
+
   const resetView = () => {
     const camera = cameraRef.current;
     const controls = controlsRef.current;
@@ -1256,6 +1273,36 @@ export function ModelViewer({
       {error && (
         <div className="absolute inset-0 flex items-center justify-center bg-bambu-dark/80">
           <p className="text-red-400">{error}</p>
+        </div>
+      )}
+
+      {!loading && !error && (
+        <div
+          role="group"
+          aria-label={t('modelViewer.shading.label')}
+          className="absolute bottom-4 left-4 flex gap-1 rounded-lg bg-bambu-dark-secondary/80 p-1"
+        >
+          {shadingOptions.map(({ mode, icon: Icon }) => {
+            const label = t(`modelViewer.shading.${mode}`);
+            const active = shadingMode === mode;
+            return (
+              <button
+                key={mode}
+                type="button"
+                onClick={() => setShadingMode(mode)}
+                aria-pressed={active}
+                title={label}
+                className={`flex items-center gap-1.5 rounded-md px-2 py-1 text-xs transition-colors ${
+                  active
+                    ? 'bg-bambu-green text-white'
+                    : 'text-bambu-gray hover:bg-bambu-dark-tertiary hover:text-white'
+                }`}
+              >
+                <Icon className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">{label}</span>
+              </button>
+            );
+          })}
         </div>
       )}
 

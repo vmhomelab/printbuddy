@@ -452,6 +452,7 @@ export function SettingsPage() {
   const [changePasswordData, setChangePasswordData] = useState({ currentPassword: '', newPassword: '', confirmPassword: '' });
   const [changePasswordLoading, setChangePasswordLoading] = useState(false);
   const [storageUsageRefreshing, setStorageUsageRefreshing] = useState(false);
+  const [slicerConnectionTesting, setSlicerConnectionTesting] = useState(false);
 
   // User management state
   const [showCreateUserModal, setShowCreateUserModal] = useState(false);
@@ -1391,6 +1392,7 @@ export function SettingsPage() {
       (baseline.include_beta_updates ?? false) !== (localSettings.include_beta_updates ?? false) ||
       (baseline.local_login_enabled ?? true) !== (localSettings.local_login_enabled ?? true) ||
       (baseline.bed_cooled_threshold ?? 35) !== (localSettings.bed_cooled_threshold ?? 35) ||
+      (baseline.progress_milestone_mode ?? 'layers') !== (localSettings.progress_milestone_mode ?? 'layers') ||
       clampPauseWarningMinutes(baseline.pause_warning_minutes) !== clampPauseWarningMinutes(localSettings.pause_warning_minutes) ||
       baseline.ams_humidity_good !== localSettings.ams_humidity_good ||
       baseline.ams_humidity_fair !== localSettings.ams_humidity_fair ||
@@ -1525,6 +1527,7 @@ export function SettingsPage() {
         local_login_enabled: localSettings.local_login_enabled,
         bed_cooled_threshold: localSettings.bed_cooled_threshold,
         pause_warning_minutes: clampPauseWarningMinutes(localSettings.pause_warning_minutes),
+        progress_milestone_mode: localSettings.progress_milestone_mode ?? 'layers',
         ams_humidity_good: localSettings.ams_humidity_good,
         ams_humidity_fair: localSettings.ams_humidity_fair,
         ams_temp_good: localSettings.ams_temp_good,
@@ -1634,6 +1637,75 @@ export function SettingsPage() {
     }
     setLocalSettings(prev => prev ? { ...prev, [key]: value } : null);
   }, [authEnabled, hasPermission, showToast, t]);
+
+  const handleTestSlicerConnection = async () => {
+    setSlicerConnectionTesting(true);
+    try {
+      const result = await api.testSlicerConnection();
+      const nameOf = (slicer: 'bambu_studio' | 'orcaslicer') =>
+        slicer === 'orcaslicer' ? 'OrcaSlicer' : 'Bambu Studio';
+      const slicerName = nameOf(result.slicer);
+      const version = result.health?.version ?? '';
+      if (result.success && result.detected_slicer && result.detected_slicer !== result.slicer) {
+        // The URL answers, but with the other sidecar — typically a swapped
+        // port (3001 Bambu Studio / 3003 OrcaSlicer).
+        showToast(
+          t(
+            'settings.slicerConnectionMismatch',
+            'The sidecar at this URL runs {{detected}} {{version}}, but {{slicer}} is selected. Check the sidecar URL and port.',
+            { detected: nameOf(result.detected_slicer), version, slicer: slicerName },
+          ),
+          'warning',
+        );
+      } else if (result.success && result.sidecar_up_to_date === false) {
+        // The sidecar answers but runs another revision than this Printbuddy
+        // expects (or one too old to report it): fixes and API changes the
+        // slice flow relies on may be missing.
+        showToast(
+          t(
+            'settings.slicerSidecarOutdated',
+            'Connected to {{slicer}}, but the sidecar image is not the version this Printbuddy expects (running {{running}}, expected {{expected}}). Update it: docker compose pull && docker compose up -d.',
+            {
+              slicer: slicerName,
+              running: result.sidecar_revision?.slice(0, 7) ?? t('settings.slicerSidecarRevisionOld', 'an older build'),
+              expected: (result.expected_sidecar_revision ?? '').slice(0, 7),
+            },
+          ),
+          'warning',
+        );
+      } else if (result.success && version) {
+        showToast(
+          t('settings.slicerConnectionSuccessVersion', 'Connected to {{slicer}} {{version}}.', {
+            slicer: slicerName,
+            version,
+          }),
+          'success',
+        );
+      } else if (result.success) {
+        showToast(
+          t('settings.slicerConnectionSuccess', '{{slicer}} slicer connection succeeded.', { slicer: slicerName }),
+          'success',
+        );
+      } else if (result.error === 'invalid_response') {
+        showToast(
+          t(
+            'settings.slicerConnectionInvalidResponse',
+            'The URL answers, but not with the slicer API. A desktop slicer (e.g. an OrcaSlicer web GUI on port 3000) cannot be used here: point it at the slicer-API sidecar (OrcaSlicer default port 3003).',
+          ),
+          'error',
+        );
+      } else {
+        showToast(
+          t('settings.slicerConnectionFailed', '{{slicer}} slicer connection failed.', { slicer: slicerName }),
+          'error',
+        );
+      }
+    } catch {
+      showToast(t('settings.slicerConnectionError', 'Slicer connection failed.'), 'error');
+    } finally {
+      setSlicerConnectionTesting(false);
+    }
+  };
 
   const handleTestExternalCamera = async (printerId: number, url: string, cameraType: string) => {
     const trimmedUrl = url.trim();
@@ -4383,6 +4455,36 @@ export function SettingsPage() {
               </div>
             </div>
 
+            {/* Progress Milestone Mode Setting */}
+            <Card className="mb-4">
+              <CardContent className="py-3">
+                <div>
+                  <p className="text-white text-sm font-medium">{t('settings.progressMilestoneMode')}</p>
+                  <p className="text-xs text-bambu-gray">{t('settings.progressMilestoneModeDescription')}</p>
+                </div>
+                <div className="mt-2">
+                  <select
+                    value={localSettings.progress_milestone_mode ?? 'layers'}
+                    onChange={(e) =>
+                      updateSetting('progress_milestone_mode', e.target.value as 'layers' | 'print_progress')
+                    }
+                    className="w-full px-2 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-bambu-green"
+                  >
+                    <option value="print_progress">{t('settings.progressMilestoneModePrintProgress')}</option>
+                    <option value="layers">{t('settings.progressMilestoneModeLayers')}</option>
+                  </select>
+                </div>
+                <div className="mt-2 flex items-start gap-2 rounded bg-bambu-dark px-3 py-2 text-xs text-bambu-gray">
+                  <Info className="w-4 h-4 mt-0.5 shrink-0 text-bambu-green" />
+                  <span>
+                    {(localSettings.progress_milestone_mode ?? 'layers') === 'print_progress'
+                      ? t('settings.progressMilestoneModePrintProgressInfo')
+                      : t('settings.progressMilestoneModeLayersInfo')}
+                  </span>
+                </div>
+              </CardContent>
+            </Card>
+
             {/* Bed Cooled Threshold Setting */}
             <Card className="mb-4">
               <CardContent className="py-3">
@@ -6036,25 +6138,23 @@ export function SettingsPage() {
                 <p className="text-xs text-bambu-gray mt-1">
                   {t('settings.preferredSlicerDescription')}
                 </p>
-                {/* Upstream OrcaSlicer 2.3.2 / 2.4.0-dev have two known
-                    CLI bugs that block slicing many Bambu-authored 3MFs:
-                    a SIGSEGV on painted multi-extruder 3MFs (#12426) and
-                    a strict range-check on sentinel parameter values
-                    BambuStudio writes by default. Until the upstream
-                    fixes land, surface a clear warning when a user has
-                    OrcaSlicer selected so they know what to expect; we
-                    don't auto-switch them in case they're testing. */}
-                {(localSettings.preferred_slicer ?? 'bambu_studio') === 'orcaslicer' && (
-                  <div
-                    role="alert"
-                    className="text-xs text-amber-800 dark:text-amber-200 bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-700/40 rounded p-2 mt-2"
-                  >
-                    {t(
-                      'settings.orcaslicerKnownIssuesWarning',
-                      'OrcaSlicer 2.3.2 / 2.4.0-dev have known CLI bugs that block slicing many Bambu-authored 3MFs — see upstream issues #12426 (segfault on painted multi-extruder files) and #13386 (parameter-range strict-validation reject). Bambu Studio is recommended until the upstream fixes land.',
-                    )}
-                  </div>
-                )}
+                {/* Which sidecar fits which printer. Bambu Studio ships profiles
+                    for Bambu Lab printers (incl. the newest, e.g. X2D) but few
+                    others; OrcaSlicer covers most other vendors but lacks the
+                    newest Bambu models and can crash on painted multi-colour
+                    Bambu 3MFs (upstream #12426). The "-1" range-check rejects
+                    (#13386) are handled by the sidecar since 9ff0c6e. */}
+                <p className="text-xs text-bambu-gray bg-bambu-dark border border-bambu-dark-tertiary/40 rounded p-2 mt-2">
+                  {(localSettings.preferred_slicer ?? 'bambu_studio') === 'orcaslicer'
+                    ? t(
+                        'settings.orcaslicerKnownIssuesWarning',
+                        'Use OrcaSlicer for non-Bambu printers (Prusa, Elegoo, Klipper, …). For Bambu Lab printers Bambu Studio is recommended: OrcaSlicer 2.3.2 has no profiles for the newest models such as the X2D and can crash on painted multi-colour Bambu 3MFs (upstream #12426).',
+                      )
+                    : t(
+                        'settings.bambuStudioSlicerHint',
+                        'Bambu Studio is recommended for Bambu Lab printers. It ships only a few profiles for other brands; use OrcaSlicer for Prusa, Elegoo, Klipper and other printers.',
+                      )}
+                </p>
               </div>
               {/* Desktop "Open in Slicer" override (#1329). Independent of the
                   API slicer so a user can slice via the Bambu Studio sidecar
@@ -6139,6 +6239,19 @@ export function SettingsPage() {
                       'URL of the slicer-API sidecar container. Leave blank to use the SLICER_API_URL / BAMBU_STUDIO_API_URL env var defaults.',
                     )}
                   </p>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    onClick={handleTestSlicerConnection}
+                    disabled={slicerConnectionTesting}
+                    className="mt-3"
+                  >
+                    {slicerConnectionTesting && <Loader2 className="w-4 h-4 animate-spin" />}
+                    {slicerConnectionTesting
+                      ? t('settings.testingSlicerConnection', 'Testing slicer connection…')
+                      : t('settings.testSlicerConnection', 'Test slicer connection')}
+                  </Button>
                 </div>
               )}
               {(localSettings.use_slicer_api ?? false) && (

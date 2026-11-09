@@ -34,6 +34,8 @@ LAN_SERVICE_URL_SETTINGS = ("ha_url", "obico_ml_url", "orcaslicer_api_url", "bam
 _COMPOSE_DIR_ALLOWED = re.compile(r"^[\w \-./\\:~]+$", re.UNICODE)
 _COMPOSE_DIR_MAX_LEN = 512
 
+PROGRESS_MILESTONE_MODES = ("layers", "print_progress")
+
 
 class AppSettings(BaseModel):
     """Application settings schema."""
@@ -102,6 +104,9 @@ class AppSettings(BaseModel):
         default=True,
         description="Automatically add spools with unknown RFID tags to inventory. Disable if you pre-create inventory entries manually to avoid duplicates.",
     )
+    # GyroidVault integration (read-only here; configured via /gyroidvault/settings,
+    # which also holds the URL and the encrypted API key).
+    gyroidvault_enabled: bool = Field(default=False, description="GyroidVault model library integration is enabled")
     disable_filament_warnings: bool = Field(
         default=False,
         description="Disable insufficient filament warnings when printing or queueing prints",
@@ -129,6 +134,15 @@ class AppSettings(BaseModel):
     # Language
     language: str = Field(default="en", description="UI language (en, de, fr, ja, it, pt-BR)")
     notification_language: str = Field(default="en", description="Language for push notifications (en, de)")
+
+    # Progress milestone notifications (25/50/75 %)
+    progress_milestone_mode: str = Field(
+        default="layers",
+        description=(
+            "Source for 25/50/75% milestone notifications: 'layers' (layer count) or "
+            "'print_progress' (overall printer progress, same value as the Notify Live Activity)"
+        ),
+    )
 
     # Bed cooled notification threshold
     bed_cooled_threshold: float = Field(
@@ -811,6 +825,7 @@ class AppSettingsUpdate(BaseModel):
     local_login_enabled: bool | None = None
     language: str | None = None
     notification_language: str | None = None
+    progress_milestone_mode: str | None = None
     bed_cooled_threshold: float | None = None
     pause_warning_minutes: int | None = Field(default=None, ge=1, le=120)
     ams_humidity_good: int | None = None
@@ -1144,6 +1159,15 @@ class AppSettingsUpdate(BaseModel):
             return v
         if v not in ("low", "medium", "high"):
             raise ValueError(f"{info.field_name} must be 'low', 'medium', or 'high'")
+        return v
+
+    @field_validator("progress_milestone_mode")
+    @classmethod
+    def validate_progress_milestone_mode(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        if v not in PROGRESS_MILESTONE_MODES:
+            raise ValueError("progress_milestone_mode must be 'layers' or 'print_progress'")
         return v
 
     @field_validator("octoeverywhere_confidence")

@@ -125,7 +125,7 @@ function isAlwaysAllowedIdentical(value) {
   if (/^https?:\/\//.test(value)) return true;          // URL
   if (/^ON,\s+true,\s+1$/.test(value)) return true;     // literal example "ON, true, 1"
   // Brand / technical names that ship verbatim everywhere.
-  if (/^(Printbuddy|Printbuddy URL|Printbuddy Backend URL|Obico|OctoEverywhere|Bambu Lab|Bambu Studio|Bambu Studio 2\.6\+|Bambu Studio sidecar URL|OrcaSlicer|OrcaSlicer sidecar URL|MakerWorld|Manyfold|Spoolman|\(Spoolman\)|Spoolman URL|Tailscale|GitHub|GitLab|Gitea|Forgejo|Discord|MQTT|FTP|HTTPS?|JSON|YAML|RTSP|TLS|SSL|CSRF|OIDC|SSO|SSO \/ OIDC|LDAP|TOTP|2FA|MFA|API|AMS|CRC|SHA256|SHA-256|kWh|MB|GB|KB|RGBA?|HSL|RGB|UTC|ISO|UI|HTTP|HTTP Method|H2D|H2D Pro|X1C|X1E|P1S|P1P|A1|A1 Mini|H2C|N3F|N3S|PETG|PLA|ABS|PA|TPU|PEI|PA-CF|PVA|HIPS|ASA|PC|PETG-HF|G\.code|G-code|gcode|cm³|°C|°F|GCODE|SOURCE|ntfy|Notify|Notify!|Pushover|Bark|Gotify|Telegram|Webhook|Webhook URL|Home Assistant|Home Assistant URL|CallMeBot\/WhatsApp|Cool Plate|Cool Plate SuperTack|Engineering Plate|High Temp Plate|Smooth PEI Plate|Smooth PEI Plate \/ High Temp Plate|Textured PEI Plate|Ext-L|Ext-R|ISO \(YYYY-MM-DD\))$/.test(value)) return true;
+  if (/^(Printbuddy|Printbuddy URL|Printbuddy Backend URL|Obico|OctoEverywhere|Bambu Lab|Bambu Studio|Bambu Studio 2\.6\+|Bambu Studio sidecar URL|OrcaSlicer|OrcaSlicer sidecar URL|MakerWorld|GyroidVault|Manyfold|Spoolman|\(Spoolman\)|Spoolman URL|Tailscale|GitHub|GitLab|Gitea|Forgejo|Discord|MQTT|FTP|HTTPS?|JSON|YAML|RTSP|TLS|SSL|CSRF|OIDC|SSO|SSO \/ OIDC|LDAP|TOTP|2FA|MFA|API|AMS|CRC|SHA256|SHA-256|kWh|MB|GB|KB|RGBA?|HSL|RGB|UTC|ISO|UI|HTTP|HTTP Method|H2D|H2D Pro|X1C|X1E|P1S|P1P|A1|A1 Mini|H2C|N3F|N3S|PETG|PLA|ABS|PA|TPU|PEI|PA-CF|PVA|HIPS|ASA|PC|PETG-HF|G\.code|G-code|gcode|cm³|°C|°F|GCODE|SOURCE|ntfy|Notify|Notify!|Pushover|Bark|Gotify|Telegram|Webhook|Webhook URL|Home Assistant|Home Assistant URL|CallMeBot\/WhatsApp|Cool Plate|Cool Plate SuperTack|Engineering Plate|High Temp Plate|Smooth PEI Plate|Smooth PEI Plate \/ High Temp Plate|Textured PEI Plate|Ext-L|Ext-R|ISO \(YYYY-MM-DD\))$/.test(value)) return true;
   return false;
 }
 
@@ -155,7 +155,7 @@ const DE_COGNATES = [
   'Pipeline', 'Pipelines', 'Filament {{n}}',  // #1425 — Slicer Pipelines (DE)
   'parallel',  // #1425 PR C polish — "parallel" is the same word in German
   'Region', 'Normal', 'Orange', 'Branch', 'Budget', 'Commit', 'Global',
-  'Version', 'Slot', 'Live', 'Rate', 'Host', 'Trend', 'Min', 'Admin', 'Cloud',
+  'Version', 'Slot', 'Slot {{slot}}', 'Live', 'Rate', 'Host', 'Trend', 'Min', 'Admin', 'Cloud',
   'Filament', 'Filaments', 'Software', 'Hardware', 'Avatar', 'Pin', 'Modal',
   'Active', 'Plate', 'Layer', 'Total', 'Plus', 'Pro', 'Mini', 'Studio',
   'Temperatur', 'Process', 'Service', 'Cache', 'Color', 'Login', 'Logout',
@@ -251,7 +251,7 @@ const IT_COGNATES = [
   'Bundle', 'Slicer Bundles', 'Imported', 'Smart Plugs', 'Smart Switches',
   'Smart Plug', 'High Flow', 'Sport (124%)', 'Ludicrous (166%)',
   'Standard (100%)', 'STARTTLS (Port 587)', 'SSL/TLS (Port 465)',
-  'Slot', 'Host', 'File', 'Cloud', 'Admin', 'Silk', '(Inv)', 'Slice',
+  'Slot', 'Slot {{slot}}', 'Host', 'File', 'Cloud', 'Admin', 'Silk', '(Inv)', 'Slice',
   'Backup', 'Legacy', 'Branch', 'Auto On', 'Display', 'Password',
   'Auto Off', 'Dashboard', 'Timestamp', 'Pressure Advance', 'Provisioning...',
   '(25%, 50%, 75%)', 'Provider', 'Provider: {{type}}', 'Base: {{name}}',
@@ -295,7 +295,7 @@ const PT_BR_COGNATES = [
   'Software', 'Hardware', 'Stop', 'Reset', 'Test', 'Code', 'Token', 'Server',
   'Port', 'Plate', 'Layer', 'Modal', 'Pin', 'Pro', 'Mini', 'Studio', 'Cache',
   'Service', 'Avatar', 'Total', 'Active', 'Login', 'Logout', 'Color', 'Hex',
-  'Slot', 'Live', 'Rate', 'Host', 'Trend', 'Original', 'Auto', 'Bundle',
+  'Slot', 'Slot {{slot}}', 'Live', 'Rate', 'Host', 'Trend', 'Original', 'Auto', 'Bundle',
   'Imported', 'Action', 'Actions', 'Slicer Bundles', 'Sport (124%)',
   'Ludicrous (166%)', 'Standard (100%)', 'STARTTLS (Port 587)',
   'SSL/TLS (Port 465)', 'Smart Plugs', 'Smart Switches', 'High Flow',

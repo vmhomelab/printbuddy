@@ -14,37 +14,33 @@
 #
 # Usage:
 #   cd slicer-api/
-#   docker compose up -d                       # starts OrcaSlicer only
-#   docker compose --profile bambu up -d       # starts both
+#   cp .env.example .env
+#   docker compose up -d                       # OrcaSlicer only
+#   docker compose --profile bambu up -d       # Bambu Studio and OrcaSlicer
 #
-# First build pulls the sidecar source over git (~5 min — downloads the
-# BambuStudio AppImage, ~220 MB) and caches the image locally.
-# Subsequent runs reuse the cache. Pin the slicer versions via .env.
+# `up` pulls the prebuilt images from Docker Hub (BAMBU_STUDIO_API_IMAGE /
+# ORCA_SLICER_API_IMAGE in .env). To build them yourself from the pinned
+# sidecar source instead, run `docker compose --profile bambu build` first;
+# that downloads the slicer AppImage (~220 MB for Bambu Studio) and takes a
+# few minutes.
 #
-# Updating: `docker compose build` / `up` skip profile-gated services, so a
-# bare rebuild silently leaves bambu-studio-api on its old image (and
-# restart: unless-stopped keeps it serving). Use `--profile bambu` on every
-# command, or name the service: `docker compose build bambu-studio-api`.
-#
-# Both images are linux/amd64 only. OrcaSlicer's ARM64 path is on hold
-# pending an upstream extraction fix; BambuStudio doesn't publish ARM64
-# at all. ARM64 hosts are best served by running the sidecar on a separate
-# x86_64 box; failing that, `docker-compose.arm64.yml` in this directory
-# runs these same images under QEMU emulation — experimental, ~3-6x slower,
-# and it needs binfmt set up on the host. See the README.
+# The ports bind to loopback only: Printbuddy runs in host-network mode and
+# reaches them via localhost, while the unauthenticated sidecar must not be
+# exposed to the LAN.
 
 services:
   orca-slicer-api:
     build:
-      context: "${SLICER_API_BUILD_CONTEXT}"
+      context: "${SLICER_API_BUILD_CONTEXT:-https://github.com/vmhomelab/orca-slicer-api.git#661cd475085b7699280ac6307dbb5d06af41b04f}"
       dockerfile: Dockerfile
       args:
         ORCA_VERSION: "${ORCA_VERSION:-2.3.2}"
-    image: printbuddy-orca-slicer-api:orca${ORCA_VERSION:-2.3.2}
+        SIDECAR_REVISION: "${SIDECAR_REVISION:-661cd475085b7699280ac6307dbb5d06af41b04f}"
+    image: "${ORCA_SLICER_API_IMAGE:-docker.io/vmhomelabde/printbuddy-orca-slicer-api:latest}"
     container_name: orca-slicer-api
     restart: unless-stopped
     ports:
-      - "${ORCA_API_PORT:-3003}:3000"
+      - "127.0.0.1:${ORCA_API_PORT:-3003}:3000"
     volumes:
       - ./data/orca:/app/data
     environment:
@@ -61,15 +57,17 @@ services:
 
   bambu-studio-api:
     build:
-      context: "${SLICER_API_BUILD_CONTEXT}"
+      context: "${SLICER_API_BUILD_CONTEXT:-https://github.com/vmhomelab/orca-slicer-api.git#661cd475085b7699280ac6307dbb5d06af41b04f}"
       dockerfile: Dockerfile.bambu-studio
       args:
-        BAMBU_VERSION: "${BAMBU_VERSION:-02.06.00.51}"
-    image: printbuddy-bambu-studio-api:bambu${BAMBU_VERSION:-02.06.00.51}
+        BAMBU_VERSION: "${BAMBU_VERSION:-02.08.02.61}"
+        BAMBU_APPIMAGE_URL: "${BAMBU_APPIMAGE_URL:-}"
+        SIDECAR_REVISION: "${SIDECAR_REVISION:-661cd475085b7699280ac6307dbb5d06af41b04f}"
+    image: "${BAMBU_STUDIO_API_IMAGE:-docker.io/vmhomelabde/printbuddy-bambu-studio-api:latest}"
     container_name: bambu-studio-api
     restart: unless-stopped
     ports:
-      - "${BAMBU_API_PORT:-3001}:3000"
+      - "127.0.0.1:${BAMBU_API_PORT:-3001}:3000"
     volumes:
       - ./data/bambu:/app/data
     environment:

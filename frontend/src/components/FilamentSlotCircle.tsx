@@ -20,6 +20,7 @@
  *                a string for non-numeric labels (e.g. "L" / "R" for the
  *                dual-nozzle external trays, where carrying a separate
  *                Ext-L/Ext-R caption underneath made the row taller).
+ *   size       - "sm" (default, AMS slot grid) or "lg" (larger toolhead tiles).
  */
 
 interface FilamentSlotCircleProps {
@@ -29,6 +30,7 @@ interface FilamentSlotCircleProps {
   emptyKind?: 'physical' | 'reset' | null;
   pendingColor?: string | null;
   slotNumber: number | string;
+  size?: 'sm' | 'lg';
 }
 
 function isLightFilamentColor(hex: string): boolean {
@@ -39,7 +41,7 @@ function isLightFilamentColor(hex: string): boolean {
   return (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.6;
 }
 
-export function FilamentSlotCircle({ trayColor, trayType, isEmpty, emptyKind, pendingColor, slotNumber }: FilamentSlotCircleProps) {
+export function FilamentSlotCircle({ trayColor, trayType, isEmpty, emptyKind, pendingColor, slotNumber, size = 'sm' }: FilamentSlotCircleProps) {
   // Reset slots get a quieter border than physical-empty so they read as
   // "cleared but possibly still has a spool the firmware hasn't confirmed
   // gone" rather than "definitely no spool".
@@ -48,7 +50,7 @@ export function FilamentSlotCircle({ trayColor, trayType, isEmpty, emptyKind, pe
   const fill = pending ?? trayColor;
   return (
     <div
-      className="w-3.5 h-3.5 rounded-full mx-auto mb-0.5 border-2 flex items-center justify-center"
+      className={`${size === 'lg' ? 'w-6 h-6 mb-1' : 'w-3.5 h-3.5 mb-0.5'} rounded-full mx-auto border-2 flex items-center justify-center`}
       data-pending-config={pending ? 'true' : undefined}
       style={{
         backgroundColor: fill ? `#${fill}` : (trayType ? '#333' : 'transparent'),
@@ -57,7 +59,7 @@ export function FilamentSlotCircle({ trayColor, trayType, isEmpty, emptyKind, pe
       }}
     >
       <span
-        className="text-[6px] font-bold leading-none select-none"
+        className={`${size === 'lg' ? 'text-[11px]' : 'text-[6px]'} font-bold leading-none select-none`}
         style={{ color: fill && isLightFilamentColor(fill) ? '#000' : '#fff' }}
       >
         {slotNumber}

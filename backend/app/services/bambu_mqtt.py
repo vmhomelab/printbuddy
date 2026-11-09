@@ -1338,7 +1338,6 @@ _END_OF_PRINT_PROBE_MAX_FRAMES = 400
 _END_OF_PRINT_PROBE_CLOSING_STATES = frozenset({"FINISH", "FAILED", "IDLE", "PREPARE"})
 
 
-
 def merge_vt_tray(existing: object, incoming: object) -> object:
     """The external spool slots after an MQTT push, merged into what is known.
 
@@ -1367,6 +1366,7 @@ def merge_vt_tray(existing: object, incoming: object) -> object:
             previous = stored[0] if len(stored) == 1 else None
         merged.append({**previous, **entry} if previous else entry)
     return merged
+
 
 class BambuMQTTClient:
     """MQTT client for Bambu Lab printer communication."""

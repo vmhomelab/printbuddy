@@ -724,6 +724,11 @@ export interface PrinterStatus {
   speed_level: number;
   // Chamber light on/off
   chamber_light: boolean;
+  // Provider-detected chamber capabilities (e.g. Moonraker objects).
+  // null/undefined = provider does not report the capability explicitly.
+  chamber_light_supported?: boolean | null;
+  chamber_heater_supported?: boolean;
+  chamber_temp_max?: number | null;
   // Active extruder for dual nozzle (0=right, 1=left)
   active_extruder: number;
   // AMS mapping - which AMS is connected to which nozzle
@@ -1204,6 +1209,17 @@ export interface ProjectStats {
   bom_total_items: number;
   bom_completed_items: number;
   bom_cost: number;
+  // Planned totals: from the job plan, or from linked folder files when there is no plan
+  planned_source?: 'plan' | 'files' | null;
+  planned_print_time_hours?: number;
+  planned_filament_grams?: number;
+  plan_total_plates?: number;
+  plan_completed_plates?: number;
+  plan_queued_plates?: number;
+  plan_printing_plates?: number;
+  plan_failed_plates?: number;
+  plan_remaining_plates?: number;
+  plan_progress_percent?: number | null;
 }
 
 // A sub-project as listed on its parent's page. The figures cover the child's
@@ -1252,6 +1268,7 @@ export interface Project {
   rollup_stats?: ProjectStats | null;
   url: string | null;  // External link rendered next to project name on the card (#1155)
   cover_image_filename: string | null;  // Filename within project attachments dir (#1155)
+  order_number?: string | null;  // External order / tracking number (e.g. Etsy)
 }
 
 export interface ProjectAttachment {
@@ -1301,6 +1318,9 @@ export interface ProjectListItem {
   archives: ArchivePreview[];
   url: string | null;  // #1155
   cover_image_filename: string | null;  // #1155
+  order_number?: string | null;
+  plan_total_plates?: number;
+  plan_completed_plates?: number;
 }
 
 export interface ProjectCreate {
@@ -1317,6 +1337,8 @@ export interface ProjectCreate {
   budget?: number | null;
   parent_id?: number;
   url?: string | null;  // #1155
+  order_number?: string | null;
+  folder_ids?: number[];  // File Manager folders to link right away
 }
 
 export interface ProjectUpdate {
@@ -1334,6 +1356,110 @@ export interface ProjectUpdate {
   budget?: number | null;
   parent_id?: number;
   url?: string | null;  // #1155 — explicit null clears the URL
+  order_number?: string | null;  // explicit null clears it
+}
+
+// Project plan ("Job") — every plate a project needs
+export interface PlanFilament {
+  slot_id: number;
+  type: string;
+  color: string;  // #RRGGBB
+  color_name?: string | null;
+  used_grams?: number | null;  // per copy
+  original_type?: string | null;  // as sliced
+  original_color?: string | null;
+}
+
+export interface PlanItemProgress {
+  completed: number;
+  printing: number;
+  queued: number;
+  failed: number;
+  remaining: number;  // copies still to be queued
+  percent: number;
+}
+
+export interface PlanItem {
+  id: number;
+  project_id: number;
+  library_file_id: number | null;
+  library_file_name: string | null;
+  library_file_missing: boolean;
+  is_sliced: boolean;
+  thumbnail_url: string | null;
+  plate_id: number | null;
+  name: string;
+  group_label: string | null;
+  quantity: number;
+  filaments: PlanFilament[];
+  est_print_time_seconds: number | null;
+  est_filament_grams: number | null;
+  printer_id: number | null;
+  printer_name: string | null;
+  target_model: string | null;
+  notes: string | null;
+  sort_order: number;
+  progress: PlanItemProgress;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PlanItemCreate {
+  library_file_id?: number | null;
+  plate_id?: number | null;
+  name?: string;
+  group_label?: string | null;
+  quantity?: number;
+  filaments?: PlanFilament[];
+  est_print_time_seconds?: number | null;
+  est_filament_grams?: number | null;
+  printer_id?: number | null;
+  target_model?: string | null;
+  notes?: string | null;
+}
+
+export interface PlanItemUpdate {
+  plate_id?: number | null;
+  name?: string;
+  group_label?: string | null;
+  quantity?: number;
+  filaments?: PlanFilament[];
+  est_print_time_seconds?: number | null;
+  est_filament_grams?: number | null;
+  printer_id?: number | null;  // 0 / null clears
+  target_model?: string | null;  // '' / null clears
+  notes?: string | null;
+  sort_order?: number;
+}
+
+export interface PlanMaterialTotal {
+  type: string;
+  color: string;
+  color_name: string | null;
+  planned_grams: number;
+  completed_grams: number;
+  remaining_grams: number;
+}
+
+export interface PlanSummary {
+  total_plates: number;
+  completed_plates: number;
+  printing_plates: number;
+  queued_plates: number;
+  failed_plates: number;
+  remaining_plates: number;
+  progress_percent: number | null;
+  planned_print_time_seconds: number;
+  remaining_print_time_seconds: number;
+  planned_filament_grams: number;
+  remaining_filament_grams: number;
+  unestimated_items: number;
+  materials: PlanMaterialTotal[];
+}
+
+export interface PlanEnqueueResponse {
+  queued_total: number;
+  results: Array<{ plan_item_id: number; queued: number; error: string | null }>;
 }
 
 // BOM Types - Tracks sourced/purchased parts (hardware, electronics, etc.)
@@ -1511,6 +1637,7 @@ export interface AppSettings {
   local_login_enabled: boolean;
   language: string;
   notification_language: string;
+  progress_milestone_mode?: 'layers' | 'print_progress';
   // AMS threshold settings
   ams_humidity_good: number;  // <= this is green
   ams_humidity_fair: number;  // <= this is orange, > is red
@@ -1593,6 +1720,8 @@ export interface AppSettings {
   // MakerWorld import defaults
   makerworld_archive_details_default: boolean;
   makerworld_cover_thumbnail_default: boolean;
+  // GyroidVault integration toggle (read-only here; set via /gyroidvault/settings)
+  gyroidvault_enabled?: boolean;
   // Camera view settings
   camera_view_mode: CameraViewMode;
   // Chamber light while the camera is in use (#1655)
@@ -1925,6 +2054,126 @@ export interface ManyfoldImportResponse {
   was_existing: boolean;
 }
 
+// GyroidVault integration (self-hosted model library). The backend reshapes
+// GyroidVault's payloads, so these mirror backend/app/schemas/gyroidvault.py.
+export interface GyroidVaultSettings {
+  enabled: boolean;
+  url: string;
+  has_api_key: boolean;
+  /** Add finished prints of imported models to their GyroidVault print history. */
+  report_prints: boolean;
+}
+
+export interface GyroidVaultSettingsUpdate {
+  enabled?: boolean;
+  report_prints?: boolean;
+  url?: string;
+  /** Empty string clears the stored key; omit to keep it. */
+  api_key?: string;
+}
+
+export interface GyroidVaultTestResult {
+  ok: boolean;
+  version: string | null;
+  username: string | null;
+  role: string | null;
+  supported_version: boolean;
+  warning: string | null;
+  error: string | null;
+}
+
+export interface GyroidVaultStatus {
+  enabled: boolean;
+  configured: boolean;
+  connected: boolean;
+  version: string | null;
+  supported_version: boolean;
+  error: string | null;
+}
+
+export interface GyroidVaultTag {
+  id: number;
+  name: string;
+}
+
+export interface GyroidVaultCategory {
+  id: number;
+  name: string;
+  color: string | null;
+  model_count: number;
+}
+
+export interface GyroidVaultModelSummary {
+  id: number;
+  name: string;
+  description: string;
+  category_id: number | null;
+  category_name: string | null;
+  category_color: string | null;
+  thumbnail_path: string | null;
+  file_count: number;
+  file_types: string[];
+  print_count: number;
+  tags: GyroidVaultTag[];
+  updated_at: string | null;
+}
+
+export interface GyroidVaultModelList {
+  models: GyroidVaultModelSummary[];
+  total_items: number;
+  total_pages: number;
+  page: number;
+  limit: number;
+}
+
+export interface GyroidVaultFile {
+  id: number;
+  filename: string;
+  file_type: string;
+  file_size: number;
+  importable: boolean;
+  imported_library_file_id: number | null;
+}
+
+export interface GyroidVaultModelDetail extends GyroidVaultModelSummary {
+  print_tips: string;
+  source_url: string | null;
+  web_url: string;
+  files: GyroidVaultFile[];
+}
+
+export interface GyroidVaultModelQuery {
+  search?: string;
+  category?: string;
+  tag?: string;
+  format?: string;
+  sort?: 'updated' | 'created' | 'name' | 'prints' | 'files';
+  page?: number;
+  limit?: number;
+}
+
+export interface GyroidVaultImportedFile {
+  gyroidvault_file_id: number;
+  library_file_id: number | null;
+  filename: string | null;
+  was_existing: boolean;
+  error: string | null;
+}
+
+export interface GyroidVaultImportResponse {
+  folder_id: number;
+  files: GyroidVaultImportedFile[];
+}
+
+export interface GyroidVaultRecentImport {
+  library_file_id: number;
+  filename: string;
+  folder_id: number | null;
+  thumbnail_path: string | null;
+  source_url: string | null;
+  created_at: string;
+}
+
 export interface SlicerSetting {
   setting_id: string;
   name: string;
@@ -2095,6 +2344,27 @@ export interface SliceRequest {
   // values, so they apply on the embedded-settings path too.
   auto_orient?: boolean;
   auto_arrange?: boolean;
+}
+
+/** Safe, documented result of POST /settings/test-slicer-connection. */
+export interface SlicerConnectionTestResult {
+  success: boolean;
+  slicer: 'bambu_studio' | 'orcaslicer';
+  health: {
+    status?: string | null;
+    version?: string | null;
+    capabilities?: string[] | null;
+  } | null;
+  /** Slicer that actually answered, inferred from its version; null if unknown. */
+  detected_slicer?: 'bambu_studio' | 'orcaslicer' | null;
+  /** Why the test failed; `invalid_response` = the URL is not the slicer API. */
+  error?: 'unreachable' | 'invalid_response' | null;
+  /** Commit the sidecar reports; null when it reports none or "unknown". */
+  sidecar_revision?: string | null;
+  /** Commit this Printbuddy version expects. */
+  expected_sidecar_revision?: string;
+  /** false = other (or too old to report a) revision; null = cannot tell. */
+  sidecar_up_to_date?: boolean | null;
 }
 
 // GET /api/v1/slicer/presets — unified listing across cloud / local / standard.
@@ -6873,6 +7143,8 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(data),
     }),
+  testSlicerConnection: () =>
+    request<SlicerConnectionTestResult>('/settings/test-slicer-connection', { method: 'POST' }),
   getMQTTStatus: () => request<MQTTStatus>('/settings/mqtt/status'),
   getPandaBreathStatus: () => request<PandaBreathStatus>('/settings/panda-breath/status'),
   sendPandaBreathCommand: (data: { command: string; value?: string | number | boolean | null; device_id?: string | null }) =>
@@ -7067,6 +7339,40 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ model_id: modelId, file_id: fileId, folder_id: folderId }),
     }),
+
+  // GyroidVault (self-hosted model library) browse + import.
+  getGyroidVaultSettings: () => request<GyroidVaultSettings>('/gyroidvault/settings'),
+  updateGyroidVaultSettings: (data: GyroidVaultSettingsUpdate) =>
+    request<GyroidVaultSettings>('/gyroidvault/settings', {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  testGyroidVaultConnection: (data: { url?: string; api_key?: string; report_prints?: boolean } = {}) =>
+    request<GyroidVaultTestResult>('/gyroidvault/test', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  getGyroidVaultStatus: () => request<GyroidVaultStatus>('/gyroidvault/status'),
+  getGyroidVaultModels: (query: GyroidVaultModelQuery = {}) => {
+    const params = new URLSearchParams();
+    Object.entries(query).forEach(([key, value]) => {
+      if (value !== undefined && value !== null && value !== '') params.set(key, String(value));
+    });
+    const qs = params.toString();
+    return request<GyroidVaultModelList>(`/gyroidvault/models${qs ? `?${qs}` : ''}`);
+  },
+  getGyroidVaultModel: (modelId: number) => request<GyroidVaultModelDetail>(`/gyroidvault/models/${modelId}`),
+  getGyroidVaultCategories: () => request<GyroidVaultCategory[]>('/gyroidvault/categories'),
+  getGyroidVaultTags: () => request<GyroidVaultTag[]>('/gyroidvault/tags'),
+  getGyroidVaultAssetUrl: (path: string) =>
+    withStreamToken(`${API_BASE}/gyroidvault/asset?path=${encodeURIComponent(path)}`),
+  importGyroidVaultFiles: (model_id: number, file_ids: number[], folder_id?: number | null) =>
+    request<GyroidVaultImportResponse>('/gyroidvault/import', {
+      method: 'POST',
+      body: JSON.stringify({ model_id, file_ids, folder_id: folder_id ?? null }),
+    }),
+  getGyroidVaultRecentImports: (limit = 10) =>
+    request<GyroidVaultRecentImport[]>(`/gyroidvault/recent-imports?limit=${limit}`),
   getCloudSettingDetail: (settingId: string) =>
     request<SlicerSettingDetail>(`/cloud/settings/${settingId}`),
   createCloudSetting: (data: SlicerSettingCreate) =>
@@ -8352,6 +8658,34 @@ export const api = {
   deleteBOMItem: (projectId: number, itemId: number) =>
     request<{ status: string; message: string }>(`/projects/${projectId}/bom/${itemId}`, {
       method: 'DELETE',
+    }),
+
+  // Project plan ("Job")
+  getProjectPlan: (projectId: number) =>
+    request<PlanItem[]>(`/projects/${projectId}/plan`),
+  getProjectPlanSummary: (projectId: number) =>
+    request<PlanSummary>(`/projects/${projectId}/plan/summary`),
+  createPlanItem: (projectId: number, data: PlanItemCreate) =>
+    request<PlanItem>(`/projects/${projectId}/plan`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  updatePlanItem: (projectId: number, itemId: number, data: PlanItemUpdate) =>
+    request<PlanItem>(`/projects/${projectId}/plan/${itemId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+  deletePlanItem: (projectId: number, itemId: number) =>
+    request<{ message: string }>(`/projects/${projectId}/plan/${itemId}`, { method: 'DELETE' }),
+  reorderPlanItems: (projectId: number, itemIds: number[]) =>
+    request<{ message: string }>(`/projects/${projectId}/plan/reorder`, {
+      method: 'POST',
+      body: JSON.stringify({ item_ids: itemIds }),
+    }),
+  enqueueProjectPlan: (projectId: number, itemIds?: number[], manualStart = false) =>
+    request<PlanEnqueueResponse>(`/projects/${projectId}/plan/enqueue`, {
+      method: 'POST',
+      body: JSON.stringify({ item_ids: itemIds ?? null, manual_start: manualStart }),
     }),
 
   // Templates

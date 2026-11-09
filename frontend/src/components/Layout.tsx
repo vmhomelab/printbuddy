@@ -71,6 +71,14 @@ export const defaultNavItems: NavItem[] = [
 // previously hidden entries stay hidden after the upgrade.
 const LEGACY_SIDEBAR_HIDDEN_ITEMS_KEY = 'sidebarHiddenItems';
 
+// Ids Printbuddy builds used for what is now the Model Sources entry (id
+// "makerworld"): its short-lived "Model import" entry and the GyroidVault page
+// it replaced. A hidden one stays hidden.
+const LEGACY_NAV_ID_ALIASES: Record<string, string> = {
+  'model-import': 'makerworld',
+  gyroidvault: 'makerworld',
+};
+
 function loadHiddenSidebarItemIds(): string[] {
   const hiddenIds = getHiddenSidebarSystemItemIds();
   const stored = localStorage.getItem(LEGACY_SIDEBAR_HIDDEN_ITEMS_KEY);
@@ -80,7 +88,10 @@ function loadHiddenSidebarItemIds(): string[] {
     const parsed = JSON.parse(stored);
     if (Array.isArray(parsed)) {
       const validIds = new Set(defaultNavItems.map(item => item.id));
-      const legacyIds = parsed.filter((id): id is string => typeof id === 'string' && validIds.has(id) && id !== 'settings');
+      const legacyIds = parsed
+        .filter((id): id is string => typeof id === 'string')
+        .map((id) => LEGACY_NAV_ID_ALIASES[id] ?? id)
+        .filter((id) => validIds.has(id) && id !== 'settings');
       if (legacyIds.length > 0) {
         merged = Array.from(new Set([...hiddenIds, ...legacyIds]));
         saveHiddenSidebarSystemItemIds(merged);
@@ -374,7 +385,7 @@ export function Layout() {
       inventory: 'inventory:read',
       finance: 'cost_centers:read_own',
       files: ['library:read', 'library:read_own', 'library:read_all'],
-      makerworld: ['makerworld:view', 'manyfold:view'],
+      makerworld: ['makerworld:view', 'manyfold:view', 'library:read', 'settings:read'],
       settings: 'settings:read',
       // The user-email-preferences API requires notifications:user_email, so
       // gate the nav item on the same permission (both default groups —

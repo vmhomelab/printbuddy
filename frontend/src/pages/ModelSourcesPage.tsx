@@ -1,20 +1,30 @@
 import { useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { Globe, Library } from 'lucide-react';
+import { Boxes, Globe, Library, Settings } from 'lucide-react';
 
 import { api } from '../api/client';
+import { GyroidVaultSettings } from '../components/GyroidVaultSettings';
+import { MakerworldImportDefaults } from '../components/MakerworldImportDefaults';
 import { ManyfoldTab } from '../components/ManyfoldTab';
 import { useAuth } from '../contexts/AuthContext';
+import { GyroidVaultPage } from './GyroidVaultPage';
 import { MakerworldPage } from './MakerworldPage';
 
-type SourceTab = 'makerworld' | 'manyfold';
+export type SourceTab = 'makerworld' | 'manyfold' | 'gyroidvault' | 'settings';
+
+const TAB_IDS: SourceTab[] = ['makerworld', 'manyfold', 'gyroidvault', 'settings'];
 
 /**
  * Model Sources (#1471): the places models come into the library from, one tab
- * each. MakerWorld takes pasted links; Manyfold is a self-hosted library that
- * is browsed. Each tab shows only to users with that source's permission, and
- * Manyfold only once it is connected, except to those who can connect it.
+ * each. MakerWorld takes pasted links; Manyfold and GyroidVault are
+ * self-hosted libraries that are browsed; Settings holds GyroidVault's
+ * connection and the MakerWorld import defaults. Each tab shows only to users
+ * with that source's permission, and Manyfold only once it is connected,
+ * except to those who can connect it.
+ *
+ * The active tab lives in ``?tab=``. ``?source=`` is still read: the page was
+ * briefly called Model import and linked its tabs that way.
  */
 export function ModelSourcesPage() {
   const { t } = useTranslation();
@@ -33,8 +43,11 @@ export function ModelSourcesPage() {
   const tabs: { id: SourceTab; label: string; icon: typeof Globe }[] = [];
   if (hasPermission('makerworld:view')) tabs.push({ id: 'makerworld', label: t('modelSources.tabMakerworld'), icon: Globe });
   if (showManyfold) tabs.push({ id: 'manyfold', label: t('modelSources.tabManyfold'), icon: Library });
+  if (hasPermission('library:read')) tabs.push({ id: 'gyroidvault', label: t('modelSources.tabGyroidvault'), icon: Boxes });
+  if (hasPermission('settings:read')) tabs.push({ id: 'settings', label: t('modelSources.tabSettings'), icon: Settings });
 
-  const requested = searchParams.get('tab');
+  const param = searchParams.get('tab') ?? searchParams.get('source');
+  const requested = TAB_IDS.find((id) => id === param);
   // A Manyfold-only user, before Manyfold is connected, has no tab; show them
   // the Manyfold tab's "not connected" note rather than an empty page.
   const active =
@@ -73,6 +86,13 @@ export function ModelSourcesPage() {
 
       {active === 'makerworld' && <MakerworldPage embedded />}
       {active === 'manyfold' && <ManyfoldTab />}
+      {active === 'gyroidvault' && <GyroidVaultPage embedded />}
+      {active === 'settings' && (
+        <div className="grid gap-6 lg:grid-cols-2 items-start max-w-6xl">
+          <GyroidVaultSettings />
+          <MakerworldImportDefaults />
+        </div>
+      )}
     </div>
   );
 }

@@ -112,6 +112,16 @@ export function buildCompatibilityIndex(
   };
 }
 
+function canonicalPrinterPresetName(name: string): string {
+  const stripped = name.replace(/^#\s*/, '').trim();
+  // A PrintBuddy/Bambu user clone may append a human label (e.g. " - Ethan")
+  // while its compatible_printers array retains the stock canonical name.
+  // Scope this to explicit Bambu nozzle preset names; do not fuzzy-match
+  // unrelated manufacturers or arbitrary display text.
+  const clone = stripped.match(/^(Bambu Lab .+?\s+\d(?:\.\d+)?\s+nozzle)\s+-\s+.+$/i);
+  return clone ? clone[1] : stripped;
+}
+
 function normalizeModelFragment(s: string): string {
   return s.replace(/\s+/g, '').toLowerCase();
 }
@@ -257,7 +267,7 @@ function classifyByBambuName(
 ): PrinterCompatibility {
   const parsed = extractPrinterTag(presetName);
   if (!parsed) return 'unknown';
-  const selectedParts = extractPrinterPresetModel(selectedPrinterName);
+  const selectedParts = extractPrinterPresetModel(canonicalPrinterPresetName(selectedPrinterName));
   if (!selectedParts) return 'unknown';
   if (parsed.token === null) {
     // Nozzle-only tag ("Overture PLA Matte @0.2"). The size can rule a
@@ -331,8 +341,8 @@ export function presetCompatibility(
     // system printer lists the *unprefixed* name, and comparing that raw
     // against a selected "# Bambu Lab …" reads as a mismatch — which now
     // hides the preset rather than merely demoting it.
-    const names = [selectedPrinterName, parentName].filter((n): n is string => !!n).map(stripUserClonePrefix);
-    return compat.some((name) => names.includes(stripUserClonePrefix(name))) ? 'match' : 'mismatch';
+    const names = [selectedPrinterName, parentName].filter((n): n is string => !!n).map(canonicalPrinterPresetName);
+    return compat.some((name) => names.includes(canonicalPrinterPresetName(name))) ? 'match' : 'mismatch';
   }
   // (2) BambuStudio's `@BBL <model>` name convention — covers cloud /
   // standard presets that don't carry compatible_printers. A name of the

@@ -834,6 +834,126 @@ async def save_3mf_bytes_to_library(
     return library_file, False
 
 
+def new_managed_library_path(filename: str) -> Path:
+    """Return a fresh UUID-named path in the managed library dir for *filename*'s extension.
+
+    Lets importers stream large downloads straight to their final location
+    instead of buffering them in memory, then hand the path to
+    :func:`save_downloaded_file_to_library`.
+    """
+    ext = os.path.splitext(filename)[1].lower()
+    return get_library_files_dir() / f"{uuid.uuid4().hex}{ext}"
+
+
+async def save_downloaded_file_to_library(
+    db: AsyncSession,
+    *,
+    file_path: Path,
+    filename: str,
+    folder_id: int | None = None,
+    source_type: str | None = None,
+    source_url: str | None = None,
+    owner_id: int | None = None,
+) -> LibraryFile:
+    """Register a file already written to *file_path* (from :func:`new_managed_library_path`).
+
+    Same metadata/thumbnail handling as :func:`save_3mf_bytes_to_library`, but
+    also covers STL/OBJ (rendered thumbnail) and G-code (header metadata and
+    embedded thumbnail). 3MFs without an embedded preview get a rendered one.
+    Callers are responsible for source_url dedupe.
+    """
+    return await _register_managed_library_file(
+        db,
+        file_path=file_path,
+        filename=filename,
+        folder_id=folder_id,
+        source_type=source_type,
+        source_url=source_url,
+        owner_id=owner_id,
+    )
+
+
+async def _render_mesh_thumbnail(file_path: Path, thumbs_dir: Path, filename: str) -> str | None:
+    """Render a preview of a mesh file (STL / 3MF / OBJ); ``None`` on failure."""
+    try:
+        # Rendering is CPU-bound and can take seconds for large meshes.
+        return await asyncio.to_thread(generate_stl_thumbnail, file_path, thumbs_dir)
+    except Exception as exc:
+        logger.warning("Failed to render mesh thumbnail for %s: %s", filename, exc)
+        return None
+
+
+async def _register_managed_library_file(
+    db: AsyncSession,
+    *,
+    file_path: Path,
+    filename: str,
+    folder_id: int | None,
+    source_type: str | None,
+    source_url: str | None,
+    owner_id: int | None,
+) -> LibraryFile:
+    ext = file_path.suffix.lower()
+    file_hash = calculate_file_hash(file_path)
+    thumbs_dir = get_library_thumbnails_dir()
+
+    # Extract metadata + thumbnail.
+    metadata: dict | None = None
+    thumbnail_path: str | None = None
+    if ext == ".3mf":
+        try:
+            parser = ThreeMFParser(str(file_path))
+            raw_metadata = parser.parse()
+            thumb_data = raw_metadata.get("_thumbnail_data")
+            thumb_ext = raw_metadata.get("_thumbnail_ext", ".png")
+            if thumb_data:
+                thumb_filename = f"{uuid.uuid4().hex}{thumb_ext}"
+                thumb_path = thumbs_dir / thumb_filename
+                with open(thumb_path, "wb") as fh:
+                    fh.write(thumb_data)
+                thumbnail_path = str(thumb_path)
+            metadata = _clean_3mf_metadata(raw_metadata) or None
+        except Exception as exc:
+            # Matches the multipart upload route's behaviour — a bad 3MF should
+            # still land in the library so the user can see / delete it rather
+            # than failing the whole request.
+            logger.warning("Failed to parse 3MF %s: %s", filename, exc)
+        if not thumbnail_path:
+            # Plain 3MFs (CAD exports, unsliced projects) carry no preview
+            # image; render the mesh like an STL so the file card is not empty.
+            thumbnail_path = await _render_mesh_thumbnail(file_path, thumbs_dir, filename)
+    elif ext == ".gcode":
+        metadata = extract_gcode_file_metadata(file_path) or None
+        try:
+            thumb_data = extract_gcode_thumbnail(file_path)
+            if thumb_data:
+                thumb_path = thumbs_dir / f"{uuid.uuid4().hex}.png"
+                thumb_path.write_bytes(thumb_data)
+                thumbnail_path = str(thumb_path)
+        except Exception as exc:
+            logger.warning("Failed to extract gcode thumbnail for %s: %s", filename, exc)
+    elif ext in (".stl", ".obj"):
+        thumbnail_path = await _render_mesh_thumbnail(file_path, thumbs_dir, filename)
+
+    library_file = LibraryFile(
+        folder_id=folder_id,
+        filename=filename,
+        file_path=to_relative_path(file_path),
+        file_type=classify_file_type(filename, file_path),
+        file_size=file_path.stat().st_size,
+        file_hash=file_hash,
+        thumbnail_path=to_relative_path(thumbnail_path) if thumbnail_path else None,
+        file_metadata=_without_print_name(metadata),
+        source_type=source_type,
+        source_url=source_url,
+        created_by_id=owner_id,
+    )
+    db.add(library_file)
+    await db.commit()
+    await db.refresh(library_file)
+    return library_file
+
+
 def extract_gcode_metadata(header: str) -> dict[str, str]:
     """Extract safe, displayable material metadata from a raw G-code header.
 

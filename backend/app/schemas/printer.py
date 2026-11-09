@@ -616,6 +616,8 @@ class PrinterStatus(BaseModel):
     nozzles: list[NozzleInfoResponse] = []  # Nozzle hardware info (index 0=left/primary, 1=right)
     nozzle_rack: list[NozzleRackSlot] = []  # H2C 6-nozzle tool-changer rack
     tool_slots: list[dict] = []  # Generic multi-tool Klipper local spool slots
+    position: dict[str, float] | None = None  # Toolhead position {x, y, z} (Klipper/PrusaConnect)
+    z_offset: float | None = None  # Active G-code Z offset in mm (Klipper)
     print_options: PrintOptionsResponse | None = None  # AI detection and print options
     # Calibration stage tracking
     stg_cur: int = -1  # Current stage number (-1 = not calibrating)
@@ -627,6 +629,11 @@ class PrinterStatus(BaseModel):
     speed_level: int = 2
     # Chamber light on/off
     chamber_light: bool = False
+    # Capability flags (provider-detected, e.g. from Moonraker objects).
+    # None = provider does not report the capability explicitly.
+    chamber_light_supported: bool | None = None
+    chamber_heater_supported: bool = False
+    chamber_temp_max: float | None = None
     # Active extruder for dual nozzle (0=right, 1=left)
     active_extruder: int = 0
     # AMS mapping for dual nozzle: which AMS is connected to which nozzle

@@ -2855,6 +2855,7 @@ function PrinterCard({
     initialKind: HeaterSensorKind;
     availableKinds: HeaterSensorKind[];
   } | null>(null);
+  const [amsSlotMenu, setAmsSlotMenu] = useState<{ amsId: number; slotId: number } | null>(null);
   const [assignSpoolModal, setAssignSpoolModal] = useState<{
     printerId: number;
     amsId: number;
@@ -3225,35 +3226,80 @@ function PrinterCard({
   // providers that have no slot of their own to assign to.
   const showLoadedSpoolPicker = supportsSpoolAssignment && !isBambuProvider && !spoolmanLoading && !hasGenericMultiToolSlots && (amsData.length === 0) && ((status?.vt_tray?.length ?? 0) === 0);
   const genericToolSpoolPickers = hasGenericMultiToolSlots ? (
-    <div className="space-y-2">
-      {genericToolSlots.map((tool) => {
-        const assignment = onGetAssignment?.(printer.id, -1, tool.id);
-        const spool = assignment?.spool ?? undefined;
-        const color = spool?.rgba ? `#${spool.rgba.replace(/^#/, '').slice(0, 6)}` : undefined;
-        const state = tool.active ? 'Active' : tool.docked === true ? 'Docked' : tool.filament_present === true ? 'Filament detected' : 'No filament detected';
-        return (
-          <div key={tool.id} className="flex items-center justify-between gap-3 rounded-lg bg-bambu-dark/70 border border-bambu-dark-tertiary px-3 py-2">
-            <div className="min-w-0">
-              <p className="text-[10px] uppercase tracking-wide text-bambu-gray">T{tool.id}{tool.nozzle_diameter ? ` · ${tool.nozzle_diameter} mm` : ''} · {state}</p>
-              {spool ? (
-                <div className="flex items-center gap-1.5 min-w-0">
-                  {color && <span className="w-2.5 h-2.5 rounded-full border border-black/30 flex-shrink-0" style={{ backgroundColor: color }} />}
-                  <p className="text-xs text-white truncate">{spool.brand ? `${spool.brand} ` : ''}{spool.material}{spool.subtype ? ` ${spool.subtype}` : ''}{spool.color_name ? ` · ${spool.color_name}` : ''}</p>
+    <div className="p-2.5 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary/30">
+      <div className="flex items-center gap-2 mb-2">
+        <span className="text-[10px] uppercase tracking-wider text-bambu-gray font-medium">Toolheads</span>
+        <div className="flex-1 h-px bg-bambu-dark-tertiary/30" />
+        <span className="text-[10px] text-bambu-gray">{genericToolSlots.length} tools</span>
+      </div>
+      <div className={`grid gap-1.5 ${genericToolSlots.length >= 4 ? 'grid-cols-4' : genericToolSlots.length === 3 ? 'grid-cols-3' : 'grid-cols-2'}`}>
+        {genericToolSlots.map((tool) => {
+          const assignment = onGetAssignment?.(printer.id, -1, tool.id);
+          const spool = assignment?.spool ?? undefined;
+          const colorHex = spool?.rgba ? spool.rgba.replace(/^#/, '').slice(0, 6) : undefined;
+          const fill = spool && spool.label_weight > 0 && spool.weight_used != null
+            ? Math.round(Math.max(0, spool.label_weight - spool.weight_used) / spool.label_weight * 100)
+            : null;
+          const noFilament = !spool && tool.filament_present === false;
+          const state = tool.active ? 'Active' : tool.docked === true ? 'Docked' : tool.filament_present === true ? 'Filament detected' : tool.filament_present === false ? 'No filament detected' : 'Unknown';
+          const detail = spool
+            ? [spool.brand, spool.color_name].filter(Boolean).join(' · ')
+            : (tool.filament_present === true ? 'Filament detected' : noFilament ? 'No filament' : 'No spool');
+          const isMenuOpen = amsSlotMenu?.amsId === -1 && amsSlotMenu?.slotId === tool.id;
+          const openAssign = () => {
+            setAmsSlotMenu(null);
+            setAssignSpoolModal({
+              printerId: printer.id, amsId: -1, trayId: tool.id,
+              trayInfo: { type: spool?.material || '', material: spool?.material, profile: spool?.slicer_filament_name || spool?.slicer_filament || '', color: colorHex || '', location: `Tool T${tool.id}` },
+            });
+          };
+          return (
+            <div key={tool.id} className="relative">
+              <button
+                type="button"
+                data-testid={`tool-slot-${tool.id}`}
+                aria-label={`T${tool.id} · ${state}`}
+                title={`T${tool.id}${tool.nozzle_diameter ? ` · ${tool.nozzle_diameter} mm` : ''} · ${state}`}
+                onClick={() => assignment ? setAmsSlotMenu(isMenuOpen ? null : { amsId: -1, slotId: tool.id }) : openAssign()}
+                className={`relative w-full bg-bambu-dark-tertiary rounded-lg px-1.5 pt-2.5 pb-1.5 text-center transition-colors hover:brightness-110 ${noFilament ? 'opacity-50' : ''} ${tool.active ? 'ring-2 ring-bambu-green ring-offset-1 ring-offset-bambu-dark' : ''}`}
+              >
+                <span className="absolute top-1 left-1.5 text-[8px] font-semibold text-bambu-gray">T{tool.id}</span>
+                <FilamentSlotCircle
+                  trayColor={colorHex}
+                  trayType={spool?.material}
+                  isEmpty={!spool}
+                  emptyKind="physical"
+                  slotNumber={tool.id + 1}
+                  size="lg"
+                />
+                <div className={`text-xs font-bold truncate ${spool ? 'text-white' : 'text-bambu-gray-light'}`}>
+                  {spool ? spool.material : noFilament ? 'Empty' : 'Assign'}
                 </div>
-              ) : <p className="text-xs text-bambu-gray">No inventory spool selected</p>}
+                <div className="text-[9px] text-bambu-gray truncate">{detail || '\u00a0'}</div>
+                <div className="mt-1 h-1.5 bg-black/30 rounded-full overflow-hidden">
+                  {fill !== null && (
+                    <div className="h-full rounded-full transition-all" style={{ width: `${fill}%`, backgroundColor: getFillBarColor(fill) }} />
+                  )}
+                </div>
+              </button>
+              {isMenuOpen && (
+                <div className="absolute top-full left-0 mt-1 z-50 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl py-1 min-w-[140px]">
+                  <button type="button" className="w-full px-3 py-1.5 text-left text-xs flex items-center gap-2 text-white hover:bg-bambu-dark-tertiary" onClick={openAssign}>
+                    <AssignSpoolIcon className="w-3 h-3" />Change spool
+                  </button>
+                  <button
+                    type="button"
+                    className="w-full px-3 py-1.5 text-left text-xs flex items-center gap-2 text-white hover:bg-bambu-dark-tertiary"
+                    onClick={() => { setAmsSlotMenu(null); onUnassignSpool?.(printer.id, -1, tool.id); }}
+                  >
+                    <X className="w-3 h-3" />Clear assignment
+                  </button>
+                </div>
+              )}
             </div>
-            <div className="flex items-center gap-2 flex-shrink-0">
-              {assignment && <Button variant="secondary" size="sm" onClick={() => onUnassignSpool?.(printer.id, -1, tool.id)}>Clear</Button>}
-              <Button variant="secondary" size="sm" onClick={() => setAssignSpoolModal({
-                printerId: printer.id, amsId: -1, trayId: tool.id,
-                trayInfo: { type: spool?.material || '', material: spool?.material, profile: spool?.slicer_filament_name || spool?.slicer_filament || '', color: spool?.rgba?.slice(0, 6) || '', location: `Tool T${tool.id}` },
-              })}>
-                <AssignSpoolIcon className="w-4 h-4" />{assignment ? 'Change' : 'Assign'}
-              </Button>
-            </div>
-          </div>
-        );
-      })}
+          );
+        })}
+      </div>
     </div>
   ) : null;
   const loadedSpoolPicker = showLoadedSpoolPicker ? (
@@ -4261,9 +4307,6 @@ function PrinterCard({
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [showMenu]);
-
-  // State for AMS slot menu (CFS / Snapmaker assignment-only units)
-  const [amsSlotMenu, setAmsSlotMenu] = useState<{ amsId: number; slotId: number } | null>(null);
 
   const printerCardSectionStorageKey = `printerCardSectionOrder_${printer.id}`;
   const hasLoadedPrinterCardSectionOrder = useRef(false);
@@ -5920,7 +5963,8 @@ function PrinterCard({
                     {status.temperatures.chamber !== undefined && (() => {
                       // Sensor-only models (X1C, P2S) show the chamber reading
                       // but can't act on M141, so we keep the card read-only there.
-                      const hasChamberHeater = status.supports_chamber_heater === true;
+                      // Moonraker printers (QIDI Q2) report a detected chamber heater instead.
+                      const hasChamberHeater = status.supports_chamber_heater === true || status.chamber_heater_supported === true;
                       return (
                         <div
                           className={hasChamberHeater
@@ -5946,13 +5990,16 @@ function PrinterCard({
                           <p className="text-[length:var(--pc-t9,9px)] text-bambu-gray">{t('printers.temperatures.chamber')}</p>
                           <p className="text-[length:var(--pc-t11,11px)] text-white">
                             {Math.round(status.temperatures.chamber || 0)}°C
+                            {status.chamber_heater_supported && status.temperatures.chamber_target
+                              ? ` / ${Math.round(status.temperatures.chamber_target)}°`
+                              : ''}
                           </p>
                           {hasChamberHeater && statusControlMenu === 'chamber-temp' && (
                             <IndicatorControlPopover
                               title="Set Chamber Temperature"
                               unit="°C"
                               customMin={0}
-                              customMax={MAX_CHAMBER_TEMP_C}
+                              customMax={status.chamber_temp_max ?? MAX_CHAMBER_TEMP_C}
                               isPending={chamberTemperatureMutation.isPending}
                               options={buildPresetOptions(chamberTempPresets, 'C')}
                               onClose={() => setStatusControlMenu(null)}
@@ -6137,7 +6184,7 @@ function PrinterCard({
                   <div className="flex flex-wrap items-start justify-between gap-x-2 gap-y-2">
                     {/* Left: Secondary controls */}
                     <div className="flex flex-wrap items-center gap-2 min-w-0">
-                      {((isBambuProvider && !isPrusaModelPrinter) || isElegooSDCPProvider) && (
+                      {((isBambuProvider && !isPrusaModelPrinter) || isElegooSDCPProvider || (isMoonrakerProvider && status.chamber_light_supported === true)) && (
                         <button
                           onClick={() => chamberLightMutation.mutate(!status.chamber_light)}
                           disabled={!status.connected || chamberLightMutation.isPending || !hasPermission('printers:control')}
@@ -6604,7 +6651,7 @@ function PrinterCard({
                   <div className="flex flex-wrap gap-2">
                     {/* Regular AMS units */}
                     {regularAms.map((ams) => {
-                      const isK2CfsLikeUnit = isCrealityK2Moonraker && ams.tray.length === 4;
+                      const isK2CfsLikeUnit = (isCrealityK2Moonraker && ams.tray.length === 4) || ams.module_type === 'cfs' || ams.module_type === 'k2oh_cfs';
                       const isSnapmakerU1Unit = ams.module_type === 'snapmaker_u1';
                       const amsDisplayLabel = isSnapmakerU1Unit ? 'Spools' : (isK2CfsLikeUnit ? `CFS T${ams.id + 1}` : (ams.name || getAmsLabel(ams.id)));
                       const sideBadge = amsSideBadge(ams.id, amsExtruderMap, amsSwitchInlet, ftsInstalled);
@@ -6786,6 +6833,8 @@ function PrinterCard({
                                 // Find tray data for this slot (may be undefined if data incomplete)
                                 const tray = trayForSlot(ams.tray, slotIdx);
                                 const isCfsUnit = ams.module_type === 'cfs' || isK2CfsLikeUnit;
+                                // K2-OpenHost (Kalico) CFS: load/unload go through its BOX_* commands.
+                                const isOpenHostCfsUnit = ams.module_type === 'k2oh_cfs';
                                 const isSlotAssignmentOnlyUnit = isCfsUnit || isSnapmakerU1Unit;
                                 const snapmakerLoadState = isSnapmakerU1Unit ? snapmakerU1LoadState(tray) : null;
                                 const hasFillLevel = tray?.tray_type && tray.remain >= 0;
@@ -7002,6 +7051,46 @@ function PrinterCard({
                                             {t('common.assign', 'Assign')}
                                           </button>
                                         )}
+                                        {isOpenHostCfsUnit && (
+                                          <>
+                                            <button
+                                              className={`w-full px-3 py-1.5 text-left text-xs flex items-center gap-2 ${
+                                                hasPermission('printers:control')
+                                                  ? 'text-white hover:bg-bambu-dark-tertiary'
+                                                  : 'text-bambu-gray/50 cursor-not-allowed'
+                                              }`}
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                if (!hasPermission('printers:control')) return;
+                                                loadAmsTrayMutation.mutate({ trayId: ams.id * 4 + slotIdx });
+                                                setAmsSlotMenu(null);
+                                              }}
+                                              disabled={!hasPermission('printers:control') || !tray?.tray_type}
+                                              title={!hasPermission('printers:control') ? t('printers.permission.noControl') : undefined}
+                                            >
+                                              <LogIn className="w-3 h-3" />
+                                              {t('printers.ams.load')}
+                                            </button>
+                                            <button
+                                              className={`w-full px-3 py-1.5 text-left text-xs flex items-center gap-2 ${
+                                                hasPermission('printers:control')
+                                                  ? 'text-white hover:bg-bambu-dark-tertiary'
+                                                  : 'text-bambu-gray/50 cursor-not-allowed'
+                                              }`}
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                if (!hasPermission('printers:control')) return;
+                                                unloadAmsMutation.mutate({});
+                                                setAmsSlotMenu(null);
+                                              }}
+                                              disabled={!hasPermission('printers:control')}
+                                              title={!hasPermission('printers:control') ? t('printers.permission.noControl') : undefined}
+                                            >
+                                              <LogOut className="w-3 h-3" />
+                                              {t('printers.ams.unload')}
+                                            </button>
+                                          </>
+                                        )}
                                       </div>
                                     )}
                                     {/* Hover card wraps only the visual content */}
@@ -7096,7 +7185,7 @@ function PrinterCard({
                                           };
                                         })()}
                                         configureSlot={{
-                                          enabled: hasPermission('printers:control') && !isCfsUnit,
+                                          enabled: hasPermission('printers:control') && !isSlotAssignmentOnlyUnit,
                                           onConfigure: () => setConfigureSlotModal({
                                             amsId: ams.id,
                                             trayId: slotIdx,
@@ -7123,7 +7212,7 @@ function PrinterCard({
                                           isRefreshing,
                                         })}
                                         configureSlot={{
-                                          enabled: hasPermission('printers:control') && !isCfsUnit,
+                                          enabled: hasPermission('printers:control') && !isSlotAssignmentOnlyUnit,
                                           onConfigure: () => setConfigureSlotModal({
                                             amsId: ams.id,
                                             trayId: slotIdx,

@@ -23,6 +23,10 @@ class PrintArchive(Base):
     cost_center_id: Mapped[int | None] = mapped_column(
         ForeignKey("cost_centers.id", ondelete="SET NULL"), nullable=True
     )
+    # Plan row of a project "job" this print was made for (job progress tracking)
+    plan_item_id: Mapped[int | None] = mapped_column(
+        ForeignKey("project_plan_items.id", ondelete="SET NULL"), nullable=True, index=True
+    )
 
     # File info
     filename: Mapped[str] = mapped_column(String(255))

@@ -18,15 +18,30 @@ import { useQueryClient } from '@tanstack/react-query';
 import { api, type SliceJobProgress, type SliceJobState, type SliceJobStatus } from '../api/client';
 import { useToast } from './ToastContext';
 import { AlertModal } from '../components/AlertModal';
+import { PrintModal } from '../components/PrintModal';
+
+export interface TrackJobOptions {
+  /** Open the add-to-queue dialog for the sliced result once the job completes. */
+  queueAfterSlice?: boolean;
+}
 
 interface TrackedJob {
   id: number;
   kind: 'libraryFile' | 'archive';
   sourceName: string;
+  queueAfterSlice?: boolean;
+}
+
+/** The sliced result waiting to be added to the print queue. */
+interface QueueTarget {
+  libraryFileId?: number;
+  archiveId?: number;
+  name: string;
 }
 
 interface SliceJobTrackerContextValue {
-  trackJob: (id: number, kind: 'libraryFile' | 'archive', sourceName: string) => void;
+  trackJob: (id: number, kind: 'libraryFile' | 'archive', sourceName: string, options?: TrackJobOptions) => void;
+  activeJobs: TrackedJob[];
 }
 
 const SliceJobTrackerContext = createContext<SliceJobTrackerContextValue | null>(null);
@@ -71,6 +86,10 @@ export function SliceJobTrackerProvider({ children }: { children: ReactNode }) {
   // slicer's reason (e.g. "objects over the bed boundary") is actionable and
   // a 3s toast hides it before it can be read.
   const [sliceError, setSliceError] = useState<{ name: string; detail: string } | null>(null);
+  // Sliced result to queue, set when a job tracked with `queueAfterSlice`
+  // completes. Opens the regular add-to-queue dialog so printer, AMS
+  // mapping and schedule are picked exactly as for any other file.
+  const [queueTarget, setQueueTarget] = useState<QueueTarget | null>(null);
 
   // Stable mutable ref so the polling effect can read the current list
   // without re-subscribing every time it changes.
@@ -154,8 +173,11 @@ export function SliceJobTrackerProvider({ children }: { children: ReactNode }) {
   );
 
   const trackJob = useCallback(
-    (id: number, kind: 'libraryFile' | 'archive', sourceName: string) => {
-      setActiveJobs((prev) => (prev.some((j) => j.id === id) ? prev : [...prev, { id, kind, sourceName }]));
+    (id: number, kind: 'libraryFile' | 'archive', sourceName: string, options?: TrackJobOptions) => {
+      const queueAfterSlice = options?.queueAfterSlice === true;
+      setActiveJobs((prev) =>
+        prev.some((j) => j.id === id) ? prev : [...prev, { id, kind, sourceName, queueAfterSlice }],
+      );
       // Re-tracking an id re-arms it. Ids come from a database sequence so
       // this can't collide in practice; clearing here is what keeps the set
       // from being a permanent record of every job the session ever saw.
@@ -212,6 +234,14 @@ export function SliceJobTrackerProvider({ children }: { children: ReactNode }) {
             ),
             'warning',
           );
+        }
+        if (job.queueAfterSlice && state.result) {
+          const result = state.result;
+          if ('library_file_id' in result && typeof result.library_file_id === 'number') {
+            setQueueTarget({ libraryFileId: result.library_file_id, name: result.name });
+          } else if ('archive_id' in result && typeof result.archive_id === 'number') {
+            setQueueTarget({ archiveId: result.archive_id, name: result.name });
+          }
         }
       } else if (state.status === 'failed') {
         setSliceError({
@@ -289,7 +319,7 @@ export function SliceJobTrackerProvider({ children }: { children: ReactNode }) {
   }, [activeJobs.length, renderProgressToast]);
 
   return (
-    <SliceJobTrackerContext.Provider value={{ trackJob }}>
+    <SliceJobTrackerContext.Provider value={{ trackJob, activeJobs }}>
       {children}
       {sliceError && (
         <AlertModal
@@ -297,6 +327,19 @@ export function SliceJobTrackerProvider({ children }: { children: ReactNode }) {
           subtitle={sliceError.name}
           message={sliceError.detail}
           onClose={() => setSliceError(null)}
+        />
+      )}
+      {queueTarget && (
+        <PrintModal
+          mode="create"
+          libraryFileId={queueTarget.libraryFileId}
+          archiveId={queueTarget.archiveId}
+          archiveName={queueTarget.name}
+          onClose={() => setQueueTarget(null)}
+          onSuccess={() => {
+            setQueueTarget(null);
+            queryClient.invalidateQueries({ queryKey: ['queue'] });
+          }}
         />
       )}
     </SliceJobTrackerContext.Provider>

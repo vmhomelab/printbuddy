@@ -247,4 +247,3 @@ async def test_a_concurrent_insert_is_written_as_an_update(db_session, printer_f
         .all()
     )
     assert [(r.tray_id, r.preset_id, r.preset_name) for r in rows] == [(1, "P0802d25", "Winkle ABS Normal")]
-

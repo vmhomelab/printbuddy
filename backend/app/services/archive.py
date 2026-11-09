@@ -1315,6 +1315,7 @@ class ArchiveService:
         slicer_ams_mapping_printer_id: int | None = None,
         update_archive_id: int | None = None,
         started_at: datetime | None = None,
+        plan_item_id: int | None = None,
     ) -> PrintArchive | None:
         """Archive a 3MF file with metadata.
 
@@ -1332,6 +1333,9 @@ class ArchiveService:
             subtask_id: MQTT-provided task identifier (optional). Used to match an
                 existing archive across a backend restart mid-print so the
                 original row can be resumed instead of cancelled (#972).
+            plan_item_id: Project plan row ("job" plate) this print belongs to
+                (optional, set by the scheduler for queue items created from a
+                project plan).
             prefer_filename_for_name: When True, use the uploaded filename stem as the
                 archive's display name even if the 3MF embeds a `print_name` in its
                 metadata. Used by virtual-printer flows so users who rename a job in
@@ -1611,6 +1615,7 @@ class ArchiveService:
             project_id=project_id,
             library_file_id=library_file_id,
             cost_center_id=cost_center_id,
+            plan_item_id=plan_item_id,
             subtask_id=subtask_id,
             plate_id=plate_id,
         )

@@ -486,3 +486,200 @@ def test_prusalink_start_print_uses_explicit_storage_namespace(monkeypatch):
     assert client.start_print("nested/Part A.bgcode", storage="local") is True
 
     assert posted_paths == ["POST api/v1/files/local/nested/Part%20A.bgcode"]
+
+
+def _scripted_prusalink_client(monkeypatch, samples):
+    """Client whose polls replay (status, job_detail) pairs; job_detail None = HTTP 204."""
+    starts: list[dict] = []
+    completions: list[dict] = []
+    client = PrusaLinkPrinterClient(
+        base_url="http://prusa.local",
+        password="secret",
+        on_print_start=starts.append,
+        on_print_complete=completions.append,
+    )
+    queue: list = []
+    for status, job_detail in samples:
+        queue.append(status)
+        queue.append(job_detail)
+    responses = iter(queue)
+
+    def fake_get(path):
+        value = next(responses)
+        if path == "api/v1/job" and value is None:
+            raise httpx.HTTPStatusError(
+                "no job",
+                request=httpx.Request("GET", "http://prusa.local/api/v1/job"),
+                response=httpx.Response(204),
+            )
+        return value
+
+    monkeypatch.setattr(client, "_get", fake_get)
+    return client, starts, completions
+
+
+_PRINTING_SAMPLE = (
+    {"printer": {"state": "PRINTING"}, "job": {"id": 7, "progress": 55.0, "time_remaining": 600}},
+    {"id": 7, "state": "PRINTING", "progress": 55.0, "file": {"display_name": "core-one-part.bgcode"}},
+)
+
+
+def test_prusalink_stopped_job_emits_stopped_not_failed(monkeypatch):
+    """PB-2: a STOPPED job is a stop, so the print-stopped notification must fire."""
+    client, _starts, completions = _scripted_prusalink_client(
+        monkeypatch,
+        [
+            _PRINTING_SAMPLE,
+            (
+                {"printer": {"state": "STOPPED"}, "job": {"id": 7, "progress": 55.0}},
+                {"id": 7, "state": "STOPPED", "progress": 55.0, "file": {"display_name": "core-one-part.bgcode"}},
+            ),
+            ({"printer": {"state": "IDLE"}, "job": {}}, None),
+        ],
+    )
+
+    for _ in range(3):
+        assert client.request_status_update() is True
+
+    assert len(completions) == 1
+    assert completions[0]["status"] == "stopped"
+    assert completions[0]["filename"] == "core-one-part.bgcode"
+
+
+def test_prusalink_maintenance_bed_move_after_stop_does_not_fake_a_new_print(monkeypatch):
+    """PB-2: CORE One maintenance reports BUSY while moving the bed after the stop."""
+    client, starts, completions = _scripted_prusalink_client(
+        monkeypatch,
+        [
+            _PRINTING_SAMPLE,
+            (
+                {"printer": {"state": "STOPPED"}, "job": {"id": 7, "progress": 55.0}},
+                {"id": 7, "state": "STOPPED", "progress": 55.0},
+            ),
+            ({"printer": {"state": "BUSY"}, "job": {}}, None),
+            ({"printer": {"state": "IDLE"}, "job": {}}, None),
+        ],
+    )
+
+    for _ in range(4):
+        client.request_status_update()
+
+    assert starts == []
+    assert [c["status"] for c in completions] == ["stopped"]
+
+
+def test_prusalink_stop_missed_between_polls_still_reports_stopped(monkeypatch):
+    """PB-2: if the short STOPPED state is missed, PRINTING -> BUSY -> IDLE still ends as stopped."""
+    client, starts, completions = _scripted_prusalink_client(
+        monkeypatch,
+        [
+            _PRINTING_SAMPLE,
+            ({"printer": {"state": "BUSY"}, "job": {}}, None),
+            ({"printer": {"state": "IDLE"}, "job": {}}, None),
+        ],
+    )
+
+    for _ in range(3):
+        client.request_status_update()
+
+    assert starts == []
+    assert [c["status"] for c in completions] == ["stopped"]
+    assert completions[0]["filename"] == "core-one-part.bgcode"
+
+
+def test_prusalink_maintenance_without_print_emits_no_lifecycle_events(monkeypatch):
+    client, starts, completions = _scripted_prusalink_client(
+        monkeypatch,
+        [
+            ({"printer": {"state": "IDLE"}, "job": {}}, None),
+            ({"printer": {"state": "BUSY"}, "job": {}}, None),
+            ({"printer": {"state": "IDLE"}, "job": {}}, None),
+        ],
+    )
+
+    for _ in range(3):
+        client.request_status_update()
+
+    assert client.state.state == "IDLE"
+    assert starts == []
+    assert completions == []
+
+
+def test_prusalink_busy_with_active_job_still_counts_as_printing(monkeypatch):
+    client, starts, completions = _scripted_prusalink_client(
+        monkeypatch,
+        [
+            _PRINTING_SAMPLE,
+            ({"printer": {"state": "BUSY"}, "job": {"id": 7, "progress": 56.0}}, None),
+        ],
+    )
+
+    client.request_status_update()
+    client.request_status_update()
+
+    assert client.state.state == "RUNNING"
+    assert starts == []
+    assert completions == []
+
+
+def test_prusalink_error_state_still_reports_failed(monkeypatch):
+    client, _starts, completions = _scripted_prusalink_client(
+        monkeypatch,
+        [
+            _PRINTING_SAMPLE,
+            ({"printer": {"state": "ERROR"}, "job": {"id": 7, "progress": 55.0}}, {"id": 7, "state": "ERROR"}),
+        ],
+    )
+
+    client.request_status_update()
+    client.request_status_update()
+
+    assert [c["status"] for c in completions] == ["failed"]
+
+
+def test_prusalink_pause_and_resume_keep_one_print_lifecycle(monkeypatch):
+    """PB-2: pausing (e.g. for maintenance) must not send a stop and fake a new start on resume."""
+    paused = (
+        {"printer": {"state": "PAUSED"}, "job": {"id": 7, "progress": 55.0}},
+        {"id": 7, "state": "PAUSED", "progress": 55.0},
+    )
+    client, starts, completions = _scripted_prusalink_client(
+        monkeypatch,
+        [
+            _PRINTING_SAMPLE,
+            paused,
+            _PRINTING_SAMPLE,
+            (
+                {"printer": {"state": "FINISHED"}, "job": {"id": 7, "progress": 100.0}},
+                {"id": 7, "state": "FINISHED", "progress": 100.0},
+            ),
+        ],
+    )
+
+    for _ in range(4):
+        client.request_status_update()
+
+    assert starts == []
+    assert [c["status"] for c in completions] == ["completed"]
+
+
+def test_prusalink_stop_while_paused_reports_stopped(monkeypatch):
+    client, _starts, completions = _scripted_prusalink_client(
+        monkeypatch,
+        [
+            _PRINTING_SAMPLE,
+            (
+                {"printer": {"state": "PAUSED"}, "job": {"id": 7, "progress": 55.0}},
+                {"id": 7, "state": "PAUSED", "progress": 55.0},
+            ),
+            (
+                {"printer": {"state": "STOPPED"}, "job": {"id": 7, "progress": 55.0}},
+                {"id": 7, "state": "STOPPED", "progress": 55.0},
+            ),
+        ],
+    )
+
+    for _ in range(3):
+        client.request_status_update()
+
+    assert [c["status"] for c in completions] == ["stopped"]
