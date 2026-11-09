@@ -635,3 +635,51 @@ def test_prusalink_error_state_still_reports_failed(monkeypatch):
     client.request_status_update()
 
     assert [c["status"] for c in completions] == ["failed"]
+
+
+def test_prusalink_pause_and_resume_keep_one_print_lifecycle(monkeypatch):
+    """PB-2: pausing (e.g. for maintenance) must not send a stop and fake a new start on resume."""
+    paused = (
+        {"printer": {"state": "PAUSED"}, "job": {"id": 7, "progress": 55.0}},
+        {"id": 7, "state": "PAUSED", "progress": 55.0},
+    )
+    client, starts, completions = _scripted_prusalink_client(
+        monkeypatch,
+        [
+            _PRINTING_SAMPLE,
+            paused,
+            _PRINTING_SAMPLE,
+            (
+                {"printer": {"state": "FINISHED"}, "job": {"id": 7, "progress": 100.0}},
+                {"id": 7, "state": "FINISHED", "progress": 100.0},
+            ),
+        ],
+    )
+
+    for _ in range(4):
+        client.request_status_update()
+
+    assert starts == []
+    assert [c["status"] for c in completions] == ["completed"]
+
+
+def test_prusalink_stop_while_paused_reports_stopped(monkeypatch):
+    client, _starts, completions = _scripted_prusalink_client(
+        monkeypatch,
+        [
+            _PRINTING_SAMPLE,
+            (
+                {"printer": {"state": "PAUSED"}, "job": {"id": 7, "progress": 55.0}},
+                {"id": 7, "state": "PAUSED", "progress": 55.0},
+            ),
+            (
+                {"printer": {"state": "STOPPED"}, "job": {"id": 7, "progress": 55.0}},
+                {"id": 7, "state": "STOPPED", "progress": 55.0},
+            ),
+        ],
+    )
+
+    for _ in range(3):
+        client.request_status_update()
+
+    assert [c["status"] for c in completions] == ["stopped"]

@@ -218,9 +218,10 @@ class PrusaLinkPrinterClient(PolledLifecycleMixin):
     explicitly asks for it.
     """
 
-    # PrusaLink has always treated only RUNNING as an active job here, so a
-    # pause ends the lifecycle and a resume starts a new one.
-    LIFECYCLE_ACTIVE_STATES = frozenset({"RUNNING", "PRINTING"})
+    # A paused job is still the same print: pausing must not end the lifecycle
+    # (and send a print-stopped notification), resuming must not start a new
+    # one (PB-2).
+    LIFECYCLE_ACTIVE_STATES = frozenset({"RUNNING", "PAUSE"})
 
     def __init__(
         self,

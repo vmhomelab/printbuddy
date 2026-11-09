@@ -4195,6 +4195,12 @@ async def on_print_running_observed(printer_id: int, data: dict):
     await _capture_timelapse_baseline_at_start(printer, printer_id, logger)
 
 
+# Statuses that end a print: they get an archive completed_at timestamp and
+# raise the plate-clear gate. "stopped" comes from polled providers
+# (PrusaLink/OctoPrint) and needs both, like "aborted" (PB-2).
+TERMINAL_PRINT_STATUSES = ("completed", "failed", "aborted", "cancelled", "stopped")
+
+
 async def on_print_complete(printer_id: int, data: dict):
     """Handle print completion - update the archive status."""
     import time
@@ -4254,9 +4260,7 @@ async def on_print_complete(printer_id: int, data: dict):
     # after a touchscreen-abort (#1171). Persisted to DB so the gate survives
     # Auto Off power cycles and Printbuddy restarts.
     _final_status = data.get("status", "completed")
-    # "stopped" comes from polled providers (PrusaLink/OctoPrint) and can leave
-    # a partial print on the bed just like "aborted" (PB-2).
-    if _final_status in ("completed", "failed", "aborted", "cancelled", "stopped"):
+    if _final_status in TERMINAL_PRINT_STATUSES:
         printer_manager.set_awaiting_plate_clear(printer_id, True)
 
     # MQTT relay - publish print complete
@@ -4845,9 +4849,7 @@ async def on_print_complete(printer_id: int, data: dict):
             await service.update_archive_status(
                 archive_id,
                 status=status,
-                completed_at=(
-                    datetime.now(timezone.utc) if status in ("completed", "failed", "aborted", "cancelled") else None
-                ),
+                completed_at=(datetime.now(timezone.utc) if status in TERMINAL_PRINT_STATUSES else None),
                 failure_reason=failure_reason,
             )
             logger.info(
