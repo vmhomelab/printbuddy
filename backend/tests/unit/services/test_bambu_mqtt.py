@@ -4223,6 +4223,73 @@ class TestVtTrayNormalization:
         assert stored[0]["tray_type"] == "ABS"
 
 
+    # The P1S full status (pushall) for a configured external spool, and the
+    # incremental push it sent next after Printbuddy configured the slot.
+    P1S_EXTERNAL = {
+        "id": "254",
+        "tag_uid": "0000000000000000",
+        "tray_info_idx": "P0802d25",
+        "tray_type": "ABS",
+        "tray_sub_brands": "",
+        "tray_color": "000000FF",
+        "nozzle_temp_max": "260",
+        "nozzle_temp_min": "240",
+        "tray_uuid": "00000000000000000000000000000000",
+    }
+
+    def test_a_partial_external_push_keeps_the_slot_configured(self, mqtt_client):
+        """An incremental push carries only the changed fields of the slot: it
+        must not wipe its type, filament id and colour (the slot read as empty
+        and the UI showed "assigned, not configured yet" until a reload)."""
+        mqtt_client._process_message({"print": {"command": "push_status", "vt_tray": dict(self.P1S_EXTERNAL)}})
+        mqtt_client._process_message({"print": {"command": "push_status", "vt_tray": {"id": "254", "nozzle_temp_max": "270"}}})
+
+        (slot,) = mqtt_client.state.raw_data["vt_tray"]
+        assert slot["tray_type"] == "ABS"
+        assert slot["tray_info_idx"] == "P0802d25"
+        assert slot["tray_color"] == "000000FF"
+        assert slot["nozzle_temp_max"] == "270"
+
+    def test_a_cleared_external_slot_still_clears(self, mqtt_client):
+        mqtt_client._process_message({"print": {"command": "push_status", "vt_tray": dict(self.P1S_EXTERNAL)}})
+        cleared = {"id": "254", "tray_type": "", "tray_info_idx": "", "tray_color": "", "tag_uid": "0000000000000000"}
+        mqtt_client._process_message({"print": {"command": "push_status", "vt_tray": cleared}})
+
+        (slot,) = mqtt_client.state.raw_data["vt_tray"]
+        assert slot["tray_type"] == ""
+        assert slot["tray_info_idx"] == ""
+
+
+class TestMergeVtTray:
+    """merge_vt_tray: incremental external-slot pushes update the stored slot."""
+
+    def test_entries_merge_by_id(self):
+        from backend.app.services.bambu_mqtt import merge_vt_tray
+
+        stored = [{"id": "254", "tray_type": "PLA", "tray_color": "FF0000FF"}, {"id": "255", "tray_type": "PETG"}]
+        assert merge_vt_tray(stored, [{"id": "255", "tray_color": "00FF00FF"}]) == [
+            {"id": "255", "tray_type": "PETG", "tray_color": "00FF00FF"}
+        ]
+
+    def test_an_entry_without_id_updates_the_only_slot(self):
+        from backend.app.services.bambu_mqtt import merge_vt_tray
+
+        assert merge_vt_tray([{"id": "254", "tray_type": "ABS"}], [{"remain": 50}]) == [
+            {"id": "254", "tray_type": "ABS", "remain": 50}
+        ]
+
+    def test_nothing_stored_takes_the_push_as_is(self):
+        from backend.app.services.bambu_mqtt import merge_vt_tray
+
+        assert merge_vt_tray(None, [{"id": "254", "tray_type": "ABS"}]) == [{"id": "254", "tray_type": "ABS"}]
+
+    def test_an_unknown_id_is_taken_as_is(self):
+        from backend.app.services.bambu_mqtt import merge_vt_tray
+
+        assert merge_vt_tray([{"id": "254", "tray_type": "ABS"}], [{"id": "255", "tray_type": "TPU"}]) == [
+            {"id": "255", "tray_type": "TPU"}
+        ]
+
 class TestSendDryingCommand:
     """Tests for send_drying_command MQTT payload construction."""
 

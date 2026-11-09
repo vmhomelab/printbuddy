@@ -1338,6 +1338,36 @@ _END_OF_PRINT_PROBE_MAX_FRAMES = 400
 _END_OF_PRINT_PROBE_CLOSING_STATES = frozenset({"FINISH", "FAILED", "IDLE", "PREPARE"})
 
 
+
+def merge_vt_tray(existing: object, incoming: object) -> object:
+    """The external spool slots after an MQTT push, merged into what is known.
+
+    A full status (pushall) carries every field of the external slot, but an
+    incremental push carries only the fields that changed: after a slot is
+    configured, the P1S sent ``{"id": "254", "nozzle_temp_max": "270", ...}``
+    on its own. Stored as the slot, that wiped its type, filament id and
+    colour, so the slot read as empty and the UI showed "assigned, not
+    configured yet" until the next full status. Each incoming entry updates the
+    stored entry with the same id; an entry without an id updates the only
+    stored one. A cleared slot still clears: the printer sends its emptied
+    fields explicitly.
+    """
+    if not isinstance(incoming, list) or not isinstance(existing, list):
+        return incoming
+    stored = [entry for entry in existing if isinstance(entry, dict)]
+    by_id = {str(entry["id"]): entry for entry in stored if "id" in entry}
+    merged = []
+    for entry in incoming:
+        if not isinstance(entry, dict):
+            merged.append(entry)
+            continue
+        if "id" in entry:
+            previous = by_id.get(str(entry["id"]))
+        else:
+            previous = stored[0] if len(stored) == 1 else None
+        merged.append({**previous, **entry} if previous else entry)
+    return merged
+
 class BambuMQTTClient:
     """MQTT client for Bambu Lab printer communication."""
 
@@ -2590,7 +2620,7 @@ class BambuMQTTClient:
                 else:
                     if isinstance(vt_tray, dict):
                         vt_tray = [vt_tray]
-                    self.state.raw_data["vt_tray"] = vt_tray
+                    self.state.raw_data["vt_tray"] = merge_vt_tray(existing, vt_tray)
 
             # The regular AMS change-hash (in _handle_ams_data) only sees AMS
             # units, and _handle_ams_data runs before this block — so a change
