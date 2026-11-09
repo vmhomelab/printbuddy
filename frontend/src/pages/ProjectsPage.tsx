@@ -67,6 +67,7 @@ export function ProjectModal({ project, onClose, onSave, isLoading, currencySymb
   const [priority, setPriority] = useState((project as ProjectListItem & { priority?: string })?.priority || 'normal');
   const [budget, setBudget] = useState(project?.budget?.toString() || '');
   const [url, setUrl] = useState(project?.url || '');
+  const [orderNumber, setOrderNumber] = useState(project?.order_number || '');
   const [urlError, setUrlError] = useState<string | null>(null);
   const queryClient = useQueryClient();
   const [coverImageFilename, setCoverImageFilename] = useState(project?.cover_image_filename || null);
@@ -128,6 +129,7 @@ export function ProjectModal({ project, onClose, onSave, isLoading, currencySymb
       // http(s) prefix validator. Use undefined for create (omit) and null for
       // edit-with-cleared-value.
       url: project ? (trimmedUrl || null) : (trimmedUrl || undefined),
+      order_number: project ? (orderNumber.trim() || null) : (orderNumber.trim() || undefined),
       ...(project && { status }),
     });
   };
@@ -166,6 +168,21 @@ export function ProjectModal({ project, onClose, onSave, isLoading, currencySymb
               className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-3 py-2 text-white placeholder-bambu-gray focus:outline-none focus:border-bambu-green resize-none"
               placeholder={t('projects.descriptionPlaceholder')}
               rows={2}
+            />
+          </div>
+
+          {/* Order / tracking number (e.g. Etsy order) for print jobs */}
+          <div>
+            <label className="block text-sm font-medium text-white mb-1">
+              {t('projects.orderNumberLabel')}
+            </label>
+            <input
+              type="text"
+              value={orderNumber}
+              onChange={(e) => setOrderNumber(e.target.value)}
+              className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-3 py-2 text-white placeholder-bambu-gray focus:outline-none focus:border-bambu-green"
+              placeholder={t('projects.orderNumberPlaceholder')}
+              maxLength={100}
             />
           </div>
 
@@ -498,6 +515,10 @@ function ProjectCard({ project, onClick, onEdit, onDelete, hasPermission, t }: P
   const partsProgressPercent = project.target_parts_count
     ? Math.round((project.completed_count / project.target_parts_count) * 100)
     : 0;
+  // Job plan progress: completed plates / planned plates
+  const planTotal = project.plan_total_plates ?? 0;
+  const planCompleted = project.plan_completed_plates ?? 0;
+  const planProgressPercent = planTotal > 0 ? Math.round((planCompleted / planTotal) * 100) : 0;
   const isCompleted = project.status === 'completed';
   const isArchived = project.status === 'archived';
   const [showActions, setShowActions] = useState(false);
@@ -562,7 +583,20 @@ function ProjectCard({ project, onClick, onEdit, onDelete, hasPermission, t }: P
                     <ExternalLink className="w-3.5 h-3.5" />
                   </a>
                 )}
-                {project.target_parts_count ? (
+                {project.order_number && (
+                  <span className="text-xs px-2 py-0.5 rounded-full whitespace-nowrap bg-bambu-dark text-bambu-gray-light" title={t('projects.orderNumberLabel')}>
+                    #{project.order_number}
+                  </span>
+                )}
+                {planTotal > 0 ? (
+                  <span className={`text-xs px-2 py-0.5 rounded-full whitespace-nowrap font-medium ${
+                    planProgressPercent >= 100
+                      ? 'bg-bambu-green/20 text-bambu-green'
+                      : 'bg-bambu-dark text-bambu-gray'
+                  }`}>
+                    {planCompleted}/{planTotal} {t('projects.plates')}
+                  </span>
+                ) : project.target_parts_count ? (
                   <span className={`text-xs px-2 py-0.5 rounded-full whitespace-nowrap font-medium ${
                     partsProgressPercent >= 100
                       ? 'bg-bambu-green/20 text-bambu-green'
@@ -688,6 +722,27 @@ function ProjectCard({ project, onClick, onEdit, onDelete, hasPermission, t }: P
 
         {/* Progress section - show for all projects */}
         <div className="mb-4">
+          {planTotal > 0 && (
+            <div className="mb-3">
+              <div className="flex items-center justify-between text-xs mb-1">
+                <span className="text-bambu-gray">{t('projects.jobProgress')}</span>
+                <span className={planProgressPercent >= 100 ? 'text-bambu-green font-medium' : 'text-white'}>
+                  {planCompleted} / {planTotal} · {planProgressPercent}%
+                </span>
+              </div>
+              <div className="h-2 bg-bambu-dark/80 rounded-full overflow-hidden backdrop-blur-sm">
+                <div
+                  className="h-full transition-all duration-500 ease-out rounded-full"
+                  style={{
+                    width: `${Math.min(planProgressPercent, 100)}%`,
+                    background: planProgressPercent >= 100
+                      ? 'linear-gradient(90deg, #22c55e, #4ade80)'
+                      : `linear-gradient(90deg, ${project.color || '#6b7280'}, ${project.color || '#6b7280'}cc)`,
+                  }}
+                />
+              </div>
+            </div>
+          )}
           {(project.target_count || project.target_parts_count) ? (
             <div className="space-y-3">
               {/* Plates progress */}

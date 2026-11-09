@@ -832,6 +832,17 @@ export interface ProjectStats {
   bom_total_items: number;
   bom_completed_items: number;
   bom_cost: number;
+  // Planned totals: from the job plan, or from linked folder files when there is no plan
+  planned_source?: 'plan' | 'files' | null;
+  planned_print_time_hours?: number;
+  planned_filament_grams?: number;
+  plan_total_plates?: number;
+  plan_completed_plates?: number;
+  plan_queued_plates?: number;
+  plan_printing_plates?: number;
+  plan_failed_plates?: number;
+  plan_remaining_plates?: number;
+  plan_progress_percent?: number | null;
 }
 
 export interface ProjectChildPreview {
@@ -866,6 +877,7 @@ export interface Project {
   stats?: ProjectStats;
   url: string | null;  // External link rendered next to project name on the card (#1155)
   cover_image_filename: string | null;  // Filename within project attachments dir (#1155)
+  order_number?: string | null;  // External order / tracking number (e.g. Etsy)
 }
 
 export interface ProjectAttachment {
@@ -903,6 +915,9 @@ export interface ProjectListItem {
   archives: ArchivePreview[];
   url: string | null;  // #1155
   cover_image_filename: string | null;  // #1155
+  order_number?: string | null;
+  plan_total_plates?: number;
+  plan_completed_plates?: number;
 }
 
 export interface ProjectCreate {
@@ -918,6 +933,7 @@ export interface ProjectCreate {
   budget?: number | null;
   parent_id?: number;
   url?: string | null;  // #1155
+  order_number?: string | null;
 }
 
 export interface ProjectUpdate {
@@ -934,6 +950,110 @@ export interface ProjectUpdate {
   budget?: number | null;
   parent_id?: number;
   url?: string | null;  // #1155 — explicit null clears the URL
+  order_number?: string | null;  // explicit null clears it
+}
+
+// Project plan ("Job") — every plate a project needs
+export interface PlanFilament {
+  slot_id: number;
+  type: string;
+  color: string;  // #RRGGBB
+  color_name?: string | null;
+  used_grams?: number | null;  // per copy
+  original_type?: string | null;  // as sliced
+  original_color?: string | null;
+}
+
+export interface PlanItemProgress {
+  completed: number;
+  printing: number;
+  queued: number;
+  failed: number;
+  remaining: number;  // copies still to be queued
+  percent: number;
+}
+
+export interface PlanItem {
+  id: number;
+  project_id: number;
+  library_file_id: number | null;
+  library_file_name: string | null;
+  library_file_missing: boolean;
+  is_sliced: boolean;
+  thumbnail_url: string | null;
+  plate_id: number | null;
+  name: string;
+  group_label: string | null;
+  quantity: number;
+  filaments: PlanFilament[];
+  est_print_time_seconds: number | null;
+  est_filament_grams: number | null;
+  printer_id: number | null;
+  printer_name: string | null;
+  target_model: string | null;
+  notes: string | null;
+  sort_order: number;
+  progress: PlanItemProgress;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PlanItemCreate {
+  library_file_id?: number | null;
+  plate_id?: number | null;
+  name?: string;
+  group_label?: string | null;
+  quantity?: number;
+  filaments?: PlanFilament[];
+  est_print_time_seconds?: number | null;
+  est_filament_grams?: number | null;
+  printer_id?: number | null;
+  target_model?: string | null;
+  notes?: string | null;
+}
+
+export interface PlanItemUpdate {
+  plate_id?: number | null;
+  name?: string;
+  group_label?: string | null;
+  quantity?: number;
+  filaments?: PlanFilament[];
+  est_print_time_seconds?: number | null;
+  est_filament_grams?: number | null;
+  printer_id?: number | null;  // 0 / null clears
+  target_model?: string | null;  // '' / null clears
+  notes?: string | null;
+  sort_order?: number;
+}
+
+export interface PlanMaterialTotal {
+  type: string;
+  color: string;
+  color_name: string | null;
+  planned_grams: number;
+  completed_grams: number;
+  remaining_grams: number;
+}
+
+export interface PlanSummary {
+  total_plates: number;
+  completed_plates: number;
+  printing_plates: number;
+  queued_plates: number;
+  failed_plates: number;
+  remaining_plates: number;
+  progress_percent: number | null;
+  planned_print_time_seconds: number;
+  remaining_print_time_seconds: number;
+  planned_filament_grams: number;
+  remaining_filament_grams: number;
+  unestimated_items: number;
+  materials: PlanMaterialTotal[];
+}
+
+export interface PlanEnqueueResponse {
+  queued_total: number;
+  results: Array<{ plan_item_id: number; queued: number; error: string | null }>;
 }
 
 // BOM Types - Tracks sourced/purchased parts (hardware, electronics, etc.)
@@ -5912,6 +6032,34 @@ export const api = {
   deleteBOMItem: (projectId: number, itemId: number) =>
     request<{ status: string; message: string }>(`/projects/${projectId}/bom/${itemId}`, {
       method: 'DELETE',
+    }),
+
+  // Project plan ("Job")
+  getProjectPlan: (projectId: number) =>
+    request<PlanItem[]>(`/projects/${projectId}/plan`),
+  getProjectPlanSummary: (projectId: number) =>
+    request<PlanSummary>(`/projects/${projectId}/plan/summary`),
+  createPlanItem: (projectId: number, data: PlanItemCreate) =>
+    request<PlanItem>(`/projects/${projectId}/plan`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  updatePlanItem: (projectId: number, itemId: number, data: PlanItemUpdate) =>
+    request<PlanItem>(`/projects/${projectId}/plan/${itemId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+  deletePlanItem: (projectId: number, itemId: number) =>
+    request<{ message: string }>(`/projects/${projectId}/plan/${itemId}`, { method: 'DELETE' }),
+  reorderPlanItems: (projectId: number, itemIds: number[]) =>
+    request<{ message: string }>(`/projects/${projectId}/plan/reorder`, {
+      method: 'POST',
+      body: JSON.stringify({ item_ids: itemIds }),
+    }),
+  enqueueProjectPlan: (projectId: number, itemIds?: number[], manualStart = false) =>
+    request<PlanEnqueueResponse>(`/projects/${projectId}/plan/enqueue`, {
+      method: 'POST',
+      body: JSON.stringify({ item_ids: itemIds ?? null, manual_start: manualStart }),
     }),
 
   // Templates
