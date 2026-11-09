@@ -332,7 +332,23 @@ async def create_project(
         url=data.url,
         order_number=(data.order_number or "").strip() or None,
     )
+
+    # Optional File Manager folders to link right away (validated before insert)
+    folders: list[LibraryFolder] = []
+    if data.folder_ids:
+        folder_ids = list(dict.fromkeys(data.folder_ids))
+        folder_result = await db.execute(select(LibraryFolder).where(LibraryFolder.id.in_(folder_ids)))
+        folders = list(folder_result.scalars().all())
+        if len(folders) != len(folder_ids):
+            raise HTTPException(status_code=400, detail="Folder not found")
+
     db.add(project)
+    await db.flush()
+    for folder in folders:
+        # A folder links to one project or archive at a time (same as the
+        # File Manager's link dialog) — linking moves it to this project.
+        folder.project_id = project.id
+        folder.archive_id = None
     await db.flush()
     await db.refresh(project)
 

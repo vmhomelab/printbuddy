@@ -3225,6 +3225,11 @@ export default {
 
   // Projects
   projects: {
+    linkFolderLabel: 'Lier un dossier du gestionnaire de fichiers (facultatif)',
+    linkFolderNone: 'Aucun dossier',
+    linkFolderLinkedTo: 'lié à {{name}}',
+    linkFolderMoveHint: 'Ce dossier est lié à « {{name}} » et sera déplacé vers le nouveau projet.',
+    linkFolderHint: 'Ses fichiers apparaissent dans le projet et peuvent être ajoutés au plan du job. D’autres dossiers peuvent être liés plus tard dans le gestionnaire de fichiers.',
     orderNumberLabel: 'N° de commande / suivi',
     orderNumberPlaceholder: 'ex. commande Etsy 3141592653',
     jobProgress: 'Progression du job',
@@ -6009,7 +6014,9 @@ export default {
     notes: 'Remarques',
     searchFiles: 'Rechercher des fichiers…',
     projectFiles: 'Fichiers du projet ({{count}})',
-    allLibraryFiles: 'Tous les fichiers de la bibliothèque',
+    otherFiles: 'Autres fichiers (hors projet)',
+    noProjectFiles: 'Aucun fichier dans les dossiers liés à ce projet pour l’instant.',
+    showOtherFiles: 'Afficher les autres fichiers de la bibliothèque',
     noFiles: 'Aucun fichier trouvé.',
     notSlicedShort: 'non tranché',
     pickFileHint: 'Choisissez un fichier à gauche.',

@@ -3236,6 +3236,11 @@ export default {
 
   // Projects
   projects: {
+    linkFolderLabel: 'ファイルマネージャーのフォルダーをリンク（任意）',
+    linkFolderNone: 'フォルダーなし',
+    linkFolderLinkedTo: '{{name}} にリンク済み',
+    linkFolderMoveHint: 'このフォルダーは「{{name}}」にリンクされており、新しいプロジェクトに移動されます。',
+    linkFolderHint: 'ファイルはプロジェクトに表示され、ジョブ計画に追加できます。他のフォルダーは後でファイルマネージャーからリンクできます。',
     orderNumberLabel: '注文番号 / 追跡番号',
     orderNumberPlaceholder: '例: Etsy 注文 3141592653',
     jobProgress: 'ジョブの進捗',
@@ -6020,7 +6025,9 @@ export default {
     notes: 'メモ',
     searchFiles: 'ファイルを検索…',
     projectFiles: 'プロジェクトのファイル（{{count}}）',
-    allLibraryFiles: 'ライブラリの全ファイル',
+    otherFiles: 'その他のファイル（プロジェクト外）',
+    noProjectFiles: 'このプロジェクトにリンクされたフォルダーにはまだファイルがありません。',
+    showOtherFiles: '他のライブラリファイルを表示',
     noFiles: 'ファイルが見つかりません。',
     notSlicedShort: '未スライス',
     pickFileHint: '左側でファイルを選択してください。',

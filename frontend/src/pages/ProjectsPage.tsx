@@ -25,7 +25,7 @@ import {
   X,
 } from 'lucide-react';
 import { api } from '../api/client';
-import type { ProjectListItem, ProjectCreate, ProjectUpdate, ProjectImport, Permission } from '../api/client';
+import type { ProjectListItem, ProjectCreate, ProjectUpdate, ProjectImport, Permission, LibraryFolderTree } from '../api/client';
 import { Button } from '../components/Button';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { useToast } from '../contexts/ToastContext';
@@ -45,6 +45,11 @@ const PROJECT_COLORS = [
 ];
 
 type TFunction = (key: string, options?: Record<string, unknown>) => string;
+
+// Flatten the File Manager folder tree into indented select options
+function flattenFolderTree(folders: LibraryFolderTree[], depth = 0): Array<{ folder: LibraryFolderTree; depth: number }> {
+  return folders.flatMap((folder) => [{ folder, depth }, ...flattenFolderTree(folder.children || [], depth + 1)]);
+}
 
 interface ProjectModalProps {
   project?: ProjectListItem;
@@ -68,6 +73,15 @@ export function ProjectModal({ project, onClose, onSave, isLoading, currencySymb
   const [budget, setBudget] = useState(project?.budget?.toString() || '');
   const [url, setUrl] = useState(project?.url || '');
   const [orderNumber, setOrderNumber] = useState(project?.order_number || '');
+  // Optional File Manager folder to link when creating a project
+  const [linkFolderId, setLinkFolderId] = useState('');
+  const { data: folderTree } = useQuery({
+    queryKey: ['library-folders'],
+    queryFn: () => api.getLibraryFolders(),
+    enabled: !project,
+  });
+  const folderOptions = flattenFolderTree(folderTree || []);
+  const selectedFolder = folderOptions.find((o) => String(o.folder.id) === linkFolderId)?.folder;
   const [urlError, setUrlError] = useState<string | null>(null);
   const queryClient = useQueryClient();
   const [coverImageFilename, setCoverImageFilename] = useState(project?.cover_image_filename || null);
@@ -130,6 +144,7 @@ export function ProjectModal({ project, onClose, onSave, isLoading, currencySymb
       // edit-with-cleared-value.
       url: project ? (trimmedUrl || null) : (trimmedUrl || undefined),
       order_number: project ? (orderNumber.trim() || null) : (orderNumber.trim() || undefined),
+      ...(!project && linkFolderId && { folder_ids: [Number(linkFolderId)] }),
       ...(project && { status }),
     });
   };
@@ -170,6 +185,36 @@ export function ProjectModal({ project, onClose, onSave, isLoading, currencySymb
               rows={2}
             />
           </div>
+
+          {/* Optional: link a File Manager folder right away (create only;
+              existing projects link folders from the File Manager) */}
+          {!project && (
+            <div>
+              <label className="block text-sm font-medium text-white mb-1" htmlFor="project-link-folder">
+                {t('projects.linkFolderLabel')}
+              </label>
+              <select
+                id="project-link-folder"
+                value={linkFolderId}
+                onChange={(e) => setLinkFolderId(e.target.value)}
+                className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-3 py-2 text-white focus:outline-none focus:border-bambu-green"
+              >
+                <option value="">{t('projects.linkFolderNone')}</option>
+                {folderOptions.map(({ folder, depth }) => (
+                  <option key={folder.id} value={folder.id}>
+                    {`${'\u00A0\u00A0'.repeat(depth)}${depth > 0 ? '└ ' : ''}${folder.name} (${folder.file_count})${
+                      folder.project_name ? ` · ${t('projects.linkFolderLinkedTo', { name: folder.project_name })}` : ''
+                    }`}
+                  </option>
+                ))}
+              </select>
+              {selectedFolder?.project_name ? (
+                <p className="text-xs text-yellow-400 mt-1">{t('projects.linkFolderMoveHint', { name: selectedFolder.project_name })}</p>
+              ) : (
+                <p className="text-xs text-bambu-gray mt-1">{t('projects.linkFolderHint')}</p>
+              )}
+            </div>
+          )}
 
           {/* Order / tracking number (e.g. Etsy order) for print jobs */}
           <div>
@@ -919,8 +964,11 @@ export function ProjectsPage() {
 
   const createMutation = useMutation({
     mutationFn: (data: ProjectCreate) => api.createProject(data),
-    onSuccess: () => {
+    onSuccess: (_project, data) => {
       queryClient.invalidateQueries({ queryKey: ['projects'] });
+      if (data.folder_ids?.length) {
+        queryClient.invalidateQueries({ queryKey: ['library-folders'] });
+      }
       setShowModal(false);
       showToast(t('projects.toast.created'), 'success');
     },

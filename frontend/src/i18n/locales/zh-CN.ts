@@ -3223,6 +3223,11 @@ export default {
 
   // Projects
   projects: {
+    linkFolderLabel: '关联文件管理器文件夹（可选）',
+    linkFolderNone: '不关联文件夹',
+    linkFolderLinkedTo: '已关联到 {{name}}',
+    linkFolderMoveHint: '此文件夹已关联到“{{name}}”，将移至新项目。',
+    linkFolderHint: '其文件会显示在项目中，并可加入作业计划。之后可在文件管理器中关联更多文件夹。',
     orderNumberLabel: '订单号 / 跟踪号',
     orderNumberPlaceholder: '例如 Etsy 订单 3141592653',
     jobProgress: '作业进度',
@@ -6006,7 +6011,9 @@ export default {
     notes: '备注',
     searchFiles: '搜索文件…',
     projectFiles: '项目文件（{{count}}）',
-    allLibraryFiles: '全部文件库文件',
+    otherFiles: '其他文件（不在项目中）',
+    noProjectFiles: '此项目关联的文件夹中还没有文件。',
+    showOtherFiles: '显示其他文件库文件',
     noFiles: '未找到文件。',
     notSlicedShort: '未切片',
     pickFileHint: '请在左侧选择文件。',

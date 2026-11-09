@@ -3238,6 +3238,11 @@ export default {
 
   // Projects
   projects: {
+    linkFolderLabel: 'Link File Manager folder (optional)',
+    linkFolderNone: 'No folder',
+    linkFolderLinkedTo: 'linked to {{name}}',
+    linkFolderMoveHint: 'This folder is linked to "{{name}}" and will be moved to the new project.',
+    linkFolderHint: 'Its files show up in the project and can be added to the job plan. More folders can be linked later in the File Manager.',
     orderNumberLabel: 'Order / tracking number',
     orderNumberPlaceholder: 'e.g. Etsy order 3141592653',
     jobProgress: 'Job progress',
@@ -6033,7 +6038,9 @@ export default {
     notes: 'Notes',
     searchFiles: 'Search files…',
     projectFiles: 'Project files ({{count}})',
-    allLibraryFiles: 'All library files',
+    otherFiles: 'Other files (not in project)',
+    noProjectFiles: 'No files in the folders linked to this project yet.',
+    showOtherFiles: 'Show other library files',
     noFiles: 'No files found.',
     notSlicedShort: 'not sliced',
     pickFileHint: 'Pick a file on the left.',

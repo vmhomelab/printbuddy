@@ -3224,6 +3224,11 @@ export default {
 
   // Projects
   projects: {
+    linkFolderLabel: 'Collega cartella del file manager (facoltativo)',
+    linkFolderNone: 'Nessuna cartella',
+    linkFolderLinkedTo: 'collegata a {{name}}',
+    linkFolderMoveHint: 'Questa cartella è collegata a "{{name}}" e verrà spostata nel nuovo progetto.',
+    linkFolderHint: 'I suoi file compaiono nel progetto e possono essere aggiunti al piano di lavoro. Altre cartelle si possono collegare in seguito dal file manager.',
     orderNumberLabel: 'Numero ordine / tracking',
     orderNumberPlaceholder: 'es. ordine Etsy 3141592653',
     jobProgress: 'Avanzamento del lavoro',
@@ -6008,7 +6013,9 @@ export default {
     notes: 'Note',
     searchFiles: 'Cerca file…',
     projectFiles: 'File del progetto ({{count}})',
-    allLibraryFiles: 'Tutti i file della libreria',
+    otherFiles: 'Altri file (non nel progetto)',
+    noProjectFiles: 'Nessun file nelle cartelle collegate a questo progetto.',
+    showOtherFiles: 'Mostra altri file della libreria',
     noFiles: 'Nessun file trovato.',
     notSlicedShort: 'non slicato',
     pickFileHint: 'Scegli un file a sinistra.',

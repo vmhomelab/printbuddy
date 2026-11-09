@@ -3224,6 +3224,11 @@ export default {
 
   // Projects
   projects: {
+    linkFolderLabel: 'Vincular pasta do gerenciador de arquivos (opcional)',
+    linkFolderNone: 'Nenhuma pasta',
+    linkFolderLinkedTo: 'vinculada a {{name}}',
+    linkFolderMoveHint: 'Esta pasta está vinculada a "{{name}}" e será movida para o novo projeto.',
+    linkFolderHint: 'Os arquivos aparecem no projeto e podem ser adicionados ao plano de trabalho. Outras pastas podem ser vinculadas depois no gerenciador de arquivos.',
     orderNumberLabel: 'Número do pedido / rastreio',
     orderNumberPlaceholder: 'ex.: pedido Etsy 3141592653',
     jobProgress: 'Progresso do trabalho',
@@ -6008,7 +6013,9 @@ export default {
     notes: 'Notas',
     searchFiles: 'Pesquisar arquivos…',
     projectFiles: 'Arquivos do projeto ({{count}})',
-    allLibraryFiles: 'Todos os arquivos da biblioteca',
+    otherFiles: 'Outros arquivos (fora do projeto)',
+    noProjectFiles: 'Ainda não há arquivos nas pastas vinculadas a este projeto.',
+    showOtherFiles: 'Mostrar outros arquivos da biblioteca',
     noFiles: 'Nenhum arquivo encontrado.',
     notSlicedShort: 'não fatiado',
     pickFileHint: 'Escolha um arquivo à esquerda.',

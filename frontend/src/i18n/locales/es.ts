@@ -3238,6 +3238,11 @@ export default {
 
   // Projects
   projects: {
+    linkFolderLabel: 'Vincular carpeta del gestor de archivos (opcional)',
+    linkFolderNone: 'Ninguna carpeta',
+    linkFolderLinkedTo: 'vinculada a {{name}}',
+    linkFolderMoveHint: 'Esta carpeta está vinculada a "{{name}}" y se moverá al nuevo proyecto.',
+    linkFolderHint: 'Sus archivos aparecen en el proyecto y pueden añadirse al plan de trabajo. Puedes vincular más carpetas después en el gestor de archivos.',
     orderNumberLabel: 'Número de pedido / seguimiento',
     orderNumberPlaceholder: 'p. ej. pedido de Etsy 3141592653',
     jobProgress: 'Progreso del trabajo',
@@ -6029,7 +6034,9 @@ export default {
     notes: 'Notas',
     searchFiles: 'Buscar archivos…',
     projectFiles: 'Archivos del proyecto ({{count}})',
-    allLibraryFiles: 'Todos los archivos de la biblioteca',
+    otherFiles: 'Otros archivos (fuera del proyecto)',
+    noProjectFiles: 'Todavía no hay archivos en las carpetas vinculadas a este proyecto.',
+    showOtherFiles: 'Mostrar otros archivos de la biblioteca',
     noFiles: 'No se encontraron archivos.',
     notSlicedShort: 'sin laminar',
     pickFileHint: 'Elige un archivo a la izquierda.',

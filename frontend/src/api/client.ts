@@ -934,6 +934,7 @@ export interface ProjectCreate {
   parent_id?: number;
   url?: string | null;  // #1155
   order_number?: string | null;
+  folder_ids?: number[];  // File Manager folders to link right away
 }
 
 export interface ProjectUpdate {

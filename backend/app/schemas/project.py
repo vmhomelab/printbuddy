@@ -34,6 +34,8 @@ class ProjectCreate(BaseModel):
     parent_id: int | None = None  # For sub-projects
     url: str | None = None
     order_number: str | None = None  # External order / tracking number (e.g. Etsy)
+    # File Manager folders to link to the new project right away
+    folder_ids: list[int] | None = None
 
     @field_validator("url")
     @classmethod

@@ -3236,6 +3236,11 @@ export default {
 
   // Projects
   projects: {
+    linkFolderLabel: 'File-Manager-Ordner verknüpfen (optional)',
+    linkFolderNone: 'Kein Ordner',
+    linkFolderLinkedTo: 'verknüpft mit {{name}}',
+    linkFolderMoveHint: 'Dieser Ordner ist mit „{{name}}“ verknüpft und wird ins neue Projekt verschoben.',
+    linkFolderHint: 'Die Dateien erscheinen im Projekt und lassen sich in den Job-Plan übernehmen. Weitere Ordner kannst du später im File Manager verknüpfen.',
     orderNumberLabel: 'Auftrags- / Bestellnummer',
     orderNumberPlaceholder: 'z. B. Etsy-Bestellung 3141592653',
     jobProgress: 'Job-Fortschritt',
@@ -6021,7 +6026,9 @@ export default {
     notes: 'Notizen',
     searchFiles: 'Dateien suchen…',
     projectFiles: 'Projektdateien ({{count}})',
-    allLibraryFiles: 'Alle Bibliotheksdateien',
+    otherFiles: 'Andere Dateien (nicht im Projekt)',
+    noProjectFiles: 'In den verknüpften Ordnern dieses Projekts liegen noch keine Dateien.',
+    showOtherFiles: 'Andere Bibliotheksdateien anzeigen',
     noFiles: 'Keine Dateien gefunden.',
     notSlicedShort: 'nicht geslict',
     pickFileHint: 'Wähle links eine Datei aus.',

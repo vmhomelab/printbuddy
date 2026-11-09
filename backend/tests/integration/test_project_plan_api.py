@@ -371,3 +371,44 @@ async def _check_template_copies_plan(async_client, make_project, lib_file_facto
     job_plan = (await async_client.get(f"/api/v1/projects/{job['id']}/plan")).json()
     assert len(job_plan) == 1
     assert job_plan[0]["progress"]["remaining"] == 6
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_create_project_links_folders(async_client: AsyncClient, lib_file_factory, db_session, test_engine):
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    from backend.app.core.database import get_db
+    from backend.app.main import app
+    from backend.app.models.library import LibraryFolder
+
+    folder = LibraryFolder(name="Desk organizer")
+    db_session.add(folder)
+    await db_session.commit()
+    await lib_file_factory(folder_id=folder.id)
+
+    # Unknown folder → 400 and nothing is created
+    resp = await async_client.post("/api/v1/projects/", json={"name": "Bad", "folder_ids": [folder.id, 99999]})
+    assert resp.status_code == 400
+
+    maker = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def committing_get_db():
+        async with maker() as session:
+            yield session
+            await session.commit()
+
+    previous = app.dependency_overrides[get_db]
+    app.dependency_overrides[get_db] = committing_get_db
+    try:
+        resp = await async_client.post("/api/v1/projects/", json={"name": "Job", "folder_ids": [folder.id]})
+        assert resp.status_code == 200, resp.text
+        project = resp.json()
+        # Linked folder's slice estimate shows up right away
+        assert project["stats"]["planned_source"] == "files"
+        assert project["stats"]["planned_print_time_hours"] == 1.0
+
+        linked = (await async_client.get(f"/api/v1/library/folders/by-project/{project['id']}")).json()
+        assert [f["id"] for f in linked] == [folder.id]
+    finally:
+        app.dependency_overrides[get_db] = previous

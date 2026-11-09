@@ -488,7 +488,9 @@ function AddPlatesModal({
   adding: boolean;
 }) {
   const { t } = useTranslation();
-  const [showAll, setShowAll] = useState(projectFiles.length === 0);
+  // Start with the files of the project's linked folders; the other library
+  // files (not part of the project) are an opt-in second list.
+  const [showAll, setShowAll] = useState(false);
   const [search, setSearch] = useState('');
   const [selectedFile, setSelectedFile] = useState<LibraryFileListItem | null>(null);
   const [selectedPlates, setSelectedPlates] = useState<Set<number>>(new Set());
@@ -510,7 +512,9 @@ function AddPlatesModal({
   });
   const plates: PlateMetadata[] = useMemo(() => platesData?.plates ?? [], [platesData]);
 
-  const files = (showAll ? allFiles : projectFiles).filter((f) => {
+  const projectFileIds = useMemo(() => new Set(projectFiles.map((f) => f.id)), [projectFiles]);
+  const otherFiles = useMemo(() => allFiles.filter((f) => !projectFileIds.has(f.id)), [allFiles, projectFileIds]);
+  const files = (showAll ? otherFiles : projectFiles).filter((f) => {
     const q = search.trim().toLowerCase();
     if (!q) return true;
     return f.filename.toLowerCase().includes(q) || (f.print_name || '').toLowerCase().includes(q);
@@ -594,7 +598,7 @@ function AddPlatesModal({
                 onClick={() => setShowAll(true)}
                 className={`rounded px-2 py-1 ${showAll ? 'bg-bambu-green/20 text-bambu-green' : 'text-bambu-gray hover:text-white'}`}
               >
-                {t('projectPlan.allLibraryFiles')}
+                {t('projectPlan.otherFiles')}
               </button>
             </div>
             <div className="max-h-80 min-h-[10rem] space-y-1 overflow-y-auto rounded border border-bambu-dark-tertiary bg-bambu-dark/50 p-1">
@@ -604,7 +608,16 @@ function AddPlatesModal({
                 </div>
               )}
               {files.length === 0 && !(showAll && allFilesLoading) && (
-                <p className="p-3 text-sm text-bambu-gray">{t('projectPlan.noFiles')}</p>
+                !showAll && projectFiles.length === 0 ? (
+                  <div className="p-3 text-sm text-bambu-gray">
+                    <p>{t('projectPlan.noProjectFiles')}</p>
+                    <button type="button" onClick={() => setShowAll(true)} className="mt-2 text-bambu-green hover:underline">
+                      {t('projectPlan.showOtherFiles')}
+                    </button>
+                  </div>
+                ) : (
+                  <p className="p-3 text-sm text-bambu-gray">{t('projectPlan.noFiles')}</p>
+                )
               )}
               {files.map((file) => (
                 <button

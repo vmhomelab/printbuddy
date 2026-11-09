@@ -157,4 +157,38 @@ describe('ProjectPlanSection', () => {
 
     await waitFor(() => expect(patchBody).toEqual({ printer_id: null, target_model: 'X1C' }));
   });
+
+  it('lists project files first and other library files only on request', async () => {
+    const file = (id: number, filename: string) => ({
+      id, folder_id: id, is_external: false, filename, file_type: '3mf', file_size: 1, thumbnail_path: null,
+      print_count: 0, duplicate_count: 0, created_at: '2026-01-01T00:00:00Z', print_time_seconds: 600,
+      filament_used_grams: 5, filament_type: 'PLA', sliced_for_model: 'P1S', print_name: null,
+    });
+    const projectFile = file(10, 'base.gcode.3mf');
+    server.use(
+      http.get('/api/v1/library/files', () =>
+        HttpResponse.json([projectFile, file(11, 'unrelated.gcode.3mf')]),
+      ),
+    );
+    const user = userEvent.setup();
+    render(
+      <ProjectPlanSection
+        projectId={1}
+        projectFiles={[projectFile] as never}
+        printers={printers}
+        canEdit
+        canQueue
+      />,
+    );
+
+    await user.click((await screen.findAllByRole('button', { name: 'Add plates' }))[0]);
+    const dialog = screen.getByRole('dialog', { name: 'Add plates' });
+    expect(within(dialog).getByText('base')).toBeInTheDocument();
+    expect(within(dialog).queryByText('unrelated')).not.toBeInTheDocument();
+
+    await user.click(within(dialog).getByRole('button', { name: /other files \(not in project\)/i }));
+    expect(await within(dialog).findByText('unrelated')).toBeInTheDocument();
+    // project files are not repeated in the "other" list
+    expect(within(dialog).queryByText('base')).not.toBeInTheDocument();
+  });
 });

@@ -3223,6 +3223,11 @@ export default {
 
   // Projects
   projects: {
+    linkFolderLabel: '連結檔案管理員資料夾（選填）',
+    linkFolderNone: '不連結資料夾',
+    linkFolderLinkedTo: '已連結到 {{name}}',
+    linkFolderMoveHint: '此資料夾已連結到「{{name}}」，將移至新專案。',
+    linkFolderHint: '其檔案會顯示在專案中，並可加入工作計畫。之後可在檔案管理員中連結更多資料夾。',
     orderNumberLabel: '訂單編號 / 追蹤編號',
     orderNumberPlaceholder: '例如 Etsy 訂單 3141592653',
     jobProgress: '工作進度',
@@ -6006,7 +6011,9 @@ export default {
     notes: '備註',
     searchFiles: '搜尋檔案…',
     projectFiles: '專案檔案（{{count}}）',
-    allLibraryFiles: '全部檔案庫檔案',
+    otherFiles: '其他檔案（不在專案中）',
+    noProjectFiles: '此專案連結的資料夾中還沒有檔案。',
+    showOtherFiles: '顯示其他檔案庫檔案',
     noFiles: '找不到檔案。',
     notSlicedShort: '未切片',
     pickFileHint: '請在左側選擇檔案。',
