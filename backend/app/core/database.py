@@ -5623,6 +5623,39 @@ async def _run_migrations(conn):
     await _migrate_rename_user_print_template_names(conn)
     await _migrate_clear_bug_report_emails(conn)
 
+    # Migration: project "jobs" — order number on projects plus plan-item
+    # links on queue items and archives. The project_plan_items table itself
+    # is created by create_all(). Plain ANSI ALTER TABLE works on SQLite and
+    # PostgreSQL; _safe_execute swallows the duplicate-column error on rerun.
+    if is_sqlite():
+        await _safe_execute(conn, "ALTER TABLE projects ADD COLUMN order_number VARCHAR(100)")
+        await _safe_execute(
+            conn,
+            "ALTER TABLE print_queue ADD COLUMN plan_item_id INTEGER "
+            "REFERENCES project_plan_items(id) ON DELETE SET NULL",
+        )
+        await _safe_execute(
+            conn,
+            "ALTER TABLE print_archives ADD COLUMN plan_item_id INTEGER "
+            "REFERENCES project_plan_items(id) ON DELETE SET NULL",
+        )
+    else:
+        await _safe_execute(conn, "ALTER TABLE projects ADD COLUMN IF NOT EXISTS order_number VARCHAR(100)")
+        await _safe_execute(
+            conn,
+            "ALTER TABLE print_queue ADD COLUMN IF NOT EXISTS plan_item_id INTEGER "
+            "REFERENCES project_plan_items(id) ON DELETE SET NULL",
+        )
+        await _safe_execute(
+            conn,
+            "ALTER TABLE print_archives ADD COLUMN IF NOT EXISTS plan_item_id INTEGER "
+            "REFERENCES project_plan_items(id) ON DELETE SET NULL",
+        )
+    await _safe_execute(conn, "CREATE INDEX IF NOT EXISTS ix_print_queue_plan_item_id ON print_queue (plan_item_id)")
+    await _safe_execute(
+        conn, "CREATE INDEX IF NOT EXISTS ix_print_archives_plan_item_id ON print_archives (plan_item_id)"
+    )
+
     # Migration: per-file print progress inside a project (#1897).
     # - print_archives.library_file_id: which library file a queued run was
     #   dispatched from; nullable. Added without its foreign key (SQLite can't
@@ -7754,39 +7787,6 @@ async def _migrate_rename_user_print_template_names(conn) -> None:
                 text("UPDATE notification_templates SET name = :new WHERE event_type = :et AND name = :old"),
                 {"new": new_name, "et": event_type, "old": old_name},
             )
-
-    # Migration: project "jobs" — order number on projects plus plan-item
-    # links on queue items and archives. The project_plan_items table itself
-    # is created by create_all(). Plain ANSI ALTER TABLE works on SQLite and
-    # PostgreSQL; _safe_execute swallows the duplicate-column error on rerun.
-    if is_sqlite():
-        await _safe_execute(conn, "ALTER TABLE projects ADD COLUMN order_number VARCHAR(100)")
-        await _safe_execute(
-            conn,
-            "ALTER TABLE print_queue ADD COLUMN plan_item_id INTEGER "
-            "REFERENCES project_plan_items(id) ON DELETE SET NULL",
-        )
-        await _safe_execute(
-            conn,
-            "ALTER TABLE print_archives ADD COLUMN plan_item_id INTEGER "
-            "REFERENCES project_plan_items(id) ON DELETE SET NULL",
-        )
-    else:
-        await _safe_execute(conn, "ALTER TABLE projects ADD COLUMN IF NOT EXISTS order_number VARCHAR(100)")
-        await _safe_execute(
-            conn,
-            "ALTER TABLE print_queue ADD COLUMN IF NOT EXISTS plan_item_id INTEGER "
-            "REFERENCES project_plan_items(id) ON DELETE SET NULL",
-        )
-        await _safe_execute(
-            conn,
-            "ALTER TABLE print_archives ADD COLUMN IF NOT EXISTS plan_item_id INTEGER "
-            "REFERENCES project_plan_items(id) ON DELETE SET NULL",
-        )
-    await _safe_execute(conn, "CREATE INDEX IF NOT EXISTS ix_print_queue_plan_item_id ON print_queue (plan_item_id)")
-    await _safe_execute(
-        conn, "CREATE INDEX IF NOT EXISTS ix_print_archives_plan_item_id ON print_archives (plan_item_id)"
-    )
 
 
 def _repair_default_notification_template(existing_template, template_data: dict) -> bool:

@@ -82,6 +82,8 @@ class TestLivenessWindow:
         assert "Settings -> Workflow -> Slicer" in live.timeout_message()
 
 
+# Request ids are UUIDs: the sidecar takes no other form, and a non-UUID id
+# is dropped, which turns progress reporting off (slicer_api._sidecar_request_id).
 class TestSliceIsNotCutOffWhileProgressing:
     @pytest.mark.asyncio
     async def test_a_slow_slice_that_reports_progress_completes(self):
@@ -108,7 +110,9 @@ class TestSliceIsNotCutOffWhileProgressing:
             return httpx.Response(200, json={"percent": progress["n"]})
 
         svc = _service(handler, timeout_seconds=0.1)
-        result = await svc.slice_with_profiles(**SLICE_ARGS, request_id="req-1", on_progress=lambda _p: None)
+        result = await svc.slice_with_profiles(
+            **SLICE_ARGS, request_id="00000000-0000-4000-8000-000000000001", on_progress=lambda _p: None
+        )
 
         assert result.print_time_seconds == 100
         assert progress["n"] > 1, "the poller must have been running throughout"
@@ -126,7 +130,9 @@ class TestSliceIsNotCutOffWhileProgressing:
 
         svc = _service(handler, timeout_seconds=0.3)
         with pytest.raises(SlicerTimeoutError):
-            await svc.slice_with_profiles(**SLICE_ARGS, request_id="req-2", on_progress=lambda _p: None)
+            await svc.slice_with_profiles(
+                **SLICE_ARGS, request_id="00000000-0000-4000-8000-000000000002", on_progress=lambda _p: None
+            )
 
 
 class TestStalledSliceFails:
@@ -140,7 +146,9 @@ class TestStalledSliceFails:
 
         svc = _service(handler, timeout_seconds=0.2)
         with pytest.raises(SlicerTimeoutError) as exc:
-            await svc.slice_with_profiles(**SLICE_ARGS, request_id="req-3", on_progress=lambda _p: None)
+            await svc.slice_with_profiles(
+                **SLICE_ARGS, request_id="00000000-0000-4000-8000-000000000003", on_progress=lambda _p: None
+            )
 
         assert "does not report progress" in str(exc.value)
 
@@ -155,7 +163,9 @@ class TestStalledSliceFails:
 
         svc = _service(handler, timeout_seconds=0.2)
         with pytest.raises(SlicerTimeoutError) as exc:
-            await svc.slice_with_profiles(**SLICE_ARGS, request_id="req-4", on_progress=lambda _p: None)
+            await svc.slice_with_profiles(
+                **SLICE_ARGS, request_id="00000000-0000-4000-8000-000000000004", on_progress=lambda _p: None
+            )
 
         assert not isinstance(exc.value, SlicerApiUnavailableError)
         assert "unreachable" not in str(exc.value)
