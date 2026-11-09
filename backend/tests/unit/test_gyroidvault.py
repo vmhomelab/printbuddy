@@ -531,6 +531,82 @@ class TestImportRoute:
         assert resp.status_code == 404
 
 
+class TestImportThumbnails:
+    """Imported files must end up with a preview even when the file has none."""
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_model_cover_when_file_has_no_preview(
+        self, async_client, db_session, patched_client, library_tmp
+    ):
+        # STL_BYTES is an empty mesh: nothing to render locally.
+        await _configure(async_client)
+        resp = await async_client.post("/api/v1/gyroidvault/import", json={"model_id": 7, "file_ids": [70]})
+        row = await db_session.get(LibraryFile, resp.json()["files"][0]["library_file_id"])
+        assert row.thumbnail_path
+        assert (Path(library_tmp) / row.thumbnail_path).read_bytes() == PNG_BYTES
+        thumb = await async_client.get(f"/api/v1/library/files/{row.id}/thumbnail")
+        assert thumb.status_code == 200
+        assert thumb.content == PNG_BYTES
+
+    @pytest.mark.asyncio
+    async def test_prefers_file_thumbnail_and_skips_missing_ones(
+        self, async_client, db_session, patched_client, library_tmp
+    ):
+        detail = json.loads(json.dumps(MODEL_DETAIL))
+        detail["files"][0]["thumbnail"] = "thumb_3mf_file.png"
+        patched_client.overrides["/api/models/7"] = httpx.Response(200, json=detail)
+        patched_client.overrides["/uploads/thumb_3mf_file.png"] = httpx.Response(
+            200, content=b"\x89PNG\r\n\x1a\nfile", headers={"content-type": "image/png"}
+        )
+        await _configure(async_client)
+        resp = await async_client.post("/api/v1/gyroidvault/import", json={"model_id": 7, "file_ids": [70]})
+        row = await db_session.get(LibraryFile, resp.json()["files"][0]["library_file_id"])
+        assert (Path(library_tmp) / row.thumbnail_path).read_bytes() == b"\x89PNG\r\n\x1a\nfile"
+
+        # A file thumbnail GyroidVault cannot serve falls through to the cover.
+        del patched_client.overrides["/uploads/thumb_3mf_file.png"]
+        detail["files"][2]["thumbnail"] = "gone.png"
+        patched_client.overrides["/api/models/7"] = httpx.Response(200, json=detail)
+        resp = await async_client.post("/api/v1/gyroidvault/import", json={"model_id": 7, "file_ids": [72]})
+        result = resp.json()["files"][0]
+        assert result["error"] is None
+        row = await db_session.get(LibraryFile, result["library_file_id"])
+        assert (Path(library_tmp) / row.thumbnail_path).read_bytes() == PNG_BYTES
+
+    @pytest.mark.asyncio
+    async def test_unavailable_cover_does_not_fail_import(self, async_client, db_session, patched_client, library_tmp):
+        patched_client.overrides["/uploads/thumb-7.png"] = httpx.Response(500, json={"error": "boom"})
+        await _configure(async_client)
+        resp = await async_client.post("/api/v1/gyroidvault/import", json={"model_id": 7, "file_ids": [70]})
+        result = resp.json()["files"][0]
+        assert result["error"] is None
+        row = await db_session.get(LibraryFile, result["library_file_id"])
+        assert row.thumbnail_path is None
+
+    @pytest.mark.asyncio
+    async def test_plain_3mf_gets_rendered_thumbnail(self, async_client, db_session, patched_client, library_tmp):
+        trimesh = pytest.importorskip("trimesh")
+        pytest.importorskip("matplotlib")
+        three_mf = Path(library_tmp) / "src.3mf"
+        trimesh.creation.box((40, 30, 20)).export(three_mf)  # no Metadata/*.png inside
+
+        detail = json.loads(json.dumps(MODEL_DETAIL))
+        detail["files"].append(
+            {"id": 73, "filename": "case.3mf", "original_name": "case.3mf", "file_type": "3mf", "file_size": 1}
+        )
+        detail.pop("thumbnail_url")  # no GyroidVault cover either
+        patched_client.overrides["/api/models/7"] = httpx.Response(200, json=detail)
+        patched_client.overrides["/api/files/73/download"] = httpx.Response(200, content=three_mf.read_bytes())
+
+        await _configure(async_client)
+        resp = await async_client.post("/api/v1/gyroidvault/import", json={"model_id": 7, "file_ids": [73]})
+        row = await db_session.get(LibraryFile, resp.json()["files"][0]["library_file_id"])
+        assert row.file_type == "3mf"
+        assert row.thumbnail_path
+        assert (Path(library_tmp) / row.thumbnail_path).read_bytes().startswith(b"\x89PNG")
+        assert not any(r.url.path.startswith("/uploads/") for r in patched_client.requests)
+
+
 def test_module_exports_limits():
     assert gv_service.MAX_DOWNLOAD_BYTES > gv_service.MAX_ASSET_BYTES
 

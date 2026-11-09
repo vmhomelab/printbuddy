@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import uuid
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -21,7 +22,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.api.routes._spoolman_helpers import assert_safe_spoolman_url
-from backend.app.api.routes.library import new_managed_library_path, save_downloaded_file_to_library
+from backend.app.api.routes.library import (
+    get_library_thumbnails_dir,
+    new_managed_library_path,
+    save_downloaded_file_to_library,
+    to_relative_path,
+)
 from backend.app.api.routes.settings import get_setting, set_setting
 from backend.app.core.auth import RequireCameraStreamTokenIfAuthEnabled, RequirePermissionIfAuthEnabled
 from backend.app.core.database import get_db
@@ -195,6 +201,52 @@ def _source_url(base_url: str, model_id: int, file_id: int) -> str:
 
 def _is_importable(filename: str) -> bool:
     return filename.lower().endswith(IMPORTABLE_EXTENSIONS)
+
+
+_THUMB_EXTENSIONS = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif"}
+
+
+def _vault_thumbnail_candidates(model: dict, file: dict) -> list[str]:
+    """GyroidVault-side previews for *file*, best first: its own thumbnail, then the model cover.
+
+    File rows store a bare upload filename (``thumb_3mf_<hex>.png``); the model
+    detail already carries a resolved ``thumbnail_url``. Only proxyable
+    relative paths are returned.
+    """
+    candidates: list[str] = []
+    file_thumb = file.get("thumbnail")
+    if isinstance(file_thumb, str) and file_thumb and "/" not in file_thumb:
+        path = _asset_path(f"/uploads/{file_thumb}")
+        if path:
+            candidates.append(path)
+    cover = _asset_path(model.get("thumbnail_url"))
+    if cover and cover not in candidates:
+        candidates.append(cover)
+    return candidates
+
+
+async def _adopt_vault_thumbnail(
+    db: AsyncSession, client: GyroidVaultClient, library_file: LibraryFile, candidates: list[str]
+) -> None:
+    """Give *library_file* GyroidVault's preview when Printbuddy could not make one.
+
+    Best effort: a missing or broken upstream image just leaves the file
+    without a thumbnail, it never fails the import.
+    """
+    for asset_path in candidates:
+        try:
+            payload, content_type = await client.fetch_asset(asset_path)
+        except GyroidVaultError as exc:
+            logger.info("GyroidVault thumbnail %s not used: %s", asset_path, exc)
+            continue
+        ext = _THUMB_EXTENSIONS.get(content_type)
+        if not ext or not payload:
+            continue
+        thumb_path = get_library_thumbnails_dir() / f"{uuid.uuid4().hex}{ext}"
+        thumb_path.write_bytes(payload)
+        library_file.thumbnail_path = to_relative_path(thumb_path)
+        await db.commit()
+        return
 
 
 def _safe_filename(raw: str | None, fallback: str) -> str:
@@ -599,6 +651,12 @@ async def import_files(
                     )
                 )
                 continue
+
+            # 3MF/G-code previews and STL/OBJ renders come from the file itself;
+            # for anything else (STEP, unrenderable meshes) fall back to the
+            # preview GyroidVault shows for this file / model.
+            if not library_file.thumbnail_path:
+                await _adopt_vault_thumbnail(db, client, library_file, _vault_thumbnail_candidates(model, raw))
 
             results.append(
                 GyroidVaultImportedFile(

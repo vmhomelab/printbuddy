@@ -481,8 +481,9 @@ async def save_downloaded_file_to_library(
     """Register a file already written to *file_path* (from :func:`new_managed_library_path`).
 
     Same metadata/thumbnail handling as :func:`save_3mf_bytes_to_library`, but
-    also covers STL (rendered thumbnail) and G-code (header metadata and
-    embedded thumbnail). Callers are responsible for source_url dedupe.
+    also covers STL/OBJ (rendered thumbnail) and G-code (header metadata and
+    embedded thumbnail). 3MFs without an embedded preview get a rendered one.
+    Callers are responsible for source_url dedupe.
     """
     return await _register_managed_library_file(
         db,
@@ -493,6 +494,16 @@ async def save_downloaded_file_to_library(
         source_url=source_url,
         owner_id=owner_id,
     )
+
+
+async def _render_mesh_thumbnail(file_path: Path, thumbs_dir: Path, filename: str) -> str | None:
+    """Render a preview of a mesh file (STL / 3MF / OBJ); ``None`` on failure."""
+    try:
+        # Rendering is CPU-bound and can take seconds for large meshes.
+        return await asyncio.to_thread(generate_stl_thumbnail, file_path, thumbs_dir)
+    except Exception as exc:
+        logger.warning("Failed to render mesh thumbnail for %s: %s", filename, exc)
+        return None
 
 
 async def _register_managed_library_file(
@@ -530,6 +541,10 @@ async def _register_managed_library_file(
             # still land in the library so the user can see / delete it rather
             # than failing the whole request.
             logger.warning("Failed to parse 3MF %s: %s", filename, exc)
+        if not thumbnail_path:
+            # Plain 3MFs (CAD exports, unsliced projects) carry no preview
+            # image; render the mesh like an STL so the file card is not empty.
+            thumbnail_path = await _render_mesh_thumbnail(file_path, thumbs_dir, filename)
     elif ext == ".gcode":
         metadata = extract_gcode_file_metadata(file_path) or None
         try:
@@ -540,12 +555,8 @@ async def _register_managed_library_file(
                 thumbnail_path = str(thumb_path)
         except Exception as exc:
             logger.warning("Failed to extract gcode thumbnail for %s: %s", filename, exc)
-    elif ext == ".stl":
-        try:
-            # Rendering is CPU-bound and can take seconds for large meshes.
-            thumbnail_path = await asyncio.to_thread(generate_stl_thumbnail, file_path, thumbs_dir)
-        except Exception as exc:
-            logger.warning("Failed to render STL thumbnail for %s: %s", filename, exc)
+    elif ext in (".stl", ".obj"):
+        thumbnail_path = await _render_mesh_thumbnail(file_path, thumbs_dir, filename)
 
     library_file = LibraryFile(
         folder_id=folder_id,
