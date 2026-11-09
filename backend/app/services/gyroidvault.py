@@ -14,6 +14,8 @@ taken from its server source (``server/routes/*.js``, v2.3.x):
 - ``GET  /api/models/:id``               → model detail incl. ``files``
 - ``GET  /api/categories`` / ``/api/tags``
 - ``GET  /api/files/:id/download``       → raw file bytes
+- ``POST /api/models/:id/prints``         → add a print-history entry (needs a
+  non-viewer account)
 
 Authentication is a bearer JWT that the user generates inside GyroidVault
 (``POST /api/auth/api-key``). Those keys never expire and cannot be revoked
@@ -80,6 +82,24 @@ class GyroidVaultTooLargeError(GyroidVaultError):
 def normalize_base_url(url: str) -> str:
     """Strip whitespace and trailing slashes so path joining stays predictable."""
     return (url or "").strip().rstrip("/")
+
+
+_SOURCE_URL_RE = re.compile(r"^(?P<base>https?://.+?)/#/models/(?P<model>\d+)\?file=(?P<file>\d+)$")
+
+
+def build_source_url(base_url: str, model_id: int, file_id: int) -> str:
+    """Stable per-file ``LibraryFile.source_url`` that also deep-links into GyroidVault's UI."""
+    return f"{normalize_base_url(base_url)}/#/models/{int(model_id)}?file={int(file_id)}"
+
+
+def parse_source_url(value: str | None) -> tuple[str, int, int] | None:
+    """Inverse of :func:`build_source_url` → ``(base_url, model_id, file_id)``."""
+    if not value or not isinstance(value, str):
+        return None
+    match = _SOURCE_URL_RE.match(value)
+    if not match:
+        return None
+    return match.group("base"), int(match.group("model")), int(match.group("file"))
 
 
 def is_safe_asset_path(path: str) -> bool:
@@ -240,6 +260,31 @@ class GyroidVaultClient:
     async def list_tags(self) -> list[dict]:
         data = await self._get_json("/api/tags")
         return [t for t in data if isinstance(t, dict)] if isinstance(data, list) else []
+
+    async def add_print(
+        self,
+        model_id: int,
+        *,
+        successful: bool,
+        notes: str = "",
+        printed_at: str | None = None,
+    ) -> dict:
+        """Append an entry to the model's print history (``POST /api/models/:id/prints``)."""
+        body: dict[str, Any] = {"successful": bool(successful), "notes": notes[:1000]}
+        if printed_at:
+            body["printed_at"] = printed_at
+        try:
+            response = await self._client.post(f"/api/models/{int(model_id)}/prints", json=body)
+        except httpx.TimeoutException as exc:
+            raise GyroidVaultUnavailableError("GyroidVault timed out") from exc
+        except httpx.HTTPError as exc:
+            raise GyroidVaultUnavailableError(f"Cannot reach GyroidVault: {exc.__class__.__name__}") from exc
+        self._raise_for_status(response)
+        try:
+            data = response.json()
+        except ValueError:
+            return {}
+        return data if isinstance(data, dict) else {}
 
     async def download_file(
         self,

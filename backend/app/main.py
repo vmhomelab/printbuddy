@@ -4696,6 +4696,24 @@ async def on_print_complete(printer_id: int, data: dict):
 
     log_timing("Filament usage tracking")
 
+    # GyroidVault: add finished prints of imported models to their GyroidVault
+    # print history. Background + best effort; it checks the settings itself.
+    try:
+        from backend.app.services.gyroidvault_reporter import report_print_completion
+
+        _gv_printer = printer_manager.get_printer(printer_id)
+        asyncio.create_task(
+            report_print_completion(
+                printer_id=printer_id,
+                status=data.get("status"),
+                archive_id=archive_id,
+                queue_item_id=queue_item_id,
+                printer_name=_gv_printer.name if _gv_printer else None,
+            )
+        )
+    except Exception as e:
+        logger.debug("[GYROIDVAULT] Could not schedule print report: %s", e)
+
     if not archive_id:
         logger.warning("Could not find archive for print complete: filename=%s, subtask=%s", filename, subtask_name)
 

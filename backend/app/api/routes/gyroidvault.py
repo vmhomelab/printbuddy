@@ -55,6 +55,7 @@ from backend.app.services.gyroidvault import (
     GyroidVaultRateLimitError,
     GyroidVaultTooLargeError,
     GyroidVaultUnavailableError,
+    build_source_url,
     is_safe_asset_path,
     is_supported_version,
     normalize_base_url,
@@ -71,6 +72,7 @@ IMPORTABLE_EXTENSIONS = (".3mf", ".stl", ".gcode", ".obj", ".step", ".stp")
 _KEY_ENABLED = "gyroidvault_enabled"
 _KEY_URL = "gyroidvault_url"
 _KEY_API_KEY = "gyroidvault_api_key"
+_KEY_REPORT_PRINTS = "gyroidvault_report_prints"
 
 
 # ── settings helpers ────────────────────────────────────────────────────────
@@ -188,7 +190,7 @@ def _summary(raw: dict, *, thumbnail_key: str = "thumbnail") -> GyroidVaultModel
 
 def _source_url(base_url: str, model_id: int, file_id: int) -> str:
     """Stable per-file dedupe key that also deep-links into GyroidVault's UI."""
-    return f"{normalize_base_url(base_url)}/#/models/{model_id}?file={file_id}"
+    return build_source_url(base_url, model_id, file_id)
 
 
 def _is_importable(filename: str) -> bool:
@@ -209,7 +211,8 @@ async def get_gyroidvault_settings(
     _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_READ),
 ):
     enabled, url, has_key = await _load_settings(db)
-    return GyroidVaultSettings(enabled=enabled, url=url, has_api_key=has_key)
+    report_prints = (await get_setting(db, _KEY_REPORT_PRINTS) or "false").lower() == "true"
+    return GyroidVaultSettings(enabled=enabled, url=url, has_api_key=has_key, report_prints=report_prints)
 
 
 @router.put("/settings", response_model=GyroidVaultSettings)
@@ -225,6 +228,8 @@ async def update_gyroidvault_settings(
         await set_setting(db, _KEY_API_KEY, mfa_encrypt(key) if key else "")
     if body.enabled is not None:
         await set_setting(db, _KEY_ENABLED, "true" if body.enabled else "false")
+    if body.report_prints is not None:
+        await set_setting(db, _KEY_REPORT_PRINTS, "true" if body.report_prints else "false")
     await db.commit()
     return await get_gyroidvault_settings(db)
 
@@ -259,11 +264,25 @@ async def test_connection(
             )
 
     role = me.get("role") if isinstance(me.get("role"), str) else None
+    if body.report_prints is not None:
+        report_prints = body.report_prints
+    else:
+        report_prints = (await get_setting(db, _KEY_REPORT_PRINTS) or "false").lower() == "true"
     warning = None
-    if role and role != "viewer":
+    if report_prints and role == "viewer":
+        warning = (
+            "Reporting prints needs a GyroidVault account with the 'uploader' role; 'viewer' accounts "
+            "cannot add print-history entries."
+        )
+    elif not report_prints and role and role != "viewer":
         warning = (
             "This API key belongs to a GyroidVault account with write access. Printbuddy only needs read "
             "access — consider a dedicated 'viewer' account, because GyroidVault API keys cannot be revoked."
+        )
+    elif report_prints and role == "admin":
+        warning = (
+            "This API key belongs to a GyroidVault admin. Reporting prints only needs the 'uploader' role — "
+            "consider a dedicated uploader account, because GyroidVault API keys cannot be revoked."
         )
     if not supported:
         unsupported = (

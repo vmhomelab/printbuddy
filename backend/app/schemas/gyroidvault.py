@@ -11,10 +11,15 @@ class GyroidVaultSettings(BaseModel):
     enabled: bool = False
     url: str = ""
     has_api_key: bool = False
+    report_prints: bool = Field(
+        default=False,
+        description="Add finished prints of imported files to the model's GyroidVault print history",
+    )
 
 
 class GyroidVaultSettingsUpdate(BaseModel):
     enabled: bool | None = None
+    report_prints: bool | None = None
     url: str | None = Field(default=None, max_length=500)
     api_key: str | None = Field(
         default=None,
@@ -28,6 +33,7 @@ class GyroidVaultTestRequest(BaseModel):
 
     url: str | None = Field(default=None, max_length=500)
     api_key: str | None = Field(default=None, max_length=4096)
+    report_prints: bool | None = Field(default=None, description="Check the key's role against this choice")
 
 
 class GyroidVaultTestResult(BaseModel):

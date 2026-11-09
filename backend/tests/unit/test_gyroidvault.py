@@ -300,14 +300,14 @@ class TestSettingsRoutes:
     async def test_defaults(self, async_client):
         resp = await async_client.get("/api/v1/gyroidvault/settings")
         assert resp.status_code == 200
-        assert resp.json() == {"enabled": False, "url": "", "has_api_key": False}
+        assert resp.json() == {"enabled": False, "url": "", "has_api_key": False, "report_prints": False}
 
     @pytest.mark.asyncio
     async def test_api_key_is_encrypted_and_never_returned(self, async_client, db_session):
         from backend.app.api.routes.settings import get_setting
 
         body = await _configure(async_client, url=BASE + "/")
-        assert body == {"enabled": True, "url": BASE, "has_api_key": True}
+        assert body == {"enabled": True, "url": BASE, "has_api_key": True, "report_prints": False}
         assert API_KEY not in json.dumps(body)
 
         stored = await get_setting(db_session, "gyroidvault_api_key")
@@ -549,3 +549,225 @@ class TestAppSettingsFlag:
         # The generic settings PUT must not be able to flip it.
         await async_client.put("/api/v1/settings/", json={"gyroidvault_enabled": False})
         assert (await async_client.get("/api/v1/settings/")).json()["gyroidvault_enabled"] is True
+
+
+# ── phase 4: reporting finished prints ──────────────────────────────────────
+
+
+@pytest.fixture
+def reporter_env(test_engine, vault):
+    """Point the reporter at the test DB and the fake vault."""
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    maker = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+    real_cls = GyroidVaultClient
+
+    def factory(base_url, api_key, **kwargs):
+        return real_cls(base_url, api_key, transport=httpx.MockTransport(vault))
+
+    with (
+        patch("backend.app.services.gyroidvault_reporter.async_session", maker),
+        patch("backend.app.services.gyroidvault_reporter.GyroidVaultClient", side_effect=factory),
+    ):
+        yield vault
+
+
+async def _lib_file(db_session, **kwargs) -> LibraryFile:
+    defaults = {
+        "filename": "benchy.stl",
+        "file_path": "library/files/x.stl",
+        "file_type": "stl",
+        "file_size": 10,
+        "file_hash": "a" * 64,
+    }
+    defaults.update(kwargs)
+    row = LibraryFile(**defaults)
+    db_session.add(row)
+    await db_session.commit()
+    await db_session.refresh(row)
+    return row
+
+
+def _print_requests(vault):
+    return [r for r in vault.requests if r.method == "POST" and r.url.path.endswith("/prints")]
+
+
+class TestPrintReporting:
+    @pytest.fixture(autouse=True)
+    def _prints_endpoint(self, vault):
+        vault.overrides["/api/models/7/prints"] = httpx.Response(201, json={"id": 1})
+
+    async def _enable(self, async_client, report=True):
+        await _configure(async_client)
+        resp = await async_client.put("/api/v1/gyroidvault/settings", json={"report_prints": report})
+        assert resp.json()["report_prints"] is report
+
+    @pytest.mark.asyncio
+    async def test_source_url_roundtrip(self):
+        url = gv_service.build_source_url(BASE + "/", 7, 70)
+        assert gv_service.parse_source_url(url) == (BASE, 7, 70)
+        assert gv_service.parse_source_url("https://makerworld.com/models/1") is None
+
+    @pytest.mark.asyncio
+    async def test_queue_print_of_sliced_import_is_reported(
+        self, async_client, db_session, reporter_env, printer_factory
+    ):
+        from backend.app.models.print_queue import PrintQueueItem
+        from backend.app.services.gyroidvault_reporter import report_print_completion
+
+        await self._enable(async_client)
+        source = await _lib_file(
+            db_session, source_type="gyroidvault", source_url=gv_service.build_source_url(BASE, 7, 70)
+        )
+        sliced = await _lib_file(
+            db_session,
+            filename="benchy.gcode.3mf",
+            file_type="gcode",
+            file_hash="b" * 64,
+            source_type="sliced",
+            file_metadata={"sliced_from_library_file_id": source.id},
+        )
+        printer = await printer_factory()
+        item = PrintQueueItem(printer_id=printer.id, library_file_id=sliced.id, status="completed")
+        db_session.add(item)
+        await db_session.commit()
+
+        model_id = await report_print_completion(
+            printer_id=printer.id, status="completed", archive_id=None, queue_item_id=item.id, printer_name="X1C"
+        )
+        assert model_id == 7
+        (req,) = _print_requests(reporter_env)
+        body = json.loads(req.content)
+        assert body["successful"] is True
+        assert "X1C" in body["notes"]
+        assert req.headers["authorization"] == f"Bearer {API_KEY}"
+
+    @pytest.mark.asyncio
+    async def test_direct_print_matched_by_hash_and_reported_once(
+        self, async_client, db_session, reporter_env, printer_factory, archive_factory
+    ):
+        from backend.app.models.archive import PrintArchive
+        from backend.app.services.gyroidvault_reporter import REPORTED_FLAG, report_print_completion
+
+        await self._enable(async_client)
+        await _lib_file(
+            db_session,
+            file_hash="c" * 64,
+            source_type="gyroidvault",
+            source_url=gv_service.build_source_url(BASE, 7, 70),
+        )
+        printer = await printer_factory()
+        archive = await archive_factory(printer.id, content_hash="c" * 64, with_run=False)
+
+        assert (
+            await report_print_completion(
+                printer_id=printer.id, status="failed", archive_id=archive.id, queue_item_id=None
+            )
+            == 7
+        )
+        assert json.loads(_print_requests(reporter_env)[0].content)["successful"] is False
+
+        await db_session.refresh(archive)
+        assert archive.extra_data[REPORTED_FLAG] == 7
+        # A duplicate completion event must not add a second history entry.
+        assert (
+            await report_print_completion(
+                printer_id=printer.id, status="completed", archive_id=archive.id, queue_item_id=None
+            )
+            is None
+        )
+        assert len(_print_requests(reporter_env)) == 1
+        assert isinstance(await db_session.get(PrintArchive, archive.id), PrintArchive)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", ["cancelled", "aborted", None])
+    async def test_cancelled_prints_are_not_reported(
+        self, async_client, db_session, reporter_env, printer_factory, archive_factory, status
+    ):
+        from backend.app.services.gyroidvault_reporter import report_print_completion
+
+        await self._enable(async_client)
+        await _lib_file(db_session, source_type="gyroidvault", source_url=gv_service.build_source_url(BASE, 7, 70))
+        printer = await printer_factory()
+        archive = await archive_factory(printer.id, content_hash="a" * 64, with_run=False)
+        assert (
+            await report_print_completion(
+                printer_id=printer.id, status=status, archive_id=archive.id, queue_item_id=None
+            )
+            is None
+        )
+        assert _print_requests(reporter_env) == []
+
+    @pytest.mark.asyncio
+    async def test_disabled_reporting_sends_nothing(
+        self, async_client, db_session, reporter_env, printer_factory, archive_factory
+    ):
+        from backend.app.services.gyroidvault_reporter import report_print_completion
+
+        await self._enable(async_client, report=False)
+        await _lib_file(db_session, source_type="gyroidvault", source_url=gv_service.build_source_url(BASE, 7, 70))
+        printer = await printer_factory()
+        archive = await archive_factory(printer.id, content_hash="a" * 64, with_run=False)
+        assert (
+            await report_print_completion(
+                printer_id=printer.id, status="completed", archive_id=archive.id, queue_item_id=None
+            )
+            is None
+        )
+        assert _print_requests(reporter_env) == []
+
+    @pytest.mark.asyncio
+    async def test_import_from_other_instance_is_ignored(
+        self, async_client, db_session, reporter_env, printer_factory, archive_factory
+    ):
+        from backend.app.services.gyroidvault_reporter import report_print_completion
+
+        await self._enable(async_client)
+        await _lib_file(
+            db_session,
+            source_type="gyroidvault",
+            source_url=gv_service.build_source_url("http://old-vault.lan", 7, 70),
+        )
+        printer = await printer_factory()
+        archive = await archive_factory(printer.id, content_hash="a" * 64, with_run=False)
+        assert (
+            await report_print_completion(
+                printer_id=printer.id, status="completed", archive_id=archive.id, queue_item_id=None
+            )
+            is None
+        )
+        assert _print_requests(reporter_env) == []
+
+    @pytest.mark.asyncio
+    async def test_upstream_error_is_swallowed(
+        self, async_client, db_session, reporter_env, printer_factory, archive_factory
+    ):
+        from backend.app.services.gyroidvault_reporter import REPORTED_FLAG, report_print_completion
+
+        reporter_env.overrides["/api/models/7/prints"] = httpx.Response(403, json={"error": "Viewer"})
+        await self._enable(async_client)
+        await _lib_file(db_session, source_type="gyroidvault", source_url=gv_service.build_source_url(BASE, 7, 70))
+        printer = await printer_factory()
+        archive = await archive_factory(printer.id, content_hash="a" * 64, with_run=False)
+        assert (
+            await report_print_completion(
+                printer_id=printer.id, status="completed", archive_id=archive.id, queue_item_id=None
+            )
+            is None
+        )
+        await db_session.refresh(archive)
+        assert REPORTED_FLAG not in (archive.extra_data or {})
+
+    @pytest.mark.asyncio
+    async def test_connection_test_warns_viewer_when_reporting(self, async_client, patched_client):
+        await self._enable(async_client)
+        body = (await async_client.post("/api/v1/gyroidvault/test")).json()
+        assert body["ok"] is True
+        assert "uploader" in body["warning"]
+
+    @pytest.mark.asyncio
+    async def test_add_print_client_call(self, vault):
+        async with GyroidVaultClient(BASE, API_KEY, transport=httpx.MockTransport(vault)) as client:
+            await client.add_print(7, successful=True, notes="n" * 2000, printed_at="2026-11-09T10:00:00+00:00")
+        body = json.loads(_print_requests(vault)[0].content)
+        assert body == {"successful": True, "notes": "n" * 1000, "printed_at": "2026-11-09T10:00:00+00:00"}
