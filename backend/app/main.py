@@ -4254,7 +4254,9 @@ async def on_print_complete(printer_id: int, data: dict):
     # after a touchscreen-abort (#1171). Persisted to DB so the gate survives
     # Auto Off power cycles and Printbuddy restarts.
     _final_status = data.get("status", "completed")
-    if _final_status in ("completed", "failed", "aborted", "cancelled"):
+    # "stopped" comes from polled providers (PrusaLink/OctoPrint) and can leave
+    # a partial print on the bed just like "aborted" (PB-2).
+    if _final_status in ("completed", "failed", "aborted", "cancelled", "stopped"):
         printer_manager.set_awaiting_plate_clear(printer_id, True)
 
     # MQTT relay - publish print complete

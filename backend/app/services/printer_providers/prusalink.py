@@ -73,7 +73,10 @@ def _map_prusalink_state(raw_state: Any) -> str:
     state = str(raw_state or "").upper()
     return {
         "PRINTING": "RUNNING",
-        "BUSY": "RUNNING",
+        # BUSY is reported for non-print motion too (homing, maintenance moving
+        # the bed on a CORE One, ...). It only counts as an active print when a
+        # job is present, which request_status_update() decides (PB-2).
+        "BUSY": "PREPARE",
         "PAUSED": "PAUSE",
         "FINISHED": "FINISH",
         "STOPPED": "FAILED",
@@ -249,6 +252,9 @@ class PrusaLinkPrinterClient(PolledLifecycleMixin):
         self.on_bed_temp_update = on_bed_temp_update
         self._last_state: str | None = None
         self._has_status_sample = False
+        # Upper-cased raw PrusaLink state behind self.state.state, so a STOPPED
+        # job can be reported as "stopped" instead of "failed" (PB-2).
+        self._raw_state: str = ""
         self._last_bed_temp: float | None = None
         self._current_print_started_at: float | None = None
         self._file_storage: str | None = None
@@ -542,7 +548,7 @@ class PrusaLinkPrinterClient(PolledLifecycleMixin):
             self.state.raw_status = job_detail
             self.state.raw_data = {**self.state.raw_data, **job_detail}
             state = job_detail.get("state") or job_detail.get("status") or "IDLE"
-            self.state.state = _map_prusalink_state(state)
+            self._set_state(state)
             if job_detail:
                 self._apply_job_detail(job_detail)
             self._emit_status_callbacks(previous_state)
@@ -563,7 +569,7 @@ class PrusaLinkPrinterClient(PolledLifecycleMixin):
             job = {}
 
         self._job_id = job.get("id") if isinstance(job.get("id"), int) else self._job_id
-        self.state.state = _map_prusalink_state(printer.get("state"))
+        self._set_state(printer.get("state"), job_active=bool(job.get("id")))
         self.state.progress = _progress_percent(job.get("progress"))
         self.state.remaining_time = minutes_from_seconds(job.get("time_remaining"))
         self.state.temperatures = {
@@ -590,10 +596,24 @@ class PrusaLinkPrinterClient(PolledLifecycleMixin):
         self._has_status_sample = True
         return True
 
+    def _set_state(self, raw_state: Any, *, job_active: bool = False) -> None:
+        self._raw_state = str(raw_state or "").upper()
+        mapped = _map_prusalink_state(raw_state)
+        if self._raw_state == "BUSY" and job_active:
+            mapped = "RUNNING"
+        self.state.state = mapped
+
+    def _completion_status(self, current_state: str) -> str:
+        # STOPPED is a user/firmware stop (e.g. CORE One maintenance moving the
+        # bed), not a print failure: send the print-stopped notification (PB-2).
+        if self._raw_state == "STOPPED":
+            return "stopped"
+        return super()._completion_status(current_state)
+
     def _apply_job_detail(self, job_detail: dict[str, Any]) -> None:
         self._job_id = job_detail.get("id") if isinstance(job_detail.get("id"), int) else self._job_id
         if job_detail.get("state"):
-            self.state.state = _map_prusalink_state(job_detail.get("state"))
+            self._set_state(job_detail.get("state"), job_active=True)
         if "progress" in job_detail:
             self.state.progress = _progress_percent(job_detail.get("progress"))
         if "time_remaining" in job_detail:
