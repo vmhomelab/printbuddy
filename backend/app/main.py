@@ -32,6 +32,7 @@ from backend.app.api.routes import (
     firmware,
     github_backup,
     groups,
+    gyroidvault,
     inventory,
     kprofiles,
     labels,
@@ -6724,6 +6725,7 @@ app.include_router(slice_jobs.router, prefix=app_settings.api_prefix)
 app.include_router(slicer_presets.router, prefix=app_settings.api_prefix)
 app.include_router(archive_purge.router, prefix=app_settings.api_prefix)
 app.include_router(makerworld.router, prefix=app_settings.api_prefix)
+app.include_router(gyroidvault.router, prefix=app_settings.api_prefix)
 app.include_router(api_keys.router, prefix=app_settings.api_prefix)
 app.include_router(webhook.router, prefix=app_settings.api_prefix)
 app.include_router(ams_history.router, prefix=app_settings.api_prefix)
