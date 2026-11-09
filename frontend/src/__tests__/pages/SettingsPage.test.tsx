@@ -163,16 +163,16 @@ describe('SettingsPage', () => {
       const user = userEvent.setup();
       render(<SettingsPage />);
 
-      const makerWorldLabel = (await screen.findAllByText('MakerWorld')).find(element => element.tagName === 'SPAN');
-      if (!makerWorldLabel) throw new Error('MakerWorld sidebar label was not rendered');
-      const makerWorldToggle = makerWorldLabel.parentElement?.querySelector('[role="switch"]');
-      expect(makerWorldToggle).not.toBeNull();
-      if (!makerWorldToggle) throw new Error('MakerWorld navigation toggle was not rendered');
-      expect(makerWorldToggle.getAttribute('aria-checked')).toBe('true');
+      const modelImportLabel = (await screen.findAllByText('Model import')).find(element => element.tagName === 'SPAN');
+      if (!modelImportLabel) throw new Error('Model import sidebar label was not rendered');
+      const modelImportToggle = modelImportLabel.parentElement?.querySelector('[role="switch"]');
+      expect(modelImportToggle).not.toBeNull();
+      if (!modelImportToggle) throw new Error('Model import navigation toggle was not rendered');
+      expect(modelImportToggle.getAttribute('aria-checked')).toBe('true');
 
-      await user.click(makerWorldToggle);
+      await user.click(modelImportToggle);
 
-      expect(localStorage.setItem).toHaveBeenCalledWith('sidebarHiddenItems', JSON.stringify(['makerworld']));
+      expect(localStorage.setItem).toHaveBeenCalledWith('sidebarHiddenItems', JSON.stringify(['model-import']));
     });
 
     it('offers the printer-card camera view mode in the Camera settings', async () => {

@@ -1470,10 +1470,13 @@ export interface GyroidVaultSettings {
   enabled: boolean;
   url: string;
   has_api_key: boolean;
+  /** Add finished prints of imported models to their GyroidVault print history. */
+  report_prints: boolean;
 }
 
 export interface GyroidVaultSettingsUpdate {
   enabled?: boolean;
+  report_prints?: boolean;
   url?: string;
   /** Empty string clears the stored key; omit to keep it. */
   api_key?: string;
@@ -5160,7 +5163,7 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(data),
     }),
-  testGyroidVaultConnection: (data: { url?: string; api_key?: string } = {}) =>
+  testGyroidVaultConnection: (data: { url?: string; api_key?: string; report_prints?: boolean } = {}) =>
     request<GyroidVaultTestResult>('/gyroidvault/test', {
       method: 'POST',
       body: JSON.stringify(data),

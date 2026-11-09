@@ -69,7 +69,7 @@ function Thumbnail({ path, alt, className }: { path: string | null; alt: string;
   );
 }
 
-export function GyroidVaultPage() {
+export function GyroidVaultPage({ embedded = false }: { embedded?: boolean } = {}) {
   const { t } = useTranslation();
   const { hasPermission } = useAuth();
   const { showToast } = useToast();
@@ -190,13 +190,15 @@ export function GyroidVaultPage() {
   );
 
   return (
-    <div className="p-4 md:p-8 max-w-screen-2xl space-y-6">
+    <div className={embedded ? 'space-y-6' : 'p-4 md:p-8 max-w-screen-2xl space-y-6'}>
       <div>
-        <h1 className="text-2xl font-bold text-white flex items-center gap-3">
-          <Boxes className="w-7 h-7 text-bambu-green" />
-          {t('gyroidvault.title')}
-        </h1>
-        <p className="text-bambu-gray mt-1">{t('gyroidvault.description')}</p>
+        {!embedded && (
+          <h1 className="text-2xl font-bold text-white flex items-center gap-3">
+            <Boxes className="w-7 h-7 text-bambu-green" />
+            {t('gyroidvault.title')}
+          </h1>
+        )}
+        <p className={embedded ? 'text-bambu-gray' : 'text-bambu-gray mt-1'}>{t('gyroidvault.description')}</p>
       </div>
 
       {statusQuery.isLoading && (
@@ -219,7 +221,7 @@ export function GyroidVaultPage() {
                 <p className="text-amber-200 mt-1">
                   {statusQuery.data.error ?? t('gyroidvault.notConfiguredBody')}{' '}
                   {canConfigure && (
-                    <Link to="/settings?tab=network" className="underline">
+                    <Link to="/import?source=settings" className="underline">
                       {t('gyroidvault.openSettings')}
                     </Link>
                   )}

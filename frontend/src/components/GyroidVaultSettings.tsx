@@ -31,6 +31,7 @@ export function GyroidVaultSettings() {
   });
 
   const [enabled, setEnabled] = useState(false);
+  const [reportPrints, setReportPrints] = useState(false);
   const [url, setUrl] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [testResult, setTestResult] = useState<GyroidVaultTestResult | null>(null);
@@ -38,6 +39,7 @@ export function GyroidVaultSettings() {
   useEffect(() => {
     if (settings) {
       setEnabled(settings.enabled);
+      setReportPrints(settings.report_prints);
       setUrl(settings.url);
     }
   }, [settings]);
@@ -63,6 +65,7 @@ export function GyroidVaultSettings() {
       api.testGyroidVaultConnection({
         url: url.trim() || undefined,
         api_key: apiKey.trim() || undefined,
+        report_prints: reportPrints,
       }),
     onSuccess: (result) => setTestResult(result),
     onError: (err: Error) =>
@@ -78,10 +81,14 @@ export function GyroidVaultSettings() {
   });
 
   const dirty =
-    !!settings && (enabled !== settings.enabled || url.trim() !== settings.url || apiKey.trim() !== '');
+    !!settings &&
+    (enabled !== settings.enabled ||
+      reportPrints !== settings.report_prints ||
+      url.trim() !== settings.url ||
+      apiKey.trim() !== '');
 
   const handleSave = () => {
-    const data: GyroidVaultSettingsUpdate = { enabled, url: url.trim() };
+    const data: GyroidVaultSettingsUpdate = { enabled, report_prints: reportPrints, url: url.trim() };
     if (apiKey.trim()) data.api_key = apiKey.trim();
     saveMutation.mutate(data);
   };
@@ -150,6 +157,16 @@ export function GyroidVaultSettings() {
                   {t('gyroidvault.settings.removeApiKey')}
                 </button>
               )}
+            </div>
+
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-sm text-white">{t('gyroidvault.settings.reportPrints')}</p>
+                <p className="text-xs text-bambu-gray">{t('gyroidvault.settings.reportPrintsDesc')}</p>
+              </div>
+              <div aria-label={t('gyroidvault.settings.reportPrints')}>
+                <Toggle checked={reportPrints} onChange={setReportPrints} disabled={!canUpdate} />
+              </div>
             </div>
 
             {testResult && (

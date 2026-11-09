@@ -149,12 +149,17 @@ describe('GyroidVaultSettings', () => {
     const bodies: Array<Record<string, unknown>> = [];
     server.use(
       http.get('*/gyroidvault/settings', () =>
-        HttpResponse.json({ enabled: true, url: 'http://vault.lan', has_api_key: true }),
+        HttpResponse.json({ enabled: true, url: 'http://vault.lan', has_api_key: true, report_prints: false }),
       ),
       http.put('*/gyroidvault/settings', async ({ request }) => {
         const body = (await request.json()) as Record<string, unknown>;
         bodies.push(body);
-        return HttpResponse.json({ enabled: true, url: String(body.url ?? 'http://vault.lan'), has_api_key: true });
+        return HttpResponse.json({
+          enabled: true,
+          url: String(body.url ?? 'http://vault.lan'),
+          has_api_key: true,
+          report_prints: Boolean(body.report_prints),
+        });
       }),
     );
     render(<GyroidVaultSettings />);
@@ -167,13 +172,48 @@ describe('GyroidVaultSettings', () => {
     await userEvent.type(urlInput, 'http://192.168.1.5:3457');
     await userEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(bodies).toHaveLength(1));
-    expect(bodies[0]).toEqual({ enabled: true, url: 'http://192.168.1.5:3457' });
+    expect(bodies[0]).toEqual({ enabled: true, report_prints: false, url: 'http://192.168.1.5:3457' });
+  });
+
+  it('saves the report-prints switch and sends it to the connection test', async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    let testBody: Record<string, unknown> | null = null;
+    server.use(
+      http.get('*/gyroidvault/settings', () =>
+        HttpResponse.json({ enabled: true, url: 'http://vault.lan', has_api_key: true, report_prints: false }),
+      ),
+      http.put('*/gyroidvault/settings', async ({ request }) => {
+        const body = (await request.json()) as Record<string, unknown>;
+        bodies.push(body);
+        return HttpResponse.json({ enabled: true, url: 'http://vault.lan', has_api_key: true, report_prints: true });
+      }),
+      http.post('*/gyroidvault/test', async ({ request }) => {
+        testBody = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json({
+          ok: true,
+          version: '2.3.1',
+          username: 'pb',
+          role: 'viewer',
+          supported_version: true,
+          warning: 'needs uploader',
+          error: null,
+        });
+      }),
+    );
+    render(<GyroidVaultSettings />);
+    const toggle = await screen.findByLabelText('Report prints to GyroidVault');
+    await userEvent.click(toggle.querySelector('[role="switch"]') as HTMLElement);
+    await userEvent.click(screen.getByRole('button', { name: /Test connection/ }));
+    await waitFor(() => expect(testBody).toEqual({ url: 'http://vault.lan', report_prints: true }));
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(bodies).toHaveLength(1));
+    expect(bodies[0]).toMatchObject({ report_prints: true });
   });
 
   it('shows the connection test result and role warning', async () => {
     server.use(
       http.get('*/gyroidvault/settings', () =>
-        HttpResponse.json({ enabled: true, url: 'http://vault.lan', has_api_key: true }),
+        HttpResponse.json({ enabled: true, url: 'http://vault.lan', has_api_key: true, report_prints: false }),
       ),
       http.post('*/gyroidvault/test', () =>
         HttpResponse.json({

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
-import { Printer, Archive, ListOrdered, BarChart3, Cloud, Settings, Sun, Moon, ChevronLeft, ChevronRight, Keyboard, Github, GripVertical, ArrowUpCircle, Wrench, FolderKanban, FolderOpen, X, Menu, Info, Plug, Bug, LogOut, Key, Loader2, Disc3, ShieldAlert, Bell, Globe, Boxes, Monitor, PanelLeftClose, type LucideIcon } from 'lucide-react';
+import { Printer, Archive, ListOrdered, BarChart3, Cloud, Settings, Sun, Moon, ChevronLeft, ChevronRight, Keyboard, Github, GripVertical, ArrowUpCircle, Wrench, FolderKanban, FolderOpen, X, Menu, Info, Plug, Bug, LogOut, Key, Loader2, Disc3, ShieldAlert, Bell, Download, Monitor, PanelLeftClose, type LucideIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useTheme } from '../contexts/ThemeContext';
 import { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
@@ -35,8 +35,7 @@ export const defaultNavItems: NavItem[] = [
   { id: 'queue', to: '/queue', icon: ListOrdered, labelKey: 'nav.queue' },
   { id: 'projects', to: '/projects', icon: FolderKanban, labelKey: 'nav.projects' },
   { id: 'files', to: '/files', icon: FolderOpen, labelKey: 'nav.files' },
-  { id: 'makerworld', to: '/makerworld', icon: Globe, labelKey: 'nav.makerworld' },
-  { id: 'gyroidvault', to: '/gyroidvault', icon: Boxes, labelKey: 'nav.gyroidvault' },
+  { id: 'model-import', to: '/import', icon: Download, labelKey: 'nav.modelImport' },
   { id: 'profiles', to: '/profiles', icon: Cloud, labelKey: 'nav.profiles' },
   { id: 'maintenance', to: '/maintenance', icon: Wrench, labelKey: 'nav.maintenance' },
   { id: 'stats', to: '/stats', icon: BarChart3, labelKey: 'nav.stats' },
@@ -46,12 +45,30 @@ export const defaultNavItems: NavItem[] = [
   { id: 'settings', to: '/settings', icon: Settings, labelKey: 'nav.settings' },
 ];
 
+// Nav ids that were merged into another entry. Stored order/visibility
+// preferences are carried over so a hidden or moved item stays that way.
+const LEGACY_NAV_IDS: Record<string, string> = {
+  makerworld: 'model-import',
+  gyroidvault: 'model-import',
+};
+
+function migrateNavIds(ids: unknown[]): string[] {
+  const out: string[] = [];
+  for (const id of ids) {
+    if (typeof id !== 'string') continue;
+    const mapped = LEGACY_NAV_IDS[id] ?? id;
+    if (!out.includes(mapped)) out.push(mapped);
+  }
+  return out;
+}
+
 // Get unified sidebar order from localStorage
 function getSidebarOrder(): string[] {
   const stored = localStorage.getItem('sidebarOrder');
   if (stored) {
     try {
-      return JSON.parse(stored);
+      const parsed = JSON.parse(stored);
+      return Array.isArray(parsed) ? migrateNavIds(parsed) : defaultNavItems.map(i => i.id);
     } catch {
       return defaultNavItems.map(i => i.id);
     }
@@ -75,9 +92,7 @@ export function getSidebarHiddenItems(): string[] {
 
   try {
     const parsed = JSON.parse(stored);
-    return Array.isArray(parsed)
-      ? parsed.filter((id): id is string => typeof id === 'string' && id !== 'settings')
-      : [];
+    return Array.isArray(parsed) ? migrateNavIds(parsed).filter(id => id !== 'settings') : [];
   } catch {
     return [];
   }
@@ -329,16 +344,23 @@ export function Layout() {
       projects: 'projects:read',
       inventory: 'inventory:read',
       files: 'library:read',
-      makerworld: 'makerworld:view',
-      gyroidvault: 'library:read',
       settings: 'settings:read',
       notifications: 'notifications:user_email',
     };
 
     const isHidden = (id: string) => {
       if (sidebarHiddenItems.includes(id)) return true;
-      // GyroidVault only shows up once the integration is switched on in Settings
-      if (id === 'gyroidvault' && settings?.gyroidvault_enabled !== true) return true;
+      // Model import bundles MakerWorld (makerworld:view), GyroidVault (library:read)
+      // and their settings (settings:read); show it if any tab is reachable.
+      if (
+        id === 'model-import' &&
+        authEnabled &&
+        !hasPermission('makerworld:view') &&
+        !hasPermission('library:read') &&
+        !hasPermission('settings:read')
+      ) {
+        return true;
+      }
       if (authEnabled && id in navPermissions && !hasPermission(navPermissions[id])) return true;
       // notifications nav item also requires advanced auth to be enabled and user_notifications_enabled setting
       if (id === 'notifications' && (!authEnabled || !advancedAuthStatus?.advanced_auth_enabled || (settings?.user_notifications_enabled === false))) return true;

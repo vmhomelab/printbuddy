@@ -151,16 +151,39 @@ describe('Layout', () => {
 
     it('hides a user-selected sidebar item but keeps Settings available', async () => {
       vi.mocked(localStorage.getItem).mockImplementation((key: string) => (
-        key === 'sidebarHiddenItems' ? JSON.stringify(['makerworld']) : null
+        key === 'sidebarHiddenItems' ? JSON.stringify(['model-import']) : null
       ));
 
       render(<Layout />);
 
       await waitFor(() => {
         expect(document.querySelector('aside')).toBeInTheDocument();
-        expect(document.querySelector('aside a[href="/makerworld"]')).not.toBeInTheDocument();
+        expect(document.querySelector('aside a[href="/import"]')).not.toBeInTheDocument();
         expect(document.querySelector('aside a[href="/settings"]')).toBeInTheDocument();
       });
+    });
+
+    it('shows one Model import entry instead of MakerWorld', async () => {
+      render(<Layout />);
+
+      await waitFor(() => {
+        expect(document.querySelector('aside a[href="/import"]')).toBeInTheDocument();
+      });
+      expect(document.querySelector('aside a[href="/makerworld"]')).not.toBeInTheDocument();
+      expect(document.querySelector('aside a[href="/gyroidvault"]')).not.toBeInTheDocument();
+    });
+
+    it('keeps the old hidden MakerWorld preference for the merged Model import entry', async () => {
+      vi.mocked(localStorage.getItem).mockImplementation((key: string) => (
+        key === 'sidebarHiddenItems' ? JSON.stringify(['makerworld']) : null
+      ));
+
+      render(<Layout />);
+
+      await waitFor(() => {
+        expect(document.querySelector('aside a[href="/settings"]')).toBeInTheDocument();
+      });
+      expect(document.querySelector('aside a[href="/import"]')).not.toBeInTheDocument();
     });
 
     it('links the sidebar to Farm Command Center instead of the TV monitor route', async () => {
@@ -490,44 +513,35 @@ describe('Layout', () => {
       window.localStorage.setItem('auth_token', 'test-token');
     };
 
-    const findMakerWorldNavLink = () => {
-      // Sidebar nav links use react-router's `to` prop, which renders as a
-      // plain `<a href="/makerworld">`. Match on the href so the test isn't
-      // coupled to whatever locale string is rendered.
-      return document.querySelector('aside a[href="/makerworld"]');
+    const findModelImportNavLink = () => {
+      // MakerWorld now lives in the Model import entry (``/import``). Match
+      // on the href so the test isn't coupled to the rendered locale string.
+      return document.querySelector('aside a[href="/import"]');
     };
 
-    it('hides the MakerWorld nav entry when the user lacks makerworld:view', async () => {
-      // Standard user without the MakerWorld permission. Every other
-      // permission they hold (library:read, etc.) is irrelevant here — the
-      // gate is per-entry and the MakerWorld entry must not render.
-      enableAuthWithUser(['library:read', 'archives:read', 'queue:read']);
+    it('hides the Model import entry when the user can reach none of its tabs', async () => {
+      // Neither makerworld:view, library:read nor settings:read.
+      enableAuthWithUser(['archives:read', 'queue:read']);
 
       render(<Layout />);
 
       await waitFor(() => {
-        // Wait for the auth resolution + sidebar render. Some other nav
-        // entry (Files / Archives) confirms the sidebar finished mounting.
         const sidebar = document.querySelector('aside');
         expect(sidebar).toBeInTheDocument();
-        expect(sidebar?.querySelector('a[href="/files"]')).toBeInTheDocument();
+        expect(sidebar?.querySelector('a[href="/archives"]')).toBeInTheDocument();
       });
 
-      expect(findMakerWorldNavLink()).toBeNull();
+      expect(findModelImportNavLink()).toBeNull();
+      expect(document.querySelector('aside a[href="/makerworld"]')).toBeNull();
     });
 
-    it('shows the MakerWorld nav entry when the user has makerworld:view', async () => {
-      enableAuthWithUser([
-        'library:read',
-        'archives:read',
-        'queue:read',
-        'makerworld:view',
-      ]);
+    it('shows the Model import entry when the user has makerworld:view only', async () => {
+      enableAuthWithUser(['archives:read', 'queue:read', 'makerworld:view']);
 
       render(<Layout />);
 
       await waitFor(() => {
-        expect(findMakerWorldNavLink()).toBeInTheDocument();
+        expect(findModelImportNavLink()).toBeInTheDocument();
       });
     });
   });
