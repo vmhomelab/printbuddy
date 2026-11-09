@@ -4545,6 +4545,12 @@ export default {
 
   // Model Viewer
   modelViewer: {
+    shading: {
+      label: '表示モード',
+      solid: 'ソリッド',
+      wireframe: 'ワイヤーフレーム',
+      xray: 'X線',
+    },
     openInSlicer: 'スライサーで開く',
     tabs: {
       model: '3Dモデル',

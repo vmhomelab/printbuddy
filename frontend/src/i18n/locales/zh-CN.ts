@@ -4532,6 +4532,12 @@ export default {
 
   // Model Viewer
   modelViewer: {
+    shading: {
+      label: '显示模式',
+      solid: '实体',
+      wireframe: '线框',
+      xray: 'X 光透视',
+    },
     openInSlicer: '在切片软件中打开',
     tabs: {
       model: '3D 模型',

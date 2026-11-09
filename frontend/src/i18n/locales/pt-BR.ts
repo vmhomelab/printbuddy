@@ -4533,6 +4533,12 @@ export default {
 
   // Model Viewer
   modelViewer: {
+    shading: {
+      label: 'Modo de exibição',
+      solid: 'Sólido',
+      wireframe: 'Aramado',
+      xray: 'Raio X',
+    },
     openInSlicer: 'Abrir no Slicer',
     tabs: {
       model: 'Modelo 3D',

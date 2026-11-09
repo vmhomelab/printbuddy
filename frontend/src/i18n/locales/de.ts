@@ -4544,6 +4544,12 @@ export default {
 
   // Model Viewer
   modelViewer: {
+    shading: {
+      label: 'Darstellung',
+      solid: 'Normal',
+      wireframe: 'Drahtgitter',
+      xray: 'Röntgen',
+    },
     openInSlicer: 'Im Slicer öffnen',
     tabs: {
       model: '3D-Modell',
