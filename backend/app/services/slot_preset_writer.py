@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.slot_preset import SlotPresetMapping
@@ -50,7 +51,8 @@ async def upsert_slot_preset(
     """
     if not preset_id:
         return
-    try:
+
+    async def read() -> SlotPresetMapping | None:
         existing = await db.execute(
             select(SlotPresetMapping).where(
                 SlotPresetMapping.printer_id == printer_id,
@@ -58,23 +60,35 @@ async def upsert_slot_preset(
                 SlotPresetMapping.tray_id == tray_id,
             )
         )
-        mapping = existing.scalar_one_or_none()
-        if mapping:
-            mapping.preset_id = preset_id
-            mapping.preset_name = preset_name
-            mapping.preset_source = preset_source
-            mapping.tray_info_idx = configured_tray_info_idx or None
+        return existing.scalar_one_or_none()
+
+    def write(mapping: SlotPresetMapping) -> None:
+        mapping.preset_id = preset_id
+        mapping.preset_name = preset_name
+        mapping.preset_source = preset_source
+        mapping.tray_info_idx = configured_tray_info_idx or None
+
+    try:
+        mapping = await read()
+        if mapping is None:
+            mapping = SlotPresetMapping(printer_id=printer_id, ams_id=ams_id, tray_id=tray_id)
+            write(mapping)
+            try:
+                # In a savepoint: the Spoolman AMS sync is not serialised per
+                # printer (network-bound), so two AMS pushes ~30 ms apart at
+                # power-on can both find no row and both insert it. The loser's
+                # insert hits uq_slot_preset; only the savepoint is rolled back,
+                # and the row the other pass wrote gets this pass's values.
+                async with db.begin_nested():
+                    db.add(mapping)
+                    await db.flush()
+            except IntegrityError:
+                mapping = await read()
+                if mapping is None:
+                    raise
+                write(mapping)
         else:
-            mapping = SlotPresetMapping(
-                printer_id=printer_id,
-                ams_id=ams_id,
-                tray_id=tray_id,
-                preset_id=preset_id,
-                preset_name=preset_name,
-                preset_source=preset_source,
-                tray_info_idx=configured_tray_info_idx or None,
-            )
-            db.add(mapping)
+            write(mapping)
         await db.commit()
     except Exception as e:
         logger.warning(

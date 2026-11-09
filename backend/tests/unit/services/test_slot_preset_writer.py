@@ -199,3 +199,52 @@ async def test_spoolman_helper_skips_when_tray_info_idx_unknown(db_session, prin
     )
     result = await db_session.execute(select(SlotPresetMapping).where(SlotPresetMapping.printer_id == printer.id))
     assert result.scalar_one_or_none() is None
+
+
+class _NoRow:
+    def scalar_one_or_none(self):
+        return None
+
+
+@pytest.mark.asyncio
+async def test_a_concurrent_insert_is_written_as_an_update(db_session, printer_factory):
+    """Two AMS pushes ~30 ms apart at power-on both run the (unlocked) Spoolman
+    sync: both read "no row" and both INSERT. The loser hits uq_slot_preset;
+    it must write its values as an update and leave the session usable."""
+    printer = await printer_factory()
+    await upsert_slot_preset(
+        db=db_session, printer_id=printer.id, ams_id=0, tray_id=1, preset_id="GFB99", preset_name="Generic ABS"
+    )
+
+    real_execute = db_session.execute
+    reads = 0
+
+    async def first_read_misses_the_row(statement, *args, **kwargs):
+        # This pass read before the other one committed its row.
+        nonlocal reads
+        reads += 1
+        if reads == 1:
+            return _NoRow()
+        return await real_execute(statement, *args, **kwargs)
+
+    db_session.execute = first_read_misses_the_row
+    try:
+        await upsert_slot_preset(
+            db=db_session,
+            printer_id=printer.id,
+            ams_id=0,
+            tray_id=1,
+            preset_id="P0802d25",
+            preset_name="Winkle ABS Normal",
+        )
+    finally:
+        db_session.execute = real_execute
+
+    assert reads == 2  # the INSERT failed and the row was read again
+    rows = (
+        (await db_session.execute(select(SlotPresetMapping).where(SlotPresetMapping.printer_id == printer.id)))
+        .scalars()
+        .all()
+    )
+    assert [(r.tray_id, r.preset_id, r.preset_name) for r in rows] == [(1, "P0802d25", "Winkle ABS Normal")]
+
