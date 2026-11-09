@@ -533,3 +533,19 @@ class TestImportRoute:
 
 def test_module_exports_limits():
     assert gv_service.MAX_DOWNLOAD_BYTES > gv_service.MAX_ASSET_BYTES
+
+
+class TestAppSettingsFlag:
+    @pytest.mark.asyncio
+    async def test_enabled_flag_is_exposed_read_only(self, async_client):
+        resp = await async_client.get("/api/v1/settings/")
+        assert resp.json()["gyroidvault_enabled"] is False
+
+        await _configure(async_client)
+        body = (await async_client.get("/api/v1/settings/")).json()
+        assert body["gyroidvault_enabled"] is True
+        assert "gyroidvault_api_key" not in body
+
+        # The generic settings PUT must not be able to flip it.
+        await async_client.put("/api/v1/settings/", json={"gyroidvault_enabled": False})
+        assert (await async_client.get("/api/v1/settings/")).json()["gyroidvault_enabled"] is True

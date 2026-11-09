@@ -23,6 +23,7 @@ import { ConfirmModal } from '../components/ConfirmModal';
 import { CreateUserAdvancedAuthModal } from '../components/CreateUserAdvancedAuthModal';
 import { LdapUserPicker } from '../components/LdapUserPicker';
 import { SpoolmanSettings } from '../components/SpoolmanSettings';
+import { GyroidVaultSettings } from '../components/GyroidVaultSettings';
 import { SpoolCatalogSettings } from '../components/SpoolCatalogSettings';
 import { ColorCatalogSettings } from '../components/ColorCatalogSettings';
 import { ExternalLinksSettings } from '../components/ExternalLinksSettings';
@@ -100,6 +101,7 @@ registerSettingsSearch({ labelKey: 'settings.ftpRetry', tab: 'network', keywords
 registerSettingsSearch({ labelKey: 'settings.homeAssistant', tab: 'network', keywords: 'home assistant ha hass mqtt integration', anchor: 'card-ha' });
 registerSettingsSearch({ labelKey: 'settings.mqttPublishing', tab: 'network', keywords: 'mqtt publish broker topic', anchor: 'card-mqtt' });
 registerSettingsSearch({ labelKey: 'settings.pandaBreath.title', labelFallback: 'Panda Breath', tab: 'network', keywords: 'panda breath biqu chamber heater mqtt accessory', anchor: 'card-panda-breath' });
+registerSettingsSearch({ labelKey: 'gyroidvault.settings.title', labelFallback: 'GyroidVault', tab: 'network', keywords: 'gyroidvault model library stl vault import api key integration', anchor: 'card-gyroidvault' });
 registerSettingsSearch({ labelKey: 'settings.prometheusMetrics', tab: 'network', keywords: 'prometheus metrics grafana monitoring bearer token', anchor: 'card-prometheus' });
 registerSettingsSearch({ labelKey: 'settings.createNewApiKey', tab: 'apikeys', keywords: 'api key create permission scope', anchor: 'card-createapi' });
 registerSettingsSearch({ labelKey: 'settings.webhookEndpoints', tab: 'apikeys', keywords: 'webhook endpoint post http', anchor: 'card-webhooks' });
@@ -3009,6 +3011,7 @@ export function SettingsPage() {
             </CardContent>
           </Card>
 
+          <GyroidVaultSettings />
         </div>
 
         {/* Right Column - Home Assistant & MQTT Publishing */}

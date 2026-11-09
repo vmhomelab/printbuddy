@@ -1285,6 +1285,8 @@ export interface AppSettings {
   // MakerWorld import defaults
   makerworld_archive_details_default: boolean;
   makerworld_cover_thumbnail_default: boolean;
+  // GyroidVault integration toggle (read-only here; set via /gyroidvault/settings)
+  gyroidvault_enabled?: boolean;
   // Camera view settings
   camera_view_mode: CameraViewMode;
   // Preferred slicer
@@ -1454,6 +1456,123 @@ export interface LibrarySourceSnapshot {
 }
 
 export interface MakerworldRecentImport {
+  library_file_id: number;
+  filename: string;
+  folder_id: number | null;
+  thumbnail_path: string | null;
+  source_url: string | null;
+  created_at: string;
+}
+
+// GyroidVault integration (self-hosted model library). The backend reshapes
+// GyroidVault's payloads, so these mirror backend/app/schemas/gyroidvault.py.
+export interface GyroidVaultSettings {
+  enabled: boolean;
+  url: string;
+  has_api_key: boolean;
+}
+
+export interface GyroidVaultSettingsUpdate {
+  enabled?: boolean;
+  url?: string;
+  /** Empty string clears the stored key; omit to keep it. */
+  api_key?: string;
+}
+
+export interface GyroidVaultTestResult {
+  ok: boolean;
+  version: string | null;
+  username: string | null;
+  role: string | null;
+  supported_version: boolean;
+  warning: string | null;
+  error: string | null;
+}
+
+export interface GyroidVaultStatus {
+  enabled: boolean;
+  configured: boolean;
+  connected: boolean;
+  version: string | null;
+  supported_version: boolean;
+  error: string | null;
+}
+
+export interface GyroidVaultTag {
+  id: number;
+  name: string;
+}
+
+export interface GyroidVaultCategory {
+  id: number;
+  name: string;
+  color: string | null;
+  model_count: number;
+}
+
+export interface GyroidVaultModelSummary {
+  id: number;
+  name: string;
+  description: string;
+  category_id: number | null;
+  category_name: string | null;
+  category_color: string | null;
+  thumbnail_path: string | null;
+  file_count: number;
+  file_types: string[];
+  print_count: number;
+  tags: GyroidVaultTag[];
+  updated_at: string | null;
+}
+
+export interface GyroidVaultModelList {
+  models: GyroidVaultModelSummary[];
+  total_items: number;
+  total_pages: number;
+  page: number;
+  limit: number;
+}
+
+export interface GyroidVaultFile {
+  id: number;
+  filename: string;
+  file_type: string;
+  file_size: number;
+  importable: boolean;
+  imported_library_file_id: number | null;
+}
+
+export interface GyroidVaultModelDetail extends GyroidVaultModelSummary {
+  print_tips: string;
+  source_url: string | null;
+  web_url: string;
+  files: GyroidVaultFile[];
+}
+
+export interface GyroidVaultModelQuery {
+  search?: string;
+  category?: string;
+  tag?: string;
+  format?: string;
+  sort?: 'updated' | 'created' | 'name' | 'prints' | 'files';
+  page?: number;
+  limit?: number;
+}
+
+export interface GyroidVaultImportedFile {
+  gyroidvault_file_id: number;
+  library_file_id: number | null;
+  filename: string | null;
+  was_existing: boolean;
+  error: string | null;
+}
+
+export interface GyroidVaultImportResponse {
+  folder_id: number;
+  files: GyroidVaultImportedFile[];
+}
+
+export interface GyroidVaultRecentImport {
   library_file_id: number;
   filename: string;
   folder_id: number | null;
@@ -5033,6 +5152,40 @@ export const api = {
         use_cover_as_thumbnail,
       }),
     }),
+
+  // GyroidVault (self-hosted model library) browse + import.
+  getGyroidVaultSettings: () => request<GyroidVaultSettings>('/gyroidvault/settings'),
+  updateGyroidVaultSettings: (data: GyroidVaultSettingsUpdate) =>
+    request<GyroidVaultSettings>('/gyroidvault/settings', {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  testGyroidVaultConnection: (data: { url?: string; api_key?: string } = {}) =>
+    request<GyroidVaultTestResult>('/gyroidvault/test', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  getGyroidVaultStatus: () => request<GyroidVaultStatus>('/gyroidvault/status'),
+  getGyroidVaultModels: (query: GyroidVaultModelQuery = {}) => {
+    const params = new URLSearchParams();
+    Object.entries(query).forEach(([key, value]) => {
+      if (value !== undefined && value !== null && value !== '') params.set(key, String(value));
+    });
+    const qs = params.toString();
+    return request<GyroidVaultModelList>(`/gyroidvault/models${qs ? `?${qs}` : ''}`);
+  },
+  getGyroidVaultModel: (modelId: number) => request<GyroidVaultModelDetail>(`/gyroidvault/models/${modelId}`),
+  getGyroidVaultCategories: () => request<GyroidVaultCategory[]>('/gyroidvault/categories'),
+  getGyroidVaultTags: () => request<GyroidVaultTag[]>('/gyroidvault/tags'),
+  getGyroidVaultAssetUrl: (path: string) =>
+    withStreamToken(`${API_BASE}/gyroidvault/asset?path=${encodeURIComponent(path)}`),
+  importGyroidVaultFiles: (model_id: number, file_ids: number[], folder_id?: number | null) =>
+    request<GyroidVaultImportResponse>('/gyroidvault/import', {
+      method: 'POST',
+      body: JSON.stringify({ model_id, file_ids, folder_id: folder_id ?? null }),
+    }),
+  getGyroidVaultRecentImports: (limit = 10) =>
+    request<GyroidVaultRecentImport[]>(`/gyroidvault/recent-imports?limit=${limit}`),
   getCloudSettingDetail: (settingId: string) =>
     request<SlicerSettingDetail>(`/cloud/settings/${settingId}`),
   createCloudSetting: (data: SlicerSettingCreate) =>

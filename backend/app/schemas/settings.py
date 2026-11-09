@@ -35,6 +35,9 @@ class AppSettings(BaseModel):
         default=True,
         description="Report Partial Usage for Failed Prints. When a print fails or is cancelled, report the estimated filament used up to that point based on layer progress.",
     )
+    # GyroidVault integration (read-only here; configured via /gyroidvault/settings,
+    # which also holds the URL and the encrypted API key).
+    gyroidvault_enabled: bool = Field(default=False, description="GyroidVault model library integration is enabled")
     disable_filament_warnings: bool = Field(
         default=False,
         description="Disable insufficient filament warnings when printing or queueing prints",
