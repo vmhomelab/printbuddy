@@ -4590,7 +4590,7 @@ function PrinterCard({
                     {regularAms.length > 0 && (
                       <div className="grid grid-cols-2 gap-3">
                         {regularAms.map((ams) => {
-                        const isK2CfsLikeUnit = (isCrealityK2Moonraker && ams.tray.length === 4) || ams.module_type === 'cfs';
+                        const isK2CfsLikeUnit = (isCrealityK2Moonraker && ams.tray.length === 4) || ams.module_type === 'cfs' || ams.module_type === 'k2oh_cfs';
                         const isSnapmakerU1Unit = ams.module_type === 'snapmaker_u1';
                         const mappedExtruderId = amsExtruderMap[String(ams.id)];
                         const normalizedId = ams.id >= 128 ? ams.id - 128 : ams.id;
@@ -4732,6 +4732,8 @@ function PrinterCard({
                                 // Use array index if available, as tray.id may not always be set
                                 const tray = ams.tray[slotIdx] || ams.tray.find(t => t.id === slotIdx);
                                 const isCfsUnit = ams.module_type === 'cfs' || isK2CfsLikeUnit;
+                                // K2-OpenHost (Kalico) CFS: load/unload go through its BOX_* commands.
+                                const isOpenHostCfsUnit = ams.module_type === 'k2oh_cfs';
                                 const isSlotAssignmentOnlyUnit = isCfsUnit || isSnapmakerU1Unit;
                                 const snapmakerLoadState = isSnapmakerU1Unit ? snapmakerU1LoadState(tray) : null;
                                 const hasFillLevel = tray?.tray_type && tray.remain >= 0;
@@ -4952,6 +4954,46 @@ function PrinterCard({
                                             <AssignSpoolIcon className="w-3 h-3" />
                                             {t('common.assign', 'Assign')}
                                           </button>
+                                        )}
+                                        {isOpenHostCfsUnit && (
+                                          <>
+                                            <button
+                                              className={`w-full px-3 py-1.5 text-left text-xs flex items-center gap-2 ${
+                                                hasPermission('printers:control')
+                                                  ? 'text-white hover:bg-bambu-dark-tertiary'
+                                                  : 'text-bambu-gray/50 cursor-not-allowed'
+                                              }`}
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                if (!hasPermission('printers:control')) return;
+                                                loadAmsTrayMutation.mutate({ trayId: ams.id * 4 + slotIdx });
+                                                setAmsSlotMenu(null);
+                                              }}
+                                              disabled={!hasPermission('printers:control') || !tray?.tray_type}
+                                              title={!hasPermission('printers:control') ? t('printers.permission.noControl') : undefined}
+                                            >
+                                              <LogIn className="w-3 h-3" />
+                                              {t('printers.ams.load')}
+                                            </button>
+                                            <button
+                                              className={`w-full px-3 py-1.5 text-left text-xs flex items-center gap-2 ${
+                                                hasPermission('printers:control')
+                                                  ? 'text-white hover:bg-bambu-dark-tertiary'
+                                                  : 'text-bambu-gray/50 cursor-not-allowed'
+                                              }`}
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                if (!hasPermission('printers:control')) return;
+                                                unloadAmsMutation.mutate({});
+                                                setAmsSlotMenu(null);
+                                              }}
+                                              disabled={!hasPermission('printers:control')}
+                                              title={!hasPermission('printers:control') ? t('printers.permission.noControl') : undefined}
+                                            >
+                                              <LogOut className="w-3 h-3" />
+                                              {t('printers.ams.unload')}
+                                            </button>
+                                          </>
                                         )}
                                       </div>
                                     )}

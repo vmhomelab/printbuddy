@@ -883,7 +883,7 @@ class BackgroundDispatchService:
                         printer_model=printer_model,
                         ftp_timeout=ftp_timeout,
                     )
-                    raise RuntimeError("Failed to start print")
+                    raise RuntimeError(self._start_failure_message(job.printer_id))
 
                 # Register the archive's local 3MF in the cover-cache so the
                 # /cover endpoint can skip FTP — we already have the file on
@@ -1098,7 +1098,7 @@ class BackgroundDispatchService:
                         ftp_timeout=ftp_timeout,
                     )
                     await db.rollback()
-                    raise RuntimeError("Failed to start print")
+                    raise RuntimeError(self._start_failure_message(job.printer_id))
 
                 # Same as the archive path: register the library file's local
                 # 3MF in the cover-cache so /cover skips FTP (#1166 follow-up).
@@ -1282,6 +1282,15 @@ class BackgroundDispatchService:
         except (ValueError, zipfile.BadZipFile, OSError):
             pass
         return plate_id
+
+    @staticmethod
+    def _start_failure_message(printer_id: int) -> str:
+        """``Failed to start print``, with the printer's own reason when it gave one."""
+        client = printer_manager.get_client(printer_id)
+        reason = getattr(client, "last_error", None) if client is not None else None
+        if isinstance(reason, str) and reason:
+            return f"Failed to start print: {reason}"
+        return "Failed to start print"
 
     @staticmethod
     def _is_sliced_file(filename: str) -> bool:

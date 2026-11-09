@@ -659,6 +659,17 @@ def _moonraker_url_candidates(base_url: str) -> list[str]:
     return candidates
 
 
+def _moonraker_error_message(exc: httpx.HTTPStatusError) -> str:
+    """Klipper's own error text from a failed Moonraker request (e.g. a gcode error)."""
+    try:
+        data = exc.response.json()
+    except ValueError:
+        return str(exc)
+    error = data.get("error") if isinstance(data, dict) else None
+    message = error.get("message") if isinstance(error, dict) else None
+    return str(message).strip() if message else str(exc)
+
+
 def _creality_cfs_slot_name(tray_id: int) -> str | None:
     if tray_id < 0 or tray_id > 15:
         return None
@@ -798,6 +809,9 @@ class MoonrakerPrinterClient:
         self._current_print_started_at: float | None = None
         self._current_file_metadata: dict[str, Any] = {}
         self._current_file_metadata_name: str | None = None
+        # Firmware message of the last failed CFS/print-start command, for the
+        # API and print-dispatch error shown to the user.
+        self.last_error: str | None = None
 
     @property
     def _headers(self) -> dict[str, str]:
@@ -1164,6 +1178,106 @@ class MoonrakerPrinterClient:
             return False
         return self._current_cfs_tray_id() == tray_id
 
+    # ------------------------------------------------------------------
+    # K2-OpenHost (Kalico) CFS control: BOX_* commands, see the firmware's
+    # docs/box-status-api.md. Slot numbers are global
+    # ((box address - 1) * 4 + local), the external spool is the last
+    # physical slot + 1.
+    # ------------------------------------------------------------------
+
+    def _openhost_slot(self, tray_id: int) -> int | None:
+        """Firmware slot number for a Printbuddy tray id (254/255 = external spool)."""
+        cfs = self.state.raw_data.get("cfs")
+        if not isinstance(cfs, dict):
+            return None
+        if tray_id in (254, 255):
+            return _safe_int(cfs.get("external_slot"))
+        slots = cfs.get("slot_index_by_tray")
+        return _safe_int(slots.get(tray_id)) if isinstance(slots, dict) else None
+
+    def _openhost_command(self, script: str) -> bool:
+        """Send a BOX_* command; keep the firmware's refusal text in last_error."""
+        self.last_error = None
+        try:
+            return self.send_gcode(script)
+        except httpx.HTTPStatusError as exc:
+            self.last_error = _moonraker_error_message(exc)
+            logger.warning("K2-OpenHost CFS command %r refused: %s", script, self.last_error)
+            return False
+
+    def _openhost_printer_busy(self) -> bool:
+        if self.state.state in {"RUNNING", "PAUSE"}:
+            self.last_error = "Finish or cancel the current print before changing CFS filament"
+            return True
+        return False
+
+    def _openhost_load(self, tray_id: int) -> bool:
+        if self._openhost_printer_busy():
+            return False
+        slot = self._openhost_slot(int(tray_id))
+        if slot is None:
+            self.last_error = f"CFS slot {tray_id} is not available"
+            return False
+        # Full change like the printer UI: unload the current filament, load
+        # and purge the new one.
+        return self._openhost_command(f"BOX_SELECT_SLOT SLOT={slot}")
+
+    def _openhost_unload(self) -> bool:
+        if self._openhost_printer_busy():
+            return False
+        return self._openhost_command("BOX_UNLOAD")
+
+    def _openhost_print_tools(self, filename: str) -> list[int] | None:
+        """Tools the file uses, as the firmware reads them (BOX_PRINT_INFO).
+
+        Returns None when the firmware refused the command (last_error set).
+        """
+        quoted = filename.replace('"', "")
+        if not self._openhost_command(f'BOX_PRINT_INFO FILENAME="{quoted}"'):
+            return None
+        status = self._query_objects(["box"])
+        box = status.get("box") if isinstance(status, dict) else None
+        info = box.get("print_info") if isinstance(box, dict) else None
+        if not isinstance(info, dict) or str(info.get("filename") or "").lstrip("/") != filename.lstrip("/"):
+            return []
+        tools = []
+        for item in info.get("tools") or []:
+            tool = _safe_int(item.get("tool")) if isinstance(item, dict) else None
+            if tool is not None and tool >= 0:
+                tools.append(tool)
+        return sorted(set(tools))
+
+    def _apply_openhost_print_map(self, filename: str, ams_mapping: list[int] | None) -> bool:
+        """Send the print dialog's tool -> slot choice as BOX_PRINT_MAP.
+
+        ``ams_mapping[tool]`` is the Printbuddy tray id chosen for that tool
+        (-1 = none). The firmware needs every tool the file uses mapped
+        exactly once, so without a complete choice no map is sent and the
+        firmware maps the tools itself, as before.
+        """
+        if not ams_mapping or all(_safe_int(tray) is None or _safe_int(tray) < 0 for tray in ams_mapping):
+            return True
+        tools = self._openhost_print_tools(filename)
+        if tools is None:
+            return False
+        if not tools:
+            logger.info("K2-OpenHost: %s has no tool metadata; starting without a CFS tool map", filename)
+            return True
+        pairs: list[str] = []
+        for tool in tools:
+            tray = _safe_int(ams_mapping[tool]) if tool < len(ams_mapping) else None
+            if tray is None or tray < 0:
+                logger.info(
+                    "K2-OpenHost: no slot chosen for T%d of %s; the firmware maps the tools itself", tool, filename
+                )
+                return True
+            slot = self._openhost_slot(tray)
+            if slot is None:
+                self.last_error = f"CFS slot {tray} chosen for T{tool} is not available"
+                return False
+            pairs.append(f"{tool}:{slot}")
+        return self._openhost_command("BOX_PRINT_MAP MAP=" + ",".join(pairs))
+
     def _prepare_creality_cfs_slot_for_print(self, ams_mapping: list[int] | None) -> bool:
         target_tray_id = self._target_cfs_tray_from_mapping(ams_mapping)
         if target_tray_id is None:
@@ -1347,7 +1461,9 @@ class MoonrakerPrinterClient:
                     {
                         "id": ams_id,
                         "name": f"CFS T{ams_id + 1}",
-                        "module_type": "cfs",
+                        # Distinct from Creality's "cfs": the UI offers load/unload
+                        # only for this driver's BOX_* commands.
+                        "module_type": "k2oh_cfs",
                         "humidity_raw": _safe_int(unit.get("humidity_pct", box.get("humidity_pct"))),
                         "temp": _safe_int(unit.get("temp_c", box.get("temp_c"))),
                         "state": unit.get("state"),
@@ -1381,6 +1497,7 @@ class MoonrakerPrinterClient:
             "loaded_slot": loaded_slot,
             "active_slots": active_slots,
             "slot_index_by_tray": slot_index_by_tray,
+            "external_slot": _safe_int(external.get("index")) if external else None,
             "print_mapping": box.get("print_mapping"),
             "print_info": box.get("print_info"),
             "filament_detected": box.get("filament_detected"),
@@ -2004,7 +2121,7 @@ class MoonrakerPrinterClient:
     def ams_load_filament(self, tray_id: int, extruder_id: int | None = None) -> bool:  # noqa: ARG002
         """Load/select a Creality CFS slot using the hardware-verified M8200 path."""
         if self.is_k2_openhost_cfs():
-            return False  # K2-OpenHost has no M8200; its BOX_* control is not wired up yet
+            return self._openhost_load(tray_id)
         if _creality_cfs_slot_name(tray_id) is None:
             return False
         return self.send_gcode(f"M8200 P\nM8200 L I={int(tray_id)}\nM8200 O")
@@ -2012,7 +2129,7 @@ class MoonrakerPrinterClient:
     def ams_unload_filament(self, tray_id: int | None = None) -> bool:
         """Unload the currently loaded Creality CFS filament using M8200."""
         if self.is_k2_openhost_cfs():
-            return False  # K2-OpenHost has no M8200; its BOX_* control is not wired up yet
+            return self._openhost_unload()
         if tray_id is not None and _creality_cfs_slot_name(int(tray_id)) is None:
             return False
         return self.send_gcode("M8200 P\nM8200 C\nM8200 R\nM8200 O")
@@ -2029,6 +2146,9 @@ class MoonrakerPrinterClient:
 
     def start_print(self, filename: str, plate_id: int = 1, **kwargs: Any) -> bool:  # noqa: ARG002
         normalized = self._normalize_gcodes_path(filename)
+        self.last_error = None
+        if self.is_k2_openhost_cfs() and not self._apply_openhost_print_map(normalized, kwargs.get("ams_mapping")):
+            return False
         if not self._prepare_creality_cfs_slot_for_print(kwargs.get("ams_mapping")):
             return False
         try:

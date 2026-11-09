@@ -1315,7 +1315,7 @@ async def assign_spool(
                     unit_id = int(ams_unit.get("id", -999))
                 except (TypeError, ValueError):
                     continue
-                if unit_id == data.ams_id and ams_unit.get("module_type") == "cfs":
+                if unit_id == data.ams_id and ams_unit.get("module_type") in ("cfs", "k2oh_cfs"):
                     is_assignment_only_slot = True
                     break
             if tray:

@@ -1865,6 +1865,9 @@ async def start_printer_file(
         success = printer_manager.start_print(printer_id, path)
 
     if not success:
+        reason = getattr(provider_client, "last_error", None) if provider_client is not None else None
+        if isinstance(reason, str) and reason:
+            raise HTTPException(400, f"Failed to start print: {reason}")
         raise HTTPException(500, f"Failed to start print: {path}")
 
     if direct_file_info:
@@ -4494,7 +4497,7 @@ async def ams_load(
     success = client.ams_load_filament(tray_id)
     if not success:
         if getattr(client, "is_k2_openhost_cfs", lambda: False)() is True:
-            raise HTTPException(400, "CFS load is not supported yet for K2-OpenHost (Kalico) firmware")
+            raise HTTPException(400, getattr(client, "last_error", None) or "CFS load failed")
         provider = str(getattr(printer, "provider", "") or "").lower()
         model = str(getattr(printer, "model", "") or "").lower()
         if provider in {"klipper", "mainsail", "fluidd"} and "creality k2" in model and tray_id in range(16):
@@ -4540,7 +4543,7 @@ async def ams_unload(
         success = client.ams_unload_filament()
     if not success:
         if getattr(client, "is_k2_openhost_cfs", lambda: False)() is True:
-            raise HTTPException(400, "CFS unload is not supported yet for K2-OpenHost (Kalico) firmware")
+            raise HTTPException(400, getattr(client, "last_error", None) or "CFS unload failed")
         model = str(getattr(printer, "model", "") or "").lower()
         if (
             provider in {"klipper", "mainsail", "fluidd"}
