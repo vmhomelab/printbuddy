@@ -1,1 +1,0 @@
-import{i as e}from"./rolldown-runtime-COiEfhsA.js";import{S as t}from"./client-D39tUZgE.js";var n=e(t(),1);function r(){let[e,t]=(0,n.useState)(!1);return(0,n.useLayoutEffect)(()=>{t(!0)},[]),e}export{r as t};
