@@ -69,6 +69,8 @@ function Thumbnail({ path, alt, className }: { path: string | null; alt: string;
   );
 }
 
+const GYROIDVAULT_REPO_URL = 'https://github.com/TeeCodeDev/GyroidVault';
+
 export function GyroidVaultPage({ embedded = false }: { embedded?: boolean } = {}) {
   const { t } = useTranslation();
   const { hasPermission } = useAuth();
@@ -198,7 +200,20 @@ export function GyroidVaultPage({ embedded = false }: { embedded?: boolean } = {
             {t('gyroidvault.title')}
           </h1>
         )}
-        <p className={embedded ? 'text-bambu-gray' : 'text-bambu-gray mt-1'}>{t('gyroidvault.description')}</p>
+        <div
+          className={`flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 ${embedded ? '' : 'mt-1'}`}
+        >
+          <p className="text-bambu-gray">{t('gyroidvault.description')}</p>
+          <a
+            href={GYROIDVAULT_REPO_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 text-sm text-bambu-green hover:underline"
+          >
+            <ExternalLink className="w-3.5 h-3.5" />
+            {t('gyroidvault.githubLink')}
+          </a>
+        </div>
       </div>
 
       {statusQuery.isLoading && (

@@ -5634,6 +5634,7 @@ export default {
     },
   },
   gyroidvault: {
+    githubLink: 'GyroidVault en GitHub',
     title: 'GyroidVault',
     description: 'Explora tu biblioteca de modelos GyroidVault autoalojada e importa archivos a la biblioteca de Printbuddy.',
     notConfiguredTitle: 'GyroidVault no está configurado',

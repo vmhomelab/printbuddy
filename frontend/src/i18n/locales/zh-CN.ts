@@ -5612,6 +5612,7 @@ export default {
     },
   },
   gyroidvault: {
+    githubLink: 'GitHub 上的 GyroidVault',
     title: 'GyroidVault',
     description: '浏览你自托管的 GyroidVault 模型库，并将文件导入 Printbuddy 库。',
     notConfiguredTitle: '尚未设置 GyroidVault',

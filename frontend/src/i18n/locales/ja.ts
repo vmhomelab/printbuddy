@@ -5626,6 +5626,7 @@ export default {
     },
   },
   gyroidvault: {
+    githubLink: 'GitHub の GyroidVault',
     title: 'GyroidVault',
     description: 'セルフホストの GyroidVault モデルライブラリを閲覧し、ファイルを Printbuddy ライブラリにインポートします。',
     notConfiguredTitle: 'GyroidVault が設定されていません',

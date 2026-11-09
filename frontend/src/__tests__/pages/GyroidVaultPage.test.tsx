@@ -84,6 +84,14 @@ describe('GyroidVaultPage', () => {
     expect(await screen.findByText('GyroidVault is not set up')).toBeInTheDocument();
   });
 
+  it('links to the GyroidVault GitHub repository', async () => {
+    render(<GyroidVaultPage embedded />);
+    const link = await screen.findByRole('link', { name: /GyroidVault on GitHub/ });
+    expect(link).toHaveAttribute('href', 'https://github.com/TeeCodeDev/GyroidVault');
+    expect(link).toHaveAttribute('target', '_blank');
+    expect(link).toHaveAttribute('rel', expect.stringContaining('noopener'));
+  });
+
   it('shows the upstream error when GyroidVault is unreachable', async () => {
     server.use(
       http.get('*/gyroidvault/status', () =>
