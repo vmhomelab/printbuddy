@@ -49,9 +49,9 @@ CONFIGS = {
     ),
     "bark": ({"device_key": "bark-key", "server": "https://bark.example"}, ["device_key"]),
     "gotify": ({"server": "https://gotify.example", "app_token": "go-tok"}, ["app_token"]),
-    # Printbuddy's Notify keeps its device tokens (top level and per recipient)
-    # readable: its edit dialog copies them into the recipients list.
-    "notify": ({"device_id": "IO12345678901234", "device_token": "notify-tok"}, []),
+    # Printbuddy's Notify: the legacy single-device token. Per-recipient
+    # tokens are covered by the Notify tests at the end of this file.
+    "notify": ({"device_id": "IO12345678901234", "device_token": "notify-tok"}, ["device_token"]),
     "homeassistant": ({"service": "notify.mobile"}, []),
 }
 
@@ -380,3 +380,132 @@ async def test_a_kept_smtp_password_is_not_sent_with_weaker_security(async_clien
 
     assert response.status_code == 400, response.text
     assert await _stored(db_session, created["id"]) == config
+
+
+# --- Notify recipients: one device token per recipient ---
+
+NOTIFY_RECIPIENTS = {
+    "recipients": [
+        {"id": "r1", "name": "Phone", "device_id": "IO1111", "device_token": "tok-1", "enabled": True},
+        {"id": "r2", "name": "Tablet", "device_id": "IO2222", "device_token": "tok-2", "enabled": True},
+    ]
+}
+
+
+def _masked_recipients(config: dict) -> list[dict]:
+    return [{**r, "device_token": M} for r in config["recipients"]]
+
+
+async def test_notify_recipient_tokens_are_masked(async_client: AsyncClient):
+    admin = await _admin(async_client)
+    viewer = await _user(async_client, admin, "viewer", ["notifications:read"])
+    created = await _create(async_client, admin, "notify", NOTIFY_RECIPIENTS)
+
+    single = (await async_client.get(f"/api/v1/notifications/{created['id']}", headers=viewer)).json()
+
+    assert created["config"]["recipients"] == _masked_recipients(NOTIFY_RECIPIENTS)
+    assert single["config"]["recipients"] == _masked_recipients(NOTIFY_RECIPIENTS)
+    assert "tok-1" not in json.dumps(single) and "tok-2" not in json.dumps(single)
+
+
+async def test_notify_recipients_saved_back_as_shown_keep_their_tokens(async_client: AsyncClient, db_session):
+    admin = await _admin(async_client)
+    created = await _create(async_client, admin, "notify", NOTIFY_RECIPIENTS)
+    shown = created["config"]["recipients"]
+    # Reordered, one renamed and a new recipient with its own token.
+    body = {
+        "recipients": [
+            {**shown[1], "name": "iPad"},
+            shown[0],
+            {"id": "r3", "name": "Mac", "device_id": "IO3333", "device_token": "tok-3", "enabled": True},
+        ]
+    }
+
+    response, _ = await _patch(async_client, admin, created["id"], {"config": body})
+
+    assert response.status_code == 200, response.text
+    stored = (await _stored(db_session, created["id"]))["recipients"]
+    assert [(r["id"], r["name"], r["device_token"]) for r in stored] == [
+        ("r2", "iPad", "tok-2"),
+        ("r1", "Phone", "tok-1"),
+        ("r3", "Mac", "tok-3"),
+    ]
+
+
+async def test_a_legacy_notify_device_keeps_its_token_when_saved_as_a_recipient(
+    async_client: AsyncClient, db_session
+):
+    admin = await _admin(async_client)
+    created = await _create(async_client, admin, "notify", {"device_id": "IO9999", "device_token": "legacy-tok"})
+    # The edit dialog shows the legacy device as recipient "legacy".
+    body = {"recipients": [{"id": "legacy", "name": "", "device_id": "IO9999", "device_token": M, "enabled": True}]}
+
+    response, _ = await _patch(async_client, admin, created["id"], {"config": body})
+
+    assert response.status_code == 200, response.text
+    assert (await _stored(db_session, created["id"]))["recipients"][0]["device_token"] == "legacy-tok"
+
+
+async def test_a_kept_notify_token_does_not_follow_a_new_device_id(async_client: AsyncClient, db_session):
+    admin = await _admin(async_client)
+    created = await _create(async_client, admin, "notify", NOTIFY_RECIPIENTS)
+    shown = created["config"]["recipients"]
+
+    response, _ = await _patch(
+        async_client, admin, created["id"], {"config": {"recipients": [{**shown[0], "device_id": "IO0000"}, shown[1]]}}
+    )
+
+    assert response.status_code == 400, response.text
+    assert await _stored(db_session, created["id"]) == NOTIFY_RECIPIENTS
+
+
+async def test_a_kept_notify_token_does_not_follow_a_new_server(async_client: AsyncClient, db_session):
+    admin = await _admin(async_client)
+    created = await _create(async_client, admin, "notify", NOTIFY_RECIPIENTS)
+
+    response, _ = await _patch(
+        async_client,
+        admin,
+        created["id"],
+        {"config": {**created["config"], "base_url": "https://relay.example"}},
+    )
+
+    assert response.status_code == 400, response.text
+    assert await _stored(db_session, created["id"]) == NOTIFY_RECIPIENTS
+
+
+async def test_a_notify_placeholder_needs_a_stored_recipient(async_client: AsyncClient, db_session):
+    admin = await _admin(async_client)
+    created = await _create(async_client, admin, "notify", NOTIFY_RECIPIENTS)
+    stranger = {"id": "r9", "name": "", "device_id": "IO9999", "device_token": M, "enabled": True}
+
+    response, _ = await _patch(async_client, admin, created["id"], {"config": {"recipients": [stranger]}})
+
+    assert response.status_code == 400, response.text
+
+
+async def test_a_new_notify_provider_cannot_use_the_placeholder(async_client: AsyncClient):
+    admin = await _admin(async_client)
+    config = {"recipients": [{"id": "r1", "device_id": "IO1111", "device_token": M, "enabled": True}]}
+
+    response = await async_client.post(
+        "/api/v1/notifications/",
+        headers=admin,
+        json={"name": "notify", "provider_type": "notify", "config": config},
+    )
+
+    assert response.status_code == 400, response.text
+
+
+async def test_an_editor_tests_notify_with_the_stored_recipient_tokens(async_client: AsyncClient):
+    admin = await _admin(async_client)
+    created = await _create(async_client, admin, "notify", NOTIFY_RECIPIENTS)
+
+    response, send = await _test_config(
+        async_client,
+        admin,
+        {"provider_type": "notify", "config": created["config"], "provider_id": created["id"]},
+    )
+
+    assert response.status_code == 200, response.text
+    assert [r["device_token"] for r in send.await_args.args[1]["recipients"]] == ["tok-1", "tok-2"]
