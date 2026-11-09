@@ -738,7 +738,7 @@ async def patch_settings(
 
 @router.post("/test-slicer-connection", response_model=SlicerConnectionTestResponse)
 async def test_slicer_connection(
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
     _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_UPDATE),
 ):
     """Health-check the effective configured slicer sidecar.

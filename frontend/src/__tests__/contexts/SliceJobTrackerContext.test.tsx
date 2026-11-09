@@ -544,7 +544,7 @@ describe('SliceJobTrackerProvider — persistent progress toast', () => {
       await runToCompletion(20);
 
       expect(screen.getByTestId('print-modal').textContent).toBe(
-        'add-to-queue|555|-|Bracket.gcode.3mf',
+        'create|555|-|Bracket.gcode.3mf',
       );
     });
 
@@ -561,7 +561,7 @@ describe('SliceJobTrackerProvider — persistent progress toast', () => {
       await runToCompletion(21);
 
       expect(screen.getByTestId('print-modal').textContent).toBe(
-        'add-to-queue|-|777|Bracket resliced',
+        'create|-|777|Bracket resliced',
       );
     });
 

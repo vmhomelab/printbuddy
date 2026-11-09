@@ -267,7 +267,7 @@ function classifyByBambuName(
 ): PrinterCompatibility {
   const parsed = extractPrinterTag(presetName);
   if (!parsed) return 'unknown';
-  const selectedParts = extractPrinterPresetModel(canonicalPrinterPresetName(selectedPrinterName));
+  const selectedParts = extractPrinterPresetModel(selectedPrinterName);
   if (!selectedParts) return 'unknown';
   if (parsed.token === null) {
     // Nozzle-only tag ("Overture PLA Matte @0.2"). The size can rule a

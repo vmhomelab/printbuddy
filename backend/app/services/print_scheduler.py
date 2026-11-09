@@ -10343,8 +10343,10 @@ class PrintScheduler:
                 await self._defer_until_printer_idle(db, item)
                 return
 
-            # Print command failed - revert status
-            if not await self._fail_dispatch(db, item, "Failed to send print command to printer"):
+            # Print command failed - revert status. The printer's own reason
+            # (e.g. a K2-OpenHost CFS refusal) reaches the user when it gave one.
+            start_failure = self._start_failure_message(item.printer_id)
+            if not await self._fail_dispatch(db, item, start_failure):
                 await self._close_cancelled_dispatch_toast(item, toast_uid)
                 return
             logger.error(
@@ -10359,7 +10361,11 @@ class PrintScheduler:
                 job_name=filename.replace(".gcode.3mf", "").replace(".3mf", ""),
                 printer_id=printer.id,
                 printer_name=printer.name,
-                reason="Failed to send print command to printer - check printer connection and status",
+                reason=(
+                    start_failure
+                    if start_failure != self._START_FAILURE
+                    else f"{self._START_FAILURE} - check printer connection and status"
+                ),
                 db=db,
             )
             try:
@@ -10373,6 +10379,17 @@ class PrintScheduler:
                 pass
 
             await self._power_off_if_needed(db, item)
+
+    _START_FAILURE = "Failed to send print command to printer"
+
+    @classmethod
+    def _start_failure_message(cls, printer_id: int | None) -> str:
+        """The start-failure text, with the printer's own reason when it gave one."""
+        client = printer_manager.get_client(printer_id) if printer_id is not None else None
+        reason = getattr(client, "last_error", None)
+        if isinstance(reason, str) and reason.strip():
+            return f"{cls._START_FAILURE}: {reason.strip()}"
+        return cls._START_FAILURE
 
     @staticmethod
     async def _watchdog_print_start(

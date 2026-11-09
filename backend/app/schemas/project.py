@@ -373,7 +373,9 @@ class PlanItemCreate(BaseModel):
     notes: str | None = None
 
 
-class PlanItemUpdate(BaseModel):
+class PlanItemUpdate(IgnoresNullForRequiredColumns):
+    __orm_table__ = "project_plan_items"
+
     plate_id: int | None = None
     name: str | None = None
     group_label: str | None = None

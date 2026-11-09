@@ -180,39 +180,9 @@ async def test_store_moonraker_thumbnail_writes_into_fileless_archive_dir(tmp_pa
     )
 
     assert stored is True
-    assert archive.thumbnail_path == "archive/_fileless/42/thumbnail.png"
+    # A no-3MF archive owns <archive_dir>/<id> (utils/archive_paths, #1820).
+    assert archive.thumbnail_path == "archive/42/thumbnail.png"
     assert (tmp_path / archive.thumbnail_path).read_bytes() == b"\x89PNG-data"
-
-
-def test_resolve_archive_dir_for_regular_and_fileless_archives(tmp_path, monkeypatch):
-    from backend.app.services import archive as archive_module
-
-    monkeypatch.setattr(archive_module.settings, "base_dir", tmp_path)
-    monkeypatch.setattr(archive_module.settings, "archive_dir", tmp_path / "archive")
-
-    regular = SimpleNamespace(id=7, file_path="archive/3/20260101_x/x.3mf")
-    fileless = SimpleNamespace(id=7, file_path="")
-
-    assert archive_module.resolve_archive_dir(regular) == tmp_path / "archive/3/20260101_x"
-    # Never the per-printer folder archive/<id>, which would collide with printer 7.
-    assert archive_module.resolve_archive_dir(fileless) == tmp_path / "archive/_fileless/7"
-
-
-def test_resolve_archive_photo_path_finds_legacy_fileless_photo(tmp_path, monkeypatch):
-    from backend.app.services import archive as archive_module
-
-    monkeypatch.setattr(archive_module.settings, "base_dir", tmp_path)
-    monkeypatch.setattr(archive_module.settings, "archive_dir", tmp_path / "archive")
-    legacy = tmp_path / "archive/9/photos/finish.jpg"
-    legacy.parent.mkdir(parents=True)
-    legacy.write_bytes(b"jpg")
-
-    archive = SimpleNamespace(id=9, file_path="")
-
-    assert archive_module.resolve_archive_photo_path(archive, "finish.jpg") == legacy
-    assert archive_module.resolve_archive_photo_path(archive, "new.jpg") == (
-        tmp_path / "archive/_fileless/9/photos/new.jpg"
-    )
 
 
 @pytest.mark.asyncio

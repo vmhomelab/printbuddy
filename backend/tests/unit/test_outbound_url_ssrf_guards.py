@@ -636,6 +636,10 @@ GUARDED_BODY_URLS = {
     # save and test, and ManyfoldService._send re-checks every redirect hop.
     ("ManyfoldConfigUpdate", "url"),
     ("ManyfoldTestRequest", "url"),
+    # GyroidVault: routes.gyroidvault._validate_url applies the LAN tier
+    # (assert_safe_spoolman_url) on save and test; the client never follows
+    # redirects.
+    ("GyroidVaultSettingsUpdate", "url"),
     ("OIDCProviderCreate", "issuer_url"),  # public tier, via schemas.auth
     ("OIDCProviderCreate", "icon_url"),
     ("OIDCProviderUpdate", "issuer_url"),

@@ -908,7 +908,8 @@ async def _register_managed_library_file(
             thumb_ext = raw_metadata.get("_thumbnail_ext", ".png")
             if thumb_data:
                 thumb_filename = f"{uuid.uuid4().hex}{thumb_ext}"
-                thumb_path = thumbs_dir / thumb_filename
+                # The extension comes from the 3MF, so join it safely.
+                thumb_path = safe_join_under(thumbs_dir, thumb_filename, http=False)
                 with open(thumb_path, "wb") as fh:
                     fh.write(thumb_data)
                 thumbnail_path = str(thumb_path)

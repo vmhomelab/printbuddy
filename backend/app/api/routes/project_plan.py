@@ -12,9 +12,16 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.api.routes.library import is_sliced_file
-from backend.app.core.auth import RequirePermissionIfAuthEnabled
+from backend.app.core.auth import (
+    ApiKeyActor,
+    QueueReviewRequired,
+    RequestActor,
+    RequestPrinterScope,
+    RequirePermissionIfAuthEnabled,
+)
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
+from backend.app.core.printer_scope import PrinterScope
 from backend.app.models.library import LibraryFile
 from backend.app.models.printer import Printer
 from backend.app.models.project import Project
@@ -159,7 +166,7 @@ async def _build_responses(
 @router.get("/{project_id}/plan", response_model=list[PlanItemResponse])
 async def list_plan_items(
     project_id: int,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
     _: User | None = RequirePermissionIfAuthEnabled(Permission.PROJECTS_READ),
 ):
     """List the plates planned for a project, with progress per row."""
@@ -171,7 +178,7 @@ async def list_plan_items(
 @router.get("/{project_id}/plan/summary", response_model=PlanSummary)
 async def get_plan_summary(
     project_id: int,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
     _: User | None = RequirePermissionIfAuthEnabled(Permission.PROJECTS_READ),
 ):
     """Running totals for the job: plates, print time, filament per material + colour."""
@@ -184,7 +191,7 @@ async def get_plan_summary(
 async def create_plan_item(
     project_id: int,
     data: PlanItemCreate,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
     _: User | None = RequirePermissionIfAuthEnabled(Permission.PROJECTS_UPDATE),
 ):
     """Add a plate to the job plan.
@@ -255,7 +262,7 @@ async def update_plan_item(
     project_id: int,
     item_id: int,
     data: PlanItemUpdate,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
     _: User | None = RequirePermissionIfAuthEnabled(Permission.PROJECTS_UPDATE),
 ):
     """Update quantity, material/colour, printer assignment, ... of a plan row."""
@@ -318,7 +325,7 @@ async def update_plan_item(
 async def delete_plan_item(
     project_id: int,
     item_id: int,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
     _: User | None = RequirePermissionIfAuthEnabled(Permission.PROJECTS_UPDATE),
 ):
     """Remove a plate from the plan. Queue items / archives keep existing."""
@@ -333,7 +340,7 @@ async def delete_plan_item(
 async def reorder_plan_items(
     project_id: int,
     data: PlanReorder,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
     _: User | None = RequirePermissionIfAuthEnabled(Permission.PROJECTS_UPDATE),
 ):
     await _get_project(db, project_id)
@@ -350,8 +357,11 @@ async def reorder_plan_items(
 async def enqueue_plan(
     project_id: int,
     data: PlanEnqueueRequest,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
     current_user: User | None = RequirePermissionIfAuthEnabled(Permission.QUEUE_CREATE),
+    printer_scope: PrinterScope = RequestPrinterScope,
+    review_required: bool = QueueReviewRequired,
+    actor: User | ApiKeyActor | None = RequestActor,
 ):
     """Add every copy of the plan that is not yet queued/printed to the print queue.
 
@@ -416,6 +426,11 @@ async def enqueue_plan(
                 ),
                 db,
                 current_user,
+                # Called directly, so its FastAPI dependencies are passed on:
+                # the same printer scope, review rule and actor as the queue route.
+                printer_scope=printer_scope,
+                review_required=review_required,
+                actor=actor,
             )
         except HTTPException as e:
             await db.rollback()

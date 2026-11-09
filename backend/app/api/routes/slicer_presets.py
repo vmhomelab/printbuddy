@@ -75,7 +75,7 @@ from backend.app.utils.printer_models import (
     normalize_printer_model,
     normalize_printer_model_id,
 )
-from backend.app.utils.slicer_strings import first_slicer_string, slicer_strings
+from backend.app.utils.slicer_strings import first_slicer_string, slicer_strings, unquote_slicer_items
 
 logger = logging.getLogger(__name__)
 
@@ -280,8 +280,12 @@ async def _fetch_orca_cloud_presets(
         if slot in ("process", "filament"):
             # The profile's own compatible-printer list, straight out of the
             # content Orca already hands us (#2628), so a profile whose name
-            # carries no model isn't auto-picked for the wrong printer.
-            preset.compatible_printers = _content_compatible_printers(content)
+            # carries no model isn't auto-picked for the wrong printer. Orca
+            # Cloud can send its list items still quoted ('"Printer"').
+            raw_compatible = content.get("compatible_printers")
+            if isinstance(raw_compatible, list):
+                raw_compatible = unquote_slicer_items(raw_compatible)
+            preset.compatible_printers = _content_compatible_printers({"compatible_printers": raw_compatible})
         if slot in ("printer", "filament"):
             # A filament's parent gives it the material its own content
             # leaves out (#3403); see _enrich_cloud_metadata.

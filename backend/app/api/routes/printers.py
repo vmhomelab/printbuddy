@@ -4782,7 +4782,7 @@ async def set_chamber_temperature(
     # Non-Bambu providers declare their heater by capability (QIDI Q2 on
     # Moonraker) and report their own limit.
     max_temp = getattr(getattr(client, "state", None), "chamber_temp_max", None)
-    if max_temp is not None and target > max_temp:
+    if isinstance(max_temp, (int, float)) and target > max_temp:
         raise HTTPException(400, f"Chamber temperature must be 0-{int(max_temp)}°C for this printer")
     try:
         success = set_temp(target)

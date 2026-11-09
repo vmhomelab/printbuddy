@@ -210,6 +210,7 @@ async def _dispatch_library_item(
         cost_center_id=None,
         plate_id=None,
         library_file_id=None,
+        plan_item_id=None,
     ):
         if archive_failure:
             raise RuntimeError("archive copy failed")

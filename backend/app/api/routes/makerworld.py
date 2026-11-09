@@ -795,13 +795,6 @@ async def import_instance(
             )
 
         return response.model_copy(update={"source_archive": source_archive})
-    except HTTPException:
-        raise
-    except Exception as exc:
-        # Anything not already mapped (unexpected upstream/client failures) is
-        # reported as a clean 503 instead of an unhandled 500 traceback.
-        logger.exception("Unexpected error during MakerWorld import of model %s", body.model_id)
-        raise HTTPException(status_code=503, detail="MakerWorld import is temporarily unavailable") from exc
     finally:
         await service.close()
 

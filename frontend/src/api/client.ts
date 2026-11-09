@@ -7365,7 +7365,7 @@ export const api = {
   getGyroidVaultCategories: () => request<GyroidVaultCategory[]>('/gyroidvault/categories'),
   getGyroidVaultTags: () => request<GyroidVaultTag[]>('/gyroidvault/tags'),
   getGyroidVaultAssetUrl: (path: string) =>
-    withStreamToken(`${API_BASE}/gyroidvault/asset?path=${encodeURIComponent(path)}`),
+    withMediaToken(`${API_BASE}/gyroidvault/asset?path=${encodeURIComponent(path)}`),
   importGyroidVaultFiles: (model_id: number, file_ids: number[], folder_id?: number | null) =>
     request<GyroidVaultImportResponse>('/gyroidvault/import', {
       method: 'POST',

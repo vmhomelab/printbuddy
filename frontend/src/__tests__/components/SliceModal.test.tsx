@@ -288,7 +288,7 @@ describe('SliceModal', () => {
     });
 
     await waitFor(() => expect(screen.getByText('Bambu Lab P1S 0.4 nozzle - Ethan')).toBeDefined());
-    const processSelect = screen.getAllByRole('combobox')[1];
+    const processSelect = presetSelects()[1];
     expect(within(processSelect).getByText('0.20mm Standard @BBL P1S')).toBeDefined();
     expect(within(processSelect).queryByText('.05mm Super Detail @Dremel 3D40 0.4')).toBeNull();
     expect(processSelect.querySelector('optgroup[label="Other printers"]')).toBeNull();
@@ -320,7 +320,7 @@ describe('SliceModal', () => {
 
     await waitFor(() => expect(screen.getByText('Bambu Lab P1S 0.4 nozzle - Ethan')).toBeDefined());
     const user = userEvent.setup();
-    await user.selectOptions(screen.getAllByRole('combobox')[0], 'orca_cloud:orca-p1p');
+    await user.selectOptions(presetSelects()[0], 'orca_cloud:orca-p1p');
     await user.click(screen.getByRole('button', { name: /^Slice$/ }));
 
     await waitFor(() => {

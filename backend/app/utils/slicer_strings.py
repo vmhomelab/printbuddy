@@ -22,6 +22,28 @@ def slicer_strings(raw: object) -> list[str]:
     return [s for s in items if s.strip()]
 
 
+def unquote_slicer_items(raw: list) -> list[str]:
+    """The string items of a list, with slicer-quoted items decoded.
+
+    Orca Cloud returns some string vectors as a list whose items are still
+    quoted (``['"Elegoo Neptune 4 Pro 0.4 nozzle"']``); use this for Orca
+    Cloud content only, since a generic JSON array keeps its items as is. An item that starts with ``"`` is read the way the slicer reads its INI
+    form (it may hold several ``;``-joined names); one the slicer can't parse
+    is kept as is. Other items are kept unchanged, empty ones included.
+    """
+    out: list[str] = []
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        if item.lstrip().startswith('"'):
+            decoded = unescape_strings_cstyle(item.strip())
+            if decoded is not None:
+                out.extend(decoded)
+                continue
+        out.append(item)
+    return out
+
+
 def first_slicer_string(raw: object) -> str | None:
     """The first non-empty item of a slicer string-list option, stripped.
 

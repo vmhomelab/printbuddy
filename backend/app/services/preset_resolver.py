@@ -42,7 +42,7 @@ from backend.app.services.bambu_cloud import (
 )
 from backend.app.services.bambu_cloud_credentials import get_stored_token
 from backend.app.services.orca_cloud import OrcaCloudAuthError, OrcaCloudError
-from backend.app.utils.slicer_strings import unescape_strings_cstyle
+from backend.app.utils.slicer_strings import unescape_strings_cstyle, unquote_slicer_items
 
 logger = logging.getLogger(__name__)
 
@@ -335,7 +335,13 @@ async def _resolve_orca_cloud(db: AsyncSession, user: User | None, ref: PresetRe
             # Parsed the way the slicer would, empty items included, so
             # per-extruder positions survive. A string it can't parse is
             # forwarded as is.
-            items = unescape_strings_cstyle(raw) if isinstance(raw, str) else None
+            # Orca Cloud also sends the list form with quoted items.
+            if isinstance(raw, str):
+                items = unescape_strings_cstyle(raw)
+            elif isinstance(raw, list):
+                items = unquote_slicer_items(raw)
+            else:
+                items = None
             if items is not None:
                 content[key] = items
     return json.dumps(content)

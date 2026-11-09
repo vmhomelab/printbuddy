@@ -265,10 +265,12 @@ async def test_cloud_custom_setting_keeps_its_cloud_payload():
     ):
         out = await preset_resolver.resolve_preset_ref(db, user, PresetRef(source="cloud", id="PFU123"), slot="process")
 
+    # `from` is pinned to "system" for every cloud tier, like `type`.
     assert json.loads(out) == {
         "name": "My P1S process",
         "inherits": "0.20mm Standard @BBL P1S",
         "type": "process",
+        "from": "system",
     }
 
 

@@ -18,6 +18,7 @@ NOT_A_ROW_UPDATE = {
     "TrashSettings": "a setting, every field required",
     "DisplaySettingsRequest": "SpoolBuddy device display, every field required",
     "ManyfoldConfigUpdate": "stored as settings",
+    "GyroidVaultSettingsUpdate": "stored as settings",
     "CostCenterBudgetUpdateRequest": "replaces the budget rows as a whole",
     "AmsLabelBody": "upserts a label, every field required",
     "LabelTemplateIn": "replaces a saved label template as a whole, every field required",
