@@ -983,7 +983,7 @@ class PrinterManager:
         ``BambuMQTTClient``).
         """
         client = self._clients.get(printer_id)
-        return client._drying_targets if client else None
+        return getattr(client, "_drying_targets", None) if client else None
 
     def get_all_statuses(self) -> dict[int, PrinterState]:
         """Get status of all connected printers (checks for stale connections)."""
