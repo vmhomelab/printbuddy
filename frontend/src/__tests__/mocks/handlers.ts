@@ -535,6 +535,28 @@ export const handlers = [
       external_url_configured: false,
     })
   ),
+  http.get('/api/v1/octoeverywhere/settings', () =>
+    HttpResponse.json({
+      enabled: false,
+      has_api_key: false,
+      sensitivity: 'medium',
+      action: 'notify',
+      poll_interval: 0,
+      enabled_printers: null,
+      notify_on_warning: true,
+    })
+  ),
+  http.get('/api/v1/octoeverywhere/status', () =>
+    HttpResponse.json({
+      is_running: false,
+      last_error: null,
+      account_error: null,
+      per_printer: {},
+      history: [],
+      enabled: false,
+      has_api_key: false,
+    })
+  ),
   http.get('/api/v1/printers/:id/current-print-user', () => HttpResponse.json(null)),
   http.get('/api/v1/settings/check-ffmpeg', () =>
     HttpResponse.json({ available: false, version: null })

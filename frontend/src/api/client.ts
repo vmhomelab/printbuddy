@@ -2739,6 +2739,74 @@ export interface ObicoTestConnection {
   error: string | null;
 }
 
+// OctoEverywhere Gadget AI failure detection (PB-35). Mirrors
+// backend/app/schemas/octoeverywhere.py; the API key is write-only.
+export type OctoEverywhereSensitivity = 'low' | 'medium' | 'high';
+export type OctoEverywhereAction = 'notify' | 'pause' | 'pause_and_off';
+
+export interface OctoEverywhereSettings {
+  enabled: boolean;
+  has_api_key: boolean;
+  sensitivity: OctoEverywhereSensitivity;
+  action: OctoEverywhereAction;
+  /** 0 = automatic (Gadget's recommended interval), otherwise 5-120 seconds. */
+  poll_interval: number;
+  /** null = all connected printers */
+  enabled_printers: number[] | null;
+  notify_on_warning: boolean;
+}
+
+export interface OctoEverywhereSettingsUpdate {
+  enabled?: boolean;
+  /** New key; empty string clears it; omit to keep the stored key. */
+  api_key?: string;
+  sensitivity?: OctoEverywhereSensitivity;
+  action?: OctoEverywhereAction;
+  poll_interval?: number;
+  enabled_printers?: number[];
+  all_printers?: boolean;
+  notify_on_warning?: boolean;
+}
+
+export interface OctoEverywherePrinterStatus {
+  print_quality: number | null;
+  score: number | null;
+  warning: boolean;
+  pause: boolean;
+  frame_count: number;
+  last_checked: string | null;
+  next_check_in: number | null;
+  using_fallback: boolean;
+  stopped_reason: string | null;
+  last_issue: string | null;
+}
+
+export interface OctoEverywhereDetectionEvent {
+  printer_id: number;
+  task_name: string;
+  timestamp: string;
+  print_quality: number | null;
+  score: number | null;
+  warning: boolean;
+  pause: boolean;
+}
+
+export interface OctoEverywhereStatus {
+  is_running: boolean;
+  last_error: string | null;
+  account_error: string | null;
+  per_printer: Record<string, OctoEverywherePrinterStatus>;
+  history: OctoEverywhereDetectionEvent[];
+  enabled: boolean;
+  has_api_key: boolean;
+}
+
+export interface OctoEverywhereTestResult {
+  ok: boolean;
+  error_type: string | null;
+  error: string | null;
+}
+
 export interface GitHubTestConnectionResponse {
   success: boolean;
   message: string;
@@ -6671,6 +6739,20 @@ export const api = {
     request<ObicoTestConnection>('/obico/test-connection', {
       method: 'POST',
       body: JSON.stringify({ url }),
+    }),
+
+  // OctoEverywhere Gadget AI failure detection (PB-35)
+  getOctoEverywhereSettings: () => request<OctoEverywhereSettings>('/octoeverywhere/settings'),
+  updateOctoEverywhereSettings: (data: OctoEverywhereSettingsUpdate) =>
+    request<OctoEverywhereSettings>('/octoeverywhere/settings', {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  getOctoEverywhereStatus: () => request<OctoEverywhereStatus>('/octoeverywhere/status'),
+  testOctoEverywhereConnection: (apiKey?: string) =>
+    request<OctoEverywhereTestResult>('/octoeverywhere/test-connection', {
+      method: 'POST',
+      body: JSON.stringify(apiKey ? { api_key: apiKey } : {}),
     }),
 
   // Slicer API — slice in the background. Both endpoints return 202 + a
