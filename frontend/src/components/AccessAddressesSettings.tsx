@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { Link2, Plus, QrCode, Sparkles, Trash2, X } from 'lucide-react';
+import { ChevronDown, ChevronUp, Link2, Plus, QrCode, Sparkles, Trash2, X } from 'lucide-react';
 import { api } from '../api/client';
 import { Card, CardContent, CardHeader } from './Card';
 import {
@@ -13,6 +13,13 @@ import {
   serializeAccessAddresses,
   type AccessAddress,
 } from '../utils/accessAddresses';
+
+function move<T>(list: T[], from: number, to: number): T[] {
+  const next = [...list];
+  const [item] = next.splice(from, 1);
+  next.splice(to, 0, item);
+  return next;
+}
 
 const KIND_LABEL: Record<string, string> = { lan: 'LAN', tailscale: 'Tailscale', public: 'Internet', local: 'Local' };
 
@@ -70,6 +77,12 @@ export function AccessAddressesSettings({ value, onChange }: Props) {
               'Addresses Printbuddy is reachable under, e.g. LAN IP, Tailscale IP or a domain. Users can see which one they are connected through and switch from the menu. Each address keeps its own login.',
           })}
         </p>
+        <p className="text-sm text-bambu-gray">
+          {t('settings.accessAddresses.launcherHint', {
+            defaultValue:
+              'Phone app: when Printbuddy is added to the home screen, it tries these addresses from top to bottom on every start and opens the first one that answers — e.g. LAN at home, Tailscale when away. Add the app to the home screen from one of these addresses, after saving.',
+          })}
+        </p>
 
         {/* Configured addresses */}
         {addresses.length > 0 && (
@@ -78,6 +91,29 @@ export function AccessAddressesSettings({ value, onChange }: Props) {
               const kind = classifyUrl(a.url);
               return (
                 <li key={a.url} className="flex items-center gap-2 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark p-2">
+                  <div className="flex flex-col">
+                    <button
+                      type="button"
+                      disabled={idx === 0}
+                      onClick={() => save(move(addresses, idx, idx - 1))}
+                      className="flex h-5 w-7 items-center justify-center rounded text-bambu-gray hover:text-white disabled:opacity-25"
+                      title={t('settings.accessAddresses.moveUp', { defaultValue: 'Higher priority' })}
+                      aria-label={t('settings.accessAddresses.moveUp', { defaultValue: 'Higher priority' })}
+                    >
+                      <ChevronUp className="h-4 w-4" />
+                    </button>
+                    <span className="text-center text-[11px] font-semibold text-bambu-gray">{idx + 1}</span>
+                    <button
+                      type="button"
+                      disabled={idx === addresses.length - 1}
+                      onClick={() => save(move(addresses, idx, idx + 1))}
+                      className="flex h-5 w-7 items-center justify-center rounded text-bambu-gray hover:text-white disabled:opacity-25"
+                      title={t('settings.accessAddresses.moveDown', { defaultValue: 'Lower priority' })}
+                      aria-label={t('settings.accessAddresses.moveDown', { defaultValue: 'Lower priority' })}
+                    >
+                      <ChevronDown className="h-4 w-4" />
+                    </button>
+                  </div>
                   <div className="min-w-0 flex-1">
                     <input
                       value={a.name}

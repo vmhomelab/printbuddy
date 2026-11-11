@@ -18,6 +18,7 @@ import { parseUTCDate } from '../utils/date';
 import { Button } from './Button';
 import { BugReportBubble } from './BugReportBubble';
 import { ConnectionBadge, ConnectionSwitcher } from './ConnectionSwitcher';
+import { useLauncherSync } from '../hooks/useLauncherSync';
 import { appAssetPath } from '../utils/assetPaths';
 
 const SOURCE_CODE_URL = 'https://github.com/vmhomelab/Printbuddy';
@@ -125,6 +126,7 @@ export function Layout() {
   const navigate = useNavigate();
   const location = useLocation();
   const { mode, toggleMode } = useTheme();
+  useLauncherSync();
   const { t } = useTranslation();
   const isSidebarCompact = useIsSidebarCompact();
   // Re-render Layout (and the page rendered inside <Outlet />) whenever the
@@ -563,7 +565,7 @@ export function Layout() {
     : (mode === 'dark' ? '/img/printbuddy_logo_dark.png' : '/img/printbuddy_logo_light.png');
 
   return (
-    <div className="flex min-h-screen">
+    <div className="pb-layout-root flex min-h-screen">
       {/* Hidden sidebar restore control */}
       {sidebarHidden && (
         <button
@@ -651,6 +653,7 @@ export function Layout() {
 
         {/* Navigation */}
         <nav className="flex-1 p-2 overflow-y-auto">
+          {isSidebarCompact && <ConnectionSwitcher />}
           <ul className="space-y-2">
             {orderedSidebarIds.map((id) => {
               const isExternal = isExternalLinkId(id);
@@ -831,7 +834,6 @@ export function Layout() {
         )}
 
         {/* Footer */}
-        {isSidebarCompact && <ConnectionSwitcher />}
         <div className="flex-shrink-0 p-2 border-t border-bambu-dark-tertiary">
           {isSidebarCompact || sidebarExpanded ? (
             <div className="flex flex-col gap-2 px-2">
@@ -1029,7 +1031,7 @@ export function Layout() {
       )}
 
       {/* Main content */}
-      <main className={`flex-1 bg-bambu-dark overflow-auto transition-all duration-300 ${
+      <main className={`pb-main flex-1 bg-bambu-dark overflow-auto transition-all duration-300 ${
         sidebarHidden ? 'ml-0 mt-0' : isSidebarCompact ? 'mobile-main min-w-0' : sidebarExpanded ? 'ml-64' : 'ml-16'
       }`}>
         {/* Debug logging indicator */}

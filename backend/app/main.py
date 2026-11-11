@@ -12,7 +12,7 @@ from logging.handlers import RotatingFileHandler
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import delete, or_, select, text
 
@@ -6451,8 +6451,13 @@ def _frame_ancestors(default_value: str) -> str:
     are configured, ``'self'`` is always included so same-origin embedding never
     breaks even if an operator forgets to add their own origin to the list.
     """
-    if _TRUSTED_FRAME_ORIGINS:
-        return "frame-ancestors 'self' " + " ".join(_TRUSTED_FRAME_ORIGINS) + ";"
+    from backend.app.services.access_addresses import get_csp_origins
+
+    # Access addresses (Settings -> Network) may embed each other: the phone
+    # launcher (/launch.html) opens whichever address is reachable in an iframe.
+    allowed = tuple(dict.fromkeys((*_TRUSTED_FRAME_ORIGINS, *get_csp_origins())))
+    if allowed:
+        return "frame-ancestors 'self' " + " ".join(allowed) + ";"
     return f"frame-ancestors {default_value};"
 
 
@@ -6477,7 +6482,9 @@ async def security_headers_middleware(request, call_next):
     # When operators have explicitly allowlisted trusted frame origins (#1191
     # — typically Home Assistant on a different port), drop X-Frame-Options
     # and let the CSP-side frame-ancestors directive govern embedding.
-    if not _TRUSTED_FRAME_ORIGINS:
+    from backend.app.services.access_addresses import get_csp_origins
+
+    if not _TRUSTED_FRAME_ORIGINS and not get_csp_origins():
         response.headers["X-Frame-Options"] = "SAMEORIGIN"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     # Content-Security-Policy for the React SPA.
@@ -6925,6 +6932,27 @@ async def serve_sw_register():
     if reg_file.exists():
         return FileResponse(reg_file, media_type="application/javascript")
     return {"error": "sw-register.js not found"}
+
+
+# Phone launcher (#mobile): the installed app starts here, picks the first
+# reachable access address and opens it. The service worker keeps a copy so it
+# also starts when the address the app was installed from is unreachable.
+@app.api_route("/launch.html", methods=["GET", "HEAD"])
+async def serve_launcher():
+    """Serve the PWA launcher page."""
+    launcher = app_settings.static_dir / "launch.html"
+    if launcher.exists():
+        return FileResponse(launcher, media_type="text/html", headers=_HTML_CACHE_HEADERS)
+    return RedirectResponse("/")
+
+
+@app.api_route("/launch.js", methods=["GET", "HEAD"])
+async def serve_launcher_script():
+    """Serve the PWA launcher script."""
+    script = app_settings.static_dir / "launch.js"
+    if script.exists():
+        return FileResponse(script, media_type="application/javascript", headers=_HTML_CACHE_HEADERS)
+    return {"error": "launch.js not found"}
 
 
 # ── GCode viewer static files ────────────────────────────────────────────────

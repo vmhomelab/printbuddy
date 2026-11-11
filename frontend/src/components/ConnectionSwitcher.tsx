@@ -9,9 +9,9 @@ import {
   isCurrentOrigin,
   parseAccessAddresses,
   probeOrigin,
-  switchUrl,
   type ConnectionKind,
 } from '../utils/accessAddresses';
+import { switchToAddress } from '../utils/launcher';
 
 const KIND_META: Record<ConnectionKind, { icon: LucideIcon; labelKey: string; fallback: string; className: string }> = {
   lan: { icon: Wifi, labelKey: 'connection.kind.lan', fallback: 'LAN', className: 'text-sky-400 bg-sky-400/10 border-sky-400/30' },
@@ -26,6 +26,7 @@ function useAccessAddresses() {
   const { data } = useQuery({ queryKey: ['ui-preferences'], queryFn: api.getUiPreferences, staleTime: 30_000 });
   return useMemo(() => parseAccessAddresses(data?.access_addresses), [data?.access_addresses]);
 }
+
 
 /** Small chip showing how the browser is connected right now (derived from the hostname). */
 export function ConnectionBadge({ onClick }: { onClick?: () => void }) {
@@ -75,7 +76,7 @@ export function ConnectionSwitcher() {
   const CurrentIcon = KIND_META[currentKind].icon;
 
   return (
-    <div className="mx-2 mb-2 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark/40 p-2">
+    <div className="mb-2 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark/40 p-2">
       <button
         type="button"
         onClick={() => canSwitch && setExpanded((v) => !v)}
@@ -98,7 +99,7 @@ export function ConnectionSwitcher() {
       </button>
 
       {canSwitch && expanded && (
-        <ul className="mt-1.5 max-h-[40vh] space-y-1 overflow-y-auto border-t border-bambu-dark-tertiary pt-1.5">
+        <ul className="mt-1.5 space-y-1 border-t border-bambu-dark-tertiary pt-1.5">
           {addresses.map((a) => {
             const current = isCurrentOrigin(a.url);
             const state = probe[a.url] ?? 'checking';
@@ -114,9 +115,7 @@ export function ConnectionSwitcher() {
                 <button
                   type="button"
                   disabled={current}
-                  onClick={() => {
-                    window.location.href = switchUrl(a.url);
-                  }}
+                  onClick={() => switchToAddress(a.url, addresses)}
                   className={`flex w-full items-center gap-2 rounded-md px-2 py-2 text-left transition-colors ${
                     current ? 'bg-bambu-green/10' : 'hover:bg-bambu-dark-tertiary active:bg-bambu-dark-tertiary'
                   }`}
