@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { screen, waitFor, fireEvent, within } from '@testing-library/react';
+import { act, screen, waitFor, fireEvent, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
 import { render } from '../utils';
@@ -22,6 +22,7 @@ const mockPrinters = [
     access_code: '12345678',
     model: 'X1C',
     enabled: true,
+    is_active: true,
     nozzle_diameter: 0.4,
     nozzle_type: 'hardened_steel',
     location: 'Workshop',
@@ -37,6 +38,7 @@ const mockPrinters = [
     access_code: '87654321',
     model: 'P1S',
     enabled: false,
+    is_active: true,
     nozzle_diameter: 0.4,
     nozzle_type: 'stainless_steel',
     location: null,
@@ -355,8 +357,9 @@ describe('PrintersPage', () => {
       render(<PrintersPage />);
 
       expect((await screen.findAllByText('Snapmaker U1')).length).toBeGreaterThan(0);
-      await user.click(await screen.findByTitle('Chamber Fan control'));
-      await user.click((await screen.findAllByRole('button', { name: '100%' }))[0]);
+      // #1661 status strip: fan tiles open the shared preset popover.
+      await user.click(await screen.findByTitle('Chamber Fan'));
+      await user.click((await screen.findAllByRole('button', { name: '100 %' }))[0]);
 
       await waitFor(() => {
         expect(requestedFan).toBe('chamber');
@@ -414,10 +417,10 @@ describe('PrintersPage', () => {
       render(<PrintersPage />);
 
       await screen.findAllByText('Prusa CORE One');
-      expect(await screen.findByRole('button', { name: 'Files' })).toBeInTheDocument();
+      expect(await screen.findByRole('button', { name: /browse printer files/i })).toBeInTheDocument();
       expect(screen.getByRole('button', { name: 'Upload' })).toBeInTheDocument();
 
-      await user.click(screen.getByRole('button', { name: 'Files' }));
+      await user.click(screen.getByRole('button', { name: /browse printer files/i }));
 
       expect(await screen.findByText('File Manager')).toBeInTheDocument();
       expect(await screen.findByRole('combobox', { name: /Storage/i })).toHaveValue('usb');
@@ -453,9 +456,9 @@ describe('PrintersPage', () => {
       render(<PrintersPage />);
 
       await screen.findAllByText('K2 Plus');
-      expect(await screen.findByRole('button', { name: 'Files' })).toBeInTheDocument();
+      expect(await screen.findByRole('button', { name: /browse printer files/i })).toBeInTheDocument();
 
-      await user.click(screen.getByRole('button', { name: 'Files' }));
+      await user.click(screen.getByRole('button', { name: /browse printer files/i }));
 
       expect(await screen.findByText('File Manager')).toBeInTheDocument();
       expect(screen.getAllByText('K2 Plus').length).toBeGreaterThan(0);
@@ -1535,10 +1538,26 @@ describe('PrintersPage', () => {
 
       await waitFor(() => {
         expect(temperatureRequests).toEqual(expect.arrayContaining([
-          'nozzle:?target=210',
+          'nozzle:?target=210&nozzle=0',
           'bed:?target=60',
         ]));
       });
+    });
+
+    it('offers FTP file browsing when MQTT status is offline', async () => {
+      server.use(
+        http.get('/api/v1/printers/:id/status', () => {
+          return HttpResponse.json({ ...mockPrinterStatus, connected: false });
+        }),
+      );
+
+      render(<PrintersPage />);
+
+      const browseButtons = await screen.findAllByRole('button', { name: /browse printer files/i });
+      expect(browseButtons).toHaveLength(mockPrinters.length);
+      await userEvent.click(browseButtons[0]);
+
+      expect(await screen.findByText('File Manager')).toBeInTheDocument();
     });
   });
 
@@ -1574,6 +1593,273 @@ describe('PrintersPage', () => {
         expect(screen.getAllByText(/25/)).toBeTruthy();
       });
     });
+
+    it('sets left and right nozzle temperatures from the nozzle selector', async () => {
+      localStorage.setItem('printerCardSize', '2');
+      const temperatureRequests: Array<{ target: string | null; nozzle: string | null }> = [];
+      const dualNozzlePrinter = { ...mockPrinters[0], model: 'H2D', nozzle_count: 2 };
+      const dualNozzleStatus = {
+        ...mockPrinterStatus,
+        active_extruder: 0,
+        temperatures: {
+          ...mockPrinterStatus.temperatures,
+          nozzle: 31,
+          nozzle_target: 0,
+          nozzle_2: 32,
+          nozzle_2_target: 0,
+        },
+        nozzle_rack: [
+          { id: 0, nozzle_type: 'HS', nozzle_diameter: '0.4', wear: 5, stat: 1, max_temp: 300, serial_number: '', filament_color: '', filament_id: '', filament_type: '' },
+          { id: 1, nozzle_type: 'HS', nozzle_diameter: '0.4', wear: 3, stat: 1, max_temp: 300, serial_number: '', filament_color: '', filament_id: '', filament_type: '' },
+        ],
+      };
+
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([dualNozzlePrinter])),
+        http.get('/api/v1/printers/:id/status', () => HttpResponse.json(dualNozzleStatus)),
+        http.post('/api/v1/printers/:id/temperature/nozzle', ({ request }) => {
+          const url = new URL(request.url);
+          temperatureRequests.push({
+            target: url.searchParams.get('target'),
+            nozzle: url.searchParams.get('nozzle'),
+          });
+          return HttpResponse.json({ success: true, message: 'Nozzle temperature set' });
+        })
+      );
+
+      render(<PrintersPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('L / R')).toBeInTheDocument();
+      });
+
+      // Dual-nozzle temps live on the L/R temperature card, not the nozzle-select card.
+      fireEvent.click(screen.getByText('L / R').parentElement!);
+
+      const leftTempBox = screen.getByText('Left Temp').parentElement!.parentElement!;
+      fireEvent.click(within(leftTempBox).getByRole('button', { name: '220 C' }));
+
+      await waitFor(() => {
+        expect(temperatureRequests).toContainEqual({ target: '220', nozzle: '1' });
+      });
+
+      fireEvent.click(screen.getByText('L / R').parentElement!);
+
+      const rightTempBox = screen.getByText('Right Temp').parentElement!.parentElement!;
+      fireEvent.click(within(rightTempBox).getByRole('button', { name: '260 C' }));
+
+      await waitFor(() => {
+        expect(temperatureRequests).toContainEqual({ target: '260', nozzle: '0' });
+      });
+    });
+  });
+
+  describe('fan badges', () => {
+    // Chamber fan only exists on enclosed Bambu models. Open-frame printers
+    // (A1, A1 Mini, A2L, P1P) have no chamber fan — the firmware reports
+    // big_fan2_speed as 0 there and the widget would be dead UI.
+    const statusWithFans = {
+      ...mockPrinterStatus,
+      cooling_fan_speed: 53,
+      big_fan1_speed: 53,
+      big_fan2_speed: 53,
+    };
+
+    const renderWithPrinter = (printer: typeof mockPrinters[number]) => {
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([printer])),
+        http.get('/api/v1/printers/:id/status', () => HttpResponse.json(statusWithFans)),
+      );
+      render(<PrintersPage />);
+    };
+
+    it('hides chamber fan badge on A1 Mini (open-frame, no chamber fan)', async () => {
+      renderWithPrinter({ ...mockPrinters[0], model: 'A1 Mini' });
+
+      await waitFor(() => {
+        // Part-cooling badge confirms the fan row rendered.
+        expect(screen.getByTitle('Part Cooling Fan')).toBeInTheDocument();
+      });
+      expect(screen.getByTitle('Auxiliary Fan')).toBeInTheDocument();
+      expect(screen.queryByTitle('Chamber Fan')).not.toBeInTheDocument();
+    });
+
+    it('hides chamber fan badge on A1 (open-frame)', async () => {
+      renderWithPrinter({ ...mockPrinters[0], model: 'A1' });
+
+      await waitFor(() => {
+        expect(screen.getByTitle('Part Cooling Fan')).toBeInTheDocument();
+      });
+      expect(screen.queryByTitle('Chamber Fan')).not.toBeInTheDocument();
+    });
+
+    it('hides chamber fan badge on P1P (open-frame)', async () => {
+      renderWithPrinter({ ...mockPrinters[0], model: 'P1P' });
+
+      await waitFor(() => {
+        expect(screen.getByTitle('Part Cooling Fan')).toBeInTheDocument();
+      });
+      expect(screen.queryByTitle('Chamber Fan')).not.toBeInTheDocument();
+    });
+
+    it('shows chamber fan badge on X1C (enclosed)', async () => {
+      renderWithPrinter({ ...mockPrinters[0], model: 'X1C' });
+
+      await waitFor(() => {
+        expect(screen.getByTitle('Chamber Fan')).toBeInTheDocument();
+      });
+      expect(screen.getByTitle('Part Cooling Fan')).toBeInTheDocument();
+      expect(screen.getByTitle('Auxiliary Fan')).toBeInTheDocument();
+    });
+
+    it('shows chamber fan badge on P1S (enclosed)', async () => {
+      renderWithPrinter({ ...mockPrinters[0], model: 'P1S' });
+
+      await waitFor(() => {
+        expect(screen.getByTitle('Chamber Fan')).toBeInTheDocument();
+      });
+    });
+
+    // P2S/X2D left auxiliary part cooling fan (airduct part id 10) — optional
+    // hardware, so the badge must only appear when the firmware reports it.
+    const renderWithStatus = (
+      printer: typeof mockPrinters[number],
+      status: Record<string, unknown>,
+    ) => {
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([printer])),
+        http.get('/api/v1/printers/:id/status', () => HttpResponse.json(status)),
+      );
+      render(<PrintersPage />);
+    };
+
+    it('shows the exhaust tile labeled "Exhaust" on P2S when the kit is present', async () => {
+      // Exhaust fan is an add-on kit; the tile appears only when the printer
+      // reports it (airduct part id 3 -> exhaust_fan_present).
+      renderWithStatus(
+        { ...mockPrinters[0], model: 'P2S' },
+        { ...statusWithFans, exhaust_fan_present: true },
+      );
+
+      await waitFor(() => {
+        expect(screen.getByTitle('Part Cooling Fan')).toBeInTheDocument();
+      });
+      expect(screen.getByTitle('Exhaust')).toBeInTheDocument();
+      expect(screen.queryByTitle('Chamber Fan')).not.toBeInTheDocument();
+    });
+
+    it('hides the exhaust tile on a base P2S without the kit', async () => {
+      renderWithStatus(
+        { ...mockPrinters[0], model: 'P2S' },
+        { ...statusWithFans, exhaust_fan_present: false },
+      );
+
+      await waitFor(() => {
+        expect(screen.getByTitle('Part Cooling Fan')).toBeInTheDocument();
+      });
+      expect(screen.queryByTitle('Exhaust')).not.toBeInTheDocument();
+      expect(screen.queryByTitle('Chamber Fan')).not.toBeInTheDocument();
+    });
+
+    it('keeps the always-on "Chamber Fan" tile on X1C regardless of exhaust_fan_present', async () => {
+      renderWithStatus(
+        { ...mockPrinters[0], model: 'X1C' },
+        { ...statusWithFans, exhaust_fan_present: false },
+      );
+
+      await waitFor(() => {
+        expect(screen.getByTitle('Chamber Fan')).toBeInTheDocument();
+      });
+      expect(screen.queryByTitle('Exhaust')).not.toBeInTheDocument();
+    });
+
+    it('hides the left aux badge when the accessory is not reported', async () => {
+      renderWithStatus({ ...mockPrinters[0], model: 'P2S' }, statusWithFans);
+
+      await waitFor(() => {
+        expect(screen.getByTitle('Part Cooling Fan')).toBeInTheDocument();
+      });
+      expect(screen.queryByTitle('Left Auxiliary Fan')).not.toBeInTheDocument();
+    });
+
+    it('orders the fan badges left-to-right: part, left aux, aux, exhaust', async () => {
+      // The two aux badges should read in the same order as the physical
+      // hardware, so the left fan sits before the right one.
+      renderWithStatus(
+        { ...mockPrinters[0], model: 'P2S' },
+        { ...statusWithFans, left_aux_fan_speed: 80, exhaust_fan_present: true },
+      );
+
+      await waitFor(() => {
+        expect(screen.getByTitle('Left Auxiliary Fan')).toBeInTheDocument();
+      });
+
+      const order = ['Part Cooling Fan', 'Left Auxiliary Fan', 'Auxiliary Fan', 'Exhaust'].map(
+        (title) => screen.getByTitle(title),
+      );
+      for (let i = 1; i < order.length; i++) {
+        // Node.compareDocumentPosition returns FOLLOWING (4) when the argument
+        // comes after the reference node in document order.
+        expect(order[i - 1].compareDocumentPosition(order[i])).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+      }
+    });
+
+    it('shows left aux fan badge when the accessory is installed (P2S)', async () => {
+      renderWithStatus(
+        { ...mockPrinters[0], model: 'P2S' },
+        { ...statusWithFans, left_aux_fan_speed: 80 },
+      );
+
+      await waitFor(() => {
+        expect(screen.getByTitle('Left Auxiliary Fan')).toBeInTheDocument();
+      });
+    });
+
+    it('names the X2D aux fans by their side, left first (#3373)', async () => {
+      // On the X2D part 2 ("aux") is the left fan and part 10 ("aux2") the
+      // right one: Bambu Studio's N6.json, the other way round from the P2S.
+      renderWithStatus(
+        { ...mockPrinters[0], model: 'X2D' },
+        { ...statusWithFans, left_aux_fan_speed: 80, exhaust_fan_present: true },
+      );
+
+      await waitFor(() => {
+        expect(screen.getByTitle('Right Auxiliary Fan')).toBeInTheDocument();
+      });
+      expect(screen.queryByTitle('Auxiliary Fan')).not.toBeInTheDocument();
+
+      const order = ['Part Cooling Fan', 'Left Auxiliary Fan', 'Right Auxiliary Fan', 'Exhaust'].map(
+        (title) => screen.getByTitle(title),
+      );
+      for (let i = 1; i < order.length; i++) {
+        expect(order[i - 1].compareDocumentPosition(order[i])).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+      }
+    });
+
+    it('keeps the P2S names: no right aux badge', async () => {
+      renderWithStatus(
+        { ...mockPrinters[0], model: 'P2S' },
+        { ...statusWithFans, left_aux_fan_speed: 80 },
+      );
+
+      await waitFor(() => {
+        expect(screen.getByTitle('Left Auxiliary Fan')).toBeInTheDocument();
+      });
+      expect(screen.getByTitle('Auxiliary Fan')).toBeInTheDocument();
+      expect(screen.queryByTitle('Right Auxiliary Fan')).not.toBeInTheDocument();
+    });
+
+    it('shows left aux fan badge even at 0% while installed', async () => {
+      renderWithStatus(
+        { ...mockPrinters[0], model: 'P2S' },
+        { ...statusWithFans, left_aux_fan_speed: 0 },
+      );
+
+      await waitFor(() => {
+        expect(screen.getByTitle('Left Auxiliary Fan')).toBeInTheDocument();
+      });
+    });
+
   });
 
   describe('empty state', () => {
@@ -1651,6 +1937,47 @@ describe('PrintersPage', () => {
       });
 
       expect(screen.getAllByRole('button', { name: 'Mark plate as cleared' }).length).toBeGreaterThan(0);
+    });
+
+    it('offers the clear action on a powered-down printer (#2864)', async () => {
+      // Auto Power Off leaves exactly this: gate up, printer unreachable. The
+      // control used to be hidden here, so a plate cleared by hand could not be
+      // acknowledged until the printer was powered back on.
+      let awaitingPlateClear = true;
+      let cleared = false;
+
+      server.use(
+        http.get('/api/v1/printers/', () => {
+          return HttpResponse.json([mockPrinters[0]]);
+        }),
+        http.get('/api/v1/printers/:id/status', () => {
+          return HttpResponse.json({
+            ...mockPrinterStatus,
+            connected: false,
+            state: 'unknown',
+            awaiting_plate_clear: awaitingPlateClear,
+          });
+        }),
+        http.post('/api/v1/printers/:id/clear-plate', () => {
+          cleared = true;
+          awaitingPlateClear = false;
+          return HttpResponse.json({ success: true, message: 'Plate cleared' });
+        })
+      );
+
+      render(<PrintersPage />);
+
+      const clearButton = await screen.findByRole('button', { name: 'Mark plate as cleared' });
+
+      fireEvent.click(clearButton);
+
+      await waitFor(() => {
+        expect(cleared).toBe(true);
+      });
+
+      await waitFor(() => {
+        expect(screen.queryByRole('button', { name: 'Mark plate as cleared' })).not.toBeInTheDocument();
+      });
     });
 
     it('updates the plate clear status after using the printer card action', async () => {
@@ -1804,6 +2131,89 @@ describe('PrintersPage', () => {
     });
   });
 
+  describe('maintenance mode (#1476)', () => {
+    // Wraps the backend is_active flag — already gates MQTT, queue dispatch,
+    // scheduler, metrics, picker. These tests pin the UI surface: status
+    // panel swap, pill swap, and the PATCH on toggle.
+    const inMaintenancePrinter = { ...mockPrinters[0], is_active: false };
+
+    it('shows the maintenance status panel instead of the print container', async () => {
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([inMaintenancePrinter])),
+        http.get('/api/v1/printers/:id/status', () =>
+          HttpResponse.json({ ...mockPrinterStatus, connected: false }),
+        ),
+      );
+      render(<PrintersPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('In Maintenance')).toBeInTheDocument();
+      });
+      // Exit button rendered
+      expect(screen.getByRole('button', { name: /exit maintenance/i })).toBeInTheDocument();
+      // The "No active job" / "Ready to print" copy from the normal status
+      // panel must NOT be present — confirms the swap, not a stacked render.
+      expect(screen.queryByText(/no active job/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/ready to print/i)).not.toBeInTheDocument();
+    });
+
+    it('shows the amber Maintenance pill in the header (no Connected/Offline)', async () => {
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([inMaintenancePrinter])),
+        http.get('/api/v1/printers/:id/status', () =>
+          HttpResponse.json({ ...mockPrinterStatus, connected: false }),
+        ),
+      );
+      render(<PrintersPage />);
+
+      // The header pill row contains "Maintenance" exactly once.
+      await waitFor(() => {
+        expect(screen.getAllByText('Maintenance').length).toBeGreaterThan(0);
+      });
+      // No connection diagnostic CTA (that's reserved for involuntary offline).
+      expect(screen.queryByRole('button', { name: /run.*diagnostic/i })).not.toBeInTheDocument();
+    });
+
+    it('PATCHes is_active=true when the Exit button is clicked', async () => {
+      const patchedBodies: unknown[] = [];
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([inMaintenancePrinter])),
+        http.get('/api/v1/printers/:id/status', () =>
+          HttpResponse.json({ ...mockPrinterStatus, connected: false }),
+        ),
+        http.patch('/api/v1/printers/:id', async ({ request }) => {
+          const body = await request.json();
+          patchedBodies.push(body);
+          return HttpResponse.json({ ...inMaintenancePrinter, is_active: true });
+        }),
+      );
+      render(<PrintersPage />);
+
+      const exit = await screen.findByRole('button', { name: /exit maintenance/i });
+      fireEvent.click(exit);
+
+      await waitFor(() => {
+        expect(patchedBodies.length).toBeGreaterThan(0);
+      });
+      expect(patchedBodies[0]).toEqual(expect.objectContaining({ is_active: true }));
+    });
+
+    it('renders the regular status panel when is_active=true', async () => {
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{ ...mockPrinters[0], is_active: true }])),
+        http.get('/api/v1/printers/:id/status', () => HttpResponse.json(mockPrinterStatus)),
+      );
+      render(<PrintersPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('X1 Carbon')).toBeInTheDocument();
+      });
+      // Active printer never shows the maintenance panel.
+      expect(screen.queryByText('In Maintenance')).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /exit maintenance/i })).not.toBeInTheDocument();
+    });
+  });
+
   describe('nozzle rack card', () => {
     const h2cStatus = {
       ...mockPrinterStatus,
@@ -1886,8 +2296,55 @@ describe('PrintersPage', () => {
       const rackLabel = screen.getAllByText('Nozzle Rack')[0];
       const rackCard = rackLabel.parentElement!;
       const slotRow = rackCard.querySelectorAll('div.flex')[0];
-      const slotTexts = Array.from(slotRow.querySelectorAll('span')).map(s => s.textContent);
+      // Match the diameter spans specifically — each chip also carries a slot
+      // number span, and a bare `span` sweep would interleave the two.
+      const slotTexts = Array.from(slotRow.querySelectorAll('span[data-rack-diameter]')).map(s => s.textContent);
       expect(slotTexts).toEqual(['—', '0.2', '0.6', '0.8', '1.0', '1.2']);
+    });
+
+    it('labels every rack position 1..6 regardless of which nozzles are present', async () => {
+      // The numbering is positional, not a count of what is loaded: the empty
+      // position keeps its number so "the nozzle in slot 4" means the same
+      // thing whether or not slots 1..3 are occupied.
+      server.use(
+        http.get('/api/v1/printers/:id/status', () => {
+          return HttpResponse.json(h2cStatus);
+        })
+      );
+
+      render(<PrintersPage />);
+
+      await waitFor(() => {
+        expect(screen.getAllByText('Nozzle Rack').length).toBeGreaterThan(0);
+      });
+
+      const rackLabel = screen.getAllByText('Nozzle Rack')[0];
+      const slotRow = rackLabel.parentElement!.querySelectorAll('div.flex')[0];
+      const numbers = Array.from(slotRow.querySelectorAll('span:not([data-rack-diameter])')).map(s => s.textContent);
+      expect(numbers).toEqual(['1', '2', '3', '4', '5', '6']);
+    });
+
+    it('sizes the rack chips from the card scale rather than a fixed 28px', async () => {
+      // The chips were hard-coded while the type and icons around them grow
+      // with the card size, so at L and XL the rack read as a shrunken strip
+      // next to neighbours that had grown by up to 40%.
+      server.use(
+        http.get('/api/v1/printers/:id/status', () => {
+          return HttpResponse.json(h2cStatus);
+        })
+      );
+
+      render(<PrintersPage />);
+
+      await waitFor(() => {
+        expect(screen.getAllByText('Nozzle Rack').length).toBeGreaterThan(0);
+      });
+
+      const rackLabel = screen.getAllByText('Nozzle Rack')[0];
+      const slotRow = rackLabel.parentElement!.querySelectorAll('div.flex')[0];
+      const chip = slotRow.querySelector('span[data-rack-diameter]')!.parentElement!;
+      expect(chip.className).toContain('w-[var(--pc-i7,28px)]');
+      expect(chip.className).toContain('h-[var(--pc-i7,28px)]');
     });
 
     it('hides nozzle rack when only L/R nozzles present (H2D)', async () => {
@@ -2004,6 +2461,36 @@ describe('PrintersPage', () => {
       // Version should not appear when firmware check is disabled
       expect(screen.queryByText('01.09.00.00')).not.toBeInTheDocument();
       expect(screen.queryByText('01.08.00.00')).not.toBeInTheDocument();
+    });
+
+    it('never asks for firmware when the check is off, not even before preferences load', async () => {
+      // The page used to decide on `undefined` while the preferences were still
+      // loading, so a check switched off still went out once per printer.
+      let firmwareRequests = 0;
+      let releasePreferences: () => void = () => {};
+      const preferencesHeld = new Promise<void>((resolve) => {
+        releasePreferences = resolve;
+      });
+      server.use(
+        http.get('/api/v1/firmware/updates/:id', () => {
+          firmwareRequests += 1;
+          return HttpResponse.json(firmwareUpdateAvailable);
+        }),
+        http.get('/api/v1/settings/ui-preferences', async () => {
+          await preferencesHeld;
+          return HttpResponse.json({ check_printer_firmware: false });
+        })
+      );
+
+      render(<PrintersPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('X1 Carbon')).toBeInTheDocument();
+      });
+      releasePreferences();
+      // Long enough for a query that was going to fire to have fired.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(firmwareRequests).toBe(0);
     });
 
     it('hides badge when API has no firmware data for the model', async () => {
@@ -2791,5 +3278,84 @@ describe('PrintersPage Phase 14 — Local-Branch BL-detection symmetry', () => {
       p => typeof (p.inventory as { onUnassignSpool?: () => void } | undefined)?.onUnassignSpool === 'function'
     );
     expect(definedUnassign.length).toBe(0);
+  });
+});
+
+/**
+ * F-U17: a failed Unassign on the printer card was silent in both inventory
+ * modes -- no toast, and the spool stayed assigned, so it looked like the
+ * click did nothing.
+ */
+describe('PrintersPage — Unassign failure', () => {
+  const genericTray = {
+    id: 0,
+    tray_type: 'PLA',
+    tray_uuid: '00000000000000000000000000000000',
+    tag_uid: '0000000000000000',
+    tray_color: 'FF0000FF',
+    tray_sub_brands: 'Generic PLA',
+  };
+
+  beforeEach(() => {
+    phase14HoverCardProps.length = 0;
+    localStorage.removeItem('printerCardSize');
+    server.use(
+      http.get('/api/v1/printers/', () => HttpResponse.json(mockPrinters)),
+      http.get('/api/v1/printers/:id/status', () =>
+        HttpResponse.json({ ...mockPrinterStatus, ams: [{ id: 0, tray: [genericTray] }] }),
+      ),
+      http.get('/api/v1/queue/', () => HttpResponse.json([])),
+    );
+  });
+
+  async function unassignFromCard() {
+    const withUnassign = await waitFor(() => {
+      const found = phase14HoverCardProps.find(
+        (p) => typeof (p.inventory as { onUnassignSpool?: () => void } | undefined)?.onUnassignSpool === 'function',
+      );
+      expect(found).toBeDefined();
+      return found!;
+    }, { timeout: 3000 });
+    act(() => {
+      (withUnassign.inventory as { onUnassignSpool: () => void }).onUnassignSpool();
+    });
+  }
+
+  it('reports a failed built-in unassign', async () => {
+    server.use(
+      http.get('/api/v1/spoolman/status', () => HttpResponse.json({ enabled: false, connected: false })),
+      http.get('/api/v1/inventory/assignments', () => HttpResponse.json([{
+        id: 1, spool_id: 42, printer_id: 1, ams_id: 0, tray_id: 0, printer_name: 'X1 Carbon', ams_label: null,
+        spool: { id: 42, material: 'PLA', brand: 'Generic', color_name: 'Red', label_weight: 1000, weight_used: 0, rgba: 'FF0000FF' },
+      }])),
+      http.delete('/api/v1/inventory/assignments/:pid/:aid/:tid', () =>
+        HttpResponse.json({ detail: 'Built-in unassign refused' }, { status: 500 }),
+      ),
+    );
+    render(<PrintersPage />);
+
+    await unassignFromCard();
+
+    expect(await screen.findByText(/Built-in unassign refused/)).toBeInTheDocument();
+  });
+
+  it('reports a failed Spoolman unassign', async () => {
+    server.use(
+      http.get('/api/v1/spoolman/status', () => HttpResponse.json({ enabled: true, connected: true })),
+      http.get('/api/v1/spoolman/inventory/spools', () => HttpResponse.json([
+        { id: 77, material: 'PLA', brand: 'Generic', color_name: 'Red', label_weight: 1000, weight_used: 0, rgba: 'FF0000FF' },
+      ])),
+      http.get('/api/v1/spoolman/inventory/slot-assignments/all', () => HttpResponse.json([
+        { printer_id: 1, printer_name: 'X1 Carbon', ams_id: 0, tray_id: 0, spoolman_spool_id: 77 },
+      ])),
+      http.delete('/api/v1/spoolman/inventory/slot-assignments/:id', () =>
+        HttpResponse.json({ detail: 'Spoolman unassign refused' }, { status: 503 }),
+      ),
+    );
+    render(<PrintersPage />);
+
+    await unassignFromCard();
+
+    expect(await screen.findByText(/Spoolman unassign refused/)).toBeInTheDocument();
   });
 });

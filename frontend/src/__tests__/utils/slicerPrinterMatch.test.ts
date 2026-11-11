@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import {
   buildCompatibilityIndex,
+  matchesPrinterModelSuffix,
   presetCompatibility,
   EMPTY_COMPATIBILITY_INDEX,
-  type CompatibilityBundle,
 } from '../../utils/slicerPrinterMatch';
 
 const X1C = 'Bambu Lab X1 Carbon 0.4 nozzle';
@@ -30,60 +30,9 @@ const PRINTER_MODELS: Record<string, string> = {
   'Bambu Lab X2D': 'X2D',
 };
 
-// Two uploaded bundles, one per printer — the ground truth all matching
-// is derived from. Note P2S: a model the old hard-coded list never knew
-// about, now covered purely because its bundle was uploaded (#1325).
-const BUNDLES: CompatibilityBundle[] = [
-  {
-    printer_preset_name: X1C,
-    process: ['0.20mm Standard @BBL X1C', '0.20mm Strength @BBL X1C'],
-    filament: ['Bambu PLA Basic @BBL X1C'],
-  },
-  {
-    printer_preset_name: P2S,
-    process: ['0.20mm Standard @BBL P2S', '0.16mm Standard @BBL P2S'],
-    filament: ['Bambu PLA Basic @BBL P2S'],
-  },
-];
-
 describe('buildCompatibilityIndex', () => {
-  it('maps each preset name to the printers whose bundles ship it', () => {
-    const index = buildCompatibilityIndex(BUNDLES, PRINTER_MODELS);
-    expect([...(index.process.get('0.20mm Standard @BBL X1C') ?? [])]).toEqual([X1C]);
-    expect([...(index.process.get('0.16mm Standard @BBL P2S') ?? [])]).toEqual([P2S]);
-    expect([...(index.filament.get('Bambu PLA Basic @BBL P2S') ?? [])]).toEqual([P2S]);
-  });
-
-  it('unions printers when several bundles ship the same preset name', () => {
-    const shared = '0.20mm Standard';
-    const index = buildCompatibilityIndex(
-      [
-        { printer_preset_name: X1C, process: [shared], filament: [] },
-        { printer_preset_name: P2S, process: [shared], filament: [] },
-      ],
-      PRINTER_MODELS,
-    );
-    expect(index.process.get(shared)).toEqual(new Set([X1C, P2S]));
-  });
-
-  it("strips BambuStudio's '# ' user-clone prefix so names compare equal", () => {
-    const index = buildCompatibilityIndex(
-      [{ printer_preset_name: X1C, process: ['# 0.20mm Custom'], filament: [] }],
-      PRINTER_MODELS,
-    );
-    expect(index.process.has('0.20mm Custom')).toBe(true);
-  });
-
-  it('skips bundles with no printer name', () => {
-    const index = buildCompatibilityIndex(
-      [{ printer_preset_name: '', process: ['Orphan Process'], filament: [] }],
-      PRINTER_MODELS,
-    );
-    expect(index.process.size).toBe(0);
-  });
-
   it('inverts the printer-model registry into short-code → display fragment', () => {
-    const index = buildCompatibilityIndex([], PRINTER_MODELS);
+    const index = buildCompatibilityIndex(PRINTER_MODELS);
     expect(index.bambuModelByShortCode.X1C).toBe('X1 Carbon');
     expect(index.bambuModelByShortCode.P2S).toBe('P2S');
     expect(index.bambuModelByShortCode['A1 Mini']).toBe('A1 Mini');
@@ -91,18 +40,13 @@ describe('buildCompatibilityIndex', () => {
   });
 
   it('tolerates an empty printer-model registry (model fetch hasn\'t resolved yet)', () => {
-    const index = buildCompatibilityIndex(BUNDLES);
+    const index = buildCompatibilityIndex();
     expect(index.bambuModelByShortCode).toEqual({});
-    // Bundle matching still works on its own.
-    expect([...(index.process.get('0.20mm Standard @BBL X1C') ?? [])]).toEqual([X1C]);
   });
 });
 
 describe('presetCompatibility', () => {
-  const index = buildCompatibilityIndex(BUNDLES, PRINTER_MODELS);
-  // Bundle-free index used by the #1325 follow-up fallback tests: any match
-  // here must come from the @BBL name parse alone.
-  const namesOnlyIndex = buildCompatibilityIndex([], PRINTER_MODELS);
+  const index = buildCompatibilityIndex(PRINTER_MODELS);
 
   it('uses compatible_printers exactly when present (imported / local tier)', () => {
     const preset = { name: 'My Process', compatible_printers: [X1C] };
@@ -128,63 +72,10 @@ describe('presetCompatibility', () => {
     ).toBe('unknown');
   });
 
-  it('matches a preset shipped by the selected printer\'s bundle', () => {
-    expect(presetCompatibility({ name: '0.20mm Standard @BBL X1C' }, 'process', X1C, index)).toBe(
-      'match',
-    );
-    expect(
-      presetCompatibility({ name: 'Bambu PLA Basic @BBL P2S' }, 'filament', P2S, index),
-    ).toBe('match');
-  });
-
-  it('flags a preset whose bundle is for a different printer (the #1325 bug)', () => {
-    // X1C selected, but this process only ships in the P2S bundle.
-    expect(presetCompatibility({ name: '0.16mm Standard @BBL P2S' }, 'process', X1C, index)).toBe(
-      'mismatch',
-    );
-  });
-
-  it('falls back to @BBL name parsing when no bundle covers the preset (#1325 follow-up)', () => {
-    // No A1 bundle uploaded, but the preset's @BBL A1 tag is enough to
-    // resolve it: A1 ≠ X1C so it belongs in "Other printers".
-    expect(
-      presetCompatibility({ name: '0.20mm Standard @BBL A1' }, 'process', X1C, index),
-    ).toBe('mismatch');
-  });
-
-  it('falls back to @BBL name parsing when no bundles are imported at all', () => {
-    // Brand-new user, zero bundles, every preset would have been "unknown"
-    // under the bundle-only design — now resolves via the name suffix.
-    expect(
-      presetCompatibility(
-        { name: '0.20mm Standard @BBL X1C' },
-        'process',
-        X1C,
-        namesOnlyIndex,
-      ),
-    ).toBe('match');
-    expect(
-      presetCompatibility(
-        { name: '0.20mm Standard @BBL P2S' },
-        'process',
-        X1C,
-        namesOnlyIndex,
-      ),
-    ).toBe('mismatch');
-  });
-
   it('is unknown when no printer is selected', () => {
     expect(
       presetCompatibility({ name: '0.20mm Standard @BBL X1C' }, 'process', null, index),
     ).toBe('unknown');
-  });
-
-  it("matches across the '# ' user-clone prefix", () => {
-    const index2 = buildCompatibilityIndex(
-      [{ printer_preset_name: X1C, process: ['# 0.20mm Custom'], filament: [] }],
-      PRINTER_MODELS,
-    );
-    expect(presetCompatibility({ name: '0.20mm Custom' }, 'process', X1C, index2)).toBe('match');
   });
 
   it('compatible_printers wins over @BBL even when the name suggests a different printer', () => {
@@ -195,7 +86,7 @@ describe('presetCompatibility', () => {
         { name: '0.20mm Standard @BBL P2S', compatible_printers: [X1C] },
         'process',
         X1C,
-        namesOnlyIndex,
+        index,
       ),
     ).toBe('match');
     expect(
@@ -203,30 +94,16 @@ describe('presetCompatibility', () => {
         { name: '0.20mm Standard @BBL P2S', compatible_printers: [X1C] },
         'process',
         P2S,
-        namesOnlyIndex,
+        index,
       ),
     ).toBe('mismatch');
-  });
-
-  it('bundle index wins over @BBL when they disagree', () => {
-    // Hypothetical bundle that ships a P2S-tagged preset as compatible
-    // with the X1C printer too — bundle-as-ground-truth overrules the
-    // name-suffix inference.
-    const reassigned = buildCompatibilityIndex(
-      [{ printer_preset_name: X1C, process: ['0.20mm Standard @BBL P2S'], filament: [] }],
-      PRINTER_MODELS,
-    );
-    expect(
-      presetCompatibility({ name: '0.20mm Standard @BBL P2S' }, 'process', X1C, reassigned),
-    ).toBe('match');
   });
 });
 
 // ─── #1325 follow-up: @BBL name fallback ──────────────────────────────────
 
-describe('presetCompatibility — @BBL name fallback (no bundles)', () => {
-  // No bundles, but with the registry loaded — exactly the new-user shape.
-  const idx = buildCompatibilityIndex([], PRINTER_MODELS);
+describe('presetCompatibility — @BBL name fallback', () => {
+  const idx = buildCompatibilityIndex(PRINTER_MODELS);
 
   // Bambu's short codes vs the long forms in printer-preset names: the
   // entire reason the fallback needs a registry to consult.
@@ -246,8 +123,8 @@ describe('presetCompatibility — @BBL name fallback (no bundles)', () => {
     ['0.20mm Standard @BBL H2D', 'Bambu Lab H2D 0.4 nozzle', 'match'],
     ['0.20mm Standard @BBL H2D', 'Bambu Lab H2D Pro 0.4 nozzle', 'mismatch'],
     ['0.20mm Standard @BBL H2D Pro', 'Bambu Lab H2D Pro 0.4 nozzle', 'match'],
-    // Models missing from the original hardcoded list (the #1325 bug),
-    // now resolved via the backend registry.
+    // Models the original hardcoded list missed, now resolved via the
+    // backend registry.
     ['Bambu PLA Basic @BBL P2S', P2S, 'match'],
     ['Bambu PLA Basic @BBL P2S', X1C, 'mismatch'],
     ['0.20mm Standard @BBL X2D', 'Bambu Lab X2D 0.4 nozzle', 'match'],
@@ -317,11 +194,11 @@ describe('presetCompatibility — @BBL name fallback (no bundles)', () => {
   });
 
   it('still resolves @BBL when the registry has not loaded yet (raw-token only)', () => {
-    // EMPTY_COMPATIBILITY_INDEX = no bundles, no models — first paint of
-    // the SliceModal before the /slicer/printer-models fetch resolves.
-    // Short codes that match their printer-name fragment directly (P2S,
-    // H2D, etc.) still work; codes that differ in form (X1C vs "X1
-    // Carbon") gracefully fall through to 'unknown'.
+    // EMPTY_COMPATIBILITY_INDEX = no models — first paint of the SliceModal
+    // before the /slicer/printer-models fetch resolves. Short codes that
+    // match their printer-name fragment directly (P2S, H2D, etc.) still
+    // work; codes that differ in form (X1C vs "X1 Carbon") gracefully
+    // fall through to 'mismatch'.
     expect(
       presetCompatibility(
         { name: '0.20mm Standard @BBL P2S' },
@@ -352,8 +229,7 @@ describe('presetCompatibility — nozzle filtering on @BBL name fallback', () =>
   const X1C_04 = 'Bambu Lab X1 Carbon 0.4 nozzle';
   const X1C_06 = 'Bambu Lab X1 Carbon 0.6 nozzle';
   const X1C_08 = 'Bambu Lab X1 Carbon 0.8 nozzle';
-  // No bundles uploaded — exercise the @BBL fallback in isolation.
-  const index = buildCompatibilityIndex([], PRINTER_MODELS);
+  const index = buildCompatibilityIndex(PRINTER_MODELS);
 
   it('treats a no-suffix process as 0.4 (Bambu default) and matches a 0.4 printer', () => {
     expect(
@@ -435,5 +311,336 @@ describe('presetCompatibility — nozzle filtering on @BBL name fallback', () =>
     expect(
       presetCompatibility({ name: '0.20mm Standard @BBL X1C' }, 'process', X1C_08, index),
     ).toBe('mismatch');
+  });
+});
+
+describe('matchesPrinterModelSuffix (#1649)', () => {
+  it('matches the canonical short code against itself', () => {
+    expect(matchesPrinterModelSuffix('X1C', 'X1C')).toBe(true);
+  });
+
+  it('is case-insensitive on both sides', () => {
+    expect(matchesPrinterModelSuffix('x1c', 'X1C')).toBe(true);
+    expect(matchesPrinterModelSuffix('a1 mini', 'A1 Mini')).toBe(true);
+  });
+
+  it('matches Bambu cloud rename A1M against the long form A1 Mini', () => {
+    expect(matchesPrinterModelSuffix('A1M', 'A1 Mini')).toBe(true);
+  });
+
+  it('matches the long form A1 Mini against the short Bambu cloud code A1M', () => {
+    expect(matchesPrinterModelSuffix('A1 Mini', 'A1M')).toBe(true);
+  });
+
+  it('does NOT match A1M against A1 (different printer, must not collapse)', () => {
+    expect(matchesPrinterModelSuffix('A1M', 'A1')).toBe(false);
+  });
+
+  it('does NOT match A1 against A1 Mini', () => {
+    expect(matchesPrinterModelSuffix('A1', 'A1 Mini')).toBe(false);
+  });
+
+  it('does NOT match unrelated models', () => {
+    expect(matchesPrinterModelSuffix('X1C', 'P1S')).toBe(false);
+  });
+});
+
+describe('H2D Pro spelled H2DP in preset names (#2982)', () => {
+  const H2D_PRO = 'Bambu Lab H2D Pro 0.4 nozzle';
+  const H2D = 'Bambu Lab H2D 0.4 nozzle';
+  const idx = buildCompatibilityIndex(PRINTER_MODELS);
+
+  it('matches the preset-name spelling against the printer-name spelling', () => {
+    // The bundle names every H2D Pro process and filament "@BBL H2DP"; the
+    // printer preset, and PRINTER_MODEL_MAP with it, says "H2D Pro". Without
+    // the alias an H2D Pro read all 198 bundled processes as another
+    // printer's, and got an A1 process auto-picked.
+    expect(matchesPrinterModelSuffix('H2DP', 'H2D Pro')).toBe(true);
+    expect(matchesPrinterModelSuffix('H2D Pro', 'H2DP')).toBe(true);
+  });
+
+  it('does NOT collapse H2DP into the plain H2D', () => {
+    // Different machines. The nozzle-count and build-volume differences make
+    // their presets genuinely non-interchangeable.
+    expect(matchesPrinterModelSuffix('H2DP', 'H2D')).toBe(false);
+    expect(matchesPrinterModelSuffix('H2D', 'H2D Pro')).toBe(false);
+  });
+
+  it('classifies an @BBL H2DP process as compatible with an H2D Pro', () => {
+    expect(
+      presetCompatibility(
+        { name: '0.20mm Balanced Strength @BBL H2DP' },
+        'process',
+        H2D_PRO,
+        idx,
+      ),
+    ).toBe('match');
+  });
+
+  it('still classifies an @BBL H2DP process as a mismatch for a plain H2D', () => {
+    expect(
+      presetCompatibility(
+        { name: '0.20mm Balanced Strength @BBL H2DP' },
+        'process',
+        H2D,
+        idx,
+      ),
+    ).toBe('mismatch');
+  });
+});
+
+describe('presetCompatibility with Bambu cloud A1M rename (#1649)', () => {
+  const A1_MINI = 'Bambu Lab A1 mini 0.4 nozzle';
+  const A1 = 'Bambu Lab A1 0.4 nozzle';
+  const idx = buildCompatibilityIndex(PRINTER_MODELS);
+
+  it('matches a cloud preset using the new @BBL A1M suffix against an A1 Mini printer', () => {
+    // The slicer-mirrored case: technopaw's report — A1 Mini cloud presets
+    // newly ship as "Bambu PLA Basic @BBL A1M ..." and used to be filtered
+    // out by the model check that compared "A1M" vs "A1 mini" verbatim.
+    expect(
+      presetCompatibility({ name: 'Bambu PLA Basic @BBL A1M' }, 'filament', A1_MINI, idx),
+    ).toBe('match');
+  });
+
+  it('matches a 0.4-nozzle process with @BBL A1M against an A1 Mini printer', () => {
+    expect(
+      presetCompatibility({ name: '0.20mm Standard @BBL A1M' }, 'process', A1_MINI, idx),
+    ).toBe('match');
+  });
+
+  it('does NOT match @BBL A1M against an A1 (non-mini) printer', () => {
+    // The alias must not collapse two physically different printers — A1
+    // and A1 Mini ship distinct profile sets.
+    expect(
+      presetCompatibility({ name: '0.20mm Standard @BBL A1M' }, 'process', A1, idx),
+    ).toBe('mismatch');
+  });
+});
+
+describe('presetCompatibility — long-form @Bambu Lab printer tag (#2628)', () => {
+  const A1 = 'Bambu Lab A1 0.4 nozzle';
+  const A1_MINI = 'Bambu Lab A1 mini 0.4 nozzle';
+  const H2D = 'Bambu Lab H2D 0.4 nozzle';
+  const idx = buildCompatibilityIndex(PRINTER_MODELS);
+
+  it('flags a user-saved H2D filament preset as a mismatch on an A1', () => {
+    // michaelklos's report: this exact preset sat in an unused filament slot
+    // of a multi-plate 3MF. Classified 'unknown' it was treated as usable,
+    // auto-picked, and the CLI rejected the slice with "filament preset
+    // (slot 1) is not compatible with printer Bambu Lab A1 0.4 nozzle".
+    expect(
+      presetCompatibility({ name: 'SUNLU TPU 95A @Bambu Lab H2D 0.4 nozzle' }, 'filament', A1, idx),
+    ).toBe('mismatch');
+  });
+
+  it('matches the same preset against its own printer', () => {
+    expect(
+      presetCompatibility({ name: 'SUNLU TPU 95A @Bambu Lab H2D 0.4 nozzle' }, 'filament', H2D, idx),
+    ).toBe('match');
+  });
+
+  it('resolves a long-form model whose display name differs from its short code', () => {
+    const name = 'My PETG @Bambu Lab X1 Carbon 0.4 nozzle';
+    expect(presetCompatibility({ name }, 'filament', X1C, idx)).toBe('match');
+    expect(presetCompatibility({ name }, 'filament', A1, idx)).toBe('mismatch');
+  });
+
+  it('applies the nozzle filter to the long form too', () => {
+    expect(
+      presetCompatibility({ name: 'My PETG @Bambu Lab A1 0.6 nozzle' }, 'filament', A1, idx),
+    ).toBe('mismatch');
+  });
+
+  it('ignores a trailing "(Custom)" suffix rather than mangling the model token', () => {
+    // The slicer appends this to user-saved presets. Parsed naively the tag
+    // becomes "H2D 0.4 nozzle (Custom)" — which would brand the preset a
+    // mismatch against its own printer and hide it from the dropdown.
+    const name = 'Devil Design PLA Basic @Bambu Lab H2D 0.4 nozzle (Custom)';
+    expect(presetCompatibility({ name }, 'filament', H2D, idx)).toBe('match');
+    expect(presetCompatibility({ name }, 'filament', A1, idx)).toBe('mismatch');
+  });
+
+  it('keeps the A1M alias working through the long form', () => {
+    expect(
+      presetCompatibility({ name: 'My PLA @Bambu Lab A1 mini 0.4 nozzle' }, 'filament', A1_MINI, idx),
+    ).toBe('match');
+    expect(
+      presetCompatibility({ name: 'My PLA @Bambu Lab A1 mini 0.4 nozzle' }, 'filament', A1, idx),
+    ).toBe('mismatch');
+  });
+
+  it('stays unknown for an @-tag that names no recognisable printer', () => {
+    // "@Voron 0.4 nozzle" is not a Bambu printer preset — the matcher must
+    // not guess, so the preset keeps its place in the main dropdown list.
+    expect(
+      presetCompatibility({ name: 'My PLA @Voron 0.4 nozzle' }, 'filament', A1, idx),
+    ).toBe('unknown');
+  });
+
+  it('reads the tag from the last @ so a stray earlier one cannot swallow it', () => {
+    expect(
+      presetCompatibility({ name: 'My @work PLA @Bambu Lab H2D 0.4 nozzle' }, 'filament', A1, idx),
+    ).toBe('mismatch');
+    expect(
+      presetCompatibility({ name: 'My @work PLA @Bambu Lab H2D 0.4 nozzle' }, 'filament', H2D, idx),
+    ).toBe('match');
+  });
+});
+
+describe('presetCompatibility — nozzle-only @<size> tag (#2628 follow-up)', () => {
+  const P2S_04 = 'Bambu Lab P2S 0.4 nozzle';
+  const X1C_02 = 'Bambu Lab X1 Carbon 0.2 nozzle';
+  const idx = buildCompatibilityIndex(PRINTER_MODELS);
+
+  it('rules out a 0.2-nozzle profile on a 0.4-nozzle printer', () => {
+    // The live case: "Overture PLA Matte @0.2" inherits from the X1C 0.2
+    // nozzle system profile, so the slicer rejected a P2S 0.4 slice with
+    // "not compatible with printer Bambu Lab P2S 0.4 nozzle". The name
+    // carries no model, so this size is the only signal available.
+    expect(
+      presetCompatibility({ name: 'Overture PLA Matte @0.2' }, 'filament', P2S_04, idx),
+    ).toBe('mismatch');
+  });
+
+  it('stays unknown when the size agrees — a size is not a model', () => {
+    // The profile might belong to a different printer with the same nozzle;
+    // promoting this to 'match' would claim knowledge we don't have.
+    expect(
+      presetCompatibility({ name: 'Overture PLA Matte @0.2' }, 'filament', X1C_02, idx),
+    ).toBe('unknown');
+  });
+
+  it('accepts the "0.2 nozzle" and "0.2mm" spellings of the same tag', () => {
+    for (const name of ['My PLA @0.2 nozzle', 'My PLA @0.2mm']) {
+      expect(presetCompatibility({ name }, 'filament', P2S_04, idx)).toBe('mismatch');
+    }
+  });
+
+  it('compares sizes numerically so 0.20 and 0.2 are one size', () => {
+    expect(
+      presetCompatibility({ name: 'My PLA @0.20' }, 'filament', X1C_02, idx),
+    ).toBe('unknown');
+  });
+
+  it('ignores a numeric tag that cannot be a nozzle', () => {
+    // "@2026" is a year, not a 2026 mm nozzle — guessing here would brand
+    // the profile incompatible with every printer that exists.
+    expect(presetCompatibility({ name: 'My PLA @2026' }, 'filament', P2S_04, idx)).toBe('unknown');
+    expect(presetCompatibility({ name: 'My PLA @0.05' }, 'filament', P2S_04, idx)).toBe('unknown');
+  });
+
+  it('leaves a model-bearing tag on the model path', () => {
+    // Regression guard: the nozzle-only branch must not swallow the forms
+    // that carry a model — those still resolve to match/mismatch.
+    expect(
+      presetCompatibility({ name: 'Bambu PLA Basic @BBL P2S' }, 'filament', P2S_04, idx),
+    ).toBe('match');
+    expect(
+      presetCompatibility({ name: 'My PLA @Bambu Lab X1 Carbon 0.4 nozzle' }, 'filament', P2S_04, idx),
+    ).toBe('mismatch');
+  });
+});
+
+describe("presetCompatibility — BambuStudio's \"# \" user-clone prefix", () => {
+  const index = buildCompatibilityIndex(PRINTER_MODELS);
+  // Editing a system preset saves a copy under this name; .bbscfg bundle
+  // exports use the same convention. The backend already normalises it in
+  // _canonical_printer_model.
+  const CLONED_X1C = '# Bambu Lab X1 Carbon 0.4 nozzle';
+
+  it('still matches a printer-tagged preset when the printer is a clone', () => {
+    // Regression: the prefix failed the "Bambu Lab …" test, so every preset
+    // came back 'unknown' and the dropdown filter silently did nothing.
+    expect(
+      presetCompatibility({ name: '0.20mm Standard @BBL X1C' }, 'process', CLONED_X1C, index),
+    ).toBe('match');
+  });
+
+  it('still rules out another printer when the selected printer is a clone', () => {
+    expect(
+      presetCompatibility({ name: '0.20mm Standard @BBL H2D' }, 'process', CLONED_X1C, index),
+    ).toBe('mismatch');
+  });
+
+  it('matches a cloned preset against an unprefixed printer', () => {
+    expect(
+      presetCompatibility({ name: '# 0.20mm Standard @BBL X1C' }, 'process', X1C, index),
+    ).toBe('match');
+  });
+
+  it('still compares the nozzle size through the prefix', () => {
+    expect(
+      presetCompatibility({ name: '0.20mm Standard @BBL X1C 0.6 nozzle' }, 'process', CLONED_X1C, index),
+    ).toBe('mismatch');
+  });
+
+  it('matches compatible_printers with the prefix on either side', () => {
+    // A preset cloned from a system printer lists the *unprefixed* name; a raw
+    // comparison against the "# " form reads as a mismatch, which now hides
+    // the preset rather than merely demoting it.
+    expect(
+      presetCompatibility({ name: 'My Process', compatible_printers: [X1C] }, 'process', CLONED_X1C, index),
+    ).toBe('match');
+    expect(
+      presetCompatibility({ name: 'My Process', compatible_printers: [CLONED_X1C] }, 'process', X1C, index),
+    ).toBe('match');
+  });
+
+  it('does not let the prefix turn a genuine mismatch into a match', () => {
+    expect(
+      presetCompatibility({ name: 'My Process', compatible_printers: [P2S] }, 'process', CLONED_X1C, index),
+    ).toBe('mismatch');
+  });
+
+  it('leaves an untagged clone unknown rather than guessing', () => {
+    expect(
+      presetCompatibility({ name: '# My own profile' }, 'process', CLONED_X1C, index),
+    ).toBe('unknown');
+  });
+});
+
+describe('presetCompatibility — printer preset saved under a name of its own (#3250)', () => {
+  const RENAMED = 'Bambu Lab H2D 0.4 nozzle - Apply Skew Calibration - Only use once';
+  const H2D = 'Bambu Lab H2D 0.4 nozzle';
+  const index = buildCompatibilityIndex(PRINTER_MODELS, { [RENAMED]: H2D });
+
+  it('matches a stock process by name through the parent', () => {
+    expect(presetCompatibility({ name: '0.16mm Balanced Quality @BBL H2D' }, 'process', RENAMED, index)).toBe('match');
+  });
+
+  it('still rules out a process for another printer', () => {
+    expect(presetCompatibility({ name: '0.20mm Standard @BBL X1C' }, 'process', RENAMED, index)).toBe('mismatch');
+  });
+
+  it('matches a list naming the parent', () => {
+    expect(
+      presetCompatibility({ name: 'Mine', compatible_printers: [H2D] }, 'process', RENAMED, index),
+    ).toBe('match');
+  });
+
+  it('matches a list naming the renamed preset itself', () => {
+    expect(
+      presetCompatibility({ name: 'Mine', compatible_printers: [RENAMED] }, 'process', RENAMED, index),
+    ).toBe('match');
+  });
+
+  it('rejects a list naming neither', () => {
+    expect(
+      presetCompatibility({ name: 'Mine', compatible_printers: [X1C] }, 'process', RENAMED, index),
+    ).toBe('mismatch');
+  });
+
+  it('without a known parent the name alone decides, as before', () => {
+    const noParents = buildCompatibilityIndex(PRINTER_MODELS);
+    expect(
+      presetCompatibility({ name: '0.16mm Balanced Quality @BBL H2D' }, 'process', RENAMED, noParents),
+    ).toBe('mismatch');
+  });
+
+  it('ignores names that collide with Object.prototype', () => {
+    expect(
+      presetCompatibility({ name: '0.16mm Balanced Quality @BBL H2D' }, 'process', 'constructor', index),
+    ).toBe('unknown');
   });
 });

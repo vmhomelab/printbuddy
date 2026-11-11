@@ -1,0 +1,1 @@
+function e(e,t=!1){if(!e?.connected)return`offline`;if(t)return`error`;switch(e.state){case`RUNNING`:return`printing`;case`PAUSE`:return`paused`;case`FINISH`:case`FAILED`:return`finished`;default:return`idle`}}export{e as t};

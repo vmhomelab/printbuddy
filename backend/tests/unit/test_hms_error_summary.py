@@ -52,3 +52,51 @@ def test_tolerates_malformed_entry_and_skips_it():
 
 def test_all_malformed_returns_none():
     assert _format([{"code": "not-hex", "attr": "also-not-int"}]) is None
+
+
+def test_masks_a_32_bit_code_into_a_four_digit_label():
+    """An `hms[]` entry's code carries the alert level in its high 16 bits. The
+    label used to be formatted from the unmasked value, producing "0500_3000A" —
+    five digits in a group that has four, so it matched no catalogue key and was
+    not a code anyone could look up either."""
+    summary = _format([{"code": "0x3000a", "attr": 0x05000200, "module": 5, "severity": 2}])
+    assert summary == "[0500_000A]"
+
+
+def test_masking_lets_a_32_bit_code_resolve_its_description():
+    """0500_4038 is the nozzle-size mismatch. Arriving as an `hms[]` entry with
+    an alert-level group, it went undescribed purely because of the formatting
+    above; now it reads the same as when it arrives via print_error."""
+    summary = _format([{"code": "0x00024038", "attr": 0x05000200, "module": 5, "severity": 2}])
+    assert summary is not None
+    assert summary.startswith("[0500_4038] ")
+    assert "nozzle diameter" in summary.lower()
+
+
+def test_accepts_an_integer_code():
+    """`_hms_short_code` takes both shapes; the raw MQTT payload carries ints."""
+    assert _format([{"code": 0x4038, "attr": 0x05000000, "module": 5, "severity": 1}]).startswith("[0500_4038] ")
+
+
+def test_an_hms_array_fault_is_labelled_with_its_full_code() -> None:
+    """The short code of an `hms[]` fault ("0500_000E") drops the part and level
+    groups and is not a code anyone can look up; the printer screen and Bambu's
+    wiki write it as four groups (#2728)."""
+    summary = _format(
+        [
+            {
+                "code": "0x2000e",
+                "attr": 0x05000300,
+                "module": 5,
+                "severity": 2,
+                "full_code": "050003000002000E",
+                "description": "Some modules are incompatible.",
+            }
+        ]
+    )
+    assert summary == "[0500-0300-0002-000E] Some modules are incompatible."
+
+
+def test_a_print_error_keeps_its_short_label() -> None:
+    summary = _format([{"code": "0x8004", "attr": 0x03008004, "module": 3, "severity": 2, "full_code": "03008004"}])
+    assert summary.startswith("[0300_8004] Filament ran out")

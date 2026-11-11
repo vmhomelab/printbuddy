@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, false, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.core.database import Base
@@ -17,8 +17,8 @@ class GitHubBackupConfig(Base):
     repository_url: Mapped[str] = mapped_column(String(500))  # Full GitHub URL
     access_token: Mapped[str] = mapped_column(Text)  # Personal Access Token
     branch: Mapped[str] = mapped_column(String(100), default="main")
-    provider: Mapped[str] = mapped_column(String(30), default="github")
-    allow_insecure_http: Mapped[bool] = mapped_column(Boolean, default=False)
+    provider: Mapped[str] = mapped_column(String(30), default="github", server_default="github")
+    allow_insecure_http: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
 
     # Schedule configuration
     schedule_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -59,7 +59,7 @@ class GitHubBackupLog(Base):
     started_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     status: Mapped[str] = mapped_column(String(20))  # running/success/failed/skipped
-    trigger: Mapped[str] = mapped_column(String(20))  # manual/scheduled
+    trigger: Mapped[str] = mapped_column(String(20))  # manual/scheduled/restore
 
     commit_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
     files_changed: Mapped[int] = mapped_column(Integer, default=0)

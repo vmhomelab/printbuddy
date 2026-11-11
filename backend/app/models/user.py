@@ -7,6 +7,7 @@ from sqlalchemy import DateTime, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.core.database import Base
+from backend.app.utils.local_time import utcnow_naive
 
 if TYPE_CHECKING:
     from backend.app.models.group import Group
@@ -22,6 +23,8 @@ class User(Base):
     """
 
     __tablename__ = "users"
+    # SQLite would give a freed id to the next row; see core/database AUTOINCREMENT_TABLES
+    __table_args__ = {"sqlite_autoincrement": True}
 
     id: Mapped[int] = mapped_column(primary_key=True)
     username: Mapped[str] = mapped_column(String(100), unique=True, index=True)
@@ -37,13 +40,24 @@ class User(Base):
 
     # Set whenever the local password is changed/reset — used to invalidate JWTs
     # issued before the change (M-R7-B).  NULL means no password change recorded yet.
-    password_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Set at creation too, whichever way the user is created: sessions name the
+    # user by username, and a deleted user's still-valid JWTs must not sign in
+    # whoever is given the name next.
+    password_changed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=utcnow_naive)
 
     # Per-user Bambu Cloud credentials (when auth is enabled, each user has their own)
     cloud_token: Mapped[str | None] = mapped_column(String(500), nullable=True, default=None)
     cloud_email: Mapped[str | None] = mapped_column(String(255), nullable=True, default=None)
     # "global" or "china"; NULL treated as "global" for legacy rows.
     cloud_region: Mapped[str | None] = mapped_column(String(10), nullable=True, default=None)
+    # Set when Bambu answers 401 to a call made with ``cloud_token`` — the token
+    # has expired or been revoked. NULL means "not known to be dead". The token
+    # itself is kept: clearing it would lose the email/region we show on the
+    # re-login form, and a token can only be replaced by signing in again anyway.
+    # Bambu's token is opaque and carries no expiry we can read, and Printbuddy
+    # does not persist the refresh token, so this flag is the *only* record that
+    # a stored credential has stopped working (#2562 follow-up).
+    cloud_token_invalid_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
 
     # Per-user Orca Cloud external-app credentials. Access tokens expire after
     # 24h; refresh tokens rotate and must be replaced atomically by the route.

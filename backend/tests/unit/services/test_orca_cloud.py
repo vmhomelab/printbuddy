@@ -349,7 +349,7 @@ class TestListProfiles:
     async def test_pull_hits_external_path_without_cursor(self, svc):
         """Regression guard: the list must hit the EXTERNAL sync path
         (``/api/v1/external/sync/pull``, not the first-party ``/api/v1/sync``)
-        with no ``?cursor=`` — the initial full snapshot intentionally omits the optional cursor."""
+        with no ``?cursor=`` — ``cursor=0`` trips ``410 cursor_too_old``."""
         svc.access_token = "oc_ext_A"
         svc.token_expiry = datetime.now(timezone.utc) + timedelta(hours=12)
         svc._client.get = AsyncMock(return_value=_mock_response(json_data={"upserts": [], "deletes": []}))

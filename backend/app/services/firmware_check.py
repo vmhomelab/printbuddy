@@ -13,12 +13,33 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
 
 import httpx
 
 from backend.app.core.config import _data_dir
 
 logger = logging.getLogger(__name__)
+
+# Cloudflare on bambulab.com now gates the firmware-download page behind a
+# JA3/TLS-fingerprint challenge (cf-mitigated=challenge) that plain Python
+# TLS can't pass (#1666). curl_cffi replays Chrome's actual ClientHello
+# bytes so the handshake clears CF; we override the HTTP User-Agent back to
+# the honest Printbuddy/1.0 string so the application-layer identity stays
+# truthful (TLS fingerprint matches Chrome because Python's TLS is the
+# signal CF gates on; everything above TLS is still Printbuddy).
+#
+# Soft dependency — if curl_cffi isn't importable on the running platform,
+# firmware_check degrades to httpx (which will likely 403) and wiki-based
+# version detection continues to work for the badge; only the in-app
+# firmware-download URL stops resolving.
+try:
+    from curl_cffi.requests import AsyncSession as _CurlCffiAsyncSession
+
+    _CURL_CFFI_AVAILABLE = True
+except ImportError:  # pragma: no cover — exercised only on platforms without wheels
+    _CurlCffiAsyncSession = None  # type: ignore[misc,assignment]
+    _CURL_CFFI_AVAILABLE = False
 
 # Bambu Lab firmware download page (for download URLs)
 BAMBU_FIRMWARE_BASE = "https://bambulab.com"
@@ -65,12 +86,12 @@ MODEL_TO_API_KEY = {
     "BL-P003": "x1e",
     "C11": "p1",
     "C12": "p1",
-    "C13": "p2s",
+    "C13": "x1e",
     "N2S": "a1",
     "N1": "a1-mini",
-    "N9": "a2l",
     "N6": "x2d",
     "N7": "p2s",
+    "N9": "a2l",
 }
 
 # Reverse mapping: API key to model codes
@@ -79,7 +100,6 @@ API_KEY_TO_DEV_MODEL = {
     "p1": "C11",
     "a1": "N2S",
     "a1-mini": "N1",
-    "a2l": "N9",
     "h2d": "O1D",
     "h2c": "O1C",
     "h2s": "O1S",
@@ -87,6 +107,7 @@ API_KEY_TO_DEV_MODEL = {
     "x1e": "C13",
     "x2d": "N6",
     "h2d-pro": "O1E",
+    "a2l": "N9",
 }
 
 # Wiki firmware release history pages (primary version source)
@@ -96,13 +117,16 @@ API_KEY_TO_WIKI_PATH = {
     "p1": "/en/p1/manual/p1p-firmware-release-history",
     "a1": "/en/a1/manual/a1-firmware-release-history",
     "a1-mini": "/en/a1-mini/manual/a1-mini-firmware-release-history",
-    "a2l": "/en/a2l/manual/a2l-firmware-release-history",
     "h2d": "/en/h2d/manual/h2d-firmware-release-history",
     "h2c": "/en/h2c/manual/h2c-firmware-release-history",
     "h2s": "/en/h2s/manual/h2s-firmware-release-history",
     "p2s": "/en/p2s/manual/p2s-firmware-release-history",
     "x2d": "/en/x2d/manual/x2d-firmware-release-history",
     "h2d-pro": "/en/h2d-pro/manual/firmware-release-history",
+    # A2L wiki path follows the established pattern but isn't yet published —
+    # _fetch_all_versions_from_wiki silently returns [] on 404 so this is safe
+    # to ship before Bambu publishes the page.
+    "a2l": "/en/a2l/manual/a2l-firmware-release-history",
 }
 
 
@@ -126,6 +150,8 @@ class FirmwareCheckService:
         self._version_cache: dict[str, FirmwareVersion] = {}
         self._versions_list_cache: dict[str, list[FirmwareVersion]] = {}
         self._cache_time: float = 0
+        # Plain httpx client for the Bambu Lab wiki (no CF fingerprint check)
+        # and other endpoints. Honest UA throughout.
         self._client = httpx.AsyncClient(
             timeout=30.0,
             headers={
@@ -142,6 +168,88 @@ class FirmwareCheckService:
                 "Accept-Language": "en-US,en;q=0.9",
             },
         )
+        # Bambu Lab hosts known to be unreachable (no internet, a blocked
+        # host): each outage is logged once, not on every fetch of every check.
+        # Per host, as the wiki and bambulab.com can fail independently.
+        self._unreachable_hosts: set[str] = set()
+        # curl_cffi session for bambulab.com (lazily initialised on first use).
+        # See module-level note on why this is needed.
+        self._bambulab_client: object | None = None
+        if not _CURL_CFFI_AVAILABLE:
+            logger.warning(
+                "curl_cffi not installed — bambulab.com firmware-download page "
+                "will likely return Cloudflare 403 (#1666). Wiki-based version "
+                "detection still works; install curl_cffi to also resolve "
+                "in-app firmware download URLs."
+            )
+
+    def _get_bambulab_client(self) -> object | None:
+        """Lazy-init curl_cffi async session for bambulab.com.
+
+        Chrome TLS impersonation is required to pass Cloudflare's JA3
+        challenge. The HTTP `User-Agent` is overridden back to the honest
+        Printbuddy string so application-layer identity stays truthful.
+        Returns None when curl_cffi is unavailable.
+        """
+        if not _CURL_CFFI_AVAILABLE:
+            return None
+        if self._bambulab_client is None:
+            assert _CurlCffiAsyncSession is not None  # type-narrow for mypy
+            self._bambulab_client = _CurlCffiAsyncSession(
+                impersonate="chrome",
+                headers={
+                    "User-Agent": "Printbuddy/1.0 (+https://github.com/vmhomelab/Printbuddy)",
+                    "Accept": "text/html,application/json,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.9",
+                },
+                timeout=30,
+            )
+        return self._bambulab_client
+
+    def _note_unreachable(self, url: str, error: Exception) -> None:
+        """A fetch failed at the transport: log the host's outage once, then quietly."""
+        host = urlparse(url).hostname or url
+        if host in self._unreachable_hosts:
+            logger.debug("%s still unreachable (%s): %s", host, url, error)
+            return
+        self._unreachable_hosts.add(host)
+        logger.warning(
+            "%s unreachable (%s: %s); firmware checks keep retrying, further failures "
+            "are logged at debug level until it is reachable again",
+            host,
+            url,
+            error,
+        )
+
+    def _note_reachable(self, url: str) -> None:
+        host = urlparse(url).hostname or url
+        if host in self._unreachable_hosts:
+            self._unreachable_hosts.discard(host)
+            logger.info("%s reachable again", host)
+
+    async def _bambulab_get(self, url: str) -> tuple[int, str]:
+        """GET against bambulab.com. Returns (status_code, body_text).
+
+        Routes through curl_cffi when available (passes the CF JA3 gate);
+        falls back to httpx otherwise (will likely 403 but worth the try
+        in case CF eases the check). status 0 indicates a transport error.
+        """
+        client = self._get_bambulab_client()
+        if client is not None:
+            try:
+                response = await client.get(url)  # type: ignore[attr-defined]
+            except Exception as e:
+                self._note_unreachable(url, e)
+                return 0, ""
+            self._note_reachable(url)
+            return response.status_code, response.text
+        try:
+            response = await self._client.get(url)
+        except Exception as e:
+            self._note_unreachable(url, e)
+            return 0, ""
+        self._note_reachable(url)
+        return response.status_code, response.text
 
     def _build_id_cache_path(self) -> Path:
         cache_dir = _data_dir / "firmware"
@@ -193,28 +301,29 @@ class FirmwareCheckService:
                 self._build_id_time = disk_time
 
         # 3. Live fetch
-        try:
-            response = await self._client.get(f"{BAMBU_FIRMWARE_BASE}{FIRMWARE_PAGE}")
-            if response.status_code == 200:
-                match = re.search(r'"buildId":"([^"]+)"', response.text)
-                if match:
-                    new_build_id = match.group(1)
-                    if new_build_id != self._build_id:
-                        logger.info("Got Bambu Lab build ID: %s", new_build_id)
-                    self._build_id = new_build_id
-                    self._build_id_time = time.time()
-                    self._download_page_unreachable = False
-                    self._save_build_id_to_disk(new_build_id)
-                    return self._build_id
-            else:
-                # 403/5xx — keep stale cached buildId if we have one (#1350).
-                logger.warning(
-                    "Failed to get Bambu Lab page: %s (will try cached buildId if available)",
-                    response.status_code,
-                )
-                self._download_page_unreachable = True
-        except Exception as e:
-            logger.error("Error fetching Bambu Lab build ID: %s", e)
+        status, body = await self._bambulab_get(f"{BAMBU_FIRMWARE_BASE}{FIRMWARE_PAGE}")
+        if status == 200:
+            match = re.search(r'"buildId":"([^"]+)"', body)
+            if match:
+                new_build_id = match.group(1)
+                if new_build_id != self._build_id:
+                    logger.info("Got Bambu Lab build ID: %s", new_build_id)
+                self._build_id = new_build_id
+                self._build_id_time = time.time()
+                self._download_page_unreachable = False
+                self._save_build_id_to_disk(new_build_id)
+                return self._build_id
+        elif status == 0:
+            # Transport-level error already logged by _bambulab_get.
+            self._download_page_unreachable = True
+        else:
+            # 403/5xx — keep stale cached buildId if we have one (#1350).
+            # Without curl_cffi this is the expected outcome on Cloudflare
+            # JA3-gated zones (#1666).
+            logger.warning(
+                "Failed to get Bambu Lab page: %s (will try cached buildId if available)",
+                status,
+            )
             self._download_page_unreachable = True
 
         # Return whatever we have — even a stale buildId beats nothing.
@@ -256,9 +365,18 @@ class FirmwareCheckService:
         if not wiki_path:
             return []
 
+        url = f"{BAMBU_WIKI_BASE}{wiki_path}"
         try:
-            url = f"{BAMBU_WIKI_BASE}{wiki_path}"
             response = await self._client.get(url, follow_redirects=True)
+        except httpx.TransportError as e:
+            self._note_unreachable(url, e)
+            return []
+        except Exception as e:
+            # Reached, but no usable answer (a redirect loop, a broken encoding).
+            logger.debug("Error fetching wiki firmware list for %s: %s", api_key, e)
+            return []
+        self._note_reachable(url)
+        try:
             if response.status_code != 200:
                 return []
 
@@ -307,50 +425,49 @@ class FirmwareCheckService:
             return []
 
         for attempt in range(2):
-            try:
-                url = f"{BAMBU_FIRMWARE_BASE}/_next/data/{build_id}/en/support/firmware-download/{api_key}.json"
-                response = await self._client.get(url)
+            url = f"{BAMBU_FIRMWARE_BASE}/_next/data/{build_id}/en/support/firmware-download/{api_key}.json"
+            status, body = await self._bambulab_get(url)
 
-                if response.status_code == 200:
-                    data = response.json()
-                    page_props = data.get("pageProps", {})
-                    printer_map = page_props.get("printerMap", {})
-                    printer_data = printer_map.get(api_key, {})
-                    versions = printer_data.get("versions", [])
-                    return [
-                        FirmwareVersion(
-                            version=v.get("version", ""),
-                            download_url=v.get("url", ""),
-                            release_notes=v.get("release_notes_en"),
-                            release_time=v.get("release_time"),
-                        )
-                        for v in versions
-                        if v.get("version")
-                    ]
+            if status == 200:
+                try:
+                    data = json.loads(body)
+                except ValueError as e:
+                    logger.debug("Download-page JSON for %s parse error: %s", api_key, e)
+                    return []
+                page_props = data.get("pageProps", {})
+                printer_map = page_props.get("printerMap", {})
+                printer_data = printer_map.get(api_key, {})
+                versions = printer_data.get("versions", [])
+                return [
+                    FirmwareVersion(
+                        version=v.get("version", ""),
+                        download_url=v.get("url", ""),
+                        release_notes=v.get("release_notes_en"),
+                        release_time=v.get("release_time"),
+                    )
+                    for v in versions
+                    if v.get("version")
+                ]
 
-                # 404 with cached buildId → Bambu rebuilt the page; invalidate
-                # and retry once. Other status codes (403, 5xx) are upstream
-                # blocks — don't churn.
-                if response.status_code == 404 and attempt == 0:
-                    logger.info("Cached Bambu buildId stale (404), refreshing")
-                    self._build_id = None
-                    self._build_id_time = 0
-                    build_id = await self._get_build_id()
-                    if not build_id:
-                        return []
-                    continue
+            # 404 with cached buildId → Bambu rebuilt the page; invalidate
+            # and retry once. Other status codes (403, 5xx) are upstream
+            # blocks — don't churn.
+            if status == 404 and attempt == 0:
+                logger.info("Cached Bambu buildId stale (404), refreshing")
+                self._build_id = None
+                self._build_id_time = 0
+                build_id = await self._get_build_id()
+                if not build_id:
+                    return []
+                continue
 
-                # 403 from the JSON endpoint is the same Cloudflare block
-                # signal as on the index page (#1350).
-                if response.status_code == 403:
-                    self._download_page_unreachable = True
+            # 403 from the JSON endpoint is the same Cloudflare block
+            # signal as on the index page (#1350, #1666).
+            if status == 403:
+                self._download_page_unreachable = True
 
-                logger.debug("Download-page JSON for %s returned status %s", api_key, response.status_code)
-                return []
-
-            except Exception as e:
-                logger.debug("Error fetching download page firmware for %s: %s", api_key, e)
-                return []
+            logger.debug("Download-page JSON for %s returned status %s", api_key, status)
+            return []
 
         return []
 
@@ -383,7 +500,9 @@ class FirmwareCheckService:
         if download_info:
             return download_info
 
-        logger.warning("Could not fetch firmware info for %s from wiki or download page", api_key)
+        # Already reported once as an outage when the sites are unreachable.
+        log = logger.debug if self._unreachable_hosts else logger.warning
+        log("Could not fetch firmware info for %s from wiki or download page", api_key)
         return None
 
     async def get_latest_version(self, model: str) -> FirmwareVersion | None:

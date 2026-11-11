@@ -34,6 +34,11 @@ def mock_plug():
     plug.rest_energy_url = None
     plug.rest_energy_path = "energy.today"
     plug.rest_energy_multiplier = 1.0
+    # Pinned to None rather than left as a MagicMock: an auto-created attribute is
+    # truthy, so get_energy would think a lifetime path was configured and take a
+    # branch no test meant to exercise.
+    plug.rest_energy_total_path = None
+    plug.rest_energy_total_multiplier = 1.0
     return plug
 
 
@@ -44,11 +49,38 @@ class TestURLValidation:
     def test_hostname_url(self, service):
         assert service._validate_url("http://openhab.local:8080/api") is True
 
-    def test_loopback_blocked(self, service):
-        assert service._validate_url("http://127.0.0.1/api") is False
+    def test_loopback_allowed(self, service):
+        """Deliberate change: the LAN-service policy permits loopback, because
+        an openHAB/Node-RED bridge on the same host is the normal topology.
 
-    def test_link_local_blocked(self, service):
+        The previous check rejected a literal 127.0.0.1 while accepting the
+        equivalent "localhost", so the same target was configurable one way and
+        not the other. See test_outbound_url_ssrf_guards.py for the policy.
+        """
+        assert service._validate_url("http://127.0.0.1/api") is True
+
+    def test_link_local_refused(self, service):
+        """The IPv4 link-local range is where cloud providers put their
+        metadata endpoints, listed or not, so the whole /16 is refused."""
         assert service._validate_url("http://169.254.1.1/api") is False
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://169.254.169.254/latest/meta-data/",
+            "http://100.100.100.200/",
+            "http://[fd00:ec2::254]/",
+            "http://metadata.google.internal/",
+            "http://[::ffff:169.254.169.254]/",
+            "http://2130706433/",
+            "http://0.0.0.0/",
+        ],
+    )
+    def test_metadata_and_encoded_targets_blocked(self, service, url):
+        """The gap the previous hand-rolled check left: anything that was not a
+        bare IP literal fell through to True, and the literals it did parse were
+        only tested for loopback/link-local."""
+        assert service._validate_url(url) is False
 
     def test_empty_hostname(self, service):
         assert service._validate_url("http:///api") is False
@@ -184,6 +216,91 @@ class TestGetEnergy:
         assert result["power"] == 42.5
         assert result["today"] == 1.23
 
+
+class TestGetEnergyLifetimeCounter:
+    """#2539. A Shelly Plug S Gen3 reports exactly one energy figure, and it is
+    cumulative. It has to land in ``total``, not ``today``.
+    """
+
+    # The reporter's own Switch.GetStatus payload.
+    SHELLY = {"apower": 84.0, "aenergy": {"total": 2620.197}}
+
+    @pytest.fixture
+    def shelly(self, mock_plug):
+        mock_plug.rest_power_path = "apower"
+        mock_plug.rest_power_multiplier = 1.0
+        mock_plug.rest_energy_path = None  # a Shelly has no notion of "today"
+        mock_plug.rest_energy_total_path = "aenergy.total"
+        mock_plug.rest_energy_total_multiplier = 0.001  # Wh -> kWh
+        return mock_plug
+
+    @pytest.mark.asyncio
+    async def test_lifetime_counter_lands_in_total_not_today(self, service, shelly):
+        response = MagicMock()
+        response.json.return_value = self.SHELLY
+
+        with patch.object(service, "_send_request", new_callable=AsyncMock, return_value=response):
+            result = await service.get_energy(shelly)
+
+        assert result["power"] == 84.0
+        assert result["total"] == pytest.approx(2.620197)
+        # The bug: this used to be 2.620197, a lifetime figure wearing today's
+        # label, which then never reset at midnight.
+        assert "today" not in result
+
+    @pytest.mark.asyncio
+    async def test_a_plug_reporting_both_counters_keeps_them_apart(self, service, mock_plug):
+        """A Tasmota behind a REST bridge exposes Today and Total. Neither may
+        overwrite the other.
+        """
+        mock_plug.rest_power_path = "power"
+        mock_plug.rest_energy_path = "energy.today"
+        mock_plug.rest_energy_multiplier = 1.0
+        mock_plug.rest_energy_total_path = "energy.total"
+        mock_plug.rest_energy_total_multiplier = 1.0
+
+        response = MagicMock()
+        response.json.return_value = {"power": 42.5, "energy": {"today": 1.23, "total": 987.6}}
+
+        with patch.object(service, "_send_request", new_callable=AsyncMock, return_value=response):
+            result = await service.get_energy(mock_plug)
+
+        assert result["today"] == 1.23
+        assert result["total"] == 987.6
+
+    @pytest.mark.asyncio
+    async def test_total_path_alone_is_enough_to_read_energy(self, service, mock_plug):
+        """No power path, no today path — only the lifetime counter. get_energy
+        used to bail out entirely, since its guard only knew about the other two.
+        """
+        mock_plug.rest_power_path = None
+        mock_plug.rest_energy_path = None
+        mock_plug.rest_energy_total_path = "aenergy.total"
+        mock_plug.rest_energy_total_multiplier = 0.001
+
+        response = MagicMock()
+        response.json.return_value = self.SHELLY
+
+        with patch.object(service, "_send_request", new_callable=AsyncMock, return_value=response):
+            result = await service.get_energy(mock_plug)
+
+        assert result == {"total": pytest.approx(2.620197)}
+
+    @pytest.mark.asyncio
+    async def test_both_counters_share_one_fetch(self, service, shelly):
+        """Today and Total ride on the same Shelly response. Reading them must not
+        cost two HTTP round-trips against a device on the end of a wifi link.
+        """
+        shelly.rest_energy_path = "aenergy.total"  # same URL as the total path
+
+        response = MagicMock()
+        response.json.return_value = self.SHELLY
+
+        with patch.object(service, "_send_request", new_callable=AsyncMock, return_value=response) as send:
+            await service.get_energy(shelly)
+
+        assert send.await_count == 1
+
     @pytest.mark.asyncio
     async def test_energy_no_status_url_no_separate_urls(self, service, mock_plug):
         """No URLs at all (status=None, power_url=None, energy_url=None) → None."""
@@ -315,6 +432,117 @@ class TestTestConnection:
 
     @pytest.mark.asyncio
     async def test_connection_invalid_url(self, service):
-        result = await service.test_connection("http://127.0.0.1/api")
+        """127.0.0.1 is now permitted (see TestURLValidation), so the rejection
+        case here is a target that is out of policy under any topology. The
+        error is the guard's own message rather than a fixed sentence, so the
+        user learns which rule the URL broke."""
+        result = await service.test_connection("http://169.254.169.254/latest/meta-data/")
         assert result["success"] is False
-        assert "blocked" in result["error"].lower()
+        assert "cloud metadata" in result["error"].lower()
+
+
+class TestLogsKeepCredentialsOut:
+    """A REST URL may carry the device credential in its login, query or path.
+
+    The log names the device by scheme and host only, also inside an error's
+    own text.
+    """
+
+    URL = "http://admin:login-value@plug.elsewhere.example:8080/api/webhook/path-value?auth_key=query-value"
+
+    @pytest.fixture
+    def plug(self, mock_plug):
+        mock_plug.rest_on_url = self.URL
+        mock_plug.rest_off_url = self.URL
+        return mock_plug
+
+    @staticmethod
+    def _client(side_effect=None):
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        if side_effect is None:
+            response = MagicMock()
+            response.raise_for_status = MagicMock()
+            client.request = AsyncMock(return_value=response)
+        else:
+            client.request = AsyncMock(side_effect=side_effect)
+        return client
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "error",
+        [
+            None,
+            httpx.TimeoutException("timed out"),
+            httpx.HTTPStatusError(
+                f"Client error '404 Not Found' for url '{URL}'",
+                request=httpx.Request("GET", URL),
+                response=httpx.Response(404, request=httpx.Request("GET", URL)),
+            ),
+            httpx.ConnectError(f"cannot reach {URL}"),
+            RuntimeError(f"odd failure for {URL}"),
+        ],
+    )
+    async def test_switching_logs_only_the_host(self, service, plug, caplog, error):
+        caplog.set_level("DEBUG", logger="backend.app.services.rest_smart_plug")
+        with patch("httpx.AsyncClient", return_value=self._client(error)):
+            await service.turn_on(plug)
+            await service.turn_off(plug)
+
+        assert "plug.elsewhere.example:8080" in caplog.text
+        assert "-value" not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_a_refused_url_logs_only_the_host(self, service, caplog):
+        caplog.set_level("DEBUG", logger="backend.app.services.rest_smart_plug")
+
+        await service._send_request("http://admin:login-value@169.254.169.254/path-value?auth_key=query-value")
+
+        assert "169.254.169.254" in caplog.text
+        assert "-value" not in caplog.text
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("delimiter", ["?", "/", "#"])
+    async def test_a_login_the_parser_cannot_find_is_hidden_whole(self, service, mock_plug, caplog, delimiter):
+        """An unencoded ? / or # in the password ends the host early: the login
+        cannot be told apart, so none of the URL is logged."""
+        caplog.set_level("DEBUG", logger="backend.app.services.rest_smart_plug")
+        mock_plug.rest_on_url = f"http://admin:p{delimiter}w-value@plug.elsewhere.example/x"
+        with patch("httpx.AsyncClient", return_value=self._client(httpx.ConnectError("refused"))):
+            await service.turn_on(mock_plug)
+
+        assert "admin" not in caplog.text
+        assert "-value" not in caplog.text
+        assert "http://<hidden>" in caplog.text
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://admin:pa@ssw0rd-value?more@plug.elsewhere.example/x",
+            "http://a:Sec@ret-value/Tail@plug.elsewhere.example",
+            "http://u:a@b-value#c@plug.elsewhere.example",
+        ],
+    )
+    async def test_an_at_after_the_host_hides_the_url_whole(self, service, mock_plug, caplog, url):
+        caplog.set_level("DEBUG", logger="backend.app.services.rest_smart_plug")
+        mock_plug.rest_on_url = url
+        with patch("httpx.AsyncClient", return_value=self._client(httpx.ConnectError("refused"))):
+            await service.turn_on(mock_plug)
+
+        assert "-value" not in caplog.text
+        assert "http://<hidden>" in caplog.text
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "error",
+        [httpx.LocalProtocolError("Illegal header value b'Bearer header-value '"), RuntimeError("odd header-value")],
+    )
+    async def test_an_error_that_may_quote_a_header_is_logged_by_its_type(self, service, mock_plug, caplog, error):
+        caplog.set_level("DEBUG", logger="backend.app.services.rest_smart_plug")
+        with patch("httpx.AsyncClient", return_value=self._client(error)):
+            await service.turn_on(mock_plug)
+
+        assert "-value" not in caplog.text
+        assert type(error).__name__ in caplog.text

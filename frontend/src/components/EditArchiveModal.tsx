@@ -1,14 +1,22 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { X, Save, Tag, Camera, Trash2, Loader2, Plus, FolderKanban, Hash, Link } from 'lucide-react';
+import { X, Save, Tag, Camera, Trash2, Loader2, Plus, FolderKanban, Hash, Link, Weight } from 'lucide-react';
 import { api } from '../api/client';
+import { useAuth } from '../contexts/AuthContext';
 import type { Archive } from '../api/client';
 import { Button } from './Button';
 import { PrintLogTable } from './PrintLogTable';
+import { invalidateArchiveAndProjectViews } from '../utils/projectQueries';
+import { assignableProjects } from '../utils/projectTree';
+import { verdictSourceKey } from '../utils/verdictSource';
+import { NumberInput } from './NumberInput';
 
-// Keys for failure reasons - translated at render time
-const FAILURE_REASON_KEYS = [
+// Keys for failure reasons - translated at render time.
+// Exported so the Print Log per-row classification editor (#1687 part 4)
+// can share the same vocabulary as the Archive Edit modal — the backend
+// PATCH /print-log/{id} validator gates writes against this exact list.
+export const FAILURE_REASON_KEYS = [
   'adhesionFailure',
   'spaghettiDetached',
   'layerShift',
@@ -19,11 +27,20 @@ const FAILURE_REASON_KEYS = [
   'underExtrusion',
   'powerFailure',
   'userCancelled',
+  'noStatusUpdate',
+  'killSwitch',
   'other',
 ] as const;
 
-// Keys for archive statuses - translated at render time
-const ARCHIVE_STATUS_KEYS = ['completed', 'failed', 'aborted', 'printing'] as const;
+// The finished outcomes an archive can be given by hand (the API refuses any
+// other). Translated at render time.
+const ARCHIVE_STATUS_KEYS: readonly string[] = ['completed', 'failed', 'aborted', 'cancelled'];
+
+// Mirrors the API's own bound on filament_used_grams. Clamped here as well so
+// the field cannot produce a request the backend would reject with a 422 —
+// this modal has no error surface, so a refused save looks like nothing
+// happened at all (#1820).
+const MAX_FILAMENT_GRAMS = 100000;
 
 interface EditArchiveModalProps {
   archive: Archive;
@@ -48,9 +65,51 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
   const [projectId, setProjectId] = useState<number | null>(archive.project_id ?? null);
   const [notes, setNotes] = useState(archive.notes || '');
   const [tags, setTags] = useState(archive.tags || '');
-  const [failureReason, setFailureReason] = useState(archive.failure_reason || '');
+  // Failure reason is stored as a camelCase key (`filamentRunout`). Three older
+  // writers stored other spellings -- English display labels from the backend,
+  // this modal's own translated labels, and two prose sentences from the stale
+  // archive paths -- and a startup migration folds all of them onto keys
+  // (issue #2974). This reverse lookup is the belt to that migration's braces,
+  // for a frontend running against a backend that has not restarted yet.
+  //
+  // A value it cannot resolve is kept rather than dropped. It used to fall back
+  // to '', which did not merely look wrong: the empty selection was then saved
+  // over the stored text, so opening the editor on an archive whose reason was
+  // free text and pressing Save silently destroyed the classification. Anything
+  // unrecognised now shows up as its own option (see `unmappedReason` below).
+  const [failureReason, setFailureReason] = useState(() => {
+    const raw = archive.failure_reason || '';
+    if (!raw) return '';
+    if ((FAILURE_REASON_KEYS as readonly string[]).includes(raw)) return raw;
+    const match = FAILURE_REASON_KEYS.find(
+      (k) => t(`editArchive.failureReasons.${k}`) === raw,
+    );
+    return match || raw;
+  });
+
+  // The stored value when it is not part of the vocabulary, so the dropdown can
+  // offer it verbatim instead of appearing empty over a reason that exists.
+  const unmappedReason =
+    failureReason && !(FAILURE_REASON_KEYS as readonly string[]).includes(failureReason)
+      ? failureReason
+      : null;
   const [status, setStatus] = useState(archive.status);
+  // Post-print quality verdict (#1898): '' = none, 'good' / 'reject'
+  const [userVerdict, setUserVerdict] = useState<string>(archive.user_verdict ?? '');
+  const verdictSourceHintKey = verdictSourceKey(archive.user_verdict_source);
   const [quantity, setQuantity] = useState(archive.quantity ?? 1);
+  // Kept as a string so the field can be genuinely empty: a print archived
+  // without its 3MF has no figure at all, and "" has to stay distinguishable
+  // from 0 both on the way in and on the way out (#1820).
+  const [filamentGrams, setFilamentGrams] = useState(
+    archive.filament_used_grams != null ? String(archive.filament_used_grams) : ''
+  );
+  const { hasPermission } = useAuth();
+  // Later prints of the archive are charged from its weight: without the right
+  // to edit every archive, it can only be filled in for an archive without its
+  // 3MF, which has none and cannot be printed again (the API refuses the rest).
+  const filamentGramsLocked =
+    !hasPermission('archives:update_all') && (archive.filament_used_grams != null || !!archive.file_path);
   const [photos, setPhotos] = useState<string[]>(archive.photos || []);
   const [externalUrl, setExternalUrl] = useState(archive.external_url || '');
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
@@ -69,6 +128,15 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
     queryFn: () => api.getProjects(),
     select: (rows) => [...rows].sort((a, b) => a.name.localeCompare(b.name)),
   });
+
+  // Archived projects drop off the list, except the one this archive is
+  // already filed under. That one has to stay: a select holding a value with
+  // no matching option resets to the first one, so the field would read
+  // "No project" for an archive that is in one (#2888).
+  const projectOptions = useMemo(
+    () => assignableProjects(projects ?? [], archive.project_id),
+    [projects, archive.project_id],
+  );
 
   // Fetch all tags using the dedicated API
   const { data: tagsData } = useQuery({
@@ -132,8 +200,15 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
     mutationFn: (data: Parameters<typeof api.updateArchive>[1]) =>
       api.updateArchive(archive.id, data),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['archives'] });
-      queryClient.invalidateQueries({ queryKey: ['projects'] });
+      // This form can change the archive's project, so the project detail
+      // views need refreshing too — not just the overview cards (#2731).
+      // That includes ['archive-runs']: some of what this form writes is
+      // mirrored onto the archive's most recent run — status and failure
+      // reason since #1444, filament grams since #1820 — and the Print Log
+      // this modal renders at its top reads the runs through their own
+      // query. Without it the cached pre-edit row stays, so the correction
+      // looks like it did not take.
+      invalidateArchiveAndProjectViews(queryClient);
       onClose();
     },
   });
@@ -185,11 +260,38 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
       updateData.status = status;
     }
 
-    // Handle failure_reason based on status
+    // Verdict only when touched, same reasoning as status; '' clears it.
+    if (userVerdict !== (archive.user_verdict ?? '')) {
+      updateData.user_verdict = userVerdict === '' ? null : (userVerdict as 'good' | 'reject');
+      updateData.user_verdict_source = 'dialog';
+    }
+
+    // Sent only when the user actually touched it, so an ordinary save of an
+    // archive that has its 3MF cannot overwrite the sliced figure with a
+    // rounded one from the input.
+    const trimmedGrams = filamentGrams.trim();
+    const typedGrams = trimmedGrams === '' ? null : Number(trimmedGrams);
+    // An empty field means "no figure" and clears the stored one; a field that
+    // holds something unparseable (a lone decimal point, mid-typing) means the
+    // user is not finished, and must not read as a clear. Clamped here as well
+    // as on blur because Enter submits without the field losing focus.
+    const gramsUnparseable = typedGrams !== null && !Number.isFinite(typedGrams);
+    const parsedGrams = typedGrams === null ? null : Math.min(Math.max(typedGrams, 0), MAX_FILAMENT_GRAMS);
+    const originalGrams = archive.filament_used_grams ?? null;
+    if (!gramsUnparseable && parsedGrams !== originalGrams) {
+      updateData.filament_used_grams = parsedGrams;
+    }
+
+    // Handle failure_reason based on status. A completed-but-rejected print
+    // (#1898) uses the same field as its reject reason.
     if (status === 'failed' || status === 'aborted') {
       updateData.failure_reason = failureReason || undefined;
-    } else if (archive.status === 'failed' || archive.status === 'aborted') {
-      // Clear failure_reason when changing from failed/aborted to another status
+    } else if (status === 'completed' && userVerdict === 'reject') {
+      updateData.failure_reason = failureReason || undefined;
+    } else if (status === 'completed' && archive.failure_reason) {
+      // A completed print without a reject carries no reason. A cancelled one
+      // keeps its own: the machine wrote it ("User cancelled", "No status
+      // update received") and the dialog has no field to put it back.
       updateData.failure_reason = null;
     }
 
@@ -266,7 +368,7 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
               className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
             >
               <option value="">{t('editArchive.noProject')}</option>
-              {projects?.map((p) => (
+              {projectOptions.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.name}
                 </option>
@@ -276,20 +378,62 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
 
           {/* Quantity - number of items printed */}
           <div>
-            <label className="block text-sm text-bambu-gray mb-1">
+            <label className="block text-sm text-bambu-gray mb-1" htmlFor="archive-items-printed">
               <Hash className="w-4 h-4 inline mr-1" />
               {t('editArchive.itemsPrinted')}
             </label>
-            <input
-              type="number"
-              min={1}
+            <NumberInput
+              id="archive-items-printed"
+              min={0}
               value={quantity}
-              onChange={(e) => setQuantity(Math.max(1, parseInt(e.target.value) || 1))}
+              // 0 is a real answer, not an empty field: a plate that jammed and
+              // came off ruined produced nothing, and the project's completed
+              // count has to be able to say so (#3051).
+              onChange={setQuantity}
+              fallback={0}
               className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
               placeholder="1"
             />
             <p className="text-xs text-bambu-gray mt-1">
               {t('editArchive.itemsPrintedHelp')}
+            </p>
+          </div>
+
+          {/* Filament used - the only way to supply a figure for a print that
+              archived without its 3MF, which has nothing to read it from (#1820). */}
+          <div>
+            <label className="block text-sm text-bambu-gray mb-1" htmlFor="archive-filament-grams">
+              <Weight className="w-4 h-4 inline mr-1" />
+              {t('editArchive.filamentUsed')}
+            </label>
+            <input
+              id="archive-filament-grams"
+              type="text"
+              inputMode="decimal"
+              value={filamentGrams}
+              // Text rather than number, and filtered on the way in. A number
+              // input reports an empty string for anything the browser judges
+              // malformed — including a decimal comma in a locale it doesn't
+              // expect — which would read here as "the user cleared it" and
+              // wipe a good figure. Filtering keeps what is displayed and what
+              // would be sent the same thing, and keeps the value inside the
+              // range the API accepts: this modal shows nothing at all when a
+              // save is refused, so it must not be able to send a refusable one.
+              onChange={(e) => {
+                const next = e.target.value.replace(',', '.');
+                if (next === '' || /^\d*\.?\d*$/.test(next)) setFilamentGrams(next);
+              }}
+              onBlur={() => setFilamentGrams((current) => {
+                const parsed = Number(current);
+                if (current === '' || !Number.isFinite(parsed)) return '';
+                return String(Math.min(parsed, MAX_FILAMENT_GRAMS));
+              })}
+              className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
+              placeholder={t('editArchive.filamentUsedPlaceholder')}
+              disabled={filamentGramsLocked}
+            />
+            <p className="text-xs text-bambu-gray mt-1">
+              {filamentGramsLocked ? t('editArchive.filamentUsedLocked') : t('editArchive.filamentUsedHelp')}
             </p>
           </div>
 
@@ -403,29 +547,72 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
               }}
               className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
             >
+              {/* Any other status (still printing, never printed) is shown as it
+                  is, and is only sent if the user picks an outcome. */}
+              {archive.status && !ARCHIVE_STATUS_KEYS.includes(archive.status) && (
+                <option value={archive.status} disabled>
+                  {t(`editArchive.statuses.${archive.status}`, { defaultValue: archive.status })}
+                </option>
+              )}
               {ARCHIVE_STATUS_KEYS.map((statusKey) => (
                 <option key={statusKey} value={statusKey}>
                   {t(`editArchive.statuses.${statusKey}`)}
                 </option>
               ))}
             </select>
+            <p className="text-xs text-bambu-gray mt-1">{t('editArchive.statusHelp')}</p>
           </div>
 
-          {/* Failure Reason - only show for failed/aborted prints */}
-          {(status === 'failed' || status === 'aborted') && (
+          {/* Outcome verdict (#1898) - only meaningful on completed prints */}
+          {status === 'completed' && (
             <div>
-              <label className="block text-sm text-bambu-gray mb-1">{t('editArchive.failureReason')}</label>
+              <label htmlFor="user-verdict-select" className="block text-sm text-bambu-gray mb-1">
+                {t('editArchive.userVerdict')}
+              </label>
               <select
+                id="user-verdict-select"
+                value={userVerdict}
+                onChange={(e) => setUserVerdict(e.target.value)}
+                className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+              >
+                <option value="">{t('editArchive.verdicts.none')}</option>
+                <option value="good">{t('editArchive.verdicts.good')}</option>
+                <option value="reject">{t('editArchive.verdicts.reject')}</option>
+              </select>
+              {/* How the stored verdict got here (#1898) — hidden once the
+                  select no longer shows that verdict, since the hint would
+                  then describe an answer the user is replacing. */}
+              {verdictSourceHintKey && userVerdict === (archive.user_verdict ?? '') && (
+                <p className="text-xs text-bambu-gray/70 mt-1" data-testid="verdict-source-hint">
+                  {t(verdictSourceHintKey)}
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* Failure Reason - shown for failed/aborted prints and for
+              completed-but-rejected ones (#1898: the reject reason reuses
+              this field and vocabulary) */}
+          {(status === 'failed' || status === 'aborted' || (status === 'completed' && userVerdict === 'reject')) && (
+            <div>
+              <label htmlFor="failure-reason-select" className="block text-sm text-bambu-gray mb-1">{t('editArchive.failureReason')}</label>
+              <select
+                id="failure-reason-select"
                 value={failureReason}
                 onChange={(e) => setFailureReason(e.target.value)}
                 className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
               >
                 <option value="">{t('editArchive.selectReason')}</option>
                 {FAILURE_REASON_KEYS.map((reasonKey) => (
-                  <option key={reasonKey} value={t(`editArchive.failureReasons.${reasonKey}`)}>
+                  <option key={reasonKey} value={reasonKey}>
                     {t(`editArchive.failureReasons.${reasonKey}`)}
                   </option>
                 ))}
+                {/* A stored reason outside the vocabulary keeps its own option
+                    so it stays visible and survives a save (issue #2974). */}
+                {unmappedReason && (
+                  <option value={unmappedReason}>{unmappedReason}</option>
+                )}
               </select>
             </div>
           )}
@@ -448,7 +635,7 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
                   <button
                     type="button"
                     onClick={() => handlePhotoDelete(filename)}
-                    className="absolute -top-1 -right-1 p-1 bg-red-500 rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
+                    className="absolute -top-1 -right-1 p-1 bg-red-500 rounded-full can-hover:opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity"
                   >
                     <Trash2 className="w-3 h-3 text-white" />
                   </button>

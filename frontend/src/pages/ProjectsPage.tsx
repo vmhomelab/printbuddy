@@ -13,9 +13,11 @@ import {
   ListTodo,
   Package,
   Layers,
+  FolderTree,
   Clock,
   CheckCircle2,
   AlertTriangle,
+  ChevronDown,
   ChevronRight,
   MoreVertical,
   Download,
@@ -31,6 +33,8 @@ import { ConfirmModal } from '../components/ConfirmModal';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { getCurrencySymbol } from '../utils/currency';
+import { eligibleParents } from '../utils/projectTree';
+import { useUiSettings } from '../hooks/useUiSettings';
 
 const PROJECT_COLORS = [
   '#ef4444', // red
@@ -66,10 +70,11 @@ export function ProjectModal({ project, onClose, onSave, isLoading, currencySymb
   const [color, setColor] = useState(project?.color || PROJECT_COLORS[0]);
   const [targetCount, setTargetCount] = useState(project?.target_count?.toString() || '');
   const [targetPartsCount, setTargetPartsCount] = useState(project?.target_parts_count?.toString() || '');
+  const [targetSets, setTargetSets] = useState(project?.target_sets?.toString() || '');
   const [status, setStatus] = useState(project?.status || 'active');
-  const [tags, setTags] = useState((project as ProjectListItem & { tags?: string })?.tags || '');
-  const [dueDate, setDueDate] = useState((project as ProjectListItem & { due_date?: string })?.due_date?.split('T')[0] || '');
-  const [priority, setPriority] = useState((project as ProjectListItem & { priority?: string })?.priority || 'normal');
+  const [tags, setTags] = useState(project?.tags || '');
+  const [dueDate, setDueDate] = useState(project?.due_date?.split('T')[0] || '');
+  const [priority, setPriority] = useState(project?.priority || 'normal');
   const [budget, setBudget] = useState(project?.budget?.toString() || '');
   const [url, setUrl] = useState(project?.url || '');
   const [orderNumber, setOrderNumber] = useState(project?.order_number || '');
@@ -83,7 +88,17 @@ export function ProjectModal({ project, onClose, onSave, isLoading, currencySymb
   const folderOptions = flattenFolderTree(folderTree || []);
   const selectedFolder = folderOptions.find((o) => String(o.folder.id) === linkFolderId)?.folder;
   const [urlError, setUrlError] = useState<string | null>(null);
+  const [parentId, setParentId] = useState<number | null>(project?.parent_id ?? null);
   const queryClient = useQueryClient();
+
+  // Unfiltered on purpose: a completed or archived project is still a legal
+  // parent, and the picker offering fewer options than the list does would be
+  // hard to explain.
+  const { data: allProjects } = useQuery({
+    queryKey: ['projects', undefined],
+    queryFn: () => api.getProjects(),
+  });
+  const parentOptions = eligibleParents(allProjects || [], project?.id);
   const [coverImageFilename, setCoverImageFilename] = useState(project?.cover_image_filename || null);
   const coverFileInputRef = useRef<HTMLInputElement>(null);
   const [coverUploading, setCoverUploading] = useState(false);
@@ -135,14 +150,20 @@ export function ProjectModal({ project, onClose, onSave, isLoading, currencySymb
       color,
       target_count: targetCount ? parseInt(targetCount, 10) : undefined,
       target_parts_count: targetPartsCount ? parseInt(targetPartsCount, 10) : undefined,
-      tags: tags.trim() || undefined,
-      due_date: dueDate || undefined,
+      // Null clears the copies-per-file target on edit (#1897); undefined omits on create.
+      target_sets: project ? (targetSets ? parseInt(targetSets, 10) : null) : (targetSets ? parseInt(targetSets, 10) : undefined),
+      // Null clears the stored value on edit; undefined omits the key on create.
+      // Sending undefined on edit would make an emptied field un-clearable.
+      tags: project ? (tags.trim() || null) : (tags.trim() || undefined),
+      due_date: project ? (dueDate || null) : (dueDate || undefined),
       priority,
       budget: budget.trim() ? parseFloat(budget) : null,
       // Pydantic accepts null to clear the URL; an empty string would fail the
-      // http(s) prefix validator. Use undefined for create (omit) and null for
-      // edit-with-cleared-value.
+      // http(s) prefix validator.
       url: project ? (trimmedUrl || null) : (trimmedUrl || undefined),
+      // The API reads 0 as "remove the parent" — null would be indistinguishable
+      // from the field having been omitted (#1264).
+      parent_id: project ? (parentId ?? 0) : (parentId ?? undefined),
       order_number: project ? (orderNumber.trim() || null) : (orderNumber.trim() || undefined),
       ...(!project && linkFolderId && { folder_ids: [Number(linkFolderId)] }),
       ...(project && { status }),
@@ -150,15 +171,19 @@ export function ProjectModal({ project, onClose, onSave, isLoading, currencySymb
   };
 
   return (
+    // max-h + flex column on the card + overflow on the fields wrapper so the
+    // modal stays inside the viewport on short screens (#1642). Outer p-4 is
+    // 1rem each side, hence the 2rem subtraction below.
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
-      <div className="bg-bambu-dark-secondary rounded-lg w-full max-w-md border border-bambu-dark-tertiary">
-        <div className="p-4 border-b border-bambu-dark-tertiary">
+      <div className="bg-bambu-dark-secondary rounded-lg w-full max-w-md border border-bambu-dark-tertiary flex flex-col max-h-[calc(100vh-2rem)]">
+        <div className="p-4 border-b border-bambu-dark-tertiary flex-shrink-0">
           <h2 className="text-lg font-semibold text-white">
             {project ? t('projects.editProject') : t('projects.newProject')}
           </h2>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-4 space-y-4">
+        <form onSubmit={handleSubmit} className="flex flex-col flex-1 min-h-0">
+          <div className="p-4 space-y-4 overflow-y-auto flex-1">
           <div>
             <label className="block text-sm font-medium text-white mb-1">
               {t('common.name')}
@@ -246,7 +271,27 @@ export function ProjectModal({ project, onClose, onSave, isLoading, currencySymb
               placeholder={t('projects.urlPlaceholder')}
               maxLength={2048}
             />
-            {urlError && <p className="text-xs text-red-400 mt-1">{urlError}</p>}
+            {urlError && <p className="text-xs text-red-600 dark:text-red-400 mt-1">{urlError}</p>}
+          </div>
+
+          {/* #1264: Nest this project under another one */}
+          <div>
+            <label className="block text-sm font-medium text-white mb-1">
+              {t('projects.parentLabel')}
+            </label>
+            <select
+              value={parentId ?? ''}
+              onChange={(e) => setParentId(e.target.value ? parseInt(e.target.value, 10) : null)}
+              className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-3 py-2 text-white focus:outline-none focus:border-bambu-green"
+            >
+              <option value="">{t('projects.parentNone')}</option>
+              {parentOptions.map((option) => (
+                <option key={option.id} value={option.id}>
+                  {option.name}
+                </option>
+              ))}
+            </select>
+            <p className="text-xs text-bambu-gray mt-1">{t('projects.parentHint')}</p>
           </div>
 
           {/* #1155: Cover image — only available when editing an existing project,
@@ -260,7 +305,7 @@ export function ProjectModal({ project, onClose, onSave, isLoading, currencySymb
                 <div className="w-20 h-20 rounded bg-bambu-dark border border-bambu-dark-tertiary overflow-hidden flex items-center justify-center flex-shrink-0">
                   {coverImageFilename ? (
                     <img
-                      src={`${api.getProjectCoverImageUrl(project.id)}?v=${coverCacheKey}`}
+                      src={api.getProjectCoverImageUrl(project.id, coverCacheKey)}
                       alt={t('projects.coverImageAlt')}
                       className="w-full h-full object-cover"
                     />
@@ -356,6 +401,22 @@ export function ProjectModal({ project, onClose, onSave, isLoading, currencySymb
             </div>
           </div>
 
+          {/* Copies-per-file target (#1897) */}
+          <div>
+            <label className="block text-sm font-medium text-white mb-1">
+              {t('projects.targetSets')}
+            </label>
+            <input
+              type="number"
+              value={targetSets}
+              onChange={(e) => setTargetSets(e.target.value)}
+              className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-3 py-2 text-white placeholder-bambu-gray focus:outline-none focus:border-bambu-green"
+              placeholder={t('projects.targetSetsPlaceholder')}
+              min="1"
+            />
+            <p className="text-xs text-bambu-gray mt-1">{t('projects.targetSetsHelp')}</p>
+          </div>
+
           {/* Tags */}
           <div>
             <label className="block text-sm font-medium text-white mb-1">
@@ -436,8 +497,12 @@ export function ProjectModal({ project, onClose, onSave, isLoading, currencySymb
               </select>
             </div>
           )}
+          </div>
 
-          <div className="flex justify-end gap-2 pt-2">
+          {/* Sticky action footer — stays visible regardless of scroll
+              position so Save/Cancel are always reachable on short screens
+              (#1642). Buttons stay inside <form> for type="submit". */}
+          <div className="flex justify-end gap-2 p-4 border-t border-bambu-dark-tertiary flex-shrink-0">
             <Button type="button" variant="secondary" onClick={onClose}>
               {t('common.cancel')}
             </Button>
@@ -544,6 +609,7 @@ function ProjectCoverThumbnail({
 
 interface ProjectCardProps {
   project: ProjectListItem;
+  parentName?: string;  // #1264 — resolved by the caller, which holds the whole list
   onClick: () => void;
   onEdit: () => void;
   onDelete: () => void;
@@ -551,7 +617,7 @@ interface ProjectCardProps {
   t: TFunction;
 }
 
-function ProjectCard({ project, onClick, onEdit, onDelete, hasPermission, t }: ProjectCardProps) {
+function ProjectCard({ project, parentName, onClick, onEdit, onDelete, hasPermission, t }: ProjectCardProps) {
   // Plates progress: archive_count / target_count
   const platesProgressPercent = project.target_count
     ? Math.round((project.archive_count / project.target_count) * 100)
@@ -572,7 +638,7 @@ function ProjectCard({ project, onClick, onEdit, onDelete, hasPermission, t }: P
   const getStatusConfig = () => {
     if (isCompleted) return { icon: CheckCircle2, color: 'text-bambu-green', bg: 'bg-bambu-green/10' };
     if (isArchived) return { icon: Archive, color: 'text-bambu-gray', bg: 'bg-bambu-gray/10' };
-    if (project.queue_count > 0) return { icon: Clock, color: 'text-blue-400', bg: 'bg-blue-400/10' };
+    if (project.queue_count > 0) return { icon: Clock, color: 'text-blue-600 dark:text-blue-400', bg: 'bg-blue-50 dark:bg-blue-400/10' };
     return { icon: FolderKanban, color: 'text-bambu-gray', bg: 'bg-bambu-gray/10' };
   };
   const statusConfig = getStatusConfig();
@@ -672,7 +738,24 @@ function ProjectCard({ project, onClick, onEdit, onDelete, hasPermission, t }: P
                     {t('projects.statusArchived')}
                   </span>
                 )}
+                {/* #1264: without these, eight sub-projects of one programme
+                    look like eight unrelated projects in the grid. */}
+                {project.child_count > 0 && (
+                  <span
+                    className="text-xs bg-bambu-dark text-bambu-gray px-2 py-0.5 rounded-full whitespace-nowrap inline-flex items-center gap-1"
+                    title={t('projects.subProjectCount', { count: project.child_count })}
+                  >
+                    <FolderTree className="w-3 h-3" />
+                    {project.child_count}
+                  </span>
+                )}
               </div>
+              {parentName && (
+                <p className="text-xs text-bambu-gray mt-1 flex items-center gap-1">
+                  <Layers className="w-3 h-3 flex-shrink-0" />
+                  <span className="truncate">{t('projects.partOf', { name: parentName })}</span>
+                </p>
+              )}
               {project.description && (
                 <p className="text-sm text-bambu-gray/70 mt-1 line-clamp-1">
                   {project.description}
@@ -728,7 +811,7 @@ function ProjectCard({ project, onClick, onEdit, onDelete, hasPermission, t }: P
           {/* Actions menu */}
           <div className="relative" onClick={(e) => e.stopPropagation()}>
             <button
-              className="p-1.5 rounded-lg hover:bg-bambu-dark text-bambu-gray hover:text-white transition-colors opacity-0 group-hover:opacity-100"
+              className="p-1.5 rounded-lg hover:bg-bambu-dark text-bambu-gray hover:text-white transition-colors can-hover:opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
               onClick={() => setShowActions(!showActions)}
             >
               <MoreVertical className="w-4 h-4" />
@@ -750,7 +833,7 @@ function ProjectCard({ project, onClick, onEdit, onDelete, hasPermission, t }: P
                   </button>
                   <button
                     className={`w-full px-3 py-2 text-left text-sm flex items-center gap-2 ${
-                      hasPermission('projects:delete') ? 'text-red-400 hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
+                      hasPermission('projects:delete') ? 'text-red-600 dark:text-red-400 hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
                     }`}
                     onClick={() => { if (hasPermission('projects:delete')) { onDelete(); setShowActions(false); } }}
                     disabled={!hasPermission('projects:delete')}
@@ -838,7 +921,7 @@ function ProjectCard({ project, onClick, onEdit, onDelete, hasPermission, t }: P
               )}
               {/* Failed count */}
               {project.failed_count > 0 && (
-                <div className="text-xs text-red-400">
+                <div className="text-xs text-red-600 dark:text-red-400">
                   {project.failed_count} {t('projects.failed')}
                 </div>
               )}
@@ -852,13 +935,13 @@ function ProjectCard({ project, onClick, onEdit, onDelete, hasPermission, t }: P
                 </div>
               )}
               {project.failed_count > 0 && (
-                <div className="flex items-center gap-1.5 text-red-400">
+                <div className="flex items-center gap-1.5 text-red-600 dark:text-red-400">
                   <AlertTriangle className="w-3.5 h-3.5" />
                   <span>{project.failed_count} {t('projects.failed')}</span>
                 </div>
               )}
               {project.queue_count > 0 && (
-                <div className="flex items-center gap-1.5 text-blue-400">
+                <div className="flex items-center gap-1.5 text-blue-600 dark:text-blue-400">
                   <Clock className="w-3.5 h-3.5" />
                   <span>{project.queue_count} {t('projects.inQueue')}</span>
                 </div>
@@ -912,7 +995,7 @@ function ProjectCard({ project, onClick, onEdit, onDelete, hasPermission, t }: P
         <div className="flex items-center justify-between pt-3 border-t border-bambu-dark-tertiary">
           <div className="flex items-center gap-4 text-xs text-bambu-gray">
             <div className="flex items-center gap-1.5" title={t('projects.printJobs')}>
-              <Layers className="w-3.5 h-3.5 text-blue-400" />
+              <Layers className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
               <span>{project.archive_count} {t('projects.plates')}</span>
             </div>
             <div className="flex items-center gap-1.5" title={t('projects.partsPrinted')}>
@@ -920,13 +1003,13 @@ function ProjectCard({ project, onClick, onEdit, onDelete, hasPermission, t }: P
               <span>{project.completed_count} {t('projects.parts')}</span>
             </div>
             {project.failed_count > 0 && (
-              <div className="flex items-center gap-1.5 text-red-400" title={t('projects.failedParts')}>
+              <div className="flex items-center gap-1.5 text-red-600 dark:text-red-400" title={t('projects.failedParts')}>
                 <AlertTriangle className="w-3.5 h-3.5" />
                 <span>{project.failed_count}</span>
               </div>
             )}
             {project.queue_count > 0 && (
-              <div className="flex items-center gap-1.5 text-yellow-400" title={t('projects.inQueue')}>
+              <div className="flex items-center gap-1.5 text-yellow-600 dark:text-yellow-400" title={t('projects.inQueue')}>
                 <ListTodo className="w-3.5 h-3.5" />
                 <span>{project.queue_count}</span>
               </div>
@@ -949,11 +1032,28 @@ export function ProjectsPage() {
   const [editingProject, setEditingProject] = useState<ProjectListItem | undefined>();
   const [statusFilter, setStatusFilter] = useState<string>('active');
   const [deleteConfirm, setDeleteConfirm] = useState<number | null>(null);
+  // Sub-project groups fold away (#2991). Every sub-project at every depth was
+  // drawn expanded with no way to shut one, so a three-level hierarchy over a
+  // couple of hundred archives turned this page into a very long scroll. The
+  // pill next to the filter tabs sets the default and is remembered; the
+  // chevron on a group deviates from it for that one parent.
+  const [collapseSubProjects, setCollapseSubProjects] = useState(
+    () => localStorage.getItem('projects-collapse-subprojects') === 'true',
+  );
+  const [subProjectOverrides, setSubProjectOverrides] = useState<Record<number, boolean>>({});
 
-  const { data: settings } = useQuery({
-    queryKey: ['settings'],
-    queryFn: api.getSettings,
-  });
+  const toggleCollapseDefault = () => {
+    const next = !collapseSubProjects;
+    setCollapseSubProjects(next);
+    // Every deviation was made against the old default, so keeping them would
+    // leave groups sitting open right after the user asked for everything
+    // shut. Same bargain the file manager's folder tree makes, where flipping
+    // its Collapse toggle remounts the tree and drops each folder's own state.
+    setSubProjectOverrides({});
+    localStorage.setItem('projects-collapse-subprojects', String(next));
+  };
+
+  const { data: settings } = useUiSettings();
 
   const currencySymbol = getCurrencySymbol(settings?.currency || 'USD');
 
@@ -961,6 +1061,125 @@ export function ProjectsPage() {
     queryKey: ['projects', statusFilter === 'all' ? undefined : statusFilter],
     queryFn: () => api.getProjects(statusFilter === 'all' ? undefined : statusFilter),
   });
+
+  // Parent names come from the unfiltered list, so a sub-project still says
+  // what it belongs to when the status filter has hidden its parent (#1264).
+  // Same query key the parent picker uses — one request shared between them,
+  // and the same one as above whenever the filter is 'all'.
+  const { data: allProjects } = useQuery({
+    queryKey: ['projects', undefined],
+    queryFn: () => api.getProjects(),
+  });
+  const namesById = new Map((allProjects || []).map((p) => [p.id, p.name]));
+
+  // A sub-project is drawn inside its parent's group rather than as another
+  // card somewhere in the grid — two cards that belong together are not
+  // something a caption can convey when they sit columns apart (#1264).
+  const visible = projects || [];
+  const visibleIds = new Set(visible.map((p) => p.id));
+  const childrenByParent = new Map<number, ProjectListItem[]>();
+  for (const project of visible) {
+    // Parent hidden by the status filter: the child has nothing to nest under
+    // here, so it stays a top-level card and keeps its "part of" caption.
+    if (project.parent_id !== null && visibleIds.has(project.parent_id)) {
+      const siblings = childrenByParent.get(project.parent_id) || [];
+      siblings.push(project);
+      childrenByParent.set(project.parent_id, siblings);
+    }
+  }
+  // Everything drawn at the top of the grid, in order. Roots first, then any
+  // project the roots cannot reach: a database written before the API refused
+  // A -> B -> A can still hold a cycle, and a cycle has no root, so filtering
+  // on "has no visible parent" alone would drop every project in it off the
+  // page. Each entry point marks its whole branch as drawn, so nothing appears
+  // twice either.
+  const drawn = new Set<number>();
+  const markDrawn = (id: number) => {
+    if (drawn.has(id)) return;
+    drawn.add(id);
+    for (const child of childrenByParent.get(id) || []) markDrawn(child.id);
+  };
+  const topLevel: ProjectListItem[] = [];
+  for (const project of visible) {
+    if (project.parent_id !== null && visibleIds.has(project.parent_id)) continue;
+    topLevel.push(project);
+    markDrawn(project.id);
+  }
+  for (const project of visible) {
+    if (drawn.has(project.id)) continue;
+    topLevel.push(project);
+    markDrawn(project.id);
+  }
+
+  const renderProjectTree = (project: ProjectListItem, depth: number, seen: Set<number>) => {
+    const card = (
+      <ProjectCard
+        project={project}
+        // Only when it is detached from its parent — inside the group the
+        // nesting is already visible, and the caption would be noise.
+        parentName={depth === 0 && project.parent_id !== null ? namesById.get(project.parent_id) : undefined}
+        onClick={() => handleClick(project)}
+        onEdit={() => handleEdit(project)}
+        onDelete={() => handleDeleteClick(project.id)}
+        hasPermission={hasPermission}
+        t={t}
+      />
+    );
+
+    // Drop any child that is already an ancestor on this path. A database
+    // written before the API refused A -> B -> A can still hold a cycle, and
+    // following one would draw the same project over and over.
+    const descended = new Set(seen).add(project.id);
+    const children = (childrenByParent.get(project.id) || []).filter((c) => !descended.has(c.id));
+    if (children.length === 0) return <div key={project.id}>{card}</div>;
+
+    const expanded = subProjectOverrides[project.id] ?? !collapseSubProjects;
+
+    return (
+      // A shut group is a card like any other, so it takes one grid cell
+      // instead of a whole row of its own — folding a deep tree that still
+      // spent a full-width row per parent would only halve the scrolling.
+      <div key={project.id} className={expanded ? 'col-span-full space-y-4' : 'space-y-4'}>
+        {card}
+        <div
+          className="ml-4 md:ml-8 pl-4 md:pl-6 border-l-2 rounded-l space-y-4"
+          style={{ borderColor: project.color || '#6b7280' }}
+        >
+          {/* The caption is the toggle rather than the card above it: clicking
+              a card opens the project, and taking that over would surprise
+              every user who has no sub-projects to fold. */}
+          <button
+            type="button"
+            onClick={() => setSubProjectOverrides((prev) => ({ ...prev, [project.id]: !expanded }))}
+            aria-expanded={expanded}
+            title={expanded ? t('projects.collapseSubProjects') : t('projects.expandSubProjects')}
+            className="text-xs uppercase tracking-wide text-bambu-gray hover:text-white transition-colors flex items-center gap-1.5 max-w-full min-w-0"
+          >
+            {expanded
+              ? <ChevronDown className="w-3.5 h-3.5 flex-shrink-0" />
+              : <ChevronRight className="w-3.5 h-3.5 flex-shrink-0" />}
+            <FolderTree className="w-3.5 h-3.5 flex-shrink-0" />
+            {/* Truncated because a shut group lives in one grid column, where
+                a long project name would otherwise run out of the card. */}
+            <span className="truncate">{t('projects.subProjectsOf', { name: project.name })}</span>
+            {/* Counted from what is actually nested here, not from the card's
+                own badge: the API counts sub-projects across every status on
+                purpose, so that badge can say 2 where only one card is behind
+                this chevron. A count that disagrees with what unfolds is
+                worse than no count. */}
+            <span className="px-1.5 py-0.5 rounded-full bg-bambu-dark normal-case tracking-normal flex-shrink-0">
+              {children.length}
+            </span>
+          </button>
+          {expanded && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+              {children.map((child) => renderProjectTree(child, depth + 1, descended))}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
 
   const createMutation = useMutation({
     mutationFn: (data: ProjectCreate) => api.createProject(data),
@@ -1109,8 +1328,12 @@ export function ProjectsPage() {
     }
   };
 
-  // Count projects by status for filter badges
-  const projectCounts = projects?.reduce((acc, p) => {
+  // Count projects by status for filter badges. Counted from the unfiltered
+  // list, not the one on screen: `projects` holds only the selected status, so
+  // every other tab counted zero and lost its badge entirely -- a fleet of
+  // thirty finished projects showed "Completed" bare while Active read 5
+  // (#2888).
+  const projectCounts = allProjects?.reduce((acc, p) => {
     acc[p.status] = (acc[p.status] || 0) + 1;
     acc.all = (acc.all || 0) + 1;
     return acc;
@@ -1170,33 +1393,53 @@ export function ProjectsPage() {
       </div>
 
       {/* Filter tabs */}
-      <div className="flex gap-1 p-1 bg-bambu-dark rounded-xl w-fit">
-        {[
-          { key: 'active', label: t('projects.statusActive'), icon: Clock },
-          { key: 'completed', label: t('projects.statusCompleted'), icon: CheckCircle2 },
-          { key: 'archived', label: t('projects.statusArchived'), icon: Archive },
-          { key: 'all', label: t('common.all'), icon: FolderKanban },
-        ].map(({ key, label, icon: Icon }) => (
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="flex gap-1 p-1 bg-bambu-dark rounded-xl w-fit">
+          {[
+            { key: 'active', label: t('projects.statusActive'), icon: Clock },
+            { key: 'completed', label: t('projects.statusCompleted'), icon: CheckCircle2 },
+            { key: 'archived', label: t('projects.statusArchived'), icon: Archive },
+            { key: 'all', label: t('common.all'), icon: FolderKanban },
+          ].map(({ key, label, icon: Icon }) => (
+            <button
+              key={key}
+              onClick={() => setStatusFilter(key)}
+              className={`flex items-center gap-2 px-4 py-2 text-sm rounded-lg transition-all ${
+                statusFilter === key
+                  ? 'bg-bambu-card text-white shadow-sm'
+                  : 'text-bambu-gray hover:text-white'
+              }`}
+            >
+              <Icon className="w-4 h-4" />
+              <span>{label}</span>
+              {projectCounts[key] > 0 && (
+                <span className={`text-xs px-1.5 py-0.5 rounded-full ${
+                  statusFilter === key ? 'bg-bambu-green/20 text-bambu-green' : 'bg-bambu-dark-tertiary'
+                }`}>
+                  {projectCounts[key]}
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
+        {/* Only where something can actually be folded -- with no nesting under
+            the current filter this would be a control that does nothing. */}
+        {childrenByParent.size > 0 && (
           <button
-            key={key}
-            onClick={() => setStatusFilter(key)}
-            className={`flex items-center gap-2 px-4 py-2 text-sm rounded-lg transition-all ${
-              statusFilter === key
-                ? 'bg-bambu-card text-white shadow-sm'
-                : 'text-bambu-gray hover:text-white'
+            type="button"
+            onClick={toggleCollapseDefault}
+            aria-pressed={collapseSubProjects}
+            title={collapseSubProjects ? t('projects.expandSubProjects') : t('projects.collapseSubProjects')}
+            className={`flex items-center gap-2 px-3 py-1.5 text-sm rounded-lg transition-colors ${
+              collapseSubProjects
+                ? 'bg-bambu-green/20 text-bambu-green'
+                : 'text-bambu-gray hover:text-white hover:bg-bambu-dark'
             }`}
           >
-            <Icon className="w-4 h-4" />
-            <span>{label}</span>
-            {projectCounts[key] > 0 && (
-              <span className={`text-xs px-1.5 py-0.5 rounded-full ${
-                statusFilter === key ? 'bg-bambu-green/20 text-bambu-green' : 'bg-bambu-dark-tertiary'
-              }`}>
-                {projectCounts[key]}
-              </span>
-            )}
+            <FolderTree className="w-4 h-4" />
+            {t('common.collapse')}
           </button>
-        ))}
+        )}
       </div>
 
       {/* Content */}
@@ -1234,17 +1477,7 @@ export function ProjectsPage() {
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-8">
-          {projects?.map((project) => (
-            <ProjectCard
-              key={project.id}
-              project={project}
-              onClick={() => handleClick(project)}
-              onEdit={() => handleEdit(project)}
-              onDelete={() => handleDeleteClick(project.id)}
-              hasPermission={hasPermission}
-              t={t}
-            />
-          ))}
+          {topLevel.map((project) => renderProjectTree(project, 0, new Set()))}
         </div>
       )}
 

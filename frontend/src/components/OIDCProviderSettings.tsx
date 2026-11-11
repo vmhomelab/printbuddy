@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Plus, Edit2, Trash2, Globe, Check, X, RefreshCw, ExternalLink, ImageOff } from 'lucide-react';
+import { Plus, Edit2, Trash2, Globe, Check, X, RefreshCw, ExternalLink, ImageOff, Lock } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api/client';
 import type { Group, OIDCProvider, OIDCProviderCreate } from '../api/client';
@@ -21,8 +21,11 @@ const EMPTY_FORM: OIDCProviderCreate = {
   auto_link_existing_accounts: false,
   email_claim: 'email',
   require_email_verified: true,
+  group_claim: 'groups',
+  group_mapping: {},
   icon_url: undefined,
   default_group_id: null,
+  is_autologin: false,
 };
 
 // ─── Provider form (create / edit) ───────────────────────────────────────────
@@ -44,6 +47,16 @@ function ProviderForm({
   const { t } = useTranslation();
   const [form, setForm] = useState<OIDCProviderCreate>(initial);
   const [secretChanged, setSecretChanged] = useState(false);
+  // #3107 — each row is an { idpGroup -> printbuddyGroup } pair, edited directly
+  // instead of as JSON. The Printbuddy side is a <select> sourced from `groups`,
+  // so an invalid group name can't be entered in the first place.
+  const [mappingRows, setMappingRows] = useState<{ idpGroup: string; printbuddyGroup: string }[]>(() =>
+    Object.entries(initial.group_mapping ?? {}).map(([idpGroup, printbuddyGroup]) => ({ idpGroup, printbuddyGroup }))
+  );
+  const addMappingRow = () => setMappingRows((prev) => [...prev, { idpGroup: '', printbuddyGroup: '' }]);
+  const removeMappingRow = (i: number) => setMappingRows((prev) => prev.filter((_, idx) => idx !== i));
+  const updateMappingRow = (i: number, patch: Partial<{ idpGroup: string; printbuddyGroup: string }>) =>
+    setMappingRows((prev) => prev.map((row, idx) => (idx === i ? { ...row, ...patch } : row)));
   const set = (key: keyof OIDCProviderCreate, value: unknown) =>
     setForm((prev) => ({ ...prev, [key]: value }));
 
@@ -56,8 +69,41 @@ function ProviderForm({
     if (isEdit && !secretChanged) {
       delete (payload as Partial<OIDCProviderCreate>).client_secret;
     }
+    // #3107 review: default the group claim on save, not on change —
+    // snapping it back mid-edit means the field can only be typed over.
+    if (!payload.group_claim || !payload.group_claim.trim()) {
+      payload.group_claim = 'groups';
+    }
+    // #3107 — blank IdP-group name or unselected Printbuddy group means the row
+    // isn't finished yet; drop it rather than saving a half-filled mapping.
+    const mapping: Record<string, string> = {};
+    for (const row of mappingRows) {
+      const idpGroup = row.idpGroup.trim();
+      if (idpGroup && row.printbuddyGroup) {
+        mapping[idpGroup] = row.printbuddyGroup;
+      }
+    }
+    payload.group_mapping = mapping;
     onSave(payload);
   };
+
+  const groupNames = new Set(groups.map((g) => g.name));
+
+  // A row with only one side filled in is unfinished, and a second row for an
+  // IdP group already mapped above would be collapsed into one entry (the
+  // backend compares IdP names ignoring case). Either way the saved mapping
+  // would differ from what the form shows -- dropping the only row turns
+  // group sync off -- so the row is flagged and Save stays disabled instead.
+  // A row with both sides empty is a fresh "Add Mapping" and is just skipped.
+  const mappingRowErrors = mappingRows.map((row, i) => {
+    const idpGroup = row.idpGroup.trim();
+    if (!idpGroup && !row.printbuddyGroup) return null;
+    if (!idpGroup || !row.printbuddyGroup) return 'incomplete' as const;
+    const key = idpGroup.toLowerCase();
+    if (mappingRows.slice(0, i).some((prev) => prev.idpGroup.trim().toLowerCase() === key)) return 'duplicate' as const;
+    return null;
+  });
+  const hasMappingErrors = mappingRowErrors.some((e) => e !== null);
 
   const autoLinkOn = form.auto_link_existing_accounts === true;
   const emailVerifiedOn = form.require_email_verified ?? true;
@@ -68,7 +114,7 @@ function ProviderForm({
     requireEmailVerifiedDesc = t('settings.oidc.form.requireEmailVerifiedDesc');
   } else {
     requireEmailVerifiedDesc = (
-      <span className="text-red-400">{t('settings.oidc.form.requireEmailVerifiedWarning')}</span>
+      <span className="text-red-700 dark:text-red-400">{t('settings.oidc.form.requireEmailVerifiedWarning')}</span>
     );
   }
 
@@ -76,21 +122,21 @@ function ProviderForm({
     <div className="space-y-4">
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
-          <label className={labelCls}>{t('settings.oidc.form.name')} <span className="text-red-400">*</span></label>
+          <label className={labelCls}>{t('settings.oidc.form.name')} <span className="text-red-700 dark:text-red-400">*</span></label>
           <input className={inputCls} value={form.name} onChange={(e) => set('name', e.target.value)} placeholder="Google" />
         </div>
         <div>
-          <label className={labelCls}>{t('settings.oidc.form.issuerUrl')} <span className="text-red-400">*</span></label>
+          <label className={labelCls}>{t('settings.oidc.form.issuerUrl')} <span className="text-red-700 dark:text-red-400">*</span></label>
           <input className={inputCls} value={form.issuer_url} onChange={(e) => set('issuer_url', e.target.value)} placeholder="https://accounts.google.com" />
         </div>
         <div>
-          <label className={labelCls}>{t('settings.oidc.form.clientId')} <span className="text-red-400">*</span></label>
+          <label className={labelCls}>{t('settings.oidc.form.clientId')} <span className="text-red-700 dark:text-red-400">*</span></label>
           <input className={inputCls} value={form.client_id} onChange={(e) => set('client_id', e.target.value)} placeholder="your-client-id" />
         </div>
         <div>
           <label className={labelCls}>
             {t('settings.oidc.form.clientSecret')}
-            {!isEdit && <span className="text-red-400"> *</span>}
+            {!isEdit && <span className="text-red-700 dark:text-red-400"> *</span>}
             {isEdit && <span className="text-bambu-gray text-xs ml-1">({t('settings.oidc.form.secretHint')})</span>}
           </label>
           <input
@@ -149,6 +195,13 @@ function ProviderForm({
             <p className="text-bambu-gray text-xs">{requireEmailVerifiedDesc}</p>
           </div>
         </label>
+        <label className="flex items-center gap-3 cursor-pointer w-full">
+          <Toggle checked={form.is_autologin ?? false} onChange={(v) => set('is_autologin', v)} />
+          <div>
+            <p className="text-white text-sm">{t('settings.oidc.form.autologin')}</p>
+            <p className="text-bambu-gray text-xs">{t('settings.oidc.form.autologinDesc')}</p>
+          </div>
+        </label>
       </div>
 
       <div>
@@ -161,7 +214,7 @@ function ProviderForm({
         />
         <p className="text-bambu-gray text-xs mt-1">{t('settings.oidc.form.emailClaimDesc')}</p>
         {autoLinkOn && form.email_claim !== 'email' && (
-          <p className="text-yellow-400 text-xs mt-1">{t('settings.oidc.form.emailClaimCustomClaimAutoLinkWarning')}</p>
+          <p className="text-yellow-700 dark:text-yellow-400 text-xs mt-1">{t('settings.oidc.form.emailClaimCustomClaimAutoLinkWarning')}</p>
         )}
       </div>
 
@@ -180,6 +233,82 @@ function ProviderForm({
         <p className="text-bambu-gray text-xs mt-1">{t('settings.oidc.form.defaultGroupDesc')}</p>
       </div>
 
+      <div>
+        <label className={labelCls}>{t('settings.oidc.form.groupClaim')}</label>
+        <input
+          className={inputCls}
+          value={form.group_claim ?? 'groups'}
+          onChange={(e) => set('group_claim', e.target.value)}
+          placeholder="groups"
+        />
+        <p className="text-bambu-gray text-xs mt-1">{t('settings.oidc.form.groupClaimDesc')}</p>
+      </div>
+
+      <div>
+        <label className={labelCls}>{t('settings.oidc.form.groupMapping')}</label>
+        <div className="space-y-2">
+          {mappingRows.map((row, i) => {
+            // A row can point at a group name that's since been deleted
+            // (deleting a group doesn't touch any provider's mapping — see
+            // #3107 follow-up). Left alone, that value doesn't match any
+            // <option> and the select just renders as if nothing were
+            // chosen, so the broken row looks identical to an unset one.
+            // Injecting the stale name as its own (disabled) option keeps it
+            // visibly selected, and the row is flagged red until the admin
+            // repoints it or removes it.
+            const isOrphaned = row.printbuddyGroup !== '' && !groupNames.has(row.printbuddyGroup);
+            return (
+              <div key={i}>
+                <div className="flex items-center gap-2">
+                  <input
+                    className={inputCls}
+                    value={row.idpGroup}
+                    onChange={(e) => updateMappingRow(i, { idpGroup: e.target.value })}
+                    placeholder={t('settings.oidc.form.groupMappingIdpGroupPlaceholder')}
+                  />
+                  <span className="text-bambu-gray text-sm shrink-0">&rarr;</span>
+                  <select
+                    className={`${inputCls} ${isOrphaned ? 'border-red-700 dark:border-red-400 text-red-700 dark:text-red-400' : ''}`}
+                    value={row.printbuddyGroup}
+                    onChange={(e) => updateMappingRow(i, { printbuddyGroup: e.target.value })}
+                  >
+                    <option value="">{t('settings.oidc.form.groupMappingSelectGroup')}</option>
+                    {isOrphaned && (
+                      <option value={row.printbuddyGroup}>
+                        {t('settings.oidc.form.groupMappingDeletedGroupOption', { group: row.printbuddyGroup })}
+                      </option>
+                    )}
+                    {groups.map((g) => (
+                      <option key={g.id} value={g.name}>{g.name}</option>
+                    ))}
+                  </select>
+                  <Button variant="secondary" size="sm" onClick={() => removeMappingRow(i)} title={t('common.remove')}>
+                    <Trash2 className="w-4 h-4" />
+                  </Button>
+                </div>
+                {isOrphaned && (
+                  <p className="text-red-700 dark:text-red-400 text-xs mt-1">
+                    {t('settings.oidc.form.groupMappingDeletedGroupWarning')}
+                  </p>
+                )}
+                {mappingRowErrors[i] && (
+                  <p className="text-red-700 dark:text-red-400 text-xs mt-1">
+                    {mappingRowErrors[i] === 'incomplete'
+                      ? t('settings.oidc.form.groupMappingIncompleteRow')
+                      : t('settings.oidc.form.groupMappingDuplicateRow')}
+                  </p>
+                )}
+              </div>
+            );
+          })}
+          <Button variant="secondary" size="sm" onClick={addMappingRow} className="inline-flex items-center gap-2">
+            <Plus className="w-4 h-4" />
+            {t('settings.oidc.form.groupMappingAddRow')}
+          </Button>
+        </div>
+        <p className="text-bambu-gray text-xs mt-1">{t('settings.oidc.form.groupMappingDesc')}</p>
+      </div>
+
       <div className="flex gap-3 pt-2">
         <Button variant="secondary" onClick={onCancel} className="flex-1">
           {t('common.cancel')}
@@ -187,7 +316,7 @@ function ProviderForm({
         <Button
           variant="primary"
           className="flex-1"
-          disabled={!form.name || !form.issuer_url || !form.client_id || (!isEdit && !form.client_secret) || (isEdit && secretChanged && !form.client_secret) || isPending}
+          disabled={!form.name || !form.issuer_url || !form.client_id || (!isEdit && !form.client_secret) || (isEdit && secretChanged && !form.client_secret) || hasMappingErrors || isPending}
           onClick={handleSave}
         >
           {isPending ? t('common.saving') : t('common.save')}
@@ -370,12 +499,17 @@ export function OIDCProviderSettings() {
                 <div className="flex items-center gap-2">
                   <h4 className="text-white font-medium">{provider.name}</h4>
                   {provider.is_enabled ? (
-                    <span className="flex items-center gap-1 text-xs text-green-400 bg-green-400/10 px-2 py-0.5 rounded-full">
+                    <span className="flex items-center gap-1 text-xs text-green-700 dark:text-green-400 bg-green-50 dark:bg-green-400/10 px-2 py-0.5 rounded-full">
                       <Check className="w-3 h-3" /> {t('common.enabled')}
                     </span>
                   ) : (
                     <span className="flex items-center gap-1 text-xs text-bambu-gray bg-bambu-dark-tertiary px-2 py-0.5 rounded-full">
                       <X className="w-3 h-3" /> {t('common.disabled')}
+                    </span>
+                  )}
+                  {provider.is_env_managed && (
+                    <span className="flex items-center gap-1 text-xs text-bambu-green">
+                      <Lock className="w-3 h-3" /> {t('settings.environmentManagedLabel')}
                     </span>
                   )}
                 </div>
@@ -385,45 +519,59 @@ export function OIDCProviderSettings() {
                 </div>
               </div>
               <div className="flex items-center gap-2">
-                {provider.icon_url && (
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => refreshIconMutation.mutate(provider.id)}
-                    disabled={refreshIconMutation.isPending}
-                    title={t('settings.oidc.refreshIcon')}
-                    data-testid={`refresh-icon-${provider.id}`}
-                  >
-                    <RefreshCw className={`w-4 h-4 ${refreshIconMutation.isPending ? 'animate-spin' : ''}`} />
-                  </Button>
+                {/* #2593: startup rewrites the env-managed row from PRINTBUDDY_OIDC_*
+                    and the API answers 409, so offering any of these would promise
+                    a change that cannot land -- the icon routes included, where the
+                    click only ever produced an error toast. */}
+                {!provider.is_env_managed && (
+                  <>
+                    {provider.icon_url && (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => refreshIconMutation.mutate(provider.id)}
+                        disabled={refreshIconMutation.isPending}
+                        title={t('settings.oidc.refreshIcon')}
+                        data-testid={`refresh-icon-${provider.id}`}
+                      >
+                        <RefreshCw className={`w-4 h-4 ${refreshIconMutation.isPending ? 'animate-spin' : ''}`} />
+                      </Button>
+                    )}
+                    {provider.has_icon && (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => removeIconMutation.mutate(provider.id)}
+                        disabled={removeIconMutation.isPending}
+                        title={t('settings.oidc.removeIcon')}
+                        data-testid={`remove-icon-${provider.id}`}
+                      >
+                        <ImageOff className="w-4 h-4" />
+                      </Button>
+                    )}
+                    <Toggle
+                      checked={provider.is_enabled}
+                      onChange={() => toggleEnabled(provider)}
+                      disabled={updateMutation.isPending}
+                    />
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => setEditingId(editingId === provider.id ? null : provider.id)}
+                      data-testid={`edit-provider-${provider.id}`}
+                    >
+                      <Edit2 className="w-4 h-4" />
+                    </Button>
+                    <Button
+                      variant="danger"
+                      size="sm"
+                      onClick={() => setDeleteTarget(provider)}
+                      data-testid={`delete-provider-${provider.id}`}
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </Button>
+                  </>
                 )}
-                {provider.has_icon && (
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => removeIconMutation.mutate(provider.id)}
-                    disabled={removeIconMutation.isPending}
-                    title={t('settings.oidc.removeIcon')}
-                    data-testid={`remove-icon-${provider.id}`}
-                  >
-                    <ImageOff className="w-4 h-4" />
-                  </Button>
-                )}
-                <Toggle
-                  checked={provider.is_enabled}
-                  onChange={() => toggleEnabled(provider)}
-                  disabled={updateMutation.isPending}
-                />
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => setEditingId(editingId === provider.id ? null : provider.id)}
-                >
-                  <Edit2 className="w-4 h-4" />
-                </Button>
-                <Button variant="danger" size="sm" onClick={() => setDeleteTarget(provider)}>
-                  <Trash2 className="w-4 h-4" />
-                </Button>
               </div>
             </div>
           </CardHeader>
@@ -445,8 +593,11 @@ export function OIDCProviderSettings() {
                     auto_link_existing_accounts: provider.auto_link_existing_accounts,
                     email_claim: provider.email_claim,
                     require_email_verified: provider.require_email_verified,
+                    group_claim: provider.group_claim ?? 'groups',
+                    group_mapping: provider.group_mapping ?? {},
                     icon_url: provider.icon_url ?? undefined,
                     default_group_id: provider.default_group_id ?? null,
+                    is_autologin: provider.is_autologin,
                   }}
                   onSave={(data) => updateMutation.mutate({ id: provider.id, data })}
                   onCancel={() => setEditingId(null)}
@@ -469,13 +620,13 @@ export function OIDCProviderSettings() {
                 </div>
                 <div>
                   <dt className="text-bambu-gray">{t('settings.oidc.form.autoCreate')}</dt>
-                  <dd className={provider.auto_create_users ? 'text-green-400' : 'text-bambu-gray'}>
+                  <dd className={provider.auto_create_users ? 'text-green-700 dark:text-green-400' : 'text-bambu-gray'}>
                     {provider.auto_create_users ? t('common.yes') : t('common.no')}
                   </dd>
                 </div>
                 <div>
                   <dt className="text-bambu-gray">{t('settings.oidc.form.autoLink')}</dt>
-                  <dd className={provider.auto_link_existing_accounts ? 'text-green-400' : 'text-bambu-gray'}>
+                  <dd className={provider.auto_link_existing_accounts ? 'text-green-700 dark:text-green-400' : 'text-bambu-gray'}>
                     {provider.auto_link_existing_accounts ? t('common.yes') : t('common.no')}
                   </dd>
                 </div>
@@ -484,8 +635,12 @@ export function OIDCProviderSettings() {
                   <dd className="text-white font-mono">{provider.email_claim}</dd>
                 </div>
                 <div>
+                  <dt className="text-bambu-gray">{t('settings.oidc.form.groupClaim')}</dt>
+                  <dd className="text-white font-mono">{provider.group_claim ?? 'groups'}</dd>
+                </div>
+                <div>
                   <dt className="text-bambu-gray">{t('settings.oidc.form.requireEmailVerified')}</dt>
-                  <dd className={provider.require_email_verified ? 'text-green-400' : 'text-red-400'}>
+                  <dd className={provider.require_email_verified ? 'text-green-700 dark:text-green-400' : 'text-red-700 dark:text-red-400'}>
                     {provider.require_email_verified ? t('common.yes') : t('common.no')}
                   </dd>
                 </div>
@@ -495,6 +650,14 @@ export function OIDCProviderSettings() {
                     {provider.default_group_id
                       ? (groups.find((g) => g.id === provider.default_group_id)?.name ?? t('settings.oidc.form.defaultGroupViewersFallback'))
                       : t('settings.oidc.form.defaultGroupViewersFallback')}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-bambu-gray">{t('settings.oidc.form.groupSync')}</dt>
+                  <dd className={provider.group_mapping && Object.keys(provider.group_mapping).length > 0 ? 'text-green-700 dark:text-green-400' : 'text-bambu-gray'}>
+                    {provider.group_mapping && Object.keys(provider.group_mapping).length > 0
+                      ? t('settings.oidc.form.groupSyncOn')
+                      : t('common.off')}
                   </dd>
                 </div>
               </dl>

@@ -3,6 +3,7 @@ import os
 import re as _re
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings
 
 # Application version - single source of truth
@@ -71,17 +72,46 @@ class Settings(BaseSettings):
     static_dir: Path = _app_dir / "static"  # Static files are part of app, not data
     log_dir: Path = _log_dir
     database_url: str = _external_db_url or f"sqlite+aiosqlite:///{_db_path}"
-    db_pool_size: int = 20
-    db_max_overflow: int = 80
-    db_pool_timeout: int = 30
-    db_pool_recycle: int = 1800
     # Colon-separated allowlist for host paths that may be mounted through the
     # external library folder feature. Empty means disabled by default.
     external_roots: str = os.environ.get("PRINTBUDDY_EXTERNAL_ROOTS", "")
 
+    # Database connection pool sizing. ``None`` = use the built-in, dialect-aware
+    # default (PostgreSQL: pool_size 20 + max_overflow 60; SQLite: 10 + 90).
+    # Large PostgreSQL printer farms can raise these via the DB_POOL_SIZE /
+    # DB_MAX_OVERFLOW / DB_POOL_TIMEOUT / DB_POOL_RECYCLE env vars (issue #2572).
+    # A large farm still on SQLite can raise DB_MAX_OVERFLOW, but is better
+    # served by moving to PostgreSQL (#2883).
+    # Make sure PostgreSQL ``max_connections`` comfortably exceeds
+    # (pool_size + max_overflow) x number of app worker processes.
+    db_pool_size: int | None = Field(default=None, gt=0)
+    db_max_overflow: int | None = Field(default=None, ge=0)
+    db_pool_timeout: int | None = Field(default=None, gt=0)
+    db_pool_recycle: int | None = Field(default=None, gt=0)
+    # LIFO checkout (PostgreSQL default on): reuse the most-recently-returned
+    # connection so a bursty farm keeps a small hot set busy and lets the excess
+    # overflow connections age out via pool_recycle instead of churning the whole
+    # pool. Override with DB_POOL_USE_LIFO. No effect on SQLite. (#2572)
+    db_pool_use_lifo: bool | None = Field(default=None)
+    # pool_pre_ping (PostgreSQL default on): every checkout first runs a liveness
+    # ping, which SQLAlchemy's asyncpg dialect wraps in its own transaction, so
+    # each pooled session costs an extra ``BEGIN; ROLLBACK`` round-trip that
+    # shows up in ``pg_stat_database.xact_rollback``. Set DB_POOL_PRE_PING=false
+    # to skip it; ``pool_recycle`` then bounds how long a dead connection can
+    # survive, but a connection dropped by the server or a proxy in between is
+    # no longer replaced transparently. No effect on SQLite.
+    db_pool_pre_ping: bool | None = Field(default=None)
+
     # Logging
     log_level: str = "INFO"  # Override with LOG_LEVEL env var or DEBUG=true
     log_to_file: bool = True  # Set to false to disable file logging
+    # Rotation for printbuddy.log. Read by main.py (which owns the handler) and by
+    # the support bundle (which harvests the backups as well as the live file);
+    # they must agree on the backup count or the bundle silently skips history.
+    # Bounded: RotatingFileHandler treats maxBytes=0 as "never rotate", so a
+    # zero/negative override would grow the log without limit.
+    log_max_bytes: int = Field(default=5 * 1024 * 1024, gt=0)
+    log_backup_count: int = Field(default=3, ge=0)
 
     # API
     api_prefix: str = "/api/v1"
@@ -123,8 +153,28 @@ _INTENTIONAL_UNSETTINGS = {
     "LOG_DIR",  # config.py (above)
     "LOG_LEVEL",  # main.py logging setup
     "PRINTBUDDY_EXTERNAL_ROOTS",  # config.py field sourced explicitly above
+    "PRINTBUDDY_LOCAL_LOGIN",  # api/routes/auth.py — SSO-only recovery bypass
+    "PRINTBUDDY_VP_DUMP_WIRE",  # services/virtual_printer/_debug.py — VP wire dump
     "DISCOVERY_EXTRA_SUBNETS",  # network_utils.py — extra CIDRs for Docker scan UI
     "DISCOVERY_MOONRAKER_PORTS",  # discovery.py — Moonraker scan ports (default 7125,80)
+    "PRINTBUDDY_COMPOSE_DIR",  # api/routes/updates.py — compose dir for update instructions (#2664)
+    # #2593 — core/oidc_env.py reads these directly; they are not Settings
+    # fields because they map to an OIDCProvider row, not to app config.
+    "PRINTBUDDY_OIDC_NAME",
+    "PRINTBUDDY_OIDC_ISSUER_URL",
+    "PRINTBUDDY_OIDC_CLIENT_ID",
+    "PRINTBUDDY_OIDC_CLIENT_SECRET",
+    "PRINTBUDDY_OIDC_SCOPES",
+    "PRINTBUDDY_OIDC_ENABLED",
+    "PRINTBUDDY_OIDC_AUTO_CREATE_USERS",
+    "PRINTBUDDY_OIDC_AUTO_LINK_EXISTING",
+    "PRINTBUDDY_OIDC_EMAIL_CLAIM",
+    "PRINTBUDDY_OIDC_REQUIRE_EMAIL_VERIFIED",
+    "PRINTBUDDY_OIDC_GROUP_CLAIM",
+    "PRINTBUDDY_OIDC_GROUP_MAPPING",
+    "PRINTBUDDY_OIDC_ICON_URL",
+    "PRINTBUDDY_OIDC_AUTOLOGIN",
+    "PRINTBUDDY_OIDC_DEFAULT_GROUP",
 }
 
 _known_settings_fields = {f.upper() for f in settings.model_fields}

@@ -145,3 +145,58 @@ async def test_helper_exception_does_not_wedge_dispatch(scheduler, db_session, q
     assert blocked is False
     await db_session.refresh(item)
     assert item.filament_short is False
+
+
+@pytest.mark.asyncio
+async def test_skip_filament_check_short_circuits_without_compute(scheduler, db_session, queue_item):
+    """User clicked Print Anyway (skip_filament_check=True): no compute, no flag (#1698-followup).
+
+    Pre-fix the scheduler re-ran the deficit check on every tick, re-set
+    manual_start/filament_short to True, and the item bounced between
+    "user said anyway" (route clears flags) and "scheduler re-blocked"
+    forever. With the persistent acknowledgement flag the scheduler bails
+    early without even touching the deficit helper.
+    """
+    item = await queue_item(skip_filament_check=True)
+    compute_mock = AsyncMock(
+        return_value=[
+            FilamentDeficit(
+                slot_id=1,
+                ams_id=0,
+                tray_id=0,
+                filament_type="PLA",
+                required_grams=270.0,
+                remaining_grams=200.0,
+            ),
+        ]
+    )
+    with patch(
+        "backend.app.services.print_scheduler.compute_deficit_for_queue_item",
+        compute_mock,
+    ):
+        blocked = await scheduler._block_on_filament_deficit(db_session, item)
+
+    assert blocked is False
+    compute_mock.assert_not_awaited()
+    await db_session.refresh(item)
+    # Flags must not get re-set by the scheduler now that the user has
+    # acknowledged the deficit.
+    assert item.filament_short is False
+    assert item.manual_start is False
+
+
+@pytest.mark.asyncio
+async def test_the_waiting_notification_names_the_printer(scheduler, db_session, queue_item):
+    """A channel limited to the job's printer is told the job is short."""
+    item = await queue_item()
+    waiting = AsyncMock()
+    deficit = FilamentDeficit(
+        slot_id=1, ams_id=0, tray_id=0, filament_type="PLA", required_grams=270.0, remaining_grams=200.0
+    )
+    with (
+        patch("backend.app.services.print_scheduler.compute_deficit_for_queue_item", AsyncMock(return_value=[deficit])),
+        patch("backend.app.services.notification_service.notification_service.on_queue_job_waiting", waiting),
+    ):
+        await scheduler._block_on_filament_deficit(db_session, item)
+
+    assert waiting.await_args.kwargs["printer_id"] == item.printer_id

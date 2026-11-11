@@ -1,11 +1,13 @@
 """Unit tests for Spoolman tracking service helpers."""
 
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from backend.app.services.spoolman_tracking import (
+    _apply_spool_types_to_archive,
     _get_fallback_spool_tag,
     _global_tray_id_to_ams_slot,
     _hash_serial_to_hex32,
@@ -78,9 +80,9 @@ class TestResolveGlobalTrayId:
         assert _resolve_global_tray_id(4, mapping) == 0
 
     def test_unmapped_slot(self):
-        """Slot with -1 in mapping uses default."""
+        """Slot with -1 in mapping feeds nothing: no tray, never the default."""
         mapping = [5, -1, 2, 0]
-        assert _resolve_global_tray_id(2, mapping) == 1  # default: slot 2 -> tray 1
+        assert _resolve_global_tray_id(2, mapping, ams_trays={0: {}, 1: {}, 2: {}, 5: {}}) == -1
 
     def test_slot_beyond_mapping(self):
         """Slot beyond mapping length uses default."""
@@ -183,8 +185,14 @@ class TestStorePrintData:
     @pytest.mark.asyncio
     async def test_prefers_explicit_ams_mapping_over_queue_mapping(self):
         db = AsyncMock()
+        # store_print_data now queries the queue item unconditionally (to pick up
+        # plate_id for multi-plate 3MFs, #1697), then deletes any stale spoolman
+        # row before inserting the new one. Two execute calls in that order.
+        queue_item = SimpleNamespace(ams_mapping=json.dumps([2, -1, -1, -1]), plate_id=None)
+        queue_result = MagicMock()
+        queue_result.scalars.return_value.first.return_value = queue_item
         delete_result = MagicMock()
-        db.execute = AsyncMock(side_effect=[delete_result])
+        db.execute = AsyncMock(side_effect=[queue_result, delete_result])
         db.add = MagicMock()
         db.commit = AsyncMock()
 
@@ -220,4 +228,93 @@ class TestStorePrintData:
         db.add.assert_called_once()
         tracking = db.add.call_args.args[0]
         assert tracking.slot_to_tray == [1, -1, -1, -1]
-        db.execute.assert_called_once()
+        assert db.execute.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_passes_queue_plate_id_to_3mf_extract(self):
+        """Multi-plate 3MFs queued for one plate must only count that plate's filament (#1697)."""
+        db = AsyncMock()
+        queue_item = SimpleNamespace(ams_mapping=None, plate_id=2)
+        queue_result = MagicMock()
+        queue_result.scalars.return_value.first.return_value = queue_item
+        delete_result = MagicMock()
+        db.execute = AsyncMock(side_effect=[queue_result, delete_result])
+        db.add = MagicMock()
+        db.commit = AsyncMock()
+
+        printer_manager = MagicMock()
+        printer_manager.get_status.return_value = SimpleNamespace(
+            raw_data={"ams": [{"id": 0, "tray": [{"id": 0, "tray_type": "PLA"}]}]}
+        )
+
+        mock_settings = MagicMock()
+        mock_path = MagicMock()
+        mock_path.exists.return_value = True
+        mock_settings.base_dir.__truediv__.return_value = mock_path
+
+        extract_mock = MagicMock(return_value=[{"slot_id": 1, "used_g": 190.0, "type": "PETG", "color": "#888888"}])
+
+        with (
+            patch("backend.app.services.spoolman_tracking.app_settings", mock_settings),
+            patch("backend.app.api.routes.settings.get_setting", AsyncMock(side_effect=["true", "true"])),
+            patch("backend.app.utils.threemf_tools.extract_filament_usage_from_3mf", extract_mock),
+            patch("backend.app.utils.threemf_tools.extract_layer_filament_usage_from_3mf", return_value=None),
+            patch("backend.app.utils.threemf_tools.extract_filament_properties_from_3mf", return_value={}),
+        ):
+            await store_print_data(
+                printer_id=1,
+                archive_id=15,
+                file_path="archives/test.3mf",
+                db=db,
+                printer_manager=printer_manager,
+                ams_mapping=[1, -1, -1, -1],
+            )
+
+        # plate_id=2 must be passed as the second positional arg
+        assert extract_mock.call_count == 1
+        assert extract_mock.call_args.args[1] == 2
+
+
+class TestApplySpoolTypesToArchive:
+    """_apply_spool_types_to_archive() rewrites the archive's filament_type
+    from the resolved Spoolman spools' materials (#2563)."""
+
+    @staticmethod
+    async def _make_archive(db, filament_type):
+        from backend.app.models.archive import PrintArchive
+
+        archive = PrintArchive(
+            filename="job.gcode.3mf",
+            file_path="archive/job.3mf",
+            file_size=1,
+            filament_type=filament_type,
+        )
+        db.add(archive)
+        await db.commit()
+        await db.refresh(archive)
+        return archive
+
+    @pytest.mark.asyncio
+    async def test_overwrites_sliced_type_with_spool_material(self, db_session):
+        """PLA-sliced job mapped to a PETG Spoolman spool → recorded as PETG."""
+        archive = await self._make_archive(db_session, "PLA")
+        usage = [{"slot_id": 1, "used_g": 2.9}]
+        await _apply_spool_types_to_archive(db_session, archive.id, usage, {1: "PETG"})
+        await db_session.refresh(archive)
+        assert archive.filament_type == "PETG"
+
+    @pytest.mark.asyncio
+    async def test_partial_match_leaves_type_untouched(self, db_session):
+        """All-or-nothing: an unmatched used slot means no rewrite."""
+        archive = await self._make_archive(db_session, "PLA,PLA")
+        usage = [{"slot_id": 1, "used_g": 5.0}, {"slot_id": 2, "used_g": 3.0}]
+        await _apply_spool_types_to_archive(db_session, archive.id, usage, {1: "PETG"})
+        await db_session.refresh(archive)
+        assert archive.filament_type == "PLA,PLA"
+
+    @pytest.mark.asyncio
+    async def test_empty_materials_is_noop(self, db_session):
+        archive = await self._make_archive(db_session, "PLA")
+        await _apply_spool_types_to_archive(db_session, archive.id, [{"slot_id": 1, "used_g": 2.9}], {})
+        await db_session.refresh(archive)
+        assert archive.filament_type == "PLA"

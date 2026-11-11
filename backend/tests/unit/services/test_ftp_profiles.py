@@ -43,10 +43,42 @@ def test_p2s_internal_ssdp_code_resolves_to_p2s():
     assert profile.cap_tls_v1_2 is True
 
 
+def test_x2d_caps_tls_v1_2():
+    """X2D firmware 01.01.00.00 fails implicit-FTPS handshake on port
+    990 with WRONG_VERSION_NUMBER against Python 3.13's TLS-1.3 default
+    (#1638, reporter @vasmarfas). The profile caps to TLS 1.2 by
+    analogy with P2S."""
+    profile = get_ftp_profile("X2D")
+    assert profile.cap_tls_v1_2 is True
+
+
+def test_x2d_internal_ssdp_code_resolves_to_x2d():
+    """SSDP internal code N6 → X2D profile."""
+    profile = get_ftp_profile("N6")
+    assert profile.cap_tls_v1_2 is True
+
+
+def test_h2c_caps_tls_v1_2():
+    """H2C firmware 01.02.00.00 — same H2 generation / firmware line as
+    P2S — intermittently fails the FTPS 3MF download and falls through to
+    the no-3MF fallback archive, so nothing gets deducted (#2582, reporter
+    @gyrene2083). The profile caps to TLS 1.2 by analogy with P2S."""
+    profile = get_ftp_profile("H2C")
+    assert profile.cap_tls_v1_2 is True
+
+
+def test_h2c_internal_ssdp_codes_resolve_to_h2c():
+    """SSDP internal codes O1C and O1C2 (dual-nozzle variant) → H2C
+    profile, so the cap applies however the model string arrives."""
+    assert get_ftp_profile("O1C").cap_tls_v1_2 is True
+    assert get_ftp_profile("O1C2").cap_tls_v1_2 is True
+
+
 def test_lookup_is_case_insensitive():
     """Printer.model may carry mixed case; the lookup normalises."""
     assert get_ftp_profile("p2s").cap_tls_v1_2 is True
     assert get_ftp_profile("P2s").cap_tls_v1_2 is True
+    assert get_ftp_profile("x2d").cap_tls_v1_2 is True
 
 
 def test_non_capped_models_still_default():

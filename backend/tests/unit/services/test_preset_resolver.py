@@ -199,7 +199,16 @@ async def test_cloud_unwraps_setting_envelope():
     ):
         out = await preset_resolver._resolve_cloud(db, user, PresetRef(source="cloud", id="PFU123"), slot="printer")
     payload = json.loads(out)
-    assert payload == {"name": "X1C Custom", "nozzle_diameter": [0.4]}
+    # Resolver rewrites the `type` field to the CLI-expected value AND pins
+    # `from: "system"` (#1712 follow-up: Bambu Cloud labels printers as
+    # "printer" and filaments routinely ship with empty `from`; the CLI
+    # rejects either with the same -5 "input preset invalid" surface).
+    assert payload == {
+        "name": "X1C Custom",
+        "nozzle_diameter": [0.4],
+        "type": "machine",
+        "from": "system",
+    }
     cloud_mock.close.assert_awaited_once()
 
 
@@ -256,10 +265,12 @@ async def test_cloud_custom_setting_keeps_its_cloud_payload():
     ):
         out = await preset_resolver.resolve_preset_ref(db, user, PresetRef(source="cloud", id="PFU123"), slot="process")
 
+    # `from` is pinned to "system" for every cloud tier, like `type`.
     assert json.loads(out) == {
         "name": "My P1S process",
         "inherits": "0.20mm Standard @BBL P1S",
         "type": "process",
+        "from": "system",
     }
 
 
@@ -288,6 +299,115 @@ async def test_cloud_falls_back_to_top_level_when_no_envelope():
     assert "name" in payload
 
 
+@pytest.mark.parametrize(
+    "slot, source_type, expected_type",
+    [
+        # Bambu Cloud's wire shape: `printer` / `print` / `filament`. The CLI
+        # only accepts `machine` / `process` / `filament`. Without rewrite
+        # the CLI exits -5 with `operator(): unknown config type` and the
+        # sidecar surfaces "The input preset file is invalid and can not be
+        # parsed" (#1712 follow-up, reported by the upstream maintainer on Mecha Mewtwo).
+        ("printer", "printer", "machine"),
+        ("process", "print", "process"),
+        ("filament", "filament", "filament"),
+        # Cloud-side already CLI-shaped: still gets overwritten to the
+        # canonical value — idempotent, no harm.
+        ("printer", "machine", "machine"),
+        ("process", "process", "process"),
+        # Missing type field on the source payload: synthesise it.
+        ("printer", None, "machine"),
+        ("process", None, "process"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_cloud_rewrites_type_field_for_cli(slot, source_type, expected_type):
+    db = MagicMock()
+    user = MagicMock()
+    user.has_permission = MagicMock(return_value=True)
+    setting: dict = {"name": "P"}
+    if source_type is not None:
+        setting["type"] = source_type
+    cloud_mock = MagicMock()
+    cloud_mock.set_token = MagicMock()
+    cloud_mock.get_setting_detail = AsyncMock(return_value={"setting": setting})
+    cloud_mock.close = AsyncMock()
+    with (
+        patch.object(
+            preset_resolver,
+            "get_stored_token",
+            AsyncMock(return_value=("tok", None, "global")),
+        ),
+        patch.object(preset_resolver, "BambuCloudService", return_value=cloud_mock),
+    ):
+        out = await preset_resolver._resolve_cloud(db, user, PresetRef(source="cloud", id="X"), slot=slot)
+    assert json.loads(out)["type"] == expected_type
+
+
+@pytest.mark.parametrize(
+    "source_from",
+    [
+        # The actual failing case (#1712 follow-up): Bambu Cloud's filament
+        # detail endpoint routinely returns presets with no `from` field or
+        # `from: ""`. The CLI rejects either with
+        # `operator(): ... from  unsupported` (note the double space — that's
+        # the literal stderr from the sidecar log on the Mecha Mewtwo slice).
+        "",
+        # Cloud-side already CLI-friendly: still gets pinned to "system" —
+        # idempotent, no harm, matches the standard-tier convention.
+        "system",
+        # GUI-exported values that the sidecar's normalizeFromField also
+        # maps to "system" for the same reason — we beat it to the punch.
+        "User",
+        "System",
+    ],
+)
+@pytest.mark.asyncio
+async def test_cloud_pins_from_field_to_system(source_from):
+    db = MagicMock()
+    user = MagicMock()
+    user.has_permission = MagicMock(return_value=True)
+    setting: dict = {"name": "F", "type": "filament", "from": source_from}
+    cloud_mock = MagicMock()
+    cloud_mock.set_token = MagicMock()
+    cloud_mock.get_setting_detail = AsyncMock(return_value={"setting": setting})
+    cloud_mock.close = AsyncMock()
+    with (
+        patch.object(
+            preset_resolver,
+            "get_stored_token",
+            AsyncMock(return_value=("tok", None, "global")),
+        ),
+        patch.object(preset_resolver, "BambuCloudService", return_value=cloud_mock),
+    ):
+        out = await preset_resolver._resolve_cloud(db, user, PresetRef(source="cloud", id="X"), slot="filament")
+    assert json.loads(out)["from"] == "system"
+
+
+@pytest.mark.asyncio
+async def test_cloud_synthesises_from_field_when_missing():
+    """The original failing payload had no `from` field at all (sidecar
+    error: `from  unsupported` — double space = empty value). The resolver
+    must still emit a usable `from` instead of forwarding the gap."""
+    db = MagicMock()
+    user = MagicMock()
+    user.has_permission = MagicMock(return_value=True)
+    setting = {"name": "F", "type": "filament"}  # NB: no `from`
+    cloud_mock = MagicMock()
+    cloud_mock.set_token = MagicMock()
+    cloud_mock.get_setting_detail = AsyncMock(return_value={"setting": setting})
+    cloud_mock.close = AsyncMock()
+    with (
+        patch.object(
+            preset_resolver,
+            "get_stored_token",
+            AsyncMock(return_value=("tok", None, "global")),
+        ),
+        patch.object(preset_resolver, "BambuCloudService", return_value=cloud_mock),
+    ):
+        out = await preset_resolver._resolve_cloud(db, user, PresetRef(source="cloud", id="X"), slot="filament")
+    assert json.loads(out)["from"] == "system"
+
+
 @pytest.mark.asyncio
 async def test_cloud_auth_error_returns_401():
     db = MagicMock()
@@ -308,6 +428,169 @@ async def test_cloud_auth_error_returns_401():
     ):
         await preset_resolver._resolve_cloud(db, user, PresetRef(source="cloud", id="PFU123"), slot="printer")
     assert exc.value.status_code == 401
+
+
+# --- orca_cloud tier -------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_orca_cloud_blocks_user_without_orca_cloud_auth():
+    """Defence-in-depth, same shape as the Bambu Cloud permission check:
+    a user holding LIBRARY_UPLOAD but not ORCA_CLOUD_AUTH can't slice with
+    Orca Cloud presets even if their User row still carries a token."""
+    db = MagicMock()
+    user = MagicMock()
+    user.has_permission = MagicMock(return_value=False)
+    with pytest.raises(HTTPException) as exc:
+        await preset_resolver._resolve_orca_cloud(db, user, PresetRef(source="orca_cloud", id="abc"), slot="printer")
+    assert exc.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_orca_cloud_unwraps_content():
+    """Orca's profile shape is ``{id, name, content, updated_time, created_time}``
+    — the inner ``content`` is the actual slicer-format JSON. We forward
+    that, not the wrapper."""
+    db = MagicMock()
+    user = MagicMock()
+    user.has_permission = MagicMock(return_value=True)
+    svc_mock = MagicMock()
+    svc_mock.get_profile = AsyncMock(
+        return_value={
+            "id": "abc",
+            "name": "X1C Custom",
+            "content": {"name": "X1C Custom", "nozzle_diameter": [0.4]},
+        }
+    )
+    svc_mock.close = AsyncMock()
+    with patch.object(preset_resolver, "_build_orca_service", AsyncMock(return_value=svc_mock)):
+        out = await preset_resolver._resolve_orca_cloud(
+            db, user, PresetRef(source="orca_cloud", id="abc"), slot="printer"
+        )
+    payload = json.loads(out)
+    # Resolver rewrites `type` to the CLI-expected value AND pins
+    # `from: "system"` (#1712 follow-up). Orca natively uses "machine" but
+    # Bambu-sourced syncs can carry "printer" and either empty/missing `from`.
+    assert payload == {
+        "name": "X1C Custom",
+        "nozzle_diameter": [0.4],
+        "type": "machine",
+        "from": "system",
+    }
+    svc_mock.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_orca_cloud_string_lists_become_arrays():
+    """#3380: Orca Cloud returns list options INI-encoded. The sidecar only
+    adds a user printer preset's system parent to ``compatible_printers``
+    when it is an array, so they're forwarded as arrays, parsed the way the
+    slicer would: empty items keep their per-extruder positions. Other
+    options are left alone."""
+    db = MagicMock()
+    user = MagicMock()
+    user.has_permission = MagicMock(return_value=True)
+    svc_mock = MagicMock()
+    svc_mock.get_profile = AsyncMock(
+        return_value={
+            "content": {
+                "compatible_printers": '"Bambu Lab H2D 0.4 nozzle - Skew";"Bambu Lab X1 Carbon 0.4 nozzle"',
+                "compatible_prints": "",
+                "filament_type": "PLA",
+                "default_filament_colour": '"";"#FF0000"',
+                "compatible_printers_condition": '"bad" quote',
+            }
+        }
+    )
+    svc_mock.close = AsyncMock()
+    with patch.object(preset_resolver, "_build_orca_service", AsyncMock(return_value=svc_mock)):
+        out = await preset_resolver._resolve_orca_cloud(
+            db, user, PresetRef(source="orca_cloud", id="abc"), slot="filament"
+        )
+    payload = json.loads(out)
+    assert payload["compatible_printers"] == ["Bambu Lab H2D 0.4 nozzle - Skew", "Bambu Lab X1 Carbon 0.4 nozzle"]
+    assert payload["compatible_prints"] == ""
+    assert payload["filament_type"] == ["PLA"]
+    assert payload["default_filament_colour"] == ["", "#FF0000"]
+    assert payload["compatible_printers_condition"] == '"bad" quote'
+
+
+@pytest.mark.asyncio
+async def test_orca_cloud_unparseable_string_list_is_forwarded_as_is():
+    db = MagicMock()
+    user = MagicMock()
+    user.has_permission = MagicMock(return_value=True)
+    svc_mock = MagicMock()
+    svc_mock.get_profile = AsyncMock(return_value={"content": {"compatible_printers": '"X1C" junk'}})
+    svc_mock.close = AsyncMock()
+    with patch.object(preset_resolver, "_build_orca_service", AsyncMock(return_value=svc_mock)):
+        out = await preset_resolver._resolve_orca_cloud(
+            db, user, PresetRef(source="orca_cloud", id="abc"), slot="process"
+        )
+    assert json.loads(out)["compatible_printers"] == '"X1C" junk'
+
+
+@pytest.mark.asyncio
+async def test_orca_cloud_json_array_lists_are_forwarded_unchanged():
+    """Only a string is INI-parsed: an array that already is one must not be
+    re-read, or its names would merge into one and the slice be refused."""
+    db = MagicMock()
+    user = MagicMock()
+    user.has_permission = MagicMock(return_value=True)
+    svc_mock = MagicMock()
+    svc_mock.get_profile = AsyncMock(
+        return_value={
+            "content": {
+                "compatible_printers": ["X1C 0.4", "H2C 0.4"],
+                "filament_type": ["PLA", "PETG"],
+                "default_filament_colour": ["", "#FF0000"],
+            }
+        }
+    )
+    svc_mock.close = AsyncMock()
+    with patch.object(preset_resolver, "_build_orca_service", AsyncMock(return_value=svc_mock)):
+        out = await preset_resolver._resolve_orca_cloud(
+            db, user, PresetRef(source="orca_cloud", id="abc"), slot="filament"
+        )
+    payload = json.loads(out)
+    assert payload["compatible_printers"] == ["X1C 0.4", "H2C 0.4"]
+    assert payload["filament_type"] == ["PLA", "PETG"]
+    assert payload["default_filament_colour"] == ["", "#FF0000"]
+
+
+@pytest.mark.asyncio
+async def test_orca_cloud_auth_error_returns_401():
+    db = MagicMock()
+    user = MagicMock()
+    user.has_permission = MagicMock(return_value=True)
+    svc_mock = MagicMock()
+    svc_mock.get_profile = AsyncMock(side_effect=preset_resolver.OrcaCloudAuthError("expired"))
+    svc_mock.close = AsyncMock()
+    with (
+        patch.object(preset_resolver, "_build_orca_service", AsyncMock(return_value=svc_mock)),
+        pytest.raises(HTTPException) as exc,
+    ):
+        await preset_resolver._resolve_orca_cloud(db, user, PresetRef(source="orca_cloud", id="abc"), slot="printer")
+    assert exc.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_orca_cloud_not_found_returns_400():
+    """``get_profile`` raises generic ``OrcaCloudError`` for "not found" —
+    the resolver maps that to a 400 (not 502) so the UI can show "profile
+    no longer exists" rather than "service down"."""
+    db = MagicMock()
+    user = MagicMock()
+    user.has_permission = MagicMock(return_value=True)
+    svc_mock = MagicMock()
+    svc_mock.get_profile = AsyncMock(side_effect=preset_resolver.OrcaCloudError("profile 'abc' not found (scanned 0)"))
+    svc_mock.close = AsyncMock()
+    with (
+        patch.object(preset_resolver, "_build_orca_service", AsyncMock(return_value=svc_mock)),
+        pytest.raises(HTTPException) as exc,
+    ):
+        await preset_resolver._resolve_orca_cloud(db, user, PresetRef(source="orca_cloud", id="abc"), slot="printer")
+    assert exc.value.status_code == 400
 
 
 # --- top-level dispatcher -------------------------------------------------
@@ -334,3 +617,30 @@ async def test_resolve_preset_ref_dispatches_by_source():
         db, user, PresetRef(source="standard", id="Some Bundled Name"), slot="printer"
     )
     assert json.loads(out)["inherits"] == "Some Bundled Name"
+
+
+# --- no user while auth is on ----------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "resolve,source,loader",
+    [
+        (preset_resolver._resolve_cloud, "cloud", "get_stored_token"),
+        (preset_resolver._resolve_orca_cloud, "orca_cloud", "_build_orca_service"),
+    ],
+)
+async def test_no_user_with_auth_on_borrows_no_stored_sign_in(resolve, source, loader):
+    """The sign-in stored without a user is the auth-off install's, and may be
+    left over after auth was turned on. A caller with no user while auth is
+    on (an API key without Allow Cloud Access) must not slice with it."""
+    load = AsyncMock(return_value=("global-tok", "admin@x.com", "global"))
+    with (
+        patch.object(preset_resolver, "is_auth_enabled", AsyncMock(return_value=True)),
+        patch.object(preset_resolver, loader, load),
+        pytest.raises(HTTPException) as exc,
+    ):
+        await resolve(MagicMock(), None, PresetRef(source=source, id="X"), slot="printer")
+
+    assert exc.value.status_code == 403
+    load.assert_not_awaited()

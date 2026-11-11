@@ -1,73 +1,49 @@
+import { createRequire } from 'node:module'
+import { readdirSync, readFileSync } from 'node:fs'
 import { defineConfig } from 'vite'
+import type { Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import path from 'path'
-import fs from 'fs'
-import type { Connect } from 'vite'
 
 // Backend port for dev server proxy (default: 8000)
 const backendPort = process.env.BACKEND_PORT || '8000'
 const backendUrl = `http://localhost:${backendPort}`
 
-// Absolute path to the gcode_viewer directory at the repo root
-const gcodeViewerDir = path.resolve(__dirname, '../gcode_viewer')
+// pdf.js keeps these out of its bundle and fetches them at runtime (#2976):
+// CJK text needs the CMaps, non-embedded fonts the standard font files, and
+// JPEG2000/JBIG2 images and ICC colour the wasm decoders. Published under the
+// bundle's own assets directory so the existing /assets mount serves them —
+// PdfPreviewModal builds the matching URLs from its PDFJS_ASSET_BASE.
+const PDFJS_RUNTIME_DIRS = ['cmaps', 'iccs', 'standard_fonts', 'wasm']
+const PDFJS_RUNTIME_PREFIX = 'assets/pdfjs'
 
-// MIME types for static files served from gcode_viewer/
-const MIME: Record<string, string> = {
-  '.html': 'text/html; charset=utf-8',
-  '.js':   'application/javascript',
-  '.css':  'text/css',
-  '.obj':  'model/obj',
-  '.mtl':  'model/mtl',
-  '.png':  'image/png',
-  '.jpg':  'image/jpeg',
-  '.svg':  'image/svg+xml',
-  '.json': 'application/json',
-  '.woff': 'font/woff',
-  '.woff2':'font/woff2',
-}
+/** Publish pdf.js's runtime data directories next to the bundle. */
+function pdfjsRuntimeAssets(): Plugin {
+  const require = createRequire(__filename)
+  const packageDir = path.dirname(require.resolve('pdfjs-dist/package.json'))
+  // Published path -> file on disk. Built once, and used as an allowlist by
+  // the dev-server handler so no request can escape the package directory.
+  const files = new Map<string, string>()
+  for (const dir of PDFJS_RUNTIME_DIRS) {
+    for (const entry of readdirSync(path.join(packageDir, dir), { withFileTypes: true })) {
+      if (!entry.isFile()) continue
+      files.set(`${PDFJS_RUNTIME_PREFIX}/${dir}/${entry.name}`, path.join(packageDir, dir, entry.name))
+    }
+  }
 
-/**
- * Vite dev-server plugin: serves ../gcode_viewer/ at /gcode-viewer/
- * without needing a proxy to uvicorn.  In production uvicorn handles it
- * via the StaticFiles mount in main.py.
- */
-function serveGcodeViewer() {
   return {
-    name: 'serve-gcode-viewer',
-    configureServer(server: { middlewares: Connect.Server }) {
+    name: 'printbuddy:pdfjs-runtime-assets',
+    generateBundle() {
+      for (const [fileName, source] of files) {
+        this.emitFile({ type: 'asset', fileName, source: readFileSync(source) })
+      }
+    },
+    configureServer(server) {
       server.middlewares.use((req, res, next) => {
-        const url = req.url ?? ''
-        if (!url.startsWith('/gcode-viewer')) return next()
-
-        // Strip prefix, default to index.html
-        let rel = url.slice('/gcode-viewer'.length)
-        if (rel === '' || rel === '/') rel = '/index.html'
-        // Strip query string
-        rel = rel.split('?')[0]
-
-        const absPath = path.join(gcodeViewerDir, rel)
-
-        try {
-          const stat = fs.statSync(absPath)
-          if (stat.isFile()) {
-            const ext = path.extname(absPath).toLowerCase()
-            res.setHeader('Content-Type', MIME[ext] ?? 'application/octet-stream')
-            res.end(fs.readFileSync(absPath))
-            return
-          }
-        } catch {
-          // file not found — fall through to index.html
-        }
-
-        // SPA fallback: serve index.html for any unmatched /gcode-viewer/* path
-        const index = path.join(gcodeViewerDir, 'index.html')
-        if (fs.existsSync(index)) {
-          res.setHeader('Content-Type', 'text/html; charset=utf-8')
-          res.end(fs.readFileSync(index))
-          return
-        }
-
-        next()
+        const source = files.get((req.url ?? '').split('?')[0].replace(/^\//, ''))
+        if (!source) return next()
+        res.setHeader('Content-Type', source.endsWith('.wasm') ? 'application/wasm' : 'application/octet-stream')
+        res.end(readFileSync(source))
       })
     },
   }
@@ -83,11 +59,37 @@ export default defineConfig({
   // fix for subpath reverse proxies (#1195, wontfix) is reverted — that
   // audience uses NPM + Cloudflare Tunnel at a real domain per the
   // documented workaround, which doesn't depend on this setting.
-  plugins: [react(), serveGcodeViewer()],
+  plugins: [react(), pdfjsRuntimeAssets()],
   build: {
     outDir: '../static',
     emptyOutDir: true,
     chunkSizeWarningLimit: 3000,
+    // Support floor is Safari 16.0 / iOS 16.0 (see
+    // scripts/check-browser-baseline.mjs, #2971). Without an explicit target
+    // the bundler keeps newer syntax verbatim — pdf.js ships class static
+    // initialisation blocks (Safari 16.4+), which would parse-fail the whole
+    // chunk on iOS 16.0-16.3 (#2976). This lowers such syntax at build time;
+    // regex features are NOT lowered, which is why the baseline check script
+    // still exists alongside this setting.
+    target: 'safari16',
+    rolldownOptions: {
+      // occt-import-js (STEP previews, #2976) is an Emscripten build that
+      // requires `path` and `crypto`, but only inside its ENVIRONMENT_IS_NODE
+      // branches; in the browser it takes the fetch/getRandomValues paths.
+      // Vite externalizes both and warns on every build. Drop just those two
+      // warnings for that one package so a new externalization still shows.
+      onLog(level, log, defaultHandler) {
+        if (
+          level === 'warn' &&
+          /Module "(path|crypto)" has been externalized for browser compatibility, imported by "[^"]*\/node_modules\/occt-import-js\//.test(
+            log.message,
+          )
+        ) {
+          return
+        }
+        defaultHandler(level, log)
+      },
+    },
   },
   server: {
     host: '0.0.0.0',

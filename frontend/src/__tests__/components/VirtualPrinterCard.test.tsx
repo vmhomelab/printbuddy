@@ -35,7 +35,7 @@ vi.mock('../../api/client', () => ({
   },
 }));
 
-import { multiVirtualPrinterApi } from '../../api/client';
+import { multiVirtualPrinterApi, api } from '../../api/client';
 
 const models: Record<string, string> = {
   'BL-P001': 'X1C',
@@ -46,7 +46,7 @@ const createMockPrinter = (overrides: Partial<VirtualPrinterConfig> = {}): Virtu
   id: 1,
   name: 'Test VP',
   enabled: false,
-  mode: 'immediate',
+  mode: 'archive',
   model: 'BL-P001',
   model_name: 'X1C',
   access_code_set: false,
@@ -68,7 +68,7 @@ describe('VirtualPrinterCard - auto-dispatch toggle', () => {
   });
 
   it('renders auto-dispatch toggle when mode is print_queue', async () => {
-    const printer = createMockPrinter({ mode: 'print_queue' });
+    const printer = createMockPrinter({ mode: 'queue' });
     render(<VirtualPrinterCard printer={printer} models={models} />);
 
     await waitFor(() => {
@@ -77,7 +77,7 @@ describe('VirtualPrinterCard - auto-dispatch toggle', () => {
   });
 
   it('does not render auto-dispatch toggle when mode is immediate', async () => {
-    const printer = createMockPrinter({ mode: 'immediate' });
+    const printer = createMockPrinter({ mode: 'archive' });
     render(<VirtualPrinterCard printer={printer} models={models} />);
 
     // Wait for the card to render fully (check for something that should be there)
@@ -100,7 +100,7 @@ describe('VirtualPrinterCard - auto-dispatch toggle', () => {
   });
 
   it('auto-dispatch toggle defaults to on', async () => {
-    const printer = createMockPrinter({ mode: 'print_queue', auto_dispatch: true });
+    const printer = createMockPrinter({ mode: 'queue', auto_dispatch: true });
     render(<VirtualPrinterCard printer={printer} models={models} />);
 
     await waitFor(() => {
@@ -118,9 +118,9 @@ describe('VirtualPrinterCard - auto-dispatch toggle', () => {
 
   it('clicking auto-dispatch toggle calls update API', async () => {
     const user = userEvent.setup();
-    const printer = createMockPrinter({ mode: 'print_queue', auto_dispatch: true });
+    const printer = createMockPrinter({ mode: 'queue', auto_dispatch: true });
     vi.mocked(multiVirtualPrinterApi.update).mockResolvedValue(
-      createMockPrinter({ mode: 'print_queue', auto_dispatch: false })
+      createMockPrinter({ mode: 'queue', auto_dispatch: false })
     );
 
     render(<VirtualPrinterCard printer={printer} models={models} />);
@@ -156,7 +156,7 @@ describe('VirtualPrinterCard - force color match toggle (#1188)', () => {
   });
 
   it('renders force-color-match toggle when mode is print_queue', async () => {
-    const printer = createMockPrinter({ mode: 'print_queue' });
+    const printer = createMockPrinter({ mode: 'queue' });
     render(<VirtualPrinterCard printer={printer} models={models} />);
 
     await waitFor(() => {
@@ -165,7 +165,7 @@ describe('VirtualPrinterCard - force color match toggle (#1188)', () => {
   });
 
   it('does not render force-color-match toggle when mode is immediate', async () => {
-    const printer = createMockPrinter({ mode: 'immediate' });
+    const printer = createMockPrinter({ mode: 'archive' });
     render(<VirtualPrinterCard printer={printer} models={models} />);
 
     await waitFor(() => {
@@ -185,7 +185,7 @@ describe('VirtualPrinterCard - force color match toggle (#1188)', () => {
   });
 
   it('force-color-match toggle defaults off (not green) — preserves pre-fix behaviour', async () => {
-    const printer = createMockPrinter({ mode: 'print_queue', queue_force_color_match: false });
+    const printer = createMockPrinter({ mode: 'queue', queue_force_color_match: false });
     render(<VirtualPrinterCard printer={printer} models={models} />);
 
     await waitFor(() => {
@@ -201,7 +201,7 @@ describe('VirtualPrinterCard - force color match toggle (#1188)', () => {
   });
 
   it('force-color-match toggle renders enabled (green) when queue_force_color_match is true', async () => {
-    const printer = createMockPrinter({ mode: 'print_queue', queue_force_color_match: true });
+    const printer = createMockPrinter({ mode: 'queue', queue_force_color_match: true });
     render(<VirtualPrinterCard printer={printer} models={models} />);
 
     await waitFor(() => {
@@ -216,9 +216,9 @@ describe('VirtualPrinterCard - force color match toggle (#1188)', () => {
 
   it('clicking force-color-match toggle posts queue_force_color_match in update body', async () => {
     const user = userEvent.setup();
-    const printer = createMockPrinter({ mode: 'print_queue', queue_force_color_match: false });
+    const printer = createMockPrinter({ mode: 'queue', queue_force_color_match: false });
     vi.mocked(multiVirtualPrinterApi.update).mockResolvedValue(
-      createMockPrinter({ mode: 'print_queue', queue_force_color_match: true })
+      createMockPrinter({ mode: 'queue', queue_force_color_match: true })
     );
 
     render(<VirtualPrinterCard printer={printer} models={models} />);
@@ -405,5 +405,171 @@ describe('VirtualPrinterCard - Tailscale FQDN copy', () => {
     await waitFor(() => {
       expect(document.querySelectorAll('textarea').length).toBe(0);
     });
+  });
+});
+
+// Non-proxy VPs with a target printer derive their access code from the
+// target — the live-mirror bridge forwards slicer auth to the real printer,
+// so the codes must match. The card surfaces the target's code read-only
+// (with an Eye-toggle reveal) so the user knows what to type into the slicer
+// but can't diverge it from the printer's. When no target is set, the field
+// stays editable.
+describe('VirtualPrinterCard - access code inherits from target', () => {
+  const printers = [
+    {
+      id: 7,
+      name: 'Workshop X1C',
+      ip_address: '192.168.1.50',
+      access_code: 'TGTCODE1',
+      serial_number: '01P00A391800001',
+      model: 'X1C',
+      is_active: true,
+    },
+  ];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(multiVirtualPrinterApi.update).mockResolvedValue(createMockPrinter());
+    // Re-mock the printers query for this block so the card has a target
+    // printer it can read access_code from.
+    vi.mocked(api.getPrinters).mockResolvedValue(printers as unknown as Awaited<ReturnType<typeof api.getPrinters>>);
+  });
+
+  it('shows target printer access code read-only when target is set on a non-proxy VP', async () => {
+    const printer = createMockPrinter({ mode: 'queue', target_printer_id: 7 });
+    render(<VirtualPrinterCard printer={printer} models={models} />);
+
+    // Wait for the inheritance badge AND the actual code value to appear —
+    // the badge renders synchronously from local state, but the value
+    // depends on the printers query (api.getPrinters) resolving first.
+    const codeInput = await waitFor(() => {
+      const input = screen.getByLabelText('Access Code') as HTMLInputElement;
+      if (input.value !== 'TGTCODE1') throw new Error('inherited value not populated yet');
+      return input;
+    });
+
+    expect(screen.getByText('Inherited from target')).toBeInTheDocument();
+    // Save button must NOT exist in the readonly path — the field is
+    // managed via the target printer's settings, not this card.
+    expect(screen.queryByRole('button', { name: /save/i })).not.toBeInTheDocument();
+    expect(codeInput.readOnly).toBe(true);
+    expect(codeInput.type).toBe('password');
+  });
+
+  it('toggles the access code to plaintext via the Eye button', async () => {
+    const user = userEvent.setup();
+    const printer = createMockPrinter({ mode: 'queue', target_printer_id: 7 });
+    render(<VirtualPrinterCard printer={printer} models={models} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Inherited from target')).toBeInTheDocument();
+    });
+
+    const revealBtn = screen.getByRole('button', { name: /show access code/i });
+    await user.click(revealBtn);
+
+    const codeInput = screen.getByLabelText('Access Code') as HTMLInputElement;
+    expect(codeInput.type).toBe('text');
+  });
+
+  it('keeps the editable input + Save button when no target is set', async () => {
+    const printer = createMockPrinter({ mode: 'archive', target_printer_id: null });
+    render(<VirtualPrinterCard printer={printer} models={models} />);
+
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText('Enter 8-char code')).toBeInTheDocument();
+    });
+
+    // Inheritance badge must NOT appear when there's no target.
+    expect(screen.queryByText('Inherited from target')).not.toBeInTheDocument();
+    // Save button IS present in the editable path (disabled until 8 chars typed).
+    expect(screen.getByRole('button', { name: /save/i })).toBeInTheDocument();
+  });
+});
+
+// The collapsed header used to be a single flex row of flex-shrink-0 items,
+// so it was as wide as its contents and spilled past the card's border --
+// the reporter of #2808 saw an IP address and the enable toggle floating on
+// the page background. jsdom does no layout, so these pin the CSS contract
+// that makes wrapping possible rather than the pixels: a flexible, wrappable
+// metadata group, and no item that both refuses to shrink and claims it will
+// truncate.
+describe('VirtualPrinterCard - header does not overflow the card', () => {
+  const printers = [
+    {
+      id: 9,
+      // The name a printer adopted without one gets (discovery.py) -- 25
+      // unbreakable characters, and half of why this overflowed.
+      name: 'Printer at 192.168.30.210',
+      ip_address: '192.168.30.210',
+      access_code: 'TGTCODE1',
+      serial_number: '01P00A391800001',
+      model: 'H2C',
+      is_active: true,
+    },
+  ];
+
+  const twoVlanPrinter = () =>
+    createMockPrinter({
+      name: 'H2C',
+      mode: 'proxy',
+      model_name: 'H2C',
+      target_printer_id: 9,
+      // Both are populated only when Printbuddy and the printer sit on
+      // different subnets -- the reporter's case.
+      bind_ip: '192.168.20.175',
+      remote_interface_ip: '192.168.30.210',
+    });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(multiVirtualPrinterApi.update).mockResolvedValue(createMockPrinter());
+    vi.mocked(api.getPrinters).mockResolvedValue(printers as unknown as Awaited<ReturnType<typeof api.getPrinters>>);
+  });
+
+  it('keeps both IPs visible instead of truncating them away', async () => {
+    render(<VirtualPrinterCard printer={twoVlanPrinter()} models={models} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('192.168.20.175')).toBeInTheDocument();
+    });
+    // An operator opens this page to check exactly these two values, so the
+    // fix has to wrap them, not hide them.
+    expect(screen.getByText('192.168.30.210')).toBeInTheDocument();
+  });
+
+  it('puts the metadata in a shrinkable, wrapping group', async () => {
+    render(<VirtualPrinterCard printer={twoVlanPrinter()} models={models} />);
+
+    const bindIp = await screen.findByText('192.168.20.175');
+    const group = bindIp.parentElement as HTMLElement;
+
+    expect(group.className).toContain('flex-wrap');
+    // Without min-w-0 a flex item cannot shrink below its content, which is
+    // what defeated the name's `truncate` before.
+    expect(group.className).toContain('min-w-0');
+    expect(group.className).toContain('flex-1');
+  });
+
+  it('has no header item that is both unshrinkable and truncating', async () => {
+    render(<VirtualPrinterCard printer={twoVlanPrinter()} models={models} />);
+
+    const bindIp = await screen.findByText('192.168.20.175');
+    const group = bindIp.parentElement as HTMLElement;
+
+    const selfCancelling = Array.from(group.children).filter(
+      (el) => el.className.includes('flex-shrink-0') && el.className.includes('truncate')
+    );
+    expect(selfCancelling).toHaveLength(0);
+  });
+
+  it('clips at the card border as a backstop', async () => {
+    const { container } = render(<VirtualPrinterCard printer={twoVlanPrinter()} models={models} />);
+
+    await screen.findByText('192.168.20.175');
+    // Scoped to this card on purpose: cards elsewhere render menus that paint
+    // outside their own bounds, so this must not migrate into `Card`.
+    const card = container.querySelector('.rounded-xl') as HTMLElement;
+    expect(card.className).toContain('overflow-hidden');
   });
 });

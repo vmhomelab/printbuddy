@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from httpx import AsyncClient
 
+from backend.app.api.routes.settings import get_homeassistant_settings, get_setting
 from backend.app.services.slicer_api import EXPECTED_SIDECAR_REVISION
 
 
@@ -43,6 +44,176 @@ class TestSettingsAPI:
         # Verify some default values
         assert isinstance(result["auto_archive"], bool)
         assert isinstance(result["currency"], str)
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_unset_temp_alarm_reads_back_as_null(self, async_client: AsyncClient, db_session):
+        """#2905: ams_temp_alarm is nullable, and settings storage stringifies
+        None to the literal "None".
+
+        Putting it in the plain float-cast list would make float("None") raise
+        inside the response builder and take the whole settings response with it
+        — every unrelated setting on the page included.
+        """
+        from backend.app.models.settings import Settings
+
+        db_session.add(Settings(key="ams_temp_alarm", value="None"))
+        await db_session.commit()
+
+        response = await async_client.get("/api/v1/settings/")
+
+        assert response.status_code == 200
+        assert response.json()["ams_temp_alarm"] is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    @pytest.mark.parametrize(
+        ("key", "default"),
+        [
+            ("ambient_drying_sustained_minutes", 0),
+            ("queue_keep_warm_bed_temp", 90),
+            ("default_filament_cost", 25.0),
+        ],
+    )
+    async def test_unparseable_number_setting_reads_back_as_the_default(
+        self, async_client: AsyncClient, db_session, key, default
+    ):
+        """A numeric row holding "None" (an old null save) or any other
+        unparseable value must fall back to the default, not make int()/float()
+        raise inside the response builder and take every setting with it."""
+        from backend.app.models.settings import Settings
+
+        db_session.add(Settings(key=key, value="None"))
+        await db_session.commit()
+
+        response = await async_client.get("/api/v1/settings/")
+
+        assert response.status_code == 200
+        assert response.json()[key] == default
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "ambient_drying_sustained_minutes",
+            "default_filament_cost",
+            "auto_archive",
+            "obico_enabled",
+            "obico_sensitivity",
+            "obico_action",
+            "obico_poll_interval",
+            "octoeverywhere_enabled",
+            "octoeverywhere_confidence",
+            "octoeverywhere_action",
+            "octoeverywhere_poll_interval",
+        ],
+    )
+    async def test_null_for_a_typed_setting_is_refused_and_not_stored(self, async_client: AsyncClient, key):
+        """A null for a typed setting would be stored as the literal
+        "None". The whole request is refused, so a valid field sent alongside it
+        is not half-applied either."""
+        before = (await async_client.get("/api/v1/settings/")).json()
+        assert before["currency"] != "EUR"
+
+        response = await async_client.put("/api/v1/settings/", json={key: None, "currency": "EUR"})
+
+        assert response.status_code == 422
+        assert key in response.json()["detail"]
+        response = await async_client.get("/api/v1/settings/")
+        assert response.status_code == 200
+        after = response.json()
+        assert after[key] == before[key]
+        assert after["currency"] == before["currency"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    @pytest.mark.parametrize(
+        "enabled_key, null_key",
+        [("obico_enabled", "octoeverywhere_enabled"), ("octoeverywhere_enabled", "obico_enabled")],
+    )
+    async def test_enabling_provider_does_not_hide_null_other_provider(
+        self, async_client: AsyncClient, enabled_key, null_key
+    ):
+        before = (await async_client.get("/api/v1/settings/")).json()
+
+        response = await async_client.put(
+            "/api/v1/settings/", json={enabled_key: True, null_key: None, "currency": "EUR"}
+        )
+
+        assert response.status_code == 422
+        assert null_key in response.json()["detail"]
+        response = await async_client.get("/api/v1/settings/")
+        assert response.status_code == 200
+        after = response.json()
+        for key in (enabled_key, null_key, "currency"):
+            assert after[key] == before[key]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_set_temp_alarm_reads_back_as_a_float(self, async_client: AsyncClient, db_session):
+        from backend.app.models.settings import Settings
+
+        db_session.add(Settings(key="ams_temp_alarm", value="45"))
+        await db_session.commit()
+
+        response = await async_client.get("/api/v1/settings/")
+
+        assert response.status_code == 200
+        assert response.json()["ams_temp_alarm"] == 45.0
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_malformed_temp_alarm_does_not_break_the_response(self, async_client: AsyncClient, db_session):
+        """A hand-edited or half-written value must degrade to "unset" rather
+        than making the settings page unreachable."""
+        from backend.app.models.settings import Settings
+
+        db_session.add(Settings(key="ams_temp_alarm", value="warm"))
+        await db_session.commit()
+
+        response = await async_client.get("/api/v1/settings/")
+
+        assert response.status_code == 200
+        assert response.json()["ams_temp_alarm"] is None
+        assert "currency" in response.json(), "the rest of the page still renders"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_temp_alarm_survives_a_set_then_clear_round_trip(self, async_client: AsyncClient):
+        """The path the settings page actually takes, end to end (#2905).
+
+        The tests above seed rows directly, which pins the read but not the
+        convention the whole design rests on: clearing the field sends an
+        explicit ``null``, ``update_settings`` stores that as the literal
+        string ``"None"``, and the response builder has to turn it back into
+        ``None``. A regression anywhere along that chain would leave a cleared
+        threshold reading back as the old number, and no test above would fail.
+        """
+        from sqlalchemy import select
+
+        # Imported here, not at module scope: the async_client fixture patches
+        # core.database.async_session onto the test engine, so a name bound at
+        # import time would point at the real app database and find nothing.
+        from backend.app.core.database import async_session
+        from backend.app.models.settings import Settings
+
+        response = await async_client.put("/api/v1/settings/", json={"ams_temp_alarm": 45})
+        assert response.status_code == 200
+        assert response.json()["ams_temp_alarm"] == 45.0
+        assert (await async_client.get("/api/v1/settings/")).json()["ams_temp_alarm"] == 45.0
+
+        response = await async_client.put("/api/v1/settings/", json={"ams_temp_alarm": None})
+        assert response.status_code == 200
+        assert response.json()["ams_temp_alarm"] is None
+        assert (await async_client.get("/api/v1/settings/")).json()["ams_temp_alarm"] is None
+
+        # Pin the stored form too — the fallback in _resolve_temp_alarm_threshold
+        # is written against this exact string, so a storage change that silently
+        # switched to "" or NULL would break the alarm rather than this test.
+        async with async_session() as db:
+            row = (await db.execute(select(Settings).where(Settings.key == "ams_temp_alarm"))).scalar_one()
+        assert row.value == "None"
 
     # ========================================================================
     # Update settings
@@ -423,7 +594,7 @@ class TestSettingsAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_update_mqtt_settings(self, async_client: AsyncClient):
+    async def test_update_mqtt_settings(self, async_client: AsyncClient, db_session):
         """Verify MQTT settings can be updated."""
         response = await async_client.put(
             "/api/v1/settings/",
@@ -444,7 +615,8 @@ class TestSettingsAPI:
         assert result["mqtt_broker"] == "mqtt.example.com"
         assert result["mqtt_port"] == 8883
         assert result["mqtt_username"] == "testuser"
-        assert result["mqtt_password"] == "testpass"
+        assert result["mqtt_password"] == "********"  # write-only
+        assert await get_setting(db_session, "mqtt_password") == "testpass"
         assert result["mqtt_topic_prefix"] == "myprefix"
         assert result["mqtt_use_tls"] is True
 
@@ -681,8 +853,9 @@ class TestSettingsAPI:
         response = await async_client.get("/api/v1/settings/")
         result = response.json()
 
-        assert result["default_bed_levelling"] is True
-        assert result["default_flow_cali"] is False
+        # bed_levelling / flow_cali are tri-state, defaulting to "auto".
+        assert result["default_bed_levelling"] == "auto"
+        assert result["default_flow_cali"] == "auto"
         assert result["default_vibration_cali"] is True
         assert result["default_layer_inspect"] is False
         assert result["default_timelapse"] is False
@@ -690,12 +863,12 @@ class TestSettingsAPI:
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_update_default_print_options(self, async_client: AsyncClient):
-        """Verify default print options can be updated."""
+        """Verify default print options can be updated (tri-state + booleans)."""
         response = await async_client.put(
             "/api/v1/settings/",
             json={
-                "default_bed_levelling": False,
-                "default_flow_cali": True,
+                "default_bed_levelling": "off",
+                "default_flow_cali": "on",
                 "default_vibration_cali": False,
                 "default_layer_inspect": True,
                 "default_timelapse": True,
@@ -704,11 +877,28 @@ class TestSettingsAPI:
 
         assert response.status_code == 200
         result = response.json()
-        assert result["default_bed_levelling"] is False
-        assert result["default_flow_cali"] is True
+        assert result["default_bed_levelling"] == "off"
+        assert result["default_flow_cali"] == "on"
         assert result["default_vibration_cali"] is False
         assert result["default_layer_inspect"] is True
         assert result["default_timelapse"] is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_default_print_options_legacy_bool_coerced(self, async_client: AsyncClient):
+        """Old clients sending booleans for the tri-state options still work.
+
+        The TriState validator maps true->"on", false->"off" on input so a
+        pre-upgrade frontend never writes an invalid value.
+        """
+        response = await async_client.put(
+            "/api/v1/settings/",
+            json={"default_bed_levelling": False, "default_flow_cali": True},
+        )
+        assert response.status_code == 200
+        result = response.json()
+        assert result["default_bed_levelling"] == "off"
+        assert result["default_flow_cali"] == "on"
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -717,14 +907,14 @@ class TestSettingsAPI:
         await async_client.put(
             "/api/v1/settings/",
             json={
-                "default_bed_levelling": False,
+                "default_bed_levelling": "on",
                 "default_timelapse": True,
             },
         )
 
         response = await async_client.get("/api/v1/settings/")
         result = response.json()
-        assert result["default_bed_levelling"] is False
+        assert result["default_bed_levelling"] == "on"
         assert result["default_timelapse"] is True
 
     @pytest.mark.asyncio
@@ -735,21 +925,21 @@ class TestSettingsAPI:
         await async_client.put(
             "/api/v1/settings/",
             json={
-                "default_bed_levelling": False,
-                "default_flow_cali": True,
+                "default_bed_levelling": "off",
+                "default_flow_cali": "on",
             },
         )
 
         # Update only one
         response = await async_client.put(
             "/api/v1/settings/",
-            json={"default_bed_levelling": True},
+            json={"default_bed_levelling": "auto"},
         )
 
         assert response.status_code == 200
         result = response.json()
-        assert result["default_bed_levelling"] is True
-        assert result["default_flow_cali"] is True  # Should remain from previous update
+        assert result["default_bed_levelling"] == "auto"
+        assert result["default_flow_cali"] == "on"  # Should remain from previous update
 
     # ========================================================================
     # Home Assistant environment variable tests
@@ -781,7 +971,7 @@ class TestSettingsAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_ha_settings_with_both_env_vars(self, async_client: AsyncClient):
+    async def test_ha_settings_with_both_env_vars(self, async_client: AsyncClient, db_session):
         """Verify HA settings are overridden when both env vars are set."""
         # Set environment variables
         os.environ["HA_URL"] = "http://supervisor/core"
@@ -795,7 +985,8 @@ class TestSettingsAPI:
 
             # Verify env var values are used
             assert result["ha_url"] == "http://supervisor/core"
-            assert result["ha_token"] == "test-token-12345"
+            assert result["ha_token"] == "********"  # write-only
+            assert (await get_homeassistant_settings(db_session))["ha_token"] == "test-token-12345"
 
             # Verify metadata fields
             assert result["ha_url_from_env"] is True
@@ -838,7 +1029,7 @@ class TestSettingsAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_ha_settings_with_only_token_env_var(self, async_client: AsyncClient):
+    async def test_ha_settings_with_only_token_env_var(self, async_client: AsyncClient, db_session):
         """Verify partial configuration when only HA_TOKEN is set."""
         # Set only token env var
         os.environ.pop("HA_URL", None)
@@ -851,7 +1042,8 @@ class TestSettingsAPI:
             assert response.status_code == 200
 
             # Verify token is from env, URL is from database
-            assert result["ha_token"] == "test-token-12345"
+            assert result["ha_token"] == "********"  # write-only
+            assert (await get_homeassistant_settings(db_session))["ha_token"] == "test-token-12345"
             assert result["ha_url_from_env"] is False
             assert result["ha_token_from_env"] is True
             assert result["ha_env_managed"] is False
@@ -864,7 +1056,7 @@ class TestSettingsAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_ha_settings_env_vars_override_database(self, async_client: AsyncClient):
+    async def test_ha_settings_env_vars_override_database(self, async_client: AsyncClient, db_session):
         """Verify environment variables take precedence over database values."""
         # First, set database values
         await async_client.put(
@@ -880,7 +1072,8 @@ class TestSettingsAPI:
         response = await async_client.get("/api/v1/settings/")
         result = response.json()
         assert result["ha_url"] == "http://database-url:8123"
-        assert result["ha_token"] == "database-token"
+        assert result["ha_token"] == "********"  # write-only
+        assert (await get_homeassistant_settings(db_session))["ha_token"] == "database-token"
 
         # Now set environment variables
         os.environ["HA_URL"] = "http://env-url/core"
@@ -892,7 +1085,8 @@ class TestSettingsAPI:
 
             # Verify env vars override database
             assert result["ha_url"] == "http://env-url/core"
-            assert result["ha_token"] == "env-token-xyz"
+            assert result["ha_token"] == "********"  # write-only
+            assert (await get_homeassistant_settings(db_session))["ha_token"] == "env-token-xyz"
             assert result["ha_url_from_env"] is True
             assert result["ha_token_from_env"] is True
             assert result["ha_env_managed"] is True
@@ -906,13 +1100,14 @@ class TestSettingsAPI:
         response = await async_client.get("/api/v1/settings/")
         result = response.json()
         assert result["ha_url"] == "http://database-url:8123"
-        assert result["ha_token"] == "database-token"
+        assert result["ha_token"] == "********"  # write-only
+        assert (await get_homeassistant_settings(db_session))["ha_token"] == "database-token"
         assert result["ha_url_from_env"] is False
         assert result["ha_token_from_env"] is False
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_ha_settings_database_updates_accepted_but_ignored(self, async_client: AsyncClient):
+    async def test_ha_settings_database_updates_accepted_but_ignored(self, async_client: AsyncClient, db_session):
         """Verify database updates are accepted but have no effect when env vars are set."""
         # Set environment variables
         os.environ["HA_URL"] = "http://supervisor/core"
@@ -934,7 +1129,8 @@ class TestSettingsAPI:
             # But values should still be from env vars
             result = response.json()
             assert result["ha_url"] == "http://supervisor/core"
-            assert result["ha_token"] == "env-token"
+            assert result["ha_token"] == "********"  # write-only
+            assert (await get_homeassistant_settings(db_session))["ha_token"] == "env-token"
             assert result["ha_url_from_env"] is True
             assert result["ha_token_from_env"] is True
 
@@ -965,7 +1161,7 @@ class TestSettingsAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_ha_settings_can_be_updated_normally_without_env_vars(self, async_client: AsyncClient):
+    async def test_ha_settings_can_be_updated_normally_without_env_vars(self, async_client: AsyncClient, db_session):
         """Verify HA settings can be updated normally when env vars are not set."""
         # Ensure no env vars
         os.environ.pop("HA_URL", None)
@@ -985,7 +1181,8 @@ class TestSettingsAPI:
         result = response.json()
         assert result["ha_enabled"] is True
         assert result["ha_url"] == "http://192.168.1.100:8123"
-        assert result["ha_token"] == "my-long-lived-token"
+        assert result["ha_token"] == "********"  # write-only
+        assert (await get_homeassistant_settings(db_session))["ha_token"] == "my-long-lived-token"
         assert result["ha_url_from_env"] is False
         assert result["ha_token_from_env"] is False
         assert result["ha_env_managed"] is False
@@ -995,7 +1192,67 @@ class TestSettingsAPI:
         result = response.json()
         assert result["ha_enabled"] is True
         assert result["ha_url"] == "http://192.168.1.100:8123"
-        assert result["ha_token"] == "my-long-lived-token"
+        assert result["ha_token"] == "********"  # write-only
+        assert (await get_homeassistant_settings(db_session))["ha_token"] == "my-long-lived-token"
+
+
+class TestOpenInSlicerOverride:
+    """Per #1329, the desktop 'Open in Slicer' target can diverge from the API
+    sidecar slicer. The new `open_in_slicer` setting is None by default (frontend
+    inherits from `preferred_slicer`); setting it to 'orcaslicer' or 'bambu_studio'
+    overrides only the desktop URI handoff, not the in-app SliceModal."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_open_in_slicer_default_is_null(self, async_client: AsyncClient):
+        response = await async_client.get("/api/v1/settings/")
+        assert response.status_code == 200
+        # Default null so existing installs behave identically — the frontend
+        # then falls back to preferred_slicer.
+        assert response.json()["open_in_slicer"] is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_open_in_slicer_override_persists(self, async_client: AsyncClient):
+        # Set preferred_slicer=bambu_studio (API sidecar) but
+        # open_in_slicer=orcaslicer (desktop). Exactly the reporter's case:
+        # slice via Bambu Studio sidecar, open files locally in OrcaSlicer.
+        response = await async_client.put(
+            "/api/v1/settings/",
+            json={"preferred_slicer": "bambu_studio", "open_in_slicer": "orcaslicer"},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["preferred_slicer"] == "bambu_studio"
+        assert body["open_in_slicer"] == "orcaslicer"
+
+        # Persisted across a fresh GET.
+        get_resp = await async_client.get("/api/v1/settings/")
+        assert get_resp.json()["preferred_slicer"] == "bambu_studio"
+        assert get_resp.json()["open_in_slicer"] == "orcaslicer"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_open_in_slicer_can_be_cleared_to_null(self, async_client: AsyncClient):
+        # Reset path: user picks an override, then later goes back to "Same as
+        # API slicer". The literal string "None" the PUT path writes for a
+        # None value must be normalized back to a real null on GET — otherwise
+        # the frontend can't distinguish "explicit override absent" from
+        # "explicit override set to a bogus value".
+        await async_client.put(
+            "/api/v1/settings/",
+            json={"open_in_slicer": "orcaslicer"},
+        )
+        response = await async_client.put(
+            "/api/v1/settings/",
+            json={"open_in_slicer": None},
+        )
+        assert response.status_code == 200
+        assert response.json()["open_in_slicer"] is None
+
+        # And a fresh GET also sees it as null, not the literal string "None".
+        get_resp = await async_client.get("/api/v1/settings/")
+        assert get_resp.json()["open_in_slicer"] is None
 
 
 class TestSimplifiedBackupRestore:

@@ -18,6 +18,7 @@ import { http, HttpResponse } from 'msw';
 import { render } from '../utils';
 import { server } from '../mocks/server';
 import { AddNotificationModal } from '../../components/AddNotificationModal';
+import { NotificationProviderCard } from '../../components/NotificationProviderCard';
 import type { NotificationProvider } from '../../api/client';
 
 afterEach(() => {
@@ -42,6 +43,7 @@ function buildProvider(overrides: Partial<NotificationProvider> = {}): Notificat
     on_print_missing_spool_assignment: false,
     on_printer_offline: false,
     on_printer_error: false,
+    on_ai_failure_detection: false,
     on_filament_low: false,
     on_maintenance_due: false,
     on_ams_humidity_high: false,
@@ -49,6 +51,7 @@ function buildProvider(overrides: Partial<NotificationProvider> = {}): Notificat
     on_ams_ht_humidity_high: false,
     on_ams_ht_temperature_high: false,
     on_plate_not_empty: true,
+    on_plate_clear_required: false,
     on_bed_cooled: false,
     on_first_layer_complete: false,
     on_queue_job_added: false,
@@ -162,7 +165,7 @@ describe('AddNotificationModal — ntfy Priority (#990)', () => {
     expect(screen.getByDisplayValue('17585')).toBeInTheDocument();
 
     await user.clear(screen.getByDisplayValue('17585'));
-    await user.type(screen.getByPlaceholderText(/optional forum topic id/i), '42');
+    await user.type(screen.getByLabelText(/forum topic id/i), '42');
     await user.click(screen.getByRole('button', { name: /^save$/i }));
 
     await waitFor(() => expect(onClose).toHaveBeenCalled());
@@ -452,6 +455,145 @@ describe('AddNotificationModal — Notify Live Activity display', () => {
   });
 });
 
+describe('AddNotificationModal — Gotify (#2743)', () => {
+  const gotifyProvider = () =>
+    buildProvider({
+      name: 'My Gotify',
+      provider_type: 'gotify',
+      config: { server: 'https://gotify.example.com', app_token: 'Atoken' },
+    });
+
+  it('shows the server and token fields, with the token masked', async () => {
+    render(<AddNotificationModal provider={gotifyProvider()} onClose={() => undefined} />);
+
+    expect(await screen.findByDisplayValue('https://gotify.example.com')).toBeInTheDocument();
+    const token = screen.getByDisplayValue('Atoken');
+    expect(token).toHaveAttribute('type', 'password');
+  });
+
+  it('renders its own priority section and saves event_priorities', async () => {
+    let captured: unknown = null;
+    server.use(
+      http.patch('*/api/v1/notifications/1', async ({ request }) => {
+        captured = await request.json();
+        return HttpResponse.json({ id: 1 });
+      }),
+    );
+
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    render(<AddNotificationModal provider={gotifyProvider()} onClose={onClose} />);
+
+    const sectionHeader = await screen.findByText(/gotify priority/i);
+    expect(screen.queryByText(/ntfy priority/i)).not.toBeInTheDocument();
+    const sectionRoot = sectionHeader.closest('div')!;
+    const failedRow = within(sectionRoot).getByText('Failed').closest('div')!;
+    await user.selectOptions(within(failedRow).getByRole('combobox'), '4');
+
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    const payload = captured as { config: Record<string, unknown> };
+    expect(payload.config).toMatchObject({
+      server: 'https://gotify.example.com',
+      app_token: 'Atoken',
+      event_priorities: { on_print_failed: 4 },
+    });
+  });
+});
+
+describe('AddNotificationModal — provider type list', () => {
+  it('lists the providers alphabetically by their label', async () => {
+    render(<AddNotificationModal onClose={() => undefined} />);
+
+    const select = (await screen.findByDisplayValue('Email')) as HTMLSelectElement;
+    const labels = Array.from(select.options).map((o) => o.textContent);
+
+    expect(labels).toEqual([
+      'Bark',
+      'CallMeBot/WhatsApp',
+      'Discord',
+      'Email',
+      'Gotify',
+      'Home Assistant',
+      'Notify!',
+      'ntfy',
+      'Pushover',
+      'Telegram',
+      'Webhook',
+    ]);
+  });
+});
+
+describe('AddNotificationModal — plate clear required (#2525)', () => {
+  it('renders the toggle off by default', async () => {
+    render(<AddNotificationModal provider={buildProvider()} onClose={() => undefined} />);
+
+    await screen.findByDisplayValue('My ntfy');
+
+    const toggle = screen
+      .getAllByRole('switch')
+      .find((s) => s.closest('div')?.textContent?.match(/plate clear required/i));
+    expect(toggle).toBeDefined();
+    expect(toggle).toHaveAttribute('aria-checked', 'false');
+  });
+
+  it('pre-fills the toggle from the existing provider value', async () => {
+    render(
+      <AddNotificationModal
+        provider={buildProvider({ on_plate_clear_required: true })}
+        onClose={() => undefined}
+      />,
+    );
+
+    await screen.findByDisplayValue('My ntfy');
+
+    const toggle = screen
+      .getAllByRole('switch')
+      .find((s) => s.closest('div')?.textContent?.match(/plate clear required/i))!;
+    expect(toggle).toHaveAttribute('aria-checked', 'true');
+  });
+
+  it('persists on_plate_clear_required on save', async () => {
+    let captured: unknown = null;
+    server.use(
+      http.patch('*/api/v1/notifications/1', async ({ request }) => {
+        captured = await request.json();
+        return HttpResponse.json({ id: 1 });
+      }),
+    );
+
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    render(<AddNotificationModal provider={buildProvider()} onClose={onClose} />);
+
+    await screen.findByDisplayValue('My ntfy');
+
+    const toggle = screen
+      .getAllByRole('switch')
+      .find((s) => s.closest('div')?.textContent?.match(/plate clear required/i))!;
+    await user.click(toggle);
+
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+
+    const payload = captured as Record<string, unknown>;
+    expect(payload.on_plate_clear_required).toBe(true);
+  });
+
+  it('lists the event in the ntfy priority section once enabled', async () => {
+    render(
+      <AddNotificationModal
+        provider={buildProvider({ on_plate_clear_required: true })}
+        onClose={() => undefined}
+      />,
+    );
+
+    const sectionHeader = await screen.findByText(/ntfy priority/i);
+    const sectionRoot = sectionHeader.closest('div')!;
+    expect(within(sectionRoot).getByText(/plate clear required/i)).toBeInTheDocument();
+  });
+});
 
 describe('AddNotificationModal — stock alert toggles', () => {
   it('renders Inventory Alerts section with both stock alert toggles', async () => {
@@ -565,5 +707,355 @@ describe('AddNotificationModal — stock alert toggles', () => {
     expect(within(priorityRoot).getByText('Reorder Alert')).toBeInTheDocument();
     expect(within(priorityRoot).getByText('Stock Break Alert')).toBeInTheDocument();
     void user; // referenced to avoid unused-var lint warning
+  });
+});
+
+describe('AddNotificationModal — AI Failure Detection toggle (#1794)', () => {
+  it('renders the toggle in the Printer Status section', async () => {
+    render(<AddNotificationModal provider={buildProvider()} onClose={() => undefined} />);
+
+    expect(await screen.findByText('AI Failure Detection')).toBeInTheDocument();
+  });
+
+  it('persists on_ai_failure_detection on save (and does NOT touch on_printer_error)', async () => {
+    let captured: Record<string, unknown> | null = null;
+    server.use(
+      http.patch('*/api/v1/notifications/1', async ({ request }) => {
+        captured = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json({ id: 1 });
+      }),
+    );
+
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    render(<AddNotificationModal provider={buildProvider()} onClose={onClose} />);
+
+    const label = await screen.findByText('AI Failure Detection');
+    const row = label.closest('div.flex')!;
+    const toggle = within(row).getByRole('switch');
+    await user.click(toggle);
+
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+
+    expect(captured).not.toBeNull();
+    expect(captured!.on_ai_failure_detection).toBe(true);
+    // Critical regression guard: don't accidentally flip the legacy multiplexed field.
+    expect(captured!.on_printer_error).toBe(false);
+  });
+
+  it('AI Failure Detection appears in ntfy priority section when enabled', async () => {
+    render(
+      <AddNotificationModal
+        provider={buildProvider({ on_ai_failure_detection: true })}
+        onClose={() => undefined}
+      />,
+    );
+
+    const priorityHeader = await screen.findByText(/ntfy priority/i);
+    const priorityRoot = priorityHeader.closest('div')!;
+
+    expect(within(priorityRoot).getByText('AI Failure Detection')).toBeInTheDocument();
+  });
+});
+
+describe('AddNotificationModal — Storage Location Sensor Alert toggle (#2824)', () => {
+  it('renders its own toggle, separate from the printer Sensor Alert toggle', async () => {
+    render(<AddNotificationModal provider={buildProvider()} onClose={() => undefined} />);
+
+    expect(await screen.findByText('Printer Sensor Alert')).toBeInTheDocument();
+    expect(await screen.findByText('Storage Location Sensor Alert')).toBeInTheDocument();
+  });
+
+  it('persists on_location_ha_sensor_alert on save (and does NOT touch on_ha_sensor_alert)', async () => {
+    // The regression this guards: the two events used to share one column,
+    // so a provider scoped to a single printer's sensor alerts would also
+    // start receiving storage-location alerts the moment either toggle went on.
+    let captured: Record<string, unknown> | null = null;
+    server.use(
+      http.patch('*/api/v1/notifications/1', async ({ request }) => {
+        captured = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json({ id: 1 });
+      }),
+    );
+
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    render(<AddNotificationModal provider={buildProvider()} onClose={onClose} />);
+
+    const label = await screen.findByText('Storage Location Sensor Alert');
+    const row = label.closest('div.flex')!;
+    const toggle = within(row).getByRole('switch');
+    await user.click(toggle);
+
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+
+    expect(captured).not.toBeNull();
+    expect(captured!.on_location_ha_sensor_alert).toBe(true);
+    expect(captured!.on_ha_sensor_alert).toBe(false);
+  });
+
+  it('appears in ntfy priority section when enabled', async () => {
+    render(
+      <AddNotificationModal
+        provider={buildProvider({ provider_type: 'ntfy', on_location_ha_sensor_alert: true })}
+        onClose={() => undefined}
+      />,
+    );
+
+    const priorityHeader = await screen.findByText(/ntfy priority/i);
+    const priorityRoot = priorityHeader.closest('div')!;
+
+    expect(within(priorityRoot).getByText('Storage Location Sensor Alert')).toBeInTheDocument();
+  });
+});
+
+describe('AddNotificationModal — Home Assistant custom data (#1441)', () => {
+  const haProvider = () =>
+    buildProvider({
+      provider_type: 'homeassistant',
+      config: { service: 'notify.mobile_app_myphone' },
+    });
+
+  it('renders the Data (JSON) textarea for the homeassistant provider', async () => {
+    render(<AddNotificationModal provider={haProvider()} onClose={() => undefined} />);
+
+    await screen.findByDisplayValue('My ntfy');
+    expect(screen.getByText(/data \(json, optional\)/i)).toBeInTheDocument();
+    expect(screen.getByPlaceholderText(/"priority": "high"/)).toBeInTheDocument();
+  });
+
+  it('rejects malformed JSON in the Data field on save', async () => {
+    const patchSpy = vi.fn();
+    server.use(
+      http.patch('*/api/v1/notifications/1', () => {
+        patchSpy();
+        return HttpResponse.json({ id: 1 });
+      }),
+    );
+
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    render(<AddNotificationModal provider={haProvider()} onClose={onClose} />);
+
+    const textarea = await screen.findByPlaceholderText(/"priority": "high"/);
+    await user.type(textarea, '{{priority: high}');
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+
+    expect(await screen.findByText(/must be a valid JSON object/i)).toBeInTheDocument();
+    expect(patchSpy).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('round-trips valid Data JSON into config on save', async () => {
+    let captured: { config: Record<string, unknown> } | null = null;
+    server.use(
+      http.patch('*/api/v1/notifications/1', async ({ request }) => {
+        captured = (await request.json()) as { config: Record<string, unknown> };
+        return HttpResponse.json({ id: 1 });
+      }),
+    );
+
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    render(<AddNotificationModal provider={haProvider()} onClose={onClose} />);
+
+    const textarea = await screen.findByPlaceholderText(/"priority": "high"/);
+    await user.type(textarea, '{{"ttl": 0}');
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(captured).not.toBeNull();
+    expect(captured!.config).toMatchObject({
+      service: 'notify.mobile_app_myphone',
+      data: '{"ttl": 0}',
+    });
+  });
+});
+
+describe('AddNotificationModal — Bark provider (#1495)', () => {
+  it('offers Bark in the provider select and renders its config fields', async () => {
+    render(
+      <AddNotificationModal
+        provider={buildProvider({ provider_type: 'bark', config: { device_key: 'abc123' } })}
+        onClose={() => undefined}
+      />,
+    );
+
+    await screen.findByDisplayValue('My ntfy');
+    expect(screen.getByRole('option', { name: 'Bark' })).toBeInTheDocument();
+    expect(screen.getByText(/device key/i)).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('https://api.day.app')).toBeInTheDocument();
+    expect(screen.getByText(/interruption level/i)).toBeInTheDocument();
+  });
+
+  it('round-trips Bark options into config on save', async () => {
+    let captured: { config: Record<string, unknown> } | null = null;
+    server.use(
+      http.patch('*/api/v1/notifications/1', async ({ request }) => {
+        captured = (await request.json()) as { config: Record<string, unknown> };
+        return HttpResponse.json({ id: 1 });
+      }),
+    );
+
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <AddNotificationModal
+        provider={buildProvider({ provider_type: 'bark', config: { device_key: 'abc123' } })}
+        onClose={onClose}
+      />,
+    );
+
+    const groupInput = await screen.findByPlaceholderText('Printbuddy');
+    await user.type(groupInput, 'Printers');
+    const levelRow = screen.getByText(/interruption level/i).closest('div')!;
+    await user.selectOptions(within(levelRow).getByRole('combobox'), 'critical');
+
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(captured).not.toBeNull();
+    expect(captured!.config).toMatchObject({
+      device_key: 'abc123',
+      group: 'Printers',
+      level: 'critical',
+    });
+  });
+});
+
+describe('AddNotificationModal — Telegram forum topic (#1518)', () => {
+  const telegramProvider = (config: Record<string, unknown> = { bot_token: 'x', chat_id: '-100123' }) =>
+    buildProvider({ provider_type: 'telegram', config });
+
+  it('offers the Forum Topic ID field as optional for telegram', async () => {
+    render(<AddNotificationModal provider={telegramProvider()} onClose={() => undefined} />);
+
+    const label = await screen.findByText(/forum topic id/i);
+    // Required fields are marked with a trailing asterisk — this one must not be.
+    expect(label.textContent).not.toContain('*');
+    expect(screen.getByText(/leave empty for the general topic/i)).toBeInTheDocument();
+  });
+
+  it('does not offer the field for other providers', async () => {
+    render(<AddNotificationModal provider={buildProvider()} onClose={() => undefined} />);
+
+    await screen.findByDisplayValue('My ntfy');
+    expect(screen.queryByText(/forum topic id/i)).not.toBeInTheDocument();
+  });
+
+  it('round-trips the topic id into config on save', async () => {
+    let captured: { config: Record<string, unknown> } | null = null;
+    server.use(
+      http.patch('*/api/v1/notifications/1', async ({ request }) => {
+        captured = (await request.json()) as { config: Record<string, unknown> };
+        return HttpResponse.json({ id: 1 });
+      }),
+    );
+
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    render(<AddNotificationModal provider={telegramProvider()} onClose={onClose} />);
+
+    await user.type(await screen.findByPlaceholderText('123'), '25');
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(captured).not.toBeNull();
+    expect(captured!.config).toMatchObject({ chat_id: '-100123', message_thread_id: '25' });
+  });
+
+  it('keeps the config free of the key when the field is left empty', async () => {
+    let captured: { config: Record<string, unknown> } | null = null;
+    server.use(
+      http.patch('*/api/v1/notifications/1', async ({ request }) => {
+        captured = (await request.json()) as { config: Record<string, unknown> };
+        return HttpResponse.json({ id: 1 });
+      }),
+    );
+
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    render(<AddNotificationModal provider={telegramProvider()} onClose={onClose} />);
+
+    await screen.findByPlaceholderText('123');
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(captured!.config).not.toHaveProperty('message_thread_id');
+  });
+
+  it('blocks save on a non-numeric topic id', async () => {
+    // Reaches the form via a config written by the API rather than the picker —
+    // the number input itself already filters most junk out.
+    let patched = false;
+    server.use(
+      http.patch('*/api/v1/notifications/1', async () => {
+        patched = true;
+        return HttpResponse.json({ id: 1 });
+      }),
+    );
+
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <AddNotificationModal
+        provider={telegramProvider({ bot_token: 'x', chat_id: '-100123', message_thread_id: 'General' })}
+        onClose={onClose}
+      />,
+    );
+
+    await screen.findByText(/forum topic id/i);
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+
+    expect(await screen.findByText(/forum topic id must be a number/i)).toBeInTheDocument();
+    expect(patched).toBe(false);
+    expect(onClose).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('AddNotificationModal — Notify photo gate', () => {
+  const notifyProvider = (deviceId: string) => buildProvider({
+    name: 'My Notify',
+    provider_type: 'notify',
+    config: {
+      recipients: [{ id: 'r1', name: 'Group', device_id: deviceId, device_token: 'notify-secret', enabled: true, live_activities_enabled: false }],
+    },
+  });
+
+  const photoSwitch = () => screen.getAllByRole('switch').find(
+    (toggle) => toggle.parentElement?.textContent?.includes('Attach Photo'),
+  )!;
+
+  it.each(['GRP12345678901234', 'WB12345678901234'])('saves a %s recipient with photo attachments disabled', async (deviceId) => {
+    let captured: Record<string, unknown> | null = null;
+    server.use(http.patch('*/api/v1/notifications/1', async ({ request }) => {
+      captured = await request.json() as Record<string, unknown>;
+      return HttpResponse.json({ id: 1 });
+    }));
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    render(<AddNotificationModal provider={notifyProvider(deviceId)} onClose={onClose} />);
+    expect(photoSwitch()).toBeDisabled();
+    expect(photoSwitch()).toHaveAttribute('aria-checked', 'false');
+    expect(screen.getByText(/Browser and group recipients support text notifications only/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(captured).toMatchObject({ attach_photo: false });
+  });
+
+  it('keeps photo attachments available for an iOS recipient', () => {
+    render(<AddNotificationModal provider={notifyProvider('IO12345678901234')} onClose={() => undefined} />);
+    expect(photoSwitch()).toBeEnabled();
+  });
+
+  it.each(['GRP12345678901234', 'WB12345678901234'])('disables photo attachments in the provider card for a %s recipient', async (deviceId) => {
+    const user = userEvent.setup();
+    render(<NotificationProviderCard provider={notifyProvider(deviceId)} onEdit={() => undefined} />);
+    await user.click(screen.getByRole('button', { name: /event settings/i }));
+    expect(photoSwitch()).toBeDisabled();
+    expect(photoSwitch()).toHaveAttribute('aria-checked', 'false');
   });
 });

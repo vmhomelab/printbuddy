@@ -62,10 +62,30 @@ DEFAULT_TEMPLATES = [
         "body_template": "{printer}: {filename}\nRemaining: {remaining_time}\n{finish_photo_url}",
     },
     {
+        # Post-print outcome confirmation (#1898). The body carries
+        # {confirm_url}, which only opens the archive in Printbuddy: anything
+        # that walks a URL out of a message body — a preview card, a mail
+        # gateway, a proxy — then reaches a page that changes nothing.
+        # {good_url} / {reject_url} are the single-use capability links and
+        # stay available as variables, but they travel by default only in the
+        # affordances nothing prefetches: the ntfy action buttons and the
+        # Telegram inline keyboard, both built in notification_service.
+        "event_type": "print_confirm_request",
+        "name": "Print Outcome Confirmation",
+        "title_template": "How did your print come out?",
+        "body_template": "{printer}: {filename}\nConfirm: {confirm_url}",
+    },
+    {
         "event_type": "print_missing_spool_assignment",
         "name": "Missing Spool Assignment",
         "title_template": "Missing Spool Assignment",
         "body_template": "{printer}: print started with missing spool assignments\nSlots: {missing_slots}\nExpected profile:\n{missing_slot_details}",
+    },
+    {
+        "event_type": "billing_charge_failed",
+        "name": "Billing Charge Failed",
+        "title_template": "Billing Charge Failed",
+        "body_template": "{printer}: {filename}\nThe print charge could not be recorded. The budget reservation was retained.\nArchive: {archive_id}",
     },
     {
         "event_type": "printer_offline",
@@ -80,10 +100,22 @@ DEFAULT_TEMPLATES = [
         "body_template": "{printer}\n{error_detail}",
     },
     {
+        "event_type": "ai_failure_detection",
+        "name": "AI Failure Detection",
+        "title_template": "Possible Print Failure Detected",
+        "body_template": "{printer}: {task_name}\nProvider: {provider}\nPrint quality: {print_quality}\nConfidence: {confidence}\nAction taken: {action}",
+    },
+    {
         "event_type": "plate_not_empty",
         "name": "Plate Not Empty",
         "title_template": "Plate Not Empty - Print Paused",
         "body_template": "{printer}: Objects detected on build plate. Print has been paused. Clear plate and resume.",
+    },
+    {
+        "event_type": "plate_clear_required",
+        "name": "Plate Clear Required",
+        "title_template": "Plate Clear Required",
+        "body_template": "{printer}: print finished. Confirm the build plate is clear before the queue continues.",
     },
     {
         "event_type": "filament_low",
@@ -110,16 +142,44 @@ DEFAULT_TEMPLATES = [
         "body_template": "{printer} {ams_label}: Temperature {temperature}°C exceeds {threshold}°C threshold",
     },
     {
+        "event_type": "ams_drying_suspended",
+        "name": "Auto-Drying Suspended",
+        "title_template": "Auto-Drying Suspended",
+        "body_template": (
+            "{printer} {ams_label}: stopped automatic drying after {cycles} cycles left humidity at "
+            "{humidity}%, still above the {threshold}% threshold. An AMS reads higher while it is warm, "
+            "so raise the threshold or dry the spools off the printer."
+        ),
+    },
+    {
         "event_type": "bed_cooled",
         "name": "Bed Cooled",
         "title_template": "Bed Cooled",
         "body_template": "{printer}: Bed cooled to {bed_temp}°C (threshold: {threshold}°C)",
     },
     {
+        "event_type": "ha_sensor_alert",
+        "name": "Printer Sensor Alert",
+        "title_template": "Sensor Alert",
+        "body_template": "{printer}: {sensor} is {state}",
+    },
+    {
+        "event_type": "location_ha_sensor_alert",
+        "name": "Storage Location Sensor Alert",
+        "title_template": "Sensor Alert",
+        "body_template": "{location}: {sensor} is {state}",
+    },
+    {
         "event_type": "first_layer_complete",
         "name": "First Layer Complete",
         "title_template": "First Layer Complete",
         "body_template": "{printer}: {filename}\nLayer 1/{total_layers} done",
+    },
+    {
+        "event_type": "print_pause_upcoming",
+        "name": "Pause Coming Up",
+        "title_template": "Pause Coming Up",
+        "body_template": "{printer}: {filename}\nPauses in {time_to_pause} (about {eta}), at layer {layer}/{total_layers}",
     },
     {
         "event_type": "test",
@@ -174,49 +234,53 @@ DEFAULT_TEMPLATES = [
         "event_type": "user_created",
         "name": "Welcome Email",
         "title_template": "Welcome to {app_name}",
-        "body_template": "Welcome {username}!\n\nYour account has been created.\nUsername: {username}\nPassword: {password}\n\nLogin at: {login_url}",
+        "body_template": "Welcome {username}!\n\nYour {app_name} account has been created. Please change your password after your first login.\n\nLogin at: {login_url}\n\nYour login details:",
     },
     {
         "event_type": "password_reset",
         "name": "Password Reset",
         "title_template": "{app_name} - Password Reset",
-        "body_template": "Hello {username},\n\nYour password has been reset.\nNew Password: {password}\n\nLogin at: {login_url}",
+        "body_template": "Hello {username},\n\nA password reset was requested for your {app_name} account. If you did not request it, you can ignore this email: your password has not been changed.\n\nSet a new password with the link below (valid for 1 hour, usable once):",
     },
     # Inventory stock alert templates
     {
         "event_type": "stock_reorder_alert",
         "name": "Stock Reorder Alert",
         "title_template": "Reorder Alert: {material}",
-        "body_template": "{material} ({brand}) has reached the reorder point.\nStock: {stock_g}g | Rate: {rate_g_day}g/day | Days left: {days_left}d\nReorder now to avoid a stock break.",
+        "body_template": "{material} {subtype} {color} ({brand}) has reached the reorder point.\nStock: {stock_g}g | Rate: {rate_g_day}g/day | Days left: {days_left}d\nReorder now to avoid a stock break.",
     },
     {
         "event_type": "stock_break_alert",
         "name": "Stock Break Alert",
         "title_template": "Stock Break Risk: {material}",
-        "body_template": "{material} ({brand}) will run out before replenishment arrives.\nStock: {stock_g}g | Rate: {rate_g_day}g/day | Lead time: {lead_time_days}d\nOnly {days_left}d of stock remaining — order immediately.",
+        "body_template": "{material} {subtype} {color} ({brand}) will run out before replenishment arrives.\nStock: {stock_g}g | Rate: {rate_g_day}g/day | Lead time: {lead_time_days}d\nOnly {days_left}d of stock remaining — order immediately.",
     },
-    # User email notification templates (sent to the print job owner)
+    # User email notification templates (sent to the print job owner).
+    # Names include " Email" so they aren't confused with the provider-level
+    # `print_*` templates above, which share the same body shape but are
+    # broadcast to admin-configured providers (ntfy/pushover/telegram/discord/
+    # etc.) rather than mailed to a specific user.
     {
         "event_type": "user_print_start",
-        "name": "User Print Started",
+        "name": "User Print Started Email",
         "title_template": "Your Print Has Started",
         "body_template": "Hello {username},\n\nYour print job has started on {printer}.\n\nFile: {filename}\n\nYou will be notified when it completes.",
     },
     {
         "event_type": "user_print_complete",
-        "name": "User Print Completed",
+        "name": "User Print Completed Email",
         "title_template": "Your Print Is Complete",
         "body_template": "Hello {username},\n\nYour print job has completed on {printer}.\n\nFile: {filename}",
     },
     {
         "event_type": "user_print_failed",
-        "name": "User Print Failed",
+        "name": "User Print Failed Email",
         "title_template": "Your Print Has Failed",
         "body_template": "Hello {username},\n\nYour print job has failed on {printer}.\n\nFile: {filename}",
     },
     {
         "event_type": "user_print_stopped",
-        "name": "User Print Stopped",
+        "name": "User Print Stopped Email",
         "title_template": "Your Print Has Been Stopped",
         "body_template": "Hello {username},\n\nYour print job was stopped on {printer}.\n\nFile: {filename}",
     },

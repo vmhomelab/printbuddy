@@ -504,8 +504,8 @@ function ActiveProjectsPanel({ projects, theme }: { projects: ProjectListItem[];
 
 export function PrintFarmMonitorPage() {
   const [now, setNow] = useState(() => new Date());
-  const { mode } = useTheme();
-  const theme = useMemo(() => getMonitorTheme(mode), [mode]);
+  const { resolvedMode } = useTheme();
+  const theme = useMemo(() => getMonitorTheme(resolvedMode), [resolvedMode]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(new Date()), 1000);
@@ -563,7 +563,7 @@ export function PrintFarmMonitorPage() {
   const utilizationStyle = { background: `conic-gradient(var(--accent) ${utilization * 3.6}deg, var(--bg-tertiary) 0deg)` };
 
   return (
-    <main className={`min-h-screen overflow-x-hidden ${theme.page}`} data-monitor-theme={mode}>
+    <main className={`min-h-screen overflow-x-hidden ${theme.page}`} data-monitor-theme={resolvedMode}>
       <div className={`min-h-screen w-full max-w-full p-3 sm:p-4 xl:p-5 ${theme.backdrop}`}>
         <header className={`mb-4 flex min-w-0 flex-col gap-4 border-b pb-4 xl:flex-row xl:items-center xl:justify-between ${theme.divider}`}>
           <div className="flex min-w-0 flex-wrap items-center gap-3 sm:gap-5">

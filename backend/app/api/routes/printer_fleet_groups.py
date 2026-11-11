@@ -56,7 +56,7 @@ async def _load_group(db: AsyncSession, group_id: int) -> PrinterFleetGroup:
 @router.get("/", response_model=list[PrinterFleetGroupResponse])
 async def list_printer_fleet_groups(
     _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_READ),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
 ):
     result = await db.execute(
         select(PrinterFleetGroup)
@@ -70,7 +70,7 @@ async def list_printer_fleet_groups(
 async def create_printer_fleet_group(
     data: PrinterFleetGroupCreate,
     _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_UPDATE),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
 ):
     printer_ids = await _validate_printer_ids(db, data.printer_ids)
     group = PrinterFleetGroup(name=data.name.strip(), color=data.color, sort_order=data.sort_order)
@@ -86,7 +86,7 @@ async def update_printer_fleet_group(
     group_id: int,
     data: PrinterFleetGroupUpdate,
     _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_UPDATE),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
 ):
     group = await _load_group(db, group_id)
     printer_ids = await _validate_printer_ids(db, data.printer_ids)
@@ -104,7 +104,7 @@ async def update_printer_fleet_group(
 async def delete_printer_fleet_group(
     group_id: int,
     _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_UPDATE),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
 ):
     group = await _load_group(db, group_id)
     await db.delete(group)

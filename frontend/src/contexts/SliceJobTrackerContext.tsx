@@ -103,6 +103,12 @@ export function SliceJobTrackerProvider({ children }: { children: ReactNode }) {
   const phaseRef = useRef<Map<number, SliceJobStatus>>(new Map());
   const progressRef = useRef<Map<number, SliceJobProgress | null>>(new Map());
 
+  // Job ids whose terminal state has already been handled. `completeJob`
+  // shows a toast and invalidates two query keys, so it has to be exactly
+  // once per job no matter how many callers reach it — see the poll loop
+  // below for how more than one used to.
+  const finishedRef = useRef<Set<number>>(new Set());
+
   const renderProgressToast = useCallback(
     (job: TrackedJob) => {
       const startedAt = startedAtRef.current.get(job.id);
@@ -172,6 +178,10 @@ export function SliceJobTrackerProvider({ children }: { children: ReactNode }) {
       setActiveJobs((prev) =>
         prev.some((j) => j.id === id) ? prev : [...prev, { id, kind, sourceName, queueAfterSlice }],
       );
+      // Re-tracking an id re-arms it. Ids come from a database sequence so
+      // this can't collide in practice; clearing here is what keeps the set
+      // from being a permanent record of every job the session ever saw.
+      finishedRef.current.delete(id);
       startedAtRef.current.set(id, Date.now());
       phaseRef.current.set(id, 'pending');
       progressRef.current.set(id, null);
@@ -184,6 +194,11 @@ export function SliceJobTrackerProvider({ children }: { children: ReactNode }) {
 
   const completeJob = useCallback(
     (job: TrackedJob, state: SliceJobState) => {
+      // Guard, not an optimisation: everything below is a side effect the
+      // user sees, and a second call would repeat all of it.
+      if (finishedRef.current.has(job.id)) return;
+      finishedRef.current.add(job.id);
+
       setActiveJobs((prev) => prev.filter((j) => j.id !== job.id));
       startedAtRef.current.delete(job.id);
       phaseRef.current.delete(job.id);
@@ -203,6 +218,23 @@ export function SliceJobTrackerProvider({ children }: { children: ReactNode }) {
           t('slice.completedToast', 'Sliced {{name}}', { name: prettifyFilename(job.sourceName) }),
           'success',
         );
+        // The result normally lands next to its source, including on an
+        // external mount. When the mount can't take it the file is still
+        // kept — in managed storage — but the user has to be told, or they
+        // go looking on the share and find nothing (#2810).
+        const fallback =
+          state.result && 'external_write_fallback' in state.result
+            ? state.result.external_write_fallback
+            : null;
+        if (fallback) {
+          showToast(
+            t(
+              'slice.externalWriteFallbackToast',
+              'Saved to the internal library: the external folder could not be written to',
+            ),
+            'warning',
+          );
+        }
         if (job.queueAfterSlice && state.result) {
           const result = state.result;
           if ('library_file_id' in result && typeof result.library_file_id === 'number') {
@@ -230,24 +262,41 @@ export function SliceJobTrackerProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (activeJobs.length === 0) return;
     let cancelled = false;
+    // setInterval does not await an async callback, so a tick fires whether
+    // or not the previous one came back. Slicing a large project blocks the
+    // backend for seconds at a time (zip parsing and output assembly are
+    // synchronous), and every tick that piled up during the stall had
+    // already captured a snapshot naming the job as active. They all
+    // resolved `completed` together and each called completeJob, which is
+    // how one slice produced a stream of a dozen "Sliced X" toasts. Letting
+    // only one poll round be in flight fixes that at the source, and stops
+    // queueing requests against a backend that is already saturated.
+    let polling = false;
     const interval = setInterval(async () => {
-      if (cancelled) return;
-      const snapshot = [...activeJobsRef.current];
-      for (const job of snapshot) {
-        try {
-          const state = await api.getSliceJob(job.id);
-          phaseRef.current.set(job.id, state.status);
-          // Capture the latest progress snapshot if the sidecar fed
-          // one through. The 1s tick re-renders the toast off this ref.
-          if (state.progress) {
-            progressRef.current.set(job.id, state.progress);
+      if (cancelled || polling) return;
+      polling = true;
+      try {
+        const snapshot = [...activeJobsRef.current];
+        for (const job of snapshot) {
+          try {
+            const state = await api.getSliceJob(job.id);
+            // The tracker may have been torn down while this was in flight.
+            if (cancelled) return;
+            phaseRef.current.set(job.id, state.status);
+            // Capture the latest progress snapshot if the sidecar fed
+            // one through. The 1s tick re-renders the toast off this ref.
+            if (state.progress) {
+              progressRef.current.set(job.id, state.progress);
+            }
+            if (state.status === 'completed' || state.status === 'failed') {
+              completeJob(job, state);
+            }
+          } catch {
+            // Transient poll failure — stay tracked, retry next tick.
           }
-          if (state.status === 'completed' || state.status === 'failed') {
-            completeJob(job, state);
-          }
-        } catch {
-          // Transient poll failure — stay tracked, retry next tick.
         }
+      } finally {
+        polling = false;
       }
     }, POLL_INTERVAL_MS);
     return () => {
@@ -282,7 +331,7 @@ export function SliceJobTrackerProvider({ children }: { children: ReactNode }) {
       )}
       {queueTarget && (
         <PrintModal
-          mode="add-to-queue"
+          mode="create"
           libraryFileId={queueTarget.libraryFileId}
           archiveId={queueTarget.archiveId}
           archiveName={queueTarget.name}

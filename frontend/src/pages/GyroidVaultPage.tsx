@@ -236,7 +236,7 @@ export function GyroidVaultPage({ embedded = false }: { embedded?: boolean } = {
                 <p className="text-amber-200 mt-1">
                   {statusQuery.data.error ?? t('gyroidvault.notConfiguredBody')}{' '}
                   {canConfigure && (
-                    <Link to="/import?source=settings" className="underline">
+                    <Link to="/model-sources?tab=settings" className="underline">
                       {t('gyroidvault.openSettings')}
                     </Link>
                   )}

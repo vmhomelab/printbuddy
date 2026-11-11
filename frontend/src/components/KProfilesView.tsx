@@ -19,12 +19,20 @@ import {
   Square,
   StickyNote,
 } from 'lucide-react';
-import { api } from '../api/client';
+import { api, ApiError } from '../api/client';
 import type { KProfile, KProfileCreate, KProfileDelete, Permission } from '../api/client';
+import {
+  buildFilamentPresetOptions,
+  resolveFilamentId,
+  type FilamentPresetOption,
+  type FilamentPresetSource,
+} from '../utils/filamentPresets';
 import { Card, CardContent } from './Card';
 import { Button } from './Button';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
+import { useCancellableTimeout } from '../hooks/useCancellableTimeout';
+import { kprofileWriteToast, writeUnconfirmed } from '../utils/kprofileWrite';
 
 interface KProfileCardProps {
   profile: KProfile;
@@ -42,17 +50,25 @@ const truncateK = (value: string) => {
   return (Math.trunc(num * 1000) / 1000).toFixed(3);
 };
 
-// Get flow type label from nozzle_id (e.g., "HH00-0.4" -> "HF", "HS00-0.4" -> "S")
-const getFlowTypeLabel = (nozzleId: string) => {
-  if (nozzleId.startsWith('HH')) return 'HF';  // High Flow
-  return 'S';  // Standard Flow (default)
-};
+// nozzle_id encodes the flow type, per the slicer's own generator:
+//   "H" + (Standard ? "S" : "H") + "00" + "-" + diameter
+// so "HS00-0.4" is Standard and "HH00-0.4" is High Flow. The "00" is a literal,
+// not a material code.
+const STANDARD_FLOW = 'HS00';
+const HIGH_FLOW = 'HH00';
 
-// Extract nozzle type prefix from nozzle_id (e.g., "HH00-0.4" -> "HH00")
+// Many printers omit nozzle_id from their extrusion_cali_get response entirely
+// (#1748) — the field simply isn't in the payload. BambuStudio treats that as
+// Standard (its parser falls back to nvtStandard when the key is absent), and
+// so do we: the flow type stays a real, editable value rather than a blank.
 const getNozzleTypePrefix = (nozzleId: string) => {
   const match = nozzleId.match(/^([A-Z]{2}\d{2})/);
-  return match ? match[1] : 'HH00';
+  return match ? match[1] : STANDARD_FLOW;
 };
+
+// Short label for the profile list.
+const getFlowTypeLabel = (nozzleId: string) =>
+  getNozzleTypePrefix(nozzleId) === HIGH_FLOW ? 'HF' : 'S';
 
 // Extract filament name from profile name (e.g., "High Flow_Devil Design PLA Basic" -> "Devil Design PLA Basic")
 const extractFilamentName = (profileName: string) => {
@@ -149,9 +165,11 @@ interface KProfileModalProps {
   profile?: KProfile;
   printerId: number;
   nozzleDiameter: string;
-  existingProfiles?: KProfile[];  // Existing profiles for filament selection
+  existingProfiles?: KProfile[];  // Existing profiles, used for name resolution
   builtinFilaments?: { filament_id: string; name: string }[];  // Filament ID → name lookup
+  filamentPresets?: FilamentPresetOption[];  // Every filament this install knows, tiered
   isDualNozzle?: boolean;  // Whether this is a dual-nozzle printer
+  supportsFlowType?: boolean;  // Model sells both Standard and High Flow nozzles
   initialNote?: string;  // Initial note value for the profile
   initialNoteKey?: string | null;  // Key the note was stored under (for clearing)
   onClose: () => void;
@@ -166,7 +184,9 @@ function KProfileModal({
   nozzleDiameter,
   existingProfiles = [],
   builtinFilaments = [],
+  filamentPresets = [],
   isDualNozzle = false,
+  supportsFlowType = true,
   initialNote = '',
   initialNoteKey = null,
   onClose,
@@ -181,10 +201,19 @@ function KProfileModal({
   const [kValue, setKValue] = useState(
     profile?.k_value ? truncateK(profile.k_value) : '0.020'
   );
-  const [filamentId, setFilamentId] = useState(profile?.filament_id || '');
+  // What the Filament select is bound to. When editing, the printer's own
+  // filament_id (the select is read-only). For a new profile, the *preset
+  // handle* from the tiered list — a local row id, an Orca UUID, a Bambu Cloud
+  // setting_id or a builtin filament id — which is resolved to a real
+  // filament_id on submit, since only some tiers carry one directly.
+  const [filamentChoice, setFilamentChoice] = useState(profile?.filament_id || '');
   // Split nozzle into type and diameter
+  // Both selects are read-only while editing: they report what the printer
+  // holds, they don't set it. '' means the printer reported no nozzle_id, which
+  // single-nozzle models never do (#1748) — showing "High Flow" there was the
+  // UI inventing a value the printer never sent.
   const [nozzleType, setNozzleType] = useState(
-    profile?.nozzle_id ? getNozzleTypePrefix(profile.nozzle_id) : 'HH00'
+    profile ? getNozzleTypePrefix(profile.nozzle_id) : STANDARD_FLOW
   );
   const [modalDiameter, setModalDiameter] = useState(
     profile?.nozzle_diameter || nozzleDiameter
@@ -197,42 +226,52 @@ function KProfileModal({
   const [isSyncing, setIsSyncing] = useState(false);
   const [savingProgress, setSavingProgress] = useState({ current: 0, total: 0 });
   const [note, setNote] = useState(initialNote);
+  const [filamentQuery, setFilamentQuery] = useState('');
+  // The modal defers its own close so the printer has time to process the
+  // command; that timer must not outlive the modal.
+  const { schedule: scheduleClose } = useCancellableTimeout();
 
-  // Extract unique filaments from existing K-profiles on the printer
-  // Use builtin filament table for accurate name resolution (filament_id → name)
-  // Falls back to extracting from profile name for custom/unknown presets
-  const knownFilaments = React.useMemo(() => {
-    // Build lookup map from builtin filament names (includes cloud presets from parent)
-    const builtinMap = new Map<string, string>();
-    for (const bf of builtinFilaments) {
-      builtinMap.set(bf.filament_id, bf.name);
-    }
+  // Name for the filament an existing profile is bound to. The builtin table
+  // (which the parent has already merged with the user's cloud presets) is
+  // authoritative; a profile whose filament_id is in neither falls back to the
+  // name the printer stored for it.
+  const editedFilamentName = React.useMemo(() => {
+    if (!profile?.filament_id) return '';
+    const builtinName = builtinFilaments.find(bf => bf.filament_id === profile.filament_id)?.name;
+    if (builtinName) return builtinName;
+    const fromProfile = existingProfiles.find(p => p.filament_id === profile.filament_id);
+    return extractFilamentName(fromProfile?.name || profile.name || '') || profile.filament_id;
+  }, [profile, existingProfiles, builtinFilaments]);
 
-    const filamentMap = new Map<string, { id: string; name: string }>();
-    for (const p of existingProfiles) {
-      if (p.filament_id && !filamentMap.has(p.filament_id)) {
-        // Prefer builtin name (accurate), fall back to extracting from profile name
-        const builtinName = builtinMap.get(p.filament_id);
-        const filamentName = builtinName || extractFilamentName(p.name || '');
-        filamentMap.set(p.filament_id, {
-          id: p.filament_id,
-          name: filamentName || p.filament_id,
-        });
-      }
-    }
-    return Array.from(filamentMap.values()).sort((a, b) =>
-      a.name.localeCompare(b.name)
-    );
-  }, [existingProfiles, builtinFilaments]);
+  // The tiered list, grouped for rendering. Order is fixed app-wide —
+  // imported, then Orca Cloud, then Bambu Cloud, then the hardcoded table —
+  // and buildFilamentPresetOptions has already sorted by it, so grouping is
+  // just a partition that preserves that order.
+  const presetGroups = React.useMemo(() => {
+    const labels: [FilamentPresetSource, string][] = [
+      ['local', t('kProfiles.modal.source.local')],
+      ['orca_cloud', t('kProfiles.modal.source.orcaCloud')],
+      ['cloud', t('kProfiles.modal.source.bambuCloud')],
+      ['builtin', t('kProfiles.modal.source.builtin')],
+    ];
+    const query = filamentQuery.trim().toLowerCase();
+    const matches = query
+      ? filamentPresets.filter(p => p.name.toLowerCase().includes(query))
+      : filamentPresets;
+    return labels
+      .map(([source, label]) => ({ source, label, items: matches.filter(p => p.source === source) }))
+      .filter(g => g.items.length > 0);
+  }, [filamentPresets, filamentQuery, t]);
 
   const saveMutation = useMutation({
     mutationFn: (data: KProfileCreate) => {
       console.log('[KProfile] Calling API...');
       return api.setKProfile(printerId, data);
     },
-    onSuccess: (result) => {
+    onSuccess: (result, variables) => {
       console.log('[KProfile] Save success:', result);
-      showToast(t('kProfiles.toast.profileSaved'));
+      const toast = kprofileWriteToast(result, 'kProfiles.toast.profileSaved');
+      showToast(t(toast.key), toast.type);
       // Save note if it changed (including clearing it)
       if (onSaveNote && note !== initialNote) {
         let profileKey: string;
@@ -243,8 +282,10 @@ function KProfileModal({
           // Editing: use setting_id if available, or composite key with slot_id
           profileKey = profile.setting_id || `slot_${profile.slot_id}_${profile.filament_id}_${profile.extruder_id}`;
         } else {
-          // New profile: use name as key (will be matched when profile is loaded)
-          profileKey = `name_${name}_${filamentId}`;
+          // New profile: use name as key (matched against the reloaded profile,
+          // so it has to be the resolved filament_id that was sent — not the
+          // preset handle the user picked).
+          profileKey = `name_${name}_${variables.filament_id}`;
         }
         onSaveNote(profileKey, note);
       }
@@ -252,7 +293,7 @@ function KProfileModal({
       setIsSyncing(true);
       // Add delay before closing to give printer time to process the save
       // onSave will trigger refetch in the parent component
-      setTimeout(() => {
+      scheduleClose(() => {
         setIsSyncing(false);
         onSave();
       }, 2500);
@@ -271,12 +312,13 @@ function KProfileModal({
     },
     onSuccess: (result) => {
       console.log('[KProfile] Delete success:', result);
-      showToast(t('kProfiles.toast.profileDeleted'));
+      const toast = kprofileWriteToast(result, 'kProfiles.toast.profileDeleted');
+      showToast(t(toast.key), toast.type);
       // Show syncing indicator while printer processes the command
       setIsSyncing(true);
       // Add longer delay for delete - printer needs more time to process
       // before it can return the updated profile list
-      setTimeout(() => {
+      scheduleClose(() => {
         setIsSyncing(false);
         onClose();
       }, 4000);
@@ -316,14 +358,46 @@ function KProfileModal({
     // Combine nozzle type and diameter into nozzle_id (e.g., "HH00-0.4")
     const nozzleId = `${nozzleType}-${modalDiameter}`;
 
+    // An edit is delete + re-add on single-nozzle printers, so the nozzle
+    // fields have to survive the round trip — both selects are disabled while
+    // editing. Rebuilding them blindly from the selects is what let a 0.6mm
+    // profile come back as "HH00-0.4" once the parse defaults had stamped it
+    // 0.4 (#1748), so prefer whatever the printer reported. Where it reported
+    // no nozzle_id at all, send the rebuilt one rather than an empty string —
+    // the field is part of the profile's identity on the wire and the slicer
+    // always populates it.
+    const editNozzleId = profile ? profile.nozzle_id || nozzleId : nozzleId;
+    const editDiameter = profile ? profile.nozzle_diameter : modalDiameter;
+
+    // The printer indexes its calibration table by filament_id, so the preset
+    // the user picked has to be reduced to one before anything is sent. Only
+    // the builtin tier and Bambu's official cloud presets carry one outright;
+    // a cloud *user* preset needs its detail fetched, and imported / Orca
+    // presets have no Bambu id at all and map to the generic for their
+    // material. Refuse rather than guess when nothing resolves — a profile
+    // filed under the wrong filament is invisible to the slot that needs it.
+    let resolvedFilamentId = profile?.filament_id || '';
+    if (!profile) {
+      const picked = filamentPresets.find(p => p.id === filamentChoice);
+      if (!picked) {
+        showToast(t('kProfiles.toast.selectFilament'), 'error');
+        return;
+      }
+      resolvedFilamentId = await resolveFilamentId(picked, api.getCloudSettingDetail);
+      if (!resolvedFilamentId) {
+        showToast(t('kProfiles.toast.filamentNotResolvable', { name: picked.name }), 'error');
+        return;
+      }
+    }
+
     // For editing or single extruder: just save one profile
     if (profile || selectedExtruders.length === 1) {
       const payload = {
         name: name,
         k_value: formattedKValue,
-        filament_id: filamentId,
-        nozzle_id: nozzleId,
-        nozzle_diameter: modalDiameter,
+        filament_id: resolvedFilamentId,
+        nozzle_id: editNozzleId,
+        nozzle_diameter: editDiameter,
         extruder_id: profile ? profile.extruder_id : selectedExtruders[0],
         setting_id: profile?.setting_id,
         slot_id: profile?.slot_id ?? 0,
@@ -341,7 +415,7 @@ function KProfileModal({
     const batchPayload = selectedExtruders.map(extruderId => ({
       name: name,
       k_value: formattedKValue,
-      filament_id: filamentId,
+      filament_id: resolvedFilamentId,
       nozzle_id: nozzleId,
       nozzle_diameter: modalDiameter,
       extruder_id: extruderId,
@@ -352,11 +426,12 @@ function KProfileModal({
     console.log(`[KProfile] Saving ${batchPayload.length} profiles in batch:`, batchPayload);
 
     try {
-      await api.setKProfilesBatch(printerId, batchPayload);
-      showToast(t('kProfiles.toast.profilesSaved', { count: selectedExtruders.length }));
+      const result = await api.setKProfilesBatch(printerId, batchPayload);
+      const toast = kprofileWriteToast(result, 'kProfiles.toast.profilesSaved');
+      showToast(t(toast.key, { count: selectedExtruders.length }), toast.type);
       // Save note for new batch profiles
       if (onSaveNote && note) {
-        const profileKey = `name_${name}_${filamentId}`;
+        const profileKey = `name_${name}_${resolvedFilamentId}`;
         onSaveNote(profileKey, note);
       }
     } catch (error) {
@@ -370,7 +445,7 @@ function KProfileModal({
     setSavingProgress({ current: selectedExtruders.length, total: selectedExtruders.length });
     // Wait for final sync before closing
     // onSave will trigger refetch in the parent component
-    setTimeout(() => {
+    scheduleClose(() => {
       setIsSyncing(false);
       setSavingProgress({ current: 0, total: 0 });
       onSave();
@@ -454,49 +529,77 @@ function KProfileModal({
             {/* Filament - read-only when editing */}
             <div>
               <label className="block text-sm text-bambu-gray mb-1">{t('kProfiles.modal.filament')}</label>
-              <select
-                value={filamentId}
-                onChange={(e) => {
-                  const newFilamentId = e.target.value;
-                  setFilamentId(newFilamentId);
-                  // Auto-generate profile name when filament is selected (for new profiles)
-                  // Only auto-generate if name is empty - don't overwrite user input
-                  if (!profile && newFilamentId && !name) {
-                    const selectedFilament = knownFilaments.find(f => f.id === newFilamentId);
-                    if (selectedFilament) {
-                      const flowLabel = nozzleType === 'HH00' ? 'HF' : 'S';
-                      setName(`${flowLabel} ${selectedFilament.name}`);
-                    }
-                  }
-                }}
-                disabled={!!profile}
-                className={`w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none ${profile ? 'opacity-60 cursor-not-allowed' : ''}`}
-                required={!profile}
-              >
-                <option value="">{t('kProfiles.modal.selectFilament')}</option>
-                {/* Show current filament when editing - look up from knownFilaments */}
-                {profile?.filament_id && (
-                  <option key={profile.filament_id} value={profile.filament_id}>
-                    {knownFilaments.find(f => f.id === profile.filament_id)?.name || profile.filament_id}
-                  </option>
-                )}
-                {/* Show known filaments from existing K-profiles (for new profiles) */}
-                {!profile && knownFilaments.map((f) => (
-                  <option key={f.id} value={f.id}>
-                    {f.name}
-                  </option>
-                ))}
-              </select>
-              {!profile && knownFilaments.length === 0 && (
-                <p className="text-xs text-bambu-gray mt-1">
-                  {t('kProfiles.modal.noFilamentsHelp')}
-                </p>
+              {profile ? (
+                // Editing or copying: the filament is fixed, so this is a
+                // readout rather than a control.
+                <div className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white opacity-60">
+                  {editedFilamentName || profile.filament_id}
+                </div>
+              ) : (
+                // A real list rather than a <select>: Chrome ignores almost
+                // every CSS property on <optgroup>, so a source heading inside
+                // a native dropdown can't be made to stand out.
+                <div className="border border-bambu-dark-tertiary rounded-lg overflow-hidden">
+                  <div className="relative border-b border-bambu-dark-tertiary">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray" />
+                    <input
+                      type="text"
+                      value={filamentQuery}
+                      onChange={(e) => setFilamentQuery(e.target.value)}
+                      placeholder={t('kProfiles.modal.searchFilaments')}
+                      className="w-full pl-10 pr-3 py-2 bg-bambu-dark text-white placeholder-bambu-gray focus:outline-none"
+                    />
+                  </div>
+                  <div className="max-h-56 overflow-y-auto bg-bambu-dark">
+                    {presetGroups.length === 0 ? (
+                      <p className="px-3 py-3 text-xs text-bambu-gray">
+                        {filamentPresets.length === 0
+                          ? t('kProfiles.modal.noFilamentsHelp')
+                          : t('kProfiles.modal.noFilamentMatches')}
+                      </p>
+                    ) : presetGroups.map((group) => (
+                      <div key={group.source}>
+                        <div className="sticky top-0 z-10 flex items-center gap-2 px-3 py-1.5 bg-bambu-dark-secondary border-y border-bambu-dark-tertiary">
+                          <span className="text-xs font-bold uppercase tracking-wider text-bambu-green">
+                            {group.label}
+                          </span>
+                          <span className="text-[10px] text-bambu-gray">{group.items.length}</span>
+                        </div>
+                        {group.items.map((f) => (
+                          <button
+                            key={f.id}
+                            type="button"
+                            onClick={() => {
+                              setFilamentChoice(f.id);
+                              // Auto-generate the profile name, but never over
+                              // an entry the user typed.
+                              if (!name) {
+                                const flowLabel = nozzleType === HIGH_FLOW ? 'HF' : 'S';
+                                setName(`${flowLabel} ${f.name}`);
+                              }
+                            }}
+                            className={`w-full text-left px-3 py-1.5 text-sm transition-colors ${
+                              filamentChoice === f.id
+                                ? 'bg-bambu-green/20 text-white'
+                                : 'text-white hover:bg-bambu-dark-tertiary'
+                            }`}
+                          >
+                            {f.name}
+                          </button>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                </div>
               )}
             </div>
 
-            {/* Flow Type and Nozzle Size - read-only when editing */}
-            <div className="grid grid-cols-2 gap-4">
-              <div>
+            {/* Flow Type and Nozzle Size - read-only when editing. Flow type
+                is hidden on models sold with a single nozzle variant (the
+                A-series), where the choice would be meaningless — same gate
+                the slicer applies via support_nozzle_volume(). */}
+            <div className={supportsFlowType ? 'grid grid-cols-2 gap-4' : ''}>
+              <div className={supportsFlowType ? '' : 'hidden'}>
                 <label className="block text-sm text-bambu-gray mb-1">{t('kProfiles.modal.flowType')}</label>
                 <select
                   value={nozzleType}
@@ -505,10 +608,10 @@ function KProfileModal({
                     setNozzleType(newNozzleType);
                     // Update profile name when flow type changes (for new profiles)
                     // Only auto-generate if name is empty - don't overwrite user input
-                    if (!profile && filamentId && !name) {
-                      const selectedFilament = knownFilaments.find(f => f.id === filamentId);
+                    if (!profile && filamentChoice && !name) {
+                      const selectedFilament = filamentPresets.find(f => f.id === filamentChoice);
                       if (selectedFilament) {
-                        const flowLabel = newNozzleType === 'HS00' ? 'HF' : 'S';
+                        const flowLabel = newNozzleType === HIGH_FLOW ? 'HF' : 'S';
                         setName(`${flowLabel} ${selectedFilament.name}`);
                       }
                     }
@@ -516,8 +619,8 @@ function KProfileModal({
                   disabled={!!profile}
                   className={`w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none ${profile ? 'opacity-60 cursor-not-allowed' : ''}`}
                 >
-                  <option value="HH00">{t('kProfiles.modal.highFlow')}</option>
-                  <option value="HS00">{t('kProfiles.modal.standard')}</option>
+                  <option value={HIGH_FLOW}>{t('kProfiles.modal.highFlow')}</option>
+                  <option value={STANDARD_FLOW}>{t('kProfiles.modal.standard')}</option>
                 </select>
               </div>
               <div>
@@ -772,13 +875,12 @@ export function KProfilesView() {
     refetchOnMount: 'always',  // Always refetch when component mounts
   });
 
-  // Also fetch 0.4mm profiles for the filament dropdown (most filaments are calibrated for 0.4mm)
-  const { data: allProfiles } = useQuery({
-    queryKey: ['kprofiles', selectedPrinter, '0.4'],
-    queryFn: () => api.getKProfiles(selectedPrinter!, '0.4'),
-    enabled: !!selectedPrinter,
-    staleTime: 60000,  // Cache for 1 minute
-  });
+  // A second fetch for 0.4mm profiles used to seed the Add-Profile filament
+  // dropdown. The dropdown is built from the filament preset tiers now
+  // (#2719), so the round trip bought nothing — and it fired concurrently
+  // with the fetch above whenever a different nozzle was selected, which is
+  // exactly the two-requests-in-flight case that made K-profile fetches time
+  // out (#1748).
 
   // Fetch builtin filament names for accurate filament_id → name resolution
   const { data: builtinFilaments } = useQuery({
@@ -794,6 +896,28 @@ export function KProfilesView() {
     staleTime: 300000,  // Cache for 5 minutes
   });
 
+  // The other three filament tiers, so a printer with no K-profiles yet can
+  // still be given its first one (#2719). Each query stands alone and fails
+  // quietly: not being signed in to a cloud should thin the list, not break
+  // the page, and the builtin tier above guarantees it is never empty.
+  const { data: localPresets } = useQuery({
+    queryKey: ['localPresets'],
+    queryFn: () => api.getLocalPresets(),
+    retry: false,
+  });
+
+  const { data: orcaCloudList } = useQuery({
+    queryKey: ['orcaCloudProfilesForKProfiles'],
+    queryFn: () => api.orcaCloudListProfiles(),
+    retry: false,
+  });
+
+  const { data: cloudSettings } = useQuery({
+    queryKey: ['cloudSettings'],
+    queryFn: () => api.getCloudSettings(),
+    retry: false,
+  });
+
   // Fetch K-profile notes (stored locally)
   const {
     data: notesData,
@@ -807,6 +931,9 @@ export function KProfilesView() {
 
   // Check if error is due to printer not being connected
   const isOfflineError = kprofilesError?.message?.includes('not connected');
+  // Any other failed read, mostly a printer that didn't answer (504): not a
+  // printer without profiles, so no "Create first profile" (#3404).
+  const isNoAnswerError = kprofilesError instanceof ApiError && kprofilesError.status === 504;
 
   // Auto-select first connected printer
   useEffect(() => {
@@ -860,6 +987,19 @@ export function KProfilesView() {
     }));
   }, [builtinFilamentMap]);
 
+  // Every filament this install knows about, ranked in the app-wide order:
+  // imported presets, then Orca Cloud, then Bambu Cloud, then the hardcoded
+  // built-in table as the floor.
+  const filamentPresets = React.useMemo(
+    () => buildFilamentPresetOptions({
+      localPresets: localPresets?.filament,
+      orcaProfiles: orcaCloudList?.filament,
+      cloudSettings: cloudSettings?.filament,
+      builtinFilaments,
+    }),
+    [localPresets?.filament, orcaCloudList?.filament, cloudSettings?.filament, builtinFilaments]
+  );
+
   // Resolve filament name: builtin table first, then extract from profile name
   const resolveFilamentName = React.useCallback((profile: KProfile) => {
     return builtinFilamentMap.get(profile.filament_id) || extractFilamentName(profile.name);
@@ -910,6 +1050,18 @@ export function KProfilesView() {
   // Check if selected printer is dual-nozzle (auto-detected from MQTT temperature data)
   const selectedPrinterData = printers?.find((p) => p.id === selectedPrinter);
   const isDualNozzle = selectedPrinterData?.nozzle_count === 2;
+
+  // Whether this printer model is sold with both Standard and High Flow
+  // nozzles. Comes from the model, not from whether the payload happened to
+  // carry a nozzle_id — most printers omit that field entirely (#1748) while
+  // still offering both flows. Only the A-series has a single variant.
+  const supportsFlowType = selectedPrinterData?.supports_nozzle_flow_type ?? true;
+
+  // Don't strand the list behind a filter whose control just disappeared.
+  useEffect(() => {
+    if (!supportsFlowType) setFlowTypeFilter('all');
+  }, [supportsFlowType]);
+
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -994,20 +1146,25 @@ export function KProfilesView() {
 
         // Import profiles one by one
         let imported = 0;
+        let unconfirmed = 0;
         for (const p of data.profiles) {
           if (!p.name || !p.k_value || !p.filament_id) continue;
 
           try {
-            await api.setKProfile(selectedPrinter!, {
+            const result = await api.setKProfile(selectedPrinter!, {
               name: p.name,
               k_value: parseFloat(p.k_value).toFixed(6),
               filament_id: p.filament_id,
-              nozzle_id: p.nozzle_id || `HH00-${nozzleDiameter}`,
+              // An export from a printer that reports no nozzle_id carries
+              // none; fall back to Standard, the same default the slicer's
+              // parser uses for a missing field.
+              nozzle_id: p.nozzle_id || `${STANDARD_FLOW}-${nozzleDiameter}`,
               nozzle_diameter: p.nozzle_diameter || nozzleDiameter,
               extruder_id: p.extruder_id ?? 0,
               slot_id: 0, // Always create new
             });
             imported++;
+            if (writeUnconfirmed(result)) unconfirmed++;
             // Small delay between imports
             await new Promise(resolve => setTimeout(resolve, 500));
           } catch (err) {
@@ -1016,6 +1173,7 @@ export function KProfilesView() {
         }
 
         showToast(t('kProfiles.toast.importedProfiles', { count: imported, total: data.profiles.length }));
+        if (unconfirmed > 0) showToast(t('kProfiles.toast.writesUnconfirmed', { count: unconfirmed }), 'warning');
         refetchProfiles();
       } catch (err) {
         console.error('Import error:', err);
@@ -1055,9 +1213,10 @@ export function KProfilesView() {
     setBulkDeleteInProgress(true);
 
     let deleted = 0;
+    let unconfirmed = 0;
     for (const profile of profilesToDelete) {
       try {
-        await api.deleteKProfile(selectedPrinter!, {
+        const result = await api.deleteKProfile(selectedPrinter!, {
           slot_id: profile.slot_id,
           extruder_id: profile.extruder_id,
           nozzle_id: profile.nozzle_id,
@@ -1066,6 +1225,7 @@ export function KProfilesView() {
           setting_id: profile.setting_id,
         });
         deleted++;
+        if (writeUnconfirmed(result)) unconfirmed++;
         // Small delay between deletes
         await new Promise(resolve => setTimeout(resolve, 300));
       } catch (err) {
@@ -1074,6 +1234,7 @@ export function KProfilesView() {
     }
 
     showToast(t('kProfiles.toast.profilesDeleted', { count: deleted }));
+    if (unconfirmed > 0) showToast(t('kProfiles.toast.writesUnconfirmed', { count: unconfirmed }), 'warning');
     setBulkDeleteInProgress(false);
     setShowBulkDeleteConfirm(false);
     setSelectionMode(false);
@@ -1248,17 +1409,19 @@ export function KProfilesView() {
             </select>
           </div>
         )}
-        <div className="w-32">
-          <select
-            value={flowTypeFilter}
-            onChange={(e) => setFlowTypeFilter(e.target.value as FlowTypeFilter)}
-            className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-          >
-            <option value="all">{t('kProfiles.allFlow')}</option>
-            <option value="hf">{t('kProfiles.hfOnly')}</option>
-            <option value="s">{t('kProfiles.sOnly')}</option>
-          </select>
-        </div>
+        {supportsFlowType && (
+          <div className="w-32">
+            <select
+              value={flowTypeFilter}
+              onChange={(e) => setFlowTypeFilter(e.target.value as FlowTypeFilter)}
+              className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+            >
+              <option value="all">{t('kProfiles.allFlow')}</option>
+              <option value="hf">{t('kProfiles.hfOnly')}</option>
+              <option value="s">{t('kProfiles.sOnly')}</option>
+            </select>
+          </div>
+        )}
         <div className="w-32">
           <select
             value={sortOption}
@@ -1348,6 +1511,20 @@ export function KProfilesView() {
             <h3 className="text-lg font-semibold text-white mb-2">{t('kProfiles.printerOffline')}</h3>
             <p className="text-bambu-gray mb-4">
               {t('kProfiles.printerOfflineDesc')}
+            </p>
+            <Button variant="secondary" onClick={() => refetchProfiles()}>
+              <RefreshCw className="w-4 h-4" />
+              {t('common.refresh')}
+            </Button>
+          </CardContent>
+        </Card>
+      ) : kprofilesError ? (
+        <Card>
+          <CardContent className="py-12 text-center">
+            <AlertCircle className="w-12 h-12 text-amber-700 dark:text-amber-400 mx-auto mb-4" />
+            <h3 className="text-lg font-semibold text-white mb-2">{t('kProfiles.readFailed')}</h3>
+            <p className="text-bambu-gray mb-4">
+              {isNoAnswerError ? t('kProfiles.noAnswerDesc') : kprofilesError.message}
             </p>
             <Button variant="secondary" onClick={() => refetchProfiles()}>
               <RefreshCw className="w-4 h-4" />
@@ -1451,9 +1628,11 @@ export function KProfilesView() {
             profile={editingProfile}
             printerId={selectedPrinter}
             nozzleDiameter={nozzleDiameter}
-            existingProfiles={allProfiles?.profiles || kprofiles?.profiles}
+            existingProfiles={kprofiles?.profiles}
             builtinFilaments={enrichedBuiltinFilaments}
+            filamentPresets={filamentPresets}
             isDualNozzle={isDualNozzle}
+            supportsFlowType={supportsFlowType}
             initialNote={note}
             initialNoteKey={key}
             onSaveNote={handleSaveNote}
@@ -1476,9 +1655,11 @@ export function KProfilesView() {
         <KProfileModal
           printerId={selectedPrinter}
           nozzleDiameter={nozzleDiameter}
-          existingProfiles={allProfiles?.profiles || kprofiles?.profiles}
+          existingProfiles={kprofiles?.profiles}
           builtinFilaments={enrichedBuiltinFilaments}
+          filamentPresets={filamentPresets}
           isDualNozzle={isDualNozzle}
+          supportsFlowType={supportsFlowType}
           onSaveNote={handleSaveNote}
           hasPermission={hasPermission}
           onClose={() => {
@@ -1497,9 +1678,11 @@ export function KProfilesView() {
         <KProfileModal
           printerId={selectedPrinter}
           nozzleDiameter={nozzleDiameter}
-          existingProfiles={allProfiles?.profiles || kprofiles?.profiles}
+          existingProfiles={kprofiles?.profiles}
           builtinFilaments={enrichedBuiltinFilaments}
+          filamentPresets={filamentPresets}
           isDualNozzle={isDualNozzle}
+          supportsFlowType={supportsFlowType}
           onSaveNote={handleSaveNote}
           hasPermission={hasPermission}
           // Pass profile data but without slot_id to create a new profile

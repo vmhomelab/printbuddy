@@ -103,16 +103,17 @@ Documentation can be edited directly in the browser, no `git clone` required:
 python3 -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 
-# Install dependencies
-pip install -r requirements.txt
+# Install dependencies: the pinned versions that ship (see "Dependencies" below)
+pip install -r requirements.lock
 pip install -r requirements-dev.txt  # Dev/test dependencies (pytest, ruff, bandit, etc.)
 
 # Install pre-commit hooks
 pip install pre-commit
 pre-commit install
 
-# Run backend
-DEBUG=true uvicorn backend.app.main:app --reload --host 0.0.0.0 --port 8000
+# Run backend (--loop asyncio matches production; avoids a uvloop TLS bug
+# that can truncate Virtual Printer FTP uploads on slow storage — see #1896)
+DEBUG=true uvicorn backend.app.main:app --reload --host 0.0.0.0 --port 8000 --loop asyncio
 ```
 
 ### Frontend Setup
@@ -188,9 +189,38 @@ ruff format backend/
 ruff format --check backend/
 ```
 
+Types are checked with [basedpyright](https://docs.basedpyright.com/) (configuration in `pyproject.toml`). Errors that existed when the check was introduced are listed in `.basedpyright/baseline.json` and pass; a new one fails the check. The check runs against the pinned library versions in `requirements-typecheck.lock`, because other versions report different errors. It needs Python 3.11 or newer on Linux, macOS on Apple Silicon, or WSL (the lock is built for Linux; on Intel Macs some pinned packages have no wheels). `./test_backend.sh` runs it for you: it creates `.typecheck-venv` on first use when Python 3.11 is available (through `uv`, or as `python3.11`), and rebuilds it whenever the lock changes. Running the commands by hand, re-run the `pip install` after a lock change:
+
+```bash
+python3 -m venv .typecheck-venv          # Python 3.11 or newer
+.typecheck-venv/bin/pip install -r requirements-typecheck.lock
+.typecheck-venv/bin/basedpyright --pythonpath .typecheck-venv/bin/python
+```
+
+- **Fixed an error from the baseline?** A local run without new errors removes it from `baseline.json`; commit that change with your fix. (With a new error in the same run, the baseline is left as it is until that error is fixed.) CI never rewrites the baseline and fails if it still lists an error that is gone.
+- **Added or changed a dependency in `requirements.txt`?** Regenerate `requirements.lock` (see [Dependencies](#dependencies)) and then the type-check lock, with the command in `requirements-typecheck.txt`, in the same PR. If that moves the pin of a package already in the lock and the check then reports errors in code you did not touch, regenerate the baseline in the same commit (see `requirements-typecheck.txt`).
+- **Moved or edited code that has a baselined error?** The baseline matches each file's errors in order by rule and column span, not by line number. Editing such a line, re-indenting it (wrapping it in `if`/`try`/`with`) or reordering functions that hold baselined errors can bring them back as new ones. Fix them while you are there.
+
+### Dependencies
+
+`requirements.txt` lists what Printbuddy needs, with lower bounds. `requirements.lock` pins the exact versions, for every supported Python (3.11+) and platform, and it is what Docker, the installers, the update scripts and CI install: everyone runs the versions that were tested. Both files change together, and a test (`test_requirements_lock.py`) fails if the lock doesn't cover `requirements.txt`.
+
+Regenerating needs [uv](https://docs.astral.sh/uv/) (`pip install uv`):
+
+```bash
+# After adding or changing a dependency (keeps every other pin)
+uv pip compile requirements.txt --universal --python-version 3.11 -o requirements.lock
+
+# Moving every package to its newest version, on purpose (e.g. before a release)
+uv pip compile requirements.txt --universal --python-version 3.11 --upgrade -o requirements.lock
+```
+
+Then regenerate the type-check lock (command in `requirements-typecheck.txt`), install the new lock into your venv, and run the full test suite before committing.
+
 ### Frontend (TypeScript/React)
 
-We use ESLint for linting and TypeScript for type checking:
+We use ESLint for linting, TypeScript for type checking and knip for unused
+files and dependencies:
 
 ```bash
 cd frontend
@@ -199,8 +229,17 @@ cd frontend
 npm run lint
 
 # Type check
-npx tsc --noEmit
+npm run typecheck
+
+# Unused files and dependencies
+npm run check:knip
 ```
+
+knip follows imports from the entry points (`index.html`, the Vite and Vitest
+configs, and `public/sw.js`, which the browser loads by URL). A file nothing
+imports, or a package nothing uses, fails the check: delete it, or add it to
+`frontend/knip.jsonc` with a comment saying why if something loads it in a way
+knip can't see.
 
 ### Pre-commit Hooks
 
@@ -216,21 +255,18 @@ The frontend uses [react-i18next](https://react.i18next.com/) for all user-facin
 
 ### Locale Files
 
-Translations live in `frontend/src/i18n/locales/`:
+Translations live in `frontend/src/i18n/locales/`. `en.ts` is the reference locale; every other `*.ts` file in that directory is checked against it. The parity check discovers the directory at runtime, so a new locale is picked up automatically — this file never needs updating when one is added.
 
-| File | Language |
-|------|----------|
-| `en.ts` | English (primary) |
-| `de.ts` | German |
-| `fr.ts` | French |
-| `ja.ts` | Japanese |
-| `pt-BR.ts` | Brazilian Portuguese |
-[...]
-check for possibly more files!!!
+To see the current set of locales and check your work:
+
+```bash
+cd frontend
+npm run check:i18n
+```
 
 ### Adding New Strings
 
-1. Add the key to the appropriate section in **all three** locale files
+1. Add the key to the appropriate section in **every** locale file
 2. Use the `useTranslation` hook in your component:
 
 ```tsx
@@ -246,9 +282,9 @@ function MyComponent() {
 
 ### Important Notes
 
-- All three locale files must use the **same key structure** — same nesting, same key paths
-- Always add keys to all three locales to maintain parity
-- Run frontend tests after changes — locale parity is validated
+- Every locale file must use the **same key structure** — same nesting, same key paths
+- Always add keys to **every** locale to maintain parity, with real translations rather than English placeholders — the check flags leaves that are identical to `en`
+- Run `npm run test:run` before pushing — it chains the parity check, which CI runs too. Plain `npm test` is vitest in watch mode and skips it
 - If you find structural inconsistencies between locales, fix them — different key paths cause silent fallback to English
 
 ## Authentication & Permissions
@@ -289,7 +325,11 @@ Permissions follow the `resource:action` pattern (e.g., `filaments:read`, `print
 | `update` | Modify existing resources |
 | `delete` | Remove resources |
 
-Some resources have additional actions (e.g., `printers:control` for start/stop, `printers:files` for file transfer).
+Some resources have additional actions. Examples: `printers:control` for live printer controls
+such as stop/pause/resume, `printers:files` for printer storage access, `queue:create` for
+creating queue items that may dispatch immediately when scheduled ASAP, `library:upload` for
+File Manager uploads/imports, and `archives:reprint_own` / `archives:reprint_all` for archive
+reprint eligibility. Archive reprint still needs `queue:create` before it can enqueue a job.
 
 ### Adding New Permissions
 
@@ -311,8 +351,8 @@ Some resources have additional actions (e.g., `printers:control` for start/stop,
 The easiest way to run tests is with the provided scripts in the project root:
 
 ```bash
-./test_frontend.sh    # TypeScript check + ESLint + Vitest
-./test_backend.sh     # Ruff lint/format + pytest (parallel)
+./test_frontend.sh    # TypeScript check + ESLint + knip + Vitest
+./test_backend.sh     # Ruff lint/format + type check (if .typecheck-venv exists) + PostgreSQL upgrade check (if Docker is available) + pytest (parallel)
 ./test_docker.sh      # Full Docker build, unit tests, and integration tests
 ./test_all.sh         # All of the above (frontend → backend → docker)
 ./test_security.sh    # Security scans (bandit, pip-audit, npm-audit)
@@ -332,6 +372,39 @@ pytest backend/tests/unit/         # Unit tests only
 pytest backend/tests/ --cov=backend  # With coverage
 ```
 
+`conftest.py` redirects `DATABASE_URL` to a throwaway SQLite file before any app
+module is imported, and aborts the run if that redirect did not take. Your `.env`
+is ignored for the duration, so the suite cannot reach the database you develop
+against — it exercises code paths that open their own sessions, and some of those
+write. Don't undo that override to "test against real data": point `DATABASE_URL`
+at a copy instead.
+
+### Database migrations (PostgreSQL)
+
+The test suite runs on SQLite only. `scripts/check_postgres_upgrade.py` covers
+PostgreSQL: it builds a database with older releases' code (the first release
+with PostgreSQL support and the newest stable one), upgrades it with the current
+code twice, and compares its schema with a fresh install. `test_backend.sh`
+runs it in a throwaway `postgres:16-alpine` container when Docker is available
+and the clone has the release tags (`git fetch --tags`); CI runs it too.
+
+A fresh install gets every table and column straight from the models, while an
+existing database only gets what the migrations in `backend/app/core/database.py`
+add. So a new column, constraint or index needs a migration that builds it
+exactly as the model does, including nullability and default; the check fails
+when an upgraded database ends up different.
+
+A migration that only fails with data in the database, such as a constraint
+that existing rows violate, gets a scenario in `SCENARIOS` in the same script:
+a fixed chain of old releases to build the database, rows to add, and a query
+that must find nothing wrong after the upgrade.
+
+`scripts/postgres_schema_drift.txt` can list known drift, each line an object
+and exactly how it differs; a listed object that starts to differ in another
+way fails like new drift, and so does a line that no longer drifts. The drift
+found when the check was introduced has been fixed and the list is empty: fix
+new drift with a migration rather than listing it.
+
 **Frontend** — tests use [Vitest](https://vitest.dev/) and are in `frontend/src/__tests__/`:
 
 ```bash
@@ -345,8 +418,8 @@ npm run test:coverage  # With coverage
 
 Pull requests trigger automated CI checks via GitHub Actions (`.github/workflows/ci.yml`):
 
-- **Backend**: Ruff lint + format check, unit/integration tests, pip-audit
-- **Frontend**: ESLint, TypeScript type check, Vitest tests, production build
+- **Backend**: Ruff lint + format check, basedpyright type check (against the baseline), unit/integration tests, PostgreSQL upgrade check, pip-audit
+- **Frontend**: ESLint, knip (unused files and dependencies), TypeScript type check, Vitest tests, production build
 - **Docker**: Full image build, backend/frontend tests in Docker, integration health checks
 - **Security**: CodeQL analysis, dependency audits
 

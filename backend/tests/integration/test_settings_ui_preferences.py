@@ -83,6 +83,7 @@ class TestUiPreferencesEndpoint:
             "time_format",
             "date_format",
             "drying_presets",
+            "ams_humidity_thresholds",
             "ams_humidity_good",
             "ams_humidity_fair",
             "ams_temp_good",
@@ -90,6 +91,10 @@ class TestUiPreferencesEndpoint:
             "bed_cooled_threshold",
             "panda_breath_printer_assignments",
             "print_farm_monitor_refresh_interval",
+            "nozzle_temp_presets",
+            "bed_temp_presets",
+            "chamber_temp_presets",
+            "fan_speed_presets",
         }
         assert set(data.keys()) == expected
 

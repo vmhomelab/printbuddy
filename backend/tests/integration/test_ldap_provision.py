@@ -20,8 +20,10 @@ from unittest.mock import patch
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.models.finance import CostCenter, CostCenterMember, UserWallet
 from backend.app.models.settings import Settings
 from backend.app.models.user import User
 from backend.app.services.ldap_service import LDAPSearchResult, LDAPUserInfo
@@ -367,3 +369,222 @@ class TestLdapProvisionRoute:
         body = response.json()
         group_names = {g["name"] for g in body["groups"]}
         assert "Operators" in group_names
+
+
+class TestLdapLoginFinanceDefaults:
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_successful_ldap_login_backfills_finance_defaults(
+        self, async_client: AsyncClient, db_session: AsyncSession
+    ):
+        """LDAP login should ensure wallet + private cost center defaults exist.
+
+        Regression: LDAP users created before finance defaults were introduced can
+        exist without wallet/private center. A successful LDAP login must backfill
+        these defaults so billing-enabled flows have a valid personal cost center.
+        """
+        await async_client.post(
+            "/api/v1/auth/setup",
+            json={
+                "auth_enabled": True,
+                "admin_username": "ldapadmin",
+                "admin_password": "AdminPass1!",
+            },
+        )
+        await _seed_ldap_settings(db_session, ldap_auto_provision="false")
+
+        legacy_user = User(
+            username="legacyldap",
+            email="legacyldap@test.com",
+            password_hash=None,
+            role="user",
+            auth_source="ldap",
+            is_active=True,
+        )
+        db_session.add(legacy_user)
+        await db_session.commit()
+        await db_session.refresh(legacy_user)
+
+        # Precondition: legacy LDAP row has no finance defaults yet.
+        wallet_before = (
+            await db_session.execute(select(UserWallet).where(UserWallet.user_id == legacy_user.id))
+        ).scalar_one_or_none()
+        private_cc_before = (
+            await db_session.execute(
+                select(CostCenter).where(
+                    CostCenter.owner_user_id == legacy_user.id,
+                    CostCenter.is_private.is_(True),
+                )
+            )
+        ).scalar_one_or_none()
+        assert wallet_before is None
+        assert private_cc_before is None
+
+        fake_ldap = LDAPUserInfo(
+            username="legacyldap",
+            email="legacyldap@test.com",
+            display_name="Legacy LDAP",
+            groups=[],
+        )
+        with patch("backend.app.services.ldap_service.authenticate_ldap_user", return_value=fake_ldap):
+            response = await async_client.post(
+                "/api/v1/auth/login",
+                json={"username": "legacyldap", "password": "irrelevant"},
+            )
+
+        assert response.status_code == 200
+        assert response.json()["user"]["auth_source"] == "ldap"
+
+        wallet_after = (
+            await db_session.execute(select(UserWallet).where(UserWallet.user_id == legacy_user.id))
+        ).scalar_one_or_none()
+        assert wallet_after is not None
+
+        private_cc_after = (
+            await db_session.execute(
+                select(CostCenter).where(
+                    CostCenter.owner_user_id == legacy_user.id,
+                    CostCenter.is_private.is_(True),
+                )
+            )
+        ).scalar_one_or_none()
+        assert private_cc_after is not None
+        assert private_cc_after.name == "legacyldap"
+
+        membership = (
+            await db_session.execute(
+                select(CostCenterMember).where(
+                    CostCenterMember.cost_center_id == private_cc_after.id,
+                    CostCenterMember.user_id == legacy_user.id,
+                )
+            )
+        ).scalar_one_or_none()
+        assert membership is not None
+        assert membership.can_print is True
+
+
+class TestLdapFirstLoginProvisionsOnce:
+    """Auto-provisioning on login used to be followed straight away by the sync
+    meant for returning users, which repeated what provisioning had just done and
+    logged the default-group warning twice (#3197)."""
+
+    async def _login(
+        self, async_client: AsyncClient, db_session: AsyncSession, groups: list[str], default_group: str = "Viewers"
+    ):
+        await async_client.post(
+            "/api/v1/auth/setup",
+            json={"auth_enabled": True, "admin_username": "ldapadmin", "admin_password": "AdminPass1!"},
+        )
+        await _seed_ldap_settings(
+            db_session,
+            ldap_auto_provision="true",
+            ldap_default_group=default_group,
+            ldap_group_mapping='{"cn=printbuddy-admins,ou=groups,dc=test,dc=com": "Administrators"}',
+        )
+        fake_ldap = LDAPUserInfo(username="tofm", email="tofm@test.com", display_name=None, groups=groups)
+        with patch("backend.app.services.ldap_service.authenticate_ldap_user", return_value=fake_ldap):
+            return await async_client.post("/api/v1/auth/login", json={"username": "tofm", "password": "irrelevant"})
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_default_group_warning_is_logged_once(
+        self, async_client: AsyncClient, db_session: AsyncSession, caplog
+    ):
+        with caplog.at_level("WARNING", logger="backend.app.api.routes.auth"):
+            response = await self._login(async_client, db_session, groups=[])
+
+        assert response.status_code == 200
+        assert {g["name"] for g in response.json()["user"]["groups"]} == {"Viewers"}
+        assert caplog.text.count("has no mapped groups") == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_new_user_gets_mapped_group_and_finance_defaults(
+        self, async_client: AsyncClient, db_session: AsyncSession
+    ):
+        response = await self._login(async_client, db_session, groups=["CN=Printbuddy-Admins,OU=Groups,DC=Test,DC=Com"])
+
+        assert response.status_code == 200
+        body = response.json()["user"]
+        assert body["auth_source"] == "ldap"
+        assert body["email"] == "tofm@test.com"
+        assert {g["name"] for g in body["groups"]} == {"Administrators"}
+        user = (await db_session.execute(select(User).where(User.username == "tofm"))).scalar_one()
+        wallet = (
+            await db_session.execute(select(UserWallet).where(UserWallet.user_id == user.id))
+        ).scalar_one_or_none()
+        assert wallet is not None
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_new_user_with_no_groups_at_all_logs_in_twice(
+        self, async_client: AsyncClient, db_session: AsyncSession
+    ):
+        """No mapped group and no default group: the new user has no groups, and
+        the second login (the sync path) still works."""
+        first = await self._login(async_client, db_session, groups=[], default_group="")
+        assert first.status_code == 200
+        assert first.json()["user"]["groups"] == []
+
+        fake_ldap = LDAPUserInfo(username="tofm", email="new@test.com", display_name=None, groups=[])
+        with patch("backend.app.services.ldap_service.authenticate_ldap_user", return_value=fake_ldap):
+            second = await async_client.post("/api/v1/auth/login", json={"username": "tofm", "password": "irrelevant"})
+        assert second.status_code == 200
+        assert second.json()["user"]["email"] == "new@test.com"
+
+
+class TestLdapUserCreationIsAdminOnly:
+    """Creating a user is admin-only (users.create_user); the LDAP way in is too."""
+
+    @staticmethod
+    async def _creator_token(async_client: AsyncClient, admin_token: str) -> str:
+        auth = {"Authorization": f"Bearer {admin_token}"}
+        group = await async_client.post(
+            "/api/v1/groups", json={"name": "User creators", "permissions": ["users:create"]}, headers=auth
+        )
+        assert group.status_code == 201, group.text
+        # pragma: allowlist secret — test fixture only, not a real credential
+        password = "Creator1pass!"  # noqa: S105
+        created = await async_client.post(
+            "/api/v1/users",
+            json={"username": "ldapcreator", "password": password, "group_ids": [group.json()["id"]]},
+            headers=auth,
+        )
+        assert created.status_code == 201, created.text
+        login = await async_client.post("/api/v1/auth/login", json={"username": "ldapcreator", "password": password})
+        return login.json()["access_token"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_provision_refuses_a_non_admin(
+        self, async_client: AsyncClient, admin_token: str, db_session: AsyncSession
+    ):
+        await _seed_ldap_settings(db_session)
+        token = await self._creator_token(async_client, admin_token)
+        fake_ldap = LDAPUserInfo(username="jdoe", email="jdoe@test.com", display_name=None, groups=[])
+
+        with patch("backend.app.services.ldap_service.lookup_ldap_user", return_value=fake_ldap):
+            response = await async_client.post(
+                "/api/v1/auth/ldap/provision",
+                json={"username": "jdoe"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+
+        assert response.status_code == 403
+        assert (await db_session.execute(select(User).where(User.username == "jdoe"))).scalar_one_or_none() is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_search_refuses_a_non_admin(
+        self, async_client: AsyncClient, admin_token: str, db_session: AsyncSession
+    ):
+        await _seed_ldap_settings(db_session)
+        token = await self._creator_token(async_client, admin_token)
+
+        with patch("backend.app.services.ldap_service.search_ldap_users", return_value=[]) as search:
+            response = await async_client.get(
+                "/api/v1/auth/ldap/search?q=jdoe", headers={"Authorization": f"Bearer {token}"}
+            )
+
+        assert response.status_code == 403
+        search.assert_not_called()

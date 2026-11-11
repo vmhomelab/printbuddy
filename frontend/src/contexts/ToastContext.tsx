@@ -1,41 +1,59 @@
 import { AlertCircle, CheckCircle, ChevronDown, ChevronUp, Info, Loader2, X, XCircle } from 'lucide-react';
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { api } from '../api/client';
 import { formatFileSize } from '../utils/file';
 
 type ToastType = 'success' | 'error' | 'warning' | 'info' | 'loading';
 
-type ShowPersistentToast = (id: string, message: string, type?: ToastType) => void;
-
-interface Toast {
-  id: string;
-  message: string;
-  type: ToastType;
-  persistent?: boolean;
-  dispatchData?: DispatchToastData;
-}
-
-type DispatchJobStatus = 'dispatched' | 'processing' | 'completed' | 'failed' | 'cancelled';
+// Dispatch-toast types — ported verbatim from
+// 0b43ac0d:frontend/src/contexts/ToastContext.tsx. The visual rendering
+// block below is the legacy code 1:1; the only swap is the event ingestion
+// (now sourced from `printbuddy:dispatch-toast` window events that
+// useWebSocket forwards from the four backend WS event types added in
+// the #1625 follow-up). Same shape, same DOM, same styling, same i18n
+// surface — guarantees the modal looks identical to the pre-scheduler
+// experience that users remember.
+type DispatchJobStatus = 'processing' | 'completed' | 'failed';
 
 interface DispatchToastJob {
   jobId: number;
   sourceName: string;
   printerName: string;
   status: DispatchJobStatus;
-  message?: string;
   uploadBytes?: number;
   uploadTotalBytes?: number;
   uploadProgressPct?: number;
+  failReason?: string;
 }
 
 interface DispatchToastData {
   total: number;
-  dispatched: number;
   processing: number;
   completed: number;
   failed: number;
   jobs: DispatchToastJob[];
+}
+
+interface ToastAction {
+  label: string;
+  href: string;
+  onClick?: () => void;
+}
+
+type ShowPersistentToast = (
+  id: string,
+  message: string,
+  type?: ToastType,
+  options?: { action?: ToastAction },
+) => void;
+
+interface Toast {
+  id: string;
+  message: string;
+  type: ToastType;
+  persistent?: boolean;
+  action?: ToastAction;
+  dispatchData?: DispatchToastData;
 }
 
 interface ToastContextType {
@@ -76,15 +94,58 @@ const bgColors = {
   loading: 'bg-bambu-green/10 border-bambu-green/30',
 };
 
+const DISPATCH_TOAST_ID = 'background-dispatch';
+const DISPATCH_TERMINAL_DISMISS_MS = 3500;
+
+// Auto-dismiss windows for the plain (non-persistent) toasts. Errors and
+// warnings get double the default because they carry far more text than a
+// success confirmation — a backend failure reason or a validation message
+// often runs to a couple of lines, and 3s isn't long enough to finish
+// reading one before it slides away. Success/info stay short: they confirm
+// something the user just did and are skimmed, not read.
+const TOAST_DISMISS_MS = 3000;
+const TOAST_DISMISS_LONG_MS = 2 * TOAST_DISMISS_MS;
+const LONG_LIVED_TOAST_TYPES: ReadonlySet<ToastType> = new Set(['error', 'warning']);
+
+interface DispatchEventDetail {
+  type: string;
+  queue_item_id: number;
+  printer_id?: number | null;
+  printer_name?: string | null;
+  file_name?: string;
+  total_bytes?: number;
+  bytes_transferred?: number;
+  pct?: number;
+  reason?: string;
+}
+
+function isAwaitingPrinter(job: DispatchToastJob): boolean {
+  // Same trick the legacy code used to derive "Awaiting printer…" without
+  // a separate status. While the job is still 'processing' AND upload pct
+  // has reached 99.9%, the printer hasn't yet acked our project_file.
+  return (
+    job.status === 'processing'
+    && typeof job.uploadProgressPct === 'number'
+    && job.uploadProgressPct >= 99.9
+  );
+}
+
+function recomputeAggregate(jobs: DispatchToastJob[]): DispatchToastData {
+  return {
+    total: jobs.length,
+    processing: jobs.filter((j) => j.status === 'processing').length,
+    completed: jobs.filter((j) => j.status === 'completed').length,
+    failed: jobs.filter((j) => j.status === 'failed').length,
+    jobs,
+  };
+}
+
 export function ToastProvider({ children }: { children: ReactNode }) {
   const { t } = useTranslation();
   const [toasts, setToasts] = useState<Toast[]>([]);
-  const [isDispatchCollapsed, setIsDispatchCollapsed] = useState(false);
   const [viewportSuppressed, setViewportSuppressed] = useState(false);
-  const [cancellingDispatchJobIds, setCancellingDispatchJobIds] = useState<Set<number>>(new Set());
+  const [isDispatchCollapsed, setIsDispatchCollapsed] = useState(false);
   const timeoutRefs = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
-  const dispatchToastId = 'background-dispatch';
-  const lastDispatchSummaryRef = useRef<string | null>(null);
   // Tracks whether the provider is still mounted. A toast can be triggered by
   // an async callback that resolves AFTER React has unmounted us (common in
   // tests: `cleanup()` runs while a login promise is still in flight, then
@@ -110,26 +171,31 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     const id = Math.random().toString(36).substr(2, 9);
     setToasts((prev) => [...prev, { id, message, type }]);
 
-    // Auto-dismiss after 3 seconds
+    // Auto-dismiss — longer for the types that carry more to read.
     const timeout = setTimeout(() => {
       if (!isMountedRef.current) return;
       setToasts((prev) => prev.filter((t) => t.id !== id));
       timeoutRefs.current.delete(id);
-    }, 3000);
+    }, LONG_LIVED_TOAST_TYPES.has(type) ? TOAST_DISMISS_LONG_MS : TOAST_DISMISS_MS);
     timeoutRefs.current.set(id, timeout);
   }, []);
 
-  const showPersistentToast = useCallback((id: string, message: string, type: ToastType = 'info') => {
-    if (!isMountedRef.current) return;
-    setToasts((prev) => {
-      // Update existing toast if same id, otherwise add new one
-      const exists = prev.find((t) => t.id === id);
-      if (exists) {
-        return prev.map((t) => (t.id === id ? { ...t, message, type, persistent: true } : t));
-      }
-      return [...prev, { id, message, type, persistent: true }];
-    });
-  }, []);
+  const showPersistentToast = useCallback(
+    (id: string, message: string, type: ToastType = 'info', options?: { action?: ToastAction }) => {
+      if (!isMountedRef.current) return;
+      setToasts((prev) => {
+        // Update existing toast if same id, otherwise add new one
+        const exists = prev.find((t) => t.id === id);
+        if (exists) {
+          return prev.map((t) =>
+            t.id === id ? { ...t, message, type, persistent: true, action: options?.action } : t,
+          );
+        }
+        return [...prev, { id, message, type, persistent: true, action: options?.action }];
+      });
+    },
+    [],
+  );
 
   const dismissToast = useCallback((id: string) => {
     if (!isMountedRef.current) return;
@@ -142,374 +208,172 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
-  const cancelDispatchJob = useCallback(async (jobId: number) => {
-    setCancellingDispatchJobIds((prev) => {
-      const next = new Set(prev);
-      next.add(jobId);
-      return next;
-    });
-
-    try {
-      const result = await api.cancelBackgroundDispatchJob(jobId);
-      showToast(
-        result.status === 'cancelling'
-          ? t('backgroundDispatch.toast.cancellingUpload')
-          : t('backgroundDispatch.toast.cancelled'),
-        'info'
-      );
-    } catch (error) {
-      const message = error instanceof Error ? error.message : t('backgroundDispatch.toast.cancelFailed');
-      showToast(message, 'error');
-    } finally {
-      setCancellingDispatchJobIds((prev) => {
-        const next = new Set(prev);
-        next.delete(jobId);
-        return next;
-      });
-    }
-  }, [showToast, t]);
-
+  // Dispatch-toast ingestion. The four event types from the backend
+  // (queue_item_uploading / upload_progress / acked / failed) map to
+  // the legacy DispatchToastJob shape, then the same auto-dismiss +
+  // aggregate-recompute logic from 0b43ac0d takes over.
   useEffect(() => {
-    interface DispatchEventDetail {
-      total?: number;
-      dispatched?: number;
-      processing?: number;
-      completed?: number;
-      failed?: number;
-      dispatched_jobs?: Array<{
-        job_id: number;
-        source_name?: string;
-        printer_name?: string;
-      }>;
-      active_job?: {
-        job_id?: number;
-        printer_name?: string;
-        source_name?: string;
-        message?: string;
-        upload_bytes?: number;
-        upload_total_bytes?: number;
-        upload_progress_pct?: number;
-      } | null;
-      active_jobs?: Array<{
-        job_id?: number;
-        printer_name?: string;
-        source_name?: string;
-        message?: string;
-        upload_bytes?: number;
-        upload_total_bytes?: number;
-        upload_progress_pct?: number;
-      }>;
-      recent_event?: {
-        status?: string;
-        job_id?: number;
-        source_name?: string;
-        printer_name?: string;
-        message?: string;
-      };
-    }
-
-    const updateJob = (
-      jobs: DispatchToastJob[],
-      jobId: number,
-      next: Partial<DispatchToastJob> & {
-        status: DispatchJobStatus;
-        sourceName: string;
-        printerName: string;
-      }
-    ) => {
-      const index = jobs.findIndex((job) => job.jobId === jobId);
-      if (index === -1) {
-        return [...jobs, { jobId, ...next }];
-      }
-      const copy = [...jobs];
-      copy[index] = {
-        ...copy[index],
-        ...next,
-      };
-      return copy;
-    };
-
-    const statusWeight = (status: DispatchJobStatus) => {
-      switch (status) {
-        case 'failed':
-          return 0;
-        case 'processing':
-          return 1;
-        case 'dispatched':
-          return 2;
-        case 'completed':
-          return 3;
-        case 'cancelled':
-          return 4;
-      }
-    };
-
     const onDispatchEvent = (event: Event) => {
-      const detail = (event as CustomEvent<DispatchEventDetail>).detail || {};
-      const total = detail.total ?? 0;
-      const dispatched = detail.dispatched ?? 0;
-      const processing = detail.processing ?? 0;
-      const completed = detail.completed ?? 0;
-      const failed = detail.failed ?? 0;
+      if (!isMountedRef.current) return;
+      const detail = (event as CustomEvent<DispatchEventDetail>).detail;
+      if (!detail || typeof detail.queue_item_id !== 'number') return;
+      const jobId = detail.queue_item_id;
 
-      const hasActiveWork = dispatched + processing > 0;
-      const allDone = total > 0 && completed + failed >= total && !hasActiveWork;
-      const recentStatus = detail.recent_event?.status;
+      setToasts((prev) => {
+        const existing = prev.find((toastItem) => toastItem.id === DISPATCH_TOAST_ID);
+        const existingJobs = existing?.dispatchData?.jobs ?? [];
+        const existingJobIndex = existingJobs.findIndex((j) => j.jobId === jobId);
+        const existingJob = existingJobIndex >= 0 ? existingJobs[existingJobIndex] : undefined;
 
-      // Once any print starts successfully, dismiss the dispatch toast (#615)
-      // Remaining jobs continue in the background silently
-      if (recentStatus === 'completed' && completed > 0) {
-        const summaryKey = `first-complete:${completed}:${failed}`;
-        if (lastDispatchSummaryRef.current !== summaryKey) {
-          lastDispatchSummaryRef.current = summaryKey;
+        let nextJob: DispatchToastJob | null = null;
+        const sourceName =
+          detail.file_name
+          || existingJob?.sourceName
+          || t('dispatchToast.untitled');
+        const printerName =
+          detail.printer_name
+          || existingJob?.printerName
+          || (detail.printer_id ? `Printer ${detail.printer_id}` : '');
 
-          const remaining = total - completed - failed;
-          const doneMessage = remaining > 0
-            ? t('backgroundDispatch.toast.printStartedRemaining', { completed, remaining })
-            : failed > 0
-              ? t('backgroundDispatch.toast.completeWithFailures', { completed, failed })
-              : t('backgroundDispatch.toast.completeSuccess', { completed });
-
-          setToasts((prev) => {
-            const doneToast: Toast = {
-              id: dispatchToastId,
-              message: doneMessage,
-              type: failed > 0 ? 'warning' : 'success',
-              persistent: true,
-            };
-            const exists = prev.find((toastItem) => toastItem.id === dispatchToastId);
-            if (exists) {
-              return prev.map((toastItem) =>
-                toastItem.id === dispatchToastId ? doneToast : toastItem
-              );
-            }
-            return [...prev, doneToast];
-          });
-
-          const existingTimeout = timeoutRefs.current.get(dispatchToastId);
-          if (existingTimeout) clearTimeout(existingTimeout);
-          const timeout = setTimeout(() => {
-            if (!isMountedRef.current) return;
-            setToasts((prev) => prev.filter((t) => t.id !== dispatchToastId));
-            timeoutRefs.current.delete(dispatchToastId);
-            lastDispatchSummaryRef.current = null;
-          }, 3000);
-          timeoutRefs.current.set(dispatchToastId, timeout);
-        }
-        return;
-      }
-
-      if (hasActiveWork) {
-        // New batch starting — reset dedup guard so completion toast works
-        lastDispatchSummaryRef.current = null;
-        setToasts((prev) => {
-          const existing = prev.find((toastItem) => toastItem.id === dispatchToastId);
-          const existingJobs = existing?.dispatchData?.jobs || [];
-
-          const dispatchedJobs: DispatchToastJob[] = (detail.dispatched_jobs || []).map((job) => ({
-            jobId: job.job_id,
-            sourceName: job.source_name || t('backgroundDispatch.unknownFile'),
-            printerName: job.printer_name || t('backgroundDispatch.unknownPrinter'),
-            status: 'dispatched',
-          }));
-
-          const activeJobsPayload =
-            detail.active_jobs && detail.active_jobs.length > 0
-              ? detail.active_jobs
-              : detail.active_job?.job_id
-                ? [detail.active_job]
-                : [];
-
-          const activeJobs: DispatchToastJob[] = activeJobsPayload
-            .filter((job) => typeof job.job_id === 'number')
-            .map((job) => ({
-              jobId: job.job_id as number,
-              sourceName: job.source_name || t('backgroundDispatch.unknownFile'),
-              printerName: job.printer_name || t('backgroundDispatch.unknownPrinter'),
-              status: 'processing',
-              message: job.message,
-              uploadBytes: job.upload_bytes,
-              uploadTotalBytes: job.upload_total_bytes,
-              uploadProgressPct: job.upload_progress_pct,
-            }));
-
-          const activeIds = new Set([...dispatchedJobs, ...activeJobs].map((job) => job.jobId));
-          const historicalJobs = existingJobs.filter(
-            (job) => !activeIds.has(job.jobId) && ['completed', 'failed', 'cancelled'].includes(job.status)
-          );
-
-          let jobs = [...dispatchedJobs, ...activeJobs, ...historicalJobs];
-
-          if (detail.recent_event?.job_id && detail.recent_event?.status) {
-            const rawStatus = detail.recent_event.status;
-            const eventStatus = (
-              rawStatus === 'cancelled' ? 'cancelled' : rawStatus === 'cancelling' ? 'processing' : rawStatus
-            ) as DispatchJobStatus;
-            const sourceName = detail.recent_event.source_name || t('backgroundDispatch.unknownFile');
-            const printerName = detail.recent_event.printer_name || t('backgroundDispatch.unknownPrinter');
-            jobs = updateJob(jobs, detail.recent_event.job_id, {
-              status: eventStatus,
+        switch (detail.type) {
+          case 'queue_item_uploading':
+            // Materialization point — job appears here, never on queue-add.
+            nextJob = {
+              jobId,
               sourceName,
               printerName,
-              message: detail.recent_event.message,
-            });
-          }
-
-          activeJobs.forEach((activeJob) => {
-            jobs = updateJob(jobs, activeJob.jobId, {
               status: 'processing',
-              sourceName: activeJob.sourceName,
-              printerName: activeJob.printerName,
-              message: activeJob.message,
-              uploadBytes: activeJob.uploadBytes,
-              uploadTotalBytes: activeJob.uploadTotalBytes,
-              uploadProgressPct: activeJob.uploadProgressPct,
-            });
-          });
-
-          const dispatchData: DispatchToastData = {
-            total,
-            dispatched,
-            processing,
-            completed,
-            failed,
-            jobs: [...jobs].sort((a, b) => {
-              const byStatus = statusWeight(a.status) - statusWeight(b.status);
-              if (byStatus !== 0) {
-                return byStatus;
-              }
-              return a.jobId - b.jobId;
-            }),
-          };
-
-          const exists = prev.find((toastItem) => toastItem.id === dispatchToastId);
-          if (exists) {
-            return prev.map((toastItem) =>
-              toastItem.id === dispatchToastId
-                ? {
-                    ...toastItem,
-                    message: t('backgroundDispatch.startingPrints'),
-                    type: 'loading',
-                    persistent: true,
-                    dispatchData,
-                  }
-                : toastItem
-            );
-          }
-          return [
-            ...prev,
-            {
-              id: dispatchToastId,
-              message: t('backgroundDispatch.startingPrints'),
-              type: 'loading',
-              persistent: true,
-              dispatchData,
-            },
-          ];
-        });
-        return;
-      }
-
-      if (allDone) {
-        const summaryKey = `${completed}:${failed}`;
-        if (lastDispatchSummaryRef.current === summaryKey) {
-          return;
+              uploadBytes: 0,
+              uploadTotalBytes: detail.total_bytes,
+              uploadProgressPct: 0,
+            };
+            break;
+          case 'queue_item_upload_progress':
+            if (!existingJob) return prev;
+            nextJob = {
+              ...existingJob,
+              uploadBytes: detail.bytes_transferred,
+              uploadTotalBytes: detail.total_bytes ?? existingJob.uploadTotalBytes,
+              uploadProgressPct: detail.pct,
+            };
+            break;
+          case 'queue_item_acked':
+            if (!existingJob) return prev;
+            nextJob = {
+              ...existingJob,
+              status: 'completed',
+              uploadProgressPct: 100,
+            };
+            break;
+          case 'queue_item_failed':
+            if (!existingJob) return prev;
+            nextJob = {
+              ...existingJob,
+              status: 'failed',
+              failReason: detail.reason,
+            };
+            break;
+          default:
+            return prev;
         }
-        lastDispatchSummaryRef.current = summaryKey;
 
-        const doneMessage = failed > 0
-          ? t('backgroundDispatch.toast.completeWithFailures', { completed, failed })
-          : t('backgroundDispatch.toast.completeSuccess', { completed });
+        // Compose the updated jobs list
+        let updatedJobs: DispatchToastJob[];
+        if (existingJob) {
+          updatedJobs = [...existingJobs];
+          updatedJobs[existingJobIndex] = nextJob;
+        } else {
+          updatedJobs = [...existingJobs, nextJob];
+        }
 
-        // Show a brief "completed" state on the dispatch toast before replacing with summary
-        // This ensures the user sees confirmation even for fast uploads (#615)
-        setToasts((prev) => {
-          const doneToast: Toast = {
-            id: dispatchToastId,
-            message: doneMessage,
-            type: failed > 0 ? 'warning' : 'success',
-            persistent: true,
-            // Clear dispatchData so it renders as a simple text toast
-          };
-          const exists = prev.find((toastItem) => toastItem.id === dispatchToastId);
-          if (exists) {
-            return prev.map((toastItem) =>
-              toastItem.id === dispatchToastId ? doneToast : toastItem
-            );
-          }
-          return [...prev, doneToast];
-        });
+        const dispatchData = recomputeAggregate(updatedJobs);
 
-        // Auto-dismiss after 3 seconds
-        const existingTimeout = timeoutRefs.current.get(dispatchToastId);
-        if (existingTimeout) clearTimeout(existingTimeout);
-        const timeout = setTimeout(() => {
-          setToasts((prev) => prev.filter((t) => t.id !== dispatchToastId));
-          timeoutRefs.current.delete(dispatchToastId);
-          lastDispatchSummaryRef.current = null;
-        }, 3000);
-        timeoutRefs.current.set(dispatchToastId, timeout);
-        return;
-      }
+        const toastShape: Toast = {
+          id: DISPATCH_TOAST_ID,
+          message: t('dispatchToast.startingPrints'),
+          type: 'loading',
+          persistent: true,
+          dispatchData,
+        };
 
-      if (!hasActiveWork && recentStatus && ['cancelled', 'failed', 'completed', 'idle'].includes(recentStatus)) {
-        setToasts((prev) => prev.filter((t) => t.id !== dispatchToastId));
-        lastDispatchSummaryRef.current = null;
-      }
-
-      if (detail.recent_event?.status === 'idle' && !hasActiveWork) {
-        setToasts((prev) => prev.filter((t) => t.id !== dispatchToastId));
-        lastDispatchSummaryRef.current = null;
-      }
-
-      if (!hasActiveWork) {
-        setCancellingDispatchJobIds(new Set());
-      }
-
-      if (detail.dispatched_jobs) {
-        const dispatchedIds = new Set(detail.dispatched_jobs.map((job) => job.job_id));
-        setCancellingDispatchJobIds((prev) => {
-          const next = new Set<number>();
-          prev.forEach((id) => {
-            if (dispatchedIds.has(id)) {
-              next.add(id);
-            }
-          });
-          return next;
-        });
-      }
+        if (existing) {
+          return prev.map((toastItem) =>
+            toastItem.id === DISPATCH_TOAST_ID ? toastShape : toastItem,
+          );
+        }
+        return [...prev, toastShape];
+      });
     };
 
-    window.addEventListener('background-dispatch', onDispatchEvent);
-    return () => window.removeEventListener('background-dispatch', onDispatchEvent);
+    window.addEventListener('printbuddy:dispatch-toast', onDispatchEvent);
+    return () => window.removeEventListener('printbuddy:dispatch-toast', onDispatchEvent);
   }, [t]);
 
+  // Auto-dismiss the wrapper once every job has reached a terminal state.
+  useEffect(() => {
+    const dispatchToast = toasts.find((tst) => tst.id === DISPATCH_TOAST_ID);
+    if (!dispatchToast?.dispatchData) return;
+    const data = dispatchToast.dispatchData;
+    if (data.total === 0 || data.processing !== 0) return;
+    const existing = timeoutRefs.current.get(DISPATCH_TOAST_ID);
+    if (existing) clearTimeout(existing);
+    const timeout = setTimeout(() => {
+      if (!isMountedRef.current) return;
+      setToasts((prev) => prev.filter((tst) => tst.id !== DISPATCH_TOAST_ID));
+      timeoutRefs.current.delete(DISPATCH_TOAST_ID);
+    }, DISPATCH_TERMINAL_DISMISS_MS);
+    timeoutRefs.current.set(DISPATCH_TOAST_ID, timeout);
+  }, [toasts]);
 
   return (
     <ToastContext.Provider value={{ showToast, showPersistentToast, dismissToast, setViewportSuppressed }}>
       {children}
 
-      {/* Toast Container — to the left of the bug-report bubble (bottom-4 right-4 w-12). */}
-      <div className={`fixed bottom-4 right-20 z-[60] flex flex-col items-end gap-2 ${viewportSuppressed ? 'hidden' : ''}`}>
+      {/* Toast Container — to the left of the bug-report bubble (bottom-4 right-4 w-12).
+          Position is set via safe-area-aware calc() rather than bottom-4/right-20 so an
+          installed PWA on a notched phone clears the home indicator / landscape notch
+          (#2612): the 5rem right offset keeps clearance for the bug bubble. */}
+      <div
+        data-testid="toast-viewport"
+        className={`fixed z-[60] flex flex-col items-end gap-2 ${viewportSuppressed ? 'hidden' : ''}`}
+        style={{
+          bottom: 'calc(1rem + env(safe-area-inset-bottom))',
+          right: 'calc(5rem + env(safe-area-inset-right))',
+        }}
+      >
         {toasts.map((toast) => (
           <div
             key={toast.id}
             className={`rounded-lg border shadow-lg backdrop-blur-sm animate-slide-in ${bgColors[toast.type]} ${
               toast.dispatchData ? 'w-[420px] p-3' : 'flex items-center gap-3 px-4 py-3'
             }`}
+            // Cap width to the viewport so the fixed-width dispatch toast (420px)
+            // can't run off the left edge on a phone (#2612). At the cap the toast
+            // sits 1rem + safe-area from the left; on desktop the 420px wins. The
+            // 6rem = the 5rem right offset above + a 1rem left gutter.
+            style={{
+              maxWidth:
+                'calc(100vw - 6rem - env(safe-area-inset-left) - env(safe-area-inset-right))',
+            }}
+            data-testid={toast.dispatchData ? 'dispatch-toast-wrapper' : undefined}
           >
             {toast.dispatchData ? (
+              // Legacy dispatch-toast rendering — verbatim port from
+              // 0b43ac0d:frontend/src/contexts/ToastContext.tsx lines
+              // 515–650. Same DOM, same Tailwind classes, same uppercase
+              // status chip, same `awaitingPrinter` derivation. Only
+              // diff vs legacy: no cancel button (the BG dispatch
+              // cancel endpoint doesn't exist in the scheduler model).
               <>
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex items-start gap-2">
                     {icons[toast.type]}
                     <div>
-                      <p className="text-white text-sm font-medium">{t('backgroundDispatch.startingPrints')}</p>
+                      <p className="text-white text-sm font-medium">{t('dispatchToast.startingPrints')}</p>
                       <p className="text-xs text-bambu-gray mt-0.5">
-                        {t('backgroundDispatch.progressSummary', {
+                        {t('dispatchToast.progressSummary', {
                           complete: toast.dispatchData.completed + toast.dispatchData.failed,
                           total: toast.dispatchData.total,
-                          dispatched: toast.dispatchData.dispatched,
                           processing: toast.dispatchData.processing,
                         })}
                       </p>
@@ -519,18 +383,16 @@ export function ToastProvider({ children }: { children: ReactNode }) {
                     <button
                       onClick={() => setIsDispatchCollapsed((prev) => !prev)}
                       className="text-bambu-gray hover:text-white transition-colors"
-                      aria-label={
-                        isDispatchCollapsed
-                          ? t('backgroundDispatch.expandDetails')
-                          : t('backgroundDispatch.collapseDetails')
-                      }
+                      aria-label={isDispatchCollapsed ? t('dispatchToast.expandDetails') : t('dispatchToast.collapseDetails')}
+                      data-testid="dispatch-toast-collapse"
                     >
                       {isDispatchCollapsed ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
                     </button>
                     <button
                       onClick={() => dismissToast(toast.id)}
                       className="text-bambu-gray hover:text-white transition-colors"
-                      aria-label={t('backgroundDispatch.dismissToast')}
+                      aria-label={t('dispatchToast.dismiss')}
+                      data-testid="dispatch-toast-dismiss"
                     >
                       <X className="w-4 h-4" />
                     </button>
@@ -540,73 +402,60 @@ export function ToastProvider({ children }: { children: ReactNode }) {
                 {!isDispatchCollapsed && (
                   <div className="mt-3 space-y-2 max-h-64 overflow-y-auto pr-1">
                     {toast.dispatchData.jobs.map((job) => {
-                      const progressByStatus: Record<DispatchJobStatus, number> = {
-                        dispatched: 15,
-                        processing: 60,
-                        completed: 100,
-                        failed: 100,
-                        cancelled: 100,
-                      };
-                      // Upload byte count reached the total — the printer hasn't yet
-                      // confirmed it received the file (state is still 'processing').
-                      // Without distinguishing this we show a frozen 100% bar that
-                      // reads as "stuck" on small files where the upload completed
-                      // in <500ms.
-                      const uploadDoneAwaitingPrinter =
-                        job.status === 'processing' &&
-                        typeof job.uploadProgressPct === 'number' &&
-                        job.uploadProgressPct >= 99.9;
+                      const uploadDoneAwaitingPrinter = isAwaitingPrinter(job);
                       const barColorByStatus: Record<DispatchJobStatus, string> = {
-                        dispatched: 'bg-bambu-gray/60',
                         processing: 'bg-bambu-green',
                         completed: 'bg-green-500',
                         failed: 'bg-red-500',
-                        cancelled: 'bg-yellow-500',
+                      };
+                      const progressByStatus: Record<DispatchJobStatus, number> = {
+                        processing: 60,
+                        completed: 100,
+                        failed: 100,
                       };
                       return (
-                        <div key={job.jobId} className="rounded border border-white/10 bg-black/15 p-2">
+                        <div
+                          key={job.jobId}
+                          className="rounded border border-white/10 bg-black/15 p-2"
+                          data-testid={`dispatch-toast-job-${job.jobId}`}
+                        >
                           <div className="flex items-center justify-between gap-2">
-                            <span className="text-xs text-white truncate" title={job.sourceName}>
+                            {/* min-w-0 + flex-1 lets truncate actually kick in
+                                when the toast is capped to a phone's width
+                                (#2612); the status chip stays put with shrink-0. */}
+                            <span className="text-xs text-white truncate min-w-0 flex-1" title={job.sourceName}>
                               {job.sourceName}
                             </span>
-                            <div className="flex items-center gap-2">
-                              {(job.status === 'dispatched' || job.status === 'processing') && (
-                                <button
-                                  onClick={() => void cancelDispatchJob(job.jobId)}
-                                  disabled={cancellingDispatchJobIds.has(job.jobId)}
-                                  className="text-[11px] text-red-300 hover:text-red-200 disabled:opacity-50 disabled:cursor-not-allowed"
-                                  title={t('backgroundDispatch.cancelDispatchJob')}
-                                >
-                                  {cancellingDispatchJobIds.has(job.jobId)
-                                    ? t('backgroundDispatch.cancelling')
-                                    : t('backgroundDispatch.cancel')}
-                                </button>
-                              )}
-                              <span className="text-[11px] uppercase tracking-wide text-bambu-gray">
-                                {t(`backgroundDispatch.status.${job.status}`)}
-                              </span>
-                            </div>
+                            <span
+                              className="text-[11px] uppercase tracking-wide text-bambu-gray shrink-0"
+                              data-testid={`dispatch-toast-status-${job.jobId}`}
+                            >
+                              {t(`dispatchToast.status.${job.status}`)}
+                            </span>
                           </div>
-                          <div className="text-[11px] text-bambu-gray truncate" title={job.printerName}>
-                            {job.printerName}
-                          </div>
-                          {job.message && (
-                            <div className="text-[11px] text-bambu-gray truncate" title={job.message}>
-                              {job.message}
+                          {job.printerName && (
+                            <div className="text-[11px] text-bambu-gray truncate" title={job.printerName}>
+                              {job.printerName}
                             </div>
                           )}
-                          {job.status === 'processing' && (
+                          {job.status === 'processing' ? (
                             uploadDoneAwaitingPrinter ? (
                               <div className="text-[11px] text-bambu-gray truncate">
-                                {t('backgroundDispatch.awaitingPrinter')}
+                                {t('dispatchToast.awaitingPrinter')}
                               </div>
-                            ) : typeof job.uploadBytes === 'number' && typeof job.uploadTotalBytes === 'number' && job.uploadTotalBytes > 0 ? (
+                            ) : typeof job.uploadBytes === 'number'
+                                && typeof job.uploadTotalBytes === 'number'
+                                && job.uploadTotalBytes > 0 ? (
                               <div className="text-[11px] text-bambu-gray truncate">
                                 {formatFileSize(job.uploadBytes)} / {formatFileSize(job.uploadTotalBytes)}
                                 {typeof job.uploadProgressPct === 'number' ? ` (${job.uploadProgressPct.toFixed(1)}%)` : ''}
                               </div>
                             ) : null
-                          )}
+                          ) : job.status === 'failed' && job.failReason ? (
+                            <div className="text-[11px] text-red-400 truncate">
+                              {t(`dispatchToast.failed.${job.failReason}`, { defaultValue: t('dispatchToast.failed.generic') })}
+                            </div>
+                          ) : null}
                           <div className="mt-1 h-1.5 w-full rounded bg-white/10 overflow-hidden">
                             <div
                               className={`h-full ${barColorByStatus[job.status]} transition-all duration-300 ${uploadDoneAwaitingPrinter ? 'animate-pulse' : ''}`}
@@ -629,6 +478,20 @@ export function ToastProvider({ children }: { children: ReactNode }) {
               <>
                 {icons[toast.type]}
                 <span className="text-white text-sm">{toast.message}</span>
+                {toast.action && (
+                  <a
+                    href={toast.action.href}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={() => {
+                      toast.action?.onClick?.();
+                      dismissToast(toast.id);
+                    }}
+                    className="ml-2 px-2 py-1 rounded text-xs font-medium bg-bambu-green/20 text-bambu-green hover:bg-bambu-green/30 whitespace-nowrap"
+                  >
+                    {toast.action.label}
+                  </a>
+                )}
                 <button
                   onClick={() => dismissToast(toast.id)}
                   className="ml-2 text-bambu-gray hover:text-white transition-colors"

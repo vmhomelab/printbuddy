@@ -60,10 +60,11 @@ RUN setcap cap_net_bind_service=+ep "$(readlink -f /usr/local/bin/python3)"
 # pip is upgraded to >=26.1 first to close CVE-2026-6357 — the python:3.13-slim
 # base image ships pip 26.0.1, which runs its self-update check after installing
 # wheels (so a hostile wheel could hijack stdlib imports during install).
-COPY requirements.txt ./
+# requirements.lock pins the exact versions that were tested (see CONTRIBUTING.md).
+COPY requirements.txt requirements.lock ./
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --root-user-action=ignore --upgrade 'pip>=26.1' \
- && pip install --root-user-action=ignore -r requirements.txt
+    pip install --root-user-action=ignore --upgrade 'pip>=26.1.2' \
+ && pip install --root-user-action=ignore -r requirements.lock
 
 # Copy backend
 COPY backend/ ./backend/
@@ -78,15 +79,6 @@ COPY .git/HEAD ./.git/HEAD
 
 # Copy built frontend from builder stage
 COPY --from=frontend-builder /app/static ./static
-
-# Copy embedded GCode viewer static assets (PrettyGCode + Printbuddy adapter).
-# Served by the explicit @app.get("/gcode-viewer/{...}") routes in main.py,
-# which resolve files under (static_dir.parent / "gcode_viewer") = /app/gcode_viewer/.
-# Without this COPY the routes return a bare 404 at request time and the 3D
-# Preview iframe shows {"detail":"Not Found"} (see #1218). The directory is
-# vendored third-party JS — the Vite build does NOT stage it into static/,
-# the dev server serves it via a configureServer middleware that's dev-only.
-COPY gcode_viewer/ ./gcode_viewer/
 
 # Create data directories. Ownership is normalised at startup by the
 # entrypoint (chowns to PUID:PGID and drops privileges via gosu before
@@ -154,6 +146,22 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
 
 # Run the application
 # Use standard asyncio loop (uvloop has permission issues in some Docker environments)
-# Port is configurable via PORT environment variable (default: 8000)
+# Port is configurable via PORT (default 8000); bind address via HOST (default
+# 0.0.0.0). Set HOST=127.0.0.1 to bind loopback only, e.g. when a reverse proxy
+# on the same host fronts the app.
+#
+# `exec` is load-bearing, not style. Without it the shell stays as PID 1 and
+# uvicorn runs as its child; dash does not forward signals, so `docker stop`
+# SIGTERMs the shell and uvicorn never hears about it. Every stop then ran to
+# the end of the grace period and died on SIGKILL (exit 137) — no WAL
+# checkpoint, no MQTT disconnect, no virtual-printer teardown, on every restart
+# and every image update. With `exec`, uvicorn *is* PID 1 and gets the signal.
+#
+# --timeout-graceful-shutdown caps the wait on in-flight requests. Uvicorn's
+# default is to wait forever, and an MJPEG camera stream is a response that
+# never completes, so a single open camera tile would otherwise pin the process
+# past Docker's 10s grace and back into SIGKILL. On timeout uvicorn cancels the
+# request tasks; the camera generators already unwind cleanly on CancelledError.
+ENV UVICORN_TIMEOUT_GRACEFUL_SHUTDOWN=5
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
-CMD ["sh", "-c", "uvicorn backend.app.main:app --host 0.0.0.0 --port ${PORT:-8000} --loop asyncio"]
+CMD ["sh", "-c", "exec uvicorn backend.app.main:app --host ${HOST:-0.0.0.0} --port ${PORT:-8000} --loop asyncio --timeout-graceful-shutdown ${UVICORN_TIMEOUT_GRACEFUL_SHUTDOWN}"]

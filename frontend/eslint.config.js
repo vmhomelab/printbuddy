@@ -6,7 +6,10 @@ import tseslint from 'typescript-eslint'
 import { defineConfig, globalIgnores } from 'eslint/config'
 
 export default defineConfig([
-  globalIgnores(['dist', 'coverage']),
+  // src/lib/vendor holds third-party build output copied in verbatim. Linting
+  // it produces findings we must not act on -- editing vendored code makes it
+  // impossible to re-copy on the next upstream release.
+  globalIgnores(['dist', 'coverage', 'src/lib/vendor']),
   {
     files: ['**/*.{ts,tsx}'],
     extends: [

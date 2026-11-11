@@ -48,6 +48,31 @@ class TestMaintenanceTypesAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_create_custom_type_persists_wiki_url(self, async_client: AsyncClient):
+        """#1596: pre-fix, the POST handler hard-coded every constructor field
+        by name and silently dropped `wiki_url`. The schema accepted the value,
+        the response echoed `null`, and the row landed without it. Pin the
+        contract so the constructor doesn't drift again."""
+        data = {
+            "name": "Wiki URL Persistence Test",
+            "default_interval_hours": 50.0,
+            "interval_type": "hours",
+            "wiki_url": "https://wiki.example.com/lubrication",
+        }
+        response = await async_client.post("/api/v1/maintenance/types", json=data)
+        assert response.status_code == 200
+        assert response.json()["wiki_url"] == "https://wiki.example.com/lubrication"
+
+        # Verify it persists through a separate GET round-trip — the POST
+        # response could have echoed the request body without committing.
+        list_response = await async_client.get("/api/v1/maintenance/types")
+        assert list_response.status_code == 200
+        matching = [t for t in list_response.json() if t["name"] == data["name"]]
+        assert len(matching) == 1
+        assert matching[0]["wiki_url"] == "https://wiki.example.com/lubrication"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_update_maintenance_type(self, async_client: AsyncClient):
         """Verify maintenance type can be updated."""
         # First create a custom type
@@ -170,6 +195,25 @@ class TestMaintenanceItemsAPI:
         response = await async_client.patch(f"/api/v1/maintenance/items/{item_id}", json={"enabled": False})
         assert response.status_code == 200
         assert response.json()["enabled"] is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_perform_reports_the_item_s_own_interval_type(self, async_client: AsyncClient, printer_factory):
+        """dbcol-09: an item set to days on an hours-based type was answered in
+        hours by "performed", while the list honoured the item's setting."""
+        printer = await printer_factory(name="Interval Type Printer")
+        overview = (await async_client.get(f"/api/v1/maintenance/printers/{printer.id}")).json()
+        item = next(i for i in overview["maintenance_items"] if i["interval_type"] == "hours")
+        patched = await async_client.patch(
+            f"/api/v1/maintenance/items/{item['id']}",
+            json={"custom_interval_type": "days", "custom_interval_hours": 30},
+        )
+        assert patched.status_code == 200
+
+        data = (await async_client.post(f"/api/v1/maintenance/items/{item['id']}/perform", json={})).json()
+
+        assert data["interval_type"] == "days"
+        assert data["days_until_due"] == 30
 
     @pytest.mark.asyncio
     @pytest.mark.integration

@@ -9,8 +9,10 @@ import secrets
 import smtplib
 import string
 from datetime import datetime, timezone
+from email.mime.image import MIMEImage
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.utils import formataddr, formatdate, make_msgid, parseaddr
 from typing import Any
 
 from sqlalchemy import select
@@ -173,12 +175,32 @@ async def save_smtp_settings(db: AsyncSession, smtp_settings: SMTPSettings) -> N
         await upsert_setting(db, Settings, key, value)
 
 
+def add_required_headers(msg: MIMEMultipart, from_email: str) -> None:
+    """Add the Date and Message-ID headers RFC 5322 requires (#3376).
+
+    Neither smtplib nor the MIME classes add them, and strict receivers
+    (amavis's bad_header policy) quarantine mail without a Date after the
+    SMTP server already accepted it. The Message-ID domain comes from the
+    sender address; without one, make_msgid() would look up the container's
+    hostname, which can block on DNS and leaks an internal name.
+    """
+    _local, at, domain = parseaddr(from_email)[1].rpartition("@")
+    if not at or not domain:
+        domain = "printbuddy.local"
+    if "Date" not in msg:
+        msg["Date"] = formatdate(localtime=True)
+    if "Message-ID" not in msg:
+        msg["Message-ID"] = make_msgid(domain=domain)
+
+
 def send_email(
     smtp_settings: SMTPSettings,
     to_email: str,
     subject: str,
     body_text: str,
     body_html: str | None = None,
+    image_data: bytes | None = None,
+    image_cid: str = "printbuddy-inline-photo",
 ) -> None:
     """Send an email using SMTP.
 
@@ -188,21 +210,45 @@ def send_email(
         subject: Email subject
         body_text: Plain text body
         body_html: Optional HTML body
+        image_data: Optional JPEG bytes to embed inline. The caller is
+            responsible for putting a matching ``<img src="cid:{image_cid}">``
+            in body_html — this just attaches the bytes under that Content-ID.
+        image_cid: Content-ID the embedded image is referenced by in body_html.
 
     Raises:
         Exception: If email sending fails
     """
-    msg = MIMEMultipart("alternative")
-    msg["From"] = f"{smtp_settings.smtp_from_name} <{smtp_settings.smtp_from_email}>"
-    msg["To"] = to_email
-    msg["Subject"] = subject
+    if image_data and body_html:
+        # multipart/related wraps multipart/alternative so the inline image
+        # travels with the HTML part without becoming a visible attachment.
+        msg = MIMEMultipart("related")
+        msg["From"] = formataddr((smtp_settings.smtp_from_name, smtp_settings.smtp_from_email))
+        msg["To"] = to_email
+        msg["Subject"] = subject
 
-    # Attach plain text part
-    msg.attach(MIMEText(body_text, "plain"))
+        alt = MIMEMultipart("alternative")
+        alt.attach(MIMEText(body_text, "plain"))
+        alt.attach(MIMEText(body_html, "html"))
+        msg.attach(alt)
 
-    # Attach HTML part if provided
-    if body_html:
-        msg.attach(MIMEText(body_html, "html"))
+        img = MIMEImage(image_data, _subtype="jpeg")
+        img.add_header("Content-ID", f"<{image_cid}>")
+        img.add_header("Content-Disposition", "inline", filename="photo.jpg")
+        msg.attach(img)
+    else:
+        msg = MIMEMultipart("alternative")
+        msg["From"] = formataddr((smtp_settings.smtp_from_name, smtp_settings.smtp_from_email))
+        msg["To"] = to_email
+        msg["Subject"] = subject
+
+        # Attach plain text part
+        msg.attach(MIMEText(body_text, "plain"))
+
+        # Attach HTML part if provided
+        if body_html:
+            msg.attach(MIMEText(body_html, "html"))
+
+    add_required_headers(msg, smtp_settings.smtp_from_email)
 
     # Send email
     try:
@@ -233,7 +279,7 @@ def send_email(
                 if auth_enabled and smtp_settings.smtp_password and smtp_settings.smtp_username:
                     server.login(smtp_settings.smtp_username, smtp_settings.smtp_password)
                 server.send_message(msg)
-        logger.info(f"Email sent successfully to {to_email}")
+        logger.info(f"Email accepted by SMTP server for {to_email}")
     except Exception as e:
         logger.error(f"Failed to send email to {to_email}: {e}")
         raise
@@ -305,80 +351,6 @@ Printbuddy Team
     return subject, text_body, html_body
 
 
-def create_password_reset_email(username: str, password: str, login_url: str) -> tuple[str, str, str]:
-    """Create password reset email content.
-
-    Args:
-        username: Username of the user
-        password: New auto-generated password
-        login_url: URL to login page
-
-    Returns:
-        Tuple of (subject, text_body, html_body)
-    """
-    subject = "Printbuddy - Your Password Has Been Reset"
-
-    text_body = f"""Your Printbuddy password has been reset.
-
-Your login details:
-
-Username: {username}
-New Password: {password}
-
-You can login at: {login_url}
-
-For security reasons, please change your password after logging in.
-
-If you did not request this password reset, please contact your administrator immediately.
-
-Best regards,
-Printbuddy Team
-"""
-
-    html_body = f"""<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-</head>
-<body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
-    <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); background-color: #667eea; padding: 20px; border-radius: 8px 8px 0 0;">
-        <h1 style="color: #ffffff; margin: 0; font-size: 24px; text-shadow: 0 1px 2px rgba(0,0,0,0.3);">Password Reset</h1>
-    </div>
-    <div style="background: #f9f9f9; padding: 30px; border-radius: 0 0 8px 8px; border: 1px solid #ddd; border-top: none;">
-        <p style="font-size: 16px;">Your Printbuddy password has been reset.</p>
-
-        <div style="background: white; padding: 20px; border-radius: 4px; margin: 20px 0; border-left: 4px solid #667eea;">
-            <p style="margin: 0 0 10px 0;"><strong>Username:</strong> <code style="background: #f0f0f0; padding: 2px 6px; border-radius: 3px;">{username}</code></p>
-            <p style="margin: 0;"><strong>New Password:</strong> <code style="background: #f0f0f0; padding: 2px 6px; border-radius: 3px;">{password}</code></p>
-        </div>
-
-        <div style="text-align: center; margin: 30px 0;">
-            <a href="{login_url}" style="display: inline-block; background-color: #667eea; color: #ffffff; padding: 12px 30px; text-decoration: none; border-radius: 4px; font-weight: bold;">Login Now</a>
-        </div>
-
-        <div style="background-color: #fff3cd; border: 1px solid #ffc107; border-radius: 4px; padding: 15px; margin: 20px 0;">
-            <p style="margin: 0; font-size: 14px; color: #856404;">
-                <strong>⚠️ Security Alert:</strong> If you did not request this password reset, please contact your administrator immediately.
-            </p>
-        </div>
-
-        <p style="font-size: 14px; color: #666; border-top: 1px solid #ddd; padding-top: 20px; margin-top: 20px;">
-            <strong>Security Note:</strong> For security reasons, please change your password after logging in.
-        </p>
-
-        <p style="font-size: 14px; color: #999; margin-top: 30px;">
-            Best regards,<br>
-            Printbuddy Team
-        </p>
-    </div>
-</body>
-</html>
-"""
-
-    return subject, text_body, html_body
-
-
 def create_password_reset_link_email(username: str, reset_url: str) -> tuple[str, str, str]:
     """Create a password-reset email that contains a secure link (not a plaintext password)."""
     subject = "Printbuddy - Password Reset Request"
@@ -428,26 +400,62 @@ Printbuddy Team
 
 
 async def create_password_reset_link_email_from_template(
-    db: AsyncSession, username: str, reset_url: str
+    db: AsyncSession, username: str, reset_url: str, app_name: str = "Printbuddy"
 ) -> tuple[str, str, str]:
-    """Create password-reset link email, using DB template if configured."""
-    template = await get_notification_template(db, "password_reset_link")
-    if template:
-        variables = {"username": username, "reset_url": reset_url}
-        subject = render_template(template.subject or "Printbuddy - Password Reset Request", variables)
-        text_body = render_template(template.body or "", variables)
-        html_body = render_template(template.html_body or "", variables) if template.html_body else None
-        if not html_body:
-            _, text_body, html_body = create_password_reset_link_email(username, reset_url)
-            return subject, text_body, html_body
-        return subject, text_body, html_body
-    return create_password_reset_link_email(username, reset_url)
+    """Create the password-reset link email from the "password_reset" template.
+
+    The link is never a template variable: the code adds it, on a line of its
+    own at the end and as the button, so the template's text cannot change it.
+    A {reset_url} written into the template renders as nothing. No template:
+    the built-in email.
+
+    Returns:
+        Tuple of (subject, text_body, html_body)
+    """
+    template = await get_notification_template(db, "password_reset")
+    if not template:
+        return create_password_reset_link_email(username, reset_url)
+
+    variables = {
+        "app_name": app_name,
+        "username": username,
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
+    }
+    subject = render_template(template.title_template, variables)
+    text_body = f"{render_template(template.body_template, variables).rstrip()}\n\n{reset_url}"
+
+    escaped_text_body = html.escape(text_body).replace("\n", "<br>\n")
+    html_body = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+    <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); background-color: #667eea; padding: 30px; border-radius: 8px 8px 0 0;">
+        <h1 style="color: #ffffff; margin: 0; font-size: 24px; text-shadow: 0 1px 2px rgba(0,0,0,0.3);">{html.escape(subject)}</h1>
+    </div>
+    <div style="background: #f9f9f9; padding: 30px; border-radius: 0 0 8px 8px; border: 1px solid #ddd; border-top: none;">
+        <div style="font-size: 16px;">{escaped_text_body}</div>
+
+        <div style="text-align: center; margin: 30px 0;">
+            <a href="{html.escape(reset_url)}" style="display: inline-block; background-color: #667eea; color: #ffffff; padding: 12px 30px; text-decoration: none; border-radius: 4px; font-weight: bold;">Reset Password</a>
+        </div>
+    </div>
+</body>
+</html>
+"""
+    return subject, text_body, html_body
 
 
 async def create_welcome_email_from_template(
     db: AsyncSession, username: str, password: str, login_url: str, app_name: str = "Printbuddy"
 ) -> tuple[str, str, str]:
     """Create welcome email content using notification template from database.
+
+    The password is never a template variable: Printbuddy adds the login details
+    itself, at the end of the text and in a box in the HTML, so the template's
+    text cannot change them. A {password} in the template renders as nothing.
 
     Args:
         db: Database session
@@ -467,16 +475,17 @@ async def create_welcome_email_from_template(
         variables = {
             "app_name": app_name,
             "username": username,
-            "password": password,
             "login_url": login_url,
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
         }
 
         subject = render_template(template.title_template, variables)
-        text_body = render_template(template.body_template, variables)
+        body = render_template(template.body_template, variables).rstrip()
+        text_body = f"{body}\n\nUsername: {username}\nPassword: {password}"
 
         # Create HTML version with embedded login button
-        # Escape text_body to prevent XSS vulnerabilities and convert newlines to <br> tags
-        escaped_text_body = html.escape(text_body).replace("\n", "<br>\n")
+        # Escape the body to prevent XSS vulnerabilities and convert newlines to <br> tags
+        escaped_body = html.escape(body).replace("\n", "<br>\n")
         html_body = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -488,10 +497,15 @@ async def create_welcome_email_from_template(
         <h1 style="color: #ffffff; margin: 0; font-size: 24px; text-shadow: 0 1px 2px rgba(0,0,0,0.3);">{html.escape(subject)}</h1>
     </div>
     <div style="background: #f9f9f9; padding: 30px; border-radius: 0 0 8px 8px; border: 1px solid #ddd; border-top: none;">
-        <div style="font-size: 16px;">{escaped_text_body}</div>
+        <div style="font-size: 16px;">{escaped_body}</div>
+
+        <div style="background: white; padding: 20px; border-radius: 4px; margin: 20px 0; border-left: 4px solid #667eea;">
+            <p style="margin: 0 0 10px 0;"><strong>Username:</strong> <code style="background: #f0f0f0; padding: 2px 6px; border-radius: 3px;">{html.escape(username)}</code></p>
+            <p style="margin: 0;"><strong>Password:</strong> <code style="background: #f0f0f0; padding: 2px 6px; border-radius: 3px;">{html.escape(password)}</code></p>
+        </div>
 
         <div style="text-align: center; margin: 30px 0;">
-            <a href="{login_url}" style="display: inline-block; background-color: #667eea; color: #ffffff; padding: 12px 30px; text-decoration: none; border-radius: 4px; font-weight: bold;">Login Now</a>
+            <a href="{html.escape(login_url)}" style="display: inline-block; background-color: #667eea; color: #ffffff; padding: 12px 30px; text-decoration: none; border-radius: 4px; font-weight: bold;">Login Now</a>
         </div>
     </div>
 </body>
@@ -506,80 +520,13 @@ async def create_welcome_email_from_template(
         return create_welcome_email(username, password, login_url)
 
 
-async def create_password_reset_email_from_template(
-    db: AsyncSession, username: str, password: str, login_url: str, app_name: str = "Printbuddy"
-) -> tuple[str, str, str]:
-    """Create password reset email content using notification template from database.
-
-    Args:
-        db: Database session
-        username: Username of the user
-        password: New auto-generated password
-        login_url: URL to login page
-        app_name: Application name (default: Printbuddy)
-
-    Returns:
-        Tuple of (subject, text_body, html_body)
-    """
-    # Try to get template from database
-    template = await get_notification_template(db, "password_reset")
-
-    if template:
-        # Render template with variables
-        variables = {
-            "app_name": app_name,
-            "username": username,
-            "password": password,
-            "login_url": login_url,
-        }
-
-        subject = render_template(template.title_template, variables)
-        text_body = render_template(template.body_template, variables)
-
-        # Create HTML version with embedded login button
-        # Escape text_body to prevent XSS vulnerabilities and convert newlines to <br> tags
-        escaped_text_body = html.escape(text_body).replace("\n", "<br>\n")
-        html_body = f"""<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-</head>
-<body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
-    <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); background-color: #667eea; padding: 30px; border-radius: 8px 8px 0 0;">
-        <h1 style="color: #ffffff; margin: 0; font-size: 24px; text-shadow: 0 1px 2px rgba(0,0,0,0.3);">{html.escape(subject)}</h1>
-    </div>
-    <div style="background: #f9f9f9; padding: 30px; border-radius: 0 0 8px 8px; border: 1px solid #ddd; border-top: none;">
-        <div style="font-size: 16px;">{escaped_text_body}</div>
-
-        <div style="text-align: center; margin: 30px 0;">
-            <a href="{login_url}" style="display: inline-block; background-color: #667eea; color: #ffffff; padding: 12px 30px; text-decoration: none; border-radius: 4px; font-weight: bold;">Login Now</a>
-        </div>
-
-        <div style="background-color: #fff3cd; border: 1px solid #ffc107; border-radius: 4px; padding: 15px; margin: 20px 0;">
-            <p style="margin: 0; font-size: 14px; color: #856404;">
-                <strong>⚠️ Security Alert:</strong> If you did not request this password reset, please contact your administrator immediately.
-            </p>
-        </div>
-    </div>
-</body>
-</html>
-"""
-
-        logger.info("Using custom password reset email template from database")
-        return subject, text_body, html_body
-    else:
-        # Fallback to hardcoded template
-        logger.warning("No password reset email template found in database, using default")
-        return create_password_reset_email(username, password, login_url)
-
-
 async def send_user_print_notification(
     db: AsyncSession,
     event_type: str,
     user_email: str,
     username: str,
     variables: dict,
+    image_data: bytes | None = None,
 ) -> None:
     """Send a print notification email to a user using Advanced Auth SMTP settings.
 
@@ -589,6 +536,10 @@ async def send_user_print_notification(
         user_email: Recipient email address
         username: Username of the recipient
         variables: Template variables (printer, filename, etc.)
+        image_data: Camera snapshot bytes, if one was captured for the event.
+            Inlined only when the template explicitly references
+            {finish_photo_url} — same opt-in as the provider-based email path
+            (#1792), so a user who never asked for a photo never gets one.
     """
     # Check that advanced auth is enabled (SMTP settings must be configured)
     smtp_settings = await get_smtp_settings(db)
@@ -613,8 +564,20 @@ async def send_user_print_notification(
     subject = render_template(template.title_template, all_variables)
     text_body = render_template(template.body_template, all_variables)
 
+    finish_photo_url = variables.get("finish_photo_url")
+    inline_photo = bool(image_data and finish_photo_url and finish_photo_url in text_body)
+
     # Build HTML body — content comes entirely from the database template
     escaped_text_body = html.escape(text_body).replace("\n", "<br>\n")
+    if inline_photo:
+        escaped_url = html.escape(finish_photo_url)
+        img_tag = (
+            '<img src="cid:printbuddy-user-print-photo" '
+            'alt="Printer camera snapshot" '
+            'style="max-width:100%;height:auto;border:1px solid #ddd;border-radius:4px;">'
+        )
+        escaped_text_body = escaped_text_body.replace(escaped_url, img_tag)
+
     html_body = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -633,7 +596,15 @@ async def send_user_print_notification(
 """
 
     try:
-        send_email(smtp_settings, user_email, subject, text_body, html_body)
+        send_email(
+            smtp_settings,
+            user_email,
+            subject,
+            text_body,
+            html_body,
+            image_data=image_data if inline_photo else None,
+            image_cid="printbuddy-user-print-photo",
+        )
         logger.info("Sent %s notification email to %s", event_type, user_email)
     except Exception as e:
         logger.error("Failed to send %s notification to %s: %s", event_type, user_email, e)

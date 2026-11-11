@@ -265,7 +265,7 @@ class TestCloudTokenStorage:
     @pytest.mark.asyncio
     async def test_get_stored_token_returns_none_when_no_user_no_global(self, db_session):
         """get_stored_token with user=None and no global token returns (None, None)."""
-        from backend.app.api.routes.cloud import get_stored_token
+        from backend.app.services.bambu_cloud_credentials import get_stored_token
 
         token, email, region = await get_stored_token(db_session, user=None)
         assert token is None
@@ -275,7 +275,8 @@ class TestCloudTokenStorage:
     @pytest.mark.asyncio
     async def test_store_and_get_global_token(self, db_session):
         """store_token with user=None stores in global Settings table."""
-        from backend.app.api.routes.cloud import get_stored_token, store_token
+        from backend.app.api.routes.cloud import store_token
+        from backend.app.services.bambu_cloud_credentials import get_stored_token
 
         await store_token(db_session, "test-token-123", "test@example.com", "global", user=None)
         token, email, region = await get_stored_token(db_session, user=None)
@@ -286,9 +287,10 @@ class TestCloudTokenStorage:
     @pytest.mark.asyncio
     async def test_store_and_get_per_user_token(self, db_session):
         """store_token with user stores on the user record."""
-        from backend.app.api.routes.cloud import get_stored_token, store_token
+        from backend.app.api.routes.cloud import store_token
         from backend.app.core.auth import get_password_hash
         from backend.app.models.user import User
+        from backend.app.services.bambu_cloud_credentials import get_stored_token
 
         user = User(username="tokentest", password_hash=get_password_hash("pass"), role="user")
         db_session.add(user)
@@ -309,9 +311,10 @@ class TestCloudTokenStorage:
     @pytest.mark.asyncio
     async def test_per_user_token_does_not_affect_global(self, db_session):
         """Storing per-user token should not affect global Settings."""
-        from backend.app.api.routes.cloud import get_stored_token, store_token
+        from backend.app.api.routes.cloud import store_token
         from backend.app.core.auth import get_password_hash
         from backend.app.models.user import User
+        from backend.app.services.bambu_cloud_credentials import get_stored_token
 
         user = User(username="isolationtest", password_hash=get_password_hash("pass"), role="user")
         db_session.add(user)
@@ -352,7 +355,8 @@ class TestCloudTokenStorage:
     @pytest.mark.asyncio
     async def test_clear_global_token(self, db_session):
         """clear_token with user=None clears from global Settings."""
-        from backend.app.api.routes.cloud import clear_token, get_stored_token, store_token
+        from backend.app.api.routes.cloud import clear_token, store_token
+        from backend.app.services.bambu_cloud_credentials import get_stored_token
 
         await store_token(db_session, "global-token", "global@test.com", "global", user=None)
         await clear_token(db_session, user=None)
@@ -365,9 +369,10 @@ class TestCloudTokenStorage:
     @pytest.mark.asyncio
     async def test_two_users_independent_tokens(self, db_session):
         """Two users should have completely independent cloud tokens and regions."""
-        from backend.app.api.routes.cloud import get_stored_token, store_token
+        from backend.app.api.routes.cloud import store_token
         from backend.app.core.auth import get_password_hash
         from backend.app.models.user import User
+        from backend.app.services.bambu_cloud_credentials import get_stored_token
 
         user_a = User(username="user_a", password_hash=get_password_hash("pass"), role="user")
         user_b = User(username="user_b", password_hash=get_password_hash("pass"), role="user")
@@ -406,9 +411,10 @@ class TestCloudRegionPersistence:
     @pytest.mark.asyncio
     async def test_region_survives_roundtrip_per_user(self, db_session):
         """Stored China region is returned on subsequent get_stored_token calls."""
-        from backend.app.api.routes.cloud import get_stored_token, store_token
+        from backend.app.api.routes.cloud import store_token
         from backend.app.core.auth import get_password_hash
         from backend.app.models.user import User
+        from backend.app.services.bambu_cloud_credentials import get_stored_token
 
         user = User(username="region-user", password_hash=get_password_hash("pass"), role="user")
         db_session.add(user)
@@ -429,7 +435,8 @@ class TestCloudRegionPersistence:
     @pytest.mark.asyncio
     async def test_region_survives_roundtrip_global_fallback(self, db_session):
         """Stored China region in auth-disabled Settings fallback survives too."""
-        from backend.app.api.routes.cloud import get_stored_token, store_token
+        from backend.app.api.routes.cloud import store_token
+        from backend.app.services.bambu_cloud_credentials import get_stored_token
 
         await store_token(db_session, "cn-token", "token-auth", "china", user=None)
         _token, _email, region = await get_stored_token(db_session, user=None)
@@ -438,7 +445,8 @@ class TestCloudRegionPersistence:
     @pytest.mark.asyncio
     async def test_invalid_region_is_normalised_to_global(self, db_session):
         """Unknown region values fall back to 'global' rather than mis-route."""
-        from backend.app.api.routes.cloud import get_stored_token, store_token
+        from backend.app.api.routes.cloud import store_token
+        from backend.app.services.bambu_cloud_credentials import get_stored_token
 
         await store_token(db_session, "t", "x@test.com", "mars", user=None)
         _token, _email, region = await get_stored_token(db_session, user=None)
@@ -501,6 +509,12 @@ class TestCloudRouteRegionPlumbing:
 
         def handler(request: httpx.Request) -> httpx.Response:
             captured.append(str(request.url))
+            # The TOTP path now performs a CSRF handshake first (#2696): it
+            # fetches /api/csrf and refuses to submit the code unless that call
+            # yields a bbl_csrf_token cookie. Mint one here so region-routing
+            # tests reach the TFA POST they are actually asserting on.
+            if request.url.path == "/api/csrf":
+                return httpx.Response(204, headers={"set-cookie": "bbl_csrf_token=csrf-test-token; Path=/"})
             return httpx.Response(status, json=response_json)
 
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
@@ -574,6 +588,10 @@ class TestCloudRouteRegionPlumbing:
                 # TOTP endpoint lives on bambulab.cn (without the api. prefix),
                 # NOT bambulab.com — that's exactly the bug we just fixed.
                 assert any("bambulab.cn/api/sign-in/tfa" in url for url in captured_urls), captured_urls
+                # The CSRF handshake (#2696) must follow the same origin —
+                # fetching a token from the global site would hand the .cn
+                # endpoint a cookie it never issued.
+                assert any("bambulab.cn/api/csrf" in url for url in captured_urls), captured_urls
                 assert not any("bambulab.com" in url for url in captured_urls), captured_urls
         finally:
             set_shared_http_client(None)
@@ -583,11 +601,22 @@ class TestCloudRouteRegionPlumbing:
     @pytest.mark.integration
     async def test_cloud_status_exposes_stored_region(self, async_client: AsyncClient):
         """GET /cloud/status returns the stored region so the UI can render
-        'Connected (China)' after a reload."""
+        'Connected (China)' after a reload.
+
+        ``validate_token`` is stubbed because the endpoint now asks Bambu whether
+        the stored token is still accepted rather than assuming it is — without
+        the stub this test would make a live call to api.bambulab.cn with a fake
+        token, get a 401, and correctly report the session as expired. Region
+        plumbing is what's under test here.
+        """
         from backend.app.api.routes.cloud import store_token
         from backend.app.core.database import async_session
+        from backend.app.services.bambu_cloud import BambuCloudService
 
-        with patch("backend.app.core.auth.is_auth_enabled", return_value=False):
+        with (
+            patch("backend.app.core.auth.is_auth_enabled", return_value=False),
+            patch.object(BambuCloudService, "validate_token", AsyncMock(return_value=True)),
+        ):
             async with async_session() as db:
                 await store_token(db, "cn-token", "token-auth", "china", user=None)
 

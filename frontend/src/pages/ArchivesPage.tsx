@@ -1,5 +1,5 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
@@ -17,6 +17,7 @@ import {
   Upload,
   ExternalLink,
   CheckSquare,
+  Combine,
   Square,
   X,
   Globe,
@@ -33,6 +34,7 @@ import {
   AlertCircle,
   Copy,
   Film,
+  FileVideo,
   ScanSearch,
   QrCode,
   Camera,
@@ -53,26 +55,42 @@ import {
   Play,
   ClipboardList,
   Zap,
+  Wrench,
   Cog,
   Archive as ArchiveIcon,
   History,
+  CheckCircle2,
+  Columns,
+  ChevronUp,
+  ChevronDown,
+  ThumbsUp,
+  ThumbsDown,
 } from 'lucide-react';
 import { api } from '../api/client';
 import { SliceModal } from '../components/SliceModal';
-import { openInSlicer, type SlicerType } from '../utils/slicer';
+import { ArchiveDetailModal } from '../components/ArchiveDetailModal';
+import { RunWithPipelineModal } from '../components/RunWithPipelineModal';
+import { isSlicedFile, openInSlicerWithToken, resolveDesktopSlicer, type SlicerType } from '../utils/slicer';
 import { formatDateTime, formatDateOnly, parseUTCDate, type TimeFormat, formatDuration } from '../utils/date';
 import { getCurrencySymbol } from '../utils/currency';
 import { getBedTypeInfo } from '../utils/bedType';
-import { useIsMobile } from '../hooks/useIsMobile';
-import type { Archive, ProjectListItem } from '../api/client';
+import { splitFilamentTypes } from '../utils/filamentTypes';
+import { invalidateArchiveAndProjectViews } from '../utils/projectQueries';
+import { assignableProjects } from '../utils/projectTree';
+import { verdictSourceKey } from '../utils/verdictSource';
+import { usePageFileDrop } from '../hooks/usePageFileDrop';
+import type { Archive, PrintLogEntry, ProjectListItem } from '../api/client';
 import { Card, CardContent } from '../components/Card';
 import { Button } from '../components/Button';
 import { PrintModal } from '../components/PrintModal';
+import { ConfirmOutcomeDialog } from '../components/ConfirmOutcomeDialog';
 import { UploadModal } from '../components/UploadModal';
 import { PurgeArchivesModal } from '../components/PurgeArchivesModal';
+import { MergeDuplicatesModal } from '../components/MergeDuplicatesModal';
 import { ConfirmModal } from '../components/ConfirmModal';
-import { EditArchiveModal } from '../components/EditArchiveModal';
+import { EditArchiveModal, FAILURE_REASON_KEYS } from '../components/EditArchiveModal';
 import { PrintLogModal } from '../components/PrintLogModal';
+import { ColumnConfigModal, type ColumnConfig } from '../components/ColumnConfigModal';
 import { ContextMenu, type ContextMenuItem } from '../components/ContextMenu';
 import { BatchTagModal } from '../components/BatchTagModal';
 import { BatchProjectModal } from '../components/BatchProjectModal';
@@ -81,6 +99,7 @@ import { QRCodeModal } from '../components/QRCodeModal';
 import { PhotoGalleryModal } from '../components/PhotoGalleryModal';
 import { ProjectPageModal } from '../components/ProjectPageModal';
 import { TimelapseViewer } from '../components/TimelapseViewer';
+import { ArchiveMediaDownloadModal } from '../components/ArchiveMediaDownloadModal';
 import { CompareArchivesModal } from '../components/CompareArchivesModal';
 import { PendingUploadsPanel } from '../components/PendingUploadsPanel';
 import { TagManagementModal } from '../components/TagManagementModal';
@@ -89,61 +108,168 @@ import type { PlateMetadata } from '../types/plates';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { formatFileSize } from '../utils/file';
+import { useUiSettings } from '../hooks/useUiSettings';
 
 type TFunction = (key: string, options?: Record<string, unknown>) => string;
 
-/**
- * Check if an archive represents a sliced/printable file.
- * Uses filename (.gcode, .gcode.3mf) as primary check, then falls back to
- * metadata — a .3mf with total_layers or print_time is sliced (contains gcode),
- * while a raw source .3mf (CAD export) has neither.
- */
-function isSlicedFile(archive: { filename?: string | null; total_layers?: number | null; print_time_seconds?: number | null }): boolean {
-  const filename = archive.filename;
-  if (filename) {
-    const lower = filename.toLowerCase();
-    if (lower.endsWith('.gcode') || lower.includes('.gcode.')) return true;
+// ---------------------------------------------------------------------------
+// Print Log column configuration (#2636, reporter @ajbastien)
+//
+// The log view used to hardcode seven columns, which left four populated
+// columns of `print_log_entries` — filament used, cost, energy, energy cost —
+// unreachable in the UI even though the API has always returned them. They are
+// per-run actuals (partial prints scaled to progress, multi-plate archives
+// scoped to the printed plate), so they are exactly what a log is for.
+//
+// Persisted per browser like the Inventory table's config, under its own key.
+// Labels are NOT read back from storage: they are re-derived from `t()` on
+// every render so a stored config from before a language switch doesn't pin
+// the column picker to the old language.
+// ---------------------------------------------------------------------------
+const LOG_COLUMN_CONFIG_KEY = 'printbuddy-printlog-columns';
+
+/** Column id -> i18n key. Also the authoritative list of valid ids. */
+const LOG_COLUMN_LABEL_KEYS: Record<string, string> = {
+  date: 'archives.log.date',
+  print_name: 'archives.log.printName',
+  printer: 'archives.log.printer',
+  user: 'archives.log.user',
+  status: 'archives.log.status',
+  duration: 'archives.log.duration',
+  completed_at: 'archives.log.completedAt',
+  filament: 'archives.log.filament',
+  filament_used: 'archives.log.filamentUsed',
+  cost: 'archives.log.cost',
+  energy: 'archives.log.energy',
+  energy_cost: 'archives.log.energyCost',
+  wear_cost: 'archives.log.wearCost',
+};
+
+// Defaults reproduce the previous seven columns in the same order, plus the
+// filament amount the issue actually asked for. The rest ship hidden: they are
+// available to anyone who wants them without widening the table for everyone
+// who doesn't.
+const DEFAULT_LOG_COLUMNS: Array<{ id: string; visible: boolean }> = [
+  { id: 'date', visible: true },
+  { id: 'print_name', visible: true },
+  { id: 'printer', visible: true },
+  { id: 'user', visible: true },
+  { id: 'status', visible: true },
+  { id: 'duration', visible: true },
+  { id: 'filament', visible: true },
+  { id: 'filament_used', visible: true },
+  { id: 'completed_at', visible: false },
+  { id: 'cost', visible: false },
+  { id: 'energy', visible: false },
+  { id: 'energy_cost', visible: false },
+  { id: 'wear_cost', visible: false },
+];
+
+/** Stored config merged with the defaults: unknown ids (removed columns) are
+ *  dropped and ids added by a later Printbuddy version are appended with their
+ *  default visibility, so an upgrade never silently hides a new column or
+ *  crashes on one that no longer exists. */
+function loadLogColumnConfig(): Array<{ id: string; visible: boolean }> {
+  try {
+    const stored = localStorage.getItem(LOG_COLUMN_CONFIG_KEY);
+    if (stored) {
+      const parsed = JSON.parse(stored) as Array<{ id: string; visible: boolean }>;
+      const known = new Set(Object.keys(LOG_COLUMN_LABEL_KEYS));
+      const storedIds = new Set(parsed.map((c) => c.id));
+      const valid = parsed
+        .filter((c) => known.has(c.id))
+        .map((c) => ({ id: c.id, visible: !!c.visible }));
+      const added = DEFAULT_LOG_COLUMNS.filter((c) => !storedIds.has(c.id));
+      if (valid.length > 0) return [...valid, ...added];
+    }
+  } catch {
+    // Corrupt or unavailable storage falls back to defaults.
   }
-  // .3mf can be either sliced or source — check for gcode metadata
-  if (archive.total_layers || archive.print_time_seconds) return true;
-  return false;
+  return DEFAULT_LOG_COLUMNS.map((c) => ({ ...c }));
+}
+
+const LOG_SORT_KEY = 'printbuddy-printlog-sort';
+
+type LogSortState = { column: string; direction: 'asc' | 'desc' };
+
+/** Column ids the backend will order by. Kept in step with
+ *  ``_SORTABLE_COLUMNS`` in ``routes/print_log.py`` — an id missing there
+ *  comes back as a 400, so a header is only made clickable if it is listed
+ *  in both. */
+const SORTABLE_LOG_COLUMNS = new Set(Object.keys(LOG_COLUMN_LABEL_KEYS));
+
+const DEFAULT_LOG_SORT: LogSortState = { column: 'date', direction: 'desc' };
+
+function loadLogSort(): LogSortState {
+  try {
+    const stored = localStorage.getItem(LOG_SORT_KEY);
+    if (stored) {
+      const parsed = JSON.parse(stored) as LogSortState;
+      if (SORTABLE_LOG_COLUMNS.has(parsed?.column) && (parsed.direction === 'asc' || parsed.direction === 'desc')) {
+        return parsed;
+      }
+    }
+  } catch {
+    // Fall through to the default.
+  }
+  return { ...DEFAULT_LOG_SORT };
+}
+
+function saveLogSort(state: LogSortState) {
+  try {
+    localStorage.setItem(LOG_SORT_KEY, JSON.stringify(state));
+  } catch {
+    // Private-mode / quota failures shouldn't break the page.
+  }
+}
+
+function saveLogColumnConfig(config: Array<{ id: string; visible: boolean }>) {
+  try {
+    localStorage.setItem(
+      LOG_COLUMN_CONFIG_KEY,
+      JSON.stringify(config.map((c) => ({ id: c.id, visible: c.visible }))),
+    );
+  } catch {
+    // Private-mode / quota failures shouldn't break the page.
+  }
+}
+
+// A click on an archive's card or row itself, not on a control in it or a
+// dialog it opened: that opens the archive's page (archive redesign P4).
+function isOwnClick(e: React.MouseEvent<Element>): boolean {
+  const target = e.target as HTMLElement;
+  if (!e.currentTarget.contains(target)) return false;
+  if (target.closest('button, a, input, select, textarea, label, video, .fixed')) return false;
+  return !window.getSelection()?.toString();
 }
 
 // formatDate imported from '../utils/date' - handles UTC conversion
 
-/**
- * Open an archive file in the slicer.
- * Fetches a short-lived download token, then builds a token-authenticated URL
- * that bypasses auth middleware (slicer protocol handlers can't send auth headers).
- */
-async function openInSlicerWithToken(
-  archiveId: number,
-  filename: string,
-  resourceType: 'file' | 'source',
-  slicer: SlicerType,
-): Promise<void> {
-  try {
-    if (resourceType === 'source') {
-      const { token } = await api.createSourceSlicerToken(archiveId);
-      const path = api.getSourceSlicerDownloadUrl(archiveId, token, filename);
-      openInSlicer(`${window.location.origin}${path}`, slicer);
-    } else {
-      const { token } = await api.createArchiveSlicerToken(archiveId);
-      const path = api.getArchiveSlicerDownloadUrl(archiveId, token, filename);
-      openInSlicer(`${window.location.origin}${path}`, slicer);
-    }
-  } catch {
-    // Fallback to direct URL (works when auth is disabled)
-    const path = resourceType === 'source'
-      ? api.getSource3mfForSlicer(archiveId, filename)
-      : api.getArchiveForSlicer(archiveId, filename);
-    openInSlicer(`${window.location.origin}${path}`, slicer);
-  }
+// Its videos: the archive's timelapse_path is its latest print's only, the
+// others are on their prints, which the archive window plays.
+function videoCount(archive: Archive): number {
+  return Math.max(archive.timelapse_count ?? 0, archive.timelapse_path ? 1 : 0);
 }
+
+// One video plays in place; more, or one only an earlier print has, open the
+// archive window, where each print's plays.
+function useArchiveVideos(archive: Archive, navigate: (to: string) => void, play: () => void) {
+  const videos = videoCount(archive);
+  const openTimelapse = () => {
+    if (videos > 1 || !archive.timelapse_path) navigate(`/archives/${archive.id}`);
+    else play();
+  };
+  return { videos, openTimelapse };
+}
+
+// Ended without finishing: the archive's grams and cost stay one full print of
+// the file (COST-3), not what this run used.
+const UNFINISHED_STATUSES = new Set(['failed', 'aborted', 'cancelled', 'stopped']);
 
 function ArchiveCard({
   archive,
   printerName,
+  printerMap,
   isSelected,
   onSelect,
   selectionMode,
@@ -169,32 +295,54 @@ function ArchiveCard({
   currency: string;
   t: TFunction;
   onNavigateToArchive?: (archiveId: number) => void;
+  /** Printer id -> name, for naming the printer a saved slicer AMS mapping
+   *  belongs to. The card can't know which printer a reprint will target, so
+   *  the badge names the one the mapping is actually good for. */
+  printerMap: Map<number, string>;
 }) {
-  // Debug: log when card is highlighted
-  if (isHighlighted) {
-    console.log('ArchiveCard isHighlighted=true for archive:', archive.id);
-  }
-
   const queryClient = useQueryClient();
   const { showToast } = useToast();
   const { hasPermission, canModify } = useAuth();
-  const isMobile = useIsMobile();
   const navigate = useNavigate();
+  const { videos, openTimelapse } = useArchiveVideos(archive, navigate, () => setShowTimelapse(true));
+  // Name of the printer this archive's saved slicer AMS mapping was resolved
+  // against, or undefined when there is none. Undefined also when the printer
+  // has since been deleted — a mapping whose printer is gone can never be
+  // reused, so the badge stays off rather than naming a ghost.
+  const savedSlicerAmsMappingPrinter = useMemo(() => {
+    const saved = (archive.extra_data as Record<string, unknown> | null)?.slicer_ams_mapping as
+      | { mapping?: unknown; printer_id?: number }
+      | undefined;
+    if (!saved || !Array.isArray(saved.mapping) || saved.printer_id == null) return undefined;
+    return printerMap.get(saved.printer_id);
+  }, [archive.extra_data, printerMap]);
   const [showReprint, setShowReprint] = useState(false);
+  // Post-print outcome confirmation dialog (#1898)
+  const [showConfirmOutcome, setShowConfirmOutcome] = useState(false);
   const [showSliceModal, setShowSliceModal] = useState(false);
+  const [showRunPipeline, setShowRunPipeline] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   // #1343: when true, the delete also drops the row from Quick Stats. Default
   // off — soft delete preserves the archive's filament/time/cost contribution.
   const [deletePurgeStats, setDeletePurgeStats] = useState(false);
+  // #1734: pre-flight count of related queue items so the confirm modal can
+  // tell the user how many will be removed and disable the button if any are
+  // currently printing (the server 409s in that case).
+  const deleteImpactQuery = useQuery({
+    queryKey: ['archive', archive.id, 'delete-impact'],
+    queryFn: () => api.getArchiveDeleteImpact(archive.id),
+    enabled: showDeleteConfirm,
+    staleTime: 0,
+  });
   const [showEdit, setShowEdit] = useState(false);
   const [showPrintLog, setShowPrintLog] = useState(false);
   const [showTimelapse, setShowTimelapse] = useState(false);
+  const [showPrinterMedia, setShowPrinterMedia] = useState(false);
   const [showTimelapseSelect, setShowTimelapseSelect] = useState(false);
   const [availableTimelapses, setAvailableTimelapses] = useState<Array<{ name: string; path: string; size: number; mtime: string | null }>>([]);
   const [showQRCode, setShowQRCode] = useState(false);
   const [showPhotos, setShowPhotos] = useState(false);
   const [showProjectPage, setShowProjectPage] = useState(false);
-  const [showSchedule, setShowSchedule] = useState(false);
   const [showDeleteSource3mfConfirm, setShowDeleteSource3mfConfirm] = useState(false);
   const [showDeleteF3dConfirm, setShowDeleteF3dConfirm] = useState(false);
   const [showDeleteTimelapseConfirm, setShowDeleteTimelapseConfirm] = useState(false);
@@ -216,6 +364,9 @@ function ArchiveCard({
 
   // Use pre-computed duplicate sequence and original archive ID from list response
   const duplicateSequence = archive.duplicate_sequence ?? 0;
+  // Appended to the verdict badge's tooltip (#1898) so a verdict the
+  // plate-clear default recorded can be explained where it is shown.
+  const verdictSourceHintKey = verdictSourceKey(archive.user_verdict_source);
   const originalArchiveId = archive.original_archive_id ?? null;
 
   const plates = platesData?.plates ?? [];
@@ -348,7 +499,9 @@ function ArchiveCard({
   const deleteMutation = useMutation({
     mutationFn: (purgeStats: boolean) => api.deleteArchive(archive.id, purgeStats),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['archives'] });
+      // A deleted archive leaves its project too, so the project views have to
+      // be refreshed alongside the archive list (#2731).
+      invalidateArchiveAndProjectViews(queryClient);
       showToast(t('archives.toast.archiveDeleted'));
     },
     onError: () => {
@@ -373,8 +526,7 @@ function ArchiveCard({
   const assignProjectMutation = useMutation({
     mutationFn: (projectId: number | null) => api.updateArchive(archive.id, { project_id: projectId }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['archives'] });
-      queryClient.invalidateQueries({ queryKey: ['projects'] });
+      invalidateArchiveAndProjectViews(queryClient);
       showToast(t('archives.toast.projectUpdated'));
     },
     onError: () => {
@@ -394,18 +546,17 @@ function ArchiveCard({
     // For source files: show Slice as the primary action
     ...(isGcodeFile ? [
       {
-        label: t('archives.menu.print'),
+        label: t('common.print'),
         icon: <Printer className="w-4 h-4" />,
         onClick: () => setShowReprint(true),
-        disabled: !archive.file_path || !canModify('archives', 'reprint', archive.created_by_id),
-        title: !archive.file_path ? t('archives.card.noFileForReprint') : !canModify('archives', 'reprint', archive.created_by_id) ? t('archives.permission.noReprint') : undefined,
-      },
-      {
-        label: t('archives.menu.schedule'),
-        icon: <Calendar className="w-4 h-4" />,
-        onClick: () => setShowSchedule(true),
-        disabled: !archive.file_path || !hasPermission('queue:create'),
-        title: !archive.file_path ? t('archives.card.noFileForReprint') : !hasPermission('queue:create') ? t('archives.permission.noAddToQueue') : undefined,
+        disabled: !archive.file_path || !hasPermission('queue:create') || !canModify('archives', 'reprint', archive.created_by_id),
+        title: !archive.file_path
+          ? t('archives.card.noFileForReprint')
+          : !hasPermission('queue:create')
+            ? t('archives.permission.noAddToQueue')
+            : !canModify('archives', 'reprint', archive.created_by_id)
+              ? t('archives.permission.noReprint')
+              : undefined,
       },
       {
         label: t('archives.menu.openInBambuStudio'),
@@ -429,7 +580,29 @@ function ArchiveCard({
             openInSlicerWithToken(archive.id, filename, 'file', preferredSlicer);
           }
         },
+        // The sliced copy is printable as the user's own, so it needs the right to reprint.
+        disabled: useSlicerApi && !canModify('archives', 'reprint', archive.created_by_id),
+        title:
+          useSlicerApi && !canModify('archives', 'reprint', archive.created_by_id)
+            ? t('archives.permission.noReprint')
+            : undefined,
       },
+      // Run-with-pipeline (#1425 PR B follow-up). Sources from archive's
+      // source 3MF (or file_path fallback). Only when slicer-api is on.
+      ...(useSlicerApi
+        ? [{
+            label: t('library.runWithPipeline.actionLabel'),
+            icon: <Play className="w-4 h-4" />,
+            onClick: () => setShowRunPipeline(true),
+            // A run prints the archive again, so it needs the right to reprint it.
+            disabled: !hasPermission('pipelines:run') || !canModify('archives', 'reprint', archive.created_by_id),
+            title: !hasPermission('pipelines:run')
+              ? t('library.runWithPipeline.noPermission')
+              : !canModify('archives', 'reprint', archive.created_by_id)
+                ? t('archives.permission.noReprint')
+                : undefined,
+          }]
+        : []),
     ]),
     {
       label: archive.external_url ? t('archives.menu.externalLink') : t('archives.menu.viewOnMakerWorld'),
@@ -440,6 +613,21 @@ function ArchiveCard({
       },
       disabled: !archive.external_url && !archive.makerworld_url,
     },
+    // Post-print outcome confirmation (#1898): completed prints only — the
+    // machine statuses already cover everything else.
+    ...(archive.status === 'completed'
+      ? [{
+          label: t('archives.menu.confirmOutcome'),
+          icon: archive.user_verdict === 'reject'
+            ? <ThumbsDown className="w-4 h-4" />
+            : <ThumbsUp className="w-4 h-4" />,
+          onClick: () => setShowConfirmOutcome(true),
+          disabled: !canModify('archives', 'update', archive.created_by_id),
+          title: !canModify('archives', 'update', archive.created_by_id)
+            ? t('archives.permission.noUpdateArchives')
+            : undefined,
+        }]
+      : []),
     { label: '', divider: true, onClick: () => {} },
     {
       label: t('archives.menu.preview3d'),
@@ -449,8 +637,19 @@ function ArchiveCard({
     {
       label: t('archives.menu.viewTimelapse'),
       icon: <Film className="w-4 h-4" />,
-      onClick: () => setShowTimelapse(true),
-      disabled: !archive.timelapse_path,
+      onClick: openTimelapse,
+      disabled: videos === 0,
+    },
+    {
+      label: t('archives.media.download'),
+      icon: <FileVideo className="w-4 h-4" />,
+      onClick: () => setShowPrinterMedia(true),
+      disabled: !archive.timelapse_path && (
+        !hasPermission('printers:files') || !archive.printer_id || !archive.started_at
+      ),
+      title: !archive.timelapse_path && !hasPermission('printers:files')
+        ? t('printers.permission.noFiles')
+        : undefined,
     },
     {
       label: t('archives.menu.scanForTimelapse'),
@@ -574,7 +773,8 @@ function ArchiveCard({
     { label: '', divider: true, onClick: () => {} },
     {
       label: archive.is_favorite ? t('archives.menu.removeFromFavorites') : t('archives.menu.addToFavorites'),
-      icon: <Star className={`w-4 h-4 ${archive.is_favorite ? 'fill-yellow-400 text-yellow-400' : ''}`} />,
+      // Preview the favourited state on hover so the row reads as clickable (#2791).
+      icon: <Star className={`w-4 h-4 ${archive.is_favorite ? 'fill-yellow-400 text-yellow-400' : canModify('archives', 'update', archive.created_by_id) ? 'group-hover:text-yellow-400' : ''}`} />,
       onClick: () => favoriteMutation.mutate(),
       disabled: !canModify('archives', 'update', archive.created_by_id),
       title: !canModify('archives', 'update', archive.created_by_id) ? t('archives.permission.noUpdateArchives') : undefined,
@@ -602,7 +802,7 @@ function ArchiveCard({
       onClick: () => {},
       disabled: !canModify('archives', 'update', archive.created_by_id),
       title: !canModify('archives', 'update', archive.created_by_id) ? t('archives.permission.noUpdateArchives') : undefined,
-      submenuSearchPlaceholder: (projects?.filter(p => p.status === 'active').length ?? 0) > 5
+      submenuSearchPlaceholder: assignableProjects(projects ?? [], archive.project_id).length > 5
         ? t('archives.menu.searchProjects')
         : undefined,
       submenu: (() => {
@@ -627,10 +827,14 @@ function ArchiveCard({
             disabled: true,
           });
         } else {
-          const activeProjects = projects
-            .filter(p => p.status === 'active')
+          // Archived projects are put away on purpose and are left out;
+          // completed ones stay, since a reprint filed against a finished
+          // project is ordinary (#2888). The archive's own project is kept
+          // whatever its status -- it is disabled below, and dropping it
+          // would leave the menu unable to say where the archive already is.
+          const assignable = assignableProjects(projects, archive.project_id)
             .sort((a, b) => a.name.localeCompare(b.name));
-          if (activeProjects.length === 0) {
+          if (assignable.length === 0) {
             items.push({
               label: t('archives.menu.noProjectsAvailable'),
               icon: <FolderKanban className="w-4 h-4 opacity-50" />,
@@ -638,7 +842,7 @@ function ArchiveCard({
               disabled: true,
             });
           } else {
-            activeProjects.forEach(p => {
+            assignable.forEach(p => {
               items.push({
                 label: p.name,
                 icon: <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: p.color || '#888' }} />,
@@ -668,13 +872,30 @@ function ArchiveCard({
     },
   ];
 
+  // Only a plate past the first says anything. The queue records a plate
+  // for single-plate files too -- the print dialog auto-selects the only
+  // plate there is -- so an ungated label reads "Plate 1" on ordinary
+  // prints, and eats room from the truncated name (#2796). The plate
+  // carousel is the one place a multi-plate archive printed from plate 1
+  // still identifies itself; it already gates on is_multi_plate, which this
+  // title cannot read without waiting for the hover-lazy plates request.
+  const cardTitle = `${archive.print_name || archive.filename}${
+    archive.plate_id != null && archive.plate_id > 1 ? ` — ${t('printers.plateNumber', { number: archive.plate_id })}` : ''
+  }`;
+
   return (
     <Card
       data-archive-id={archive.id}
-      className={`relative flex flex-col group ${isSelected ? 'ring-2 ring-bambu-green' : ''} ${selectionMode ? 'cursor-pointer' : ''}`}
+      className={`relative flex flex-col group cursor-pointer ${isSelected ? 'ring-2 ring-bambu-green' : ''}`}
       style={isHighlighted ? { outline: '4px solid #facc15', outlineOffset: '2px' } : undefined}
       onContextMenu={handleContextMenu}
-      onClick={selectionMode ? () => onSelect(archive.id) : undefined}
+      onClick={
+        selectionMode
+          ? () => onSelect(archive.id)
+          : (e) => {
+              if (!contextMenu && isOwnClick(e)) navigate(`/archives/${archive.id}`);
+            }
+      }
     >
       {/* Selection checkbox */}
       {selectionMode && (
@@ -701,8 +922,20 @@ function ArchiveCard({
             src={
               currentPlateIndex !== null && plates.length > 0
                 ? api.getArchivePlateThumbnail(archive.id, plates[displayPlateIndex]?.index ?? 0)
-                : api.getArchiveThumbnail(archive.id)
+                : // The plate the title names: a file printed again shows its
+                  // latest run's plate, the stored picture is the first's.
+                  archive.plate_id != null && archive.plate_id > 1
+                  ? api.getArchivePlateThumbnail(archive.id, archive.plate_id)
+                  : api.getArchiveThumbnail(archive.id)
             }
+            onError={(e) => {
+              // A file without per-plate pictures: the stored one.
+              const img = e.currentTarget;
+              if (img.dataset.fellBack) return;
+              img.dataset.fellBack = '1';
+              img.src = api.getArchiveThumbnail(archive.id);
+            }}
+            loading="lazy"
             alt={archive.print_name || archive.filename}
             className="w-full h-full object-cover"
           />
@@ -716,9 +949,7 @@ function ArchiveCard({
           <>
             {/* Left arrow */}
             <button
-              className={`absolute left-1 top-1/2 -translate-y-1/2 p-1 rounded-full bg-black/60 hover:bg-black/80 transition-all ${
-                isMobile ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
-              }`}
+              className="absolute left-1 top-1/2 -translate-y-1/2 p-1 rounded-full bg-black/60 hover:bg-black/80 transition-all can-hover:opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
               onClick={(e) => {
                 e.stopPropagation();
                 setCurrentPlateIndex((prev) => {
@@ -732,9 +963,7 @@ function ArchiveCard({
             </button>
             {/* Right arrow */}
             <button
-              className={`absolute right-1 top-1/2 -translate-y-1/2 p-1 rounded-full bg-black/60 hover:bg-black/80 transition-all ${
-                isMobile ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
-              }`}
+              className="absolute right-1 top-1/2 -translate-y-1/2 p-1 rounded-full bg-black/60 hover:bg-black/80 transition-all can-hover:opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
               onClick={(e) => {
                 e.stopPropagation();
                 setCurrentPlateIndex((prev) => {
@@ -748,9 +977,7 @@ function ArchiveCard({
             </button>
             {/* Dots indicator */}
             <div
-              className={`absolute bottom-1 left-1/2 -translate-x-1/2 flex gap-1 px-2 py-1 rounded-full bg-black/50 transition-all ${
-                isMobile ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
-              }`}
+              className="absolute bottom-1 left-1/2 -translate-x-1/2 flex gap-1 px-2 py-1 rounded-full bg-black/50 transition-all can-hover:opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
             >
               {plates.map((plate, idx) => (
                 <button
@@ -768,11 +995,9 @@ function ArchiveCard({
             </div>
           </>
         )}
-        {/* Context menu button - visible on mobile, shows on hover for desktop */}
+        {/* Context menu button - hover-revealed with a mouse, always there without one (#2865) */}
         <button
-          className={`absolute top-2 left-2 p-1.5 rounded bg-black/50 hover:bg-black/70 transition-all ${
-            isMobile ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
-          } ${selectionMode ? 'left-10' : ''}`}
+          className={`absolute top-2 left-2 p-1.5 rounded bg-black/50 hover:bg-black/70 transition-all can-hover:opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 ${selectionMode ? 'left-10' : ''}`}
           onClick={(e) => {
             e.stopPropagation();
             const rect = e.currentTarget.getBoundingClientRect();
@@ -804,7 +1029,49 @@ function ArchiveCard({
         </button>
         {(archive.status === 'failed' || archive.status === 'aborted') && (
           <div className="absolute top-2 left-12 px-2 py-1 rounded text-xs bg-status-error/80 text-white">
-            {archive.status === 'aborted' ? t('archives.card.cancelled') : t('archives.card.failed')}
+            {archive.status === 'aborted' ? t('archives.card.aborted') : t('archives.card.failed')}
+          </div>
+        )}
+        {/* Stopped rather than failed: counted apart from failures in the statistics. */}
+        {archive.status === 'cancelled' && (
+          <div className="absolute top-2 left-12 px-2 py-1 rounded text-xs bg-status-warning/80 text-white">
+            {t('archives.card.cancelled')}
+          </div>
+        )}
+        {/* Outcome-confirmation badges (#1898): a completed print either
+            waiting for its verdict (click to answer, for whoever may update
+            the archive; a status only for anyone else) or marked as reject.
+            Same spot as the failed badge — the three are mutually exclusive. */}
+        {archive.status === 'completed' && archive.confirm_requested && archive.user_verdict == null && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setShowConfirmOutcome(true);
+            }}
+            disabled={!canModify('archives', 'update', archive.created_by_id)}
+            className="absolute top-2 left-12 px-2 py-1 rounded text-xs bg-amber-500/90 enabled:hover:bg-amber-500 text-black flex items-center gap-1 transition-colors enabled:cursor-pointer"
+            title={!canModify('archives', 'update', archive.created_by_id) ? t('archives.permission.noUpdateArchives') : t('archives.card.confirmPendingTitle')}
+          >
+            <ThumbsUp className="w-3 h-3" />
+            {t('archives.card.confirmPending')}
+          </button>
+        )}
+        {archive.status === 'completed' && archive.user_verdict === 'reject' && (
+          <div
+            className="absolute top-2 left-12 px-2 py-1 rounded text-xs bg-status-error/80 text-white flex items-center gap-1"
+            title={`${t('archives.card.rejectedTitle')}${verdictSourceHintKey ? ` — ${t(verdictSourceHintKey)}` : ''}`}
+          >
+            <ThumbsDown className="w-3 h-3" />
+            {t('archives.card.rejected')}
+          </div>
+        )}
+        {archive.status === 'completed' && archive.user_verdict === 'good' && (
+          <div
+            className="absolute top-2 left-12 px-2 py-1 rounded text-xs bg-bambu-green/80 text-white flex items-center gap-1"
+            title={`${t('archives.card.confirmedGoodTitle')}${verdictSourceHintKey ? ` — ${t(verdictSourceHintKey)}` : ''}`}
+          >
+            <ThumbsUp className="w-3 h-3" />
+            {t('archives.card.confirmedGood')}
           </div>
         )}
         {/* Duplicate badge */}
@@ -873,22 +1140,28 @@ function ArchiveCard({
           <Layers className="w-4 h-4 text-white" />
         </button>
         {/* Timelapse badge */}
-        {archive.timelapse_path && (
+        {videos > 0 && (
           <button
             className="absolute bottom-2 right-12 p-1.5 rounded bg-black/60 hover:bg-black/80 transition-colors"
             onClick={(e) => {
               e.stopPropagation();
-              setShowTimelapse(true);
+              openTimelapse();
             }}
-            title={t('archives.card.viewTimelapse')}
+            title={videos > 1 ? t('archives.card.viewTimelapses', { count: videos }) : t('archives.card.viewTimelapse')}
+            data-testid="archive-card-timelapse"
           >
             <Film className="w-4 h-4 text-bambu-green" />
+            {videos > 1 && (
+              <span className="absolute -top-1 -right-1 w-4 h-4 bg-bambu-green rounded-full text-[10px] text-white flex items-center justify-center">
+                {videos}
+              </span>
+            )}
           </button>
         )}
         {/* Photos badge */}
         {archive.photos && archive.photos.length > 0 && (
           <button
-            className={`absolute bottom-2 ${archive.timelapse_path ? 'right-[5.5rem]' : 'right-12'} p-1.5 rounded bg-black/60 hover:bg-black/80 transition-colors`}
+            className={`absolute bottom-2 ${videos > 0 ? 'right-[5.5rem]' : 'right-12'} p-1.5 rounded bg-black/60 hover:bg-black/80 transition-colors`}
             onClick={(e) => {
               e.stopPropagation();
               setShowPhotos(true);
@@ -924,7 +1197,13 @@ function ArchiveCard({
         {/* Title */}
         <div className="flex items-center justify-between gap-2 mb-1">
           <h3 className="min-w-0 font-medium text-white truncate">
-            {archive.print_name || archive.filename}
+            {selectionMode ? (
+              cardTitle
+            ) : (
+              <Link to={`/archives/${archive.id}`} className="hover:underline">
+                {cardTitle}
+              </Link>
+            )}
           </h3>
           <Button
             variant="ghost"
@@ -950,7 +1229,7 @@ function ArchiveCard({
             className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
               isSlicedFile(archive)
                 ? 'bg-bambu-green/20 text-bambu-green'
-                : 'bg-orange-500/20 text-orange-400'
+                : 'bg-orange-100 dark:bg-orange-500/20 text-orange-700 dark:text-orange-400'
             }`}
             title={
               isSlicedFile(archive)
@@ -986,7 +1265,7 @@ function ArchiveCard({
               className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-bambu-orange/20 text-bambu-orange hover:bg-bambu-orange/30 transition-colors cursor-pointer"
               onClick={(e) => {
                 e.stopPropagation();
-                setShowPrintLog(true);
+                navigate(`/archives/${archive.id}`);
               }}
               title={t('archives.card.runsBadgeTitle', {
                 count: archive.run_count,
@@ -1004,7 +1283,7 @@ function ArchiveCard({
           {(archive.print_time_seconds || archive.actual_time_seconds) && (
             <div className="flex items-center gap-1.5 text-bambu-gray" title={
               archive.time_accuracy
-                ? `Estimated: ${formatDuration(archive.print_time_seconds || 0)}\nActual: ${formatDuration(archive.actual_time_seconds || 0)}\nAccuracy: ${archive.time_accuracy.toFixed(0)}%`
+                ? `Estimated: ${formatDuration(archive.time_estimate_seconds || archive.print_time_seconds || 0)}\nActual: ${formatDuration(archive.actual_time_seconds || 0)}\nAccuracy: ${archive.time_accuracy.toFixed(0)}%`
                 : archive.actual_time_seconds
                   ? `Actual: ${formatDuration(archive.actual_time_seconds)}`
                   : `Estimated: ${formatDuration(archive.print_time_seconds || 0)}`
@@ -1016,8 +1295,8 @@ function ArchiveCard({
                   archive.time_accuracy >= 95 && archive.time_accuracy <= 105
                     ? 'bg-bambu-green/20 text-bambu-green'
                     : archive.time_accuracy > 105
-                      ? 'bg-blue-500/20 text-blue-400'
-                      : 'bg-orange-500/20 text-orange-400'
+                      ? 'bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-400'
+                      : 'bg-orange-100 dark:bg-orange-500/20 text-orange-700 dark:text-orange-400'
                 }`}>
                   {archive.time_accuracy > 100 ? '+' : ''}{(archive.time_accuracy - 100).toFixed(0)}%
                 </span>
@@ -1025,16 +1304,34 @@ function ArchiveCard({
             </div>
           )}
           {archive.filament_used_grams && (
-            <div className="flex items-center gap-1.5 text-bambu-gray">
+            <div
+              className="flex items-center gap-1.5 text-bambu-gray"
+              title={UNFINISHED_STATUSES.has(archive.status) ? t('archives.card.fullPrintFigure') : undefined}
+              data-testid="archive-grams"
+            >
               <Package className="w-3 h-3" />
               {archive.filament_used_grams.toFixed(1)}g
             </div>
           )}
-          {(archive.cost != null || archive.energy_cost != null) && (
+          {(archive.cost != null || archive.energy_cost != null || archive.wear_cost != null) && (
             <div className="flex items-center gap-3 text-bambu-gray">
               {archive.cost != null && (
-                <div className="flex items-center gap-1.5">
+                // A running print's cost is an estimate until completion re-prices it (#3261).
+                // A run that did not finish leaves one full print's figure; its
+                // own cost is in the Print Log (#3318).
+                <div
+                  className="flex items-center gap-1.5"
+                  title={
+                    archive.status === 'printing'
+                      ? t('archives.card.costEstimate')
+                      : UNFINISHED_STATUSES.has(archive.status)
+                        ? t('archives.card.fullPrintFigure')
+                        : undefined
+                  }
+                  data-testid="archive-cost"
+                >
                   <Coins className="w-3 h-3" />
+                  {archive.status === 'printing' && '~'}
                   {currency}{archive.cost.toFixed(2)}
                 </div>
               )}
@@ -1042,6 +1339,12 @@ function ArchiveCard({
                   <div className="flex items-center gap-1.5" title={`${t('stats.energyUsed')}: ${archive.energy_kwh?.toFixed(3) || 'N/A'} kWh`}>
                     <Zap className="w-3 h-3" />
                     {currency}{archive.energy_cost.toFixed(2)}
+                  </div>
+                )}
+                {archive.wear_cost != null && (
+                  <div className="flex items-center gap-1.5" title={t('archives.card.wearCost')}>
+                    <Wrench className="w-3 h-3" />
+                    {currency}{archive.wear_cost.toFixed(2)}
                   </div>
                 )}
             </div>
@@ -1085,12 +1388,26 @@ function ArchiveCard({
           )}
         </div>
 
+        {/* Slicer's own saved AMS-slot pick (see "Save AMS mapping" VP setting).
+            Named with the printer it was resolved against: global tray IDs mean
+            nothing on any other printer, so a reprint only reuses these exact
+            spools when it targets that same printer. */}
+        {savedSlicerAmsMappingPrinter && (
+          <div
+            className="flex items-center gap-1.5 text-bambu-green text-xs mb-3"
+            title={t('archives.card.slicerAmsMappingTooltip', { printer: savedSlicerAmsMappingPrinter })}
+          >
+            <CheckCircle2 className="w-3.5 h-3.5" />
+            {t('archives.card.slicerAmsMapping', { printer: savedSlicerAmsMappingPrinter })}
+          </div>
+        )}
+
         {/* Tags & Notes */}
         {(archive.tags || archive.notes) && (
           <div className="flex flex-wrap items-center gap-1.5 mb-3">
             {archive.notes && (
               <div
-                className="flex items-center gap-1 px-1.5 py-0.5 bg-blue-500/20 text-blue-400 rounded text-xs"
+                className="flex items-center gap-1 px-1.5 py-0.5 bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-400 rounded text-xs"
                 title={archive.notes}
               >
                 <StickyNote className="w-3 h-3" />
@@ -1134,22 +1451,11 @@ function ArchiveCard({
                 size="sm"
                 className="flex-1 min-w-0 overflow-hidden"
                 onClick={() => setShowReprint(true)}
-                disabled={!archive.file_path || !canModify('archives', 'reprint', archive.created_by_id)}
-                title={!archive.file_path ? t('archives.card.noFileForReprint') : !canModify('archives', 'reprint', archive.created_by_id) ? t('archives.card.noPermissionReprint') : undefined}
+                disabled={!archive.file_path || !hasPermission('queue:create') || !canModify('archives', 'reprint', archive.created_by_id)}
+                title={!archive.file_path ? t('archives.card.noFileForReprint') : !hasPermission('queue:create') ? t('archives.permission.noAddToQueue') : !canModify('archives', 'reprint', archive.created_by_id) ? t('archives.card.noPermissionReprint') : undefined}
               >
                 <Printer className="w-3 h-3 flex-shrink-0" />
-                <span className="hidden xl:inline truncate">{t('archives.card.reprint')}</span>
-              </Button>
-              <Button
-                variant="secondary"
-                size="sm"
-                className="flex-1 min-w-0 overflow-hidden"
-                onClick={() => setShowSchedule(true)}
-                disabled={!archive.file_path || !hasPermission('queue:create')}
-                title={!archive.file_path ? t('archives.card.noFileForReprint') : !hasPermission('queue:create') ? t('archives.permission.noAddToQueue') : t('archives.card.schedulePrint')}
-              >
-                <Calendar className="w-3 h-3 flex-shrink-0" />
-                <span className="hidden xl:inline truncate">{t('archives.card.schedule')}</span>
+                <span className="hidden xl:inline truncate">{t('common.print')}</span>
               </Button>
               <Button
                 variant="secondary"
@@ -1178,7 +1484,14 @@ function ArchiveCard({
                   openInSlicerWithToken(archive.id, filename, 'file', preferredSlicer);
                 }
               }}
-              title={useSlicerApi ? t('slice.title') : t('archives.card.openInBambuStudioToSlice')}
+              disabled={useSlicerApi && !canModify('archives', 'reprint', archive.created_by_id)}
+              title={
+                useSlicerApi
+                  ? canModify('archives', 'reprint', archive.created_by_id)
+                    ? t('slice.title')
+                    : t('archives.permission.noReprint')
+                  : t('archives.card.openInBambuStudioToSlice')
+              }
             >
               {useSlicerApi ? (
                 <Cog className="w-3 h-3 flex-shrink-0" />
@@ -1228,7 +1541,7 @@ function ArchiveCard({
             disabled={!canModify('archives', 'delete', archive.created_by_id)}
             title={!canModify('archives', 'delete', archive.created_by_id) ? t('archives.card.noPermissionDelete') : t('archives.card.delete')}
           >
-            <Trash2 className="w-3 h-3 sm:w-4 sm:h-4 text-red-400" />
+            <Trash2 className="w-3 h-3 sm:w-4 sm:h-4 text-red-600 dark:text-red-400" />
           </Button>
         </div>
       </CardContent>
@@ -1265,10 +1578,19 @@ function ArchiveCard({
       {/* Reprint Modal */}
       {showReprint && (
         <PrintModal
-          mode="reprint"
+          mode="create"
           archiveId={archive.id}
           archiveName={archive.print_name || archive.filename}
+          preselectPlateId={archive.plate_id}
           onClose={() => setShowReprint(false)}
+        />
+      )}
+
+      {/* Post-print outcome confirmation (#1898) */}
+      {showConfirmOutcome && (
+        <ConfirmOutcomeDialog
+          archiveId={archive.id}
+          onClose={() => setShowConfirmOutcome(false)}
         />
       )}
 
@@ -1280,6 +1602,15 @@ function ArchiveCard({
         />
       )}
 
+      {/* Run-with-Pipeline Modal (#1425 PR B). Sources from archive — backend
+          reads source_3mf_path, falls back to file_path. */}
+      {showRunPipeline && (
+        <RunWithPipelineModal
+          source={{ kind: 'archive', id: archive.id, filename: archive.print_name || archive.filename || 'model' }}
+          onClose={() => setShowRunPipeline(false)}
+        />
+      )}
+
       {/* Delete Confirmation */}
       {showDeleteConfirm && (
         <ConfirmModal
@@ -1287,6 +1618,7 @@ function ArchiveCard({
           message={t('archives.modal.deleteConfirm', { name: archive.print_name || archive.filename })}
           confirmText={t('archives.modal.deleteButton')}
           variant="danger"
+          confirmDisabled={(deleteImpactQuery.data?.currently_printing ?? 0) > 0}
           onConfirm={() => {
             deleteMutation.mutate(deletePurgeStats);
             setShowDeleteConfirm(false);
@@ -1297,6 +1629,25 @@ function ArchiveCard({
             setDeletePurgeStats(false);
           }}
         >
+          {/* #1734: warn the user when related queue items will also be removed,
+              and block the action entirely if any are currently printing. */}
+          {(deleteImpactQuery.data?.related_queue_items ?? 0) > 0 && (
+            <div
+              className={
+                (deleteImpactQuery.data?.currently_printing ?? 0) > 0
+                  ? 'text-sm text-red-600 dark:text-red-400 mb-2'
+                  : 'text-sm text-amber-600 dark:text-amber-400 mb-2'
+              }
+            >
+              {(deleteImpactQuery.data?.currently_printing ?? 0) > 0
+                ? t('archives.modal.deleteBlockedByPrinting', {
+                    count: deleteImpactQuery.data!.currently_printing,
+                  })
+                : t('archives.modal.deleteQueueItemsWarning', {
+                    count: deleteImpactQuery.data!.related_queue_items,
+                  })}
+            </div>
+          )}
           {/* #1343: opt-in checkbox — by default the archive is soft-deleted,
               so its filament / time / cost contribution stays in Quick Stats. */}
           <label className="flex items-start gap-2 cursor-pointer text-sm text-bambu-gray">
@@ -1363,6 +1714,16 @@ function ArchiveCard({
           y={contextMenu.y}
           items={contextMenuItems}
           onClose={() => setContextMenu(null)}
+        />
+      )}
+
+      {/* Print Media Download Modal */}
+      {showPrinterMedia && (
+        <ArchiveMediaDownloadModal
+          archiveId={archive.id}
+          archiveName={archive.print_name || archive.filename}
+          printerName={printerName}
+          onClose={() => setShowPrinterMedia(false)}
         />
       )}
 
@@ -1474,15 +1835,6 @@ function ArchiveCard({
         />
       )}
 
-      {showSchedule && (
-        <PrintModal
-          mode="add-to-queue"
-          archiveId={archive.id}
-          archiveName={archive.print_name || archive.filename}
-          onClose={() => setShowSchedule(false)}
-        />
-      )}
-
       {/* Hidden file input for source 3MF upload */}
       <input
         ref={source3mfInputRef}
@@ -1563,11 +1915,23 @@ function ArchiveListRow({
   // #1343: opt-in "Also remove from statistics" checkbox state. Default off
   // — soft delete keeps the archive's contribution to Quick Stats.
   const [deletePurgeStats, setDeletePurgeStats] = useState(false);
+  // #1734: pre-flight count of related queue items for the delete modal.
+  // Same shape as the card-view sibling above.
+  const deleteImpactQuery = useQuery({
+    queryKey: ['archive', archive.id, 'delete-impact'],
+    queryFn: () => api.getArchiveDeleteImpact(archive.id),
+    enabled: showDeleteConfirm,
+    staleTime: 0,
+  });
   const navigate = useNavigate();
+  const { videos, openTimelapse } = useArchiveVideos(archive, navigate, () => setShowTimelapse(true));
   const [showReprint, setShowReprint] = useState(false);
+  // Post-print outcome confirmation dialog (#1898)
+  const [showConfirmOutcome, setShowConfirmOutcome] = useState(false);
   const [showSliceModal, setShowSliceModal] = useState(false);
-  const [showSchedule, setShowSchedule] = useState(false);
+  const [showRunPipeline, setShowRunPipeline] = useState(false);
   const [showTimelapse, setShowTimelapse] = useState(false);
+  const [showPrinterMedia, setShowPrinterMedia] = useState(false);
   const [showTimelapseSelect, setShowTimelapseSelect] = useState(false);
   const [availableTimelapses, setAvailableTimelapses] = useState<Array<{ name: string; path: string; size: number; mtime: string | null }>>([]);
   const [showQRCode, setShowQRCode] = useState(false);
@@ -1584,6 +1948,9 @@ function ArchiveListRow({
 
   // Use pre-computed duplicate sequence and original archive ID from list response
   const duplicateSequence = archive.duplicate_sequence ?? 0;
+  // Appended to the verdict badge's tooltip (#1898) so a verdict the
+  // plate-clear default recorded can be explained where it is shown.
+  const verdictSourceHintKey = verdictSourceKey(archive.user_verdict_source);
   const originalArchiveId = archive.original_archive_id ?? null;
 
   // 3D Preview click handler. Multi-plate archives show the plate picker
@@ -1703,7 +2070,9 @@ function ArchiveListRow({
   const deleteMutation = useMutation({
     mutationFn: (purgeStats: boolean) => api.deleteArchive(archive.id, purgeStats),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['archives'] });
+      // A deleted archive leaves its project too, so the project views have to
+      // be refreshed alongside the archive list (#2731).
+      invalidateArchiveAndProjectViews(queryClient);
       showToast(t('archives.toast.archiveDeleted'));
     },
     onError: () => {
@@ -1728,8 +2097,7 @@ function ArchiveListRow({
   const assignProjectMutation = useMutation({
     mutationFn: (projectId: number | null) => api.updateArchive(archive.id, { project_id: projectId }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['archives'] });
-      queryClient.invalidateQueries({ queryKey: ['projects'] });
+      invalidateArchiveAndProjectViews(queryClient);
       showToast(t('archives.toast.projectUpdated'));
     },
     onError: () => {
@@ -1747,18 +2115,17 @@ function ArchiveListRow({
   const contextMenuItems: ContextMenuItem[] = [
     ...(isGcodeFile ? [
       {
-        label: t('archives.menu.print'),
+        label: t('common.print'),
         icon: <Printer className="w-4 h-4" />,
         onClick: () => setShowReprint(true),
-        disabled: !archive.file_path || !canModify('archives', 'reprint', archive.created_by_id),
-        title: !archive.file_path ? t('archives.card.noFileForReprint') : !canModify('archives', 'reprint', archive.created_by_id) ? t('archives.permission.noReprint') : undefined,
-      },
-      {
-        label: t('archives.menu.schedule'),
-        icon: <Calendar className="w-4 h-4" />,
-        onClick: () => setShowSchedule(true),
-        disabled: !archive.file_path || !hasPermission('queue:create'),
-        title: !archive.file_path ? t('archives.card.noFileForReprint') : !hasPermission('queue:create') ? t('archives.permission.noAddToQueue') : undefined,
+        disabled: !archive.file_path || !hasPermission('queue:create') || !canModify('archives', 'reprint', archive.created_by_id),
+        title: !archive.file_path
+          ? t('archives.card.noFileForReprint')
+          : !hasPermission('queue:create')
+            ? t('archives.permission.noAddToQueue')
+            : !canModify('archives', 'reprint', archive.created_by_id)
+              ? t('archives.permission.noReprint')
+              : undefined,
       },
       {
         label: t('archives.menu.openInBambuStudio'),
@@ -1782,7 +2149,29 @@ function ArchiveListRow({
             openInSlicerWithToken(archive.id, filename, 'file', preferredSlicer);
           }
         },
+        // The sliced copy is printable as the user's own, so it needs the right to reprint.
+        disabled: useSlicerApi && !canModify('archives', 'reprint', archive.created_by_id),
+        title:
+          useSlicerApi && !canModify('archives', 'reprint', archive.created_by_id)
+            ? t('archives.permission.noReprint')
+            : undefined,
       },
+      // Run-with-pipeline (#1425 PR B follow-up). Sources from archive's
+      // source 3MF (or file_path fallback). Only when slicer-api is on.
+      ...(useSlicerApi
+        ? [{
+            label: t('library.runWithPipeline.actionLabel'),
+            icon: <Play className="w-4 h-4" />,
+            onClick: () => setShowRunPipeline(true),
+            // A run prints the archive again, so it needs the right to reprint it.
+            disabled: !hasPermission('pipelines:run') || !canModify('archives', 'reprint', archive.created_by_id),
+            title: !hasPermission('pipelines:run')
+              ? t('library.runWithPipeline.noPermission')
+              : !canModify('archives', 'reprint', archive.created_by_id)
+                ? t('archives.permission.noReprint')
+                : undefined,
+          }]
+        : []),
     ]),
     {
       label: archive.external_url ? t('archives.menu.externalLink') : t('archives.menu.viewOnMakerWorld'),
@@ -1793,6 +2182,21 @@ function ArchiveListRow({
       },
       disabled: !archive.external_url && !archive.makerworld_url,
     },
+    // Post-print outcome confirmation (#1898): completed prints only — the
+    // machine statuses already cover everything else.
+    ...(archive.status === 'completed'
+      ? [{
+          label: t('archives.menu.confirmOutcome'),
+          icon: archive.user_verdict === 'reject'
+            ? <ThumbsDown className="w-4 h-4" />
+            : <ThumbsUp className="w-4 h-4" />,
+          onClick: () => setShowConfirmOutcome(true),
+          disabled: !canModify('archives', 'update', archive.created_by_id),
+          title: !canModify('archives', 'update', archive.created_by_id)
+            ? t('archives.permission.noUpdateArchives')
+            : undefined,
+        }]
+      : []),
     { label: '', divider: true, onClick: () => {} },
     {
       label: t('archives.menu.preview3d'),
@@ -1802,8 +2206,8 @@ function ArchiveListRow({
     {
       label: t('archives.menu.viewTimelapse'),
       icon: <Film className="w-4 h-4" />,
-      onClick: () => setShowTimelapse(true),
-      disabled: !archive.timelapse_path,
+      onClick: openTimelapse,
+      disabled: videos === 0,
     },
     {
       label: t('archives.menu.scanForTimelapse'),
@@ -1927,7 +2331,8 @@ function ArchiveListRow({
     { label: '', divider: true, onClick: () => {} },
     {
       label: archive.is_favorite ? t('archives.menu.removeFromFavorites') : t('archives.menu.addToFavorites'),
-      icon: <Star className={`w-4 h-4 ${archive.is_favorite ? 'fill-yellow-400 text-yellow-400' : ''}`} />,
+      // Preview the favourited state on hover so the row reads as clickable (#2791).
+      icon: <Star className={`w-4 h-4 ${archive.is_favorite ? 'fill-yellow-400 text-yellow-400' : canModify('archives', 'update', archive.created_by_id) ? 'group-hover:text-yellow-400' : ''}`} />,
       onClick: () => favoriteMutation.mutate(),
       disabled: !canModify('archives', 'update', archive.created_by_id),
       title: !canModify('archives', 'update', archive.created_by_id) ? t('archives.permission.noUpdateArchives') : undefined,
@@ -1953,7 +2358,7 @@ function ArchiveListRow({
       label: t('archives.menu.addToProject'),
       icon: <FolderKanban className="w-4 h-4" />,
       onClick: () => {},
-      submenuSearchPlaceholder: (projects?.filter(p => p.status === 'active').length ?? 0) > 5
+      submenuSearchPlaceholder: assignableProjects(projects ?? [], archive.project_id).length > 5
         ? t('archives.menu.searchProjects')
         : undefined,
       submenu: (() => {
@@ -1973,10 +2378,14 @@ function ArchiveListRow({
             disabled: true,
           });
         } else {
-          const activeProjects = projects
-            .filter(p => p.status === 'active')
+          // Archived projects are put away on purpose and are left out;
+          // completed ones stay, since a reprint filed against a finished
+          // project is ordinary (#2888). The archive's own project is kept
+          // whatever its status -- it is disabled below, and dropping it
+          // would leave the menu unable to say where the archive already is.
+          const assignable = assignableProjects(projects, archive.project_id)
             .sort((a, b) => a.name.localeCompare(b.name));
-          if (activeProjects.length === 0) {
+          if (assignable.length === 0) {
             items.push({
               label: t('archives.menu.noProjectsAvailable'),
               icon: <FolderKanban className="w-4 h-4 opacity-50" />,
@@ -1984,7 +2393,7 @@ function ArchiveListRow({
               disabled: true,
             });
           } else {
-            activeProjects.forEach(p => {
+            assignable.forEach(p => {
               items.push({
                 label: p.name,
                 icon: <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: p.color || '#888' }} />,
@@ -2017,11 +2426,18 @@ function ArchiveListRow({
     <>
       <div
         data-archive-id={archive.id}
-        className={`grid grid-cols-12 gap-4 px-4 py-3 items-center hover:bg-bambu-dark-tertiary/30 ${
+        className={`grid grid-cols-12 gap-4 px-4 py-3 items-center cursor-pointer hover:bg-bambu-dark-tertiary/30 ${
           isSelected ? 'bg-bambu-green/10' : ''
         }`}
         style={isHighlighted ? { outline: '4px solid #facc15', outlineOffset: '-4px' } : undefined}
         onContextMenu={handleContextMenu}
+        onClick={
+          selectionMode
+            ? undefined
+            : (e) => {
+                if (!contextMenu && isOwnClick(e)) navigate(`/archives/${archive.id}`);
+              }
+        }
       >
         <div className="col-span-1 flex items-center gap-2">
           {selectionMode && (
@@ -2036,6 +2452,7 @@ function ArchiveListRow({
           {archive.thumbnail_path ? (
             <img
               src={api.getArchiveThumbnail(archive.id)}
+              loading="lazy"
               alt=""
               className="w-10 h-10 object-cover rounded"
             />
@@ -2047,10 +2464,53 @@ function ArchiveListRow({
         </div>
         <div className="col-span-4">
           <div className="flex items-center gap-2">
-            <p className="text-white text-sm truncate">{archive.print_name || archive.filename}</p>
+            <p className="text-white text-sm truncate">
+              {selectionMode ? (
+                archive.print_name || archive.filename
+              ) : (
+                <Link to={`/archives/${archive.id}`} className="hover:underline">
+                  {archive.print_name || archive.filename}
+                </Link>
+              )}
+            </p>
             {(archive.status === 'failed' || archive.status === 'aborted') && (
               <span className="px-1.5 py-0.5 rounded text-[10px] leading-tight bg-status-error/80 text-white flex-shrink-0">
-                {archive.status === 'aborted' ? t('archives.card.cancelled') : t('archives.card.failed')}
+                {archive.status === 'aborted' ? t('archives.card.aborted') : t('archives.card.failed')}
+              </span>
+            )}
+            {archive.status === 'cancelled' && (
+              <span className="px-1.5 py-0.5 rounded text-[10px] leading-tight bg-status-warning/80 text-white flex-shrink-0">
+                {t('archives.card.cancelled')}
+              </span>
+            )}
+            {/* Outcome-confirmation badges (#1898), compact list variants */}
+            {archive.status === 'completed' && archive.confirm_requested && archive.user_verdict == null && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setShowConfirmOutcome(true);
+                }}
+                disabled={!canModify('archives', 'update', archive.created_by_id)}
+                className="px-1.5 py-0.5 rounded text-[10px] leading-tight bg-amber-500/90 enabled:hover:bg-amber-500 text-black flex-shrink-0 transition-colors"
+                title={!canModify('archives', 'update', archive.created_by_id) ? t('archives.permission.noUpdateArchives') : t('archives.card.confirmPendingTitle')}
+              >
+                {t('archives.card.confirmPending')}
+              </button>
+            )}
+            {archive.status === 'completed' && archive.user_verdict === 'reject' && (
+              <span
+                className="px-1.5 py-0.5 rounded text-[10px] leading-tight bg-status-error/80 text-white flex-shrink-0"
+                title={`${t('archives.card.rejectedTitle')}${verdictSourceHintKey ? ` — ${t(verdictSourceHintKey)}` : ''}`}
+              >
+                {t('archives.card.rejected')}
+              </span>
+            )}
+            {archive.status === 'completed' && archive.user_verdict === 'good' && (
+              <span
+                className="px-1.5 py-0.5 rounded text-[10px] leading-tight bg-bambu-green/80 text-white flex-shrink-0"
+                title={`${t('archives.card.confirmedGoodTitle')}${verdictSourceHintKey ? ` — ${t(verdictSourceHintKey)}` : ''}`}
+              >
+                {t('archives.card.confirmedGood')}
               </span>
             )}
             {archive.duplicate_count > 0 && duplicateSequence > 0 && originalArchiveId && (
@@ -2075,8 +2535,8 @@ function ArchiveListRow({
                 +{archive.duplicate_count}
               </span>
             )}
-            {archive.timelapse_path && (
-              <span title={t('archives.list.hasTimelapse')}>
+            {videos > 0 && (
+              <span title={videos > 1 ? t('archives.card.viewTimelapses', { count: videos }) : t('archives.list.hasTimelapse')}>
                 <Film className="w-3.5 h-3.5 text-bambu-green flex-shrink-0" />
               </span>
             )}
@@ -2087,7 +2547,7 @@ function ArchiveListRow({
                 title={t('archives.card.openFolder', { name: linkedFolders[0].name })}
                 onClick={(e) => e.stopPropagation()}
               >
-                <FolderOpen className="w-3.5 h-3.5 text-yellow-400" />
+                <FolderOpen className="w-3.5 h-3.5 text-yellow-600 dark:text-yellow-400" />
               </Link>
             )}
           </div>
@@ -2147,8 +2607,8 @@ function ArchiveListRow({
               variant="ghost"
               size="sm"
               onClick={() => setShowReprint(true)}
-              disabled={!canModify('archives', 'reprint', archive.created_by_id)}
-              title={!canModify('archives', 'reprint', archive.created_by_id) ? t('archives.card.noPermissionReprint') : t('archives.card.reprint')}
+              disabled={!archive.file_path || !hasPermission('queue:create') || !canModify('archives', 'reprint', archive.created_by_id)}
+              title={!archive.file_path ? t('archives.card.noFileForReprint') : !hasPermission('queue:create') ? t('archives.permission.noAddToQueue') : !canModify('archives', 'reprint', archive.created_by_id) ? t('archives.card.noPermissionReprint') : t('common.print')}
               className="text-bambu-green hover:text-bambu-green-light hover:bg-bambu-green/10"
             >
               <Play className="w-4 h-4" />
@@ -2178,6 +2638,19 @@ function ArchiveListRow({
           <Button
             variant="ghost"
             size="sm"
+            onClick={() => setShowPrinterMedia(true)}
+            disabled={!archive.timelapse_path && (
+              !hasPermission('printers:files') || !archive.printer_id || !archive.started_at
+            )}
+            title={!archive.timelapse_path && !hasPermission('printers:files')
+              ? t('printers.permission.noFiles')
+              : t('archives.media.download')}
+          >
+            <Film className="w-4 h-4" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={() => {
               api.downloadArchive(archive.id, `${archive.print_name || archive.filename}.3mf`).catch((err) => {
                 console.error('Archive download failed:', err);
@@ -2203,7 +2676,7 @@ function ArchiveListRow({
             disabled={!canModify('archives', 'delete', archive.created_by_id)}
             title={!canModify('archives', 'delete', archive.created_by_id) ? t('archives.card.noPermissionDelete') : t('archives.card.delete')}
           >
-            <Trash2 className="w-4 h-4 text-red-400" />
+            <Trash2 className="w-4 h-4 text-red-600 dark:text-red-400" />
           </Button>
           <Button
             variant="ghost"
@@ -2251,10 +2724,19 @@ function ArchiveListRow({
       {/* Reprint Modal */}
       {showReprint && (
         <PrintModal
-          mode="reprint"
+          mode="create"
           archiveId={archive.id}
           archiveName={archive.print_name || archive.filename}
+          preselectPlateId={archive.plate_id}
           onClose={() => setShowReprint(false)}
+        />
+      )}
+
+      {/* Post-print outcome confirmation (#1898) */}
+      {showConfirmOutcome && (
+        <ConfirmOutcomeDialog
+          archiveId={archive.id}
+          onClose={() => setShowConfirmOutcome(false)}
         />
       )}
 
@@ -2266,6 +2748,15 @@ function ArchiveListRow({
         />
       )}
 
+      {/* Run-with-Pipeline Modal (#1425 PR B). Sources from archive — backend
+          reads source_3mf_path, falls back to file_path. */}
+      {showRunPipeline && (
+        <RunWithPipelineModal
+          source={{ kind: 'archive', id: archive.id, filename: archive.print_name || archive.filename || 'model' }}
+          onClose={() => setShowRunPipeline(false)}
+        />
+      )}
+
       {/* Delete Confirmation */}
       {showDeleteConfirm && (
         <ConfirmModal
@@ -2273,6 +2764,7 @@ function ArchiveListRow({
           message={t('archives.modal.deleteConfirm', { name: archive.print_name || archive.filename })}
           confirmText={t('archives.modal.deleteButton')}
           variant="danger"
+          confirmDisabled={(deleteImpactQuery.data?.currently_printing ?? 0) > 0}
           onConfirm={() => {
             deleteMutation.mutate(deletePurgeStats);
             setShowDeleteConfirm(false);
@@ -2283,6 +2775,25 @@ function ArchiveListRow({
             setDeletePurgeStats(false);
           }}
         >
+          {/* #1734: warn the user when related queue items will also be removed,
+              and block the action entirely if any are currently printing. */}
+          {(deleteImpactQuery.data?.related_queue_items ?? 0) > 0 && (
+            <div
+              className={
+                (deleteImpactQuery.data?.currently_printing ?? 0) > 0
+                  ? 'text-sm text-red-600 dark:text-red-400 mb-2'
+                  : 'text-sm text-amber-600 dark:text-amber-400 mb-2'
+              }
+            >
+              {(deleteImpactQuery.data?.currently_printing ?? 0) > 0
+                ? t('archives.modal.deleteBlockedByPrinting', {
+                    count: deleteImpactQuery.data!.currently_printing,
+                  })
+                : t('archives.modal.deleteQueueItemsWarning', {
+                    count: deleteImpactQuery.data!.related_queue_items,
+                  })}
+            </div>
+          )}
           {/* #1343: opt-in checkbox — by default the archive is soft-deleted,
               so its filament / time / cost contribution stays in Quick Stats. */}
           <label className="flex items-start gap-2 cursor-pointer text-sm text-bambu-gray">
@@ -2349,6 +2860,16 @@ function ArchiveListRow({
           y={contextMenu.y}
           items={contextMenuItems}
           onClose={() => setContextMenu(null)}
+        />
+      )}
+
+      {/* Print Media Download Modal */}
+      {showPrinterMedia && (
+        <ArchiveMediaDownloadModal
+          archiveId={archive.id}
+          archiveName={archive.print_name || archive.filename}
+          printerName={printerName}
+          onClose={() => setShowPrinterMedia(false)}
         />
       )}
 
@@ -2447,16 +2968,6 @@ function ArchiveListRow({
         />
       )}
 
-      {/* Schedule Modal */}
-      {showSchedule && (
-        <PrintModal
-          mode="add-to-queue"
-          archiveId={archive.id}
-          archiveName={archive.print_name || archive.filename}
-          onClose={() => setShowSchedule(false)}
-        />
-      )}
-
       {/* Hidden file input for source 3MF upload */}
       <input
         ref={source3mfInputRef}
@@ -2525,6 +3036,9 @@ const collections: { id: Collection; label: string; icon: React.ReactNode }[] = 
 
 export function ArchivesPage() {
   const { t } = useTranslation();
+  const navigate = useNavigate();
+  // /archives/<id> opens that archive over the list.
+  const { id: openArchiveId } = useParams<{ id: string }>();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
   const { hasPermission, hasAnyPermission } = useAuth();
@@ -2534,9 +3048,12 @@ export function ArchivesPage() {
     const saved = localStorage.getItem('archiveFilterPrinter');
     return saved ? Number(saved) : null;
   });
-  const [filterMaterial, setFilterMaterial] = useState<string | null>(() =>
-    localStorage.getItem('archiveFilterMaterial')
-  );
+  const [filterMaterial, setFilterMaterial] = useState<string | null>(() => {
+    // A saved joined value ("PLA Basic,PLA") was once offered as a material of
+    // its own (#3262); it matches nothing now, and would hide every archive.
+    const saved = localStorage.getItem('archiveFilterMaterial');
+    return saved && !saved.includes(',') ? saved : null;
+  });
   const [filterColors, setFilterColors] = useState<Set<string>>(() => {
     const saved = localStorage.getItem('archiveFilterColors');
     return saved ? new Set(JSON.parse(saved)) : new Set();
@@ -2550,6 +3067,10 @@ export function ArchivesPage() {
   const [hideFailed, setHideFailed] = useState(() =>
     localStorage.getItem('archiveHideFailed') === 'true'
   );
+  // Only archives still waiting for their outcome verdict (#1898)
+  const [filterUnconfirmed, setFilterUnconfirmed] = useState(() =>
+    localStorage.getItem('archiveFilterUnconfirmed') === 'true'
+  );
   const [hideDuplicates, setHideDuplicates] = useState(() =>
     localStorage.getItem('archiveHideDuplicates') === 'true'
   );
@@ -2561,8 +3082,52 @@ export function ArchivesPage() {
   );
   const [showUpload, setShowUpload] = useState(false);
   const [uploadFiles, setUploadFiles] = useState<File[]>([]);
-  const [isDraggingOver, setIsDraggingOver] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  // Install-step-4 nudge — covers the slicer-side variant of "Store sent files
+  // on external storage" that the connection diagnostic can't detect (printer
+  // never hears about it). Symptom: archive created via no-3MF fallback. Once
+  // dismissed, never shown again — fixing step 4 stops new fallbacks anyway.
+  const [no3MFWarningDismissed, setNo3MFWarningDismissed] = useState(
+    () => localStorage.getItem('archiveNo3MFWarningDismissed') === 'true',
+  );
+  const { data: no3MFWarning } = useQuery({
+    queryKey: ['archives', 'no-3mf-warning'],
+    queryFn: api.getNo3MFWarning,
+    staleTime: 5 * 60 * 1000,
+    enabled: !no3MFWarningDismissed,
+  });
+  const dismissNo3MFWarning = () => {
+    localStorage.setItem('archiveNo3MFWarningDismissed', 'true');
+    setNo3MFWarningDismissed(true);
+  };
+  // Why the 3MF was missing decides what to tell the user, and the original
+  // single wording is wrong for five of the six cases: it sends H2-series and
+  // P2S owners to switch on a setting that is already on and would not have
+  // helped, it blames the slicer when the real answer is an empty card slot
+  // (#2780), it blames a slicer that was never involved when the print was
+  // started from a file already on the printer (#1820), it blames the
+  // slicer again when the printer's own file service refused the TLS handshake
+  // and no lookup was ever attempted (#2957, surfaced by #2780), and it blames
+  // it a third time when the file was on the card, was served, and the transfer
+  // simply ran out of time (#3063). An unknown/absent reason keeps the original
+  // text.
+  const no3MFVariant =
+    no3MFWarning?.reason === 'ftps_cooloff'
+      ? 'FtpsCooloff'
+      : no3MFWarning?.reason === 'ftp_transfer_failed'
+        ? 'FtpTransferFailed'
+        : no3MFWarning?.reason === 'internal_storage'
+          ? 'InternalStorage'
+          : no3MFWarning?.reason === 'no_external_storage'
+            ? 'NoExternalStorage'
+            : no3MFWarning?.reason === 'internal_history'
+              ? 'InternalHistory'
+              : '';
+  // Nothing to link for the empty-slot case — "put a card in" is the whole fix.
+  const no3MFDocsHref =
+    no3MFWarning?.reason === 'no_external_storage'
+      ? null
+      : 'https://github.com/vmhomelab/Printbuddy/wiki';
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [showBulkDeleteConfirm, setShowBulkDeleteConfirm] = useState(false);
   const [showBatchTag, setShowBatchTag] = useState(false);
@@ -2590,8 +3155,40 @@ export function ArchivesPage() {
   const [showCompareModal, setShowCompareModal] = useState(false);
   const [showTagManagement, setShowTagManagement] = useState(false);
   const [showPurgeModal, setShowPurgeModal] = useState(false);
+  const [showMergeModal, setShowMergeModal] = useState(false);
+  // What the merge API asks for: it changes and removes whole archives.
+  const canMergeDuplicates = hasPermission('archives:update_all') && hasPermission('archives:delete_all');
+  // Offered while archives of one file exist more than once: after an
+  // update, or a restore of an old backup. Dismissed until the count changes.
+  const { data: mergeCount } = useQuery({
+    queryKey: ['archive-merge-count'],
+    queryFn: () => api.getArchiveMergeCount(),
+    enabled: canMergeDuplicates,
+  });
+  const [mergeBannerDismissedAt, setMergeBannerDismissedAt] = useState<number | null>(() => {
+    try {
+      const stored = localStorage.getItem('archiveMergeBannerDismissed');
+      return stored ? Number(stored) : null;
+    } catch {
+      return null;
+    }
+  });
+  const duplicateGroups = canMergeDuplicates ? (mergeCount?.groups ?? 0) : 0;
+  // Shown again only when there are more groups than when it was dismissed:
+  // merging some leaves the rest (some may never merge, their files differ).
+  const mergeBannerDismissed = mergeBannerDismissedAt !== null && duplicateGroups <= mergeBannerDismissedAt;
+  const dismissMergeBanner = () => {
+    setMergeBannerDismissedAt(duplicateGroups);
+    try {
+      localStorage.setItem('archiveMergeBannerDismissed', String(duplicateGroups));
+    } catch {
+      // Private window: dismissed for this visit only.
+    }
+  };
   const [highlightedArchiveId, setHighlightedArchiveId] = useState<number | null>(null);
-  const [pendingNavigationArchiveId, setPendingNavigationArchiveId] = useState<number | null>(null);
+  // An archive navigated to from elsewhere, and the warning shown when the
+  // current filters hide it.
+  const [pendingNavigation, setPendingNavigation] = useState<{ archiveId: number; notVisibleKey: string } | null>(null);
 
   // Log view state
   const [logFilterUser, setLogFilterUser] = useState<string | null>(() =>
@@ -2611,29 +3208,46 @@ export function ArchivesPage() {
     return saved ? Number(saved) : 0;
   });
   const [showClearLogConfirm, setShowClearLogConfirm] = useState(false);
+  const [pendingDeleteEntryId, setPendingDeleteEntryId] = useState<number | null>(null);
+  // Per-row classification editor for Print Log entries (#1687 part 4).
+  // Holds the entry being edited; null = modal closed.
+  const [editingLogEntry, setEditingLogEntry] = useState<PrintLogEntry | null>(null);
+  const [editingLogFailureReason, setEditingLogFailureReason] = useState('');
+  const [editingLogStatus, setEditingLogStatus] = useState('');
   const [logPageSize, setLogPageSize] = useState(() => {
     const saved = localStorage.getItem('logPageSize');
     return saved ? Number(saved) : 25;
   });
 
+  // Print Log column configuration (#2636). Stored without labels; the picker
+  // gets freshly translated ones below.
+  const [logColumns, setLogColumns] = useState(loadLogColumnConfig);
+  const [showLogColumnModal, setShowLogColumnModal] = useState(false);
+  const [logSort, setLogSort] = useState<LogSortState>(loadLogSort);
+  const visibleLogColumns = useMemo(
+    () => logColumns.filter((c) => c.visible).map((c) => c.id),
+    [logColumns],
+  );
+
   const handleNavigateToArchive = useCallback((archiveId: number) => {
-    setPendingNavigationArchiveId(archiveId);
+    setPendingNavigation({ archiveId, notVisibleKey: 'archives.originalPrintNotVisible' });
     setHighlightedArchiveId(archiveId);
   }, []);
 
   // Clear highlight after 5 seconds and scroll to highlighted element
   useEffect(() => {
     if (highlightedArchiveId) {
+      const pending = pendingNavigation?.archiveId === highlightedArchiveId ? pendingNavigation : null;
       // Scroll to highlighted element after a short delay (to let the view render)
       const scrollTimer = setTimeout(() => {
         const element = document.querySelector(`[data-archive-id="${highlightedArchiveId}"]`);
         if (element) {
           element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        } else if (pendingNavigationArchiveId === highlightedArchiveId) {
-          showToast(t('archives.originalPrintNotVisible'), 'warning');
+        } else if (pending) {
+          showToast(t(pending.notVisibleKey), 'warning');
         }
-        if (pendingNavigationArchiveId === highlightedArchiveId) {
-          setPendingNavigationArchiveId(null);
+        if (pending) {
+          setPendingNavigation(null);
         }
       }, 100);
 
@@ -2644,12 +3258,57 @@ export function ArchivesPage() {
         clearTimeout(clearTimer);
       };
     }
-  }, [highlightedArchiveId, pendingNavigationArchiveId, showToast, t]);
+  }, [highlightedArchiveId, pendingNavigation, showToast, t]);
 
-  const { data: archives, isLoading } = useQuery({
+  const { data: archives, isLoading, dataUpdatedAt: archivesUpdatedAt, refetch: refetchArchives } = useQuery({
     queryKey: ['archives', filterPrinter],
     queryFn: () => api.getArchives(filterPrinter || undefined),
   });
+
+  // ?highlight=<archive id> (the queue card's and a project's archive links)
+  // points at one archive. It is looked for in a freshly fetched list: one
+  // cached from an earlier visit may predate the archive, which a queued job
+  // creates when it starts. So the page jump finds it, and the warning fires
+  // only when the filters really hide it.
+  const [searchParams] = useSearchParams();
+  const highlightParam = searchParams.get('highlight');
+  const handledHighlightRef = useRef<string | null>(null);
+  const [highlightRequest, setHighlightRequest] = useState<{ archiveId: number; requestedAt: number } | null>(null);
+  useEffect(() => {
+    if (!highlightParam || handledHighlightRef.current === highlightParam) return;
+    handledHighlightRef.current = highlightParam;
+    const archiveId = parseInt(highlightParam, 10);
+    if (!Number.isFinite(archiveId)) return;
+    setHighlightRequest({ archiveId, requestedAt: Date.now() });
+    refetchArchives();
+  }, [highlightParam, refetchArchives]);
+  // Archives deleted, uploaded or printed change the duplicates the banner counts.
+  useEffect(() => {
+    if (canMergeDuplicates && archivesUpdatedAt) {
+      queryClient.invalidateQueries({ queryKey: ['archive-merge-count'] });
+    }
+  }, [archivesUpdatedAt, canMergeDuplicates, queryClient]);
+  useEffect(() => {
+    if (!highlightRequest || !archives || archivesUpdatedAt < highlightRequest.requestedAt) return;
+    setHighlightRequest(null);
+    if (viewMode === 'log' || viewMode === 'calendar') setViewMode('grid');
+    const highlight = (archiveId: number) => {
+      setPendingNavigation({ archiveId, notVisibleKey: 'archives.linkedArchiveNotVisible' });
+      setHighlightedArchiveId(archiveId);
+    };
+    if (archives.some((a) => a.id === highlightRequest.archiveId)) {
+      highlight(highlightRequest.archiveId);
+      return;
+    }
+    // Not listed: maybe merged into another archive (archive redesign P2),
+    // which the archive's own lookup answers with. Not cancelled when this
+    // effect re-runs: clearing the request above re-runs it.
+    const requested = highlightRequest.archiveId;
+    api
+      .getArchive(requested)
+      .then((found) => highlight(found.id))
+      .catch(() => highlight(requested));
+  }, [highlightRequest, archives, archivesUpdatedAt, viewMode]);
 
   const { data: printers } = useQuery({
     queryKey: ['printers'],
@@ -2661,19 +3320,17 @@ export function ArchivesPage() {
     queryFn: () => api.getProjects(),
   });
 
-  const { data: settings } = useQuery({
-    queryKey: ['settings'],
-    queryFn: api.getSettings,
-  });
+  const { data: settings } = useUiSettings();
 
+  // Print Log user filter -- names only, so the slim listing is enough (#1894).
   const { data: users } = useQuery({
-    queryKey: ['users'],
-    queryFn: api.getUsers,
+    queryKey: ['users', 'slim'],
+    queryFn: api.getUsersSlim,
     enabled: viewMode === 'log',
   });
 
   const { data: printLogData, isLoading: isLogLoading } = useQuery({
-    queryKey: ['print-log', filterPrinter, logFilterUser, logFilterStatus, logFilterDateFrom, logFilterDateTo, search, logOffset, logPageSize],
+    queryKey: ['print-log', filterPrinter, logFilterUser, logFilterStatus, logFilterDateFrom, logFilterDateTo, search, logOffset, logPageSize, logSort.column, logSort.direction],
     queryFn: () => api.getPrintLog({
       search: search || undefined,
       printerId: filterPrinter || undefined,
@@ -2683,14 +3340,212 @@ export function ArchivesPage() {
       dateTo: logFilterDateTo || undefined,
       limit: logPageSize,
       offset: logOffset,
+      sortBy: logSort.column,
+      sortDir: logSort.direction,
     }),
     enabled: viewMode === 'log',
   });
 
   const timeFormat: TimeFormat = settings?.time_format || 'system';
-  const preferredSlicer: SlicerType = settings?.preferred_slicer || 'bambu_studio';
+  // Desktop "Open in Slicer" target — falls back to preferred_slicer when the
+  // user hasn't explicitly chosen a different desktop slicer (#1329). This is
+  // ONLY the URI-handoff target; the in-app SliceModal still uses
+  // preferred_slicer for the sidecar.
+  const preferredSlicer: SlicerType = resolveDesktopSlicer(settings?.open_in_slicer, settings?.preferred_slicer);
   const useSlicerApi = settings?.use_slicer_api ?? false;
   const currency = getCurrencySymbol(settings?.currency || 'USD');
+
+  // Print Log columns, with labels translated at render time (#2636).
+  const logColumnConfig: ColumnConfig[] = useMemo(
+    () =>
+      logColumns.map((c) => ({
+        ...c,
+        label: t(LOG_COLUMN_LABEL_KEYS[c.id] ?? c.id),
+      })),
+    [logColumns, t],
+  );
+  const defaultLogColumnConfig: ColumnConfig[] = useMemo(
+    () =>
+      DEFAULT_LOG_COLUMNS.map((c) => ({
+        ...c,
+        label: t(LOG_COLUMN_LABEL_KEYS[c.id] ?? c.id),
+      })),
+    [t],
+  );
+  // Click a header to sort by it; click again to flip. Dates, durations and
+  // amounts open on descending — "newest / biggest first" is what someone
+  // reaching for those wants — while text opens A-Z.
+  const handleLogSort = useCallback((colId: string) => {
+    if (!SORTABLE_LOG_COLUMNS.has(colId)) return;
+    setLogSort((prev) => {
+      const numericFirstDesc = ['date', 'completed_at', 'duration', 'filament_used', 'cost', 'energy', 'energy_cost', 'wear_cost'];
+      const next: LogSortState =
+        prev.column === colId
+          ? { column: colId, direction: prev.direction === 'asc' ? 'desc' : 'asc' }
+          : { column: colId, direction: numericFirstDesc.includes(colId) ? 'desc' : 'asc' };
+      saveLogSort(next);
+      return next;
+    });
+    // Page 1 of the new order, not whatever offset the old one was on —
+    // otherwise sorting by cost from page 3 lands you in the middle of the
+    // re-sorted list with no indication why.
+    setLogOffset(0);
+  }, []);
+
+  const handleLogColumnSave = useCallback((config: ColumnConfig[]) => {
+    const stripped = config.map((c) => ({ id: c.id, visible: c.visible }));
+    setLogColumns(stripped);
+    saveLogColumnConfig(stripped);
+  }, []);
+
+  // Columns that hold a number and read better right-aligned. Kept as data so
+  // the header and the body can't drift apart.
+  const LOG_NUMERIC_COLUMNS = useMemo(
+    () => new Set(['duration', 'filament_used', 'cost', 'energy', 'energy_cost', 'wear_cost']),
+    [],
+  );
+
+  const deletedLogArchives = useMemo(
+    () => new Set(printLogData?.deleted_archive_ids ?? []),
+    [printLogData],
+  );
+  const renderLogCell = useCallback(
+    (colId: string, entry: PrintLogEntry) => {
+      switch (colId) {
+        case 'date':
+          return (
+            <span className="text-white whitespace-nowrap">
+              {formatDateTime(entry.started_at || entry.created_at, timeFormat)}
+            </span>
+          );
+        case 'completed_at':
+          return (
+            <span className="text-bambu-gray-light whitespace-nowrap">
+              {entry.completed_at ? formatDateTime(entry.completed_at, timeFormat) : '—'}
+            </span>
+          );
+        case 'print_name':
+          return (
+            <div className="flex items-center gap-2">
+              {entry.thumbnail_path && (
+                <img
+                  src={api.getPrintLogThumbnail(entry.id)}
+                  alt=""
+                  className="w-8 h-8 rounded object-cover flex-shrink-0"
+                  onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                />
+              )}
+              {entry.archive_id != null && !deletedLogArchives.has(entry.archive_id) ? (
+                // Its archive's page, at this print (archive redesign P4)
+                <Link
+                  to={`/archives/${entry.archive_id}?run=${entry.id}`}
+                  className="text-white break-words hover:underline"
+                  title={entry.print_name || ''}
+                >
+                  {entry.print_name || '—'}
+                </Link>
+              ) : (
+                <span className="text-white break-words" title={entry.print_name || ''}>
+                  {entry.print_name || '—'}
+                </span>
+              )}
+            </div>
+          );
+        case 'printer':
+          return <span className="text-bambu-gray-light">{entry.printer_name || '—'}</span>;
+        case 'user':
+          return <span className="text-bambu-gray-light">{entry.created_by_username || '—'}</span>;
+        case 'status':
+          return (
+            <>
+              <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
+                entry.status === 'completed' ? 'bg-green-100 dark:bg-green-500/20 text-green-700 dark:text-green-400' :
+                entry.status === 'failed' ? 'bg-red-100 dark:bg-red-500/20 text-red-700 dark:text-red-400' :
+                entry.status === 'stopped' ? 'bg-yellow-100 dark:bg-yellow-500/20 text-yellow-700 dark:text-yellow-400' :
+                entry.status === 'cancelled' ? 'bg-orange-100 dark:bg-orange-500/20 text-orange-700 dark:text-orange-400' :
+                entry.status === 'skipped' ? 'bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-400' :
+                'bg-gray-500/20 text-gray-400'
+              }`}>
+                {entry.status}
+              </span>
+              {entry.failure_reason && (
+                <span className="block text-[10px] text-bambu-gray mt-0.5">
+                  {t(`editArchive.failureReasons.${entry.failure_reason}`, { defaultValue: entry.failure_reason })}
+                </span>
+              )}
+            </>
+          );
+        case 'duration':
+          return (
+            <span className="text-bambu-gray-light whitespace-nowrap">
+              {entry.duration_seconds ? formatDuration(entry.duration_seconds) : '—'}
+            </span>
+          );
+        case 'filament':
+          return (
+            <div className="flex items-center gap-1.5">
+              {entry.filament_color && (
+                <div className="flex items-center gap-0.5 flex-wrap">
+                  {entry.filament_color.split(',').map((color, i) => {
+                    const trimmed = color.trim();
+                    return (
+                      <span
+                        key={i}
+                        className="w-3 h-3 rounded-full border border-black/20 flex-shrink-0"
+                        style={{ backgroundColor: trimmed.startsWith('#') ? trimmed : undefined }}
+                        title={trimmed}
+                      />
+                    );
+                  })}
+                </div>
+              )}
+              <span className="text-bambu-gray-light text-xs">
+                {entry.filament_type || '—'}
+              </span>
+            </div>
+          );
+        case 'filament_used':
+          // Per-run actual, not the archive's estimate: partial prints are
+          // scaled to progress and multi-plate archives are scoped to the
+          // plate that printed. One decimal matches the per-archive log table.
+          return (
+            <span className="text-bambu-gray-light whitespace-nowrap tabular-nums">
+              {entry.filament_used_grams != null ? `${entry.filament_used_grams.toFixed(1)} g` : '—'}
+            </span>
+          );
+        case 'cost':
+          return (
+            <span className="text-bambu-gray-light whitespace-nowrap tabular-nums">
+              {entry.cost != null ? `${currency}${entry.cost.toFixed(2)}` : '—'}
+            </span>
+          );
+        case 'energy':
+          // Written by the energy background task after the row itself, so a
+          // just-finished print shows "—" for a moment. That is accurate: the
+          // measurement genuinely isn't in yet.
+          return (
+            <span className="text-bambu-gray-light whitespace-nowrap tabular-nums">
+              {entry.energy_kwh != null ? `${entry.energy_kwh.toFixed(2)} kWh` : '—'}
+            </span>
+          );
+        case 'energy_cost':
+          return (
+            <span className="text-bambu-gray-light whitespace-nowrap tabular-nums">
+              {entry.energy_cost != null ? `${currency}${entry.energy_cost.toFixed(2)}` : '—'}
+            </span>
+          );
+        case 'wear_cost':
+          return (
+            <span className="text-bambu-gray-light whitespace-nowrap tabular-nums">
+              {entry.wear_cost != null ? `${currency}${entry.wear_cost.toFixed(2)}` : '—'}
+            </span>
+          );
+        default:
+          return null;
+      }
+    },
+    [currency, deletedLogArchives, t, timeFormat],
+  );
 
   const bulkDeleteMutation = useMutation({
     mutationFn: async (ids: number[]) => {
@@ -2698,7 +3553,7 @@ export function ArchivesPage() {
       return ids.length;
     },
     onSuccess: (count) => {
-      queryClient.invalidateQueries({ queryKey: ['archives'] });
+      invalidateArchiveAndProjectViews(queryClient);
       setSelectedIds(new Set());
       showToast(`${count} archive${count !== 1 ? 's' : ''} deleted`);
     },
@@ -2711,11 +3566,46 @@ export function ArchivesPage() {
     mutationFn: () => api.clearPrintLog(),
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['print-log'] });
+      queryClient.invalidateQueries({ queryKey: ['calendar-runs'] });
+      queryClient.invalidateQueries({ queryKey: ['archive-runs'] });
       setLogOffset(0);
       showToast(t('archives.log.cleared', { count: data.deleted }));
     },
     onError: () => {
       showToast(t('archives.log.clearFailed'), 'error');
+    },
+  });
+
+  const deleteLogEntryMutation = useMutation({
+    mutationFn: (id: number) => api.deletePrintLogEntry(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['print-log'] });
+      queryClient.invalidateQueries({ queryKey: ['calendar-runs'] });
+      queryClient.invalidateQueries({ queryKey: ['archive-runs'] });
+      queryClient.invalidateQueries({ queryKey: ['archives-stats'] });
+      showToast(t('archives.log.entryDeleted'));
+    },
+    onError: () => {
+      showToast(t('archives.log.entryDeleteFailed'), 'error');
+    },
+  });
+
+  const updateLogEntryMutation = useMutation({
+    mutationFn: ({ id, body }: { id: number; body: { failure_reason?: string | null; status?: string } }) =>
+      api.updatePrintLogEntry(id, body),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['print-log'] });
+      queryClient.invalidateQueries({ queryKey: ['calendar-runs'] });
+      queryClient.invalidateQueries({ queryKey: ['archive-runs'] });
+      // Also invalidate /archives/stats — the Failure Analysis widget there
+      // groups by PrintLogEntry.failure_reason, so a re-classification needs
+      // to flow through (#1687 part 4).
+      queryClient.invalidateQueries({ queryKey: ['archives-stats'] });
+      setEditingLogEntry(null);
+      showToast(t('archives.log.entryUpdated'));
+    },
+    onError: () => {
+      showToast(t('archives.log.entryUpdateFailed'), 'error');
     },
   });
 
@@ -2753,6 +3643,10 @@ export function ArchivesPage() {
   }, [hideFailed]);
 
   useEffect(() => {
+    localStorage.setItem('archiveFilterUnconfirmed', filterUnconfirmed.toString());
+  }, [filterUnconfirmed]);
+
+  useEffect(() => {
     localStorage.setItem('archiveHideDuplicates', hideDuplicates.toString());
   }, [hideDuplicates]);
 
@@ -2771,7 +3665,7 @@ export function ArchivesPage() {
   // Reset page when filters/search/sort/collection change
   useEffect(() => {
     setPageIndex(0);
-  }, [search, filterPrinter, filterMaterial, filterColors, colorFilterMode, filterFavorites, hideFailed, hideDuplicates, filterTag, filterFileType, sortBy, collection]);
+  }, [search, filterPrinter, filterMaterial, filterColors, colorFilterMode, filterFavorites, hideFailed, filterUnconfirmed, hideDuplicates, filterTag, filterFileType, sortBy, collection]);
 
   useEffect(() => {
     try { localStorage.setItem('archivePageSize', String(pageSize)); } catch { /* ignore */ }
@@ -2830,11 +3724,16 @@ export function ArchivesPage() {
     localStorage.setItem('logPageSize', logPageSize.toString());
   }, [logPageSize]);
 
-  const printerMap = new Map(printers?.map((p) => [p.id, p.name]) || []);
+  // Memoised: it's handed to every ArchiveCard as a prop, and a fresh Map each
+  // render would re-run their lookups for no reason.
+  const printerMap = useMemo(
+    () => new Map<number, string>(printers?.map((p) => [p.id, p.name]) || []),
+    [printers],
+  );
 
   // Extract unique materials and colors from archives
   const uniqueMaterials = [...new Set(
-    archives?.flatMap(a => a.filament_type?.split(', ') || []).filter(Boolean) || []
+    archives?.flatMap(a => splitFilamentTypes(a.filament_type)) || []
   )].sort();
 
   const uniqueColors = [...new Set(
@@ -2872,7 +3771,9 @@ export function ArchivesPage() {
           matchesCollection = (PRINTED_STATUSES as readonly string[]).includes(a.status);
           break;
         case 'failed':
-          matchesCollection = a.status === 'failed' || a.status === 'aborted';
+          // Any print of it failed, not only the latest; one from before
+          // prints were logged by its own status.
+          matchesCollection = a.status === 'failed' || a.status === 'aborted' || a.failed_run_count > 0;
           break;
         case 'duplicates':
           matchesCollection = a.duplicate_count > 0;
@@ -2884,7 +3785,7 @@ export function ArchivesPage() {
 
       // Material filter
       const matchesMaterial = !filterMaterial ||
-        (a.filament_type?.split(', ').includes(filterMaterial));
+        splitFilamentTypes(a.filament_type).includes(filterMaterial);
 
       // Color filter (AND: must have all selected colors, OR: must have any selected color)
       const archiveColors = a.filament_color?.split(',') || [];
@@ -2898,6 +3799,14 @@ export function ArchivesPage() {
 
       // Hide failed filter (don't apply when viewing failed collection)
       const matchesHideFailed = collection === 'failed' || !hideFailed || (a.status !== 'failed' && a.status !== 'aborted');
+
+      // Unconfirmed-outcome filter (#1898): archives that asked for a verdict
+      // and are still waiting for one. Completed prints only, like the badge
+      // and the menu entry — confirm_requested is copied on at dispatch and
+      // never cleared, so a print that failed or is still running would
+      // otherwise sit here forever with no way to answer it.
+      const matchesUnconfirmed = !filterUnconfirmed ||
+        (a.status === 'completed' && a.confirm_requested && a.user_verdict == null);
 
       // Hide duplicates filter (don't apply when viewing duplicates collection)
       const matchesHideDuplicates =
@@ -2913,7 +3822,7 @@ export function ArchivesPage() {
         (filterFileType === 'gcode' && isGcodeFile) ||
         (filterFileType === 'source' && !isGcodeFile);
 
-      return matchesCollection && matchesSearch && matchesMaterial && matchesColor && matchesFavorites && matchesHideFailed && matchesHideDuplicates && matchesTag && matchesFileType;
+      return matchesCollection && matchesSearch && matchesMaterial && matchesColor && matchesFavorites && matchesHideFailed && matchesUnconfirmed && matchesHideDuplicates && matchesTag && matchesFileType;
     })
     .sort((a, b) => {
       switch (sortBy) {
@@ -3002,44 +3911,35 @@ export function ArchivesPage() {
     setFilterMaterial(null);
     setFilterFavorites(false);
     setHideFailed(false);
+    setFilterUnconfirmed(false);
     setHideDuplicates(false);
     setFilterTag(null);
     setFilterFileType('all');
   };
 
-  const hasTopFilters = search || filterPrinter || filterMaterial || filterFavorites || hideFailed || hideDuplicates || filterTag || filterFileType !== 'all';
+  const hasTopFilters = search || filterPrinter || filterMaterial || filterFavorites || hideFailed || filterUnconfirmed || hideDuplicates || filterTag || filterFileType !== 'all';
 
-  // Drag & drop handlers for page-wide upload
-  const handleDragOver = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    if (e.dataTransfer.types.includes('Files')) {
-      setIsDraggingOver(true);
-    }
-  }, []);
-
-  const handleDragLeave = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    // Only hide if leaving the page (not entering a child)
-    if (e.currentTarget === e.target) {
-      setIsDraggingOver(false);
-    }
-  }, []);
-
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDraggingOver(false);
-
-    const droppedFiles = Array.from(e.dataTransfer.files).filter(f => f.name.endsWith('.3mf'));
-    if (droppedFiles.length > 0) {
-      setUploadFiles(droppedFiles);
+  // Page-wide drag-and-drop upload (#1510). The hook covers the three cancel
+  // paths the previous inline implementation missed (drag-out-of-window, Escape,
+  // dragend outside any drop target). Disabled while the upload modal is open
+  // so drags into the modal's own drop zone don't bubble up and flash the page
+  // overlay behind it.
+  const { isDraggingOver, dragHandlers } = usePageFileDrop({
+    // Nor while an archive is open over the list: its upload dialog would
+    // open underneath it.
+    disabled: showUpload || !!openArchiveId,
+    extensions: ['.3mf'],
+    onFiles: (files) => {
+      setUploadFiles(files);
       setShowUpload(true);
-    } else if (e.dataTransfer.files.length > 0) {
-      showToast(t('archives.page.only3mfSupported'), 'warning');
-    }
-  }, [showToast, t]);
+    },
+    onRejected: () => showToast(t('archives.page.only3mfSupported'), 'warning'),
+  });
 
   // Keyboard shortcuts
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
+    // An archive open over the list has the keyboard.
+    if (openArchiveId) return;
     const target = e.target as HTMLElement;
     // Ignore if typing in an input/textarea
     if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
@@ -3067,7 +3967,7 @@ export function ArchivesPage() {
         }
         break;
     }
-  }, [selectionMode]);
+  }, [selectionMode, openArchiveId]);
 
   useEffect(() => {
     document.addEventListener('keydown', handleKeyDown);
@@ -3077,16 +3977,14 @@ export function ArchivesPage() {
   return (
     <div
       className="p-4 md:p-8 relative"
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
-      onDrop={handleDrop}
+      {...dragHandlers}
     >
       {/* Drag & Drop Overlay */}
       {isDraggingOver && (
         <div className="fixed inset-0 z-50 bg-bambu-dark/90 flex items-center justify-center pointer-events-none">
           <div className="border-4 border-dashed border-bambu-green rounded-xl p-12 text-center">
             <Upload className="w-16 h-16 mx-auto mb-4 text-bambu-green" />
-            <p className="text-2xl font-semibold text-white mb-2">Drop .3mf files here</p>
+            <p className="text-2xl font-semibold text-white mb-2">{t('archives.page.dropFilesHere')}</p>
             <p className="text-bambu-gray">{t('archives.releaseToUpload')}</p>
           </div>
         </div>
@@ -3161,6 +4059,81 @@ export function ArchivesPage() {
         </div>
       )}
 
+      {collection !== 'duplicates' && duplicateGroups > 0 && !mergeBannerDismissed && (
+        <div
+          className="mb-6 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary px-4 py-3 flex items-center gap-3"
+          data-testid="merge-banner"
+        >
+          <Combine className="w-5 h-5 text-bambu-green flex-shrink-0" />
+          <div className="flex-1 min-w-0 text-sm text-bambu-gray-light">
+            {t('archiveMerge.bannerText', { count: duplicateGroups })}
+          </div>
+          <Button variant="secondary" size="sm" onClick={() => setShowMergeModal(true)}>
+            {t('archiveMerge.headerButton')}
+          </Button>
+          <button
+            onClick={dismissMergeBanner}
+            className="text-bambu-gray hover:text-white"
+            aria-label={t('archiveMerge.dismiss')}
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
+      {collection === 'duplicates' && canMergeDuplicates && (
+        <div className="mb-6 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary px-4 py-3 flex items-center gap-3">
+          <Combine className="w-5 h-5 text-bambu-green flex-shrink-0" />
+          <div className="flex-1 min-w-0 text-sm text-bambu-gray-light">{t('archiveMerge.duplicatesHint')}</div>
+          <Button variant="secondary" size="sm" onClick={() => setShowMergeModal(true)}>
+            {t('archiveMerge.headerButton')}
+          </Button>
+        </div>
+      )}
+
+      {no3MFWarning?.has_fallback && !no3MFWarningDismissed && (
+        <div className="mb-6 rounded-lg border border-amber-300 dark:border-amber-500/30 bg-amber-50 dark:bg-amber-500/10 px-4 py-3 flex items-start gap-3">
+          <AlertCircle className="w-5 h-5 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
+          <div className="flex-1 min-w-0">
+            <div className="text-sm font-medium text-amber-900 dark:text-amber-200">
+              {t(`archives.no3mfBanner.title${no3MFVariant}`)}
+            </div>
+            <div className="text-xs text-amber-800/90 dark:text-amber-200/80 mt-1">
+              {t(`archives.no3mfBanner.body${no3MFVariant}`)}
+              {no3MFDocsHref && (
+                <>
+                  {' '}
+                  <a
+                    href={no3MFDocsHref}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="underline hover:text-amber-900 dark:hover:text-amber-100 inline-flex items-center gap-1"
+                  >
+                    {t(
+                      no3MFWarning?.reason === 'internal_storage' ||
+                        no3MFWarning?.reason === 'internal_history' ||
+                        no3MFWarning?.reason === 'ftps_cooloff' ||
+                        no3MFWarning?.reason === 'ftp_transfer_failed'
+                        ? 'archives.no3mfBanner.docsLinkInternalStorage'
+                        : 'archives.no3mfBanner.docsLink',
+                    )}
+                    <ExternalLink className="w-3 h-3" />
+                  </a>
+                </>
+              )}
+            </div>
+          </div>
+          <button
+            onClick={dismissNo3MFWarning}
+            className="text-amber-800/70 dark:text-amber-200/60 hover:text-amber-900 dark:hover:text-amber-200 flex-shrink-0 p-1 -m-1"
+            title={t('archives.no3mfBanner.dismissLabel')}
+            aria-label={t('archives.no3mfBanner.dismissLabel')}
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
         <div>
           <div className="flex items-start gap-3">
@@ -3212,7 +4185,8 @@ export function ArchivesPage() {
                       const { blob, filename } = await api.exportArchives({
                         format: 'csv',
                         printerId: filterPrinter || undefined,
-                        status: collection === 'failed' ? 'failed' : undefined,
+                        // As the Failed collection shows them.
+                        status: collection === 'failed' ? 'failed,aborted' : undefined,
                         search: search || undefined,
                       });
                       const url = URL.createObjectURL(blob);
@@ -3241,7 +4215,8 @@ export function ArchivesPage() {
                       const { blob, filename } = await api.exportArchives({
                         format: 'xlsx',
                         printerId: filterPrinter || undefined,
-                        status: collection === 'failed' ? 'failed' : undefined,
+                        // As the Failed collection shows them.
+                        status: collection === 'failed' ? 'failed,aborted' : undefined,
                         search: search || undefined,
                       });
                       const url = URL.createObjectURL(blob);
@@ -3288,6 +4263,16 @@ export function ArchivesPage() {
             <Upload className="w-4 h-4" />
             Upload 3MF
           </Button>
+          {canMergeDuplicates && (
+            <Button
+              variant="secondary"
+              onClick={() => setShowMergeModal(true)}
+              title={t('archiveMerge.headerTooltip')}
+            >
+              <Combine className="w-4 h-4 mr-2" />
+              {t('archiveMerge.headerButton')}
+            </Button>
+          )}
           {hasPermission('archives:purge') && (
             <Button
               variant="secondary"
@@ -3401,7 +4386,7 @@ export function ArchivesPage() {
               onClick={() => setFilterFavorites(!filterFavorites)}
               className={`flex items-center gap-2 px-3 py-2 rounded-lg border transition-colors flex-shrink-0 ${
                 filterFavorites
-                  ? 'bg-yellow-500/20 border-yellow-500 text-yellow-400'
+                  ? 'bg-yellow-100 dark:bg-yellow-500/20 border-yellow-500 text-yellow-700 dark:text-yellow-400'
                   : 'bg-bambu-dark border-bambu-dark-tertiary text-bambu-gray hover:text-white'
               }`}
               title={filterFavorites ? t('archives.showAll') : t('archives.showFavoritesOnly')}
@@ -3413,7 +4398,7 @@ export function ArchivesPage() {
               onClick={() => setHideFailed(!hideFailed)}
               className={`flex items-center gap-2 px-3 py-2 rounded-lg border transition-colors flex-shrink-0 ${
                 hideFailed
-                  ? 'bg-red-500/20 border-red-500 text-red-400'
+                  ? 'bg-red-100 dark:bg-red-500/20 border-red-500 text-red-700 dark:text-red-400'
                   : 'bg-bambu-dark border-bambu-dark-tertiary text-bambu-gray hover:text-white'
               }`}
               title={hideFailed ? t('archives.showFailedPrints') : t('archives.hideFailedPrints')}
@@ -3422,10 +4407,22 @@ export function ArchivesPage() {
               <span className="text-sm hidden md:inline">Hide Failed</span>
             </button>
             <button
+              onClick={() => setFilterUnconfirmed(!filterUnconfirmed)}
+              className={`flex items-center gap-2 px-3 py-2 rounded-lg border transition-colors flex-shrink-0 ${
+                filterUnconfirmed
+                  ? 'bg-amber-100 dark:bg-amber-500/20 border-amber-500 text-amber-700 dark:text-amber-400'
+                  : 'bg-bambu-dark border-bambu-dark-tertiary text-bambu-gray hover:text-white'
+              }`}
+              title={t('archives.filterUnconfirmedTitle')}
+            >
+              <ThumbsUp className="w-4 h-4" />
+              <span className="text-sm hidden md:inline">{t('archives.filterUnconfirmed')}</span>
+            </button>
+            <button
               onClick={() => setHideDuplicates(!hideDuplicates)}
               className={`flex items-center gap-2 px-3 py-2 rounded-lg border transition-colors flex-shrink-0 ${
                 hideDuplicates
-                  ? 'bg-purple-500/20 border-purple-500 text-purple-400'
+                  ? 'bg-purple-100 dark:bg-purple-500/20 border-purple-500 text-purple-700 dark:text-purple-400'
                   : 'bg-bambu-dark border-bambu-dark-tertiary text-bambu-gray hover:text-white'
               }`}
               title={t('archives.hideDuplicates')}
@@ -3537,7 +4534,12 @@ export function ArchivesPage() {
       {/* Archives */}
       {isLoading ? (
         <div className="text-center py-12 text-bambu-gray">{t('archives.loadingArchives')}</div>
-      ) : filteredArchives?.length === 0 ? (
+      ) : filteredArchives?.length === 0 && viewMode !== 'log' ? (
+        // The log view is exempt: `print_log_entries` is an independent table
+        // that outlives the archives it refers to (deleting an archive only
+        // NULLs the FK), so "no archives" says nothing about whether there is
+        // a log to show. Without the guard, purging archives made the whole
+        // Print Log unreachable — the view has its own empty state below.
         <Card>
           <CardContent className="text-center py-12">
             <p className="text-bambu-gray">
@@ -3552,12 +4554,8 @@ export function ArchivesPage() {
         <Card className="p-6">
           <CalendarView
             archives={filteredArchives || []}
-            onArchiveClick={(archive) => {
-              // Switch to grid view and highlight the archive
-              setSearch(''); // Clear search to show all archives
-              setViewMode('grid');
-              setHighlightedArchiveId(archive.id);
-            }}
+            printerId={filterPrinter}
+            onPrintClick={(archiveId, runId) => navigate(`/archives/${archiveId}${runId != null ? `?run=${runId}` : ''}`)}
             highlightedArchiveId={highlightedArchiveId}
           />
         </Card>
@@ -3569,6 +4567,7 @@ export function ArchivesPage() {
                 key={archive.id}
                 archive={archive}
                 printerName={archive.printer_id ? printerMap.get(archive.printer_id) || 'Unknown' : (archive.sliced_for_model || 'No Printer')}
+                printerMap={printerMap}
                 isSelected={selectedIds.has(archive.id)}
                 onSelect={toggleSelect}
                 selectionMode={selectionMode}
@@ -3706,8 +4705,19 @@ export function ArchivesPage() {
                     onChange={(e) => { setLogFilterDateTo(e.target.value); setLogOffset(0); }}
                   />
                 </div>
-                {/* Clear log button */}
-                <div className="ml-auto">
+                {/* Columns + clear log */}
+                <div className="ml-auto flex items-center gap-2">
+                  {/* #2636: the log carries more per-run data than fits on one
+                      screen, so which columns show is the user's choice. */}
+                  <button
+                    type="button"
+                    onClick={() => setShowLogColumnModal(true)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-bambu-gray border border-bambu-dark-tertiary rounded-lg hover:bg-bambu-dark-tertiary transition-colors"
+                    title={t('inventory.configureColumns')}
+                  >
+                    <Columns className="w-4 h-4" />
+                    <span className="hidden sm:inline">{t('archives.log.columns')}</span>
+                  </button>
                   <Button
                     variant="danger"
                     size="sm"
@@ -3738,64 +4748,100 @@ export function ArchivesPage() {
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b border-bambu-dark-tertiary text-bambu-gray text-left">
-                        <th className="px-4 py-3 font-medium">{t('archives.log.date')}</th>
-                        <th className="px-4 py-3 font-medium">{t('archives.log.printName')}</th>
-                        <th className="px-4 py-3 font-medium">{t('archives.log.printer')}</th>
-                        <th className="px-4 py-3 font-medium">{t('archives.log.user')}</th>
-                        <th className="px-4 py-3 font-medium">{t('archives.log.status')}</th>
-                        <th className="px-4 py-3 font-medium">{t('archives.log.duration')}</th>
-                        <th className="px-4 py-3 font-medium">{t('archives.log.filament')}</th>
+                        {visibleLogColumns.map((colId) => {
+                          const sortable = SORTABLE_LOG_COLUMNS.has(colId);
+                          const isActive = logSort.column === colId;
+                          const label = t(LOG_COLUMN_LABEL_KEYS[colId] ?? colId);
+                          return (
+                            <th
+                              key={colId}
+                              scope="col"
+                              aria-sort={
+                                isActive ? (logSort.direction === 'asc' ? 'ascending' : 'descending') : 'none'
+                              }
+                              className={`px-4 py-3 font-medium ${LOG_NUMERIC_COLUMNS.has(colId) ? 'text-right' : ''}`}
+                            >
+                              {sortable ? (
+                                <button
+                                  type="button"
+                                  onClick={() => handleLogSort(colId)}
+                                  className={`inline-flex items-center gap-1 font-medium transition-colors hover:text-bambu-green ${
+                                    isActive ? 'text-bambu-green' : ''
+                                  }`}
+                                  title={t('archives.log.sortBy', { column: label })}
+                                >
+                                  {label}
+                                  {isActive ? (
+                                    logSort.direction === 'asc' ? (
+                                      <ChevronUp className="w-3.5 h-3.5" />
+                                    ) : (
+                                      <ChevronDown className="w-3.5 h-3.5" />
+                                    )
+                                  ) : (
+                                    // Held at low opacity rather than omitted, so
+                                    // the header doesn't shift sideways when it
+                                    // becomes the active sort.
+                                    <ArrowUpDown className="w-3.5 h-3.5 opacity-30" />
+                                  )}
+                                </button>
+                              ) : (
+                                label
+                              )}
+                            </th>
+                          );
+                        })}
+                        <th className="px-4 py-3 font-medium w-10" aria-label={t('common.actions')} />
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-bambu-dark-tertiary">
                       {printLogData.items.map((entry) => (
                         <tr key={entry.id} className="hover:bg-bambu-dark-secondary/50">
-                          <td className="px-4 py-3 text-white whitespace-nowrap">
-                            {formatDateTime(entry.started_at || entry.created_at, timeFormat)}
-                          </td>
-                          <td className="px-4 py-3">
-                            <div className="flex items-center gap-2">
-                              {entry.thumbnail_path && (
-                                <img
-                                  src={api.getPrintLogThumbnail(entry.id)}
-                                  alt=""
-                                  className="w-8 h-8 rounded object-cover flex-shrink-0"
-                                  onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
-                                />
-                              )}
-                              <span className="text-white break-words" title={entry.print_name || ''}>
-                                {entry.print_name || '—'}
-                              </span>
-                            </div>
-                          </td>
-                          <td className="px-4 py-3 text-bambu-gray-light">{entry.printer_name || '—'}</td>
-                          <td className="px-4 py-3 text-bambu-gray-light">{entry.created_by_username || '—'}</td>
-                          <td className="px-4 py-3">
-                            <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
-                              entry.status === 'completed' ? 'bg-green-500/20 text-green-400' :
-                              entry.status === 'failed' ? 'bg-red-500/20 text-red-400' :
-                              entry.status === 'stopped' ? 'bg-yellow-500/20 text-yellow-400' :
-                              entry.status === 'cancelled' ? 'bg-orange-500/20 text-orange-400' :
-                              entry.status === 'skipped' ? 'bg-blue-500/20 text-blue-400' :
-                              'bg-gray-500/20 text-gray-400'
-                            }`}>
-                              {entry.status}
-                            </span>
-                          </td>
-                          <td className="px-4 py-3 text-bambu-gray-light whitespace-nowrap">
-                            {entry.duration_seconds ? formatDuration(entry.duration_seconds) : '—'}
-                          </td>
-                          <td className="px-4 py-3">
-                            <div className="flex items-center gap-1.5">
-                              {entry.filament_color && (
-                                <span
-                                  className="w-3 h-3 rounded-full border border-black/20 flex-shrink-0"
-                                  style={{ backgroundColor: entry.filament_color.startsWith('#') ? entry.filament_color : undefined }}
-                                />
-                              )}
-                              <span className="text-bambu-gray-light text-xs">
-                                {entry.filament_type || '—'}
-                              </span>
+                          {visibleLogColumns.map((colId) => (
+                            <td
+                              key={colId}
+                              className={`px-4 py-3 ${LOG_NUMERIC_COLUMNS.has(colId) ? 'text-right' : ''}`}
+                            >
+                              {renderLogCell(colId, entry)}
+                            </td>
+                          ))}
+                          <td className="px-4 py-3 text-right">
+                            <div className="inline-flex items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setEditingLogEntry(entry);
+                                  setEditingLogFailureReason(entry.failure_reason || '');
+                                  setEditingLogStatus(entry.status);
+                                }}
+                                disabled={
+                                  updateLogEntryMutation.isPending ||
+                                  !(hasPermission('archives:update_all') || hasPermission('archives:update_own'))
+                                }
+                                title={
+                                  hasPermission('archives:update_all') || hasPermission('archives:update_own')
+                                    ? t('archives.log.editEntryTitle')
+                                    : t('archives.permission.noEdit')
+                                }
+                                className="text-bambu-gray hover:text-bambu-blue disabled:opacity-40 disabled:hover:text-bambu-gray transition-colors"
+                              >
+                                <Pencil className="w-4 h-4" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setPendingDeleteEntryId(entry.id)}
+                                disabled={
+                                  deleteLogEntryMutation.isPending ||
+                                  !(hasPermission('archives:delete_all') || hasPermission('archives:delete_own'))
+                                }
+                                title={
+                                  hasPermission('archives:delete_all') || hasPermission('archives:delete_own')
+                                    ? t('archives.log.deleteEntryTitle')
+                                    : t('archives.permission.noDelete')
+                                }
+                                className="text-bambu-gray hover:text-red-600 dark:hover:text-red-400 disabled:opacity-40 disabled:hover:text-bambu-gray transition-colors"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
                             </div>
                           </td>
                         </tr>
@@ -3853,6 +4899,9 @@ export function ArchivesPage() {
         />
       )}
 
+      {/* Merge duplicate archives (archive redesign P2) */}
+      {showMergeModal && <MergeDuplicatesModal onClose={() => setShowMergeModal(false)} />}
+
       {/* Archive bulk-purge modal (#1008 follow-up) */}
       {showPurgeModal && (
         <PurgeArchivesModal onClose={() => setShowPurgeModal(false)} />
@@ -3907,6 +4956,15 @@ export function ArchivesPage() {
         <TagManagementModal onClose={() => setShowTagManagement(false)} />
       )}
 
+      {/* Print Log column picker (#2636) */}
+      <ColumnConfigModal
+        isOpen={showLogColumnModal}
+        onClose={() => setShowLogColumnModal(false)}
+        columns={logColumnConfig}
+        defaultColumns={defaultLogColumnConfig}
+        onSave={handleLogColumnSave}
+      />
+
       {/* Clear Log Confirmation */}
       {showClearLogConfirm && (
         <ConfirmModal
@@ -3919,6 +4977,119 @@ export function ArchivesPage() {
             setShowClearLogConfirm(false);
           }}
           onCancel={() => setShowClearLogConfirm(false)}
+        />
+      )}
+
+      {/* Per-row Print Log entry delete confirmation (#1687) */}
+      {pendingDeleteEntryId !== null && (
+        <ConfirmModal
+          title={t('archives.log.deleteEntryTitle')}
+          message={t('archives.log.deleteEntryConfirm')}
+          confirmText={t('common.delete')}
+          variant="danger"
+          onConfirm={() => {
+            deleteLogEntryMutation.mutate(pendingDeleteEntryId);
+            setPendingDeleteEntryId(null);
+          }}
+          onCancel={() => setPendingDeleteEntryId(null)}
+        />
+      )}
+
+      {/* Per-row Print Log classification editor (#1687 part 4).
+          Reuses editArchive.failureReasons.* and archives.log.statuses.*
+          vocabularies so the dropdown stays in lockstep with the
+          Archive Edit modal — backend validates against the same list. */}
+      {editingLogEntry !== null && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+          onClick={() => setEditingLogEntry(null)}
+        >
+          <div
+            className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg w-full max-w-md mx-4 p-6"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-lg font-semibold text-white mb-4">
+              {t('archives.log.editEntryTitle')}
+            </h3>
+            <p className="text-xs text-bambu-gray mb-4">
+              {t('archives.log.editEntryDescription')}
+            </p>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm text-bambu-gray mb-1">
+                  {t('editArchive.status')}
+                </label>
+                <select
+                  value={editingLogStatus}
+                  onChange={(e) => setEditingLogStatus(e.target.value)}
+                  className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-sm focus:border-bambu-green focus:outline-none"
+                >
+                  <option value="completed">{t('archives.log.statuses.completed', { defaultValue: 'completed' })}</option>
+                  <option value="failed">{t('archives.log.statuses.failed', { defaultValue: 'failed' })}</option>
+                  <option value="stopped">{t('archives.log.statuses.stopped', { defaultValue: 'stopped' })}</option>
+                  <option value="cancelled">{t('archives.log.statuses.cancelled', { defaultValue: 'cancelled' })}</option>
+                  <option value="skipped">{t('archives.log.statuses.skipped', { defaultValue: 'skipped' })}</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-sm text-bambu-gray mb-1">
+                  {t('editArchive.failureReason')}
+                </label>
+                <select
+                  value={editingLogFailureReason}
+                  onChange={(e) => setEditingLogFailureReason(e.target.value)}
+                  className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-sm focus:border-bambu-green focus:outline-none"
+                >
+                  <option value="">{t('editArchive.selectReason')}</option>
+                  {FAILURE_REASON_KEYS.map((key) => (
+                    <option key={key} value={key}>
+                      {t(`editArchive.failureReasons.${key}`)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 mt-6">
+              <Button
+                variant="secondary"
+                onClick={() => setEditingLogEntry(null)}
+              >
+                {t('common.cancel')}
+              </Button>
+              <Button
+                variant="primary"
+                onClick={() => {
+                  const body: { failure_reason?: string | null; status?: string } = {};
+                  // Send failure_reason only if it changed — empty string
+                  // clears the classification (backend stores it as NULL).
+                  if (editingLogFailureReason !== (editingLogEntry.failure_reason || '')) {
+                    body.failure_reason = editingLogFailureReason || null;
+                  }
+                  if (editingLogStatus !== editingLogEntry.status) {
+                    body.status = editingLogStatus;
+                  }
+                  if (Object.keys(body).length === 0) {
+                    setEditingLogEntry(null);
+                    return;
+                  }
+                  updateLogEntryMutation.mutate({ id: editingLogEntry.id, body });
+                }}
+                disabled={updateLogEntryMutation.isPending}
+              >
+                {updateLogEntryMutation.isPending ? t('editArchive.saving') : t('common.save')}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+      {openArchiveId && (
+        <ArchiveDetailModal
+          key={openArchiveId}
+          archiveId={Number(openArchiveId)}
+          onClose={() => navigate('/archives')}
         />
       )}
     </div>

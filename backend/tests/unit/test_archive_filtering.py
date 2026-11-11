@@ -10,6 +10,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from backend.app.core.printer_scope import ALL_PRINTERS
+from backend.app.services.bambu_ftp import FileListResult
+
 # Patch paths for lazy imports inside functions
 _FTP_MODULE = "backend.app.services.bambu_ftp"
 
@@ -119,13 +122,16 @@ class TestCalibrationPrintFiltering:
                     },
                 )
 
-                # Notification should still be sent
-                mock_notif_send.assert_called_once()
+                # And no notification. The event describes the printer
+                # calibrating itself, so "Print started: auto_cali_for_user" is
+                # as wrong as the archive would have been. This assertion used
+                # to demand the opposite.
+                mock_notif_send.assert_not_called()
 
         # Verify the skip was logged
         info_messages = [r.message for r in capture_logs.records if r.levelno >= 20]
-        skip_msgs = [m for m in info_messages if "internal printer file" in str(m)]
-        assert skip_msgs, "Should log that internal printer file was skipped"
+        skip_msgs = [m for m in info_messages if "internal printer job" in str(m)]
+        assert skip_msgs, "Should log that an internal printer job was skipped"
 
     @pytest.mark.asyncio
     async def test_usr_prefix_various_paths(self, capture_logs):
@@ -168,7 +174,7 @@ class TestCalibrationPrintFiltering:
 
                 await on_print_start(1, {"filename": path, "subtask_name": "test"})
 
-            skip_msgs = [r for r in capture_logs.records if "internal printer file" in str(r.message)]
+            skip_msgs = [r for r in capture_logs.records if "internal printer job" in str(r.message)]
             assert skip_msgs, f"Path {path} should be skipped"
             capture_logs.clear()
 
@@ -319,6 +325,9 @@ class TestScanForTimelapseWithRetries:
         mock_archive.timelapse_path = timelapse_path
         mock_archive.printer_id = 1
         mock_archive.filename = archive_filename
+        # No persisted print-start baseline (#2704) — these cases exercise the
+        # in-memory / fallback baseline paths.
+        mock_archive.timelapse_baseline = None
 
         mock_printer = MagicMock()
         mock_printer.id = 1
@@ -333,9 +342,16 @@ class TestScanForTimelapseWithRetries:
         mock_session = AsyncMock()
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock()
+        # Serves both the printer lookup and the "already claimed by another
+        # archive" query the candidate filter runs (#2704).
         mock_session.execute = AsyncMock(
-            return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=mock_printer))
+            return_value=MagicMock(
+                scalar_one_or_none=MagicMock(return_value=mock_printer),
+                scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[]))),
+            )
         )
+        # The claimed-videos lookup reads runs and archives with scalars().
+        mock_session.scalars = AsyncMock(return_value=MagicMock(all=MagicMock(return_value=[])))
         return mock_session
 
     @pytest.mark.asyncio
@@ -367,13 +383,19 @@ class TestScanForTimelapseWithRetries:
         with (
             patch("backend.app.main.async_session", return_value=mock_session),
             patch("backend.app.main._list_timelapse_videos", side_effect=mock_list_mp4s),
+            patch(f"{_FTP_MODULE}.list_files_result_async", AsyncMock(return_value=FileListResult([], True))),
             patch("backend.app.main.ws_manager") as mock_ws,
             patch("backend.app.main.asyncio.sleep", new_callable=AsyncMock),
             patch("backend.app.main.ArchiveService", return_value=mock_service),
             patch(f"{_FTP_MODULE}.download_file_bytes_async", new_callable=AsyncMock) as mock_download,
+            # The attach re-lists the file to confirm the printer has finished
+            # writing it (#2704); without this it opens a real FTP connection.
+            patch(f"{_FTP_MODULE}.remote_file_settled", new_callable=AsyncMock) as mock_settled,
+            patch(f"{_FTP_MODULE}.delete_archived_timelapse", new_callable=AsyncMock),
         ):
+            mock_settled.return_value = True
             mock_ws.send_archive_updated = AsyncMock()
-            mock_download.return_value = b"fake video data"
+            mock_download.return_value = b"x" * 2000  # must match the listed size (#2704)
 
             from backend.app.main import _scan_for_timelapse_with_retries
 
@@ -407,13 +429,19 @@ class TestScanForTimelapseWithRetries:
         with (
             patch("backend.app.main.async_session", return_value=mock_session),
             patch("backend.app.main._list_timelapse_videos", side_effect=mock_list_mp4s),
+            patch(f"{_FTP_MODULE}.list_files_result_async", AsyncMock(return_value=FileListResult([], True))),
             patch("backend.app.main.ws_manager") as mock_ws,
             patch("backend.app.main.asyncio.sleep", new_callable=AsyncMock),
             patch("backend.app.main.ArchiveService", return_value=mock_service),
             patch(f"{_FTP_MODULE}.download_file_bytes_async", new_callable=AsyncMock) as mock_download,
+            # The attach re-lists the file to confirm the printer has finished
+            # writing it (#2704); without this it opens a real FTP connection.
+            patch(f"{_FTP_MODULE}.remote_file_settled", new_callable=AsyncMock) as mock_settled,
+            patch(f"{_FTP_MODULE}.delete_archived_timelapse", new_callable=AsyncMock),
         ):
+            mock_settled.return_value = True
             mock_ws.send_archive_updated = AsyncMock()
-            mock_download.return_value = b"fake video data"
+            mock_download.return_value = b"x" * 2000  # must match the listed size (#2704)
 
             from backend.app.main import _scan_for_timelapse_with_retries
 
@@ -423,8 +451,14 @@ class TestScanForTimelapseWithRetries:
         mock_service.attach_timelapse.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_name_match_fallback(self):
-        """When no new file appears, should fall back to name matching."""
+    async def test_no_name_match_rescue(self):
+        """The name-match fallback was removed (#2704).
+
+        It looked for the print name inside the video filename, but Bambu
+        firmware only ever writes "video_<timestamp>" — across 247 support
+        bundles it ran 159 times and matched zero times. A file already present
+        at baseline belongs to an earlier print, and guessing otherwise from its
+        name attaches the wrong video."""
         mock_archive, mock_printer = self._make_mocks()
 
         baseline_files = [
@@ -448,22 +482,27 @@ class TestScanForTimelapseWithRetries:
         with (
             patch("backend.app.main.async_session", return_value=mock_session),
             patch("backend.app.main._list_timelapse_videos", side_effect=mock_list_mp4s),
+            patch(f"{_FTP_MODULE}.list_files_result_async", AsyncMock(return_value=FileListResult([], True))),
             patch("backend.app.main.ws_manager") as mock_ws,
             patch("backend.app.main.asyncio.sleep", new_callable=AsyncMock),
             patch("backend.app.main.ArchiveService", return_value=mock_service),
             patch(f"{_FTP_MODULE}.download_file_bytes_async", new_callable=AsyncMock) as mock_download,
+            # The attach re-lists the file to confirm the printer has finished
+            # writing it (#2704); without this it opens a real FTP connection.
+            patch(f"{_FTP_MODULE}.remote_file_settled", new_callable=AsyncMock) as mock_settled,
+            patch(f"{_FTP_MODULE}.delete_archived_timelapse", new_callable=AsyncMock),
         ):
+            mock_settled.return_value = True
             mock_ws.send_archive_updated = AsyncMock()
-            mock_download.return_value = b"fake video data"
+            mock_download.return_value = b"x" * 2000  # must match the listed size (#2704)
 
             from backend.app.main import _scan_for_timelapse_with_retries
 
             await _scan_for_timelapse_with_retries(1)
 
-        # Name-match fallback: "benchy" is in "benchy_20240101.mp4"
-        mock_service.attach_timelapse.assert_called_once()
-        attached_filename = mock_service.attach_timelapse.call_args[0][2]
-        assert attached_filename == "benchy_20240101.mp4"
+        # "benchy" is in "benchy_20240101.mp4", but that file was there before
+        # the print started, so it is not this print's video.
+        mock_service.attach_timelapse.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_stops_when_archive_already_has_timelapse(self):
@@ -515,8 +554,14 @@ class TestScanForTimelapseWithRetries:
         mock_sleep.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_retries_four_times(self):
-        """Should retry with delays [5, 10, 20, 30]."""
+    async def test_polls_until_the_budget_runs_out(self):
+        """The fixed [5, 10, 20, 30] ladder gave up after ~65s (#2704).
+
+        Support bundles showed the attempt that found the video was #1 272
+        times and then 17 / 13 / 13 — flat against the cutoff, i.e. files were
+        still arriving when the old budget expired. It is now a poll: one short
+        first look, then a steady interval until the wall-clock budget or the
+        derived round cap is reached, whichever comes first."""
         mock_archive, mock_printer = self._make_mocks(archive_filename="test.gcode.3mf")
 
         # Never find any files
@@ -530,6 +575,7 @@ class TestScanForTimelapseWithRetries:
         with (
             patch("backend.app.main.async_session", return_value=mock_session),
             patch("backend.app.main._list_timelapse_videos", side_effect=mock_list_mp4s),
+            patch(f"{_FTP_MODULE}.list_files_result_async", AsyncMock(return_value=FileListResult([], True))),
             patch("backend.app.main.ws_manager") as mock_ws,
             patch("backend.app.main.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
             patch("backend.app.main.ArchiveService", return_value=mock_service),
@@ -540,10 +586,18 @@ class TestScanForTimelapseWithRetries:
 
             await _scan_for_timelapse_with_retries(1)
 
-        # Should have slept 4 times with delays [5, 10, 20, 30]
-        assert mock_sleep.call_count == 4
+        from backend.app.main import (
+            _TIMELAPSE_SCAN_FIRST_DELAY_SECONDS,
+            _TIMELAPSE_SCAN_POLL_INTERVAL_SECONDS,
+            _timelapse_scan_max_attempts,
+        )
+
         sleep_args = [call.args[0] for call in mock_sleep.call_args_list]
-        assert sleep_args == [5, 10, 20, 30]
+        assert len(sleep_args) == _timelapse_scan_max_attempts()
+        assert sleep_args[0] == _TIMELAPSE_SCAN_FIRST_DELAY_SECONDS
+        assert set(sleep_args[1:]) == {_TIMELAPSE_SCAN_POLL_INTERVAL_SECONDS}
+        # Substantially longer than the ladder it replaced.
+        assert sum(sleep_args) > 300
 
 
 class TestListTimelapseVideosAvi:
@@ -606,6 +660,7 @@ class TestListTimelapseVideosAvi:
         mock_archive.timelapse_path = None
         mock_archive.printer_id = 1
         mock_archive.filename = "benchy.gcode.3mf"
+        mock_archive.timelapse_baseline = None
 
         mock_printer = MagicMock()
         mock_printer.id = 1
@@ -640,19 +695,29 @@ class TestListTimelapseVideosAvi:
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock()
         mock_session.execute = AsyncMock(
-            return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=mock_printer))
+            return_value=MagicMock(
+                scalar_one_or_none=MagicMock(return_value=mock_printer),
+                scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[]))),
+            )
         )
+        mock_session.scalars = AsyncMock(return_value=MagicMock(all=MagicMock(return_value=[])))
 
         with (
             patch("backend.app.main.async_session", return_value=mock_session),
             patch("backend.app.main._list_timelapse_videos", side_effect=mock_list_videos),
+            patch(f"{_FTP_MODULE}.list_files_result_async", AsyncMock(return_value=FileListResult([], True))),
             patch("backend.app.main.ws_manager") as mock_ws,
             patch("backend.app.main.asyncio.sleep", new_callable=AsyncMock),
             patch("backend.app.main.ArchiveService", return_value=mock_service),
             patch(f"{_FTP_MODULE}.download_file_bytes_async", new_callable=AsyncMock) as mock_download,
+            # The attach re-lists the file to confirm the printer has finished
+            # writing it (#2704); without this it opens a real FTP connection.
+            patch(f"{_FTP_MODULE}.remote_file_settled", new_callable=AsyncMock) as mock_settled,
+            patch(f"{_FTP_MODULE}.delete_archived_timelapse", new_callable=AsyncMock),
         ):
+            mock_settled.return_value = True
             mock_ws.send_archive_updated = AsyncMock()
-            mock_download.return_value = b"fake avi data"
+            mock_download.return_value = b"x" * 50000  # must match the listed size (#2704)
 
             from backend.app.main import _scan_for_timelapse_with_retries
 
@@ -667,8 +732,7 @@ class TestConvertTimelapseToMp4:
     """Test the background AVI-to-MP4 conversion."""
 
     @pytest.mark.asyncio
-    async def test_converts_avi_to_mp4(self, tmp_path):
-        """Should call FFmpeg to convert and update the DB path."""
+    async def _convert(self, tmp_path, shown: str):
         source = tmp_path / "video.avi"
         source.write_bytes(b"fake avi")
         mp4_path = tmp_path / "video.mp4"
@@ -679,7 +743,7 @@ class TestConvertTimelapseToMp4:
 
         mock_archive = MagicMock()
         mock_archive.id = 42
-        mock_archive.timelapse_path = "archives/42/video.avi"
+        mock_archive.timelapse_path = shown
 
         mock_session = AsyncMock()
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
@@ -693,9 +757,13 @@ class TestConvertTimelapseToMp4:
             patch("backend.app.services.camera.get_ffmpeg_path", return_value="/usr/bin/ffmpeg"),
             patch("backend.app.core.database.async_session", return_value=mock_session),
             patch("backend.app.services.archive.settings") as mock_settings,
+            patch("backend.app.utils.archive_paths.settings") as mock_paths_settings,
             patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
+            patch("backend.app.services.archive._announce_timelapse", AsyncMock()) as announce,
         ):
             mock_settings.base_dir = tmp_path
+            mock_paths_settings.base_dir = tmp_path
+            mock_paths_settings.archive_dir = tmp_path / "archive"
             mock_exec.return_value = mock_process
             # Create the expected output file (as FFmpeg would)
             mp4_path.write_bytes(b"fake mp4 output")
@@ -703,6 +771,27 @@ class TestConvertTimelapseToMp4:
             from backend.app.services.archive import _convert_timelapse_to_mp4
 
             await _convert_timelapse_to_mp4(42, source)
+
+        mock_session.announce = announce
+        return mock_exec, mock_session, mock_archive, mp4_path
+
+    @pytest.mark.asyncio
+    async def test_the_converted_video_is_announced(self, tmp_path):
+        """Open Archives pages refresh to the MP4 (TL-5)."""
+        _, session, _, _ = await self._convert(tmp_path, shown="video.avi")
+
+        session.announce.assert_awaited_once_with(42, attached=True)
+
+    @pytest.mark.asyncio
+    async def test_a_discarded_conversion_is_not_announced(self, tmp_path):
+        _, session, _, _ = await self._convert(tmp_path, shown="other.avi")
+
+        session.announce.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_converts_avi_to_mp4(self, tmp_path):
+        """Should call FFmpeg to convert and update the DB path."""
+        mock_exec, mock_session, mock_archive, _ = await self._convert(tmp_path, shown="video.avi")
 
         # FFmpeg should have been called
         mock_exec.assert_called_once()
@@ -714,6 +803,15 @@ class TestConvertTimelapseToMp4:
         # DB should have been updated to .mp4 path
         mock_session.commit.assert_called_once()
         assert mock_archive.timelapse_path == "video.mp4"
+
+    @pytest.mark.asyncio
+    async def test_an_archive_that_moved_on_keeps_what_it_shows(self, tmp_path):
+        """The video was deleted, or a reprint's replaced it, while it converted."""
+        _, mock_session, mock_archive, mp4_path = await self._convert(tmp_path, shown="other.mp4")
+
+        mock_session.commit.assert_not_called()
+        assert mock_archive.timelapse_path == "other.mp4"
+        assert not mp4_path.exists()
 
     @pytest.mark.asyncio
     async def test_skips_when_no_ffmpeg(self, tmp_path):
@@ -778,9 +876,14 @@ class TestAttachTimelapseBackgroundConversion:
 
         with (
             patch("backend.app.services.archive.settings") as mock_settings,
+            patch("backend.app.utils.archive_paths.settings") as mock_paths_settings,
             patch("asyncio.create_task") as mock_create_task,
+            # Its broadcast opens a session task of its own
+            patch("backend.app.services.archive._announce_timelapse", AsyncMock()),
         ):
             mock_settings.base_dir = tmp_path
+            mock_paths_settings.base_dir = tmp_path
+            mock_paths_settings.archive_dir = tmp_path / "archive"
 
             result = await service.attach_timelapse(1, b"fake mp4 data", "video.mp4")
 
@@ -804,9 +907,14 @@ class TestAttachTimelapseBackgroundConversion:
 
         with (
             patch("backend.app.services.archive.settings") as mock_settings,
+            patch("backend.app.utils.archive_paths.settings") as mock_paths_settings,
             patch("asyncio.create_task") as mock_create_task,
+            # Its broadcast opens a session task of its own
+            patch("backend.app.services.archive._announce_timelapse", AsyncMock()),
         ):
             mock_settings.base_dir = tmp_path
+            mock_paths_settings.base_dir = tmp_path
+            mock_paths_settings.archive_dir = tmp_path / "archive"
 
             result = await service.attach_timelapse(1, b"fake avi data", "video.avi")
 
@@ -833,6 +941,7 @@ class TestDeleteTimelapse:
 
         mock_archive = MagicMock()
         mock_archive.timelapse_path = "archives/1/timelapse.mp4"
+        mock_archive.deleted_at = None
 
         mock_db = AsyncMock()
         mock_db.execute = AsyncMock()
@@ -842,7 +951,10 @@ class TestDeleteTimelapse:
 
         with patch("backend.app.api.routes.archives.settings") as mock_settings:
             mock_settings.base_dir = tmp_path
-            result = await delete_timelapse(archive_id=1, db=mock_db)
+            # auth_result=(None, True) → the auth-disabled / can_modify_all path.
+            result = await delete_timelapse(
+                archive_id=1, db=mock_db, auth_result=(None, True), printer_scope=ALL_PRINTERS
+            )
 
         assert result == {"status": "deleted"}
         assert mock_archive.timelapse_path is None
@@ -858,6 +970,7 @@ class TestDeleteTimelapse:
 
         mock_archive = MagicMock()
         mock_archive.timelapse_path = None
+        mock_archive.deleted_at = None
 
         mock_db = AsyncMock()
         mock_result = MagicMock()
@@ -865,7 +978,7 @@ class TestDeleteTimelapse:
         mock_db.execute = AsyncMock(return_value=mock_result)
 
         with pytest.raises(HTTPException) as exc_info:
-            await delete_timelapse(archive_id=1, db=mock_db)
+            await delete_timelapse(archive_id=1, db=mock_db, auth_result=(None, True), printer_scope=ALL_PRINTERS)
 
         assert exc_info.value.status_code == 404
 
@@ -882,6 +995,6 @@ class TestDeleteTimelapse:
         mock_db.execute = AsyncMock(return_value=mock_result)
 
         with pytest.raises(HTTPException) as exc_info:
-            await delete_timelapse(archive_id=999, db=mock_db)
+            await delete_timelapse(archive_id=999, db=mock_db, auth_result=(None, True), printer_scope=ALL_PRINTERS)
 
         assert exc_info.value.status_code == 404

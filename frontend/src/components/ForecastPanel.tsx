@@ -13,8 +13,13 @@ import {
 } from 'recharts';
 import { api } from '../api/client';
 import type { InventorySpool, SpoolUsageRecord, FilamentSkuSettings, ShoppingListItem } from '../api/client';
+import { getSwatchStyle } from '../utils/colors';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
+import { useUiSettings } from '../hooks/useUiSettings';
+import { ConfirmModal } from './ConfirmModal';
+import { parseUTCDate } from '../utils/date';
+import { ownRecords, timeOf } from '../utils/usageHistory';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -23,7 +28,25 @@ interface SkuGroup {
   material: string;
   subtype: string | null;
   brand: string | null;
+  colorName: string | null;
+  /** The SKU's stock: its spools that are not archived. */
   spools: InventorySpool[];
+  /** Spools archived in the last ARCHIVED_RATE_WINDOW_DAYS: no stock, but what
+   *  they were used for counts towards the rate (#3399). */
+  usedUp: InventorySpool[];
+  /** It has spools archived longer ago than that: it was in use before the
+   *  rate's window, so the window is observed in full (#3407). */
+  usedBefore: boolean;
+}
+
+// An archived spool counts towards its SKU's rate for this long after it was
+// archived; older ones would stretch the estimate over years and dilute it.
+// Same as stock_forecast.ARCHIVED_RATE_WINDOW_DAYS in the backend.
+const ARCHIVED_RATE_WINDOW_DAYS = 90;
+
+function archivedCounts(archivedAt: string, now: number): boolean {
+  const at = parseUTCDate(archivedAt)?.getTime();
+  return at !== undefined && !Number.isNaN(at) && now - at <= ARCHIVED_RATE_WINDOW_DAYS * 86400000;
 }
 
 interface SkuForecast {
@@ -58,8 +81,16 @@ const CHART_COLORS = ['#1DB954', '#3B82F6', '#F59E0B', '#EF4444', '#8B5CF6'];
 
 // ── Pure helpers ──────────────────────────────────────────────────────────────
 
-function skuKey(material: string, subtype: string | null, brand: string | null) {
-  return `${material}||${subtype ?? ''}||${brand ?? ''}`;
+function skuKey(material: string, subtype: string | null, brand: string | null, colorName: string | null) {
+  return `${material}||${subtype ?? ''}||${brand ?? ''}||${colorName ?? ''}`;
+}
+
+/** A SKU's name for people. In Spoolman mode a filament with no colour name
+ *  gets its subtype as one ("PLA Basic" named "Black"), which printed the word
+ *  twice: "Bambu Lab PLA Basic Black Black" (#3400). The key keeps the colour. */
+function skuLabel(brand: string | null, material: string, subtype: string | null, colorName: string | null) {
+  const sameAsSubtype = !!colorName && !!subtype && colorName.trim().toLowerCase() === subtype.trim().toLowerCase();
+  return [brand, material, subtype, sameAsSubtype ? null : colorName].filter(Boolean).join(' ');
 }
 
 function addDays(date: Date, days: number): Date {
@@ -80,25 +111,39 @@ function formatDateShort(date: Date): string {
  * Compute a time-weighted daily consumption rate and standard deviation.
  *
  * Algorithm:
- *   1. Sort all usage events by timestamp (oldest → newest).
- *   2. Convert each event into a g/day intensity = weight_used / elapsed_days,
- *      where elapsed_days is the gap to the previous event (floor: 0.5d to
- *      avoid inflated rates from same-day prints).
+ *   1. Aggregate all usage events by calendar day (UTC date string), summing
+ *      weight_used across all spools in the group that printed on that day.
+ *      Day-bucketing fixes two problems: (a) concurrent prints from multiple
+ *      spools in the same group no longer produce near-zero inter-event gaps
+ *      that inflate per-interval rates; (b) the oldest event's weight is no
+ *      longer silently dropped — it contributes to its day bucket.
+ *   2. Sort day buckets oldest → newest and compute inter-day g/day rates.
+ *      The gap is in whole days (minimum 1) so same-day reprints don't
+ *      create a zero-duration interval.
  *   3. Apply exponential age-decay: each observation is weighted by
  *      exp(-λ * age_days) so recent prints dominate. λ = ln(2)/30 gives a
  *      30-day half-life — prints from a month ago count half as much.
  *   4. Compute the weighted mean and weighted variance → std dev.
  *
- * Returns null when there is only one event (no gap to measure) — the
- * delta-rate fallback handles that case.
+ * Returns null when there are fewer than 2 distinct days (no gap to measure)
+ * — the delta-rate fallback handles that case.
  */
 function computeHistoryRate(records: SpoolUsageRecord[]): { rate: number; stdDev: number } | null {
   if (records.length < 2) return null;
 
-  // Sort ascending by time
-  const sorted = [...records].sort(
-    (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
-  );
+  // Aggregate by UTC calendar day so concurrent multi-spool prints on the
+  // same day are summed before rate computation.
+  const byDay = new Map<string, number>();
+  for (const r of records) {
+    const day = r.created_at.slice(0, 10); // "YYYY-MM-DD" UTC — consistent with server timestamps
+    byDay.set(day, (byDay.get(day) ?? 0) + r.weight_used);
+  }
+
+  if (byDay.size < 2) return null;
+
+  const days = [...byDay.entries()]
+    .map(([day, totalG]) => ({ ms: new Date(day).getTime(), totalG }))
+    .sort((a, b) => a.ms - b.ms);
 
   const now = Date.now();
   // λ for 30-day half-life: ln(2)/30
@@ -106,15 +151,12 @@ function computeHistoryRate(records: SpoolUsageRecord[]): { rate: number; stdDev
 
   const observations: { rate: number; weight: number }[] = [];
 
-  for (let i = 1; i < sorted.length; i++) {
-    const prev = new Date(sorted[i - 1].created_at).getTime();
-    const curr = new Date(sorted[i].created_at).getTime();
-    const elapsedDays = Math.max((curr - prev) / 86400000, 0.5); // floor at 0.5d
-    const ageDays = (now - curr) / 86400000;
+  for (let i = 1; i < days.length; i++) {
+    const elapsedDays = Math.max((days[i].ms - days[i - 1].ms) / 86400000, 1);
+    const ageDays = (now - days[i].ms) / 86400000;
 
-    // g/day for this interval
-    const intervalRate = sorted[i].weight_used / elapsedDays;
-    // Exponential age-decay weight
+    // g/day for this inter-day interval: weight printed on day[i] / gap to previous day
+    const intervalRate = days[i].totalG / elapsedDays;
     const w = Math.exp(-lambda * ageDays);
 
     observations.push({ rate: intervalRate, weight: w });
@@ -129,20 +171,52 @@ function computeHistoryRate(records: SpoolUsageRecord[]): { rate: number; stdDev
   return { rate: mean, stdDev: Math.sqrt(variance) };
 }
 
-function computeDeltaRate(spools: InventorySpool[]): number | null {
-  // Use weight_used - baseline so "Reset usage to 0" on the Inventory page
-  // makes forecast restart from zero rather than carrying stale lifetime
-  // consumption across the reset (#1390).
-  const totalUsed = spools.reduce((s, sp) => s + Math.max(0, sp.weight_used - (sp.weight_used_baseline ?? 0)), 0);
-  if (totalUsed === 0) return null;
-  const now = Date.now();
-  const oldestMs = spools.reduce((min, sp) => {
-    const t = new Date(sp.created_at).getTime();
-    return t < min ? t : min;
-  }, now);
-  const daysSinceOldest = (now - oldestMs) / 86400000;
-  if (daysSinceOldest < 1) return null;
-  return totalUsed / daysSinceOldest;
+// The rate when there is not enough usage history (#3407). A spool's total is
+// all there is, so it is spread evenly over the time the spool was in use: from
+// its first use (Spoolman's first_used, else its earliest usage record, else
+// its creation) to its last (else its archiving, else now). What falls inside
+// the last ARCHIVED_RATE_WINDOW_DAYS is divided by the days of that window,
+// which starts no earlier than the SKU's first use (all of it, when the SKU
+// has spools archived before the window), so shelf time is not use
+// and the grams and the days cover the same span. Same as
+// stock_forecast.delta_rate in the backend.
+function computeDeltaRate(
+  spools: InventorySpool[],
+  firstUse: Map<number, number>,
+  usedBefore: boolean,
+  now: number,
+): number | null {
+  const spans: { consumed: number; start: number; end: number }[] = [];
+  for (const sp of spools) {
+    // Use weight_used - baseline so "Reset usage to 0" on the Inventory page
+    // makes forecast restart from zero rather than carrying stale lifetime
+    // consumption across the reset (#1390).
+    const consumed = Math.max(0, sp.weight_used - (sp.weight_used_baseline ?? 0));
+    if (consumed <= 0) continue;
+    const endAt = timeOf(sp.last_used) ?? timeOf(sp.archived_at);
+    const end = endAt === null ? now : Math.min(endAt, now);
+    const startAt = timeOf(sp.first_used) ?? firstUse.get(sp.id) ?? timeOf(sp.created_at);
+    const start = startAt === null ? end : Math.min(startAt, end);
+    spans.push({ consumed, start, end });
+  }
+  if (spans.length === 0) return null;
+
+  const windowStart = now - ARCHIVED_RATE_WINDOW_DAYS * 86400000;
+  const observedFrom = usedBefore ? windowStart : Math.max(windowStart, Math.min(...spans.map(s => s.start)));
+  const days = (now - observedFrom) / 86400000;
+  if (days < 1) return null;
+  let grams = 0;
+  for (const { consumed, start, end } of spans) {
+    const length = end - start;
+    if (length < 86400000) {
+      // Used up within a day: all of it at its end.
+      if (end >= observedFrom) grams += consumed;
+      continue;
+    }
+    const inside = end - Math.max(start, observedFrom);
+    if (inside > 0) grams += (consumed * inside) / length;
+  }
+  return grams / days;
 }
 
 function buildProjectionSeries(
@@ -167,7 +241,7 @@ function buildProjectionSeries(
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export function ForecastPanel({ spools }: { spools: InventorySpool[] }) {
+export function ForecastPanel({ spools, spoolmanMode = false }: { spools: InventorySpool[]; spoolmanMode?: boolean }) {
   const queryClient = useQueryClient();
   const { showToast } = useToast();
   const { t } = useTranslation();
@@ -180,50 +254,82 @@ export function ForecastPanel({ spools }: { spools: InventorySpool[] }) {
   const [alertsOpen, setAlertsOpen] = useState(false);
   const [sortKey, setSortKey] = useState<SortKey>('material');
   const [sortDir, setSortDir] = useState<SortDir>('asc');
+  const [materialFilter, setMaterialFilter] = useState('');
+  const [brandFilter, setBrandFilter] = useState('');
   const [cartModal, setCartModal] = useState<SkuForecast | null>(null);
   const [listOpen, setListOpen] = useState(false);
+  const [confirmClearList, setConfirmClearList] = useState(false);
   const [chartDays, setChartDays] = useState<ChartDays>(30);
 
-  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, enabled: canRead });
+  const { data: settings } = useUiSettings({ enabled: canRead });
   const { data: skuSettingsList = [] } = useQuery({ queryKey: ['sku-settings'], queryFn: api.getSkuSettings, staleTime: 60_000, enabled: canRead });
-  const { data: usageHistory = [] } = useQuery({ queryKey: ['all-usage-history-forecast'], queryFn: () => api.getAllUsageHistory(5000), staleTime: 60_000, enabled: canRead });
+  // Each inventory's own usage history, keyed by its own spool ids: in
+  // Spoolman mode the rows Printbuddy wrote for the Spoolman spools it charged
+  // (#3407), never the built-in ones, whose ids a Spoolman id can match (#3406).
+  const { data: usageHistory = [] } = useQuery({
+    queryKey: ['all-usage-history-forecast', spoolmanMode],
+    queryFn: () => api.getAllUsageHistory(5000, undefined, spoolmanMode),
+    staleTime: 60_000,
+    enabled: canRead,
+  });
   const { data: shoppingList = [] } = useQuery({ queryKey: ['shopping-list'], queryFn: api.getShoppingList, staleTime: 30_000, enabled: canRead });
 
   const globalLeadTime = settings?.forecast_global_lead_time_days ?? 0;
 
   const settingsMap = useMemo(() => {
     const m = new Map<string, FilamentSkuSettings>();
-    for (const s of skuSettingsList) m.set(skuKey(s.material, s.subtype, s.brand), s);
+    for (const s of skuSettingsList) m.set(skuKey(s.material, s.subtype, s.brand, s.color_name), s);
     return m;
   }, [skuSettingsList]);
 
   const usageBySpoolId = useMemo(() => {
     const m = new Map<number, SpoolUsageRecord[]>();
     for (const r of usageHistory) {
-      const arr = m.get(r.spool_id) ?? [];
+      const spoolId = spoolmanMode ? r.spoolman_spool_id : r.spool_id;
+      // Usage of a deleted spool belongs to no spool here.
+      if (spoolId === null || spoolId === undefined) continue;
+      const arr = m.get(spoolId) ?? [];
       arr.push(r);
-      m.set(r.spool_id, arr);
+      m.set(spoolId, arr);
     }
     return m;
-  }, [usageHistory]);
+  }, [usageHistory, spoolmanMode]);
 
   const groups = useMemo((): SkuGroup[] => {
     const map = new Map<string, SkuGroup>();
     for (const spool of spools) {
       if (spool.archived_at) continue;
-      const key = skuKey(spool.material, spool.subtype, spool.brand);
-      const g = map.get(key) ?? { key, material: spool.material, subtype: spool.subtype, brand: spool.brand, spools: [] };
+      const key = skuKey(spool.material, spool.subtype, spool.brand, spool.color_name);
+      const g = map.get(key) ?? { key, material: spool.material, subtype: spool.subtype, brand: spool.brand, colorName: spool.color_name, spools: [], usedUp: [], usedBefore: false };
       g.spools.push(spool);
       map.set(key, g);
+    }
+    // Used-up spools are archived. They are not stock, and a SKU with nothing
+    // left is not forecast, but leaving out what they took makes a SKU in weekly
+    // use look untouched (#3399).
+    const now = Date.now();
+    for (const spool of spools) {
+      if (!spool.archived_at) continue;
+      const group = map.get(skuKey(spool.material, spool.subtype, spool.brand, spool.color_name));
+      if (!group) continue;
+      if (archivedCounts(spool.archived_at, now)) group.usedUp.push(spool);
+      // Only a spool that was used says the SKU was in use before the window.
+      else if (spool.weight_used > 0) group.usedBefore = true;
     }
     return [...map.values()];
   }, [spools]);
 
   const forecasts = useMemo((): SkuForecast[] => {
     const today = new Date(); today.setHours(0, 0, 0, 0);
+    const now = Date.now();
 
     return groups.map((group): SkuForecast => {
-      const skuSettings = settingsMap.get(group.key) ?? null;
+      // Fall back to the NULL-colour row that pre-upgrade users have so their
+      // lead-time / safety-margin overrides survive the first load after the
+      // color_name column is added (#forecast-color-grouping migration).
+      const skuSettings =
+        settingsMap.get(group.key) ??
+        (group.colorName !== null ? settingsMap.get(skuKey(group.material, group.subtype, group.brand, null)) ?? null : null);
       const skuLeadTime = skuSettings?.lead_time_days ?? 0;
       const effectiveLeadTimeDays = Math.max(globalLeadTime, skuLeadTime);
       const marginValue = skuSettings?.safety_margin_value ?? 14;
@@ -231,11 +337,27 @@ export function ForecastPanel({ spools }: { spools: InventorySpool[] }) {
 
       const totalRemainingG = group.spools.reduce((s, sp) => s + Math.max(0, sp.label_weight - sp.weight_used), 0);
       const totalLabelG = group.spools.reduce((s, sp) => s + sp.label_weight, 0);
+      const rateSpools = [...group.spools, ...group.usedUp];
       // Consumed since baseline (post-reset); see InventoryPage stats calc (#1390).
-      const totalUsedG = group.spools.reduce((s, sp) => s + Math.max(0, sp.weight_used - (sp.weight_used_baseline ?? 0)), 0);
+      // Used-up spools included: it ranks the most-used SKUs.
+      const totalUsedG = rateSpools.reduce((s, sp) => s + Math.max(0, sp.weight_used - (sp.weight_used_baseline ?? 0)), 0);
 
+      // Only include history from spools that haven't been reset — pre-reset
+      // events on a reset spool have no anchor timestamp so they'd inflate the
+      // rate. Spools without a baseline are clean and keep their records.
+      // Spoolman hands deleted spools' ids on; built-in ids are never reused.
+      const own = new Map(
+        rateSpools.map(s => {
+          const records = usageBySpoolId.get(s.id) ?? [];
+          return [s.id, spoolmanMode ? ownRecords(s, records) : records] as const;
+        }),
+      );
       const groupHistory: SpoolUsageRecord[] = [];
-      for (const s of group.spools) groupHistory.push(...(usageBySpoolId.get(s.id) ?? []));
+      for (const s of rateSpools) {
+        if ((s.weight_used_baseline ?? 0) === 0) {
+          groupHistory.push(...(own.get(s.id) ?? []));
+        }
+      }
 
       let dailyRateG: number | null = null;
       let dailyRateStdDev: number | null = null;
@@ -247,7 +369,16 @@ export function ForecastPanel({ spools }: { spools: InventorySpool[] }) {
         dailyRateStdDev = histResult.stdDev;
         rateTier = 'history';
       } else {
-        const delta = computeDeltaRate(group.spools);
+        // A spool's first use is its earliest record, kept or not: a reset
+        // drops records from the rate, not from when use began.
+        const firstUse = new Map<number, number>();
+        for (const s of rateSpools) {
+          for (const r of own.get(s.id) ?? []) {
+            const at = timeOf(r.created_at);
+            if (at !== null && at < (firstUse.get(s.id) ?? Infinity)) firstUse.set(s.id, at);
+          }
+        }
+        const delta = computeDeltaRate(rateSpools, firstUse, group.usedBefore, now);
         if (delta !== null) { dailyRateG = delta; rateTier = 'delta'; }
       }
 
@@ -284,10 +415,20 @@ export function ForecastPanel({ spools }: { spools: InventorySpool[] }) {
         reorderAlert, stockBreakAlert,
       };
     });
-  }, [groups, settingsMap, usageBySpoolId, globalLeadTime]);
+  }, [groups, settingsMap, usageBySpoolId, globalLeadTime, spoolmanMode]);
+
+  const uniqueMaterials = useMemo(() =>
+    [...new Set(groups.map((g) => g.material))].sort(),
+    [groups]);
+
+  const uniqueBrands = useMemo(() =>
+    [...new Set(groups.map((g) => g.brand).filter(Boolean))].sort() as string[],
+    [groups]);
 
   const sortedForecasts = useMemo(() => {
-    const arr = [...forecasts];
+    let arr = [...forecasts];
+    if (materialFilter) arr = arr.filter((f) => f.group.material === materialFilter);
+    if (brandFilter) arr = arr.filter((f) => f.group.brand === brandFilter);
     arr.sort((a, b) => {
       let va: number | string = 0;
       let vb: number | string = 0;
@@ -310,7 +451,7 @@ export function ForecastPanel({ spools }: { spools: InventorySpool[] }) {
       return sortDir === 'asc' ? cmp : -cmp;
     });
     return arr;
-  }, [forecasts, sortKey, sortDir]);
+  }, [forecasts, sortKey, sortDir, materialFilter, brandFilter]);
 
   const alerts = useMemo(() => forecasts.filter((f) => !f.settings?.alerts_snoozed && (f.stockBreakAlert || f.reorderAlert)), [forecasts]);
 
@@ -350,8 +491,8 @@ export function ForecastPanel({ spools }: { spools: InventorySpool[] }) {
             onClick={() => setAlertsOpen((o) => !o)}
             className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-sm font-medium transition-colors ${
               alerts.some((f) => f.stockBreakAlert)
-                ? 'bg-red-500/15 border-red-500/30 text-red-300 hover:bg-red-500/25'
-                : 'bg-yellow-500/15 border-yellow-500/30 text-yellow-300 hover:bg-yellow-500/25'
+                ? 'bg-red-100 dark:bg-red-500/15 border-red-300 dark:border-red-500/30 text-red-700 dark:text-red-300 hover:bg-red-200 dark:hover:bg-red-500/25'
+                : 'bg-yellow-100 dark:bg-yellow-500/15 border-yellow-300 dark:border-yellow-500/30 text-yellow-700 dark:text-yellow-300 hover:bg-yellow-200 dark:hover:bg-yellow-500/25'
             }`}
           >
             <AlertTriangle className="w-4 h-4" />
@@ -372,6 +513,34 @@ export function ForecastPanel({ spools }: { spools: InventorySpool[] }) {
             }}
           />
         )}
+
+        {/* Material filter */}
+        <select
+          value={materialFilter}
+          onChange={(e) => setMaterialFilter(e.target.value)}
+          className={`px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors cursor-pointer focus:outline-none ${
+            materialFilter
+              ? 'bg-bambu-green/20 text-bambu-green border-bambu-green/30'
+              : 'bg-transparent text-bambu-gray border-bambu-dark-tertiary hover:bg-bambu-dark-tertiary'
+          }`}
+        >
+          <option value="">{t('inventory.material')}</option>
+          {uniqueMaterials.map((m) => <option key={m} value={m}>{m}</option>)}
+        </select>
+
+        {/* Brand filter */}
+        <select
+          value={brandFilter}
+          onChange={(e) => setBrandFilter(e.target.value)}
+          className={`px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors cursor-pointer focus:outline-none ${
+            brandFilter
+              ? 'bg-bambu-green/20 text-bambu-green border-bambu-green/30'
+              : 'bg-transparent text-bambu-gray border-bambu-dark-tertiary hover:bg-bambu-dark-tertiary'
+          }`}
+        >
+          <option value="">{t('inventory.brand')}</option>
+          {uniqueBrands.map((b) => <option key={b} value={b}>{b}</option>)}
+        </select>
 
         {/* Shopping list toggle */}
         <button
@@ -410,11 +579,22 @@ export function ForecastPanel({ spools }: { spools: InventorySpool[] }) {
               .then(() => queryClient.invalidateQueries({ queryKey: ['shopping-list'] }))
               .catch(() => showToast(t('forecast.failedSaveSettings'), 'error'));
           }}
-          onClear={() => {
+          onClear={() => setConfirmClearList(true)}
+        />
+      )}
+      {confirmClearList && (
+        <ConfirmModal
+          title={t('forecast.clearAllConfirmTitle')}
+          message={t('forecast.clearAllConfirmMessage', { count: shoppingList.length })}
+          confirmText={t('forecast.clearAll')}
+          variant="danger"
+          onConfirm={() => {
+            setConfirmClearList(false);
             api.clearShoppingList()
               .then(() => queryClient.invalidateQueries({ queryKey: ['shopping-list'] }))
               .catch(() => showToast(t('forecast.failedSaveSettings'), 'error'));
           }}
+          onCancel={() => setConfirmClearList(false)}
         />
       )}
 
@@ -438,6 +618,9 @@ export function ForecastPanel({ spools }: { spools: InventorySpool[] }) {
                   <SortableTh col="material" active={sortKey} dir={sortDir} onSort={handleSort}>
                     {t('forecast.sku')}
                   </SortableTh>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-bambu-gray uppercase tracking-wide">
+                    {t('locations.spools')}
+                  </th>
                   <SortableTh col="stock" active={sortKey} dir={sortDir} onSort={handleSort}>
                     {t('forecast.stock')}
                   </SortableTh>
@@ -544,12 +727,12 @@ function SortableTh({
 
 function AlertBanner({ forecast: f, onCart }: { forecast: SkuForecast; onCart: () => void }) {
   const { t } = useTranslation();
-  const label = [f.group.brand, f.group.material, f.group.subtype].filter(Boolean).join(' ');
+  const label = skuLabel(f.group.brand, f.group.material, f.group.subtype, f.group.colorName);
   const isBreak = f.stockBreakAlert;
 
   return (
     <div className={`flex items-center gap-3 px-4 py-3 rounded-lg border text-sm ${
-      isBreak ? 'bg-red-500/10 border-red-500/30 text-red-300' : 'bg-yellow-500/10 border-yellow-500/30 text-yellow-300'
+      isBreak ? 'bg-red-50 dark:bg-red-500/10 border-red-300 dark:border-red-500/30 text-red-700 dark:text-red-300' : 'bg-yellow-50 dark:bg-yellow-500/10 border-yellow-300 dark:border-yellow-500/30 text-yellow-700 dark:text-yellow-300'
     }`}>
       <AlertTriangle className="w-4 h-4 flex-shrink-0" />
       <div className="flex-1 min-w-0">
@@ -592,7 +775,7 @@ function UsageChart({ forecasts, days: maxDays, onDaysChange }: {
 
   const series = forecasts.map((f, idx) => ({
     key: f.group.key,
-    label: [f.group.brand, f.group.material, f.group.subtype].filter(Boolean).join(' '),
+    label: skuLabel(f.group.brand, f.group.material, f.group.subtype, f.group.colorName),
     color: CHART_COLORS[idx % CHART_COLORS.length],
     rop: f.reorderPointG,
     points: buildProjectionSeries(f, maxDays),
@@ -665,13 +848,24 @@ function UsageChart({ forecasts, days: maxDays, onDaysChange }: {
             width={48}
           />
           <Tooltip
-            contentStyle={{ background: '#1a1a2e', border: '1px solid #374151', borderRadius: 8, fontSize: 12 }}
-            labelStyle={{ color: '#9CA3AF' }}
-            itemStyle={{ color: '#E5E7EB' }}
-            formatter={(value, name) => {
-              if (typeof value !== 'number') return '';
-              const s = series.find((x) => x.key === String(name));
-              return `${value}g — ${s?.label ?? name}`;
+            content={({ label: dateLabel, payload }) => {
+              if (!payload?.length) return null;
+              return (
+                <div style={{ background: '#1a1a2e', border: '1px solid #374151', borderRadius: 8, fontSize: 12, padding: '8px 12px' }}>
+                  <div style={{ color: '#9CA3AF', marginBottom: 6 }}>{dateLabel}</div>
+                  {payload.map((p) => {
+                    const s = series.find((x) => x.key === String(p.dataKey));
+                    if (typeof p.value !== 'number') return null;
+                    return (
+                      <div key={String(p.dataKey)} style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#E5E7EB', marginBottom: 2 }}>
+                        <span style={{ color: s?.color ?? '#9CA3AF', fontSize: 10 }}>●</span>
+                        <span>{s?.label ?? String(p.dataKey)}</span>
+                        <span style={{ color: '#9CA3AF', marginLeft: 4 }}>{p.value}g</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
             }}
           />
           <Legend
@@ -789,19 +983,21 @@ function ForecastRow({
 
   const snoozed = f.settings?.alerts_snoozed ?? false;
 
-  const label = [f.group.brand, f.group.material, f.group.subtype].filter(Boolean).join(' ');
-  const colorStyle = f.group.spools[0]?.rgba ? `#${f.group.spools[0].rgba.substring(0, 6)}` : '#4B5563';
+  const label = skuLabel(f.group.brand, f.group.material, f.group.subtype, f.group.colorName);
+  // Use getSwatchStyle so a Clear (alpha=00) lead spool renders as a
+  // checkerboard rather than collapsing to solid black (#1545).
+  const colorStyle = f.group.spools[0]?.rgba ? getSwatchStyle(f.group.spools[0].rgba) : { backgroundColor: '#4B5563' };
   const remainPct = f.totalLabelG > 0 ? Math.round((f.totalRemainingG / f.totalLabelG) * 100) : 0;
 
   const daysColor = snoozed ? 'text-bambu-gray'
     : f.daysRemaining === null ? 'text-bambu-gray'
-    : f.stockBreakAlert ? 'text-red-400'
-    : f.reorderAlert ? 'text-yellow-400'
-    : f.daysRemaining < 30 ? 'text-yellow-400'
-    : 'text-green-400';
+    : f.stockBreakAlert ? 'text-red-700 dark:text-red-400'
+    : f.reorderAlert ? 'text-yellow-700 dark:text-yellow-400'
+    : f.daysRemaining < 30 ? 'text-yellow-700 dark:text-yellow-400'
+    : 'text-green-700 dark:text-green-400';
 
   function upsert(lead: number, marginVal: number, marginUnitArg: 'days' | 'g', alertsSnoozed = snoozed) {
-    upsertMutation.mutate({ material: f.group.material, subtype: f.group.subtype, brand: f.group.brand, lead_time_days: lead, safety_margin_value: marginVal, safety_margin_unit: marginUnitArg, alerts_snoozed: alertsSnoozed });
+    upsertMutation.mutate({ material: f.group.material, subtype: f.group.subtype, brand: f.group.brand, color_name: f.group.colorName, lead_time_days: lead, safety_margin_value: marginVal, safety_margin_unit: marginUnitArg, alerts_snoozed: alertsSnoozed });
   }
 
   function toggleSnooze(e: React.MouseEvent) {
@@ -812,7 +1008,7 @@ function ForecastRow({
   const tierBadge = f.rateTier === 'history'
     ? <span className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-bambu-green/15 text-bambu-green"><span className="w-1.5 h-1.5 rounded-full bg-bambu-green" />{t('forecast.trend')}</span>
     : f.rateTier === 'delta'
-    ? <span className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-blue-400/15 text-blue-400"><span className="w-1.5 h-1.5 rounded-full bg-blue-400" />{t('forecast.estimated')}</span>
+    ? <span className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-400/15 text-blue-700 dark:text-blue-400"><span className="w-1.5 h-1.5 rounded-full bg-blue-400" />{t('forecast.estimated')}</span>
     : <span className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-bambu-dark-tertiary text-bambu-gray/60"><span className="w-1.5 h-1.5 rounded-full bg-bambu-gray/40" />{t('forecast.noData')}</span>;
 
   const rowAlertBorder = snoozed ? '' : f.stockBreakAlert ? 'bg-red-500/5' : f.reorderAlert ? 'bg-yellow-500/5' : '';
@@ -820,38 +1016,46 @@ function ForecastRow({
   return (
     <>
       <tr
-        className={`cursor-pointer hover:bg-bambu-dark-tertiary/40 transition-colors ${rowAlertBorder} ${snoozed ? 'opacity-50' : ''}`}
+        className={`border-b border-bambu-dark-tertiary/50 cursor-pointer hover:bg-bambu-dark-tertiary/30 transition-colors ${rowAlertBorder} ${snoozed ? 'opacity-50' : ''}`}
         onClick={() => setExpanded((e) => !e)}
       >
         {/* Color dot */}
         <td className="px-4 py-3">
           <span
-            className="block w-3 h-3 rounded-full border border-black/20"
-            style={{ backgroundColor: colorStyle }}
+            className="block w-5 h-5 rounded-full border border-black/20"
+            style={colorStyle}
           />
         </td>
 
         {/* SKU */}
         <td className="px-4 py-3">
-          <div className="text-sm font-medium text-white">{label}</div>
-          <div className="text-xs text-bambu-gray">{t('forecast.spoolCount', { count: f.totalSpools })}</div>
+          <span className="text-sm text-white">{label}</span>
+        </td>
+
+        {/* Spools */}
+        <td className="px-4 py-3">
+          <span className="text-sm text-bambu-gray">{f.totalSpools}</span>
         </td>
 
         {/* Stock */}
-        <td className="px-4 py-3 min-w-[120px]">
-          <div className="h-1.5 bg-bambu-dark-tertiary rounded-full overflow-hidden mb-1 w-24">
-            <div
-              className={`h-full rounded-full ${remainPct > 50 ? 'bg-bambu-green' : remainPct > 20 ? 'bg-yellow-500' : 'bg-red-500'}`}
-              style={{ width: `${Math.min(remainPct, 100)}%` }}
-            />
+        <td className="px-4 py-3 min-w-[140px]">
+          <div className="flex items-center gap-2">
+            <div className="flex-1 h-2 bg-bambu-dark-tertiary rounded-full overflow-hidden">
+              <div
+                className={`h-full rounded-full ${remainPct > 50 ? 'bg-bambu-green' : remainPct > 20 ? 'bg-yellow-500' : 'bg-red-500'}`}
+                style={{ width: `${Math.min(remainPct, 100)}%` }}
+              />
+            </div>
+            <span className="text-xs text-bambu-gray min-w-[40px] text-right">{Math.round(f.totalRemainingG)}g</span>
           </div>
-          <span className="text-xs text-bambu-gray">{Math.round(f.totalRemainingG)}g</span>
         </td>
 
         {/* Rate */}
         <td className="px-4 py-3">
-          <div className="text-sm text-white">{f.dailyRateG !== null ? `${f.dailyRateG.toFixed(1)}g/d` : '—'}</div>
-          <div className="mt-0.5">{tierBadge}</div>
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-sm text-white">{f.dailyRateG !== null ? `${f.dailyRateG.toFixed(1)}g/d` : '—'}</span>
+            {tierBadge}
+          </div>
         </td>
 
         {/* Days left */}
@@ -870,7 +1074,7 @@ function ForecastRow({
 
         {/* Reorder by */}
         <td className="px-4 py-3">
-          <span className={`text-sm font-medium ${!snoozed && f.reorderAlert ? 'text-yellow-400' : 'text-bambu-gray'}`}>
+          <span className={`text-sm ${!snoozed && f.reorderAlert ? 'text-yellow-700 dark:text-yellow-400' : 'text-bambu-gray'}`}>
             {f.reorderTriggerDate ? formatDate(f.reorderTriggerDate) : '—'}
           </span>
         </td>
@@ -888,16 +1092,16 @@ function ForecastRow({
               </button>
             )}
             {!snoozed && (f.stockBreakAlert ? (
-              <AlertTriangle className="w-4 h-4 text-red-400" aria-label={t('forecast.stockBreakRisk')} />
+              <AlertTriangle className="w-4 h-4 text-red-600 dark:text-red-400" aria-label={t('forecast.stockBreakRisk')} />
             ) : f.reorderAlert ? (
-              <AlertTriangle className="w-4 h-4 text-yellow-400" aria-label={t('forecast.reorderNow')} />
+              <AlertTriangle className="w-4 h-4 text-yellow-600 dark:text-yellow-400" aria-label={t('forecast.reorderNow')} />
             ) : f.daysRemaining !== null ? (
               <Check className="w-4 h-4 text-bambu-green/50" />
             ) : null)}
             {canWrite && (
               <button
                 onClick={toggleSnooze}
-                className={`p-1 rounded transition-colors ${snoozed ? 'text-bambu-gray/70 hover:text-white' : 'text-bambu-dark-tertiary hover:text-bambu-gray'}`}
+                className={`p-1 rounded transition-colors ${snoozed ? 'text-amber-600/80 dark:text-amber-400/80 hover:text-amber-700 dark:hover:text-amber-300' : 'text-slate-400 hover:text-white'}`}
                 title={t(snoozed ? 'forecast.alertsEnabled' : 'forecast.alertsSnoozed')}
               >
                 <BellOff className="w-3.5 h-3.5" />
@@ -916,70 +1120,63 @@ function ForecastRow({
       {/* ── Expanded detail row ── */}
       {expanded && (
         <tr className="bg-bambu-dark-tertiary/10">
-          <td colSpan={8} className="px-6 py-4">
-            <div className="space-y-4">
+          <td colSpan={9} className="px-6 py-4">
+            <div className="space-y-3">
 
-              {/* Logistics summary */}
-              <div className="grid grid-cols-3 gap-3">
+              {/* Single compact row: read-only stats + editable settings */}
+              <div className={`grid gap-2 ${canWrite ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-2'}`}>
                 <LogisticStat
                   label={t('forecast.effectiveLeadTime')}
                   value={`${f.effectiveLeadTimeDays}d`}
                   hint={t('forecast.effectiveLeadTimeHint', { global: globalLeadTime, sku: f.settings?.lead_time_days ?? 0 })}
                 />
                 <LogisticStat
-                  label={t('forecast.safetyMarginLabel')}
-                  value={`${Math.round(f.safetyStockG)}g`}
-                  hint={t('forecast.safetyMarginHint')}
-                />
-                <LogisticStat
                   label={t('forecast.reorderPoint')}
                   value={`${Math.round(f.reorderPointG)}g`}
                   hint={t('forecast.reorderPointHint')}
                 />
+                {canWrite && (
+                  <>
+                    <SettingField
+                      label={t('forecast.skuLeadTimeOverride')}
+                      hint={t('forecast.skuLeadTimeHint')}
+                      unit={t('forecast.leadTime')}
+                      editing={editingLead}
+                      value={f.settings?.lead_time_days ?? 0}
+                      inputValue={leadInput}
+                      onInputChange={setLeadInput}
+                      onEdit={() => { setLeadInput(String(f.settings?.lead_time_days ?? 0)); setEditingLead(true); }}
+                      onSave={() => {
+                        const v = parseInt(leadInput, 10);
+                        if (!isNaN(v) && v >= 0) { upsert(v, f.settings?.safety_margin_value ?? 14, marginUnit); setEditingLead(false); }
+                      }}
+                      onCancel={() => setEditingLead(false)}
+                      isPending={upsertMutation.isPending}
+                      saveLabel={t('forecast.save')}
+                      cancelLabel={t('forecast.cancel')}
+                    />
+                    <SafetyMarginField
+                      value={f.settings?.safety_margin_value ?? 14}
+                      unit={marginUnit}
+                      editing={editingMargin}
+                      inputValue={marginInput}
+                      dailyRateG={f.dailyRateG}
+                      onInputChange={setMarginInput}
+                      onUnitChange={(u) => setMarginUnit(u)}
+                      onEdit={() => { setMarginInput(String(f.settings?.safety_margin_value ?? 14)); setMarginUnit(f.settings?.safety_margin_unit ?? 'days'); setEditingMargin(true); }}
+                      onSave={() => {
+                        const v = parseInt(marginInput, 10);
+                        if (!isNaN(v) && v >= 0) { upsert(f.settings?.lead_time_days ?? 0, v, marginUnit); setEditingMargin(false); }
+                      }}
+                      onCancel={() => setEditingMargin(false)}
+                      isPending={upsertMutation.isPending}
+                      saveLabel={t('forecast.save')}
+                      cancelLabel={t('forecast.cancel')}
+                      safetyMarginLabel={t('forecast.safetyMarginLabel')}
+                    />
+                  </>
+                )}
               </div>
-
-              {/* Per-SKU settings — write-gated */}
-              {canWrite && (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <SettingField
-                    label={t('forecast.skuLeadTimeOverride')}
-                    hint={t('forecast.skuLeadTimeHint')}
-                    unit={t('forecast.leadTime')}
-                    editing={editingLead}
-                    value={f.settings?.lead_time_days ?? 0}
-                    inputValue={leadInput}
-                    onInputChange={setLeadInput}
-                    onEdit={() => { setLeadInput(String(f.settings?.lead_time_days ?? 0)); setEditingLead(true); }}
-                    onSave={() => {
-                      const v = parseInt(leadInput, 10);
-                      if (!isNaN(v) && v >= 0) { upsert(v, f.settings?.safety_margin_value ?? 14, marginUnit); setEditingLead(false); }
-                    }}
-                    onCancel={() => setEditingLead(false)}
-                    isPending={upsertMutation.isPending}
-                    saveLabel={t('forecast.save')}
-                    cancelLabel={t('forecast.cancel')}
-                  />
-                  <SafetyMarginField
-                    value={f.settings?.safety_margin_value ?? 14}
-                    unit={marginUnit}
-                    editing={editingMargin}
-                    inputValue={marginInput}
-                    dailyRateG={f.dailyRateG}
-                    onInputChange={setMarginInput}
-                    onUnitChange={(u) => setMarginUnit(u)}
-                    onEdit={() => { setMarginInput(String(f.settings?.safety_margin_value ?? 14)); setMarginUnit(f.settings?.safety_margin_unit ?? 'days'); setEditingMargin(true); }}
-                    onSave={() => {
-                      const v = parseInt(marginInput, 10);
-                      if (!isNaN(v) && v >= 0) { upsert(f.settings?.lead_time_days ?? 0, v, marginUnit); setEditingMargin(false); }
-                    }}
-                    onCancel={() => setEditingMargin(false)}
-                    isPending={upsertMutation.isPending}
-                    saveLabel={t('forecast.save')}
-                    cancelLabel={t('forecast.cancel')}
-                    safetyMarginLabel={t('forecast.safetyMarginLabel')}
-                  />
-                </div>
-              )}
 
               {/* Individual spools — shown when group has >1 spool */}
               {f.group.spools.length > 1 && (
@@ -989,10 +1186,10 @@ function ForecastRow({
                     <table className="w-full">
                       <thead>
                         <tr className="border-b border-bambu-dark-tertiary bg-bambu-dark-tertiary/30">
-                          <th className="px-4 py-2 text-left text-xs font-medium text-bambu-gray uppercase tracking-wide">#</th>
-                          <th className="px-4 py-2 text-left text-xs font-medium text-bambu-gray uppercase tracking-wide">{t('inventory.remaining')}</th>
-                          <th className="px-4 py-2 text-left text-xs font-medium text-bambu-gray uppercase tracking-wide">{t('inventory.used')}</th>
-                          <th className="px-4 py-2 text-left text-xs font-medium text-bambu-gray uppercase tracking-wide">{t('forecast.labelWeight')}</th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-bambu-gray uppercase tracking-wide">#</th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-bambu-gray uppercase tracking-wide">{t('inventory.remaining')}</th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-bambu-gray uppercase tracking-wide">{t('inventory.used')}</th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-bambu-gray uppercase tracking-wide">{t('forecast.labelWeight')}</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-bambu-dark-tertiary">
@@ -1042,7 +1239,7 @@ function ForecastRow({
 function LogisticStat({ label, value, hint }: { label: string; value: string; hint: string }) {
   return (
     <div className="bg-bambu-dark-tertiary/40 rounded-lg p-3" title={hint}>
-      <div className="text-xs text-bambu-gray mb-1">{label}</div>
+      <div className="text-xs font-medium text-white mb-1">{label}</div>
       <div className="text-lg font-semibold text-white">{value}</div>
     </div>
   );
@@ -1110,7 +1307,8 @@ function SafetyMarginField({
         approx: displayG !== null ? t('forecast.safetyMarginHintDaysApprox', { g: displayG }) : '',
       })
     : t('forecast.safetyMarginHintG', {
-        approx: dailyRateG !== null ? t('forecast.safetyMarginHintGApprox', { days: Math.round(value / dailyRateG) }) : '',
+        // A SKU not used lately has a rate of 0 (#3407): no day count to give.
+        approx: dailyRateG ? t('forecast.safetyMarginHintGApprox', { days: Math.round(value / dailyRateG) }) : '',
       });
 
   return (
@@ -1140,10 +1338,10 @@ function SafetyMarginField({
           <span className="text-lg font-semibold text-white">{value}</span>
           <span className="text-xs text-bambu-gray">{unit}</span>
           {displayG !== null && unit === 'days' && (
-            <span className="text-xs text-bambu-gray/60">≈ {displayG}g</span>
+            <span className="text-lg font-semibold text-white">≈ {displayG}g</span>
           )}
-          {unit === 'g' && dailyRateG !== null && (
-            <span className="text-xs text-bambu-gray/60">≈ {Math.round(value / dailyRateG)}d</span>
+          {unit === 'g' && !!dailyRateG && (
+            <span className="text-lg font-semibold text-white">≈ {Math.round(value / dailyRateG)}d</span>
           )}
           <button onClick={onEdit} className="p-1 text-bambu-gray hover:text-white rounded transition-colors"><Edit2 className="w-3 h-3" /></button>
         </div>
@@ -1187,7 +1385,7 @@ function ShoppingListPanel({
           label_weight: spoolWeight,
           core_weight: 0,
           core_weight_catalog_id: null,
-          color_name: null, rgba: null, extra_colors: null, effect_type: null,
+          color_name: item.color_name, rgba: null, extra_colors: null, effect_type: null,
           nozzle_temp_min: null, nozzle_temp_max: null,
           note: item.note ?? null,
           tag_uid: null, tray_uuid: null,
@@ -1199,6 +1397,7 @@ function ShoppingListPanel({
           added_full: null, last_used: null, encode_time: null,
           category: 'Stock',
           low_stock_threshold_pct: null,
+          material_number: null,
         };
         await api.bulkCreateSpools(spoolBase, item.quantity_spools);
         await api.removeFromShoppingList(id);
@@ -1221,7 +1420,7 @@ function ShoppingListPanel({
   const cartForecasts = useMemo(() =>
     items.map((item) => ({
       item,
-      forecast: forecastMap.get(skuKey(item.material, item.subtype, item.brand)) ?? null,
+      forecast: forecastMap.get(skuKey(item.material, item.subtype, item.brand, item.color_name)) ?? null,
     })),
     [items, forecastMap]
   );
@@ -1237,9 +1436,9 @@ function ShoppingListPanel({
   );
 
   function downloadCsv() {
-    const headers = [t('forecast.qty'), t('forecast.material'), 'Brand', 'Subtype', `${t('forecast.weight')} (g)`, `${t('forecast.leadTime')} (d)`, t('forecast.expectedRestock'), t('forecast.status'), t('forecast.note')];
+    const headers = [t('forecast.qty'), t('forecast.material'), t('inventory.brand'), t('inventory.subtype'), t('inventory.color'), `${t('forecast.weight')} (g)`, `${t('forecast.leadTime')} (d)`, t('forecast.expectedRestock'), t('forecast.status'), t('forecast.note')];
     const rows = items.map((i) => {
-      const f = forecastMap.get(skuKey(i.material, i.subtype, i.brand)) ?? null;
+      const f = forecastMap.get(skuKey(i.material, i.subtype, i.brand, i.color_name)) ?? null;
       const avgSpoolG = f && f.totalSpools > 0 ? f.totalLabelG / f.totalSpools : 1000;
       const totalWeightG = Math.round(i.quantity_spools * avgSpoolG);
       const lt = f?.effectiveLeadTimeDays ?? globalLeadTime ?? 0;
@@ -1249,6 +1448,7 @@ function ShoppingListPanel({
         i.material,
         i.brand ?? '',
         i.subtype ?? '',
+        i.color_name ?? '',
         totalWeightG,
         lt || '',
         restock,
@@ -1307,7 +1507,7 @@ function ShoppingListPanel({
                 {t('forecast.downloadCsv')}
               </button>
               {canWrite && (
-                <button onClick={onClear} className="text-xs text-red-400 hover:text-red-300 transition-colors px-2 py-1 rounded border border-red-500/20 hover:bg-red-500/10">
+                <button onClick={onClear} className="text-xs text-red-700 dark:text-red-400 hover:text-red-800 dark:hover:text-red-300 transition-colors px-2 py-1 rounded border border-red-200 dark:border-red-500/20 hover:bg-red-50 dark:hover:bg-red-500/10">
                   {t('forecast.clearAll')}
                 </button>
               )}
@@ -1327,21 +1527,21 @@ function ShoppingListPanel({
           <table className="w-full">
             <thead>
               <tr className="border-b border-bambu-dark-tertiary bg-bambu-dark-tertiary/20">
-                <th className="px-4 py-2 text-left text-xs font-medium text-bambu-gray uppercase tracking-wide">{t('forecast.qty')}</th>
-                <th className="px-4 py-2 text-left text-xs font-medium text-bambu-gray uppercase tracking-wide">{t('forecast.material')}</th>
-                <th className="px-4 py-2 text-left text-xs font-medium text-bambu-gray uppercase tracking-wide">{t('forecast.weight')}</th>
-                <th className="px-4 py-2 text-left text-xs font-medium text-bambu-gray uppercase tracking-wide">{t('forecast.leadTime')}</th>
-                <th className="px-4 py-2 text-left text-xs font-medium text-bambu-gray uppercase tracking-wide">{t('forecast.expectedRestock')}</th>
-                <th className="px-4 py-2 text-left text-xs font-medium text-bambu-gray uppercase tracking-wide">{t('forecast.status')}</th>
-                <th className="px-4 py-2 text-left text-xs font-medium text-bambu-gray uppercase tracking-wide">{t('forecast.note')}</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-bambu-gray uppercase tracking-wide">{t('forecast.qty')}</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-bambu-gray uppercase tracking-wide">{t('forecast.material')}</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-bambu-gray uppercase tracking-wide">{t('forecast.weight')}</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-bambu-gray uppercase tracking-wide">{t('forecast.leadTime')}</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-bambu-gray uppercase tracking-wide">{t('forecast.expectedRestock')}</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-bambu-gray uppercase tracking-wide">{t('forecast.status')}</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-bambu-gray uppercase tracking-wide">{t('forecast.note')}</th>
                 <th className="px-4 py-2 text-right text-xs font-medium text-bambu-gray uppercase tracking-wide">{t('forecast.actions')}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-bambu-dark-tertiary">
               {items.map((item) => {
-                const lbl = [item.brand, item.material, item.subtype].filter(Boolean).join(' ');
+                const lbl = skuLabel(item.brand, item.material, item.subtype, item.color_name);
                 const hasBreak = breakAlerts.some((a) => a.item.id === item.id);
-                const f = forecastMap.get(skuKey(item.material, item.subtype, item.brand)) ?? null;
+                const f = forecastMap.get(skuKey(item.material, item.subtype, item.brand, item.color_name)) ?? null;
                 const avgSpoolG = f && f.totalSpools > 0 ? f.totalLabelG / f.totalSpools : 1000;
                 const totalWeightG = Math.round(item.quantity_spools * avgSpoolG);
                 const lt = f?.effectiveLeadTimeDays ?? globalLeadTime ?? 0;
@@ -1361,7 +1561,7 @@ function ShoppingListPanel({
                       <div className="flex items-center gap-2">
                         <span className="text-sm text-white">{lbl}</span>
                         {hasBreak && !isPurchased && (
-                          <AlertTriangle className="w-3.5 h-3.5 text-red-400 flex-shrink-0" aria-label={t('forecast.stockBreakBefore')} />
+                          <AlertTriangle className="w-3.5 h-3.5 text-red-600 dark:text-red-400 flex-shrink-0" aria-label={t('forecast.stockBreakBefore')} />
                         )}
                       </div>
                     </td>
@@ -1385,7 +1585,7 @@ function ShoppingListPanel({
                     <td className="px-4 py-2.5">
                       <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
                         isReceived ? 'bg-bambu-green/20 text-bambu-green' :
-                        isPurchased ? 'bg-blue-400/20 text-blue-400' :
+                        isPurchased ? 'bg-blue-100 dark:bg-blue-400/20 text-blue-700 dark:text-blue-400' :
                         'bg-bambu-dark-tertiary text-bambu-gray'
                       }`}>
                         {isReceived ? t('forecast.received') : isPurchased ? t('forecast.purchased') : t('forecast.pending')}
@@ -1405,27 +1605,27 @@ function ShoppingListPanel({
                               onClick={() => statusMutation.mutate({ id: item.id, status: isPurchased ? 'pending' : 'purchased' })}
                               disabled={isMutating || isReceived}
                               title={isPurchased ? t('forecast.resetToPending') : t('forecast.markPurchased')}
-                              className={`p-1 rounded transition-colors disabled:opacity-30 ${
+                              className={`p-1.5 rounded transition-colors disabled:opacity-30 ${
                                 isPurchased
-                                  ? 'text-blue-400 hover:text-bambu-gray'
-                                  : 'text-bambu-gray hover:text-blue-400'
+                                  ? 'text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300'
+                                  : 'text-blue-600/50 dark:text-blue-400/50 hover:text-blue-600 dark:hover:text-blue-400'
                               }`}
                             >
-                              {isPurchased ? <RotateCcw className="w-3.5 h-3.5" /> : <CreditCard className="w-3.5 h-3.5" />}
+                              {isPurchased ? <RotateCcw className="w-4 h-4" /> : <CreditCard className="w-4 h-4" />}
                             </button>
                             {/* Received icon — available only after purchasing */}
                             <button
                               onClick={() => statusMutation.mutate({ id: item.id, status: 'received', item, avgSpoolG })}
                               disabled={isMutating || !isPurchased || isReceived}
                               title={t('forecast.markReceived')}
-                              className="p-1 rounded transition-colors text-bambu-gray hover:text-bambu-green disabled:opacity-30"
+                              className="p-1.5 rounded transition-colors text-bambu-green/50 hover:text-bambu-green disabled:opacity-30"
                             >
-                              <PackageCheck className="w-3.5 h-3.5" />
+                              <PackageCheck className="w-4 h-4" />
                             </button>
                             {/* Delete */}
                             <button
                               onClick={() => onRemove(item.id)}
-                              className="p-1 text-bambu-gray hover:text-red-400 transition-colors"
+                              className="p-1 text-bambu-gray hover:text-red-600 dark:hover:text-red-400 transition-colors"
                               title={t('forecast.remove')}
                             >
                               <Trash2 className="w-3.5 h-3.5" />
@@ -1471,7 +1671,7 @@ function CartLogisticsRow({
   onRemove: () => void;
 }) {
   const { t } = useTranslation();
-  const label = [item.brand, item.material, item.subtype].filter(Boolean).join(' ');
+  const label = skuLabel(item.brand, item.material, item.subtype, item.color_name);
 
   // Build a timeline showing stock depletion, arrival bump, then post-arrival depletion.
   // Two points are inserted at day `lt` (just-before and just-after arrival) so the
@@ -1525,14 +1725,14 @@ function CartLogisticsRow({
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2 min-w-0">
           {hasBreak
-            ? <AlertTriangle className="w-4 h-4 text-red-400 flex-shrink-0" />
+            ? <AlertTriangle className="w-4 h-4 text-red-600 dark:text-red-400 flex-shrink-0" />
             : <Check className="w-4 h-4 text-bambu-green/60 flex-shrink-0" />
           }
           <span className="text-sm font-medium text-white truncate">{label}</span>
           <span className="text-xs text-bambu-gray flex-shrink-0">{t('forecast.spoolCount', { count: item.quantity_spools })} ordered</span>
         </div>
         {canWrite && (
-          <button onClick={onRemove} className="p-1 text-bambu-gray hover:text-red-400 transition-colors flex-shrink-0">
+          <button onClick={onRemove} className="p-1 text-bambu-gray hover:text-red-600 dark:hover:text-red-400 transition-colors flex-shrink-0">
             <Trash2 className="w-3.5 h-3.5" />
           </button>
         )}
@@ -1540,7 +1740,7 @@ function CartLogisticsRow({
 
       {/* Break alert */}
       {hasBreak && (
-        <div className="mb-3 px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/20 text-xs text-red-300">
+        <div className="mb-3 px-3 py-2 rounded-lg bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/20 text-xs text-red-700 dark:text-red-300">
           <span className="font-medium">{t('forecast.stockBreakIn', { days: stockBreaksAt })}</span>
           {' '}{t('forecast.stockRunsOutBefore', { lt: f!.effectiveLeadTimeDays })}
           {f!.dailyRateG !== null && (
@@ -1574,9 +1774,9 @@ function CartLogisticsRow({
               <div className="text-xs text-bambu-gray mb-0.5">{t('forecast.safetyMarginLabel')}</div>
               <div className="text-sm font-semibold text-white">{Math.round(f.safetyStockG)}g</div>
             </div>
-            <div className={`rounded-lg px-2.5 py-2 text-center ${hasBreak ? 'bg-red-500/15' : 'bg-bambu-dark-tertiary/40'}`}>
+            <div className={`rounded-lg px-2.5 py-2 text-center ${hasBreak ? 'bg-red-100 dark:bg-red-500/15' : 'bg-bambu-dark-tertiary/40'}`}>
               <div className="text-xs text-bambu-gray mb-0.5">{t('forecast.daysLeft')}</div>
-              <div className={`text-sm font-semibold ${hasBreak ? 'text-red-400' : 'text-green-400'}`}>
+              <div className={`text-sm font-semibold ${hasBreak ? 'text-red-700 dark:text-red-400' : 'text-green-700 dark:text-green-400'}`}>
                 {f.daysRemaining ?? '—'}d
               </div>
             </div>
@@ -1688,7 +1888,7 @@ function CartLogisticsRow({
             <span className="flex items-center gap-1"><span className="inline-block w-4 border-t-2 border-yellow-400 border-dashed" /> {t('forecast.ropLabel')}</span>
             <span className="flex items-center gap-1"><span className="inline-block w-4 border-t border-bambu-gray border-dashed" /> {t('forecast.safetyStockLegend')}</span>
             <span className="flex items-center gap-1"><span className="inline-block w-4 border-t-2 border-blue-400 border-dashed" /> {t('forecast.stockArrivalLegend')}</span>
-            {hasBreak && <span className="flex items-center gap-1 text-red-400"><span className="inline-block w-4 border-t-2 border-red-400" /> {t('forecast.stockoutLegend')}</span>}
+            {hasBreak && <span className="flex items-center gap-1 text-red-700 dark:text-red-400"><span className="inline-block w-4 border-t-2 border-red-400" /> {t('forecast.stockoutLegend')}</span>}
           </div>
         </>
       ) : null}
@@ -1703,10 +1903,10 @@ function AddToCartModal({
 }: {
   forecast: SkuForecast;
   onClose: () => void;
-  onAdd: (item: { material: string; subtype: string | null; brand: string | null; quantity_spools: number; note: string | null }) => void;
+  onAdd: (item: { material: string; subtype: string | null; brand: string | null; color_name: string | null; quantity_spools: number; note: string | null }) => void;
 }) {
   const { t } = useTranslation();
-  const label = [f.group.brand, f.group.material, f.group.subtype].filter(Boolean).join(' ');
+  const label = skuLabel(f.group.brand, f.group.material, f.group.subtype, f.group.colorName);
   const [mode, setMode] = useState<'qty' | 'duration'>('qty');
   const [qty, setQty] = useState('1');
   const [durationDays, setDurationDays] = useState('30');
@@ -1725,7 +1925,7 @@ function AddToCartModal({
 
   function submit(e: React.FormEvent) {
     e.preventDefault();
-    onAdd({ material: f.group.material, subtype: f.group.subtype, brand: f.group.brand, quantity_spools: finalQty, note: note || null });
+    onAdd({ material: f.group.material, subtype: f.group.subtype, brand: f.group.brand, color_name: f.group.colorName, quantity_spools: finalQty, note: note || null });
   }
 
   return (
@@ -1787,7 +1987,7 @@ function AddToCartModal({
                   <span className="text-xs text-bambu-gray">at {f.dailyRateG.toFixed(1)}g/day</span>
                 </div>
               ) : (
-                <div className="text-xs text-yellow-400 px-1">{t('forecast.noUsageQty')}</div>
+                <div className="text-xs text-yellow-700 dark:text-yellow-400 px-1">{t('forecast.noUsageQty')}</div>
               )}
             </div>
           )}
@@ -1817,10 +2017,4 @@ function AddToCartModal({
       </div>
     </div>
   );
-}
-
-// ── Column headers (re-exported for InventoryPage) ────────────────────────────
-
-export function ForecastColumnHeaders() {
-  return null;
 }

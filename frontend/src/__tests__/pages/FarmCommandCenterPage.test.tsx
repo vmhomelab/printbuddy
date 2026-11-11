@@ -204,7 +204,8 @@ describe('FarmCommandCenterPage', () => {
     expect(screen.getByRole('heading', { name: 'Dispatch Suggestions' })).toBeInTheDocument();
     expect(screen.getByText('Review 1 active project with 3 queued jobs and 1 failed job.')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /review gridfinity organizer set dispatch/i })).toHaveAttribute('href', '/projects/42');
-    expect(screen.getByText('Printing now')).toBeInTheDocument();
+    // Printer statuses arrive through the batched bulk read, a beat after the page.
+    expect(await screen.findByText('Printing now')).toBeInTheDocument();
     expect(screen.getByText('PRA-01 - Gridfinity Tray - 68%')).toBeInTheDocument();
     expect(screen.getByText('Queued')).toBeInTheDocument();
     expect(screen.getByText('gridfinity-bin-plate-03.gcode.3mf')).toBeInTheDocument();

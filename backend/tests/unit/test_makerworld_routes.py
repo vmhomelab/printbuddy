@@ -17,32 +17,24 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from backend.app.api.routes.makerworld import _canonical_url
+from backend.app.api.routes import makerworld as makerworld_routes
+from backend.app.core.permissions import Permission
 from backend.app.models.library import LibraryFile, LibraryFolder
-from backend.app.services.makerworld import MakerWorldUnavailableError
-
-
-def _fake_service(**stubs):
-    """Build an AsyncMock MakerWorldService with the given async method stubs."""
-    svc = AsyncMock()
-    svc.close = AsyncMock()
-    # Existing import fixtures model older design payloads without an instance
-    # id. They must exercise the supported legacy fallback rather than return
-    # AsyncMock internals from unstubbed service methods.
-    svc.get_design_instances = AsyncMock(return_value={"total": 0, "hits": []})
-    svc.get_instance_download = AsyncMock(return_value={})
-    for name, value in stubs.items():
-        if callable(value) and not isinstance(value, AsyncMock):
-            setattr(svc, name, AsyncMock(side_effect=value))
-        else:
-            setattr(svc, name, AsyncMock(return_value=value))
-    return svc
+from backend.app.services.model_providers.base import (
+    ModelProvider,
+    ProviderDownload,
+    ProviderDownloadInfo,
+    ProviderResolvedModel,
+    ProviderResourceRef,
+    ProviderStatus,
+)
+from backend.app.services.model_providers.makerworld import makerworld_provider
+from backend.app.services.model_providers.makerworld.errors import MakerWorldUnavailableError
 
 
 def _default_design(alphanumeric: str = "US2bb73b106683e5", model_id: int = 1400373):
-    """Shape the backend needs from ``/design/{id}``: the alphanumeric
-    ``modelId`` field that iot-service requires, plus at least one instance
-    so the importer has a ``profile_id`` to fall back on."""
+    """Shape of ``/design/{id}`` the source-archive path reads (title, summary,
+    cover, creator); download selection itself lives in the service."""
     return {
         "id": model_id,
         "modelId": alphanumeric,
@@ -51,25 +43,147 @@ def _default_design(alphanumeric: str = "US2bb73b106683e5", model_id: int = 1400
     }
 
 
-def _default_manifest(name: str = "benchy.3mf"):
-    return {
-        "name": name,
-        "url": "https://makerworld.bblmw.com/makerworld/model/X/Y/f.3mf?exp=1&key=k",
-    }
+def _download_info(
+    model_id: int = 1400373,
+    profile_id: int = 298919107,
+    name: str = "benchy.3mf",
+    url: str = "https://makerworld.bblmw.com/makerworld/model/X/Y/f.3mf?exp=1&key=k",
+) -> ProviderDownloadInfo:
+    """What ``service.get_download`` hands the route: signed URL + raw upstream
+    name + the enriched resource ref (``sub_id`` carries the resolved profile)."""
+    return ProviderDownloadInfo(
+        ref=ProviderResourceRef(source_type="makerworld", external_id=str(model_id), sub_id=str(profile_id)),
+        url=url,
+        suggested_filename=name,
+    )
 
 
-class TestCanonicalUrl:
-    """Unit test the dedupe-key builder directly — regressions break dedupe
-    silently so it's worth pinning the exact shape."""
+def _fake_service(**stubs):
+    """Build an AsyncMock MakerWorldService with the given async method stubs."""
+    svc = AsyncMock()
+    svc.close = AsyncMock()
+    # The source-archive gallery lookup reads the instances envelope; default it
+    # so unstubbed tests don't receive AsyncMock internals.
+    svc.get_design_instances = AsyncMock(return_value={"total": 0, "hits": []})
+    for name, value in stubs.items():
+        if callable(value) and not isinstance(value, AsyncMock):
+            setattr(svc, name, AsyncMock(side_effect=value))
+        else:
+            setattr(svc, name, AsyncMock(return_value=value))
+    return svc
 
-    def test_without_profile_id(self):
-        assert _canonical_url(1400373) == "https://makerworld.com/models/1400373"
 
-    def test_without_profile_id_when_none(self):
-        assert _canonical_url(1400373, None) == "https://makerworld.com/models/1400373"
+class _DummyProvider(ModelProvider):
+    """Stand-in for a second registered model provider.
 
-    def test_with_profile_id(self):
-        assert _canonical_url(1400373, 298919107) == ("https://makerworld.com/models/1400373#profileId-298919107")
+    Lets the route tests exercise behaviour that differs from the MakerWorld
+    singleton — a provider-specific default folder name (or none at all), and
+    its own permissions — without registering anything in the app-wide
+    registry. The permissions deliberately are *not* the MakerWorld ones: the
+    routes must gate on whichever provider the request resolved to.
+    """
+
+    source_type = "dummy"
+    display_name = "Dummy"
+
+    def __init__(
+        self,
+        default_folder_name: str | None = "Dummy Imports",
+        view_permission: Permission | None = Permission.LIBRARY_READ,
+        import_permission: Permission | None = Permission.LIBRARY_UPLOAD,
+    ):
+        self.default_folder_name = default_folder_name
+        self.view_permission = view_permission
+        self.import_permission = import_permission
+
+    async def build_service(self, *, db, user, api_key_owner=None, client=None):
+        raise NotImplementedError
+
+    def parse_url(self, url):
+        return ProviderResourceRef(source_type=self.source_type, external_id="1400373", original_url=url)
+
+    def canonical_url(self, ref):
+        return f"https://dummy.example.com/models/{ref.external_id}"
+
+
+def _permission_spy():
+    """Record which permission the route hands the shared gate.
+
+    The gate itself still runs — the spy delegates to the real factory — so a
+    test using it proves the wiring without loosening the check.
+    """
+    seen: list = []
+    real = makerworld_routes.require_permission_if_auth_enabled
+
+    def factory(*permissions):
+        seen.extend(permissions)
+        return real(*permissions)
+
+    return seen, factory
+
+
+class TestThumbnail:
+    """GET /makerworld/thumbnail — the anonymous CDN image proxy."""
+
+    def _patch_service(self, svc):
+        return patch("backend.app.api.routes.makerworld.MakerWorldService", return_value=svc)
+
+    @pytest.mark.asyncio
+    async def test_proxies_image_with_immutable_cache(self, async_client):
+        from unittest.mock import MagicMock
+
+        svc = MagicMock()
+        svc.fetch_thumbnail = AsyncMock(return_value=(b"png-bytes", "image/png"))
+        svc.close = AsyncMock()
+
+        with self._patch_service(svc):
+            resp = await async_client.get(
+                "/api/v1/makerworld/thumbnail",
+                params={"url": "https://makerworld.bblmw.com/img/x.png"},
+            )
+        assert resp.status_code == 200, resp.text
+        assert resp.content == b"png-bytes"
+        assert resp.headers["content-type"] == "image/png"
+        assert "immutable" in resp.headers["cache-control"]
+        # The SSRF allowlist is the provider's declared seam, not a local
+        # copy inside the route (review round 2).
+        assert svc.fetch_thumbnail.await_args.args[0] == "https://makerworld.bblmw.com/img/x.png"
+        svc.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_allowlist_comes_from_the_provider_descriptor(self, async_client):
+        from unittest.mock import MagicMock
+
+        svc = MagicMock()
+        svc.fetch_thumbnail = AsyncMock(return_value=(b"x", "image/png"))
+        svc.close = AsyncMock()
+
+        with self._patch_service(svc) as cls:
+            await async_client.get(
+                "/api/v1/makerworld/thumbnail",
+                params={"url": "https://makerworld.bblmw.com/img/x.png"},
+            )
+        assert cls.call_args.kwargs["thumbnail_hosts"] == makerworld_provider.thumbnail_hosts()
+
+    @pytest.mark.asyncio
+    async def test_non_cdn_host_is_a_clean_400(self, async_client):
+        from unittest.mock import MagicMock
+
+        from backend.app.services.model_providers.makerworld.errors import MakerWorldUrlError
+
+        svc = MagicMock()
+        svc.fetch_thumbnail = AsyncMock(
+            side_effect=MakerWorldUrlError("Refusing to fetch thumbnail from non-MakerWorld host: 'evil.example'")
+        )
+        svc.close = AsyncMock()
+
+        with self._patch_service(svc):
+            resp = await async_client.get(
+                "/api/v1/makerworld/thumbnail",
+                params={"url": "https://evil.example/x.png"},
+            )
+        assert resp.status_code == 400
+        svc.close.assert_awaited_once()
 
 
 class TestStatus:
@@ -78,8 +192,57 @@ class TestStatus:
         resp = await async_client.get("/api/v1/makerworld/status")
         assert resp.status_code == 200
         body = resp.json()
-        # Fresh in-memory DB has no stored token, so can_download must be false
-        assert body == {"has_cloud_token": False, "can_download": False}
+        # Fresh in-memory DB has no stored token, so can_download must be false.
+        # sign_in_expired is False, not True: there is no sign-in to have expired.
+        assert body == {"has_cloud_token": False, "can_download": False, "sign_in_expired": False}
+
+    @pytest.mark.asyncio
+    async def test_rejected_token_blocks_download_and_reports_expired(self, async_client, db_session):
+        """A token Bambu has already rejected downloads nothing. ``can_download``
+        used to be a bare alias for ``has_cloud_token``, so the import button
+        stayed live against a dead credential and the user only found out via a
+        401 toast."""
+        from backend.app.models.settings import Settings
+        from backend.app.services.bambu_cloud_credentials import CLOUD_TOKEN_INVALID_KEY, CLOUD_TOKEN_KEY
+
+        db_session.add(Settings(key=CLOUD_TOKEN_KEY, value="dead-token"))
+        db_session.add(Settings(key=CLOUD_TOKEN_INVALID_KEY, value="2026-07-14T07:00:00+00:00"))
+        await db_session.commit()
+
+        resp = await async_client.get("/api/v1/makerworld/status")
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "has_cloud_token": True,
+            "can_download": False,
+            "sign_in_expired": True,
+        }
+
+    @pytest.mark.asyncio
+    async def test_sign_in_expired_reads_credential_rejected_not_auth_error(self, async_client):
+        """The route keys ``sign_in_expired`` off the machine-readable
+        ``credential_rejected`` flag, not ``auth_error`` (review round 3 note 1):
+        ``auth_error`` is the human-readable reason and may be set for non-
+        credential failures too. A service reporting an expired credential
+        *without* a message must still surface ``sign_in_expired=True``."""
+        svc = AsyncMock()
+        svc.close = AsyncMock()
+        svc.get_status = AsyncMock(
+            return_value=ProviderStatus(
+                authenticated=True,
+                can_download=False,
+                auth_error=None,
+                credential_rejected=True,
+            )
+        )
+
+        with patch("backend.app.api.routes.makerworld._build_service", AsyncMock(return_value=svc)):
+            resp = await async_client.get("/api/v1/makerworld/status")
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "has_cloud_token": True,
+            "can_download": False,
+            "sign_in_expired": True,
+        }
 
 
 class TestResolve:
@@ -89,20 +252,25 @@ class TestResolve:
             "/api/v1/makerworld/resolve",
             json={"url": "https://thingiverse.com/thing/1"},
         )
+        # A pasted link for an unsupported host is a clean client-input 400,
+        # never a 500 — the registry guard runs before any provider call.
         assert resp.status_code == 400
-        assert "makerworld" in resp.json()["detail"].lower()
+        assert "provider" in resp.json()["detail"].lower()
 
     @pytest.mark.asyncio
     async def test_happy_path_returns_design_and_instances(self, async_client):
         design_payload = {"id": 1400373, "title": "Seed Starter"}
-        instances_payload = {
-            "total": 2,
-            "hits": [
-                {"id": 1452154, "profileId": 298919107, "title": "9 cells"},
-                {"id": 1452158, "profileId": 298919564, "title": "12 cells"},
-            ],
-        }
-        svc = _fake_service(get_design=design_payload, get_design_instances=instances_payload)
+        instances_payload = [
+            {"id": 1452154, "profileId": 298919107, "title": "9 cells"},
+            {"id": 1452158, "profileId": 298919564, "title": "12 cells"},
+        ]
+        svc = _fake_service(
+            resolve=ProviderResolvedModel(
+                ref=ProviderResourceRef(source_type="makerworld", external_id="1400373", sub_id="1452154"),
+                design=design_payload,
+                instances=instances_payload,
+            )
+        )
 
         with patch("backend.app.api.routes.makerworld._build_service", AsyncMock(return_value=svc)):
             resp = await async_client.post(
@@ -119,8 +287,10 @@ class TestResolve:
 
     @pytest.mark.asyncio
     async def test_flags_already_imported_library_ids(self, async_client, db_session):
-        # Seed a matching LibraryFile so resolve() reports it back
-        existing = LibraryFile(
+        """Both dedupe shapes must be found through the provider's
+        ``source_url_filter``: the whole-model canonical URL *and* any
+        plate-level ``#profileId-`` row."""
+        model_row = LibraryFile(
             filename="prev.3mf",
             file_path="library/files/prev.3mf",
             file_type="3mf",
@@ -128,13 +298,25 @@ class TestResolve:
             source_type="makerworld",
             source_url="https://makerworld.com/models/1400373",
         )
-        db_session.add(existing)
+        plate_row = LibraryFile(
+            filename="prev-plate.3mf",
+            file_path="library/files/prev-plate.3mf",
+            file_type="3mf",
+            file_size=100,
+            source_type="makerworld",
+            source_url="https://makerworld.com/models/1400373#profileId-298919107",
+        )
+        db_session.add_all([model_row, plate_row])
         await db_session.commit()
-        await db_session.refresh(existing)
+        await db_session.refresh(model_row)
+        await db_session.refresh(plate_row)
 
         svc = _fake_service(
-            get_design={"id": 1400373},
-            get_design_instances={"total": 0, "hits": []},
+            resolve=ProviderResolvedModel(
+                ref=ProviderResourceRef(source_type="makerworld", external_id="1400373"),
+                design={"id": 1400373},
+                instances=[],
+            )
         )
 
         with patch("backend.app.api.routes.makerworld._build_service", AsyncMock(return_value=svc)):
@@ -143,93 +325,34 @@ class TestResolve:
                 json={"url": "https://makerworld.com/en/models/1400373"},
             )
         assert resp.status_code == 200, resp.text
-        assert resp.json()["already_imported_library_ids"] == [existing.id]
+        assert sorted(resp.json()["already_imported_library_ids"]) == sorted([model_row.id, plate_row.id])
 
     @pytest.mark.asyncio
-    async def test_merges_compatibility_from_design_into_instances(self, async_client):
-        """Per-instance printer compatibility info lives on
-        ``design.instances[].extention.modelInfo`` but not on
-        ``/instances/hits``. Resolve enriches each hit with both
-        ``compatibility`` (primary printer the instance was sliced for) and
-        ``otherCompatibility`` (extra printers the uploader marked it
-        compatible with) so the frontend can show "sliced for A1 / also
-        marked compatible with: H2D, P1S".
-        """
-        design_payload = {
-            "id": 1400373,
-            "title": "Seed Starter",
-            "instances": [
-                {
-                    "id": 1452154,
-                    "extention": {
-                        "modelInfo": {
-                            "compatibility": ["A1"],
-                            "otherCompatibility": ["H2D", "P1S"],
-                        }
-                    },
-                },
-                {
-                    "id": 1452158,
-                    "extention": {
-                        "modelInfo": {
-                            "compatibility": ["X1 Carbon"],
-                            "otherCompatibility": [],
-                        }
-                    },
-                },
-            ],
-        }
-        instances_payload = {
-            "total": 2,
-            "hits": [
-                {"id": 1452154, "profileId": 298919107, "title": "9 cells"},
-                {"id": 1452158, "profileId": 298919564, "title": "12 cells"},
-            ],
-        }
-        svc = _fake_service(get_design=design_payload, get_design_instances=instances_payload)
+    async def test_gate_uses_the_permission_of_the_provider_the_url_routes_to(self, async_client):
+        """Same rule as import, keyed off the pasted URL instead of
+        ``source_type``: a link that routes to another provider is gated on
+        that provider's view permission, not ``makerworld:view``."""
+        seen, factory = _permission_spy()
+        dummy = _DummyProvider()
+        svc = _fake_service(
+            resolve=ProviderResolvedModel(
+                ref=ProviderResourceRef(source_type="dummy", external_id="1400373"),
+                design={"id": 1400373},
+                instances=[],
+            )
+        )
 
-        with patch("backend.app.api.routes.makerworld._build_service", AsyncMock(return_value=svc)):
+        with (
+            patch("backend.app.api.routes.makerworld.require_permission_if_auth_enabled", factory),
+            patch("backend.app.api.routes.makerworld._provider_for_url", return_value=dummy),
+            patch("backend.app.api.routes.makerworld._build_service", AsyncMock(return_value=svc)),
+        ):
             resp = await async_client.post(
                 "/api/v1/makerworld/resolve",
-                json={"url": "https://makerworld.com/en/models/1400373"},
+                json={"url": "https://dummy.example.com/models/1400373"},
             )
         assert resp.status_code == 200, resp.text
-        instances = resp.json()["instances"]
-        by_id = {i["id"]: i for i in instances}
-        assert by_id[1452154]["compatibility"] == ["A1"]
-        assert by_id[1452154]["otherCompatibility"] == ["H2D", "P1S"]
-        assert by_id[1452158]["compatibility"] == ["X1 Carbon"]
-        assert by_id[1452158]["otherCompatibility"] == []
-
-    @pytest.mark.asyncio
-    async def test_resolve_handles_missing_compatibility_gracefully(self, async_client):
-        """Older designs (or hits without a matching design.instances entry)
-        must not crash the resolve response — they just don't get the
-        compat fields."""
-        design_payload = {"id": 1400373, "instances": [{"id": 1452154}]}  # no extention
-        instances_payload = {
-            "total": 2,
-            "hits": [
-                {"id": 1452154, "profileId": 298919107},
-                {"id": 9999999, "profileId": 298919999},  # no design.instances match
-            ],
-        }
-        svc = _fake_service(get_design=design_payload, get_design_instances=instances_payload)
-
-        with patch("backend.app.api.routes.makerworld._build_service", AsyncMock(return_value=svc)):
-            resp = await async_client.post(
-                "/api/v1/makerworld/resolve",
-                json={"url": "https://makerworld.com/en/models/1400373"},
-            )
-        assert resp.status_code == 200, resp.text
-        instances = resp.json()["instances"]
-        # First instance: design entry exists but no extention → fields absent or None.
-        first = next(i for i in instances if i["id"] == 1452154)
-        assert first.get("compatibility") is None
-        assert first.get("otherCompatibility") is None
-        # Second instance: no design entry at all → no enrichment, no crash.
-        second = next(i for i in instances if i["id"] == 9999999)
-        assert "compatibility" not in second or second["compatibility"] is None
+        assert seen == [Permission.LIBRARY_READ]
 
 
 class TestImport:
@@ -237,49 +360,6 @@ class TestImport:
     real DB writes, real ``save_3mf_bytes_to_library``, real folder auto-creation."""
 
     _FAKE_3MF_BYTES = b"PK\x03\x04not-a-real-3mf"
-
-    @pytest.mark.asyncio
-    async def test_import_prefers_instance_download_url(self, async_client):
-        """The fixed per-instance endpoint is used before the legacy profile API."""
-        design = _default_design()
-        design["instances"] = [{"id": 4028000, "profileId": 298919107, "title": "9 cells"}]
-        svc = _fake_service(
-            get_design=design,
-            get_instance_download=_default_manifest(),
-            download_3mf=(self._FAKE_3MF_BYTES, "benchy.3mf"),
-        )
-
-        with patch("backend.app.api.routes.makerworld._build_service", AsyncMock(return_value=svc)):
-            resp = await async_client.post(
-                "/api/v1/makerworld/import",
-                json={"model_id": 1400373, "profile_id": 298919107},
-            )
-
-        assert resp.status_code == 200, resp.text
-        svc.get_instance_download.assert_awaited_once_with(4028000)
-        svc.get_profile_download.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_import_falls_back_to_legacy_profile_download_when_instance_has_no_url(self, async_client):
-        """An empty instance response must retain compatibility with the legacy endpoint."""
-        design = _default_design()
-        design["instances"] = [{"id": 4028000, "profileId": 298919107, "title": "9 cells"}]
-        svc = _fake_service(
-            get_design=design,
-            get_instance_download={},
-            get_profile_download=_default_manifest(),
-            download_3mf=(self._FAKE_3MF_BYTES, "benchy.3mf"),
-        )
-
-        with patch("backend.app.api.routes.makerworld._build_service", AsyncMock(return_value=svc)):
-            resp = await async_client.post(
-                "/api/v1/makerworld/import",
-                json={"model_id": 1400373, "profile_id": 298919107},
-            )
-
-        assert resp.status_code == 200, resp.text
-        svc.get_instance_download.assert_awaited_once_with(4028000)
-        svc.get_profile_download.assert_awaited_once_with(298919107, "US2bb73b106683e5")
 
     @pytest.mark.asyncio
     async def test_source_archive_is_opt_in_and_disabled_by_default(
@@ -297,8 +377,8 @@ class TestImport:
                 "summary": "<p>Assembly instructions</p>",
                 "coverUrl": "https://makerworld.bblmw.com/cover.png",
             },
-            get_profile_download=_default_manifest(),
-            download_3mf=(self._FAKE_3MF_BYTES, "benchy.3mf"),
+            get_download=_download_info(),
+            download=ProviderDownload(file_bytes=self._FAKE_3MF_BYTES, filename="benchy.3mf"),
         )
         svc.fetch_thumbnail = AsyncMock(return_value=(b"cover-bytes", "image/png"))
 
@@ -333,8 +413,8 @@ class TestImport:
         }
         svc = _fake_service(
             get_design=design,
-            get_profile_download=_default_manifest(),
-            download_3mf=(self._FAKE_3MF_BYTES, "benchy.3mf"),
+            get_download=_download_info(),
+            download=ProviderDownload(file_bytes=self._FAKE_3MF_BYTES, filename="benchy.3mf"),
             fetch_thumbnail=(b"cover-bytes", "image/png"),
         )
 
@@ -377,8 +457,8 @@ class TestImport:
                 **_default_design(),
                 "coverUrl": "https://makerworld.bblmw.com/cover.png",
             },
-            get_profile_download=_default_manifest(),
-            download_3mf=(self._FAKE_3MF_BYTES, "benchy.3mf"),
+            get_download=_download_info(),
+            download=ProviderDownload(file_bytes=self._FAKE_3MF_BYTES, filename="benchy.3mf"),
             fetch_thumbnail=(b"local-cover-bytes", "image/png"),
         )
 
@@ -416,8 +496,8 @@ class TestImport:
                 "summary": "<p>Instructions survive without an image</p>",
                 "coverUrl": "https://makerworld.bblmw.com/missing.png",
             },
-            get_profile_download=_default_manifest(),
-            download_3mf=(self._FAKE_3MF_BYTES, "benchy.3mf"),
+            get_download=_download_info(),
+            download=ProviderDownload(file_bytes=self._FAKE_3MF_BYTES, filename="benchy.3mf"),
         )
         svc.fetch_thumbnail = AsyncMock(side_effect=MakerWorldUnavailableError("upstream image failed"))
 
@@ -440,15 +520,19 @@ class TestImport:
     @pytest.mark.asyncio
     async def test_unexpected_service_error_still_closes_client(self, async_client):
         svc = _fake_service()
-        svc.get_design = AsyncMock(side_effect=RuntimeError("unexpected upstream failure"))
+        svc.get_download = AsyncMock(side_effect=RuntimeError("unexpected upstream failure"))
 
-        with patch("backend.app.api.routes.makerworld._build_service", AsyncMock(return_value=svc)):
-            resp = await async_client.post(
+        # An error in a route is the 500 it is, not an auth outage (503): the
+        # auth middleware guards only its own probe. The test client re-raises it.
+        with (
+            patch("backend.app.api.routes.makerworld._build_service", AsyncMock(return_value=svc)),
+            pytest.raises(RuntimeError, match="unexpected upstream failure"),
+        ):
+            await async_client.post(
                 "/api/v1/makerworld/import",
                 json={"model_id": 1400373, "profile_id": 298919107},
             )
 
-        assert resp.status_code == 503
         svc.close.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -467,8 +551,8 @@ class TestImport:
                 "summary": "<p>Still import the model</p>",
                 "coverUrl": "https://makerworld.bblmw.com/cover.png",
             },
-            get_profile_download=_default_manifest(),
-            download_3mf=(self._FAKE_3MF_BYTES, "benchy.3mf"),
+            get_download=_download_info(),
+            download=ProviderDownload(file_bytes=self._FAKE_3MF_BYTES, filename="benchy.3mf"),
         )
 
         with (
@@ -512,8 +596,8 @@ class TestImport:
                 "summary": "<p>Description only</p>",
                 "coverUrl": "https://makerworld.bblmw.com/cover.png",
             },
-            get_profile_download=_default_manifest(),
-            download_3mf=(self._FAKE_3MF_BYTES, "benchy.3mf"),
+            get_download=_download_info(),
+            download=ProviderDownload(file_bytes=self._FAKE_3MF_BYTES, filename="benchy.3mf"),
         )
         svc.fetch_thumbnail = AsyncMock()
 
@@ -560,9 +644,9 @@ class TestImport:
         await db_session.refresh(existing)
         svc = _fake_service(
             get_design={**_default_design(), "summary": "<p>Archived later</p>"},
-            get_profile_download=_default_manifest(),
+            get_download=_download_info(),
         )
-        svc.download_3mf = AsyncMock()
+        svc.download = AsyncMock()
 
         with patch("backend.app.api.routes.makerworld._build_service", AsyncMock(return_value=svc)):
             resp = await async_client.post(
@@ -578,7 +662,7 @@ class TestImport:
         assert resp.status_code == 200, resp.text
         assert resp.json()["was_existing"] is True
         assert resp.json()["source_archive"] == {"saved": True, "image_count": 0, "warning": None}
-        svc.download_3mf.assert_not_called()
+        svc.download.assert_not_called()
         await db_session.refresh(existing)
         assert existing.source_snapshot_path
         assert (Path(app_settings.base_dir) / existing.source_snapshot_path).is_file()
@@ -599,9 +683,9 @@ class TestImport:
         existing_id = existing.id
         svc = _fake_service(
             get_design={**_default_design(), "summary": "<p>Archived later</p>"},
-            get_profile_download=_default_manifest(),
+            get_download=_download_info(),
         )
-        svc.download_3mf = AsyncMock()
+        svc.download = AsyncMock()
 
         with (
             patch("backend.app.api.routes.makerworld._build_service", AsyncMock(return_value=svc)),
@@ -626,7 +710,7 @@ class TestImport:
         assert body["was_existing"] is True
         assert body["source_archive"]["saved"] is False
         assert body["source_archive"]["warning"]
-        svc.download_3mf.assert_not_called()
+        svc.download.assert_not_called()
         svc.close.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -648,11 +732,8 @@ class TestImport:
         await db_session.commit()
         await db_session.refresh(existing)
 
-        svc = _fake_service(
-            get_design=_default_design(),
-            get_profile_download=_default_manifest(),
-        )
-        svc.download_3mf = AsyncMock()  # must remain uncalled
+        svc = _fake_service(get_download=_download_info())
+        svc.download = AsyncMock()  # must remain uncalled
 
         with patch("backend.app.api.routes.makerworld._build_service", AsyncMock(return_value=svc)):
             resp = await async_client.post(
@@ -665,16 +746,52 @@ class TestImport:
         assert body["library_file_id"] == existing.id
         assert body["was_existing"] is True
         assert body["profile_id"] == 298919107
-        svc.download_3mf.assert_not_called()
+        svc.download.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_unknown_source_type_is_a_clean_400(self, async_client, db_session):
+        """``source_type`` names the provider (there is no URL to route on);
+        an unregistered value is a client-input problem — 400 before any
+        service is built or bytes downloaded."""
+        svc = _fake_service(
+            get_download=_download_info(),
+            download=ProviderDownload(file_bytes=self._FAKE_3MF_BYTES, filename="benchy.3mf"),
+        )
+        svc.download = AsyncMock()
+
+        with patch("backend.app.api.routes.makerworld._build_service", AsyncMock(return_value=svc)):
+            resp = await async_client.post(
+                "/api/v1/makerworld/import",
+                json={"model_id": 1400373, "source_type": "thingiverse"},
+            )
+        assert resp.status_code == 400, resp.text
+        assert "thingiverse" in resp.json()["detail"].lower()
+        svc.download.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_unknown_source_type_creates_no_folder_side_effect(self, async_client, db_session):
+        """Provider resolution must precede destination handling — a rejected
+        request must not leave an auto-created default folder behind."""
+        from sqlalchemy import select
+
+        svc = _fake_service(get_download=_download_info())
+
+        with patch("backend.app.api.routes.makerworld._build_service", AsyncMock(return_value=svc)):
+            await async_client.post(
+                "/api/v1/makerworld/import",
+                json={"model_id": 1400373, "source_type": "bogus"},
+            )
+
+        result = await db_session.execute(select(LibraryFolder))
+        assert result.scalars().all() == []
 
     @pytest.mark.asyncio
     async def test_autocreates_makerworld_folder_when_folder_id_none(self, async_client, db_session):
         """Default destination — a top-level "MakerWorld" folder — is created
         on first import so users don't have to set it up."""
         svc = _fake_service(
-            get_design=_default_design(),
-            get_profile_download=_default_manifest(),
-            download_3mf=(self._FAKE_3MF_BYTES, "benchy.3mf"),
+            get_download=_download_info(),
+            download=ProviderDownload(file_bytes=self._FAKE_3MF_BYTES, filename="benchy.3mf"),
         )
 
         with patch("backend.app.api.routes.makerworld._build_service", AsyncMock(return_value=svc)):
@@ -694,6 +811,141 @@ class TestImport:
         assert resp.json()["folder_id"] == folder.id
 
     @pytest.mark.asyncio
+    async def test_default_folder_comes_from_resolved_provider(self, async_client, db_session):
+        """``import_instance`` must read ``default_folder_name`` off the provider
+        it resolved — not the MakerWorld singleton (review round 3 fix). Latent
+        with one provider, but the difference is visible behind a stand-in: a
+        second provider's import lands in *its* folder, not "MakerWorld"."""
+        dummy = _DummyProvider(default_folder_name="Dummy Imports")
+        svc = _fake_service(
+            get_download=_download_info(),
+            download=ProviderDownload(file_bytes=self._FAKE_3MF_BYTES, filename="benchy.3mf"),
+        )
+
+        with (
+            patch("backend.app.api.routes.makerworld._provider_for_source", return_value=dummy),
+            patch("backend.app.api.routes.makerworld._build_service", AsyncMock(return_value=svc)),
+        ):
+            resp = await async_client.post(
+                "/api/v1/makerworld/import",
+                json={"model_id": 1400373, "profile_id": 298919107, "source_type": "dummy"},
+            )
+        assert resp.status_code == 200, resp.text
+
+        from sqlalchemy import select
+
+        result = await db_session.execute(
+            select(LibraryFolder).where(LibraryFolder.name == "Dummy Imports", LibraryFolder.parent_id.is_(None))
+        )
+        assert result.scalar_one_or_none() is not None
+        # The MakerWorld singleton's folder must NOT be auto-created instead.
+        assert (
+            await db_session.execute(
+                select(LibraryFolder).where(LibraryFolder.name == "MakerWorld", LibraryFolder.parent_id.is_(None))
+            )
+        ).scalar_one_or_none() is None
+
+    @pytest.mark.asyncio
+    async def test_none_default_folder_name_imports_to_library_root(self, async_client, db_session):
+        """A provider that leaves ``default_folder_name`` unset imports into the
+        library root rather than minting a NULL-named folder (review round 3,
+        note 3)."""
+        dummy = _DummyProvider(default_folder_name=None)
+        svc = _fake_service(
+            get_download=_download_info(),
+            download=ProviderDownload(file_bytes=self._FAKE_3MF_BYTES, filename="benchy.3mf"),
+        )
+
+        with (
+            patch("backend.app.api.routes.makerworld._provider_for_source", return_value=dummy),
+            patch("backend.app.api.routes.makerworld._build_service", AsyncMock(return_value=svc)),
+        ):
+            resp = await async_client.post(
+                "/api/v1/makerworld/import",
+                json={"model_id": 1400373, "profile_id": 298919107, "source_type": "dummy", "folder_id": None},
+            )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["folder_id"] is None
+
+        from sqlalchemy import select
+
+        result = await db_session.execute(select(LibraryFolder))
+        assert result.scalars().all() == []
+
+    @pytest.mark.asyncio
+    async def test_gate_uses_the_makerworld_permission_for_makerworld(self, async_client):
+        """Control for the test below: the default ``source_type`` still gates
+        on ``makerworld:import``, exactly as the route decorator used to."""
+        seen, factory = _permission_spy()
+        svc = _fake_service(
+            get_download=_download_info(),
+            download=ProviderDownload(file_bytes=self._FAKE_3MF_BYTES, filename="benchy.3mf"),
+        )
+
+        with (
+            patch("backend.app.api.routes.makerworld.require_permission_if_auth_enabled", factory),
+            patch("backend.app.api.routes.makerworld._build_service", AsyncMock(return_value=svc)),
+        ):
+            resp = await async_client.post(
+                "/api/v1/makerworld/import",
+                json={"model_id": 1400373, "profile_id": 298919107},
+            )
+        assert resp.status_code == 200, resp.text
+        assert seen == [Permission.MAKERWORLD_IMPORT]
+
+    @pytest.mark.asyncio
+    async def test_gate_uses_the_resolved_providers_permission(self, async_client):
+        """The permission is the resolved provider's, not the MakerWorld
+        singleton's. It cannot be a route dependency — FastAPI resolves those
+        before the body exists, so the decorator could only ever name one
+        provider, and importing from a second one would be gated on
+        ``makerworld:import``."""
+        seen, factory = _permission_spy()
+        dummy = _DummyProvider()
+        svc = _fake_service(
+            get_download=_download_info(),
+            download=ProviderDownload(file_bytes=self._FAKE_3MF_BYTES, filename="benchy.3mf"),
+        )
+
+        with (
+            patch("backend.app.api.routes.makerworld.require_permission_if_auth_enabled", factory),
+            patch("backend.app.api.routes.makerworld._provider_for_source", return_value=dummy),
+            patch("backend.app.api.routes.makerworld._build_service", AsyncMock(return_value=svc)),
+        ):
+            resp = await async_client.post(
+                "/api/v1/makerworld/import",
+                json={"model_id": 1400373, "profile_id": 298919107, "source_type": "dummy"},
+            )
+        assert resp.status_code == 200, resp.text
+        assert seen == [Permission.LIBRARY_UPLOAD]
+        assert Permission.MAKERWORLD_IMPORT not in seen
+
+    @pytest.mark.asyncio
+    async def test_provider_without_a_permission_is_refused_not_waved_through(self, async_client, db_session):
+        """``import_permission`` is optional on the descriptor, so "unset" must
+        fail closed rather than read as "unrestricted"."""
+        dummy = _DummyProvider(import_permission=None)
+        svc = _fake_service(
+            get_download=_download_info(),
+            download=ProviderDownload(file_bytes=self._FAKE_3MF_BYTES, filename="benchy.3mf"),
+        )
+
+        with (
+            patch("backend.app.api.routes.makerworld._provider_for_source", return_value=dummy),
+            patch("backend.app.api.routes.makerworld._build_service", AsyncMock(return_value=svc)),
+        ):
+            resp = await async_client.post(
+                "/api/v1/makerworld/import",
+                json={"model_id": 1400373, "profile_id": 298919107, "source_type": "dummy"},
+            )
+        assert resp.status_code == 500
+        assert "declares no permission" in resp.json()["detail"]
+
+        from sqlalchemy import select
+
+        assert (await db_session.execute(select(LibraryFile))).scalars().all() == []
+
+    @pytest.mark.asyncio
     async def test_uses_existing_folder_when_folder_id_provided(self, async_client, db_session):
         """Caller-supplied ``folder_id`` must be honoured even if the default
         ``MakerWorld`` folder also exists — no silent hijacking."""
@@ -703,9 +955,8 @@ class TestImport:
         await db_session.refresh(folder)
 
         svc = _fake_service(
-            get_design=_default_design(),
-            get_profile_download=_default_manifest(),
-            download_3mf=(self._FAKE_3MF_BYTES, "benchy.3mf"),
+            get_download=_download_info(),
+            download=ProviderDownload(file_bytes=self._FAKE_3MF_BYTES, filename="benchy.3mf"),
         )
 
         with patch("backend.app.api.routes.makerworld._build_service", AsyncMock(return_value=svc)):
@@ -721,9 +972,8 @@ class TestImport:
         """The saved row's ``source_url`` must include ``#profileId-`` so two
         plates of the same model become two library rows (dedupe is per-plate)."""
         svc = _fake_service(
-            get_design=_default_design(),
-            get_profile_download=_default_manifest(),
-            download_3mf=(self._FAKE_3MF_BYTES, "benchy.3mf"),
+            get_download=_download_info(),
+            download=ProviderDownload(file_bytes=self._FAKE_3MF_BYTES, filename="benchy.3mf"),
         )
 
         with patch("backend.app.api.routes.makerworld._build_service", AsyncMock(return_value=svc)):
@@ -747,12 +997,8 @@ class TestImport:
         library row. On-disk storage uses a UUID already, this is belt-and-
         braces protection for the human-readable field."""
         svc = _fake_service(
-            get_design=_default_design(),
-            get_profile_download={
-                "name": "../../evil.3mf",
-                "url": "https://makerworld.bblmw.com/makerworld/model/X/Y/f.3mf?exp=1&key=k",
-            },
-            download_3mf=(self._FAKE_3MF_BYTES, "fallback.3mf"),
+            get_download=_download_info(name="../../evil.3mf"),
+            download=ProviderDownload(file_bytes=self._FAKE_3MF_BYTES, filename="fallback.3mf"),
         )
 
         with patch("backend.app.api.routes.makerworld._build_service", AsyncMock(return_value=svc)):
@@ -769,9 +1015,8 @@ class TestImport:
         response field must always be populated, even when the caller provided
         it explicitly (rather than the backend falling back to design defaults)."""
         svc = _fake_service(
-            get_design=_default_design(),
-            get_profile_download=_default_manifest(),
-            download_3mf=(self._FAKE_3MF_BYTES, "benchy.3mf"),
+            get_download=_download_info(),
+            download=ProviderDownload(file_bytes=self._FAKE_3MF_BYTES, filename="benchy.3mf"),
         )
 
         with patch("backend.app.api.routes.makerworld._build_service", AsyncMock(return_value=svc)):
@@ -781,6 +1026,145 @@ class TestImport:
             )
         assert resp.status_code == 200, resp.text
         assert resp.json()["profile_id"] == 298919107
+
+    @pytest.mark.asyncio
+    async def test_import_to_writable_external_writes_bytes_to_mount(self, async_client, db_session, tmp_path):
+        """#1645: importing into a writable external folder writes the bytes to
+        ``<external_path>/<filename>`` and tags the row ``is_external=True`` —
+        same shape as the multipart-upload path (#1112). Previously the bytes
+        landed in the internal library dir under a UUID name while the row
+        showed up under the external folder in the UI, leaving a NAS/SMB user
+        unable to find their file on the mount."""
+        ext_dir = tmp_path / "nas-makerworld"
+        ext_dir.mkdir()
+        folder = LibraryFolder(
+            name="NAS Imports",
+            parent_id=None,
+            is_external=True,
+            external_path=str(ext_dir),
+            external_readonly=False,
+        )
+        db_session.add(folder)
+        await db_session.commit()
+        await db_session.refresh(folder)
+
+        svc = _fake_service(
+            get_download=_download_info(name="seed-starter.3mf"),
+            download=ProviderDownload(file_bytes=self._FAKE_3MF_BYTES, filename="seed-starter.3mf"),
+        )
+
+        with patch("backend.app.api.routes.makerworld._build_service", AsyncMock(return_value=svc)):
+            resp = await async_client.post(
+                "/api/v1/makerworld/import",
+                json={"model_id": 1400373, "profile_id": 298919107, "folder_id": folder.id},
+            )
+        assert resp.status_code == 200, resp.text
+
+        from sqlalchemy import select
+
+        row = (
+            await db_session.execute(select(LibraryFile).where(LibraryFile.id == resp.json()["library_file_id"]))
+        ).scalar_one()
+        assert row.folder_id == folder.id
+        assert row.is_external is True, "Row must be tagged external so re-scan can reconcile it"
+        # External rows persist the absolute mount path (matches scan + upload paths).
+        assert row.file_path == str(ext_dir / "seed-starter.3mf")
+        on_disk = ext_dir / "seed-starter.3mf"
+        assert on_disk.is_file(), "Bytes must land on the external mount, not in the internal library dir"
+        assert on_disk.read_bytes() == self._FAKE_3MF_BYTES
+
+    @pytest.mark.asyncio
+    async def test_import_to_readonly_external_rejected_at_route(self, async_client, db_session, tmp_path):
+        """The route-layer gate in ``import_instance`` rejects read-only
+        external folders with 403 before any download happens — so MakerWorld
+        credentials and the upstream download bandwidth aren't wasted."""
+        ext_dir = tmp_path / "nas-readonly"
+        ext_dir.mkdir()
+        folder = LibraryFolder(
+            name="NAS read-only",
+            parent_id=None,
+            is_external=True,
+            external_path=str(ext_dir),
+            external_readonly=True,
+        )
+        db_session.add(folder)
+        await db_session.commit()
+        await db_session.refresh(folder)
+
+        svc = _fake_service(get_download=_download_info())
+        svc.download = AsyncMock()
+
+        with patch("backend.app.api.routes.makerworld._build_service", AsyncMock(return_value=svc)):
+            resp = await async_client.post(
+                "/api/v1/makerworld/import",
+                json={"model_id": 1400373, "profile_id": 298919107, "folder_id": folder.id},
+            )
+        assert resp.status_code == 403, resp.text
+        svc.download.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_import_to_external_with_missing_path_returns_400(self, async_client, db_session, tmp_path):
+        """If the external folder's mount has gone away (NAS unplugged, SMB
+        share down), ``_resolve_upload_destination`` returns 400 before the
+        write so we don't silently fall back to the internal library dir."""
+        missing_dir = tmp_path / "vanished-mount"  # NOTE: deliberately not created
+        folder = LibraryFolder(
+            name="NAS gone",
+            parent_id=None,
+            is_external=True,
+            external_path=str(missing_dir),
+            external_readonly=False,
+        )
+        db_session.add(folder)
+        await db_session.commit()
+        await db_session.refresh(folder)
+
+        svc = _fake_service(
+            get_download=_download_info(),
+            download=ProviderDownload(file_bytes=self._FAKE_3MF_BYTES, filename="benchy.3mf"),
+        )
+
+        with patch("backend.app.api.routes.makerworld._build_service", AsyncMock(return_value=svc)):
+            resp = await async_client.post(
+                "/api/v1/makerworld/import",
+                json={"model_id": 1400373, "profile_id": 298919107, "folder_id": folder.id},
+            )
+        assert resp.status_code == 400, resp.text
+        assert "not accessible" in resp.text.lower()
+
+    @pytest.mark.asyncio
+    async def test_import_to_external_with_name_collision_returns_409(self, async_client, db_session, tmp_path):
+        """A user-visible 409 fires when the filename already exists on the
+        external mount, instead of silently overwriting a file the user put
+        there outside Printbuddy."""
+        ext_dir = tmp_path / "nas-collide"
+        ext_dir.mkdir()
+        (ext_dir / "benchy.3mf").write_bytes(b"pre-existing")
+
+        folder = LibraryFolder(
+            name="NAS collide",
+            parent_id=None,
+            is_external=True,
+            external_path=str(ext_dir),
+            external_readonly=False,
+        )
+        db_session.add(folder)
+        await db_session.commit()
+        await db_session.refresh(folder)
+
+        svc = _fake_service(
+            get_download=_download_info(name="benchy.3mf"),
+            download=ProviderDownload(file_bytes=self._FAKE_3MF_BYTES, filename="benchy.3mf"),
+        )
+
+        with patch("backend.app.api.routes.makerworld._build_service", AsyncMock(return_value=svc)):
+            resp = await async_client.post(
+                "/api/v1/makerworld/import",
+                json={"model_id": 1400373, "profile_id": 298919107, "folder_id": folder.id},
+            )
+        assert resp.status_code == 409, resp.text
+        # Pre-existing file's contents must not be clobbered by the failed write.
+        assert (ext_dir / "benchy.3mf").read_bytes() == b"pre-existing"
 
 
 class TestRecentImports:

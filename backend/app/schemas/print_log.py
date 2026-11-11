@@ -1,12 +1,23 @@
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
+
+from backend.app.schemas.not_null import IgnoresNullForRequiredColumns
 
 
 class PrintLogEntrySchema(BaseModel):
+    # from_attributes lets the routes build this straight off the ORM row.
+    # The GET serialiser used to name every field by hand, and each field it
+    # forgot came back as its default — a silent null rather than an error.
+    # That cost the log its failure_reason (#1687 part 4) and then its cost /
+    # energy_kwh / energy_cost (#2636). Validating from the row removes the
+    # chance to forget one.
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     archive_id: int | None = None
     print_name: str | None = None
+    plate_id: int | None = None
     printer_name: str | None = None
     printer_id: int | None = None
     status: str
@@ -19,7 +30,22 @@ class PrintLogEntrySchema(BaseModel):
     cost: float | None = None
     energy_kwh: float | None = None
     energy_cost: float | None = None
+    wear_cost: float | None = None  # #694
     failure_reason: str | None = None
+    user_verdict: str | None = None  # Post-print quality verdict (#1898)
+    user_verdict_source: str | None = None
+    confirm_requested: bool | None = None
+    duration_unmeasured: bool | None = None
+    quantity: int | None = None
+    # This print's own (archive redesign): its note, its finish photos (served
+    # by the archive's photo route) and its video (the run's timelapse route).
+    notes: str | None = None
+    photos: list[str] | None = None
+    timelapse_path: str | None = None
+    # The slicer's estimate for the plate it printed (#3375); only in an
+    # archive's runs list (GET /archives/{id}/runs).
+    estimate_seconds: int | None = None
+    estimate_grams: float | None = None
     thumbnail_path: str | None = None
     created_by_id: int | None = None
     created_by_username: str | None = None
@@ -29,3 +55,23 @@ class PrintLogEntrySchema(BaseModel):
 class PrintLogResponse(BaseModel):
     items: list[PrintLogEntrySchema]
     total: int
+    # The print log only: archives of these prints that were deleted, whose
+    # prints stay logged (#1343) but have no archive page to open.
+    deleted_archive_ids: list[int] = []
+
+
+class PrintLogEntryUpdate(IgnoresNullForRequiredColumns):
+    """Per-row classification edits (#1687 part 4 — IndividualGhost1905).
+
+    Lets the user set ``failure_reason`` (and re-classify ``status``) directly
+    on a Print Log row, including on orphan entries that have no archive to
+    edit through. The Failure Analysis widget already groups by
+    ``PrintLogEntry.failure_reason``, so this just plugs the editor gap.
+    """
+
+    __orm_table__ = "print_log_entries"
+
+    failure_reason: str | None = None
+    status: str | None = None
+    # The print's own note, beside the archive's (the file's) note.
+    notes: str | None = None

@@ -1,13 +1,15 @@
 /**
  * Tests for the AMS slot load / unload buttons on PrintersPage (#891).
  *
- * Verifies that the menu in each AMS slot popover exposes Load and Unload,
- * that clicking them POSTs to the right endpoint with the right tray_id, and
- * that the buttons are hidden while the printer is RUNNING.
+ * The printer-card refactor in #1661 replaced the kebab "Slot options"
+ * button with a hover card (FilamentHoverCard) whose actions render on
+ * hover. Tests now `fireEvent.mouseEnter` on the slot trigger
+ * (`data-testid="filament-slot"`) and wait for the portaled card to
+ * appear in document.body before clicking Load / Unload.
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { screen, waitFor } from '@testing-library/react';
+import { screen, waitFor, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { render } from '../utils';
 import { PrintersPage } from '../../pages/PrintersPage';
@@ -147,6 +149,13 @@ const mockIdleStatusWithK2AmsFallback = {
     },
   ],
 };
+/** Hover-card visibility flips after an 80ms timeout — wait it out. */
+async function hoverSlot(slot: Element) {
+  fireEvent.mouseEnter(slot);
+  await waitFor(() => {
+    expect(screen.getByText('Load')).toBeInTheDocument();
+  });
+}
 
 describe('PrintersPage - AMS load/unload (#891)', () => {
   beforeEach(() => {
@@ -172,18 +181,12 @@ describe('PrintersPage - AMS load/unload (#891)', () => {
     render(<PrintersPage />);
 
     await waitFor(() => {
-      // The slot menu button is hidden until we hover. Pull it directly out of the DOM.
-      expect(document.querySelectorAll('[title="Slot options"]').length).toBeGreaterThan(0);
+      expect(screen.getAllByTestId('filament-slot').length).toBeGreaterThan(0);
     });
 
     // Slot 2 (third one, slotIdx=2) → expected tray_id = 0*4 + 2 = 2
-    const menuButtons = document.querySelectorAll<HTMLButtonElement>('[title="Slot options"]');
-    await user.click(menuButtons[2]);
-
-    await waitFor(() => {
-      expect(screen.getByText('Load')).toBeInTheDocument();
-    });
-
+    const slots = screen.getAllByTestId('filament-slot');
+    await hoverSlot(slots[2]);
     await user.click(screen.getByText('Load'));
 
     await waitFor(() => {
@@ -207,16 +210,11 @@ describe('PrintersPage - AMS load/unload (#891)', () => {
     render(<PrintersPage />);
 
     await waitFor(() => {
-      expect(document.querySelectorAll('[title="Slot options"]').length).toBeGreaterThan(0);
+      expect(screen.getAllByTestId('filament-slot').length).toBeGreaterThan(0);
     });
 
-    const menuButtons = document.querySelectorAll<HTMLButtonElement>('[title="Slot options"]');
-    await user.click(menuButtons[0]);
-
-    await waitFor(() => {
-      expect(screen.getByText('Unload')).toBeInTheDocument();
-    });
-
+    const slots = screen.getAllByTestId('filament-slot');
+    await hoverSlot(slots[0]);
     await user.click(screen.getByText('Unload'));
 
     await waitFor(() => {
@@ -224,20 +222,29 @@ describe('PrintersPage - AMS load/unload (#891)', () => {
     });
   });
 
-  it('hides the slot menu while the printer is RUNNING', async () => {
+  it('disables Load / Unload while the printer is RUNNING', async () => {
     server.use(
       http.get('/api/v1/printers/:id/status', () => HttpResponse.json(mockRunningStatus)),
     );
 
     render(<PrintersPage />);
 
-    // Wait for the page to render the printer card.
     await waitFor(() => {
-      expect(screen.getByText('X1 Carbon')).toBeInTheDocument();
+      expect(screen.getAllByTestId('filament-slot').length).toBeGreaterThan(0);
     });
 
-    // No "Slot options" menu trigger should be present at all while running.
-    expect(document.querySelectorAll('[title="Slot options"]').length).toBe(0);
+    // Hover to reveal the actions — they should be present but disabled
+    // while the printer is running (replaces the pre-#1661 behavior where
+    // the trigger button was hidden entirely).
+    const slots = screen.getAllByTestId('filament-slot');
+    fireEvent.mouseEnter(slots[0]);
+
+    await waitFor(() => {
+      expect(screen.getByText('Load')).toBeInTheDocument();
+    });
+
+    expect(screen.getByText('Load').closest('button')).toBeDisabled();
+    expect(screen.getByText('Unload').closest('button')).toBeDisabled();
   });
 
   it('external spool slot exposes Load and posts tray_id=254', async () => {
@@ -261,16 +268,11 @@ describe('PrintersPage - AMS load/unload (#891)', () => {
     render(<PrintersPage />);
 
     await waitFor(() => {
-      expect(document.querySelectorAll('[title="Slot options"]').length).toBeGreaterThan(0);
+      expect(screen.getAllByTestId('filament-slot').length).toBeGreaterThan(0);
     });
 
-    const menuButtons = document.querySelectorAll<HTMLButtonElement>('[title="Slot options"]');
-    await user.click(menuButtons[0]);
-
-    await waitFor(() => {
-      expect(screen.getByText('Load')).toBeInTheDocument();
-    });
-
+    const slots = screen.getAllByTestId('filament-slot');
+    await hoverSlot(slots[0]);
     await user.click(screen.getByText('Load'));
 
     await waitFor(() => {
@@ -417,6 +419,12 @@ describe('PrintersPage - AMS load/unload (#891)', () => {
     const user = userEvent.setup();
 
     server.use(
+      http.get('/api/v1/printers/', () => HttpResponse.json([{
+        ...mockPrinter,
+        name: 'Core One Bench',
+        provider: 'prusalink',
+        model: 'Prusa CORE One',
+      }])),
       http.get('/api/v1/printers/:id/status', () => HttpResponse.json({
         ...mockIdleStatusWithAms,
         connected: false,
@@ -447,7 +455,7 @@ describe('PrintersPage - AMS load/unload (#891)', () => {
     render(<PrintersPage />);
 
     await waitFor(() => {
-      expect(screen.getByText('X1 Carbon')).toBeInTheDocument();
+      expect(screen.getByText('Core One Bench')).toBeInTheDocument();
       expect(screen.getByText('Offline')).toBeInTheDocument();
     });
 
@@ -457,5 +465,118 @@ describe('PrintersPage - AMS load/unload (#891)', () => {
       expect(screen.getByRole('heading', { name: 'Assign Spool' })).toBeInTheDocument();
     });
     expect(screen.getByText(/Polymaker/)).toBeInTheDocument();
+  });
+
+  it('does not offer a virtual loaded spool for an offline Bambu printer', async () => {
+    server.use(
+      http.get('/api/v1/printers/:id/status', () => HttpResponse.json({
+        ...mockIdleStatusWithAms,
+        connected: false,
+        ams: [],
+        vt_tray: [],
+        temperatures: null,
+      })),
+      http.get('/api/v1/inventory/assignments', () => HttpResponse.json([])),
+      http.get('/api/v1/settings/spoolman', () => HttpResponse.json({ spoolman_enabled: 'false', spoolman_url: '' })),
+      http.get('/api/v1/settings/', () => HttpResponse.json({})),
+    );
+
+    render(<PrintersPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('X1 Carbon')).toBeInTheDocument();
+      expect(screen.getByText('Offline')).toBeInTheDocument();
+    });
+
+    expect(screen.queryByText('Loaded spool')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Assign' })).not.toBeInTheDocument();
+  });
+
+  it('an AMS-HT slot loads and unloads by its unit id (128), not unit*4+slot', async () => {
+    const user = userEvent.setup();
+    const captured: Record<string, string | null> = {};
+    const htStatus = {
+      ...mockIdleStatusWithAms,
+      ams: [
+        {
+          ...mockIdleStatusWithAms.ams[0],
+          id: 128,
+          is_ams_ht: true,
+          serial_number: 'HT00',
+          module_type: 'n3s',
+          tray: [{ id: 0, ...baseTray }],
+        },
+      ],
+    };
+
+    server.use(
+      http.get('/api/v1/printers/:id/status', () => HttpResponse.json(htStatus)),
+      http.post('/api/v1/printers/:id/ams/load', ({ request }) => {
+        captured.load = new URL(request.url).searchParams.get('tray_id');
+        return HttpResponse.json({ success: true, message: 'Loading filament from AMS HT-A' });
+      }),
+      http.post('/api/v1/printers/:id/ams/unload', ({ request }) => {
+        captured.unload = new URL(request.url).searchParams.get('tray_id');
+        return HttpResponse.json({ success: true, message: 'Unloading filament' });
+      }),
+    );
+
+    render(<PrintersPage />);
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId('filament-slot').length).toBeGreaterThan(0);
+    });
+
+    await hoverSlot(screen.getAllByTestId('filament-slot')[0]);
+    await user.click(screen.getByText('Load'));
+    await waitFor(() => expect(captured.load).toBe('128'));
+
+    await hoverSlot(screen.getAllByTestId('filament-slot')[0]);
+    await user.click(screen.getByText('Unload'));
+    await waitFor(() => expect(captured.unload).toBe('128'));
+  });
+
+  it('with a Filament Track Switch, an AMS-HT slot asks which nozzle and sends it', async () => {
+    const user = userEvent.setup();
+    let captured: { tray_id: string | null; extruder_id: string | null } | null = null;
+    const htStatus = {
+      ...mockIdleStatusWithAms,
+      fila_switch: { installed: true, ready: true, in_slots: [-1, -1], out_extruders: [1, 0], stat: 0, info: 0 },
+      extruder_slots: {},
+      ams: [
+        {
+          ...mockIdleStatusWithAms.ams[0],
+          id: 128,
+          is_ams_ht: true,
+          serial_number: 'HT00',
+          module_type: 'n3s',
+          tray: [{ id: 0, ...baseTray }],
+        },
+      ],
+    };
+
+    server.use(
+      http.get('/api/v1/printers/:id/status', () => HttpResponse.json(htStatus)),
+      http.post('/api/v1/printers/:id/ams/load', ({ request }) => {
+        const url = new URL(request.url);
+        captured = { tray_id: url.searchParams.get('tray_id'), extruder_id: url.searchParams.get('extruder_id') };
+        return HttpResponse.json({ success: true, message: 'Loading filament from AMS HT-A' });
+      }),
+    );
+
+    render(<PrintersPage />);
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId('filament-slot').length).toBeGreaterThan(0);
+    });
+
+    await hoverSlot(screen.getAllByTestId('filament-slot')[0]);
+    await user.click(screen.getByText('Load'));
+    await user.click(await screen.findByText('Left nozzle'));
+    await user.click(screen.getByText('Confirm'));
+
+    await waitFor(() => {
+      expect(captured).toEqual({ tray_id: '128', extruder_id: '1' });
+    });
   });
 });

@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Loader2 } from 'lucide-react';
 import { api } from '../api/client';
+import { parseUTCDate } from '../utils/date';
 
 interface PrintLogTableProps {
   archiveId: number;
@@ -17,8 +18,8 @@ function formatDuration(seconds: number | null): string {
 
 function formatDate(isoString: string | null): string {
   if (!isoString) return '—';
-  const d = new Date(isoString);
-  return d.toLocaleString();
+  const d = parseUTCDate(isoString);
+  return d ? d.toLocaleString() : '—';
 }
 
 export function PrintLogTable({ archiveId }: PrintLogTableProps) {
@@ -37,6 +38,9 @@ export function PrintLogTable({ archiveId }: PrintLogTableProps) {
   }
 
   const runs = data?.items || [];
+  // A file with one plate names plate 1 on every run: the column only shows
+  // once a run printed another plate.
+  const showPlate = runs.some((run) => run.plate_id != null && run.plate_id > 1);
   if (runs.length === 0) {
     return (
       <p className="text-sm text-bambu-gray italic py-2">
@@ -51,6 +55,7 @@ export function PrintLogTable({ archiveId }: PrintLogTableProps) {
         <thead>
           <tr className="text-bambu-gray border-b border-bambu-dark-tertiary">
             <th className="text-left py-1.5 pr-2 font-medium">{t('archives.runLog.col.date')}</th>
+            {showPlate && <th className="text-left py-1.5 pr-2 font-medium">{t('archives.runLog.col.plate')}</th>}
             <th className="text-left py-1.5 pr-2 font-medium">{t('archives.runLog.col.status')}</th>
             <th className="text-right py-1.5 pr-2 font-medium">{t('archives.runLog.col.duration')}</th>
             <th className="text-right py-1.5 pr-2 font-medium">{t('archives.runLog.col.filament')}</th>
@@ -63,7 +68,7 @@ export function PrintLogTable({ archiveId }: PrintLogTableProps) {
               run.status === 'completed'
                 ? 'text-bambu-green'
                 : run.status === 'failed'
-                  ? 'text-red-400'
+                  ? 'text-red-700 dark:text-red-400'
                   : 'text-bambu-gray';
             return (
               <tr
@@ -73,11 +78,16 @@ export function PrintLogTable({ archiveId }: PrintLogTableProps) {
                 <td className="py-1.5 pr-2 text-bambu-gray-light">
                   {formatDate(run.started_at || run.created_at)}
                 </td>
+                {showPlate && (
+                  <td className="py-1.5 pr-2 text-bambu-gray-light">
+                    {run.plate_id != null ? t('archives.card.plateNumber', { index: run.plate_id }) : '—'}
+                  </td>
+                )}
                 <td className={`py-1.5 pr-2 font-medium ${statusClass}`}>
                   {t(`archives.runLog.status.${run.status}`, { defaultValue: run.status })}
                   {run.failure_reason && (
                     <span className="block text-[10px] text-bambu-gray font-normal">
-                      {run.failure_reason}
+                      {t(`editArchive.failureReasons.${run.failure_reason}`, { defaultValue: run.failure_reason })}
                     </span>
                   )}
                 </td>

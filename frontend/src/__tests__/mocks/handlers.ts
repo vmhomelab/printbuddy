@@ -51,6 +51,7 @@ const mockNotificationProviders = [
   on_print_almost_done: false,
     on_printer_offline: false,
     on_printer_error: false,
+    on_ai_failure_detection: false,
     on_filament_low: false,
     on_maintenance_due: false,
     on_ams_humidity_high: false,
@@ -88,7 +89,58 @@ const mockPrinters = [
   },
 ];
 
+// The bulk routes the API client batches per-printer reads into (api/batch.ts)
+// answer by asking the matching single-printer route for each id, through
+// MSW again. A test that mocks the single route therefore shapes the bulk
+// answer too, and ids the single route rejects are left out, as the backend
+// leaves out printers outside the caller's scope.
+async function fanOut(request: Request, single: (id: string) => string): Promise<Map<string, unknown>> {
+  const url = new URL(request.url);
+  const ids = (url.searchParams.get('ids') ?? '').split(',').filter(Boolean);
+  const answers = new Map<string, unknown>();
+  await Promise.all(
+    ids.map(async (id) => {
+      const headers = new Headers(request.headers);
+      // Marks the request as the mock's own, for tests counting what the app sent
+      headers.set('x-test-fan-out', '1');
+      const response = await fetch(new URL(single(id), url), { headers });
+      if (response.ok) answers.set(id, await response.json());
+    }),
+  );
+  return answers;
+}
+
+const asRecord = (answers: Map<string, unknown>) => HttpResponse.json(Object.fromEntries(answers));
+const asList = (answers: Map<string, unknown>) => HttpResponse.json([...answers.values()]);
+
+const bulkHandlers = [
+  http.get('*/api/v1/bulk/printer-statuses', async ({ request }) =>
+    asList(await fanOut(request, (id) => `/api/v1/printers/${id}/status`))),
+  http.get('*/api/v1/bulk/slot-presets', async ({ request }) =>
+    asRecord(await fanOut(request, (id) => `/api/v1/printers/${id}/slot-presets`))),
+  http.get('*/api/v1/bulk/ams-labels', async ({ request }) =>
+    asRecord(await fanOut(request, (id) => `/api/v1/printers/${id}/ams-labels`))),
+  http.get('*/api/v1/bulk/card-plugs', async ({ request }) => {
+    const plugs = await fanOut(request, (id) => `/api/v1/smart-plugs/by-printer/${id}`);
+    const scripts = await fanOut(request, (id) => `/api/v1/smart-plugs/by-printer/${id}/scripts`);
+    return HttpResponse.json(
+      Object.fromEntries([...plugs].map(([id, plug]) => [id, { plug, scripts: scripts.get(id) ?? [] }])),
+    );
+  }),
+  http.get('*/api/v1/bulk/ha-sensor-readings', async ({ request }) =>
+    asRecord(await fanOut(request, (id) => `/api/v1/ha-sensors/by-printer/${id}/readings`))),
+  http.get('*/api/v1/bulk/firmware-updates', async ({ request }) =>
+    asList(await fanOut(request, (id) => `/api/v1/firmware/updates/${id}`))),
+  http.get('*/api/v1/bulk/printer-queues', async ({ request }) => {
+    const status = new URL(request.url).searchParams.get('status') ?? '';
+    return asRecord(await fanOut(request, (id) => `/api/v1/queue/?printer_id=${id}&status=${status}`));
+  }),
+  http.get('*/api/v1/bulk/archive-folders', async ({ request }) =>
+    asRecord(await fanOut(request, (id) => `/api/v1/library/folders/by-archive/${id}`))),
+];
+
 export const handlers = [
+  ...bulkHandlers,
   // ========================================================================
   // Smart Plugs
   // ========================================================================
@@ -261,6 +313,7 @@ export const handlers = [
       currency: 'USD',
       ams_humidity_good: 40,
       ams_humidity_fair: 60,
+      ams_temp_alarm: null,
       ams_temp_good: 30,
       ams_temp_fair: 35,
       open_filament_database_enabled: false,
@@ -443,6 +496,8 @@ export const handlers = [
 
   // Lists → empty arrays
   http.get('/api/v1/archives/', () => HttpResponse.json([])),
+  http.get('/api/v1/archives/last-per-printer', () => HttpResponse.json([])),
+  http.get('/api/v1/queue/history', () => HttpResponse.json({ items: [], total: 0, locations: [] })),
   http.get('/api/v1/auth/oidc/providers', () => HttpResponse.json([])),
   http.get('/api/v1/auth/oidc/providers/all', () => HttpResponse.json([])),
   // OIDC icon proxy (#1333). Default returns a tiny PNG; individual tests
@@ -474,6 +529,7 @@ export const handlers = [
   http.get('/api/v1/inventory/assignments', () => HttpResponse.json([])),
   http.get('/api/v1/inventory/catalog', () => HttpResponse.json([])),
   http.get('/api/v1/inventory/colors', () => HttpResponse.json([])),
+  http.get('/api/v1/inventory/locations', () => HttpResponse.json([])),
   http.get('/api/v1/inventory/spools', () => HttpResponse.json([])),
   http.get('/api/v1/library/folders', () => HttpResponse.json([])),
   http.get('/api/v1/library/folders/by-archive/:id', () => HttpResponse.json([])),
@@ -482,13 +538,21 @@ export const handlers = [
   http.get('/api/v1/notification-templates', () => HttpResponse.json([])),
   http.get('/api/v1/pending-uploads/', () => HttpResponse.json([])),
   http.get('/api/v1/printers/:id/ams-labels', () => HttpResponse.json([])),
+  http.get('/api/v1/printers/:id/inventory-remain', () =>
+    HttpResponse.json({ inventory_remain_g: {}, slot_materials: [] }),
+  ),
   http.get('/api/v1/printers/:id/slot-presets', () => HttpResponse.json([])),
   http.get('/api/v1/smart-plugs/by-printer/:id', () => HttpResponse.json([])),
   http.get('/api/v1/smart-plugs/by-printer/:id/scripts', () => HttpResponse.json([])),
+  // Asked by the bulk mocks above for each id: without them the fan-out fails
+  // and the client falls back to one request per printer.
+  http.get('/api/v1/ha-sensors/by-printer/:id/readings', () => HttpResponse.json([])),
+  http.get('/api/v1/queue/', () => HttpResponse.json([])),
   http.get('/api/v1/spoolman/inventory/filaments', () => HttpResponse.json([])),
   http.get('/api/v1/spoolman/spools/linked', () => HttpResponse.json([])),
   http.get('/api/v1/spoolman/spools/unlinked', () => HttpResponse.json([])),
   http.get('/api/v1/users/', () => HttpResponse.json([])),
+  http.get('/api/v1/users/slim', () => HttpResponse.json([])),
 
   // Status / object endpoints → minimal disabled-state responses
   http.get('/api/v1/archives/purge/settings', () =>
@@ -498,7 +562,12 @@ export const handlers = [
     HttpResponse.json({ totp_enabled: false, email_otp_enabled: false, backup_codes_remaining: 0 })
   ),
   http.get('/api/v1/auth/advanced-auth/status', () =>
-    HttpResponse.json({ advanced_auth_enabled: false, smtp_configured: false })
+    HttpResponse.json({
+      advanced_auth_enabled: false,
+      smtp_configured: false,
+      local_login_enabled: true,
+      autologin_provider_id: null,
+    })
   ),
   http.get('/api/v1/auth/ldap/status', () =>
     HttpResponse.json({ ldap_enabled: false, ldap_configured: false })
@@ -535,7 +604,33 @@ export const handlers = [
       external_url_configured: false,
     })
   ),
+  http.get('/api/v1/obico/printer-status', () =>
+    HttpResponse.json({ enabled: false, monitored_printers: null, per_printer: {}, last_error: null })
+  ),
+  http.get('/api/v1/octoeverywhere/status', () =>
+    HttpResponse.json({
+      enabled: false,
+      api_key_configured: false,
+      confidence: 'medium',
+      action: 'notify',
+      poll_interval: 20,
+      is_running: false,
+      last_error: null,
+      last_error_code: null,
+      per_printer: {},
+      history: [],
+      notifications: { configured: false, uncovered_printers: [] },
+    })
+  ),
+  http.get('/api/v1/octoeverywhere/printer-status', () =>
+    HttpResponse.json({ enabled: false, monitored_printers: null, per_printer: {}, last_error: null, last_error_code: null })
+  ),
+  // Per-file project print progress (#1897) — empty means "no completed runs"
+  http.get('/api/v1/projects/:id/file-progress', () => HttpResponse.json([])),
   http.get('/api/v1/printers/:id/current-print-user', () => HttpResponse.json(null)),
+  // What a user who may not read /settings gets instead (useUiSettings).
+  http.get('/api/v1/settings/ui-flags', () => HttpResponse.json({})),
+  http.get('/api/v1/settings/ui-preferences', () => HttpResponse.json({})),
   http.get('/api/v1/settings/check-ffmpeg', () =>
     HttpResponse.json({ available: false, version: null })
   ),

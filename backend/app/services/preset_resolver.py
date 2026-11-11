@@ -29,8 +29,8 @@ import logging
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.api.routes.cloud import get_stored_token
 from backend.app.api.routes.orca_cloud import _build_authenticated_service as _build_orca_service
+from backend.app.core.auth import is_auth_enabled
 from backend.app.core.permissions import Permission
 from backend.app.models.local_preset import LocalPreset
 from backend.app.models.user import User
@@ -40,7 +40,9 @@ from backend.app.services.bambu_cloud import (
     BambuCloudError,
     BambuCloudService,
 )
-from backend.app.services.orca_cloud import OrcaCloudAuthError, OrcaCloudError, parse_orca_string_list
+from backend.app.services.bambu_cloud_credentials import get_stored_token
+from backend.app.services.orca_cloud import OrcaCloudAuthError, OrcaCloudError
+from backend.app.utils.slicer_strings import unescape_strings_cstyle, unquote_slicer_items
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +69,11 @@ _SLOT_TO_PROFILE_TYPE = {
     "filament": "filament",
 }
 
+# String-list options Orca Cloud can return INI-encoded (#3380). The sidecar
+# only fixes up `compatible_printers` when it is an array (#3250), so a
+# process made for a user printer preset passes the Slice dialog's check and
+# is then refused by the CLI.
+_ORCA_STRING_LIST_FIELDS = ("compatible_printers", "filament_type", "default_filament_colour")
 # GUI-originated Bambu/Orca profiles use these exact string values as
 # "inherit from parent" sentinels. The desktop UI resolves them before
 # validation; the headless CLI does not. Keep this list deliberately narrow:
@@ -154,6 +161,12 @@ async def _resolve_local(db: AsyncSession, ref: PresetRef, slot: str) -> str:
     return preset.setting
 
 
+# The sign-in stored without a user belongs to an install with auth off. With
+# auth on, a caller without a user (an API key without Allow Cloud Access)
+# has no cloud sign-in of its own and must not borrow that one.
+_NO_CLOUD_IDENTITY = "{cloud} presets need a signed-in user or an API key with Allow Cloud Access ({slot})"
+
+
 async def _resolve_cloud(db: AsyncSession, user: User | None, ref: PresetRef, slot: str) -> str:
     """Fetch a single cloud preset detail. Permission gate matches the
     rest of the cloud surface (`CLOUD_AUTH`) so a user with `LIBRARY_UPLOAD`
@@ -164,6 +177,8 @@ async def _resolve_cloud(db: AsyncSession, user: User | None, ref: PresetRef, sl
             status_code=403,
             detail=f"Cloud presets require the cloud:auth permission ({slot})",
         )
+    if user is None and await is_auth_enabled(db):
+        raise HTTPException(status_code=403, detail=_NO_CLOUD_IDENTITY.format(cloud="Bambu Cloud", slot=slot))
 
     token, _email, region = await get_stored_token(db, user)
     if not token:
@@ -231,19 +246,47 @@ async def _resolve_cloud(db: AsyncSession, user: User | None, ref: PresetRef, sl
             slot,
         )
         payload = detail
+    if isinstance(payload, dict):
+        # Bambu Cloud labels presets with `type: "printer"` / `"print"` /
+        # `"filament"`, but the BS / Orca CLI's `--load-settings` parser only
+        # accepts `"machine"` / `"process"` / `"filament"`. Without this
+        # rewrite the CLI exits -5 with `operator(): unknown config type`
+        # and the sidecar surfaces a generic "The input preset file is
+        # invalid and can not be parsed" — see preset_resolver header
+        # comment for the silent-fail history. `from` gets the same
+        # treatment: Bambu Cloud's filament details routinely arrive with
+        # `from: ""` (or no `from` at all) and the CLI rejects either with
+        # `operator(): ... from  unsupported` (same -5 exit). The standard
+        # tier already pins `from: "system"` for exactly this reason; the
+        # cloud tier needs the same pin because it lands at the same `--load-
+        # settings` parser. The sidecar's `normalizeFromField` only rewrites
+        # the `"User"` / `"System"` casings, not empty / missing values.
+        payload = {**payload, "type": _SLOT_TO_PROFILE_TYPE[slot], "from": "system"}
     return json.dumps(payload)
 
 
 async def _resolve_orca_cloud(db: AsyncSession, user: User | None, ref: PresetRef, slot: str) -> str:
-    """Resolve a profile through the user's separately paired, read-only Orca
-    Cloud account. The route builder handles proactive token refresh and atomically
-    persists rotation before this fetch occurs."""
+    """Fetch a single profile from the user's separately paired, read-only
+    Orca Cloud account and return its content JSON.
+
+    The route-layer service builder handles JIT token refresh (atomically
+    persisting rotation before this fetch) and stale-credential cleanup, so any
+    exception here means a genuine fetch / network / not-found problem — never
+    a "stale token" situation the caller could retry through. Permission gate
+    matches the rest of the Orca Cloud surface so a user with
+    ``LIBRARY_UPLOAD`` but no ``ORCA_CLOUD_AUTH`` cannot slice using cloud
+    profiles even if their stored token survived a permission revocation.
+    """
     if user is not None and not user.has_permission(Permission.ORCA_CLOUD_AUTH.value):
         raise HTTPException(
             status_code=403,
             detail=f"Orca Cloud presets require the orca_cloud:auth permission ({slot})",
         )
+    if user is None and await is_auth_enabled(db):
+        raise HTTPException(status_code=403, detail=_NO_CLOUD_IDENTITY.format(cloud="Orca Cloud", slot=slot))
 
+    # Builder already produces the right user-facing error (401 not
+    # connected, 401 session refresh failed, 502 unreachable).
     svc = await _build_orca_service(db, user)
     try:
         profile = await svc.get_profile(ref.id)
@@ -265,6 +308,10 @@ async def _resolve_orca_cloud(db: AsyncSession, user: User | None, ref: PresetRe
     finally:
         await svc.close()
 
+    # ``profile`` is the ProfileUpsert shape — the inner ``content`` is the
+    # actual slicer-format JSON. Fall back to forwarding the wrapper if the
+    # shape doesn't match what we expect (defensive, in case Orca evolves
+    # the wire format).
     content = profile.get("content") if isinstance(profile, dict) else None
     if not isinstance(content, dict):
         logger.info(
@@ -274,14 +321,29 @@ async def _resolve_orca_cloud(db: AsyncSession, user: User | None, ref: PresetRe
         )
         content = profile
     if isinstance(content, dict):
-        # Orca can contain Bambu-style printer/print labels. Normalize every
-        # source to the CLI's machine/process/filament vocabulary.
+        # Orca natively uses `machine` / `process` / `filament` for `type`,
+        # which is what the CLI wants — but Bambu-imported profiles synced
+        # through Orca Cloud can carry `printer` / `print` instead, and the
+        # CLI's `--load-settings` parser rejects those the same way it does
+        # for the Bambu Cloud tier. Force the slot-appropriate value so the
+        # source tier doesn't decide whether slicing works. `from` gets the
+        # same forced pin to `"system"` for the same reason — see the
+        # Bambu Cloud branch above.
         content = {**content, "type": _SLOT_TO_PROFILE_TYPE[slot], "from": "system"}
-        # Orca Cloud serialises compatible_printers with quoted items
-        # ('"Printer"'). The sidecar compares bare preset names, so a quoted
-        # list would make it reject every printer.
-        if "compatible_printers" in content:
-            content["compatible_printers"] = parse_orca_string_list(content["compatible_printers"])
+        for key in _ORCA_STRING_LIST_FIELDS:
+            raw = content.get(key)
+            # Parsed the way the slicer would, empty items included, so
+            # per-extruder positions survive. A string it can't parse is
+            # forwarded as is.
+            # Orca Cloud also sends the list form with quoted items.
+            if isinstance(raw, str):
+                items = unescape_strings_cstyle(raw)
+            elif isinstance(raw, list):
+                items = unquote_slicer_items(raw)
+            else:
+                items = None
+            if items is not None:
+                content[key] = items
     return json.dumps(content)
 
 

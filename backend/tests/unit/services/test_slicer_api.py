@@ -8,8 +8,6 @@ import httpx
 import pytest
 
 from backend.app.services.slicer_api import (
-    BundleNotFoundError,
-    BundleSummary,
     SlicerApiInvalidResponseError,
     SlicerApiServerError,
     SlicerApiService,
@@ -35,12 +33,13 @@ class TestSlicerApiIdentity:
 
         def handler(request: httpx.Request) -> httpx.Response:
             captured["user_agent"] = request.headers.get("user-agent", "")
-            return httpx.Response(status_code=200, json={"ok": True})
+            return httpx.Response(status_code=200, json={"printer": [], "process": [], "filament": []})
 
         client = _mock_client(handler)
         service = SlicerApiService("http://slicer.local", client=client)
 
-        await service.health()
+        # Any request: health() went with upstream's dead-code cleanup.
+        await service.list_bundled_profiles()
         await client.aclose()
 
         assert captured["user_agent"].startswith("Printbuddy/")
@@ -249,9 +248,11 @@ class TestSliceWithProfiles:
 
         def handler(request: httpx.Request) -> httpx.Response:
             captured["body"] = request.content
+            # export_3mf=True → the response body must be a valid 3MF zip, or the
+            # #2671 output validation rejects it. This test is about the request.
             return httpx.Response(
                 status_code=200,
-                content=b"3MF-BYTES",
+                content=_valid_3mf_zip(),
                 headers={"x-print-time-seconds": "0", "x-filament-used-g": "0", "x-filament-used-mm": "0"},
             )
 
@@ -331,6 +332,115 @@ class TestSliceWithProfiles:
         assert b'name="arrange"' not in captured["body"]
 
     @pytest.mark.asyncio
+    async def test_orient_true_emits_form_field(self):
+        """#2548: user-requested auto-orient reaches the sidecar as its own
+        form field, which it turns into ``--orient 1``."""
+        captured: dict = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["body"] = request.content
+            return httpx.Response(
+                status_code=200,
+                content=b"3MF",
+                headers={"x-print-time-seconds": "0", "x-filament-used-g": "0", "x-filament-used-mm": "0"},
+            )
+
+        service = SlicerApiService("http://sidecar:3000", client=_mock_client(handler))
+        await service.slice_with_profiles(
+            model_bytes=b"x",
+            model_filename="Cube.3mf",
+            printer_profile_json="{}",
+            process_profile_json="{}",
+            filament_profile_jsons=["{}"],
+            orient=True,
+        )
+
+        assert b'name="orient"' in captured["body"]
+
+    @pytest.mark.asyncio
+    async def test_orient_false_omits_form_field(self):
+        """An off flag must be expressed by ABSENCE, never by sending
+        "false". The sidecar branches on ``settings.orient !== undefined``
+        and multipart fields arrive as strings — and ``"false"`` is truthy
+        in JavaScript, so sending it would switch auto-orient ON for every
+        user who left the box unticked."""
+        captured: dict = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["body"] = request.content
+            return httpx.Response(
+                status_code=200,
+                content=b"3MF",
+                headers={"x-print-time-seconds": "0", "x-filament-used-g": "0", "x-filament-used-mm": "0"},
+            )
+
+        service = SlicerApiService("http://sidecar:3000", client=_mock_client(handler))
+        await service.slice_with_profiles(
+            model_bytes=b"x",
+            model_filename="Cube.3mf",
+            printer_profile_json="{}",
+            process_profile_json="{}",
+            filament_profile_jsons=["{}"],
+            orient=False,
+        )
+
+        body = captured["body"]
+        assert b'name="orient"' not in body
+        assert b"false" not in body
+
+    @pytest.mark.asyncio
+    async def test_profileless_slice_forwards_both_layout_flags(self):
+        """The embedded-settings path and the segfault fallback both run
+        through ``slice_without_profiles``. Arrange / orient are CLI actions
+        on the geometry rather than profile values, so a user's per-slice
+        choice has to survive those routes too (#2548) — before this they
+        could not be expressed there at all."""
+        captured: dict = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["body"] = request.content
+            return httpx.Response(
+                status_code=200,
+                content=b"3MF",
+                headers={"x-print-time-seconds": "0", "x-filament-used-g": "0", "x-filament-used-mm": "0"},
+            )
+
+        service = SlicerApiService("http://sidecar:3000", client=_mock_client(handler))
+        await service.slice_without_profiles(
+            model_bytes=b"x",
+            model_filename="Cube.3mf",
+            arrange=True,
+            orient=True,
+        )
+
+        body = captured["body"]
+        assert b'name="arrange"' in body
+        assert b'name="orient"' in body
+
+    @pytest.mark.asyncio
+    async def test_profileless_slice_defaults_omit_layout_flags(self):
+        """The filament-discovery preview also uses this method and passes
+        neither flag — it must keep sending the pre-#2548 payload, since
+        rearranging objects would not change which slots a plate consumes
+        but would burn the arrange pass on every preview."""
+        captured: dict = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["body"] = request.content
+            return httpx.Response(
+                status_code=200,
+                content=b"3MF",
+                headers={"x-print-time-seconds": "0", "x-filament-used-g": "0", "x-filament-used-mm": "0"},
+            )
+
+        service = SlicerApiService("http://sidecar:3000", client=_mock_client(handler))
+        await service.slice_without_profiles(model_bytes=b"x", model_filename="Cube.3mf")
+
+        body = captured["body"]
+        assert b'name="arrange"' not in body
+        assert b'name="orient"' not in body
+
+    @pytest.mark.asyncio
     async def test_multi_filament_sends_one_part_per_profile(self):
         # Multi-color slicing requires N filament profiles, in plate-slot
         # order, sent as N repeated multipart `filamentProfile` parts (NOT a
@@ -385,27 +495,102 @@ class TestSliceWithProfiles:
         assert result.filament_used_mm == 0.0
 
 
-class TestHealth:
+def _valid_3mf_zip() -> bytes:
+    """Minimal-but-valid ZIP so is_zipfile() accepts it as a 3MF container."""
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("[Content_Types].xml", "<Types/>")
+        zf.writestr("Metadata/plate_1.gcode", "; G-CODE\nG28\n")
+    return buf.getvalue()
+
+
+class TestSliceOutputValidation:
+    """#2671: a 200 with a non-3MF body must not be persisted as a slice."""
+
+    _SLICE_KW = {
+        "model_bytes": b"solid Cube\n",
+        "model_filename": "Cube.stl",
+        "printer_profile_json": "{}",
+        "process_profile_json": "{}",
+        "filament_profile_jsons": ["{}"],
+    }
+
     @pytest.mark.asyncio
-    async def test_health_returns_body(self):
+    async def test_413_gives_actionable_reverse_proxy_message(self):
+        # A 413 is a proxy/CDN body-size cap, not the slicer — the message must
+        # point at the right layer so the user stops editing the wrong one.
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(status_code=413, content=b"<html>413 Request Entity Too Large</html>")
+
+        service = SlicerApiService("http://sidecar:3000", client=_mock_client(handler))
+        with pytest.raises(SlicerInputError) as exc_info:
+            await service.slice_with_profiles(export_3mf=True, **self._SLICE_KW)
+        msg = str(exc_info.value)
+        assert "413" in msg
+        assert "client_max_body_size" in msg
+        assert "proxy" in msg.lower()
+
+    @pytest.mark.asyncio
+    async def test_export_3mf_rejects_non_zip_200_body(self):
+        # The exact failure from #2671: sidecar/proxy returns 200 with a tiny
+        # garbage body; Printbuddy must NOT accept it as a sliced 3MF.
+        body = b'{"detail":"Not Found"}xxxxxx'  # 28 bytes, not a zip
+        assert len(body) == 28
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(status_code=200, content=body)
+
+        service = SlicerApiService("http://sidecar:3000", client=_mock_client(handler))
+        with pytest.raises(SlicerApiServerError) as exc_info:
+            await service.slice_with_profiles(export_3mf=True, **self._SLICE_KW)
+        msg = str(exc_info.value)
+        assert "not a valid" in msg.lower()
+        assert "28 bytes" in msg
+
+    @pytest.mark.asyncio
+    async def test_export_3mf_accepts_valid_zip_body(self):
+        zip_bytes = _valid_3mf_zip()
+
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(
                 status_code=200,
-                json={"status": "healthy", "checks": {"orcaslicer": {"available": True}}},
+                content=zip_bytes,
+                headers={"x-print-time-seconds": "656"},
             )
 
         service = SlicerApiService("http://sidecar:3000", client=_mock_client(handler))
-        body = await service.health()
-        assert body["status"] == "healthy"
+        result = await service.slice_with_profiles(export_3mf=True, **self._SLICE_KW)
+        assert result.content == zip_bytes
+        assert result.print_time_seconds == 656
 
     @pytest.mark.asyncio
-    async def test_health_unreachable_raises(self):
+    async def test_raw_gcode_body_not_zip_validated(self):
+        # export_3mf defaults False (preview / raw-gcode callers): the body is
+        # legitimately not a zip, so the validation must NOT fire.
         def handler(request: httpx.Request) -> httpx.Response:
-            raise httpx.ConnectError("no route")
+            return httpx.Response(status_code=200, content=b"; G-CODE\nG28\n")
 
         service = SlicerApiService("http://sidecar:3000", client=_mock_client(handler))
-        with pytest.raises(SlicerApiUnavailableError):
-            await service.health()
+        result = await service.slice_with_profiles(**self._SLICE_KW)
+        assert result.content == b"; G-CODE\nG28\n"
+
+    @pytest.mark.asyncio
+    async def test_without_profiles_also_rejects_non_zip_200_body(self):
+        # The validation lives in the shared response handler, so the
+        # embedded-settings path (slice_without_profiles) is covered too.
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(status_code=200, content=b"nope")
+
+        service = SlicerApiService("http://sidecar:3000", client=_mock_client(handler))
+        with pytest.raises(SlicerApiServerError):
+            await service.slice_without_profiles(
+                model_bytes=b"solid Cube\n",
+                model_filename="Cube.stl",
+                export_3mf=True,
+            )
 
 
 class TestSliceWithProfilesProgress:
@@ -590,317 +775,51 @@ class TestSliceWithProfilesProgress:
         assert snapshots == []
 
 
-# ── BundleSummary parsing + bundle CRUD client methods ─────────────────────
+# ── Printbuddy: sidecar health, non-API answers, request ids ────────────────
 
 
-class TestBundleClientMethods:
-    """Coverage for import_bundle / list_bundles / get_bundle / delete_bundle.
-
-    Mirrors the existing SlicerApiService tests' mock-transport pattern. The
-    bundle endpoints are simple JSON CRUD on the sidecar, but the response
-    parsing has to remain forgiving (newer sidecars may add fields, older
-    ones may omit some) and the failure modes have to map cleanly to our
-    typed exceptions so route handlers can pick the right HTTP status.
-    """
-
-    SAMPLE_SUMMARY = {
-        "id": "2bd8722dd20a837e",
-        "printer_preset_name": "# Bambu Lab H2D 0.4 nozzle",
-        "printer": ["# Bambu Lab H2D 0.4 nozzle"],
-        "process": ["# 0.20mm Standard @BBL H2D"],
-        "filament": ["# Bambu PLA Basic @BBL H2D"],
-        "version": "02.06.00.50",
-    }
+class TestSidecarHealthAndInvalidAnswers:
+    """The settings' slicer connection check and the guards against a URL that
+    answers, but not with the slicer API (a desktop-slicer web GUI, say)."""
 
     @pytest.mark.asyncio
-    async def test_import_bundle_happy_path(self):
-        captured: dict = {}
-
+    async def test_health_returns_the_sidecar_json(self):
         def handler(request: httpx.Request) -> httpx.Response:
-            captured["url"] = str(request.url)
-            captured["method"] = request.method
-            captured["content_type"] = request.headers.get("content-type", "")
-            return httpx.Response(status_code=201, json=self.SAMPLE_SUMMARY)
+            assert request.url.path == "/health"
+            return httpx.Response(200, json={"status": "ok", "slicer": "orcaslicer", "version": "2.3.1"})
+
+        service = SlicerApiService("http://sidecar:3003", client=_mock_client(handler))
+        assert (await service.health())["slicer"] == "orcaslicer"
+
+    @pytest.mark.asyncio
+    async def test_health_from_a_web_gui_is_an_invalid_response(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, text="<html>KasmVNC</html>", headers={"content-type": "text/html"})
 
         service = SlicerApiService("http://sidecar:3000", client=_mock_client(handler))
-        summary = await service.import_bundle(b"PK\x03\x04zip-bytes", filename="H2D.bbscfg")
-
-        assert isinstance(summary, BundleSummary)
-        assert summary.id == "2bd8722dd20a837e"
-        assert summary.printer == ["# Bambu Lab H2D 0.4 nozzle"]
-        assert summary.process == ["# 0.20mm Standard @BBL H2D"]
-        assert summary.filament == ["# Bambu PLA Basic @BBL H2D"]
-        assert captured["method"] == "POST"
-        assert captured["url"].endswith("/profiles/bundle")
-        assert captured["content_type"].startswith("multipart/form-data")
-
-    @pytest.mark.asyncio
-    async def test_import_bundle_400_raises_input_error(self):
-        # Non-.bbscfg uploads, corrupt zips, malicious entry names — all
-        # rejected by the sidecar with 4xx so the user can fix and retry.
-        def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(
-                status_code=400,
-                json={"message": "Bundle is missing bundle_structure.json"},
-            )
-
-        service = SlicerApiService("http://sidecar:3000", client=_mock_client(handler))
-        with pytest.raises(SlicerInputError) as exc_info:
-            await service.import_bundle(b"not a zip")
-        assert "missing bundle_structure" in str(exc_info.value)
-
-    @pytest.mark.asyncio
-    async def test_import_bundle_5xx_raises_server_error(self):
-        # Disk-write failure on DATA_PATH — rare but observable when /data
-        # is a tmpfs that filled up.
-        def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(status_code=500, json={"message": "ENOSPC"})
-
-        service = SlicerApiService("http://sidecar:3000", client=_mock_client(handler))
-        with pytest.raises(SlicerApiServerError):
-            await service.import_bundle(b"x")
-
-    @pytest.mark.asyncio
-    async def test_import_bundle_connection_error(self):
-        def handler(request: httpx.Request) -> httpx.Response:
-            raise httpx.ConnectError("connection refused")
-
-        service = SlicerApiService("http://sidecar:3000", client=_mock_client(handler))
-        with pytest.raises(SlicerApiUnavailableError):
-            await service.import_bundle(b"x")
-
-    @pytest.mark.asyncio
-    async def test_list_bundles_returns_summaries(self):
-        def handler(request: httpx.Request) -> httpx.Response:
-            assert request.url.path == "/profiles/bundles"
-            return httpx.Response(status_code=200, json=[self.SAMPLE_SUMMARY])
-
-        service = SlicerApiService("http://sidecar:3000", client=_mock_client(handler))
-        bundles = await service.list_bundles()
-        assert len(bundles) == 1
-        assert bundles[0].id == self.SAMPLE_SUMMARY["id"]
-
-    @pytest.mark.asyncio
-    async def test_list_bundles_empty_array(self):
-        # Sidecar returns [] when no bundles imported yet — must not raise.
-        def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(status_code=200, json=[])
-
-        service = SlicerApiService("http://sidecar:3000", client=_mock_client(handler))
-        assert await service.list_bundles() == []
-
-    @pytest.mark.asyncio
-    async def test_list_bundles_non_array_raises(self):
-        # Older / mis-configured sidecar returning {} instead of []. Surface
-        # the bug with a clear server error rather than silently treating
-        # malformed payload as empty.
-        def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(status_code=200, json={"unexpected": "shape"})
-
-        service = SlicerApiService("http://sidecar:3000", client=_mock_client(handler))
-        with pytest.raises(SlicerApiServerError):
-            await service.list_bundles()
-
-    @pytest.mark.asyncio
-    async def test_get_bundle_404_raises_not_found(self):
-        def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(status_code=404, json={"message": "not found"})
-
-        service = SlicerApiService("http://sidecar:3000", client=_mock_client(handler))
-        with pytest.raises(BundleNotFoundError):
-            await service.get_bundle("deadbeef00000000")
-
-    @pytest.mark.asyncio
-    async def test_get_bundle_happy_path(self):
-        def handler(request: httpx.Request) -> httpx.Response:
-            assert request.url.path == "/profiles/bundles/2bd8722dd20a837e"
-            return httpx.Response(status_code=200, json=self.SAMPLE_SUMMARY)
-
-        service = SlicerApiService("http://sidecar:3000", client=_mock_client(handler))
-        summary = await service.get_bundle("2bd8722dd20a837e")
-        assert summary.id == "2bd8722dd20a837e"
-
-    @pytest.mark.asyncio
-    async def test_delete_bundle_204_succeeds_silently(self):
-        def handler(request: httpx.Request) -> httpx.Response:
-            assert request.method == "DELETE"
-            return httpx.Response(status_code=204)
-
-        service = SlicerApiService("http://sidecar:3000", client=_mock_client(handler))
-        # Should not raise.
-        await service.delete_bundle("2bd8722dd20a837e")
-
-    @pytest.mark.asyncio
-    async def test_delete_bundle_404_raises_not_found(self):
-        def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(status_code=404, json={"message": "not found"})
-
-        service = SlicerApiService("http://sidecar:3000", client=_mock_client(handler))
-        with pytest.raises(BundleNotFoundError):
-            await service.delete_bundle("missing")
-
-
-class TestSliceWithBundle:
-    """The bundle slice path takes the same model upload but replaces the
-    profile-attachment fields with bundle-id + preset-name form fields.
-    Coverage for the form shape, the multi-filament join, and the same
-    4xx/5xx mapping as slice_with_profiles."""
-
-    @pytest.mark.asyncio
-    async def test_form_fields_and_filament_join(self):
-        captured: dict = {}
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            captured["url"] = str(request.url)
-            captured["body"] = request.content
-            captured["content_type"] = request.headers.get("content-type", "")
-            return httpx.Response(
-                status_code=200,
-                content=b"; G-CODE",
-                headers={
-                    "x-print-time-seconds": "60",
-                    "x-filament-used-g": "1.0",
-                    "x-filament-used-mm": "100.0",
-                },
-            )
-
-        service = SlicerApiService("http://sidecar:3000", client=_mock_client(handler))
-        result = await service.slice_with_bundle(
-            model_bytes=b"solid Cube\n",
-            model_filename="Cube.stl",
-            bundle_id="2bd8722dd20a837e",
-            printer_name="# Bambu Lab H2D 0.4 nozzle",
-            process_name="# 0.20mm Standard @BBL H2D",
-            filament_names=["# Bambu PLA Basic @BBL H2D", "# Bambu PETG HF @BBL H2D"],
-        )
-
-        assert isinstance(result, SliceResult)
-        assert result.print_time_seconds == 60
-        assert captured["url"].endswith("/slice")
-        assert captured["content_type"].startswith("multipart/form-data")
-        # Multi-filament joined with ';' — the sidecar's parser splits on
-        # both ';' and ',' so the wire format is the more-explicit ';'.
-        body = captured["body"]
-        assert b"# Bambu PLA Basic @BBL H2D;# Bambu PETG HF @BBL H2D" in body
-        # Each form field appears in the multipart body.
-        assert b'name="bundle"' in body
-        assert b'name="printerName"' in body
-        assert b'name="processName"' in body
-        assert b'name="filamentNames"' in body
-        # Bundle id round-trips on the wire.
-        assert b"2bd8722dd20a837e" in body
-
-    @pytest.mark.asyncio
-    async def test_arrange_true_emits_form_field(self):
-        """#1493: bundle dispatch also forwards arrange=True so cross-class
-        slices via .bbscfg bundles get the same BS auto-arrange behaviour
-        as the preset path."""
-        captured: dict = {}
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            captured["body"] = request.content
-            return httpx.Response(
-                status_code=200,
-                content=b"3MF",
-                headers={"x-print-time-seconds": "0", "x-filament-used-g": "0", "x-filament-used-mm": "0"},
-            )
-
-        service = SlicerApiService("http://sidecar:3000", client=_mock_client(handler))
-        await service.slice_with_bundle(
-            model_bytes=b"x",
-            model_filename="Cube.3mf",
-            bundle_id="abc",
-            printer_name="p",
-            process_name="pr",
-            filament_names=["f"],
-            arrange=True,
-        )
-
-        assert b'name="arrange"' in captured["body"]
-
-    @pytest.mark.asyncio
-    async def test_404_unknown_preset_maps_to_input_error(self):
-        # Sidecar returns 404 when bundle exists but preset name doesn't.
-        # The slice route classifies this as user-correctable input error,
-        # not server failure.
-        def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(
-                status_code=404,
-                json={"message": 'process preset "Imaginary" not found in bundle "abc"'},
-            )
-
-        service = SlicerApiService("http://sidecar:3000", client=_mock_client(handler))
-        with pytest.raises(SlicerInputError):
-            await service.slice_with_bundle(
-                model_bytes=b"x",
-                model_filename="Cube.stl",
-                bundle_id="abc",
-                printer_name="p",
-                process_name="Imaginary",
-                filament_names=["f"],
-            )
-
-    @pytest.mark.asyncio
-    async def test_5xx_maps_to_server_error(self):
-        # CLI segfault on the resolved triplet — same handling as slice_with_profiles.
-        def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(
-                status_code=500,
-                json={"message": "Slicer process failed (signal SIGSEGV)"},
-            )
-
-        service = SlicerApiService("http://sidecar:3000", client=_mock_client(handler))
-        with pytest.raises(SlicerApiServerError):
-            await service.slice_with_bundle(
-                model_bytes=b"x",
-                model_filename="Cube.3mf",
-                bundle_id="abc",
-                printer_name="p",
-                process_name="pr",
-                filament_names=["f"],
-            )
-
-
-class TestNonSlicerApiUrl:
-    """A URL that answers with HTML (e.g. a desktop-slicer web GUI on port
-    3000) must surface as a clear "not the slicer API" error, not a raw
-    JSONDecodeError that turns into a 500."""
-
-    @staticmethod
-    def _html_handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            status_code=200,
-            content=b"<!DOCTYPE html><html><body>KasmVNC</body></html>",
-            headers={"content-type": "text/html"},
-        )
-
-    @pytest.mark.asyncio
-    async def test_list_bundles_html_raises_invalid_response(self):
-        client = _mock_client(self._html_handler)
-        service = SlicerApiService("http://192.168.1.5:3000", client=client)
-        with pytest.raises(SlicerApiInvalidResponseError, match="does not look like the slicer-API sidecar"):
-            await service.list_bundles()
-        await client.aclose()
-
-    @pytest.mark.asyncio
-    async def test_invalid_response_is_still_an_unavailable_error(self):
-        client = _mock_client(self._html_handler)
-        service = SlicerApiService("http://192.168.1.5:3000", client=client)
-        for call in (service.health, service.list_bundled_profiles, lambda: service.get_bundle("abc")):
-            with pytest.raises(SlicerApiUnavailableError):
-                await call()
-        await client.aclose()
-
-    @pytest.mark.asyncio
-    async def test_slice_html_page_is_rejected(self):
-        client = _mock_client(self._html_handler)
-        service = SlicerApiService("http://192.168.1.5:3000", client=client)
         with pytest.raises(SlicerApiInvalidResponseError):
-            await service.slice_with_profiles(
-                model_bytes=b"solid Cube\n",
-                model_filename="Cube.stl",
-                printer_profile_json='{"name": "p"}',
-                process_profile_json='{"name": "pr"}',
-                filament_profile_jsons=['{"name": "f"}'],
-            )
-        await client.aclose()
+            await service.health()
+
+    @pytest.mark.asyncio
+    async def test_an_html_page_is_not_stored_as_gcode(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, text="<html>login</html>", headers={"content-type": "text/html; charset=utf-8"})
+
+        service = SlicerApiService("http://sidecar:3000", client=_mock_client(handler))
+        with pytest.raises(SlicerApiInvalidResponseError):
+            await service.slice_without_profiles(model_bytes=b"x", model_filename="Cube.stl")
+
+    @pytest.mark.asyncio
+    async def test_a_non_uuid_request_id_is_not_sent(self):
+        seen: dict = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/slice":
+                seen["body"] = request.content
+            return httpx.Response(200, content=b"; gcode", headers={"content-type": "text/plain"})
+
+        service = SlicerApiService("http://sidecar:3003", client=_mock_client(handler))
+        await service.slice_without_profiles(
+            model_bytes=b"x", model_filename="Cube.stl", request_id="library-11-p1-not-a-uuid"
+        )
+        assert b"requestId" not in seen["body"]

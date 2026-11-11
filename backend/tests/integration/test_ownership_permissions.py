@@ -287,15 +287,15 @@ class TestArchiveOwnershipPermissions(TestOwnershipPermissionsSetup):
         assert response.status_code == 403
 
     # ========================================================================
-    # REPRINT permissions
+    # Legacy reprint endpoint
     # ========================================================================
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_operator_cannot_reprint_others_archive(
+    async def test_reprint_endpoint_is_gone_for_all_callers(
         self, async_client: AsyncClient, auth_setup, archive_factory, printer_factory, db_session
     ):
-        """Operator cannot reprint another user's archive."""
+        """Direct archive reprint no longer exists; callers must use the queue."""
         printer = await printer_factory()
         archive = await archive_factory(
             printer.id,
@@ -307,7 +307,239 @@ class TestArchiveOwnershipPermissions(TestOwnershipPermissionsSetup):
             headers={"Authorization": f"Bearer {auth_setup['operator_token']}"},
         )
 
+        assert response.status_code == 410
+
+    # ========================================================================
+    # Queue route — archives:reprint_* gate (#1625)
+    # ========================================================================
+    # The unified /queue/ route replaced the legacy /reprint endpoint; the
+    # reprint permission gate must move with it. Without these checks a
+    # caller with QUEUE_CREATE + ARCHIVES_READ_OWN could reprint their own
+    # archives even if explicitly denied ARCHIVES_REPRINT_OWN.
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_queue_route_operator_can_reprint_own_archive(
+        self, async_client: AsyncClient, auth_setup, archive_factory, printer_factory, db_session
+    ):
+        """Operator with REPRINT_OWN can queue their own archive."""
+        printer = await printer_factory()
+        archive = await archive_factory(
+            printer.id,
+            created_by_id=auth_setup["operator_user"]["id"],
+        )
+
+        response = await async_client.post(
+            "/api/v1/queue/",
+            headers={"Authorization": f"Bearer {auth_setup['operator_token']}"},
+            json={"printer_id": printer.id, "archive_id": archive.id},
+        )
+
+        assert response.status_code == 200
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_queue_route_user_without_reprint_gets_403(
+        self, async_client: AsyncClient, auth_setup, archive_factory, printer_factory, db_session
+    ):
+        """User with QUEUE_CREATE + ARCHIVES_READ_OWN but no reprint perm → 403.
+
+        Custom group mirrors a real operator policy where someone is allowed
+        to enqueue freshly-uploaded library files but explicitly NOT allowed
+        to re-run completed archives.
+        """
+        # Create custom group with queue:create + archives:read_own but no reprint perm.
+        admin_headers = {"Authorization": f"Bearer {auth_setup['admin_token']}"}
+        group_resp = await async_client.post(
+            "/api/v1/groups/",
+            headers=admin_headers,
+            json={
+                "name": "QueueOnlyNoReprint",
+                "description": "Test group: can queue library files but not reprint",
+                "permissions": [
+                    "queue:create",
+                    "queue:read_own",
+                    "archives:read_own",
+                    "library:read_own",
+                    "library:upload",
+                    "printers:read",
+                ],
+            },
+        )
+        assert group_resp.status_code in (200, 201)
+        group_id = group_resp.json()["id"]
+
+        await async_client.post(
+            "/api/v1/users/",
+            headers=admin_headers,
+            json={
+                "username": "noreprint_user",
+                "password": "NoreprintPass1!",
+                "group_ids": [group_id],
+            },
+        )
+        login = await async_client.post(
+            "/api/v1/auth/login",
+            json={"username": "noreprint_user", "password": "NoreprintPass1!"},
+        )
+        token = login.json()["access_token"]
+        user_id = login.json()["user"]["id"]
+
+        # Archive owned by the no-reprint user.
+        printer = await printer_factory()
+        archive = await archive_factory(printer.id, created_by_id=user_id)
+
+        response = await async_client.post(
+            "/api/v1/queue/",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"printer_id": printer.id, "archive_id": archive.id},
+        )
+
         assert response.status_code == 403
+        assert "reprint" in response.json()["detail"].lower()
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_batch_dispatch_allowed_for_own_archive_with_reprint_own(
+        self, async_client: AsyncClient, auth_setup, archive_factory, printer_factory, db_session
+    ):
+        """The dispatch gate must not block the ordinary self-service case (#342)."""
+        headers = {"Authorization": f"Bearer {auth_setup['operator_token']}"}
+        printer = await printer_factory()
+        archive = await archive_factory(printer.id, created_by_id=auth_setup["operator_user"]["id"])
+
+        order = await async_client.post(
+            "/api/v1/queue/batches",
+            headers=headers,
+            json={
+                "name": "Own order",
+                "archive_id": archive.id,
+                "plates": [{"plate_id": 1, "quantity_target": 2}],
+            },
+        )
+        assert order.status_code == 200
+        batch_id = order.json()["id"]
+        assert (
+            await async_client.post(
+                "/api/v1/queue/",
+                headers=headers,
+                json={
+                    "printer_id": printer.id,
+                    "archive_id": archive.id,
+                    "batch_id": batch_id,
+                    "plate_id": 1,
+                },
+            )
+        ).status_code == 200
+
+        response = await async_client.post(f"/api/v1/queue/batches/{batch_id}/dispatch", headers=headers, json={})
+        assert response.status_code == 200
+        assert response.json()["remaining_count"] == 0
+        assert response.json()["pending_count"] == 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_batch_dispatch_honours_the_reprint_gate(
+        self, async_client: AsyncClient, auth_setup, archive_factory, printer_factory, db_session
+    ):
+        """Dispatching a batch order must not be a weaker door than POST /queue/ (#342).
+
+        Dispatch clones existing queue items, so without the same source-file
+        gate a caller holding queue:create and queue:update_all — but
+        explicitly denied archives:reprint_* — could start prints of an
+        archive that POST /queue/ would have refused them.
+        """
+        admin_headers = {"Authorization": f"Bearer {auth_setup['admin_token']}"}
+        group_resp = await async_client.post(
+            "/api/v1/groups/",
+            headers=admin_headers,
+            json={
+                "name": "BatchDispatchNoReprint",
+                "description": "Test group: can manage the queue but not reprint archives",
+                "permissions": [
+                    "queue:create",
+                    "queue:read_all",
+                    "queue:update_all",
+                    "archives:read_all",
+                    "printers:read",
+                ],
+            },
+        )
+        assert group_resp.status_code in (200, 201)
+        await async_client.post(
+            "/api/v1/users/",
+            headers=admin_headers,
+            json={
+                "username": "batch_noreprint_user",
+                "password": "BatchNoreprint1!",
+                "group_ids": [group_resp.json()["id"]],
+            },
+        )
+        login = await async_client.post(
+            "/api/v1/auth/login",
+            json={"username": "batch_noreprint_user", "password": "BatchNoreprint1!"},
+        )
+        token = login.json()["access_token"]
+
+        # Admin builds an order with one dispatched run and two still owed.
+        printer = await printer_factory()
+        archive = await archive_factory(printer.id, created_by_id=auth_setup["admin_user"]["id"])
+        order = await async_client.post(
+            "/api/v1/queue/batches",
+            headers=admin_headers,
+            json={
+                "name": "Gated order",
+                "archive_id": archive.id,
+                "plates": [{"plate_id": 1, "quantity_target": 3}],
+            },
+        )
+        assert order.status_code == 200
+        batch_id = order.json()["id"]
+        seeded = await async_client.post(
+            "/api/v1/queue/",
+            headers=admin_headers,
+            json={"printer_id": printer.id, "archive_id": archive.id, "batch_id": batch_id, "plate_id": 1},
+        )
+        assert seeded.status_code == 200
+
+        response = await async_client.post(
+            f"/api/v1/queue/batches/{batch_id}/dispatch",
+            headers={"Authorization": f"Bearer {token}"},
+            json={},
+        )
+
+        assert response.status_code == 403
+        assert "reprint" in response.json()["detail"].lower()
+
+        # And nothing was queued behind the refusal.
+        listing = await async_client.get(f"/api/v1/queue/batches/{batch_id}", headers=admin_headers)
+        assert listing.json()["pending_count"] == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_queue_route_ownerless_archive_requires_reprint_all(
+        self, async_client: AsyncClient, auth_setup, archive_factory, printer_factory, db_session
+    ):
+        """Ownerless archive (created_by_id=null) requires REPRINT_ALL.
+
+        Pre-IDOR-fix legacy data has no creator; an operator with
+        REPRINT_OWN can't fall back to "I own this" — fail-closed.
+        The existing IDOR check returns 404 first (operator lacks
+        READ_ALL and doesn't own the row), so this is also a regression
+        guard against accidentally surfacing 403-instead-of-404 if the
+        IDOR check is ever loosened.
+        """
+        printer = await printer_factory()
+        archive = await archive_factory(printer.id, created_by_id=None)
+
+        response = await async_client.post(
+            "/api/v1/queue/",
+            headers={"Authorization": f"Bearer {auth_setup['operator_token']}"},
+            json={"printer_id": printer.id, "archive_id": archive.id},
+        )
+
+        # IDOR returns 404 before the new gate fires for this operator.
+        assert response.status_code == 404
 
 
 class TestQueueOwnershipPermissions(TestOwnershipPermissionsSetup):
@@ -426,6 +658,139 @@ class TestQueueOwnershipPermissions(TestOwnershipPermissionsSetup):
 
         assert response.status_code == 403
 
+    # ========================================================================
+    # Start / Stop ownership gates (#1625-followup)
+    # ========================================================================
+    # Pre-fix /stop required QUEUE_UPDATE_ALL (admin-only) — operators saw the
+    # Stop button in the queue UI but got 403 on click. /start required
+    # QUEUE_UPDATE_OWN with no ownership check — operators could start anyone's
+    # queue items via direct API. Both now use require_ownership_permission.
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_operator_can_start_own_queue_item(self, async_client: AsyncClient, auth_setup, queue_item_factory):
+        """Operator can start their own staged queue item."""
+        item = await queue_item_factory(
+            created_by_id=auth_setup["operator_user"]["id"],
+            manual_start=True,
+        )
+
+        response = await async_client.post(
+            f"/api/v1/queue/{item.id}/start?skip_filament_check=true",
+            headers={"Authorization": f"Bearer {auth_setup['operator_token']}"},
+        )
+
+        assert response.status_code == 200
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_operator_cannot_start_others_queue_item(
+        self, async_client: AsyncClient, auth_setup, queue_item_factory
+    ):
+        """Operator cannot start another user's queue item."""
+        item = await queue_item_factory(
+            created_by_id=auth_setup["operator2_user"]["id"],
+            manual_start=True,
+        )
+
+        response = await async_client.post(
+            f"/api/v1/queue/{item.id}/start?skip_filament_check=true",
+            headers={"Authorization": f"Bearer {auth_setup['operator_token']}"},
+        )
+
+        assert response.status_code == 403
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_operator_can_start_unowned_queue_item(
+        self, async_client: AsyncClient, auth_setup, queue_item_factory, db_session
+    ):
+        """Operator can start a NULL-owner queue item (VP-uploaded, #1670)
+        and claims ownership in the process.
+
+        Stop and Cancel reject unowned items for _OWN holders (destructive,
+        no "I own it" claim available), but Start is the entry point for the
+        VP-import flow where attribution happens at click-time.
+        """
+        from backend.app.models.print_queue import PrintQueueItem
+
+        item = await queue_item_factory(created_by_id=None, manual_start=True)
+
+        response = await async_client.post(
+            f"/api/v1/queue/{item.id}/start?skip_filament_check=true",
+            headers={"Authorization": f"Bearer {auth_setup['operator_token']}"},
+        )
+
+        assert response.status_code == 200
+        # Ownership claimed: operator is now the item's owner.
+        await db_session.refresh(item)
+        refetch = await db_session.get(PrintQueueItem, item.id)
+        assert refetch.created_by_id == auth_setup["operator_user"]["id"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_operator_can_stop_own_queue_item(self, async_client: AsyncClient, auth_setup, queue_item_factory):
+        """Operator can stop their own currently-printing queue item."""
+        item = await queue_item_factory(
+            created_by_id=auth_setup["operator_user"]["id"],
+            status="printing",
+        )
+
+        response = await async_client.post(
+            f"/api/v1/queue/{item.id}/stop",
+            headers={"Authorization": f"Bearer {auth_setup['operator_token']}"},
+        )
+
+        assert response.status_code == 200
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_operator_cannot_stop_others_queue_item(
+        self, async_client: AsyncClient, auth_setup, queue_item_factory
+    ):
+        """Operator cannot stop another user's printing queue item."""
+        item = await queue_item_factory(
+            created_by_id=auth_setup["operator2_user"]["id"],
+            status="printing",
+        )
+
+        response = await async_client.post(
+            f"/api/v1/queue/{item.id}/stop",
+            headers={"Authorization": f"Bearer {auth_setup['operator_token']}"},
+        )
+
+        assert response.status_code == 403
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_operator_cannot_stop_unowned_queue_item(
+        self, async_client: AsyncClient, auth_setup, queue_item_factory
+    ):
+        """Operator cannot stop a NULL-owner printing queue item — stop mirrors
+        cancel (destructive, no claim semantics). Admins with _ALL can still stop it.
+        """
+        item = await queue_item_factory(created_by_id=None, status="printing")
+
+        response = await async_client.post(
+            f"/api/v1/queue/{item.id}/stop",
+            headers={"Authorization": f"Bearer {auth_setup['operator_token']}"},
+        )
+
+        assert response.status_code == 403
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_admin_can_stop_any_queue_item(self, async_client: AsyncClient, auth_setup, queue_item_factory):
+        """Admin with _ALL can stop any printing queue item including unowned."""
+        item = await queue_item_factory(created_by_id=None, status="printing")
+
+        response = await async_client.post(
+            f"/api/v1/queue/{item.id}/stop",
+            headers={"Authorization": f"Bearer {auth_setup['admin_token']}"},
+        )
+
+        assert response.status_code == 200
+
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_bulk_update_skips_non_owned_items(self, async_client: AsyncClient, auth_setup, queue_item_factory):
@@ -491,8 +856,11 @@ class TestLibraryOwnershipPermissions(TestOwnershipPermissionsSetup):
             from backend.app.models.library import LibraryFolder
 
             _counter[0] += 1
+            # Ownerless and shared: a folder from before #3201 after the
+            # upgrade backfill, or one made with auth off.
             defaults = {
                 "name": f"TestFolder_{_counter[0]}",
+                "shared": True,
             }
             defaults.update(kwargs)
 
@@ -579,19 +947,281 @@ class TestLibraryOwnershipPermissions(TestOwnershipPermissionsSetup):
 
         assert response.status_code == 403
 
+    # ========================================================================
+    # Photo routes (#3077). Upload and delete are gated on LIBRARY_UPDATE_*,
+    # so a non-owner is refused with 403 exactly like ``update_file``. The
+    # read path goes through ``_ensure_library_file_visible`` and answers 404
+    # instead, so an id that exists tells an outsider nothing.
+    # ========================================================================
+
+    @pytest.fixture
+    def photo_storage(self, monkeypatch, tmp_path):
+        """Keep uploaded photos out of the real data directory."""
+        from backend.app.core.config import settings as app_settings
+
+        monkeypatch.setattr(app_settings, "base_dir", tmp_path)
+        monkeypatch.setattr(app_settings, "archive_dir", tmp_path / "archive")
+        return tmp_path
+
+    @staticmethod
+    def _photo_upload():
+        import io
+
+        from PIL import Image
+
+        buf = io.BytesIO()
+        Image.new("RGB", (8, 8), "blue").save(buf, "JPEG")
+        return {"file": ("result.jpg", buf.getvalue(), "image/jpeg")}
+
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_folders_require_all_permission(self, async_client: AsyncClient, auth_setup, library_folder_factory):
-        """Folders require *_all permission (no ownership tracking on folders)."""
-        folder = await library_folder_factory(name="TestFolder")
+    async def test_operator_can_upload_photo_to_own_library_file(
+        self, async_client: AsyncClient, auth_setup, library_file_factory, photo_storage
+    ):
+        file = await library_file_factory(created_by_id=auth_setup["operator_user"]["id"])
 
-        # Operator cannot delete folder (needs *_all)
+        response = await async_client.post(
+            f"/api/v1/library/files/{file.id}/photos",
+            headers={"Authorization": f"Bearer {auth_setup['operator_token']}"},
+            files=self._photo_upload(),
+        )
+
+        assert response.status_code == 200
+        assert len(response.json()["photos"]) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_operator_cannot_upload_photo_to_others_library_file(
+        self, async_client: AsyncClient, auth_setup, library_file_factory, photo_storage
+    ):
+        from backend.app.utils.library_paths import library_photos_dir
+
+        file = await library_file_factory(created_by_id=auth_setup["operator2_user"]["id"])
+
+        response = await async_client.post(
+            f"/api/v1/library/files/{file.id}/photos",
+            headers={"Authorization": f"Bearer {auth_setup['operator_token']}"},
+            files=self._photo_upload(),
+        )
+
+        assert response.status_code == 403
+        assert not library_photos_dir(file.id).exists()
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_operator_cannot_delete_photo_from_others_library_file(
+        self, async_client: AsyncClient, auth_setup, library_file_factory, photo_storage
+    ):
+        from backend.app.utils.library_paths import library_photos_dir
+
+        file = await library_file_factory(created_by_id=auth_setup["operator2_user"]["id"])
+        upload = await async_client.post(
+            f"/api/v1/library/files/{file.id}/photos",
+            headers={"Authorization": f"Bearer {auth_setup['operator2_token']}"},
+            files=self._photo_upload(),
+        )
+        filename = upload.json()["filename"]
+
+        response = await async_client.delete(
+            f"/api/v1/library/files/{file.id}/photos/{filename}",
+            headers={"Authorization": f"Bearer {auth_setup['operator_token']}"},
+        )
+
+        assert response.status_code == 403
+        assert (library_photos_dir(file.id) / filename).is_file()
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_operator_reading_others_library_file_photo_gets_404(
+        self, async_client: AsyncClient, auth_setup, library_file_factory, photo_storage
+    ):
+        file = await library_file_factory(created_by_id=auth_setup["operator2_user"]["id"])
+        upload = await async_client.post(
+            f"/api/v1/library/files/{file.id}/photos",
+            headers={"Authorization": f"Bearer {auth_setup['operator2_token']}"},
+            files=self._photo_upload(),
+        )
+        filename = upload.json()["filename"]
+
+        owner = await async_client.get(
+            f"/api/v1/library/files/{file.id}/photos/{filename}",
+            headers={"Authorization": f"Bearer {auth_setup['operator2_token']}"},
+        )
+        assert owner.status_code == 200
+
+        stranger = await async_client.get(
+            f"/api/v1/library/files/{file.id}/photos/{filename}",
+            headers={"Authorization": f"Bearer {auth_setup['operator_token']}"},
+        )
+        assert stranger.status_code == 404
+
+    # ========================================================================
+    # Folder deletion (#1781): a folder without an owner may be deleted with
+    # only library:delete_own when it is empty, non-external and non-linked.
+    # Everything else still requires library:delete_all. Owned folders (#3201)
+    # are covered in test_library_folder_ownership_3201.py.
+    # ========================================================================
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_operator_can_delete_empty_folder(
+        self, async_client: AsyncClient, auth_setup, library_folder_factory
+    ):
+        """A user with library:delete_own can delete an empty folder (#1781)."""
+        folder = await library_folder_factory(name="EmptyFolder")
+
+        response = await async_client.delete(
+            f"/api/v1/library/folders/{folder.id}",
+            headers={"Authorization": f"Bearer {auth_setup['operator_token']}"},
+        )
+
+        assert response.status_code == 200
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_viewer_cannot_delete_empty_folder(
+        self, async_client: AsyncClient, auth_setup, library_folder_factory
+    ):
+        """No delete permission at all still means no folder deletion."""
+        folder = await library_folder_factory(name="EmptyFolder")
+
+        response = await async_client.delete(
+            f"/api/v1/library/folders/{folder.id}",
+            headers={"Authorization": f"Bearer {auth_setup['viewer_token']}"},
+        )
+
+        assert response.status_code == 403
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_operator_cannot_delete_folder_with_files(
+        self, async_client: AsyncClient, auth_setup, library_folder_factory, library_file_factory
+    ):
+        """Non-empty folders still require library:delete_all."""
+        folder = await library_folder_factory(name="FullFolder")
+        await library_file_factory(folder_id=folder.id, created_by_id=auth_setup["operator_user"]["id"])
+
         response = await async_client.delete(
             f"/api/v1/library/folders/{folder.id}",
             headers={"Authorization": f"Bearer {auth_setup['operator_token']}"},
         )
 
         assert response.status_code == 403
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_operator_cannot_delete_folder_with_trashed_file(
+        self, async_client: AsyncClient, auth_setup, library_folder_factory, library_file_factory
+    ):
+        """Trashed files count as content: cascade would hard-drop them and
+        silently break trash restore for their owner."""
+        from datetime import datetime, timezone
+
+        folder = await library_folder_factory(name="TrashedContentFolder")
+        await library_file_factory(
+            folder_id=folder.id,
+            created_by_id=auth_setup["operator2_user"]["id"],
+            deleted_at=datetime.now(timezone.utc),
+        )
+
+        response = await async_client.delete(
+            f"/api/v1/library/folders/{folder.id}",
+            headers={"Authorization": f"Bearer {auth_setup['operator_token']}"},
+        )
+
+        assert response.status_code == 403
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_operator_cannot_delete_folder_with_subfolder(
+        self, async_client: AsyncClient, auth_setup, library_folder_factory
+    ):
+        """A folder containing subfolders (even empty ones) is not empty."""
+        parent = await library_folder_factory(name="ParentFolder")
+        await library_folder_factory(name="ChildFolder", parent_id=parent.id)
+
+        response = await async_client.delete(
+            f"/api/v1/library/folders/{parent.id}",
+            headers={"Authorization": f"Bearer {auth_setup['operator_token']}"},
+        )
+
+        assert response.status_code == 403
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_operator_cannot_delete_external_folder(
+        self, async_client: AsyncClient, auth_setup, library_folder_factory
+    ):
+        """Deleting an external folder unmounts an operator-configured mount
+        for everyone — stays behind library:delete_all even when empty."""
+        folder = await library_folder_factory(name="ExternalFolder", is_external=True, external_path="/mnt/models")
+
+        response = await async_client.delete(
+            f"/api/v1/library/folders/{folder.id}",
+            headers={"Authorization": f"Bearer {auth_setup['operator_token']}"},
+        )
+
+        assert response.status_code == 403
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_operator_cannot_delete_linked_folder(
+        self, async_client: AsyncClient, auth_setup, library_folder_factory, db_session
+    ):
+        """Project/archive links are created via update_all, so unlinking by
+        deletion stays admin-only even for empty folders."""
+        from backend.app.models.project import Project
+
+        project = Project(name="LinkTestProject")
+        db_session.add(project)
+        await db_session.commit()
+        await db_session.refresh(project)
+
+        folder = await library_folder_factory(name="LinkedFolder", project_id=project.id)
+
+        response = await async_client.delete(
+            f"/api/v1/library/folders/{folder.id}",
+            headers={"Authorization": f"Bearer {auth_setup['operator_token']}"},
+        )
+
+        assert response.status_code == 403
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_admin_can_delete_folder_with_contents(
+        self, async_client: AsyncClient, auth_setup, library_folder_factory, library_file_factory
+    ):
+        """library:delete_all keeps full cascade deletion."""
+        folder = await library_folder_factory(name="AdminFolder")
+        await library_file_factory(folder_id=folder.id, created_by_id=auth_setup["operator_user"]["id"])
+
+        response = await async_client.delete(
+            f"/api/v1/library/folders/{folder.id}",
+            headers={"Authorization": f"Bearer {auth_setup['admin_token']}"},
+        )
+
+        assert response.status_code == 200
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_bulk_delete_operator_folders_empty_only(
+        self, async_client: AsyncClient, auth_setup, library_folder_factory, library_file_factory
+    ):
+        """Bulk delete applies the same rule: empty folders go, non-empty are skipped."""
+        empty_folder = await library_folder_factory(name="BulkEmpty")
+        full_folder = await library_folder_factory(name="BulkFull")
+        await library_file_factory(folder_id=full_folder.id, created_by_id=auth_setup["operator2_user"]["id"])
+
+        response = await async_client.post(
+            "/api/v1/library/bulk-delete",
+            headers={"Authorization": f"Bearer {auth_setup['operator_token']}"},
+            json={"file_ids": [], "folder_ids": [empty_folder.id, full_folder.id]},
+        )
+
+        assert response.status_code == 200
+        result = response.json()
+        assert result["deleted_folders"] == 1
+        assert result["deleted_files"] == 0
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -744,3 +1374,771 @@ class TestUserItemsCountAndDeletion(TestOwnershipPermissionsSetup):
             headers={"Authorization": f"Bearer {auth_setup['admin_token']}"},
         )
         assert archive_response.status_code == 404
+
+
+class TestReadIDORClosure(TestOwnershipPermissionsSetup):
+    """Regression tests pinning upstream security advisory #2 — IDOR on
+    archives / library / queue read paths.
+
+    Before the fix, ARCHIVES_READ / LIBRARY_READ / QUEUE_READ were flat
+    "see everything" permissions even though the write side was split into
+    OWN/ALL. An operator with only ARCHIVES_READ could read, download, and
+    queue any user's archive via direct id reference. These tests pin the
+    printbuddy_archive_idor.py and printbuddy_archive_viewer_idor.py PoC paths
+    so the IDOR can't regress silently.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_operator_get_others_archive_returns_404_not_200(
+        self, async_client: AsyncClient, auth_setup, archive_factory, printer_factory, db_session
+    ):
+        """PoC #2 read path. operator1 GET /archives/{id} where id is admin's
+        archive must NOT leak the row. 404 (not 403) so the operator can't
+        enumerate which ids exist — same shape as a nonexistent id."""
+        printer = await printer_factory()
+        archive = await archive_factory(
+            printer.id,
+            print_name="Admin Archive",
+            created_by_id=auth_setup["admin_user"]["id"],
+        )
+        response = await async_client.get(
+            f"/api/v1/archives/{archive.id}",
+            headers={"Authorization": f"Bearer {auth_setup['operator_token']}"},
+        )
+        assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_operator_download_others_archive_returns_404(
+        self, async_client: AsyncClient, auth_setup, archive_factory, printer_factory, db_session
+    ):
+        """Viewer-IDOR PoC path: GET /archives/{id}/download on admin's archive.
+        Before the fix this streamed the 3MF body straight to a viewer-tier
+        token."""
+        printer = await printer_factory()
+        archive = await archive_factory(
+            printer.id,
+            print_name="Admin Archive 2",
+            created_by_id=auth_setup["admin_user"]["id"],
+        )
+        response = await async_client.get(
+            f"/api/v1/archives/{archive.id}/download",
+            headers={"Authorization": f"Bearer {auth_setup['viewer_token']}"},
+        )
+        assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_operator_list_archives_excludes_others(
+        self, async_client: AsyncClient, auth_setup, archive_factory, printer_factory, db_session
+    ):
+        """GET /archives/ must filter to own archives only for OWN-level callers."""
+        printer = await printer_factory()
+        own = await archive_factory(
+            printer.id, print_name="Operator's Own", created_by_id=auth_setup["operator_user"]["id"]
+        )
+        others = await archive_factory(printer.id, print_name="Admin's", created_by_id=auth_setup["admin_user"]["id"])
+        response = await async_client.get(
+            "/api/v1/archives/",
+            headers={"Authorization": f"Bearer {auth_setup['operator_token']}"},
+        )
+        assert response.status_code == 200
+        returned_ids = {a["id"] for a in response.json()}
+        assert own.id in returned_ids
+        assert others.id not in returned_ids
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_admin_list_archives_includes_all(
+        self, async_client: AsyncClient, auth_setup, archive_factory, printer_factory, db_session
+    ):
+        """ARCHIVES_READ_ALL → admin sees own + every user's archives."""
+        printer = await printer_factory()
+        admin_archive = await archive_factory(
+            printer.id, print_name="Admin's", created_by_id=auth_setup["admin_user"]["id"]
+        )
+        operator_archive = await archive_factory(
+            printer.id, print_name="Operator's", created_by_id=auth_setup["operator_user"]["id"]
+        )
+        response = await async_client.get(
+            "/api/v1/archives/",
+            headers={"Authorization": f"Bearer {auth_setup['admin_token']}"},
+        )
+        assert response.status_code == 200
+        returned_ids = {a["id"] for a in response.json()}
+        assert admin_archive.id in returned_ids
+        assert operator_archive.id in returned_ids
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_operator_cannot_queue_others_archive(
+        self, async_client: AsyncClient, auth_setup, archive_factory, printer_factory, db_session
+    ):
+        """PoC #2 queue path. POST /queue/ with admin's archive_id as
+        operator1 must return 404, not create a queue item. Before the fix
+        this returned 201 and queued the admin archive (Landon's CONFIRMED
+        line in the PoC)."""
+        printer = await printer_factory()
+        archive = await archive_factory(
+            printer.id,
+            print_name="Admin Archive (queue-target)",
+            created_by_id=auth_setup["admin_user"]["id"],
+        )
+        response = await async_client.post(
+            "/api/v1/queue/",
+            headers={"Authorization": f"Bearer {auth_setup['operator_token']}"},
+            json={"archive_id": archive.id, "printer_id": printer.id, "quantity": 1},
+        )
+        assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_admin_can_queue_others_archive(
+        self, async_client: AsyncClient, auth_setup, archive_factory, printer_factory, db_session
+    ):
+        """Belt-and-suspenders for the ALL path: admin (ARCHIVES_READ_ALL) can
+        queue a user's archive on their behalf — common workshop pattern."""
+        printer = await printer_factory()
+        archive = await archive_factory(
+            printer.id,
+            print_name="Operator's archive (queue by admin)",
+            created_by_id=auth_setup["operator_user"]["id"],
+        )
+        response = await async_client.post(
+            "/api/v1/queue/",
+            headers={"Authorization": f"Bearer {auth_setup['admin_token']}"},
+            json={"archive_id": archive.id, "printer_id": printer.id, "quantity": 1},
+        )
+        assert response.status_code == 200
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_operator_get_others_library_file_returns_404(
+        self, async_client: AsyncClient, auth_setup, db_session
+    ):
+        """Library IDOR closure (same shape as archives — closed in the same PR
+        per upstream security advisory #2)."""
+        from backend.app.models.library import LibraryFile
+
+        admin_file = LibraryFile(
+            filename="admin_secret.3mf",
+            file_path="library/admin_secret.3mf",
+            file_type="3mf",
+            file_size=2048,
+            created_by_id=auth_setup["admin_user"]["id"],
+        )
+        db_session.add(admin_file)
+        await db_session.commit()
+        await db_session.refresh(admin_file)
+
+        response = await async_client.get(
+            f"/api/v1/library/files/{admin_file.id}",
+            headers={"Authorization": f"Bearer {auth_setup['operator_token']}"},
+        )
+        assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_operator_list_library_files_excludes_others(self, async_client: AsyncClient, auth_setup, db_session):
+        from backend.app.models.library import LibraryFile
+
+        own = LibraryFile(
+            filename="my_file.3mf",
+            file_path="library/my_file.3mf",
+            file_type="3mf",
+            file_size=1024,
+            created_by_id=auth_setup["operator_user"]["id"],
+        )
+        others = LibraryFile(
+            filename="admin_file.3mf",
+            file_path="library/admin_file.3mf",
+            file_type="3mf",
+            file_size=1024,
+            created_by_id=auth_setup["admin_user"]["id"],
+        )
+        db_session.add_all([own, others])
+        await db_session.commit()
+        await db_session.refresh(own)
+        await db_session.refresh(others)
+
+        response = await async_client.get(
+            "/api/v1/library/files",
+            headers={"Authorization": f"Bearer {auth_setup['operator_token']}"},
+        )
+        assert response.status_code == 200
+        returned_ids = {f["id"] for f in response.json()}
+        assert own.id in returned_ids
+        assert others.id not in returned_ids
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_operator_queue_list_excludes_others_items(
+        self, async_client: AsyncClient, auth_setup, archive_factory, printer_factory, db_session
+    ):
+        """GET /queue/ must filter to own queue items only for OWN callers —
+        same shape as the archive list."""
+        from backend.app.models.print_queue import PrintQueueItem
+
+        printer = await printer_factory()
+        archive = await archive_factory(printer.id, print_name="A", created_by_id=auth_setup["operator_user"]["id"])
+        own_item = PrintQueueItem(
+            archive_id=archive.id,
+            printer_id=printer.id,
+            status="pending",
+            position=1,
+            created_by_id=auth_setup["operator_user"]["id"],
+        )
+        admin_item = PrintQueueItem(
+            archive_id=archive.id,
+            printer_id=printer.id,
+            status="pending",
+            position=2,
+            created_by_id=auth_setup["admin_user"]["id"],
+        )
+        db_session.add_all([own_item, admin_item])
+        await db_session.commit()
+        await db_session.refresh(own_item)
+        await db_session.refresh(admin_item)
+
+        response = await async_client.get(
+            "/api/v1/queue/",
+            headers={"Authorization": f"Bearer {auth_setup['operator_token']}"},
+        )
+        assert response.status_code == 200
+        returned_ids = {q["id"] for q in response.json()}
+        assert own_item.id in returned_ids
+        assert admin_item.id not in returned_ids
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_operator_get_others_queue_item_returns_404(
+        self, async_client: AsyncClient, auth_setup, archive_factory, printer_factory, db_session
+    ):
+        """Direct-id queue item access — same enumeration risk as archive get."""
+        from backend.app.models.print_queue import PrintQueueItem
+
+        printer = await printer_factory()
+        archive = await archive_factory(printer.id, print_name="A", created_by_id=auth_setup["admin_user"]["id"])
+        admin_item = PrintQueueItem(
+            archive_id=archive.id,
+            printer_id=printer.id,
+            status="pending",
+            position=1,
+            created_by_id=auth_setup["admin_user"]["id"],
+        )
+        db_session.add(admin_item)
+        await db_session.commit()
+        await db_session.refresh(admin_item)
+
+        response = await async_client.get(
+            f"/api/v1/queue/{admin_item.id}",
+            headers={"Authorization": f"Bearer {auth_setup['operator_token']}"},
+        )
+        assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_auth_disabled_preserves_single_tenant_read_all(
+        self, async_client: AsyncClient, archive_factory, printer_factory
+    ):
+        """With auth disabled, ARCHIVES_READ resolves to read-all (can_modify_all=True
+        in require_ownership_permission's auth-disabled branch). Existing
+        single-user installs see no behavior change."""
+        printer = await printer_factory()
+        archive = await archive_factory(printer.id, print_name="Anonymous", created_by_id=None)
+        # No Authorization header — auth-disabled mode.
+        response = await async_client.get(f"/api/v1/archives/{archive.id}")
+        # Either 200 (auth disabled in this test session) or 401 (auth enabled
+        # from a prior test) — both are acceptable; the IDOR closure does not
+        # change auth-enable/disable behavior. Pin not-404 to avoid masking a
+        # regression where auth-disabled callers would lose access.
+        assert response.status_code in (200, 401)
+
+
+# Every archive WRITE sub-resource route: (id, http method, path suffix, request kwargs).
+# The ownership gate (_ensure_archive_visible) fires immediately after the fetch,
+# before any resource-specific logic, so a not-owned / ownerless row 404s regardless
+# of whether the timelapse / photo / source / f3d actually exists. Upload routes still
+# need a body so FastAPI reaches the handler instead of 422-ing on the missing File(...).
+_WRITE_SUBRESOURCE_ROUTES = [
+    ("favorite", "post", "/favorite", {}),
+    ("timelapse_delete", "delete", "/timelapse", {}),
+    ("photo_upload", "post", "/photos", {"files": {"file": ("x.jpg", b"\x89PNG\r\n\x1a\n", "image/jpeg")}}),
+    ("photo_delete", "delete", "/photos/nonexistent.jpg", {}),
+    ("project_page", "patch", "/project-page", {"json": {"title": "hijacked"}}),
+    ("source_upload", "post", "/source", {"files": {"file": ("x.3mf", b"PK\x03\x04", "application/octet-stream")}}),
+    ("source_delete", "delete", "/source", {}),
+    ("f3d_upload", "post", "/f3d", {"files": {"file": ("x.f3d", b"f3d-bytes", "application/octet-stream")}}),
+    ("f3d_delete", "delete", "/f3d", {}),
+]
+
+
+class TestWriteSubResourceIDORClosure(TestOwnershipPermissionsSetup):
+    """Regression tests for the archive write SUB-RESOURCE IDOR.
+
+    The read sub-resource routes were closed under upstream security advisory #2
+    via ``_ensure_archive_visible``, but the *write* sub-resource routes
+    (favorite, timelapse, photos, project-page, source, f3d) were left gating
+    on the bare ``RequirePermissionIfAuthEnabled(ARCHIVES_*_OWN)`` scope and
+    fetched the row by id only — never comparing ``created_by_id`` to the
+    caller. An operator holding only ``ARCHIVES_*_OWN`` (or an API key with
+    ``can_manage_archives``) could delete/overwrite files on ANY user's
+    archive, most severely rewriting the project-page metadata inside another
+    user's ``.3mf`` on disk. Each route is now gated by
+    ``require_ownership_permission`` + ``_ensure_archive_visible`` → 404 (not
+    403, to stay non-enumerable and match the read side) on a not-owned or
+    ownerless row.
+    """
+
+    @pytest.mark.parametrize(
+        "name,method,suffix,kwargs",
+        _WRITE_SUBRESOURCE_ROUTES,
+        ids=[r[0] for r in _WRITE_SUBRESOURCE_ROUTES],
+    )
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_operator_cannot_write_others_archive_subresource(
+        self,
+        async_client: AsyncClient,
+        auth_setup,
+        archive_factory,
+        printer_factory,
+        db_session,
+        name,
+        method,
+        suffix,
+        kwargs,
+    ):
+        """SECURITY.md rule 4: right credentials, wrong ownership → 404.
+
+        operator1 (ARCHIVES_*_OWN) targeting a route on admin's archive.
+        """
+        printer = await printer_factory()
+        archive = await archive_factory(
+            printer.id,
+            print_name="Admin's Archive",
+            created_by_id=auth_setup["admin_user"]["id"],
+        )
+        response = await getattr(async_client, method)(
+            f"/api/v1/archives/{archive.id}{suffix}",
+            headers={"Authorization": f"Bearer {auth_setup['operator_token']}"},
+            **kwargs,
+        )
+        assert response.status_code == 404, f"{name}: expected 404, got {response.status_code}"
+
+    @pytest.mark.parametrize(
+        "name,method,suffix,kwargs",
+        _WRITE_SUBRESOURCE_ROUTES,
+        ids=[r[0] for r in _WRITE_SUBRESOURCE_ROUTES],
+    )
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_operator_cannot_write_ownerless_archive_subresource(
+        self,
+        async_client: AsyncClient,
+        auth_setup,
+        archive_factory,
+        printer_factory,
+        db_session,
+        name,
+        method,
+        suffix,
+        kwargs,
+    ):
+        """Ownerless rows (created_by_id = null, legacy data) require *_ALL — an
+        operator with only *_OWN has no 'I own this' claim, so fail closed → 404."""
+        printer = await printer_factory()
+        archive = await archive_factory(
+            printer.id,
+            print_name="Ownerless Archive",
+            created_by_id=None,
+        )
+        response = await getattr(async_client, method)(
+            f"/api/v1/archives/{archive.id}{suffix}",
+            headers={"Authorization": f"Bearer {auth_setup['operator_token']}"},
+            **kwargs,
+        )
+        assert response.status_code == 404, f"{name}: expected 404, got {response.status_code}"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_operator_can_favorite_own_archive(
+        self, async_client: AsyncClient, auth_setup, archive_factory, printer_factory, db_session
+    ):
+        """Positive control: the owner still gets through the new gate. Favorite
+        is the one write sub-resource that needs no pre-existing file, so it
+        cleanly proves the *_OWN happy path returns 200 (not a false 404)."""
+        printer = await printer_factory()
+        archive = await archive_factory(
+            printer.id,
+            print_name="Operator's Own",
+            created_by_id=auth_setup["operator_user"]["id"],
+        )
+        response = await async_client.post(
+            f"/api/v1/archives/{archive.id}/favorite",
+            headers={"Authorization": f"Bearer {auth_setup['operator_token']}"},
+        )
+        assert response.status_code == 200
+        assert response.json()["is_favorite"] is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_admin_can_favorite_any_archive(
+        self, async_client: AsyncClient, auth_setup, archive_factory, printer_factory, db_session
+    ):
+        """Positive control for the *_ALL path: admin can act on a user's archive."""
+        printer = await printer_factory()
+        archive = await archive_factory(
+            printer.id,
+            print_name="Operator's Own",
+            created_by_id=auth_setup["operator_user"]["id"],
+        )
+        response = await async_client.post(
+            f"/api/v1/archives/{archive.id}/favorite",
+            headers={"Authorization": f"Bearer {auth_setup['admin_token']}"},
+        )
+        assert response.status_code == 200
+
+
+class TestSliceOwnershipPermissions(TestOwnershipPermissionsSetup):
+    """IDOR regression: slicing and slice-job polling must honour per-row ownership.
+
+    Before the fix, ``POST /library/files/{id}/slice`` and
+    ``POST /archives/{id}/slice`` gated only on ``LIBRARY_UPLOAD``, so a
+    READ_OWN operator could slice another user's model by raw id even though a
+    direct GET on that id returned 404 — the sliced output was then attributed
+    to and downloadable by the requester. ``GET /slice-jobs/{id}`` had no owner
+    scoping at all. ``POST /slicer-pipelines/{id}/run`` (and check-eligibility)
+    resolved the source by raw id with the same gap.
+
+    The slice route enforces the gate before touching the source bytes, so the
+    owner/READ_ALL "control" cases reach the later on-disk check (a distinct 404
+    detail) rather than a real slice — enough to prove the gate lets them past.
+    """
+
+    # Any preset triplet: the ownership 404 fires before preset resolution.
+    _SLICE_BODY = {"printer_preset_id": 1, "process_preset_id": 2, "filament_preset_id": 3}
+
+    @pytest.fixture
+    async def library_file_factory(self, db_session):
+        _counter = [0]
+
+        async def _create_file(**kwargs):
+            from backend.app.models.library import LibraryFile
+
+            _counter[0] += 1
+            defaults = {
+                "filename": f"slice_src_{_counter[0]}.3mf",
+                "file_path": f"library/slice_src_{_counter[0]}.3mf",
+                "file_type": "3mf",
+                "file_size": 1024,
+            }
+            defaults.update(kwargs)
+            row = LibraryFile(**defaults)
+            db_session.add(row)
+            await db_session.commit()
+            await db_session.refresh(row)
+            return row
+
+        return _create_file
+
+    # --- library file slice ------------------------------------------------
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_operator_cannot_slice_others_library_file(self, async_client, auth_setup, library_file_factory):
+        file = await library_file_factory(created_by_id=auth_setup["operator2_user"]["id"])
+        resp = await async_client.post(
+            f"/api/v1/library/files/{file.id}/slice",
+            headers={"Authorization": f"Bearer {auth_setup['operator_token']}"},
+            json=self._SLICE_BODY,
+        )
+        assert resp.status_code == 404
+        # 404 (not 403) so a probing operator can't tell the id exists.
+        assert resp.json()["detail"] == "File not found"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_operator_can_slice_own_library_file(self, async_client, auth_setup, library_file_factory):
+        file = await library_file_factory(created_by_id=auth_setup["operator_user"]["id"])
+        resp = await async_client.post(
+            f"/api/v1/library/files/{file.id}/slice",
+            headers={"Authorization": f"Bearer {auth_setup['operator_token']}"},
+            json=self._SLICE_BODY,
+        )
+        # Past the ownership gate — only the on-disk source is missing in tests.
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "Source file missing on disk"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_admin_can_slice_any_library_file(self, async_client, auth_setup, library_file_factory):
+        file = await library_file_factory(created_by_id=auth_setup["operator2_user"]["id"])
+        resp = await async_client.post(
+            f"/api/v1/library/files/{file.id}/slice",
+            headers={"Authorization": f"Bearer {auth_setup['admin_token']}"},
+            json=self._SLICE_BODY,
+        )
+        # READ_ALL passes the gate even on another user's file.
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "Source file missing on disk"
+
+    # --- combine to 3MF ----------------------------------------------------
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_operator_cannot_combine_others_library_file(self, async_client, auth_setup, library_file_factory):
+        own = await library_file_factory(filename="own.stl", created_by_id=auth_setup["operator_user"]["id"])
+        other = await library_file_factory(filename="other.stl", created_by_id=auth_setup["operator2_user"]["id"])
+        resp = await async_client.post(
+            "/api/v1/library/files/combine",
+            headers={"Authorization": f"Bearer {auth_setup['operator_token']}"},
+            json={"items": [{"file_id": own.id}, {"file_id": other.id}], "filename": "mix"},
+        )
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "File not found"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_admin_can_combine_any_library_file(self, async_client, auth_setup, library_file_factory):
+        other = await library_file_factory(filename="other.stl", created_by_id=auth_setup["operator2_user"]["id"])
+        resp = await async_client.post(
+            "/api/v1/library/files/combine",
+            headers={"Authorization": f"Bearer {auth_setup['admin_token']}"},
+            json={"items": [{"file_id": other.id}], "filename": "mix"},
+        )
+        # Past the ownership gate — only the on-disk source is missing in tests.
+        assert resp.status_code == 404
+        assert resp.json()["detail"].startswith("Source file missing on disk")
+
+    # --- archive slice -----------------------------------------------------
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_operator_cannot_slice_others_archive(
+        self, async_client, auth_setup, archive_factory, printer_factory
+    ):
+        printer = await printer_factory()
+        archive = await archive_factory(printer.id, created_by_id=auth_setup["operator2_user"]["id"])
+        resp = await async_client.post(
+            f"/api/v1/archives/{archive.id}/slice",
+            headers={"Authorization": f"Bearer {auth_setup['operator_token']}"},
+            json=self._SLICE_BODY,
+        )
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "Archive not found"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_operator_can_slice_own_archive(self, async_client, auth_setup, archive_factory, printer_factory):
+        printer = await printer_factory()
+        archive = await archive_factory(printer.id, created_by_id=auth_setup["operator_user"]["id"])
+        resp = await async_client.post(
+            f"/api/v1/archives/{archive.id}/slice",
+            headers={"Authorization": f"Bearer {auth_setup['operator_token']}"},
+            json=self._SLICE_BODY,
+        )
+        # Past the gate — the archive's source file isn't on disk in tests.
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "Archive source file missing on disk"
+
+    # --- slice-job polling -------------------------------------------------
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_slice_job_polling_is_owner_scoped(self, async_client, auth_setup):
+        from backend.app.services.slice_dispatch import slice_dispatch
+
+        async def _noop(_job_id):
+            return {}
+
+        job = await slice_dispatch.enqueue(
+            kind="library_file",
+            source_id=1,
+            source_name="secret_model.3mf",
+            owner_id=auth_setup["operator2_user"]["id"],
+            run=_noop,
+        )
+
+        # Non-owner without READ_ALL cannot see the job (404, not 403).
+        other = await async_client.get(
+            f"/api/v1/slice-jobs/{job.id}",
+            headers={"Authorization": f"Bearer {auth_setup['operator_token']}"},
+        )
+        assert other.status_code == 404
+
+        # The owner and a READ_ALL admin can.
+        owner = await async_client.get(
+            f"/api/v1/slice-jobs/{job.id}",
+            headers={"Authorization": f"Bearer {auth_setup['operator2_token']}"},
+        )
+        assert owner.status_code == 200
+        admin = await async_client.get(
+            f"/api/v1/slice-jobs/{job.id}",
+            headers={"Authorization": f"Bearer {auth_setup['admin_token']}"},
+        )
+        assert admin.status_code == 200
+
+    # --- pipeline source resolution ----------------------------------------
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_pipeline_run_cannot_reference_others_library_file(
+        self, async_client, auth_setup, library_file_factory, db_session
+    ):
+        """A pipeline runner with READ_OWN cannot resolve another user's source.
+
+        The built-in Operators group has no pipeline permissions, so this uses a
+        custom group carrying PIPELINES_RUN + READ_OWN — the realistic shape of
+        the exposure. check-eligibility resolves the source before any
+        eligibility work, so the ownership gate is what returns 404.
+        """
+        from backend.app.models.slicer_pipeline import SlicerPipeline
+
+        admin_headers = {"Authorization": f"Bearer {auth_setup['admin_token']}"}
+        group_resp = await async_client.post(
+            "/api/v1/groups/",
+            headers=admin_headers,
+            json={
+                "name": "pipeline_runners",
+                "permissions": [
+                    "pipelines:read",
+                    "pipelines:run",
+                    "library:read_own",
+                    "archives:read_own",
+                ],
+            },
+        )
+        assert group_resp.status_code == 201, group_resp.text
+        group_id = group_resp.json()["id"]
+
+        await async_client.post(
+            "/api/v1/users/",
+            headers=admin_headers,
+            json={"username": "runner1", "password": "Runnerpass1!", "group_ids": [group_id]},
+        )
+        runner_login = await async_client.post(
+            "/api/v1/auth/login",
+            json={"username": "runner1", "password": "Runnerpass1!"},
+        )
+        runner_token = runner_login.json()["access_token"]
+
+        pipeline = SlicerPipeline(
+            name="Cross-user pipeline",
+            printer_preset_source="local",
+            printer_preset_id="1",
+            process_preset_source="local",
+            process_preset_id="2",
+            filament_presets_json="[]",
+            target_kind="printer_class",
+            target_model_class="Bambu Lab X1 Carbon",
+        )
+        db_session.add(pipeline)
+        await db_session.commit()
+        await db_session.refresh(pipeline)
+
+        # Source owned by operator2, not the runner.
+        file = await library_file_factory(created_by_id=auth_setup["operator2_user"]["id"])
+        resp = await async_client.post(
+            f"/api/v1/slicer-pipelines/{pipeline.id}/check-eligibility",
+            headers={"Authorization": f"Bearer {runner_token}"},
+            json={"source_library_file_id": file.id},
+        )
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "File not found"
+
+
+class TestLibraryAddToQueueOwnership(TestOwnershipPermissionsSetup):
+    """The bulk add-to-queue path must scope reads the way its siblings do.
+
+    ``POST /library/files/add-to-queue`` resolved its files by raw id and gated
+    only on QUEUE_CREATE, so a READ_OWN operator could queue -- and therefore
+    print, and then hold the archive of -- a file a direct GET on the same id
+    answers 404 for. Same shape as the slice path above.
+
+    An invisible row is dropped before the loop, so it reports as the plain
+    "File not found" an unknown id gets: the response must not say which ids
+    exist. With nothing added the route now answers 400, so the assertions read
+    the reasons out of ``detail``.
+    """
+
+    @pytest.fixture
+    async def library_file_factory(self, db_session):
+        _counter = [0]
+
+        async def _create_file(**kwargs):
+            from backend.app.models.library import LibraryFile
+
+            _counter[0] += 1
+            defaults = {
+                "filename": f"queue_src_{_counter[0]}.gcode.3mf",
+                "file_path": f"library/queue_src_{_counter[0]}.gcode.3mf",
+                "file_type": "3mf",
+                "file_size": 1024,
+            }
+            defaults.update(kwargs)
+            row = LibraryFile(**defaults)
+            db_session.add(row)
+            await db_session.commit()
+            await db_session.refresh(row)
+            return row
+
+        return _create_file
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_operator_cannot_queue_others_library_file(
+        self, async_client: AsyncClient, auth_setup, library_file_factory
+    ):
+        file = await library_file_factory(created_by_id=auth_setup["operator2_user"]["id"])
+        resp = await async_client.post(
+            "/api/v1/library/files/add-to-queue",
+            headers={"Authorization": f"Bearer {auth_setup['operator_token']}"},
+            json={"file_ids": [file.id]},
+        )
+        assert resp.status_code == 400
+        errors = resp.json()["detail"]["errors"]
+        assert [e["error"] for e in errors] == ["File not found"]
+        # Indistinguishable from an id that was never there.
+        assert errors[0]["filename"] == "(not found)"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_operator_can_queue_own_library_file(
+        self, async_client: AsyncClient, auth_setup, library_file_factory
+    ):
+        """Control: the gate lets the owner through to the on-disk check."""
+        file = await library_file_factory(created_by_id=auth_setup["operator_user"]["id"])
+        resp = await async_client.post(
+            "/api/v1/library/files/add-to-queue",
+            headers={"Authorization": f"Bearer {auth_setup['operator_token']}"},
+            json={"file_ids": [file.id]},
+        )
+        assert resp.status_code == 400
+        errors = resp.json()["detail"]["errors"]
+        assert [e["error"] for e in errors] == ["File not found on disk"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_ownerless_file_needs_read_all(self, async_client: AsyncClient, auth_setup, library_file_factory):
+        """A row with no owner is not everyone's row -- fail closed.
+
+        Matches _ensure_library_file_visible, which the read routes use.
+        """
+        file = await library_file_factory(created_by_id=None)
+        resp = await async_client.post(
+            "/api/v1/library/files/add-to-queue",
+            headers={"Authorization": f"Bearer {auth_setup['operator_token']}"},
+            json={"file_ids": [file.id]},
+        )
+        assert resp.status_code == 400
+        assert resp.json()["detail"]["errors"][0]["error"] == "File not found"
+
+        admin = await async_client.post(
+            "/api/v1/library/files/add-to-queue",
+            headers={"Authorization": f"Bearer {auth_setup['admin_token']}"},
+            json={"file_ids": [file.id]},
+        )
+        # READ_ALL sees it and reaches the on-disk check.
+        assert admin.json()["detail"]["errors"][0]["error"] == "File not found on disk"

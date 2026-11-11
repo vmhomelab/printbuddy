@@ -3,6 +3,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from backend.app.schemas.not_null import IgnoresNullForRequiredColumns
+
 
 def _validate_password_complexity(v: str) -> str:
     """Enforce minimum password complexity (M-C).
@@ -61,7 +63,8 @@ class UserCreate(BaseModel):
         return v
 
 
-class UserUpdate(BaseModel):
+class UserUpdate(IgnoresNullForRequiredColumns):
+    __orm_table__ = "users"
     username: str | None = Field(default=None, max_length=150)
     password: str | None = Field(default=None, max_length=256)  # M-NEW-4: cap before pbkdf2
     email: str | None = Field(default=None, max_length=254)  # L-NEW-5: RFC 5321 max
@@ -93,6 +96,22 @@ class UserResponse(BaseModel):
         from_attributes = True
 
 
+class UserSlim(BaseModel):
+    """Just enough to resolve a user id to a display name (#1894).
+
+    Deliberately narrower than ``UserResponse``: no email, role, auth source,
+    group membership or permission set. Adding a field here widens what every
+    ``can_read_status`` API key can read about every account, so treat this
+    shape as the contract rather than a starting point.
+    """
+
+    id: int
+    username: str
+
+    class Config:
+        from_attributes = True
+
+
 class LDAPSearchResultResponse(BaseModel):
     """One match from GET /auth/ldap/search — surfaced in the admin UI."""
 
@@ -101,6 +120,21 @@ class LDAPSearchResultResponse(BaseModel):
     display_name: str | None = None
     dn: str
     already_provisioned: bool = False  # True if this username already exists as a Printbuddy user
+
+
+class LDAPTestRequest(BaseModel):
+    """The LDAP settings in the form, tested before they are saved.
+
+    A field left out uses the saved value; an empty bind password keeps the
+    saved one.
+    """
+
+    ldap_server_url: str | None = None
+    ldap_bind_dn: str | None = None
+    ldap_bind_password: str | None = None
+    ldap_search_base: str | None = None
+    ldap_user_filter: str | None = None
+    ldap_security: str | None = None
 
 
 class LDAPProvisionRequest(BaseModel):
@@ -179,6 +213,9 @@ class SMTPSettings(BaseModel):
 
 class TestSMTPRequest(BaseModel):
     test_recipient: str
+    # The settings in the form, tested before they are saved; left out, the
+    # saved ones. An empty password keeps the saved one.
+    smtp: SMTPSettings | None = None
 
 
 class TestSMTPResponse(BaseModel):
@@ -244,12 +281,6 @@ class TOTPDisableRequest(BaseModel):
 class BackupCodesResponse(BaseModel):
     backup_codes: list[str]
     message: str
-
-
-class EmailOTPEnableRequest(BaseModel):
-    """No body required — email is taken from the authenticated user's profile."""
-
-    pass
 
 
 class TwoFAVerifyRequest(BaseModel):
@@ -327,6 +358,68 @@ def _validate_email_claim_name(v: str) -> str:
     return v
 
 
+def _validate_group_claim_name(v: str) -> str:
+    """#3107 — like _validate_email_claim_name, but also allows one slash.
+
+    Auth0 (and Auth0-compatible providers) only expose custom claims under a
+    non-reserved namespace, e.g. ``https://example.com/roles`` or ``app/roles``,
+    so the email-claim charset would refuse every valid Auth0 group claim.
+    The slash is structurally safe here: the value never reaches a URL, a
+    path or SQL — it is only a JWT claim lookup key inside ``claims.get`` —
+    so the wider charset does not widen any injection surface. The 64-char
+    cap and the "starts with a letter" rule are kept. The full-URL form of
+    an Auth0 namespace exceeds 64 chars, but that is Auth0's documented
+    short-namespace territory; the limit matches email_claim and keeps the
+    column bound meaningful.
+    """
+    if not re.fullmatch(r"[a-zA-Z][a-zA-Z0-9_\-/]{0,63}", v):
+        raise ValueError("Invalid claim name")
+    return v
+
+
+def _validate_group_mapping(v: dict[str, str]) -> dict[str, str]:
+    """#3107 — normalise and bound an IdP-group -> Printbuddy-group mapping.
+
+    Values must reference Printbuddy group names; existence is checked against
+    the database in the route handlers (same split as default_group_id), since
+    the schema layer has no session. Keys are left as-is apart from stripping:
+    IdP group values are opaque strings (DNs, UUIDs, names) and must match the
+    claim byte-for-byte, so any normalisation beyond whitespace would silently
+    break the lookup.
+
+    Keys colliding case-insensitively are rejected: the sync matches the IdP
+    side case-insensitively, so {"Admins": "Administrators", "admins":
+    "Viewers"} would silently collapse to whichever entry the dict happens to
+    keep last — a member of "Admins" could end up in Viewers. Rejecting the
+    pair at save time (here, so the env path gets the same answer) turns an
+    undiagnosable runtime behaviour into a form error. Two keys differing only
+    by case and mapping to the SAME group are pointless but harmless, and are
+    rejected too for the same reason: they read as a mistake.
+    """
+    if not isinstance(v, dict):
+        raise ValueError("group_mapping must be a JSON object")
+    if len(v) > 100:
+        raise ValueError("group_mapping must have at most 100 entries")
+    cleaned: dict[str, str] = {}
+    seen_ci: dict[str, str] = {}
+    for key, value in v.items():
+        if not isinstance(key, str) or not key.strip():
+            raise ValueError("group_mapping keys must be non-empty strings")
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("group_mapping values must be non-empty group names")
+        k = key.strip()
+        ci = k.lower()
+        if ci in seen_ci:
+            raise ValueError(
+                f"group_mapping has two IdP groups differing only by case: "
+                f"'{seen_ci[ci]}' and '{k}' — the sync matches case-insensitively, "
+                f"so both cannot be honored"
+            )
+        seen_ci[ci] = k
+        cleaned[k] = value.strip()
+    return cleaned
+
+
 def _validate_icon_url(v: str | None) -> str | None:
     """Reject non-HTTPS icon URLs and SSRF-unsafe hosts.
 
@@ -360,28 +453,37 @@ def _validate_icon_url(v: str | None) -> str | None:
 
 
 def _validate_issuer_url(v: str | None) -> str | None:
-    """Nit4: Reject non-HTTPS issuer URLs and private/loopback/link-local hosts.
+    """Reject non-HTTPS issuer URLs and SSRF-unsafe hosts.
 
-    HTTP is no longer accepted — OIDC providers must be reachable over TLS.
-    Private-network and loopback addresses are rejected to prevent SSRF attacks
-    where an admin-supplied URL could reach internal services.
+    An OIDC provider must be reachable over TLS on the public internet, so
+    this uses the public-internet policy: private, loopback and link-local
+    addresses are all rejected.
+
+    Delegates to the runtime guard ``assert_safe_public_https_url`` for the
+    same reason ``_validate_icon_url`` does — no policy drift between the
+    schema layer and the fetcher. The hand-rolled version this replaced
+    checked only ``is_private | is_loopback | is_link_local``, which left
+    numeric-encoded IPs (``https://2130706433/``), IPv4-mapped IPv6
+    (``https://[::ffff:127.0.0.1]/``), multicast and unspecified addresses
+    able to express a target the policy meant to forbid. The guard's
+    docstring already claimed the two were consistent; now they are.
+
+    Lazy-imported because ``_oidc_helpers`` lives under ``api/routes/`` and
+    schemas avoid top-level imports from that layer.
     """
-    import ipaddress
-    from urllib.parse import urlparse
-
     if v is None:
         return v
     if not v.startswith("https://"):
         raise ValueError("issuer_url must start with https://")
-    host = urlparse(v).hostname or ""
+    from backend.app.api.routes._oidc_helpers import assert_safe_public_https_url
+
     try:
-        addr = ipaddress.ip_address(host)
-        if addr.is_private or addr.is_loopback or addr.is_link_local:
-            raise ValueError("issuer_url must not point to a private, loopback, or link-local address")
+        assert_safe_public_https_url(v)
     except ValueError as exc:
-        if "issuer_url" in str(exc):
-            raise
-        # hostname is a domain name, not a bare IP — that's fine
+        # The guard's messages say "icon URL" — rewrite for this field so the
+        # user sees the setting they actually submitted.
+        detail = str(exc).replace("icon URL", "issuer_url")
+        raise ValueError(detail) from exc
     return v
 
 
@@ -411,8 +513,12 @@ class OIDCProviderCreate(BaseModel):
     auto_link_existing_accounts: bool = False  # M-2: conservative default, opt-in only
     email_claim: str = Field(default="email", max_length=64)
     require_email_verified: bool = True
+    # #3107 — group sync config. group_mapping empty (default) = no sync.
+    group_claim: str = Field(default="groups", max_length=64)
+    group_mapping: dict[str, str] = Field(default_factory=dict)
     icon_url: str | None = None
     default_group_id: int | None = None
+    is_autologin: bool = False  # #1589 — at most one provider may carry this
 
     @field_validator("issuer_url")
     @classmethod
@@ -435,6 +541,17 @@ class OIDCProviderCreate(BaseModel):
     def validate_email_claim(cls, v: str) -> str:
         return _validate_email_claim_name(v)
 
+    @field_validator("group_claim")
+    @classmethod
+    def validate_group_claim(cls, v: str) -> str:
+        # Namespaced claims allowed here (Auth0 et al) — see _validate_group_claim_name.
+        return _validate_group_claim_name(v)
+
+    @field_validator("group_mapping")
+    @classmethod
+    def validate_group_mapping(cls, v: dict[str, str]) -> dict[str, str]:
+        return _validate_group_mapping(v)
+
     @field_validator("icon_url")
     @classmethod
     def validate_icon_url(cls, v: str | None) -> str | None:
@@ -450,7 +567,8 @@ class OIDCProviderCreate(BaseModel):
         return self
 
 
-class OIDCProviderUpdate(BaseModel):
+class OIDCProviderUpdate(IgnoresNullForRequiredColumns):
+    __orm_table__ = "oidc_providers"
     name: str | None = Field(default=None, max_length=100)
     issuer_url: str | None = None
 
@@ -467,8 +585,13 @@ class OIDCProviderUpdate(BaseModel):
     auto_link_existing_accounts: bool | None = None
     email_claim: str | None = Field(default=None, max_length=64)
     require_email_verified: bool | None = None
+    # #3107 — group sync config. None = leave unchanged, same as every other
+    # optional field here; an explicit {} clears the mapping and disables sync.
+    group_claim: str | None = Field(default=None, max_length=64)
+    group_mapping: dict[str, str] | None = None
     icon_url: str | None = None
     default_group_id: int | None = None
+    is_autologin: bool | None = None  # #1589
 
     @field_validator("scopes")
     @classmethod
@@ -481,6 +604,20 @@ class OIDCProviderUpdate(BaseModel):
         if v is None:
             return None
         return _validate_email_claim_name(v)
+
+    @field_validator("group_claim")
+    @classmethod
+    def validate_group_claim(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        return _validate_group_claim_name(v)
+
+    @field_validator("group_mapping")
+    @classmethod
+    def validate_group_mapping(cls, v: dict[str, str] | None) -> dict[str, str] | None:
+        if v is None:
+            return None
+        return _validate_group_mapping(v)
 
     @field_validator("icon_url")
     @classmethod
@@ -513,14 +650,42 @@ class OIDCProviderResponse(BaseModel):
     auto_link_existing_accounts: bool = False
     email_claim: str = "email"
     require_email_verified: bool = True
+    # #3107 — group sync config, echoed back so the settings UI can render it.
+    group_claim: str = "groups"
+    group_mapping: dict[str, str] = {}
     icon_url: str | None = None
     default_group_id: int | None = None
+    is_autologin: bool = False  # #1589
+    # #2593 — the UI renders this provider read-only; without the flag it would
+    # offer editable fields whose writes the API then refuses with 409.
+    is_env_managed: bool = False
     # Set explicitly in the route handler from `icon_content_type is not None`
     # rather than `@computed_field` (project policy) or `icon_data is not None`
     # (would trigger an async lazy-load on the deferred BLOB column).
     # Required (no default) so Pydantic fails loudly if any code path skips
     # `_build_provider_response` and tries `model_validate(provider)` directly.
     has_icon: bool
+
+    class Config:
+        from_attributes = True
+
+
+class OIDCProviderPublicResponse(BaseModel):
+    """#3107 — what the unauthenticated login page is allowed to see.
+
+    GET /oidc/providers is public so the login page can render the SSO
+    buttons, and it needs exactly four fields: id + name for the button,
+    has_icon for the avatar, is_autologin for the redirect-on-mount (#1589).
+    The full OIDCProviderResponse carries group_claim / group_mapping —
+    which IdP group name maps to which Printbuddy group, including
+    Administrators — and leaking that to anonymous visitors would tell
+    anyone who can reach the login page exactly which IdP group to aim for.
+    """
+
+    id: int
+    name: str
+    has_icon: bool
+    is_autologin: bool = False
 
     class Config:
         from_attributes = True

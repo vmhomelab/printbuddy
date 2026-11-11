@@ -7,17 +7,23 @@ Tests against a real mock implicit FTPS server, covering:
 - Upload (chunked transfer, progress, error codes)
 - Delete
 - File size
-- Storage info (AVBL, directory scan, diagnose_storage)
+- Storage info (AVBL, directory scan)
 - Model-specific behavior (X1C prot_p, A1 prot_c fallback)
 - Async wrappers
 - Failure injection scenarios (regressions for 0.1.8 bugs)
 """
 
+import asyncio
+import logging
+import socket
+import threading
 import time
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
+from backend.app.services import bambu_ftp
 from backend.app.services.bambu_ftp import (
     BambuFTPClient,
     FileNotOnPrinterError,
@@ -271,6 +277,66 @@ class TestDownload:
         assert not local.exists()
         client.disconnect()
 
+    def test_download_to_file_prefers_fresh_server_size_over_stale_client_hint(
+        self, ftp_client_factory, ftp_server, tmp_path
+    ):
+        """The immediate printer SIZE result overrides a stale browser hint."""
+        ftp_server.add_file("cache/short.bin", b"short")
+        local = tmp_path / "short.bin"
+        client = ftp_client_factory()
+        client.connect()
+        try:
+            assert client.download_to_file("/cache/short.bin", local, expected_size=100) is True
+            assert local.read_bytes() == b"short"
+        finally:
+            client.disconnect()
+
+    def test_download_to_file_enforces_actual_byte_limit(self, ftp_client_factory, ftp_server, tmp_path):
+        """Untrusted size hints cannot let a transfer exceed the server-side cap."""
+        ftp_server.add_file("cache/oversize.bin", b"too large")
+        local = tmp_path / "oversize.bin"
+        client = ftp_client_factory()
+        client.connect()
+        try:
+            with pytest.raises(bambu_ftp.DownloadLimitExceeded):
+                client.download_to_file("/cache/oversize.bin", local, max_bytes=3)
+            assert not local.exists()
+        finally:
+            client.disconnect()
+
+    def test_download_to_file_uses_server_size_when_client_hint_is_omitted(self, tmp_path):
+        """A clean short RETR is rejected using SIZE, without trusting a caller hint."""
+        local = tmp_path / "server-sized.bin"
+        client = BambuFTPClient("127.0.0.1", "12345678")
+
+        class FakeFTP:
+            def size(self, _remote_path):
+                return 100
+
+            def retrbinary(self, _command, callback):
+                callback(b"short")
+
+        client._ftp = FakeFTP()
+
+        assert client.download_to_file("/cache/server-sized.bin", local) is False
+        assert not local.exists()
+
+    def test_download_to_file_falls_back_to_client_hint_when_size_is_unsupported(self, tmp_path):
+        local = tmp_path / "hint-sized.bin"
+        client = BambuFTPClient("127.0.0.1", "12345678")
+
+        class FakeFTP:
+            def size(self, _remote_path):
+                raise bambu_ftp.ftplib.error_perm("502 SIZE unsupported")
+
+            def retrbinary(self, _command, callback):
+                callback(b"short")
+
+        client._ftp = FakeFTP()
+
+        assert client.download_to_file("/cache/hint-sized.bin", local, expected_size=100) is False
+        assert not local.exists()
+
     def test_download_to_file_missing_raises_not_on_printer(self, ftp_client_factory, tmp_path):
         """Missing file raises FileNotOnPrinterError so callers can short-circuit
         the retry loop — 550 means the file isn't there and retrying won't help."""
@@ -386,6 +452,68 @@ class TestUpload:
         assert result is False
         client.disconnect()
 
+    @pytest.mark.parametrize(("server_size", "logged_error"), [(100, True), (1024, False), (None, False)])
+    def test_upload_without_a_226_is_checked_on_a_new_connection(
+        self, ftp_client_factory, ftp_server, tmp_path, caplog, server_size, logged_error
+    ):
+        """No 226 within the wait (an H2D can take 30+ s) still lets the upload
+        proceed, but its size is read back on a fresh connection, since the
+        old one may be out of step, and a mismatch is logged as an error."""
+        import logging
+
+        import backend.app.services.bambu_ftp as ftp_mod
+
+        local = tmp_path / "test.bin"
+        local.write_bytes(b"data" * 256)
+        client = ftp_client_factory()
+        client.connect()
+
+        def never_answers():
+            raise TimeoutError("timed out")
+
+        client._ftp.voidresp = never_answers
+        checked: list[str] = []
+
+        def fake_size(c, remote_path):
+            checked.append(remote_path)
+            return server_size
+
+        with (
+            patch.object(ftp_mod, "_size_on_new_connection", fake_size),
+            caplog.at_level(logging.INFO, logger="backend.app.services.bambu_ftp"),
+        ):
+            assert client.upload_file(local, "/cache/test.bin") is True
+        client.disconnect()
+
+        assert checked == ["/cache/test.bin"]
+        errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+        assert bool(errors) is logged_error
+
+    def test_the_read_back_reads_the_size_on_its_own_connection(self, ftp_client_factory, ftp_server, tmp_path):
+        import backend.app.services.bambu_ftp as ftp_mod
+
+        local = tmp_path / "r.bin"
+        local.write_bytes(b"x" * 300)
+        client = ftp_client_factory()
+        client.connect()
+        assert client.upload_file(local, "/cache/r.bin") is True
+
+        assert ftp_mod._size_on_new_connection(client, "/cache/r.bin") == 300
+        client.disconnect()
+
+    def test_a_refused_read_back_does_not_pause_the_printer(self, ftp_client_factory, ftp_server):
+        """A second session can be refused while the first still waits; that
+        must not open the cool-off that skips the printer's archive downloads."""
+        import ssl
+
+        import backend.app.services.bambu_ftp as ftp_mod
+
+        client = ftp_client_factory()
+        with patch.object(ftp_mod.ImplicitFTP_TLS, "connect", side_effect=ssl.SSLError("refused")):
+            assert ftp_mod._size_on_new_connection(client, "/cache/r.bin") is None
+
+        assert not ftp_mod.BambuFTPClient.handshake_blocked("127.0.0.1")
+
     def test_upload_426_with_intact_file_proceeds(self, ftp_client_factory, ftp_server, tmp_path):
         """Some P2S firmware revisions return 426 on voidresp() even when the
         file landed fully (TLS data-channel close races the 226). #1417
@@ -421,6 +549,62 @@ class TestUpload:
         result = client.upload_file(local, "/cache/test.bin")
         assert result is True, "intact file (SIZE match) tolerates 426 noise"
         client.disconnect()
+
+    def test_upload_426_with_intact_file_logs_at_info_not_warning(
+        self, ftp_client_factory, ftp_server, tmp_path, caplog
+    ):
+        """A verified-intact 426 is how Bambu FTPS normally ends a transfer,
+        not a fault, so it must not be a WARNING (#2987).
+
+        It fired 54 times in one support bundle, every one followed by a
+        completed upload, and buried the 26 TLS handshake failures in the same
+        log that actually cost the reporter two prints. The truncated case below
+        is still an error -- this only moves the one we have already verified.
+        """
+        import ftplib  # nosec B402 — tests need the real ftplib to construct mock 426 responses
+        import logging
+
+        local = tmp_path / "test.bin"
+        local.write_bytes(b"data" * 256)  # 1024 bytes
+        client = ftp_client_factory()
+        client.connect()
+
+        def raise_426():
+            raise ftplib.error_temp("426 Failure reading network stream.")
+
+        client._ftp.voidresp = raise_426
+        client._ftp.size = lambda _path: 1024
+
+        with caplog.at_level(logging.INFO, logger="backend.app.services.bambu_ftp"):
+            assert client.upload_file(local, "/cache/test.bin") is True
+        client.disconnect()
+
+        intact = [r for r in caplog.records if "file is intact on the" in r.getMessage()]
+        assert intact, "the proceed path must still say why it proceeded"
+        assert [r.levelno for r in intact] == [logging.INFO] * len(intact)
+
+    def test_upload_426_with_truncated_file_still_logs_an_error(self, ftp_client_factory, ftp_server, tmp_path, caplog):
+        """The half that must stay loud: bytes that did not verify."""
+        import ftplib  # nosec B402 — tests need the real ftplib to construct mock 426 responses
+        import logging
+
+        local = tmp_path / "test.bin"
+        local.write_bytes(b"data" * 256)
+        client = ftp_client_factory()
+        client.connect()
+
+        def raise_426():
+            raise ftplib.error_temp("426 Failure reading network stream.")
+
+        client._ftp.voidresp = raise_426
+        client._ftp.size = lambda _path: 100
+
+        with caplog.at_level(logging.INFO, logger="backend.app.services.bambu_ftp"):
+            assert client.upload_file(local, "/cache/test.bin") is False
+        client.disconnect()
+
+        rejected = [r for r in caplog.records if "rejected by printer" in r.getMessage()]
+        assert rejected and all(r.levelno == logging.ERROR for r in rejected)
 
     def test_upload_426_with_truncated_file_returns_false(self, ftp_client_factory, ftp_server, tmp_path):
         """The original #1401 fix is preserved: when SIZE confirms the file
@@ -472,73 +656,6 @@ class TestUpload:
         assert result is False
         client.disconnect()
 
-    def test_upload_bytes_426_with_intact_file_proceeds(self, ftp_client_factory, ftp_server):
-        """upload_bytes() mirrors the same SIZE-verify logic as upload_file."""
-        import ftplib  # nosec B402 — tests need the real ftplib to construct mock 426 responses
-
-        client = ftp_client_factory()
-        client.connect()
-        data = b"x" * 1024
-
-        def raise_426():
-            raise ftplib.error_temp("426 Failure reading network stream.")
-
-        def fake_size(_path):
-            return 1024  # printer-side file matches expected size
-
-        client._ftp.voidresp = raise_426
-        client._ftp.size = fake_size
-
-        result = client.upload_bytes(data, "/cache/bytes.bin")
-        assert result is True
-        client.disconnect()
-
-    def test_upload_bytes_426_with_truncated_file_returns_false(self, ftp_client_factory, ftp_server):
-        """The truncated branch for upload_bytes()."""
-        import ftplib  # nosec B402 — tests need the real ftplib to construct mock 426 responses
-
-        client = ftp_client_factory()
-        client.connect()
-        data = b"x" * 1024
-
-        def raise_426():
-            raise ftplib.error_temp("426 Failure reading network stream.")
-
-        def fake_size(_path):
-            return 100
-
-        client._ftp.voidresp = raise_426
-        client._ftp.size = fake_size
-
-        result = client.upload_bytes(data, "/cache/bytes.bin")
-        assert result is False
-        client.disconnect()
-
-    def test_upload_bytes_success(self, ftp_client_factory, ftp_server):
-        """upload_bytes() writes data to server."""
-        data = b"Bytes upload content"
-        client = ftp_client_factory()
-        client.connect()
-        result = client.upload_bytes(data, "/cache/bytes.bin")
-        assert result is True
-        client.disconnect()
-        # Verify via fresh connection
-        time.sleep(_UPLOAD_FLUSH_DELAY)
-        client2 = ftp_client_factory()
-        client2.connect()
-        downloaded = client2.download_file("/cache/bytes.bin")
-        assert downloaded == data
-        client2.disconnect()
-
-    def test_upload_bytes_failure(self, ftp_client_factory, ftp_server):
-        """upload_bytes() returns False on STOR failure."""
-        ftp_server.inject_failure("STOR", 553, "No space.")
-        client = ftp_client_factory()
-        client.connect()
-        result = client.upload_bytes(b"data", "/cache/fail.bin")
-        assert result is False
-        client.disconnect()
-
     def test_upload_large_chunked(self, ftp_client_factory, ftp_server, tmp_path):
         """Large file upload in chunks completes without error.
 
@@ -575,26 +692,32 @@ class TestDelete:
 
     def test_delete_success(self, ftp_client_factory, ftp_server):
         """Successful file deletion."""
+        from backend.app.services.bambu_ftp import DeleteResult
+
         ftp_server.add_file("cache/to_delete.bin", b"delete me")
         client = ftp_client_factory()
         client.connect()
         result = client.delete_file("/cache/to_delete.bin")
-        assert result is True
+        assert result == DeleteResult.DELETED
         assert not ftp_server.file_exists("cache/to_delete.bin")
         client.disconnect()
 
     def test_delete_not_found(self, ftp_client_factory):
-        """Deleting a nonexistent file returns False."""
+        """Deleting a nonexistent file returns NOT_FOUND (550, #1721)."""
+        from backend.app.services.bambu_ftp import DeleteResult
+
         client = ftp_client_factory()
         client.connect()
         result = client.delete_file("/cache/no_such_file.bin")
-        assert result is False
+        assert result == DeleteResult.NOT_FOUND
         client.disconnect()
 
     def test_delete_not_connected(self):
-        """Delete when not connected returns False."""
+        """Delete when not connected returns FAILED."""
+        from backend.app.services.bambu_ftp import DeleteResult
+
         client = BambuFTPClient("127.0.0.1", "12345678")
-        assert client.delete_file("/cache/test.bin") is False
+        assert client.delete_file("/cache/test.bin") == DeleteResult.FAILED
 
 
 # ---------------------------------------------------------------------------
@@ -657,25 +780,6 @@ class TestStorageInfo:
         """Returns None when not connected."""
         client = BambuFTPClient("127.0.0.1", "12345678")
         assert client.get_storage_info() is None
-
-    def test_diagnose_storage_success(self, ftp_client_factory, ftp_server):
-        """diagnose_storage() returns connected=True with working diagnostics."""
-        client = ftp_client_factory()
-        client.connect()
-        diag = client.diagnose_storage()
-        assert diag["connected"] is True
-        assert diag["can_list_root"] is True
-        assert diag["can_list_cache"] is True
-        assert diag["pwd"] is not None
-        assert diag["storage_info"] is not None
-        client.disconnect()
-
-    def test_diagnose_storage_not_connected(self):
-        """diagnose_storage() reports not connected."""
-        client = BambuFTPClient("127.0.0.1", "12345678")
-        diag = client.diagnose_storage()
-        assert diag["connected"] is False
-        assert "FTP not connected" in diag["errors"]
 
 
 # ---------------------------------------------------------------------------
@@ -745,7 +849,6 @@ class TestModelSpecificBehavior:
     def test_unknown_model_defaults_prot_p(self, ftp_client_factory):
         """Unknown model defaults to prot_p."""
         client = ftp_client_factory(printer_model="FuturePrinter3000")
-        assert client._is_a1_model() is False
         assert client._should_use_prot_c() is False
         assert client.connect() is True
         client.disconnect()
@@ -873,7 +976,7 @@ class TestAsyncWrappers:
             def connect(self):
                 return True
 
-            def download_to_file(self, remote_path, local_path):
+            def download_to_file(self, remote_path, local_path, **_kwargs):
                 time.sleep(0.4)  # longer than wait_for timeout=0.1
                 local_path.write_bytes(expected_content)
                 return True
@@ -922,12 +1025,14 @@ class TestAsyncWrappers:
             def connect(self):
                 return True
 
-            def download_to_file(self, remote_path, local_path):
+            def download_to_file(self, remote_path, local_path, **kwargs):
                 # Simulate an in-progress partial write that never completes
-                # within the salvage grace period.
+                # until the async timeout asks the worker to unwind.
                 local_path.write_bytes(b"partial...")
-                time.sleep(2.0)
-                return True  # would complete eventually, but too late
+                while not kwargs["cancel_event"].is_set():
+                    time.sleep(0.01)
+                local_path.unlink(missing_ok=True)
+                raise bambu_ftp.DownloadCancelled(remote_path)
 
             def disconnect(self):
                 pass
@@ -979,7 +1084,7 @@ class TestAsyncWrappers:
             def connect(self):
                 return True
 
-            def download_to_file(self, remote_path, local_path):
+            def download_to_file(self, remote_path, local_path, **_kwargs):
                 time.sleep(1.5)  # wait_for times out at 1.0 s; zombie finishes 0.5 s later
                 local_path.write_bytes(expected_content)
                 return True
@@ -1004,6 +1109,61 @@ class TestAsyncWrappers:
         assert local.read_bytes() == expected_content
 
     @pytest.mark.asyncio
+    async def test_download_file_async_cancellation_waits_for_worker_cleanup(self, tmp_path, monkeypatch):
+        """Task cancellation returns only after the FTP worker has unwound."""
+        from backend.app.services import bambu_ftp
+
+        bambu_ftp.BambuFTPClient._mode_cache.pop("127.0.0.1", None)
+        local = tmp_path / "cancelled.bin"
+        started = threading.Event()
+        finished = threading.Event()
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def connect(self):
+                return True
+
+            def download_to_file(self, remote_path, local_path, **kwargs):
+                local_path.write_bytes(b"partial")
+                started.set()
+                try:
+                    while not kwargs["cancel_event"].is_set():
+                        time.sleep(0.01)
+                    local_path.unlink(missing_ok=True)
+                    raise bambu_ftp.DownloadCancelled(remote_path)
+                finally:
+                    finished.set()
+
+            def disconnect(self):
+                pass
+
+        monkeypatch.setattr(bambu_ftp, "BambuFTPClient", FakeClient)
+        monkeypatch.setattr(FakeClient, "_mode_cache", {}, raising=False)
+        monkeypatch.setattr(FakeClient, "A1_MODELS", set(), raising=False)
+        monkeypatch.setattr(FakeClient, "cache_mode", staticmethod(lambda ip, mode: None), raising=False)
+
+        task = asyncio.create_task(
+            download_file_async(
+                "127.0.0.1",
+                "12345678",
+                "/cache/cancelled.bin",
+                local,
+                timeout=30.0,
+                printer_model="X1C",
+            )
+        )
+        assert await asyncio.to_thread(started.wait, 1.0)
+        task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert finished.is_set()
+        assert not local.exists()
+
+    @pytest.mark.asyncio
     async def test_download_file_try_paths_first_succeeds(self, patch_ftp_port, tmp_path):
         """download_file_try_paths_async succeeds on first path."""
         server = patch_ftp_port
@@ -1016,7 +1176,9 @@ class TestAsyncWrappers:
             local,
             printer_model="X1C",
         )
-        assert result is True
+        # The path, not a flag: the caller logs which candidate served the file
+        # so a stale same-named copy is diagnosable (#1820).
+        assert result == "/cache/try1.bin"
         assert local.read_bytes() == b"first path"
 
     @pytest.mark.asyncio
@@ -1032,7 +1194,7 @@ class TestAsyncWrappers:
             local,
             printer_model="X1C",
         )
-        assert result is True
+        assert result == "/cache/second.bin"
         assert local.read_bytes() == b"second path"
 
     @pytest.mark.asyncio
@@ -1053,6 +1215,8 @@ class TestAsyncWrappers:
     @pytest.mark.asyncio
     async def test_delete_file_async_success(self, patch_ftp_port):
         """delete_file_async deletes a file."""
+        from backend.app.services.bambu_ftp import DeleteResult
+
         server = patch_ftp_port
         server.add_file("cache/to_async_del.bin", b"delete me")
         result = await delete_file_async(
@@ -1061,8 +1225,21 @@ class TestAsyncWrappers:
             "/cache/to_async_del.bin",
             printer_model="X1C",
         )
-        assert result is True
+        assert result == DeleteResult.DELETED
         assert not server.file_exists("cache/to_async_del.bin")
+
+    @pytest.mark.asyncio
+    async def test_delete_file_async_not_found(self, patch_ftp_port):
+        """delete_file_async distinguishes 550 from real failure (#1721)."""
+        from backend.app.services.bambu_ftp import DeleteResult
+
+        result = await delete_file_async(
+            "127.0.0.1",
+            "12345678",
+            "/cache/never_existed.bin",
+            printer_model="X1C",
+        )
+        assert result == DeleteResult.NOT_FOUND
 
 
 # ---------------------------------------------------------------------------
@@ -1141,21 +1318,6 @@ class TestFailureScenarios:
         client.connect()
         result = client.upload_file(local, "/cache/test.bin")
         assert result is False
-        client.disconnect()
-
-    def test_diagnose_storage_cwd_failure_doesnt_propagate(self, ftp_client_factory, ftp_server):
-        """diagnose_storage CWD failure doesn't crash the whole operation.
-
-        Regression: diagnose_storage() was called in the upload path and
-        a CWD failure would propagate and crash the upload.
-        """
-        ftp_server.inject_failure("CWD", 550, "No such directory.", count=2)
-        client = ftp_client_factory()
-        client.connect()
-        diag = client.diagnose_storage()
-        # Should still return results (with errors noted)
-        assert diag["connected"] is True
-        assert len(diag["errors"]) > 0
         client.disconnect()
 
     def test_failure_injection_count_decrements(self, ftp_client_factory, ftp_server):
@@ -1401,3 +1563,319 @@ class TestThreeMFCache:
         assert archive_file.exists(), "archive 3mf must not be deleted by cache cleanup"
         assert library_file.exists(), "library 3mf must not be deleted by cache cleanup"
         assert not temp_file.exists(), "temp file should still be cleaned up"
+
+
+@pytest.fixture
+def slow_upload_client(monkeypatch):
+    """Replace BambuFTPClient with a fake whose upload streams slowly.
+
+    Mirrors the real client's contract for the bits that matter here: it fires
+    the progress callback once per chunk and treats a callback exception as
+    "stop now" — break out of the send loop, drop the partial file, re-raise.
+    The returned dict lets a test see what the worker thread actually did,
+    which is the whole point: the #2529 ghost transfer was invisible from the
+    event loop's side.
+    """
+    state = {
+        "attempts": 0,
+        "concurrent": 0,
+        "max_concurrent": 0,
+        "completed": False,
+        "cancelled": False,
+        "deleted": [],
+        "chunks": 20,
+        "chunk_delay": 0.05,
+    }
+    lock = threading.Lock()
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def connect(self):
+            return True
+
+        def upload_file(self, local_path, remote_path, progress_callback=None):
+            with lock:
+                state["attempts"] += 1
+                state["concurrent"] += 1
+                state["max_concurrent"] = max(state["max_concurrent"], state["concurrent"])
+            try:
+                total = state["chunks"]
+                for sent in range(1, total + 1):
+                    time.sleep(state["chunk_delay"])
+                    if progress_callback:
+                        try:
+                            progress_callback(sent, total)
+                        except Exception:
+                            state["cancelled"] = True
+                            state["deleted"].append(remote_path)
+                            raise
+                state["completed"] = True
+                return True
+            finally:
+                with lock:
+                    state["concurrent"] -= 1
+
+        def disconnect(self):
+            pass
+
+    monkeypatch.setattr(bambu_ftp, "BambuFTPClient", FakeClient)
+    monkeypatch.setattr(FakeClient, "_mode_cache", {}, raising=False)
+    monkeypatch.setattr(FakeClient, "A1_MODELS", ("A1", "A1 Mini"), raising=False)
+    monkeypatch.setattr(FakeClient, "cache_mode", staticmethod(lambda ip, mode: None), raising=False)
+    return state
+
+
+# ---------------------------------------------------------------------------
+# TestUploadDeadline (#2529)
+# ---------------------------------------------------------------------------
+class TestUploadDeadline:
+    """The upload deadline must be size-aware, and must actually stop the transfer.
+
+    Regression for #2529: a 96 MB 3MF to an A1 over WiFi sustains ~75 KB/s and
+    needs ~20 minutes. The old flat 600 s wall-clock cap declared it dead at
+    ~70 MB, `asyncio.wait_for` cancelled the *future* but not the executor
+    thread — which kept streaming — and `with_ftp_retry` then started a second
+    STOR of the same file onto the same printer. The reporter's video shows two
+    transfers of the same job climbing in parallel (2% and 72%), and the print
+    never landed.
+    """
+
+    def test_deadline_scales_with_file_size(self, tmp_path):
+        """A big file gets proportionally longer, a small one gets the floor."""
+        small = tmp_path / "small.3mf"
+        small.write_bytes(b"x" * 1024)
+        assert bambu_ftp._upload_deadline(small) == bambu_ftp._UPLOAD_MIN_TIMEOUT
+
+        # The reporter's file. At the 25 KB/s floor rate, 96 MB is ~64 minutes —
+        # far above the 600 s that killed it at 72%.
+        big = tmp_path / "big.3mf"
+        big.write_bytes(b"x" * (96 * 1024 * 1024))
+        deadline = bambu_ftp._upload_deadline(big)
+        assert deadline > bambu_ftp._UPLOAD_MIN_TIMEOUT
+        assert deadline == pytest.approx((96 * 1024 * 1024) / bambu_ftp._UPLOAD_FLOOR_BYTES_PER_SEC)
+
+    def test_deadline_falls_back_to_floor_for_unstatable_file(self, tmp_path):
+        assert bambu_ftp._upload_deadline(tmp_path / "nope.3mf") == bambu_ftp._UPLOAD_MIN_TIMEOUT
+
+    @pytest.mark.asyncio
+    async def test_timeout_stops_the_worker_thread(self, tmp_path, monkeypatch, slow_upload_client):
+        """The transfer stops when the deadline expires, instead of streaming on.
+
+        Mutation check: drop the `cancel.set()` in upload_file_async and the
+        worker runs to completion, which is exactly the ghost transfer #2529
+        reported.
+        """
+        state = slow_upload_client
+        local = tmp_path / "slow.3mf"
+        local.write_bytes(b"x" * 4096)
+
+        with pytest.raises(bambu_ftp.UploadCancelled):
+            await upload_file_async("127.0.0.1", "12345678", local, "/cache/slow.3mf", timeout=0.2, printer_model="X1C")
+
+        # The worker noticed the cancel and unwound — it did not run to the end.
+        await asyncio.sleep(0.5)
+        assert state["cancelled"] is True
+        assert state["completed"] is False
+        # And it cleaned the partial file off the printer on its way out.
+        assert state["deleted"] == ["/cache/slow.3mf"]
+
+    @pytest.mark.asyncio
+    async def test_timeout_is_not_retried(self, tmp_path, monkeypatch, slow_upload_client):
+        """with_ftp_retry must not start a second transfer after a deadline expiry.
+
+        This is the bug the reporter filmed: attempt 2 began while attempt 1 was
+        still sending. One attempt, then a hard failure.
+        """
+        state = slow_upload_client
+        local = tmp_path / "slow.3mf"
+        local.write_bytes(b"x" * 4096)
+
+        with pytest.raises(bambu_ftp.UploadCancelled):
+            await with_ftp_retry(
+                upload_file_async,
+                "127.0.0.1",
+                "12345678",
+                local,
+                "/cache/slow.3mf",
+                timeout=0.2,
+                printer_model="X1C",
+                max_retries=3,
+                retry_delay=0,
+            )
+
+        assert state["attempts"] == 1, "a timed-out upload must not be retried"
+
+    @pytest.mark.asyncio
+    async def test_uploads_to_one_printer_are_serialized(self, tmp_path, monkeypatch, slow_upload_client):
+        """Two dispatches to the same printer queue up; they never overlap.
+
+        Concurrent STORs of the same remote path leave a corrupt file on the SD
+        card and make the printer look like it has a flaky network.
+        """
+        state = slow_upload_client
+        state["chunk_delay"] = 0.05
+        local = tmp_path / "slow.3mf"
+        local.write_bytes(b"x" * 4096)
+
+        async def _dispatch(name: str) -> bool:
+            return await upload_file_async(
+                "127.0.0.1", "12345678", local, f"/cache/{name}.3mf", timeout=30.0, printer_model="X1C"
+            )
+
+        results = await asyncio.gather(_dispatch("a"), _dispatch("b"))
+
+        assert results == [True, True]
+        assert state["attempts"] == 2
+        assert state["max_concurrent"] == 1, "two uploads ran against the same printer at once"
+
+    def test_progress_callback_raising_deletes_the_partial_file(self, ftp_client_factory, ftp_root, tmp_path):
+        """The cancel path in the real client removes what it already wrote.
+
+        This is the mechanism the deadline now hangs off, exercised end to end
+        against the mock FTPS server rather than a fake.
+        """
+        client = ftp_client_factory()
+        assert client.connect() is True
+        try:
+            local = tmp_path / "cancelme.3mf"
+            # Two chunks, so the callback fires while there is a partial file.
+            local.write_bytes(b"x" * (BambuFTPClient.CHUNK_SIZE * 2))
+
+            def _stop_after_first_chunk(uploaded: int, total: int) -> None:
+                raise bambu_ftp.UploadCancelled("stop")
+
+            with pytest.raises(bambu_ftp.UploadCancelled):
+                client.upload_file(local, "/cancelme.3mf", _stop_after_first_chunk)
+        finally:
+            client.disconnect()
+
+        time.sleep(_UPLOAD_FLUSH_DELAY)
+        assert not (Path(ftp_root) / "cancelme.3mf").exists(), "partial file left on the printer"
+
+
+# ---------------------------------------------------------------------------
+# TestHandshakeCoolOff
+# ---------------------------------------------------------------------------
+class _PlaintextServer:
+    """A socket that accepts on 990 and answers in plaintext, not TLS.
+
+    This is what #2780's printers do once their file service wedges: the TCP
+    connect succeeds, so a port probe reports the printer as healthy, and then
+    the implicit-FTPS handshake dies on ``WRONG_VERSION_NUMBER`` because the
+    first bytes back are an FTP banner rather than a TLS record.
+    """
+
+    def __init__(self):
+        self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._sock.bind(("127.0.0.1", 0))
+        self._sock.listen(8)
+        self.port = self._sock.getsockname()[1]
+        self.accepts = 0
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread.start()
+
+    def _serve(self):
+        while not self._stop.is_set():
+            try:
+                conn, _addr = self._sock.accept()
+            except OSError:
+                return
+            self.accepts += 1
+            try:
+                conn.sendall(b"220 Welcome to the printer.\r\n")
+            except OSError:
+                pass
+            finally:
+                conn.close()
+
+    def stop(self):
+        self._stop.set()
+        self._sock.close()
+        self._thread.join(timeout=2)
+
+
+@pytest.fixture()
+def plaintext_server():
+    server = _PlaintextServer()
+    yield server
+    server.stop()
+
+
+class TestHandshakeCoolOff:
+    """A wedged file service must be contacted once, not hundreds of times.
+
+    #2780: an X2D served clean FTPS for five days, flipped, and then failed
+    every handshake for eight more. Because each candidate path opened its own
+    connection, one reporter's log carried 3511 identical handshake failures.
+    """
+
+    def _client(self, server, ip="127.0.0.1"):
+        client = BambuFTPClient(ip, "12345678", timeout=5.0, printer_model="P2S")
+        client.FTP_PORT = server.port
+        return client
+
+    def test_plaintext_answer_on_990_blocks_the_printer(self, plaintext_server, caplog):
+        client = self._client(plaintext_server)
+        with caplog.at_level(logging.WARNING, logger="backend.app.services.bambu_ftp"):
+            assert client.connect() is False
+        assert bambu_ftp.ftps_handshake_blocked("127.0.0.1") is True
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("WRONG_VERSION_NUMBER" in m for m in messages)
+        # The warning has to say more than the error: the port is open, so
+        # "unblock port 990" is the wrong reading and the operator needs to
+        # know what it actually costs them.
+        assert any("covers and timelapses cannot be fetched" in m for m in messages)
+        # It must NOT prescribe a restart. It used to, and #2780's reporter
+        # power-cycled both affected printers with no effect while a single
+        # manual connection to the same printers completed a clean handshake.
+        # Naming a remedy that is known not to work is worse than naming none.
+        assert not any("restart" in m.lower() for m in messages)
+
+    def test_blocked_printer_is_not_contacted_again(self, plaintext_server):
+        self._client(plaintext_server).connect()
+        # Two, not one: the failed handshake, then one cleartext read asking
+        # what the printer actually answered with (#2780). That read is the
+        # whole diagnosis and it happens once per cool-off, so the promise
+        # this test exists for -- contacted a couple of times, not ~110 --
+        # still holds.
+        assert plaintext_server.accepts == 2
+
+        for _ in range(5):
+            assert self._client(plaintext_server).connect() is False
+        # Still two: the cool-off answered without opening a socket, and it
+        # gates the probe as well as the handshake.
+        assert plaintext_server.accepts == 2
+
+    def test_cooloff_expiry_lets_the_printer_be_retried(self, plaintext_server, monkeypatch):
+        monkeypatch.setattr(bambu_ftp, "_HANDSHAKE_COOLOFF_SECONDS", 0.0)
+        self._client(plaintext_server).connect()
+        assert bambu_ftp.ftps_handshake_blocked("127.0.0.1") is False
+        assert self._client(plaintext_server).connect() is False
+        # Two handshakes and a cleartext probe on each. A zero-length cool-off
+        # is what makes the probe repeat -- it is gated on the window being
+        # already open, and here there is never a window. At the real 300s it
+        # runs once, which `test_blocked_printer_is_not_contacted_again` pins.
+        assert plaintext_server.accepts == 4
+
+    def test_block_is_per_printer(self, plaintext_server):
+        self._client(plaintext_server).connect()
+        assert bambu_ftp.ftps_handshake_blocked("127.0.0.1") is True
+        # A second printer that never failed must stay reachable.
+        assert bambu_ftp.ftps_handshake_blocked("192.0.2.77") is False
+
+    def test_expired_block_lets_a_recovered_printer_straight_back_in(self, ftp_client_factory):
+        """A power-cycled printer is picked up on the next print, not held out.
+
+        The expired entry is also dropped, so the map holds one key per
+        currently-wedged printer rather than one per printer this process has
+        ever failed against.
+        """
+        BambuFTPClient._handshake_blocked_until["127.0.0.1"] = time.monotonic() - 1
+        client = ftp_client_factory()
+        assert client.connect() is True
+        client.disconnect()
+        assert BambuFTPClient._handshake_blocked_until == {}

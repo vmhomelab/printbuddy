@@ -18,6 +18,99 @@ import pytest
 os.environ["LOG_TO_FILE"] = "false"
 os.environ["DEBUG"] = "false"
 
+# Point the app's own engine at a throwaway database before anything reads
+# DATABASE_URL.
+#
+# The fixtures below build their own SQLite engine, but that is not the only
+# engine in play: `core/config.py` snapshots ``DATABASE_URL`` at import time and
+# `core/database.py` builds a module-level ``engine`` / ``async_session`` from
+# it. Any app code that opens its own session rather than receiving the fixture
+# one therefore talks to whatever database the developer's `.env` names. The
+# clearest example is ``run_with_retry`` (used by the print-completion path),
+# whose sessions come from ``backend.app.core.database`` — so the widespread
+# ``patch("backend.app.main.async_session")`` does not intercept them.
+#
+# Left alone that is not a hypothetical: on a plain checkout it means the suite
+# writes to the developer's real SQLite file, and with a PostgreSQL `.env` it
+# means a live install. A completion test calling ``on_print_complete(1, ...)``
+# closed a queue item belonging to an actual running print that way.
+_TEST_APP_DB_DIR = Path(tempfile.mkdtemp(prefix="printbuddy_test_appdb_"))
+APP_DATABASE_URL = f"sqlite+aiosqlite:///{_TEST_APP_DB_DIR / 'app.db'}"
+
+# Opt-in PostgreSQL run. TEST_POSTGRES_URL names a throwaway local server
+# (postgresql+asyncpg://user:password@127.0.0.1:port/postgres). Each xdist
+# worker gets two fresh databases there, under a prefix this file owns: one for
+# the app's own engine, one for the fixtures, kept apart as they are on SQLite.
+# Nothing else on that server is touched.
+_PG_DB_PREFIX = "printbuddy_testpg_"
+TEST_PG_URL: str | None = None
+if os.environ.get("TEST_POSTGRES_URL"):
+    from sqlalchemy.engine import make_url
+
+    _pg_server = make_url(os.environ["TEST_POSTGRES_URL"])
+    if _pg_server.drivername != "postgresql+asyncpg" or _pg_server.host not in ("127.0.0.1", "localhost"):
+        raise RuntimeError("TEST_POSTGRES_URL must be a postgresql+asyncpg URL of a local throwaway server")
+    _pg_worker = os.environ.get("PYTEST_XDIST_WORKER", "main")
+    _pg_app_db = f"{_PG_DB_PREFIX}{_pg_worker}_app"
+    _pg_test_db = f"{_PG_DB_PREFIX}{_pg_worker}_test"
+
+    async def _recreate_pg_databases() -> None:
+        import asyncpg
+
+        conn = await asyncpg.connect(
+            user=_pg_server.username,
+            password=_pg_server.password,
+            host=_pg_server.host,
+            port=_pg_server.port or 5432,
+            database=_pg_server.database or "postgres",
+        )
+        try:
+            for name in (_pg_app_db, _pg_test_db):
+                await conn.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
+                await conn.execute(f'CREATE DATABASE "{name}"')
+        finally:
+            await conn.close()
+
+    asyncio.run(_recreate_pg_databases())
+    APP_DATABASE_URL = _pg_server.set(database=_pg_app_db).render_as_string(hide_password=False)
+    TEST_PG_URL = _pg_server.set(database=_pg_test_db).render_as_string(hide_password=False)
+
+os.environ["DATABASE_URL"] = APP_DATABASE_URL
+
+
+def _cleanup_test_app_db_dir():
+    shutil.rmtree(_TEST_APP_DB_DIR, ignore_errors=True)
+
+
+atexit.register(_cleanup_test_app_db_dir)
+
+
+def _assert_disposable_database(url, source: str) -> None:
+    """Abort the run unless *url* is the throwaway database created above.
+
+    A guard rather than a comment because the failure it prevents is silent and
+    destructive: the suite would appear to pass while having mutated real print
+    history. Anything that reintroduces a real ``DATABASE_URL`` — an `.env` read
+    later in the import order, a fixture rebuilding the engine — trips this
+    instead of reaching the database.
+    """
+    database = str(getattr(url, "database", "") or "")
+    if TEST_PG_URL is not None:
+        if (
+            str(getattr(url, "drivername", "")) == "postgresql+asyncpg"
+            and getattr(url, "host", None) in ("127.0.0.1", "localhost")
+            and database.startswith(_PG_DB_PREFIX)
+        ):
+            return
+        raise RuntimeError(f"Refusing to run tests: {source} resolves to {url!r}, not a {_PG_DB_PREFIX}* database.")
+    if not str(getattr(url, "drivername", "")).startswith("sqlite") or not database.startswith(str(_TEST_APP_DB_DIR)):
+        raise RuntimeError(
+            f"Refusing to run tests: {source} resolves to {url!r}, which is not the "
+            f"disposable SQLite database under {_TEST_APP_DB_DIR}. Tests must never "
+            f"open a session against a real Printbuddy database."
+        )
+
+
 from httpx import ASGITransport, AsyncClient  # noqa: E402
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine  # noqa: E402
 
@@ -25,6 +118,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from backend.app.core.config import settings  # noqa: E402
 
 settings.log_to_file = False
+if settings.database_url != APP_DATABASE_URL:
+    raise RuntimeError(
+        f"Refusing to run tests: settings.database_url is {settings.database_url!r} "
+        f"rather than the disposable test database. Something read DATABASE_URL "
+        f"before conftest could override it."
+    )
 
 # Use a temp directory for plate calibration to avoid deleting real calibration files
 _test_plate_cal_dir = Path(tempfile.mkdtemp(prefix="printbuddy_test_plate_cal_"))
@@ -39,10 +138,43 @@ def _cleanup_test_plate_cal_dir():
 
 atexit.register(_cleanup_test_plate_cal_dir)
 
-from backend.app.core.database import Base  # noqa: E402
+from backend.app.core.database import Base, engine as _app_engine  # noqa: E402
+
+# The engine is built at import time from the URL above, so this catches the
+# case where that override did not take effect for whatever reason.
+_assert_disposable_database(_app_engine.url, "backend.app.core.database.engine")
+
+
+if TEST_PG_URL is not None:
+    # The app's own database gets the schema too, once per worker, as a real
+    # install's has it: code that opens its own session (the backup export,
+    # print completion) reads and writes it. A short-lived engine, so the app
+    # engine's pool holds no connection from this event loop.
+    async def _create_app_schema() -> None:
+        from backend.app.core.database import _create_engine, load_all_models
+
+        load_all_models()
+        schema_engine = _create_engine(APP_DATABASE_URL)
+        try:
+            async with schema_engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+        finally:
+            await schema_engine.dispose()
+
+    asyncio.run(_create_app_schema())
 
 # Use in-memory SQLite for tests
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
+
+
+def pytest_collection_modifyitems(config, items):
+    """On PostgreSQL, skip the tests of SQLite-specific behaviour."""
+    if TEST_PG_URL is None:
+        return
+    skip = pytest.mark.skip(reason="SQLite-specific behaviour; the suite runs on PostgreSQL")
+    for item in items:
+        if item.get_closest_marker("sqlite_only"):
+            item.add_marker(skip)
 
 
 @pytest.fixture(autouse=True)
@@ -81,6 +213,120 @@ def mfa_encryption_isolation(monkeypatch, tmp_path):
     enc_mod._key_source = None
 
 
+@pytest.fixture(autouse=True)
+def reset_archive_work():
+    """Drop archives held or being merged between tests (services/archive_work).
+
+    Every test database hands out the same archive ids, and a dispatch driven
+    without ``_dispatch_one`` never releases its hold."""
+    from backend.app.services import archive_work
+
+    archive_work._held.clear()
+    archive_work._merging.clear()
+    yield
+    archive_work._held.clear()
+    archive_work._merging.clear()
+
+
+@pytest.fixture(autouse=True)
+def reset_printer_file_cache():
+    """A fresh file-browser preview cache per test.
+
+    Test databases start their printer ids at 1 again, so a preview kept by one
+    test would be served to the next one's printer 1."""
+    from backend.app.services.printer_file_cache import printer_file_cache
+
+    printer_file_cache.clear()
+    yield
+    printer_file_cache.clear()
+
+
+@pytest.fixture(autouse=True)
+def reset_spoolman_location_sync_cache():
+    """Drop the per-URL Spoolman location-sync TTL cache between tests.
+
+    Without this, a test that runs the sync against `http://localhost:7912`
+    will skip the sync in any later test that uses the same URL within 60
+    real seconds — test ordering would then leak assertions across runs."""
+    from backend.app.services.location_service import _spoolman_location_sync_cache_clear
+
+    _spoolman_location_sync_cache_clear()
+    yield
+    _spoolman_location_sync_cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def reset_slot_unlink_grace():
+    """Drop held slot unlinks and cancel their re-checks between tests (#3186).
+
+    The holds live in a module-level dict keyed by printer id, and every test
+    database hands out the same ids -- a hold left by one test would let the
+    next one's first blank report count as already confirmed."""
+    from backend.app.services import slot_unlink_grace
+
+    slot_unlink_grace.reset()
+    yield
+    slot_unlink_grace.reset()
+
+
+@pytest.fixture(autouse=True)
+def reset_usage_tracker_sessions():
+    """Drop the usage tracker's in-flight print sessions between tests.
+
+    They live in a module-level dict keyed by printer id. Any test that runs
+    ``main.on_print_start(1, ...)`` against a mocked printer manager leaves a
+    session for printer 1 whose fields are MagicMocks, and a later test on the
+    same worker that completes a print for printer 1 picks it up as its own."""
+    from backend.app.services.usage_tracker import _active_sessions
+
+    _active_sessions.clear()
+    yield
+    _active_sessions.clear()
+
+
+@pytest.fixture(autouse=True)
+def reset_auth_enabled_cache():
+    """Drop the module-level auth-enabled cache between tests (issue #2572).
+
+    ``is_auth_enabled`` caches an enabled=True result for a TTL. Without this
+    reset a test that enables auth would leave ``True`` cached, so a later test
+    running in auth-disabled mode (without going through ``set_auth_enabled``)
+    would wrongly see auth as enabled until the TTL expired — order-dependent
+    flakiness."""
+    from backend.app.core.auth import invalidate_auth_enabled_cache
+
+    invalidate_auth_enabled_cache()
+    yield
+    invalidate_auth_enabled_cache()
+
+
+@pytest.fixture(autouse=True)
+def disconnect_printers_registered_during_a_test():
+    """Give every test an empty ``printer_manager`` singleton.
+
+    ``POST /api/v1/printers`` really calls ``connect_printer``, so a test that
+    creates a printer through the API parks a live client in the singleton --
+    and the singleton outlives the per-test in-memory database. The next test
+    on the same xdist worker gets a fresh database whose first printer is handed
+    the same primary key, and reads that leftover client as its own live status.
+    ``test_scheduled_drying_routes`` saw exactly that: an "online" printer with
+    no firmware version, so scheduling a dry came back 400 instead of 200.
+
+    Snapshotting the ids at test entry was insufficient: a client leaked by a
+    previous module became part of that snapshot and therefore survived every
+    later cleanup on the same xdist worker. Clear both before and after each
+    test. ``disconnect_printer`` also clears model/printer-info caches and stops
+    any paho thread owned by the leaked client.
+    """
+    from backend.app.services.printer_manager import printer_manager
+
+    for printer_id in list(printer_manager._clients):
+        printer_manager.disconnect_printer(printer_id)
+    yield
+    for printer_id in list(printer_manager._clients):
+        printer_manager.disconnect_printer(printer_id)
+
+
 @pytest.fixture(scope="session")
 def event_loop():
     """Create an instance of the default event loop for each test session."""
@@ -95,57 +341,175 @@ def event_loop():
     loop.close()
 
 
+# The test database's schema as built, per worker: built once and emptied
+# between tests. Rebuilding it for every test (DROP SCHEMA + create_all, a few
+# hundred DDL statements) was 90% of a PostgreSQL run, with 30 workers and the
+# server competing for the same cores.
+_pg_schema: dict[str, object] = {}
+
+# Everything a test could change about the schema: relations (tables, indexes,
+# sequences, views) with their columns, types, nullability and defaults, and
+# every constraint.
+_PG_SCHEMA_FINGERPRINT = """
+SELECT md5(coalesce(string_agg(item, ',' ORDER BY item), '')) FROM (
+    SELECT c.relname || ':' || c.relkind::text || ':' || coalesce(a.attname, '') || ':'
+        || coalesce(format_type(a.atttypid, a.atttypmod), '') || ':' || coalesce(a.attnotnull::text, '')
+        || ':' || coalesce(pg_get_expr(d.adbin, d.adrelid), '') AS item
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    LEFT JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+    LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+    WHERE n.nspname = 'public'
+    UNION ALL
+    SELECT 'constraint:' || conname || ':' || pg_get_constraintdef(oid)
+    FROM pg_constraint WHERE connamespace = 'public'::regnamespace
+) AS schema_items
+"""
+
+
+# Every row out and every id back to 1. DELETE rather than TRUNCATE: TRUNCATE
+# gives each table and index a new file, about three times the cost for the few
+# rows a test leaves. Foreign-key triggers are off for this transaction only
+# (the throwaway server's superuser), so the order does not matter.
+_PG_EMPTY_TABLES = """
+DO $$
+DECLARE r record;
+BEGIN
+    PERFORM set_config('session_replication_role', 'replica', true);
+    FOR r IN SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename LOOP
+        EXECUTE format('DELETE FROM public.%I', r.tablename);
+    END LOOP;
+    FOR r IN SELECT c.oid::regclass AS seq FROM pg_class c
+             WHERE c.relkind = 'S' AND c.relnamespace = 'public'::regnamespace LOOP
+        PERFORM setval(r.seq, 1, false);
+    END LOOP;
+END $$
+"""
+
+
+async def _reset_pg_test_schema(conn) -> None:
+    """An empty test database with the models' schema, as cheaply as possible.
+
+    Emptied (ids restart at 1) when the schema is still the one built for this
+    worker; a full rebuild the first time, after a test changed the schema (a
+    migration test adding a column), and when a model loaded since adds a table.
+    """
+    from sqlalchemy import text
+
+    from backend.app.core.database import load_all_models
+
+    load_all_models()
+    tables = set(Base.metadata.tables)
+    fingerprint = (await conn.execute(text(_PG_SCHEMA_FINGERPRINT))).scalar_one()
+    if _pg_schema.get("fingerprint") != fingerprint or _pg_schema.get("tables") != tables:
+        await conn.execute(text("DROP SCHEMA public CASCADE"))
+        await conn.execute(text("CREATE SCHEMA public"))
+        await conn.run_sync(Base.metadata.create_all)
+        _pg_schema["fingerprint"] = (await conn.execute(text(_PG_SCHEMA_FINGERPRINT))).scalar_one()
+        _pg_schema["tables"] = tables
+        return
+    await conn.execute(text(_PG_EMPTY_TABLES))
+
+
+async def _finish_query_cancellations() -> None:
+    """Wait for asyncpg to finish cancelling queries in this test's loop.
+
+    A test that cancels a task mid-query (to stop the background work a
+    handler started) awaits the task, but asyncpg cancels the query on the
+    server in a task of its own. If the test ends first, that task is still
+    pending when the loop closes and is reported as an unraisable
+    "Connection._cancel" coroutine in some later test.
+    """
+    current = asyncio.current_task()
+    pending = [
+        task
+        for task in asyncio.all_tasks()
+        if task is not current
+        and not task.done()
+        and getattr(task.get_coro(), "__qualname__", "") == "Connection._cancel"
+    ]
+    if pending:
+        await asyncio.wait(pending, timeout=5)
+
+
+async def _stop_background_tasks() -> None:
+    """Cancel the background tasks this test's code spawned, and wait for them.
+
+    A task still in a query when the loop closes gets its answer from
+    aiosqlite's worker thread into the closed loop ("Event loop is closed"),
+    reported as a thread exception in whatever test runs next on the worker.
+    Cancelled here, its session closes while the loop still runs.
+    """
+    from backend.app.core.tasks import _background_tasks
+
+    loop = asyncio.get_running_loop()
+    pending = [task for task in _background_tasks if not task.done() and task.get_loop() is loop]
+    for task in pending:
+        task.cancel()
+    if pending:
+        await asyncio.wait(pending, timeout=5)
+
+
+async def _release_app_engine() -> None:
+    """Close the app engine's pooled connections before this test's loop ends.
+
+    Code that opens its own session (print completion, services) uses the
+    app's module-level engine, shared by every test on the worker. Its pool
+    would keep a connection opened in this test's event loop into the next
+    test's, where SQLAlchemy closes it in a loop it does not belong to; on
+    PostgreSQL that leaves asyncpg's cleanup unawaited, reported as an
+    unraisable "Connection._cancel" coroutine in some later test.
+    """
+    # First: a task still holding a connection would return it to the pool
+    # after the dispose below has replaced that pool, and it is never closed.
+    await _stop_background_tasks()
+    await _finish_query_cancellations()
+    await _app_engine.dispose()
+
+
+@pytest.fixture(autouse=True)
+async def _app_engine_released_after_each_test():
+    """Every test, not only those with test_engine: any of them can reach
+    the app engine through code that opens its own session.
+
+    On SQLite too: an aiosqlite connection belongs to the loop it was opened
+    in, so one kept in the pool answers the next test's query into a closed
+    loop ("Event loop is closed" from aiosqlite's worker thread).
+    """
+    yield
+    await _release_app_engine()
+
+
 @pytest.fixture
 async def test_engine():
     """Create a test database engine."""
     engine = create_async_engine(TEST_DATABASE_URL, echo=False)
 
-    # Import all models to register them
-    from backend.app.models import (
-        ams_history,
-        ams_label,
-        api_key,
-        archive,
-        auth_ephemeral,
-        color_catalog,
-        external_link,
-        filament,
-        group,
-        kprofile_note,
-        maintenance,
-        notification,
-        notification_live_activity,
-        notification_template,
-        oidc_provider,
-        pending_slot_assignment,  # noqa: F401
-        print_log,
-        print_queue,
-        printer,
-        project,
-        project_bom,
-        project_plan,
-        settings,
-        slot_preset,
-        smart_plug,
-        smart_plug_energy_snapshot,  # noqa: F401
-        spool,
-        spool_assignment,
-        spool_catalog,
-        spool_k_profile,
-        spool_usage_history,
-        spoolman_k_profile,
-        spoolman_slot_assignment,
-        user,
-        user_email_pref,
-        user_otp_code,
-        user_totp,
-        virtual_printer,
-    )
+    # Every model, as the app's schema has them: a hand-kept list here fell
+    # behind and left four tables out of the SQLite test database.
+    from backend.app.core.database import load_all_models
+
+    load_all_models()
+
+    if TEST_PG_URL is not None:
+        # The same engine setup as the app's (UTC session, aware datetimes
+        # made naive), on this worker's own database, emptied for each test.
+        from backend.app.core.database import _create_engine
+
+        await engine.dispose()
+        engine = _create_engine(TEST_PG_URL)
+        async with engine.begin() as conn:
+            await _reset_pg_test_schema(conn)
+        yield engine
+        await _release_app_engine()
+        await engine.dispose()
+        return
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
     yield engine
+    await _release_app_engine()
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
@@ -174,8 +538,17 @@ async def async_client(test_engine, db_session) -> AsyncGenerator[AsyncClient, N
     test_async_session = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
 
     async def override_get_db():
+        # Mirror production get_db (core/database.py): commit on success,
+        # rollback on error. Endpoints that rely on the request-scoped
+        # implicit commit (e.g. create_project, which only flushes) would
+        # otherwise silently lose their writes in tests (#1897).
         async with test_async_session() as session:
-            yield session
+            try:
+                yield session
+                await session.commit()
+            except BaseException:
+                await session.rollback()
+                raise
 
     app.dependency_overrides[get_db] = override_get_db
 
@@ -188,6 +561,10 @@ async def async_client(test_engine, db_session) -> AsyncGenerator[AsyncClient, N
         patch("backend.app.core.database.async_session", test_async_session),
         patch("backend.app.core.auth.async_session", test_async_session),
         patch("backend.app.main.async_session", test_async_session),
+        # Obico endpoints load settings through the service's module-level binding;
+        # without this patch they'd read whatever DB the cwd resolves to (#1546).
+        patch("backend.app.services.obico_detection.async_session", test_async_session),
+        patch("backend.app.services.octoeverywhere_detection.async_session", test_async_session),
         patch("backend.app.main.init_printer_connections", mock_init_printer_connections),
     ):
         # Seed default groups for tests that need them
@@ -199,11 +576,9 @@ async def async_client(test_engine, db_session) -> AsyncGenerator[AsyncClient, N
             yield client
 
         # The app lifespan called init_db() which used the module-level engine
-        # (not the test engine), creating aiosqlite connections. Dispose those
-        # connections so their background threads finish before the event loop closes.
-        from backend.app.core.database import engine as real_engine
-
-        await real_engine.dispose()
+        # (not the test engine), creating aiosqlite connections. Close those,
+        # and stop background work still using them, before the loop closes.
+        await _release_app_engine()
 
     app.dependency_overrides.clear()
 
@@ -303,7 +678,6 @@ def mock_mqtt_smart_plug_service():
         # Create a mock smart_plug_service
         mock_service = MagicMock()
         mock_service.is_configured = MagicMock(return_value=True)
-        mock_service.has_broker_settings = MagicMock(return_value=True)
         mock_service.configure = AsyncMock(return_value=True)
         mock_service.subscribe = MagicMock()
         mock_service.unsubscribe = MagicMock()
@@ -338,6 +712,8 @@ def mock_httpx_client():
 
         mock_instance.get = AsyncMock(return_value=mock_response)
         mock_instance.post = AsyncMock(return_value=mock_response)
+        # ntfy switches to PUT when a photo is attached (e.g. the sample image on Test).
+        mock_instance.put = AsyncMock(return_value=mock_response)
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock()
 
@@ -432,6 +808,29 @@ def smart_plug_factory(db_session):
 
 
 @pytest.fixture
+async def printer_1(db_session):
+    """A printer with id 1, for tests whose rows refer to printer 1 directly.
+
+    Without it those rows point at nothing, which only SQLite (foreign keys
+    off) accepts.
+    """
+    from sqlalchemy import text
+
+    from backend.app.models.printer import Printer
+
+    printer = Printer(
+        id=1, name="Printer 1", serial_number="00M09A900000001", ip_address="192.168.1.250", access_code="12345678"
+    )
+    db_session.add(printer)
+    await db_session.flush()
+    if TEST_PG_URL is not None:
+        # An explicit id does not move the sequence on.
+        await db_session.execute(text("SELECT setval(pg_get_serial_sequence('printers', 'id'), 1)"))
+    await db_session.commit()
+    return printer
+
+
+@pytest.fixture
 def printer_factory(db_session):
     """Factory to create test printers."""
     _counter = [0]  # Use list to allow mutation in nested function
@@ -463,6 +862,32 @@ def printer_factory(db_session):
 
 
 @pytest.fixture
+def location_factory(db_session):
+    _counter = [0]
+
+    async def _create_location(**kwargs):
+        from backend.app.models.location import Location
+
+        _counter[0] += 1
+        counter = _counter[0]
+
+        name = kwargs.pop("name", f"Test Location {counter}")
+        defaults = {
+            "name": name,
+            "name_key": name.strip().lower(),
+        }
+        defaults.update(kwargs)
+
+        location = Location(**defaults)
+        db_session.add(location)
+        await db_session.commit()
+        await db_session.refresh(location)
+        return location
+
+    return _create_location
+
+
+@pytest.fixture
 def notification_provider_factory(db_session):
     """Factory to create test notification providers."""
 
@@ -484,6 +909,7 @@ def notification_provider_factory(db_session):
             "on_print_stopped": True,
             "on_print_progress": False,
             "on_print_missing_spool_assignment": False,
+            "on_billing_charge_failed": True,
             "on_printer_offline": False,
             "on_printer_error": False,
             "on_filament_low": False,

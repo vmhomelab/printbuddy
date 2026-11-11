@@ -2,7 +2,7 @@
  * Tests for the StatsPage component.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import { render } from '../utils';
 import { StatsPage } from '../../pages/StatsPage';
@@ -14,6 +14,7 @@ const mockStats = {
   total_prints: 150,
   successful_prints: 140,
   failed_prints: 10,
+  cancelled_prints: 0,
   total_print_time_hours: 500.5,
   total_filament_grams: 5500,
   total_cost: 125.50,
@@ -215,11 +216,14 @@ describe('StatsPage', () => {
       });
     });
 
-    it('uses total_prints as denominator so cancelled/stopped events count (#1390)', async () => {
-      // 40 successful out of 100 total — with 20 failed and 40 cancelled/stopped
-      // mixed in. Old formula (successful / (successful + failed)) would have
-      // shown 40 / (40 + 20) = 67%. New formula shows 40 / 100 = 40%, which
-      // matches the "Total Prints: 100" the user reads right above the gauge.
+    it('excludes cancelled prints from the rate denominator and surfaces them in the breakdown (#1390)', async () => {
+      // 40 completed, 20 failed (printer-detected), 40 user-cancelled out of
+      // 100 total. The earlier fix divided by total_prints and reported 40%,
+      // which conflated user intent with print quality — cancelling a roll
+      // because you changed your mind shouldn't be counted against the
+      // printer's success rate. New behaviour: gauge = 40 / (40 + 20) = 67%;
+      // cancelled count still visible in the row breakdown so the missing
+      // 40 prints don't silently disappear.
       server.use(
         http.get('/api/v1/archives/stats', () =>
           HttpResponse.json({
@@ -227,6 +231,7 @@ describe('StatsPage', () => {
             total_prints: 100,
             successful_prints: 40,
             failed_prints: 20,
+            cancelled_prints: 35,
           }),
         ),
       );
@@ -234,7 +239,13 @@ describe('StatsPage', () => {
 
       await waitFor(() => {
         expect(screen.getByText('Success Rate')).toBeInTheDocument();
-        expect(screen.getByText('40%')).toBeInTheDocument();
+        expect(screen.getByText('67%')).toBeInTheDocument();
+        // Cancelled count surfaces in the breakdown so the missing prints
+        // aren't silently swallowed (was the original bug in #1390). Pick a
+        // value distinct from successful_prints/failed_prints to keep the
+        // getByText query unambiguous.
+        expect(screen.getByText('Cancelled:')).toBeInTheDocument();
+        expect(screen.getByText('35')).toBeInTheDocument();
       });
     });
   });
@@ -254,6 +265,27 @@ describe('StatsPage', () => {
       await waitFor(() => {
         expect(screen.getByText('Energy Cost')).toBeInTheDocument();
       });
+    });
+
+    it('shows printer wear cost once a printer has a rate (#694)', async () => {
+      server.use(
+        http.get('/api/v1/archives/stats', () => HttpResponse.json({ ...mockStats, total_wear_cost: 7.25 })),
+      );
+      render(<StatsPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Wear Cost')).toBeInTheDocument();
+      });
+      expect(screen.getByText(/7\.25/)).toBeInTheDocument();
+    });
+
+    it('leaves the wear tile out when no wear was recorded (#694)', async () => {
+      render(<StatsPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Energy Cost')).toBeInTheDocument();
+      });
+      expect(screen.queryByText('Wear Cost')).not.toBeInTheDocument();
     });
   });
 
@@ -279,6 +311,49 @@ describe('StatsPage', () => {
 
       await waitFor(() => {
         expect(screen.getByText('Failure Analysis')).toBeInTheDocument();
+      });
+    });
+
+    it('translates camelCase failure-reason keys instead of rendering them raw (#1687 follow-up)', async () => {
+      // The widget groups by the raw PrintLogEntry.failure_reason column.
+      // The new editor stores camelCase keys (`filamentRunout`), so the widget
+      // must translate them — otherwise users see the literal key text.
+      server.use(
+        http.get('/api/v1/archives/analysis/failures', () => {
+          return HttpResponse.json({
+            ...mockFailureAnalysis,
+            failures_by_reason: { filamentRunout: 2, cloggedNozzle: 1 },
+          });
+        }),
+      );
+
+      render(<StatsPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Filament runout')).toBeInTheDocument();
+        expect(screen.getByText('Clogged nozzle')).toBeInTheDocument();
+      });
+      expect(screen.queryByText('filamentRunout')).not.toBeInTheDocument();
+      expect(screen.queryByText('cloggedNozzle')).not.toBeInTheDocument();
+    });
+
+    it('renders legacy translated-text failure reasons unchanged (#1687 follow-up)', async () => {
+      // Old rows from before the key/value migration stored the translated
+      // text. The defaultValue fallback in the t() call must surface them
+      // as-is rather than turning them into the literal key string.
+      server.use(
+        http.get('/api/v1/archives/analysis/failures', () => {
+          return HttpResponse.json({
+            ...mockFailureAnalysis,
+            failures_by_reason: { 'Custom legacy reason': 4 },
+          });
+        }),
+      );
+
+      render(<StatsPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Custom legacy reason')).toBeInTheDocument();
       });
     });
 
@@ -434,6 +509,46 @@ describe('StatsPage', () => {
       });
     });
 
+    it('Most Expensive includes per-print energy cost (#1432)', async () => {
+      // Cheap filament + expensive heated-chamber print must outrank a
+      // pricier-filament print once measured energy cost is added in.
+      server.use(
+        http.get('/api/v1/archives/slim', () =>
+          HttpResponse.json([
+            {
+              id: 20, created_at: '2024-03-01T10:00:00Z',
+              started_at: '2024-03-01T10:00:00Z',
+              completed_at: '2024-03-01T14:00:00Z',
+              print_name: 'PLA Filament Heavy', status: 'completed',
+              printer_id: 1, filament_type: 'PLA', filament_color: '#00FF00',
+              filament_used_grams: 200, actual_time_seconds: 14400,
+              print_time_seconds: 14000, cost: 5.00,
+              energy_kwh: null, energy_cost: null, quantity: 1,
+            },
+            {
+              id: 21, created_at: '2024-03-02T10:00:00Z',
+              started_at: '2024-03-02T10:00:00Z',
+              completed_at: '2024-03-02T20:00:00Z',
+              print_name: 'ABS Energy Hog', status: 'completed',
+              printer_id: 1, filament_type: 'ABS', filament_color: '#FF0000',
+              filament_used_grams: 100, actual_time_seconds: 36000,
+              print_time_seconds: 35000, cost: 4.00,
+              energy_kwh: 8.5, energy_cost: 2.55, quantity: 1,
+            },
+          ]),
+        ),
+      );
+
+      render(<StatsPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Most Expensive')).toBeInTheDocument();
+      });
+      // 4.00 + 2.55 = 6.55 beats 5.00 flat
+      expect(screen.getByText('$6.55')).toBeInTheDocument();
+      expect(screen.getAllByText('ABS Energy Hog').length).toBeGreaterThan(0);
+    });
+
     it('shows success streak record', async () => {
       render(<StatsPage />);
 
@@ -460,6 +575,22 @@ describe('StatsPage', () => {
       await waitFor(() => {
         expect(screen.getByText('Recalculate Costs')).toBeInTheDocument();
       });
+    });
+
+    it('says when Spoolman could not be reached for its prices (#3414)', async () => {
+      server.use(
+        http.post('/api/v1/archives/recalculate-costs', () =>
+          HttpResponse.json({ message: '', updated: 2, preserved: 0, usage_repriced: 3, spoolman_unreachable: 4 })
+        )
+      );
+      render(<StatsPage />);
+      const button = await screen.findByText('Recalculate Costs');
+
+      button.click();
+
+      expect(
+        await screen.findByText('Spoolman could not be reached: 4 usage records of its spools kept their old price')
+      ).toBeInTheDocument();
     });
   });
 
@@ -525,6 +656,48 @@ describe('StatsPage', () => {
       expect(totalPrints?.querySelector('svg[aria-label]')).toBeNull();
       const printTime = screen.getByText('Print Time').closest('div');
       expect(printTime?.querySelector('svg[aria-label]')).toBeNull();
+    });
+  });
+
+  describe('deleted printers (#2873)', () => {
+    // The per-printer breakdown only renders at half width, and the dashboard
+    // reads its sizes back from localStorage.
+    const halfWidthSuccessRate = JSON.stringify({
+      order: ['success-rate'],
+      hidden: [],
+      sizes: { 'success-rate': 2 },
+    });
+
+    afterEach(() => {
+      vi.mocked(localStorage.getItem).mockReset();
+    });
+
+    it('labels history from a deleted printer with the name it ran under', async () => {
+      vi.mocked(localStorage.getItem).mockImplementation((key: string) =>
+        key === 'bambusy-dashboard-layout-v2' ? halfWidthSuccessRate : null
+      );
+      server.use(
+        http.get('/api/v1/archives/stats', () =>
+          HttpResponse.json({
+            ...mockStats,
+            // Printer 7 was deleted with its prints kept, so it is missing from
+            // /printers and used to show as "Printer 7".
+            prints_by_printer: { '1': 100, '7': 12 },
+            printer_names: { '1': 'Name At The Time', '7': 'Ultron' },
+          })
+        )
+      );
+
+      render(<StatsPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Ultron')).toBeInTheDocument();
+      });
+      expect(screen.queryByText('Printer 7')).not.toBeInTheDocument();
+      // A printer that still exists is named from the live record instead, so a
+      // rename shows up without waiting for the next print.
+      expect(screen.getAllByText('X1 Carbon').length).toBeGreaterThan(0);
+      expect(screen.queryByText('Name At The Time')).not.toBeInTheDocument();
     });
   });
 });

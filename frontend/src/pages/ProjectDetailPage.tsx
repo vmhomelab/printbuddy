@@ -31,7 +31,6 @@ import {
   FolderOpen,
   Download,
   Pencil,
-  Play,
   CalendarPlus,
   FileBox,
 } from 'lucide-react';
@@ -50,12 +49,9 @@ import { ProjectPlanSection } from '../components/ProjectPlanSection';
 // Project edit modal (reused from ProjectsPage)
 import { ProjectModal } from './ProjectsPage';
 import { getCurrencySymbol } from '../utils/currency';
-
-// Returns true for sliced (printable) files: .gcode and .gcode.3mf
-function isSlicedFilename(filename: string): boolean {
-  const lower = filename.toLowerCase();
-  return lower.endsWith('.gcode') || lower.endsWith('.gcode.3mf');
-}
+import { isSlicedLibraryFile } from '../utils/libraryFiles';
+import { NumberInput } from '../components/NumberInput';
+import { useUiSettings } from '../hooks/useUiSettings';
 
 function formatFilament(grams: number): string {
   if (grams >= 1000) {
@@ -69,7 +65,7 @@ type TFunction = (key: string, options?: Record<string, unknown>) => string;
 function StatusBadge({ status, t }: { status: string; t: TFunction }) {
   const colors = {
     active: 'bg-bambu-green/20 text-bambu-green',
-    completed: 'bg-blue-500/20 text-blue-400',
+    completed: 'bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-400',
     archived: 'bg-bambu-gray/20 text-bambu-gray',
   };
   const color = colors[status as keyof typeof colors] || colors.active;
@@ -135,7 +131,7 @@ function ArchiveGrid({ archives, t }: { archives: Archive[]; t: TFunction }) {
       {archives.map((archive) => (
         <Link
           key={archive.id}
-          to={`/archives?search=${encodeURIComponent(archive.print_name || '')}`}
+          to={`/archives?highlight=${archive.id}`}
           className="group relative aspect-square rounded-lg bg-bambu-dark border border-bambu-dark-tertiary overflow-hidden hover:border-bambu-green transition-colors"
         >
           {archive.thumbnail_path ? (
@@ -175,9 +171,9 @@ function ArchiveGrid({ archives, t }: { archives: Archive[]; t: TFunction }) {
 function PriorityBadge({ priority, t }: { priority: string; t: TFunction }) {
   const config = {
     low: { color: 'bg-gray-500/20 text-gray-400', label: t('projectDetail.priority.low') },
-    normal: { color: 'bg-blue-500/20 text-blue-400', label: t('projectDetail.priority.normal') },
-    high: { color: 'bg-orange-500/20 text-orange-400', label: t('projectDetail.priority.high') },
-    urgent: { color: 'bg-red-500/20 text-red-400', label: t('projectDetail.priority.urgent') },
+    normal: { color: 'bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-400', label: t('projectDetail.priority.normal') },
+    high: { color: 'bg-orange-100 dark:bg-orange-500/20 text-orange-700 dark:text-orange-400', label: t('projectDetail.priority.high') },
+    urgent: { color: 'bg-red-100 dark:bg-red-500/20 text-red-700 dark:text-red-400', label: t('projectDetail.priority.urgent') },
   };
   const { color, label } = config[priority as keyof typeof config] || config.normal;
 
@@ -196,9 +192,9 @@ function getDueDateStatus(dateString: string | null, t: TFunction): { color: str
   const now = new Date();
   const diffDays = Math.ceil((dueDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
 
-  if (diffDays < 0) return { color: 'text-red-400', label: t('projectDetail.dueDate.overdue') };
-  if (diffDays === 0) return { color: 'text-orange-400', label: t('projectDetail.dueDate.today') };
-  if (diffDays <= 3) return { color: 'text-yellow-400', label: t('projectDetail.dueDate.daysLeft', { count: diffDays }) };
+  if (diffDays < 0) return { color: 'text-red-700 dark:text-red-400', label: t('projectDetail.dueDate.overdue') };
+  if (diffDays === 0) return { color: 'text-orange-700 dark:text-orange-400', label: t('projectDetail.dueDate.today') };
+  if (diffDays <= 3) return { color: 'text-yellow-700 dark:text-yellow-400', label: t('projectDetail.dueDate.daysLeft', { count: diffDays }) };
   return { color: 'text-bambu-gray', label: t('projectDetail.dueDate.daysLeft', { count: diffDays }) };
 }
 
@@ -393,7 +389,7 @@ function ProductionPlan({ bomItems, archives, files, fileStates, onStageFile }: 
                         <td className="px-3 py-2 text-bambu-gray-light">-</td>
                         <td className="px-3 py-2 text-bambu-gray-light">{[formatProductionFilament(file.filament_used_grams), formatProductionDuration(file.print_time_seconds)].filter(Boolean).join(' · ') || '-'}</td>
                         <td className="px-3 py-2 text-right">
-                          {isSlicedFilename(file.filename) ? (
+                          {isSlicedLibraryFile(file) ? (
                             <button
                               type="button"
                               onClick={() => onStageFile(file)}
@@ -479,7 +475,7 @@ function buildFilamentReadiness(printer: PrintbuddyPrinter, requirements: FileFi
 }
 
 function buildDispatchSuggestions(files: LibraryFileListItem[], printers: PrintbuddyPrinter[], statuses: Array<PrinterStatus | undefined>, queue: PrintQueueItem[], assignments: SpoolAssignment[] = [], requirementsByFile = new Map<number, FileFilamentRequirements>()): DispatchSuggestion[] {
-  const printableFiles = files.filter((file) => isSlicedFilename(file.filename));
+  const printableFiles = files.filter((file) => isSlicedLibraryFile(file));
   return printableFiles.map((file) => {
     const alreadyQueued = queue.some((item) => {
       if (item.library_file_id === file.id) return true;
@@ -664,10 +660,7 @@ export function ProjectDetailPage() {
     enabled: projectId > 0,
   });
 
-  const { data: settings } = useQuery({
-    queryKey: ['settings'],
-    queryFn: api.getSettings,
-  });
+  const { data: settings } = useUiSettings();
 
   const { data: linkedFolders } = useQuery({
     queryKey: ['project-folders', projectId],
@@ -702,7 +695,7 @@ export function ProjectDetailPage() {
   });
 
   const filamentRequirementQueries = useQueries({
-    queries: (allProjectFiles || []).filter((file) => isSlicedFilename(file.filename)).map((file) => ({
+    queries: (allProjectFiles || []).filter((file) => isSlicedLibraryFile(file)).map((file) => ({
       queryKey: ['library-file-filament-requirements', file.id, 'project-dispatch'],
       queryFn: () => api.getLibraryFileFilamentRequirements(file.id),
       enabled: projectId > 0,
@@ -754,6 +747,29 @@ export function ProjectDetailPage() {
     }
     return map;
   }, [allProjectFiles]);
+
+  // Per-file completed-run counts (#1897); a file absent from the response has 0
+  const { data: fileProgress } = useQuery({
+    queryKey: ['project-file-progress', projectId],
+    queryFn: () => api.getProjectFileProgress(projectId),
+    enabled: projectId > 0,
+  });
+
+  const progressByFileId = useMemo(() => {
+    const map = new Map<number, number>();
+    for (const row of fileProgress ?? []) map.set(row.file_id, row.completed_count);
+    return map;
+  }, [fileProgress]);
+
+  // Complete sets (#1897): the number of finished assemblies — the minimum
+  // completed count across the project's printable files, capped at the target.
+  const completeSets = useMemo(() => {
+    const target = project?.target_sets;
+    if (!target || !allProjectFiles) return null;
+    const printable = allProjectFiles.filter((f) => isSlicedLibraryFile(f));
+    if (printable.length === 0) return null;
+    return Math.min(...printable.map((f) => Math.min(progressByFileId.get(f.id) ?? 0, target)));
+  }, [project?.target_sets, allProjectFiles, progressByFileId]);
 
   const currency = getCurrencySymbol(settings?.currency || 'USD');
   const timeFormat: TimeFormat = settings?.time_format || 'system';
@@ -1030,7 +1046,7 @@ export function ProjectDetailPage() {
       </div>
 
       {/* Progress bars (if targets set) */}
-      {(project.target_count || project.target_parts_count) && (
+      {(project.target_count || project.target_parts_count || project.target_sets) && (
         <Card>
           <CardContent className="p-4 space-y-4">
             {/* Plates progress */}
@@ -1093,6 +1109,27 @@ export function ProjectDetailPage() {
                 </div>
               </div>
             )}
+            {/* Complete sets progress (#1897): min per-file completed count */}
+            {project.target_sets ? (
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-sm text-bambu-gray">{t('projectDetail.progress.setsProgress')}</span>
+                  <span className="text-sm font-medium text-white">
+                    {completeSets ?? 0} / {project.target_sets} {t('projectDetail.progress.sets')}
+                  </span>
+                </div>
+                <div className="h-3 bg-bambu-dark rounded-full overflow-hidden">
+                  <div
+                    className="h-full transition-all duration-500"
+                    style={{
+                      width: `${Math.min(((completeSets ?? 0) / project.target_sets) * 100, 100)}%`,
+                      backgroundColor: (completeSets ?? 0) >= project.target_sets ? '#22c55e' : project.color || '#6b7280',
+                    }}
+                  />
+                </div>
+                <p className="text-xs text-bambu-gray/70 mt-1">{t('projectDetail.progress.setsHint')}</p>
+              </div>
+            ) : null}
           </CardContent>
         </Card>
       )}
@@ -1123,7 +1160,7 @@ export function ProjectDetailPage() {
             value={formatDurationFromHours(stats.total_print_time_hours)}
             subValue={stats.planned_source && stats.planned_print_time_hours ? t('projectDetail.stats.planned', { value: formatDurationFromHours(stats.planned_print_time_hours) }) : undefined}
             hint={stats.planned_source === 'files' ? t('projectDetail.stats.plannedFromFiles') : stats.planned_source === 'plan' ? t('projectDetail.stats.plannedFromPlan') : undefined}
-            color="text-yellow-400"
+            color="text-yellow-600 dark:text-yellow-400"
           />
           <StatCard
             icon={Printer}
@@ -1131,7 +1168,7 @@ export function ProjectDetailPage() {
             value={formatFilament(stats.total_filament_grams)}
             subValue={stats.planned_source && stats.planned_filament_grams ? t('projectDetail.stats.planned', { value: formatFilament(stats.planned_filament_grams) }) : undefined}
             hint={stats.planned_source === 'files' ? t('projectDetail.stats.plannedFromFiles') : stats.planned_source === 'plan' ? t('projectDetail.stats.plannedFromPlan') : undefined}
-            color="text-purple-400"
+            color="text-purple-600 dark:text-purple-400"
           />
           {(stats.plan_total_plates ?? 0) > 0 && (
             <StatCard
@@ -1155,10 +1192,84 @@ export function ProjectDetailPage() {
 
       <ProductionPlan bomItems={bomItems || []} archives={archives || []} files={allProjectFiles || []} fileStates={productionFileStates} onStageFile={(file) => { setSchedulePrinterIds([]); setScheduleFile(file); }} />
       <DispatchSuggestions suggestions={dispatchSuggestions} onReview={(suggestion) => { setSchedulePrinterIds(suggestion.printer ? [suggestion.printer.id] : []); setScheduleFile(suggestion.file); }} />
+      {/* #1264: the whole programme in one place. Deliberately a separate card
+          from the stats grid above — the figures there are this project's own
+          prints, and the two must not read as one set. The API sends
+          rollup_stats only when there is a sub-project, so there is never an
+          identical pair on screen. */}
+      {project.rollup_stats && (
+        <Card>
+          <CardContent className="p-4">
+            <h2 className="text-lg font-semibold text-white flex items-center gap-2 mb-3">
+              <FolderTree className="w-5 h-5" />
+              {t('projectDetail.rollup.title', { count: project.descendant_count })}
+            </h2>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div>
+                <p className="text-xs text-bambu-gray uppercase">{t('projectDetail.stats.printJobs')}</p>
+                <p className="text-lg font-semibold text-white">{project.rollup_stats.total_archives}</p>
+                <p className="text-sm text-bambu-gray">
+                  {t('projectDetail.stats.partsPrinted', { count: project.rollup_stats.completed_prints })}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-bambu-gray uppercase">{t('projectDetail.stats.printTime')}</p>
+                <p className="text-lg font-semibold text-white">
+                  {formatDurationFromHours(project.rollup_stats.total_print_time_hours)}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-bambu-gray uppercase">{t('projectDetail.stats.filamentUsed')}</p>
+                <p className="text-lg font-semibold text-white">
+                  {formatFilament(project.rollup_stats.total_filament_grams)}
+                </p>
+              </div>
+              {(() => {
+                const rollupCost =
+                  project.rollup_stats.estimated_cost +
+                  project.rollup_stats.total_energy_cost +
+                  (project.rollup_stats.total_wear_cost ?? 0) +
+                  project.rollup_stats.bom_cost;
+                if (rollupCost <= 0) return null;
+                return (
+                  <div>
+                    <p className="text-xs text-bambu-gray uppercase">{t('projectDetail.cost.totalCost')}</p>
+                    <p className="text-lg font-semibold text-bambu-green">
+                      {currency}{rollupCost.toFixed(2)}
+                    </p>
+                  </div>
+                );
+              })()}
+            </div>
+            {project.rollup_stats.progress_percent !== null && (
+              <div className="mt-4">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-sm text-bambu-gray">{t('projectDetail.rollup.progress')}</span>
+                  <span className="text-sm font-medium text-white">
+                    {t('projectDetail.rollup.percentComplete', {
+                      percent: project.rollup_stats.progress_percent.toFixed(0),
+                    })}
+                  </span>
+                </div>
+                <div className="h-3 bg-bambu-dark rounded-full overflow-hidden">
+                  <div
+                    className="h-full transition-all duration-500"
+                    style={{
+                      width: `${Math.min(project.rollup_stats.progress_percent, 100)}%`,
+                      backgroundColor:
+                        project.rollup_stats.progress_percent >= 100 ? '#22c55e' : project.color || '#6b7280',
+                    }}
+                  />
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* Cost tracking */}
       {stats && (() => {
-        const totalCost = stats.estimated_cost + stats.total_energy_cost + stats.bom_cost;
+        const totalCost = stats.estimated_cost + stats.total_energy_cost + (stats.total_wear_cost ?? 0) + stats.bom_cost;
         return (stats.estimated_cost > 0 || totalCost > 0 || project.budget !== null);
       })() && (
         <Card>
@@ -1186,8 +1297,16 @@ export function ProjectDetailPage() {
                   </p>
                 </div>
               )}
+              {(stats.total_wear_cost ?? 0) > 0 && (
+                <div>
+                  <p className="text-xs text-bambu-gray uppercase">{t('projectDetail.cost.wear')}</p>
+                  <p className="text-lg font-semibold text-white">
+                    {currency}{stats.total_wear_cost.toFixed(2)}
+                  </p>
+                </div>
+              )}
               {(() => {
-                const totalCost = stats.estimated_cost + stats.total_energy_cost + stats.bom_cost;
+                const totalCost = stats.estimated_cost + stats.total_energy_cost + (stats.total_wear_cost ?? 0) + stats.bom_cost;
                 if (totalCost <= 0) return null;
                 return (
                   <div>
@@ -1202,7 +1321,7 @@ export function ProjectDetailPage() {
                 );
               })()}
               {project.budget !== null && (() => {
-                const totalCost = stats.estimated_cost + stats.total_energy_cost + stats.bom_cost;
+                const totalCost = stats.estimated_cost + stats.total_energy_cost + (stats.total_wear_cost ?? 0) + stats.bom_cost;
                 const remaining = project.budget - totalCost;
                 return (
                   <div>
@@ -1210,7 +1329,7 @@ export function ProjectDetailPage() {
                     <p className="text-sm text-bambu-gray">
                       {t('projectDetail.cost.total')}: <span className="text-white font-semibold">{currency}{project.budget.toFixed(2)}</span>
                     </p>
-                    <p className={`text-sm ${remaining >= 0 ? 'text-bambu-green' : 'text-red-400'}`}>
+                    <p className={`text-sm ${remaining >= 0 ? 'text-bambu-green' : 'text-red-700 dark:text-red-400'}`}>
                       {t('projectDetail.cost.remaining')}: <span className="font-semibold">{currency}{remaining.toFixed(2)}</span>
                     </p>
                   </div>
@@ -1234,27 +1353,48 @@ export function ProjectDetailPage() {
                 <Link
                   key={child.id}
                   to={`/projects/${child.id}`}
-                  className="flex items-center justify-between p-3 bg-bambu-dark rounded-lg hover:bg-bambu-dark-tertiary transition-colors"
+                  className="flex items-center justify-between gap-4 p-3 bg-bambu-dark rounded-lg hover:bg-bambu-dark-tertiary transition-colors"
                 >
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-3 min-w-0">
                     <div
-                      className="w-3 h-3 rounded-full"
+                      className="w-3 h-3 rounded-full flex-shrink-0"
                       style={{ backgroundColor: child.color || '#6b7280' }}
                     />
-                    <span className="text-white">{child.name}</span>
-                    <span className={`text-xs px-2 py-0.5 rounded ${
+                    <span className="text-white truncate">{child.name}</span>
+                    <span className={`text-xs px-2 py-0.5 rounded flex-shrink-0 ${
                       child.status === 'completed' ? 'bg-status-ok/20 text-status-ok' :
                       child.status === 'archived' ? 'bg-bambu-gray/20 text-bambu-gray' :
-                      'bg-blue-500/20 text-blue-400'
+                      'bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-400'
                     }`}>
                       {child.status}
                     </span>
+                    {/* A branch of its own, so its figures cover more than the
+                        one project named on this row (#1264). */}
+                    {child.descendant_count > 0 && (
+                      <span className="text-xs text-bambu-gray flex-shrink-0 inline-flex items-center gap-1">
+                        <FolderTree className="w-3 h-3" />
+                        {child.descendant_count}
+                      </span>
+                    )}
                   </div>
-                  {child.progress_percent !== null && (
-                    <span className="text-sm text-bambu-gray">
-                      {child.progress_percent.toFixed(0)}%
-                    </span>
-                  )}
+                  {/* Each row carries its own branch's roll-up, so the rows add
+                      up to the card above minus this project's own prints. */}
+                  <div className="flex items-center gap-4 text-sm text-bambu-gray flex-shrink-0">
+                    {child.total_archives > 0 && (
+                      <span className="hidden sm:inline">
+                        {t('projectDetail.subProjects.jobs', { count: child.total_archives })}
+                      </span>
+                    )}
+                    {child.total_filament_grams > 0 && (
+                      <span className="hidden md:inline">{formatFilament(child.total_filament_grams)}</span>
+                    )}
+                    {child.total_cost > 0 && (
+                      <span className="hidden md:inline">{currency}{child.total_cost.toFixed(2)}</span>
+                    )}
+                    {child.progress_percent !== null && (
+                      <span>{child.progress_percent.toFixed(0)}%</span>
+                    )}
+                  </div>
                 </Link>
               ))}
             </div>
@@ -1438,7 +1578,7 @@ export function ProjectDetailPage() {
                     ) : (
                       <div className="space-y-1 pl-3">
                         {files.map((file) => {
-                          const printable = isSlicedFilename(file.filename);
+                          const printable = isSlicedLibraryFile(file);
                           return (
                             <div
                               key={file.id}
@@ -1464,29 +1604,57 @@ export function ProjectDetailPage() {
                                 </p>
                                 <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
                                   file.file_type === '3mf' ? 'bg-bambu-green/20 text-bambu-green'
-                                  : file.file_type === 'gcode' ? 'bg-blue-500/20 text-blue-400'
+                                  : (file.file_type === 'gcode' || file.file_type === 'gcode.3mf') ? 'bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-400'
                                   : 'bg-bambu-gray/20 text-bambu-gray'
                                 }`}>
                                   {file.file_type.toUpperCase()}
                                 </span>
                               </div>
 
+                              {/* Per-file print progress (#1897) */}
+                              {printable && (() => {
+                                const done = progressByFileId.get(file.id) ?? 0;
+                                const target = project.target_sets;
+                                if (!target) {
+                                  // No copies-per-file target — show a plain printed-count badge
+                                  return done > 0 ? (
+                                    <span
+                                      className="shrink-0 text-xs px-1.5 py-0.5 rounded-full bg-bambu-dark text-bambu-gray"
+                                      title={t('projectDetail.files.printedCount', { count: done })}
+                                    >
+                                      {done}×
+                                    </span>
+                                  ) : null;
+                                }
+                                const pct = Math.min((done / target) * 100, 100);
+                                const textColor =
+                                  done >= target ? 'text-status-ok' : done > 0 ? 'text-status-warning' : 'text-bambu-gray';
+                                const barColor =
+                                  done >= target ? 'bg-status-ok' : done > 0 ? 'bg-status-warning' : 'bg-bambu-gray';
+                                return (
+                                  <div
+                                    className="shrink-0 w-20"
+                                    title={t('projectDetail.files.progressTooltip', { done, target })}
+                                  >
+                                    <p className={`text-xs font-medium text-right ${textColor}`}>
+                                      {done} / {target}
+                                    </p>
+                                    <div className="h-1 bg-bambu-dark rounded-full overflow-hidden mt-1">
+                                      <div className={`h-full ${barColor}`} style={{ width: `${pct}%` }} />
+                                    </div>
+                                  </div>
+                                );
+                              })()}
+
                               {/* Print actions for sliced files */}
                               {printable && (
                                 <div className="flex items-center gap-1 shrink-0">
                                   <button
                                     onClick={() => setPrintFile(file)}
-                                    title={t('projectDetail.files.print')}
+                                    title={t('common.print')}
                                     className="p-1.5 rounded hover:bg-bambu-green/20 text-bambu-green transition-colors"
                                   >
-                                    <Play className="w-4 h-4" />
-                                  </button>
-                                  <button
-                                    onClick={() => setScheduleFile(file)}
-                                    title={t('projectDetail.files.addToQueue')}
-                                    className="p-1.5 rounded hover:bg-blue-500/20 text-blue-400 transition-colors"
-                                  >
-                                    <CalendarPlus className="w-4 h-4" />
+                                    <Printer className="w-4 h-4" />
                                   </button>
                                 </div>
                               )}
@@ -1561,12 +1729,12 @@ export function ProjectDetailPage() {
                   autoFocus
                 />
                 <div className="flex gap-2">
-                  <input
-                    type="number"
+                  <NumberInput
                     value={newBomQty}
-                    onChange={(e) => setNewBomQty(parseInt(e.target.value) || 1)}
+                    onChange={setNewBomQty}
+                    fallback={1}
                     className="w-20 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-bambu-green"
-                    min="1"
+                    min={1}
                     placeholder={t('projectDetail.bom.qty')}
                   />
                   <input
@@ -1636,12 +1804,12 @@ export function ProjectDetailPage() {
                           autoFocus
                         />
                         <div className="flex gap-2">
-                          <input
-                            type="number"
+                          <NumberInput
                             value={editBomQty}
-                            onChange={(e) => setEditBomQty(parseInt(e.target.value) || 1)}
+                            onChange={setEditBomQty}
+                            fallback={1}
                             className="w-20 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-bambu-green"
-                            min="1"
+                            min={1}
                             placeholder={t('projectDetail.bom.qty')}
                           />
                           <input
@@ -1746,7 +1914,7 @@ export function ProjectDetailPage() {
                             href={item.sourcing_url}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="flex items-center gap-1 mt-1 text-xs text-blue-400 hover:text-blue-300 transition-colors"
+                            className="flex items-center gap-1 mt-1 text-xs text-blue-700 dark:text-blue-400 hover:text-blue-900 dark:hover:text-blue-300 transition-colors"
                             onClick={(e) => e.stopPropagation()}
                           >
                             <ExternalLink className="w-3 h-3 shrink-0" />
@@ -1811,7 +1979,7 @@ export function ProjectDetailPage() {
                   <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${
                     event.event_type === 'print_completed' ? 'bg-status-ok/20 text-status-ok' :
                     event.event_type === 'print_failed' ? 'bg-status-error/20 text-status-error' :
-                    event.event_type === 'print_started' ? 'bg-yellow-500/20 text-yellow-400' :
+                    event.event_type === 'print_started' ? 'bg-yellow-100 dark:bg-yellow-500/20 text-yellow-700 dark:text-yellow-400' :
                     'bg-bambu-dark-tertiary text-bambu-gray'
                   }`}>
                     {event.event_type === 'print_completed' && <CheckCircle className="w-4 h-4" />}
@@ -1876,7 +2044,7 @@ export function ProjectDetailPage() {
             </div>
             <div className="flex items-center gap-4 text-sm">
               {stats.in_progress_prints > 0 && (
-                <span className="text-yellow-400">
+                <span className="text-yellow-700 dark:text-yellow-400">
                   {t('projectDetail.queue.printing', { count: stats.in_progress_prints })}
                 </span>
               )}
@@ -1920,6 +2088,10 @@ export function ProjectDetailPage() {
             failed_count: stats?.failed_prints || 0,
             queue_count: stats?.queued_prints || 0,
             progress_percent: stats?.progress_percent || null,
+            // Required by ProjectListItem, but nothing in the dialog reads it —
+            // the parent picker works off the project list it fetches itself.
+            // Guarded like every other read of `children` on this page (#1264).
+            child_count: project.children?.length ?? 0,
             archives: [],
           }}
           onClose={() => setShowEditModal(false)}
@@ -1940,10 +2112,10 @@ export function ProjectDetailPage() {
         />
       )}
 
-      {/* Print directly from project — reprint mode */}
+      {/* Print from project */}
       {printFile && (
         <PrintModal
-          mode="reprint"
+          mode="create"
           libraryFileId={printFile.id}
           archiveName={printFile.print_name || printFile.filename}
           projectId={projectId}
@@ -1951,14 +2123,15 @@ export function ProjectDetailPage() {
           onSuccess={() => {
             setPrintFile(null);
             queryClient.invalidateQueries({ queryKey: ['archives'] });
+            queryClient.invalidateQueries({ queryKey: ['queue'] });
           }}
         />
       )}
 
-      {/* Add to queue from project */}
+      {/* Stage to queue from project (production plan / dispatch suggestions) */}
       {scheduleFile && (
         <PrintModal
-          mode="add-to-queue"
+          mode="create"
           libraryFileId={scheduleFile.id}
           archiveName={scheduleFile.print_name || scheduleFile.filename}
           initialSelectedPrinterIds={schedulePrinterIds}

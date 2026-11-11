@@ -5,17 +5,24 @@
  */
 import type { AMSTray, AMSUnit, InventorySpool, Printer, PrinterStatus, SpoolAssignment } from '../api/client';
 import { parseUTCDate } from './date';
+import { settingIdToFilamentId } from './filamentIds';
 
 /**
- * Normalize color format from various sources.
+ * Normalize color format from various sources for CSS rendering.
  * API returns "RRGGBBAA" (8-char), 3MF uses "#RRGGBB" (7-char with hash).
- * This normalizes to "#RRGGBB" format.
+ * Result is "#RRGGBB" for opaque colors and "#RRGGBBAA" when alpha < FF —
+ * CSS accepts both forms on `fill` / `backgroundColor`, and preserving alpha
+ * lets transparent filaments render translucent instead of collapsing to
+ * solid black (#1545). Comparison helpers use normalizeColorForCompare which
+ * still strips alpha, so type/colour matching is unaffected.
  */
 export function normalizeColor(color: string | null | undefined): string {
   if (!color) return '#808080';
-  // Remove alpha channel if present (8-char hex to 6-char)
-  const hex = color.replace('#', '').substring(0, 6);
-  return `#${hex}`;
+  const clean = color.replace('#', '');
+  if (clean.length >= 8 && clean.substring(6, 8).toLowerCase() !== 'ff') {
+    return `#${clean.substring(0, 8)}`;
+  }
+  return `#${clean.substring(0, 6)}`;
 }
 
 /**
@@ -24,6 +31,67 @@ export function normalizeColor(color: string | null | undefined): string {
 export function normalizeColorForCompare(color: string | undefined): string {
   if (!color) return '';
   return color.replace('#', '').toLowerCase().substring(0, 6);
+}
+
+/**
+ * Which side letter stands for a Filament Track Switch inlet: In-A reads as L,
+ * In-B as R.
+ *
+ * This labels the inlet's position, not the nozzle it feeds — the switch can
+ * route either inlet to either nozzle, and it never reports which pairing is
+ * live. Anywhere this letter is shown next to a hover target, the tooltip names
+ * the inlet outright so the two cannot be confused.
+ */
+export const FTS_INLET_SIDE = { A: 'L', B: 'R' } as const;
+
+/**
+ * Which extruder each switch inlet feeds. Out-A is the left hotend and Out-B the
+ * right one (measured on an H2C), and the inlet pairs with its own outlet in the
+ * switch's rest position. Mirrors `backend/app/utils/fts_routing.py`, which
+ * carries the full reasoning and the reason `fila_switch.out` cannot be used.
+ */
+const FTS_INLET_EXTRUDER: Record<string, number> = { A: 1, B: 0 };
+
+/**
+ * The extruder an AMS slot feeds, or undefined when it genuinely cannot be told.
+ *
+ * Undefined is not the same as extruder 0. K-profiles are per-nozzle, so a slot
+ * whose nozzle is unknown must not be silently treated as right-hand — that is
+ * what bound a left-nozzle profile to a slot sitting on the right.
+ */
+export function resolveSlotExtruder(
+  amsId: number,
+  trayId: number,
+  amsExtruderMap: Record<string, number> | undefined,
+  amsSwitchInlet: Record<string, string> | undefined
+): number | undefined {
+  // External holder: the tray id names the side. 254/Ext-L feeds extruder 1.
+  if (amsId === 255) return trayId === 0 || trayId === 1 ? 1 - trayId : undefined;
+
+  const mapped = amsExtruderMap?.[String(amsId)];
+  if (mapped !== undefined) return mapped;
+
+  const inlet = amsSwitchInlet?.[String(amsId)];
+  return inlet ? FTS_INLET_EXTRUDER[inlet.toUpperCase()] : undefined;
+}
+
+/**
+ * AMS unit label using the codebase convention: "AMS-A / AMS-B / ..." for
+ * regular AMS, "HT-A / HT-B / ..." for AMS-HT (single-tray modules with
+ * IDs 128-135). The unit id decides: a regular AMS can report one tray.
+ */
+export function getAmsLabel(amsId: number | string): string {
+  const id = typeof amsId === 'string' ? parseInt(amsId, 10) : amsId;
+  const safeId = isNaN(id) ? 0 : id;
+  if (safeId === 255) return 'External';
+  // A2L "AMS Lite": the backend normalises its physical unit id 16 to 6 at
+  // ingest (see a2l-am-unit-16). No regular AMS uses id 6, so this is a safe,
+  // self-scoping label for the Lite's 4-slot unit.
+  if (safeId === 6) return 'AMS Lite';
+  const isHt = isAmsHtUnit(safeId);
+  const normalizedId = safeId >= 128 ? safeId - 128 : safeId;
+  const letter = String.fromCharCode(65 + normalizedId);
+  return isHt ? `HT-${letter}` : `AMS-${letter}`;
 }
 
 /**
@@ -90,6 +158,200 @@ export function colorsAreSimilar(
   );
 }
 
+const D65_WHITE: readonly [number, number, number] = [0.95047, 1.0, 1.08883];
+const LAB_DELTA = 6 / 29;
+
+/**
+ * Convert a hex colour to CIE L*a*b* under D65, or null if it is unusable.
+ *
+ * Alpha is dropped by `normalizeColorForCompare`, deliberately: the alpha a
+ * slicer writes for a transparent filament is not a colour the user chose, and
+ * counting it would stop a transparent filament matching itself.
+ */
+function hexToLab(color: string | undefined): [number, number, number] | null {
+  const hex = normalizeColorForCompare(color);
+  if (!hex || hex.length < 6) return null;
+
+  const channels = [0, 2, 4].map((i) => parseInt(hex.substring(i, i + 2), 16) / 255);
+  if (channels.some(Number.isNaN)) return null;
+
+  // sRGB gamma -> linear light.
+  const [r, g, b] = channels.map((c) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+
+  const xyz: [number, number, number] = [
+    0.4124564 * r + 0.3575761 * g + 0.1804375 * b,
+    0.2126729 * r + 0.7151522 * g + 0.072175 * b,
+    0.0193339 * r + 0.119192 * g + 0.9503041 * b,
+  ];
+
+  const f = (t: number) =>
+    t > LAB_DELTA ** 3 ? Math.cbrt(t) : t / (3 * LAB_DELTA * LAB_DELTA) + 4 / 29;
+  const [fx, fy, fz] = xyz.map((v, i) => f(v / D65_WHITE[i]));
+
+  return [116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)];
+}
+
+/**
+ * CIEDE2000 colour difference between two L*a*b* triples.
+ *
+ * Straight transcription of the CIE formulation with kL = kC = kH = 1, kept
+ * structurally identical to `perceptual_color_distance` in
+ * `backend/app/utils/color_utils.py` so the two can be read side by side. They
+ * must agree: the dialog must not promise a spool the scheduler would not pick.
+ */
+function ciede2000(lab1: [number, number, number], lab2: [number, number, number]): number {
+  const [l1, a1, b1] = lab1;
+  const [l2, a2, b2] = lab2;
+  const rad = (deg: number) => (deg * Math.PI) / 180;
+
+  const c1 = Math.hypot(a1, b1);
+  const c2 = Math.hypot(a2, b2);
+  const cBar7 = ((c1 + c2) / 2) ** 7;
+  const g = 0.5 * (1 - Math.sqrt(cBar7 / (cBar7 + 25 ** 7)));
+
+  const a1p = (1 + g) * a1;
+  const a2p = (1 + g) * a2;
+  const c1p = Math.hypot(a1p, b1);
+  const c2p = Math.hypot(a2p, b2);
+
+  const hue = (ap: number, bp: number) => {
+    if (ap === 0 && bp === 0) return 0;
+    const deg = (Math.atan2(bp, ap) * 180) / Math.PI;
+    return deg < 0 ? deg + 360 : deg;
+  };
+  const h1p = hue(a1p, b1);
+  const h2p = hue(a2p, b2);
+
+  const dlp = l2 - l1;
+  const dcp = c2p - c1p;
+
+  const chromaProduct = c1p * c2p;
+  let dhp = 0;
+  if (chromaProduct !== 0) {
+    dhp = h2p - h1p;
+    if (dhp > 180) dhp -= 360;
+    else if (dhp < -180) dhp += 360;
+  }
+  const dhpBig = 2 * Math.sqrt(chromaProduct) * Math.sin(rad(dhp) / 2);
+
+  const lBar = (l1 + l2) / 2;
+  const cBar = (c1p + c2p) / 2;
+
+  let hBar: number;
+  if (chromaProduct === 0) hBar = h1p + h2p;
+  else if (Math.abs(h1p - h2p) <= 180) hBar = (h1p + h2p) / 2;
+  else if (h1p + h2p < 360) hBar = (h1p + h2p + 360) / 2;
+  else hBar = (h1p + h2p - 360) / 2;
+
+  const t =
+    1 -
+    0.17 * Math.cos(rad(hBar - 30)) +
+    0.24 * Math.cos(rad(2 * hBar)) +
+    0.32 * Math.cos(rad(3 * hBar + 6)) -
+    0.2 * Math.cos(rad(4 * hBar - 63));
+
+  const cBarP7 = cBar ** 7;
+  const rc = 2 * Math.sqrt(cBarP7 / (cBarP7 + 25 ** 7));
+  const sl = 1 + (0.015 * (lBar - 50) ** 2) / Math.sqrt(20 + (lBar - 50) ** 2);
+  const sc = 1 + 0.045 * cBar;
+  const sh = 1 + 0.015 * cBar * t;
+  const rt = -Math.sin(rad(2 * (30 * Math.exp(-(((hBar - 275) / 25) ** 2))))) * rc;
+
+  const dL = dlp / sl;
+  const dC = dcp / sc;
+  const dH = dhpBig / sh;
+  return Math.sqrt(dL * dL + dC * dC + dH * dH + rt * dC * dH);
+}
+
+/**
+ * Perceptual distance between two hex colours, or null if either is unusable.
+ *
+ * Used to rank the candidates `colorsAreSimilar` admits. Eligibility stays the
+ * per-channel box that shipped; this only decides which of several eligible
+ * spools is closest, so no spool becomes usable or unusable because of it.
+ *
+ * It ranks by how far apart the colours *look*, not how far apart their numbers
+ * are. RGB distance overweights blue badly enough to invert the answer: against
+ * a required `#1E4821` green, a purple `#38202F` is the nearer of two eligible
+ * spools by RGB and four times the further once measured perceptually.
+ *
+ * The scale is CIEDE2000 delta-E, where ~1 is a just-noticeable difference —
+ * far smaller numbers than the RGB distances this replaced, and not comparable
+ * against an RGB threshold.
+ */
+export function colorDistance(
+  color1: string | undefined,
+  color2: string | undefined,
+): number | null {
+  const lab1 = hexToLab(color1);
+  const lab2 = hexToLab(color2);
+  if (!lab1 || !lab2) return null;
+  return ciede2000(lab1, lab2);
+}
+
+/**
+ * The closest colour match among `candidates`, or undefined if none is similar
+ * enough to qualify.
+ *
+ * Callers pass candidates in the order they already established — slot order,
+ * or the "prefer lowest remaining" sort. Ties keep the earliest of them, so
+ * that order survives as the tie-break and Prefer Lowest still decides between
+ * two equally close spools, which is the case it was actually for.
+ *
+ * This exists so the four matchers that pick a spool (`autoMatchFilament`,
+ * `computeAmsMapping`, `computeMappingWithOverrides`, `computeMatchDetails`)
+ * share one ranking rule instead of four copies of "first one within
+ * tolerance", which made the winner depend on AMS slot order.
+ */
+export function findNearestSimilar<T>(
+  candidates: T[],
+  requiredColor: string | undefined,
+  getColor: (candidate: T) => string | undefined,
+): T | undefined {
+  let best: T | undefined;
+  let bestDistance = Infinity;
+
+  for (const candidate of candidates) {
+    const color = getColor(candidate);
+    if (!colorsAreSimilar(color, requiredColor)) continue;
+    const distance = colorDistance(color, requiredColor);
+    if (distance === null) continue;
+    // Strict <: an equally close candidate never displaces an earlier one.
+    if (distance < bestDistance) {
+      best = candidate;
+      bestDistance = distance;
+    }
+  }
+
+  return best;
+}
+
+/** Classify an empty AMS slot for UI rendering (#1322 follow-up).
+ *
+ *  "physical" — firmware positively confirmed no spool (state 9 or 10). The
+ *  bambu_mqtt handler now promotes tray_exist_bits=0 slots to state=9, so
+ *  every empty-by-bitmask slot lands here regardless of firmware payload
+ *  shape.
+ *
+ *  "reset" — tray_type is missing/empty but firmware hasn't confirmed
+ *  emptiness (state is null, 3, or any non-9/10 value). Typically a slot
+ *  the user cleared with "Reset Slot" where a physical spool may still be
+ *  loaded but unassigned.
+ *
+ *  Returns null when the slot is loaded (tray_type is present).
+ */
+export function getEmptySlotKind(tray: { tray_type?: string | null; state?: number | null; exists?: boolean | null } | null | undefined): 'physical' | 'reset' | null {
+  if (tray?.tray_type) return null;
+  // tray_exist_bits is firmware's authoritative presence signal: a non-RFID
+  // spool the firmware can't identify is physically present (exists === true)
+  // but carries no tray_type, so it must read as "?" (loaded, unconfigured),
+  // never "Empty" (#2527). BambuStudio draws it the same way. Only fall back to
+  // the state=9/10 heuristic when the bitmask was unavailable (exists == null).
+  if (tray?.exists === true) return 'reset';
+  if (tray?.exists === false) return 'physical';
+  return (tray?.state === 9 || tray?.state === 10) ? 'physical' : 'reset';
+}
+
 /**
  * Format slot label for display in the UI.
  * @param amsId - AMS unit ID (0-3 for regular AMS, 128+ for AMS-HT)
@@ -128,6 +390,46 @@ export function getGlobalTrayId(
   // AMS-HT units have IDs starting at 128 with a single tray — use ID directly
   if (amsId >= 128) return amsId;
   return amsId * 4 + trayId;
+}
+
+/**
+ * AMS-HT units are ids 128-135, one tray each. The id decides, not the tray
+ * count: a regular AMS can report fewer than four trays.
+ */
+export function isAmsHtUnit(amsId: number): boolean {
+  return amsId >= 128 && amsId <= 135;
+}
+
+/**
+ * The tray reported for a slot of a regular AMS, by its tray id. An AMS can
+ * report only some of its trays, and then a position in the list is not the
+ * slot. Only when the ids do not tell the trays apart (a firmware that sends
+ * none: they all read 0) does the position decide.
+ */
+export function trayForSlot<T extends { id: number }>(trays: T[], slotIdx: number): T | undefined {
+  const idsUsable = new Set(trays.map(tray => tray.id)).size === trays.length;
+  return idsUsable ? trays.find(tray => tray.id === slotIdx) : trays[slotIdx];
+}
+
+/**
+ * Whether some spool of this AMS is threaded into the feed tube. The AMS turns
+ * its spools together, so one loaded slot keeps it from rotating them while
+ * drying (the firmware refuses with dry_sf_reason 3, consumable at AMS outlet).
+ *
+ * Tray state 11 means loaded, but not on every firmware, so the slot the
+ * printer reports as loaded (tray_now) counts too, and on a two-nozzle printer
+ * the slot each hotend is fed from (extruder_slots), since tray_now names only
+ * the active nozzle's.
+ */
+export function amsHasLoadedTray(
+  ams: { id: number; tray: { id: number; state?: number | null }[] } | undefined,
+  trayNow: number | null | undefined,
+  extruderSlots: Record<string, { ams_id: number | null; has_filament: boolean }> | null | undefined,
+): boolean {
+  if (!ams) return false;
+  if (ams.tray.some(tray => tray.state === 11)) return true;
+  if (trayNow != null && ams.tray.some(tray => getGlobalTrayId(ams.id, tray.id, false) === trayNow)) return true;
+  return Object.values(extruderSlots ?? {}).some(slot => slot.ams_id === ams.id && slot.has_filament);
 }
 
 /**
@@ -228,16 +530,6 @@ export function getFallbackSpoolTag(printerSerial: string, amsId: number, trayId
 }
 
 /**
- * Get minimum datetime for scheduling (now + 1 minute).
- * Returns ISO string format for datetime-local input.
- */
-export function getMinDateTime(): string {
-  const now = new Date();
-  now.setMinutes(now.getMinutes() + 1);
-  return now.toISOString().slice(0, 16);
-}
-
-/**
  * Check if a scheduled time is a placeholder far-future date.
  * Placeholder dates (more than 6 months out) are treated as ASAP.
  */
@@ -248,23 +540,90 @@ export function isPlaceholderDate(scheduledTime: string | null | undefined): boo
 }
 
 /**
+ * Banding tie-break for `preferLowestSortKey`, mirroring backend
+ * `PrintScheduler._slot_priority` so regular AMS < AMS-HT < external on ties
+ * regardless of the raw `ams_id`. In particular, `ams_id = -1` (VT / external
+ * in `buildLoadedFilaments`) MUST NOT sort to a negative number or it would
+ * beat AMS slot 0 — backend clamps to 10_000.
+ */
+function slotPriority(amsId: number | undefined, trayId: number | undefined): number {
+  if (amsId == null || amsId < 0) return 10_000;
+  if (amsId >= 128) return 1_000 + (amsId - 128) * 4 + (trayId ?? 0);
+  return amsId * 4 + (trayId ?? 0);
+}
+
+/**
+ * Two-tier sort key for the "Prefer Lowest Remaining Filament" preference (#1766).
+ *
+ * Mirrors backend `_prefer_lowest_sort_key` in `print_scheduler.py:1161` so the
+ * client-side sort that PrintModal pre-computes lines up with the dispatch-time
+ * sort. Inventory-bound spools sort before MQTT-only ones (tier 0 vs tier 1) so
+ * the user's tracked grams beat the printer's per-cent estimate; within each
+ * tier the lowest value wins, with the slot-position tie-break above so the
+ * order is deterministic across identical spools.
+ *
+ * `inventoryByTrayId` is the `globalTrayId -> grams_remaining` map derived from
+ * the user's spool assignments. Pass `undefined` to fall back to remain%-only
+ * sorting (preserves pre-#1766 behaviour for callers that don't yet wire it in).
+ */
+export function preferLowestSortKey(
+  f: { globalTrayId: number; amsId?: number; trayId?: number; remain?: number },
+  inventoryByTrayId: Map<number, number> | undefined,
+): [number, number, number] {
+  const slot = slotPriority(f.amsId, f.trayId);
+  if (inventoryByTrayId && inventoryByTrayId.has(f.globalTrayId)) {
+    return [0, inventoryByTrayId.get(f.globalTrayId) ?? 0, slot];
+  }
+  const remain = f.remain ?? -1;
+  return [1, remain >= 0 ? remain : 101, slot];
+}
+
+/** Tuple compare for `preferLowestSortKey` outputs. */
+export function compareSortKeys(
+  a: [number, number, number],
+  b: [number, number, number],
+): number {
+  return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+}
+
+/**
+ * Effective "Prefer lowest remaining filament" preference for a given printer,
+ * gated on its AMS Filament Backup state (#1766).
+ *
+ * Without backup, the printer can't switch to a second spool when the picked
+ * one runs out — so even with the user setting on, sorting toward the lowest
+ * leaves the print at risk. Mirrors the backend gate in
+ * `print_scheduler.py::_compute_ams_mapping_for_printer`. `null`/`undefined`
+ * (unknown state, e.g. A1 family) preserves today's behaviour intentionally.
+ */
+export function effectivePreferLowest(
+  setting: boolean | undefined,
+  amsFilamentBackup: boolean | null | undefined,
+): boolean {
+  if (!setting) return false;
+  return amsFilamentBackup !== false;
+}
+
+/**
  * Auto-match a filament requirement to a loaded filament, respecting nozzle constraints.
  * Used by both single-printer (FilamentMapping) and multi-printer (InlineMappingEditor) paths.
  */
 export function autoMatchFilament(
   req: { type?: string; color?: string; nozzle_id?: number | null },
-  loadedFilaments: { globalTrayId: number; type?: string; color?: string; extruderId?: number; remain?: number }[],
+  loadedFilaments: { globalTrayId: number; amsId?: number; trayId?: number; type?: string; color?: string; extruderId?: number; remain?: number }[],
   usedTrayIds: Set<number>,
   preferLowest?: boolean,
+  inventoryByTrayId?: Map<number, number>,
 ): typeof loadedFilaments[number] | undefined {
   let nozzleFilaments = filterFilamentsByNozzle(loadedFilaments, req.nozzle_id);
 
   if (preferLowest) {
-    nozzleFilaments = [...nozzleFilaments].sort((a, b) => {
-      const ra = (a.remain ?? -1) >= 0 ? (a.remain ?? -1) : 101;
-      const rb = (b.remain ?? -1) >= 0 ? (b.remain ?? -1) : 101;
-      return ra - rb;
-    });
+    nozzleFilaments = [...nozzleFilaments].sort((a, b) =>
+      compareSortKeys(
+        preferLowestSortKey(a, inventoryByTrayId),
+        preferLowestSortKey(b, inventoryByTrayId),
+      ),
+    );
   }
 
   const exactMatch = nozzleFilaments.find(
@@ -275,11 +634,12 @@ export function autoMatchFilament(
   );
   const similarMatch = exactMatch
     ? undefined
-    : nozzleFilaments.find(
-        (f) =>
-          !usedTrayIds.has(f.globalTrayId) &&
-          filamentTypesCompatible(f.type, req.type) &&
-          colorsAreSimilar(f.color, req.color)
+    : findNearestSimilar(
+        nozzleFilaments.filter(
+          (f) => !usedTrayIds.has(f.globalTrayId) && filamentTypesCompatible(f.type, req.type),
+        ),
+        req.color,
+        (f) => f.color,
       );
   const typeOnlyMatch =
     exactMatch || similarMatch
@@ -301,6 +661,62 @@ export function filterFilamentsByNozzle<T extends { extruderId?: number }>(
   return loadedFilaments.filter(
     (f) => nozzleId == null || f.extruderId === nozzleId
   );
+}
+
+/**
+ * List the distinct nozzle diameters the printer actually reports (#2618).
+ * Mirrors the backend `_installed_nozzle_diameters`: reads each
+ * `status.nozzles[].nozzle_diameter`, skips the empty-string / non-positive
+ * defaults that populate a NozzleInfo before MQTT fills it in, and dedupes.
+ *
+ * Returns e.g. `['0.4']` (single-nozzle) or `['0.4', '0.6']` (dual-nozzle). An
+ * empty array means "the printer hasn't told us its nozzle hardware" — callers
+ * that need to fetch per-nozzle should fall back to their own default rather
+ * than treating it as "no nozzles". Preserves the bare decimal string form the
+ * status carries so it can be passed straight to `getKProfiles`.
+ */
+export function installedNozzleDiameters(
+  status: { nozzles?: { nozzle_diameter?: string }[] } | null | undefined,
+): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const nozzle of status?.nozzles ?? []) {
+    const raw = (nozzle?.nozzle_diameter ?? '').trim();
+    if (!raw || !(parseFloat(raw) > 0) || seen.has(raw)) continue;
+    seen.add(raw);
+    result.push(raw);
+  }
+  return result;
+}
+
+/**
+ * Resolve the installed nozzle diameter feeding a given AMS unit, so the
+ * Configure-AMS-Slot picker filters filament presets by the nozzle actually on
+ * the machine instead of assuming 0.4mm (#1899).
+ *
+ * On dual-nozzle printers (H2D) each AMS is bound to one extruder via
+ * `ams_extruder_map` (amsId → extruder index), so we read that nozzle's
+ * diameter. `status.nozzles` is indexed by extruder id -- [0] is the RIGHT
+ * hotend and [1] the left, measured on an H2D fitted with 0.4 left / 0.6 right
+ * -- so indexing it by the extruder is correct. (This comment used to say
+ * "0=left/primary, 1=right", which was backwards; the code was always right.)
+ * Single-nozzle printers have no map entry and fall back to index 0. Returns
+ * undefined when the printer hasn't reported nozzle hardware yet, letting the
+ * caller keep its own default.
+ * Diameter is the bare decimal string the status carries, e.g. "0.4" / "0.6".
+ */
+export function resolveSlotNozzleDiameter(
+  status: {
+    nozzles?: { nozzle_diameter?: string }[];
+    ams_extruder_map?: Record<string, number>;
+  } | null | undefined,
+  amsId: number,
+): string | undefined {
+  const nozzles = status?.nozzles;
+  if (!nozzles || nozzles.length === 0) return undefined;
+  const extruderIdx = status?.ams_extruder_map?.[String(amsId)] ?? 0;
+  const diameter = nozzles[extruderIdx]?.nozzle_diameter || nozzles[0]?.nozzle_diameter;
+  return diameter || undefined;
 }
 
 /**
@@ -544,4 +960,181 @@ export function resolveLoadedFilamentInfo({
   }
 
   return null;
+}
+
+/**
+ * Does a stored slot preset still describe what is in the slot?
+ *
+ * `slot_preset_mappings` remembers the preset a slot was last configured with,
+ * and the AMS slot card shows that name ahead of anything the printer reports —
+ * which is what lets a slot keep a hand-picked name like "# Bambu PLA Matte
+ * @BBL H2C 0.4 nozzle (Custom)" instead of the plain catalog one. The cost is
+ * that a swapped spool leaves the previous spool's name on the card until the
+ * row is refetched, and until then a cached row outranks live telemetry.
+ *
+ * The printer's own `tray_info_idx` settles it, but only for official Bambu
+ * presets, where the two id forms differ by one letter (setting_id `GFSA01` ↔
+ * filament_id `GFA01`). A user preset genuinely carries two unrelated ids — a
+ * slot configured with `PFUSa3b8b0c664c142` reports `tray_info_idx=P8a85d5a` —
+ * and a local preset (`local_68`) has no printer-side id at all, so neither can
+ * be checked here and both keep the stored name. Same for a slot reporting no
+ * id (generic filament with no tag), which is the case the row exists for.
+ *
+ * Rows written since #3216 also record the filament id the slot was given
+ * with the preset (`presetTrayInfoIdx`). That settles every kind of preset:
+ * once the printer reports a different id, something else — the slicer's
+ * Device tab, the printer's screen — re-configured the slot, and the row no
+ * longer describes it.
+ */
+export function slotPresetDescribesTray(
+  presetId: string | null | undefined,
+  trayInfoIdx: string | null | undefined,
+  presetTrayInfoIdx?: string | null,
+): boolean {
+  const preset = (presetId || '').split('_')[0].toUpperCase();
+  const tray = (trayInfoIdx || '').split('_')[0].toUpperCase();
+  const recorded = (presetTrayInfoIdx || '').split('_')[0].toUpperCase();
+  if (recorded && tray) return recorded === tray;
+  if (!preset.startsWith('GFS') || !tray.startsWith('GF')) return true;
+  // The full id, suffix included, decides some presets' filament_id (#3387).
+  return settingIdToFilamentId((presetId || '').toUpperCase()) === tray;
+}
+
+export interface AmsTrayLike {
+  id: number;
+  tray_type: string | null | undefined;
+  tray_sub_brands: string | null | undefined;
+  tray_color: string | null | undefined;
+  tray_info_idx: string | null | undefined;
+}
+
+export interface AmsUnitLike {
+  id: number;
+  tray: AmsTrayLike[];
+}
+
+/**
+ * One row in the AMS Backup modal: a group of slots that back each other up
+ * (length >= 2), or a single non-empty slot with no peer (length === 1).
+ */
+export interface BackupGroup {
+  /** Stable key — same across renders for the same material+extruder. */
+  key: string;
+  /** Bambu preset ID (tray_info_idx) when matched on preset; null otherwise. */
+  presetId: string | null;
+  /** 0 = right / single, 1 = left. Scoping field for dual-nozzle. */
+  extruder: number;
+  /** Display name from the first slot's tray_sub_brands (or tray_type). */
+  displayName: string;
+  /** Tray colour from the first slot, for the swatch in the modal. */
+  trayColor: string | null;
+  /** Member slots, in (ams_id, slot_idx) order. */
+  members: Array<{ amsId: number; slotIdx: number; globalTrayId: number }>;
+}
+
+/**
+ * Canonicalise a hex colour for identity comparison. Mirrors the backend
+ * `_normalize_color_for_id`. Strips the leading `#`, uppercases, and drops
+ * the alpha channel when 8 chars long so `1A1A1AFF` matches `1A1A1A`.
+ */
+function normalizeColorForId(raw: string | null | undefined): string {
+  let s = (raw || '').trim().replace(/^#/, '').toUpperCase();
+  if (s.length === 8) s = s.slice(0, 6);
+  return s;
+}
+
+/**
+ * Compute backup pairs for the AMS Backup modal (#1762).
+ *
+ * Strict identity rule (mirrors backend `_material_identity_internal` /
+ * `_material_identity_spoolman`): slots pair ONLY when they share the same
+ * Bambu preset ID (`tray_info_idx`, e.g. "GFA00") AND the same colour. The
+ * preset identifies the filament profile (PETG HF, PLA Basic, etc.); the
+ * colour pins the variant — three PETG HF spools in different colours
+ * absolutely don't back each other up. User-tagged spools without a preset
+ * never pair — Bambu's firmware backup logic relies on the preset, and
+ * pairing on cosmetic name/colour match alone would let two visually-
+ * identical but materially-different spools be treated as backups.
+ *
+ * Empty slots are skipped entirely. Every non-empty slot is returned — slots
+ * without a peer come back as 1-member entries so the modal can list them as
+ * "Slots without a backup peer".
+ *
+ * On dual-extruder printers (H2D / H2C / X2D), pairs are scoped per extruder
+ * side — the firmware can't cross extruders even with the global backup bit
+ * set.
+ */
+export function computeBackupGroups(
+  amsUnits: AmsUnitLike[] | undefined,
+  amsExtruderMap: Record<string, number> | undefined,
+  isDualNozzle: boolean,
+): BackupGroup[] {
+  if (!amsUnits || amsUnits.length === 0) return [];
+
+  // Defensive dedup: ``status.ams`` is expected to be unique by `ams.id`, but
+  // observed in the wild to occasionally contain duplicate entries (e.g. on
+  // VP-aggregated switch printers or during MQTT partial-update merges). A
+  // duplicate would surface as "AMS-A slot 1" rendered twice with different
+  // materials, which is impossible physically and visually broken. First
+  // occurrence per `ams.id` wins.
+  const seenIds = new Set<number>();
+  const uniqueAms: AmsUnitLike[] = [];
+  for (const ams of amsUnits) {
+    if (seenIds.has(ams.id)) continue;
+    seenIds.add(ams.id);
+    uniqueAms.push(ams);
+  }
+
+  const byKey = new Map<string, BackupGroup>();
+
+  for (const ams of uniqueAms) {
+    const extruder = isDualNozzle ? Number(amsExtruderMap?.[String(ams.id)] ?? 0) : 0;
+    ams.tray.forEach((tray, slotIdx) => {
+      if (!tray?.tray_type) return; // empty slot
+      const preset = (tray.tray_info_idx || '').trim();
+      const globalTrayId = getGlobalTrayId(ams.id, slotIdx, false);
+      const member = { amsId: ams.id, slotIdx, globalTrayId };
+
+      let key: string;
+      let presetId: string | null;
+      if (preset) {
+        // Same Bambu profile is necessary but NOT sufficient — different colours
+        // of the same PETG HF profile can't back each other up. Bake the colour
+        // into the identity key, normalised to strip alpha and case.
+        const color = normalizeColorForId(tray.tray_color);
+        key = `preset:${preset}|color:${color}#${extruder}`;
+        presetId = preset;
+      } else {
+        // No preset → never group with anything else. Unique-per-slot key.
+        key = `unmatched:${ams.id}:${slotIdx}#${extruder}`;
+        presetId = null;
+      }
+
+      const existing = byKey.get(key);
+      if (existing) {
+        existing.members.push(member);
+      } else {
+        byKey.set(key, {
+          key,
+          presetId,
+          extruder,
+          displayName: tray.tray_sub_brands || tray.tray_type || '',
+          trayColor: tray.tray_color ?? null,
+          members: [member],
+        });
+      }
+    });
+  }
+
+  // Stable sort: extruder first (so the modal can section per side on
+  // dual-nozzle), then pairs before lone slots, then by name, then by first
+  // member's global tray id for deterministic rendering.
+  return Array.from(byKey.values()).sort((a, b) => {
+    if (a.extruder !== b.extruder) return a.extruder - b.extruder;
+    const aLone = a.members.length === 1 ? 1 : 0;
+    const bLone = b.members.length === 1 ? 1 : 0;
+    if (aLone !== bLone) return aLone - bLone;
+    if (a.displayName !== b.displayName) return a.displayName.localeCompare(b.displayName);
+    return a.members[0].globalTrayId - b.members[0].globalTrayId;
+  });
 }

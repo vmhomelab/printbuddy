@@ -91,3 +91,111 @@ async def test_scheduler_provider_delete_uses_connected_client_not_bambu_ftp(mon
     )
 
     assert client.deletes == ["/Cable_Holder.gcode"]
+
+
+# Ported from the former test_background_dispatch_provider_uploads.py: upstream
+# #1625 moved print dispatch into the scheduler, so the PrusaLink / Elegoo SDCP /
+# Bambu provider-upload guarantees are now asserted against PrintScheduler.
+
+
+def test_scheduler_remote_filename_preserves_gcode_for_prusalink_and_elegoo():
+    scheduler = PrintScheduler()
+
+    assert scheduler._remote_filename_for_provider("Cable Holder.gcode", "prusalink") == "Cable_Holder.gcode"
+    assert scheduler._remote_filename_for_provider("Cable Holder.bgcode", "prusalink") == "Cable_Holder.bgcode"
+    assert scheduler._remote_filename_for_provider("Cable Holder.gcode", "elegoo_sdcp") == "Cable_Holder.gcode"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["prusalink", "elegoo_sdcp"])
+async def test_scheduler_prusalink_and_elegoo_upload_use_client_not_bambu_ftp(monkeypatch, tmp_path, provider: str):
+    scheduler = PrintScheduler()
+    local_file = tmp_path / "Cable Holder.gcode"
+    local_file.write_text("G28\n", encoding="utf-8")
+    client = FakeProviderClient()
+
+    monkeypatch.setattr(ps.printer_manager, "get_client", lambda printer_id: client)
+
+    async def fail_bambu_upload(*args, **kwargs):  # pragma: no cover - assertion path
+        raise AssertionError("Bambu FTP upload must not be used for provider dispatch")
+
+    monkeypatch.setattr(ps, "upload_file_async", fail_bambu_upload)
+
+    uploaded = await scheduler._upload_file_for_provider(
+        printer_id=3,
+        provider=provider,
+        printer_name="Provider Printer",
+        printer_ip="192.0.2.10",
+        printer_access_code="unused",
+        file_path=local_file,
+        remote_path="/Cable_Holder.gcode",
+        printer_model="core_one",
+        ftp_retry_enabled=True,
+        ftp_retry_count=3,
+        ftp_retry_delay=0,
+        ftp_timeout=1,
+        operation_name="Upload print to Provider Printer",
+    )
+
+    assert uploaded is True
+    assert client.uploads == [(local_file, "/Cable_Holder.gcode")]
+
+
+@pytest.mark.asyncio
+async def test_scheduler_prusalink_delete_uses_client_not_bambu_ftp(monkeypatch):
+    scheduler = PrintScheduler()
+    client = FakeProviderClient()
+    monkeypatch.setattr(ps.printer_manager, "get_client", lambda printer_id: client)
+
+    async def fail_bambu_delete(*args, **kwargs):  # pragma: no cover - assertion path
+        raise AssertionError("Bambu FTP delete must not be used for PrusaLink dispatch")
+
+    monkeypatch.setattr(ps, "delete_file_async", fail_bambu_delete)
+
+    await scheduler._delete_remote_file_for_provider(
+        printer_id=3,
+        provider="prusalink",
+        printer_ip="192.0.2.10",
+        printer_access_code="unused",
+        remote_path="/Cable_Holder.gcode",
+        printer_model="core_one",
+        ftp_timeout=1,
+    )
+
+    assert client.deletes == ["/Cable_Holder.gcode"]
+
+
+@pytest.mark.asyncio
+async def test_scheduler_bambu_upload_still_uses_ftp(monkeypatch, tmp_path):
+    scheduler = PrintScheduler()
+    local_file = tmp_path / "Cable Holder.gcode.3mf"
+    local_file.write_bytes(b"PK\x03\x04")
+    calls = []
+
+    async def fake_bambu_upload(*args, **kwargs):
+        calls.append((args, kwargs))
+        return True
+
+    monkeypatch.setattr(ps, "upload_file_async", fake_bambu_upload)
+
+    uploaded = await scheduler._upload_file_for_provider(
+        printer_id=4,
+        provider="bambu",
+        printer_name="X1C",
+        printer_ip="192.0.2.20",
+        printer_access_code="secret",
+        file_path=local_file,
+        remote_path="/Cable_Holder.3mf",
+        printer_model="x1c",
+        ftp_retry_enabled=False,
+        ftp_retry_count=0,
+        ftp_retry_delay=0,
+        ftp_timeout=1,
+        operation_name="Upload print to X1C",
+    )
+
+    assert uploaded is True
+    assert len(calls) == 1
+    args, kwargs = calls[0]
+    assert args[:4] == ("192.0.2.20", "secret", local_file, "/Cable_Holder.3mf")
+    assert kwargs["printer_model"] == "x1c"

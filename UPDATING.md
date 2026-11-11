@@ -67,7 +67,7 @@ cd /opt/printbuddy
 sudo systemctl stop printbuddy
 sudo -u printbuddy git fetch origin
 sudo -u printbuddy git reset --hard origin/main
-sudo -u printbuddy venv/bin/pip install -r requirements.txt
+sudo -u printbuddy venv/bin/pip install -r requirements.lock
 sudo systemctl start printbuddy
 ```
 

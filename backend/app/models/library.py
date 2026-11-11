@@ -23,13 +23,49 @@ class LibraryFolder(Base):
     external_show_hidden: Mapped[bool] = mapped_column(Boolean, default=False)
     external_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
+    # Ownership (#3201): who made the folder, and whether an admin shared it
+    # with everyone. library:read_own users see only their own folders, shared
+    # ones and the folders holding their files (services/library_folder_access).
+    created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    shared: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+
     # Link to project or archive
     project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
-    archive_id: Mapped[int | None] = mapped_column(ForeignKey("print_archives.id", ondelete="SET NULL"), nullable=True)
+    # use_alter breaks a dependency cycle in the schema, and is not about this
+    # link being special: print_archives.library_file_id -> library_files,
+    # library_files.folder_id -> library_folders, and this column back to
+    # print_archives. Each is reasonable alone and together they are a loop
+    # SQLAlchemy cannot topologically sort, so metadata.sorted_tables dropped
+    # those edges, warned on every backup and restore, and could hand back an
+    # order placing a child before its parent -- which once imported
+    # library_files ahead of library_folders and killed a restore on a foreign
+    # key violation. Marking ONE edge for ALTER removes it from the sort graph
+    # and the other two order correctly. The constraint is still created and
+    # still enforced: PostgreSQL emits it as ALTER TABLE ADD CONSTRAINT (as it
+    # already does for every constraint on these three tables), and SQLite,
+    # which reports no ALTER support, inlines it into CREATE TABLE as before.
+    # It has to be named, because an unnamed constraint cannot be ALTERed in.
+    archive_id: Mapped[int | None] = mapped_column(
+        ForeignKey(
+            "print_archives.id",
+            ondelete="SET NULL",
+            use_alter=True,
+            name="fk_library_folders_archive_id",
+        ),
+        nullable=True,
+    )
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    # Real on-disk modification time of the directory this folder mirrors (#2680).
+    # For external folders this is captured from ``os.stat().st_mtime`` on scan so
+    # the tree's "sort by recent activity" matches ``ls -t`` instead of ordering by
+    # the DB row's ``updated_at`` (which is the scan instant, identical for every
+    # row of a bulk scan). Null for managed (internal) folders, which have no
+    # meaningful directory mtime — callers fall back to ``updated_at``/``created_at``.
+    fs_modified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     # Relationships
     parent: Mapped["LibraryFolder | None"] = relationship(
@@ -50,6 +86,41 @@ class LibraryFolder(Base):
     )
     project: Mapped["Project | None"] = relationship()
     archive: Mapped["PrintArchive | None"] = relationship()
+
+
+class FileVariantGroup(Base):
+    """A set of library files that are the same job sliced for different printers.
+
+    Members are peers, not a source/output hierarchy. The group answers one
+    question — "which of these files goes to an H2S, and which to an H2C" — and
+    both open features need that answer from opposite ends: the print queue
+    picks the printer and needs the matching file (#671), the File Manager's
+    print action has the printer already and needs the same match (#2570).
+
+    The group deliberately stores no model information of its own. Each
+    member's target model comes from its own ``file_metadata['sliced_for_model']``,
+    parsed out of the 3MF, so a group can never disagree with the files it
+    contains. It also carries no pointer to an unsliced source file: that is a
+    display concern for the grouped File Manager listing, which is not built.
+
+    Deleting a group ungroups its files rather than deleting them (the member
+    side is ON DELETE SET NULL) — every member is independently printable.
+    """
+
+    __tablename__ = "file_variant_groups"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(255))
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+    created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
+    files: Mapped[list["LibraryFile"]] = relationship(
+        back_populates="variant_group",
+        order_by="LibraryFile.variant_position",
+    )
+    created_by: Mapped["User | None"] = relationship()
 
 
 class LibraryFile(Base):
@@ -82,6 +153,12 @@ class LibraryFile(Base):
     # User notes
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # User-provided link (Printables, Thingiverse, ...) and photos of the printed
+    # result (#3077) — the same trio archives carry. ``photos`` is a list of
+    # stored filenames under ``library_paths.library_photos_dir(id)``.
+    external_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    photos: Mapped[list | None] = mapped_column(JSON, nullable=True)
+
     # Provenance — when the file was imported from an external source (e.g.
     # MakerWorld), ``source_type`` identifies the source and ``source_url`` is
     # the canonical public URL. Used for "already imported" detection and
@@ -90,6 +167,23 @@ class LibraryFile(Base):
     source_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
     source_url: Mapped[str | None] = mapped_column(String(512), nullable=True, index=True)
     source_snapshot_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+    # Variant grouping (#671 / #2570). A file belongs to at most one group of
+    # "same job, sliced for a different printer" siblings. SET NULL on group
+    # delete: ungrouping must never take the files with it. ``variant_position``
+    # is the user's priority order within the group — when two printers are idle
+    # at the same scheduler tick, the lowest position wins, so the pick is
+    # reproducible instead of depending on which match the scheduler found first.
+    variant_group_id: Mapped[int | None] = mapped_column(
+        ForeignKey("file_variant_groups.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    variant_position: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # User's answer to "which printer is this for", for a file that does not say.
+    # Files imported before Printbuddy parsed ``sliced_for_model`` — and raw .gcode —
+    # declare nothing, and without this they could never be grouped. Deliberately
+    # NOT written into ``file_metadata``: that holds what was parsed out of the
+    # file, and a user's assertion must not become indistinguishable from it.
+    variant_target_model: Mapped[str | None] = mapped_column(String(50), nullable=True)
 
     # User tracking (Issue #206)
     created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
@@ -103,13 +197,29 @@ class LibraryFile(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
+    # Real on-disk modification time of the file (#2680). Captured from
+    # ``os.stat().st_mtime`` for external files on scan so the file pane's date
+    # sort and the folder tree's recursive "recent activity" bubble reflect the
+    # actual filesystem mtime (``ls -t``) rather than the DB ``updated_at`` (the
+    # scan instant, identical across a bulk scan). Null for managed uploads —
+    # callers fall back to ``created_at``.
+    fs_modified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
     # Relationships
     folder: Mapped["LibraryFolder | None"] = relationship(back_populates="files")
     project: Mapped["Project | None"] = relationship()
     created_by: Mapped["User | None"] = relationship()
+    variant_group: Mapped["FileVariantGroup | None"] = relationship(back_populates="files")
+    # Tags (#1268). M2M via library_file_tags. Loaded explicitly via
+    # ``selectinload`` in list_files so each row in the listing carries its
+    # chip set without N+1 fetches.
+    tags: Mapped[list["LibraryTag"]] = relationship(
+        secondary="library_file_tags",
+        back_populates="files",
+    )
 
     @classmethod
-    def active(cls) -> "Select[tuple[LibraryFile]]":
+    def active(cls) -> "Select[LibraryFile]":
         """Select statement that excludes trashed (soft-deleted) files.
 
         Use this in place of ``select(LibraryFile)`` for any user-facing listing
@@ -118,6 +228,47 @@ class LibraryFile(Base):
         must use ``select(LibraryFile)`` directly.
         """
         return select(cls).where(cls.deleted_at.is_(None))
+
+
+class LibraryTag(Base):
+    """User-authored cross-cutting label for library files (#1268).
+
+    Folders express hierarchy; tags express orthogonal attributes ("toy",
+    "kid-safe", "petg-only"). Catalog is global (one tag set per install)
+    — the multi-user "private tags" case is not in v1 scope. ``name_key``
+    is ``LOWER(TRIM(name))`` so "Toys" / "toys" / "  TOYS  " all collide
+    on the UNIQUE index and the route returns 409 instead of silently
+    creating a duplicate.
+    """
+
+    __tablename__ = "library_tags"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    name_key: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    files: Mapped[list["LibraryFile"]] = relationship(
+        secondary="library_file_tags",
+        back_populates="tags",
+    )
+
+
+class LibraryFileTag(Base):
+    """Association between library files and tags (#1268).
+
+    Composite PK so the same (file, tag) pair can't be inserted twice. Both
+    sides ON DELETE CASCADE: deleting a tag drops every association row,
+    deleting a file drops its tag links, and the catalog row survives so
+    other files keep their chip.
+    """
+
+    __tablename__ = "library_file_tags"
+
+    file_id: Mapped[int] = mapped_column(ForeignKey("library_files.id", ondelete="CASCADE"), primary_key=True)
+    tag_id: Mapped[int] = mapped_column(ForeignKey("library_tags.id", ondelete="CASCADE"), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
 from backend.app.models.archive import PrintArchive  # noqa: E402, F811

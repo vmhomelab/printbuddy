@@ -148,6 +148,39 @@ class TestCameraAPI:
         assert response.status_code == 200
         mock_shutdown.assert_awaited_once_with(f"printer-{printer.id}")
 
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_stop_camera_stream_skips_shutdown_when_subscribers_remain(
+        self, async_client: AsyncClient, printer_factory
+    ):
+        """Reference-count guard: when other viewers are still subscribed to the
+        broadcaster, /camera/stop must NOT force-shutdown — otherwise closing
+        the embedded viewer kills the cam-wall tile of the same printer.
+        Natural cleanup tears it down when the last HTTP connection closes.
+        """
+        printer = await printer_factory()
+
+        mock_shutdown = AsyncMock(return_value=True)
+        mock_process = MagicMock()
+        mock_process.returncode = None
+        mock_process.pid = 88888
+        mock_process.terminate = MagicMock()
+        mock_process.wait = AsyncMock()
+
+        with (
+            patch("backend.app.api.routes.camera.get_subscriber_count", return_value=2),
+            patch("backend.app.api.routes.camera.shutdown_broadcaster", mock_shutdown),
+            patch("backend.app.api.routes.camera._active_streams", {f"{printer.id}-abc": mock_process}),
+        ):
+            response = await async_client.post(f"/api/v1/printers/{printer.id}/camera/stop")
+
+        assert response.status_code == 200
+        result = response.json()
+        assert result["stopped"] == 0
+        assert result.get("skipped") is True
+        mock_shutdown.assert_not_awaited()
+        mock_process.terminate.assert_not_called()
+
     # ========================================================================
     # Camera Test Endpoint
     # ========================================================================
@@ -697,25 +730,14 @@ class TestCameraAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_delete_calibration_printer_not_found(self, async_client: AsyncClient):
-        """Verify 404 when deleting calibration for non-existent printer."""
-        response = await async_client.delete("/api/v1/printers/99999/camera/plate-detection/calibrate")
-
-        assert response.status_code == 404
-
-    @pytest.mark.asyncio
-    @pytest.mark.integration
-    async def test_delete_calibration_success(self, async_client: AsyncClient, printer_factory):
-        """Verify delete calibration returns proper structure."""
+    async def test_the_legacy_delete_all_calibration_route_is_gone(self, async_client: AsyncClient, printer_factory):
+        """References are deleted one at a time (DELETE .../references/{index});
+        the old delete-everything route had no caller left."""
         printer = await printer_factory()
 
-        with patch("backend.app.services.plate_detection.is_plate_detection_available", return_value=True):
-            response = await async_client.delete(f"/api/v1/printers/{printer.id}/camera/plate-detection/calibrate")
+        response = await async_client.delete(f"/api/v1/printers/{printer.id}/camera/plate-detection/calibrate")
 
-        assert response.status_code == 200
-        result = response.json()
-        assert "success" in result
-        assert "message" in result
+        assert response.status_code == 405
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -832,3 +854,51 @@ class TestCameraAPI:
         assert response.status_code == 200
         result = response.json()
         assert result["cameras"] == []
+
+
+class TestCameraStreamPoolHygiene:
+    """Regression guard for the camera-stream DB-connection leak (issue #2572)."""
+
+    def test_camera_stream_does_not_hold_a_get_db_session(self):
+        """The MJPEG stream endpoint must NOT take a ``Depends(get_db)`` session.
+
+        ``get_db`` is a ``yield`` dependency, so its session stays open until the
+        response body is fully consumed — for a live MJPEG stream that is the
+        whole time the browser tab is open (hours), pinning one pooled DB
+        connection per open camera tab per printer. The endpoint fetches the
+        printer in a short-lived ``async with async_session()`` instead and
+        releases the connection before streaming. If someone re-adds a
+        ``Depends(get_db)`` param, this fails.
+        """
+        import inspect
+
+        from backend.app.api.routes.camera import camera_stream, get_db
+
+        for name, param in inspect.signature(camera_stream).parameters.items():
+            dependency = getattr(param.default, "dependency", None)
+            assert dependency is not get_db, (
+                f"camera_stream re-introduced a get_db-held session via parameter {name!r} — "
+                "it would stay open for the entire stream (issue #2572)"
+            )
+
+    @pytest.mark.parametrize(
+        "route",
+        [
+            "test_camera",
+            "diagnose_camera_route",
+            "test_external_camera",
+            "check_plate_empty",
+            "calibrate_plate_detection",
+        ],
+    )
+    def test_capturing_routes_do_not_hold_a_get_db_session(self, route):
+        """RC-C10: these capture, diagnose or run OpenCV for 10-30 s after one
+        printer lookup; a ``Depends(get_db)`` session pinned a pooled
+        connection idle-in-transaction for all of it."""
+        import inspect
+
+        from backend.app.api.routes import camera
+
+        for name, param in inspect.signature(getattr(camera, route)).parameters.items():
+            dependency = getattr(param.default, "dependency", None)
+            assert dependency is not camera.get_db, f"{route} holds a get_db session via {name!r} (RC-C10)"

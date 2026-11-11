@@ -5,36 +5,45 @@ import { api } from '../api/client';
 import type { SpoolUsageRecord } from '../api/client';
 import { Button } from './Button';
 import { useToast } from '../contexts/ToastContext';
+import { parseUTCDate } from '../utils/date';
+import { ownRecords } from '../utils/usageHistory';
 function formatDate(dateStr: string): string {
-  const date = new Date(dateStr);
+  const date = parseUTCDate(dateStr);
+  if (!date) return '';
   return date.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: '2-digit' }) +
     ' ' + date.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
 }
 
 interface SpoolUsageHistoryProps {
   spoolId: number;
+  // A Spoolman spool: the rows Printbuddy wrote for the prints it charged (#3407).
+  spoolman?: boolean;
+  // When the spool was created: older rows are an earlier spool's that had its id.
+  createdAt?: string | null;
 }
 
 const STATUS_COLORS: Record<string, string> = {
   completed: 'text-bambu-green',
-  failed: 'text-red-400',
-  aborted: 'text-yellow-400',
+  failed: 'text-red-700 dark:text-red-400',
+  aborted: 'text-yellow-700 dark:text-yellow-400',
 };
 
-export function SpoolUsageHistory({ spoolId }: SpoolUsageHistoryProps) {
+export function SpoolUsageHistory({ spoolId, spoolman = false, createdAt = null }: SpoolUsageHistoryProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
 
-  const { data: history, isLoading } = useQuery({
-    queryKey: ['spool-usage', spoolId],
-    queryFn: () => api.getSpoolUsageHistory(spoolId),
+  const { data: fetched, isLoading } = useQuery({
+    queryKey: ['spool-usage', spoolman, spoolId],
+    queryFn: () => (spoolman ? api.getSpoolmanSpoolUsageHistory(spoolId) : api.getSpoolUsageHistory(spoolId)),
   });
 
+  const history = fetched && spoolman ? ownRecords({ created_at: createdAt }, fetched) : fetched;
+
   const clearMutation = useMutation({
-    mutationFn: () => api.clearSpoolUsageHistory(spoolId),
+    mutationFn: () => (spoolman ? api.clearSpoolmanSpoolUsageHistory(spoolId) : api.clearSpoolUsageHistory(spoolId)),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['spool-usage', spoolId] });
+      queryClient.invalidateQueries({ queryKey: ['spool-usage', spoolman, spoolId] });
       showToast(t('inventory.historyCleared'), 'success');
     },
   });
@@ -65,7 +74,7 @@ export function SpoolUsageHistory({ spoolId }: SpoolUsageHistoryProps) {
           size="sm"
           onClick={() => clearMutation.mutate()}
           disabled={clearMutation.isPending}
-          className="text-xs text-bambu-gray hover:text-red-400"
+          className="text-xs text-bambu-gray hover:text-red-700 dark:hover:text-red-400"
         >
           <Trash2 className="w-3 h-3 mr-1" />
           {t('inventory.clearHistory')}

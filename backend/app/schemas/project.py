@@ -2,6 +2,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field, field_validator
 
+from backend.app.schemas.not_null import IgnoresNullForRequiredColumns
+
 
 def _validate_project_url(value: str | None) -> str | None:
     """Reject anything that isn't an http(s) URL — the URL is rendered as a
@@ -26,6 +28,7 @@ class ProjectCreate(BaseModel):
     color: str | None = None
     target_count: int | None = None
     target_parts_count: int | None = None
+    target_sets: int | None = None  # Copies-per-file target (#1897)
     notes: str | None = None
     tags: str | None = None
     due_date: datetime | None = None
@@ -43,8 +46,10 @@ class ProjectCreate(BaseModel):
         return _validate_project_url(v)
 
 
-class ProjectUpdate(BaseModel):
+class ProjectUpdate(IgnoresNullForRequiredColumns):
     """Schema for updating a project."""
+
+    __orm_table__ = "projects"
 
     name: str | None = None
     description: str | None = None
@@ -52,6 +57,7 @@ class ProjectUpdate(BaseModel):
     status: str | None = None  # active, completed, archived
     target_count: int | None = None
     target_parts_count: int | None = None
+    target_sets: int | None = None  # Copies-per-file target (#1897)
     notes: str | None = None
     tags: str | None = None
     due_date: datetime | None = None
@@ -84,6 +90,7 @@ class ProjectStats(BaseModel):
     estimated_cost: float = 0.0  # Based on filament cost
     total_energy_kwh: float = 0.0
     total_energy_cost: float = 0.0
+    total_wear_cost: float = 0.0  # Printer wear (#694)
     remaining_prints: int | None = None  # target_count - total_archives
     remaining_parts: int | None = None  # target_parts_count - completed_prints
     # BOM stats (Phase 7)
@@ -106,13 +113,24 @@ class ProjectStats(BaseModel):
 
 
 class ProjectChildPreview(BaseModel):
-    """Minimal project data for child preview."""
+    """A sub-project as listed on its parent's page.
+
+    The figures cover the child's *own* subtree, not just its own prints, so
+    the listed rows add up to the parent's roll-up minus the parent's own
+    prints (#1264).
+    """
 
     id: int
     name: str
     color: str | None
     status: str
     progress_percent: float | None = None
+    descendant_count: int = 0  # Sub-projects nested under this one, at any depth
+    total_archives: int = 0
+    completed_prints: int = 0
+    total_print_time_hours: float = 0.0
+    total_filament_grams: float = 0.0
+    total_cost: float = 0.0  # Filament + energy + BOM, matching the parent's cost card
 
 
 class ProjectResponse(BaseModel):
@@ -125,6 +143,7 @@ class ProjectResponse(BaseModel):
     status: str
     target_count: int | None
     target_parts_count: int | None = None
+    target_sets: int | None = None  # Copies-per-file target (#1897)
     notes: str | None = None
     attachments: list | None = None
     tags: str | None = None
@@ -136,15 +155,26 @@ class ProjectResponse(BaseModel):
     parent_id: int | None = None
     parent_name: str | None = None  # For display
     children: list[ProjectChildPreview] = []
+    descendant_count: int = 0  # Sub-projects at any depth beneath this one (#1264)
     created_at: datetime
     updated_at: datetime
     stats: ProjectStats | None = None
+    # This project's numbers combined with every sub-project's. Null when there
+    # are none, since it would only repeat ``stats`` (#1264).
+    rollup_stats: ProjectStats | None = None
     url: str | None = None
     cover_image_filename: str | None = None
     order_number: str | None = None
 
     class Config:
         from_attributes = True
+
+
+class ProjectFileProgress(BaseModel):
+    """Completed-run count for one library file inside a project (#1897)."""
+
+    file_id: int
+    completed_count: int
 
 
 class ArchivePreview(BaseModel):
@@ -168,7 +198,15 @@ class ProjectListResponse(BaseModel):
     status: str
     target_count: int | None
     target_parts_count: int | None = None
+    target_sets: int | None = None  # Copies-per-file target (#1897); the shared edit dialog needs it
     budget: float | None = None
+    # The edit dialog is shared with the project detail page and seeds its fields
+    # from whichever project object it is handed, so the list payload has to carry
+    # everything the dialog edits — otherwise a save from the list view submits a
+    # blank tags field and a default priority over the stored values (#2536).
+    tags: str | None = None
+    due_date: datetime | None = None
+    priority: str = "normal"
     created_at: datetime
     # Quick stats
     archive_count: int = 0  # Number of print jobs
@@ -177,6 +215,10 @@ class ProjectListResponse(BaseModel):
     failed_count: int = 0  # Sum of quantities for failed prints
     queue_count: int = 0
     progress_percent: float | None = None
+    # Nesting (#1264) — the grid needs both to tell a sub-project apart from a
+    # top-level one without fetching every project's detail.
+    parent_id: int | None = None
+    child_count: int = 0  # Direct sub-projects only
     # Preview of archives (up to 5)
     archives: list[ArchivePreview] = []
     # #1155: card-level metadata
@@ -216,8 +258,10 @@ class BOMItemCreate(BaseModel):
     remarks: str | None = None
 
 
-class BOMItemUpdate(BaseModel):
+class BOMItemUpdate(IgnoresNullForRequiredColumns):
     """Schema for updating a BOM item."""
+
+    __orm_table__ = "project_bom_items"
 
     name: str | None = None
     quantity_needed: int | None = None
@@ -282,24 +326,6 @@ class LinkedFolderExport(BaseModel):
     name: str
 
 
-class ProjectExport(BaseModel):
-    """Schema for exporting a project."""
-
-    name: str
-    description: str | None
-    color: str | None
-    status: str
-    target_count: int | None
-    target_parts_count: int | None
-    notes: str | None
-    tags: str | None
-    due_date: datetime | None
-    priority: str
-    budget: float | None
-    bom_items: list[BOMItemExport] = []
-    linked_folders: list[LinkedFolderExport] = []
-
-
 class ProjectImport(BaseModel):
     """Schema for importing a project."""
 
@@ -309,6 +335,7 @@ class ProjectImport(BaseModel):
     status: str = "active"
     target_count: int | None = None
     target_parts_count: int | None = None
+    target_sets: int | None = None
     notes: str | None = None
     tags: str | None = None
     due_date: datetime | None = None
@@ -346,7 +373,9 @@ class PlanItemCreate(BaseModel):
     notes: str | None = None
 
 
-class PlanItemUpdate(BaseModel):
+class PlanItemUpdate(IgnoresNullForRequiredColumns):
+    __orm_table__ = "project_plan_items"
+
     plate_id: int | None = None
     name: str | None = None
     group_label: str | None = None

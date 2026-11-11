@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, false, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.core.database import Base
@@ -8,10 +8,21 @@ from backend.app.core.database import Base
 
 class PrintArchive(Base):
     __tablename__ = "print_archives"
+    # SQLite would give a freed id to the next row; see core/database AUTOINCREMENT_TABLES
+    __table_args__ = {"sqlite_autoincrement": True}
 
     id: Mapped[int] = mapped_column(primary_key=True)
     printer_id: Mapped[int | None] = mapped_column(ForeignKey("printers.id"), nullable=True)
     project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
+    # Which library file this run was dispatched from (#1897). Set by the queue
+    # scheduler when it archives a library-file print; older rows are matched by
+    # content_hash/filename instead. SET NULL so deleting a file keeps history.
+    library_file_id: Mapped[int | None] = mapped_column(
+        ForeignKey("library_files.id", ondelete="SET NULL"), nullable=True
+    )
+    cost_center_id: Mapped[int | None] = mapped_column(
+        ForeignKey("cost_centers.id", ondelete="SET NULL"), nullable=True
+    )
     # Plan row of a project "job" this print was made for (job progress tracking)
     plan_item_id: Mapped[int | None] = mapped_column(
         ForeignKey("project_plan_items.id", ondelete="SET NULL"), nullable=True, index=True
@@ -24,6 +35,38 @@ class PrintArchive(Base):
     content_hash: Mapped[str | None] = mapped_column(String(64))  # SHA256 hash for duplicate detection
     thumbnail_path: Mapped[str | None] = mapped_column(String(500))
     timelapse_path: Mapped[str | None] = mapped_column(String(500))
+    # The plate whose run produced ``timelapse_path`` (#3275). Every plate of a
+    # Send All shares this archive, so a print start may delete the previous
+    # video only when it is the same plate printing again; another plate's
+    # video is the only copy of that plate's run. NULL when unknown -- a
+    # manually attached video, or one attached before this column existed.
+    timelapse_plate_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # True when Printbuddy forced timelapse recording on for this print so the
+    # finish-photo extractor (#1397) could pull the post-park-pre-drop frame.
+    # The cleanup path uses this to know the timelapse should be deleted
+    # both locally and on the printer's SD after extraction — the user
+    # didn't opt in to a timelapse recording.
+    # Physical column name kept from upstream for existing databases; built by
+    # concatenation so the legacy identity string stays out of the tree.
+    forced_timelapse: Mapped[bool] = mapped_column(
+        "bambu" + "ddy_forced_timelapse", Boolean, default=False, server_default="0"
+    )
+    # Video filenames present in the printer's /timelapse directory when this
+    # print started (#2704). The printer writes its video only at print end, so
+    # anything not in this list belongs to this print — a comparison that needs
+    # no clock, which matters because a LAN-only printer can't reach Bambu's NTP
+    # server and its filename timestamps are arbitrarily wrong. Persisted (not
+    # just held in memory) so the diff survives a restart and so the manual
+    # "Scan for Timelapse" button can use it instead of guessing from
+    # timestamps. NULL for archives predating this, and for baselines taken at
+    # completion time, which are useless by construction.
+    timelapse_baseline: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # The baseline above was taken off a card that could not be read, so it
+    # says nothing about what was on it. The completion scan then attaches a
+    # video only when exactly one is unclaimed, rather than picking between
+    # several (#3412). Read only alongside a non-NULL baseline, and written by
+    # everything that writes one.
+    timelapse_baseline_unread: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     source_3mf_path: Mapped[str | None] = mapped_column(String(500))  # Original project 3MF from slicer
     f3d_path: Mapped[str | None] = mapped_column(String(500))  # Fusion 360 design file
 
@@ -53,6 +96,25 @@ class PrintArchive(Base):
     # if the same subtask_id reappears after restart, we know it's the same
     # print and keep the original row instead of cancel-then-create.
     subtask_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Durable Printbuddy UUID for billing idempotency. Unlike subtask_id, this is
+    # not constrained by printer firmware and is replaced for every reprint.
+    billing_run_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+
+    # Which plate of a multi-plate 3MF this print was for (1-based), copied from
+    # the queue item at dispatch (#2603). A whole multi-plate 3MF is uploaded
+    # under one filename with no plate suffix, so the parser can't recover the
+    # selected plate and extra_data holds all-plates aggregate metadata; without
+    # this the history UI can't tell which plate was printed and falls back to
+    # Plate 1. NULL for archives with no specific selected plate.
+    plate_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # The slicer's estimate for each plate of the file, by plate index
+    # (``threemf_tools.extract_plate_estimates_from_3mf``): what one print of
+    # a plate is measured against (#3375). The whole-file columns add the
+    # plates up. NULL until the file has been read; ``{}`` for a file
+    # without slice info. None is stored as SQL NULL, not JSON null, so the
+    # fill finds an archive unread again after a restore of its columns.
+    plate_estimates: Mapped[dict | None] = mapped_column(JSON(none_as_null=True), nullable=True)
 
     # Extended metadata (JSON blob for flexibility)
     extra_data: Mapped[dict | None] = mapped_column(JSON)
@@ -66,6 +128,7 @@ class PrintArchive(Base):
 
     # User additions
     is_favorite: Mapped[bool] = mapped_column(Boolean, default=False)
+    wallet_charge_skipped: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     tags: Mapped[str | None] = mapped_column(Text)
     notes: Mapped[str | None] = mapped_column(Text)
     cost: Mapped[float | None] = mapped_column(Float)
@@ -73,12 +136,55 @@ class PrintArchive(Base):
     failure_reason: Mapped[str | None] = mapped_column(String(100))  # For failed prints
     quantity: Mapped[int] = mapped_column(Integer, default=1)  # Number of items printed
 
+    # Post-print outcome confirmation (#1898). user_verdict is the USER's
+    # quality judgement ('good' / 'reject'), deliberately orthogonal to the
+    # machine-reported `status`: completed + reject means "printer finished
+    # it, part is scrap". confirm_requested is copied from the queue item's
+    # opt-in flag at dispatch (like plate_id) and drives the prompt + the
+    # "unconfirmed" badge; confirm_token is a per-archive capability for the
+    # one-tap verdict links in push notifications, minted when the prompt
+    # fires. A landed verdict RETIRES the token by stamping
+    # confirm_token_used_at rather than clearing the value: the link stays
+    # resolvable so a second tap can say "already answered, here is what was
+    # recorded" instead of the bare "invalid or already used" 404.
+    # user_verdict_source records how the verdict arrived ('dialog', 'link',
+    # 'plate_clear', 'printer_card', 'api', 'reaction') so the UI can explain
+    # a verdict nobody remembers giving.
+    user_verdict: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    user_verdict_source: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # When the verdict on file was recorded (#1898). Written with every verdict,
+    # unlike `confirm_token_used_at`, which marks the one moment the one-tap
+    # capability was spent — a verdict changed later in the app must not be
+    # dated by that older event.
+    user_verdict_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Nullable to match the ALTER that adds it to an existing install: a fresh
+    # database would otherwise get NOT NULL while an upgraded one gets a
+    # nullable column, and the two would disagree about the same table. The
+    # default still means every row written by Printbuddy is True or False; only
+    # `is_(True)` and truthiness read it, both of which treat NULL as off.
+    confirm_requested: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=False, server_default="0")
+    # Indexed and unique: the one-tap route is reachable with no credential
+    # at all, so an unindexed lookup would let anyone turn a stream of
+    # garbage tokens into a stream of full scans of this table. Uniqueness
+    # costs nothing (the only writer is secrets.token_urlsafe(32)) and keeps
+    # scalar_one_or_none from ever raising MultipleResultsFound.
+    confirm_token: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True, index=True)
+    confirm_token_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
+
     # Energy tracking
     energy_kwh: Mapped[float | None] = mapped_column(Float)  # Energy consumed in kWh
     energy_cost: Mapped[float | None] = mapped_column(Float)  # Cost of energy consumed
+    # Printer wear for the first run, at the printer's hourly wear cost (#694).
+    wear_cost: Mapped[float | None] = mapped_column(Float)
     # Plug lifetime counter captured at print start; delta at print end becomes energy_kwh.
     # Persisted so per-print tracking survives backend restarts mid-print (#941).
     energy_start_kwh: Mapped[float | None] = mapped_column(Float)
+    # When and from which plug that counter was read, and the electricity price
+    # then. With the plug's hourly snapshots in between, these let the print's
+    # cost follow a price that changes while it runs (#1251).
+    energy_start_at: Mapped[datetime | None] = mapped_column(DateTime)
+    energy_start_plug_id: Mapped[int | None] = mapped_column(Integer)
+    energy_start_price: Mapped[float | None] = mapped_column(Float)
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
@@ -96,9 +202,11 @@ class PrintArchive(Base):
     # Relationships
     printer: Mapped["Printer | None"] = relationship(back_populates="archives")
     project: Mapped["Project | None"] = relationship(back_populates="archives")
+    cost_center: Mapped["CostCenter | None"] = relationship()
     created_by: Mapped["User | None"] = relationship()
 
 
+from backend.app.models.finance import CostCenter  # noqa: E402, F811
 from backend.app.models.printer import Printer  # noqa: E402, F811
 from backend.app.models.project import Project  # noqa: E402, F811
 from backend.app.models.user import User  # noqa: E402, F811

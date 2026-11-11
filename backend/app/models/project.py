@@ -5,6 +5,10 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.core.database import Base
 
+# The priorities and statuses the project editor accepts.
+PROJECT_PRIORITIES = ("low", "normal", "high", "urgent")
+PROJECT_STATUSES = ("active", "completed", "archived")
+
 
 class Project(Base):
     """Project to group related prints (e.g., 'Voron Build' with multiple parts)."""
@@ -33,6 +37,9 @@ class Project(Base):
     target_parts_count: Mapped[int | None] = mapped_column(
         Integer, nullable=True
     )  # Optional target number of parts/objects
+    # Optional copies-per-file target (#1897): every printable file in the
+    # project's linked folders should be printed this many times ("sets").
+    target_sets: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     # Phase 2: Rich text notes (HTML from WYSIWYG editor)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)

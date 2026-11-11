@@ -1,0 +1,174 @@
+"""The backup says which version made it, and restore refuses one it cannot import.
+
+Restoring a backup into a different version of Printbuddy is ordinary -- an
+upgrade, a rebuild, a move to another host. What is not ordinary is the Postgres
+restore path, which throws the backup's schema away and rebuilds from the
+running ORM. A NOT NULL column the running version has and the backup does not
+then has nothing to put in it, and the import fails on the INSERT: after the
+drop, with the install's data already gone.
+
+So the incompatibility has to be found before any of that, and it has to say
+something an operator can act on. A column name does not; a pair of version
+numbers does, which is what the manifest is for.
+"""
+
+from __future__ import annotations
+
+import io
+import json
+import sqlite3
+import zipfile
+from pathlib import Path
+from unittest.mock import AsyncMock, patch
+
+import pytest
+
+from backend.app.core.config import APP_VERSION, settings as app_settings
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_the_backup_records_the_version_that_made_it(async_client, monkeypatch, tmp_path):
+    from backend.app.api.routes.settings import create_backup_zip
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(app_settings, "base_dir", tmp_path)
+
+    zip_path, _filename = await create_backup_zip(output_path=tmp_path)
+    try:
+        with zipfile.ZipFile(zip_path) as zf:
+            assert "manifest.json" in zf.namelist()
+            manifest = json.loads(zf.read("manifest.json"))
+    finally:
+        zip_path.unlink(missing_ok=True)
+
+    assert manifest["app_version"] == APP_VERSION
+    assert manifest["format"] == 1
+    assert manifest["database"] in ("sqlite", "postgresql")
+    assert manifest["created_at"]
+
+
+def _incompatible_backup(tmp_path: Path, *, version: str) -> bytes:
+    """A backup whose `cost_centers` has no `name` -- NOT NULL, no default."""
+    db = tmp_path / "printbuddy.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE cost_centers (id INTEGER PRIMARY KEY, code TEXT)")
+    conn.execute("INSERT INTO cost_centers (id, code) VALUES (1, 'abc')")
+    conn.commit()
+    conn.close()
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as zf:
+        zf.write(db, "printbuddy.db")
+        zf.writestr("manifest.json", json.dumps({"format": 1, "app_version": version}))
+    return buffer.getvalue()
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_an_unimportable_backup_is_refused_with_both_versions(async_client, tmp_path):
+    """A 400 naming the two versions, and -- the point -- nothing touched.
+
+    is_sqlite is patched false because this is the PostgreSQL path: a SQLite
+    install restores by copying the backup's pages, schema and all, and has
+    never had this problem.
+    """
+    payload = _incompatible_backup(tmp_path, version="99.9.9")
+
+    with patch("backend.app.core.db_dialect.is_sqlite", return_value=False):
+        response = await async_client.post(
+            "/api/v1/settings/restore",
+            files={"file": ("backup.zip", payload, "application/zip")},
+        )
+
+    assert response.status_code == 400, response.text
+    detail = response.json()["detail"]
+    assert "cost_centers.name" in detail
+    assert "99.9.9" in detail
+    assert APP_VERSION in detail
+    assert "Nothing has been changed" in detail
+
+
+@pytest.mark.sqlite_only  # switches the app to its own SQLite database file
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_overlay_logo_survives_backup_and_restore(async_client, monkeypatch, tmp_path):
+    from backend.app.api.routes.settings import create_backup_zip
+
+    # Keep the restored database separate from the integration-test engine.
+    db_path = tmp_path / "printbuddy.db"
+    with sqlite3.connect(db_path) as db:
+        db.execute("CREATE TABLE backup_marker (id INTEGER PRIMARY KEY)")
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(app_settings, "base_dir", tmp_path)
+    monkeypatch.setattr(app_settings, "database_url", f"sqlite+aiosqlite:///{db_path}")
+    logo_dir = tmp_path / "overlay-branding"
+    logo_dir.mkdir()
+    logo = logo_dir / "logo.png"
+    original = b"saved overlay logo"
+    logo.write_bytes(original)
+
+    zip_path, _ = await create_backup_zip(output_path=tmp_path)
+    with zipfile.ZipFile(zip_path) as archive:
+        assert archive.read("overlay-branding/logo.png") == original
+    logo.write_bytes(b"replacement logo")
+    (logo_dir / "stale.png").write_bytes(b"stale")
+
+    with (
+        patch("backend.app.core.database.close_all_connections", new_callable=AsyncMock),
+        patch("backend.app.core.database.reinitialize_database", new_callable=AsyncMock),
+        patch("backend.app.core.database.init_db", new_callable=AsyncMock),
+        patch("backend.app.core.database.invalidate_all_sessions", new_callable=AsyncMock),
+        patch("backend.app.services.print_scheduler.scheduler.stop"),
+        patch("backend.app.services.smart_plug_manager.smart_plug_manager.stop_scheduler"),
+        patch("backend.app.services.notification_service.notification_service.stop_digest_scheduler"),
+    ):
+        response = await async_client.post(
+            "/api/v1/settings/restore",
+            files={"file": ("backup.zip", zip_path.read_bytes(), "application/zip")},
+        )
+
+    assert response.status_code == 200, response.text
+    assert logo.read_bytes() == original
+    assert not (logo_dir / "stale.png").exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.sqlite_only  # backs up and restores the app's own SQLite database file
+async def test_a_restore_stops_the_virtual_printers(async_client, monkeypatch, tmp_path):
+    """vp-2: the "stop virtual printer" step called the legacy configure(),
+    which ignores its arguments and re-syncs from the database not yet
+    replaced, so their FTP, MQTT and SSDP services ran on through the file
+    swap. A successful restore asks for a restart, as for the other services."""
+    from backend.app.api.routes.settings import create_backup_zip
+    from backend.app.services.virtual_printer import virtual_printer_manager
+
+    db_path = tmp_path / "printbuddy.db"
+    with sqlite3.connect(db_path) as db:
+        db.execute("CREATE TABLE backup_marker (id INTEGER PRIMARY KEY)")
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(app_settings, "base_dir", tmp_path)
+    monkeypatch.setattr(app_settings, "database_url", f"sqlite+aiosqlite:///{db_path}")
+    zip_path, _ = await create_backup_zip(output_path=tmp_path)
+    monkeypatch.setitem(virtual_printer_manager._instances, 4242, object())
+
+    with (
+        patch("backend.app.core.database.close_all_connections", new_callable=AsyncMock),
+        patch("backend.app.core.database.reinitialize_database", new_callable=AsyncMock),
+        patch("backend.app.core.database.init_db", new_callable=AsyncMock),
+        patch("backend.app.core.database.invalidate_all_sessions", new_callable=AsyncMock),
+        patch("backend.app.services.print_scheduler.scheduler.stop"),
+        patch("backend.app.services.smart_plug_manager.smart_plug_manager.stop_scheduler"),
+        patch("backend.app.services.notification_service.notification_service.stop_digest_scheduler"),
+        patch.object(virtual_printer_manager, "stop_all", new_callable=AsyncMock) as stop_all,
+        patch.object(virtual_printer_manager, "configure", new_callable=AsyncMock) as configure,
+    ):
+        response = await async_client.post(
+            "/api/v1/settings/restore",
+            files={"file": ("backup.zip", zip_path.read_bytes(), "application/zip")},
+        )
+
+    assert response.status_code == 200, response.text
+    stop_all.assert_awaited_once()
+    configure.assert_not_awaited()

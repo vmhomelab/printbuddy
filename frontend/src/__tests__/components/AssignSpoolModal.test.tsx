@@ -19,6 +19,15 @@ vi.mock('../../api/client', () => ({
   },
 }));
 
+const mockShowToast = vi.fn();
+vi.mock('../../contexts/ToastContext', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../contexts/ToastContext')>();
+  return {
+    ...actual,
+    useToast: () => ({ showToast: mockShowToast }),
+  };
+});
+
 const defaultProps = {
   isOpen: true,
   onClose: vi.fn(),
@@ -116,6 +125,38 @@ describe('AssignSpoolModal', () => {
     expect(screen.getByText(/Jade White/)).toBeInTheDocument();
   });
 
+  it('shows each spool ID on the assignment card (#2978)', async () => {
+    render(<AssignSpoolModal {...defaultProps} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('#1')).toBeInTheDocument();
+    });
+
+    expect(screen.getByText('#2')).toBeInTheDocument();
+    expect(screen.getByText('#3')).toBeInTheDocument();
+  });
+
+  it('renders a clear tray as the transparency checkerboard, not an invisible circle (#2912)', async () => {
+    render(
+      <AssignSpoolModal
+        {...defaultProps}
+        trayInfo={{ type: 'PETG', color: '00000000', location: 'AMS 1 - Slot 1' }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/PETG/)).toBeInTheDocument();
+    });
+
+    // The tray swatch used to be painted `#00000000` directly, which is a valid
+    // colour the browser renders as nothing at all — a clear spool showed an
+    // empty circle. getSwatchStyle draws the checkerboard instead.
+    const swatches = Array.from(document.querySelectorAll<HTMLElement>('[style]'));
+    expect(
+      swatches.some((el) => el.style.backgroundImage.includes('repeating-conic-gradient')),
+    ).toBe(true);
+  });
+
   it('filters out spools already assigned to other slots', async () => {
     (api.getAssignments as ReturnType<typeof vi.fn>).mockResolvedValue([
       { id: 1, spool_id: 3, printer_id: 1, ams_id: 0, tray_id: 1 }, // spool 3 assigned to different slot
@@ -141,12 +182,11 @@ describe('AssignSpoolModal', () => {
 
     render(<AssignSpoolModal {...defaultProps} />);
 
+    // Spool 1 (assigned to current slot) should still be in the list for
+    // re-assignment — its card, not the "Assigned" line above the list.
     await waitFor(() => {
-      expect(screen.getByText(/Polymaker/)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /Polymaker/ })).toBeInTheDocument();
     });
-
-    // Spool 1 (assigned to current slot) should still be visible for re-assignment
-    expect(screen.getByText(/Polymaker/)).toBeInTheDocument();
   });
 
   // Empty-state premise reworked for #1133: BL spools no longer trigger
@@ -264,6 +304,7 @@ describe('AssignSpoolModal', () => {
     render(
       <AssignSpoolModal
         {...defaultProps}
+        inventoryOnlySlot
         trayId={1}
         trayInfo={{
           type: 'PLA',
@@ -289,8 +330,20 @@ describe('AssignSpoolModal', () => {
     expect(api.assignSpool).toHaveBeenCalledWith({ spool_id: 42, printer_id: 1, ams_id: 0, tray_id: 1 });
   });
 
+  it('does not show quick-create for Bambu printer slots', () => {
+    render(
+      <AssignSpoolModal
+        {...defaultProps}
+        trayInfo={{ type: 'PLA', material: 'PLA', color: 'FFF014', location: 'AMS 1 - Slot 1' }}
+      />
+    );
+
+    expect(screen.getByRole('heading', { name: 'Assign Spool' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /create spool from slot/i })).not.toBeInTheDocument();
+  });
+
   it('does not show quick-create for Spoolman slot assignment mode', async () => {
-    render(<AssignSpoolModal {...defaultProps} spoolmanEnabled />);
+    render(<AssignSpoolModal {...defaultProps} spoolmanEnabled inventoryOnlySlot />);
 
     expect(screen.getByRole('heading', { name: 'Assign Spool' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /create spool from slot/i })).not.toBeInTheDocument();
@@ -430,6 +483,7 @@ describe('AssignSpoolModal', () => {
         printerId={7}
         amsId={-1}
         trayId={0}
+        inventoryOnlySlot
         trayInfo={{ type: '', material: undefined, profile: '', color: '', location: 'Loaded spool' }}
       />
     );
@@ -479,6 +533,88 @@ describe('AssignSpoolModal', () => {
     await waitFor(() => {
       expect(api.refreshPrinterStatus).toHaveBeenCalledWith(7);
     });
+  });
+
+  // #1680: backend returns `pending_config=true` when the AMS slot was empty
+  // at assign time (firmware drops the MQTT push silently; on_ams_change
+  // re-fires the config when filament is detected). The toast MUST reflect
+  // that the slot hasn't been configured yet — saying "AMS slot configured"
+  // reads as a lie and is what the reporter hit.
+  it('shows the pending-insert toast when backend returns pending_config=true (#1680)', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const user = userEvent.setup();
+
+    (api.getSpools as ReturnType<typeof vi.fn>).mockResolvedValue([manualSpool]);
+    (api.assignSpool as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: 1, spool_id: 1, printer_id: 7, ams_id: 0, tray_id: 0,
+      pending_config: true,
+    });
+
+    render(
+      <AssignSpoolModal
+        {...defaultProps}
+        printerId={7}
+        trayInfo={{ type: 'PLA', material: 'PLA', profile: 'PLA', color: 'FF0000', location: 'AMS 1 - Slot 1' }}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/Polymaker/)).toBeInTheDocument();
+    });
+    await user.click(screen.getByText(/Polymaker/));
+    await user.click(screen.getByRole('button', { name: /assign spool/i }));
+
+    await waitFor(() => {
+      expect(mockShowToast).toHaveBeenCalledWith(
+        expect.stringContaining('Slot will configure when you insert the spool'),
+        'success',
+      );
+    });
+    // And the "AMS slot configured" toast must NOT also have fired.
+    expect(mockShowToast).not.toHaveBeenCalledWith(
+      expect.stringContaining('AMS slot configured'),
+      expect.anything(),
+    );
+  });
+
+  // Counterpart guard: when the backend did configure the slot
+  // (pending_config=false or absent), the existing success toast still
+  // fires. Without this regression test, the #1680 fix could silently
+  // overshoot and label every assign as pending.
+  it('shows the configured toast when backend returns pending_config=false (#1680)', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const user = userEvent.setup();
+
+    (api.getSpools as ReturnType<typeof vi.fn>).mockResolvedValue([manualSpool]);
+    (api.assignSpool as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: 1, spool_id: 1, printer_id: 7, ams_id: 0, tray_id: 0,
+      pending_config: false,
+    });
+
+    render(
+      <AssignSpoolModal
+        {...defaultProps}
+        printerId={7}
+        trayInfo={{ type: 'PLA', material: 'PLA', profile: 'PLA', color: 'FF0000', location: 'AMS 1 - Slot 1' }}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/Polymaker/)).toBeInTheDocument();
+    });
+    await user.click(screen.getByText(/Polymaker/));
+    await user.click(screen.getByRole('button', { name: /assign spool/i }));
+
+    await waitFor(() => {
+      expect(mockShowToast).toHaveBeenCalledWith(
+        expect.stringContaining('AMS slot configured'),
+        'success',
+      );
+    });
+    expect(mockShowToast).not.toHaveBeenCalledWith(
+      expect.stringContaining('Slot will configure when you insert'),
+      expect.anything(),
+    );
   });
 });
 
@@ -576,6 +712,7 @@ describe('AssignSpoolModal — Spoolman enabled (T-Gap 7)', () => {
       expect(screen.getByText(/Bambu Lab/)).toBeInTheDocument();
     });
     expect(api.getSpoolmanInventorySpools).toHaveBeenCalledWith(false);
+    expect(screen.getByText('#200')).toBeInTheDocument();
   });
 
   it('does not fetch Spoolman spools when spoolmanEnabled=false', async () => {
@@ -600,6 +737,28 @@ describe('AssignSpoolModal — Spoolman enabled (T-Gap 7)', () => {
     });
     // Local spool (Polymaker) must NOT appear in Spoolman mode
     expect(screen.queryByText(/Polymaker/)).not.toBeInTheDocument();
+  });
+
+  it('refreshes the slots it filters "assigned elsewhere" by after an assignment', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const user = userEvent.setup();
+    (api.assignSpoolmanSlot as ReturnType<typeof vi.fn>).mockResolvedValue({});
+    const slotsCall = api.getSpoolmanSlotAssignments as ReturnType<typeof vi.fn>;
+    render(
+      <AssignSpoolModal
+        {...defaultProps}
+        spoolmanEnabled
+        trayInfo={{ type: 'PETG', material: 'PETG', profile: 'PETG HF', color: '0000FF', location: 'AMS 1 - Slot 1' }}
+      />
+    );
+
+    await waitFor(() => expect(screen.getByText(/Bambu Lab/)).toBeInTheDocument());
+    const before = slotsCall.mock.calls.length;
+    await user.click(screen.getByText(/Bambu Lab/));
+    await user.click(screen.getByRole('button', { name: /assign spool/i }));
+
+    await waitFor(() => expect(api.assignSpoolmanSlot).toHaveBeenCalled());
+    await waitFor(() => expect(slotsCall.mock.calls.length).toBeGreaterThan(before));
   });
 
   it('hides archived Spoolman spools', async () => {

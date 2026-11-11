@@ -5,24 +5,29 @@ import { useTranslation } from 'react-i18next';
 import { api } from '../api/client';
 import { formatRelativeTime } from '../utils/date';
 import { filterCompatibleQueueItems } from '../utils/printer';
+import { queueItemDisplayName } from '../utils/queueItemName';
 
 interface PrinterQueueWidgetProps {
   printerId: number;
   printerModel?: string | null;
   loadedFilamentTypes?: Set<string>;
   loadedFilaments?: Set<string>;  // "TYPE:rrggbb" pairs for filament override color matching
+  loadedVariants?: Set<string>;  // "TYPE:rrggbb:idx" triples for PLA sub-variant matching (#2650)
+  variant?: 'card' | 'panelExtension';
 }
 
-export function PrinterQueueWidget({ printerId, printerModel, loadedFilamentTypes, loadedFilaments }: PrinterQueueWidgetProps) {
+export function PrinterQueueWidget({ printerId, printerModel, loadedFilamentTypes, loadedFilaments, loadedVariants, variant = 'card' }: PrinterQueueWidgetProps) {
   const { t } = useTranslation();
   const { data: queue } = useQuery({
     queryKey: ['queue', printerId, 'pending', printerModel],
-    queryFn: () => api.getQueue(printerId, 'pending', printerModel || undefined),
+    // The printer's model is resolved on the server, as GET /queue/ does when
+    // no target_model is given; the key keeps it so a model change refetches.
+    queryFn: () => api.getPrinterQueue(printerId, 'pending'),
     refetchInterval: 30000,
   });
 
   // Filter queue to items this printer can actually print (filament type + color check)
-  const compatibleQueue = queue ? filterCompatibleQueueItems(queue, loadedFilamentTypes, loadedFilaments) : undefined;
+  const compatibleQueue = queue ? filterCompatibleQueueItems(queue, loadedFilamentTypes, loadedFilaments, loadedVariants) : undefined;
   const totalPending = compatibleQueue?.length || 0;
 
   if (totalPending === 0) {
@@ -36,18 +41,22 @@ export function PrinterQueueWidget({ printerId, printerModel, loadedFilamentType
   // second button in this widget caused the two controls to overlap whenever
   // the plate-clear gate was up with auto-dispatch items queued — both POSTed
   // to the same /clear-plate endpoint, so the widget button was pure noise.
+  const linkClassName = variant === 'panelExtension'
+    ? 'block mt-2 border-t border-bambu-dark-tertiary pt-2 pl-1 hover:opacity-90 transition-opacity'
+    : 'block mb-3 p-3 bg-bambu-dark rounded-lg hover:bg-bambu-dark-tertiary transition-colors';
+
   return (
     <Link
       to="/queue"
-      className="block mb-3 p-3 bg-bambu-dark rounded-lg hover:bg-bambu-dark-tertiary transition-colors"
+      className={linkClassName}
     >
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-3 min-w-0 flex-1">
-          <Calendar className="w-5 h-5 text-yellow-400 flex-shrink-0" />
+          <Calendar className="w-5 h-5 text-yellow-600 dark:text-yellow-400 flex-shrink-0" />
           <div className="min-w-0 flex-1">
             <p className="text-xs text-bambu-gray">{t('queue.nextInQueue')}</p>
             <p className="text-sm text-white truncate">
-              {nextItem?.archive_name || nextItem?.library_file_name || `File #${nextItem?.archive_id || nextItem?.library_file_id}`}
+              {nextItem ? queueItemDisplayName(nextItem) : ''}
             </p>
           </div>
         </div>
@@ -57,7 +66,7 @@ export function PrinterQueueWidget({ printerId, printerModel, loadedFilamentType
             {nextItem?.scheduled_time ? formatRelativeTime(nextItem.scheduled_time, 'system', t) : t('time.waiting')}
           </span>
           {totalPending > 1 && (
-            <span className="text-xs px-1.5 py-0.5 bg-yellow-400/20 text-yellow-400 rounded">
+            <span className="text-xs px-1.5 py-0.5 bg-yellow-100 dark:bg-yellow-400/20 text-yellow-700 dark:text-yellow-400 rounded">
               +{totalPending - 1}
             </span>
           )}

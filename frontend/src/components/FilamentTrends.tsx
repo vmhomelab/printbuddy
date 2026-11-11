@@ -16,12 +16,19 @@ import type { ArchiveSlim } from '../api/client';
 import { MetricToggle, type Metric } from './MetricToggle';
 import { parseUTCDate } from '../utils/date';
 import { formatWeight } from '../utils/weight';
+import { splitFilamentTypes } from '../utils/filamentTypes';
 
 interface FilamentTrendsProps {
   archives: ArchiveSlim[];
   currency?: string;
   dateFrom?: string;
   dateTo?: string;
+}
+
+/** An archive's materials, or 'Unknown' when it has none (#3262). */
+function archiveFilamentTypes(filamentType: string | null | undefined): string[] {
+  const types = splitFilamentTypes(filamentType);
+  return types.length ? types : ['Unknown'];
 }
 
 const COLORS = ['#00ae42', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316'];
@@ -36,17 +43,18 @@ export function FilamentTrends({ archives, currency = '$', dateFrom, dateTo }: F
 
   // Calculate daily usage data
   const dailyData = useMemo(() => {
-    const dataMap = new Map<string, { date: string; filament: number; cost: number; prints: number }>();
+    const dataMap = new Map<string, { date: string; filament: number; cost: number; energy: number; prints: number }>();
 
     archives.forEach(archive => {
       const date = parseUTCDate(archive.completed_at || archive.created_at) || new Date();
       // Use local date string for grouping
       const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 
-      const existing = dataMap.get(key) || { date: key, filament: 0, cost: 0, prints: 0 };
+      const existing = dataMap.get(key) || { date: key, filament: 0, cost: 0, energy: 0, prints: 0 };
       existing.filament += archive.filament_used_grams || 0;
       existing.cost += archive.cost || 0;
-      existing.prints += archive.quantity || 1;
+      existing.energy += archive.energy_kwh || 0;
+      existing.prints += archive.quantity ?? 1;
       dataMap.set(key, existing);
     });
 
@@ -75,7 +83,7 @@ export function FilamentTrends({ archives, currency = '$', dateFrom, dateTo }: F
   const hourlyData = useMemo(() => {
     if (spanDays > 7) return [];
 
-    const dataMap = new Map<string, { date: string; filament: number; cost: number; prints: number }>();
+    const dataMap = new Map<string, { date: string; filament: number; cost: number; energy: number; prints: number }>();
     const multiDay = spanDays > 1;
 
     archives.forEach(archive => {
@@ -83,10 +91,11 @@ export function FilamentTrends({ archives, currency = '$', dateFrom, dateTo }: F
       const h = date.getHours();
       const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}T${String(h).padStart(2, '0')}`;
 
-      const existing = dataMap.get(key) || { date: key, filament: 0, cost: 0, prints: 0 };
+      const existing = dataMap.get(key) || { date: key, filament: 0, cost: 0, energy: 0, prints: 0 };
       existing.filament += archive.filament_used_grams || 0;
       existing.cost += archive.cost || 0;
-      existing.prints += archive.quantity || 1;
+      existing.energy += archive.energy_kwh || 0;
+      existing.prints += archive.quantity ?? 1;
       dataMap.set(key, existing);
     });
 
@@ -107,7 +116,7 @@ export function FilamentTrends({ archives, currency = '$', dateFrom, dateTo }: F
   const weeklyData = useMemo(() => {
     if (dailyData.length <= 60) return dailyData;
 
-    const dataMap = new Map<string, { week: string; filament: number; cost: number; prints: number }>();
+    const dataMap = new Map<string, { week: string; filament: number; cost: number; energy: number; prints: number }>();
 
     dailyData.forEach(day => {
       const date = new Date(day.date);
@@ -115,9 +124,10 @@ export function FilamentTrends({ archives, currency = '$', dateFrom, dateTo }: F
       weekStart.setDate(date.getDate() - date.getDay());
       const key = `${weekStart.getFullYear()}-${String(weekStart.getMonth() + 1).padStart(2, '0')}-${String(weekStart.getDate()).padStart(2, '0')}`;
 
-      const existing = dataMap.get(key) || { week: key, filament: 0, cost: 0, prints: 0 };
+      const existing = dataMap.get(key) || { week: key, filament: 0, cost: 0, energy: 0, prints: 0 };
       existing.filament += day.filament;
       existing.cost += day.cost;
+      existing.energy += day.energy;
       existing.prints += day.prints;
       dataMap.set(key, existing);
     });
@@ -136,9 +146,8 @@ export function FilamentTrends({ archives, currency = '$', dateFrom, dateTo }: F
     const dataMap = new Map<string, number>();
 
     archives.forEach(archive => {
-      const type = archive.filament_type || 'Unknown';
-      // Handle multiple types (e.g., "PLA, PETG")
-      const types = type.split(', ');
+      // Multiple types (e.g. "PLA, PETG" or "PLA Basic,PLA") share the print
+      const types = archiveFilamentTypes(archive.filament_type);
       types.forEach(t => {
         const grams = (archive.filament_used_grams || 0) / types.length;
         dataMap.set(t, (dataMap.get(t) || 0) + grams);
@@ -154,8 +163,7 @@ export function FilamentTrends({ archives, currency = '$', dateFrom, dateTo }: F
   const filamentTypePrintData = useMemo(() => {
     const dataMap = new Map<string, number>();
     archives.forEach(archive => {
-      const type = archive.filament_type || 'Unknown';
-      const types = type.split(', ');
+      const types = archiveFilamentTypes(archive.filament_type);
       types.forEach(t => {
         dataMap.set(t, (dataMap.get(t) || 0) + 1);
       });
@@ -169,8 +177,7 @@ export function FilamentTrends({ archives, currency = '$', dateFrom, dateTo }: F
   const filamentTypeTimeData = useMemo(() => {
     const dataMap = new Map<string, number>();
     archives.forEach(archive => {
-      const type = archive.filament_type || 'Unknown';
-      const types = type.split(', ');
+      const types = archiveFilamentTypes(archive.filament_type);
       const seconds = (archive.actual_time_seconds || archive.print_time_seconds || 0) / types.length;
       types.forEach(t => {
         dataMap.set(t, (dataMap.get(t) || 0) + seconds);
@@ -186,7 +193,7 @@ export function FilamentTrends({ archives, currency = '$', dateFrom, dateTo }: F
     const map = new Map<string, { completed: number; failed: number }>();
     archives.forEach(a => {
       if (a.status !== 'completed' && a.status !== 'failed') return;
-      const types = (a.filament_type || 'Unknown').split(', ');
+      const types = archiveFilamentTypes(a.filament_type);
       types.forEach(type => {
         const entry = map.get(type) || { completed: 0, failed: 0 };
         if (a.status === 'completed') entry.completed++;
@@ -237,7 +244,12 @@ export function FilamentTrends({ archives, currency = '$', dateFrom, dateTo }: F
   const chartData = spanDays <= 7 && hourlyData.length > 0 ? hourlyData : weeklyData;
   const totalFilament = archives.reduce((sum, a) => sum + (a.filament_used_grams || 0), 0);
   const totalCost = archives.reduce((sum, a) => sum + (a.cost || 0), 0);
-  const totalPrints = archives.reduce((sum, a) => sum + (a.quantity || 1), 0);
+  const totalEnergy = archives.reduce((sum, a) => sum + (a.energy_kwh || 0), 0);
+  const totalEnergyCost = archives.reduce((sum, a) => sum + (a.energy_cost || 0), 0);
+  // `??`, not `||`: an archive edited down to 0 produced nothing (#3051), and
+  // `0 || 1` would count the ruined plate as one print here while the project
+  // page correctly counts none.
+  const totalPrints = archives.reduce((sum, a) => sum + (a.quantity ?? 1), 0);
   const printerCount = new Set(archives.map(a => a.printer_id).filter(Boolean)).size;
 
   return (
@@ -320,6 +332,57 @@ export function FilamentTrends({ archives, currency = '$', dateFrom, dateTo }: F
       ) : (
         <div className="bg-bambu-dark rounded-lg p-8 text-center text-bambu-gray">
           {t('stats.noPrintDataInRange')}
+        </div>
+      )}
+
+      {/* Energy Over Time Chart (#1432) — only when smart-plug per-print data exists */}
+      {totalEnergy > 0 && chartData.length > 0 && (
+        <div className="bg-bambu-dark rounded-lg p-4">
+          <div className="flex items-center justify-between mb-4">
+            <h4 className="text-sm font-medium text-bambu-gray">{t('stats.energyOverTime')}</h4>
+            <span className="text-xs text-bambu-gray">
+              {totalEnergy.toFixed(3)} kWh · {currency}{totalEnergyCost.toFixed(2)}
+            </span>
+          </div>
+          <ResponsiveContainer width="100%" height={250}>
+            <AreaChart data={chartData}>
+              <defs>
+                <linearGradient id="colorEnergy" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#f59e0b" stopOpacity={0.3}/>
+                  <stop offset="95%" stopColor="#f59e0b" stopOpacity={0}/>
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="#3d3d3d" />
+              <XAxis
+                dataKey="dateLabel"
+                stroke="#9ca3af"
+                tick={{ fontSize: 12 }}
+                interval="preserveStartEnd"
+              />
+              <YAxis
+                stroke="#9ca3af"
+                tick={{ fontSize: 12 }}
+                tickFormatter={(value) => `${value}kWh`}
+              />
+              <Tooltip
+                contentStyle={{
+                  backgroundColor: '#2d2d2d',
+                  border: '1px solid #3d3d3d',
+                  borderRadius: '8px',
+                }}
+                labelStyle={{ color: '#fff' }}
+                formatter={(value) => [`${Number(value ?? 0).toFixed(3)} kWh`, t('stats.energyUsed')]}
+              />
+              <Area
+                type="monotone"
+                dataKey="energy"
+                stroke="#f59e0b"
+                strokeWidth={2}
+                fillOpacity={1}
+                fill="url(#colorEnergy)"
+              />
+            </AreaChart>
+          </ResponsiveContainer>
         </div>
       )}
 

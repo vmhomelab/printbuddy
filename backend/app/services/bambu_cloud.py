@@ -4,8 +4,11 @@ Bambu Lab Cloud API Service
 Handles authentication and profile management with Bambu Lab's cloud services.
 """
 
+import hashlib
 import logging
-from datetime import datetime, timedelta, timezone
+import time
+from collections.abc import Awaitable, Callable
+from datetime import datetime, timezone
 
 import httpx
 
@@ -13,6 +16,61 @@ logger = logging.getLogger(__name__)
 
 BAMBU_API_BASE = "https://api.bambulab.com"
 BAMBU_API_BASE_CN = "https://api.bambulab.cn"
+
+# How long a "Bambu still accepts this token" answer is trusted before we ask
+# again. ``/cloud/status`` is polled by several components, so validating on
+# every call would put a Bambu round-trip behind every settings render; a token
+# does not expire on a five-minute boundary, so caching that long is free.
+_VALIDATION_TTL_SECONDS = 300
+
+# token digest -> (monotonic deadline, accepted?). Keyed by digest so a token
+# never sits in a process-wide dict in the clear.
+_validation_cache: dict[str, tuple[float, bool]] = {}
+
+
+def _token_digest(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def is_expiry_401(response: httpx.Response) -> bool:
+    """Whether a 401 is Bambu's genuine "token expired" signal.
+
+    Bambu answers an expired/revoked token with ``{"code":4,"error":"Please
+    login.","message":""}``. Not every 401 means that: individual endpoints
+    return 401 for resource-, region- or scope-specific reasons, and a working
+    token still draws the occasional transient 401 (Cloudflare edge, a brief
+    backend blip). Treating *any* 401 as a dead credential signs the user out on
+    a single stray rejection — the #2562 follow-up regression. We trust only the
+    documented expiry body, so a benign 401 no longer nukes the whole cloud
+    integration. An unparseable / unsigned 401 is deliberately NOT expiry.
+
+    Shared by the Bambu Cloud and MakerWorld services — both carry the same
+    token and see the same expiry body.
+    """
+    try:
+        body = response.json()
+    except Exception:
+        return False
+    if not isinstance(body, dict):
+        return False
+    if body.get("code") == 4:
+        return True
+    text = f"{body.get('error', '')} {body.get('message', '')}".lower()
+    return "please login" in text
+
+
+def invalidate_validation_cache(token: str | None = None) -> None:
+    """Drop cached validation verdicts.
+
+    Called on login/logout so a fresh token isn't judged by the previous one's
+    cached verdict, and so a re-login clears a cached rejection immediately
+    rather than leaving the user staring at "sign-in expired" for five minutes.
+    """
+    if token is None:
+        _validation_cache.clear()
+    else:
+        _validation_cache.pop(_token_digest(token), None)
+
 
 # Client identity sent to Bambu Lab's cloud services. We identify honestly as
 # Printbuddy — the URL in parens makes the source unambiguous so Bambu can
@@ -22,27 +80,196 @@ BAMBU_API_BASE_CN = "https://api.bambulab.cn"
 # introduce ourselves as official Bambu Studio.
 _USER_AGENT = "Printbuddy/1.0 (+https://github.com/vmhomelab/Printbuddy)"
 
-# The `/v1/iot-service/api/slicer/setting` endpoint requires a `version` query
-# parameter in the XX.YY.ZZ.WW format Bambu Studio releases use (without it the
-# API returns HTTP 400 "field 'version' is not set"; non-matching formats like
-# "printbuddy-1.0" return HTTP 422 "Invalid input parameters"). However, Bambu's
-# server accepts ANY value within that format — it doesn't validate against a
-# release manifest. We therefore use a neutral "1.0.0.0" placeholder that does
-# not impersonate any real Bambu Studio release. Our client identity is in the
-# User-Agent header.
+# Cloudflare protection on Bambu Lab's edge intermittently returns interstitials /
+# challenges instead of the JSON the API normally produces (issue #1575). The
+# parse error that results is opaque — these helpers detect the CF markers so
+# we can surface an actionable message instead of "Invalid response from Bambu Cloud".
+_CF_INTERSTITIAL_USER_MESSAGE = (
+    "Bambu Cloud is temporarily blocking automated requests from your network. "
+    "This is a Cloudflare protection on Bambu Lab's side, not a Printbuddy issue. "
+    "Please wait a few minutes and try again. If it persists, signing in to "
+    "bambulab.com once from a browser on the same network usually clears the "
+    "challenge."
+)
+
+
+def _detect_cloudflare_challenge(response) -> str | None:
+    """Return a user-actionable message when the response is a Cloudflare
+    challenge / mitigation page instead of the JSON the API normally returns.
+
+    Triggers on any of:
+      - body contains "Just a moment..." (CF interactive challenge title)
+      - body contains "challenges.cloudflare.com" (CF turnstile widget src)
+      - HTTP 403 with a "cf-mitigated" response header (CF blocked)
+      - HTTP 503 with a "cf-ray" response header (CF Under Attack mode)
+
+    Returns None when the response doesn't look like a CF challenge — callers
+    fall through to their existing error path.
+    """
+    try:
+        body = response.text or ""
+    except Exception:
+        body = ""
+    if "Just a moment..." in body or "challenges.cloudflare.com" in body:
+        return _CF_INTERSTITIAL_USER_MESSAGE
+    try:
+        status = int(getattr(response, "status_code", 0) or 0)
+    except (TypeError, ValueError):
+        status = 0
+    headers = getattr(response, "headers", {}) or {}
+    if status == 403 and "cf-mitigated" in headers:
+        return _CF_INTERSTITIAL_USER_MESSAGE
+    if status == 503 and "cf-ray" in headers:
+        return _CF_INTERSTITIAL_USER_MESSAGE
+    return None
+
+
+# Bambu's own anti-abuse layer — distinct from the Cloudflare edge above —
+# answers a request it has flagged with HTTP 418 and a challenge body:
+#
+#     {"captchaId": "...", "error": "We need you to confirm you are not a robot"}
+#
+# The flag is keyed to the source IP and covers api.bambulab.com as a whole:
+# the same 418 turns up on the login endpoint and on the design-service
+# endpoints MakerWorld imports use. It clears on its own after a few hours of
+# quiet traffic, and there is no server-side solve — a CAPTCHA is designed to be
+# unanswerable without a real browser, and the challenge id is of no use to us
+# because we have nowhere to render the widget.
+#
+# It reaches ``login_request`` as a perfectly well-formed JSON body, so
+# ``_detect_cloudflare_challenge`` above never fires on it. Before #2790 the
+# generic error path then lifted Bambu's sentence out of ``error`` and showed it
+# as a bare toast: the reporter saw "We need you to confirm you are not a robot"
+# with no challenge, no explanation and nothing to click, and filed it as a
+# Printbuddy bug.
+_CAPTCHA_HTTP_STATUS = 418
+
+# Markers that identify a 418 as the CAPTCHA challenge rather than some other
+# refusal. ``captchaId`` is the reliable one; the wording is matched too because
+# Bambu has shipped the challenge under more than one phrasing.
+_CAPTCHA_BODY_MARKERS = ("captchaid", "captcha", "robot")
+
+CAPTCHA_USER_MESSAGE = (
+    "Bambu Cloud is challenging this network with a CAPTCHA before it will accept a sign-in, "
+    "and there is no way to answer it from Printbuddy. Your email and password are not the "
+    "problem. The block is tied to your public IP address and normally clears by itself within "
+    "a few hours — retrying repeatedly extends it. To sign in now, use 'Use access token "
+    "instead' and paste a token taken from a browser session."
+)
+
+# How long to stop sending sign-in requests to a Bambu region after it answered
+# with a CAPTCHA challenge. The reporter's log shows four attempts in eighteen
+# seconds, which is exactly the traffic pattern that deepens the block: every
+# extra request is more evidence for the thing that flagged us. Five minutes is
+# short against the hours the block itself lasts — the point is not to wait it
+# out here, only to stop Printbuddy from making it worse while the user reads the
+# explanation.
+_CAPTCHA_COOLOFF_SECONDS = 300.0
+
+# API base URL -> monotonic time its cool-off expires. Keyed by base URL because
+# the block lives at the edge in front of one region: being challenged on
+# api.bambulab.com says nothing about api.bambulab.cn.
+_captcha_blocked_until: dict[str, float] = {}
+
+
+def is_captcha_challenge(response) -> bool:
+    """Whether Bambu answered with an anti-abuse CAPTCHA challenge.
+
+    Requires the 418 status *and* a challenge marker in the body, so an
+    unrelated 418 is not reported to the user as "solve a CAPTCHA" — that would
+    send them looking for a widget that was never there, which is the exact
+    confusion #2790 is about. Callers that want to say something about a bare
+    418 must handle it themselves.
+
+    Shared by the Bambu Cloud and MakerWorld services: same edge, same body.
+    """
+    try:
+        status = int(getattr(response, "status_code", 0) or 0)
+    except (TypeError, ValueError):
+        return False
+    if status != _CAPTCHA_HTTP_STATUS:
+        return False
+    try:
+        data = response.json()
+    except Exception:
+        data = None
+    if isinstance(data, dict):
+        # Field *names* count as well as their text: the challenge is
+        # identified by carrying a ``captchaId`` at all, whatever it says.
+        parts = [str(key) for key in data]
+        parts += [str(data[key]) for key in ("captchaId", "error", "message", "detail") if data.get(key)]
+        haystack = " ".join(parts).lower()
+    else:
+        # Not JSON (or not an object) — fall back to the raw body so a
+        # challenge served as HTML is still recognised rather than reported as
+        # an unexplained failure.
+        try:
+            haystack = (response.text or "").lower()
+        except Exception:
+            return False
+    return any(marker in haystack for marker in _CAPTCHA_BODY_MARKERS)
+
+
+def captcha_cooloff_active(base_url: str) -> bool:
+    """Whether sign-in requests to ``base_url`` are still held back after a
+    CAPTCHA challenge. Expired entries are dropped on the way past, so the dict
+    cannot grow past one entry per region."""
+    deadline = _captcha_blocked_until.get(base_url)
+    if deadline is None:
+        return False
+    if time.monotonic() >= deadline:
+        del _captcha_blocked_until[base_url]
+        return False
+    return True
+
+
+def note_captcha_challenge(base_url: str) -> None:
+    """Start the cool-off for ``base_url`` after a challenge was seen."""
+    _captcha_blocked_until[base_url] = time.monotonic() + _CAPTCHA_COOLOFF_SECONDS
+
+
+# The `/v1/iot-service/api/slicer/setting` endpoint subtree — the plural GET
+# for the list, the singular GET/DELETE for a specific preset by setting_id, and
+# the POST for create — requires a `version` query parameter in the XX.YY.ZZ.WW
+# format Bambu Studio releases use. Without it the API returns HTTP 400
+# "field 'version' is not set"; non-matching formats like "printbuddy-1.0" return
+# HTTP 422 "Invalid input parameters". However, Bambu's server accepts ANY value
+# within that format — it doesn't validate against a release manifest. We
+# therefore use a neutral "1.0.0.0" placeholder that does not impersonate any
+# real Bambu Studio release. Our client identity is in the User-Agent header.
 _SLICER_API_VERSION = "1.0.0.0"
 
 
 class BambuCloudError(Exception):
-    """Base exception for Bambu Cloud errors."""
+    """Base exception for Bambu Cloud errors.
 
-    pass
+    ``status_code`` carries the upstream HTTP status when the failure came from
+    a response rather than from the transport, so callers can tell an expected
+    "this preset isn't in the catalog" 400 apart from an expired token or a
+    cloud outage. It stays ``None`` for connection-level failures.
+    """
+
+    def __init__(self, message: str, *, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class BambuCloudAuthError(BambuCloudError):
     """Authentication related errors."""
 
     pass
+
+
+def _cloud_json(response: httpx.Response):
+    """The response's JSON body, or a BambuCloudError when it is not JSON (a
+    Cloudflare challenge or an edge error page): an answer from Bambu Cloud
+    that it could not use, like any other failed request."""
+    try:
+        return response.json()
+    except ValueError:
+        raise BambuCloudError(
+            f"Unexpected response from Bambu Cloud (HTTP {response.status_code})", status_code=response.status_code
+        ) from None
 
 
 _shared_http_client: httpx.AsyncClient | None = None
@@ -63,11 +290,23 @@ def set_shared_http_client(client: httpx.AsyncClient | None) -> None:
 class BambuCloudService:
     """Service for interacting with Bambu Lab Cloud API."""
 
-    def __init__(self, region: str = "global", client: httpx.AsyncClient | None = None):
+    def __init__(
+        self,
+        region: str = "global",
+        client: httpx.AsyncClient | None = None,
+        on_auth_failure: Callable[[], Awaitable[None]] | None = None,
+    ):
         self.base_url = BAMBU_API_BASE if region == "global" else BAMBU_API_BASE_CN
         self.access_token: str | None = None
         self.refresh_token: str | None = None
         self.token_expiry: datetime | None = None
+        # Fired once when Bambu answers 401 to a call we made with a stored
+        # token — the credential is dead and the caller wants to record that.
+        # ``build_authenticated_cloud`` wires this to the persisted flag, so
+        # every route that builds a service through it gets invalidation for
+        # free rather than each one having to notice 401s for itself.
+        self._on_auth_failure = on_auth_failure
+        self._auth_failure_reported = False
         # Prefer an explicitly-injected client (tests), else fall back to the
         # app-scoped shared client (production), and finally create our own so
         # scripts / tests that skip the lifespan still get a working service.
@@ -83,10 +322,106 @@ class BambuCloudService:
 
     @property
     def is_authenticated(self) -> bool:
-        """Check if we have a valid token."""
+        """Whether a credential is *loaded* — NOT whether Bambu accepts it.
+
+        Bambu's access token is opaque (no JWT claims to read an expiry out
+        of), so the only authority on whether it still works is Bambu. This
+        used to pretend otherwise: ``set_token`` stamped ``token_expiry =
+        now + 30 days`` every time a stored token was loaded, which made the
+        expiry check reset on every request and this property incapable of
+        ever returning False. The UI reported "connected" indefinitely while
+        every cloud call 401'd (#2562 follow-up).
+
+        ``token_expiry`` is now only set when we genuinely know it. Callers
+        that need to know the token still *works* must ask Bambu — see
+        :meth:`validate_token` — or react to the 401 that surfaces.
+        """
         if not self.access_token:
             return False
         return not (self.token_expiry and datetime.now(timezone.utc) > self.token_expiry)
+
+    async def _note_response(self, response: httpx.Response) -> bool:
+        """Record Bambu's genuine token-expiry 401 as "this credential is dead".
+
+        Returns ``True`` only for the real expiry signal (see
+        :meth:`_is_expiry_401`); a plain/transient 401 returns ``False`` and is
+        left alone so it can't durably sign the user out. The durable flag is
+        written at most once per service instance so a route making several
+        calls doesn't write it repeatedly.
+        """
+        if response.status_code != 401:
+            return False
+        if not is_expiry_401(response):
+            logger.info(
+                "Bambu Cloud returned 401 without the expiry signature — treating as transient, "
+                "not signing the stored token out"
+            )
+            return False
+        if self._on_auth_failure is None or self._auth_failure_reported:
+            return True
+        self._auth_failure_reported = True
+        if self.access_token:
+            _validation_cache[_token_digest(self.access_token)] = (
+                time.monotonic() + _VALIDATION_TTL_SECONDS,
+                False,
+            )
+        try:
+            await self._on_auth_failure()
+        except Exception:
+            # Recording the failure is best-effort — the caller still needs the
+            # real error (a 401) rather than a bookkeeping exception on top.
+            logger.exception("Failed to record Bambu Cloud auth failure")
+        return True
+
+    async def validate_token(self) -> bool | None:
+        """Ask Bambu whether the loaded token is still accepted.
+
+        ``True`` accepted, ``False`` rejected (401), ``None`` unknown — Bambu
+        was unreachable or answered 5xx.
+
+        ``None`` must never be treated as "invalid": a Bambu outage or a
+        Cloudflare interstitial would otherwise sign every user out of a
+        perfectly good session. Callers report their last known state instead.
+        """
+        if not self.access_token:
+            return False
+
+        digest = _token_digest(self.access_token)
+        cached = _validation_cache.get(digest)
+        if cached and cached[0] > time.monotonic():
+            return cached[1]
+
+        try:
+            response = await self._client.get(
+                f"{self.base_url}/v1/design-user-service/my/preference",
+                headers=self._get_headers(),
+                timeout=15.0,
+            )
+        except httpx.HTTPError as exc:
+            logger.info("Could not reach Bambu Cloud to validate the stored token: %s", exc)
+            return None
+
+        if response.status_code == 401:
+            # Only a 401 carrying Bambu's expiry signature is a real sign-out.
+            # A signature-less 401 here is transient/edge noise — report unknown
+            # (last-known state) rather than expiring a working session.
+            expired = await self._note_response(response)
+            return False if expired else None
+        if response.status_code >= 500:
+            logger.info(
+                "Bambu Cloud returned %s while validating the token — treating as unknown", response.status_code
+            )
+            return None
+        if response.status_code != 200:
+            # 4xx that isn't 401 (403, 418 Cloudflare challenge, 429): the token
+            # itself was not rejected, so don't declare it dead.
+            logger.info(
+                "Bambu Cloud returned %s while validating the token — treating as unknown", response.status_code
+            )
+            return None
+
+        _validation_cache[digest] = (time.monotonic() + _VALIDATION_TTL_SECONDS, True)
+        return True
 
     def _get_headers(self) -> dict:
         """Get headers for authenticated requests."""
@@ -98,12 +433,62 @@ class BambuCloudService:
             headers["Authorization"] = f"Bearer {self.access_token}"
         return headers
 
+    def _captcha_refusal(self) -> dict:
+        """The result every sign-in call returns while Bambu is challenging us.
+
+        ``reason`` is what lets the UI tell this apart from a wrong password and
+        render the explanation next to the access-token route, instead of
+        flashing Bambu's own one-liner as a toast that then disappears (#2790).
+        """
+        return {
+            "success": False,
+            "needs_verification": False,
+            "reason": "captcha",
+            "message": CAPTCHA_USER_MESSAGE,
+        }
+
+    def _captcha_cooloff_holds(self, origin: str | None = None) -> bool:
+        """Whether to refuse a sign-in locally because Bambu just challenged us.
+
+        Keyed by the origin the call actually goes to. The TOTP step talks to
+        ``bambulab.com`` while everything else talks to ``api.bambulab.com``, and
+        a challenge seen on one must not strand a user halfway through a
+        two-factor sign-in on the other.
+        """
+        origin = origin or self.base_url
+        if not captcha_cooloff_active(origin):
+            return False
+        logger.warning(
+            "Bambu Cloud is challenging this network with a CAPTCHA — not sending the sign-in to %s. "
+            "The challenge cannot be answered from Printbuddy and normally clears within a few hours.",
+            origin,
+        )
+        return True
+
+    def _note_captcha(self, response, origin: str | None = None) -> bool:
+        """Record and log a CAPTCHA challenge. Returns whether it was one."""
+        if not is_captcha_challenge(response):
+            return False
+        origin = origin or self.base_url
+        logger.warning(
+            "Bambu Cloud is challenging this network with a CAPTCHA (HTTP %s from %s). Sign-in cannot "
+            "complete until the challenge clears; pausing sign-in requests for %.0fs so retries do not "
+            "extend the block.",
+            response.status_code,
+            origin,
+            _CAPTCHA_COOLOFF_SECONDS,
+        )
+        note_captcha_challenge(origin)
+        return True
+
     async def login_request(self, email: str, password: str) -> dict:
         """
         Initiate login - this will trigger either email verification or TOTP prompt.
 
         Returns dict with login status, verification type, and tfaKey if needed.
         """
+        if self._captcha_cooloff_holds():
+            return self._captcha_refusal()
         try:
             response = await self._client.post(
                 f"{self.base_url}/v1/user-service/user/login",
@@ -114,7 +499,19 @@ class BambuCloudService:
                 },
             )
 
-            data = response.json()
+            if self._note_captcha(response):
+                return self._captcha_refusal()
+
+            try:
+                data = response.json()
+            except Exception as json_err:
+                logger.error("Failed to parse login response: %s, body: %s", json_err, response.text[:500])
+                cf_message = _detect_cloudflare_challenge(response)
+                return {
+                    "success": False,
+                    "needs_verification": False,
+                    "message": cf_message or "Invalid response from Bambu Cloud",
+                }
             logger.debug(
                 f"Login response: status={response.status_code}, loginType={data.get('loginType')}, hasTfaKey={'tfaKey' in data}"
             )
@@ -154,12 +551,15 @@ class BambuCloudService:
 
         except Exception as e:
             logger.error("Login request failed: %s", e)
-            raise BambuCloudAuthError(f"Login request failed: {e}")
+            # The request never got an answer: not a refused login.
+            raise BambuCloudError(f"Login request failed: {e}")
 
     async def verify_code(self, email: str, code: str) -> dict:
         """
         Complete login with email verification code.
         """
+        if self._captcha_cooloff_holds():
+            return self._captcha_refusal()
         try:
             response = await self._client.post(
                 f"{self.base_url}/v1/user-service/user/login",
@@ -170,7 +570,15 @@ class BambuCloudService:
                 },
             )
 
-            data = response.json()
+            if self._note_captcha(response):
+                return self._captcha_refusal()
+
+            try:
+                data = response.json()
+            except Exception as json_err:
+                logger.error("Failed to parse email-verify response: %s, body: %s", json_err, response.text[:500])
+                cf_message = _detect_cloudflare_challenge(response)
+                return {"success": False, "message": cf_message or "Invalid response from Bambu Cloud"}
             logger.debug("Email verify response: status=%s, hasToken=%s", response.status_code, "accessToken" in data)
 
             if response.status_code == 200 and "accessToken" in data:
@@ -181,7 +589,44 @@ class BambuCloudService:
 
         except Exception as e:
             logger.error("Email verification failed: %s", e)
-            raise BambuCloudAuthError(f"Verification failed: {e}")
+            # The request never got an answer: not a refused code.
+            raise BambuCloudError(f"Verification failed: {e}")
+
+    async def _fetch_csrf_token(self, web_origin: str) -> str | None:
+        """Seed the ``bbl_csrf_token`` cookie and return its value (#2696).
+
+        Bambu added double-submit CSRF protection to the ``bambulab.com`` web
+        origin. A POST without the cookie is rejected ``403 {"error": "CSRF
+        error: missing_cookie"}`` before the request body is looked at; with the
+        cookie but no matching header it becomes ``missing_header``. Only
+        ``GET /api/csrf`` mints one — the sign-in *page* sets nothing but
+        Cloudflare's ``__cf_bm``, so landing there first does not help.
+
+        The token is re-fetched per verification rather than cached: the client
+        is process-wide and long-lived, so a stale cookie could otherwise
+        disagree with the header we send.
+        """
+        try:
+            response = await self._client.get(
+                f"{web_origin}/api/csrf",
+                headers={"User-Agent": _USER_AGENT, "Accept": "application/json"},
+            )
+        except Exception as e:
+            logger.warning("Failed to fetch Bambu Cloud CSRF token: %s", e)
+            return None
+        # httpx stores the Set-Cookie on the shared jar, which is also what makes
+        # the cookie ride along on the POST below — we only need the value here
+        # to echo it back in the header.
+        try:
+            token = self._client.cookies.get("bbl_csrf_token")
+        except Exception:  # multiple cookies of the same name across domains
+            token = None
+        if not token:
+            logger.warning(
+                "Bambu Cloud CSRF endpoint returned no bbl_csrf_token (status %s)",
+                response.status_code,
+            )
+        return token
 
     async def verify_totp(self, tfa_key: str, code: str) -> dict:
         """
@@ -200,9 +645,27 @@ class BambuCloudService:
             # expected application-level "Login failed" JSON, no Cloudflare
             # interstitial). Browser-impersonation removed to stay clearly on
             # the right side of Bambu Lab's "no falsified client identity" line.
-            tfa_url = "https://bambulab.com/api/sign-in/tfa"
-            if "bambulab.cn" in self.base_url:
-                tfa_url = "https://bambulab.cn/api/sign-in/tfa"
+            web_origin = "https://bambulab.cn" if "bambulab.cn" in self.base_url else "https://bambulab.com"
+            tfa_url = f"{web_origin}/api/sign-in/tfa"
+
+            if self._captcha_cooloff_holds(web_origin):
+                return self._captcha_refusal()
+
+            # #2696: the web origin is CSRF-protected (double submit). Without
+            # both halves the endpoint 403s before it ever evaluates the code,
+            # which surfaced to users as a permanent, misleading "Invalid code".
+            # api.bambulab.com — where every other call in this service goes,
+            # including the email-code 2FA path — is not gated, which is why
+            # only TOTP sign-ins broke.
+            csrf_token = await self._fetch_csrf_token(web_origin)
+            if not csrf_token:
+                return {
+                    "success": False,
+                    "message": (
+                        "Could not obtain a security token from Bambu Cloud. "
+                        "Check the server's internet access and try again."
+                    ),
+                }
 
             response = await self._client.post(
                 tfa_url,
@@ -210,6 +673,10 @@ class BambuCloudService:
                     "Content-Type": "application/json",
                     "User-Agent": _USER_AGENT,
                     "Accept": "application/json",
+                    # Echo of the bbl_csrf_token cookie httpx just stored. Both
+                    # halves are required; the cookie alone yields
+                    # "missing_header".
+                    "x-bbl-csrf-token": csrf_token,
                 },
                 json={
                     "tfaKey": tfa_key,
@@ -221,6 +688,9 @@ class BambuCloudService:
                 f"TOTP verify response: status={response.status_code}, body={response.text[:200] if response.text else '(empty)'}"
             )
 
+            if self._note_captcha(response, web_origin):
+                return self._captcha_refusal()
+
             # Handle empty response
             if not response.text or not response.text.strip():
                 logger.warning("TOTP verification returned empty response (status %s)", response.status_code)
@@ -230,7 +700,8 @@ class BambuCloudService:
                 data = response.json()
             except Exception as json_err:
                 logger.error("Failed to parse TOTP response: %s, body: %s", json_err, response.text[:500])
-                return {"success": False, "message": "Invalid response from Bambu Cloud"}
+                cf_message = _detect_cloudflare_challenge(response)
+                return {"success": False, "message": cf_message or "Invalid response from Bambu Cloud"}
 
             # Token might be in accessToken, token field, or cookies
             access_token = data.get("accessToken") or data.get("token")
@@ -245,17 +716,34 @@ class BambuCloudService:
             if response.status_code == 200 and access_token:
                 self.access_token = access_token
                 self.refresh_token = data.get("refreshToken")
-                from datetime import datetime, timedelta, timezone
-
-                self.token_expiry = datetime.now(timezone.utc) + timedelta(days=30)
+                # Expiry left unset: Bambu does not tell us when the token dies
+                # and the token is opaque, so any value here would be invented.
+                self.token_expiry = None
+                invalidate_validation_cache(access_token)
                 return {"success": True, "message": "Login successful"}
 
             # Provide helpful error message
             error_msg = data.get("message", "")
+
+            # A CSRF rejection means the code was never evaluated (#2696). It
+            # used to fall through to the generic path below and read as
+            # "Invalid code", which sent the reporter chasing clock drift and
+            # leading-zero parsing for a request Bambu had already refused.
+            csrf_error = data.get("error", "") if isinstance(data.get("error"), str) else ""
+            if "csrf" in csrf_error.lower() or data.get("reason") in ("missing_cookie", "missing_header"):
+                logger.error("Bambu Cloud rejected the TOTP request on CSRF grounds: %s", response.text[:200])
+                return {
+                    "success": False,
+                    "message": (
+                        "Bambu Cloud rejected the sign-in request before checking your code "
+                        "(security-token error). Your code is fine — please try again."
+                    ),
+                }
+
             if "expired" in error_msg.lower():
                 return {"success": False, "message": "TOTP session expired. Please try logging in again."}
             if not error_msg:
-                error_msg = f"TOTP verification failed (status {response.status_code})"
+                error_msg = data.get("error") or f"TOTP verification failed (status {response.status_code})"
 
             return {"success": False, "message": error_msg}
 
@@ -265,21 +753,29 @@ class BambuCloudService:
             return {"success": False, "message": f"TOTP verification error: {e}"}
 
     def _set_tokens(self, data: dict):
-        """Set tokens from login response."""
+        """Set tokens from a login response.
+
+        No expiry is recorded. Bambu's login response carries no expiry, and
+        the access token is opaque, so the old ``now + 30 days`` was a guess
+        that outlived its own accuracy — see :attr:`is_authenticated`.
+        """
         self.access_token = data.get("accessToken")
         self.refresh_token = data.get("refreshToken")
-        # Token typically valid for ~3 months, but we'll refresh more often
-        self.token_expiry = datetime.now(timezone.utc) + timedelta(days=30)
+        self.token_expiry = None
+        if self.access_token:
+            invalidate_validation_cache(self.access_token)
 
     def set_token(self, access_token: str):
-        """Set access token directly (for stored tokens)."""
-        self.access_token = access_token
-        self.token_expiry = datetime.now(timezone.utc) + timedelta(days=30)
+        """Load a stored access token.
 
-    def logout(self):
-        """Clear authentication state."""
-        self.access_token = None
-        self.refresh_token = None
+        This used to stamp ``token_expiry = now + 30 days`` — re-derived from
+        *now* on every request, for a token of entirely unknown age. That made
+        ``is_authenticated`` a permanent True and is why Printbuddy went on
+        reporting "connected" long after Bambu had stopped accepting the token.
+        A stored token's remaining life is unknowable from the token alone, so
+        we record no expiry and let Bambu be the authority.
+        """
+        self.access_token = access_token
         self.token_expiry = None
 
     async def get_user_profile(self) -> dict:
@@ -293,9 +789,23 @@ class BambuCloudService:
             )
 
             if response.status_code == 200:
-                return response.json()
+                return _cloud_json(response)
 
-            raise BambuCloudError(f"Failed to get profile: {response.status_code}")
+            # Only Bambu's own answer judges the token: JSON, or no body at all
+            # (how it refuses a wrong token here). A Cloudflare block or an
+            # edge or proxy page says nothing about it, so it carries no
+            # status to judge by.
+            cf_message = _detect_cloudflare_challenge(response)
+            if cf_message:
+                raise BambuCloudError(cf_message)
+            if response.content:
+                try:
+                    response.json()
+                except ValueError:
+                    raise BambuCloudError(
+                        f"Unexpected response from Bambu Cloud (HTTP {response.status_code})"
+                    ) from None
+            raise BambuCloudError(f"Failed to get profile: {response.status_code}", status_code=response.status_code)
 
         except httpx.RequestError as e:
             raise BambuCloudError(f"Request failed: {e}")
@@ -321,8 +831,10 @@ class BambuCloudService:
                 params={"version": version},
             )
 
-            data = response.json()
+            data = _cloud_json(response)
 
+            if await self._note_response(response):
+                raise BambuCloudAuthError("Bambu Cloud session expired")
             if response.status_code == 200:
                 return data
 
@@ -338,13 +850,22 @@ class BambuCloudService:
 
         try:
             response = await self._client.get(
-                f"{self.base_url}/v1/iot-service/api/slicer/setting/{setting_id}", headers=self._get_headers()
+                f"{self.base_url}/v1/iot-service/api/slicer/setting/{setting_id}",
+                headers=self._get_headers(),
+                params={"version": _SLICER_API_VERSION},
             )
 
+            if await self._note_response(response):
+                raise BambuCloudAuthError("Bambu Cloud session expired")
             if response.status_code == 200:
-                return response.json()
+                return _cloud_json(response)
 
-            raise BambuCloudError(f"Failed to get setting detail: {response.status_code}")
+            # Include body so a future contract change is self-diagnostic from logs.
+            body = (response.text or "")[:200]
+            raise BambuCloudError(
+                f"Failed to get setting detail: {response.status_code} {body}",
+                status_code=response.status_code,
+            )
 
         except httpx.RequestError as e:
             raise BambuCloudError(f"Request failed: {e}")
@@ -387,8 +908,10 @@ class BambuCloudService:
                 f"{self.base_url}/v1/iot-service/api/slicer/setting", headers=self._get_headers(), json=payload
             )
 
-            data = response.json()
+            data = _cloud_json(response)
 
+            if await self._note_response(response):
+                raise BambuCloudAuthError("Bambu Cloud session expired")
             if response.status_code in (200, 201):
                 return data
 
@@ -472,8 +995,10 @@ class BambuCloudService:
                 f"{self.base_url}/v1/iot-service/api/slicer/setting", headers=self._get_headers(), json=payload
             )
 
-            data = response.json()
+            data = _cloud_json(response)
 
+            if await self._note_response(response):
+                raise BambuCloudAuthError("Bambu Cloud session expired")
             if response.status_code == 200:
                 return data
 
@@ -498,13 +1023,17 @@ class BambuCloudService:
 
         try:
             response = await self._client.delete(
-                f"{self.base_url}/v1/iot-service/api/slicer/setting/{setting_id}", headers=self._get_headers()
+                f"{self.base_url}/v1/iot-service/api/slicer/setting/{setting_id}",
+                headers=self._get_headers(),
+                params={"version": _SLICER_API_VERSION},
             )
 
+            if await self._note_response(response):
+                raise BambuCloudAuthError("Bambu Cloud session expired")
             if response.status_code in (200, 204):
                 return {"success": True, "message": "Setting deleted"}
 
-            data = response.json() if response.content else {}
+            data = _cloud_json(response) if response.content else {}
             error_msg = data.get("message") or data.get("error") or f"HTTP {response.status_code}"
             raise BambuCloudError(f"Failed to delete setting: {error_msg}")
 
@@ -521,8 +1050,10 @@ class BambuCloudService:
                 f"{self.base_url}/v1/iot-service/api/user/bind", headers=self._get_headers()
             )
 
+            if await self._note_response(response):
+                raise BambuCloudAuthError("Bambu Cloud session expired")
             if response.status_code == 200:
-                return response.json()
+                return _cloud_json(response)
 
             raise BambuCloudError(f"Failed to get devices: {response.status_code}")
 
@@ -549,8 +1080,10 @@ class BambuCloudService:
                 params={"device_id": device_id},
             )
 
+            if await self._note_response(response):
+                raise BambuCloudAuthError("Bambu Cloud session expired")
             if response.status_code == 200:
-                data = response.json()
+                data = _cloud_json(response)
                 # API wraps response in 'data' field
                 return data.get("data", data)
 

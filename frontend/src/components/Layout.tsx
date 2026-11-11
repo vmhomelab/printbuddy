@@ -1,16 +1,21 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { Suspense, useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { PageLoading } from './PageLoading';
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
-import { Printer, Archive, ListOrdered, BarChart3, Cloud, Settings, Sun, Moon, ChevronLeft, ChevronRight, Keyboard, Github, GripVertical, ArrowUpCircle, Wrench, FolderKanban, FolderOpen, X, Menu, Info, Plug, Bug, LogOut, Key, Loader2, Disc3, ShieldAlert, Bell, Download, Monitor, PanelLeftClose, type LucideIcon } from 'lucide-react';
+import { Printer, Archive, ListOrdered, BarChart3, Cloud, Settings, Sun, Moon, Monitor, ChevronLeft, ChevronRight, Keyboard, Github, ArrowUpCircle, Wrench, FolderKanban, FolderOpen, X, Menu, Info, Plug, Bug, LogOut, Key, Loader2, Disc3, ShieldAlert, Bell, Globe, PanelLeftClose, Receipt, type LucideIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useTheme } from '../contexts/ThemeContext';
 import { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
 import { InstallAppButton } from './InstallAppButton';
 import { SwitchbarPopover } from './SwitchbarPopover';
+import { CameraLauncher } from './CameraLauncher';
 import { useQuery, useQueries } from '@tanstack/react-query';
 import { api, supportApi, pendingUploadsApi, type Permission } from '../api/client';
 import { getIconByName } from './IconPicker';
 import { useIsSidebarCompact } from '../hooks/useIsSidebarCompact';
 import { useColorCatalogVersion } from '../hooks/useColorCatalogVersion';
+import { useUnknownTagPrompt } from '../hooks/useUnknownTagPrompt';
+import { UnknownSpoolModal } from './UnknownSpoolModal';
+import { ConfirmOutcomeDialog } from './ConfirmOutcomeDialog';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { Card, CardHeader, CardContent } from './Card';
@@ -18,6 +23,15 @@ import { parseUTCDate } from '../utils/date';
 import { Button } from './Button';
 import { BugReportBubble } from './BugReportBubble';
 import { appAssetPath } from '../utils/assetPaths';
+import { plateCheckFailureText } from '../utils/plateCheck';
+import {
+  getHiddenSidebarSystemItemIds,
+  getSidebarOrder,
+  isExternalSidebarItemId,
+  saveHiddenSidebarSystemItemIds,
+  saveSidebarOrder,
+  SIDEBAR_LAYOUT_CHANGED_EVENT,
+} from '../utils/sidebarLayout';
 
 const SOURCE_CODE_URL = 'https://github.com/vmhomelab/Printbuddy';
 
@@ -35,79 +49,59 @@ export const defaultNavItems: NavItem[] = [
   { id: 'queue', to: '/queue', icon: ListOrdered, labelKey: 'nav.queue' },
   { id: 'projects', to: '/projects', icon: FolderKanban, labelKey: 'nav.projects' },
   { id: 'files', to: '/files', icon: FolderOpen, labelKey: 'nav.files' },
-  { id: 'model-import', to: '/import', icon: Download, labelKey: 'nav.modelImport' },
+  // Id kept from when the page was MakerWorld-only, so saved sidebar orders and hidden items still apply.
+  { id: 'makerworld', to: '/model-sources', icon: Globe, labelKey: 'nav.modelSources' },
   { id: 'profiles', to: '/profiles', icon: Cloud, labelKey: 'nav.profiles' },
   { id: 'maintenance', to: '/maintenance', icon: Wrench, labelKey: 'nav.maintenance' },
   { id: 'stats', to: '/stats', icon: BarChart3, labelKey: 'nav.stats' },
   { id: 'farm-command-center', to: '/farm-command-center', icon: Monitor, labelKey: 'nav.farmCommandCenter' },
-  // User-account features: kept adjacent to Settings intentionally
+  // Opt-in feature: gated in isHidden() on the billing_enabled setting, so the
+  // entry stays out of the sidebar entirely until an admin turns billing on.
+  { id: 'finance', to: '/finance', icon: Receipt, labelKey: 'nav.finance' },
+  // User-account feature: gated in isHidden() on advanced auth + user_notifications
+  // + the notifications:user_email permission. Kept adjacent to Settings
+  // intentionally. Do not drop this entry — without it the /notifications page
+  // is orphaned (route + page still exist but no nav link) (#1901).
   { id: 'notifications', to: '/notifications', icon: Bell, labelKey: 'nav.notifications' },
   { id: 'settings', to: '/settings', icon: Settings, labelKey: 'nav.settings' },
 ];
 
-// Nav ids that were merged into another entry. Stored order/visibility
-// preferences are carried over so a hidden or moved item stays that way.
-const LEGACY_NAV_IDS: Record<string, string> = {
-  makerworld: 'model-import',
-  gyroidvault: 'model-import',
+// Legacy Printbuddy key for user-hidden sidebar items. Hidden items now live
+// in the shared sidebar layout store (utils/sidebarLayout); migrate once so
+// previously hidden entries stay hidden after the upgrade.
+const LEGACY_SIDEBAR_HIDDEN_ITEMS_KEY = 'sidebarHiddenItems';
+
+// Ids Printbuddy builds used for what is now the Model Sources entry (id
+// "makerworld"): its short-lived "Model import" entry and the GyroidVault page
+// it replaced. A hidden one stays hidden.
+const LEGACY_NAV_ID_ALIASES: Record<string, string> = {
+  'model-import': 'makerworld',
+  gyroidvault: 'makerworld',
 };
 
-function migrateNavIds(ids: unknown[]): string[] {
-  const out: string[] = [];
-  for (const id of ids) {
-    if (typeof id !== 'string') continue;
-    const mapped = LEGACY_NAV_IDS[id] ?? id;
-    if (!out.includes(mapped)) out.push(mapped);
-  }
-  return out;
-}
-
-// Get unified sidebar order from localStorage
-function getSidebarOrder(): string[] {
-  const stored = localStorage.getItem('sidebarOrder');
-  if (stored) {
-    try {
-      const parsed = JSON.parse(stored);
-      return Array.isArray(parsed) ? migrateNavIds(parsed) : defaultNavItems.map(i => i.id);
-    } catch {
-      return defaultNavItems.map(i => i.id);
-    }
-  }
-  return defaultNavItems.map(i => i.id);
-}
-
-// Save unified sidebar order to localStorage
-function saveSidebarOrder(order: string[]) {
-  localStorage.setItem('sidebarOrder', JSON.stringify(order));
-}
-
-const SIDEBAR_HIDDEN_ITEMS_KEY = 'sidebarHiddenItems';
-export const SIDEBAR_VISIBILITY_CHANGED_EVENT = 'sidebarVisibilityChanged';
-
-// Sidebar visibility is a personal UI preference. Settings is deliberately
-// excluded so users always retain a route to restore hidden menu entries.
-export function getSidebarHiddenItems(): string[] {
-  const stored = localStorage.getItem(SIDEBAR_HIDDEN_ITEMS_KEY);
-  if (!stored) return [];
-
+function loadHiddenSidebarItemIds(): string[] {
+  const hiddenIds = getHiddenSidebarSystemItemIds();
+  const stored = localStorage.getItem(LEGACY_SIDEBAR_HIDDEN_ITEMS_KEY);
+  if (!stored) return hiddenIds;
+  let merged = hiddenIds;
   try {
     const parsed = JSON.parse(stored);
-    return Array.isArray(parsed) ? migrateNavIds(parsed).filter(id => id !== 'settings') : [];
+    if (Array.isArray(parsed)) {
+      const validIds = new Set(defaultNavItems.map(item => item.id));
+      const legacyIds = parsed
+        .filter((id): id is string => typeof id === 'string')
+        .map((id) => LEGACY_NAV_ID_ALIASES[id] ?? id)
+        .filter((id) => validIds.has(id) && id !== 'settings');
+      if (legacyIds.length > 0) {
+        merged = Array.from(new Set([...hiddenIds, ...legacyIds]));
+        saveHiddenSidebarSystemItemIds(merged);
+      }
+    }
   } catch {
-    return [];
+    // Ignore malformed legacy data; it is removed below.
   }
-}
-
-export function saveSidebarHiddenItems(hiddenItems: string[]) {
-  const validIds = new Set(defaultNavItems.map(item => item.id));
-  const sanitized = [...new Set(hiddenItems)].filter(id => validIds.has(id) && id !== 'settings');
-  localStorage.setItem(SIDEBAR_HIDDEN_ITEMS_KEY, JSON.stringify(sanitized));
-  window.dispatchEvent(new Event(SIDEBAR_VISIBILITY_CHANGED_EVENT));
-}
-
-// Check if an ID is an external link
-function isExternalLinkId(id: string): boolean {
-  return id.startsWith('ext-');
+  localStorage.removeItem(LEGACY_SIDEBAR_HIDDEN_ITEMS_KEY);
+  return merged;
 }
 
 // Get default view from localStorage
@@ -123,15 +117,38 @@ export function setDefaultView(path: string) {
 export function Layout() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { mode, toggleMode } = useTheme();
+  const { mode, resolvedMode, toggleMode } = useTheme();
   const { t } = useTranslation();
   const isSidebarCompact = useIsSidebarCompact();
+
+  // Bug-report panel state lives here because the trigger moves (#2750,
+  // reporter @goodjaltman). Below the sidebar-compact breakpoint the floating
+  // disc is replaced by a button in the compact header: the bottom-right corner
+  // is the most contended region in the app — the Profiles scroll-to-top FAB,
+  // the floating camera window and its resize handle, the Group Edit save bar,
+  // the bulk-selection toolbars, and the File Manager / Archives per-card
+  // action buttons all live there — and a fixed 48px disc sits on top of
+  // whichever of them happens to be underneath. Moving out of the corner is
+  // the only fix that covers in-flow content as well as fixed overlays.
+  const [bugReportOpen, setBugReportOpen] = useState(false);
+  // A bug-report logging run survives the panel being closed (#2847). The
+  // floating disc shows that itself; the compact header's button and the
+  // debug-logging banner need telling.
+  const [bugReportLogging, setBugReportLogging] = useState(false);
+  // The camera list (#2737), also opened with the C key: from the Printers row
+  // of the sidebar, or from the compact header when the sidebar is a drawer.
+  const [cameraListOpen, setCameraListOpen] = useState(false);
+
+  // Theme toggle: mode → icon and tooltip
+  const ThemeIcon = { dark: Sun, light: Monitor, system: Moon }[mode];
+  const themeSwitchTitle = t({ dark: 'nav.switchToLight', light: 'nav.switchToSystem', system: 'nav.switchToDark' }[mode]);
+
   // Re-render Layout (and the page rendered inside <Outlet />) whenever the
   // backend color catalog is (re)populated, so pages that mounted before the
   // catalog fetched — and cached HSL-fallback color names during their first
   // render — refresh with the real catalog names. See #857.
   useColorCatalogVersion();
-  const { user, authEnabled, logout, hasPermission } = useAuth();
+  const { user, authEnabled, logout, hasPermission, hasAnyPermission, loading: authLoading } = useAuth();
   const { showToast } = useToast();
   const [showChangePasswordModal, setShowChangePasswordModal] = useState(false);
   const [changePasswordData, setChangePasswordData] = useState({ currentPassword: '', newPassword: '', confirmPassword: '' });
@@ -144,10 +161,9 @@ export function Layout() {
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [showSwitchbar, setShowSwitchbar] = useState(false);
-  const [sidebarOrder, setSidebarOrder] = useState<string[]>(getSidebarOrder);
-  const [sidebarHiddenItems, setSidebarHiddenItems] = useState<string[]>(getSidebarHiddenItems);
-  const [draggedId, setDraggedId] = useState<string | null>(null);
-  const [dragOverId, setDragOverId] = useState<string | null>(null);
+  const defaultSidebarOrder = useMemo(() => defaultNavItems.map(i => i.id), []);
+  const [sidebarOrder, setSidebarOrder] = useState<string[]>(() => getSidebarOrder(defaultNavItems.map(i => i.id)));
+  const [hiddenSystemItemIds, setHiddenSystemItemIds] = useState<string[]>(loadHiddenSidebarItemIds);
   const hasRedirected = useRef(false);
   const [dismissedUpdateVersion, setDismissedUpdateVersion] = useState<string | null>(() =>
     sessionStorage.getItem('dismissedUpdateVersion')
@@ -157,6 +173,11 @@ export function Layout() {
     printer_name: string;
     message: string;
   } | null>(null);
+  // Post-print outcome confirmation (#1898): archive waiting for a verdict,
+  // set by the print_confirm_request WebSocket event.
+  const [confirmOutcomeArchiveId, setConfirmOutcomeArchiveId] = useState<number | null>(null);
+  // The run the prompt asks about (a plate of the archive), when it names one.
+  const [confirmOutcomeRunId, setConfirmOutcomeRunId] = useState<number | null>(null);
 
   // Check for updates
   const { data: versionInfo } = useQuery({
@@ -165,11 +186,22 @@ export function Layout() {
     staleTime: Infinity,
   });
 
-  const { data: settings } = useQuery({
-    queryKey: ['settings'],
-    queryFn: api.getSettings,
+  // GET /settings requires settings:read, so for every non-admin this query
+  // 403'd and each of the gates below silently took its fallback: Finance
+  // vanished from the sidebar for the users cost_centers:read_own exists for,
+  // a disabled user_notifications setting stopped applying to them, and the
+  // update check ran where it had been switched off. Two of those were
+  // invisible to an administrator testing it, because an administrator can
+  // read /settings (#3023).
+  const { data: uiFlags } = useQuery({
+    queryKey: ['ui-flags'],
+    queryFn: api.getUiFlags,
     staleTime: 5 * 60 * 1000, // 5 minutes
   });
+
+  // Unknown-spool prompt — surfaces a confirmation modal when the AMS reports a
+  // tag with no inventory match (only when `auto_add_unknown_rfid` is off).
+  const unknownSpool = useUnknownTagPrompt();
 
   // Fetch default sidebar order via a public endpoint (no settings:read needed)
   const { data: defaultSidebarData } = useQuery({
@@ -193,10 +225,16 @@ export function Layout() {
       if (!Array.isArray(orderArr) || orderArr.length === 0) return;
       // Filter to valid sidebar item IDs only
       const validIds = new Set(defaultNavItems.map(i => i.id));
-      const filtered = orderArr.filter((id: string) => typeof id === 'string' && (validIds.has(id) || isExternalLinkId(id)));
+      const filtered = orderArr.filter((id: string) => typeof id === 'string' && (validIds.has(id) || isExternalSidebarItemId(id)));
       if (filtered.length > 0) {
         setSidebarOrder(filtered);
         saveSidebarOrder(filtered);
+        const hiddenIds = Array.isArray(parsed) ? [] : parsed.hiddenSystemItemIds;
+        if (Array.isArray(hiddenIds)) {
+          const filteredHiddenIds = hiddenIds.filter((id: string) => typeof id === 'string' && validIds.has(id) && id !== 'settings');
+          setHiddenSystemItemIds(filteredHiddenIds);
+          saveHiddenSidebarSystemItemIds(filteredHiddenIds);
+        }
         localStorage.setItem(appliedKey, '1');
       }
     } catch (e) {
@@ -204,7 +242,8 @@ export function Layout() {
     }
   }, [defaultSidebarData?.default_sidebar_order, setSidebarOrder, user, authEnabled]);
 
-  // Check advanced auth status for conditional nav items
+  // Check advanced auth status — the notifications nav item is gated on it
+  // (rendered only when authEnabled && advanced_auth_enabled && user_notifications_enabled).
   const { data: advancedAuthStatus } = useQuery({
     queryKey: ['advancedAuthStatus'],
     queryFn: api.getAdvancedAuthStatus,
@@ -215,7 +254,7 @@ export function Layout() {
   const { data: updateCheck } = useQuery({
     queryKey: ['updateCheck'],
     queryFn: api.checkForUpdates,
-    enabled: settings?.check_updates !== false,
+    enabled: uiFlags?.check_updates !== false,
     staleTime: 60 * 60 * 1000, // 1 hour
     refetchInterval: 60 * 60 * 1000, // Check every hour
   });
@@ -224,6 +263,8 @@ export function Layout() {
   const { data: externalLinks } = useQuery({
     queryKey: ['external-links'],
     queryFn: api.getExternalLinks,
+    // Like the queue badge: apps behind the links report counts.
+    refetchInterval: 30_000,
   });
 
   // Fetch smart plugs to check for switchbar items
@@ -302,12 +343,6 @@ export function Layout() {
     }
   }, [sidebarHidden]);
 
-  useEffect(() => {
-    const syncSidebarVisibility = () => setSidebarHiddenItems(getSidebarHiddenItems());
-    window.addEventListener(SIDEBAR_VISIBILITY_CHANGED_EVENT, syncSidebarVisibility);
-    return () => window.removeEventListener(SIDEBAR_VISIBILITY_CHANGED_EVENT, syncSidebarVisibility);
-  }, []);
-
   // Calculate debug duration client-side for real-time updates
   const [debugDuration, setDebugDuration] = useState<number | null>(null);
   useEffect(() => {
@@ -334,36 +369,54 @@ export function Layout() {
     const result: string[] = [];
     const seen = new Set<string>();
 
-    // Map nav item IDs to the permission required to see them
-    const navPermissions: Record<string, Permission> = {
-      archives: 'archives:read',
-      queue: 'queue:read',
+    // Map nav item IDs to the permission(s) required to see them. Resources
+    // that ship in three tiers (legacy `*:read` + granular `*:read_own` /
+    // `*:read_all`) list all three: the default Operators group is seeded
+    // with `_own` only, so gating on the legacy alone hides the entry from
+    // every non-admin user even though the underlying API accepts their
+    // request (#1755).
+    const navPermissions: Record<string, Permission | Permission[]> = {
+      archives: ['archives:read', 'archives:read_own', 'archives:read_all'],
+      queue: ['queue:read', 'queue:read_own', 'queue:read_all'],
       stats: 'stats:read',
       profiles: 'kprofiles:read',
       maintenance: 'maintenance:read',
       projects: 'projects:read',
       inventory: 'inventory:read',
-      files: 'library:read',
+      finance: 'cost_centers:read_own',
+      files: ['library:read', 'library:read_own', 'library:read_all'],
+      makerworld: ['makerworld:view', 'manyfold:view', 'library:read', 'settings:read'],
       settings: 'settings:read',
+      // The user-email-preferences API requires notifications:user_email, so
+      // gate the nav item on the same permission (both default groups —
+      // Administrators and Operators — hold it). The advanced-auth /
+      // user_notifications enablement gate is applied separately below.
       notifications: 'notifications:user_email',
     };
 
     const isHidden = (id: string) => {
-      if (sidebarHiddenItems.includes(id)) return true;
-      // Model import bundles MakerWorld (makerworld:view), GyroidVault (library:read)
-      // and their settings (settings:read); show it if any tab is reachable.
-      if (
-        id === 'model-import' &&
-        authEnabled &&
-        !hasPermission('makerworld:view') &&
-        !hasPermission('library:read') &&
-        !hasPermission('settings:read')
-      ) {
-        return true;
+      // User-toggled hide (#1673) wins first — cheapest check, explicit intent.
+      if (hiddenSystemItemIds.includes(id)) return true;
+      // Permission gate accepts Permission | Permission[] so resources with
+      // granular `*:read_own` / `*:read_all` tiers (default Operators group)
+      // don't get hidden from users who only hold the granular variant (#1755).
+      if (authEnabled && id in navPermissions) {
+        const required = navPermissions[id];
+        const granted = Array.isArray(required)
+          ? required.some((p) => hasPermission(p))
+          : hasPermission(required);
+        if (!granted) return true;
       }
-      if (authEnabled && id in navPermissions && !hasPermission(navPermissions[id])) return true;
       // notifications nav item also requires advanced auth to be enabled and user_notifications_enabled setting
-      if (id === 'notifications' && (!authEnabled || !advancedAuthStatus?.advanced_auth_enabled || (settings?.user_notifications_enabled === false))) return true;
+      if (id === 'notifications' && (!authEnabled || !advancedAuthStatus?.advanced_auth_enabled || (uiFlags?.user_notifications_enabled === false))) return true;
+      // Finance is off by default and the page is meaningless without it, so it
+      // stays hidden until billing is explicitly on. Tested for `true` rather
+      // than `!== false` on purpose: the flags are undefined on the first
+      // render, and a nav entry that appears and then vanishes reads as a
+      // glitch. That polarity is also why reading this from /settings hid the
+      // entry outright for anyone without settings:read, rather than failing
+      // open the way the notifications gate two lines up did (#3023).
+      if (id === 'finance' && uiFlags?.billing_enabled !== true) return true;
       return false;
     };
 
@@ -397,58 +450,6 @@ export function Layout() {
     return result;
   })();
 
-  // Unified drag handlers
-  const handleDragStart = (e: React.DragEvent, id: string) => {
-    setDraggedId(id);
-    e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('text/plain', id);
-  };
-
-  const handleDragOver = (e: React.DragEvent, id: string) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-    setDragOverId(id);
-  };
-
-  const handleDragLeave = () => {
-    setDragOverId(null);
-  };
-
-  const handleDrop = (e: React.DragEvent, targetId: string) => {
-    e.preventDefault();
-    if (draggedId === null || draggedId === targetId) {
-      setDraggedId(null);
-      setDragOverId(null);
-      return;
-    }
-
-    const currentOrder = [...orderedSidebarIds];
-    const draggedIndex = currentOrder.indexOf(draggedId);
-    const targetIndex = currentOrder.indexOf(targetId);
-
-    if (draggedIndex === -1 || targetIndex === -1) {
-      setDraggedId(null);
-      setDragOverId(null);
-      return;
-    }
-
-    // Reorder
-    currentOrder.splice(draggedIndex, 1);
-    currentOrder.splice(targetIndex, 0, draggedId);
-
-    // Save to localStorage and update state
-    setSidebarOrder(currentOrder);
-    saveSidebarOrder(currentOrder);
-
-    setDraggedId(null);
-    setDragOverId(null);
-  };
-
-  const handleDragEnd = () => {
-    setDraggedId(null);
-    setDragOverId(null);
-  };
-
   // Show update banner if update available and not dismissed for this version.
   // Suppressed when running as a Home Assistant addon — HA Supervisor surfaces
   // its own update notification in the HA UI, so the in-app banner is duplicate
@@ -480,6 +481,19 @@ export function Layout() {
     localStorage.setItem('sidebarExpanded', String(sidebarExpanded));
   }, [sidebarExpanded]);
 
+  useEffect(() => {
+    const refreshSidebarLayout = () => {
+      setSidebarOrder(getSidebarOrder(defaultSidebarOrder));
+      setHiddenSystemItemIds(getHiddenSidebarSystemItemIds());
+    };
+    window.addEventListener(SIDEBAR_LAYOUT_CHANGED_EVENT, refreshSidebarLayout);
+    window.addEventListener('storage', refreshSidebarLayout);
+    return () => {
+      window.removeEventListener(SIDEBAR_LAYOUT_CHANGED_EVENT, refreshSidebarLayout);
+      window.removeEventListener('storage', refreshSidebarLayout);
+    };
+  }, [defaultSidebarOrder]);
+
   // Close compact drawer on navigation
   useEffect(() => {
     if (isSidebarCompact) {
@@ -506,6 +520,67 @@ export function Layout() {
     return () => window.removeEventListener('plate-not-empty', handlePlateNotEmpty);
   }, [hasPermission]);
 
+  // A plate check that could not run (no camera image, ...) does not hold the
+  // print, but it is not an empty plate either: say so to those who can act.
+  useEffect(() => {
+    const handlePlateCheckFailed = (event: Event) => {
+      if (!hasPermission('printers:control')) {
+        return;
+      }
+      const detail = (event as CustomEvent).detail ?? {};
+      showToast(
+        t('printers.plateDetection.couldNotRun', {
+          printer: detail.printer_name ?? '',
+          reason: plateCheckFailureText(t, detail.reason),
+        }),
+        'warning',
+      );
+    };
+    window.addEventListener('plate-check-failed', handlePlateCheckFailed);
+    return () => window.removeEventListener('plate-check-failed', handlePlateCheckFailed);
+  }, [hasPermission, showToast, t]);
+
+  // A completed print asked for its outcome verdict (#1898). Same CustomEvent
+  // relay as plate-not-empty, and gated the same way: the PATCH route decides
+  // who may record a verdict, so a user who cannot should not be handed a
+  // dialog whose only outcome is a 403.
+  // Held until the auth state has landed: while it is loading, `authEnabled`
+  // is still false and every permission check answers yes, which would open
+  // the dialog for exactly the user this gate exists to spare.
+  const canConfirmOutcome = !authLoading && hasAnyPermission('archives:update_all', 'archives:update_own');
+  useEffect(() => {
+    const handleConfirmRequest = (event: Event) => {
+      const detail = (event as CustomEvent).detail;
+      if (typeof detail?.archive_id === 'number') {
+        setConfirmOutcomeArchiveId(detail.archive_id);
+        setConfirmOutcomeRunId(typeof detail.run_id === 'number' ? detail.run_id : null);
+      }
+    };
+    window.addEventListener('print-confirm-request', handleConfirmRequest);
+    return () => window.removeEventListener('print-confirm-request', handleConfirmRequest);
+  }, []);
+
+  // The ?confirm=<id> deep link a push notification carries (#1898). It is read
+  // here and not on ArchivesPage because that page renders inside this Layout's
+  // <Outlet />: React flushes a child's effects before its parent's, so a page
+  // dispatching `print-confirm-request` on mount fired before the listener above
+  // existed — which is exactly the cold load a notification tap produces. The
+  // parameter is stripped afterwards so a reload does not re-open the dialog.
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const confirmId = params.get('confirm');
+    if (!confirmId || !/^\d+$/.test(confirmId)) {
+      return;
+    }
+    const runId = params.get('run');
+    setConfirmOutcomeArchiveId(Number(confirmId));
+    setConfirmOutcomeRunId(runId && /^\d+$/.test(runId) ? Number(runId) : null);
+    params.delete('confirm');
+    params.delete('run');
+    const rest = params.toString();
+    navigate({ pathname: location.pathname, search: rest ? `?${rest}` : '' }, { replace: true });
+  }, [location.pathname, location.search, navigate]);
+
   // Global keyboard shortcuts for navigation
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
     const target = e.target as HTMLElement;
@@ -521,7 +596,7 @@ export function Layout() {
         const id = orderedSidebarIds[keyNum - 1];
         e.preventDefault();
 
-        if (isExternalLinkId(id)) {
+        if (isExternalSidebarItemId(id)) {
           // External link
           const extLink = extLinksMap.get(id);
           if (extLink?.open_in_new_tab) {
@@ -545,6 +620,11 @@ export function Layout() {
           e.preventDefault();
           setShowShortcuts(true);
           break;
+        case 'c':
+        case 'C':
+          e.preventDefault();
+          setCameraListOpen(open => !open);
+          break;
         case 'Escape':
           setShowShortcuts(false);
           break;
@@ -558,8 +638,8 @@ export function Layout() {
   }, [handleKeyDown]);
 
   const sidebarBrandImagePath = !isSidebarCompact && !sidebarExpanded
-    ? (mode === 'dark' ? '/img/printbuddy_icon_dark.png' : '/img/printbuddy_icon.png')
-    : (mode === 'dark' ? '/img/printbuddy_logo_dark.png' : '/img/printbuddy_logo_light.png');
+    ? (resolvedMode === 'dark' ? '/img/printbuddy_icon_dark.png' : '/img/printbuddy_icon.png')
+    : (resolvedMode === 'dark' ? '/img/printbuddy_logo_dark.png' : '/img/printbuddy_logo_light.png');
 
   return (
     <div className="flex min-h-screen">
@@ -593,11 +673,28 @@ export function Layout() {
             className="ml-3 flex h-full items-center rounded px-1 cursor-pointer focus:outline-none focus:ring-2 focus:ring-bambu-green"
           >
             <img
-              src={appAssetPath(mode === 'dark' ? '/img/printbuddy_logo_dark.png' : '/img/printbuddy_logo_light.png')}
+              src={appAssetPath(resolvedMode === 'dark' ? '/img/printbuddy_logo_dark.png' : '/img/printbuddy_logo_light.png')}
               alt="Printbuddy"
               className="h-8"
             />
           </NavLink>
+          {/* A camera from any page (#2737), beside the bug report. */}
+          <div className="ml-auto">
+            <CameraLauncher placement="down" open={cameraListOpen} onOpenChange={setCameraListOpen} />
+          </div>
+          {/* Bug report — the compact-layout home of the floating bubble. */}
+          {location.pathname !== '/farm-monitor' && (
+            <button
+              onClick={() => setBugReportOpen(true)}
+              className={`p-2 -mr-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors ${
+                bugReportLogging ? 'text-amber-500' : 'text-red-500'
+              }`}
+              title={bugReportLogging ? t('bugReport.resumeReport') : t('bugReport.title')}
+              aria-label={bugReportLogging ? t('bugReport.resumeReport') : t('bugReport.title')}
+            >
+              <Bug className={`w-5 h-5 ${bugReportLogging ? 'animate-pulse' : ''}`} />
+            </button>
+          )}
         </header>
       )}
 
@@ -641,7 +738,7 @@ export function Layout() {
         <nav className="flex-1 p-2 overflow-y-auto">
           <ul className="space-y-2">
             {orderedSidebarIds.map((id) => {
-              const isExternal = isExternalLinkId(id);
+              const isExternal = isExternalSidebarItemId(id);
 
               if (isExternal) {
                 // Render external link
@@ -649,23 +746,31 @@ export function Layout() {
                 if (!link) return null;
 
                 const LinkIcon = link.custom_icon ? null : getIconByName(link.icon);
+                // A count the app behind the link reports (Printbuddy Orders' To do).
+                const linkBadge = link.badge_count ?? 0;
+                const linkIcon = (
+                  <div className="relative">
+                    {link.custom_icon ? (
+                      <img
+                        src={api.getExternalLinkIconUrl(link.id)}
+                        alt=""
+                        className="w-5 h-5 flex-shrink-0"
+                      />
+                    ) : (
+                      LinkIcon && <LinkIcon className="w-5 h-5 flex-shrink-0" />
+                    )}
+                    {linkBadge > 0 && (
+                      <span
+                        data-testid={`external-link-badge-${link.id}`}
+                        className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 flex items-center justify-center text-[10px] font-bold rounded-full bg-yellow-500 text-black"
+                      >
+                        {linkBadge > 99 ? '99+' : linkBadge}
+                      </span>
+                    )}
+                  </div>
+                );
                 return (
-                  <li
-                    key={id}
-                    draggable
-                    onDragStart={(e) => handleDragStart(e, id)}
-                    onDragOver={(e) => handleDragOver(e, id)}
-                    onDragLeave={handleDragLeave}
-                    onDrop={(e) => handleDrop(e, id)}
-                    onDragEnd={handleDragEnd}
-                    className={`relative ${
-                      draggedId === id ? 'opacity-50' : ''
-                    } ${
-                      dragOverId === id && draggedId !== id
-                        ? 'before:absolute before:left-0 before:right-0 before:top-0 before:h-0.5 before:bg-bambu-green'
-                        : ''
-                    }`}
-                  >
+                  <li key={id}>
                     {link.open_in_new_tab ? (
                       <a
                         href={link.url}
@@ -674,18 +779,7 @@ export function Layout() {
                         className={`flex items-center ${isSidebarCompact || sidebarExpanded ? 'gap-3 px-4' : 'justify-center px-2'} py-3 rounded-lg transition-colors group text-bambu-gray-light hover:bg-bambu-dark-tertiary hover:text-white`}
                         title={!isSidebarCompact && !sidebarExpanded ? link.name : undefined}
                       >
-                        {sidebarExpanded && !isSidebarCompact && (
-                          <GripVertical className="w-4 h-4 flex-shrink-0 opacity-0 group-hover:opacity-50 cursor-grab active:cursor-grabbing -ml-1" />
-                        )}
-                        {link.custom_icon ? (
-                          <img
-                            src={api.getExternalLinkIconUrl(link.id)}
-                            alt=""
-                            className="w-5 h-5 flex-shrink-0"
-                          />
-                        ) : (
-                          LinkIcon && <LinkIcon className="w-5 h-5 flex-shrink-0" />
-                        )}
+                        {linkIcon}
                         {(isSidebarCompact || sidebarExpanded) && <span>{link.name}</span>}
                       </a>
                     ) : (
@@ -700,18 +794,7 @@ export function Layout() {
                         }
                         title={!isSidebarCompact && !sidebarExpanded ? link.name : undefined}
                       >
-                        {sidebarExpanded && !isSidebarCompact && (
-                          <GripVertical className="w-4 h-4 flex-shrink-0 opacity-0 group-hover:opacity-50 cursor-grab active:cursor-grabbing -ml-1" />
-                        )}
-                        {link.custom_icon ? (
-                          <img
-                            src={api.getExternalLinkIconUrl(link.id)}
-                            alt=""
-                            className="w-5 h-5 flex-shrink-0"
-                          />
-                        ) : (
-                          LinkIcon && <LinkIcon className="w-5 h-5 flex-shrink-0" />
-                        )}
+                        {linkIcon}
                         {(isSidebarCompact || sidebarExpanded) && <span>{link.name}</span>}
                       </NavLink>
                     )}
@@ -729,23 +812,31 @@ export function Layout() {
                 const showBadge = showQueueBadge || showArchiveBadge;
                 const showClearPlateDot = id === 'printers' && needsClearPlate;
 
-                return (
-                  <li
-                    key={id}
-                    draggable
-                    onDragStart={(e) => handleDragStart(e, id)}
-                    onDragOver={(e) => handleDragOver(e, id)}
-                    onDragLeave={handleDragLeave}
-                    onDrop={(e) => handleDrop(e, id)}
-                    onDragEnd={handleDragEnd}
-                    className={`relative ${
-                      draggedId === id ? 'opacity-50' : ''
-                    } ${
-                      dragOverId === id && draggedId !== id
-                        ? 'before:absolute before:left-0 before:right-0 before:top-0 before:h-0.5 before:bg-bambu-green'
-                        : ''
+                const expanded = isSidebarCompact || sidebarExpanded;
+                // The camera list from any page (#2737), on the row of the page
+                // the cameras belong to. The drawer's copy is not the one the C
+                // key opens: in the compact layout that is the header's.
+                const cameraLauncher = id === 'printers' && (
+                  // Collapsed, the row is 48px wide and the nav clips anything
+                  // past it: a 16px corner button, shown on hover or focus.
+                  <div
+                    className={`absolute ${
+                      expanded
+                        ? 'right-2 top-1/2 -translate-y-1/2'
+                        : `right-0 top-0.5 ${cameraListOpen ? '' : 'opacity-0 group-hover/printers:opacity-100 focus-within:opacity-100'}`
                     }`}
                   >
+                    <CameraLauncher
+                      placement="side"
+                      size={expanded ? 'sm' : 'xs'}
+                      onAccent={location.pathname === '/'}
+                      {...(isSidebarCompact ? {} : { open: cameraListOpen, onOpenChange: setCameraListOpen })}
+                    />
+                  </div>
+                );
+
+                return (
+                  <li key={id} className={id === 'printers' ? 'relative group/printers' : undefined}>
                     <NavLink
                       to={to}
                       className={({ isActive }) =>
@@ -757,9 +848,6 @@ export function Layout() {
                       }
                       title={!isSidebarCompact && !sidebarExpanded ? t(labelKey) : undefined}
                     >
-                      {sidebarExpanded && !isSidebarCompact && (
-                        <GripVertical className="w-4 h-4 flex-shrink-0 opacity-0 group-hover:opacity-50 cursor-grab active:cursor-grabbing -ml-1" />
-                      )}
                       <div className="relative">
                         <Icon className="w-5 h-5 flex-shrink-0" />
                         {showClearPlateDot && (
@@ -775,6 +863,7 @@ export function Layout() {
                       </div>
                       {(isSidebarCompact || sidebarExpanded) && <span>{t(labelKey)}</span>}
                     </NavLink>
+                    {cameraLauncher}
                   </li>
                 );
               }
@@ -821,7 +910,7 @@ export function Layout() {
         {/* Footer */}
         <div className="flex-shrink-0 p-2 border-t border-bambu-dark-tertiary">
           {isSidebarCompact || sidebarExpanded ? (
-            <div className="flex flex-col gap-2 px-2">
+            <div className="flex flex-col gap-2">
               {/* Top row: icons */}
               <div className="flex items-center justify-center gap-1 flex-wrap">
                 {hasSwitchbarPlugs && (
@@ -881,9 +970,9 @@ export function Layout() {
                 <button
                   onClick={toggleMode}
                   className="p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors text-bambu-gray-light hover:text-white"
-                  title={mode === 'dark' ? t('nav.switchToLight') : t('nav.switchToDark')}
+                  title={themeSwitchTitle}
                 >
-                  {mode === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
+                  <ThemeIcon className="w-5 h-5" />
                 </button>
                 {authEnabled && user && (
                   <>
@@ -987,9 +1076,9 @@ export function Layout() {
               <button
                 onClick={toggleMode}
                 className="p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors text-bambu-gray-light hover:text-white"
-                title={mode === 'dark' ? t('nav.switchToLight') : t('nav.switchToDark')}
+                title={themeSwitchTitle}
               >
-                {mode === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
+                <ThemeIcon className="w-5 h-5" />
               </button>
               {authEnabled && user && (
                 <>
@@ -1021,20 +1110,32 @@ export function Layout() {
       }`}>
         {/* Debug logging indicator */}
         {debugLoggingState?.enabled && (
-          <div className="bg-amber-500/20 border-b border-amber-500/30 px-4 py-2 flex items-center justify-between">
+          <div className="bg-amber-100 dark:bg-amber-500/20 border-b border-amber-300 dark:border-amber-500/30 px-4 py-2 flex items-center justify-between">
             <div className="flex items-center gap-2 text-sm">
               <Bug className="w-4 h-4 text-amber-500 animate-pulse" />
-              <span className="text-amber-200">
+              <span className="text-amber-800 dark:text-amber-200">
                 {t('support.debugLoggingActive', { defaultValue: 'Debug logging is active' })}
                 {debugDuration !== null && (
-                  <span className="text-amber-300/70 ml-2">
+                  <span className="text-amber-700/80 dark:text-amber-300/70 ml-2">
                     ({Math.floor(debugDuration / 60)}m {debugDuration % 60}s)
                   </span>
                 )}
               </span>
+              {/* A run started from the bug-report panel ends at that panel's
+                  Stop Logging button, so send the user back there rather than
+                  to the System page's raw toggle, which would drop the logs
+                  and the description they already wrote (#2847). */}
+              {bugReportLogging && (
+                <button
+                  onClick={() => setBugReportOpen(true)}
+                  className="text-amber-700 dark:text-amber-400 hover:text-amber-900 dark:hover:text-amber-300 font-medium underline ml-2"
+                >
+                  {t('bugReport.resumeReport')}
+                </button>
+              )}
               <button
                 onClick={() => navigate('/system')}
-                className="text-amber-400 hover:text-amber-300 font-medium underline ml-2"
+                className="text-amber-700 dark:text-amber-400 hover:text-amber-900 dark:hover:text-amber-300 font-medium underline ml-2"
               >
                 {t('support.manageLogs', { defaultValue: 'Manage' })}
               </button>
@@ -1042,10 +1143,10 @@ export function Layout() {
           </div>
         )}
         {devModeWarnings && devModeWarnings.length > 0 && (
-          <div className="bg-orange-500/20 border-b border-orange-500/30 px-4 py-2 flex items-center justify-between">
+          <div className="bg-orange-100 dark:bg-orange-500/20 border-b border-orange-300 dark:border-orange-500/30 px-4 py-2 flex items-center justify-between">
             <div className="flex items-center gap-2 text-sm">
               <ShieldAlert className="w-4 h-4 text-orange-500" />
-              <span className="text-orange-200">
+              <span className="text-orange-800 dark:text-orange-200">
                 {t('printers.developerModeWarning', {
                   names: devModeWarnings.map(w => w.name).join(', '),
                   defaultValue: `Developer LAN mode is not enabled on: ${devModeWarnings.map(w => w.name).join(', ')}. Some features may not work.`
@@ -1053,7 +1154,7 @@ export function Layout() {
               </span>
               <a href="https://wiki.bambulab.com/en/knowledge-sharing/enable-developer-mode"
                  target="_blank" rel="noopener noreferrer"
-                 className="text-orange-400 hover:text-orange-300 font-medium underline ml-2">
+                 className="text-orange-700 dark:text-orange-400 hover:text-orange-900 dark:hover:text-orange-300 font-medium underline ml-2">
                 {t('printers.howToEnable', { defaultValue: 'How to enable' })}
               </a>
             </div>
@@ -1086,15 +1187,25 @@ export function Layout() {
             </button>
           </div>
         )}
-        <Outlet />
+        {/* Pages load on first open (#3175); the sidebar stays meanwhile. */}
+        <Suspense fallback={<PageLoading />}>
+          <Outlet />
+        </Suspense>
       </main>
+
+      <UnknownSpoolModal
+        prompt={unknownSpool.prompt}
+        isPending={unknownSpool.isPending}
+        onConfirm={unknownSpool.confirm}
+        onCancel={unknownSpool.cancel}
+      />
 
       {/* Keyboard Shortcuts Modal */}
       {showShortcuts && (
         <KeyboardShortcutsModal
           onClose={() => setShowShortcuts(false)}
           sidebarItems={orderedSidebarIds.map(id => {
-            if (isExternalLinkId(id)) {
+            if (isExternalSidebarItemId(id)) {
               const extLink = extLinksMap.get(id);
               return extLink ? { type: 'external' as const, label: extLink.name } : null;
             } else {
@@ -1115,7 +1226,7 @@ export function Layout() {
                   <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
                 </svg>
               </div>
-              <h2 className="text-xl font-bold text-yellow-400 mb-2">
+              <h2 className="text-xl font-bold text-yellow-700 dark:text-yellow-400 mb-2">
                 {t('plateAlert.title')}
               </h2>
               <p className="text-lg text-white mb-2">
@@ -1133,6 +1244,21 @@ export function Layout() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Post-print outcome confirmation (#1898) */}
+      {/* The dialog's only outcome for a user who may not record a verdict is
+          a 403 from the PATCH, so it is gated on the permissions that route
+          enforces — the names the June migration left in the default groups.
+          Gated on the render rather than on the two ways a request arrives:
+          one of them can land before /auth/me has answered, and a check made
+          then would drop it for everybody. */}
+      {canConfirmOutcome && confirmOutcomeArchiveId !== null && (
+        <ConfirmOutcomeDialog
+          archiveId={confirmOutcomeArchiveId}
+          runId={confirmOutcomeRunId}
+          onClose={() => setConfirmOutcomeArchiveId(null)}
+        />
       )}
 
       {/* Change Password Modal */}
@@ -1223,7 +1349,7 @@ export function Layout() {
                     minLength={6}
                   />
                   {changePasswordData.confirmPassword && changePasswordData.newPassword !== changePasswordData.confirmPassword && (
-                    <p className="text-red-400 text-xs mt-1">{t('changePassword.passwordsDoNotMatch')}</p>
+                    <p className="text-red-700 dark:text-red-400 text-xs mt-1">{t('changePassword.passwordsDoNotMatch')}</p>
                   )}
                 </div>
               </div>
@@ -1279,7 +1405,20 @@ export function Layout() {
           </Card>
         </div>
       )}
-      {location.pathname !== '/farm-monitor' && <BugReportBubble />}
+      {/* The panel always mounts here, at the Layout root. It must not move
+          into the header alongside its compact-layout trigger: the header is
+          `fixed z-40` and so its own stacking context, which would cap the
+          z-50 panel at the header's level and bury it under every ordinary
+          modal in the app. The trigger stays off the Print Farm Monitor
+          (TV / kiosk view). */}
+      {location.pathname !== '/farm-monitor' && (
+        <BugReportBubble
+          showTrigger={!isSidebarCompact}
+          open={bugReportOpen}
+          onOpenChange={setBugReportOpen}
+          onLoggingChange={setBugReportLogging}
+        />
+      )}
     </div>
   );
 }

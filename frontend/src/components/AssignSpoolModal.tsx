@@ -1,13 +1,18 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { X, Loader2, Package, Search } from 'lucide-react';
+import { X, Loader2, Package, Search, QrCode, ArrowLeft } from 'lucide-react';
 import { api } from '../api/client';
 import type { InventorySpool, SpoolAssignment } from '../api/client';
 import { Button } from './Button';
-import { ConfirmModal } from './ConfirmModal';
+import { MaterialMismatchConfirm } from './MaterialMismatchConfirm';
+import { QrSpoolScanner } from './QrSpoolScanner';
 import { useToast } from '../contexts/ToastContext';
-import { filterSpoolsByQuery } from '../utils/inventorySearch';
+import { findMaterialMismatch, normalizeValue, stripProfileQualifier, type MaterialMismatch } from '../utils/assignMismatch';
+import { exactSpoolIdQuery, filterSpoolsByQuery } from '../utils/inventorySearch';
+import { getSwatchStyle, resolveSpoolColorName } from '../utils/colors';
+import { parseSpoolQr, scannedSpoolId } from '../utils/qrAssignTarget';
+import { useUiSettings } from '../hooks/useUiSettings';
 
 interface AssignSpoolModalProps {
   isOpen: boolean;
@@ -21,11 +26,30 @@ interface AssignSpoolModalProps {
     profile?: string;
     color: string;
     location: string;
+    /**
+     * For a slot reporting no filament: getEmptySlotKind's answer. Only
+     * 'physical' (the firmware says no spool) reads as an empty slot; anything
+     * else may be a spool it can't identify (#2527).
+     */
+    emptyKind?: 'physical' | 'reset' | null;
   };
   spoolmanEnabled?: boolean;
+  /**
+   * The target is tracked in inventory only and never configured on the
+   * printer: a non-Bambu provider's slot (Creality CFS, Snapmaker U1, Klipper
+   * tool) or the virtual "Loaded spool" of a single-spool printer. Such
+   * targets often report no material/profile, so absent metadata is not a
+   * mismatch, and a spool can be created straight from the slot. Bambu AMS
+   * and external slots leave this unset and keep the upstream flow.
+   */
+  inventoryOnlySlot?: boolean;
 }
 
-export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, trayInfo, spoolmanEnabled }: AssignSpoolModalProps) {
+function spoolSummary(spool: InventorySpool): string {
+  return [spool.brand, spool.material, spool.subtype].filter(Boolean).join(' ');
+}
+
+export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, trayInfo, spoolmanEnabled, inventoryOnlySlot = false }: AssignSpoolModalProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
@@ -37,19 +61,22 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
     setSelectedSpoolmanSpoolId(null);
   }, [disableFiltering]);
   const [searchFilter, setSearchFilter] = useState('');
-  const [pendingAssignId, setPendingAssignId] = useState<number | null>(null);
-  const [showMismatchConfirm, setShowMismatchConfirm] = useState(false);
-  const [mismatchDetails, setMismatchDetails] = useState<{
-    type: 'material' | 'partial' | 'profile' | 'material_profile' | 'partial_profile';
-    spoolMaterial: string;
-    trayMaterial: string;
-    spoolProfile?: string;
-    trayProfile?: string;
-  } | null>(null);
+  // A pick waiting on the material-mismatch confirm, with what
+  // findMaterialMismatch found. `move` for a scanned spool (#1574): the one in
+  // the user's hand leaves any other slot it is in.
+  const [mismatch, setMismatch] = useState<{ spoolId: number; move: boolean; details: MaterialMismatch } | null>(null);
+  // Scanning a spool's QR instead of picking it (#1574), into this same slot.
+  const [scanning, setScanning] = useState(false);
+  const [scanError, setScanError] = useState<string | null>(null);
+  // Synchronous in-flight guard: a mutation's isPending only updates next render.
+  const scanInFlightRef = useRef(false);
 
   useEffect(() => {
     if (isOpen) {
       setDisableFiltering(false);
+      setScanning(false);
+      setScanError(null);
+      scanInFlightRef.current = false;
     }
   }, [isOpen]);
 
@@ -61,7 +88,7 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
   // explicitly excluded client-side because the backend rejects archived
   // assignments with HTTP 400 anyway, so listing them would only let the
   // user click a button that fails.
-  const { data: spools, isLoading } = useQuery({
+  const { data: spools, isLoading, isFetching: spoolsFetching } = useQuery({
     queryKey: ['inventory-spools', 'assign-modal'],
     queryFn: () => api.getSpools(true),
     enabled: isOpen && !spoolmanEnabled,
@@ -73,11 +100,7 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
     enabled: isOpen,
   });
 
-  const { data: settings } = useQuery({
-    queryKey: ['settings'],
-    queryFn: () => api.getSettings(),
-    enabled: isOpen,
-  });
+  const { data: settings } = useUiSettings({ enabled: isOpen });
 
   const { data: spoolmanSpools, isLoading: spoolmanLoading } = useQuery({
     queryKey: ['spoolman-inventory-spools', 'assign-modal'],
@@ -91,7 +114,8 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
   // in the x1c-2 assign list), and assigning would silently steal it from
   // the other printer's slot.
   const { data: allSpoolmanAssignments } = useQuery({
-    queryKey: ['spoolman-slot-assignments-all'],
+    // Under the per-slot key, so every slot invalidation refreshes it too.
+    queryKey: ['spoolman-slot-assignments', 'all'],
     queryFn: () => api.getSpoolmanSlotAssignments(),
     enabled: isOpen && !!spoolmanEnabled,
   });
@@ -123,48 +147,72 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
   };
 
   const assignMutation = useMutation({
-    mutationFn: (spoolId: number) =>
-      api.assignSpool({ spool_id: spoolId, printer_id: printerId, ams_id: amsId, tray_id: trayId }),
-    onSuccess: (newAssignment) => {
+    mutationFn: ({ spoolId, move }: { spoolId: number; move?: boolean }) =>
+      api.assignSpool({ spool_id: spoolId, printer_id: printerId, ams_id: amsId, tray_id: trayId, ...(move && { move }) }),
+    onSuccess: (newAssignment, { move }) => {
       // Immediately update cache so UI reflects the new assignment without waiting for refetch
       queryClient.setQueryData<SpoolAssignment[]>(['spool-assignments'], (old) => {
         const filtered = (old || []).filter(a =>
-          !(a.printer_id === printerId && a.ams_id === amsId && a.tray_id === trayId)
+          !(a.printer_id === printerId && a.ams_id === amsId && a.tray_id === trayId) &&
+          // A move took the spool out of its other slots as well.
+          !(move && a.spool_id === newAssignment.spool_id)
         );
         filtered.push(newAssignment);
         return filtered;
       });
       queryClient.invalidateQueries({ queryKey: ['spool-assignments'] });
       nudgePrinterRepublish();
-      showToast(t('inventory.assignSuccess'), 'success');
-      setShowMismatchConfirm(false);
-      setPendingAssignId(null);
-      setMismatchDetails(null);
+      // When the AMS slot was empty at assign time (tray_state ∈ {9, 10}), the
+      // backend persists the assignment but deliberately skips the MQTT
+      // `ams_filament_setting` push because Bambu firmware drops it silently
+      // for empty slots. `on_ams_change` re-fires the configuration once a
+      // spool is detected in the slot (#1680). The success-but-pending case
+      // gets a distinct toast so the user understands the slot hasn't been
+      // configured on the printer yet — saying "AMS slot configured" reads
+      // as a lie in that state.
+      const toastKey = newAssignment.pending_config
+        ? 'inventory.assignPendingInsert'
+        : 'inventory.assignSuccess';
+      showToast(t(toastKey), 'success');
+      setMismatch(null);
       onClose();
     },
     onError: (error: Error) => {
       showToast(`${t('inventory.assignFailed')}: ${error.message}`, 'error');
+      scanInFlightRef.current = false; // a scan can try again
     },
   });
 
   const assignSpoolmanMutation = useMutation({
-    mutationFn: (spoolmanSpoolId: number) =>
+    mutationFn: ({ spoolmanSpoolId, move }: { spoolmanSpoolId: number; move?: boolean }) =>
       api.assignSpoolmanSlot({
         spoolman_spool_id: spoolmanSpoolId,
         printer_id: printerId,
         ams_id: amsId,
         tray_id: trayId,
+        ...(move && { move }),
       }),
-    onSuccess: () => {
+    onSuccess: (_data, { move }) => {
       queryClient.invalidateQueries({ queryKey: ['spoolman-inventory-spools'] });
+      // Prefix match: also the all-printers list this dialog filters
+      // "assigned elsewhere" by.
       queryClient.invalidateQueries({ queryKey: ['spoolman-slot-assignments'] });
       queryClient.invalidateQueries({ queryKey: ['spoolman-slot-assignments-all'] });
+      // A move clears the fallback tag linking the spool to its old slot.
+      if (move) queryClient.invalidateQueries({ queryKey: ['linked-spools'] });
       nudgePrinterRepublish();
       showToast(t('inventory.assignSuccess'), 'success');
       onClose();
     },
     onError: (error: Error) => {
-      showToast(`${t('inventory.assignFailed')}: ${error.message}`, 'error');
+      const message = `${t('inventory.assignFailed')}: ${error.message}`;
+      // A scan says why in the scanner: a toast sits under this dialog's
+      // backdrop, a kiosk shows none, and the scanner doesn't send
+      // a label again while it stays in view. (A built-in assign's error shows
+      // below the dialog's buttons.)
+      if (scanInFlightRef.current) setScanError(message);
+      else showToast(message, 'error');
+      scanInFlightRef.current = false; // a scan can try again
     },
   });
 
@@ -232,54 +280,27 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
     },
   });
 
-  // --- Material/profile mismatch logic ---
-  const normalizeValue = (value: string | undefined | null) =>
-    (value ?? '').trim().toUpperCase();
-
-  const checkMaterialMatch = (
-    spoolMaterial: string | undefined | null,
-    trayMaterial: string | undefined | null
-  ): 'exact' | 'partial' | 'none' => {
-    const normalizedSpool = normalizeValue(spoolMaterial);
-    const normalizedTray = normalizeValue(trayMaterial);
-
-    if (!normalizedSpool || !normalizedTray) return 'none';
-    if (normalizedSpool === normalizedTray) return 'exact';
-    if (normalizedTray.includes(normalizedSpool) || normalizedSpool.includes(normalizedTray)) {
-      return 'partial';
-    }
-
-    return 'none';
-  };
-
-  // Bambu Studio / OrcaSlicer profile names carry a printer/nozzle/variant qualifier after
-  // `@` (e.g. "Devil Design PLA Basic @Bambu Lab H2D 0.4 nozzle (Custom)"), while the tray's
-  // profile is typically the bare base name. Strip the qualifier before comparing so identical
-  // base profiles don't trigger a mismatch warning (#1047).
-  const stripProfileQualifier = (value: string) => value.split('@')[0].trim();
-
-  const checkProfileMatch = (
-    spoolProfile: string | undefined | null,
-    trayProfile: string | undefined | null
-  ): boolean => {
-    const normalizedSpoolProfile = stripProfileQualifier(normalizeValue(spoolProfile));
-    const normalizedTrayProfile = stripProfileQualifier(normalizeValue(trayProfile));
-
-    if (!normalizedSpoolProfile || !normalizedTrayProfile) return false;
-
-    return normalizedSpoolProfile === normalizedTrayProfile;
-  };
-
-  const hasComparableProfile = (
-    spoolProfile: string | undefined | null,
-    trayProfile: string | undefined | null
-  ): boolean => Boolean(
-    stripProfileQualifier(normalizeValue(spoolProfile)) &&
-    stripProfileQualifier(normalizeValue(trayProfile))
-  );
-
   const isOpenFilamentDatabaseSpool = (spool: InventorySpool): boolean =>
     spool.data_origin === 'openfilamentdatabase';
+
+  // Inventory-only targets (see `inventoryOnlySlot`) often carry no
+  // material/profile at all, so absent comparison data is not treated as a
+  // mismatch there. Printer slots use findMaterialMismatch unchanged.
+  const slotMaterialMismatch = (spool: InventorySpool): MaterialMismatch | null => {
+    if (!trayInfo) return null;
+    const details = findMaterialMismatch(spool, trayInfo);
+    if (!details || !inventoryOnlySlot) return details;
+    if (!normalizeValue(spool.material)) return null;
+    const profileIsComparable = Boolean(
+      stripProfileQualifier(normalizeValue(details.spoolProfile)) &&
+      stripProfileQualifier(normalizeValue(details.trayProfile))
+    );
+    if (profileIsComparable) return details;
+    return {
+      ...details,
+      type: details.type === 'material_profile' ? 'material' : details.type === 'partial_profile' ? 'partial' : details.type,
+    };
+  };
 
   if (!isOpen) return null;
 
@@ -316,8 +337,14 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
   // tray's material (partial-match both directions — "PLA" spool accepts a "PLA Basic" slot and
   // vice versa). Manually-added inventory spools typically have no slicer_filament_name; gating
   // on strict profile equality alone hid them even when the material matched (#1047).
+  //
+  // A "#123" search skips the tray match: typing a spool's number is choosing
+  // that spool, and the material-mismatch warning still asks on assign
+  // (#3301). Before, a spool of another material came up empty for its own
+  // number, as if it had been deleted.
+  const exactSpoolId = exactSpoolIdQuery(searchFilter);
   let filteredSpools = availableSpools;
-  if (!disableFiltering) {
+  if (!disableFiltering && exactSpoolId === null) {
     const trayProfile = stripProfileQualifier(normalizeValue(trayInfo?.profile));
     const trayMaterial = normalizeValue(trayInfo?.material || trayInfo?.type);
     if (trayProfile || trayMaterial) {
@@ -340,10 +367,32 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
   if (searchFilter && filteredSpools) {
     filteredSpools = filterSpoolsByQuery(filteredSpools, searchFilter);
   }
+  // Why a "#123" search found nothing, when it did -- the spool is not gone
+  // just because it is not offered here.
+  let exactSpoolMissReason: string | null = null;
+  if (exactSpoolId !== null && spools && filteredSpools?.length === 0) {
+    const wanted = spools.find((spool: InventorySpool) => spool.id === exactSpoolId);
+    exactSpoolMissReason = !wanted
+      ? t('inventory.spoolIdNotFound', { id: exactSpoolId })
+      : wanted.archived_at
+        ? t('inventory.spoolIdArchived', { id: exactSpoolId })
+        : t('inventory.spoolIdInOtherSlot', { id: exactSpoolId });
+  }
+
+  // Assign a built-in spool, asking first when its material doesn't match the
+  // slot's. Shared by the picker and the QR scan.
+  const requestAssign = (spool: InventorySpool, move: boolean) => {
+    const details = !settings?.disable_filament_warnings ? slotMaterialMismatch(spool) : null;
+    if (details) {
+      setMismatch({ spoolId: spool.id, move, details });
+      return;
+    }
+    assignMutation.mutate({ spoolId: spool.id, move });
+  };
 
   const handleAssign = () => {
     if (selectedSpoolmanSpoolId !== null) {
-      assignSpoolmanMutation.mutate(selectedSpoolmanSpoolId);
+      assignSpoolmanMutation.mutate({ spoolmanSpoolId: selectedSpoolmanSpoolId });
       return;
     }
     if (!selectedSpoolId) return;
@@ -352,55 +401,80 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
       showToast(t('inventory.assignFailed'), 'error');
       return;
     }
-
-    if (!settings?.disable_filament_warnings && trayInfo) {
-      const trayMaterial = trayInfo.material || trayInfo.type;
-      const materialIsComparable = Boolean(normalizeValue(selectedSpool.material) && normalizeValue(trayMaterial));
-      const materialMatchResult = materialIsComparable
-        ? checkMaterialMatch(selectedSpool.material, trayMaterial)
-        : 'exact';
-      const spoolProfile = selectedSpool.slicer_filament_name || selectedSpool.slicer_filament;
-      const trayProfile = trayInfo.profile || trayInfo.type;
-      const profileIsComparable = hasComparableProfile(spoolProfile, trayProfile);
-      const profileMismatch = profileIsComparable && !checkProfileMatch(spoolProfile, trayProfile);
-
-      // Always evaluate both meaningful checks; if both fail, show a combined warning.
-      // Missing profile/material metadata is common for virtual Loaded spool targets
-      // and OFDB/manual spools, so do not treat absent comparison data as a mismatch.
-      if (materialMatchResult !== 'exact' || profileMismatch) {
-        let mismatchType: 'material' | 'partial' | 'profile' | 'material_profile' | 'partial_profile' = 'profile';
-
-        if (materialMatchResult === 'none' && profileMismatch) {
-          mismatchType = 'material_profile';
-        } else if (materialMatchResult === 'partial' && profileMismatch) {
-          mismatchType = 'partial_profile';
-        } else if (materialMatchResult === 'none') {
-          mismatchType = 'material';
-        } else if (materialMatchResult === 'partial') {
-          mismatchType = 'partial';
-        }
-
-        setPendingAssignId(selectedSpoolId);
-        setMismatchDetails({
-          type: mismatchType,
-          spoolMaterial: selectedSpool.material || '',
-          trayMaterial: trayMaterial || '',
-          spoolProfile: spoolProfile || undefined,
-          trayProfile: trayProfile || undefined,
-        });
-        setShowMismatchConfirm(true);
-        return;
-      }
-    }
-    assignMutation.mutate(selectedSpoolId);
+    requestAssign(selectedSpool, false);
   };
 
   const handleConfirmMismatch = () => {
-    if (!pendingAssignId) return;
-    assignMutation.mutate(pendingAssignId);
-    setShowMismatchConfirm(false);
-    setPendingAssignId(null);
+    if (!mismatch) return;
+    assignMutation.mutate({ spoolId: mismatch.spoolId, move: mismatch.move });
+    setMismatch(null);
   };
+
+  const cancelMismatch = () => {
+    setMismatch(null);
+    scanInFlightRef.current = false; // back to scanning, if that's where it came from
+  };
+
+  // A scanned label (#1574) goes to this slot — the one the dialog was opened
+  // for, so there is no target to pick. The spool is the one in the user's
+  // hand, so it moves here from any other slot; the picker's "assigned
+  // elsewhere" filter doesn't apply. The dialog closes when the assign succeeds.
+  const handleScan = (text: string) => {
+    if (scanInFlightRef.current || assignMutation.isPending || assignSpoolmanMutation.isPending) return;
+    const scanned = parseSpoolQr(text);
+    if (!scanned) {
+      setScanError(t('inventory.qrAssign.invalidQr'));
+      return;
+    }
+    const id = scannedSpoolId(scanned, !!spoolmanEnabled);
+    if (id === null) {
+      setScanError(t('inventory.qrAssign.spoolmanLabel'));
+      return;
+    }
+    if (spoolmanEnabled) {
+      // Spoolman's spool list here leaves archived spools out, so the backend,
+      // which looks the spool up itself, is the one to refuse a missing or
+      // archived spool.
+      setScanError(null);
+      scanInFlightRef.current = true;
+      assignSpoolmanMutation.mutate({ spoolmanSpoolId: id, move: true });
+      return;
+    }
+    const spool = spools?.find((s: InventorySpool) => s.id === id);
+    if (!spool) {
+      setScanError(t('inventory.spoolIdNotFound', { id }));
+      return;
+    }
+    if (spool.archived_at) {
+      setScanError(t('inventory.spoolIdArchived', { id }));
+      return;
+    }
+    setScanError(null);
+    scanInFlightRef.current = true;
+    requestAssign(spool, true);
+  };
+
+  const stopScanning = () => {
+    setScanning(false);
+    setScanError(null);
+    scanInFlightRef.current = false;
+  };
+
+  const isAssigning = assignMutation.isPending || assignSpoolmanMutation.isPending;
+
+  // What the slot holds now, for the context box: the spool assigned to it,
+  // else what the printer reports there.
+  const currentSpool: { id: number; spool?: InventorySpool } | null = (() => {
+    if (spoolmanEnabled) {
+      const row = allSpoolmanAssignments?.find(a => a.printer_id === printerId && a.ams_id === amsId && a.tray_id === trayId);
+      return row ? { id: row.spoolman_spool_id, spool: spoolmanSpools?.find(s => s.id === row.spoolman_spool_id) } : null;
+    }
+    const row = assignments?.find(a => a.printer_id === printerId && a.ams_id === amsId && a.tray_id === trayId);
+    return row ? { id: row.spool_id, spool: row.spool ?? spools?.find(s => s.id === row.spool_id) } : null;
+  })();
+  // No filament reported is an empty slot only when the firmware says so; a
+  // spool it can't identify reports none too (#2527).
+  const physicalLabel = trayInfo?.type || (trayInfo?.emptyKind === 'physical' ? t('ams.emptySlot') : t('ams.emptySlotReset'));
 
   return (
     <>
@@ -414,8 +488,10 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-bambu-dark-tertiary">
           <div className="flex items-center gap-2">
-            <Package className="w-5 h-5 text-bambu-green" />
-            <h2 className="text-lg font-semibold text-white">{t('inventory.assignSpool')}</h2>
+            {scanning ? <QrCode className="w-5 h-5 text-bambu-green" /> : <Package className="w-5 h-5 text-bambu-green" />}
+            <h2 className="text-lg font-semibold text-white">
+              {scanning ? t('inventory.qrAssign.scanTitle') : t('inventory.assignSpool')}
+            </h2>
           </div>
           <button
             onClick={onClose}
@@ -427,7 +503,8 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
 
         {/* Content */}
         <div className="p-4 space-y-4 overflow-y-auto">
-          {/* Tray info */}
+          {/* Tray info: the slot being filled, what the printer reports in it,
+              and the spool assigned to it now. */}
           {trayInfo && (
             <div className="p-3 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
               <p className="text-xs text-bambu-gray mb-1">{t('inventory.selectSpool')}:</p>
@@ -435,16 +512,25 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
                 {trayInfo.color && (
                   <span
                     className="w-4 h-4 rounded-full border border-black/20"
-                    style={{ backgroundColor: `#${trayInfo.color}` }}
+                    style={getSwatchStyle(trayInfo.color)}
                   />
                 )}
-                <span className="text-white font-medium">{trayInfo.type || t('ams.emptySlot')}</span>
+                <span className="text-white font-medium">{physicalLabel}</span>
                 <span className="text-bambu-gray">({trayInfo.location})</span>
               </div>
+              {currentSpool && (
+                <p className="mt-1 text-xs text-bambu-gray truncate">
+                  {t('inventory.assigned')}:{' '}
+                  <span className="text-white">
+                    #{currentSpool.id}
+                    {currentSpool.spool ? ` ${spoolSummary(currentSpool.spool)}` : ''}
+                  </span>
+                </p>
+              )}
             </div>
           )}
 
-            {trayInfo && !spoolmanEnabled && (
+            {trayInfo && inventoryOnlySlot && !spoolmanEnabled && (
               <div className="p-3 rounded-lg border border-bambu-green/30 bg-bambu-green/10 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div className="text-xs text-bambu-gray">
                   <p className="font-medium text-white">Create an inventory spool from this detected slot</p>
@@ -470,16 +556,40 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
               </div>
             )}
 
-          {/* Search filter */}
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray" />
-            <input
-              type="text"
-              value={searchFilter}
-              onChange={(e) => setSearchFilter(e.target.value)}
-              placeholder={t('inventory.searchSpools')}
-              className="w-full pl-9 pr-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm placeholder:text-bambu-gray focus:outline-none focus:border-bambu-green"
+          {scanning ? (
+            <QrSpoolScanner
+              onDecode={handleScan}
+              // A built-in scan is looked up in the spool list, so it waits
+              // while the list loads or refreshes: a spool missing from an old
+              // list would be turned down, and the scanner doesn't send a label
+              // again while it stays in view.
+              busy={isAssigning || mismatch !== null || spoolsFetching}
+              error={scanError}
             />
+          ) : (
+          <>
+          {/* Search filter, and scanning the spool's QR instead (#1574) */}
+          <div className="flex flex-wrap gap-2">
+            <div className="relative flex-1 min-w-[12rem]">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray" />
+              <input
+                type="text"
+                value={searchFilter}
+                onChange={(e) => setSearchFilter(e.target.value)}
+                placeholder={t('inventory.searchSpools')}
+                className="w-full pl-9 pr-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm placeholder:text-bambu-gray focus:outline-none focus:border-bambu-green"
+              />
+            </div>
+            <Button
+              variant="secondary"
+              onClick={() => {
+                setScanError(null);
+                setScanning(true);
+              }}
+            >
+              <QrCode className="w-4 h-4" />
+              <span className="whitespace-nowrap">{t('inventory.qrAssign.scanTitle')}</span>
+            </Button>
           </div>
 
           {/* Spool list */}
@@ -510,23 +620,35 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
                           OFDB
                         </span>
                       )}
+                      <span className="text-[10px] font-mono text-bambu-gray shrink-0">#{spool.id}</span>
                     </div>
                     <div className="flex items-center gap-1.5 mt-1">
                       {spool.rgba && (
                         <span
                           className="w-3 h-3 rounded-full border border-black/20 flex-shrink-0"
-                          style={{ backgroundColor: `#${spool.rgba.substring(0, 6)}` }}
+                          style={getSwatchStyle(spool.rgba)}
                         />
                       )}
-                      <span className="text-xs text-bambu-gray truncate">{spool.color_name || ''}</span>
+                      <span className="text-xs text-bambu-gray truncate">
+                        {resolveSpoolColorName(spool.color_name, spool.rgba, spool.color_name_is_synthesized) || ''}
+                      </span>
                     </div>
                     {spool.label_weight && (
                       <p className="text-xs text-bambu-gray mt-1">
                         {Math.max(0, Math.round(spool.label_weight - spool.weight_used))} / {spool.label_weight}g
                       </p>
                     )}
+                    {spool.note && (
+                      <p className="text-[10px] text-bambu-gray/70 mt-1 truncate" title={spool.note}>
+                        {spool.note}
+                      </p>
+                    )}
                   </button>
                 ))}
+              </div>
+            ) : exactSpoolMissReason ? (
+              <div className="text-center py-8 text-bambu-gray">
+                <p>{exactSpoolMissReason}</p>
               </div>
             ) : availableSpools && availableSpools.length === 0 ? (
               <div className="text-center py-8 text-bambu-gray">
@@ -583,21 +705,31 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
                                 : 'bg-bambu-dark border-bambu-dark-tertiary hover:border-bambu-gray'
                             }`}
                           >
-                            <p className="text-white text-sm font-medium truncate">
-                              {spool.brand ? `${spool.brand} ` : ''}{spool.material}{spool.subtype ? ` ${spool.subtype}` : ''}
-                            </p>
+                            <div className="flex items-start justify-between gap-2">
+                              <p className="text-white text-sm font-medium truncate">
+                                {spool.brand ? `${spool.brand} ` : ''}{spool.material}{spool.subtype ? ` ${spool.subtype}` : ''}
+                              </p>
+                              <span className="text-[10px] font-mono text-bambu-gray shrink-0">#{spool.id}</span>
+                            </div>
                             <div className="flex items-center gap-1.5 mt-1">
                               {spool.rgba && (
                                 <span
                                   className="w-3 h-3 rounded-full border border-black/20 flex-shrink-0"
-                                  style={{ backgroundColor: `#${spool.rgba.substring(0, 6)}` }}
+                                  style={getSwatchStyle(spool.rgba)}
                                 />
                               )}
-                              <span className="text-xs text-bambu-gray truncate">{spool.color_name || ''}</span>
+                              <span className="text-xs text-bambu-gray truncate">
+                                {resolveSpoolColorName(spool.color_name, spool.rgba, spool.color_name_is_synthesized) || ''}
+                              </span>
                             </div>
                             {spool.label_weight && (
                               <p className="text-xs text-bambu-gray mt-1">
                                 {Math.max(0, Math.round(spool.label_weight - spool.weight_used))} / {spool.label_weight}g
+                              </p>
+                            )}
+                            {spool.note && (
+                              <p className="text-[10px] text-bambu-gray/70 mt-1 truncate" title={spool.note}>
+                                {spool.note}
                               </p>
                             )}
                           </button>
@@ -608,9 +740,21 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
               </>
             )}
           </div>
+          </>
+          )}
         </div>
 
-        {/* Footer with filtering toggle */}
+        {/* Footer: Back returns from the scan to the picker; the dialog itself
+            closes once an assign succeeds. */}
+        {scanning ? (
+          <div className="flex justify-start p-4 border-t border-bambu-dark-tertiary">
+            <Button variant="secondary" onClick={stopScanning} disabled={isAssigning}>
+              <ArrowLeft className="w-4 h-4" />
+              {t('inventory.qrAssign.back')}
+            </Button>
+          </div>
+        ) : (
+        /* Footer with filtering toggle */
         <div className="flex justify-between items-center p-4 border-t border-bambu-dark-tertiary">
           <div className="flex items-center gap-2">
             <input
@@ -646,10 +790,11 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
             </Button>
           </div>
         </div>
+        )}
 
 
         {assignMutation.isError && (
-          <div className="mx-4 mb-4 p-2 bg-red-500/20 border border-red-500/50 rounded text-sm text-red-400">
+          <div className="mx-4 mb-4 p-2 bg-red-100 dark:bg-red-500/20 border border-red-300 dark:border-red-500/50 rounded text-sm text-red-700 dark:text-red-400">
             {(assignMutation.error as Error).message}
           </div>
         )}
@@ -657,70 +802,17 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
       </div>
       </div>
 
-      {showMismatchConfirm && trayInfo && selectedSpoolId && mismatchDetails && (() => {
-        let message = '';
-
-        if (mismatchDetails.type === 'material') {
-          message = t('inventory.assignMismatchMessage', {
-            spoolMaterial: mismatchDetails.spoolMaterial,
-            trayMaterial: mismatchDetails.trayMaterial,
-            location: trayInfo.location,
-          });
-        } else if (mismatchDetails.type === 'partial') {
-          message = t('inventory.assignPartialMismatchMessage', {
-            spoolMaterial: mismatchDetails.spoolMaterial,
-            trayMaterial: mismatchDetails.trayMaterial,
-            location: trayInfo.location,
-          });
-        } else if (mismatchDetails.type === 'material_profile') {
-          message = `${t('inventory.assignMismatchMessage', {
-            spoolMaterial: mismatchDetails.spoolMaterial,
-            trayMaterial: mismatchDetails.trayMaterial,
-            location: trayInfo.location,
-          })}\n\n${t('inventory.assignProfileMismatchMessage', {
-            spoolProfile: mismatchDetails.spoolProfile || t('common.unknown'),
-            trayProfile: mismatchDetails.trayProfile || t('common.unknown'),
-            location: trayInfo.location,
-          })}`;
-        } else if (mismatchDetails.type === 'partial_profile') {
-          message = `${t('inventory.assignPartialMismatchMessage', {
-            spoolMaterial: mismatchDetails.spoolMaterial,
-            trayMaterial: mismatchDetails.trayMaterial,
-            location: trayInfo.location,
-          })}\n\n${t('inventory.assignProfileMismatchMessage', {
-            spoolProfile: mismatchDetails.spoolProfile || t('common.unknown'),
-            trayProfile: mismatchDetails.trayProfile || t('common.unknown'),
-            location: trayInfo.location,
-          })}`;
-        } else if (mismatchDetails.type === 'profile') {
-          message = t('inventory.assignProfileMismatchMessage', {
-            spoolProfile: mismatchDetails.spoolProfile || t('common.unknown'),
-            trayProfile: mismatchDetails.trayProfile || t('common.unknown'),
-            location: trayInfo.location,
-          });
-        }
-
-        return (
-          <ConfirmModal
-            title={t('inventory.assignMismatchTitle')}
-            message={message}
-            confirmText={t('inventory.assignMismatchConfirm')}
-            variant="warning"
-            // Sit above the AssignSpoolModal wrapper (z-[100], #1336) —
-            // without this the mismatch dialog is hidden behind its parent.
-            overlayZIndex="z-[110]"
-            isLoading={assignMutation.isPending}
-            onConfirm={handleConfirmMismatch}
-            onCancel={() => {
-              if (!assignMutation.isPending) {
-                setShowMismatchConfirm(false);
-                setPendingAssignId(null);
-                setMismatchDetails(null);
-              }
-            }}
-          />
-        );
-      })()}
+      {mismatch && trayInfo && (
+        <MaterialMismatchConfirm
+          mismatch={mismatch.details}
+          location={trayInfo.location}
+          isLoading={assignMutation.isPending}
+          onConfirm={handleConfirmMismatch}
+          onCancel={() => {
+            if (!assignMutation.isPending) cancelMismatch();
+          }}
+        />
+      )}
     </>
   );
 }

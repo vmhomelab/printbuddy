@@ -20,6 +20,10 @@ interface ContextMenuProps {
   y: number;
   items: ContextMenuItem[];
   onClose: () => void;
+  // The element that opened the menu. A mousedown on it is not "outside":
+  // without this the anchor's click handler runs after the menu has already
+  // been dismissed and cannot act as a close toggle.
+  anchorRef?: React.RefObject<HTMLElement | null>;
 }
 
 interface SubmenuPanelProps {
@@ -99,7 +103,7 @@ function SubmenuPanel({
             subItem.disabled
               ? 'text-bambu-gray cursor-not-allowed'
               : subItem.danger
-              ? 'text-red-400 hover:bg-red-400/10'
+              ? 'text-red-700 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-400/10'
               : 'text-white hover:bg-bambu-dark-tertiary'
           }`}
         >
@@ -114,7 +118,7 @@ function SubmenuPanel({
   );
 }
 
-export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
+export function ContextMenu({ x, y, items, onClose, anchorRef }: ContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
   const [activeSubmenu, setActiveSubmenu] = useState<number | null>(null);
   const submenuTimeoutRef = useRef<number | null>(null);
@@ -124,9 +128,9 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        onClose();
-      }
+      const target = e.target as Node;
+      if (menuRef.current?.contains(target) || anchorRef?.current?.contains(target)) return;
+      onClose();
     };
 
     const handleEscape = (e: KeyboardEvent) => {
@@ -156,7 +160,7 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
         clearTimeout(submenuTimeoutRef.current);
       }
     };
-  }, [onClose]);
+  }, [onClose, anchorRef]);
 
   // Adjust position to keep menu in viewport - use useLayoutEffect for synchronous measurement
   useLayoutEffect(() => {
@@ -265,11 +269,11 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
               }}
               disabled={item.disabled}
               title={item.title}
-              className={`w-full flex items-center gap-2 px-3 py-2 text-sm text-left transition-colors ${
+              className={`group w-full flex items-center gap-2 px-3 py-2 text-sm text-left transition-colors ${
                 item.disabled
                   ? 'text-bambu-gray cursor-not-allowed'
                   : item.danger
-                  ? 'text-red-400 hover:bg-red-400/10'
+                  ? 'text-red-700 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-400/10'
                   : 'text-white hover:bg-bambu-dark-tertiary'
               } ${hasSubmenu && activeSubmenu === index ? 'bg-bambu-dark-tertiary' : ''}`}
             >

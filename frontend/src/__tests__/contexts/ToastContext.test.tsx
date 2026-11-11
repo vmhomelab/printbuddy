@@ -12,7 +12,7 @@
  * paths no-op instead of crashing.
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { act, render, renderHook } from '@testing-library/react';
 import { type ReactNode } from 'react';
 import { ToastProvider, useToast } from '../../contexts/ToastContext';
@@ -95,86 +95,6 @@ describe('ToastContext post-unmount safety', () => {
   });
 });
 
-describe('ToastContext background dispatch — upload-done UX', () => {
-  // Small fast files reach 100% upload before the printer's MQTT confirmation
-  // arrives, leaving the bar parked at 100% for what feels like "stuck". When
-  // status is still 'processing' but uploadProgressPct >= 99.9 the byte-count
-  // line should switch to "Awaiting printer..." and the bar gets a pulse.
-  function dispatchBackgroundEvent(detail: Record<string, unknown>) {
-    window.dispatchEvent(new CustomEvent('background-dispatch', { detail }));
-  }
-
-  it('shows "Awaiting printer..." once upload is complete but printer has not confirmed', () => {
-    const { container } = render(
-      <ToastProvider>
-        <div />
-      </ToastProvider>
-    );
-
-    act(() => {
-      dispatchBackgroundEvent({
-        total: 1,
-        dispatched: 0,
-        processing: 1,
-        completed: 0,
-        failed: 0,
-        active_jobs: [
-          {
-            job_id: 42,
-            printer_name: 'X1C-2',
-            source_name: 'Benchy.3mf',
-            upload_bytes: 102400,
-            upload_total_bytes: 102400,
-            upload_progress_pct: 100.0,
-          },
-        ],
-      });
-    });
-
-    // The byte-count line should be replaced with the awaiting-printer text.
-    expect(container.textContent).toContain('Awaiting printer');
-    // And the original bytes-progressed format must not be visible at the
-    // same time — that is the "stuck at 100%" symptom we are fixing.
-    expect(container.textContent).not.toContain('100.0%');
-
-    // Bar gets the pulse class when in this state.
-    const bar = container.querySelector('.animate-pulse');
-    expect(bar).not.toBeNull();
-  });
-
-  it('still shows the byte/percent counter while upload is mid-flight', () => {
-    const { container } = render(
-      <ToastProvider>
-        <div />
-      </ToastProvider>
-    );
-
-    act(() => {
-      dispatchBackgroundEvent({
-        total: 1,
-        dispatched: 0,
-        processing: 1,
-        completed: 0,
-        failed: 0,
-        active_jobs: [
-          {
-            job_id: 7,
-            printer_name: 'X1C-2',
-            source_name: 'Benchy.3mf',
-            upload_bytes: 51200,
-            upload_total_bytes: 102400,
-            upload_progress_pct: 50.0,
-          },
-        ],
-      });
-    });
-
-    expect(container.textContent).toContain('50.0%');
-    expect(container.textContent).not.toContain('Awaiting printer');
-    expect(container.querySelector('.animate-pulse')).toBeNull();
-  });
-});
-
 describe('ToastContext viewport suppression', () => {
   // Verify the suppression gate hides the visible viewport
   // without affecting the underlying state machine.
@@ -196,8 +116,9 @@ describe('ToastContext viewport suppression', () => {
       </ToastProvider>
     );
 
-    // Toast viewport is the fixed-position container with bottom-4 right-20.
-    const findViewport = () => container.querySelector('div.fixed.bottom-4.right-20');
+    // Toast viewport is the fixed-position container; position is set via
+    // safe-area calc() (#2612) so match the stable data-testid, not classes.
+    const findViewport = () => container.querySelector('[data-testid="toast-viewport"]');
     expect(findViewport()?.className).not.toContain('hidden');
 
     act(() => {
@@ -217,5 +138,87 @@ describe('ToastContext viewport suppression', () => {
       getByTestId('suppress-off').click();
     });
     expect(findViewport()?.className).not.toContain('hidden');
+  });
+
+  it('caps every toast to the viewport width so it cannot run off-screen (#2612)', () => {
+    const { container, getByTestId } = render(
+      <ToastProvider>
+        <ViewportProbe />
+      </ToastProvider>
+    );
+
+    act(() => {
+      getByTestId('show-toast').click();
+    });
+
+    // The fixed-width dispatch toast (420px) overflowed the left edge of a
+    // phone in an installed PWA. Every toast now carries a viewport-relative
+    // max-width so it stays on-screen; pin it here.
+    const viewport = container.querySelector('[data-testid="toast-viewport"]');
+    const toast = viewport?.querySelector<HTMLElement>('div[style]');
+    expect(toast?.style.maxWidth).toContain('100vw');
+    expect(toast?.style.maxWidth).toContain('safe-area-inset-left');
+    expect(toast?.style.maxWidth).toContain('safe-area-inset-right');
+  });
+});
+
+describe('ToastContext auto-dismiss timing by type', () => {
+  // Errors and warnings carry more text than a success confirmation — a
+  // backend failure reason often runs to a couple of lines — so they hold
+  // for 6s while success/info keep the 3s default.
+  function TypedToastProbe({ type }: { type: 'success' | 'error' | 'warning' | 'info' }) {
+    const { showToast } = useToast();
+    return <button data-testid="show" onClick={() => showToast(`a ${type} message`, type)} />;
+  }
+
+  function showAndAdvance(
+    type: 'success' | 'error' | 'warning' | 'info',
+    ms: number,
+  ): boolean {
+    const { getByTestId, queryByText, unmount } = render(
+      <ToastProvider>
+        <TypedToastProbe type={type} />
+      </ToastProvider>
+    );
+    act(() => {
+      getByTestId('show').click();
+    });
+    // Present before any time passes, otherwise a "gone" assertion below
+    // would pass on a toast that never rendered.
+    expect(queryByText(`a ${type} message`)).not.toBeNull();
+    act(() => {
+      vi.advanceTimersByTime(ms);
+    });
+    const stillThere = queryByText(`a ${type} message`) !== null;
+    unmount();
+    return stillThere;
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('keeps error toasts up for 6s', () => {
+    // Just past the old 3s window — an error must still be readable here.
+    expect(showAndAdvance('error', 3100)).toBe(true);
+    expect(showAndAdvance('error', 5999)).toBe(true);
+    expect(showAndAdvance('error', 6000)).toBe(false);
+  });
+
+  it('keeps warning toasts up for 6s', () => {
+    expect(showAndAdvance('warning', 3100)).toBe(true);
+    expect(showAndAdvance('warning', 5999)).toBe(true);
+    expect(showAndAdvance('warning', 6000)).toBe(false);
+  });
+
+  it('leaves success and info toasts on the 3s default', () => {
+    expect(showAndAdvance('success', 2999)).toBe(true);
+    expect(showAndAdvance('success', 3000)).toBe(false);
+    expect(showAndAdvance('info', 2999)).toBe(true);
+    expect(showAndAdvance('info', 3000)).toBe(false);
   });
 });

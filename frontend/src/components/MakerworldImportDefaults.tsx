@@ -53,7 +53,7 @@ export function MakerworldImportDefaults() {
       <CardHeader>
         <h2 className="text-lg font-semibold text-white flex items-center gap-2">
           <Globe className="w-5 h-5 text-bambu-green" />
-          {t('modelImport.makerworldDefaultsTitle')}
+          {t('modelSources.makerworldDefaultsTitle')}
         </h2>
       </CardHeader>
       <CardContent>

@@ -42,6 +42,13 @@ class TokenType(str, Enum):
     PASSWORD_RESET = "password_reset"
     EMAIL_OTP_SETUP = "email_otp_setup"
     SLICER_DOWNLOAD = "slicer_download"
+    CONNECT_CODE = "connect_code"
+    # Written as bare strings where they are used; listed here so every kind is
+    # known (see test_token_outlived_session).
+    WEBSOCKET = "websocket"
+    CAMERA_STREAM = "camera_stream"
+    MEDIA = "media"
+    REVOKED_JTI = "revoked_jti"  # the logout list, not a credential
 
 
 class EventType(str, Enum):
@@ -57,6 +64,8 @@ class EventType(str, Enum):
     LOGIN_IP = "login_ip"
     PASSWORD_RESET_SEND = "password_reset_send"
     PASSWORD_RESET_IP = "password_reset_ip"
+    CONNECT_TOKEN_CLIENT = "connect_client"
+    CONNECT_TOKEN_IP = "connect_ip"
 
 
 class AuthEphemeralToken(Base):
@@ -74,6 +83,10 @@ class AuthEphemeralToken(Base):
     # oidc_state: which provider initiated the flow
     provider_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
+    # camera_stream + websocket: the API key that minted the token, when one
+    # did, so the token carries that key's printer scope (#1727)
+    api_key_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     # oidc_state: replay-protection nonce embedded in the ID token
     nonce: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
@@ -84,9 +97,9 @@ class AuthEphemeralToken(Base):
     # (XSS can read JS memory but cannot read HttpOnly cookies).
     challenge_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
+        DateTime,
         nullable=False,
         default=lambda: datetime.now(timezone.utc),
     )
@@ -97,90 +110,30 @@ class AuthEphemeralToken(Base):
     # ------------------------------------------------------------------
 
     @classmethod
-    def new_pre_auth(
+    def new_connect_code(
         cls,
-        token: str,
-        username: str,
-        expires_at: datetime,
-        challenge_id: str | None = None,
-    ) -> AuthEphemeralToken:
-        """Create a pre-auth token (issued after password check, before 2FA)."""
-        return cls(
-            token=token,
-            token_type=TokenType.PRE_AUTH,
-            username=username,
-            expires_at=expires_at,
-            challenge_id=challenge_id,
-        )
-
-    @classmethod
-    def new_oidc_state(
-        cls,
-        token: str,
-        provider_id: int,
-        nonce: str,
-        code_verifier: str,
-        expires_at: datetime,
-    ) -> AuthEphemeralToken:
-        """Create an OIDC state token (CSRF protection + PKCE for authorize redirect)."""
-        return cls(
-            token=token,
-            token_type=TokenType.OIDC_STATE,
-            provider_id=provider_id,
-            nonce=nonce,
-            code_verifier=code_verifier,
-            expires_at=expires_at,
-        )
-
-    @classmethod
-    def new_oidc_exchange(
-        cls,
-        token: str,
-        username: str,
-        expires_at: datetime,
-    ) -> AuthEphemeralToken:
-        """Create an OIDC exchange token (bridge from callback to SPA)."""
-        return cls(
-            token=token,
-            token_type=TokenType.OIDC_EXCHANGE,
-            username=username,
-            expires_at=expires_at,
-        )
-
-    @classmethod
-    def new_password_reset(
-        cls,
-        token: str,
-        username: str,
-        expires_at: datetime,
-    ) -> AuthEphemeralToken:
-        """Create a password-reset token (single-use link emailed to the user)."""
-        return cls(
-            token=token,
-            token_type=TokenType.PASSWORD_RESET,
-            username=username,
-            expires_at=expires_at,
-        )
-
-    @classmethod
-    def new_email_otp_setup(
-        cls,
-        token: str,
-        username: str,
         code_hash: str,
+        username: str,
+        app_id: int,
+        code_challenge: str,
         expires_at: datetime,
+        created_at: datetime | None = None,
     ) -> AuthEphemeralToken:
-        """Create an email-OTP setup token.
+        """Create a connected-app authorization code.
 
-        The ``code_hash`` is stored in the ``nonce`` column (field reuse
-        documented inline in the enable_email_otp endpoint).
+        Only the SHA-256 of the code is stored (``token``), so a database read
+        does not yield a usable code. Field reuse: ``provider_id`` holds the
+        connected app's id and ``nonce`` the PKCE S256 challenge.
         """
         return cls(
-            token=token,
-            token_type=TokenType.EMAIL_OTP_SETUP,
+            token=code_hash,
+            token_type=TokenType.CONNECT_CODE,
             username=username,
-            nonce=code_hash,
+            provider_id=app_id,
+            nonce=code_challenge,
             expires_at=expires_at,
+            # When the minting session began (core/auth.session_dated), if given
+            **({"created_at": created_at} if created_at is not None else {}),
         )
 
 
@@ -193,7 +146,7 @@ class AuthRateLimitEvent(Base):
     username: Mapped[str] = mapped_column(String(150), nullable=False, index=True)
     event_type: Mapped[str] = mapped_column(String(20), nullable=False)  # '2fa_attempt' | 'email_send'
     occurred_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
+        DateTime,
         nullable=False,
         default=lambda: datetime.now(timezone.utc),
     )

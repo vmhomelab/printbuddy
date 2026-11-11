@@ -1,11 +1,12 @@
 """Tests for spool_tag_matcher service — RFID auto-assign and relationship loading."""
 
 import pytest
-from sqlalchemy import inspect
+from sqlalchemy import inspect, select
 
 from backend.app.models.color_catalog import ColorCatalogEntry
 from backend.app.models.spool import Spool
 from backend.app.models.spool_assignment import SpoolAssignment
+from backend.app.models.spool_catalog import SpoolCatalogEntry
 from backend.app.services.spool_tag_matcher import (
     auto_assign_spool,
     create_spool_from_tray,
@@ -96,6 +97,39 @@ async def test_create_spool_from_tray_weight_from_remain(db_session):
 
 
 @pytest.mark.asyncio
+async def test_create_spool_from_tray_inherits_material_number(db_session):
+    """A scanned refill of an already-numbered product arrives costed (#2870).
+
+    This is the one create path nobody watches: it fires from the AMS, not
+    from a request, and it hardcodes brand="Bambu Lab" in the lookup.
+    """
+    first = await create_spool_from_tray(db_session, SAMPLE_TRAY)
+    await db_session.commit()
+    assert first.material_number is None
+
+    first.material_number = "15"
+    await db_session.commit()
+
+    second = await create_spool_from_tray(db_session, SAMPLE_TRAY)
+    await db_session.commit()
+
+    assert second.material_number == "15"
+
+
+@pytest.mark.asyncio
+async def test_create_spool_from_tray_does_not_inherit_across_products(db_session):
+    """The number follows the product, not the brand (#2870)."""
+    donor = await create_spool_from_tray(db_session, SAMPLE_TRAY)
+    donor.material_number = "15"
+    await db_session.commit()
+
+    other = await create_spool_from_tray(db_session, {**SAMPLE_TRAY, "tray_type": "PETG"})
+    await db_session.commit()
+
+    assert other.material_number is None
+
+
+@pytest.mark.asyncio
 async def test_create_spool_from_tray_relationships_loaded(db_session):
     """Both k_profiles and assignments must be eagerly initialized.
 
@@ -109,6 +143,109 @@ async def test_create_spool_from_tray_relationships_loaded(db_session):
     assert _relationship_is_loaded(spool, "assignments"), "assignments not eagerly initialized"
     assert spool.k_profiles == []
     assert spool.assignments == []
+
+
+# -- create_spool_from_tray: swatch rendering ------------------------------
+#
+# `effect_type` and `extra_colors` drive how a roll is drawn in the inventory
+# and on the slot card. Nothing set either here, and the shipped colour
+# catalogue carries an effect on none of its rows, so every auto-created wood,
+# silk, sparkle and gradient roll came out as a flat disc.
+
+
+@pytest.mark.asyncio
+async def test_create_spool_from_tray_takes_effect_from_subtype(db_session):
+    """A wood-filled roll is drawn as wood, not as a flat disc.
+
+    The catalogue row that names the colour has no effect of its own -- none
+    of the shipped rows do -- so the subtype the printer reported is what the
+    swatch has to be read from.
+    """
+    db_session.add(
+        ColorCatalogEntry(
+            manufacturer="Bambu Lab",
+            color_name="Classic Birch",
+            hex_color="#918669",
+            material="PLA Wood",
+            is_default=True,
+        )
+    )
+    await db_session.flush()
+
+    spool = await create_spool_from_tray(
+        db_session,
+        {**SAMPLE_TRAY, "tray_sub_brands": "PLA Wood", "tray_color": "918669FF", "tray_id_name": "A16-G0"},
+    )
+
+    assert spool.subtype == "Wood"
+    assert spool.color_name == "Classic Birch"
+    assert spool.effect_type == "wood"
+
+
+@pytest.mark.asyncio
+async def test_create_spool_from_tray_prefers_the_catalogue_row_over_the_subtype(db_session):
+    """A catalogue row that does carry rendering columns is what gets used.
+
+    This is the same row the spool form's colour picker reads, and it hands
+    both columns to a spool a user adds by hand; taking only the name here is
+    what made an RFID roll render differently from a hand-added one.
+    """
+    db_session.add(
+        ColorCatalogEntry(
+            manufacturer="Bambu Lab",
+            color_name="Dawn Radiance",
+            hex_color="#FF0000",
+            material="PLA Basic",
+            extra_colors="00ff00,0000ff",
+            effect_type="marble",
+            is_default=True,
+        )
+    )
+    await db_session.flush()
+
+    spool = await create_spool_from_tray(
+        db_session,
+        {**SAMPLE_TRAY, "tray_color": "FF0000FF"},
+    )
+
+    # Subtype "Basic" names no effect, so the catalogue is the only source.
+    assert spool.subtype == "Basic"
+    assert spool.effect_type == "marble"
+    assert spool.extra_colors == "00ff00,0000ff"
+
+
+@pytest.mark.asyncio
+async def test_create_spool_from_tray_leaves_a_plain_subtype_alone(db_session):
+    """Basic, Tough, CF and the rest name no effect and must not invent one."""
+    spool = await create_spool_from_tray(db_session, SAMPLE_TRAY)
+
+    assert spool.subtype == "Basic"
+    assert spool.effect_type is None
+    assert spool.extra_colors is None
+
+
+@pytest.mark.asyncio
+async def test_create_spool_from_tray_reads_silk_plus_as_silk(db_session):
+    """Silk+ is the Silk finish with a plus on the product name."""
+    spool = await create_spool_from_tray(
+        db_session,
+        {**SAMPLE_TRAY, "tray_sub_brands": "PLA Silk+"},
+    )
+
+    assert spool.subtype == "Silk+"
+    assert spool.effect_type == "silk"
+
+
+@pytest.mark.asyncio
+async def test_create_spool_from_tray_reads_a_gradient_roll_as_a_gradient(db_session):
+    """The M*/T* upgrade already rewrites the subtype; the effect follows it."""
+    spool = await create_spool_from_tray(
+        db_session,
+        {**SAMPLE_TRAY, "tray_id_name": "A00-M0"},
+    )
+
+    assert spool.subtype == "Gradient"
+    assert spool.effect_type == "gradient"
 
 
 # -- get_spool_by_tag -------------------------------------------------------
@@ -300,6 +437,156 @@ async def test_get_spool_by_tag_no_false_positive_different_suffix(db_session):
     # Scan with different suffix (only first char is same) — should NOT match
     found = await get_spool_by_tag(db_session, "AABBCCDD11223355", "")
     assert found is None, "Should not match when suffix differs"
+
+
+# -- get_spool_by_tag: cascade level 1 links (#3258) ------------------------
+#
+# SpoolBuddy daemons before #3258 read only cascade level 1 and reported the
+# NTAG 04ECE673D32A81 as 8804ECE6 (cascade tag 88 + its first three bytes).
+
+NTAG_UID = "04ECE673D32A81"
+NTAG_LEVEL1 = "8804ECE6"
+
+
+async def _add_spool(db_session, tag_uid: str, archived: bool = False) -> int:
+    from datetime import datetime
+
+    spool = Spool(
+        material="PLA",
+        tag_uid=tag_uid,
+        label_weight=1000,
+        core_weight=250,
+        archived_at=datetime.now() if archived else None,
+    )
+    db_session.add(spool)
+    await db_session.commit()
+    return spool.id
+
+
+async def _stored_tag_uid(db_session, spool_id: int) -> str | None:
+    db_session.expire_all()
+    return (await db_session.execute(select(Spool.tag_uid).where(Spool.id == spool_id))).scalar_one()
+
+
+@pytest.mark.asyncio
+async def test_get_spool_by_tag_full_uid_rewrites_cascade_level_1_link(db_session):
+    """A full read finds the spool linked by a level-1 read and stores the full UID."""
+    spool_id = await _add_spool(db_session, NTAG_LEVEL1)
+
+    found = await get_spool_by_tag(db_session, NTAG_UID, "")
+    await db_session.commit()
+
+    assert found is not None
+    assert found.id == spool_id
+    assert await _stored_tag_uid(db_session, spool_id) == NTAG_UID
+    # The next read is an exact match.
+    assert (await get_spool_by_tag(db_session, NTAG_UID, "")).id == spool_id
+
+
+@pytest.mark.asyncio
+async def test_get_spool_by_tag_full_uid_two_cascade_level_1_links_no_match(db_session):
+    """Two spools linked as 8804ECE6 may hold two different tags: no guess, nothing rewritten."""
+    first_id = await _add_spool(db_session, NTAG_LEVEL1)
+    second_id = await _add_spool(db_session, NTAG_LEVEL1)
+
+    found = await get_spool_by_tag(db_session, NTAG_UID, "")
+    await db_session.commit()
+
+    assert found is None
+    assert await _stored_tag_uid(db_session, first_id) == NTAG_LEVEL1
+    assert await _stored_tag_uid(db_session, second_id) == NTAG_LEVEL1
+
+
+@pytest.mark.asyncio
+async def test_get_spool_by_tag_full_uid_exact_match_wins_over_cascade_level_1_link(db_session):
+    exact_id = await _add_spool(db_session, NTAG_UID)
+    linked_id = await _add_spool(db_session, NTAG_LEVEL1)
+
+    found = await get_spool_by_tag(db_session, NTAG_UID, "")
+    await db_session.commit()
+
+    assert found.id == exact_id
+    assert await _stored_tag_uid(db_session, linked_id) == NTAG_LEVEL1
+
+
+@pytest.mark.asyncio
+async def test_get_spool_by_tag_cascade_level_1_skips_archived(db_session):
+    """An archived spool with the same link neither matches nor makes the match ambiguous."""
+    archived_id = await _add_spool(db_session, NTAG_LEVEL1, archived=True)
+    active_id = await _add_spool(db_session, NTAG_LEVEL1)
+
+    found = await get_spool_by_tag(db_session, NTAG_UID, "")
+    await db_session.commit()
+
+    assert found.id == active_id
+    assert await _stored_tag_uid(db_session, archived_id) == NTAG_LEVEL1
+
+
+@pytest.mark.asyncio
+async def test_get_spool_by_tag_ten_byte_uid_rewrites_cascade_level_1_link(db_session):
+    spool_id = await _add_spool(db_session, "88041122")
+
+    found = await get_spool_by_tag(db_session, "04112233445566778899", "")
+    await db_session.commit()
+
+    assert found.id == spool_id
+    # tag_uid keeps the last 16 hex characters, as every lookup normalizes it.
+    assert await _stored_tag_uid(db_session, spool_id) == "2233445566778899"
+    assert (await get_spool_by_tag(db_session, "04112233445566778899", "")).id == spool_id
+
+
+@pytest.mark.asyncio
+async def test_get_spool_by_tag_cascade_level_1_read_finds_full_uid(db_session):
+    """A daemon not updated yet still finds a spool linked by the full UID."""
+    spool_id = await _add_spool(db_session, NTAG_UID)
+
+    found = await get_spool_by_tag(db_session, NTAG_LEVEL1, "")
+    await db_session.commit()
+
+    assert found.id == spool_id
+    assert await _stored_tag_uid(db_session, spool_id) == NTAG_UID
+
+
+@pytest.mark.asyncio
+async def test_get_spool_by_tag_cascade_level_1_read_with_its_sak_finds_full_uid(db_session):
+    """An old daemon reports the SAK of level 1, which says the UID goes on."""
+    spool_id = await _add_spool(db_session, NTAG_UID)
+
+    found = await get_spool_by_tag(db_session, NTAG_LEVEL1, "", sak=0x04)
+
+    assert found.id == spool_id
+
+
+@pytest.mark.asyncio
+async def test_get_spool_by_tag_complete_uid_beginning_with_88_is_no_level_1_read(db_session):
+    """A 4-byte UID that begins with 88 (a non-ISO clone card) ended there: no fallback."""
+    await _add_spool(db_session, NTAG_UID)
+
+    assert await get_spool_by_tag(db_session, NTAG_LEVEL1, "", sak=0x08) is None
+
+
+@pytest.mark.asyncio
+async def test_get_spool_by_tag_cascade_level_1_read_two_full_uids_no_match(db_session):
+    """Two stored 7-byte UIDs beginning with the same three bytes: no guess."""
+    await _add_spool(db_session, NTAG_UID)
+    await _add_spool(db_session, "04ECE6AABBCCDD")
+
+    assert await get_spool_by_tag(db_session, NTAG_LEVEL1, "") is None
+
+
+@pytest.mark.asyncio
+async def test_get_spool_by_tag_cascade_level_1_read_ignores_other_uid_lengths(db_session):
+    """Only a stored 7-byte UID can be what a level-1 read begins."""
+    await _add_spool(db_session, "04ECE673D32A8100")
+
+    assert await get_spool_by_tag(db_session, NTAG_LEVEL1, "") is None
+
+
+@pytest.mark.asyncio
+async def test_get_spool_by_tag_four_byte_uid_ignores_cascade_level_1_links(db_session):
+    await _add_spool(db_session, "8804ECE6")
+
+    assert await get_spool_by_tag(db_session, "04ECE673", "") is None
 
 
 # -- auto_assign_spool (SpoolAssignment creation) ---------------------------
@@ -1241,6 +1528,147 @@ async def test_find_matching_untagged_gradient_no_match_basic(db_session):
     assert found is None
 
 
+# -- core weight catalog lookup (#2909) --------------------------------------
+
+
+async def _seed_bambu_spool_catalog(db_session):
+    """Seed the three Bambu Lab rows in DEFAULT_SPOOL_CATALOG order.
+
+    High Temp is inserted first on purpose: that is the row the old prefix query
+    returned, so any test that expects 250 here would have failed before the fix.
+    """
+    for name, weight in (
+        ("Bambu Lab - Plastic High Temp", 216),
+        ("Bambu Lab - Plastic Low Temp", 250),
+        ("Bambu Lab - Plastic White", 253),
+    ):
+        db_session.add(SpoolCatalogEntry(name=name, weight=weight, is_default=True))
+    await db_session.flush()
+
+
+@pytest.mark.asyncio
+async def test_core_weight_matches_low_temp_row_not_first_bambu_row(db_session):
+    """Regression for #2909 — the lookup must select 'Bambu Lab - Plastic Low Temp'
+    by name, not take whichever 'Bambu Lab%' row the database returns first.
+
+    Before the fix this asserted 216 (High Temp), because the query had neither a
+    matching step nor an ORDER BY. core_weight is the tare in a scale weigh
+    flow, so the 34 g error propagated into every scale weighing of an RFID-created
+    spool.
+    """
+    await _seed_bambu_spool_catalog(db_session)
+
+    spool = await create_spool_from_tray(db_session, SAMPLE_TRAY)
+
+    assert spool.core_weight == 250
+
+
+@pytest.mark.asyncio
+async def test_core_weight_records_the_catalog_row_it_used(db_session):
+    """core_weight_catalog_id records which catalog row supplied the weight.
+
+    The RFID path never set it, and the spool form does not leave that blank: it
+    auto-selects whenever exactly one catalog row matches the weight, and shows
+    the first matching row's name otherwise. So an arbitrary tare was displayed
+    as a named row and written back as that row's id on the next save of any
+    field -- a wrong number laundered into what reads like a deliberate pick.
+    Naming the row here is what stops the form having to infer it.
+    """
+    await _seed_bambu_spool_catalog(db_session)
+
+    spool = await create_spool_from_tray(db_session, SAMPLE_TRAY)
+
+    low_temp = (
+        await db_session.execute(
+            select(SpoolCatalogEntry).where(SpoolCatalogEntry.name == "Bambu Lab - Plastic Low Temp")
+        )
+    ).scalar_one()
+    assert spool.core_weight_catalog_id == low_temp.id
+
+
+@pytest.mark.asyncio
+async def test_core_weight_honours_a_user_edited_catalog_row(db_session):
+    """The catalog is user-editable, and someone who has weighed their own empty
+    spool should get their number rather than the shipped default.
+    """
+    await _seed_bambu_spool_catalog(db_session)
+    row = (
+        await db_session.execute(
+            select(SpoolCatalogEntry).where(SpoolCatalogEntry.name == "Bambu Lab - Plastic Low Temp")
+        )
+    ).scalar_one()
+    row.weight = 244
+    await db_session.flush()
+
+    spool = await create_spool_from_tray(db_session, SAMPLE_TRAY)
+
+    assert spool.core_weight == 244
+    assert spool.core_weight_catalog_id == row.id
+
+
+@pytest.mark.asyncio
+async def test_core_weight_falls_back_to_default_when_row_is_missing(db_session):
+    """A renamed or deleted row must fall back to the 250 g constant, not to some
+    other Bambu Lab row — falling back to a row is how the arbitrary pick started.
+    """
+    db_session.add(SpoolCatalogEntry(name="Bambu Lab - Plastic High Temp", weight=216, is_default=True))
+    await db_session.flush()
+
+    spool = await create_spool_from_tray(db_session, SAMPLE_TRAY)
+
+    assert spool.core_weight == 250
+    assert spool.core_weight_catalog_id is None
+
+
+@pytest.mark.asyncio
+async def test_core_weight_is_deterministic_when_the_name_is_duplicated(db_session):
+    """The catalogue is user-editable and nothing stops two rows sharing a name.
+
+    Without order_by(id).limit(1) this is not merely non-deterministic:
+    scalar_one_or_none() raises MultipleResultsFound, so an AMS read would fail
+    outright rather than pick badly. The lowest id wins, which is the same
+    deterministic tiebreak the colour catalogue lookup above already uses.
+    """
+    await _seed_bambu_spool_catalog(db_session)
+    first = (
+        await db_session.execute(
+            select(SpoolCatalogEntry).where(SpoolCatalogEntry.name == "Bambu Lab - Plastic Low Temp")
+        )
+    ).scalar_one()
+    db_session.add(SpoolCatalogEntry(name="Bambu Lab - Plastic Low Temp", weight=999, is_default=False))
+    await db_session.flush()
+
+    spool = await create_spool_from_tray(db_session, SAMPLE_TRAY)
+
+    assert spool.core_weight == 250
+    assert spool.core_weight_catalog_id == first.id
+
+
+@pytest.mark.asyncio
+async def test_core_weight_matches_the_row_name_case_insensitively(db_session):
+    """Matching mirrors the colour catalogue lookup above, which compares through
+    func.upper(). A user who has retyped the row's name in different case still
+    gets their row rather than silently dropping to the fallback constant.
+    """
+    db_session.add(SpoolCatalogEntry(name="bambu lab - plastic low temp", weight=248, is_default=False))
+    await db_session.flush()
+
+    spool = await create_spool_from_tray(db_session, SAMPLE_TRAY)
+
+    assert spool.core_weight == 248
+
+
+@pytest.mark.asyncio
+async def test_core_weight_falls_back_on_empty_catalog(db_session):
+    """No catalog at all (fresh install before seeding) still produces a usable
+    spool rather than raising.
+    """
+    spool = await create_spool_from_tray(db_session, SAMPLE_TRAY)
+
+    assert spool.core_weight == 250
+    assert spool.core_weight_catalog_id is None
+
+
 # -- auto_assign_spool: live cali_idx fallback (P9-3) -------------------------
 
 
@@ -1346,8 +1774,12 @@ async def test_auto_assign_kprofile_takes_priority_over_live_cali_idx(db_session
 
     # Use a fully-mocked spool so SA relationship instrumentation is bypassed.
     # auto_assign_spool only reads attributes — it never persists via the spool.
+    # The assignment it writes still points at a real spool row.
+    row = Spool(material="PLA")
+    db_session.add(row)
+    await db_session.flush()
     spool = MagicMock(spec=Spool)
-    spool.id = 999
+    spool.id = row.id
     spool.material = "PLA"
     spool.slicer_filament = None
     spool.k_profiles = [kp_mock]
@@ -1365,3 +1797,185 @@ async def test_auto_assign_kprofile_takes_priority_over_live_cali_idx(db_session
     mqtt_mock.extrusion_cali_sel.assert_called_once()
     call_kwargs = mqtt_mock.extrusion_cali_sel.call_args[1]
     assert call_kwargs["cali_idx"] == 7  # stored profile, not 99
+
+
+# -- slot_preset_mappings reconciliation on RFID auto-assign ----------------
+#
+# The slot card on PrintersPage shows slot_preset_mappings.preset_name first
+# in its fallback chain (it's the user-configured override for a slot). When a
+# new spool gets auto-assigned via RFID the manual-assign path used to be the
+# only one that kept this row in sync, so the slot card kept showing the
+# previous spool's preset name until the user opened Configure Slot manually.
+
+
+@pytest.mark.asyncio
+async def test_auto_assign_overwrites_stale_slot_preset_mapping(db_session, printer_factory):
+    """Pre-seed a slot_preset_mappings row from a previous spool, run RFID
+    auto-assign with a different filament, and verify the row reflects the
+    NEW spool's preset (not the stale one). The bug being pinned: the user's
+    AMS-B3 (PLA-CF) kept showing 'Bambu PLA Silk+' because the row was last
+    written when the PLA Silk+ spool was loaded back in March.
+    """
+    from unittest.mock import MagicMock
+
+    from sqlalchemy import select as sa_select
+
+    from backend.app.models.slot_preset import SlotPresetMapping
+
+    printer = await printer_factory()
+    db_session.add(
+        SlotPresetMapping(
+            printer_id=printer.id,
+            ams_id=1,
+            tray_id=2,
+            preset_id="GFSA06_09",
+            preset_name="Bambu PLA Silk+",
+            preset_source="cloud",
+        )
+    )
+    await db_session.commit()
+
+    spool = Spool(
+        material="PLA-CF",
+        subtype="CF",
+        brand="Bambu Lab",
+        label_weight=1000,
+        core_weight=250,
+        slicer_filament="GFA50",
+        slicer_filament_name="Bambu PLA-CF",
+        rgba="951E23FF",
+    )
+    spool.k_profiles = []
+    spool.assignments = []
+    db_session.add(spool)
+    await db_session.flush()
+
+    mock_pm = MagicMock()
+    mock_pm.get_status.return_value = None
+    mock_pm.get_client.return_value = None
+
+    await auto_assign_spool(
+        printer_id=printer.id,
+        ams_id=1,
+        tray_id=2,
+        spool=spool,
+        printer_manager=mock_pm,
+        db=db_session,
+        tray_info_idx="GFA50",
+    )
+    await db_session.commit()
+
+    result = await db_session.execute(
+        sa_select(SlotPresetMapping).where(
+            SlotPresetMapping.printer_id == printer.id,
+            SlotPresetMapping.ams_id == 1,
+            SlotPresetMapping.tray_id == 2,
+        )
+    )
+    mapping = result.scalar_one()
+    assert mapping.preset_name == "Bambu PLA-CF"
+    assert mapping.preset_id == "GFSA50"
+    assert mapping.preset_source == "cloud"
+
+
+@pytest.mark.asyncio
+async def test_auto_assign_inserts_slot_preset_when_absent(db_session, printer_factory):
+    """No pre-existing row → auto-assign inserts one. Pairs with the upsert
+    case to keep both branches of the helper covered from this path."""
+    from unittest.mock import MagicMock
+
+    from sqlalchemy import select as sa_select
+
+    from backend.app.models.slot_preset import SlotPresetMapping
+
+    printer = await printer_factory()
+    spool = Spool(
+        material="PLA-CF",
+        brand="Bambu Lab",
+        label_weight=1000,
+        core_weight=250,
+        slicer_filament="GFA50",
+        slicer_filament_name="Bambu PLA-CF",
+    )
+    spool.k_profiles = []
+    spool.assignments = []
+    db_session.add(spool)
+    await db_session.flush()
+
+    mock_pm = MagicMock()
+    mock_pm.get_status.return_value = None
+    mock_pm.get_client.return_value = None
+
+    await auto_assign_spool(
+        printer_id=printer.id,
+        ams_id=0,
+        tray_id=3,
+        spool=spool,
+        printer_manager=mock_pm,
+        db=db_session,
+        tray_info_idx="GFA50",
+    )
+    await db_session.commit()
+
+    result = await db_session.execute(
+        sa_select(SlotPresetMapping).where(
+            SlotPresetMapping.printer_id == printer.id,
+            SlotPresetMapping.ams_id == 0,
+            SlotPresetMapping.tray_id == 3,
+        )
+    )
+    mapping = result.scalar_one()
+    assert mapping.preset_id == "GFSA50"
+    assert mapping.preset_name == "Bambu PLA-CF"
+
+
+@pytest.mark.asyncio
+async def test_auto_assign_local_preset_uses_local_prefix(db_session, printer_factory):
+    """Spools whose slicer_filament is a numeric local-preset id get saved
+    with a `local_{n}` preset_id (matches the manual-assign path's shape).
+    """
+    from unittest.mock import MagicMock
+
+    from sqlalchemy import select as sa_select
+
+    from backend.app.models.slot_preset import SlotPresetMapping
+
+    printer = await printer_factory()
+    spool = Spool(
+        material="PLA",
+        brand="Bambu Lab",
+        label_weight=1000,
+        core_weight=250,
+        slicer_filament="50",  # numeric → local preset
+        slicer_filament_name="My Custom PLA",
+    )
+    spool.k_profiles = []
+    spool.assignments = []
+    db_session.add(spool)
+    await db_session.flush()
+
+    mock_pm = MagicMock()
+    mock_pm.get_status.return_value = None
+    mock_pm.get_client.return_value = None
+
+    await auto_assign_spool(
+        printer_id=printer.id,
+        ams_id=0,
+        tray_id=0,
+        spool=spool,
+        printer_manager=mock_pm,
+        db=db_session,
+    )
+    await db_session.commit()
+
+    result = await db_session.execute(
+        sa_select(SlotPresetMapping).where(
+            SlotPresetMapping.printer_id == printer.id,
+            SlotPresetMapping.ams_id == 0,
+            SlotPresetMapping.tray_id == 0,
+        )
+    )
+    mapping = result.scalar_one()
+    assert mapping.preset_id == "local_50"
+    assert mapping.preset_source == "local"
+    assert mapping.preset_name == "My Custom PLA"
