@@ -45,9 +45,10 @@ reportlab>=4.0.0
 
 # STL Thumbnail Generation
 trimesh>=4.0.0
-# trimesh needs these to read 3MF (plain-3MF thumbnails)
+# trimesh's 3MF exporter loads these lazily; declare them so Docker/CI
+# images that install requirements.txt can export/import plain 3MFs.
 networkx>=3.0
-lxml>=5.0
+lxml>=5.0.0
 matplotlib>=3.8.0
 fast-simplification>=0.1.0
 

@@ -135,10 +135,43 @@ def patched_client(vault):
 
 @pytest.fixture
 def library_tmp(tmp_path, monkeypatch):
-    from backend.app.core.config import settings as app_settings
+    """Point library file/thumbnail helpers at an isolated tmp tree.
 
+    Patching ``settings.base_dir`` / ``archive_dir`` alone is not enough in
+    the Docker test image: helpers can still resolve through the image's
+    ``DATA_DIR=/app/data``. Bind the directory helpers on both the library
+    module and gyroidvault's imported names so every write lands under
+    ``tmp_path``.
+    """
+    from backend.app.core.config import settings as app_settings
+    import backend.app.api.routes.gyroidvault as gyroidvault_routes
+    import backend.app.api.routes.library as library_routes
+
+    archive = tmp_path / "archive"
+    files_dir = archive / "library" / "files"
+    thumbs_dir = archive / "library" / "thumbnails"
+    files_dir.mkdir(parents=True, exist_ok=True)
+    thumbs_dir.mkdir(parents=True, exist_ok=True)
+
+    def _library_dir() -> Path:
+        return archive / "library"
+
+    def _files_dir() -> Path:
+        return files_dir
+
+    def _thumbs_dir() -> Path:
+        return thumbs_dir
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setattr(app_settings, "base_dir", tmp_path)
-    monkeypatch.setattr(app_settings, "archive_dir", tmp_path / "archive")
+    monkeypatch.setattr(app_settings, "archive_dir", archive)
+    monkeypatch.setattr(library_routes, "app_settings", app_settings)
+    monkeypatch.setattr(library_routes, "get_library_dir", _library_dir)
+    monkeypatch.setattr(library_routes, "get_library_files_dir", _files_dir)
+    monkeypatch.setattr(library_routes, "get_library_thumbnails_dir", _thumbs_dir)
+    # gyroidvault imports these names directly — patch the bindings too.
+    monkeypatch.setattr(gyroidvault_routes, "get_library_thumbnails_dir", _thumbs_dir)
+    monkeypatch.setattr(gyroidvault_routes, "new_managed_library_path", library_routes.new_managed_library_path)
     return tmp_path
 
 
@@ -587,6 +620,8 @@ class TestImportThumbnails:
     async def test_plain_3mf_gets_rendered_thumbnail(self, async_client, db_session, patched_client, library_tmp):
         trimesh = pytest.importorskip("trimesh")
         pytest.importorskip("matplotlib")
+        pytest.importorskip("networkx")  # required by trimesh's 3MF exporter
+        pytest.importorskip("lxml")
         three_mf = Path(library_tmp) / "src.3mf"
         trimesh.creation.box((40, 30, 20)).export(three_mf)  # no Metadata/*.png inside
 
