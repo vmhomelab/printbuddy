@@ -490,12 +490,12 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       {children}
 
       {/* Toast Container — to the left of the bug-report bubble (bottom-4 right-4 w-12). */}
-      <div className={`fixed bottom-4 right-20 z-[60] flex flex-col items-end gap-2 ${viewportSuppressed ? 'hidden' : ''}`}>
+      <div className={`toast-viewport fixed bottom-[calc(4.5rem+env(safe-area-inset-bottom,0px))] left-4 right-4 sm:left-auto sm:bottom-4 sm:right-20 z-[60] flex flex-col items-stretch sm:items-end gap-2 ${viewportSuppressed ? 'hidden' : ''}`}>
         {toasts.map((toast) => (
           <div
             key={toast.id}
             className={`rounded-lg border shadow-lg backdrop-blur-sm animate-slide-in ${bgColors[toast.type]} ${
-              toast.dispatchData ? 'w-[420px] p-3' : 'flex items-center gap-3 px-4 py-3'
+              toast.dispatchData ? 'w-full sm:w-[420px] p-3' : 'flex items-center gap-3 px-4 py-3'
             }`}
           >
             {toast.dispatchData ? (

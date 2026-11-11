@@ -578,10 +578,10 @@ export function Layout() {
 
       {/* Compact Header */}
       {isSidebarCompact && !sidebarHidden && (
-        <header className="fixed top-0 left-0 right-0 z-40 h-14 bg-bambu-dark-secondary border-b border-bambu-dark-tertiary flex items-center px-4">
+        <header className="mobile-topbar fixed top-0 left-0 right-0 z-40 bg-bambu-dark-secondary/95 backdrop-blur border-b border-bambu-dark-tertiary flex items-center px-4">
           <button
             onClick={() => setMobileDrawerOpen(true)}
-            className="p-2 -ml-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors"
+            className="flex h-11 w-11 -ml-2 items-center justify-center rounded-lg hover:bg-bambu-dark-tertiary active:bg-bambu-dark-tertiary transition-colors"
             aria-label="Open menu"
           >
             <Menu className="w-6 h-6 text-white" />
@@ -595,9 +595,17 @@ export function Layout() {
             <img
               src={appAssetPath(mode === 'dark' ? '/img/printbuddy_logo_dark.png' : '/img/printbuddy_logo_light.png')}
               alt="Printbuddy"
-              className="h-8"
+              className="h-12 w-auto"
             />
           </NavLink>
+          <button
+            type="button"
+            onClick={toggleMode}
+            className="ml-auto flex h-11 w-11 -mr-2 items-center justify-center rounded-lg text-bambu-gray-light hover:bg-bambu-dark-tertiary active:bg-bambu-dark-tertiary transition-colors"
+            aria-label={mode === 'dark' ? 'Light mode' : 'Dark mode'}
+          >
+            {mode === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
+          </button>
         </header>
       )}
 
@@ -614,7 +622,7 @@ export function Layout() {
       <aside
         className={`bg-bambu-dark-secondary border-r border-bambu-dark-tertiary flex flex-col transition-all duration-300 ${
           isSidebarCompact
-            ? `fixed inset-y-0 left-0 z-50 w-72 transform ${mobileDrawerOpen ? 'translate-x-0' : '-translate-x-full'}`
+            ? `mobile-drawer fixed inset-y-0 left-0 z-50 w-72 max-w-[85vw] transform ${mobileDrawerOpen ? 'translate-x-0' : '-translate-x-full'}`
             : `fixed inset-y-0 left-0 z-30 ${sidebarExpanded ? 'w-64' : 'w-16'}`
         }`}
       >
@@ -1017,7 +1025,7 @@ export function Layout() {
 
       {/* Main content */}
       <main className={`flex-1 bg-bambu-dark overflow-auto transition-all duration-300 ${
-        sidebarHidden ? 'ml-0 mt-0' : isSidebarCompact ? 'mt-14' : sidebarExpanded ? 'ml-64' : 'ml-16'
+        sidebarHidden ? 'ml-0 mt-0' : isSidebarCompact ? 'mobile-main min-w-0' : sidebarExpanded ? 'ml-64' : 'ml-16'
       }`}>
         {/* Debug logging indicator */}
         {debugLoggingState?.enabled && (

@@ -222,7 +222,7 @@ export function BugReportBubble() {
       {/* Floating bubble */}
       <button
         onClick={handleOpen}
-        className="fixed bottom-4 right-4 z-40 w-12 h-12 rounded-full bg-red-500 hover:bg-red-600 text-white shadow-lg hover:shadow-xl transition-all duration-200 hover:scale-110 flex items-center justify-center"
+        className="floating-safe-bottom fixed right-4 z-40 w-11 h-11 sm:w-12 sm:h-12 rounded-full bg-red-500 hover:bg-red-600 text-white shadow-lg hover:shadow-xl transition-all duration-200 hover:scale-110 flex items-center justify-center"
         title={t('bugReport.title')}
       >
         <Bug className="w-5 h-5" />
@@ -232,7 +232,7 @@ export function BugReportBubble() {
       {isOpen && (
         <div
           id="bug-report-modal"
-          className="fixed bottom-20 right-4 z-50 w-full max-w-md"
+          className="fixed bottom-20 left-4 right-4 z-50 sm:left-auto sm:w-full sm:max-w-md"
           onPaste={handlePaste}
         >
           <div

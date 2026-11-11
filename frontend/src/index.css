@@ -438,3 +438,64 @@ body {
 .calendar-scroll::-webkit-scrollbar-thumb:hover {
   background-color: color-mix(in srgb, var(--text-muted) 80%, transparent);
 }
+
+/* ============================================
+   MOBILE / SMARTPHONE LAYOUT
+   ============================================ */
+
+:root {
+  --mobile-topbar-height: 3.5rem;
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Fixed top bar: grows by the notch / status-bar inset so it stays fully
+   visible in the installed PWA (status-bar-style black-translucent). */
+.mobile-topbar {
+  height: calc(var(--mobile-topbar-height) + var(--safe-top));
+  padding-top: var(--safe-top);
+  padding-left: calc(1rem + var(--safe-left));
+  padding-right: calc(1rem + var(--safe-right));
+}
+
+.mobile-drawer {
+  padding-top: var(--safe-top);
+  padding-bottom: var(--safe-bottom);
+  padding-left: var(--safe-left);
+  overscroll-behavior: contain;
+}
+
+/* Main content below the fixed top bar; extra bottom room so the floating
+   bug-report bubble never covers the last row of content. */
+.mobile-main {
+  margin-top: calc(var(--mobile-topbar-height) + var(--safe-top));
+  padding-left: var(--safe-left);
+  padding-right: var(--safe-right);
+  padding-bottom: calc(4.5rem + var(--safe-bottom));
+}
+
+/* Anchor targets (scrollIntoView) should not land under the fixed top bar */
+@media (max-width: 1143px) {
+  html {
+    scroll-padding-top: calc(var(--mobile-topbar-height) + var(--safe-top) + 0.5rem);
+  }
+}
+
+@media (max-width: 640px) {
+  /* Avoid rubber-band scroll chaining from modals/drawers into the page. */
+  body {
+    overscroll-behavior-y: none;
+  }
+}
+
+.floating-safe-bottom {
+  bottom: calc(1rem + var(--safe-bottom));
+}
