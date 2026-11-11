@@ -735,9 +735,6 @@ class NotificationService:
                 return thread_id
         return None
 
-    async def _send_telegram(self, config: dict, message: str, image_data: bytes | None = None) -> tuple[bool, str]:
-        """Send notification via Telegram bot."""
-
     async def _send_telegram(
         self,
         config: dict,

@@ -184,7 +184,6 @@ class FileResponse(BaseModel):
     # read-only import provenance (MakerWorld) shown next to it.
     external_url: str | None = None
     photos: list[str] = []
-    source_url: str | None = None
 
     source_type: str | None = None
     source_url: str | None = None
