@@ -143,9 +143,9 @@ def library_tmp(tmp_path, monkeypatch):
     module and gyroidvault's imported names so every write lands under
     ``tmp_path``.
     """
-    from backend.app.core.config import settings as app_settings
     import backend.app.api.routes.gyroidvault as gyroidvault_routes
     import backend.app.api.routes.library as library_routes
+    from backend.app.core.config import settings as app_settings
 
     archive = tmp_path / "archive"
     files_dir = archive / "library" / "files"
