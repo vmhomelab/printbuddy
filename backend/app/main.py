@@ -6213,6 +6213,16 @@ async def lifespan(app: FastAPI):
     # Start printer runtime tracking
     start_runtime_tracking()
 
+    # Load configured access addresses into the CSP img-src allow-list
+    try:
+        from backend.app.api.routes.settings import get_setting
+        from backend.app.services.access_addresses import update_csp_origins
+
+        async with async_session() as db:
+            update_csp_origins(await get_setting(db, "access_addresses"))
+    except Exception as e:
+        logging.getLogger(__name__).warning("Could not load access addresses: %s", e)
+
     # Start camera stream orphan cleanup
     start_camera_cleanup()
 
@@ -6509,11 +6519,16 @@ async def security_headers_middleware(request, call_next):
             "base-uri 'self'; " + _frame_ancestors("'none'")
         )
     else:
+        # Configured access addresses (Settings → Network) may be probed with a
+        # tiny image request so the UI can show which connections are reachable.
+        from backend.app.services.access_addresses import get_csp_origins
+
+        access_img_src = "".join(f" {o}" for o in get_csp_origins())
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
             f"script-src 'self' 'nonce-{csp_nonce}'; "
             "style-src 'self' 'unsafe-inline'; "
-            "img-src 'self' data: blob:; "
+            f"img-src 'self' data: blob:{access_img_src}; "
             "media-src 'self' blob:; "
             "connect-src 'self' ws: wss:; "
             "font-src 'self' data:; "

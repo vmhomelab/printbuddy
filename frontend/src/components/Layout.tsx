@@ -17,6 +17,7 @@ import { Card, CardHeader, CardContent } from './Card';
 import { parseUTCDate } from '../utils/date';
 import { Button } from './Button';
 import { BugReportBubble } from './BugReportBubble';
+import { ConnectionBadge, ConnectionSwitcher } from './ConnectionSwitcher';
 import { appAssetPath } from '../utils/assetPaths';
 
 const SOURCE_CODE_URL = 'https://github.com/vmhomelab/Printbuddy';
@@ -598,10 +599,13 @@ export function Layout() {
               className="h-12 w-auto"
             />
           </NavLink>
+          <div className="ml-auto flex items-center">
+            <ConnectionBadge onClick={() => setMobileDrawerOpen(true)} />
+          </div>
           <button
             type="button"
             onClick={toggleMode}
-            className="ml-auto flex h-11 w-11 -mr-2 items-center justify-center rounded-lg text-bambu-gray-light hover:bg-bambu-dark-tertiary active:bg-bambu-dark-tertiary transition-colors"
+            className="ml-1 flex h-11 w-11 -mr-2 items-center justify-center rounded-lg text-bambu-gray-light hover:bg-bambu-dark-tertiary active:bg-bambu-dark-tertiary transition-colors"
             aria-label={mode === 'dark' ? 'Light mode' : 'Dark mode'}
           >
             {mode === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
@@ -827,6 +831,7 @@ export function Layout() {
         )}
 
         {/* Footer */}
+        {isSidebarCompact && <ConnectionSwitcher />}
         <div className="flex-shrink-0 p-2 border-t border-bambu-dark-tertiary">
           {isSidebarCompact || sidebarExpanded ? (
             <div className="flex flex-col gap-2 px-2">

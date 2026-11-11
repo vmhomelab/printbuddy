@@ -1272,6 +1272,8 @@ export interface AppSettings {
   panda_breath_printer_assignments: string;
   // External URL for notifications
   external_url: string;
+  // JSON list of {name, url} addresses this instance is reachable under
+  access_addresses: string;
   // Home Assistant integration
   ha_enabled: boolean;
   ha_url: string;
@@ -5023,6 +5025,7 @@ export const api = {
       bed_cooled_threshold?: number;
       panda_breath_printer_assignments?: string;
       print_farm_monitor_refresh_interval?: number;
+      access_addresses?: string;
     }>('/settings/ui-preferences'),
   updateSettings: (data: AppSettingsUpdate) =>
     request<AppSettings>('/settings/', {
@@ -5089,6 +5092,16 @@ export const api = {
     request<{ installed: boolean; path: string | null }>('/settings/check-ffmpeg'),
   getNetworkInterfaces: () =>
     request<{ interfaces: NetworkInterface[] }>('/settings/network-interfaces'),
+  getAccessAddressSuggestions: () =>
+    request<{
+      suggestions: { kind: 'lan' | 'tailscale' | 'public' | 'local'; name: string; url: string }[];
+      tailscale_available: boolean;
+    }>('/settings/access-addresses/suggestions'),
+  getAccessAddressQRCode: (url: string) =>
+    request<{ url: string; image: string }>('/settings/access-addresses/qrcode', {
+      method: 'POST',
+      body: JSON.stringify({ url }),
+    }),
 
   // Cloud
   getCloudStatus: () => request<CloudAuthStatus>('/cloud/status'),

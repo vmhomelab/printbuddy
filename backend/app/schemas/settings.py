@@ -183,6 +183,12 @@ class AppSettings(BaseModel):
         description="JSON object mapping Panda Breath device IDs to Printbuddy printer IDs",
     )
 
+    # Addresses under which this instance is reachable (LAN, Tailscale, domain…)
+    access_addresses: str = Field(
+        default="[]",
+        description='JSON list of {"name", "url"} entries the UI offers for switching connections',
+    )
+
     # External URL for notifications
     external_url: str = Field(
         default="", description="External URL where Printbuddy is accessible (for notification images)"
@@ -437,6 +443,7 @@ class AppSettingsUpdate(BaseModel):
     panda_breath_topic_prefix: str | None = None
     panda_breath_printer_assignments: str | None = None
     external_url: str | None = None
+    access_addresses: str | None = None
     ha_enabled: bool | None = None
     ha_url: str | None = None
     ha_token: str | None = None
@@ -487,6 +494,15 @@ class AppSettingsUpdate(BaseModel):
     obico_enabled_printers: str | None = None
     default_sidebar_order: str | None = None
     forecast_global_lead_time_days: int | None = Field(default=None, ge=0)
+
+    @field_validator("access_addresses")
+    @classmethod
+    def validate_access_addresses(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        from backend.app.services.access_addresses import validate_access_addresses
+
+        return validate_access_addresses(v or "[]")
 
     @field_validator("gcode_snippets")
     @classmethod
