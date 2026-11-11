@@ -185,6 +185,26 @@ async def test_store_moonraker_thumbnail_writes_into_fileless_archive_dir(tmp_pa
     assert (tmp_path / archive.thumbnail_path).read_bytes() == b"\x89PNG-data"
 
 
+def test_photo_written_under_fileless_dir_is_still_found(tmp_path, monkeypatch):
+    """Printbuddy dev builds kept no-3MF archives under archive/_fileless/<id>;
+    photos captured there must still be found, before and after a 3MF turns up."""
+    from backend.app.core.config import settings as app_config
+    from backend.app.utils.archive_paths import find_archive_photo
+
+    monkeypatch.setattr(app_config, "base_dir", tmp_path)
+    monkeypatch.setattr(app_config, "archive_dir", tmp_path / "archive")
+    legacy = tmp_path / "archive/_fileless/9/photos/finish.jpg"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_bytes(b"jpg")
+
+    archive = SimpleNamespace(id=9, file_path="")
+    assert find_archive_photo(archive, "finish.jpg") == legacy
+
+    archive.file_path = "archive/1/20260101_x/x.3mf"
+    assert find_archive_photo(archive, "finish.jpg") == legacy
+    assert find_archive_photo(archive, "missing.jpg") is None
+
+
 @pytest.mark.asyncio
 async def test_timelapse_listing_skips_bambu_ftp_for_moonraker(monkeypatch):
     from backend.app import main

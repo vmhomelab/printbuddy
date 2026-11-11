@@ -76,6 +76,20 @@ def _pre_recovery_photos_dir(archive: object) -> Path | None:
     return settings.archive_dir / str(archive.id) / "photos"  # SEC-PATH-OK: archive.id is an int primary key
 
 
+def _printbuddy_fileless_photos_dir(archive: object) -> Path:
+    """Where Printbuddy ``dev`` builds wrote a no-3MF archive's photos.
+
+    Those builds kept no-3MF archives under ``<archive_dir>/_fileless/<id>``
+    rather than ``<archive_dir>/<id>``, so photos captured there stay a lookup
+    candidate. Checked whatever ``file_path`` is now, since the archive may
+    have been filled in from a 3MF afterwards (see
+    :func:`_pre_recovery_photos_dir`).
+    """
+    # SEC-PATH-OK: archive.id is an int primary key
+    archive_id = archive.id  # pyright: ignore[reportAttributeAccessIssue]  # duck-typed like its siblings
+    return settings.archive_dir / "_fileless" / str(archive_id) / "photos"
+
+
 def find_archive_photo(archive: object, filename: str) -> Path | None:
     """Locate an existing photo, or None if it is in neither location.
 
@@ -89,6 +103,7 @@ def find_archive_photo(archive: object, filename: str) -> Path | None:
         archive_photos_dir(archive),
         _legacy_shared_photos_dir(archive),
         _pre_recovery_photos_dir(archive),
+        _printbuddy_fileless_photos_dir(archive),
     ):
         if directory is None:
             continue
