@@ -2455,7 +2455,14 @@ async def _run_migrations(conn):
 
     # Migration: Add on_print_stopped column to notification_providers
     await _safe_execute(conn, "ALTER TABLE notification_providers ADD COLUMN on_print_stopped BOOLEAN DEFAULT 1")
-    await _safe_execute(conn, "ALTER TABLE notification_providers ADD COLUMN on_print_almost_done BOOLEAN DEFAULT 0")
+    # No column default: the model has none either (default=False is client-side),
+    # and PostgreSQL rejects an integer default on a BOOLEAN column, which aborted
+    # startup when upgrading a PostgreSQL database created before this column.
+    await _safe_execute(conn, "ALTER TABLE notification_providers ADD COLUMN on_print_almost_done BOOLEAN")
+    async with conn.begin_nested():
+        await conn.execute(
+            text("UPDATE notification_providers SET on_print_almost_done = FALSE WHERE on_print_almost_done IS NULL")
+        )
 
     # Migration: Add source_3mf_path column to print_archives
     await _safe_execute(conn, "ALTER TABLE print_archives ADD COLUMN source_3mf_path VARCHAR(500)")
