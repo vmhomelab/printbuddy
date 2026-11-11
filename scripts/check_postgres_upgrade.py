@@ -46,7 +46,7 @@ from urllib.parse import urlsplit, urlunsplit
 REPO = Path(__file__).resolve().parents[1]
 ALLOWLIST = REPO / "scripts" / "postgres_schema_drift.txt"
 # The oldest Printbuddy release (Printbuddy supported PostgreSQL from its
-# first tag): the oldest schema an install can have. Upstream Bambuddy's tags
+# first tag): the oldest schema an install can have. The upstream project's tags
 # are not in this repository.
 FIRST_PG_RELEASE = "v0.2.4.6"
 
@@ -419,7 +419,7 @@ def main() -> int:
             for scenario in SCENARIOS:
                 missing = [tag for tag in scenario.chain if not tag_exists(tag)]
                 if missing:
-                    # The scenarios rebuild states from upstream Bambuddy's release
+                    # The scenarios rebuild states from the upstream project's release
                     # history; a Printbuddy checkout has none of those tags, and no
                     # Printbuddy release produced those states.
                     print(f"{scenario.name}: skipped, release tag(s) not in this repository: {', '.join(missing)}")
