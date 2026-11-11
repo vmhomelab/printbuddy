@@ -4193,6 +4193,11 @@ async def _run_migrations(conn):
 
     # Migration: Configure backend recovery for active offline printers.
     await _safe_execute(conn, "ALTER TABLE printers ADD COLUMN reconnect_interval_seconds INTEGER DEFAULT 30 NOT NULL")
+    if not is_sqlite():
+        # The DEFAULT above fills existing rows; the model's default is
+        # client-side, so a fresh install has no column default. Drop it so an
+        # upgraded PostgreSQL database matches (SQLite cannot drop a default).
+        await _safe_execute(conn, "ALTER TABLE printers ALTER COLUMN reconnect_interval_seconds DROP DEFAULT")
 
     # Migration: Add REST/Webhook smart plug fields
     await _safe_execute(conn, "ALTER TABLE smart_plugs ADD COLUMN rest_on_url VARCHAR(500)")
@@ -5142,6 +5147,9 @@ async def _run_migrations(conn):
         "CREATE INDEX IF NOT EXISTS ix_notify_live_provider_recipient_printer_state "
         "ON notification_live_activities (provider_id, recipient_id, printer_id, state)",
     )
+    # The recipient-aware index above replaces the pre-recipient one, which the
+    # model no longer declares.
+    await _safe_execute(conn, "DROP INDEX IF EXISTS ix_notify_live_provider_printer_state")
 
     # Migration: Add inventory stock alert columns to notification_providers.
     # Postgres rejects `DEFAULT 0` for BOOLEAN columns.

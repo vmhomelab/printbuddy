@@ -45,8 +45,10 @@ from urllib.parse import urlsplit, urlunsplit
 
 REPO = Path(__file__).resolve().parents[1]
 ALLOWLIST = REPO / "scripts" / "postgres_schema_drift.txt"
-# The first release with PostgreSQL support: the oldest schema an install can have.
-FIRST_PG_RELEASE = "v0.2.3"
+# The oldest Printbuddy release (Printbuddy supported PostgreSQL from its
+# first tag): the oldest schema an install can have. Upstream Bambuddy's tags
+# are not in this repository.
+FIRST_PG_RELEASE = "v0.2.4.6"
 
 
 @dataclass(frozen=True)
@@ -228,6 +230,15 @@ def newest_stable_release() -> str:
     return stable[0]
 
 
+def tag_exists(tag: str) -> bool:
+    return (
+        subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", f"refs/tags/{tag}"], cwd=REPO, capture_output=True
+        ).returncode
+        == 0
+    )
+
+
 def extract_release(tag: str, into: Path) -> Path:
     """The release's backend/ as a directory to run init_db from (git archive, read-only)."""
     target = into / tag
@@ -406,6 +417,13 @@ def main() -> int:
                 print(f"{release}: upgrade ok, {len(found[release])} object(s) differ from a fresh install")
 
             for scenario in SCENARIOS:
+                missing = [tag for tag in scenario.chain if not tag_exists(tag)]
+                if missing:
+                    # The scenarios rebuild states from upstream Bambuddy's release
+                    # history; a Printbuddy checkout has none of those tags, and no
+                    # Printbuddy release produced those states.
+                    print(f"{scenario.name}: skipped, release tag(s) not in this repository: {', '.join(missing)}")
+                    continue
                 url = with_database(args.url, databases[scenario.name], "asyncpg")
                 scenario_problems = run_scenario(scenario, url, Path(tmp))
                 problems += scenario_problems
