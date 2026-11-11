@@ -970,45 +970,51 @@ export function ProjectDetailPage() {
   return (
     <div className="p-4 md:p-8 space-y-8">
       {/* Breadcrumb */}
-      <div className="flex items-center gap-2 text-sm text-bambu-gray">
-        <Link to="/projects" className="hover:text-white transition-colors">
+      <div className="flex min-w-0 items-center gap-2 text-sm text-bambu-gray">
+        <Link to="/projects" className="shrink-0 hover:text-white transition-colors">
           {t('nav.projects')}
         </Link>
-        <ChevronRight className="w-4 h-4" />
-        <span className="text-white">{project.name}</span>
+        <ChevronRight className="w-4 h-4 shrink-0" />
+        <span className="truncate text-white">{project.name}</span>
       </div>
 
-      {/* Header */}
-      <div className="flex items-start justify-between">
-        <div className="flex items-center gap-4">
+      {/* Header — stacks on phones: title row, then full-width actions */}
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div className="flex min-w-0 items-start gap-3 sm:items-center sm:gap-4">
           <button
             onClick={() => navigate('/projects')}
-            className="p-2 rounded-lg bg-bambu-card hover:bg-bambu-dark-tertiary transition-colors"
+            className="shrink-0 p-2 rounded-lg bg-bambu-card hover:bg-bambu-dark-tertiary transition-colors"
+            aria-label={t('nav.projects')}
           >
             <ArrowLeft className="w-5 h-5 text-bambu-gray" />
           </button>
-          <div className="flex items-center gap-3">
+          <div className="flex min-w-0 items-start gap-3 pt-1.5 sm:items-center sm:pt-0">
             <div
-              className="w-4 h-4 rounded-full shrink-0"
+              className="mt-1.5 w-4 h-4 rounded-full shrink-0 sm:mt-0"
               style={{ backgroundColor: project.color || '#6b7280' }}
             />
-            <div>
-              <h1 className="text-2xl font-bold text-white flex flex-wrap items-center gap-2">
-                {project.name}
+            <div className="min-w-0">
+              <h1 className="text-xl sm:text-2xl font-bold text-white flex flex-wrap items-center gap-2 break-words">
+                <span className="min-w-0 break-words">{project.name}</span>
                 {project.order_number && (
                   <span className="rounded bg-bambu-dark-tertiary px-2 py-0.5 text-sm font-medium text-bambu-gray-light" title={t('projectDetail.orderNumber')}>
                     #{project.order_number}
                   </span>
                 )}
+                <span className="sm:hidden">
+                  <StatusBadge status={project.status} t={t} />
+                </span>
               </h1>
               {project.description && (
-                <p className="text-bambu-gray mt-1">{project.description}</p>
+                <p className="text-bambu-gray mt-1 break-words">{project.description}</p>
               )}
             </div>
           </div>
-          <StatusBadge status={project.status} t={t} />
+          <span className="hidden sm:inline-flex">
+            <StatusBadge status={project.status} t={t} />
+          </span>
         </div>
-        <div className="flex gap-2">
+        <div className="flex shrink-0 gap-2 [&>button]:flex-1 sm:[&>button]:flex-none">
           <Button
             variant="secondary"
             onClick={handleExportProject}
