@@ -1,3 +1,4 @@
+import { parseAccessAddresses, serializeAccessAddresses } from '../utils/accessAddresses';
 import { AccessAddressesSettings } from '../components/AccessAddressesSettings';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Loader2, Plus, Plug, AlertTriangle, RotateCcw, Bell, Download, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, Unlock, ChevronDown, Save, Mail, Flame, Layers, ListOrdered, Code, Search, Settings as SettingsIcon, ScanEye, Cog, Info } from 'lucide-react';
@@ -71,6 +72,12 @@ function inferExternalCameraType(url: string): string {
     return 'snapshot';
   }
   return 'mjpeg';
+}
+
+// The backend normalizes the list (trimmed names, origins only), so compare
+// normalized forms — a raw string compare would re-save forever.
+function sameAccessAddresses(a: string | undefined, b: string | undefined): boolean {
+  return serializeAccessAddresses(parseAccessAddresses(a ?? '[]')) === serializeAccessAddresses(parseAccessAddresses(b ?? '[]'));
 }
 
 // Cross-tab search registrations for cards rendered inline in this file.
@@ -1019,6 +1026,8 @@ export function SettingsPage() {
     mutationFn: api.updateSettings,
     onSuccess: (data) => {
       queryClient.setQueryData(['settings'], data);
+      // Connection badge / switcher / phone launcher read access addresses from here
+      queryClient.invalidateQueries({ queryKey: ['ui-preferences'] });
       // Don't call setLocalSettings(data) here — it would overwrite in-progress
       // user input (e.g. typing a hostname) with the stale saved snapshot,
       // causing the text field to reset mid-typing. Instead, let the useEffect
@@ -1116,6 +1125,7 @@ export function SettingsPage() {
       (settings.panda_breath_topic_prefix ?? 'panda_breath') !== (localSettings.panda_breath_topic_prefix ?? 'panda_breath') ||
       (settings.panda_breath_printer_assignments ?? '{}') !== (localSettings.panda_breath_printer_assignments ?? '{}') ||
       settings.external_url !== localSettings.external_url ||
+      sameAccessAddresses(settings.access_addresses, localSettings.access_addresses) === false ||
       settings.ha_enabled !== localSettings.ha_enabled ||
       settings.ha_url !== localSettings.ha_url ||
       settings.ha_token !== localSettings.ha_token ||
@@ -1206,6 +1216,7 @@ export function SettingsPage() {
         panda_breath_topic_prefix: localSettings.panda_breath_topic_prefix,
         panda_breath_printer_assignments: localSettings.panda_breath_printer_assignments,
         external_url: localSettings.external_url,
+        access_addresses: localSettings.access_addresses,
         ha_enabled: localSettings.ha_enabled,
         ha_url: localSettings.ha_url,
         ha_token: localSettings.ha_token,

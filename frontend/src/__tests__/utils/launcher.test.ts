@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { LAUNCHER_STORAGE_KEY, applyInsets, parseInsets, syncLauncherAddresses } from '../../utils/launcher';
+import { LAUNCHER_STORAGE_KEY, applyInsets, canEmbed, parseInsets, syncLauncherAddresses } from '../../utils/launcher';
 import { classifyHost, normalizeOrigin, parseAccessAddresses } from '../../utils/accessAddresses';
 
 describe('parseInsets', () => {
@@ -70,5 +70,14 @@ describe('access address helpers', () => {
       parseAccessAddresses('[{"name":"ok","url":"http://10.0.0.1"},{"name":"bad","url":"ftp://x"},"junk"]'),
     ).toEqual([{ name: 'ok', url: 'http://10.0.0.1' }]);
     expect(parseAccessAddresses('not json')).toEqual([]);
+  });
+});
+
+describe('canEmbed', () => {
+  it('blocks http targets from https pages only', () => {
+    expect(canEmbed('http://100.64.0.1:8000', 'https:')).toBe(false);
+    expect(canEmbed('https://box.tail1234.ts.net', 'https:')).toBe(true);
+    expect(canEmbed('http://100.64.0.1:8000', 'http:')).toBe(true);
+    expect(canEmbed('https://printbuddy.example.com', 'http:')).toBe(true);
   });
 });

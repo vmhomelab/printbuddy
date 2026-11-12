@@ -117,6 +117,7 @@ export function AccessAddressesSettings({ value, onChange }: Props) {
                   <div className="min-w-0 flex-1">
                     <input
                       value={a.name}
+                      maxLength={50}
                       onChange={(e) => save(addresses.map((x, i) => (i === idx ? { ...x, name: e.target.value } : x)))}
                       className="w-full bg-transparent text-sm font-medium text-white focus:outline-none"
                       aria-label={t('settings.accessAddresses.name', { defaultValue: 'Name' })}
@@ -189,6 +190,7 @@ export function AccessAddressesSettings({ value, onChange }: Props) {
           >
             <input
               value={name}
+              maxLength={50}
               onChange={(e) => setName(e.target.value)}
               placeholder={t('settings.accessAddresses.namePlaceholder', { defaultValue: 'Name (e.g. Tailscale)' })}
               className="w-full sm:w-40 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"

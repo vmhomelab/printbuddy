@@ -107,6 +107,11 @@ function isStandalone(): boolean {
   );
 }
 
+/** An https page cannot embed an http page (mixed content). */
+export function canEmbed(targetOrigin: string, currentProtocol: string = window.location.protocol): boolean {
+  return !(currentProtocol === 'https:' && targetOrigin.startsWith('http:'));
+}
+
 function trustedParent(addresses: AccessAddress[]): string | null {
   return parentOrigin && addresses.some((a) => a.url === parentOrigin) ? parentOrigin : null;
 }
@@ -138,7 +143,7 @@ export function switchToAddress(targetOrigin: string, addresses: AccessAddress[]
   }
   if (window.self !== window.top) return; // framed, but not by a configured launcher
   const ownListed = addresses.some((a) => isCurrentOrigin(a.url));
-  if (isStandalone() && ownListed) {
+  if (isStandalone() && ownListed && canEmbed(targetOrigin)) {
     // Stay inside the home-screen app: let the launcher embed the target.
     const params = new URLSearchParams({ to: targetOrigin, path });
     window.location.href = `/launch.html?${params.toString()}`;

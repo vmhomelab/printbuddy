@@ -161,6 +161,12 @@
       window.location.replace(safePath(path));
       return;
     }
+    if (!canEmbed(origin)) {
+      // https launcher cannot embed an http address (mixed content) - open it
+      // directly instead of showing a blank frame.
+      window.location.href = new URL(safePath(path), origin).toString();
+      return;
+    }
     frameOrigin = origin;
     currentPath = safePath(path);
     frame.src = embedUrl(origin, currentPath);

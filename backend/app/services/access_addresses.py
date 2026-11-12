@@ -103,7 +103,7 @@ def validate_access_addresses(raw: str) -> str:
     for item in data:
         if not isinstance(item, dict) or not normalize_origin(str(item.get("url", ""))):
             raise ValueError(f"invalid access address: {item!r}")
-    return json.dumps(parse_access_addresses(raw))
+    return json.dumps(parse_access_addresses(raw), separators=(",", ":"), ensure_ascii=False)
 
 
 def update_csp_origins(raw: str | None) -> None:
