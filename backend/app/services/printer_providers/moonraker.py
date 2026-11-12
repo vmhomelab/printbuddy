@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -12,6 +13,7 @@ from urllib.parse import quote, urljoin, urlparse, urlunparse
 import httpx
 
 from backend.app.services.bambu_mqtt import FilaSwitchState, NozzleInfo, PrintOptions
+from backend.app.services.printer_providers._http_common import serialized_status_update
 
 logger = logging.getLogger(__name__)
 
@@ -768,6 +770,13 @@ logger = logging.getLogger(__name__)
 
 _MOONRAKER_ACTIVE_PRINT_STATES = frozenset({"RUNNING", "PAUSE"})
 
+# Klipper's object list only changes on a config reload/restart, but the status
+# poll needs it several times per cycle (fans, chamber, tool heads) and light/
+# fan/chamber commands need it too. Cache it briefly instead of re-fetching it
+# on every request; it is also dropped on (re)connect and whenever Klippy is
+# not ready or a status poll fails.
+_MOONRAKER_OBJECTS_CACHE_TTL_SECONDS = 300.0
+
 
 class MoonrakerPrinterClient:
     """Minimal Klipper/Mainsail provider backed by Moonraker.
@@ -812,13 +821,44 @@ class MoonrakerPrinterClient:
         # Firmware message of the last failed CFS/print-start command, for the
         # API and print-dispatch error shown to the user.
         self.last_error: str | None = None
+        # One pooled HTTP client per printer: keep-alive avoids a fresh TCP
+        # connect (and DNS lookup) for each of the several requests a status
+        # poll makes. httpx.Client is safe to share between threads.
+        self._http: httpx.Client | None = None
+        self._http_lock = threading.Lock()
+        self._objects_cache: list[str] | None = None
+        self._objects_cache_at = 0.0
 
     @property
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.auth_token}"} if self.auth_token else {}
 
+    def _http_client(self) -> httpx.Client:
+        with self._http_lock:
+            if self._http is None:
+                self._http = httpx.Client(timeout=self.timeout)
+            return self._http
+
+    def _close_http_client(self) -> None:
+        with self._http_lock:
+            client, self._http = self._http, None
+        if client is not None:
+            try:
+                client.close()
+            except Exception:  # noqa: BLE001 - closing is best effort
+                pass
+
+    def _http_get(self, url: str, **kwargs: Any) -> httpx.Response:
+        return self._http_client().get(url, **kwargs)
+
+    def _http_post(self, url: str, **kwargs: Any) -> httpx.Response:
+        return self._http_client().post(url, **kwargs)
+
+    def _invalidate_objects_cache(self) -> None:
+        self._objects_cache = None
+
     def _get(self, path: str, *, base_url: str | None = None) -> dict[str, Any]:
-        response = httpx.get(
+        response = self._http_get(
             urljoin(base_url or self.base_url, path.lstrip("/")), headers=self._headers, timeout=self.timeout
         )
         response.raise_for_status()
@@ -894,9 +934,15 @@ class MoonrakerPrinterClient:
         return normalized
 
     def _available_objects(self) -> list[str]:
+        cached = self._objects_cache
+        if cached is not None and time.monotonic() - self._objects_cache_at < _MOONRAKER_OBJECTS_CACHE_TTL_SECONDS:
+            return list(cached)
         objects = self._get("printer/objects/list")
         available = objects.get("objects", []) if isinstance(objects, dict) else []
-        return [name for name in available if isinstance(name, str)] if isinstance(available, list) else []
+        names = [name for name in available if isinstance(name, str)] if isinstance(available, list) else []
+        self._objects_cache = names
+        self._objects_cache_at = time.monotonic()
+        return list(names)
 
     def _available_fan_objects(self, available: list[str] | None = None) -> list[str]:
         if available is None:
@@ -1739,7 +1785,7 @@ class MoonrakerPrinterClient:
             }
 
     def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
-        response = httpx.post(
+        response = self._http_post(
             urljoin(self.base_url, path.lstrip("/")), json=payload, headers=self._headers, timeout=self.timeout
         )
         response.raise_for_status()
@@ -1782,7 +1828,7 @@ class MoonrakerPrinterClient:
         root = str(storage or "gcodes").strip().strip("/") or "gcodes"
         target = self._normalize_gcodes_path(remote_path) or local_path.name
         with open(local_path, "rb") as fh:
-            response = httpx.post(
+            response = self._http_post(
                 urljoin(self.base_url, "server/files/upload"),
                 data={"root": root, "path": target.rsplit("/", 1)[0] if "/" in target else ""},
                 files={"file": (target.rsplit("/", 1)[-1], fh, "application/octet-stream")},
@@ -1793,6 +1839,7 @@ class MoonrakerPrinterClient:
         return True
 
     def connect(self) -> None:
+        self._invalidate_objects_cache()
         last_exc: Exception | None = None
         for candidate in self.base_url_candidates:
             try:
@@ -1818,6 +1865,8 @@ class MoonrakerPrinterClient:
 
     def disconnect(self, timeout: float = 0) -> None:  # noqa: ARG002 - kept for Bambu client compatibility
         self.state.connected = False
+        self._invalidate_objects_cache()
+        self._close_http_client()
 
     def check_staleness(self) -> bool:
         try:
@@ -1932,11 +1981,21 @@ class MoonrakerPrinterClient:
             if self.on_print_complete:
                 self.on_print_complete(payload)
 
+    @serialized_status_update
     def request_status_update(self) -> bool:
         previous_state = self._last_state if self._has_status_sample else None
-        status = self._query_objects(
-            ["webhooks", "print_stats", "virtual_sdcard", "display_status", "extruder", "heater_bed"]
-        )
+        try:
+            status = self._query_objects(
+                ["webhooks", "print_stats", "virtual_sdcard", "display_status", "extruder", "heater_bed"]
+            )
+        except Exception:
+            # Moonraker/Klippy may have restarted with a different config.
+            self._invalidate_objects_cache()
+            raise
+        webhooks = status.get("webhooks") if isinstance(status, dict) else None
+        if isinstance(webhooks, dict) and str(webhooks.get("state") or "ready").lower() != "ready":
+            # Klippy is starting up/shutdown: its object list is incomplete.
+            self._invalidate_objects_cache()
         try:
             available_objects = self._available_objects()
         except Exception:  # noqa: BLE001 - optional object discovery must not break core status polling
@@ -2028,7 +2087,7 @@ class MoonrakerPrinterClient:
 
     def download_file(self, remote_path: str) -> bytes | None:
         normalized = self._normalize_gcodes_path(remote_path)
-        response = httpx.get(
+        response = self._http_get(
             urljoin(self.base_url, f"server/files/gcodes/{normalized}"),
             headers=self._headers,
             timeout=max(self.timeout, 60.0),

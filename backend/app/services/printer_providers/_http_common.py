@@ -9,8 +9,40 @@ API payloads onto ``self.state``.
 
 from __future__ import annotations
 
+import functools
+import threading
 import time
-from typing import Any
+from collections.abc import Callable
+from typing import Any, TypeVar
+
+_F = TypeVar("_F", bound=Callable[..., Any])
+_LOCK_INIT = threading.Lock()
+
+
+def _status_update_lock(obj: Any) -> threading.RLock:
+    lock = obj.__dict__.get("_status_update_lock")
+    if lock is None:
+        with _LOCK_INIT:
+            lock = obj.__dict__.setdefault("_status_update_lock", threading.RLock())
+    return lock
+
+
+def serialized_status_update(method: _F) -> _F:
+    """Serialize ``request_status_update`` per client instance.
+
+    The status is polled from a background thread while API routes may also
+    refresh it (e.g. after sending a command). Two overlapping updates would
+    both read the same previous state and could fire duplicate print
+    start/complete callbacks. The lock is re-entrant because some commands
+    refresh the status from inside other status-aware code paths.
+    """
+
+    @functools.wraps(method)
+    def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
+        with _status_update_lock(self):
+            return method(self, *args, **kwargs)
+
+    return wrapper  # type: ignore[return-value]
 
 
 def minutes_from_seconds(value: Any) -> int:

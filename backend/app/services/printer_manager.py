@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import re
+import threading
 import traceback
 from collections.abc import Callable
 
@@ -38,6 +39,18 @@ def reported_nozzle_temperatures(temperatures: dict[str, object]) -> tuple[tuple
 # Replacing a client can synchronously wait for its network thread. Keep that
 # teardown bounded so a failed device connection cannot freeze the API loop.
 REPLACEMENT_DISCONNECT_TIMEOUT_SECONDS = 2.0
+
+# HTTP-polled providers (Moonraker, OctoPrint, PrusaLink, PrusaConnect, Elegoo
+# SDCP) have no push channel. Their status used to be fetched synchronously on
+# every get_status()/is_connected() call, which ran blocking HTTP requests on
+# the asyncio event loop and stalled the whole backend behind slow printers.
+# A background thread per printer now polls on a fixed cadence and the
+# status accessors only read the cached state.
+HTTP_POLL_INTERVAL_SECONDS: dict[str, float] = {"moonraker": 3.0, "prusaconnect": 10.0}
+DEFAULT_HTTP_POLL_INTERVAL_SECONDS = 5.0
+# Consecutive failed polls before a polled printer is reported offline, so a
+# single dropped request does not make the printer card flap.
+HTTP_POLL_FAILURES_BEFORE_OFFLINE = 2
 
 # Models that have a real chamber temperature sensor
 # Based on Home Assistant Bambu Lab integration
@@ -215,11 +228,64 @@ class PrinterInfo:
         self.provider = normalize_provider(provider)
 
 
+class _StatusPoller:
+    """Poll an HTTP printer client's status from a daemon thread."""
+
+    def __init__(self, client, interval: float, name: str):
+        self.client = client
+        self.interval = interval
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, name=f"printer-poll-{name}", daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    @property
+    def stopped(self) -> bool:
+        return self._stop.is_set()
+
+    def _run(self) -> None:
+        failures = 0
+        while not self._stop.wait(self.interval):
+            try:
+                self.client.request_status_update()
+                failures = 0
+            except Exception as exc:  # noqa: BLE001 - a failing poll must never kill the poller
+                failures += 1
+                if self._stop.is_set():
+                    return
+                state = getattr(self.client, "state", None)
+                if failures >= HTTP_POLL_FAILURES_BEFORE_OFFLINE and state is not None and state.connected:
+                    logger.info("Printer status poll failed %s times, marking offline: %s", failures, exc)
+                    state.connected = False
+                    on_state_change = getattr(self.client, "on_state_change", None)
+                    if callable(on_state_change):
+                        try:
+                            on_state_change(state)
+                        except Exception:  # noqa: BLE001
+                            logger.debug("Offline state callback failed", exc_info=True)
+
+
+async def run_client_call(client, method: Callable, *args, **kwargs):
+    """Run a printer client call without blocking the event loop.
+
+    Bambu clients only publish to MQTT and stay on the loop thread as before.
+    HTTP-backed providers block on network I/O, so they run in a worker thread.
+    """
+    if isinstance(client, BambuMQTTClient):
+        return method(*args, **kwargs)
+    return await asyncio.to_thread(method, *args, **kwargs)
+
+
 class PrinterManager:
     """Manager for multiple printer connections."""
 
     def __init__(self):
         self._clients: dict[int, BambuMQTTClient] = {}
+        self._pollers: dict[int, _StatusPoller] = {}
         self._models: dict[int, str | None] = {}  # Cache printer models for feature detection
         self._printer_info: dict[int, PrinterInfo] = {}  # Cache printer name/serial for callbacks
         self._on_print_start: Callable[[int, dict], None] | None = None
@@ -486,10 +552,26 @@ class PrinterManager:
                 on_print_running_observed=on_print_running_observed,
             )
 
-        client.connect()
+        if provider == "bambu":
+            client.connect()
+        else:
+            # HTTP providers block on network I/O (and may probe fallback URLs);
+            # keep that off the event loop.
+            await asyncio.to_thread(client.connect)
+        if printer_id in self._clients:
+            # A concurrent connect for the same printer finished first.
+            self.disconnect_printer(printer_id, timeout=REPLACEMENT_DISCONNECT_TIMEOUT_SECONDS)
         self._clients[printer_id] = client
         self._models[printer_id] = printer.model  # Cache model for feature detection
         self._printer_info[printer_id] = PrinterInfo(printer.name, printer.serial_number, provider)
+        if provider != "bambu" and callable(getattr(client, "request_status_update", None)):
+            poller = _StatusPoller(
+                client,
+                HTTP_POLL_INTERVAL_SECONDS.get(provider, DEFAULT_HTTP_POLL_INTERVAL_SECONDS),
+                f"{provider}-{printer_id}",
+            )
+            self._pollers[printer_id] = poller
+            poller.start()
 
         # Wait a moment for connection
         await asyncio.sleep(1)
@@ -497,6 +579,9 @@ class PrinterManager:
 
     def disconnect_printer(self, printer_id: int, timeout: float = 0):
         """Disconnect from a printer."""
+        poller = self._pollers.pop(printer_id, None)
+        if poller is not None:
+            poller.stop()
         if printer_id in self._clients:
             self._clients[printer_id].disconnect(timeout=timeout)
             del self._clients[printer_id]
@@ -512,8 +597,7 @@ class PrinterManager:
         """Get the current status of a printer (checks for stale connections)."""
         if printer_id in self._clients:
             client = self._clients[printer_id]
-            # Check staleness and update connected state if needed
-            client.check_staleness()
+            self._refresh_connected(printer_id, client)
             return client.state
         return None
 
@@ -524,9 +608,8 @@ class PrinterManager:
     def get_all_statuses(self) -> dict[int, PrinterState]:
         """Get status of all connected printers (checks for stale connections)."""
         result = {}
-        for printer_id, client in self._clients.items():
-            # Check staleness and update connected state if needed
-            client.check_staleness()
+        for printer_id, client in list(self._clients.items()):
+            self._refresh_connected(printer_id, client)
             result[printer_id] = client.state
         return result
 
@@ -534,9 +617,20 @@ class PrinterManager:
         """Check if a printer is connected (checks for stale connections)."""
         if printer_id in self._clients:
             client = self._clients[printer_id]
-            # Check staleness and update connected state if needed
-            return client.check_staleness()
+            return self._refresh_connected(printer_id, client)
         return False
+
+    def _refresh_connected(self, printer_id: int, client) -> bool:
+        """Return the client's connected flag, checking staleness where cheap.
+
+        Background-polled HTTP clients already keep their state fresh, so this
+        only reads the cache for them; calling ``check_staleness()`` would run a
+        full blocking HTTP status fetch on the caller's (usually the event
+        loop's) thread. Bambu's check_staleness only inspects timestamps.
+        """
+        if printer_id in self._pollers:
+            return bool(client.state.connected)
+        return client.check_staleness()
 
     def get_client(self, printer_id: int) -> BambuMQTTClient | None:
         """Get the MQTT client for a printer."""
@@ -1205,7 +1299,7 @@ async def init_printer_connections(db: AsyncSession):
     result = await db.execute(select(Printer).where(Printer.is_active.is_(True)))
     printers = result.scalars().all()
 
-    for printer in printers:
+    async def _connect(printer: Printer) -> None:
         try:
             await printer_manager.connect_printer(printer)
         except Exception as exc:  # noqa: BLE001 - one offline saved printer must not abort app startup
@@ -1215,3 +1309,7 @@ async def init_printer_connections(db: AsyncSession):
                 exc,
                 exc_info=True,
             )
+
+    # Connect concurrently: a slow or unreachable printer (HTTP timeouts,
+    # fallback URL probes) must not delay every other printer's startup.
+    await asyncio.gather(*(_connect(printer) for printer in printers))

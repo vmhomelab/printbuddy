@@ -15,6 +15,7 @@ from backend.app.services.printer_providers._http_common import (
     PolledLifecycleMixin,
     float_or_none,
     minutes_from_seconds,
+    serialized_status_update,
 )
 
 logger = logging.getLogger(__name__)
@@ -541,6 +542,7 @@ class PrusaLinkPrinterClient(PolledLifecycleMixin):
             self.state.connected = False
         return self.state.connected
 
+    @serialized_status_update
     def request_status_update(self) -> bool:
         previous_state = self._last_state if self._has_status_sample else None
         if self.api_mode == "legacy":
