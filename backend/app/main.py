@@ -6510,6 +6510,25 @@ async def security_headers_middleware(request, call_next):
             "base-uri 'self'; "
             "frame-src 'self' http: https:; " + _frame_ancestors("'self'")
         )
+    elif request.url.path == "/launch.html":
+        # Phone launcher: probes the configured access addresses with a tiny
+        # image request and embeds the first reachable one. The service worker
+        # replays this response (headers included) while offline, possibly long
+        # after the address list changed - so the policy must not depend on the
+        # current list. The page renders no third-party content; it is never
+        # embedded itself.
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            f"script-src 'self' 'nonce-{csp_nonce}'; "
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data: http: https:; "
+            "connect-src 'self'; "
+            "font-src 'self' data:; "
+            "object-src 'none'; "
+            "base-uri 'self'; "
+            "frame-src 'self' http: https:; "
+            "frame-ancestors 'none';"
+        )
     elif request.url.path in ("/docs", "/redoc", "/docs/oauth2-redirect"):
         # FastAPI's built-in Swagger UI / ReDoc pages load assets from
         # cdn.jsdelivr.net and bootstrap with an inline <script>, so the

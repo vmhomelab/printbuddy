@@ -67,3 +67,24 @@ async def test_launcher_routes_are_not_swallowed_by_the_spa(async_client: AsyncC
     js = await async_client.get("/launch.js")
     assert js.status_code == 200
     assert js.headers["content-type"].startswith("application/javascript")
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_launcher_csp_does_not_depend_on_the_address_list(
+    async_client: AsyncClient, tmp_path, monkeypatch, no_trusted_env
+):
+    """The SW replays the launcher's headers offline, so probing must not be
+    limited to whatever addresses were configured when it was cached."""
+    from backend.app import main as main_module
+
+    (tmp_path / "launch.html").write_text("<!doctype html><title>launcher</title>")
+    monkeypatch.setattr(main_module.app_settings, "static_dir", tmp_path)
+    monkeypatch.setattr(access_addresses, "_csp_origins", ())
+
+    resp = await async_client.get("/launch.html")
+    csp = resp.headers["Content-Security-Policy"]
+    img_src = csp.split("img-src")[1].split(";")[0]
+    assert " http:" in img_src and " https:" in img_src
+    assert "frame-src 'self' http: https:" in csp
+    assert "frame-ancestors 'none'" in csp

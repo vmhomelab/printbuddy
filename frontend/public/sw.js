@@ -1,6 +1,6 @@
 // Printbuddy Service Worker
 const CACHE_NAME = 'printbuddy-v1';
-const STATIC_CACHE = 'printbuddy-static-v2';
+const STATIC_CACHE = 'printbuddy-static-v3';
 
 // Static assets to cache on install
 const STATIC_ASSETS = [
