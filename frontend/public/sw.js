@@ -1,13 +1,10 @@
 // Printbuddy Service Worker
 const CACHE_NAME = 'printbuddy-v1';
-const STATIC_CACHE = 'printbuddy-static-v3';
+const STATIC_CACHE = 'printbuddy-static-v5';
 
 // Static assets to cache on install
 const STATIC_ASSETS = [
   '/',
-  '/launch.html',
-  '/launch.js',
-  '/sw-register.js',
   '/manifest.json',
   '/img/favicon.png',
   '/img/favicon-16x16.png',
@@ -15,7 +12,6 @@ const STATIC_ASSETS = [
   '/img/android-chrome-192x192.png',
   '/img/android-chrome-512x512.png',
   '/img/apple-touch-icon.png',
-  '/img/apple-touch-icon-dark.png',
   '/img/printbuddy_logo_dark_transparent.png',
   // Self-hosted Inter font (#1460) - cached so the UI renders offline.
   '/fonts/inter-latin.woff2',
@@ -69,30 +65,6 @@ self.addEventListener('fetch', (event) => {
   // cross-origin request with our cached index.html, so e.g. a blocked
   // Google Fonts request came back as text/html (#1460).
   if (url.origin !== self.location.origin) {
-    return;
-  }
-
-  // Reachability probes from the launcher must hit the network, never the cache
-  if (url.searchParams.has('__pb_probe')) {
-    return;
-  }
-
-  // Launcher - stale-while-revalidate: start instantly from the cache (also
-  // when this address is unreachable), refresh the copy in the background.
-  if (url.pathname === '/launch.html' || url.pathname === '/launch.js') {
-    event.respondWith(
-      caches.open(STATIC_CACHE).then((cache) =>
-        cache.match(url.pathname).then((cached) => {
-          const network = fetch(request)
-            .then((response) => {
-              if (response.ok) cache.put(url.pathname, response.clone());
-              return response;
-            })
-            .catch(() => cached);
-          return cached || network;
-        })
-      )
-    );
     return;
   }
 

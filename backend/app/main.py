@@ -12,7 +12,7 @@ from logging.handlers import RotatingFileHandler
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import delete, or_, select, text
 
@@ -6213,16 +6213,6 @@ async def lifespan(app: FastAPI):
     # Start printer runtime tracking
     start_runtime_tracking()
 
-    # Load configured access addresses into the CSP img-src allow-list
-    try:
-        from backend.app.api.routes.settings import get_setting
-        from backend.app.services.access_addresses import update_csp_origins
-
-        async with async_session() as db:
-            update_csp_origins(await get_setting(db, "access_addresses"))
-    except Exception as e:
-        logging.getLogger(__name__).warning("Could not load access addresses: %s", e)
-
     # Start camera stream orphan cleanup
     start_camera_cleanup()
 
@@ -6451,13 +6441,8 @@ def _frame_ancestors(default_value: str) -> str:
     are configured, ``'self'`` is always included so same-origin embedding never
     breaks even if an operator forgets to add their own origin to the list.
     """
-    from backend.app.services.access_addresses import get_csp_origins
-
-    # Access addresses (Settings -> Network) may embed each other: the phone
-    # launcher (/launch.html) opens whichever address is reachable in an iframe.
-    allowed = tuple(dict.fromkeys((*_TRUSTED_FRAME_ORIGINS, *get_csp_origins())))
-    if allowed:
-        return "frame-ancestors 'self' " + " ".join(allowed) + ";"
+    if _TRUSTED_FRAME_ORIGINS:
+        return "frame-ancestors 'self' " + " ".join(_TRUSTED_FRAME_ORIGINS) + ";"
     return f"frame-ancestors {default_value};"
 
 
@@ -6482,9 +6467,7 @@ async def security_headers_middleware(request, call_next):
     # When operators have explicitly allowlisted trusted frame origins (#1191
     # — typically Home Assistant on a different port), drop X-Frame-Options
     # and let the CSP-side frame-ancestors directive govern embedding.
-    from backend.app.services.access_addresses import get_csp_origins
-
-    if not _TRUSTED_FRAME_ORIGINS and not get_csp_origins():
+    if not _TRUSTED_FRAME_ORIGINS:
         response.headers["X-Frame-Options"] = "SAMEORIGIN"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     # Content-Security-Policy for the React SPA.
@@ -6510,25 +6493,6 @@ async def security_headers_middleware(request, call_next):
             "base-uri 'self'; "
             "frame-src 'self' http: https:; " + _frame_ancestors("'self'")
         )
-    elif request.url.path == "/launch.html":
-        # Phone launcher: probes the configured access addresses with a tiny
-        # image request and embeds the first reachable one. The service worker
-        # replays this response (headers included) while offline, possibly long
-        # after the address list changed - so the policy must not depend on the
-        # current list. The page renders no third-party content; it is never
-        # embedded itself.
-        response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; "
-            f"script-src 'self' 'nonce-{csp_nonce}'; "
-            "style-src 'self' 'unsafe-inline'; "
-            "img-src 'self' data: http: https:; "
-            "connect-src 'self'; "
-            "font-src 'self' data:; "
-            "object-src 'none'; "
-            "base-uri 'self'; "
-            "frame-src 'self' http: https:; "
-            "frame-ancestors 'none';"
-        )
     elif request.url.path in ("/docs", "/redoc", "/docs/oauth2-redirect"):
         # FastAPI's built-in Swagger UI / ReDoc pages load assets from
         # cdn.jsdelivr.net and bootstrap with an inline <script>, so the
@@ -6545,16 +6509,11 @@ async def security_headers_middleware(request, call_next):
             "base-uri 'self'; " + _frame_ancestors("'none'")
         )
     else:
-        # Configured access addresses (Settings → Network) may be probed with a
-        # tiny image request so the UI can show which connections are reachable.
-        from backend.app.services.access_addresses import get_csp_origins
-
-        access_img_src = "".join(f" {o}" for o in get_csp_origins())
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
             f"script-src 'self' 'nonce-{csp_nonce}'; "
             "style-src 'self' 'unsafe-inline'; "
-            f"img-src 'self' data: blob:{access_img_src}; "
+            "img-src 'self' data: blob:; "
             "media-src 'self' blob:; "
             "connect-src 'self' ws: wss:; "
             "font-src 'self' data:; "
@@ -6951,27 +6910,6 @@ async def serve_sw_register():
     if reg_file.exists():
         return FileResponse(reg_file, media_type="application/javascript")
     return {"error": "sw-register.js not found"}
-
-
-# Phone launcher (#mobile): the installed app starts here, picks the first
-# reachable access address and opens it. The service worker keeps a copy so it
-# also starts when the address the app was installed from is unreachable.
-@app.api_route("/launch.html", methods=["GET", "HEAD"])
-async def serve_launcher():
-    """Serve the PWA launcher page."""
-    launcher = app_settings.static_dir / "launch.html"
-    if launcher.exists():
-        return FileResponse(launcher, media_type="text/html", headers=_HTML_CACHE_HEADERS)
-    return RedirectResponse("/")
-
-
-@app.api_route("/launch.js", methods=["GET", "HEAD"])
-async def serve_launcher_script():
-    """Serve the PWA launcher script."""
-    script = app_settings.static_dir / "launch.js"
-    if script.exists():
-        return FileResponse(script, media_type="application/javascript", headers=_HTML_CACHE_HEADERS)
-    return {"error": "launch.js not found"}
 
 
 # ── GCode viewer static files ────────────────────────────────────────────────

@@ -3,7 +3,7 @@
   "name": "Printbuddy",
   "short_name": "Printbuddy",
   "description": "Monitor and manage Bambu Lab, Klipper, and Mainsail 3D printers",
-  "start_url": "/launch.html",
+  "start_url": "/",
   "display": "standalone",
   "background_color": "#1a1a1a",
   "theme_color": "#2563eb",

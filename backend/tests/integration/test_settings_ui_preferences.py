@@ -90,7 +90,6 @@ class TestUiPreferencesEndpoint:
             "bed_cooled_threshold",
             "panda_breath_printer_assignments",
             "print_farm_monitor_refresh_interval",
-            "access_addresses",
         }
         assert set(data.keys()) == expected
 

@@ -17,8 +17,6 @@ import { Card, CardHeader, CardContent } from './Card';
 import { parseUTCDate } from '../utils/date';
 import { Button } from './Button';
 import { BugReportBubble } from './BugReportBubble';
-import { ConnectionBadge, ConnectionSwitcher } from './ConnectionSwitcher';
-import { useLauncherSync } from '../hooks/useLauncherSync';
 import { appAssetPath } from '../utils/assetPaths';
 
 const SOURCE_CODE_URL = 'https://github.com/vmhomelab/Printbuddy';
@@ -126,7 +124,6 @@ export function Layout() {
   const navigate = useNavigate();
   const location = useLocation();
   const { mode, toggleMode } = useTheme();
-  useLauncherSync();
   const { t } = useTranslation();
   const isSidebarCompact = useIsSidebarCompact();
   // Re-render Layout (and the page rendered inside <Outlet />) whenever the
@@ -565,7 +562,7 @@ export function Layout() {
     : (mode === 'dark' ? '/img/printbuddy_logo_dark.png' : '/img/printbuddy_logo_light.png');
 
   return (
-    <div className="pb-layout-root flex min-h-screen">
+    <div className="flex min-h-screen">
       {/* Hidden sidebar restore control */}
       {sidebarHidden && (
         <button
@@ -601,13 +598,10 @@ export function Layout() {
               className="h-12 w-auto"
             />
           </NavLink>
-          <div className="ml-auto flex items-center">
-            <ConnectionBadge onClick={() => setMobileDrawerOpen(true)} />
-          </div>
           <button
             type="button"
             onClick={toggleMode}
-            className="ml-1 flex h-11 w-11 -mr-2 items-center justify-center rounded-lg text-bambu-gray-light hover:bg-bambu-dark-tertiary active:bg-bambu-dark-tertiary transition-colors"
+            className="ml-auto flex h-11 w-11 -mr-2 items-center justify-center rounded-lg text-bambu-gray-light hover:bg-bambu-dark-tertiary active:bg-bambu-dark-tertiary transition-colors"
             aria-label={mode === 'dark' ? 'Light mode' : 'Dark mode'}
           >
             {mode === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
@@ -653,7 +647,6 @@ export function Layout() {
 
         {/* Navigation */}
         <nav className="flex-1 p-2 overflow-y-auto">
-          {isSidebarCompact && <ConnectionSwitcher />}
           <ul className="space-y-2">
             {orderedSidebarIds.map((id) => {
               const isExternal = isExternalLinkId(id);
@@ -1031,7 +1024,7 @@ export function Layout() {
       )}
 
       {/* Main content */}
-      <main className={`pb-main flex-1 bg-bambu-dark overflow-auto transition-all duration-300 ${
+      <main className={`flex-1 bg-bambu-dark overflow-auto transition-all duration-300 ${
         sidebarHidden ? 'ml-0 mt-0' : isSidebarCompact ? 'mobile-main min-w-0' : sidebarExpanded ? 'ml-64' : 'ml-16'
       }`}>
         {/* Debug logging indicator */}

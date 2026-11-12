@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, select
@@ -20,7 +20,6 @@ from backend.app.core.permissions import Permission
 from backend.app.models.settings import Settings
 from backend.app.models.user import User
 from backend.app.schemas.settings import AppSettings, AppSettingsUpdate
-from backend.app.services.access_addresses import classify_host, normalize_origin, update_csp_origins
 from backend.app.services.slicer_api import (
     EXPECTED_SIDECAR_REVISION,
     SlicerApiInvalidResponseError,
@@ -399,9 +398,6 @@ async def update_settings(
     # Expire all objects to ensure fresh reads after commit
     db.expire_all()
 
-    if "access_addresses" in update_data:
-        update_csp_origins(update_data["access_addresses"])
-
     if "progress_milestone_mode" in update_data:
         from backend.app.main import invalidate_progress_milestone_mode_cache
 
@@ -569,7 +565,6 @@ _UI_PREFERENCE_FIELDS: tuple[str, ...] = (
     "bed_cooled_threshold",
     "panda_breath_printer_assignments",
     "print_farm_monitor_refresh_interval",
-    "access_addresses",
 )
 
 
@@ -588,7 +583,6 @@ async def get_ui_preferences(db: AsyncSession = Depends(get_db)):
     """
     full = await _build_settings_response(db, is_api_key=False)
     dumped = full.model_dump()
-    update_csp_origins(dumped.get("access_addresses"))
     return {key: dumped[key] for key in _UI_PREFERENCE_FIELDS if key in dumped}
 
 
@@ -1291,81 +1285,6 @@ async def restore_backup(
                 status_code=500,
                 content={"success": False, "message": "Restore failed. Check server logs for details."},
             )
-
-
-@router.get("/access-addresses/suggestions")
-async def get_access_address_suggestions(
-    request: Request,
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_READ),
-):
-    """Suggest addresses this instance is probably reachable under.
-
-    LAN IPs come from the host's network interfaces, Tailscale IPs and the
-    MagicDNS name from ``tailscale status``. The port is taken from the request
-    (the port the user is using right now), which is right for direct access
-    but not behind a reverse proxy — the UI lets the admin edit every entry.
-    """
-    from backend.app.services.network_utils import get_all_interface_ips
-    from backend.app.services.virtual_printer.tailscale import TailscaleService
-
-    scheme = request.url.scheme
-    port = request.url.port
-    port_suffix = f":{port}" if port else ""
-
-    suggestions: list[dict] = []
-    seen: set[str] = set()
-
-    def add(kind: str, name: str, url: str) -> None:
-        origin = normalize_origin(url)
-        if origin and origin not in seen:
-            seen.add(origin)
-            suggestions.append({"kind": kind, "name": name, "url": origin})
-
-    for iface in get_all_interface_ips():
-        ip = iface.get("ip") or ""
-        kind = classify_host(ip)
-        if kind in ("lan", "tailscale"):
-            add(
-                kind,
-                "Tailscale" if kind == "tailscale" else f"LAN ({iface.get('name', '')})",
-                f"{scheme}://{ip}{port_suffix}",
-            )
-
-    ts = await TailscaleService().get_status()
-    if ts.available:
-        if ts.fqdn:
-            # `tailscale serve` exposes the app on https://<fqdn> without a port
-            add("tailscale", "Tailscale (HTTPS)", f"https://{ts.fqdn}")
-        for ip in ts.tailscale_ips:
-            if ":" not in ip:
-                add("tailscale", "Tailscale", f"{scheme}://{ip}{port_suffix}")
-
-    return {"suggestions": suggestions, "tailscale_available": ts.available}
-
-
-class AccessAddressQRRequest(BaseModel):
-    url: str = Field(..., max_length=300)
-
-
-@router.post("/access-addresses/qrcode")
-async def get_access_address_qrcode(
-    body: AccessAddressQRRequest,
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_READ),
-):
-    """Return a QR code (PNG data URI) for an access address."""
-    import base64
-
-    import qrcode
-
-    origin = normalize_origin(body.url)
-    if not origin:
-        raise HTTPException(400, "Invalid URL")
-    qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=8, border=2)
-    qr.add_data(origin + "/")
-    qr.make(fit=True)
-    buffer = io.BytesIO()
-    qr.make_image(fill_color="black", back_color="white").get_image().save(buffer, format="PNG")
-    return {"url": origin, "image": "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode()}
 
 
 @router.get("/network-interfaces")

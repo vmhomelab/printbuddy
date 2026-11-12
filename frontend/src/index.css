@@ -499,31 +499,3 @@ html {
 .floating-safe-bottom {
   bottom: calc(1rem + var(--safe-bottom));
 }
-
-/* Embedded by the phone launcher (public/launch.html): inside an iOS iframe the
-   page itself must not scroll, otherwise the "fixed" top bar scrolls away with
-   it. The main area becomes the scroll container instead. */
-html.pb-embedded,
-html.pb-embedded body,
-html.pb-embedded #root {
-  height: 100%;
-  min-height: 0;
-  overflow: hidden;
-  overscroll-behavior: none;
-}
-
-html.pb-embedded .pb-layout-root {
-  height: 100%;
-  min-height: 0;
-}
-
-html.pb-embedded .pb-main {
-  height: 100%;
-  overflow-y: auto;
-  -webkit-overflow-scrolling: touch;
-  overscroll-behavior-y: contain;
-}
-
-html.pb-embedded .pb-main.mobile-main {
-  height: calc(100% - var(--mobile-topbar-height) - var(--safe-top));
-}
