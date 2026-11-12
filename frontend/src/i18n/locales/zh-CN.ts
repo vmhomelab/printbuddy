@@ -4383,6 +4383,23 @@ export default {
 
   // Virtual Printer
   virtualPrinter: {
+    protocol: {
+      title: "打印机类型",
+      bambu: "Bambu 兼容",
+      bambuDesc: "模拟 Bambu Lab 打印机（Bambu Studio / 使用 Bambu 配置的 Orca）",
+      moonraker: "Moonraker/OctoPrint 兼容",
+      moonrakerDesc: "面向 Klipper、Prusa、OctoPrint 等非 Bambu 打印机的上传端点",
+    },
+    slicerConnection: {
+      title: "切片软件连接",
+      hostUrl: "主机 URL",
+      apiKey: "API 密钥",
+      regenerate: "重新生成 API 密钥",
+      regenerateConfirmTitle: "重新生成 API 密钥",
+      regenerateConfirmMessage: "当前密钥将立即失效。您需要在切片软件的物理打印机设置中填入新密钥。",
+      keyRegenerated: "已生成新的 API 密钥",
+      hint: "在切片软件中添加主机类型为“Octo/Klipper”（或 OctoPrint）的物理打印机，并填入主机 URL 和 API 密钥。发送的任务将进入 Printbuddy，而不是直接发送到打印机。",
+    },
     title: '虚拟打印机',
     running: '运行中',
     stopped: '已停止',
@@ -4412,6 +4429,7 @@ export default {
     },
     targetPrinter: {
       title: '目标打印机',
+      moonrakerHint: "只能选择非 Bambu 打印机。打印队列模式下必填。",
       configured: '代理目标已配置',
       notConfigured: '未选择目标打印机 - 代理模式需要设置',
       placeholder: '选择打印机...',
@@ -4522,6 +4540,7 @@ export default {
       title: '添加虚拟打印机',
       name: '名称',
       hint: '创建后可以配置访问码、目标打印机和其他设置。',
+      hintMoonraker: "创建后，将主机 URL 和 API 密钥复制到切片软件的物理打印机设置中。",
       create: '创建',
     },
     deleteConfirm: {

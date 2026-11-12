@@ -4396,6 +4396,23 @@ export default {
 
   // Virtual Printer
   virtualPrinter: {
+    protocol: {
+      title: "プリンタータイプ",
+      bambu: "Bambu互換",
+      bambuDesc: "Bambu Labプリンターをエミュレート（Bambu Studio / Bambuプロファイルを使うOrca）",
+      moonraker: "Moonraker/OctoPrint互換",
+      moonrakerDesc: "Klipper、Prusa、OctoPrintなどBambu以外のプリンター向けアップロードエンドポイント",
+    },
+    slicerConnection: {
+      title: "スライサー接続",
+      hostUrl: "ホストURL",
+      apiKey: "APIキー",
+      regenerate: "APIキーを再生成",
+      regenerateConfirmTitle: "APIキーを再生成",
+      regenerateConfirmMessage: "現在のキーはすぐに使えなくなります。スライサーの物理プリンター設定に新しいキーを入力する必要があります。",
+      keyRegenerated: "新しいAPIキーを生成しました",
+      hint: "スライサーでホストタイプ「Octo/Klipper」（またはOctoPrint）の物理プリンターを追加し、ホストURLとAPIキーを入力してください。送信したジョブはプリンターに直接ではなくPrintbuddyに届きます。",
+    },
     title: '仮想プリンター',
     running: '稼働中',
     stopped: '停止',
@@ -4425,6 +4442,7 @@ export default {
     },
     targetPrinter: {
       title: 'ターゲットプリンター',
+      moonrakerHint: "Bambu以外のプリンターのみ選択できます。印刷キューモードでは必須です。",
       configured: 'プロキシターゲット設定済み',
       notConfigured: 'ターゲットプリンター未選択 - プロキシモードに必要です',
       placeholder: 'プリンターを選択...',
@@ -4521,6 +4539,7 @@ export default {
       title: '仮想プリンターを追加',
       name: '名前',
       hint: 'アクセスコード、ターゲットプリンター、その他の設定は作成後に設定できます。',
+      hintMoonraker: "作成後、ホストURLとAPIキーをスライサーの物理プリンター設定にコピーしてください。",
       create: '作成',
     },
     deleteConfirm: {

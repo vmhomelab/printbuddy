@@ -4383,6 +4383,23 @@ export default {
 
   // Virtual Printer
   virtualPrinter: {
+    protocol: {
+      title: "印表機類型",
+      bambu: "Bambu 相容",
+      bambuDesc: "模擬 Bambu Lab 印表機（Bambu Studio / 使用 Bambu 設定檔的 Orca）",
+      moonraker: "Moonraker/OctoPrint 相容",
+      moonrakerDesc: "適用於 Klipper、Prusa、OctoPrint 等非 Bambu 印表機的上傳端點",
+    },
+    slicerConnection: {
+      title: "切片軟體連線",
+      hostUrl: "主機 URL",
+      apiKey: "API 金鑰",
+      regenerate: "重新產生 API 金鑰",
+      regenerateConfirmTitle: "重新產生 API 金鑰",
+      regenerateConfirmMessage: "目前的金鑰將立即失效。您需要在切片軟體的實體印表機設定中填入新金鑰。",
+      keyRegenerated: "已產生新的 API 金鑰",
+      hint: "在切片軟體中新增主機類型為「Octo/Klipper」（或 OctoPrint）的實體印表機，並填入主機 URL 與 API 金鑰。送出的工作會進入 Printbuddy，而不是直接送到印表機。",
+    },
     title: '虛擬印表機',
     running: '執行中',
     stopped: '已停止',
@@ -4412,6 +4429,7 @@ export default {
     },
     targetPrinter: {
       title: '目標印表機',
+      moonrakerHint: "只能選擇非 Bambu 印表機。列印佇列模式下為必填。",
       configured: '代理目標已設定',
       notConfigured: '未選擇目標印表機 - 代理模式需要設定',
       placeholder: '選擇印表機...',
@@ -4522,6 +4540,7 @@ export default {
       title: '新增虛擬印表機',
       name: '名稱',
       hint: '建立後可以設定存取碼、目標印表機和其他設定。',
+      hintMoonraker: "建立後，將主機 URL 與 API 金鑰複製到切片軟體的實體印表機設定中。",
       create: '建立',
     },
     deleteConfirm: {

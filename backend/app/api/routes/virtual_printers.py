@@ -1,4 +1,5 @@
 import logging
+import secrets
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
@@ -33,6 +34,10 @@ class TailscaleStatusResponse(BaseModel):
 class VirtualPrinterCreate(BaseModel):
     name: str = "Printbuddy"
     enabled: bool = False
+    # "bambu" (default, emulates a Bambu printer) or "moonraker" (OctoPrint/
+    # Moonraker-compatible HTTP upload endpoint for non-Bambu printers, #52).
+    # Fixed at creation time.
+    protocol: str = "bambu"
     mode: str = "immediate"
     model: str | None = None
     access_code: str | None = None
@@ -74,6 +79,49 @@ def _resolve_printer_model(printer_model: str | None) -> str | None:
     return DISPLAY_NAME_TO_MODEL_CODE.get(printer_model)
 
 
+def generate_vp_api_key() -> str:
+    """API key a slicer sends as ``X-Api-Key`` to a Moonraker-compatible VP."""
+    return secrets.token_hex(16)
+
+
+def _is_moonraker(vp) -> bool:
+    from backend.app.services.virtual_printer.manager import VP_PROTOCOL_MOONRAKER, vp_protocol
+
+    return vp_protocol(vp) == VP_PROTOCOL_MOONRAKER
+
+
+async def _validate_moonraker_target(db: AsyncSession, printer_id: int) -> JSONResponse | None:
+    """Moonraker-compatible VPs hand raw G-code to non-Bambu printers only."""
+    from backend.app.models.printer import Printer
+
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if not printer:
+        return JSONResponse(status_code=400, content={"detail": f"Printer with ID {printer_id} not found"})
+    if (printer.provider or "bambu").strip().lower() == "bambu":
+        return JSONResponse(
+            status_code=400,
+            content={
+                "detail": "Moonraker/OctoPrint-compatible virtual printers can only target non-Bambu printers. "
+                "Use a Bambu-compatible virtual printer for Bambu Lab printers."
+            },
+        )
+    return None
+
+
+def _moonraker_enable_error(vp) -> str | None:
+    """Return why a Moonraker-compatible VP can't be enabled, or None."""
+    from backend.app.services.virtual_printer import MOONRAKER_VP_MODES
+
+    if vp.mode not in MOONRAKER_VP_MODES:
+        return "Proxy mode is not available for Moonraker/OctoPrint-compatible virtual printers"
+    if not vp.api_key:
+        return "API key is required when enabling"
+    if vp.mode == "print_queue" and not vp.target_printer_id:
+        return "Target printer is required for print queue mode"
+    return None
+
+
 def _vp_to_dict(vp, status: dict | None = None) -> dict:
     """Convert VirtualPrinter model to response dict."""
     from backend.app.services.virtual_printer import VIRTUAL_PRINTER_MODELS
@@ -86,6 +134,7 @@ def _vp_to_dict(vp, status: dict | None = None) -> dict:
         "id": vp.id,
         "name": vp.name,
         "enabled": vp.enabled,
+        "protocol": "moonraker" if _is_moonraker(vp) else "bambu",
         "mode": vp.mode,
         "model": model_code,
         "model_name": VIRTUAL_PRINTER_MODELS.get(model_code, model_code),
@@ -99,6 +148,14 @@ def _vp_to_dict(vp, status: dict | None = None) -> dict:
         "tailscale_disabled": vp.tailscale_disabled,
         "position": vp.position,
         "status": status or {"running": False, "pending_files": 0},
+        # Moonraker/OctoPrint-compatible VPs (#52): the slicer's "Physical
+        # printer" host is <printbuddy origin><host_path>, authenticated with
+        # api_key as X-Api-Key. Only returned for those VPs.
+        **(
+            {"api_key": vp.api_key, "host_path": f"/api/v1/vp-host/{vp.id}"}
+            if _is_moonraker(vp)
+            else {"api_key": None, "host_path": None}
+        ),
     }
 
 
@@ -140,6 +197,13 @@ async def create_virtual_printer(
     # Validate mode
     if body.mode not in ("immediate", "review", "print_queue", "proxy"):
         return JSONResponse(status_code=400, content={"detail": "Invalid mode"})
+
+    from backend.app.services.virtual_printer import VP_PROTOCOLS
+
+    if body.protocol not in VP_PROTOCOLS:
+        return JSONResponse(status_code=400, content={"detail": "Invalid protocol"})
+    if body.protocol == "moonraker":
+        return await _create_moonraker_virtual_printer(body, db)
 
     # Validate model
     if body.model and body.model not in VIRTUAL_PRINTER_MODELS:
@@ -226,6 +290,67 @@ async def create_virtual_printer(
     logger.info("Created virtual printer: %s (id=%d)", vp.name, vp.id)
 
     # Sync services if enabled
+    if body.enabled:
+        try:
+            await virtual_printer_manager.sync_from_db()
+        except Exception as e:
+            logger.error("Failed to start virtual printer after create: %s", e)
+
+    return _vp_to_dict(vp)
+
+
+async def _create_moonraker_virtual_printer(body: VirtualPrinterCreate, db: AsyncSession):
+    """Create an OctoPrint/Moonraker-compatible virtual printer (#52).
+
+    Needs no bind IP, Bambu model or access code: uploads arrive over HTTP on
+    the Printbuddy port and are authenticated by a generated API key.
+    """
+    from backend.app.models.virtual_printer import VirtualPrinter
+    from backend.app.services.virtual_printer import MOONRAKER_VP_MODES, virtual_printer_manager
+
+    if body.mode not in MOONRAKER_VP_MODES:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Proxy mode is not available for Moonraker/OctoPrint-compatible virtual printers"},
+        )
+    if body.target_printer_id:
+        error = await _validate_moonraker_target(db, body.target_printer_id)
+        if error:
+            return error
+
+    result = await db.execute(select(VirtualPrinter.serial_suffix).order_by(VirtualPrinter.id.desc()))
+    last_suffix = result.scalar()
+    try:
+        new_suffix = str(int(last_suffix) + 1).zfill(9) if last_suffix else "391800001"
+    except ValueError:
+        new_suffix = "391800002"
+
+    result = await db.execute(select(VirtualPrinter.position).order_by(VirtualPrinter.position.desc()))
+    next_pos = (result.scalar() or 0) + 1
+
+    vp = VirtualPrinter(
+        name=body.name,
+        enabled=body.enabled,
+        protocol="moonraker",
+        mode=body.mode,
+        model=None,
+        api_key=generate_vp_api_key(),
+        target_printer_id=body.target_printer_id,
+        auto_dispatch=body.auto_dispatch,
+        queue_force_color_match=body.queue_force_color_match,
+        serial_suffix=new_suffix,
+        position=next_pos,
+    )
+    if body.enabled:
+        error = _moonraker_enable_error(vp)
+        if error:
+            return JSONResponse(status_code=400, content={"detail": error})
+
+    db.add(vp)
+    await db.commit()
+    await db.refresh(vp)
+    logger.info("Created Moonraker-compatible virtual printer: %s (id=%d)", vp.name, vp.id)
+
     if body.enabled:
         try:
             await virtual_printer_manager.sync_from_db()
@@ -345,6 +470,9 @@ async def update_virtual_printer(
         vp.bind_ip,
         vp.target_printer_id,
     )
+
+    if _is_moonraker(vp):
+        return await _update_moonraker_virtual_printer(vp, body, db)
 
     # Apply updates
     if body.name is not None:
@@ -467,6 +595,92 @@ async def update_virtual_printer(
     instance = virtual_printer_manager.get_instance(vp.id)
     status = instance.get_status() if instance else {"running": False, "pending_files": 0}
 
+    return _vp_to_dict(vp, status)
+
+
+async def _update_moonraker_virtual_printer(vp, body: VirtualPrinterUpdate, db: AsyncSession):
+    """Apply an update to a Moonraker/OctoPrint-compatible VP (#52).
+
+    Bambu-only fields (model, access code, bind/remote IP, Tailscale) are
+    ignored; they mean nothing to an HTTP upload endpoint.
+    """
+    from backend.app.services.virtual_printer import MOONRAKER_VP_MODES, virtual_printer_manager
+
+    if body.name is not None:
+        vp.name = body.name
+    if body.mode is not None:
+        if body.mode not in MOONRAKER_VP_MODES:
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "Proxy mode is not available for Moonraker/OctoPrint-compatible virtual printers"},
+            )
+        vp.mode = body.mode
+    if body.target_printer_id is not None:
+        error = await _validate_moonraker_target(db, body.target_printer_id)
+        if error:
+            return error
+        vp.target_printer_id = body.target_printer_id
+    if body.auto_dispatch is not None:
+        vp.auto_dispatch = body.auto_dispatch
+    if body.queue_force_color_match is not None:
+        vp.queue_force_color_match = body.queue_force_color_match
+    if not vp.api_key:
+        vp.api_key = generate_vp_api_key()
+
+    new_enabled = body.enabled if body.enabled is not None else vp.enabled
+    if new_enabled:
+        error = _moonraker_enable_error(vp)
+        if error:
+            if body.enabled is True:
+                return JSONResponse(status_code=400, content={"detail": error})
+            # Already enabled and another field change broke a requirement.
+            new_enabled = False
+    vp.enabled = new_enabled
+
+    await db.commit()
+    await db.refresh(vp)
+    logger.info("Updated Moonraker-compatible virtual printer: %s (id=%d)", vp.name, vp.id)
+
+    try:
+        await virtual_printer_manager.sync_from_db()
+    except Exception as e:
+        logger.error("Failed to sync virtual printers after update: %s", e)
+
+    instance = virtual_printer_manager.get_instance(vp.id)
+    status = instance.get_status() if instance else {"running": False, "pending_files": 0}
+    return _vp_to_dict(vp, status)
+
+
+@router.post("/{vp_id}/api-key")
+async def regenerate_virtual_printer_api_key(
+    vp_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_UPDATE),
+):
+    """Issue a new API key for a Moonraker/OctoPrint-compatible VP (#52).
+
+    The old key stops working immediately; the slicer's physical-printer
+    entry must be updated with the new one.
+    """
+    from backend.app.models.virtual_printer import VirtualPrinter
+    from backend.app.services.virtual_printer import virtual_printer_manager
+
+    result = await db.execute(select(VirtualPrinter).where(VirtualPrinter.id == vp_id))
+    vp = result.scalar_one_or_none()
+    if not vp:
+        return JSONResponse(status_code=404, content={"detail": "Virtual printer not found"})
+    if not _is_moonraker(vp):
+        return JSONResponse(
+            status_code=400, content={"detail": "Only Moonraker/OctoPrint-compatible virtual printers use an API key"}
+        )
+
+    vp.api_key = generate_vp_api_key()
+    await db.commit()
+    await db.refresh(vp)
+    logger.info("Regenerated API key for virtual printer %s (id=%d)", vp.name, vp.id)
+
+    instance = virtual_printer_manager.get_instance(vp.id)
+    status = instance.get_status() if instance else {"running": False, "pending_files": 0}
     return _vp_to_dict(vp, status)
 
 

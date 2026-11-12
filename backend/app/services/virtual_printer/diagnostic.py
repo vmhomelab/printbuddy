@@ -52,6 +52,11 @@ async def run_vp_diagnostic(vp: VirtualPrinter, instance) -> VPDiagnosticResult:
         instance: The running ``VirtualPrinterInstance`` from the manager, or
             ``None`` if the VP is not currently instantiated.
     """
+    from backend.app.services.virtual_printer.manager import VP_PROTOCOL_MOONRAKER, vp_protocol
+
+    if vp_protocol(vp) == VP_PROTOCOL_MOONRAKER:
+        return _moonraker_diagnostic(vp, instance)
+
     checks: list[DiagnosticCheck] = []
     is_proxy = vp.mode == "proxy"
     running = bool(instance and instance.is_running)
@@ -168,3 +173,41 @@ async def run_vp_diagnostic(vp: VirtualPrinter, instance) -> VPDiagnosticResult:
         overall=overall,
         checks=checks,
     )
+
+
+def _overall(checks: list[DiagnosticCheck]) -> str:
+    statuses = {c.status for c in checks}
+    if "fail" in statuses:
+        return "problems"
+    if "warn" in statuses:
+        return "warnings"
+    return "ok"
+
+
+def _moonraker_diagnostic(vp: VirtualPrinter, instance) -> VPDiagnosticResult:
+    """Checks for a Moonraker/OctoPrint-compatible VP (#52).
+
+    It has no listeners of its own (uploads arrive on the Printbuddy port), so
+    the bind-interface, port and certificate checks don't apply. The
+    ``access_code`` check stands for the API key here.
+    """
+    checks: list[DiagnosticCheck] = [DiagnosticCheck(id="enabled", status="pass" if vp.enabled else "fail")]
+    running = bool(instance and instance.is_running)
+    checks.append(DiagnosticCheck(id="running", status=("pass" if running else "fail") if vp.enabled else "skip"))
+    checks.append(DiagnosticCheck(id="bind_interface", status="skip"))
+    checks.append(DiagnosticCheck(id="access_code", status="pass" if vp.api_key else "fail"))
+
+    if not vp.target_printer_id:
+        checks.append(DiagnosticCheck(id="target_printer", status="fail" if vp.mode == "print_queue" else "skip"))
+    else:
+        from backend.app.services.printer_manager import printer_manager
+
+        state = printer_manager.get_status(vp.target_printer_id)
+        online = bool(state and state.connected)
+        checks.append(DiagnosticCheck(id="target_printer", status="pass" if online else "warn"))
+
+    for cid, port in (("port_ftps", PORT_FTPS), ("port_mqtt", PORT_MQTT), ("port_bind", PORT_BIND)):
+        checks.append(DiagnosticCheck(id=cid, status="skip", params={"port": port}))
+    checks.append(DiagnosticCheck(id="certificate", status="skip"))
+
+    return VPDiagnosticResult(vp_id=vp.id, vp_name=vp.name, mode=vp.mode, overall=_overall(checks), checks=checks)

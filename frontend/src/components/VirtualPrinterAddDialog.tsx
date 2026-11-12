@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, ChevronDown, ArrowRightLeft } from 'lucide-react';
 import { api, multiVirtualPrinterApi } from '../api/client';
+import type { VirtualPrinterProtocol } from '../api/client';
 import { Card, CardContent } from './Card';
 import { Button } from './Button';
 import { useToast } from '../contexts/ToastContext';
@@ -26,20 +27,38 @@ export function VirtualPrinterAddDialog({ onClose }: VirtualPrinterAddDialogProp
   const { showToast } = useToast();
 
   const [name, setName] = useState('');
+  const [protocol, setProtocol] = useState<VirtualPrinterProtocol>('bambu');
   const [mode, setMode] = useState<Mode>('immediate');
   const [targetPrinterId, setTargetPrinterId] = useState<number | null>(null);
+
+  const isMoonraker = protocol === 'moonraker';
+  const availableModes: readonly Mode[] = isMoonraker
+    ? (['immediate', 'review', 'print_queue'] as const)
+    : (['immediate', 'review', 'print_queue', 'proxy'] as const);
+  // Proxy mode targets a Bambu printer; Moonraker-compatible VPs target the rest.
+  const showTargetPrinter = isMoonraker ? mode === 'print_queue' : mode === 'proxy';
+
+  const handleProtocolChange = (next: VirtualPrinterProtocol) => {
+    setProtocol(next);
+    setTargetPrinterId(null);
+    if (next === 'moonraker' && mode === 'proxy') setMode('immediate');
+  };
 
   const { data: printers } = useQuery({
     queryKey: ['printers'],
     queryFn: api.getPrinters,
   });
+  const targetPrinters = printers?.filter((p) =>
+    isMoonraker ? (p.provider ?? 'bambu') !== 'bambu' : (p.provider ?? 'bambu') === 'bambu'
+  );
 
   const createMutation = useMutation({
     mutationFn: () =>
       multiVirtualPrinterApi.create({
         name: name.trim() || 'Printbuddy',
+        protocol,
         mode,
-        target_printer_id: mode === 'proxy' ? (targetPrinterId ?? undefined) : undefined,
+        target_printer_id: showTargetPrinter ? (targetPrinterId ?? undefined) : undefined,
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['virtual-printers'] });
@@ -76,11 +95,31 @@ export function VirtualPrinterAddDialog({ onClose }: VirtualPrinterAddDialogProp
             />
           </div>
 
+          {/* Protocol */}
+          <div>
+            <label className="text-sm text-white font-medium block mb-1">{t('virtualPrinter.protocol.title')}</label>
+            <div className="grid grid-cols-2 gap-2">
+              {(['bambu', 'moonraker'] as const).map((p) => (
+                <button
+                  key={p}
+                  type="button"
+                  onClick={() => handleProtocolChange(p)}
+                  className={`p-2 rounded-lg border text-left transition-colors ${
+                    protocol === p ? 'border-bambu-green bg-bambu-green/10' : 'border-bambu-dark-tertiary hover:border-bambu-gray'
+                  }`}
+                >
+                  <div className="text-white text-xs font-medium">{t(`virtualPrinter.protocol.${p}`)}</div>
+                  <div className="text-[10px] text-bambu-gray">{t(`virtualPrinter.protocol.${p}Desc`)}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+
           {/* Mode */}
           <div>
             <label className="text-sm text-white font-medium block mb-1">{t('virtualPrinter.mode.title')}</label>
             <div className="grid grid-cols-2 gap-2">
-              {(['immediate', 'review', 'print_queue', 'proxy'] as const).map((m) => (
+              {availableModes.map((m) => (
                 <button
                   key={m}
                   onClick={() => setMode(m)}
@@ -104,8 +143,8 @@ export function VirtualPrinterAddDialog({ onClose }: VirtualPrinterAddDialogProp
             </div>
           </div>
 
-          {/* Target Printer - only for proxy mode */}
-          {mode === 'proxy' && (
+          {/* Target Printer - proxy mode (Bambu) or print queue mode (Moonraker) */}
+          {showTargetPrinter && (
             <div>
               <label className="text-sm text-white font-medium block mb-1">{t('virtualPrinter.targetPrinter.title')}</label>
               <div className="relative">
@@ -118,7 +157,7 @@ export function VirtualPrinterAddDialog({ onClose }: VirtualPrinterAddDialogProp
                   className="w-full bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-md px-3 py-2 text-white text-sm appearance-none cursor-pointer pr-10"
                 >
                   <option value="">{t('virtualPrinter.targetPrinter.placeholder')}</option>
-                  {printers?.map((p) => (
+                  {targetPrinters?.map((p) => (
                     <option key={p.id} value={p.id}>{p.name} ({p.ip_address})</option>
                   ))}
                 </select>
@@ -128,7 +167,7 @@ export function VirtualPrinterAddDialog({ onClose }: VirtualPrinterAddDialogProp
           )}
 
           <p className="text-xs text-bambu-gray">
-            {t('virtualPrinter.addDialog.hint')}
+            {t(isMoonraker ? 'virtualPrinter.addDialog.hintMoonraker' : 'virtualPrinter.addDialog.hint')}
           </p>
 
           {/* Actions */}

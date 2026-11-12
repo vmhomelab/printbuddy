@@ -4407,6 +4407,23 @@ export default {
 
   // Virtual Printer
   virtualPrinter: {
+    protocol: {
+      title: "Printer type",
+      bambu: "Bambu-compatible",
+      bambuDesc: "Emulates a Bambu Lab printer (Bambu Studio / Orca with a Bambu profile)",
+      moonraker: "Moonraker/OctoPrint-compatible",
+      moonrakerDesc: "Upload endpoint for Klipper, Prusa, OctoPrint and other non-Bambu printers",
+    },
+    slicerConnection: {
+      title: "Slicer connection",
+      hostUrl: "Host URL",
+      apiKey: "API key",
+      regenerate: "Regenerate API key",
+      regenerateConfirmTitle: "Regenerate API key",
+      regenerateConfirmMessage: "The current key stops working immediately. You must enter the new key in your slicer's physical printer settings.",
+      keyRegenerated: "New API key generated",
+      hint: "In your slicer, add a physical printer with host type \"Octo/Klipper\" (or OctoPrint), enter the host URL and API key. Jobs sent to it go to Printbuddy instead of directly to the printer.",
+    },
     title: 'Virtual Printer',
     running: 'Running',
     stopped: 'Stopped',
@@ -4436,6 +4453,7 @@ export default {
     },
     targetPrinter: {
       title: 'Target Printer',
+      moonrakerHint: "Only non-Bambu printers can be selected. Required for print queue mode.",
       configured: 'Proxy target configured',
       notConfigured: 'No target printer selected - required for proxy mode',
       placeholder: 'Select a printer...',
@@ -4546,6 +4564,7 @@ export default {
       title: 'Add Virtual Printer',
       name: 'Name',
       hint: 'You can configure access code, target printer, and other settings after creating.',
+      hintMoonraker: "After creating, copy the host URL and API key into your slicer's physical printer settings.",
       create: 'Create',
     },
     deleteConfirm: {

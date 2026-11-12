@@ -4403,6 +4403,23 @@ export default {
 
   // Virtual Printer
   virtualPrinter: {
+    protocol: {
+      title: "Tipo de impresora",
+      bambu: "Compatible con Bambu",
+      bambuDesc: "Emula una impresora Bambu Lab (Bambu Studio / Orca con perfil Bambu)",
+      moonraker: "Compatible con Moonraker/OctoPrint",
+      moonrakerDesc: "Punto de subida para Klipper, Prusa, OctoPrint y otras impresoras no Bambu",
+    },
+    slicerConnection: {
+      title: "Conexión del slicer",
+      hostUrl: "URL del host",
+      apiKey: "Clave API",
+      regenerate: "Regenerar clave API",
+      regenerateConfirmTitle: "Regenerar clave API",
+      regenerateConfirmMessage: "La clave actual dejará de funcionar de inmediato. Debe introducir la nueva clave en la configuración de la impresora física de su slicer.",
+      keyRegenerated: "Nueva clave API generada",
+      hint: "En su slicer, añada una impresora física con el tipo de host \"Octo/Klipper\" (u OctoPrint) e introduzca la URL del host y la clave API. Los trabajos enviados llegan a Printbuddy en lugar de directamente a la impresora.",
+    },
     title: 'Impresora virtual',
     running: 'En ejecución',
     stopped: 'Detenida',
@@ -4432,6 +4449,7 @@ export default {
     },
     targetPrinter: {
       title: 'Impresora de destino',
+      moonrakerHint: "Solo se pueden seleccionar impresoras no Bambu. Obligatorio para el modo cola de impresión.",
       configured: 'Destino del proxy configurado',
       notConfigured: 'No hay impresora de destino seleccionada - necesaria para el modo proxy',
       placeholder: 'Seleccionar una impresora...',
@@ -4542,6 +4560,7 @@ export default {
       title: 'Añadir impresora virtual',
       name: 'Nombre',
       hint: 'Puede configurar el código de acceso, la impresora de destino y otros ajustes después de crearla.',
+      hintMoonraker: "Después de crearla, copie la URL del host y la clave API en la configuración de la impresora física de su slicer.",
       create: 'Crear',
     },
     deleteConfirm: {

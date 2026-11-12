@@ -4395,6 +4395,23 @@ export default {
 
   // Virtual Printer
   virtualPrinter: {
+    protocol: {
+      title: "Druckertyp",
+      bambu: "Bambu-kompatibel",
+      bambuDesc: "Emuliert einen Bambu Lab Drucker (Bambu Studio / Orca mit Bambu-Profil)",
+      moonraker: "Moonraker/OctoPrint-kompatibel",
+      moonrakerDesc: "Upload-Endpunkt für Klipper, Prusa, OctoPrint und andere Nicht-Bambu-Drucker",
+    },
+    slicerConnection: {
+      title: "Slicer-Verbindung",
+      hostUrl: "Host-URL",
+      apiKey: "API-Key",
+      regenerate: "API-Key neu erzeugen",
+      regenerateConfirmTitle: "API-Key neu erzeugen",
+      regenerateConfirmMessage: "Der aktuelle Key funktioniert sofort nicht mehr. Du musst den neuen Key in den Einstellungen des physischen Druckers in deinem Slicer eintragen.",
+      keyRegenerated: "Neuer API-Key erzeugt",
+      hint: "Lege im Slicer einen physischen Drucker mit Host-Typ \"Octo/Klipper\" (oder OctoPrint) an und trage Host-URL und API-Key ein. Gesendete Druckaufträge landen dann in Printbuddy statt direkt beim Drucker.",
+    },
     title: 'Virtueller Drucker',
     running: 'Läuft',
     stopped: 'Gestoppt',
@@ -4424,6 +4441,7 @@ export default {
     },
     targetPrinter: {
       title: 'Zieldrucker',
+      moonrakerHint: "Nur Nicht-Bambu-Drucker sind auswählbar. Für den Warteschlangen-Modus erforderlich.",
       configured: 'Proxy-Ziel konfiguriert',
       notConfigured: 'Kein Zieldrucker ausgewählt - erforderlich für Proxy-Modus',
       placeholder: 'Drucker auswählen...',
@@ -4534,6 +4552,7 @@ export default {
       title: 'Virtuellen Drucker hinzufügen',
       name: 'Name',
       hint: 'Sie können Zugangscode, Zieldrucker und andere Einstellungen nach dem Erstellen konfigurieren.',
+      hintMoonraker: "Kopiere nach dem Erstellen Host-URL und API-Key in die Einstellungen des physischen Druckers in deinem Slicer.",
       create: 'Erstellen',
     },
     deleteConfirm: {

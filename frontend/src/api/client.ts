@@ -7332,10 +7332,14 @@ export const virtualPrinterApi = {
 };
 
 // Multi Virtual Printer API
+export type VirtualPrinterProtocol = 'bambu' | 'moonraker';
+
 export interface VirtualPrinterConfig {
   id: number;
   name: string;
   enabled: boolean;
+  /** 'bambu' emulates a Bambu printer; 'moonraker' is an OctoPrint/Moonraker-compatible upload endpoint (#52). */
+  protocol: VirtualPrinterProtocol;
   mode: VirtualPrinterMode;
   model: string | null;
   model_name: string | null;
@@ -7349,6 +7353,10 @@ export interface VirtualPrinterConfig {
   remote_interface_ip: string | null;
   position: number;
   status: { running: boolean; pending_files: number; proxy?: VirtualPrinterProxyStatus };
+  /** Moonraker-compatible VPs only: key the slicer sends as X-Api-Key. */
+  api_key: string | null;
+  /** Moonraker-compatible VPs only: path to append to the Printbuddy origin for the slicer host URL. */
+  host_path: string | null;
 }
 
 export interface VirtualPrinterListResponse {
@@ -7364,6 +7372,7 @@ export const multiVirtualPrinterApi = {
   create: (data: {
     name?: string;
     enabled?: boolean;
+    protocol?: VirtualPrinterProtocol;
     mode?: string;
     model?: string;
     access_code?: string;
@@ -7409,6 +7418,11 @@ export const multiVirtualPrinterApi = {
 
   diagnose: (id: number) =>
     request<VPDiagnosticResult>(`/virtual-printers/${id}/diagnostic`),
+
+  regenerateApiKey: (id: number) =>
+    request<VirtualPrinterConfig>(`/virtual-printers/${id}/api-key`, {
+      method: 'POST',
+    }),
 };
 
 /** The shared CA certificate every virtual printer presents — imported once
