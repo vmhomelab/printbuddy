@@ -72,7 +72,6 @@ import {
   Download,
   Upload,
   ScanSearch,
-  ScanEye,
   CheckCircle,
   CheckSquare,
   XCircle,
@@ -98,7 +97,7 @@ import {
 import { useNavigate } from 'react-router-dom';
 import { api, discoveryApi, firmwareApi, withStreamToken, ApiError, getAuthToken } from '../api/client';
 import { formatDateOnly, formatETA, formatDuration, parseUTCDate } from '../utils/date';
-import type { Printer, PrinterCreate, PrinterStatus, AMSUnit, DiscoveredPrinter, FirmwareUpdateInfo, FirmwareUploadStatus, LinkedSpoolInfo, SpoolAssignment, HMSError, InventorySpool, SmartPlug, PrinterDiagnosticResult, PandaBreathStatus, AppSettings } from '../api/client';
+import type { Printer, PrinterCreate, PrinterStatus, AMSUnit, DiscoveredPrinter, FirmwareUpdateInfo, FirmwareUploadStatus, LinkedSpoolInfo, SpoolAssignment, HMSError, InventorySpool, SmartPlug, PrinterDiagnosticResult, PandaBreathStatus, AppSettings, OctoEverywhereSettings } from '../api/client';
 import { Card, CardContent } from '../components/Card';
 import { Button } from '../components/Button';
 import { ConfirmModal } from '../components/ConfirmModal';
@@ -131,6 +130,7 @@ import { KlipperControlPanel } from '../components/KlipperControlPanel';
 import { getColorName, parseFilamentColor, isLightColor } from '../utils/colors';
 import { getPrinterFileRuleSet, isPrintableForProvider } from '../utils/printerFileRules';
 import type { CameraViewMode } from '../api/client';
+import { AiMonitoringBadge, type AiMonitoringBadgeState } from '../components/AiMonitoringBadge';
 import { canOpenPrinterCamera } from '../utils/printerCamera';
 import { getAssignedPandaBreathState } from '../utils/pandaBreath';
 import { classifyPrinterStatus as classifySharedPrinterStatus } from '../utils/printerStatus';
@@ -1983,6 +1983,7 @@ function PrinterCard({
   requirePlateClear = false,
   pandaBreathState,
   obicoSettings,
+  octoEverywhereSettings,
   allPrinterIds = [],
   layoutEditing = false,
   selectionMode = false,
@@ -2022,6 +2023,7 @@ function PrinterCard({
   requirePlateClear?: boolean;
   pandaBreathState?: PandaBreathStatus['state'] | null;
   obicoSettings?: Pick<AppSettings, 'obico_enabled' | 'obico_ml_url' | 'obico_enabled_printers' | 'external_url'>;
+  octoEverywhereSettings?: Pick<OctoEverywhereSettings, 'enabled' | 'has_api_key' | 'enabled_printers'>;
   allPrinterIds?: number[];
   layoutEditing?: boolean;
   selectionMode?: boolean;
@@ -2175,10 +2177,10 @@ function PrinterCard({
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['settings'] });
       queryClient.invalidateQueries({ queryKey: ['obico-status'] });
-      showToast(t('printers.aiMonitoring.saved', 'AI monitoring updated'), 'success');
+      showToast(t('printers.aiMonitoring.saved'), 'success');
     },
     onError: (error) => {
-      showToast(error instanceof Error ? error.message : t('printers.aiMonitoring.saveFailed', 'Failed to update AI monitoring'), 'error');
+      showToast(error instanceof Error ? error.message : t('printers.aiMonitoring.saveFailed'), 'error');
     },
   });
 
@@ -2194,6 +2196,41 @@ function PrinterCard({
     }
     if (!canUpdateObicoSettings || obicoPrinterToggleMutation.isPending) return;
     obicoPrinterToggleMutation.mutate(!isObicoPrinterEnabled);
+  };
+
+  // OctoEverywhere Gadget provider (PB-35): same per-printer toggle, own settings.
+  const octoEnabledPrinterIds = octoEverywhereSettings?.enabled_printers ?? null;
+  const isOctoPrinterEnabled = octoEnabledPrinterIds === null || octoEnabledPrinterIds.includes(printer.id);
+  const isOctoGloballyEnabled = octoEverywhereSettings?.enabled === true;
+  const isOctoConfigured = octoEverywhereSettings?.has_api_key === true;
+
+  const octoPrinterToggleMutation = useMutation({
+    mutationFn: (nextEnabled: boolean) => {
+      const currentIds = octoEnabledPrinterIds === null ? allPrinterIds : octoEnabledPrinterIds;
+      const nextIds = Array.from(
+        new Set(nextEnabled ? [...currentIds, printer.id] : currentIds.filter((id) => id !== printer.id))
+      ).filter((id) => allPrinterIds.includes(id));
+      return api.updateOctoEverywhereSettings(
+        nextIds.length === allPrinterIds.length ? { all_printers: true } : { enabled_printers: nextIds }
+      );
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['octoeverywhere-settings'] });
+      queryClient.invalidateQueries({ queryKey: ['octoeverywhere-status'] });
+      showToast(t('printers.aiMonitoring.saved'), 'success');
+    },
+    onError: (error) => {
+      showToast(error instanceof Error ? error.message : t('printers.aiMonitoring.saveFailed'), 'error');
+    },
+  });
+
+  const handleToggleOctoPrinter = () => {
+    if (!isOctoConfigured && isOctoPrinterEnabled) {
+      navigate('/settings?tab=failure-detection');
+      return;
+    }
+    if (!canUpdateObicoSettings || octoPrinterToggleMutation.isPending) return;
+    octoPrinterToggleMutation.mutate(!isOctoPrinterEnabled);
   };
 
   // Collect unique tray_info_idx values for cloud filament info lookup
@@ -3493,53 +3530,69 @@ function PrinterCard({
                       />
                     );
                   })()}
-                  {obicoSettings && (() => {
-                    const unavailable = !isObicoGloballyEnabled;
-                    const misconfigured = isObicoGloballyEnabled && isObicoPrinterEnabled && !isObicoConfigured;
-                    const enabled = isObicoGloballyEnabled && isObicoConfigured && isObicoPrinterEnabled;
-                    const disabled = isObicoGloballyEnabled && !isObicoPrinterEnabled;
-                    const label = unavailable
-                      ? t('printers.aiMonitoring.unavailableShort', 'AI unavailable')
-                      : misconfigured
-                        ? t('printers.aiMonitoring.warningShort', 'AI warning')
-                        : enabled
-                          ? t('printers.aiMonitoring.onShort', 'AI On')
-                          : t('printers.aiMonitoring.offShort', 'AI Off');
-                    const title = unavailable
-                      ? t('printers.aiMonitoring.globalDisabledTooltip', 'Global failure detection is disabled. Enable it in Settings → Failure Detection.')
-                      : misconfigured
-                        ? t('printers.aiMonitoring.notConfiguredTooltip', 'AI failure detection needs an ML URL and External URL. Open Settings → Failure Detection.')
+                  {(obicoSettings || octoEverywhereSettings) && (() => {
+                    // One pill per active detection provider; a single "unavailable" pill when none is on.
+                    const stateLabel = (state: AiMonitoringBadgeState) =>
+                      state === 'unavailable'
+                        ? t('printers.aiMonitoring.unavailableShort')
+                        : state === 'misconfigured'
+                          ? t('printers.aiMonitoring.warningShort')
+                          : state === 'enabled'
+                            ? t('printers.aiMonitoring.onShort')
+                            : t('printers.aiMonitoring.offShort');
+                    const providerState = (configured: boolean, printerEnabled: boolean): AiMonitoringBadgeState =>
+                      printerEnabled && !configured ? 'misconfigured' : printerEnabled ? 'enabled' : 'disabled';
+                    const toggleTitle = (state: AiMonitoringBadgeState, provider: string, notConfigured: string) =>
+                      state === 'misconfigured'
+                        ? notConfigured
                         : !canUpdateObicoSettings
-                          ? t('settings.toast.noPermissionUpdate', 'You do not have permission to update settings')
-                          : disabled
-                            ? t('printers.aiMonitoring.disabledTooltip', 'AI monitoring is disabled for this printer. Click to enable.')
-                            : t('printers.aiMonitoring.enabledTooltip', 'AI monitoring is enabled for this printer. Click to disable.');
-                    const classes = unavailable
-                      ? 'border-gray-600 bg-gray-800/60 text-bambu-gray hover:text-white'
-                      : misconfigured
-                        ? 'border-amber-500/60 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20'
-                        : enabled
-                          ? 'border-bambu-green/60 bg-bambu-green/10 text-bambu-green hover:bg-bambu-green/20'
-                          : 'border-gray-600 bg-gray-800/60 text-bambu-gray hover:text-white';
+                          ? t('settings.toast.noPermissionUpdate')
+                          : state === 'disabled'
+                            ? t('printers.aiMonitoring.disabledTooltip', { provider })
+                            : t('printers.aiMonitoring.enabledTooltip', { provider });
+
+                    if (!isObicoGloballyEnabled && !isOctoGloballyEnabled) {
+                      return (
+                        <AiMonitoringBadge
+                          state="unavailable"
+                          label={stateLabel('unavailable')}
+                          title={t('printers.aiMonitoring.globalDisabledTooltip')}
+                          onClick={() => navigate('/settings?tab=failure-detection')}
+                        />
+                      );
+                    }
+
+                    const obicoState = providerState(isObicoConfigured, isObicoPrinterEnabled);
+                    const octoState = providerState(isOctoConfigured, isOctoPrinterEnabled);
                     return (
-                      <button
-                        type="button"
-                        onClick={handleToggleObicoPrinter}
-                        disabled={obicoPrinterToggleMutation.isPending || (!canUpdateObicoSettings && isObicoGloballyEnabled && isObicoConfigured)}
-                        title={title}
-                        aria-label={title}
-                        className={`inline-flex h-6 flex-shrink-0 items-center gap-1 rounded-full border px-2 text-[11px] font-semibold leading-none transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${classes}`}
-                      >
-                        {obicoPrinterToggleMutation.isPending ? (
-                          <Loader2 className="h-3 w-3 animate-spin" />
-                        ) : misconfigured ? (
-                          <AlertTriangle className="h-3 w-3" />
-                        ) : (
-                          <ScanEye className="h-3 w-3" />
+                      <>
+                        {isObicoGloballyEnabled && (
+                          <AiMonitoringBadge
+                            state={obicoState}
+                            label={stateLabel(obicoState)}
+                            provider="Obico"
+                            title={toggleTitle(obicoState, 'Obico', t('printers.aiMonitoring.notConfiguredTooltip'))}
+                            pending={obicoPrinterToggleMutation.isPending}
+                            disabled={obicoPrinterToggleMutation.isPending || (!canUpdateObicoSettings && isObicoConfigured)}
+                            onClick={handleToggleObicoPrinter}
+                          />
                         )}
-                        <span className="hidden sm:inline">{label}</span>
-                        <span className="sm:hidden">AI</span>
-                      </button>
+                        {isOctoGloballyEnabled && (
+                          <AiMonitoringBadge
+                            state={octoState}
+                            label={stateLabel(octoState)}
+                            provider="OctoEverywhere"
+                            title={toggleTitle(
+                              octoState,
+                              'OctoEverywhere',
+                              t('printers.aiMonitoring.octoNotConfiguredTooltip')
+                            )}
+                            pending={octoPrinterToggleMutation.isPending}
+                            disabled={octoPrinterToggleMutation.isPending || (!canUpdateObicoSettings && isOctoConfigured)}
+                            onClick={handleToggleOctoPrinter}
+                          />
+                        )}
+                      </>
                     );
                   })()}
                 </div>
@@ -8600,6 +8653,12 @@ export function PrintersPage() {
     enabled: hasPermission('settings:read'),
   });
 
+  const { data: octoEverywhereSettings } = useQuery({
+    queryKey: ['octoeverywhere-settings'],
+    queryFn: api.getOctoEverywhereSettings,
+    enabled: hasPermission('settings:read'),
+  });
+
   const { data: pandaBreathStatus } = useQuery({
     queryKey: ['panda-breath-status'],
     queryFn: api.getPandaBreathStatus,
@@ -9442,6 +9501,7 @@ export function PrintersPage() {
         requirePlateClear={settings?.require_plate_clear === true}
         pandaBreathState={getAssignedPandaBreathState(printer.id, settings?.panda_breath_printer_assignments, pandaBreathStatus)}
         obicoSettings={obicoSettings}
+        octoEverywhereSettings={octoEverywhereSettings}
         allPrinterIds={allPrinterIds}
         layoutEditing={layoutEditing}
         selectionMode={selectionMode}

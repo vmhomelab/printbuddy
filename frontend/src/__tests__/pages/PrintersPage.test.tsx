@@ -1915,6 +1915,112 @@ describe('PrintersPage', () => {
     });
   });
 
+  describe('AI monitoring badge (Obico / OctoEverywhere)', () => {
+    const obicoOn = {
+      auto_archive: true,
+      obico_enabled: true,
+      obico_ml_url: 'http://obico:3333',
+      obico_enabled_printers: '',
+      external_url: 'http://printbuddy:8000',
+    };
+    const obicoOff = { auto_archive: true, obico_enabled: false, obico_ml_url: '', obico_enabled_printers: '' };
+    const octo = (overrides: Record<string, unknown> = {}) => ({
+      enabled: true,
+      has_api_key: true,
+      sensitivity: 'medium',
+      action: 'notify',
+      poll_interval: 0,
+      enabled_printers: null,
+      notify_on_warning: true,
+      ...overrides,
+    });
+    const badges = (provider?: string) =>
+      Array.from(
+        document.querySelectorAll<HTMLButtonElement>(
+          provider ? `button[data-provider="${provider}"]` : 'button[aria-label*="Failure Detection"]'
+        )
+      );
+
+    it('shows one "unavailable" badge per printer when no provider is enabled', async () => {
+      server.use(
+        http.get('/api/v1/settings/', () => HttpResponse.json(obicoOff)),
+        http.get('/api/v1/octoeverywhere/settings', () => HttpResponse.json(octo({ enabled: false }))),
+      );
+      render(<PrintersPage />);
+      await waitFor(() => expect(screen.getAllByText('AI unavailable')).toHaveLength(2));
+      expect(badges('Obico')).toHaveLength(0);
+      expect(badges('OctoEverywhere')).toHaveLength(0);
+    });
+
+    it('labels the badge with Obico when only Obico is enabled', async () => {
+      server.use(
+        http.get('/api/v1/settings/', () => HttpResponse.json(obicoOn)),
+        http.get('/api/v1/octoeverywhere/settings', () => HttpResponse.json(octo({ enabled: false }))),
+      );
+      render(<PrintersPage />);
+      await waitFor(() => expect(badges('Obico')).toHaveLength(2));
+      expect(badges('OctoEverywhere')).toHaveLength(0);
+      expect(badges('Obico')[0]).toHaveTextContent('AI On · Obico');
+    });
+
+    it('labels the badge with OctoEverywhere and respects its printer list', async () => {
+      server.use(
+        http.get('/api/v1/settings/', () => HttpResponse.json(obicoOff)),
+        http.get('/api/v1/octoeverywhere/settings', () => HttpResponse.json(octo({ enabled_printers: [1] }))),
+      );
+      render(<PrintersPage />);
+      await waitFor(() => expect(badges('OctoEverywhere')).toHaveLength(2));
+      expect(badges('Obico')).toHaveLength(0);
+      const [first, second] = badges('OctoEverywhere');
+      expect(first).toHaveTextContent('AI On · OctoEverywhere');
+      expect(second).toHaveTextContent('AI Off · OctoEverywhere');
+      expect(second).toHaveAttribute('title', expect.stringContaining('OctoEverywhere AI monitoring is disabled'));
+    });
+
+    it('shows one badge per provider when both are enabled', async () => {
+      server.use(
+        http.get('/api/v1/settings/', () => HttpResponse.json(obicoOn)),
+        http.get('/api/v1/octoeverywhere/settings', () => HttpResponse.json(octo())),
+      );
+      render(<PrintersPage />);
+      await waitFor(() => expect(badges('OctoEverywhere')).toHaveLength(2));
+      expect(badges('Obico')).toHaveLength(2);
+    });
+
+    it('warns when OctoEverywhere is enabled without an API key', async () => {
+      server.use(
+        http.get('/api/v1/settings/', () => HttpResponse.json(obicoOff)),
+        http.get('/api/v1/octoeverywhere/settings', () => HttpResponse.json(octo({ has_api_key: false }))),
+      );
+      render(<PrintersPage />);
+      await waitFor(() => expect(badges('OctoEverywhere')).toHaveLength(2));
+      expect(badges('OctoEverywhere')[0]).toHaveTextContent('AI warning');
+      expect(badges('OctoEverywhere')[0]).toHaveAttribute('title', expect.stringContaining('needs an API key'));
+    });
+
+    it('toggling the OctoEverywhere badge updates only the OctoEverywhere printer list', async () => {
+      let octoBody: unknown = null;
+      let obicoUpdated = false;
+      server.use(
+        http.get('/api/v1/settings/', () => HttpResponse.json(obicoOn)),
+        http.put('/api/v1/settings/', () => {
+          obicoUpdated = true;
+          return HttpResponse.json(obicoOn);
+        }),
+        http.get('/api/v1/octoeverywhere/settings', () => HttpResponse.json(octo({ enabled_printers: [1] }))),
+        http.put('/api/v1/octoeverywhere/settings', async ({ request }) => {
+          octoBody = await request.json();
+          return HttpResponse.json(octo());
+        }),
+      );
+      render(<PrintersPage />);
+      await waitFor(() => expect(badges('OctoEverywhere')).toHaveLength(2));
+      fireEvent.click(badges('OctoEverywhere')[1]);
+      await waitFor(() => expect(octoBody).toEqual({ all_printers: true }));
+      expect(obicoUpdated).toBe(false);
+    });
+  });
+
   describe('firmware version badge', () => {
     const firmwareUpToDate = {
       printer_id: 1,

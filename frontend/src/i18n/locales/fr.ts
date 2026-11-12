@@ -128,6 +128,19 @@ export default {
 
   // Printers page
   printers: {
+    aiMonitoring: {
+      onShort: 'IA activée',
+      offShort: 'IA désactivée',
+      warningShort: 'Alerte IA',
+      unavailableShort: 'IA indisponible',
+      globalDisabledTooltip: 'La détection d\'échecs par IA est désactivée. Activez Obico ou OctoEverywhere dans Paramètres → Détection d\'échecs.',
+      notConfiguredTooltip: 'Obico nécessite une URL d\'API ML et une URL externe. Ouvrez Paramètres → Détection d\'échecs.',
+      octoNotConfiguredTooltip: 'OctoEverywhere nécessite une clé d\'API. Ouvrez Paramètres → Détection d\'échecs.',
+      enabledTooltip: 'La surveillance IA {{provider}} est activée pour cette imprimante. Cliquez pour la désactiver.',
+      disabledTooltip: 'La surveillance IA {{provider}} est désactivée pour cette imprimante. Cliquez pour l\'activer.',
+      saved: 'Surveillance IA mise à jour',
+      saveFailed: 'Échec de la mise à jour de la surveillance IA',
+    },
     addPreflight: {
       checking: 'Vérification de la connexion...',
       warning: 'Certaines vérifications de connexion ont échoué. Cette imprimante pourrait apparaître hors ligne. Examinez les vérifications ci-dessous, corrigez ce que vous pouvez, ou enregistrez quand même.',

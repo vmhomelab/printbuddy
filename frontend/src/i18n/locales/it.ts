@@ -128,6 +128,19 @@ export default {
 
   // Printers page
   printers: {
+    aiMonitoring: {
+      onShort: 'IA attiva',
+      offShort: 'IA disattiva',
+      warningShort: 'Avviso IA',
+      unavailableShort: 'IA non disponibile',
+      globalDisabledTooltip: 'Il rilevamento errori con IA è disattivato. Attiva Obico o OctoEverywhere in Impostazioni → Rilevamento errori.',
+      notConfiguredTooltip: 'Obico richiede un URL dell\'API ML e un URL esterno. Apri Impostazioni → Rilevamento errori.',
+      octoNotConfiguredTooltip: 'OctoEverywhere richiede una chiave API. Apri Impostazioni → Rilevamento errori.',
+      enabledTooltip: 'Il monitoraggio IA di {{provider}} è attivo per questa stampante. Clicca per disattivarlo.',
+      disabledTooltip: 'Il monitoraggio IA di {{provider}} è disattivato per questa stampante. Clicca per attivarlo.',
+      saved: 'Monitoraggio IA aggiornato',
+      saveFailed: 'Impossibile aggiornare il monitoraggio IA',
+    },
     addPreflight: {
       checking: 'Verifica della connessione...',
       warning: 'Alcuni controlli di connessione non sono riusciti. Questa stampante potrebbe risultare offline. Controlla le verifiche qui sotto, risolvi ciò che puoi oppure salva comunque.',

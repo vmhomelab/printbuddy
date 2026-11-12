@@ -127,6 +127,19 @@ export default {
   },
   // Printers page
   printers: {
+    aiMonitoring: {
+      onShort: 'AI オン',
+      offShort: 'AI オフ',
+      warningShort: 'AI 警告',
+      unavailableShort: 'AI 利用不可',
+      globalDisabledTooltip: 'AI 失敗検出はオフです。設定 → 失敗検出で Obico または OctoEverywhere を有効にしてください。',
+      notConfiguredTooltip: 'Obico には ML API の URL と外部 URL が必要です。設定 → 失敗検出を開いてください。',
+      octoNotConfiguredTooltip: 'OctoEverywhere には API キーが必要です。設定 → 失敗検出を開いてください。',
+      enabledTooltip: 'このプリンターでは {{provider}} の AI 監視が有効です。クリックで無効にします。',
+      disabledTooltip: 'このプリンターでは {{provider}} の AI 監視が無効です。クリックで有効にします。',
+      saved: 'AI 監視を更新しました',
+      saveFailed: 'AI 監視を更新できませんでした',
+    },
     addPreflight: {
       checking: '接続を確認しています...',
       warning: '一部の接続チェックに失敗しました。このプリンターはオフラインと表示される可能性があります。下のチェックを確認し、可能な範囲で修正するか、そのまま保存してください。',

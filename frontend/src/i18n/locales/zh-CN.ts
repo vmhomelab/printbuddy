@@ -128,6 +128,19 @@ export default {
 
   // Printers page
   printers: {
+    aiMonitoring: {
+      onShort: 'AI 已开启',
+      offShort: 'AI 已关闭',
+      warningShort: 'AI 警告',
+      unavailableShort: 'AI 不可用',
+      globalDisabledTooltip: 'AI 故障检测已关闭。请在 设置 → 故障检测 中启用 Obico 或 OctoEverywhere。',
+      notConfiguredTooltip: 'Obico 需要 ML API 地址和外部 URL。请打开 设置 → 故障检测。',
+      octoNotConfiguredTooltip: 'OctoEverywhere 需要 API 密钥。请打开 设置 → 故障检测。',
+      enabledTooltip: '此打印机已启用 {{provider}} AI 监控。点击以停用。',
+      disabledTooltip: '此打印机已停用 {{provider}} AI 监控。点击以启用。',
+      saved: 'AI 监控已更新',
+      saveFailed: '无法更新 AI 监控',
+    },
     addPreflight: {
       checking: '正在检查连接...',
       warning: '部分连接检查未通过。此打印机可能显示为离线。请查看下方的检查项，尽量修复，或仍然保存。',

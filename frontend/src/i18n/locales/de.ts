@@ -128,6 +128,19 @@ export default {
 
   // Printers page
   printers: {
+    aiMonitoring: {
+      onShort: 'KI an',
+      offShort: 'KI aus',
+      warningShort: 'KI-Warnung',
+      unavailableShort: 'KI nicht verfügbar',
+      globalDisabledTooltip: 'Die KI-Fehlererkennung ist aus. Aktiviere Obico oder OctoEverywhere unter Einstellungen → Fehlererkennung.',
+      notConfiguredTooltip: 'Obico braucht eine ML-API-URL und eine externe URL. Öffne Einstellungen → Fehlererkennung.',
+      octoNotConfiguredTooltip: 'OctoEverywhere braucht einen API-Schlüssel. Öffne Einstellungen → Fehlererkennung.',
+      enabledTooltip: 'KI-Überwachung durch {{provider}} ist für diesen Drucker aktiv. Klicken zum Deaktivieren.',
+      disabledTooltip: 'KI-Überwachung durch {{provider}} ist für diesen Drucker aus. Klicken zum Aktivieren.',
+      saved: 'KI-Überwachung aktualisiert',
+      saveFailed: 'KI-Überwachung konnte nicht aktualisiert werden',
+    },
     addPreflight: {
       checking: 'Verbindung wird geprüft...',
       warning: 'Einige Verbindungsprüfungen sind fehlgeschlagen. Dieser Drucker wird möglicherweise als offline angezeigt. Prüfe die Punkte unten, behebe was möglich ist, oder speichere trotzdem.',

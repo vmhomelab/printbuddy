@@ -16,6 +16,10 @@ and to the regional `*.octoeverywhere.com` processing hosts that Gadget returns.
 
 ## How it works
 
+- The AI badge on each printer card shows which provider watches that printer,
+  e.g. `AI On · OctoEverywhere`. When both providers are enabled, the card shows one
+  badge per provider, and clicking a badge adds or removes the printer from that
+  provider's list only.
 - For each monitored printer, Printbuddy creates one Gadget *context* per print.
   Creating a context is free.
 - While the printer is `RUNNING`, Printbuddy uploads a JPEG snapshot to the

@@ -128,6 +128,19 @@ export default {
 
   // Printers page
   printers: {
+    aiMonitoring: {
+      onShort: 'AI On',
+      offShort: 'AI Off',
+      warningShort: 'AI warning',
+      unavailableShort: 'AI unavailable',
+      globalDisabledTooltip: 'AI failure detection is off. Enable Obico or OctoEverywhere in Settings → Failure Detection.',
+      notConfiguredTooltip: 'Obico needs an ML API URL and an External URL. Open Settings → Failure Detection.',
+      octoNotConfiguredTooltip: 'OctoEverywhere needs an API key. Open Settings → Failure Detection.',
+      enabledTooltip: '{{provider}} AI monitoring is enabled for this printer. Click to disable.',
+      disabledTooltip: '{{provider}} AI monitoring is disabled for this printer. Click to enable.',
+      saved: 'AI monitoring updated',
+      saveFailed: 'Failed to update AI monitoring',
+    },
     title: 'Printers',
     addPrinter: 'Add Printer',
     addPreflight: {
