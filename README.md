@@ -50,25 +50,45 @@ Printbuddy uses a provider-based architecture for multiple printer platforms.
 
 Current state:
 
-- Initial fork setup on `dev`
 - Bambu Lab support from the original foundation ✅
-- Prusa support added via PrusaLink ✅(Prusa Connect not tested)
-- Klipper (open fimrware) support being added ⌛ (not officially supported yet)
-- Provider architecture in progress ⌛
+- Prusa support via PrusaLink ✅ (Prusa Connect available, not tested)
+- Klipper (open firmware) via Moonraker – Klipper, Mainsail and Fluidd ✅
+  - capability-based chamber, light and part-fan control (e.g. QIDI Q2)
+  - multi-tool toolheads shown as AMS-style tiles
+  - CFS display and control for K2-OpenHost (Kalico) printers
+- OctoPrint (Marlin / RepRap printers) ⌛ (Implemented / In testing)
+- Elegoo via SDCP (e.g. Centauri Carbon) ⌛ (Implemented / In testing)
+- Provider architecture in place, further providers can be added ✅
 
 ---
 
 ## Features
 
-Current and planned goals include:
+**Printers**
+- Multi-printer dashboard for mixed fleets (Bambu Lab, Klipper/Moonraker, PrusaLink, OctoPrint, Elegoo SDCP)
+- Printer discovery (Bambu SSDP, subnet scan for OctoPrint)
+- Live status, temperatures, camera, manual controls and print control (start / pause / resume / cancel)
+- File Manager per printer (list, upload, download, delete)
+- Print archive with automatic start/finish detection for all providers
+- Print queue, print farm monitor and farm command center
+- Panda Breath support, smart plugs (Tasmota, REST, MQTT) and Home Assistant
 
-- Multi-printer dashboard
-- Bambu Lab printer support
-- Klipper printer support through Moonraker
-- Prusa-compatible environments
-- Self-hosted deployment
-- Docker-based setup
-- Modern web UI
+**Slicing & models**
+- Integrated slicer via optional Bambu Studio / OrcaSlicer sidecars – slice to `.gcode.3mf` without a desktop slicer
+- 3D model viewer with wireframe and X-ray display modes, G-code viewer
+- **Model import** page: import from **MakerWorld** and from a self-hosted **[GyroidVault](https://github.com/TeeCodeDev/GyroidVault)** library into the Printbuddy library ([docs](docs/gyroidvault.md)); finished prints can optionally be reported back to GyroidVault
+
+**Projects & filament**
+- Projects with a job plan: per-plate quantity, material and printer, running totals and one-click queueing
+- Projects can be linked to a File Manager folder
+- Filament inventory, Spoolman integration and maintenance tracking
+
+**Operations**
+- Notifications (incl. selectable source for progress milestones)
+- Users, groups, MFA, OIDC / LDAP and API keys
+- Backups (local and GitHub)
+- Optional self-update from the UI via an updater sidecar that also updates itself and the slicer sidecars ([docs](docs/self-update-sidecar.md))
+- Self-hosted, Docker-based, modern web UI in multiple languages
 
 ---
 
@@ -95,7 +115,7 @@ Current and planned goals include:
 <p align="center">
   <img src="docs/screenshots/printer-detail.png" alt="Klipper-based printer with control options" width="800">
 </p>
-<img width="960" height="874" alt="grafik" src="https://github.com/user-attachments/assets/c402bcbf-3797-4ad7-b14e-f0ade3bb92d1" />
+<img width="664" height="816" alt="grafik" src="https://github.com/user-attachments/assets/aee2b4d1-ab86-4d2b-97af-59667ae7bd8d" />
 
 
 <p align="center">
@@ -154,6 +174,26 @@ cd Printbuddy
 docker compose up -d --build
 ```
 
+### Optional sidecars
+
+`docker-compose.yml` contains commented-out services you can enable:
+
+- `bambu-studio-api` / `orca-slicer-api` – integrated slicer, see [Integrated slicer](#integrated-slicer)
+- `printbuddy-updater` – **Update now** button in the UI, see [docs/self-update-sidecar.md](docs/self-update-sidecar.md). The updater needs Docker socket access, so only enable it if Printbuddy admins may manage containers on that host.
+
+## Integrated slicer
+
+Printbuddy can slice models itself: pick printer, process and filament profiles in the **Slice** dialog and Printbuddy produces a printable `.gcode.3mf`. Slicing runs in an optional companion container:
+
+| Sidecar | Port | Use it for |
+|---|---|---|
+| `bambu-studio-api` | 3001 | Bambu Lab printers (required for newer models such as the X2D), AMD64 only |
+| `orca-slicer-api` | 3003 | Non-Bambu printers (Prusa, Voron, Creality, …) and older Bambu models, AMD64 + ARM64 |
+
+Enable the sidecar in `docker-compose.yml`, then turn on **Settings → Slicer → Use Slicer API**. The connection test shows which slicer answers. The sidecar images use the `latest` tag and are kept in step with Printbuddy releases.
+
+Full guide: [docs/slicer-sidecar.md](docs/slicer-sidecar.md)
+
 Open Printbuddy in your browser:
 
 ```text
@@ -191,11 +231,14 @@ Planned providers:
 | Provider | Description | Status |
 |---|---|---|
 | `bambu` | Existing Printbuddy / Bambu Lab MQTT + FTP support | Inherited ✅ |
-| `klipper` | Moonraker-backed Klipper printer status and control | Implemented ✅ |
-| `prusa` | PrusaLink support | Implemented ✅ |
-| `elegoo` | CC1 support | Implemented ✅ |
+| `klipper` / `mainsail` / `fluidd` | Moonraker-backed Klipper printer status and control (incl. chamber/light/fan capabilities, multi-tool, K2 CFS) | Implemented ✅ |
+| `prusalink` | PrusaLink (local HTTP API) | Implemented ✅ |
+| `prusaconnect` | Prusa Connect (cloud) | Implemented, not tested ⌛ |
+| `pcl` | Prusa Connect Local (hosted server) | Implemented, in testing ⌛ |
+| `elegoo_sdcp` | Elegoo SDCP (e.g. Centauri Carbon / CC1) | Implemented, in testing ⌛ |
+| `octoprint` | OctoPrint REST API (Marlin / RepRap printers) | (mplemented, in testing ⌛ |
 
-The first implementation step adds the provider and printer metadata to allow printers to be added.
+Each printer stores its provider plus provider metadata; provider-specific clients are created through `backend/app/services/printer_providers/factory.py`.
 
 Bambu remains the default provider for backwards compatibility.
 
