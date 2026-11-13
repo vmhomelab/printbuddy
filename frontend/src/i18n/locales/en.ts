@@ -4422,7 +4422,7 @@ export default {
       },
       moonraker: {
         tag: "Klipper, Prusa, OctoPrint & more",
-        point1: "Add a physical printer in OrcaSlicer / Snapmaker Orca / PrusaSlicer with host type “Octo/Klipper”",
+        point1: "OrcaSlicer / Snapmaker Orca: add a physical printer with host type “Octo/Klipper”. PrusaSlicer: host type “OctoPrint” (binary G-code works too)",
         point2: "Paste the host URL and API key from the virtual printer card",
         point3: "Modes: Archive, Review, Queue (sends to the target printer)",
         noSetupLabel: "No extra setup:",
@@ -4444,7 +4444,7 @@ export default {
       regenerateConfirmTitle: "Regenerate API key",
       regenerateConfirmMessage: "The current key stops working immediately. You must enter the new key in your slicer's physical printer settings.",
       keyRegenerated: "New API key generated",
-      hint: "In your slicer, add a physical printer with host type \"Octo/Klipper\" (or OctoPrint), enter the host URL and API key. Jobs sent to it go to Printbuddy instead of directly to the printer.",
+      hint: "In your slicer, add a physical printer with host type “Octo/Klipper” (OrcaSlicer / Snapmaker Orca) or “OctoPrint” (PrusaSlicer, binary G-code works too) and enter the host URL and API key. Jobs sent to it go to Printbuddy instead of directly to the printer.",
     },
     title: 'Virtual Printer',
     running: 'Running',

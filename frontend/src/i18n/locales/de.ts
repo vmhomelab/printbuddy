@@ -4410,7 +4410,7 @@ export default {
       },
       moonraker: {
         tag: "Klipper, Prusa, OctoPrint & mehr",
-        point1: "Lege in OrcaSlicer / Snapmaker Orca / PrusaSlicer einen physischen Drucker mit Host-Typ „Octo/Klipper“ an",
+        point1: "OrcaSlicer / Snapmaker Orca: physischen Drucker mit Host-Typ „Octo/Klipper“ anlegen. PrusaSlicer: Host-Typ „OctoPrint“ (auch binärer G-code)",
         point2: "Host-URL und API-Key aus der Karte des virtuellen Druckers einfügen",
         point3: "Modi: Archiv, Review, Warteschlange (sendet an den Zieldrucker)",
         noSetupLabel: "Keine zusätzliche Einrichtung:",
@@ -4432,7 +4432,7 @@ export default {
       regenerateConfirmTitle: "API-Key neu erzeugen",
       regenerateConfirmMessage: "Der aktuelle Key funktioniert sofort nicht mehr. Du musst den neuen Key in den Einstellungen des physischen Druckers in deinem Slicer eintragen.",
       keyRegenerated: "Neuer API-Key erzeugt",
-      hint: "Lege im Slicer einen physischen Drucker mit Host-Typ \"Octo/Klipper\" (oder OctoPrint) an und trage Host-URL und API-Key ein. Gesendete Druckaufträge landen dann in Printbuddy statt direkt beim Drucker.",
+      hint: "Lege im Slicer einen physischen Drucker mit Host-Typ „Octo/Klipper“ (OrcaSlicer / Snapmaker Orca) oder „OctoPrint“ (PrusaSlicer, auch binärer G-code) an und trage Host-URL und API-Key ein. Gesendete Druckaufträge landen dann in Printbuddy statt direkt beim Drucker.",
     },
     title: 'Virtueller Drucker',
     running: 'Läuft',

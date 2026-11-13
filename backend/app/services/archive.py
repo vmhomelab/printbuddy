@@ -87,13 +87,14 @@ def resolve_display_stem(filename: str) -> str:
 
     - ``.gcode.3mf`` → bare stem (Bambu Studio FTP send)
     - ``.3mf``       → bare stem
+    - ``.bgcode``    → bare stem (Prusa binary G-code)
     - ``.gcode``     → bare stem (rare standalone gcode upload)
 
     Anything else passes through unchanged.
     """
     name = Path(filename).name  # drop any path components
     lower = name.lower()
-    for suffix in (".gcode.3mf", ".3mf", ".gcode"):
+    for suffix in (".gcode.3mf", ".3mf", ".bgcode", ".gcode"):
         if lower.endswith(suffix):
             return name[: -len(suffix)]
     return Path(name).stem
@@ -1182,6 +1183,10 @@ class ArchiveService:
             from backend.app.utils.gcode_metadata import parse_gcode_metadata
 
             metadata = parse_gcode_metadata(dest_file)
+        elif dest_file.suffix.lower() == ".bgcode":
+            from backend.app.utils.gcode_metadata import parse_bgcode_metadata
+
+            metadata = parse_bgcode_metadata(dest_file)
         else:
             parser = ThreeMFParser(dest_file, plate_number=plate_number)
             metadata = parser.parse()

@@ -247,12 +247,13 @@ class VirtualPrinterInstance:
         """Whether an uploaded file is a print job this VP should process.
 
         Bambu VPs receive ``.gcode.3mf``; Moonraker-compatible VPs also take
-        the raw ``.gcode`` that Klipper/Prusa/OctoPrint slicer profiles emit.
+        the raw ``.gcode`` that Klipper/Prusa/OctoPrint slicer profiles emit
+        and Prusa's binary ``.bgcode``.
         """
         suffix = file_path.suffix.lower()
         if suffix == ".3mf":
             return True
-        return self.is_http_host and suffix == ".gcode"
+        return self.is_http_host and suffix in (".gcode", ".bgcode")
 
     def generate_certificates(self) -> tuple[Path, Path]:
         """Generate certificates for this instance."""

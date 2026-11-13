@@ -4411,7 +4411,7 @@ export default {
       },
       moonraker: {
         tag: "Klipper、Prusa、OctoPrintなど",
-        point1: "OrcaSlicer / Snapmaker Orca / PrusaSlicerでホストタイプ「Octo/Klipper」の物理プリンターを追加",
+        point1: "OrcaSlicer / Snapmaker Orca：ホストタイプ「Octo/Klipper」の物理プリンターを追加。PrusaSlicer：ホストタイプ「OctoPrint」（バイナリG-codeにも対応）",
         point2: "仮想プリンターカードのホストURLとAPIキーを貼り付け",
         point3: "モード：アーカイブ、レビュー、キュー（ターゲットプリンターに送信）",
         noSetupLabel: "追加設定不要：",
@@ -4433,7 +4433,7 @@ export default {
       regenerateConfirmTitle: "APIキーを再生成",
       regenerateConfirmMessage: "現在のキーはすぐに使えなくなります。スライサーの物理プリンター設定に新しいキーを入力する必要があります。",
       keyRegenerated: "新しいAPIキーを生成しました",
-      hint: "スライサーでホストタイプ「Octo/Klipper」（またはOctoPrint）の物理プリンターを追加し、ホストURLとAPIキーを入力してください。送信したジョブはプリンターに直接ではなくPrintbuddyに届きます。",
+      hint: "スライサーでホストタイプ「Octo/Klipper」（OrcaSlicer / Snapmaker Orca）または「OctoPrint」（PrusaSlicer、バイナリG-codeにも対応）の物理プリンターを追加し、ホストURLとAPIキーを入力してください。送信したジョブはプリンターに直接ではなくPrintbuddyに届きます。",
     },
     title: '仮想プリンター',
     running: '稼働中',

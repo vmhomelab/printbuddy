@@ -7,8 +7,9 @@ Klipper/Prusa/OctoPrint printer's G-code over the Bambu network protocol.
 A Moonraker-compatible virtual printer instead answers the small subset of the
 OctoPrint and Moonraker HTTP APIs that slicers use to upload a job:
 
-* OrcaSlicer / Snapmaker Orca / PrusaSlicer / SuperSlicer, host type
-  "Octo/Klipper" or "OctoPrint": ``GET api/version``, ``POST api/files/local``
+* OrcaSlicer / Snapmaker Orca / SuperSlicer, host type "Octo/Klipper", and
+  PrusaSlicer, host type "OctoPrint" (also for binary ``.bgcode``):
+  ``GET api/version``, ``POST api/files/local``
 * Moonraker clients: ``GET server/info``, ``GET printer/info``,
   ``POST server/files/upload``
 
@@ -59,7 +60,7 @@ def _sanitize_filename(raw: str | None) -> str | None:
     if not name:
         return None
     lower = name.lower()
-    if not (lower.endswith(".gcode") or lower.endswith(".3mf")):
+    if not lower.endswith((".gcode", ".bgcode", ".3mf")):
         return None
     return name[:200]
 
@@ -129,7 +130,7 @@ async def _store_and_dispatch(vp, file: UploadFile, request: Request, path_hint:
 
     name = _sanitize_filename(file.filename) or _sanitize_filename(path_hint)
     if not name:
-        return JSONResponse(status_code=415, content={"error": "Only .gcode and .3mf files are accepted"})
+        return JSONResponse(status_code=415, content={"error": "Only .gcode, .bgcode and .3mf files are accepted"})
 
     instance.upload_dir.mkdir(parents=True, exist_ok=True)
     dest = _unique_path(instance.upload_dir, name)

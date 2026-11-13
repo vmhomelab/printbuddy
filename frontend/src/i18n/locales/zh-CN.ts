@@ -4398,7 +4398,7 @@ export default {
       },
       moonraker: {
         tag: "Klipper、Prusa、OctoPrint 等",
-        point1: "在 OrcaSlicer / Snapmaker Orca / PrusaSlicer 中添加主机类型为“Octo/Klipper”的物理打印机",
+        point1: "OrcaSlicer / Snapmaker Orca：添加主机类型为“Octo/Klipper”的物理打印机。PrusaSlicer：主机类型选“OctoPrint”（也支持二进制 G-code）",
         point2: "粘贴虚拟打印机卡片上的主机 URL 和 API 密钥",
         point3: "模式：归档、审核、队列（发送到目标打印机）",
         noSetupLabel: "无需额外设置：",
@@ -4420,7 +4420,7 @@ export default {
       regenerateConfirmTitle: "重新生成 API 密钥",
       regenerateConfirmMessage: "当前密钥将立即失效。您需要在切片软件的物理打印机设置中填入新密钥。",
       keyRegenerated: "已生成新的 API 密钥",
-      hint: "在切片软件中添加主机类型为“Octo/Klipper”（或 OctoPrint）的物理打印机，并填入主机 URL 和 API 密钥。发送的任务将进入 Printbuddy，而不是直接发送到打印机。",
+      hint: "在切片软件中添加主机类型为“Octo/Klipper”（OrcaSlicer / Snapmaker Orca）或“OctoPrint”（PrusaSlicer，也支持二进制 G-code）的物理打印机，并填入主机 URL 和 API 密钥。发送的任务将进入 Printbuddy，而不是直接发送到打印机。",
     },
     title: '虚拟打印机',
     running: '运行中',

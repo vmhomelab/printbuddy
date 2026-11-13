@@ -4399,7 +4399,7 @@ export default {
       },
       moonraker: {
         tag: "Klipper, Prusa, OctoPrint e mais",
-        point1: "Adicione uma impressora física no OrcaSlicer / Snapmaker Orca / PrusaSlicer com tipo de host “Octo/Klipper”",
+        point1: "OrcaSlicer / Snapmaker Orca: adicione uma impressora física com tipo de host “Octo/Klipper”. PrusaSlicer: tipo de host “OctoPrint” (G-code binário também funciona)",
         point2: "Cole a URL do host e a chave de API do cartão da impressora virtual",
         point3: "Modos: Arquivo, Revisão, Fila (envia para a impressora alvo)",
         noSetupLabel: "Sem configuração extra:",
@@ -4421,7 +4421,7 @@ export default {
       regenerateConfirmTitle: "Gerar nova chave de API",
       regenerateConfirmMessage: "A chave atual deixa de funcionar imediatamente. Você precisa inserir a nova chave nas configurações da impressora física do seu fatiador.",
       keyRegenerated: "Nova chave de API gerada",
-      hint: "No fatiador, adicione uma impressora física com tipo de host \"Octo/Klipper\" (ou OctoPrint) e informe a URL do host e a chave de API. Os trabalhos enviados vão para o Printbuddy em vez de direto para a impressora.",
+      hint: "No fatiador, adicione uma impressora física com tipo de host “Octo/Klipper” (OrcaSlicer / Snapmaker Orca) ou “OctoPrint” (PrusaSlicer, G-code binário também funciona) e informe a URL do host e a chave de API. Os trabalhos enviados vão para o Printbuddy em vez de direto para a impressora.",
     },
     title: 'Impressora Virtual',
     running: 'Em execução',

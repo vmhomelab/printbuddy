@@ -278,6 +278,65 @@ async def test_bambu_vp_still_ignores_raw_gcode(tmp_path: Path):
     )
     assert instance.accepts_file(Path("a.gcode.3mf"))
     assert not instance.accepts_file(Path("a.gcode"))
+    assert not instance.accepts_file(Path("a.bgcode"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_prusaslicer_bgcode_upload_reaches_prusalink_queue(
+    async_client: AsyncClient,
+    test_engine,
+    db_session: AsyncSession,
+    printer_factory,
+    no_sync,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    """PrusaSlicer (host type OctoPrint) sends binary G-code by default. It must
+    be accepted, archived with its metadata and queued for the Prusa target."""
+    from backend.tests.unit.test_gcode_archive_metadata import _write_bgcode
+
+    monkeypatch.setattr(settings, "base_dir", tmp_path)
+    monkeypatch.setattr(settings, "archive_dir", tmp_path / "archives")
+    settings.archive_dir.mkdir(parents=True, exist_ok=True)
+
+    prusa = await printer_factory(name="Core One", provider="prusalink")
+    vp = await _create(async_client, enabled=True, mode="print_queue", target_printer_id=prusa.id)
+
+    session_factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+    instance = VirtualPrinterInstance(
+        vp_id=vp["id"],
+        name="Prusa VP",
+        mode="print_queue",
+        model="BL-P001",
+        access_code="",
+        serial_suffix="391800009",
+        protocol="moonraker",
+        target_printer_id=prusa.id,
+        base_dir=tmp_path,
+        session_factory=session_factory,
+    )
+    source = tmp_path / "Benchy_COREONE.bgcode"
+    _write_bgcode(source)
+
+    with patch("backend.app.services.virtual_printer.virtual_printer_manager.get_instance", return_value=instance):
+        response = await async_client.post(
+            f"{vp['host_path']}/api/files/local",
+            headers={"X-Api-Key": vp["api_key"]},
+            files={"file": (source.name, source.read_bytes(), "application/octet-stream")},
+            data={"print": "false"},
+        )
+    assert response.status_code == 201, response.text
+
+    archive = (await db_session.execute(select(PrintArchive))).scalar_one()
+    assert archive.filename == "Benchy_COREONE.bgcode"
+    assert archive.print_name == "Benchy_COREONE"
+    assert archive.sliced_for_model == "COREONE"
+    assert archive.filament_used_grams == 18.52
+    assert archive.thumbnail_path
+
+    item = (await db_session.execute(select(PrintQueueItem))).scalar_one()
+    assert item.printer_id == prusa.id
 
 
 @pytest.mark.asyncio

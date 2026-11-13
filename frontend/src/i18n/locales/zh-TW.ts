@@ -4398,7 +4398,7 @@ export default {
       },
       moonraker: {
         tag: "Klipper、Prusa、OctoPrint 等",
-        point1: "在 OrcaSlicer / Snapmaker Orca / PrusaSlicer 中新增主機類型為「Octo/Klipper」的實體印表機",
+        point1: "OrcaSlicer / Snapmaker Orca：新增主機類型為「Octo/Klipper」的實體印表機。PrusaSlicer：主機類型選「OctoPrint」（也支援二進位 G-code）",
         point2: "貼上虛擬印表機卡片上的主機 URL 與 API 金鑰",
         point3: "模式：封存、審核、佇列（送到目標印表機）",
         noSetupLabel: "無需額外設定：",
@@ -4420,7 +4420,7 @@ export default {
       regenerateConfirmTitle: "重新產生 API 金鑰",
       regenerateConfirmMessage: "目前的金鑰將立即失效。您需要在切片軟體的實體印表機設定中填入新金鑰。",
       keyRegenerated: "已產生新的 API 金鑰",
-      hint: "在切片軟體中新增主機類型為「Octo/Klipper」（或 OctoPrint）的實體印表機，並填入主機 URL 與 API 金鑰。送出的工作會進入 Printbuddy，而不是直接送到印表機。",
+      hint: "在切片軟體中新增主機類型為「Octo/Klipper」（OrcaSlicer / Snapmaker Orca）或「OctoPrint」（PrusaSlicer，也支援二進位 G-code）的實體印表機，並填入主機 URL 與 API 金鑰。送出的工作會進入 Printbuddy，而不是直接送到印表機。",
     },
     title: '虛擬印表機',
     running: '執行中',

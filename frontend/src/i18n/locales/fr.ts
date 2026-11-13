@@ -4400,7 +4400,7 @@ export default {
       },
       moonraker: {
         tag: "Klipper, Prusa, OctoPrint et plus",
-        point1: "Ajoutez une imprimante physique dans OrcaSlicer / Snapmaker Orca / PrusaSlicer avec le type d'hôte « Octo/Klipper »",
+        point1: "OrcaSlicer / Snapmaker Orca : ajoutez une imprimante physique avec le type d'hôte « Octo/Klipper ». PrusaSlicer : type d'hôte « OctoPrint » (G-code binaire pris en charge)",
         point2: "Collez l'URL de l'hôte et la clé API depuis la carte de l'imprimante virtuelle",
         point3: "Modes : Archive, Revue, File (envoie à l'imprimante cible)",
         noSetupLabel: "Aucune configuration supplémentaire :",
@@ -4422,7 +4422,7 @@ export default {
       regenerateConfirmTitle: "Régénérer la clé API",
       regenerateConfirmMessage: "La clé actuelle cessera immédiatement de fonctionner. Vous devrez saisir la nouvelle clé dans les paramètres de l'imprimante physique de votre slicer.",
       keyRegenerated: "Nouvelle clé API générée",
-      hint: "Dans votre slicer, ajoutez une imprimante physique avec le type d'hôte « Octo/Klipper » (ou OctoPrint), puis saisissez l'URL de l'hôte et la clé API. Les travaux envoyés arrivent dans Printbuddy au lieu d'aller directement à l'imprimante.",
+      hint: "Dans votre slicer, ajoutez une imprimante physique avec le type d'hôte « Octo/Klipper » (OrcaSlicer / Snapmaker Orca) ou « OctoPrint » (PrusaSlicer, G-code binaire pris en charge), puis saisissez l'URL de l'hôte et la clé API. Les travaux envoyés arrivent dans Printbuddy au lieu d'aller directement à l'imprimante.",
     },
     title: 'Imprimante Virtuelle',
     running: 'En cours',
