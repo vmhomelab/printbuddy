@@ -50,6 +50,9 @@ _SAFE_NAME = re.compile(r"[^\w.\- ()+\[\]]")
 
 VERSION_TEXT = "OctoPrint 1.10.0 (Printbuddy virtual printer)"
 
+# Printer providers whose firmware prints Prusa binary G-code (.bgcode).
+BGCODE_PROVIDERS = {"prusalink", "prusaconnect"}
+
 
 def _sanitize_filename(raw: str | None) -> str | None:
     """Reduce an uploaded name to a safe basename with an accepted extension."""
@@ -113,7 +116,39 @@ async def _authorize(vp_id: int, request: Request, db: AsyncSession):
     return vp, None
 
 
-async def _store_and_dispatch(vp, file: UploadFile, request: Request, path_hint: str | None) -> JSONResponse | str:
+async def _bgcode_target_error(vp, db: AsyncSession) -> JSONResponse | None:
+    """Reject .bgcode when the VP's target printer can't print binary G-code.
+
+    Without this the upload is accepted and only fails later, when the print
+    queue sends it to a Klipper/OctoPrint/Elegoo printer. VPs without a target
+    (archive or review mode) still accept it: the user picks a printer later.
+    """
+    if not vp.target_printer_id:
+        return None
+    from backend.app.models.printer import Printer
+
+    result = await db.execute(select(Printer).where(Printer.id == vp.target_printer_id))
+    printer = result.scalar_one_or_none()
+    if printer is None:
+        return None
+    provider = (printer.provider or "bambu").strip().lower()
+    if provider in BGCODE_PROVIDERS:
+        return None
+    return JSONResponse(
+        status_code=415,
+        content={
+            "error": (
+                f"Binary G-code (.bgcode) can only be printed on Prusa printers (PrusaLink/PrusaConnect), "
+                f"but the target printer '{printer.name}' needs plain G-code. In PrusaSlicer, turn off "
+                f"'Supports binary G-code' in Printer Settings > General and send the job again."
+            )
+        },
+    )
+
+
+async def _store_and_dispatch(
+    vp, file: UploadFile, request: Request, path_hint: str | None, db: AsyncSession
+) -> JSONResponse | str:
     """Save the upload into the VP's upload dir and run the VP pipeline.
 
     Returns the stored filename, or an error response.
@@ -131,6 +166,11 @@ async def _store_and_dispatch(vp, file: UploadFile, request: Request, path_hint:
     name = _sanitize_filename(file.filename) or _sanitize_filename(path_hint)
     if not name:
         return JSONResponse(status_code=415, content={"error": "Only .gcode, .bgcode and .3mf files are accepted"})
+    if name.lower().endswith(".bgcode"):
+        error = await _bgcode_target_error(vp, db)
+        if error:
+            logger.info("[VP %s] Rejected %s: target printer can't print binary G-code", vp.name, name)
+            return error
 
     instance.upload_dir.mkdir(parents=True, exist_ok=True)
     dest = _unique_path(instance.upload_dir, name)
@@ -209,7 +249,7 @@ async def octoprint_upload(
     if location not in ("local", "sdcard"):
         return JSONResponse(status_code=404, content={"error": f"Unknown location {location}"})
 
-    stored = await _store_and_dispatch(vp, file, request, path)
+    stored = await _store_and_dispatch(vp, file, request, path, db)
     if isinstance(stored, JSONResponse):
         return stored
     if _truthy(print_) or _truthy(select_):
@@ -290,7 +330,7 @@ async def moonraker_upload(
     if root and root != "gcodes":
         return JSONResponse(status_code=400, content={"error": f"Unsupported root {root}"})
 
-    stored = await _store_and_dispatch(vp, file, request, path)
+    stored = await _store_and_dispatch(vp, file, request, path, db)
     if isinstance(stored, JSONResponse):
         return stored
     if _truthy(print_):

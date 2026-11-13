@@ -369,3 +369,51 @@ async def test_host_endpoint_works_with_login_enabled(async_client: AsyncClient,
         await async_client.get(f"{vp['host_path']}/api/version", headers={"X-Api-Key": vp["api_key"]})
     ).status_code == 200
     assert (await async_client.get(f"{vp['host_path']}/server/info?apikey={vp['api_key']}")).status_code == 200
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("provider", "with_target", "expected"),
+    [
+        ("klipper", True, 415),
+        ("octoprint", True, 415),
+        ("prusalink", True, 201),
+        ("prusaconnect", True, 201),
+        ("klipper", False, 201),  # archive/review without target: user picks a printer later
+    ],
+)
+async def test_bgcode_rejected_when_target_cannot_print_it(
+    async_client: AsyncClient, printer_factory, no_sync, tmp_path: Path, provider: str, with_target: bool, expected: int
+):
+    printer = await printer_factory(name="Target", provider=provider)
+    body = {"enabled": True, "mode": "print_queue" if with_target else "review"}
+    if with_target:
+        body["target_printer_id"] = printer.id
+    vp = await _create(async_client, **body)
+
+    instance = MagicMock(is_http_host=True, upload_dir=tmp_path)
+    instance.on_file_received = AsyncMock()
+    with patch("backend.app.services.virtual_printer.virtual_printer_manager.get_instance", return_value=instance):
+        response = await async_client.post(
+            f"{vp['host_path']}/api/files/local",
+            headers={"X-Api-Key": vp["api_key"]},
+            files={"file": ("Benchy.bgcode", b"GCDE\x01\x00\x00\x00\x01\x00", "application/octet-stream")},
+        )
+
+    assert response.status_code == expected, response.text
+    if expected == 415:
+        assert "Supports binary G-code" in response.json()["error"]
+        assert instance.on_file_received.await_count == 0
+        assert list(tmp_path.iterdir()) == []
+    else:
+        assert instance.on_file_received.await_count == 1
+
+    # Plain G-code is always fine for a non-Bambu target.
+    with patch("backend.app.services.virtual_printer.virtual_printer_manager.get_instance", return_value=instance):
+        response = await async_client.post(
+            f"{vp['host_path']}/api/files/local",
+            headers={"X-Api-Key": vp["api_key"]},
+            files={"file": ("Benchy.gcode", b"G28\n", "application/octet-stream")},
+        )
+    assert response.status_code == 201
