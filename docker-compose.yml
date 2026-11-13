@@ -119,8 +119,6 @@ services:
       # defaults (Bambu Studio http://localhost:3001, OrcaSlicer
       # http://localhost:3003) match them; the URLs can also be set in
       # Settings → Slicer. See docs/slicer-sidecar.md.
-      # From inside this container the Orca service is also reachable as
-      # http://orca-slicer-api:3000 (see slicer-api/docker-compose.yml).
       #- BAMBU_STUDIO_API_URL=http://localhost:3001
       #- SLICER_API_URL=http://localhost:3003
       #

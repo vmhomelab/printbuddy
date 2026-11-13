@@ -3313,19 +3313,23 @@ async def _run_slicer_with_fallback(
         if current_user_id is not None:
             user = await db.get(User, current_user_id)
 
+        # Resolve preferred slicer before presets so Orca-only inherits
+        # flattening does not run for Bambu Studio slices.
+        preferred = (await get_setting(db, "preferred_slicer")) or "bambu_studio"
+
         refs = {
             "printer": request.printer_preset,
             "process": request.process_preset,
         }
         for slot, ref in refs.items():
             assert ref is not None, "schema validator guarantees PresetRef is set"
-            presets[slot] = await resolve_preset_ref(db, user, ref, slot)
+            presets[slot] = await resolve_preset_ref(db, user, ref, slot, slicer=preferred)
         # Multi-color: resolve each filament slot in plate order. The schema
         # validator backfilled `filament_presets` from the legacy `filament_preset`
         # field for single-color callers, so this list is always non-empty.
         for ref in request.filament_presets:
             assert ref is not None, "schema validator guarantees filament list is non-None"
-            filament_jsons.append(await resolve_preset_ref(db, user, ref, "filament"))
+            filament_jsons.append(await resolve_preset_ref(db, user, ref, "filament", slicer=preferred))
 
         # Bed-type override (#1337): patch curr_bed_type onto the resolved
         # process JSON so the slicer's StaticPrintConfig pass picks up the
@@ -3348,12 +3352,13 @@ async def _run_slicer_with_fallback(
         filament_jsons = [
             _ensure_preset_compatible_with_printer(fj, presets["printer"], kind="filament") for fj in filament_jsons
         ]
+    else:
+        preferred = (await get_setting(db, "preferred_slicer")) or "bambu_studio"
 
     # Slicer routing — pick the sidecar URL by preferred_slicer.
     # The per-install URL setting (Settings UI → Slicer card) wins; an
     # empty value falls back to the SLICER_API_URL / BAMBU_STUDIO_API_URL
     # env defaults defined in core/config.py.
-    preferred = (await get_setting(db, "preferred_slicer")) or "bambu_studio"
     if preferred == "orcaslicer":
         configured = await get_setting(db, "orcaslicer_api_url")
         api_url = (configured or app_settings.slicer_api_url).strip()

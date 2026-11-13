@@ -113,17 +113,45 @@ async def _flatten_and_strip_inherits(db: AsyncSession, preset_json: str, slot: 
     return preset_json
 
 
+async def _wants_orca_inherits_flatten(db: AsyncSession, slicer: str | None) -> bool:
+    """Flatten/strip inherits only for OrcaSlicer slices.
+
+    Bambu Studio's sidecar walks stock BBL parents itself; pre-merging via
+    Orca GitHub (and stripping inherits) can inject Snapmaker base values
+    into normal Bambu chains. Default to no flatten when the setting is
+    unavailable or not a clean string (unit tests with MagicMock sessions).
+    """
+    if slicer == "orcaslicer":
+        return True
+    if slicer == "bambu_studio":
+        return False
+    try:
+        from backend.app.api.routes.settings import get_setting
+
+        preferred = await get_setting(db, "preferred_slicer")
+    except Exception:
+        return False
+    if not isinstance(preferred, str):
+        return False
+    return (preferred or "bambu_studio") == "orcaslicer"
+
+
 async def resolve_preset_ref(
     db: AsyncSession,
     user: User | None,
     ref: PresetRef,
     slot: str,
+    *,
+    slicer: str | None = None,
 ) -> str:
     """Return the JSON-string content for `ref` so the sidecar can ingest it.
 
     `slot` is one of ``"printer"`` / ``"process"`` / ``"filament"``; it's
     only used to generate friendly error messages and to pick the bundled
     category for the standard tier.
+
+    ``slicer`` gates GitHub inherits flattening: OrcaSlicer only. When omitted,
+    the Settings ``preferred_slicer`` value is used.
 
     Raises ``HTTPException`` for any caller-facing error (invalid id, wrong
     preset type, cloud auth failure, network error fetching cloud detail).
@@ -144,7 +172,10 @@ async def resolve_preset_ref(
             status_code=400,
             detail=f"Unknown preset source for {slot}: {ref.source!r}",
         )
-    return await _flatten_and_strip_inherits(db, _normalise_profile_for_slicer(content, slot), slot)
+    normalised = _normalise_profile_for_slicer(content, slot)
+    if await _wants_orca_inherits_flatten(db, slicer):
+        return await _flatten_and_strip_inherits(db, normalised, slot)
+    return normalised
 
 
 def _normalise_profile_for_slicer(content: str, slot: str) -> str:
