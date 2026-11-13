@@ -4383,6 +4383,28 @@ export default {
 
   // Virtual Printer
   virtualPrinter: {
+    types: {
+      title: "兩種虛擬印表機",
+      newBadge: "新",
+      intro: "新增虛擬印表機時選擇類型。從切片軟體送出的檔案會進入 Printbuddy（封存、審核或列印佇列），而不是直接送到印表機。",
+      bambu: {
+        tag: "Bambu Lab 印表機",
+        point1: "為 Bambu Studio / 使用 Bambu 設定檔的 OrcaSlicer 模擬 Bambu 印表機",
+        point2: "在區域網路中自動探索，或透過 IP 與存取碼新增",
+        point3: "模式：封存、審核、佇列、代理",
+        setupLabel: "需要設定：",
+        setupText: "需要獨立的綁定 IP、開放連接埠，並在切片軟體中匯入 Printbuddy CA。",
+        guide: "閱讀設定指南",
+      },
+      moonraker: {
+        tag: "Klipper、Prusa、OctoPrint 等",
+        point1: "在 OrcaSlicer / Snapmaker Orca / PrusaSlicer 中新增主機類型為「Octo/Klipper」的實體印表機",
+        point2: "貼上虛擬印表機卡片上的主機 URL 與 API 金鑰",
+        point3: "模式：封存、審核、佇列（送到目標印表機）",
+        noSetupLabel: "無需額外設定：",
+        noSetupText: "透過 Printbuddy 連接埠執行。不需要綁定 IP、連接埠或憑證。",
+      },
+    },
     protocol: {
       title: "印表機類型",
       bambu: "Bambu 相容",
@@ -4471,10 +4493,6 @@ export default {
       description: '虛擬印表機功能需要額外的系統設定才能工作。包括埠轉發、防火牆規則和平臺特定設定。',
       readGuide: '啟用前請閱讀設定指南',
     },
-    bambuOnly: {
-      badge: '僅限 Bambu Lab',
-      description: '虛擬印表機會模擬 Bambu Studio 和 OrcaSlicer 使用的 Bambu LAN 通訊協定。它不是適用於 Prusa、Klipper/Moonraker 或 Elegoo SDCP 的通用虛擬印表機層。',
-    },
     archiveNameSource: {
       title: '存檔名稱來源',
       description: '選擇透過虛擬印表機接收檔案時新存檔的命名方式。"元資料"使用 3MF 中嵌入的切片標題（預設）。"檔名"使用 Bambu Studio 透過 FTP 傳送的檔案名稱 — 當您在"傳送到印表機"對話方塊中重新命名工作時非常有用。',
@@ -4483,6 +4501,7 @@ export default {
     },
     caCert: {
       title: '切片軟體憑證',
+      bambuOnlyBadge: "僅限 Bambu 相容",
       description: '虛擬印表機使用由 Printbuddy CA 簽發的 TLS 憑證。將此 CA 憑證匯入切片軟體的信任庫一次，切片軟體即可接受連線 — 無需再透過命令列取得。',
       copy: '複製',
       copied: '已複製',

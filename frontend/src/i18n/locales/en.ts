@@ -4407,6 +4407,28 @@ export default {
 
   // Virtual Printer
   virtualPrinter: {
+    types: {
+      title: "Two kinds of virtual printers",
+      newBadge: "New",
+      intro: "Choose the type when you add a virtual printer. Files sent from your slicer land in Printbuddy (archive, review or print queue) instead of going straight to the printer.",
+      bambu: {
+        tag: "Bambu Lab printers",
+        point1: "Emulates a Bambu printer for Bambu Studio / OrcaSlicer with a Bambu profile",
+        point2: "Found automatically on the LAN, or added by IP and access code",
+        point3: "Modes: Archive, Review, Queue, Proxy",
+        setupLabel: "Setup required:",
+        setupText: "needs its own bind IP, open ports and the Printbuddy CA in your slicer.",
+        guide: "Read the setup guide",
+      },
+      moonraker: {
+        tag: "Klipper, Prusa, OctoPrint & more",
+        point1: "Add a physical printer in OrcaSlicer / Snapmaker Orca / PrusaSlicer with host type “Octo/Klipper”",
+        point2: "Paste the host URL and API key from the virtual printer card",
+        point3: "Modes: Archive, Review, Queue (sends to the target printer)",
+        noSetupLabel: "No extra setup:",
+        noSetupText: "runs on the Printbuddy port. No bind IP, ports or certificate needed.",
+      },
+    },
     protocol: {
       title: "Printer type",
       bambu: "Bambu-compatible",
@@ -4495,10 +4517,6 @@ export default {
       description: 'The virtual printer feature requires additional system configuration before it will work. This includes port forwarding, firewall rules, and platform-specific settings.',
       readGuide: 'Read the setup guide before enabling',
     },
-    bambuOnly: {
-      badge: 'Bambu Lab only',
-      description: 'Virtual printers emulate the Bambu LAN protocol for Bambu Studio and OrcaSlicer. They are not a generic virtual-printer layer for Prusa, Klipper/Moonraker, or Elegoo SDCP printers.',
-    },
     archiveNameSource: {
       title: 'Archive name source',
       description: 'Choose how new archives are named when files arrive via the virtual printer. "Metadata" uses the slicer-embedded title from the 3MF (default). "Filename" uses the filename Bambu Studio sent over FTP — handy if you renamed the job in the "send to printer" dialog.',
@@ -4507,6 +4525,7 @@ export default {
     },
     caCert: {
       title: 'Slicer certificate',
+      bambuOnlyBadge: "Bambu-compatible only",
       description: 'Virtual printers use a TLS certificate signed by the Printbuddy CA. Import this CA certificate into your slicer\'s trust store once so it accepts the connection — no need to copy it from the command line.',
       copy: 'Copy',
       copied: 'Copied',

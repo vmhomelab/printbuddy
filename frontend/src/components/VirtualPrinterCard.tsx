@@ -265,10 +265,10 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
             }
           </button>
           <span className={`w-2 h-2 rounded-full flex-shrink-0 ${isRunning ? 'bg-green-400 animate-pulse' : 'bg-gray-500'}`} />
-          <span className="text-white font-medium truncate">{printer.name}</span>
+          <span className="text-white font-medium truncate min-w-[4rem]">{printer.name}</span>
           <span className="text-xs text-bambu-gray flex-shrink-0">{modeLabel}</span>
           {isMoonraker && (
-            <span className="text-xs text-bambu-gray flex-shrink-0">Moonraker/OctoPrint</span>
+            <span className="text-xs text-bambu-gray truncate min-w-0" title="Moonraker/OctoPrint">Moonraker</span>
           )}
           {!isMoonraker && printer.model_name && (
             <span className="text-xs text-bambu-gray flex-shrink-0">{printer.model_name}</span>

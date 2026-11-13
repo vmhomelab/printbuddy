@@ -35,15 +35,27 @@ describe('VirtualPrinterList', () => {
     vi.clearAllMocks();
   });
 
-  it('marks virtual-printer settings as Bambu Lab only', async () => {
+  it('presents both virtual printer types (#52)', async () => {
     render(<VirtualPrinterList />);
 
     await waitFor(() => {
-      expect(screen.getByText('Bambu Lab only')).toBeInTheDocument();
+      expect(screen.getByText('Two kinds of virtual printers')).toBeInTheDocument();
     });
 
-    expect(
-      screen.getByText(/Virtual printers emulate the Bambu LAN protocol/i)
-    ).toBeInTheDocument();
+    expect(screen.getByText('Bambu-compatible')).toBeInTheDocument();
+    expect(screen.getByText('Moonraker/OctoPrint-compatible')).toBeInTheDocument();
+    expect(screen.getByText('Setup required:')).toBeInTheDocument();
+    expect(screen.getByText('No extra setup:')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /Read the setup guide/ })).toHaveAttribute('target', '_blank');
+    // The old "Bambu Lab only" warning would turn away non-Bambu users.
+    expect(screen.queryByText('Bambu Lab only')).not.toBeInTheDocument();
+  });
+
+  it('marks the slicer certificate as Bambu-only', async () => {
+    render(<VirtualPrinterList />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Bambu-compatible only')).toBeInTheDocument();
+    });
   });
 });

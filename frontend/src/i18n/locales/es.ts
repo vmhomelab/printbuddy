@@ -4403,6 +4403,28 @@ export default {
 
   // Virtual Printer
   virtualPrinter: {
+    types: {
+      title: "Dos tipos de impresoras virtuales",
+      newBadge: "Nuevo",
+      intro: "Elija el tipo al añadir una impresora virtual. Los archivos enviados desde su slicer llegan a Printbuddy (archivo, revisión o cola de impresión) en lugar de ir directamente a la impresora.",
+      bambu: {
+        tag: "Impresoras Bambu Lab",
+        point1: "Emula una impresora Bambu para Bambu Studio / OrcaSlicer con un perfil Bambu",
+        point2: "Se detecta automáticamente en la LAN o se añade por IP y código de acceso",
+        point3: "Modos: Archivo, Revisión, Cola, Proxy",
+        setupLabel: "Configuración necesaria:",
+        setupText: "necesita su propia IP de enlace, puertos abiertos y la CA de Printbuddy en su slicer.",
+        guide: "Leer la guía de configuración",
+      },
+      moonraker: {
+        tag: "Klipper, Prusa, OctoPrint y más",
+        point1: "Añada una impresora física en OrcaSlicer / Snapmaker Orca / PrusaSlicer con el tipo de host “Octo/Klipper”",
+        point2: "Pegue la URL del host y la clave API de la tarjeta de la impresora virtual",
+        point3: "Modos: Archivo, Revisión, Cola (envía a la impresora de destino)",
+        noSetupLabel: "Sin configuración adicional:",
+        noSetupText: "funciona en el puerto de Printbuddy. No necesita IP de enlace, puertos ni certificado.",
+      },
+    },
     protocol: {
       title: "Tipo de impresora",
       bambu: "Compatible con Bambu",
@@ -4491,10 +4513,6 @@ export default {
       description: 'La función de impresora virtual requiere configuración adicional del sistema antes de funcionar. Esto incluye el reenvío de puertos, las reglas del cortafuegos y los ajustes específicos de la plataforma.',
       readGuide: 'Lea la guía de configuración antes de activarla',
     },
-    bambuOnly: {
-      badge: 'Solo Bambu Lab',
-      description: 'Las impresoras virtuales emulan el protocolo LAN de Bambu para Bambu Studio y OrcaSlicer. No son una capa genérica de impresora virtual para Prusa, Klipper/Moonraker ni Elegoo SDCP.',
-    },
     archiveNameSource: {
       title: 'Origen del nombre del archivo',
       description: 'Elija cómo se nombran los archivos nuevos cuando llegan a través de la impresora virtual. «Metadatos» usa el título incrustado por el laminador del 3MF (predeterminado). «Nombre de archivo» usa el nombre de archivo que Bambu Studio envió por FTP — útil si renombró el trabajo en el diálogo de «enviar a la impresora».',
@@ -4503,6 +4521,7 @@ export default {
     },
     caCert: {
       title: 'Certificado del laminador',
+      bambuOnlyBadge: "Solo compatible con Bambu",
       description: 'Las impresoras virtuales usan un certificado TLS firmado por la CA de Printbuddy. Importe este certificado de CA en el almacén de confianza de su laminador una sola vez para que acepte la conexión — sin necesidad de copiarlo desde la línea de comandos.',
       copy: 'Copiar',
       copied: 'Copiado',

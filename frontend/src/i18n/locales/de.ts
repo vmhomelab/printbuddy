@@ -4395,6 +4395,28 @@ export default {
 
   // Virtual Printer
   virtualPrinter: {
+    types: {
+      title: "Zwei Arten virtueller Drucker",
+      newBadge: "Neu",
+      intro: "Wähle den Typ beim Hinzufügen eines virtuellen Druckers. Aus dem Slicer gesendete Dateien landen in Printbuddy (Archiv, Review oder Druckwarteschlange) statt direkt beim Drucker.",
+      bambu: {
+        tag: "Bambu Lab Drucker",
+        point1: "Emuliert einen Bambu-Drucker für Bambu Studio / OrcaSlicer mit Bambu-Profil",
+        point2: "Wird im LAN automatisch gefunden oder per IP und Zugangscode hinzugefügt",
+        point3: "Modi: Archiv, Review, Warteschlange, Proxy",
+        setupLabel: "Einrichtung erforderlich:",
+        setupText: "braucht eine eigene Bind-IP, offene Ports und die Printbuddy-CA im Slicer.",
+        guide: "Einrichtungsanleitung lesen",
+      },
+      moonraker: {
+        tag: "Klipper, Prusa, OctoPrint & mehr",
+        point1: "Lege in OrcaSlicer / Snapmaker Orca / PrusaSlicer einen physischen Drucker mit Host-Typ „Octo/Klipper“ an",
+        point2: "Host-URL und API-Key aus der Karte des virtuellen Druckers einfügen",
+        point3: "Modi: Archiv, Review, Warteschlange (sendet an den Zieldrucker)",
+        noSetupLabel: "Keine zusätzliche Einrichtung:",
+        noSetupText: "läuft über den Printbuddy-Port. Keine Bind-IP, Ports oder Zertifikate nötig.",
+      },
+    },
     protocol: {
       title: "Druckertyp",
       bambu: "Bambu-kompatibel",
@@ -4483,10 +4505,6 @@ export default {
       description: 'Die virtuelle Druckerfunktion erfordert zusätzliche Systemkonfiguration, bevor sie funktioniert. Dies beinhaltet Portweiterleitung, Firewall-Regeln und plattformspezifische Einstellungen.',
       readGuide: 'Lese die Einrichtungsanleitung vor dem Aktivieren',
     },
-    bambuOnly: {
-      badge: 'Nur Bambu Lab',
-      description: 'Virtuelle Drucker emulieren das Bambu-LAN-Protokoll für Bambu Studio und OrcaSlicer. Sie sind keine generische virtuelle Druckerschicht für Prusa, Klipper/Moonraker oder Elegoo SDCP.',
-    },
     archiveNameSource: {
       title: 'Quelle des Archivnamens',
       description: 'Lege fest, wie neue Archive benannt werden, wenn Dateien über den virtuellen Drucker eintreffen. "Metadaten" verwendet den im 3MF eingebetteten Titel des Slicers (Standard). "Dateiname" nutzt den Dateinamen, den Bambu Studio per FTP gesendet hat — praktisch, wenn der Job im Dialog "Zum Drucker senden" umbenannt wurde.',
@@ -4495,6 +4513,7 @@ export default {
     },
     caCert: {
       title: 'Slicer-Zertifikat',
+      bambuOnlyBadge: "Nur Bambu-kompatibel",
       description: 'Virtuelle Drucker verwenden ein TLS-Zertifikat, das von der Printbuddy-CA signiert ist. Importieren Sie dieses CA-Zertifikat einmalig in den Vertrauensspeicher Ihres Slicers, damit er die Verbindung akzeptiert — kein Abrufen über die Kommandozeile mehr nötig.',
       copy: 'Kopieren',
       copied: 'Kopiert',

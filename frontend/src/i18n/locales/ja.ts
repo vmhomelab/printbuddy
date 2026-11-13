@@ -4396,6 +4396,28 @@ export default {
 
   // Virtual Printer
   virtualPrinter: {
+    types: {
+      title: "2種類の仮想プリンター",
+      newBadge: "新機能",
+      intro: "仮想プリンターを追加するときにタイプを選択します。スライサーから送信したファイルは、プリンターに直接送られるのではなくPrintbuddy（アーカイブ、レビュー、印刷キュー）に届きます。",
+      bambu: {
+        tag: "Bambu Labプリンター",
+        point1: "Bambu Studio / Bambuプロファイルを使うOrcaSlicer向けにBambuプリンターをエミュレート",
+        point2: "LANで自動検出、またはIPとアクセスコードで追加",
+        point3: "モード：アーカイブ、レビュー、キュー、プロキシ",
+        setupLabel: "セットアップが必要：",
+        setupText: "専用のバインドIP、開放ポート、スライサーへのPrintbuddy CAの登録が必要です。",
+        guide: "セットアップガイドを読む",
+      },
+      moonraker: {
+        tag: "Klipper、Prusa、OctoPrintなど",
+        point1: "OrcaSlicer / Snapmaker Orca / PrusaSlicerでホストタイプ「Octo/Klipper」の物理プリンターを追加",
+        point2: "仮想プリンターカードのホストURLとAPIキーを貼り付け",
+        point3: "モード：アーカイブ、レビュー、キュー（ターゲットプリンターに送信）",
+        noSetupLabel: "追加設定不要：",
+        noSetupText: "Printbuddyのポートで動作します。バインドIP、ポート、証明書は不要です。",
+      },
+    },
     protocol: {
       title: "プリンタータイプ",
       bambu: "Bambu互換",
@@ -4484,10 +4506,6 @@ export default {
       description: '仮想プリンター機能を使用するには追加のシステム設定が必要です。ポートフォワーディング、ファイアウォールルール、プラットフォーム固有の設定が含まれます。',
       readGuide: '有効にする前にセットアップガイドをお読みください',
     },
-    bambuOnly: {
-      badge: 'Bambu Lab専用',
-      description: '仮想プリンターはBambu StudioとOrcaSlicer向けのBambu LANプロトコルをエミュレートします。Prusa、Klipper/Moonraker、Elegoo SDCP向けの汎用仮想プリンター層ではありません。',
-    },
     howItWorks: {
       title: '仕組み',
       step1: '同じLAN上では、仮想プリンターはスライサー（Bambu Studio / OrcaSlicer）に自動的に表示されます。他のネットワークからは、IPアドレスとアクセスコードで手動で追加してください。',
@@ -4554,6 +4572,7 @@ export default {
     },
     caCert: {
       title: 'スライサー証明書',
+      bambuOnlyBadge: "Bambu互換のみ",
       description: '仮想プリンターは Printbuddy CA が署名した TLS 証明書を使用します。この CA 証明書をスライサーの信頼ストアに一度インポートすると接続が受け入れられます — コマンドラインからコピーする必要はありません。',
       copy: 'コピー',
       copied: 'コピーしました',
