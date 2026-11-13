@@ -1,3 +1,4 @@
+import pytest
 import httpx
 
 from backend.app.services.printer_providers import prusalink
@@ -210,8 +211,9 @@ def test_prusalink_finished_job_state_emits_completed_even_without_full_progress
     ]
 
 
-def test_prusalink_fractional_progress_is_normalized_for_notifications_and_cards(monkeypatch):
-    """CORE One / PrusaLink can report job progress as 0..1; Printbuddy expects 0..100 percent."""
+@pytest.mark.parametrize("raw_progress, expected", [(0, 0.0), (1, 1.0), (0.5, 0.5), (50, 50.0), (100, 100.0)])
+def test_prusalink_modern_progress_is_reported_in_percent(monkeypatch, raw_progress, expected):
+    """/api/v1/status and /api/v1/job report percent (0..100); small values must not be scaled."""
     observed_states = []
     client = PrusaLinkPrinterClient(
         base_url="http://prusa.local",
@@ -219,39 +221,75 @@ def test_prusalink_fractional_progress_is_normalized_for_notifications_and_cards
         on_state_change=lambda state: observed_states.append(state.progress),
     )
 
-    statuses = iter(
-        [
-            {
-                "printer": {"state": "PRINTING"},
-                "job": {"id": 42, "progress": 0.995, "time_remaining": 120},
-            },
-        ]
-    )
-    job_details = iter(
-        [
-            {
-                "id": 42,
-                "state": "PRINTING",
-                "progress": 0.995,
-                "time_remaining": 120,
-                "file": {"display_name": "almost-done.bgcode"},
-            },
-        ]
-    )
-
     def fake_get(path):
         if path == "api/v1/status":
-            return next(statuses)
+            return {
+                "printer": {"state": "PRINTING"},
+                "job": {"id": 42, "progress": raw_progress, "time_remaining": 120},
+            }
         if path == "api/v1/job":
-            return next(job_details)
+            return {
+                "id": 42,
+                "state": "PRINTING",
+                "progress": raw_progress,
+                "time_remaining": 120,
+                "file": {"display_name": "progress.bgcode"},
+            }
         raise AssertionError(f"unexpected path: {path}")
 
     monkeypatch.setattr(client, "_get", fake_get)
 
     assert client.request_status_update() is True
 
-    assert client.state.progress == 99.5
-    assert observed_states == [99.5]
+    assert client.state.progress == expected
+    assert observed_states == [expected]
+
+
+def test_prusalink_modern_status_progress_without_job_detail(monkeypatch):
+    client = PrusaLinkPrinterClient(base_url="http://prusa.local", password="secret")
+
+    def fake_get(path):
+        if path == "api/v1/status":
+            return {"printer": {"state": "PRINTING"}, "job": {"id": 42, "progress": 1}}
+        if path == "api/v1/job":
+            return {}
+        raise AssertionError(f"unexpected path: {path}")
+
+    monkeypatch.setattr(client, "_get", fake_get)
+
+    assert client.request_status_update() is True
+    assert client.state.progress == 1.0
+
+
+def test_prusalink_modern_progress_is_clamped(monkeypatch):
+    client = PrusaLinkPrinterClient(base_url="http://prusa.local", password="secret")
+    responses = {
+        "api/v1/status": {"printer": {"state": "PRINTING"}, "job": {"id": 42, "progress": 150}},
+        "api/v1/job": {},
+    }
+    monkeypatch.setattr(client, "_get", responses.__getitem__)
+
+    assert client.request_status_update() is True
+    assert client.state.progress == 100.0
+
+
+def test_prusalink_legacy_job_completion_fraction_is_converted_to_percent(monkeypatch):
+    """Legacy OctoPrint-style /api/job reports progress.completion as a 0..1 fraction."""
+    client = PrusaLinkPrinterClient(base_url="http://prusa.local", password="secret", api_mode="legacy")
+
+    def fake_get(path):
+        if path == "api/job":
+            return {
+                "state": "Printing",
+                "job": {"file": {"name": "legacy.gcode"}},
+                "progress": {"completion": 0.42, "printTime": 600, "printTimeLeft": 900},
+            }
+        raise AssertionError(f"unexpected path: {path}")
+
+    monkeypatch.setattr(client, "_get", fake_get)
+
+    assert client.request_status_update() is True
+    assert client.state.progress == 42.0
 
 
 def test_prusalink_upload_uses_discovered_usb_storage(monkeypatch, tmp_path):
