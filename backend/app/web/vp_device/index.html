@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Printbuddy – Device</title>
+<link rel="stylesheet" href="{{BASE}}/device/app.css">
+</head>
+<body data-base="{{BASE}}">
+<div id="app" class="app">
+  <header class="topbar">
+    <div class="brand-row">
+      <div class="brand">
+        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="3"></rect><path d="M7 8h10M9 8v5M15 8v5M7 17h10"></path></svg>
+        <span>Printbuddy</span>
+      </div>
+      <span class="sep" aria-hidden="true">/</span>
+      <label class="visually-hidden" for="printer-select" data-i18n="printer">Printer</label>
+      <select id="printer-select" class="select"></select>
+      <span id="state-pill" class="pill"></span>
+    </div>
+    <div class="meta-row">
+      <span id="updated" class="muted"></span>
+      <a id="open-printbuddy" class="link" href="/" target="_blank" rel="noopener"><span data-i18n="openPrintbuddy">Open in Printbuddy</span>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"></path></svg></a>
+    </div>
+  </header>
+
+  <section id="auth-panel" class="card auth" hidden>
+    <h2 data-i18n="authTitle">API key required</h2>
+    <p class="muted" data-i18n="authHelp">Enter the virtual printer's API key from Printbuddy (Settings → Virtual printers). It is stored in this browser only.</p>
+    <form id="auth-form" class="auth-form">
+      <label class="visually-hidden" for="auth-key" data-i18n="apiKey">API key</label>
+      <input id="auth-key" class="input" type="password" autocomplete="off" required>
+      <button class="btn btn-primary" type="submit" data-i18n="save">Save</button>
+    </form>
+  </section>
+
+  <div id="message" class="banner" role="status" hidden></div>
+
+  <main id="dashboard" class="grid" hidden>
+    <div class="col">
+      <section class="card">
+        <div class="card-head">
+          <h2 class="state-title"><span id="state-dot" class="dot"></span><span id="state-title"></span></h2>
+        </div>
+        <div class="card-body stack">
+          <div class="job">
+            <div class="thumb" id="thumb">
+              <svg width="56" height="56" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="M8 44h48l-6 10H14z"></path><path d="M16 44c0-10 8-16 18-16h6l4-10h6l-4 12c4 3 6 8 6 14"></path><path d="M26 28v-8h10v8"></path></svg>
+            </div>
+            <div class="job-text">
+              <div id="job-file" class="job-file"></div>
+              <div id="job-model" class="muted small"></div>
+            </div>
+          </div>
+          <div id="progress-block" class="stack-sm">
+            <div class="progress-head">
+              <span id="progress-value" class="big"></span>
+              <span id="layer" class="muted small"></span>
+            </div>
+            <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" id="progress-bar"><div id="progress-fill" class="bar-fill"></div></div>
+          </div>
+          <div class="tiles">
+            <div class="tile"><div class="muted small" data-i18n="remaining">Remaining</div><div id="remaining" class="tile-value">–</div></div>
+            <div class="tile"><div class="muted small" data-i18n="eta">Done at</div><div id="eta" class="tile-value">–</div></div>
+          </div>
+          <div class="row-2" id="job-actions">
+            <button type="button" class="btn btn-outline" id="btn-pause"></button>
+            <button type="button" class="btn btn-danger" id="btn-stop" data-i18n="stop">Stop</button>
+          </div>
+          <ul id="errors" class="errors" hidden></ul>
+        </div>
+      </section>
+
+      <section class="card card-body stack-sm" id="material-card" hidden>
+        <h2 data-i18n="material">Active material</h2>
+        <div id="materials" class="materials"></div>
+      </section>
+    </div>
+
+    <div class="col">
+      <section class="card">
+        <div class="card-head">
+          <h2 data-i18n="camera">Webcam</h2>
+          <div class="icon-row">
+            <a id="btn-snapshot" class="icon-btn" target="_blank" rel="noopener" aria-label="Snapshot" data-i18n-label="snapshot">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z"></path><circle cx="12" cy="13" r="3.5"></circle></svg>
+            </a>
+          </div>
+        </div>
+        <div class="camera" id="camera">
+          <img id="camera-img" alt="" hidden>
+          <div id="camera-empty" class="camera-empty muted small"></div>
+          <span id="camera-live" class="live" hidden><span class="live-dot"></span>live</span>
+          <button type="button" id="btn-fullscreen" class="icon-btn overlay" aria-label="Fullscreen" data-i18n-label="fullscreen">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"></path></svg>
+          </button>
+        </div>
+      </section>
+    </div>
+
+    <div class="col">
+      <section class="card card-body stack">
+        <h2 data-i18n="temperatures">Temperatures</h2>
+        <div id="temps" class="stack-sm"></div>
+        <form id="temp-form" class="temp-form">
+          <label class="field"><span class="muted small" data-i18n="nozzle">Nozzle</span><input id="t-nozzle" class="input" type="number" min="0" max="350" inputmode="numeric"></label>
+          <label class="field"><span class="muted small" data-i18n="bed">Bed</span><input id="t-bed" class="input" type="number" min="0" max="140" inputmode="numeric"></label>
+          <button class="btn btn-primary" type="submit" data-i18n="setTemps">Set</button>
+        </form>
+        <div class="row-2">
+          <button type="button" class="btn btn-outline" id="btn-preheat" data-i18n="preheatPla">Preheat PLA</button>
+          <button type="button" class="btn btn-outline" id="btn-cooldown" data-i18n="cooldown">Cool down</button>
+        </div>
+      </section>
+
+      <section class="card card-body stack" id="control-card">
+        <h2 data-i18n="control">Control</h2>
+        <div id="fans" class="stack-sm"></div>
+        <div class="switch-row" id="light-row" hidden>
+          <label for="light" data-i18n="light">Chamber light</label>
+          <input id="light" type="checkbox" class="switch">
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <footer class="footer muted small"><span data-i18n="footer">Printbuddy device view · refreshes every 2 s</span></footer>
+</div>
+<script src="{{BASE}}/device/app.js"></script>
+</body>
+</html>
