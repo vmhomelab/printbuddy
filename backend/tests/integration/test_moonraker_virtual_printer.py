@@ -130,15 +130,51 @@ class TestMoonrakerVirtualPrinterAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_diagnostic_skips_bambu_checks(self, async_client: AsyncClient, no_sync):
-        vp = await _create(async_client)
+    async def test_diagnostic_uses_moonraker_checks_only(self, async_client: AsyncClient, no_sync):
+        vp = await _create(async_client, enabled=False)
         response = await async_client.get(f"/api/v1/virtual-printers/{vp['id']}/diagnostic")
         assert response.status_code == 200
-        checks = {c["id"]: c["status"] for c in response.json()["checks"]}
-        assert checks["access_code"] == "pass"
-        assert checks["bind_interface"] == "skip"
-        assert checks["port_ftps"] == "skip"
-        assert checks["certificate"] == "skip"
+        result = response.json()
+        checks = {c["id"]: c["status"] for c in result["checks"]}
+        # No Bambu checks (ports, bind IP, access code, certificate) at all.
+        assert list(checks) == ["mr_enabled", "mr_endpoint", "mr_api_key", "mr_target_printer", "mr_upload_dir"]
+        assert checks["mr_enabled"] == "fail"
+        assert checks["mr_endpoint"] == "skip"
+        assert checks["mr_api_key"] == "pass"
+        assert checks["mr_target_printer"] == "skip"  # archive mode needs no target
+        assert result["overall"] == "problems"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_diagnostic_target_printer_states(
+        self, async_client: AsyncClient, printer_factory, no_sync, tmp_path: Path
+    ):
+        prusa = await printer_factory(name="MK4", provider="prusalink")
+        vp = await _create(async_client, enabled=True, mode="print_queue", target_printer_id=prusa.id)
+        instance = MagicMock(is_http_host=True, upload_dir=tmp_path)
+
+        with (
+            patch("backend.app.services.virtual_printer.virtual_printer_manager.get_instance", return_value=instance),
+            patch("backend.app.services.printer_manager.printer_manager.get_status", return_value=None),
+        ):
+            response = await async_client.get(f"/api/v1/virtual-printers/{vp['id']}/diagnostic")
+        result = response.json()
+        by_id = {c["id"]: c for c in result["checks"]}
+        assert by_id["mr_endpoint"]["status"] == "pass"
+        assert by_id["mr_upload_dir"]["status"] == "pass"
+        assert by_id["mr_target_printer"]["status"] == "warn"  # offline
+        assert by_id["mr_target_printer"]["params"]["name"] == "MK4"
+        assert result["overall"] == "warnings"
+
+        with (
+            patch("backend.app.services.virtual_printer.virtual_printer_manager.get_instance", return_value=instance),
+            patch(
+                "backend.app.services.printer_manager.printer_manager.get_status",
+                return_value=MagicMock(connected=True),
+            ),
+        ):
+            response = await async_client.get(f"/api/v1/virtual-printers/{vp['id']}/diagnostic")
+        assert response.json()["overall"] == "ok"
 
 
 class TestVirtualPrinterHostEndpoint:

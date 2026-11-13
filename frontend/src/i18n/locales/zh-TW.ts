@@ -5522,6 +5522,30 @@ export default {
       problems: '發現的問題可以解釋切片軟體為何無法看到或使用此虛擬印表機。',
     },
     check: {
+      mr_enabled: {
+        title: "虛擬印表機已啟用",
+        fail: "此虛擬印表機已關閉。在啟用之前，切片軟體的連線測試與上傳都會被拒絕。",
+      },
+      mr_endpoint: {
+        title: "上傳端點就緒",
+        pass: "切片軟體可透過 Printbuddy 連接埠上傳到 {{path}}。",
+        fail: "虛擬印表機已啟用，但其上傳端點未註冊。請先關閉再重新啟用；若仍無效，請查看 Printbuddy 記錄。",
+      },
+      mr_api_key: {
+        title: "已設定 API 金鑰",
+        fail: "未設定 API 金鑰。請使用 API 金鑰旁的重新整理按鈕產生一組。",
+      },
+      mr_target_printer: {
+        title: "目標印表機",
+        pass: "工作會送到已連線的 {{name}}。",
+        warn: "{{name}} 目前離線。佇列中的工作會在其重新連線後送出。",
+        fail: "列印佇列模式需要一台非 Bambu 的目標印表機（Klipper、Prusa、OctoPrint 等）。請在「目標印表機」中選擇。",
+        skip: "封存與審核模式下不需要。",
+      },
+      mr_upload_dir: {
+        title: "上傳資料夾可寫入",
+        fail: "Printbuddy 無法寫入此虛擬印表機的上傳資料夾。請檢查 Printbuddy 資料目錄是否可寫入。",
+      },
       enabled: {
         title: '虛擬印表機已啟用',
         fail: '此虛擬印表機已關閉。請將其開啟以使其可被探索。',

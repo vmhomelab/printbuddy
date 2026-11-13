@@ -5547,6 +5547,30 @@ export default {
       problems: 'Found problems that explain why the slicer can\'t see or use this virtual printer.',
     },
     check: {
+      mr_enabled: {
+        title: "Virtual printer enabled",
+        fail: "This virtual printer is switched off. The slicer's connection test and uploads are refused until you turn it on.",
+      },
+      mr_endpoint: {
+        title: "Upload endpoint ready",
+        pass: "Slicers can upload to {{path}} on the Printbuddy port.",
+        fail: "The virtual printer is enabled, but its upload endpoint is not registered. Turn it off and on again; if that doesn't help, check the Printbuddy log.",
+      },
+      mr_api_key: {
+        title: "API key set",
+        fail: "No API key is set. Generate one with the refresh button next to the API key.",
+      },
+      mr_target_printer: {
+        title: "Target printer",
+        pass: "Jobs go to {{name}}, which is connected.",
+        warn: "{{name}} is offline right now. Queued jobs are sent once it reconnects.",
+        fail: "Print queue mode needs a target printer that is not a Bambu printer (Klipper, Prusa, OctoPrint, …). Select one under Target Printer.",
+        skip: "Not needed in Archive and Review mode.",
+      },
+      mr_upload_dir: {
+        title: "Upload folder writable",
+        fail: "Printbuddy can't write to this virtual printer's upload folder. Check that the Printbuddy data directory is writable.",
+      },
       enabled: {
         title: 'Virtual printer enabled',
         fail: 'This virtual printer is switched off. Toggle it on to make it discoverable.',

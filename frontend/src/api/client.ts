@@ -7445,7 +7445,13 @@ export interface VPDiagnosticCheck {
     | 'port_ftps'
     | 'port_mqtt'
     | 'port_bind'
-    | 'certificate';
+    | 'certificate'
+    // Moonraker/OctoPrint-compatible VPs (#52)
+    | 'mr_enabled'
+    | 'mr_endpoint'
+    | 'mr_api_key'
+    | 'mr_target_printer'
+    | 'mr_upload_dir';
   status: VPDiagnosticStatus;
   params: Record<string, string | number>;
 }

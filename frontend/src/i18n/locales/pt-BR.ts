@@ -5524,6 +5524,30 @@ export default {
       problems: 'Foram encontrados problemas que explicam por que o slicer não consegue ver ou usar esta impressora virtual.',
     },
     check: {
+      mr_enabled: {
+        title: "Impressora virtual ativada",
+        fail: "Esta impressora virtual está desligada. O teste de conexão e os envios do fatiador são recusados até você ativá-la.",
+      },
+      mr_endpoint: {
+        title: "Endpoint de upload pronto",
+        pass: "Os fatiadores podem enviar para {{path}} na porta do Printbuddy.",
+        fail: "A impressora virtual está ativada, mas o endpoint de upload não está registrado. Desligue e ligue novamente; se não resolver, verifique o log do Printbuddy.",
+      },
+      mr_api_key: {
+        title: "Chave de API definida",
+        fail: "Nenhuma chave de API definida. Gere uma com o botão de atualizar ao lado da chave de API.",
+      },
+      mr_target_printer: {
+        title: "Impressora alvo",
+        pass: "Os trabalhos vão para {{name}}, que está conectada.",
+        warn: "{{name}} está offline no momento. Os trabalhos na fila serão enviados quando ela reconectar.",
+        fail: "O modo fila de impressão precisa de uma impressora alvo que não seja Bambu (Klipper, Prusa, OctoPrint, …). Selecione uma em Impressora Alvo.",
+        skip: "Não é necessária nos modos Arquivo e Revisão.",
+      },
+      mr_upload_dir: {
+        title: "Pasta de upload gravável",
+        fail: "O Printbuddy não consegue gravar na pasta de upload desta impressora virtual. Verifique se o diretório de dados do Printbuddy é gravável.",
+      },
       enabled: {
         title: 'Impressora virtual habilitada',
         fail: 'Esta impressora virtual está desligada. Ative-a para torná-la detectável.',

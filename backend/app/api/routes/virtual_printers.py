@@ -420,7 +420,7 @@ async def diagnose_virtual_printer(
         return JSONResponse(status_code=404, content={"detail": "Virtual printer not found"})
 
     instance = virtual_printer_manager.get_instance(vp.id)
-    return await run_vp_diagnostic(vp, instance)
+    return await run_vp_diagnostic(vp, instance, db)
 
 
 @router.get("/{vp_id}")

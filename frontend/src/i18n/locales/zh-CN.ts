@@ -5522,6 +5522,30 @@ export default {
       problems: '发现的问题可以解释切片软件为何无法看到或使用此虚拟打印机。',
     },
     check: {
+      mr_enabled: {
+        title: "虚拟打印机已启用",
+        fail: "此虚拟打印机已关闭。在启用之前，切片软件的连接测试和上传都会被拒绝。",
+      },
+      mr_endpoint: {
+        title: "上传端点就绪",
+        pass: "切片软件可以通过 Printbuddy 端口上传到 {{path}}。",
+        fail: "虚拟打印机已启用，但其上传端点未注册。请先关闭再重新启用；如果仍不行，请查看 Printbuddy 日志。",
+      },
+      mr_api_key: {
+        title: "已设置 API 密钥",
+        fail: "未设置 API 密钥。请使用 API 密钥旁的刷新按钮生成一个。",
+      },
+      mr_target_printer: {
+        title: "目标打印机",
+        pass: "任务将发送到已连接的 {{name}}。",
+        warn: "{{name}} 当前离线。队列中的任务会在其重新连接后发送。",
+        fail: "打印队列模式需要一台非 Bambu 的目标打印机（Klipper、Prusa、OctoPrint 等）。请在“目标打印机”中选择。",
+        skip: "归档和审核模式下不需要。",
+      },
+      mr_upload_dir: {
+        title: "上传文件夹可写",
+        fail: "Printbuddy 无法写入此虚拟打印机的上传文件夹。请检查 Printbuddy 数据目录是否可写。",
+      },
       enabled: {
         title: '虚拟打印机已启用',
         fail: '此虚拟打印机已关闭。请将其打开以使其可被发现。',

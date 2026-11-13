@@ -5524,6 +5524,30 @@ export default {
       problems: 'Sono stati trovati problemi che spiegano perché lo slicer non riesce a vedere o usare questa stampante virtuale.',
     },
     check: {
+      mr_enabled: {
+        title: "Stampante virtuale attivata",
+        fail: "Questa stampante virtuale è spenta. Il test di connessione e i caricamenti dallo slicer vengono rifiutati finché non la attivi.",
+      },
+      mr_endpoint: {
+        title: "Endpoint di caricamento pronto",
+        pass: "Gli slicer possono caricare su {{path}} tramite la porta di Printbuddy.",
+        fail: "La stampante virtuale è attiva, ma il suo endpoint di caricamento non è registrato. Spegnila e riaccendila; se non basta, controlla il log di Printbuddy.",
+      },
+      mr_api_key: {
+        title: "Chiave API impostata",
+        fail: "Nessuna chiave API impostata. Generane una con il pulsante di aggiornamento accanto alla chiave API.",
+      },
+      mr_target_printer: {
+        title: "Stampante target",
+        pass: "I lavori vanno a {{name}}, che è connessa.",
+        warn: "{{name}} è offline in questo momento. I lavori in coda verranno inviati appena si riconnette.",
+        fail: "La modalità coda di stampa richiede una stampante target non Bambu (Klipper, Prusa, OctoPrint, …). Selezionane una in Stampante target.",
+        skip: "Non necessaria in modalità Archivio e Revisione.",
+      },
+      mr_upload_dir: {
+        title: "Cartella di caricamento scrivibile",
+        fail: "Printbuddy non riesce a scrivere nella cartella di caricamento di questa stampante virtuale. Verifica che la directory dei dati di Printbuddy sia scrivibile.",
+      },
       enabled: {
         title: 'Stampante virtuale abilitata',
         fail: 'Questa stampante virtuale è spenta. Attivala per renderla rilevabile.',

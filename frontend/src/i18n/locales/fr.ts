@@ -5525,6 +5525,30 @@ export default {
       problems: 'Des problèmes ont été trouvés qui expliquent pourquoi le slicer ne voit pas ou ne peut pas utiliser cette imprimante virtuelle.',
     },
     check: {
+      mr_enabled: {
+        title: "Imprimante virtuelle activée",
+        fail: "Cette imprimante virtuelle est désactivée. Le test de connexion et les envois du slicer sont refusés tant que vous ne l'activez pas.",
+      },
+      mr_endpoint: {
+        title: "Point d'envoi prêt",
+        pass: "Les slicers peuvent envoyer vers {{path}} sur le port de Printbuddy.",
+        fail: "L'imprimante virtuelle est activée, mais son point d'envoi n'est pas enregistré. Désactivez-la puis réactivez-la ; si cela ne suffit pas, consultez le journal de Printbuddy.",
+      },
+      mr_api_key: {
+        title: "Clé API définie",
+        fail: "Aucune clé API n'est définie. Générez-en une avec le bouton d'actualisation à côté de la clé API.",
+      },
+      mr_target_printer: {
+        title: "Imprimante cible",
+        pass: "Les travaux vont à {{name}}, qui est connectée.",
+        warn: "{{name}} est hors ligne pour le moment. Les travaux en file seront envoyés dès sa reconnexion.",
+        fail: "Le mode file d'impression nécessite une imprimante cible qui n'est pas une Bambu (Klipper, Prusa, OctoPrint, …). Choisissez-en une sous Imprimante cible.",
+        skip: "Inutile en mode Archive et Revue.",
+      },
+      mr_upload_dir: {
+        title: "Dossier d'envoi accessible en écriture",
+        fail: "Printbuddy ne peut pas écrire dans le dossier d'envoi de cette imprimante virtuelle. Vérifiez que le répertoire de données de Printbuddy est accessible en écriture.",
+      },
       enabled: {
         title: 'Imprimante virtuelle activée',
         fail: 'Cette imprimante virtuelle est désactivée. Activez-la pour qu\'elle soit détectable.',

@@ -5535,6 +5535,30 @@ export default {
       problems: 'Es wurden Probleme gefunden, die erklären, warum der Slicer diesen virtuellen Drucker nicht sehen oder nutzen kann.',
     },
     check: {
+      mr_enabled: {
+        title: "Virtueller Drucker aktiviert",
+        fail: "Dieser virtuelle Drucker ist ausgeschaltet. Verbindungstest und Uploads aus dem Slicer werden abgelehnt, bis du ihn einschaltest.",
+      },
+      mr_endpoint: {
+        title: "Upload-Endpunkt bereit",
+        pass: "Slicer können auf dem Printbuddy-Port an {{path}} hochladen.",
+        fail: "Der virtuelle Drucker ist aktiviert, aber sein Upload-Endpunkt ist nicht registriert. Schalte ihn aus und wieder ein; hilft das nicht, prüfe das Printbuddy-Log.",
+      },
+      mr_api_key: {
+        title: "API-Key gesetzt",
+        fail: "Es ist kein API-Key gesetzt. Erzeuge einen mit dem Aktualisieren-Button neben dem API-Key.",
+      },
+      mr_target_printer: {
+        title: "Zieldrucker",
+        pass: "Aufträge gehen an {{name}}, der Drucker ist verbunden.",
+        warn: "{{name}} ist gerade offline. Aufträge in der Warteschlange werden gesendet, sobald er wieder verbunden ist.",
+        fail: "Der Warteschlangen-Modus braucht einen Zieldrucker, der kein Bambu-Drucker ist (Klipper, Prusa, OctoPrint, …). Wähle einen unter Zieldrucker aus.",
+        skip: "Im Archiv- und Review-Modus nicht nötig.",
+      },
+      mr_upload_dir: {
+        title: "Upload-Ordner beschreibbar",
+        fail: "Printbuddy kann nicht in den Upload-Ordner dieses virtuellen Druckers schreiben. Prüfe, ob das Printbuddy-Datenverzeichnis beschreibbar ist.",
+      },
       enabled: {
         title: 'Virtueller Drucker aktiviert',
         fail: 'Dieser virtuelle Drucker ist ausgeschaltet. Schalten Sie ihn ein, damit er erkennbar wird.',

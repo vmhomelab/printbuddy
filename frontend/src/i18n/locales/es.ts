@@ -5543,6 +5543,30 @@ export default {
       problems: 'Se encontraron problemas que explican por qué el laminador no puede ver ni usar esta impresora virtual.',
     },
     check: {
+      mr_enabled: {
+        title: "Impresora virtual activada",
+        fail: "Esta impresora virtual está apagada. La prueba de conexión y las subidas del slicer se rechazan hasta que la active.",
+      },
+      mr_endpoint: {
+        title: "Punto de subida listo",
+        pass: "Los slicers pueden subir a {{path}} en el puerto de Printbuddy.",
+        fail: "La impresora virtual está activada, pero su punto de subida no está registrado. Desactívela y vuelva a activarla; si no ayuda, revise el registro de Printbuddy.",
+      },
+      mr_api_key: {
+        title: "Clave API configurada",
+        fail: "No hay ninguna clave API. Genere una con el botón de actualizar junto a la clave API.",
+      },
+      mr_target_printer: {
+        title: "Impresora de destino",
+        pass: "Los trabajos van a {{name}}, que está conectada.",
+        warn: "{{name}} está desconectada ahora. Los trabajos en cola se enviarán cuando vuelva a conectarse.",
+        fail: "El modo cola de impresión necesita una impresora de destino que no sea Bambu (Klipper, Prusa, OctoPrint, …). Seleccione una en Impresora de destino.",
+        skip: "No es necesaria en los modos Archivo y Revisión.",
+      },
+      mr_upload_dir: {
+        title: "Carpeta de subida con permiso de escritura",
+        fail: "Printbuddy no puede escribir en la carpeta de subida de esta impresora virtual. Compruebe que el directorio de datos de Printbuddy tenga permiso de escritura.",
+      },
       enabled: {
         title: 'Impresora virtual habilitada',
         fail: 'Esta impresora virtual está apagada. Actívela para que sea detectable.',
