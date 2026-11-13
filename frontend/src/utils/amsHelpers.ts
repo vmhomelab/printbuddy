@@ -306,19 +306,28 @@ export function filterFilamentsByNozzle<T extends { extruderId?: number }>(
 /**
  * Detect Bambu Lab RFID-tagged spool by tray_uuid (32 hex) or tag_uid (16 hex).
  *
- * Permissive zero-string check: any non-zero non-empty value returns true. The
- * function exists to suppress assign/unassign actions on RFID-managed slots
- * whose state is owned by the printer firmware — manual changes there would be
- * overwritten on the next RFID re-read (eye → pen icon in BambuStudio).
+ * Requires hex format so synthetic IDs (e.g. Snapmaker `snapmaker-u1-e0`) are
+ * not treated as firmware-owned RFID. RFID-managed slots suppress manual
+ * unassign because the printer overwrites them on the next re-read.
  */
 export function isBambuLabSpool(tray: {
   tray_uuid?: string | null;
   tag_uid?: string | null;
 } | null | undefined): boolean {
   if (!tray) return false;
-  if (tray.tray_uuid && tray.tray_uuid !== '00000000000000000000000000000000') return true;
-  if (tray.tag_uid && tray.tag_uid !== '0000000000000000') return true;
+  const uuid = tray.tray_uuid?.trim();
+  if (uuid && /^[0-9A-Fa-f]{32}$/.test(uuid) && !/^0+$/.test(uuid)) return true;
+  const tag = tray.tag_uid?.trim();
+  if (tag && /^[0-9A-Fa-f]{16}$/.test(tag) && !/^0+$/.test(tag)) return true;
   return false;
+}
+
+/** Positive Spoolman spool id from Snapmaker SpoolLink telemetry, if present. */
+export function getTrayFilamentSpoolId(
+  tray: { filament_spool_id?: number | null } | null | undefined,
+): number | undefined {
+  const sid = tray?.filament_spool_id;
+  return typeof sid === 'number' && Number.isFinite(sid) && sid > 0 ? Math.trunc(sid) : undefined;
 }
 
 export interface SpoolmanSlotAssignmentLike {
@@ -456,8 +465,10 @@ export function resolveLoadedFilamentInfo({
     const spoolmanAssignment = spoolmanSlotAssignments.find((assignment) => (
       assignment.printer_id === printer.id && assignment.ams_id === candidate.amsId && assignment.tray_id === candidate.trayId
     ));
-    const spoolmanSpool = spoolmanAssignment
-      ? spoolmanSpools.find((spool) => spool.id === spoolmanAssignment.spoolman_spool_id)
+    const traySpoolId = getTrayFilamentSpoolId(candidate.tray);
+    const spoolmanSpoolId = spoolmanAssignment?.spoolman_spool_id ?? traySpoolId;
+    const spoolmanSpool = spoolmanSpoolId
+      ? spoolmanSpools.find((spool) => spool.id === spoolmanSpoolId)
       : undefined;
     if (spoolmanSpool) {
       return {

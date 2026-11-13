@@ -325,6 +325,153 @@ describe('PrintersPage', () => {
       expect(await within(filamentSection).findByText('Assign')).not.toBeNull();
     });
 
+    it('binds Snapmaker SpoolLink filament_spool_id to Spoolman remain without a slot assignment', async () => {
+      phase14HoverCardProps.length = 0;
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          ...mockPrinters[0],
+          id: 7,
+          name: 'Snapmaker U1',
+          provider: 'fluidd',
+          model: 'Snapmaker U1',
+        }])),
+        http.get('/api/v1/printers/:id/status', () => HttpResponse.json({
+          ...mockPrinterStatus,
+          ams: [{
+            id: 0,
+            name: 'Snapmaker U1 Feeders',
+            module_type: 'snapmaker_u1',
+            tray: [
+              {
+                id: 0,
+                tray_color: '#E72F1D',
+                tray_type: 'PLA',
+                tray_sub_brands: 'SnapSpeed',
+                remain: -1,
+                state: 11,
+                tray_uuid: 'snapmaker-u1-e0',
+                tag_uid: '',
+                filament_spool_id: 25,
+                filament_detected: true,
+                loaded_to_feeder: true,
+                loaded_to_extruder: false,
+                channel_state: 'preload_finish',
+              },
+              { id: 1, tray_color: null, tray_type: null, remain: -1, state: 9, tray_uuid: 'snapmaker-u1-e1', filament_detected: false },
+              { id: 2, tray_color: null, tray_type: null, remain: -1, state: 9, tray_uuid: 'snapmaker-u1-e2', filament_detected: false },
+              { id: 3, tray_color: null, tray_type: null, remain: -1, state: 9, tray_uuid: 'snapmaker-u1-e3', filament_detected: false },
+            ],
+          }],
+        })),
+        http.get('/api/v1/spoolman/status', () => HttpResponse.json({ enabled: true, connected: true, url: 'http://spoolman.local' })),
+        http.get('/api/v1/settings/spoolman', () => HttpResponse.json({ spoolman_enabled: 'true', spoolman_url: 'http://spoolman.local', spoolman_sync_mode: 'read_only' })),
+        http.get('/api/v1/spoolman/inventory/spools', () => HttpResponse.json([
+          {
+            id: 25,
+            brand: 'Snapmaker',
+            material: 'PLA',
+            subtype: 'SnapSpeed',
+            color_name: 'Charcoal',
+            rgba: 'E72F1D',
+            label_weight: 1000,
+            weight_used: 602,
+            archived_at: null,
+            data_origin: 'spoolman',
+          },
+        ])),
+        http.get('/api/v1/spoolman/inventory/slot-assignments/all', () => HttpResponse.json([])),
+      );
+
+      render(<PrintersPage />);
+
+      await waitFor(() => {
+        const linked = phase14HoverCardProps.filter((props) => {
+          const spoolman = props.spoolman as { linkedSpoolId?: number } | undefined;
+          return spoolman?.linkedSpoolId === 25;
+        });
+        expect(linked.length).toBeGreaterThan(0);
+        const inventory = linked[0].inventory as {
+          isAssigned?: boolean;
+          assignedSpool?: { id: number } | null;
+          onUnassignSpool?: unknown;
+        };
+        expect(inventory.isAssigned).toBe(true);
+        expect(inventory.assignedSpool?.id).toBe(25);
+        expect(inventory.onUnassignSpool).toBeUndefined();
+        const data = linked[0].data as { fillLevel?: number | null; fillSource?: string };
+        expect(data.fillLevel).toBe(40);
+        expect(data.fillSource).toBe('spoolman');
+      }, { timeout: 3000 });
+    });
+
+    it('shows SpoolLink assigned spool from tray metadata when Printbuddy Spoolman sync is off', async () => {
+      phase14HoverCardProps.length = 0;
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          ...mockPrinters[0],
+          id: 7,
+          name: 'Snapmaker U1',
+          provider: 'fluidd',
+          model: 'Snapmaker U1',
+        }])),
+        http.get('/api/v1/printers/:id/status', () => HttpResponse.json({
+          ...mockPrinterStatus,
+          ams: [{
+            id: 0,
+            name: 'Snapmaker U1 Feeders',
+            module_type: 'snapmaker_u1',
+            tray: [
+              {
+                id: 0,
+                tray_color: '#FF9016',
+                tray_type: 'PLA',
+                remain: 100,
+                state: 11,
+                tray_uuid: 'snapmaker-u1-e0',
+                filament_spool_id: 114,
+                filament_spool_brand: 'Bambu Lab',
+                filament_spool_material: 'PLA',
+                filament_spool_color_name: 'Pumpkin Orange',
+                remaining_weight: 997.5,
+                filament_detected: true,
+                loaded_to_feeder: true,
+              },
+              { id: 1, tray_color: null, tray_type: null, remain: -1, state: 9, tray_uuid: 'snapmaker-u1-e1' },
+              { id: 2, tray_color: null, tray_type: null, remain: -1, state: 9, tray_uuid: 'snapmaker-u1-e2' },
+              { id: 3, tray_color: null, tray_type: null, remain: -1, state: 9, tray_uuid: 'snapmaker-u1-e3' },
+            ],
+          }],
+        })),
+        http.get('/api/v1/spoolman/status', () => HttpResponse.json({ enabled: false, connected: false, url: null })),
+        http.get('/api/v1/settings/spoolman', () => HttpResponse.json({ spoolman_enabled: 'false', spoolman_url: '' })),
+      );
+
+      render(<PrintersPage />);
+
+      await waitFor(() => {
+        const withAssigned = phase14HoverCardProps.filter((props) => {
+          const inventory = props.inventory as { assignedSpool?: { id: number } | null } | undefined;
+          return inventory?.assignedSpool?.id === 114;
+        });
+        expect(withAssigned.length).toBeGreaterThan(0);
+        const inventory = withAssigned[0].inventory as {
+          isAssigned?: boolean;
+          assignedSpool?: { id: number; brand: string | null; color_name: string | null } | null;
+          showOpenInInventory?: boolean;
+        };
+        expect(inventory.isAssigned).toBe(true);
+        expect(inventory.assignedSpool).toMatchObject({
+          id: 114,
+          brand: 'Bambu Lab',
+          color_name: 'Pumpkin Orange',
+        });
+        expect(inventory.showOpenInInventory).toBe(false);
+        const data = withAssigned[0].data as { profile?: string; fillLevel?: number | null };
+        expect(data.profile).toContain('Pumpkin Orange');
+        expect(data.fillLevel).toBe(100);
+      }, { timeout: 3000 });
+    });
+
     it('lets Moonraker users set reported fan speeds from the status strip', async () => {
       const user = userEvent.setup();
       let requestedFan = '';
