@@ -4463,7 +4463,7 @@ export default {
     },
     targetPrinter: {
       title: 'Zieldrucker',
-      moonrakerHint: "Nur Nicht-Bambu-Drucker sind auswählbar. Für den Warteschlangen-Modus erforderlich.",
+      moonrakerHint: "Nur Nicht-Bambu-Drucker sind auswählbar. Für den Warteschlangen-Modus erforderlich. Dieser Drucker wird auch im Device-Tab des Slicers angezeigt.",
       configured: 'Proxy-Ziel konfiguriert',
       notConfigured: 'Kein Zieldrucker ausgewählt - erforderlich für Proxy-Modus',
       placeholder: 'Drucker auswählen...',

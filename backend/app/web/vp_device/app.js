@@ -11,7 +11,6 @@
   var VP_ID = (BASE.match(/\/vp-host\/(\d+)/) || [])[1] || '0';
   var POLL_MS = 2000;
   var KEY_STORE = 'pb-device-key-' + VP_ID;
-  var PRINTER_STORE = 'pb-device-printer-' + VP_ID;
 
   var STRINGS = {
     en: {
@@ -22,14 +21,14 @@
       fullscreen: 'Fullscreen', temperatures: 'Temperatures', nozzle: 'Nozzle', bed: 'Bed', chamber: 'Chamber',
       setTemps: 'Set', preheatPla: 'Preheat PLA', cooldown: 'Cool down', control: 'Control', light: 'Chamber light',
       footer: 'Printbuddy device view · refreshes every 2 s', updatedJustNow: 'Updated just now',
-      updatedAgo: 'Updated {s} s ago', noPrinters: 'No printers are set up in Printbuddy yet.',
+      updatedAgo: 'Updated {s} s ago', noTarget: 'This virtual printer has no target printer yet. In Printbuddy open Settings → Virtual printers, pick the target printer for “{name}” and the dashboard shows it here.',
       noJob: 'No active print', layer: 'Layer {a} / {b}', noCamera: 'No camera is configured for this printer in Printbuddy.',
       cameraOffline: 'Camera stream not available. Retrying…', cameraConnecting: 'Connecting to camera…', offline: 'Offline', connectionLost: 'Printbuddy is not reachable. Retrying…',
       wrongKey: 'The API key was rejected. Enter the key of this virtual printer.', done: 'Command sent',
       fan_part: 'Part cooling fan', fan_aux: 'Auxiliary fan', fan_chamber: 'Chamber fan', target: 'Target',
       state_RUNNING: 'Printing', state_PAUSE: 'Paused', state_PREPARE: 'Preparing', state_SLICING: 'Preparing',
       state_FINISH: 'Finished', state_FAILED: 'Failed', state_IDLE: 'Ready', state_OFFLINE: 'Offline', state_UNKNOWN: 'Unknown',
-      sentFrom: 'Target of virtual printer “{name}”'
+      viaVp: 'via virtual printer “{name}”'
     },
     de: {
       printer: 'Drucker', openPrintbuddy: 'In Printbuddy öffnen', authTitle: 'API-Key erforderlich',
@@ -39,14 +38,14 @@
       fullscreen: 'Vollbild', temperatures: 'Temperaturen', nozzle: 'Düse', bed: 'Bett', chamber: 'Kammer',
       setTemps: 'Setzen', preheatPla: 'PLA vorheizen', cooldown: 'Abkühlen', control: 'Steuerung', light: 'Innenbeleuchtung',
       footer: 'Printbuddy Device-Ansicht · aktualisiert sich alle 2 s', updatedJustNow: 'Gerade aktualisiert',
-      updatedAgo: 'Aktualisiert vor {s} s', noPrinters: 'In Printbuddy ist noch kein Drucker eingerichtet.',
+      updatedAgo: 'Aktualisiert vor {s} s', noTarget: 'Für diesen virtuellen Drucker ist noch kein Zieldrucker gewählt. Wähle in Printbuddy unter Einstellungen → Virtuelle Drucker den Zieldrucker für „{name}“, dann erscheint er hier.',
       noJob: 'Kein aktiver Druck', layer: 'Schicht {a} / {b}', noCamera: 'Für diesen Drucker ist in Printbuddy keine Kamera eingerichtet.',
       cameraOffline: 'Kamerastream nicht verfügbar. Neuer Versuch…', cameraConnecting: 'Kamera wird verbunden…', offline: 'Offline', connectionLost: 'Printbuddy ist nicht erreichbar. Neuer Versuch…',
       wrongKey: 'Der API-Key wurde abgelehnt. Gib den Key dieses virtuellen Druckers ein.', done: 'Befehl gesendet',
       fan_part: 'Bauteillüfter', fan_aux: 'Zusatzlüfter', fan_chamber: 'Gehäuselüfter', target: 'Ziel',
       state_RUNNING: 'Druckt', state_PAUSE: 'Pausiert', state_PREPARE: 'Vorbereitung', state_SLICING: 'Vorbereitung',
       state_FINISH: 'Fertig', state_FAILED: 'Fehlgeschlagen', state_IDLE: 'Bereit', state_OFFLINE: 'Offline', state_UNKNOWN: 'Unbekannt',
-      sentFrom: 'Ziel des virtuellen Druckers „{name}“'
+      viaVp: 'über virtuellen Drucker „{name}“'
     }
   };
   var LANG = /^de\b/i.test(navigator.language || '') ? 'de' : 'en';
@@ -111,7 +110,6 @@
   });
 
   // ---- state -------------------------------------------------------------
-  var selectedPrinter = Number(storageGet('sessionStorage', PRINTER_STORE)) || null;
   var lastUpdate = 0;
   var pollTimer = null;
   var current = null;
@@ -164,20 +162,10 @@
   }
 
   // ---- rendering ---------------------------------------------------------
-  function renderPrinterSelect(data) {
-    var select = $('printer-select');
-    var wanted = data.printers.map(function (p) { return p.id + ':' + p.name; }).join('|');
-    if (select.getAttribute('data-list') !== wanted) {
-      select.innerHTML = '';
-      data.printers.forEach(function (p) {
-        var showModel = p.model && p.model.toLowerCase() !== String(p.name).toLowerCase();
-        var option = el('option', null, p.name + (showModel ? ' · ' + p.model : ''));
-        option.value = String(p.id);
-        select.appendChild(option);
-      });
-      select.setAttribute('data-list', wanted);
-    }
-    if (data.selected_printer_id) select.value = String(data.selected_printer_id);
+  function renderHeader(data) {
+    var p = data.printer;
+    $('printer-name').textContent = p ? p.name : data.vp.name;
+    $('vp-name').textContent = p ? t('viaVp', { name: data.vp.name }) : '';
   }
 
   function renderJob(p) {
@@ -351,13 +339,15 @@
   function render(data) {
     current = data;
     $('auth-panel').hidden = true;
-    renderPrinterSelect(data);
+    renderHeader(data);
     var p = data.printer;
     if (!p) {
       $('dashboard').hidden = true;
-      showMessage(t('noPrinters'));
+      $('state-pill').hidden = true;
+      showMessage(t('noTarget', { name: data.vp.name }));
       return;
     }
+    $('state-pill').hidden = false;
     showMessage('');
     $('dashboard').hidden = false;
     renderJob(p);
@@ -395,9 +385,8 @@
 
   function poll() {
     clearTimeout(pollTimer);
-    var query = selectedPrinter ? '?printer_id=' + selectedPrinter : '';
     ensureCameraToken()
-      .then(function () { return api('state' + query); })
+      .then(function () { return api('state'); })
       .then(function (data) {
         lastUpdate = Date.now();
         render(data);
@@ -413,19 +402,13 @@
   function act(action, body) {
     if (!current || !current.printer) return Promise.resolve();
     busy = true;
-    return api('printers/' + current.printer.id + '/' + action, { method: 'POST', body: body || {} })
+    return api('control/' + action, { method: 'POST', body: body || {} })
       .then(function () { showMessage(''); })
       .catch(function (err) { showMessage(err.message, true); })
       .then(function () { busy = false; poll(); });
   }
 
   // ---- events ------------------------------------------------------------
-  $('printer-select').addEventListener('change', function (event) {
-    selectedPrinter = Number(event.target.value) || null;
-    storageSet('sessionStorage', PRINTER_STORE, selectedPrinter ? String(selectedPrinter) : null);
-    poll();
-  });
-
   $('btn-pause').addEventListener('click', function () {
     if (!current || !current.printer) return;
     act(current.printer.state === 'PAUSE' ? 'resume' : 'pause');

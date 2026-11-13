@@ -10,21 +10,21 @@ This module serves a small standalone dashboard there instead:
 * ``GET  /vp-host/<id>`` (and ``/``): the HTML shell. It holds no printer data,
   so it is served without a key.
 * ``GET  /vp-host/<id>/device/app.js|app.css``: its static assets.
-* ``GET  /vp-host/<id>/device/api/state``: printers, status, temperatures,
-  material and camera of one printer.
+* ``GET  /vp-host/<id>/device/api/state``: status, temperatures, material and
+  camera of the VP's target printer.
 * ``POST /vp-host/<id>/device/api/camera-token``: a camera stream token for the
   ``<img>`` stream.
-* ``POST /vp-host/<id>/device/api/printers/<printer id>/<action>``: pause,
-  resume, stop, temperature, cooldown, fan and light.
+* ``POST /vp-host/<id>/device/api/control/<action>``: pause, resume, stop,
+  temperature, cooldown, fan and light on the target printer.
 
 The data and control routes use the VP's API key like the upload API. Orca
 loads the page with its own web view and adds the configured API key as an
 ``X-API-Key`` header to every ``fetch`` the page makes; the page also accepts
 ``?apikey=`` in its URL (for the "Device UI" field or another browser).
 
-The dashboard is not limited to the VP's target printer: every active
-Printbuddy printer can be picked, so it works whichever printer the job ends
-up on.
+Each printer set up in the slicer points at its own virtual printer, so the
+dashboard shows and controls only that VP's target printer and nothing else
+in Printbuddy. A VP without a target printer shows a hint to pick one.
 """
 
 from __future__ import annotations
@@ -54,6 +54,7 @@ ASSETS = {"app.js": "text/javascript", "app.css": "text/css"}
 NO_CACHE = {"Cache-Control": "no-cache, no-store, must-revalidate"}
 
 ACTIVE_STATES = ("RUNNING", "PAUSE", "PREPARE", "SLICING")
+NO_TARGET = {"error": "This virtual printer has no target printer", "code": "no_target_printer"}
 MAX_SLOTS = 16
 _EXTRUDER_KEY = re.compile(r"^extruder(\d*)$")
 
@@ -202,50 +203,32 @@ def _has_camera(printer: Any, connected: bool) -> bool:
     return (printer.provider or "bambu") == "bambu" and connected
 
 
-def _pick_printer(vp, printers: list, statuses: dict[int, Any], requested: int | None):
-    ids = {p.id for p in printers}
-    if requested in ids:
-        return requested
-    if vp.target_printer_id in ids:
-        return vp.target_printer_id
-    for printer in printers:
-        state = statuses.get(printer.id)
-        if state is not None and (getattr(state, "state", None) or "").upper() in ACTIVE_STATES:
-            return printer.id
-    return printers[0].id if printers else None
-
-
-async def _build_state(vp, requested: int | None, db: AsyncSession) -> dict[str, Any]:
-    from backend.app.api.routes.printers import get_printer_status
+async def _target_printer(vp, db: AsyncSession):
+    """The VP's target printer, or None when unset, deleted or deactivated."""
     from backend.app.models.printer import Printer
-    from backend.app.services.printer_manager import printer_manager
 
-    result = await db.execute(select(Printer).where(Printer.is_active.is_(True)).order_by(Printer.id))
-    printers = list(result.scalars().all())
-    live = {p.id: printer_manager.get_status(p.id) for p in printers}
-    selected_id = _pick_printer(vp, printers, live, requested)
+    if not vp.target_printer_id:
+        return None
+    result = await db.execute(select(Printer).where(Printer.id == vp.target_printer_id))
+    printer = result.scalar_one_or_none()
+    if printer is None or not printer.is_active:
+        return None
+    return printer
 
-    prefix = app_settings.api_prefix
+
+async def _build_state(vp, db: AsyncSession) -> dict[str, Any]:
+    from backend.app.api.routes.printers import get_printer_status
+
     payload: dict[str, Any] = {
         "vp": {"id": vp.id, "name": vp.name, "mode": vp.mode, "target_printer_id": vp.target_printer_id},
-        "printers": [
-            {
-                "id": p.id,
-                "name": p.name,
-                "model": p.model,
-                "state": getattr(live.get(p.id), "state", None),
-                "connected": live.get(p.id) is not None and printer_manager.is_connected(p.id),
-            }
-            for p in printers
-        ],
-        "selected_printer_id": selected_id,
         "printer": None,
     }
-    if selected_id is None:
+    printer = await _target_printer(vp, db)
+    if printer is None:
         return payload
 
-    printer = next(p for p in printers if p.id == selected_id)
-    status = await get_printer_status(printer_id=selected_id, _=None, db=db)
+    prefix = app_settings.api_prefix
+    status = await get_printer_status(printer_id=printer.id, _=None, db=db)
     connected = bool(status.connected)
     state = (status.state or "").upper() or None
     payload["printer"] = {
@@ -294,13 +277,12 @@ async def _build_state(vp, requested: int | None, db: AsyncSession) -> dict[str,
 async def device_state(
     vp_id: int,
     request: Request,
-    printer_id: int | None = None,
     db: AsyncSession = Depends(get_db),
 ):
     vp, error = await _authorize(vp_id, request, db)
     if error:
         return error
-    return JSONResponse(await _build_state(vp, printer_id, db), headers=NO_CACHE)
+    return JSONResponse(await _build_state(vp, db), headers=NO_CACHE)
 
 
 @router.post("/device/api/camera-token")
@@ -325,18 +307,18 @@ class DeviceAction(BaseModel):
 ACTIONS = ("pause", "resume", "stop", "temperature", "cooldown", "fan", "light")
 
 
-@router.post("/device/api/printers/{printer_id}/{action}")
+@router.post("/device/api/control/{action}")
 async def device_action(
     vp_id: int,
-    printer_id: int,
     action: str,
     request: Request,
     body: DeviceAction | None = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """Run a printer control from the dashboard.
+    """Run a printer control on the VP's target printer.
 
-    Delegates to the regular printer routes so every provider keeps its own
+    Only the target printer can be controlled; there is no printer id in the
+    request. Delegates to the regular printer routes so every provider keeps its own
     checks; their ``HTTPException`` errors pass through unchanged.
     """
     from backend.app.api.routes import printers as printer_routes
@@ -346,6 +328,10 @@ async def device_action(
         return error
     if action not in ACTIONS:
         return JSONResponse(status_code=404, content={"error": f"Unknown action {action}"})
+    printer = await _target_printer(vp, db)
+    if printer is None:
+        return JSONResponse(status_code=409, content=NO_TARGET)
+    printer_id = printer.id
     body = body or DeviceAction()
     logger.info("[VP %s] Device dashboard: %s on printer %s", vp.name, action, printer_id)
 

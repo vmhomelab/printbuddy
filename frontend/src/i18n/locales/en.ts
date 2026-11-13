@@ -4475,7 +4475,7 @@ export default {
     },
     targetPrinter: {
       title: 'Target Printer',
-      moonrakerHint: "Only non-Bambu printers can be selected. Required for print queue mode.",
+      moonrakerHint: "Only non-Bambu printers can be selected. Required for print queue mode. This printer is also shown in the slicer's Device tab.",
       configured: 'Proxy target configured',
       notConfigured: 'No target printer selected - required for proxy mode',
       placeholder: 'Select a printer...',

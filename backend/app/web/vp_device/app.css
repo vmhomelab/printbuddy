@@ -35,6 +35,8 @@ button, input, select { font: inherit; }
 .brand { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 18px; color: var(--accent); }
 .brand span { color: var(--text); }
 .sep { color: var(--line-strong); }
+.printer-id { display: flex; flex-direction: column; min-width: 0; }
+.printer-name { font-size: 16px; font-weight: 600; overflow-wrap: anywhere; }
 .link { color: var(--accent-text); text-decoration: none; display: inline-flex; align-items: center; gap: 6px; font-weight: 500; font-size: 13px; }
 .link:hover { text-decoration: underline; }
 

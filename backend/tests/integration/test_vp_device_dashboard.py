@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from httpx import AsyncClient
 
-from backend.app.api.routes.vp_device import _material_slots, _pick_printer, _temperature_rows
+from backend.app.api.routes.vp_device import _material_slots, _temperature_rows
 
 
 @pytest.fixture
@@ -51,9 +51,11 @@ class TestDevicePage:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_state_requires_vp_key(self, async_client: AsyncClient, printer_factory, no_sync):
-        printer = await printer_factory(name="Snapmaker U1", provider="klipper", model="Snapmaker U1")
-        vp = await _create_vp(async_client)
+    async def test_state_shows_only_the_target_printer(self, async_client: AsyncClient, printer_factory, no_sync):
+        await printer_factory(name="X1C")
+        u1 = await printer_factory(name="Snapmaker U1", provider="klipper", model="Snapmaker U1")
+        await printer_factory(name="Voron", provider="klipper")
+        vp = await _create_vp(async_client, target_printer_id=u1.id)
         url = f"{vp['host_path']}/device/api/state"
 
         assert (await async_client.get(url)).status_code == 401
@@ -62,34 +64,38 @@ class TestDevicePage:
         with patch("backend.app.services.printer_manager.printer_manager.get_status", return_value=None):
             response = await async_client.get(url, headers={"X-API-Key": vp["api_key"]})
             by_query = await async_client.get(f"{url}?apikey={vp['api_key']}")
+            # A printer id from the client is ignored: no way to reach other printers.
+            other = await async_client.get(f"{url}?printer_id=1", headers={"X-API-Key": vp["api_key"]})
         assert response.status_code == 200
         assert by_query.status_code == 200
         data = response.json()
         assert data["vp"]["id"] == vp["id"]
-        assert data["selected_printer_id"] == printer.id
+        assert "printers" not in data
+        assert data["printer"]["id"] == u1.id
         assert data["printer"]["name"] == "Snapmaker U1"
         assert data["printer"]["connected"] is False
-        assert data["printer"]["camera"]["stream_path"].endswith(f"/printers/{printer.id}/camera/stream")
+        assert data["printer"]["camera"]["stream_path"].endswith(f"/printers/{u1.id}/camera/stream")
+        assert other.json()["printer"]["id"] == u1.id
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_any_printer_can_be_selected(self, async_client: AsyncClient, printer_factory, no_sync):
-        bambu = await printer_factory(name="X1C")
-        klipper = await printer_factory(name="Voron", provider="klipper")
-        vp = await _create_vp(async_client, mode="print_queue", target_printer_id=klipper.id)
-        url = f"{vp['host_path']}/device/api/state"
-        headers = {"X-API-Key": vp["api_key"]}
+    async def test_state_without_target_printer(self, async_client: AsyncClient, printer_factory, no_sync):
+        await printer_factory(name="Voron", provider="klipper")
+        vp = await _create_vp(async_client)
+        response = await async_client.get(f"{vp['host_path']}/device/api/state", headers={"X-API-Key": vp["api_key"]})
+        assert response.status_code == 200
+        assert response.json()["printer"] is None
+        assert response.json()["vp"]["target_printer_id"] is None
 
-        with patch("backend.app.services.printer_manager.printer_manager.get_status", return_value=None):
-            default = (await async_client.get(url, headers=headers)).json()
-            picked = (await async_client.get(f"{url}?printer_id={bambu.id}", headers=headers)).json()
-            unknown = (await async_client.get(f"{url}?printer_id=9999", headers=headers)).json()
-
-        assert {p["id"] for p in default["printers"]} == {bambu.id, klipper.id}
-        assert default["selected_printer_id"] == klipper.id  # the VP's target
-        assert picked["selected_printer_id"] == bambu.id
-        assert picked["printer"]["provider"] == "bambu"
-        assert unknown["selected_printer_id"] == klipper.id
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_inactive_target_is_not_shown(self, async_client: AsyncClient, printer_factory, db_session, no_sync):
+        u1 = await printer_factory(name="U1", provider="klipper")
+        vp = await _create_vp(async_client, target_printer_id=u1.id)
+        u1.is_active = False
+        await db_session.commit()
+        response = await async_client.get(f"{vp['host_path']}/device/api/state", headers={"X-API-Key": vp["api_key"]})
+        assert response.json()["printer"] is None
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -106,9 +112,10 @@ class TestDeviceActions:
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_actions_delegate_to_printer_routes(self, async_client: AsyncClient, printer_factory, no_sync):
+        await printer_factory(name="Voron", provider="klipper")
         printer = await printer_factory(name="U1", provider="klipper")
-        vp = await _create_vp(async_client)
-        base = f"{vp['host_path']}/device/api/printers/{printer.id}"
+        vp = await _create_vp(async_client, target_printer_id=printer.id)
+        base = f"{vp['host_path']}/device/api/control"
         headers = {"X-API-Key": vp["api_key"]}
         ok = {"success": True}
 
@@ -141,6 +148,20 @@ class TestDeviceActions:
         assert [c.kwargs["target"] for c in nozzle.await_args_list] == [210, 0]
         assert [c.kwargs["target"] for c in bed.await_args_list] == [0]
         assert fan.await_args.kwargs["speed"] == 100  # clamped
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_actions_need_a_target_printer(self, async_client: AsyncClient, printer_factory, no_sync):
+        await printer_factory(name="Voron", provider="klipper")
+        vp = await _create_vp(async_client)
+        headers = {"X-API-Key": vp["api_key"]}
+        with patch("backend.app.api.routes.printers.pause_print", new=AsyncMock()) as pause:
+            response = await async_client.post(f"{vp['host_path']}/device/api/control/pause", headers=headers)
+            old_route = await async_client.post(f"{vp['host_path']}/device/api/printers/1/pause", headers=headers)
+        assert response.status_code == 409
+        assert response.json()["code"] == "no_target_printer"
+        assert old_route.status_code in (404, 405)
+        pause.assert_not_awaited()
 
 
 class TestNormalisation:
@@ -200,14 +221,3 @@ class TestNormalisation:
             ("A2", "#00ff00", True),
             ("T2", "#112233", True),
         ]
-
-    def test_pick_printer_prefers_request_target_then_printing(self):
-        printers = [SimpleNamespace(id=1), SimpleNamespace(id=2), SimpleNamespace(id=3)]
-        statuses = {1: SimpleNamespace(state="IDLE"), 3: SimpleNamespace(state="RUNNING")}
-        vp = SimpleNamespace(target_printer_id=2)
-        assert _pick_printer(vp, printers, statuses, 1) == 1
-        assert _pick_printer(vp, printers, statuses, None) == 2
-        vp.target_printer_id = None
-        assert _pick_printer(vp, printers, statuses, None) == 3
-        assert _pick_printer(vp, printers, {}, None) == 1
-        assert _pick_printer(vp, [], {}, None) is None
