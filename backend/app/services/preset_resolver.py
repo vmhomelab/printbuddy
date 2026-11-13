@@ -41,7 +41,7 @@ from backend.app.services.bambu_cloud import (
     BambuCloudService,
 )
 from backend.app.services.orca_cloud import OrcaCloudAuthError, OrcaCloudError, parse_orca_string_list
-from backend.app.services.orca_profiles import resolve_preset
+from backend.app.services.orca_profiles import infer_profile_vendor, resolve_preset
 
 logger = logging.getLogger(__name__)
 
@@ -173,9 +173,20 @@ async def resolve_preset_ref(
             detail=f"Unknown preset source for {slot}: {ref.source!r}",
         )
     normalised = _normalise_profile_for_slicer(content, slot)
-    if await _wants_orca_inherits_flatten(db, slicer):
-        return await _flatten_and_strip_inherits(db, normalised, slot)
-    return normalised
+    if not await _wants_orca_inherits_flatten(db, slicer):
+        return normalised
+
+    # Stock BBL parents live in the Orca sidecar's bundled tree. Leave
+    # inherits intact so the CLI walks them itself instead of replacing
+    # them with a GitHub-flattened snapshot.
+    try:
+        parsed = json.loads(normalised)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        parsed = None
+    if isinstance(parsed, dict) and infer_profile_vendor(parsed) == "BBL":
+        return normalised
+
+    return await _flatten_and_strip_inherits(db, normalised, slot)
 
 
 def _normalise_profile_for_slicer(content: str, slot: str) -> str:

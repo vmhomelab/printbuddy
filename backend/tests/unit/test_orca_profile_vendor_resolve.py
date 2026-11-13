@@ -155,28 +155,30 @@ async def test_resolve_preset_ref_skips_flatten_for_bambu_studio():
 
 
 @pytest.mark.asyncio
-async def test_resolve_preset_ref_flattens_for_orcaslicer():
+async def test_resolve_preset_ref_flattens_snapmaker_for_orcaslicer():
     from backend.app.schemas.slicer import PresetRef
     from backend.app.services import preset_resolver
 
     db = MagicMock()
     preset = MagicMock()
-    preset.preset_type = "filament"
+    preset.preset_type = "process"
     preset.setting = json.dumps(
         {
-            "name": "Custom PLA",
-            "inherits": "fdm_filament_pla",
-            "filament_type": ["PLA"],
+            "name": "0.20 Standard @Snapmaker U1",
+            "inherits": "fdm_process_common",
+            "printer_model": "Snapmaker U1",
+            "layer_height": "0.2",
         }
     )
     db.get = AsyncMock(return_value=preset)
 
     flattened = json.dumps(
         {
-            "name": "Custom PLA",
-            "filament_type": ["PLA"],
+            "name": "0.20 Standard @Snapmaker U1",
+            "printer_model": "Snapmaker U1",
+            "layer_height": "0.2",
             "bridge_speed": ["25"],
-            "type": "filament",
+            "type": "process",
         }
     )
     with patch.object(
@@ -188,9 +190,41 @@ async def test_resolve_preset_ref_flattens_for_orcaslicer():
             db,
             None,
             PresetRef(source="local", id="7"),
-            slot="filament",
+            slot="process",
             slicer="orcaslicer",
         )
 
     flatten.assert_awaited_once()
     assert json.loads(out)["bridge_speed"] == ["25"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_preset_ref_keeps_bbl_inherits_on_orcaslicer():
+    """Stock BBL chains should keep inherits for the sidecar's bundled walk."""
+    from backend.app.schemas.slicer import PresetRef
+    from backend.app.services import preset_resolver
+
+    db = MagicMock()
+    preset = MagicMock()
+    preset.preset_type = "filament"
+    preset.setting = json.dumps(
+        {
+            "name": "Bambu PLA Basic @BBL X1C",
+            "inherits": "fdm_filament_pla",
+            "filament_vendor": ["Bambu Lab"],
+            "filament_type": ["PLA"],
+        }
+    )
+    db.get = AsyncMock(return_value=preset)
+
+    with patch.object(preset_resolver, "_flatten_and_strip_inherits", new=AsyncMock()) as flatten:
+        out = await preset_resolver.resolve_preset_ref(
+            db,
+            None,
+            PresetRef(source="local", id="7"),
+            slot="filament",
+            slicer="orcaslicer",
+        )
+
+    flatten.assert_not_awaited()
+    assert json.loads(out)["inherits"] == "fdm_filament_pla"
