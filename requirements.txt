@@ -45,6 +45,9 @@ reportlab>=4.0.0
 
 # STL Thumbnail Generation
 trimesh>=4.0.0
+# trimesh needs these to read 3MF (plain-3MF thumbnails)
+networkx>=3.0
+lxml>=5.0
 matplotlib>=3.8.0
 fast-simplification>=0.1.0
 
