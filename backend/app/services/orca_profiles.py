@@ -232,9 +232,7 @@ async def fetch_and_cache_base_profile(
                         LOOKUP_TIME_BUDGET_S,
                     )
                     for v in tried:
-                        _negative_cache[f"{v}:{profile_type}:{name}"] = (
-                            time.monotonic() + NEGATIVE_CACHE_TTL_S
-                        )
+                        _negative_cache[f"{v}:{profile_type}:{name}"] = time.monotonic() + NEGATIVE_CACHE_TTL_S
                     return None
                 try:
                     resp = await client.get(url)
