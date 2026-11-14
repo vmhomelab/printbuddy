@@ -64,6 +64,15 @@ PrintBuddy slices with the sidecar of the **Preferred Slicer** setting, so
 start the matching service. Plain `docker compose up -d` starts **only**
 OrcaSlicer; Bambu Studio needs `--profile bambu`.
 
+**Snapmaker U1:** keep the Compose default on stable `2.3.2`. For U1 vendor
+profiles and painted multi-colour projects, opt in with `ORCA_VERSION=2.4.0`
+or newer in `.env` — `2.5.0-beta` includes upstream
+[#15998](https://github.com/OrcaSlicer/OrcaSlicer/pull/15998) (painted 3MF +
+multi `--load-filaments` no longer SIGSEGVs — was #12426). Snapmaker's Orca
+fork already handled these files for U1; vanilla Orca now sizes painted
+segmentation from `filament_diameter` the same way the rest of the slicer
+does. 2.3.x lacks U1 machine profiles entirely.
+
 ## Ports
 
 | Service | Default host port | Why this port |
@@ -89,10 +98,12 @@ In the Printbuddy UI: **Settings → Slicer**:
 
 - **Preferred Slicer**: pick OrcaSlicer or Bambu Studio.
 - **Use Slicer API**: turn on.
-- **Sidecar URL**: paste the full URL of the chosen slicer's sidecar.
-  Default values match the Compose defaults:
-  - OrcaSlicer: `http://localhost:3003`
-  - Bambu Studio: `http://localhost:3001`
+- **Sidecar URL**: leave blank for the defaults (`http://localhost:3003` for
+  OrcaSlicer, `http://localhost:3001` for Bambu Studio), which match the
+  loopback ports in this Compose file when Printbuddy uses host networking.
+  For bridged Docker setups, put both stacks on a shared network and use
+  `http://orca-slicer-api:3000` / `http://bambu-studio-api:3000` — see
+  “Network and security” in `docs/slicer-sidecar.md`.
 
 Leaving the URL field blank uses the `SLICER_API_URL` /
 `BAMBU_STUDIO_API_URL` environment defaults from Printbuddy's config.
