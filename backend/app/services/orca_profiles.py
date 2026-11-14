@@ -146,26 +146,8 @@ async def get_cached_base_profile(name: str, db: AsyncSession, *, vendor: str | 
     return None
 
 
-async def fetch_and_cache_base_profile(
-    name: str,
-    profile_type: str,
-    db: AsyncSession,
-    *,
-    preferred_vendor: str | None = None,
-) -> dict | None:
-    """Fetch a base profile from OrcaSlicer GitHub and cache it."""
-    vendors = _vendors_for_lookup(name, preferred_vendor)
-    # Check vendor-scoped cache first (preferred vendor, then fallbacks).
-    for vendor in vendors:
-        neg_key = f"{vendor}:{profile_type}:{name}"
-        expires = _negative_cache.get(neg_key)
-        if expires is not None and expires > time.monotonic():
-            continue
-        cached = await get_cached_base_profile(name, db, vendor=vendor)
-        if cached is not None:
-            return cached
-
-    # Map profile_type to GitHub subdirectory
+def _github_urls_for_vendor(name: str, profile_type: str, vendor: str) -> list[str]:
+    """Build GitHub raw URLs for one vendor (primary + SoftFever mirror)."""
     type_dirs = {
         "filament": "filament",
         "machine": "machine",
@@ -173,48 +155,28 @@ async def fetch_and_cache_base_profile(
         "process": "process",
     }
     subdir = type_dirs.get(profile_type, "filament")
-
-    # Walk vendor × root. Filament dir is also tried as a last-resort for
-    # mis-typed profile_type hints. Quote the file stem so names with spaces
-    # / parentheses (e.g. "Snapmaker U1 (0.4 nozzle)") resolve.
+    # Quote the file stem so names with spaces / parentheses
+    # (e.g. "Snapmaker U1 (0.4 nozzle)") resolve.
     encoded = quote(name)
-    urls_to_try: list[tuple[str, str]] = []
+    urls: list[str] = []
     for root in ORCA_PROFILE_ROOTS:
-        for vendor in vendors:
-            urls_to_try.append((vendor, f"{root}/{vendor}/{subdir}/{encoded}.json"))
-            if subdir != "filament":
-                urls_to_try.append((vendor, f"{root}/{vendor}/filament/{encoded}.json"))
+        urls.append(f"{root}/{vendor}/{subdir}/{encoded}.json")
+        # Filament dir as a last-resort for mis-typed profile_type hints.
+        if subdir != "filament":
+            urls.append(f"{root}/{vendor}/filament/{encoded}.json")
+    return urls
 
-    data = None
-    resolved_vendor: str | None = None
-    deadline = time.monotonic() + LOOKUP_TIME_BUDGET_S
-    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-        for vendor, url in urls_to_try:
-            if time.monotonic() >= deadline:
-                logger.warning(
-                    "Base profile lookup for '%s' hit %.0fs time budget; stopping early",
-                    name,
-                    LOOKUP_TIME_BUDGET_S,
-                )
-                break
-            try:
-                resp = await client.get(url)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    resolved_vendor = vendor
-                    logger.info("Resolved base profile '%s' from %s", name, url)
-                    break
-            except Exception as e:
-                logger.debug("Failed to fetch %s: %s", url, e)
 
-    if data is None or resolved_vendor is None:
-        logger.warning("Could not fetch base profile '%s' from GitHub", name)
-        for vendor in vendors:
-            _negative_cache[f"{vendor}:{profile_type}:{name}"] = time.monotonic() + NEGATIVE_CACHE_TTL_S
-        return None
-
-    # Cache under vendor-scoped key so BBL/Snapmaker parents never share a row.
-    cache_name = _cache_key(resolved_vendor, name)
+async def _store_cached_base_profile(
+    db: AsyncSession,
+    *,
+    vendor: str,
+    name: str,
+    profile_type: str,
+    data: dict,
+) -> None:
+    """Persist a resolved parent under its vendor-scoped cache key."""
+    cache_name = _cache_key(vendor, name)
     setting_json = json.dumps(data)
     result = await db.execute(select(OrcaBaseProfile).where(OrcaBaseProfile.name == cache_name))
     existing = result.scalar_one_or_none()
@@ -222,16 +184,78 @@ async def fetch_and_cache_base_profile(
         existing.setting = setting_json
         existing.profile_type = profile_type
         existing.fetched_at = datetime.now(timezone.utc)
-    else:
-        cache_entry = OrcaBaseProfile(
+        return
+    db.add(
+        OrcaBaseProfile(
             name=cache_name,
             profile_type=profile_type,
             setting=setting_json,
             fetched_at=datetime.now(timezone.utc),
         )
-        db.add(cache_entry)
+    )
 
-    return data
+
+async def fetch_and_cache_base_profile(
+    name: str,
+    profile_type: str,
+    db: AsyncSession,
+    *,
+    preferred_vendor: str | None = None,
+) -> dict | None:
+    """Fetch a base profile from OrcaSlicer GitHub and cache it.
+
+    Preferred vendor is exhausted first (cache, then GitHub). Only after that
+    miss do we fall back to other vendors — otherwise a cached Snapmaker
+    ``fdm_*`` parent would silently win for a BBL chain.
+    """
+    vendors = _vendors_for_lookup(name, preferred_vendor)
+    deadline = time.monotonic() + LOOKUP_TIME_BUDGET_S
+    tried: list[str] = []
+
+    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+        for vendor in vendors:
+            neg_key = f"{vendor}:{profile_type}:{name}"
+            expires = _negative_cache.get(neg_key)
+            if expires is not None and expires > time.monotonic():
+                continue
+
+            cached = await get_cached_base_profile(name, db, vendor=vendor)
+            if cached is not None:
+                return cached
+
+            tried.append(vendor)
+            for url in _github_urls_for_vendor(name, profile_type, vendor):
+                if time.monotonic() >= deadline:
+                    logger.warning(
+                        "Base profile lookup for '%s' hit %.0fs time budget; stopping early",
+                        name,
+                        LOOKUP_TIME_BUDGET_S,
+                    )
+                    for v in tried:
+                        _negative_cache[f"{v}:{profile_type}:{name}"] = (
+                            time.monotonic() + NEGATIVE_CACHE_TTL_S
+                        )
+                    return None
+                try:
+                    resp = await client.get(url)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        logger.info("Resolved base profile '%s' from %s", name, url)
+                        await _store_cached_base_profile(
+                            db,
+                            vendor=vendor,
+                            name=name,
+                            profile_type=profile_type,
+                            data=data,
+                        )
+                        return data
+                except Exception as e:
+                    logger.debug("Failed to fetch %s: %s", url, e)
+
+    logger.warning("Could not fetch base profile '%s' from GitHub", name)
+    for vendor in tried:
+        _negative_cache[f"{vendor}:{profile_type}:{name}"] = time.monotonic() + NEGATIVE_CACHE_TTL_S
+    return None
 
 
 async def resolve_preset(

@@ -122,6 +122,74 @@ async def test_fetch_caches_under_vendor_scoped_key():
 
 
 @pytest.mark.asyncio
+async def test_preferred_vendor_queries_github_before_other_vendor_cache():
+    """Snapmaker cache must not win when the preferred vendor is BBL.
+
+    Repro from PR #41 review: only Snapmaker/fdm_filament_pla is cached and
+    the network is stubbed. A BBL child must still fetch BBL from GitHub
+    instead of returning the Snapmaker row from the fallback cache walk.
+    """
+    snapmaker_parent = {
+        "name": "fdm_filament_pla",
+        "vendor_marker": "Snapmaker",
+        "bridge_speed": ["25"],
+    }
+    bbl_parent = {
+        "name": "fdm_filament_pla",
+        "vendor_marker": "BBL",
+        "bridge_speed": ["50"],
+    }
+
+    async def fake_cached(name, db, *, vendor=None):
+        assert name == "fdm_filament_pla"
+        if vendor == "Snapmaker":
+            return dict(snapmaker_parent)
+        return None
+
+    class _Resp:
+        def __init__(self, payload):
+            self.status_code = 200
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    async def fake_get(url):
+        if "/BBL/" in url:
+            return _Resp(bbl_parent)
+        return MagicMock(status_code=404)
+
+    db = MagicMock()
+    db.execute = AsyncMock(return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None)))
+    db.add = MagicMock()
+
+    with (
+        patch.object(orca_profiles, "get_cached_base_profile", new=AsyncMock(side_effect=fake_cached)),
+        patch("backend.app.services.orca_profiles.httpx.AsyncClient") as client_cls,
+    ):
+        client = AsyncMock()
+        client.get = AsyncMock(side_effect=fake_get)
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=None)
+        client_cls.return_value = client
+
+        child = {
+            "name": "My PLA",
+            "filament_settings_id": "Bambu PLA Basic @BBL X1C",
+            "inherits": "fdm_filament_pla",
+        }
+        assert infer_profile_vendor(child) == "BBL"
+        merged = await resolve_preset(child, "filament", db)
+
+    assert merged["vendor_marker"] == "BBL"
+    assert merged["bridge_speed"] == ["50"]
+    # GitHub was consulted for BBL rather than short-circuiting on Snapmaker cache.
+    assert any("/BBL/" in call.args[0] for call in client.get.await_args_list)
+    assert db.add.called
+    assert db.add.call_args.args[0].name == _cache_key("BBL", "fdm_filament_pla")
+
+
+@pytest.mark.asyncio
 async def test_resolve_preset_ref_skips_flatten_for_bambu_studio():
     """Bambu Studio must keep inherits so the sidecar walks stock BBL parents."""
     from backend.app.schemas.slicer import PresetRef
