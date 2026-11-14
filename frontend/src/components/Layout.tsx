@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
-import { Printer, Archive, ListOrdered, BarChart3, Cloud, Settings, Sun, Moon, ChevronLeft, ChevronRight, Keyboard, Github, GripVertical, ArrowUpCircle, Wrench, FolderKanban, FolderOpen, X, Menu, Info, Plug, Bug, LogOut, Key, Loader2, Disc3, ShieldAlert, Bell, Download, Monitor, PanelLeftClose, type LucideIcon } from 'lucide-react';
+import { Printer, Archive, ListOrdered, BarChart3, Cloud, Settings, Sun, Moon, ChevronLeft, ChevronRight, Keyboard, Github, GripVertical, ArrowUpCircle, Wrench, FolderKanban, FolderOpen, X, Menu, Info, Plug, Bug, LogOut, Key, Loader2, Disc3, ShieldAlert, Bell, Download, Monitor, PanelLeftClose, RotateCw, type LucideIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useTheme } from '../contexts/ThemeContext';
 import { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
@@ -124,6 +124,7 @@ export function Layout() {
   const navigate = useNavigate();
   const location = useLocation();
   const { mode, toggleMode } = useTheme();
+  const [isReloading, setIsReloading] = useState(false);
   const { t } = useTranslation();
   const isSidebarCompact = useIsSidebarCompact();
   // Re-render Layout (and the page rendered inside <Outlet />) whenever the
@@ -600,8 +601,20 @@ export function Layout() {
           </NavLink>
           <button
             type="button"
+            onClick={() => {
+              setIsReloading(true);
+              window.location.reload();
+            }}
+            className="ml-auto flex h-11 w-11 items-center justify-center rounded-lg text-bambu-gray-light hover:bg-bambu-dark-tertiary active:bg-bambu-dark-tertiary transition-colors"
+            aria-label={t('common.refresh')}
+            title={t('common.refresh')}
+          >
+            <RotateCw className={`w-5 h-5 ${isReloading ? 'animate-spin' : ''}`} />
+          </button>
+          <button
+            type="button"
             onClick={toggleMode}
-            className="ml-auto flex h-11 w-11 -mr-2 items-center justify-center rounded-lg text-bambu-gray-light hover:bg-bambu-dark-tertiary active:bg-bambu-dark-tertiary transition-colors"
+            className="flex h-11 w-11 -mr-2 items-center justify-center rounded-lg text-bambu-gray-light hover:bg-bambu-dark-tertiary active:bg-bambu-dark-tertiary transition-colors"
             aria-label={mode === 'dark' ? 'Light mode' : 'Dark mode'}
           >
             {mode === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
