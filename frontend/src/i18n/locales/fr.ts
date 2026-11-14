@@ -4391,6 +4391,45 @@ export default {
 
   // Virtual Printer
   virtualPrinter: {
+    types: {
+      title: "Deux types d'imprimantes virtuelles",
+      newBadge: "Nouveau",
+      intro: "Choisissez le type en ajoutant une imprimante virtuelle. Les fichiers envoyés depuis votre slicer arrivent dans Printbuddy (archive, revue ou file d'impression) au lieu d'aller directement à l'imprimante.",
+      bambu: {
+        tag: "Imprimantes Bambu Lab",
+        point1: "Émule une imprimante Bambu pour Bambu Studio / OrcaSlicer avec un profil Bambu",
+        point2: "Détectée automatiquement sur le réseau local, ou ajoutée par IP et code d'accès",
+        point3: "Modes : Archive, Revue, File, Proxy",
+        setupLabel: "Configuration requise :",
+        setupText: "nécessite sa propre IP de liaison, des ports ouverts et la CA Printbuddy dans votre slicer.",
+        guide: "Lire le guide de configuration",
+      },
+      moonraker: {
+        tag: "Klipper, Prusa, OctoPrint et plus",
+        point1: "OrcaSlicer / Snapmaker Orca : ajoutez une imprimante physique avec le type d'hôte « Octo/Klipper ». PrusaSlicer : type d'hôte « OctoPrint » (G-code binaire pris en charge)",
+        point2: "Collez l'URL de l'hôte et la clé API depuis la carte de l'imprimante virtuelle",
+        point3: "Modes : Archive, Revue, File (envoie à l'imprimante cible)",
+        noSetupLabel: "Aucune configuration supplémentaire :",
+        noSetupText: "fonctionne sur le port de Printbuddy. Pas d'IP de liaison, de ports ni de certificat.",
+      },
+    },
+    protocol: {
+      title: "Type d'imprimante",
+      bambu: "Compatible Bambu",
+      bambuDesc: "Émule une imprimante Bambu Lab (Bambu Studio / Orca avec un profil Bambu)",
+      moonraker: "Compatible Moonraker/OctoPrint",
+      moonrakerDesc: "Point d'envoi pour Klipper, Prusa, OctoPrint et autres imprimantes non Bambu",
+    },
+    slicerConnection: {
+      title: "Connexion du slicer",
+      hostUrl: "URL de l'hôte",
+      apiKey: "Clé API",
+      regenerate: "Régénérer la clé API",
+      regenerateConfirmTitle: "Régénérer la clé API",
+      regenerateConfirmMessage: "La clé actuelle cessera immédiatement de fonctionner. Vous devrez saisir la nouvelle clé dans les paramètres de l'imprimante physique de votre slicer.",
+      keyRegenerated: "Nouvelle clé API générée",
+      hint: "Dans votre slicer, ajoutez une imprimante physique avec le type d'hôte « Octo/Klipper » (OrcaSlicer / Snapmaker Orca) ou « OctoPrint » (PrusaSlicer, G-code binaire pris en charge), puis saisissez l'URL de l'hôte et la clé API. Les travaux envoyés arrivent dans Printbuddy au lieu d'aller directement à l'imprimante.",
+    },
     title: 'Imprimante Virtuelle',
     running: 'En cours',
     stopped: 'Arrêtée',
@@ -4420,6 +4459,7 @@ export default {
     },
     targetPrinter: {
       title: 'Imprimante cible',
+      moonrakerHint: "Seules les imprimantes non Bambu peuvent être sélectionnées. Requis pour le mode file d'impression.",
       configured: 'Cible configurée',
       notConfigured: 'Imprimante requise pour mode Proxy',
       placeholder: 'Choisir imprimante...',
@@ -4460,10 +4500,6 @@ export default {
       title: 'Configuration requise',
       description: 'Nécessite des réglages système (ports, pare-feu).',
       readGuide: 'Lire le guide de configuration',
-    },
-    bambuOnly: {
-      badge: 'Bambu Lab uniquement',
-      description: 'Les imprimantes virtuelles émulent le protocole LAN Bambu pour Bambu Studio et OrcaSlicer. Elles ne constituent pas une couche d’imprimante virtuelle générique pour Prusa, Klipper/Moonraker ou Elegoo SDCP.',
     },
     howItWorks: {
       title: 'Fonctionnement',
@@ -4516,6 +4552,7 @@ export default {
       title: 'Ajouter une imprimante virtuelle',
       name: 'Nom',
       hint: 'Vous pourrez configurer le code d\'accès, l\'imprimante cible et d\'autres paramètres après la création.',
+      hintMoonraker: "Après la création, copiez l'URL de l'hôte et la clé API dans les paramètres de l'imprimante physique de votre slicer.",
       create: 'Créer',
     },
     deleteConfirm: {
@@ -4530,6 +4567,7 @@ export default {
     },
     caCert: {
       title: 'Certificat du slicer',
+      bambuOnlyBadge: "Compatible Bambu uniquement",
       description: 'Les imprimantes virtuelles utilisent un certificat TLS signé par l\'autorité de certification Printbuddy. Importez ce certificat CA dans le magasin de confiance de votre slicer une seule fois pour qu\'il accepte la connexion — plus besoin de le copier depuis la ligne de commande.',
       copy: 'Copier',
       copied: 'Copié',
@@ -5493,6 +5531,30 @@ export default {
       problems: 'Des problèmes ont été trouvés qui expliquent pourquoi le slicer ne voit pas ou ne peut pas utiliser cette imprimante virtuelle.',
     },
     check: {
+      mr_enabled: {
+        title: "Imprimante virtuelle activée",
+        fail: "Cette imprimante virtuelle est désactivée. Le test de connexion et les envois du slicer sont refusés tant que vous ne l'activez pas.",
+      },
+      mr_endpoint: {
+        title: "Point d'envoi prêt",
+        pass: "Les slicers peuvent envoyer vers {{path}} sur le port de Printbuddy.",
+        fail: "L'imprimante virtuelle est activée, mais son point d'envoi n'est pas enregistré. Désactivez-la puis réactivez-la ; si cela ne suffit pas, consultez le journal de Printbuddy.",
+      },
+      mr_api_key: {
+        title: "Clé API définie",
+        fail: "Aucune clé API n'est définie. Générez-en une avec le bouton d'actualisation à côté de la clé API.",
+      },
+      mr_target_printer: {
+        title: "Imprimante cible",
+        pass: "Les travaux vont à {{name}}, qui est connectée.",
+        warn: "{{name}} est hors ligne pour le moment. Les travaux en file seront envoyés dès sa reconnexion.",
+        fail: "Le mode file d'impression nécessite une imprimante cible qui n'est pas une Bambu (Klipper, Prusa, OctoPrint, …). Choisissez-en une sous Imprimante cible.",
+        skip: "Inutile en mode Archive et Revue.",
+      },
+      mr_upload_dir: {
+        title: "Dossier d'envoi accessible en écriture",
+        fail: "Printbuddy ne peut pas écrire dans le dossier d'envoi de cette imprimante virtuelle. Vérifiez que le répertoire de données de Printbuddy est accessible en écriture.",
+      },
       enabled: {
         title: 'Imprimante virtuelle activée',
         fail: 'Cette imprimante virtuelle est désactivée. Activez-la pour qu\'elle soit détectable.',

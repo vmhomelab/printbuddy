@@ -994,6 +994,12 @@ async def run_migrations(conn):
             conn, "ALTER TABLE virtual_printers ADD COLUMN queue_force_color_match BOOLEAN DEFAULT FALSE"
         )
 
+    # Migration: protocol + api_key on virtual_printers (#52). Existing rows are
+    # Bambu-emulating VPs; "moonraker" VPs expose an OctoPrint/Moonraker-compatible
+    # HTTP upload endpoint authenticated by api_key instead.
+    await _safe_execute(conn, "ALTER TABLE virtual_printers ADD COLUMN protocol VARCHAR(20) DEFAULT 'bambu'")
+    await _safe_execute(conn, "ALTER TABLE virtual_printers ADD COLUMN api_key VARCHAR(64)")
+
     # Migration: Add target_parts_count column to projects for tracking total parts needed
     await _safe_execute(conn, "ALTER TABLE projects ADD COLUMN target_parts_count INTEGER")
 
