@@ -1868,6 +1868,8 @@ export default {
     authentication: 'Authentifizierung',
     authEnabledDescription: 'Ihre Instanz ist mit Benutzerauthentifizierung gesichert',
     authDisabledDescription: 'Aktivieren Sie die Anmeldepflicht und verwalten Sie den Benutzerzugriff',
+    rememberMeExtended: 'Angemeldet bleiben für 30 Tage',
+    rememberMeExtendedDescription: 'Wenn Benutzer beim Login \'Angemeldet bleiben\' wählen, bleiben sie 30 Tage statt 24 Stunden angemeldet',
     authDisabledMessage: 'Aktivieren Sie die Authentifizierung, um Benutzerkonten zu erstellen, Berechtigungen zu verwalten und Ihre Printbuddy-Instanz zu sichern.',
     enableAuthentication: 'Authentifizierung aktivieren',
     currentUser: 'Aktueller Benutzer',

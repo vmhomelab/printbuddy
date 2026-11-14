@@ -1868,6 +1868,8 @@ export default {
     authentication: 'Authentification',
     authEnabledDescription: 'L\'instance est sécurisée',
     authDisabledDescription: 'Activez pour restreindre l\'accès',
+    rememberMeExtended: 'Se souvenir de moi pendant 30 jours',
+    rememberMeExtendedDescription: 'Si les utilisateurs cochent \'Se souvenir de moi\' à la connexion, ils restent connectés 30 jours au lieu de 24 heures',
     authDisabledMessage: 'Activez l\'authentification pour gérer comptes et permissions.',
     enableAuthentication: 'Activer l\'authentification',
     currentUser: 'Utilisateur actuel',

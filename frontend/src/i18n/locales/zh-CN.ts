@@ -1868,6 +1868,8 @@ export default {
     authentication: '身份验证',
     authEnabledDescription: '您的实例已通过用户身份验证保护',
     authDisabledDescription: '启用以要求登录并管理用户访问',
+    rememberMeExtended: '记住我 30 天',
+    rememberMeExtendedDescription: '用户登录时勾选“记住我”后，将保持登录 30 天，而不是 24 小时',
     authDisabledMessage: '启用身份验证以创建用户账户、管理权限并保护您的 Printbuddy 实例。',
     enableAuthentication: '启用身份验证',
     currentUser: '当前用户',

@@ -34,6 +34,9 @@ class GroupBrief(BaseModel):
 class LoginRequest(BaseModel):
     username: str = Field(..., max_length=150)
     password: str = Field(..., max_length=256)
+    # "Remember Me": requests a 30-day token; honoured only when the admin
+    # enabled remember_me_extended_session.
+    remember_me: bool = False
 
 
 class LoginResponse(BaseModel):
@@ -258,6 +261,7 @@ class TwoFAVerifyRequest(BaseModel):
     # max_length=8 prevents excessively long inputs from reaching pbkdf2/pyotp.
     code: str = Field(..., min_length=6, max_length=8)
     method: Literal["totp", "email", "backup"] = "totp"
+    remember_me: bool = False
 
     @field_validator("code")
     @classmethod
@@ -532,6 +536,7 @@ class OIDCAuthorizeResponse(BaseModel):
 
 class OIDCExchangeRequest(BaseModel):
     oidc_token: str = Field(..., max_length=128)
+    remember_me: bool = False
 
 
 class OIDCLinkResponse(BaseModel):

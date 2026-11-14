@@ -334,6 +334,13 @@ class AppSettings(BaseModel):
         description="Fallback Printbuddy group name assigned when an LDAP user authenticates but has no mapped groups. Empty = no fallback.",
     )
 
+    # Session lifetime: when enabled, logins with "Remember Me" get a 30-day
+    # token instead of the default 24 h.
+    remember_me_extended_session: bool = Field(
+        default=False,
+        description="Remember Me keeps users signed in for 30 days instead of 24 hours",
+    )
+
     # Obico AI failure detection (#172)
     obico_enabled: bool = Field(default=False, description="Enable Obico AI print failure detection")
     obico_ml_url: str = Field(
@@ -479,6 +486,7 @@ class AppSettingsUpdate(BaseModel):
     ldap_group_mapping: str | None = None
     ldap_auto_provision: bool | None = None
     ldap_default_group: str | None = None
+    remember_me_extended_session: bool | None = None
     obico_enabled: bool | None = None
     obico_ml_url: str | None = None
     obico_sensitivity: str | None = None

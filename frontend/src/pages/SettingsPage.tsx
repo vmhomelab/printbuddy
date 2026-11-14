@@ -110,6 +110,7 @@ registerSettingsSearch({ labelKey: 'settings.currentUser', tab: 'users', subTab:
 registerSettingsSearch({ labelKey: 'settings.users', tab: 'users', subTab: 'users', keywords: 'users accounts list', anchor: 'card-users' });
 registerSettingsSearch({ labelKey: 'settings.groups', tab: 'users', subTab: 'users', keywords: 'groups roles permissions administrators operators viewers', anchor: 'card-groups' });
 registerSettingsSearch({ labelKey: 'settings.email.smtpSettings', labelFallback: 'SMTP Configuration', tab: 'users', subTab: 'email', keywords: 'smtp email send server port password auth starttls ssl', anchor: 'card-smtp' });
+registerSettingsSearch({ labelKey: 'settings.rememberMeExtended', labelFallback: 'Remember me for 30 days', tab: 'users', subTab: 'users', keywords: 'remember me session token lifetime 30 days stay signed in login', anchor: 'card-remember-me' });
 registerSettingsSearch({ labelKey: 'settings.ldap.title', labelFallback: 'LDAP Authentication', tab: 'users', subTab: 'ldap', keywords: 'ldap active directory ad authentication bind dn search base group mapping', anchor: 'card-ldap' });
 registerSettingsSearch({ labelKey: 'settings.tabs.backup', tab: 'backup', keywords: 'backup github restore download cloud sync profiles archives', anchor: 'card-backup' });
 // Sidebar Links (external links settings is rendered in the General tab)
@@ -1079,6 +1080,7 @@ export function SettingsPage() {
       settings.energy_tracking_mode !== localSettings.energy_tracking_mode ||
       settings.check_updates !== localSettings.check_updates ||
       (settings.check_printer_firmware ?? true) !== (localSettings.check_printer_firmware ?? true) ||
+      (settings.remember_me_extended_session ?? false) !== (localSettings.remember_me_extended_session ?? false) ||
       (settings.include_beta_updates ?? false) !== (localSettings.include_beta_updates ?? false) ||
       settings.notification_language !== localSettings.notification_language ||
       (settings.bed_cooled_threshold ?? 35) !== (localSettings.bed_cooled_threshold ?? 35) ||
@@ -1169,6 +1171,7 @@ export function SettingsPage() {
         energy_tracking_mode: localSettings.energy_tracking_mode,
         check_updates: localSettings.check_updates,
         check_printer_firmware: localSettings.check_printer_firmware,
+        remember_me_extended_session: localSettings.remember_me_extended_session ?? false,
         include_beta_updates: localSettings.include_beta_updates,
         notification_language: localSettings.notification_language,
         bed_cooled_threshold: localSettings.bed_cooled_threshold,
@@ -5564,6 +5567,24 @@ export function SettingsPage() {
                   </Button>
                 )}
               </div>
+              {authEnabled && localSettings && (
+                <div className="flex items-center justify-between gap-4 mt-4 pt-4 border-t border-bambu-dark-tertiary" id="card-remember-me">
+                  <div>
+                    <p className="text-white">{t('settings.rememberMeExtended')}</p>
+                    <p className="text-sm text-bambu-gray">{t('settings.rememberMeExtendedDescription')}</p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer flex-shrink-0">
+                    <input
+                      type="checkbox"
+                      checked={localSettings.remember_me_extended_session ?? false}
+                      onChange={(e) => updateSetting('remember_me_extended_session', e.target.checked)}
+                      className="sr-only peer"
+                      aria-label={t('settings.rememberMeExtended')}
+                    />
+                    <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                  </label>
+                </div>
+              )}
             </CardContent>
           </Card>
 

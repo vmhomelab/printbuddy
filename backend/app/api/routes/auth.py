@@ -15,7 +15,6 @@ from sqlalchemy.orm import selectinload
 
 from backend.app.api.routes.settings import get_external_login_url
 from backend.app.core.auth import (
-    ACCESS_TOKEN_EXPIRE_MINUTES,
     ALGORITHM,
     SECRET_KEY,
     Permission,
@@ -25,6 +24,7 @@ from backend.app.core.auth import (
     authenticate_user,
     authenticate_user_by_email,
     create_access_token,
+    get_access_token_ttl,
     get_current_active_user,
     get_password_hash,
     get_user_by_email,
@@ -495,7 +495,7 @@ async def login(raw_request: Request, request: LoginRequest, response: Response,
         )
 
     # No 2FA — issue full token immediately
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token_expires = await get_access_token_ttl(db, request.remember_me)
     access_token = create_access_token(data={"sub": user.username}, expires_delta=access_token_expires)
 
     return LoginResponse(

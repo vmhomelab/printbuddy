@@ -1867,6 +1867,8 @@ export default {
     authentication: '認証',
     authEnabledDescription: 'ユーザー認証でインスタンスが保護されています',
     authDisabledDescription: '認証を有効にして、ユーザーアカウントの作成、権限の管理、Printbuddyインスタンスのセキュリティを確保しましょう。',
+    rememberMeExtended: '30日間ログイン状態を保持',
+    rememberMeExtendedDescription: 'ログイン時に「ログイン状態を保持」を選択すると、24時間ではなく30日間ログインしたままになります',
     authDisabledMessage: '認証を有効にして、ユーザーアカウントの作成、権限の管理、Printbuddyインスタンスのセキュリティを確保しましょう。',
     enableAuthentication: '認証を有効にする',
     currentUser: '現在のユーザー',

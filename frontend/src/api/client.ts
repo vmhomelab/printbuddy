@@ -1340,6 +1340,8 @@ export interface AppSettings {
   ldap_group_mapping: string;
   ldap_auto_provision: boolean;
   ldap_default_group: string;
+  // Remember Me keeps users signed in for 30 days instead of 24 h
+  remember_me_extended_session?: boolean;
   obico_enabled: boolean;
   obico_ml_url: string;
   obico_sensitivity: 'low' | 'medium' | 'high';
@@ -3451,6 +3453,9 @@ export interface UserEmailPreferences {
 export interface LoginRequest {
   username: string;
   password: string;
+  // Requests a 30-day token; the backend only honours it when the admin
+  // enabled remember_me_extended_session.
+  remember_me?: boolean;
 }
 
 export interface LoginResponse {
@@ -3553,6 +3558,7 @@ export interface TwoFAVerifyRequest {
   pre_auth_token: string;
   code: string;
   method: 'totp' | 'email' | 'backup';
+  remember_me?: boolean;
 }
 
 /**
@@ -3838,10 +3844,10 @@ export const api = {
     request<{ auth_url: string }>(`/auth/oidc/authorize/${providerId}`),
 
   // OIDC exchange token for JWT
-  exchangeOIDCToken: (oidcToken: string) =>
+  exchangeOIDCToken: (oidcToken: string, rememberMe = false) =>
     request<LoginResponse>('/auth/oidc/exchange', {
       method: 'POST',
-      body: JSON.stringify({ oidc_token: oidcToken }),
+      body: JSON.stringify({ oidc_token: oidcToken, remember_me: rememberMe }),
     }),
 
   // OIDC links for current user

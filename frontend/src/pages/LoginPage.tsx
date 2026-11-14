@@ -190,7 +190,7 @@ export function LoginPage() {
     }
 
     if (oidcToken) {
-      api.exchangeOIDCToken(oidcToken).then((resp: LoginResponse) => {
+      api.exchangeOIDCToken(oidcToken, savedRememberMe).then((resp: LoginResponse) => {
         if (resp.requires_2fa && resp.pre_auth_token) {
           // OIDC user has 2FA enabled — redirect to 2FA step
           setRememberMe(savedRememberMe);
@@ -286,7 +286,7 @@ export function LoginPage() {
 
   const verify2FAMutation = useMutation({
     mutationFn: () =>
-      api.verify2FA({ pre_auth_token: preAuthToken, code: twoFACode, method: twoFAMethod }),
+      api.verify2FA({ pre_auth_token: preAuthToken, code: twoFACode, method: twoFAMethod, remember_me: rememberMe }),
     onSuccess: (resp: LoginResponse) => {
       if (resp.access_token && resp.user) {
         loginWithToken(resp.access_token, resp.user, toPersistence(rememberMe));

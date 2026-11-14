@@ -1870,6 +1870,8 @@ export default {
     authentication: 'Authentication',
     authEnabledDescription: 'Your instance is secured with user authentication',
     authDisabledDescription: 'Enable to require login and manage user access',
+    rememberMeExtended: 'Remember me for 30 days',
+    rememberMeExtendedDescription: 'When users tick \'Remember Me\' at login, they stay signed in for 30 days instead of 24 hours',
     authDisabledMessage: 'Enable authentication to create user accounts, manage permissions, and secure your Printbuddy instance.',
     enableAuthentication: 'Enable Authentication',
     currentUser: 'Current User',

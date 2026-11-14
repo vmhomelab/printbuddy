@@ -1870,6 +1870,8 @@ export default {
     authentication: 'Autenticación',
     authEnabledDescription: 'Su instancia está protegida con autenticación de usuario',
     authDisabledDescription: 'Active para exigir el inicio de sesión y gestionar el acceso de los usuarios',
+    rememberMeExtended: 'Recordarme durante 30 días',
+    rememberMeExtendedDescription: 'Si los usuarios marcan \'Recordarme\' al iniciar sesión, la sesión dura 30 días en lugar de 24 horas',
     authDisabledMessage: 'Active la autenticación para crear cuentas de usuario, gestionar permisos y proteger su instancia de Printbuddy.',
     enableAuthentication: 'Activar la autenticación',
     currentUser: 'Usuario actual',
