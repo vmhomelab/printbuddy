@@ -40,7 +40,9 @@ SIDECAR_REPO = "vmhomelab/orca-slicer-api"
 
 _ENV_LINE = re.compile(r"^([A-Z0-9_]+)=(.*)$")
 _CONTEXT = re.compile(r"^https://github\.com/(?P<repo>[\w.-]+/[\w.-]+?)(?:\.git)?#(?P<rev>[0-9a-f]{40})$")
-_VERSION = re.compile(r"^[0-9][0-9.]*$")
+# Allow plain releases (2.4.0, 02.08.02.61) and common prerelease tags
+# (2.5.0-beta, 2.5.0-rc1) so ORCA_VERSION can pin upstream beta builds.
+_VERSION = re.compile(r"^[0-9][0-9.]*(?:-(?:alpha|beta|rc)\d*)?$")
 
 
 def read_env(path: Path = ENV_EXAMPLE) -> dict[str, str]:

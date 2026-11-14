@@ -75,7 +75,7 @@ class SliceDispatchService:
 
         ``run`` is an async callable that takes the freshly-created
         ``job_id`` (so it can wire up live-progress reporting via
-        :meth:`set_progress`) and returns the response body the caller
+        `set_progress`) and returns the response body the caller
         will receive once status flips to ``completed``.
         """
         async with self._lock:

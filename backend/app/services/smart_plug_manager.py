@@ -297,7 +297,7 @@ class SmartPlugManager:
         """Schedule turn-off for plugs flagged ``auto_off_after_drying`` when
         an AMS drying cycle finishes on this printer (#1349).
 
-        Mirrors :meth:`on_print_complete` but uses the drying-specific
+        Mirrors `on_print_complete` but uses the drying-specific
         toggle and delay. Iterates every plug linked to the printer and
         fires only on the ones the user has opted-in via the per-plug
         toggle. Always uses the time-delay branch — temperature-based

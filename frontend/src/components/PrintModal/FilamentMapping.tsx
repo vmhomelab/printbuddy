@@ -156,6 +156,18 @@ export function FilamentMapping({
       >
         <Circle className="w-4 h-4" fill={statusColor} stroke="none" />
         <span>{t('printModal.filamentMapping')}</span>
+        {/* Required colors stay visible while collapsed — schedule/print for
+            single-plate (split) library files has no PlateSelector preview. */}
+        {!isExpanded &&
+          filamentComparison.map((item, idx) => (
+            <Circle
+              key={idx}
+              className="w-3 h-3"
+              fill={item.color || '#808080'}
+              stroke={!item.color || item.color === '#000000' ? '#666' : item.color}
+              strokeWidth={1}
+            />
+          ))}
         {hasTypeMismatch ? (
           <span className="text-xs text-orange-400">(Type not found)</span>
         ) : hasColorMismatch ? (

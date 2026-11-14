@@ -165,6 +165,50 @@ class TestZipPreservation:
             assert zf.read("3D/3dmodel.model").decode() == "<model><resources/></model>"
 
 
+class TestPrintCompatiblePrinters:
+    """Converted MakerWorld → Snapmaker 3MFs keep Bambu process compat."""
+
+    def test_appends_printer_settings_id_when_missing(self):
+        original = _make_3mf(
+            settings={
+                "printer_settings_id": "Snapmaker U1 (0.4 nozzle)",
+                "print_compatible_printers": ["Bambu Lab H2C 0.4 nozzle"],
+                "print_settings_id": "0.20mm Standard @BBL H2C (converted)",
+            }
+        )
+        sanitised = _sanitize_project_settings_sentinels(original)
+        assert sanitised is not original
+        with zipfile.ZipFile(io.BytesIO(sanitised), "r") as zf:
+            cfg = json.loads(zf.read("Metadata/project_settings.config"))
+        assert cfg["print_compatible_printers"] == [
+            "Bambu Lab H2C 0.4 nozzle",
+            "Snapmaker U1 (0.4 nozzle)",
+        ]
+
+    def test_noop_when_printer_already_listed(self):
+        original = _make_3mf(
+            settings={
+                "printer_settings_id": "Snapmaker U1 (0.4 nozzle)",
+                "print_compatible_printers": ["Snapmaker U1 (0.4 nozzle)"],
+            }
+        )
+        assert _sanitize_project_settings_sentinels(original) is original
+
+    def test_combines_with_sentinel_strip(self):
+        original = _make_3mf(
+            settings={
+                "printer_settings_id": "Snapmaker U1 (0.4 nozzle)",
+                "print_compatible_printers": ["Bambu Lab H2C 0.4 nozzle"],
+                "raft_first_layer_expansion": "-1",
+            }
+        )
+        sanitised = _sanitize_project_settings_sentinels(original)
+        with zipfile.ZipFile(io.BytesIO(sanitised), "r") as zf:
+            cfg = json.loads(zf.read("Metadata/project_settings.config"))
+        assert "raft_first_layer_expansion" not in cfg
+        assert "Snapmaker U1 (0.4 nozzle)" in cfg["print_compatible_printers"]
+
+
 class TestDefensiveFallbacks:
     def test_returns_original_when_input_is_not_a_zip(self):
         # An STL or any other non-zip input: pass through. The slicer

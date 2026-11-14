@@ -10,8 +10,10 @@ Handles:
 import io
 import json
 import logging
+import time
 import zipfile
 from datetime import datetime, timedelta, timezone
+from urllib.parse import quote
 
 import httpx
 from sqlalchemy import select
@@ -22,40 +24,130 @@ from backend.app.models.orca_base_cache import OrcaBaseProfile
 
 logger = logging.getLogger(__name__)
 
-ORCA_BASE_URL = "https://raw.githubusercontent.com/SoftFever/OrcaSlicer/main/resources/profiles/BBL"
+# Upstream moved from SoftFever → OrcaSlicer; SoftFever still mirrors. Prefer
+# the OrcaSlicer org, fall back to SoftFever. Vendors beyond BBL matter for
+# headless Snapmaker U1 slices — those machine profiles inherit
+# fdm_U1 → fdm_toolchanger → fdm_klipper under resources/profiles/Snapmaker/.
+ORCA_PROFILE_ROOTS = (
+    "https://raw.githubusercontent.com/OrcaSlicer/OrcaSlicer/main/resources/profiles",
+    "https://raw.githubusercontent.com/SoftFever/OrcaSlicer/main/resources/profiles",
+)
+ORCA_PROFILE_VENDORS = (
+    "BBL",
+    "Snapmaker",
+    "Prusa",
+    "Voron",
+    "Custom",
+    "OrcaFilamentLibrary",
+)
+# Back-compat alias used by older call sites / tests.
+ORCA_BASE_URL = f"{ORCA_PROFILE_ROOTS[1]}/BBL"
 CACHE_TTL_DAYS = 7
 MAX_INHERITANCE_DEPTH = 10
+# Cap GitHub walk time so offline / missing parents don't stall every slice
+# for 24 URLs × 15s. Negative hits are remembered briefly so retries don't
+# repeat the same walk immediately.
+LOOKUP_TIME_BUDGET_S = 8.0
+NEGATIVE_CACHE_TTL_S = 300.0
+_negative_cache: dict[str, float] = {}
 
 
-async def get_cached_base_profile(name: str, db: AsyncSession) -> dict | None:
-    """Get a base profile from cache if still fresh."""
-    result = await db.execute(select(OrcaBaseProfile).where(OrcaBaseProfile.name == name))
-    profile = result.scalar_one_or_none()
-    if not profile:
-        return None
-
-    # Check TTL
-    cutoff = datetime.now(timezone.utc) - timedelta(days=CACHE_TTL_DAYS)
-    fetched = profile.fetched_at
-    if fetched.tzinfo is None:
-        fetched = fetched.replace(tzinfo=timezone.utc)
-    if fetched < cutoff:
-        return None
-
-    try:
-        return json.loads(profile.setting)
-    except Exception:
-        return None
+def _cache_key(vendor: str, name: str) -> str:
+    """Vendor-scoped cache key so BBL and Snapmaker parents never collide."""
+    return f"{vendor}/{name}"
 
 
-async def fetch_and_cache_base_profile(name: str, profile_type: str, db: AsyncSession) -> dict | None:
-    """Fetch a base profile from OrcaSlicer GitHub and cache it."""
-    # Check cache first
-    cached = await get_cached_base_profile(name, db)
-    if cached is not None:
-        return cached
+def _stringish_values(value: object) -> list[str]:
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    if isinstance(value, list):
+        return [item.strip() for item in value if isinstance(item, str) and item.strip()]
+    return []
 
-    # Map profile_type to GitHub subdirectory
+
+def infer_profile_vendor(preset_data: dict | None, inherits_name: str | None = None) -> str | None:
+    """Derive the Orca vendor folder from a child preset (or parent name).
+
+    Prefer child fields (`printer_model`, filament/printer labels) over bare
+    `fdm_*` parent names — those exist under both BBL and Snapmaker and must
+    not default to Snapmaker for normal Bambu chains.
+    """
+    blobs: list[str] = []
+    if isinstance(preset_data, dict):
+        for key in (
+            "printer_model",
+            "printer_settings_id",
+            "print_settings_id",
+            "filament_settings_id",
+            "filament_vendor",
+            "name",
+            "inherits",
+        ):
+            blobs.extend(_stringish_values(preset_data.get(key)))
+        blobs.extend(_stringish_values(preset_data.get("compatible_printers")))
+    if inherits_name:
+        blobs.append(inherits_name)
+
+    for blob in blobs:
+        lowered = blob.lower()
+        if "snapmaker" in lowered or lowered.startswith("u1") or "fdm_u1" in lowered:
+            return "Snapmaker"
+        if lowered.startswith("fdm_toolchanger") or lowered.startswith("fdm_klipper"):
+            return "Snapmaker"
+        if "bbl" in lowered or "bambu" in lowered:
+            return "BBL"
+        if "prusa" in lowered:
+            return "Prusa"
+        if "voron" in lowered:
+            return "Voron"
+    return None
+
+
+def _vendors_for_lookup(name: str, preferred_vendor: str | None) -> list[str]:
+    """Order vendor folders for GitHub lookup.
+
+    Never promote Snapmaker ahead of BBL for bare `fdm_*` parents unless the
+    child chain already identified Snapmaker (or the parent name itself is
+    clearly Snapmaker/U1/klipper).
+    """
+    vendors = list(ORCA_PROFILE_VENDORS)
+    hint = infer_profile_vendor(None, name)
+    preferred = preferred_vendor or hint
+    if preferred and preferred in vendors:
+        return [preferred] + [v for v in vendors if v != preferred]
+    return vendors
+
+
+async def get_cached_base_profile(name: str, db: AsyncSession, *, vendor: str | None = None) -> dict | None:
+    """Get a base profile from cache if still fresh.
+
+    When ``vendor`` is set, only that vendor-scoped key is consulted. Without
+    it, try each known vendor key (legacy unscoped rows are ignored so a
+    wrong Snapmaker hit cannot poison a BBL lookup).
+    """
+    keys = [_cache_key(vendor, name)] if vendor else [_cache_key(v, name) for v in ORCA_PROFILE_VENDORS]
+    for key in keys:
+        result = await db.execute(select(OrcaBaseProfile).where(OrcaBaseProfile.name == key))
+        profile = result.scalar_one_or_none()
+        if not profile:
+            continue
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=CACHE_TTL_DAYS)
+        fetched = profile.fetched_at
+        if fetched.tzinfo is None:
+            fetched = fetched.replace(tzinfo=timezone.utc)
+        if fetched < cutoff:
+            continue
+
+        try:
+            return json.loads(profile.setting)
+        except Exception:
+            continue
+    return None
+
+
+def _github_urls_for_vendor(name: str, profile_type: str, vendor: str) -> list[str]:
+    """Build GitHub raw URLs for one vendor (primary + SoftFever mirror)."""
     type_dirs = {
         "filament": "filament",
         "machine": "machine",
@@ -63,54 +155,122 @@ async def fetch_and_cache_base_profile(name: str, profile_type: str, db: AsyncSe
         "process": "process",
     }
     subdir = type_dirs.get(profile_type, "filament")
+    # Quote the file stem so names with spaces / parentheses
+    # (e.g. "Snapmaker U1 (0.4 nozzle)") resolve.
+    encoded = quote(name)
+    urls: list[str] = []
+    for root in ORCA_PROFILE_ROOTS:
+        urls.append(f"{root}/{vendor}/{subdir}/{encoded}.json")
+        # Filament dir as a last-resort for mis-typed profile_type hints.
+        if subdir != "filament":
+            urls.append(f"{root}/{vendor}/filament/{encoded}.json")
+    return urls
 
-    # Try fetching from GitHub
-    urls_to_try = [
-        f"{ORCA_BASE_URL}/{subdir}/{name}.json",
-    ]
-    # Also try filament dir as fallback for any type
-    if subdir != "filament":
-        urls_to_try.append(f"{ORCA_BASE_URL}/filament/{name}.json")
 
-    data = None
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        for url in urls_to_try:
-            try:
-                resp = await client.get(url)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    break
-            except Exception as e:
-                logger.debug("Failed to fetch %s: %s", url, e)
-
-    if data is None:
-        logger.warning("Could not fetch base profile '%s' from GitHub", name)
-        return None
-
-    # Cache in DB
+async def _store_cached_base_profile(
+    db: AsyncSession,
+    *,
+    vendor: str,
+    name: str,
+    profile_type: str,
+    data: dict,
+) -> None:
+    """Persist a resolved parent under its vendor-scoped cache key."""
+    cache_name = _cache_key(vendor, name)
     setting_json = json.dumps(data)
-    result = await db.execute(select(OrcaBaseProfile).where(OrcaBaseProfile.name == name))
+    result = await db.execute(select(OrcaBaseProfile).where(OrcaBaseProfile.name == cache_name))
     existing = result.scalar_one_or_none()
     if existing:
         existing.setting = setting_json
         existing.profile_type = profile_type
         existing.fetched_at = datetime.now(timezone.utc)
-    else:
-        cache_entry = OrcaBaseProfile(
-            name=name,
+        return
+    db.add(
+        OrcaBaseProfile(
+            name=cache_name,
             profile_type=profile_type,
             setting=setting_json,
             fetched_at=datetime.now(timezone.utc),
         )
-        db.add(cache_entry)
-
-    return data
+    )
 
 
-async def resolve_preset(preset_data: dict, profile_type: str, db: AsyncSession, depth: int = 0) -> dict:
+async def fetch_and_cache_base_profile(
+    name: str,
+    profile_type: str,
+    db: AsyncSession,
+    *,
+    preferred_vendor: str | None = None,
+) -> dict | None:
+    """Fetch a base profile from OrcaSlicer GitHub and cache it.
+
+    Preferred vendor is exhausted first (cache, then GitHub). Only after that
+    miss do we fall back to other vendors — otherwise a cached Snapmaker
+    ``fdm_*`` parent would silently win for a BBL chain.
+    """
+    vendors = _vendors_for_lookup(name, preferred_vendor)
+    deadline = time.monotonic() + LOOKUP_TIME_BUDGET_S
+    tried: list[str] = []
+
+    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+        for vendor in vendors:
+            neg_key = f"{vendor}:{profile_type}:{name}"
+            expires = _negative_cache.get(neg_key)
+            if expires is not None and expires > time.monotonic():
+                continue
+
+            cached = await get_cached_base_profile(name, db, vendor=vendor)
+            if cached is not None:
+                return cached
+
+            tried.append(vendor)
+            for url in _github_urls_for_vendor(name, profile_type, vendor):
+                if time.monotonic() >= deadline:
+                    logger.warning(
+                        "Base profile lookup for '%s' hit %.0fs time budget; stopping early",
+                        name,
+                        LOOKUP_TIME_BUDGET_S,
+                    )
+                    for v in tried:
+                        _negative_cache[f"{v}:{profile_type}:{name}"] = (
+                            time.monotonic() + NEGATIVE_CACHE_TTL_S
+                        )
+                    return None
+                try:
+                    resp = await client.get(url)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        logger.info("Resolved base profile '%s' from %s", name, url)
+                        await _store_cached_base_profile(
+                            db,
+                            vendor=vendor,
+                            name=name,
+                            profile_type=profile_type,
+                            data=data,
+                        )
+                        return data
+                except Exception as e:
+                    logger.debug("Failed to fetch %s: %s", url, e)
+
+    logger.warning("Could not fetch base profile '%s' from GitHub", name)
+    for vendor in tried:
+        _negative_cache[f"{vendor}:{profile_type}:{name}"] = time.monotonic() + NEGATIVE_CACHE_TTL_S
+    return None
+
+
+async def resolve_preset(
+    preset_data: dict,
+    profile_type: str,
+    db: AsyncSession,
+    depth: int = 0,
+    *,
+    preferred_vendor: str | None = None,
+) -> dict:
     """Recursively resolve inheritance chain, merging parent into child.
 
     OrcaSlicer uses shallow merge: child keys fully replace parent keys.
+    ``preferred_vendor`` is inferred from the child once and passed down so
+    shared parents like ``fdm_filament_pla`` resolve from the right folder.
     """
     if depth >= MAX_INHERITANCE_DEPTH:
         logger.warning("Inheritance depth limit reached for preset")
@@ -120,14 +280,27 @@ async def resolve_preset(preset_data: dict, profile_type: str, db: AsyncSession,
     if not inherits:
         return preset_data
 
+    vendor = preferred_vendor or infer_profile_vendor(preset_data, inherits if isinstance(inherits, str) else None)
+
     # Fetch the base profile
-    base = await fetch_and_cache_base_profile(inherits, profile_type, db)
+    base = await fetch_and_cache_base_profile(
+        inherits,
+        profile_type,
+        db,
+        preferred_vendor=vendor,
+    )
     if base is None:
         logger.warning("Cannot resolve inherits='%s' — base profile not found", inherits)
         return preset_data
 
-    # Recursively resolve the base first
-    resolved_base = await resolve_preset(base, profile_type, db, depth + 1)
+    # Recursively resolve the base first (keep the child's vendor preference).
+    resolved_base = await resolve_preset(
+        base,
+        profile_type,
+        db,
+        depth + 1,
+        preferred_vendor=vendor,
+    )
 
     # Shallow merge: start with base, override with child
     merged = {**resolved_base, **preset_data}
