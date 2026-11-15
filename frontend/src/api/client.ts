@@ -83,6 +83,23 @@ export function withStreamToken(url: string): string {
   return `${url}${sep}token=${encodeURIComponent(streamToken)}`;
 }
 
+// WebSocket auth: browsers can't set headers on the handshake, so the token
+// rides along as a second subprotocol. The server answers with only
+// "printbuddy.v1" (see backend/app/core/auth.py, WS_SUBPROTOCOL).
+const WS_SUBPROTOCOL = 'printbuddy.v1';
+
+/** Open the live-update WebSocket, authenticated with the current token when there is one. */
+export function openAuthenticatedWebSocket(url: string): WebSocket {
+  if (!authToken) return new WebSocket(url);
+  try {
+    return new WebSocket(url, [WS_SUBPROTOCOL, `bearer.${authToken}`]);
+  } catch {
+    // A token with characters not allowed in a subprotocol makes the constructor
+    // throw; connect without it so auth-disabled servers keep working.
+    return new WebSocket(url);
+  }
+}
+
 function parseContentDispositionFilename(header: string | null): string | null {
   if (!header) return null;
   // RFC 5987: filename*=utf-8''percent-encoded-name

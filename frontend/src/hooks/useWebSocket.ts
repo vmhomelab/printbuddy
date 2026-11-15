@@ -2,6 +2,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useToast } from '../contexts/ToastContext';
 import { useTranslation } from 'react-i18next';
+import { openAuthenticatedWebSocket } from '../api/client';
 
 interface WebSocketMessage {
   type: string;
@@ -72,7 +73,7 @@ export function useWebSocket() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//${window.location.host}/api/v1/ws`;
 
-    const ws = new WebSocket(wsUrl);
+    const ws = openAuthenticatedWebSocket(wsUrl);
 
     let pingInterval: number | null = null;
 
