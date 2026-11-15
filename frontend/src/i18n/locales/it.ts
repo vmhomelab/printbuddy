@@ -531,6 +531,10 @@ export default {
       unknown: 'Sconosciuto',
       failedToStart: 'Avvio ricerca non riuscito',
     },
+    // H3C AMS 3H
+    ams3h: {
+      dryZone: 'Essiccatore: slot {{slots}}',
+    },
     // AMS Drying
     drying: {
       start: 'Avvia essiccazione',

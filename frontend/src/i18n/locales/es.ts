@@ -531,6 +531,10 @@ export default {
       unknown: 'Desconocido',
       failedToStart: 'Error al iniciar la detección',
     },
+    // H3C AMS 3H
+    ams3h: {
+      dryZone: 'Secador: ranuras {{slots}}',
+    },
     // AMS Drying
     drying: {
       start: 'Iniciar secado',

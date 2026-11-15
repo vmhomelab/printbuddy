@@ -531,6 +531,10 @@ export default {
       unknown: 'Unknown',
       failedToStart: 'Failed to start discovery',
     },
+    // H3C AMS 3H
+    ams3h: {
+      dryZone: 'Dryer: slots {{slots}}',
+    },
     // AMS Drying
     drying: {
       start: 'Start Drying',

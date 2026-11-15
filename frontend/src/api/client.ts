@@ -357,7 +357,9 @@ export interface AMSUnit {
   dry_status: number;     // 0=Off, 1=Checking, 2=Drying, 3=Cooling, 4=Stopping, 5=Error
   dry_sub_status: number; // 0=Off, 1=Heating, 2=Dehumidify
   dry_sf_reason: number[]; // Cannot-dry reasons (1=InsufficientPower, 8=NeedPluginPower)
-  module_type: string;    // "ams", "n3f", "n3s"
+  module_type: string;    // "ams", "n3f", "n3s", "n10a" (the H3C's AMS 3H)
+  ams_type?: number | null;  // Bambu Studio's AMS type; 6 = AMS 3H (H3C, nine slots)
+  dry_zone_slots?: number[]; // AMS 3H: the slots (0-8) of the zone that can dry
 }
 
 export interface NozzleInfo {

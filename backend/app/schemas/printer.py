@@ -371,7 +371,11 @@ class AMSUnit(BaseModel):
     dry_status: int = 0  # 0=Off, 1=Checking, 2=Drying, 3=Cooling, 4=Stopping, 5=Error
     dry_sub_status: int = 0  # 0=Off, 1=Heating, 2=Dehumidify
     dry_sf_reason: list[int] = []  # Cannot-dry reasons from firmware (see CannotDryReason)
-    module_type: str = ""  # "ams", "n3f", "n3s"
+    module_type: str = ""  # "ams", "n3f", "n3s", "n10a" (the H3C's AMS 3H)
+    # Bambu Studio's AMS type (bits 0-3 of `info`): 6 = AMS 3H (H3C, nine slots)
+    ams_type: int | None = None
+    # AMS 3H: the slots (0-8) of the zone that can dry; empty on other units
+    dry_zone_slots: list[int] = []
 
 
 class NozzleInfoResponse(BaseModel):

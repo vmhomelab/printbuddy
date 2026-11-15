@@ -51,6 +51,7 @@ Printbuddy uses a provider-based architecture for multiple printer platforms.
 Current state:
 
 - Bambu Lab support from the original foundation ✅
+  - Bambu Lab H3C with AMS 3H ⌛ (Experimental, not tested on hardware)
 - Prusa support via PrusaLink ✅ (Prusa Connect available, not tested)
 - Klipper (open firmware) via Moonraker – Klipper, Mainsail and Fluidd ✅
   - capability-based chamber, light and part-fan control (e.g. QIDI Q2)

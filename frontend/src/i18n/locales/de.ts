@@ -531,6 +531,10 @@ export default {
       unknown: 'Unbekannt',
       failedToStart: 'Erkennung konnte nicht gestartet werden',
     },
+    // H3C AMS 3H
+    ams3h: {
+      dryZone: 'Trockner: Slots {{slots}}',
+    },
     // AMS Drying
     drying: {
       start: 'Trocknung starten',

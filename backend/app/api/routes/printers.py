@@ -67,6 +67,15 @@ from backend.app.services.printer_providers.factory import create_printer_client
 from backend.app.services.printer_providers.moonraker import create_moonraker_client
 from backend.app.utils.filament_ids import effective_bambu_material, generic_bambu_filament_id
 from backend.app.utils.http import build_content_disposition
+from backend.app.utils.printer_models import has_ams3h
+from backend.app.utils.tray_ids import (
+    AMS3H_UNIT_ID,
+    AmsType,
+    external_tray_id,
+    h3c_global_tray,
+    h3c_slot_key,
+    unit_ams_type,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/printers", tags=["printers"])
@@ -1002,6 +1011,7 @@ async def get_printer_status(
                     # Drying: dry_time > 0 means drying is active (minutes remaining)
                     dry_time=int(ams_data.get("dry_time") or 0),
                     module_type=str(ams_data.get("module_type") or ""),
+                    **_rack_ams_fields(ams_data),
                 )
             )
 
@@ -2692,12 +2702,28 @@ async def start_calibration(
 # ============================================================================
 
 
+def _rack_ams_fields(ams_data: dict) -> dict:
+    """``ams_type`` / ``dry_zone_slots`` of an H3C's AMS 3H unit for the status API; {} for any other unit."""
+    try:
+        ams_id = int(ams_data.get("id", 0))
+    except (TypeError, ValueError):
+        return {}
+    kind = unit_ams_type(ams_id, ams_data.get("info"))
+    if kind != AmsType.ZMULTI_A:
+        return {}
+    slots = [s for s in ams_data.get("dry_zone_slots") or [] if isinstance(s, int) and 0 <= s < 9]
+    return {"ams_type": int(kind), "dry_zone_slots": slots}
+
+
 def _slot_preset_key(ams_id: int, tray_id: int) -> int:
     # Mirrors frontend getGlobalTrayId (amsHelpers.ts): AMS-HT (128-135) is keyed
     # by ams_id since each unit has a single slot and shares its global ID with
     # the unit itself. Regular AMS and external (255) use ams_id*4+tray_id.
     if 128 <= ams_id <= 135:
         return ams_id
+    # The H3C's AMS 3H (unit 32) is keyed by Studio's 28 + slot.
+    if ams_id == AMS3H_UNIT_ID:
+        return h3c_global_tray(ams_id, tray_id) or ams_id * 4 + tray_id
     return ams_id * 4 + tray_id
 
 
@@ -2946,7 +2972,7 @@ async def configure_ams_slot(
 
             if ams_id == 255:
                 vt_tray = state.raw_data.get("vt_tray") or []
-                ext_id = tray_id + 254
+                ext_id = external_tray_id(tray_id)  # 254/255, and an H3C's 247-253
                 for vt in vt_tray:
                     if isinstance(vt, dict) and int(vt.get("id", 254)) == ext_id:
                         current_tray_info_idx = vt.get("tray_info_idx", "")
@@ -4477,17 +4503,33 @@ async def ams_load(
     - 254: external spool (single-external printers, or Ext-L on dual-nozzle H2D)
     - 255: Ext-R on dual-nozzle H2D
     """
-    if tray_id not in range(16) and tray_id not in (254, 255):
-        raise HTTPException(400, "tray_id must be 0..15 (AMS slot), 254 (external / Ext-L), or 255 (Ext-R)")
+    if tray_id not in range(16) and tray_id not in range(28, 37) and tray_id not in (254, 255):
+        raise HTTPException(
+            400, "tray_id must be 0..15 (AMS slot), 28..36 (H3C AMS 3H), 254 (external / Ext-L), or 255 (Ext-R)"
+        )
 
     result = await db.execute(select(Printer).where(Printer.id == printer_id))
     printer = result.scalar_one_or_none()
     if not printer:
         raise HTTPException(404, "Printer not found")
 
+    # 28-36 are AMS 3H slots, and only an H3C has one.
+    ams3h_slot = h3c_slot_key(tray_id) if has_ams3h(printer.model) and tray_id in range(28, 37) else None
+    if tray_id in range(28, 37) and ams3h_slot is None:
+        raise HTTPException(400, "tray_id 28..36 names an AMS 3H slot, which only an H3C has")
+
     client = printer_manager.get_client(printer_id)
     if not client:
         raise HTTPException(400, "Printer not connected")
+
+    # An AMS 3H slot has nothing to feed until the AMS has pulled its filament
+    # in at the inlet; Studio offers no Load before that.
+    if ams3h_slot is not None and not client.rack_tray_has_filament(tray_id):
+        raise HTTPException(
+            409,
+            f"AMS 3H slot {ams3h_slot[1] + 1} has no filament. Push the filament into the slot's inlet "
+            "until the AMS pulls it in, then load it.",
+        )
 
     success = await run_client_call(client, client.ams_load_filament, tray_id)
     if not success:
@@ -4502,7 +4544,9 @@ async def ams_load(
             )
         raise HTTPException(500, "Failed to send load command")
 
-    if tray_id == 254:
+    if ams3h_slot is not None:
+        target = f"AMS 3H slot {ams3h_slot[1] + 1}"
+    elif tray_id == 254:
         target = "external spool"
     elif tray_id == 255:
         target = "Ext-R"
@@ -4555,6 +4599,12 @@ async def ams_unload(
     if tray_id is not None and provider in {"klipper", "mainsail", "fluidd"}:
         target = f"CFS T{tray_id // 4 + 1} slot {tray_id % 4 + 1}"
         return {"success": True, "message": f"Unloading filament from {target}"}
+    if has_ams3h(printer.model):
+        # The AMS 3H can't rewind: the printer retracts, the rest is pulled by hand.
+        return {
+            "success": True,
+            "message": "Unloading filament. The AMS 3H can't rewind: pull the filament out of the slot by hand.",
+        }
     return {"success": True, "message": "Unloading filament"}
 
 

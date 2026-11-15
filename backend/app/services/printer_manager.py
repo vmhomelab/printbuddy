@@ -68,6 +68,7 @@ CHAMBER_TEMP_SUPPORTED_MODELS = frozenset(
         "H2D",
         "H2DPRO",
         "H2S",  # H2 series
+        "H3C",  # H3 series
         "CENTAURI CARBON",  # Elegoo SDCP / CC1
         "ELEGOO CENTAURI CARBON",
         "CENTAURI-CARBON",
@@ -83,6 +84,7 @@ CHAMBER_TEMP_SUPPORTED_MODELS = frozenset(
         "O1E",  # H2D Pro
         "O2D",  # H2D Pro (alternate code)
         "N7",  # P2S
+        "N10",  # H3C
     ]
 )
 

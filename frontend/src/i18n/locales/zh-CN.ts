@@ -531,6 +531,10 @@ export default {
       unknown: '未知',
       failedToStart: '启动发现失败',
     },
+    // H3C AMS 3H
+    ams3h: {
+      dryZone: '烘干: 槽位 {{slots}}',
+    },
     // AMS Drying
     drying: {
       start: '开始干燥',

@@ -531,6 +531,10 @@ export default {
       unknown: 'Inconnu',
       failedToStart: 'Échec du démarrage de la découverte',
     },
+    // H3C AMS 3H
+    ams3h: {
+      dryZone: 'Séchoir : emplacements {{slots}}',
+    },
     // AMS Drying
     drying: {
       start: 'Démarrer le séchage',

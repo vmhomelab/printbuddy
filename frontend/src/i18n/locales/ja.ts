@@ -530,6 +530,10 @@ export default {
       unknown: '不明',
       failedToStart: '印刷の開始に失敗しました',
     },
+    // H3C AMS 3H
+    ams3h: {
+      dryZone: '乾燥: スロット {{slots}}',
+    },
     // AMS Drying
     drying: {
       start: '乾燥開始',
