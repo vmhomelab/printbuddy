@@ -722,7 +722,8 @@ def get_printer_images_dir() -> Path:
 
 def _custom_image_path(filename: str | None, printer_id: int) -> Path | None:
     """Resolve only filenames generated for this printer inside its image directory."""
-    if not filename or not re.fullmatch(rf"printer_{printer_id}_[0-9a-f]{{32}}\.(?:jpg|jpeg|png|gif|webp)", filename):
+    match = re.fullmatch(r"printer_(\d+)_[0-9a-f]{32}\.(?:jpg|jpeg|png|gif|webp)", filename or "")
+    if not match or match.group(1) != str(printer_id):
         return None
     images_dir = get_printer_images_dir().resolve()
     image_path = (images_dir / filename).resolve()

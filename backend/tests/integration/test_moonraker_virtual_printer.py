@@ -428,7 +428,10 @@ async def test_bgcode_rejected_when_target_cannot_print_it(
         body["target_printer_id"] = printer.id
     vp = await _create(async_client, **body)
 
-    instance = MagicMock(is_http_host=True, upload_dir=tmp_path)
+    # Own subdirectory: tmp_path also holds the per-test SQLite file (test.db).
+    upload_dir = tmp_path / "vp_uploads"
+    upload_dir.mkdir()
+    instance = MagicMock(is_http_host=True, upload_dir=upload_dir)
     instance.on_file_received = AsyncMock()
     with patch("backend.app.services.virtual_printer.virtual_printer_manager.get_instance", return_value=instance):
         response = await async_client.post(
@@ -441,7 +444,7 @@ async def test_bgcode_rejected_when_target_cannot_print_it(
     if expected == 415:
         assert "Supports binary G-code" in response.json()["error"]
         assert instance.on_file_received.await_count == 0
-        assert list(tmp_path.iterdir()) == []
+        assert list(upload_dir.iterdir()) == []
     else:
         assert instance.on_file_received.await_count == 1
 
