@@ -1785,6 +1785,12 @@ export default {
     apiKeyCreated: 'API 金鑰建立成功',
     apiKeyCopyWarning: '請立即複製此金鑰 - 它不會再次顯示！',
     useInApiBrowser: '在 API 瀏覽器中使用',
+    mobilePairing: {
+      title: '配對行動應用程式',
+      description: '使用手機相機或在 Printbuddy 應用程式中掃描此 QR 碼，即可用此金鑰連線。',
+      qrAlt: '用於配對 Printbuddy 行動應用程式的 QR 碼',
+      localhostWarning: '此位址僅在本機有效。請透過網路位址（例如 IP）開啟 Printbuddy，讓手機可以連線。',
+    },
     createNewApiKey: '建立新 API 金鑰',
     keyName: '金鑰名稱',
     keyNamePlaceholder: '例如：Home Assistant、OctoPrint',

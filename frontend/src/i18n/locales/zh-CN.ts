@@ -1785,6 +1785,12 @@ export default {
     apiKeyCreated: 'API 密钥创建成功',
     apiKeyCopyWarning: '请立即复制此密钥 - 它不会再次显示！',
     useInApiBrowser: '在 API 浏览器中使用',
+    mobilePairing: {
+      title: '配对移动应用',
+      description: '使用手机相机或在 Printbuddy 应用中扫描此二维码，即可用此密钥连接。',
+      qrAlt: '用于配对 Printbuddy 移动应用的二维码',
+      localhostWarning: '此地址仅在本机有效。请通过网络地址（例如 IP）打开 Printbuddy，以便手机可以访问。',
+    },
     createNewApiKey: '创建新 API 密钥',
     keyName: '密钥名称',
     keyNamePlaceholder: '例如：Home Assistant、OctoPrint',

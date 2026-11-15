@@ -1787,6 +1787,12 @@ export default {
     apiKeyCreated: 'API Key Created Successfully',
     apiKeyCopyWarning: "Copy this key now - it won't be shown again!",
     useInApiBrowser: 'Use in API Browser',
+    mobilePairing: {
+      title: 'Pair the mobile app',
+      description: 'Scan this code with your phone\'s camera or in the Printbuddy app to connect it with this key.',
+      qrAlt: 'QR code for pairing the Printbuddy mobile app',
+      localhostWarning: 'This address only works on this computer. Open Printbuddy by its network address (for example its IP) so your phone can reach it.',
+    },
     createNewApiKey: 'Create New API Key',
     keyName: 'Key Name',
     keyNamePlaceholder: 'e.g., Home Assistant, OctoPrint',

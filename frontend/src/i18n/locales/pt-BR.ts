@@ -1785,6 +1785,12 @@ export default {
     apiKeyCreated: 'Chave API criada com sucesso',
     apiKeyCopyWarning: 'Copie esta chave agora - ela não será exibida novamente!',
     useInApiBrowser: 'Usar no Navegador API',
+    mobilePairing: {
+      title: 'Conectar o app móvel',
+      description: 'Leia este código com a câmera do celular ou no app Printbuddy para conectá-lo com esta chave.',
+      qrAlt: 'Código QR para conectar o app móvel Printbuddy',
+      localhostWarning: 'Este endereço só funciona neste computador. Abra o Printbuddy pelo endereço de rede (por exemplo, o IP) para que o celular consiga acessá-lo.',
+    },
     createNewApiKey: 'Criar Nova Chave API',
     keyName: 'Nome da Chave',
     keyNamePlaceholder: 'e.g., Home Assistant, OctoPrint',

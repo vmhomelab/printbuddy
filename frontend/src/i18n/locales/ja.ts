@@ -1784,6 +1784,12 @@ export default {
     apiKeyCreated: 'APIキーを作成しました',
     apiKeyCopyWarning: '今すぐこのキーをコピーしてください - 再表示されません！',
     useInApiBrowser: 'APIブラウザーで使用',
+    mobilePairing: {
+      title: 'モバイルアプリと連携',
+      description: 'スマートフォンのカメラまたは Printbuddy アプリでこのコードを読み取ると、このキーで接続できます。',
+      qrAlt: 'Printbuddy モバイルアプリ連携用の QR コード',
+      localhostWarning: 'このアドレスはこのコンピューターでのみ有効です。スマートフォンから接続できるよう、ネットワークアドレス（IP など）で Printbuddy を開いてください。',
+    },
     createNewApiKey: '新しいAPIキーを作成',
     keyName: 'キー名',
     keyNamePlaceholder: '例: Home Assistant, OctoPrint',

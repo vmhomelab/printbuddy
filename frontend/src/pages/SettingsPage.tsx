@@ -9,6 +9,7 @@ import { getCurrencySymbol, SUPPORTED_CURRENCIES } from '../utils/currency';
 import { checkPasswordComplexity } from '../utils/password';
 import type { APIKey, AppSettings, AppSettingsUpdate, SmartPlug, SmartPlugStatus, NotificationProvider, NotificationTemplate, UpdateStatus, GitHubBackupStatus, CloudAuthStatus, UserCreate, UserUpdate, UserResponse, StorageUsageResponse, SelfUpdateJob } from '../api/client';
 import { Card, CardContent, CardDensityProvider, CardHeader } from '../components/Card';
+import { MobilePairingQR } from '../components/MobilePairingQR';
 import { SlicerBundlesPanel } from '../components/SlicerBundlesPanel';
 import { CameraTokensSection } from './CameraTokensPage';
 import { Collapsible } from '../components/Collapsible';
@@ -4193,6 +4194,7 @@ export function SettingsPage() {
                           <Copy className="w-4 h-4" />
                         </Button>
                       </div>
+                      <MobilePairingQR apiKey={createdAPIKey} />
                       <div className="flex gap-2 mt-3">
                         <Button
                           variant="secondary"
