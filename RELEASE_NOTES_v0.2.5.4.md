@@ -21,6 +21,7 @@ It also fixes a long-standing performance problem: a slow or unreachable HTTP pr
 
 - 🐙 **OctoPrint as a new printer type**: control, File Manager, webcam and discovery for Marlin/RepRap printers
 - 🖨️ **Moonraker/OctoPrint-compatible virtual printers**: send jobs from OrcaSlicer, PrusaSlicer and others to any non-Bambu printer through Printbuddy, with a printer dashboard right in OrcaSlicer's Device tab
+- 🤖 **OctoEverywhere AI failure detection**: an optional cloud AI that watches your prints next to Obico
 - 📚 **GyroidVault integration** and a new combined **Model import** page
 - 📋 **Project job plans**: plan every plate with quantity, material and printer, see running totals and queue everything with one click
 - 📱 **Smartphone-optimized layout** with PWA improvements
@@ -264,6 +265,29 @@ Projects can now carry a **job plan**: every plate that has to be printed, for e
 </p>
 -->
 
+### OctoEverywhere AI failure detection
+
+Printbuddy can now use **[OctoEverywhere's Gadget AI](https://octoeverywhere.com/gadgetapi)** to spot failed prints. It is an optional cloud provider next to the self-hosted Obico integration. You can use either one, both or neither.
+
+- **Easy setup**: create a free key at [octoeverywhere.com/gadgetapi](https://octoeverywhere.com/gadgetapi) (no card needed), paste it under **Settings → Failure Detection → OctoEverywhere AI detection**, click **Test** and turn it on
+- While a print runs, Printbuddy sends camera snapshots to Gadget. The AI compares them with earlier snapshots of the same print.
+- **Warning**: you get a notification with the snapshot attached
+- **Failure**: Printbuddy runs your chosen action once: notify, pause, or pause and turn off linked smart plugs
+- Adjustable sensitivity (low, medium, high), and an inspection interval that follows Gadget's recommendation (usually 20 s) or a fixed 10–120 s
+- Works with every printer camera Printbuddy knows: external cameras, provider cameras (PrusaLink, Creality, Elegoo) and the built-in Bambu camera. An open live view is reused instead of opening a second camera connection.
+- The **AI badge on each printer card** now shows which provider watches the printer (`AI On · Obico` / `AI On · OctoEverywhere`). Click a badge to turn monitoring on or off for that provider.
+- The API key is stored encrypted. Key or account problems pause inspections and are shown on the status card.
+
+Printbuddy needs outbound HTTPS access to `*.octoeverywhere.com`. See [`docs/octoeverywhere.md`](docs/octoeverywhere.md).
+
+<!-- SCREENSHOT: docs/screenshots/v0254-octoeverywhere-settings.png
+     Settings → Failure Detection: the OctoEverywhere card with status and history (API key blurred).
+     Optional second shot: a printer card with the "AI On · OctoEverywhere" badge.
+<p align="center">
+  <img src="docs/screenshots/v0254-octoeverywhere-settings.png" alt="OctoEverywhere AI failure detection settings" width="700">
+</p>
+-->
+
 ### Slicer
 
 - **Slice all plates: choose the output**. Keep one multi-plate 3MF, or write one `{name}_plate_N.gcode.3mf` per plate so every plate becomes its own library entry
@@ -319,6 +343,7 @@ See [`docs/self-update-sidecar.md`](docs/self-update-sidecar.md).
 
 - **Slow UI with Klipper/Moonraker (e.g. QIDI Max4) and other HTTP printers**: every status read used to block the server while it waited for the printer. A slow or offline printer could freeze every page, the camera and the light toggles for tens of seconds. Each HTTP printer is now polled in its own background thread (Moonraker every 3 s, PrusaConnect every 10 s, others every 5 s). A printer counts as offline only after two failed polls in a row, and saved printers connect in parallel at startup.
 - **PrusaLink / CORE One**: pausing no longer sends a "print stopped" notification and resuming no longer counts as a new print. Maintenance stops are reported as "stopped" instead of "failed", and stopped prints get a finish time.
+- **Obico failure detection** now uses the printer's real camera source (external, PrusaLink, Creality WebRTC, Elegoo SDCP or Bambu). Before, it always tried the Bambu camera, so many non-Bambu printers were never checked.
 - **Live Activity** no longer disappears and reappears right after a print starts
 - **PostgreSQL**: upgrading databases created before v0.2.5.0 no longer aborts startup during migration
 - Post-print SD-card cleanup and timelapse scans no longer try Bambu FTP for non-Bambu printers (saved about 8 s per print)
