@@ -1,3 +1,4 @@
+import { useIsMobile } from '../hooks/useIsMobile';
 import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
@@ -985,6 +986,140 @@ export function ProjectPlanSection({
 
   const openToQueue = items.reduce((sum, i) => sum + i.progress.remaining, 0);
 
+  // Cell renderers shared by the desktop table and the mobile card list
+  const isMobile = useIsMobile();
+  const planCell = {
+    plate: (item: PlanItem) => (
+      <>
+        <div className="flex items-center gap-2">
+          {item.thumbnail_url ? (
+            <img
+              src={withStreamToken(item.thumbnail_url)}
+              alt=""
+              className="h-10 w-10 shrink-0 rounded object-cover"
+              onError={(e) => {
+                const img = e.currentTarget;
+                if (item.library_file_id && !img.dataset.fallback) {
+                  img.dataset.fallback = '1';
+                  img.src = api.getLibraryFileThumbnailUrl(item.library_file_id);
+                } else {
+                  img.style.visibility = 'hidden';
+                }
+              }}
+            />
+          ) : (
+            <Package className="h-10 w-10 shrink-0 p-2 text-bambu-gray" />
+          )}
+          <div className="min-w-0">
+            <p className="truncate font-medium text-white">{item.name}</p>
+            {item.library_file_missing ? (
+              <p className="text-xs text-red-300">{t('projectPlan.errorFileMissing')}</p>
+            ) : !item.is_sliced && item.library_file_id ? (
+              <p className="text-xs text-yellow-300">{t('projectPlan.errorNotSliced')}</p>
+            ) : item.notes ? (
+              <p className="truncate text-xs text-bambu-gray">{item.notes}</p>
+            ) : null}
+          </div>
+        </div>
+      </>
+    ),
+    material: (item: PlanItem) => (
+      <>
+        <FilamentChips filaments={item.filaments} />
+      </>
+    ),
+    quantity: (item: PlanItem) => (
+      <>
+        {canEdit ? (
+          <input
+            key={`${item.id}-${item.quantity}`}
+            type="number"
+            min={1}
+            defaultValue={item.quantity}
+            onBlur={(e) => {
+              const value = Math.max(1, Math.round(Number(e.target.value)) || 1);
+              if (value !== item.quantity) updateMutation.mutate({ id: item.id, data: { quantity: value } });
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+            }}
+            className="w-16 rounded border border-bambu-dark-tertiary bg-bambu-dark px-2 py-1 text-white focus:border-bambu-green focus:outline-none"
+            aria-label={t('projectPlan.quantity')}
+          />
+        ) : (
+          <span className="text-white">{item.quantity}</span>
+        )}
+      </>
+    ),
+    assignment: (item: PlanItem) => (
+      <>
+        <AssignmentSelect
+          value={assignmentOf(item)}
+          printers={printers}
+          disabled={!canEdit}
+          onChange={(value) => updateMutation.mutate({ id: item.id, data: assignmentPayload(value) })}
+          className="max-w-[11rem]"
+        />
+      </>
+    ),
+    estimate: (item: PlanItem) => (
+      <>
+        <div>{formatPlanDuration((item.est_print_time_seconds || 0) * item.quantity)}</div>
+        <div className="text-xs text-bambu-gray">
+          {formatPlanGrams(
+            (item.est_filament_grams ??
+              item.filaments.reduce((s, f) => s + (f.used_grams || 0), 0)) * item.quantity,
+          )}
+        </div>
+      </>
+    ),
+    progress: (item: PlanItem) => (
+      <>
+        <ProgressCell item={item} />
+      </>
+    ),
+    actions: (item: PlanItem) => (
+      <>
+        <div className="inline-flex items-center gap-1">
+          {canQueue && item.progress.remaining > 0 && item.is_sliced && (
+            <button
+              type="button"
+              onClick={() => enqueueMutation.mutate([item.id])}
+              disabled={enqueueMutation.isPending}
+              className="rounded p-1.5 text-blue-300 hover:bg-blue-500/15"
+              title={t('projectPlan.queueRow', { count: item.progress.remaining })}
+              aria-label={t('projectPlan.queueRow', { count: item.progress.remaining })}
+            >
+              <ListPlus className="h-4 w-4" />
+            </button>
+          )}
+          {canEdit && (
+          <>
+              <button
+                type="button"
+                onClick={() => setEditing(item)}
+                className="rounded p-1.5 text-bambu-gray hover:bg-bambu-dark-tertiary hover:text-white"
+                title={t('projectPlan.editPlate')}
+                aria-label={t('projectPlan.editPlate')}
+              >
+                <Edit3 className="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                onClick={() => setDeleting(item)}
+                className="rounded p-1.5 text-bambu-gray hover:bg-red-500/15 hover:text-red-400"
+                title={t('common.delete')}
+                aria-label={t('common.delete')}
+              >
+                <Trash2 className="h-4 w-4" />
+              </button>
+          </>
+        )}
+      </div>
+      </>
+    ),
+  };
+
   return (
     <Card>
       <CardContent className="p-4">
@@ -1045,6 +1180,41 @@ export function ProjectPlanSection({
                       </span>
                     </h3>
                   )}
+                  {/* Phones: one card per plate instead of a 7-column table */}
+                  {isMobile ? (
+                  <ul className="space-y-2">
+                    {groupItems.map((item) => (
+                      <li key={item.id} className="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark/40 p-3 text-sm">
+                        <div className="flex items-start gap-2">
+                          <div className="min-w-0 flex-1">{planCell.plate(item)}</div>
+                          <div className="shrink-0 -mr-1.5 -mt-1">{planCell.actions(item)}</div>
+                        </div>
+                        <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2.5">
+                          <div className="col-span-2">
+                            <p className="mb-1 text-[11px] uppercase text-bambu-gray">{t('projectPlan.material')}</p>
+                            {planCell.material(item)}
+                          </div>
+                          <div>
+                            <p className="mb-1 text-[11px] uppercase text-bambu-gray">{t('projectPlan.quantity')}</p>
+                            {planCell.quantity(item)}
+                          </div>
+                          <div className="text-bambu-gray-light">
+                            <p className="mb-1 text-[11px] uppercase text-bambu-gray">{t('projectPlan.estimate')}</p>
+                            {planCell.estimate(item)}
+                          </div>
+                          <div className="col-span-2">
+                            <p className="mb-1 text-[11px] uppercase text-bambu-gray">{t('projectPlan.assignment')}</p>
+                            {planCell.assignment(item)}
+                          </div>
+                          <div className="col-span-2">
+                            <p className="mb-1 text-[11px] uppercase text-bambu-gray">{t('projectPlan.progress')}</p>
+                            {planCell.progress(item)}
+                          </div>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                  ) : (
                   <div className="overflow-x-auto rounded-lg border border-bambu-dark-tertiary">
                     <table className="w-full text-sm">
                       <thead className="bg-bambu-dark-tertiary text-xs uppercase text-bambu-gray">
@@ -1061,126 +1231,19 @@ export function ProjectPlanSection({
                       <tbody className="divide-y divide-bambu-dark-tertiary">
                         {groupItems.map((item) => (
                           <tr key={item.id} className="align-top">
-                            <td className="px-3 py-2">
-                              <div className="flex items-center gap-2">
-                                {item.thumbnail_url ? (
-                                  <img
-                                    src={withStreamToken(item.thumbnail_url)}
-                                    alt=""
-                                    className="h-10 w-10 shrink-0 rounded object-cover"
-                                    onError={(e) => {
-                                      const img = e.currentTarget;
-                                      if (item.library_file_id && !img.dataset.fallback) {
-                                        img.dataset.fallback = '1';
-                                        img.src = api.getLibraryFileThumbnailUrl(item.library_file_id);
-                                      } else {
-                                        img.style.visibility = 'hidden';
-                                      }
-                                    }}
-                                  />
-                                ) : (
-                                  <Package className="h-10 w-10 shrink-0 p-2 text-bambu-gray" />
-                                )}
-                                <div className="min-w-0">
-                                  <p className="truncate font-medium text-white">{item.name}</p>
-                                  {item.library_file_missing ? (
-                                    <p className="text-xs text-red-300">{t('projectPlan.errorFileMissing')}</p>
-                                  ) : !item.is_sliced && item.library_file_id ? (
-                                    <p className="text-xs text-yellow-300">{t('projectPlan.errorNotSliced')}</p>
-                                  ) : item.notes ? (
-                                    <p className="truncate text-xs text-bambu-gray">{item.notes}</p>
-                                  ) : null}
-                                </div>
-                              </div>
-                            </td>
-                            <td className="px-3 py-2">
-                              <FilamentChips filaments={item.filaments} />
-                            </td>
-                            <td className="px-3 py-2">
-                              {canEdit ? (
-                                <input
-                                  key={`${item.id}-${item.quantity}`}
-                                  type="number"
-                                  min={1}
-                                  defaultValue={item.quantity}
-                                  onBlur={(e) => {
-                                    const value = Math.max(1, Math.round(Number(e.target.value)) || 1);
-                                    if (value !== item.quantity) updateMutation.mutate({ id: item.id, data: { quantity: value } });
-                                  }}
-                                  onKeyDown={(e) => {
-                                    if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
-                                  }}
-                                  className="w-16 rounded border border-bambu-dark-tertiary bg-bambu-dark px-2 py-1 text-white focus:border-bambu-green focus:outline-none"
-                                  aria-label={t('projectPlan.quantity')}
-                                />
-                              ) : (
-                                <span className="text-white">{item.quantity}</span>
-                              )}
-                            </td>
-                            <td className="px-3 py-2">
-                              <AssignmentSelect
-                                value={assignmentOf(item)}
-                                printers={printers}
-                                disabled={!canEdit}
-                                onChange={(value) => updateMutation.mutate({ id: item.id, data: assignmentPayload(value) })}
-                                className="max-w-[11rem]"
-                              />
-                            </td>
-                            <td className="whitespace-nowrap px-3 py-2 text-bambu-gray-light">
-                              <div>{formatPlanDuration((item.est_print_time_seconds || 0) * item.quantity)}</div>
-                              <div className="text-xs text-bambu-gray">
-                                {formatPlanGrams(
-                                  (item.est_filament_grams ??
-                                    item.filaments.reduce((s, f) => s + (f.used_grams || 0), 0)) * item.quantity,
-                                )}
-                              </div>
-                            </td>
-                            <td className="px-3 py-2">
-                              <ProgressCell item={item} />
-                            </td>
-                            <td className="whitespace-nowrap px-3 py-2 text-right">
-                              <div className="inline-flex items-center gap-1">
-                                {canQueue && item.progress.remaining > 0 && item.is_sliced && (
-                                  <button
-                                    type="button"
-                                    onClick={() => enqueueMutation.mutate([item.id])}
-                                    disabled={enqueueMutation.isPending}
-                                    className="rounded p-1.5 text-blue-300 hover:bg-blue-500/15"
-                                    title={t('projectPlan.queueRow', { count: item.progress.remaining })}
-                                    aria-label={t('projectPlan.queueRow', { count: item.progress.remaining })}
-                                  >
-                                    <ListPlus className="h-4 w-4" />
-                                  </button>
-                                )}
-                                {canEdit && (
-                                  <>
-                                    <button
-                                      type="button"
-                                      onClick={() => setEditing(item)}
-                                      className="rounded p-1.5 text-bambu-gray hover:bg-bambu-dark-tertiary hover:text-white"
-                                      title={t('projectPlan.editPlate')}
-                                      aria-label={t('projectPlan.editPlate')}
-                                    >
-                                      <Edit3 className="h-4 w-4" />
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => setDeleting(item)}
-                                      className="rounded p-1.5 text-bambu-gray hover:bg-red-500/15 hover:text-red-400"
-                                      title={t('common.delete')}
-                                      aria-label={t('common.delete')}
-                                    >
-                                      <Trash2 className="h-4 w-4" />
-                                    </button>
-                                  </>
-                                )}
-                              </div>
-                            </td>
+                            <td className="px-3 py-2">{planCell.plate(item)}</td>
+                            <td className="px-3 py-2">{planCell.material(item)}</td>
+                            <td className="px-3 py-2">{planCell.quantity(item)}</td>
+                            <td className="px-3 py-2">{planCell.assignment(item)}</td>
+                            <td className="whitespace-nowrap px-3 py-2 text-bambu-gray-light">{planCell.estimate(item)}</td>
+                            <td className="px-3 py-2">{planCell.progress(item)}</td>
+                            <td className="whitespace-nowrap px-3 py-2 text-right">{planCell.actions(item)}</td>
                           </tr>
                         ))}
                       </tbody>
                     </table>
                   </div>
+                  )}
                 </div>
               ))}
             </div>

@@ -335,6 +335,13 @@ export interface AMSTray {
   channel_action_state?: string | null;
   channel_error?: string | null;
   filament_source?: string | null;
+  /** Snapmaker U1 SpoolLink / Moonraker Spoolman spool id when the slot is bound. */
+  filament_spool_id?: number | null;
+  remaining_weight?: number | null;
+  /** Identity fields from Moonraker Spoolman proxy (independent of Printbuddy Spoolman sync). */
+  filament_spool_brand?: string | null;
+  filament_spool_material?: string | null;
+  filament_spool_color_name?: string | null;
 }
 
 export interface AMSUnit {
@@ -1333,6 +1340,8 @@ export interface AppSettings {
   ldap_group_mapping: string;
   ldap_auto_provision: boolean;
   ldap_default_group: string;
+  // Remember Me keeps users signed in for 30 days instead of 24 h
+  remember_me_extended_session?: boolean;
   obico_enabled: boolean;
   obico_ml_url: string;
   obico_sensitivity: 'low' | 'medium' | 'high';
@@ -1701,6 +1710,8 @@ export interface SliceRequest {
   // dispatch ignores the preset side when bundle is set).
   bundle?: SliceBundleSpec;
   plate?: number;
+  /** When plate=0, write one library/archive file per plate instead of one multi-plate 3MF. */
+  split_plates?: boolean;
   export_3mf?: boolean;
   // Build-plate override (#1337). When omitted, the slicer uses the process
   // preset's curr_bed_type as-is. Canonical values match BambuStudio /
@@ -1799,6 +1810,9 @@ export interface SliceResponse {
   filament_used_g: number;
   filament_used_mm: number;
   used_embedded_settings: boolean;
+  /** Present when split_plates wrote one file per plate. */
+  library_file_ids?: number[] | null;
+  names?: string[] | null;
 }
 
 export interface SliceArchiveResponse {
@@ -1808,6 +1822,8 @@ export interface SliceArchiveResponse {
   filament_used_g: number;
   filament_used_mm: number;
   used_embedded_settings: boolean;
+  archive_ids?: number[] | null;
+  names?: string[] | null;
 }
 
 // Background slice-job lifecycle. POST /slice returns 202 + this shape;
@@ -3512,6 +3528,9 @@ export interface UserEmailPreferences {
 export interface LoginRequest {
   username: string;
   password: string;
+  // Requests a 30-day token; the backend only honours it when the admin
+  // enabled remember_me_extended_session.
+  remember_me?: boolean;
 }
 
 export interface LoginResponse {
@@ -3614,6 +3633,7 @@ export interface TwoFAVerifyRequest {
   pre_auth_token: string;
   code: string;
   method: 'totp' | 'email' | 'backup';
+  remember_me?: boolean;
 }
 
 /**
@@ -3899,10 +3919,10 @@ export const api = {
     request<{ auth_url: string }>(`/auth/oidc/authorize/${providerId}`),
 
   // OIDC exchange token for JWT
-  exchangeOIDCToken: (oidcToken: string) =>
+  exchangeOIDCToken: (oidcToken: string, rememberMe = false) =>
     request<LoginResponse>('/auth/oidc/exchange', {
       method: 'POST',
-      body: JSON.stringify({ oidc_token: oidcToken }),
+      body: JSON.stringify({ oidc_token: oidcToken, remember_me: rememberMe }),
     }),
 
   // OIDC links for current user

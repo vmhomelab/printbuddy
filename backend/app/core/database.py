@@ -262,14 +262,14 @@ async def _migrate_encrypt_legacy_secrets() -> None:
     """Re-encrypt OIDC ``client_secret`` and TOTP ``secret`` rows that are still
     stored as plaintext (no ``fernet:`` prefix).
 
-    Called from :func:`init_db` after :func:`run_migrations` finishes. No-ops
+    Called from `init_db` after `run_migrations` finishes. No-ops
     when no encryption key is configured (so plaintext storage stays the
     legacy behaviour for installs without a key).
 
     B2: per-row strategy — each row is committed in its own AsyncSession so a
     single corrupt row does NOT block other successful re-encryptions on every
     startup forever. The skipped-row count is exposed via
-    :func:`get_migration_error_count` and surfaced on /encryption-status.
+    `get_migration_error_count` and surfaced on /encryption-status.
 
     B3: unexpected (non-row) failures during the read phase are re-raised so
     operators see the problem instead of silent data corruption — startup
@@ -665,7 +665,14 @@ async def run_migrations(conn):
 
     # Migration: Add on_print_stopped column to notification_providers
     await _safe_execute(conn, "ALTER TABLE notification_providers ADD COLUMN on_print_stopped BOOLEAN DEFAULT 1")
-    await _safe_execute(conn, "ALTER TABLE notification_providers ADD COLUMN on_print_almost_done BOOLEAN DEFAULT 0")
+    # No column default: the model has none either (default=False is client-side),
+    # and PostgreSQL rejects an integer default on a BOOLEAN column, which aborted
+    # startup when upgrading a PostgreSQL database created before this column.
+    await _safe_execute(conn, "ALTER TABLE notification_providers ADD COLUMN on_print_almost_done BOOLEAN")
+    async with conn.begin_nested():
+        await conn.execute(
+            text("UPDATE notification_providers SET on_print_almost_done = FALSE WHERE on_print_almost_done IS NULL")
+        )
 
     # Migration: Add source_3mf_path column to print_archives
     await _safe_execute(conn, "ALTER TABLE print_archives ADD COLUMN source_3mf_path VARCHAR(500)")

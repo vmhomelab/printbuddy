@@ -1,15 +1,13 @@
 /**
  * Tests for isBambuLabSpool helper.
  *
- * The function is permissive: any non-empty non-zero value of tray_uuid OR
- * tag_uid returns true. It does NOT validate hex-length or character set —
- * its job is solely to suppress assign/unassign actions on RFID-managed slots
- * whose state is owned by the printer firmware.
+ * Requires 32-hex tray_uuid or 16-hex tag_uid so synthetic Snapmaker slot
+ * IDs are not treated as firmware-owned Bambu RFID.
  */
 
 import { describe, it, expect } from 'vitest';
 
-import { isBambuLabSpool } from '../../utils/amsHelpers';
+import { getTrayFilamentSpoolId, isBambuLabSpool } from '../../utils/amsHelpers';
 
 describe('isBambuLabSpool', () => {
   it('returns false for null', () => {
@@ -61,5 +59,21 @@ describe('isBambuLabSpool', () => {
         tag_uid: null,
       }),
     ).toBe(true);
+  });
+
+  it('returns false for Snapmaker synthetic tray_uuid values', () => {
+    expect(isBambuLabSpool({ tray_uuid: 'snapmaker-u1-e0', tag_uid: '' })).toBe(false);
+  });
+});
+
+describe('getTrayFilamentSpoolId', () => {
+  it('returns positive spool ids from SpoolLink telemetry', () => {
+    expect(getTrayFilamentSpoolId({ filament_spool_id: 25 })).toBe(25);
+  });
+
+  it('ignores missing, zero, and negative ids', () => {
+    expect(getTrayFilamentSpoolId(undefined)).toBeUndefined();
+    expect(getTrayFilamentSpoolId({ filament_spool_id: 0 })).toBeUndefined();
+    expect(getTrayFilamentSpoolId({ filament_spool_id: -1 })).toBeUndefined();
   });
 });

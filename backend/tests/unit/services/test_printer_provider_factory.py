@@ -15,6 +15,17 @@ from backend.app.services.printer_providers.prusaconnect import PrusaConnectMobi
 from backend.app.services.printer_providers.prusalink import PrusaLinkPrinterClient
 
 
+@pytest.fixture(autouse=True)
+def _moonraker_http_via_module_functions(monkeypatch):
+    """Route Moonraker's pooled HTTP client through ``httpx.get``/``httpx.post``.
+
+    The tests in this module fake Moonraker by monkeypatching the module-level
+    httpx functions; resolve them at call time so those fakes still apply.
+    """
+    monkeypatch.setattr(MoonrakerPrinterClient, "_http_get", lambda self, url, **kwargs: httpx.get(url, **kwargs))
+    monkeypatch.setattr(MoonrakerPrinterClient, "_http_post", lambda self, url, **kwargs: httpx.post(url, **kwargs))
+
+
 def test_supported_printbuddy_providers_are_registered():
     assert {
         "bambu",
@@ -771,7 +782,7 @@ def test_moonraker_connect_fetches_status_and_check_staleness_keeps_connected(mo
         "http://neptune.local:7125/printer/objects/query?webhooks&print_stats&virtual_sdcard&display_status&extruder&heater_bed",
         "http://neptune.local:7125/printer/objects/list",
         "http://neptune.local:7125/printer/objects/query?webhooks&print_stats&virtual_sdcard&display_status&extruder&heater_bed",
-        "http://neptune.local:7125/printer/objects/list",
+        # The object list is cached between polls.
     ]
 
 

@@ -119,7 +119,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [loading, requiresSetup, authEnabled]);
 
   const login = async (username: string, password: string, persistence: TokenPersistence = 'session'): Promise<LoginResponse> => {
-    const response = await api.login({ username, password });
+    const response = await api.login({ username, password, remember_me: persistence === 'persistent' });
     if (!response.requires_2fa && response.access_token) {
       setAuthToken(response.access_token, persistence);
       await checkAuthStatus();

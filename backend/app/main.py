@@ -109,6 +109,7 @@ from backend.app.services.printer_manager import (
     printer_manager,
     printer_state_to_dict,
     reported_nozzle_temperatures,
+    run_client_call,
 )
 from backend.app.services.smart_plug_manager import smart_plug_manager
 from backend.app.services.spool_assignment_notifications import (
@@ -2768,7 +2769,7 @@ async def _dispatch_user_print_email(
     """Send a user-specific print-completion email based on print status.
 
     Maps the normalised print status to the correct event type and delegates
-    to :meth:`NotificationService.send_user_print_email`.  A single helper
+    to `NotificationService.send_user_print_email`.  A single helper
     avoids duplicating the ``if status == "completed" / elif "failed" / elif
     "stopped"`` dispatch block at every call site.
 
@@ -2920,7 +2921,7 @@ async def on_print_start(printer_id: int, data: dict):
                     light_was_off = not client.state.chamber_light
                     if light_was_off:
                         logger.info("[PLATE CHECK] Turning on chamber light for printer %s", printer_id)
-                        client.set_chamber_light(True)
+                        await run_client_call(client, client.set_chamber_light, True)
                         # Wait for light to physically turn on and camera to adjust exposure
                         await asyncio.sleep(2.5)
 
@@ -2941,7 +2942,7 @@ async def on_print_start(printer_id: int, data: dict):
                 # Restore chamber light to original state
                 if light_was_off and client:
                     logger.info("[PLATE CHECK] Restoring chamber light to off for printer %s", printer_id)
-                    client.set_chamber_light(False)
+                    await run_client_call(client, client.set_chamber_light, False)
 
                 if not plate_result.needs_calibration and not plate_result.is_empty:
                     # Objects detected - pause the print!
@@ -2951,7 +2952,7 @@ async def on_print_start(printer_id: int, data: dict):
                     )
                     client = printer_manager.get_client(printer_id)
                     if client:
-                        client.pause_print()
+                        await run_client_call(client, client.pause_print)
                         logger.info("[PLATE CHECK] Print paused for printer %s", printer_id)
 
                     # Send notification about plate not empty
