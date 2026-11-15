@@ -4402,6 +4402,45 @@ export default {
 
   // Virtual Printer
   virtualPrinter: {
+    types: {
+      title: "兩種虛擬印表機",
+      newBadge: "新",
+      intro: "新增虛擬印表機時選擇類型。從切片軟體送出的檔案會進入 Printbuddy（封存、審核或列印佇列），而不是直接送到印表機。",
+      bambu: {
+        tag: "Bambu Lab 印表機",
+        point1: "為 Bambu Studio / 使用 Bambu 設定檔的 OrcaSlicer 模擬 Bambu 印表機",
+        point2: "在區域網路中自動探索，或透過 IP 與存取碼新增",
+        point3: "模式：封存、審核、佇列、代理",
+        setupLabel: "需要設定：",
+        setupText: "需要獨立的綁定 IP、開放連接埠，並在切片軟體中匯入 Printbuddy CA。",
+        guide: "閱讀設定指南",
+      },
+      moonraker: {
+        tag: "Klipper、Prusa、OctoPrint 等",
+        point1: "OrcaSlicer / Snapmaker Orca：新增主機類型為「Octo/Klipper」的實體印表機。PrusaSlicer：主機類型選「OctoPrint」（也支援二進位 G-code）",
+        point2: "貼上虛擬印表機卡片上的主機 URL 與 API 金鑰",
+        point3: "模式：封存、審核、佇列（送到目標印表機）",
+        noSetupLabel: "無需額外設定：",
+        noSetupText: "透過 Printbuddy 連接埠執行。不需要綁定 IP、連接埠或憑證。",
+      },
+    },
+    protocol: {
+      title: "印表機類型",
+      bambu: "Bambu 相容",
+      bambuDesc: "模擬 Bambu Lab 印表機（Bambu Studio / 使用 Bambu 設定檔的 Orca）",
+      moonraker: "Moonraker/OctoPrint 相容",
+      moonrakerDesc: "適用於 Klipper、Prusa、OctoPrint 等非 Bambu 印表機的上傳端點",
+    },
+    slicerConnection: {
+      title: "切片軟體連線",
+      hostUrl: "主機 URL",
+      apiKey: "API 金鑰",
+      regenerate: "重新產生 API 金鑰",
+      regenerateConfirmTitle: "重新產生 API 金鑰",
+      regenerateConfirmMessage: "目前的金鑰將立即失效。您需要在切片軟體的實體印表機設定中填入新金鑰。",
+      keyRegenerated: "已產生新的 API 金鑰",
+      hint: "在切片軟體中新增主機類型為「Octo/Klipper」（OrcaSlicer / Snapmaker Orca）或「OctoPrint」（PrusaSlicer，也支援二進位 G-code）的實體印表機，並填入主機 URL 與 API 金鑰。送出的工作會進入 Printbuddy，而不是直接送到印表機。",
+    },
     title: '虛擬印表機',
     running: '執行中',
     stopped: '已停止',
@@ -4431,6 +4470,7 @@ export default {
     },
     targetPrinter: {
       title: '目標印表機',
+      moonrakerHint: "只能選擇非 Bambu 印表機。列印佇列模式下為必填。",
       configured: '代理目標已設定',
       notConfigured: '未選擇目標印表機 - 代理模式需要設定',
       placeholder: '選擇印表機...',
@@ -4472,10 +4512,6 @@ export default {
       description: '虛擬印表機功能需要額外的系統設定才能工作。包括埠轉發、防火牆規則和平臺特定設定。',
       readGuide: '啟用前請閱讀設定指南',
     },
-    bambuOnly: {
-      badge: '僅限 Bambu Lab',
-      description: '虛擬印表機會模擬 Bambu Studio 和 OrcaSlicer 使用的 Bambu LAN 通訊協定。它不是適用於 Prusa、Klipper/Moonraker 或 Elegoo SDCP 的通用虛擬印表機層。',
-    },
     archiveNameSource: {
       title: '存檔名稱來源',
       description: '選擇透過虛擬印表機接收檔案時新存檔的命名方式。"元資料"使用 3MF 中嵌入的切片標題（預設）。"檔名"使用 Bambu Studio 透過 FTP 傳送的檔案名稱 — 當您在"傳送到印表機"對話方塊中重新命名工作時非常有用。',
@@ -4484,6 +4520,7 @@ export default {
     },
     caCert: {
       title: '切片軟體憑證',
+      bambuOnlyBadge: "僅限 Bambu 相容",
       description: '虛擬印表機使用由 Printbuddy CA 簽發的 TLS 憑證。將此 CA 憑證匯入切片軟體的信任庫一次，切片軟體即可接受連線 — 無需再透過命令列取得。',
       copy: '複製',
       copied: '已複製',
@@ -4541,6 +4578,7 @@ export default {
       title: '新增虛擬印表機',
       name: '名稱',
       hint: '建立後可以設定存取碼、目標印表機和其他設定。',
+      hintMoonraker: "建立後，將主機 URL 與 API 金鑰複製到切片軟體的實體印表機設定中。",
       create: '建立',
     },
     deleteConfirm: {
@@ -5503,6 +5541,30 @@ export default {
       problems: '發現的問題可以解釋切片軟體為何無法看到或使用此虛擬印表機。',
     },
     check: {
+      mr_enabled: {
+        title: "虛擬印表機已啟用",
+        fail: "此虛擬印表機已關閉。在啟用之前，切片軟體的連線測試與上傳都會被拒絕。",
+      },
+      mr_endpoint: {
+        title: "上傳端點就緒",
+        pass: "切片軟體可透過 Printbuddy 連接埠上傳到 {{path}}。",
+        fail: "虛擬印表機已啟用，但其上傳端點未註冊。請先關閉再重新啟用；若仍無效，請查看 Printbuddy 記錄。",
+      },
+      mr_api_key: {
+        title: "已設定 API 金鑰",
+        fail: "未設定 API 金鑰。請使用 API 金鑰旁的重新整理按鈕產生一組。",
+      },
+      mr_target_printer: {
+        title: "目標印表機",
+        pass: "工作會送到已連線的 {{name}}。",
+        warn: "{{name}} 目前離線。佇列中的工作會在其重新連線後送出。",
+        fail: "列印佇列模式需要一台非 Bambu 的目標印表機（Klipper、Prusa、OctoPrint 等）。請在「目標印表機」中選擇。",
+        skip: "封存與審核模式下不需要。",
+      },
+      mr_upload_dir: {
+        title: "上傳資料夾可寫入",
+        fail: "Printbuddy 無法寫入此虛擬印表機的上傳資料夾。請檢查 Printbuddy 資料目錄是否可寫入。",
+      },
       enabled: {
         title: '虛擬印表機已啟用',
         fail: '此虛擬印表機已關閉。請將其開啟以使其可被探索。',

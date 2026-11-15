@@ -20,6 +20,7 @@ It also fixes a long-standing performance problem: a slow or unreachable HTTP pr
 ## Highlights
 
 - 🐙 **OctoPrint as a new printer type**: control, File Manager, webcam and discovery for Marlin/RepRap printers
+- 🖨️ **Moonraker/OctoPrint-compatible virtual printers**: send jobs from OrcaSlicer, PrusaSlicer and others to any non-Bambu printer through Printbuddy, with a printer dashboard right in OrcaSlicer's Device tab
 - 📚 **GyroidVault integration** and a new combined **Model import** page
 - 📋 **Project job plans**: plan every plate with quantity, material and printer, see running totals and queue everything with one click
 - 📱 **Smartphone-optimized layout** with PWA improvements
@@ -50,6 +51,44 @@ Printers managed by OctoPrint (OctoPi, Anycubic, Raise3D Pro2, …) can now be a
      "Add printer" dialog with printer type OctoPrint selected (URL + API key fields). Optionally a second shot of the OctoPrint printer card.
 <p align="center">
   <img src="docs/screenshots/v0254-octoprint-add.png" alt="Adding an OctoPrint printer" width="600">
+</p>
+-->
+
+### Moonraker/OctoPrint-compatible virtual printers (#52)
+
+Until now, virtual printers only emulated a Bambu Lab printer, so slicers could use them only with a Bambu printer profile. Now there is a second type: a **Moonraker/OctoPrint-compatible virtual printer**. With it, OrcaSlicer, Snapmaker Orca, PrusaSlicer and other slicers can send jobs for Klipper, Prusa and OctoPrint printers through Printbuddy.
+
+- Choose the type when you add a virtual printer: **Bambu** (as before) or **Moonraker/OctoPrint**
+- In the slicer, add a physical printer with host type **OctoPrint** and the host URL `http://<printbuddy>/api/v1/vp-host/<id>` plus the generated API key. Both are shown on the virtual printer card, and the key can be regenerated. No extra ports, certificates or discovery setup are needed.
+- Uploads go to the usual modes: archive, review or print queue. In print-queue mode the job is sent to the target printer you choose (any non-Bambu printer).
+- **PrusaSlicer**: binary G-code (`.bgcode`) is accepted for PrusaLink/PrusaConnect targets, including metadata and thumbnail. Other targets get a clear error with a hint to turn off "Supports binary G-code".
+- Its own setup check (endpoint, API key, target printer, upload folder) and a settings page that explains both types of virtual printer
+- G-code archives from virtual printers get header/footer metadata and thumbnails
+
+<!-- SCREENSHOT: docs/screenshots/v0254-vp-moonraker.png
+     Settings → Virtual printer: the card "Two kinds of virtual printers" plus a Moonraker VP card showing host URL + API key (blur the key!).
+<p align="center">
+  <img src="docs/screenshots/v0254-vp-moonraker.png" alt="Moonraker/OctoPrint-compatible virtual printer in the settings" width="800">
+</p>
+-->
+
+#### Printer dashboard in OrcaSlicer's Device tab
+
+OrcaSlicer and Snapmaker Orca open the printer's host URL in their **Device** tab and switch to it after a job is sent. For a Moonraker/OctoPrint-compatible virtual printer, this now shows a **Printbuddy printer dashboard** for the virtual printer's target printer:
+
+- State, file name, progress, layer, remaining and finish time
+- Pause, resume and stop
+- Active material per spool or toolhead
+- Live webcam stream and snapshot
+- All nozzle, bed and chamber temperatures with set, preheat and cool-down
+- Fan sliders and the chamber light
+
+Each printer you set up in the slicer points to its own virtual printer, so its Device tab shows exactly that printer. The page uses the virtual printer's API key, which OrcaSlicer passes along automatically. In a normal browser you can open it with `?apikey=` or enter the key in the form. Without a target printer, the page explains where to choose one.
+
+<!-- SCREENSHOT: docs/screenshots/v0254-vp-device-tab.png
+     OrcaSlicer with the Device tab open, showing the Printbuddy dashboard of a printer that is currently printing (progress, webcam, temperatures visible).
+<p align="center">
+  <img src="docs/screenshots/v0254-vp-device-tab.png" alt="Printbuddy dashboard in OrcaSlicer's Device tab" width="800">
 </p>
 -->
 

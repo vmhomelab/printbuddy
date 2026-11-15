@@ -4414,6 +4414,45 @@ export default {
 
   // Virtual Printer
   virtualPrinter: {
+    types: {
+      title: "Zwei Arten virtueller Drucker",
+      newBadge: "Neu",
+      intro: "Wähle den Typ beim Hinzufügen eines virtuellen Druckers. Aus dem Slicer gesendete Dateien landen in Printbuddy (Archiv, Review oder Druckwarteschlange) statt direkt beim Drucker.",
+      bambu: {
+        tag: "Bambu Lab Drucker",
+        point1: "Emuliert einen Bambu-Drucker für Bambu Studio / OrcaSlicer mit Bambu-Profil",
+        point2: "Wird im LAN automatisch gefunden oder per IP und Zugangscode hinzugefügt",
+        point3: "Modi: Archiv, Review, Warteschlange, Proxy",
+        setupLabel: "Einrichtung erforderlich:",
+        setupText: "braucht eine eigene Bind-IP, offene Ports und die Printbuddy-CA im Slicer.",
+        guide: "Einrichtungsanleitung lesen",
+      },
+      moonraker: {
+        tag: "Klipper, Prusa, OctoPrint & mehr",
+        point1: "OrcaSlicer / Snapmaker Orca: physischen Drucker mit Host-Typ „Octo/Klipper“ anlegen. PrusaSlicer: Host-Typ „OctoPrint“ (auch binärer G-code)",
+        point2: "Host-URL und API-Key aus der Karte des virtuellen Druckers einfügen",
+        point3: "Modi: Archiv, Review, Warteschlange (sendet an den Zieldrucker)",
+        noSetupLabel: "Keine zusätzliche Einrichtung:",
+        noSetupText: "läuft über den Printbuddy-Port. Keine Bind-IP, Ports oder Zertifikate nötig.",
+      },
+    },
+    protocol: {
+      title: "Druckertyp",
+      bambu: "Bambu-kompatibel",
+      bambuDesc: "Emuliert einen Bambu Lab Drucker (Bambu Studio / Orca mit Bambu-Profil)",
+      moonraker: "Moonraker/OctoPrint-kompatibel",
+      moonrakerDesc: "Upload-Endpunkt für Klipper, Prusa, OctoPrint und andere Nicht-Bambu-Drucker",
+    },
+    slicerConnection: {
+      title: "Slicer-Verbindung",
+      hostUrl: "Host-URL",
+      apiKey: "API-Key",
+      regenerate: "API-Key neu erzeugen",
+      regenerateConfirmTitle: "API-Key neu erzeugen",
+      regenerateConfirmMessage: "Der aktuelle Key funktioniert sofort nicht mehr. Du musst den neuen Key in den Einstellungen des physischen Druckers in deinem Slicer eintragen.",
+      keyRegenerated: "Neuer API-Key erzeugt",
+      hint: "Lege im Slicer einen physischen Drucker mit Host-Typ „Octo/Klipper“ (OrcaSlicer / Snapmaker Orca) oder „OctoPrint“ (PrusaSlicer, auch binärer G-code) an und trage Host-URL und API-Key ein. Gesendete Druckaufträge landen dann in Printbuddy statt direkt beim Drucker.",
+    },
     title: 'Virtueller Drucker',
     running: 'Läuft',
     stopped: 'Gestoppt',
@@ -4443,6 +4482,7 @@ export default {
     },
     targetPrinter: {
       title: 'Zieldrucker',
+      moonrakerHint: "Nur Nicht-Bambu-Drucker sind auswählbar. Für den Warteschlangen-Modus erforderlich. Dieser Drucker wird auch im Device-Tab des Slicers angezeigt.",
       configured: 'Proxy-Ziel konfiguriert',
       notConfigured: 'Kein Zieldrucker ausgewählt - erforderlich für Proxy-Modus',
       placeholder: 'Drucker auswählen...',
@@ -4484,10 +4524,6 @@ export default {
       description: 'Die virtuelle Druckerfunktion erfordert zusätzliche Systemkonfiguration, bevor sie funktioniert. Dies beinhaltet Portweiterleitung, Firewall-Regeln und plattformspezifische Einstellungen.',
       readGuide: 'Lese die Einrichtungsanleitung vor dem Aktivieren',
     },
-    bambuOnly: {
-      badge: 'Nur Bambu Lab',
-      description: 'Virtuelle Drucker emulieren das Bambu-LAN-Protokoll für Bambu Studio und OrcaSlicer. Sie sind keine generische virtuelle Druckerschicht für Prusa, Klipper/Moonraker oder Elegoo SDCP.',
-    },
     archiveNameSource: {
       title: 'Quelle des Archivnamens',
       description: 'Lege fest, wie neue Archive benannt werden, wenn Dateien über den virtuellen Drucker eintreffen. "Metadaten" verwendet den im 3MF eingebetteten Titel des Slicers (Standard). "Dateiname" nutzt den Dateinamen, den Bambu Studio per FTP gesendet hat — praktisch, wenn der Job im Dialog "Zum Drucker senden" umbenannt wurde.',
@@ -4496,6 +4532,7 @@ export default {
     },
     caCert: {
       title: 'Slicer-Zertifikat',
+      bambuOnlyBadge: "Nur Bambu-kompatibel",
       description: 'Virtuelle Drucker verwenden ein TLS-Zertifikat, das von der Printbuddy-CA signiert ist. Importieren Sie dieses CA-Zertifikat einmalig in den Vertrauensspeicher Ihres Slicers, damit er die Verbindung akzeptiert — kein Abrufen über die Kommandozeile mehr nötig.',
       copy: 'Kopieren',
       copied: 'Kopiert',
@@ -4553,6 +4590,7 @@ export default {
       title: 'Virtuellen Drucker hinzufügen',
       name: 'Name',
       hint: 'Sie können Zugangscode, Zieldrucker und andere Einstellungen nach dem Erstellen konfigurieren.',
+      hintMoonraker: "Kopiere nach dem Erstellen Host-URL und API-Key in die Einstellungen des physischen Druckers in deinem Slicer.",
       create: 'Erstellen',
     },
     deleteConfirm: {
@@ -5516,6 +5554,30 @@ export default {
       problems: 'Es wurden Probleme gefunden, die erklären, warum der Slicer diesen virtuellen Drucker nicht sehen oder nutzen kann.',
     },
     check: {
+      mr_enabled: {
+        title: "Virtueller Drucker aktiviert",
+        fail: "Dieser virtuelle Drucker ist ausgeschaltet. Verbindungstest und Uploads aus dem Slicer werden abgelehnt, bis du ihn einschaltest.",
+      },
+      mr_endpoint: {
+        title: "Upload-Endpunkt bereit",
+        pass: "Slicer können auf dem Printbuddy-Port an {{path}} hochladen.",
+        fail: "Der virtuelle Drucker ist aktiviert, aber sein Upload-Endpunkt ist nicht registriert. Schalte ihn aus und wieder ein; hilft das nicht, prüfe das Printbuddy-Log.",
+      },
+      mr_api_key: {
+        title: "API-Key gesetzt",
+        fail: "Es ist kein API-Key gesetzt. Erzeuge einen mit dem Aktualisieren-Button neben dem API-Key.",
+      },
+      mr_target_printer: {
+        title: "Zieldrucker",
+        pass: "Aufträge gehen an {{name}}, der Drucker ist verbunden.",
+        warn: "{{name}} ist gerade offline. Aufträge in der Warteschlange werden gesendet, sobald er wieder verbunden ist.",
+        fail: "Der Warteschlangen-Modus braucht einen Zieldrucker, der kein Bambu-Drucker ist (Klipper, Prusa, OctoPrint, …). Wähle einen unter Zieldrucker aus.",
+        skip: "Im Archiv- und Review-Modus nicht nötig.",
+      },
+      mr_upload_dir: {
+        title: "Upload-Ordner beschreibbar",
+        fail: "Printbuddy kann nicht in den Upload-Ordner dieses virtuellen Druckers schreiben. Prüfe, ob das Printbuddy-Datenverzeichnis beschreibbar ist.",
+      },
       enabled: {
         title: 'Virtueller Drucker aktiviert',
         fail: 'Dieser virtuelle Drucker ist ausgeschaltet. Schalten Sie ihn ein, damit er erkennbar wird.',

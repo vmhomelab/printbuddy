@@ -4427,6 +4427,45 @@ export default {
 
   // Virtual Printer
   virtualPrinter: {
+    types: {
+      title: "Two kinds of virtual printers",
+      newBadge: "New",
+      intro: "Choose the type when you add a virtual printer. Files sent from your slicer land in Printbuddy (archive, review or print queue) instead of going straight to the printer.",
+      bambu: {
+        tag: "Bambu Lab printers",
+        point1: "Emulates a Bambu printer for Bambu Studio / OrcaSlicer with a Bambu profile",
+        point2: "Found automatically on the LAN, or added by IP and access code",
+        point3: "Modes: Archive, Review, Queue, Proxy",
+        setupLabel: "Setup required:",
+        setupText: "needs its own bind IP, open ports and the Printbuddy CA in your slicer.",
+        guide: "Read the setup guide",
+      },
+      moonraker: {
+        tag: "Klipper, Prusa, OctoPrint & more",
+        point1: "OrcaSlicer / Snapmaker Orca: add a physical printer with host type “Octo/Klipper”. PrusaSlicer: host type “OctoPrint” (binary G-code works too)",
+        point2: "Paste the host URL and API key from the virtual printer card",
+        point3: "Modes: Archive, Review, Queue (sends to the target printer)",
+        noSetupLabel: "No extra setup:",
+        noSetupText: "runs on the Printbuddy port. No bind IP, ports or certificate needed.",
+      },
+    },
+    protocol: {
+      title: "Printer type",
+      bambu: "Bambu-compatible",
+      bambuDesc: "Emulates a Bambu Lab printer (Bambu Studio / Orca with a Bambu profile)",
+      moonraker: "Moonraker/OctoPrint-compatible",
+      moonrakerDesc: "Upload endpoint for Klipper, Prusa, OctoPrint and other non-Bambu printers",
+    },
+    slicerConnection: {
+      title: "Slicer connection",
+      hostUrl: "Host URL",
+      apiKey: "API key",
+      regenerate: "Regenerate API key",
+      regenerateConfirmTitle: "Regenerate API key",
+      regenerateConfirmMessage: "The current key stops working immediately. You must enter the new key in your slicer's physical printer settings.",
+      keyRegenerated: "New API key generated",
+      hint: "In your slicer, add a physical printer with host type “Octo/Klipper” (OrcaSlicer / Snapmaker Orca) or “OctoPrint” (PrusaSlicer, binary G-code works too) and enter the host URL and API key. Jobs sent to it go to Printbuddy instead of directly to the printer.",
+    },
     title: 'Virtual Printer',
     running: 'Running',
     stopped: 'Stopped',
@@ -4456,6 +4495,7 @@ export default {
     },
     targetPrinter: {
       title: 'Target Printer',
+      moonrakerHint: "Only non-Bambu printers can be selected. Required for print queue mode. This printer is also shown in the slicer's Device tab.",
       configured: 'Proxy target configured',
       notConfigured: 'No target printer selected - required for proxy mode',
       placeholder: 'Select a printer...',
@@ -4497,10 +4537,6 @@ export default {
       description: 'The virtual printer feature requires additional system configuration before it will work. This includes port forwarding, firewall rules, and platform-specific settings.',
       readGuide: 'Read the setup guide before enabling',
     },
-    bambuOnly: {
-      badge: 'Bambu Lab only',
-      description: 'Virtual printers emulate the Bambu LAN protocol for Bambu Studio and OrcaSlicer. They are not a generic virtual-printer layer for Prusa, Klipper/Moonraker, or Elegoo SDCP printers.',
-    },
     archiveNameSource: {
       title: 'Archive name source',
       description: 'Choose how new archives are named when files arrive via the virtual printer. "Metadata" uses the slicer-embedded title from the 3MF (default). "Filename" uses the filename Bambu Studio sent over FTP — handy if you renamed the job in the "send to printer" dialog.',
@@ -4509,6 +4545,7 @@ export default {
     },
     caCert: {
       title: 'Slicer certificate',
+      bambuOnlyBadge: "Bambu-compatible only",
       description: 'Virtual printers use a TLS certificate signed by the Printbuddy CA. Import this CA certificate into your slicer\'s trust store once so it accepts the connection — no need to copy it from the command line.',
       copy: 'Copy',
       copied: 'Copied',
@@ -4566,6 +4603,7 @@ export default {
       title: 'Add Virtual Printer',
       name: 'Name',
       hint: 'You can configure access code, target printer, and other settings after creating.',
+      hintMoonraker: "After creating, copy the host URL and API key into your slicer's physical printer settings.",
       create: 'Create',
     },
     deleteConfirm: {
@@ -5529,6 +5567,30 @@ export default {
       problems: 'Found problems that explain why the slicer can\'t see or use this virtual printer.',
     },
     check: {
+      mr_enabled: {
+        title: "Virtual printer enabled",
+        fail: "This virtual printer is switched off. The slicer's connection test and uploads are refused until you turn it on.",
+      },
+      mr_endpoint: {
+        title: "Upload endpoint ready",
+        pass: "Slicers can upload to {{path}} on the Printbuddy port.",
+        fail: "The virtual printer is enabled, but its upload endpoint is not registered. Turn it off and on again; if that doesn't help, check the Printbuddy log.",
+      },
+      mr_api_key: {
+        title: "API key set",
+        fail: "No API key is set. Generate one with the refresh button next to the API key.",
+      },
+      mr_target_printer: {
+        title: "Target printer",
+        pass: "Jobs go to {{name}}, which is connected.",
+        warn: "{{name}} is offline right now. Queued jobs are sent once it reconnects.",
+        fail: "Print queue mode needs a target printer that is not a Bambu printer (Klipper, Prusa, OctoPrint, …). Select one under Target Printer.",
+        skip: "Not needed in Archive and Review mode.",
+      },
+      mr_upload_dir: {
+        title: "Upload folder writable",
+        fail: "Printbuddy can't write to this virtual printer's upload folder. Check that the Printbuddy data directory is writable.",
+      },
       enabled: {
         title: 'Virtual printer enabled',
         fail: 'This virtual printer is switched off. Toggle it on to make it discoverable.',

@@ -69,6 +69,8 @@ from backend.app.api.routes import (
     user_notifications,
     users,
     virtual_printers,
+    vp_device,
+    vp_host,
     webhook,
     websocket,
 )
@@ -6344,6 +6346,9 @@ PUBLIC_API_PREFIXES = [
     "/api/v1/ws",
     # OIDC authorize redirects — include provider_id in path
     "/api/v1/auth/oidc/authorize/",
+    # Moonraker/OctoPrint-compatible virtual printer upload endpoint (#52).
+    # Slicers authenticate with the VP's own API key, checked by the route.
+    "/api/v1/vp-host/",
 ]
 
 # Route patterns that are public (read-only display data)
@@ -6769,6 +6774,8 @@ app.include_router(octoeverywhere.router, prefix=app_settings.api_prefix)
 app.include_router(open_filament_database.router, prefix=app_settings.api_prefix)
 app.include_router(metrics.router, prefix=app_settings.api_prefix)
 app.include_router(virtual_printers.router, prefix=app_settings.api_prefix)
+app.include_router(vp_host.router, prefix=app_settings.api_prefix)
+app.include_router(vp_device.router, prefix=app_settings.api_prefix)
 
 
 # Serve static files (React build)
