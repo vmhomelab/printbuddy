@@ -220,6 +220,10 @@ network_mode: host
 
 Then enable the commented `ports:` block in the compose file instead.
 
+### iPhone home-screen app
+
+Optional: a small launcher opens Printbuddy full screen from the iPhone home screen and switches automatically between the local address on home Wi-Fi and a Tailscale address everywhere else. Setup: [deploy/ios-launcher/README.md](deploy/ios-launcher/README.md)
+
 ---
 
 ## Printer provider direction
