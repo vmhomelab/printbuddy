@@ -2,6 +2,8 @@ import json
 
 from pydantic import BaseModel, Field, field_validator
 
+PROGRESS_MILESTONE_MODES = ("layers", "print_progress")
+
 
 class AppSettings(BaseModel):
     """Application settings schema."""
@@ -33,6 +35,9 @@ class AppSettings(BaseModel):
         default=True,
         description="Report Partial Usage for Failed Prints. When a print fails or is cancelled, report the estimated filament used up to that point based on layer progress.",
     )
+    # GyroidVault integration (read-only here; configured via /gyroidvault/settings,
+    # which also holds the URL and the encrypted API key).
+    gyroidvault_enabled: bool = Field(default=False, description="GyroidVault model library integration is enabled")
     disable_filament_warnings: bool = Field(
         default=False,
         description="Disable insufficient filament warnings when printing or queueing prints",
@@ -60,6 +65,15 @@ class AppSettings(BaseModel):
     # Language
     language: str = Field(default="en", description="UI language (en, de, fr, ja, it, pt-BR)")
     notification_language: str = Field(default="en", description="Language for push notifications (en, de)")
+
+    # Progress milestone notifications (25/50/75 %)
+    progress_milestone_mode: str = Field(
+        default="layers",
+        description=(
+            "Source for 25/50/75% milestone notifications: 'layers' (layer count) or "
+            "'print_progress' (overall printer progress, same value as the Notify Live Activity)"
+        ),
+    )
 
     # Bed cooled notification threshold
     bed_cooled_threshold: float = Field(
@@ -320,6 +334,13 @@ class AppSettings(BaseModel):
         description="Fallback Printbuddy group name assigned when an LDAP user authenticates but has no mapped groups. Empty = no fallback.",
     )
 
+    # Session lifetime: when enabled, logins with "Remember Me" get a 30-day
+    # token instead of the default 24 h.
+    remember_me_extended_session: bool = Field(
+        default=False,
+        description="Remember Me keeps users signed in for 30 days instead of 24 hours",
+    )
+
     # Obico AI failure detection (#172)
     obico_enabled: bool = Field(default=False, description="Enable Obico AI print failure detection")
     obico_ml_url: str = Field(
@@ -383,6 +404,7 @@ class AppSettingsUpdate(BaseModel):
     include_beta_updates: bool | None = None
     language: str | None = None
     notification_language: str | None = None
+    progress_milestone_mode: str | None = None
     bed_cooled_threshold: float | None = None
     ams_humidity_good: int | None = None
     ams_humidity_fair: int | None = None
@@ -464,6 +486,7 @@ class AppSettingsUpdate(BaseModel):
     ldap_group_mapping: str | None = None
     ldap_auto_provision: bool | None = None
     ldap_default_group: str | None = None
+    remember_me_extended_session: bool | None = None
     obico_enabled: bool | None = None
     obico_ml_url: str | None = None
     obico_sensitivity: str | None = None
@@ -521,6 +544,15 @@ class AppSettingsUpdate(BaseModel):
             return v
         if v not in ("low", "medium", "high"):
             raise ValueError("obico_sensitivity must be 'low', 'medium', or 'high'")
+        return v
+
+    @field_validator("progress_milestone_mode")
+    @classmethod
+    def validate_progress_milestone_mode(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        if v not in PROGRESS_MILESTONE_MODES:
+            raise ValueError("progress_milestone_mode must be 'layers' or 'print_progress'")
         return v
 
     @field_validator("obico_action")

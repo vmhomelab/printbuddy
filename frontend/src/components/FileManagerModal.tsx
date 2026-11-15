@@ -26,6 +26,7 @@ import {
 } from 'lucide-react';
 import { api, type PrinterProvider } from '../api/client';
 import { parseUTCDate } from '../utils/date';
+import { getPrinterIdsWithSpoolAssignment } from '../utils/spoolAssignments';
 import { Button } from './Button';
 import { PrintModal } from './PrintModal';
 import { ConfirmModal } from './ConfirmModal';
@@ -510,11 +511,11 @@ export function FileManagerModal({ printerId, printerName, printerProvider, prin
     skipSpoolConfirmation = false,
   ) => {
     if (!skipSpoolConfirmation) {
-      const [settings, assignments] = await Promise.all([
+      const [settings, printersWithSpool] = await Promise.all([
         api.getSettings(),
-        api.getAssignments(printerId),
+        getPrinterIdsWithSpoolAssignment(printerId),
       ]);
-      if (settings.warn_on_missing_spool_assignment !== false && assignments.length === 0) {
+      if (settings.warn_on_missing_spool_assignment !== false && !printersWithSpool.has(printerId)) {
         setFilePendingSpoolConfirmation({ path: file.path, name: file.name, options });
         return;
       }
@@ -555,13 +556,16 @@ export function FileManagerModal({ printerId, printerName, printerProvider, prin
     setFilesToDelete(Array.from(selectedFiles));
   };
 
-  // Quick navigation buttons for common directories
-  const quickDirs = [
-    { path: '/', label: 'Root' },
-    { path: '/cache', label: 'Cache' },
-    { path: '/model', label: 'Models' },
-    { path: '/timelapse', label: 'Timelapse' },
-  ];
+  // Quick navigation buttons for common directories. OctoPrint's upload
+  // folder has no fixed sub-directories, so only Root applies there.
+  const quickDirs = printerProvider === 'octoprint'
+    ? [{ path: '/', label: 'Root' }]
+    : [
+        { path: '/', label: 'Root' },
+        { path: '/cache', label: 'Cache' },
+        { path: '/model', label: 'Models' },
+        { path: '/timelapse', label: 'Timelapse' },
+      ];
 
   return (
     <div

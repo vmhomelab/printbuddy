@@ -10,12 +10,19 @@ under the hood, response body is raw G-code or 3MF with metadata in the
 
 import asyncio
 import logging
+import uuid
 from collections.abc import Callable
 from typing import NamedTuple
 
 import httpx
 
 logger = logging.getLogger(__name__)
+
+# Sidecar (vmhomelab/orca-slicer-api) commit this Printbuddy version is built
+# and tested against. Must equal the revision pinned in slicer-api/.env.example
+# (scripts/slicer_images.py --check). The sidecar reports its own revision in
+# GET /health; the connection test warns when the two differ.
+EXPECTED_SIDECAR_REVISION = "661cd475085b7699280ac6307dbb5d06af41b04f"
 
 
 class SlicerApiError(Exception):
@@ -36,6 +43,66 @@ class SlicerApiServerError(SlicerApiError):
 
 class SlicerInputError(SlicerApiError):
     """Sidecar rejected the input as invalid (4xx)."""
+
+
+class SlicerApiInvalidResponseError(SlicerApiUnavailableError):
+    """The URL answered, but not with the slicer-API's JSON.
+
+    Typical cause: the configured URL points at something else, such as a
+    desktop-slicer web GUI container (linuxserver/orcaslicer serves its
+    KasmVNC desktop on port 3000) instead of the slicer-API sidecar. A
+    subclass of ``SlicerApiUnavailableError`` so existing callers keep
+    treating it as "sidecar offline".
+    """
+
+
+def _sidecar_request_id(request_id: str | None) -> str | None:
+    """Return ``request_id`` if the sidecar accepts it, else ``None``.
+
+    The sidecar rejects the whole slice with 400 "requestId must be a UUID"
+    for anything else. Older frontends sent ids like
+    ``library-11-p1-<uuid>`` (or a timestamp when the browser lacked
+    ``crypto.randomUUID``), which broke the preview slice. Dropping the id
+    only loses live progress for that request.
+    """
+    if request_id is None:
+        return None
+    try:
+        uuid.UUID(request_id)
+    except (ValueError, AttributeError, TypeError):
+        logger.debug("Not forwarding non-UUID slice requestId %r to the sidecar", request_id)
+        return None
+    return request_id
+
+
+def _reject_html_slice_output(response: httpx.Response) -> None:
+    """Refuse an HTML page as slice output.
+
+    The sidecar answers ``/slice`` with G-code or a 3MF. An HTML body means
+    the URL points at a web UI instead, and storing that page as G-code
+    would only fail later on the printer.
+    """
+    content_type = (response.headers.get("content-type") or "").lower()
+    if content_type.startswith("text/html"):
+        raise SlicerApiInvalidResponseError(
+            "Slicer sidecar /slice returned an HTML page instead of G-code or 3MF. "
+            "The configured URL does not look like the slicer-API sidecar; "
+            "check the host and port (the OrcaSlicer sidecar defaults to port 3003).",
+        )
+
+
+def _json_body(response: httpx.Response, endpoint: str):
+    """Decode a sidecar JSON body, or explain why it is not the slicer API."""
+    try:
+        return response.json()
+    except ValueError as exc:
+        content_type = response.headers.get("content-type", "unknown") or "unknown"
+        raise SlicerApiInvalidResponseError(
+            f"Slicer sidecar {endpoint} returned a non-JSON response "
+            f"(HTTP {response.status_code}, content-type {content_type}). "
+            "The configured URL does not look like the slicer-API sidecar; "
+            "check the host and port (the OrcaSlicer sidecar defaults to port 3003).",
+        ) from exc
 
 
 class SliceResult(NamedTuple):
@@ -170,7 +237,7 @@ class SlicerApiService:
             raise SlicerApiUnavailableError(f"Slicer sidecar unreachable: {exc}") from exc
         if response.status_code >= 400:
             raise SlicerApiUnavailableError(f"Slicer sidecar /health returned {response.status_code}")
-        return response.json()
+        return _json_body(response, "/health")
 
     async def list_bundled_profiles(self) -> dict:
         """GET /profiles/bundled — return the slicer's stock profiles by slot.
@@ -191,7 +258,7 @@ class SlicerApiService:
             raise SlicerApiUnavailableError(f"Slicer sidecar unreachable: {exc}") from exc
         if response.status_code >= 400:
             raise SlicerApiUnavailableError(f"Slicer sidecar /profiles/bundled returned {response.status_code}")
-        return response.json()
+        return _json_body(response, "/profiles/bundled")
 
     async def import_bundle(
         self,
@@ -228,7 +295,7 @@ class SlicerApiService:
             raise SlicerInputError(
                 f"Slicer sidecar rejected bundle ({response.status_code}): {_format_sidecar_error(response)}",
             )
-        return _parse_bundle_summary(response.json())
+        return _parse_bundle_summary(_json_body(response, "/profiles/bundle"))
 
     async def list_bundles(self) -> list[BundleSummary]:
         """GET /profiles/bundles — list every imported bundle and its presets.
@@ -246,7 +313,7 @@ class SlicerApiService:
             raise SlicerApiUnavailableError(
                 f"Slicer sidecar /profiles/bundles returned {response.status_code}",
             )
-        payload = response.json()
+        payload = _json_body(response, "/profiles/bundles")
         if not isinstance(payload, list):
             raise SlicerApiServerError("Slicer sidecar returned non-array bundle list")
         return [_parse_bundle_summary(b) for b in payload if isinstance(b, dict)]
@@ -271,7 +338,7 @@ class SlicerApiService:
             raise SlicerApiUnavailableError(
                 f"Slicer sidecar /profiles/bundles/{bundle_id} returned {response.status_code}",
             )
-        return _parse_bundle_summary(response.json())
+        return _parse_bundle_summary(_json_body(response, f"/profiles/bundles/{bundle_id}"))
 
     async def delete_bundle(self, bundle_id: str) -> None:
         """DELETE /profiles/bundles/<id> — remove a stored bundle."""
@@ -396,6 +463,7 @@ class SlicerApiService:
             # field when we want the flag on, so default-off callers exactly
             # match the previous wire payload.
             data["arrange"] = "true"
+        request_id = _sidecar_request_id(request_id)
         if request_id is not None:
             data["requestId"] = request_id
 
@@ -432,6 +500,7 @@ class SlicerApiService:
             raise SlicerApiServerError(f"Slicer CLI failed ({response.status_code}): {_format_sidecar_error(response)}")
         if response.status_code >= 400:
             raise SlicerInputError(f"Slicer rejected input ({response.status_code}): {_format_sidecar_error(response)}")
+        _reject_html_slice_output(response)
 
         return SliceResult(
             content=response.content,
@@ -509,6 +578,7 @@ class SlicerApiService:
             # yet recognise the field — the user's slice still runs with the
             # bundle's default plate, no crash.
             data["bedType"] = bed_type
+        request_id = _sidecar_request_id(request_id)
         if request_id is not None:
             data["requestId"] = request_id
 
@@ -540,6 +610,7 @@ class SlicerApiService:
             raise SlicerApiServerError(f"Slicer CLI failed ({response.status_code}): {_format_sidecar_error(response)}")
         if response.status_code >= 400:
             raise SlicerInputError(f"Slicer rejected input ({response.status_code}): {_format_sidecar_error(response)}")
+        _reject_html_slice_output(response)
 
         return SliceResult(
             content=response.content,
@@ -582,6 +653,7 @@ class SlicerApiService:
             data["plate"] = str(plate)
         if export_3mf:
             data["exportType"] = "3mf"
+        request_id = _sidecar_request_id(request_id)
         if request_id is not None:
             data["requestId"] = request_id
 
@@ -618,6 +690,7 @@ class SlicerApiService:
             raise SlicerApiServerError(f"Slicer CLI failed ({response.status_code}): {_format_sidecar_error(response)}")
         if response.status_code >= 400:
             raise SlicerInputError(f"Slicer rejected input ({response.status_code}): {_format_sidecar_error(response)}")
+        _reject_html_slice_output(response)
 
         return SliceResult(
             content=response.content,

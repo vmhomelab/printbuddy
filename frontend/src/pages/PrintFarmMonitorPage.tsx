@@ -30,7 +30,7 @@ import {
   type PrinterMaintenanceOverview,
   type PrinterStatus,
 } from '../api/client';
-import { getPrinterImage } from '../utils/printer';
+import { getPrinterDisplayImage } from '../utils/printer';
 import { classifyPrinterStatus } from '../utils/printerStatus';
 import { appAssetPath } from '../utils/assetPaths';
 import { resolveLoadedFilamentInfo, type ResolvedLoadedFilamentInfo, type SpoolmanSlotAssignmentLike } from '../utils/amsHelpers';
@@ -321,7 +321,7 @@ function PrinterCard({ item, loadedFilament, theme }: { item: MonitorPrinter; lo
     <article className={`min-w-0 rounded-2xl border p-4 sm:p-5 ${theme.card}`}>
       <div className="flex min-w-0 gap-3 sm:gap-4">
         <div className={`flex h-24 w-24 shrink-0 items-center justify-center overflow-hidden rounded-xl border p-2 sm:h-28 sm:w-32 ${theme.imageBox}`}>
-          {state === 'offline' ? <TriangleAlert className="h-12 w-12 text-red-400" /> : <img src={getPrinterImage(printer.model)} alt="" className="max-h-full max-w-full object-contain" />}
+          {state === 'offline' ? <TriangleAlert className="h-12 w-12 text-red-400" /> : <img src={getPrinterDisplayImage(printer)} alt="" className="max-h-full max-w-full object-contain" />}
         </div>
         <div className="min-w-0 flex-1">
           <div className={`mb-3 inline-flex items-center gap-2 rounded-lg px-3 py-1 text-xs font-bold shadow-lg ${stateClasses[state]}`}>

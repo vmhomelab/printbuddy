@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<root xmlns="urn:schemas-upnp-org:device-1-0">
+    <specVersion>
+        <major>1</major>
+        <minor>0</minor>
+    </specVersion>
+    <device>
+        <deviceType>urn:schemas-upnp-org:device:Basic:1</deviceType>
+        <friendlyName>OctoPrint instance on vm</friendlyName>
+        <manufacturer>The OctoPrint Project</manufacturer>
+        <manufacturerURL>https://octoprint.org/</manufacturerURL>
+        <UDN>uuid:b9be36c9-3b8a-421b-9509-3b70460519d9</UDN>
+        <serviceList>
+        </serviceList>
+        <presentationURL>http://192.168.1.60:5000/</presentationURL>
+    </device>
+</root>

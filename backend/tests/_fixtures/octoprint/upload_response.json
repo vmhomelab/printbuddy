@@ -1,0 +1,16 @@
+{
+  "done": true,
+  "effectivePrint": false,
+  "effectiveSelect": false,
+  "files": {
+    "local": {
+      "name": "cube.gcode",
+      "origin": "local",
+      "path": "prints/cube.gcode",
+      "refs": {
+        "download": "http://octopi.local/downloads/files/local/prints/cube.gcode",
+        "resource": "http://octopi.local/api/files/local/prints/cube.gcode"
+      }
+    }
+  }
+}

@@ -22,6 +22,7 @@ from backend.app.models.print_batch import PrintBatch
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer import Printer
 from backend.app.models.project import Project
+from backend.app.models.project_plan import ProjectPlanItem
 from backend.app.models.user import User
 from backend.app.schemas.print_queue import (
     PrintBatchResponse,
@@ -220,6 +221,9 @@ def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
         # Batch grouping
         "batch_id": item.batch_id,
         "batch_name": item.batch.name if item.batch else None,
+        # Project "job" tracking
+        "project_id": item.project_id,
+        "plan_item_id": item.plan_item_id,
         # SJF scheduling
         "been_jumped": item.been_jumped,
         # Auto-print G-code injection
@@ -475,6 +479,11 @@ async def add_to_queue(
 
     # If filament overrides are provided, update required_filament_types to match override types
     filament_overrides_json = None
+    if data.filament_overrides and data.plan_item_id and not target_model_norm:
+        # Project-plan items carry per-slot material/colour choices for
+        # printer-assigned (or unassigned) items too; the scheduler applies
+        # them when it computes the AMS mapping for the assigned printer.
+        filament_overrides_json = json.dumps(data.filament_overrides)
     if data.filament_overrides and target_model_norm:
         filament_overrides_json = json.dumps(data.filament_overrides)
         # Update required_filament_types from overrides so scheduler validates against overridden types
@@ -559,6 +568,14 @@ async def add_to_queue(
         if not project_result.scalar_one_or_none():
             raise HTTPException(status_code=404, detail="Project not found")
 
+    if data.plan_item_id is not None:
+        plan_result = await db.execute(select(ProjectPlanItem).where(ProjectPlanItem.id == data.plan_item_id))
+        plan_item = plan_result.scalar_one_or_none()
+        if not plan_item:
+            raise HTTPException(status_code=404, detail="Plan item not found")
+        if data.project_id is not None and plan_item.project_id != data.project_id:
+            raise HTTPException(status_code=400, detail="Plan item belongs to a different project")
+
     ams_mapping_json = json.dumps(data.ams_mapping) if data.ams_mapping else None
     items = []
     for i in range(quantity):
@@ -586,6 +603,7 @@ async def add_to_queue(
             use_ams=data.use_ams,
             gcode_injection=data.gcode_injection,
             project_id=data.project_id,
+            plan_item_id=data.plan_item_id,
             position=max_pos + 1 + i,
             status="pending",
             created_by_id=current_user.id if current_user else None,

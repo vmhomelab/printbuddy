@@ -20,6 +20,7 @@ from backend.app.core.permissions import Permission
 from backend.app.core.websocket import ws_manager
 from backend.app.models.ams_label import AmsLabel
 from backend.app.models.color_catalog import ColorCatalogEntry
+from backend.app.models.printer import Printer
 from backend.app.models.spool import Spool
 from backend.app.models.spool_assignment import SpoolAssignment
 from backend.app.models.spool_catalog import SpoolCatalogEntry
@@ -1256,8 +1257,12 @@ async def assign_spool(
     if spool.archived_at:
         raise HTTPException(400, "Cannot assign an archived spool")
 
-    is_loaded_spool_marker = data.ams_id == -1 and data.tray_id == 0
-    is_cfs_slot = False
+    is_local_tool_assignment = data.ams_id == -1 and data.tray_id >= 0
+    printer_result = await db.execute(select(Printer).where(Printer.id == data.printer_id))
+    printer = printer_result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+    is_assignment_only_slot = (printer.model or "").strip().lower() == "snapmaker u1"
 
     # 2. Get current AMS tray state for fingerprint + existing filament ID.
     # tray_state: Bambu firmware reports 11=loaded, 9=empty, 10=spool present
@@ -1271,7 +1276,11 @@ async def assign_spool(
     current_tray_info_idx = ""
     tray_state: int | None = None
     state = printer_manager.get_status(data.printer_id)
-    if not is_loaded_spool_marker and state and state.raw_data:
+    if is_local_tool_assignment and data.tray_id > 0:
+        tool_slots = state.raw_data.get("tool_slots", []) if state and isinstance(state.raw_data, dict) else []
+        if not any(isinstance(slot, dict) and slot.get("id") == data.tray_id for slot in tool_slots):
+            raise HTTPException(400, "Local tool slot is not available on this printer")
+    if not is_local_tool_assignment and state and state.raw_data:
         if data.ams_id == 255:
             # External slot: look up tray from vt_tray by global ID
             vt_tray = state.raw_data.get("vt_tray") or []
@@ -1306,8 +1315,8 @@ async def assign_spool(
                     unit_id = int(ams_unit.get("id", -999))
                 except (TypeError, ValueError):
                     continue
-                if unit_id == data.ams_id and ams_unit.get("module_type") == "cfs":
-                    is_cfs_slot = True
+                if unit_id == data.ams_id and ams_unit.get("module_type") in ("cfs", "k2oh_cfs"):
+                    is_assignment_only_slot = True
                     break
             if tray:
                 fingerprint_color = tray.get("tray_color", "")
@@ -1342,7 +1351,7 @@ async def assign_spool(
     await db.commit()
     await db.refresh(assignment)
 
-    if is_loaded_spool_marker or is_cfs_slot:
+    if is_local_tool_assignment or is_assignment_only_slot:
         result = await db.execute(
             select(SpoolAssignment)
             .options(

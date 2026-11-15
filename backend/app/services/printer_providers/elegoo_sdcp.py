@@ -16,6 +16,7 @@ from urllib.parse import urlparse
 import httpx
 
 from backend.app.services.bambu_mqtt import FilaSwitchState, NozzleInfo, PrintOptions
+from backend.app.services.printer_providers._http_common import serialized_status_update
 
 logger = logging.getLogger(__name__)
 
@@ -490,6 +491,7 @@ class ElegooSDCPPrinterClient:
             if self.on_print_complete:
                 self.on_print_complete(payload)
 
+    @serialized_status_update
     def request_status_update(self) -> bool:
         previous_state = self._last_state if self._has_status_sample else None
         message = self._query_status()

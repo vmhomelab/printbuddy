@@ -1,0 +1,91 @@
+{
+  "children": [
+    {
+      "date": 1793375603,
+      "display": "cube.gcode",
+      "gcodeAnalysis": {
+        "dimensions": {
+          "depth": 59.0,
+          "height": 0.0,
+          "width": 59.0
+        },
+        "estimatedPrintTime": 25.951614716074836,
+        "filament": {
+          "tool0": {
+            "length": 5.9,
+            "volume": 0.0
+          }
+        },
+        "printingArea": {
+          "maxX": 69.0,
+          "maxY": 69.0,
+          "maxZ": 0.0,
+          "minX": 10.0,
+          "minY": 10.0,
+          "minZ": 0.0
+        },
+        "travelArea": {
+          "maxX": 69.0,
+          "maxY": 69.0,
+          "maxZ": 0.0,
+          "minX": 0.0,
+          "minY": 0.0,
+          "minZ": 0.0
+        },
+        "travelDimensions": {
+          "depth": 69.0,
+          "height": 0.0,
+          "width": 69.0
+        }
+      },
+      "hash": "834f7f9d81beaa5fc5d9eda4459625e735473f8e",
+      "name": "cube.gcode",
+      "origin": "local",
+      "path": "prints/cube.gcode",
+      "prints": {
+        "failure": 1,
+        "last": {
+          "date": 1793375633.8742912,
+          "success": false
+        },
+        "success": 0
+      },
+      "refs": {
+        "download": "http://octopi.local/downloads/files/local/prints/cube.gcode",
+        "resource": "http://octopi.local/api/files/local/prints/cube.gcode"
+      },
+      "size": 1914,
+      "statistics": {
+        "averagePrintTime": {},
+        "lastPrintTime": {}
+      },
+      "type": "machinecode",
+      "typePath": [
+        "machinecode",
+        "gcode"
+      ],
+      "user": "admin"
+    }
+  ],
+  "date": 1793375633,
+  "display": "prints",
+  "name": "prints",
+  "origin": "local",
+  "path": "prints",
+  "prints": {
+    "failure": 1,
+    "last": {
+      "date": 1793375633.8742912,
+      "success": false
+    },
+    "success": 0
+  },
+  "refs": {
+    "resource": "http://octopi.local/api/files/local/prints"
+  },
+  "size": 1914,
+  "type": "folder",
+  "typePath": [
+    "folder"
+  ]
+}

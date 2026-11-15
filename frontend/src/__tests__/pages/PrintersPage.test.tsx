@@ -325,6 +325,153 @@ describe('PrintersPage', () => {
       expect(await within(filamentSection).findByText('Assign')).not.toBeNull();
     });
 
+    it('binds Snapmaker SpoolLink filament_spool_id to Spoolman remain without a slot assignment', async () => {
+      phase14HoverCardProps.length = 0;
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          ...mockPrinters[0],
+          id: 7,
+          name: 'Snapmaker U1',
+          provider: 'fluidd',
+          model: 'Snapmaker U1',
+        }])),
+        http.get('/api/v1/printers/:id/status', () => HttpResponse.json({
+          ...mockPrinterStatus,
+          ams: [{
+            id: 0,
+            name: 'Snapmaker U1 Feeders',
+            module_type: 'snapmaker_u1',
+            tray: [
+              {
+                id: 0,
+                tray_color: '#E72F1D',
+                tray_type: 'PLA',
+                tray_sub_brands: 'SnapSpeed',
+                remain: -1,
+                state: 11,
+                tray_uuid: 'snapmaker-u1-e0',
+                tag_uid: '',
+                filament_spool_id: 25,
+                filament_detected: true,
+                loaded_to_feeder: true,
+                loaded_to_extruder: false,
+                channel_state: 'preload_finish',
+              },
+              { id: 1, tray_color: null, tray_type: null, remain: -1, state: 9, tray_uuid: 'snapmaker-u1-e1', filament_detected: false },
+              { id: 2, tray_color: null, tray_type: null, remain: -1, state: 9, tray_uuid: 'snapmaker-u1-e2', filament_detected: false },
+              { id: 3, tray_color: null, tray_type: null, remain: -1, state: 9, tray_uuid: 'snapmaker-u1-e3', filament_detected: false },
+            ],
+          }],
+        })),
+        http.get('/api/v1/spoolman/status', () => HttpResponse.json({ enabled: true, connected: true, url: 'http://spoolman.local' })),
+        http.get('/api/v1/settings/spoolman', () => HttpResponse.json({ spoolman_enabled: 'true', spoolman_url: 'http://spoolman.local', spoolman_sync_mode: 'read_only' })),
+        http.get('/api/v1/spoolman/inventory/spools', () => HttpResponse.json([
+          {
+            id: 25,
+            brand: 'Snapmaker',
+            material: 'PLA',
+            subtype: 'SnapSpeed',
+            color_name: 'Charcoal',
+            rgba: 'E72F1D',
+            label_weight: 1000,
+            weight_used: 602,
+            archived_at: null,
+            data_origin: 'spoolman',
+          },
+        ])),
+        http.get('/api/v1/spoolman/inventory/slot-assignments/all', () => HttpResponse.json([])),
+      );
+
+      render(<PrintersPage />);
+
+      await waitFor(() => {
+        const linked = phase14HoverCardProps.filter((props) => {
+          const spoolman = props.spoolman as { linkedSpoolId?: number } | undefined;
+          return spoolman?.linkedSpoolId === 25;
+        });
+        expect(linked.length).toBeGreaterThan(0);
+        const inventory = linked[0].inventory as {
+          isAssigned?: boolean;
+          assignedSpool?: { id: number } | null;
+          onUnassignSpool?: unknown;
+        };
+        expect(inventory.isAssigned).toBe(true);
+        expect(inventory.assignedSpool?.id).toBe(25);
+        expect(inventory.onUnassignSpool).toBeUndefined();
+        const data = linked[0].data as { fillLevel?: number | null; fillSource?: string };
+        expect(data.fillLevel).toBe(40);
+        expect(data.fillSource).toBe('spoolman');
+      }, { timeout: 3000 });
+    });
+
+    it('shows SpoolLink assigned spool from tray metadata when Printbuddy Spoolman sync is off', async () => {
+      phase14HoverCardProps.length = 0;
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          ...mockPrinters[0],
+          id: 7,
+          name: 'Snapmaker U1',
+          provider: 'fluidd',
+          model: 'Snapmaker U1',
+        }])),
+        http.get('/api/v1/printers/:id/status', () => HttpResponse.json({
+          ...mockPrinterStatus,
+          ams: [{
+            id: 0,
+            name: 'Snapmaker U1 Feeders',
+            module_type: 'snapmaker_u1',
+            tray: [
+              {
+                id: 0,
+                tray_color: '#FF9016',
+                tray_type: 'PLA',
+                remain: 100,
+                state: 11,
+                tray_uuid: 'snapmaker-u1-e0',
+                filament_spool_id: 114,
+                filament_spool_brand: 'Bambu Lab',
+                filament_spool_material: 'PLA',
+                filament_spool_color_name: 'Pumpkin Orange',
+                remaining_weight: 997.5,
+                filament_detected: true,
+                loaded_to_feeder: true,
+              },
+              { id: 1, tray_color: null, tray_type: null, remain: -1, state: 9, tray_uuid: 'snapmaker-u1-e1' },
+              { id: 2, tray_color: null, tray_type: null, remain: -1, state: 9, tray_uuid: 'snapmaker-u1-e2' },
+              { id: 3, tray_color: null, tray_type: null, remain: -1, state: 9, tray_uuid: 'snapmaker-u1-e3' },
+            ],
+          }],
+        })),
+        http.get('/api/v1/spoolman/status', () => HttpResponse.json({ enabled: false, connected: false, url: null })),
+        http.get('/api/v1/settings/spoolman', () => HttpResponse.json({ spoolman_enabled: 'false', spoolman_url: '' })),
+      );
+
+      render(<PrintersPage />);
+
+      await waitFor(() => {
+        const withAssigned = phase14HoverCardProps.filter((props) => {
+          const inventory = props.inventory as { assignedSpool?: { id: number } | null } | undefined;
+          return inventory?.assignedSpool?.id === 114;
+        });
+        expect(withAssigned.length).toBeGreaterThan(0);
+        const inventory = withAssigned[0].inventory as {
+          isAssigned?: boolean;
+          assignedSpool?: { id: number; brand: string | null; color_name: string | null } | null;
+          showOpenInInventory?: boolean;
+        };
+        expect(inventory.isAssigned).toBe(true);
+        expect(inventory.assignedSpool).toMatchObject({
+          id: 114,
+          brand: 'Bambu Lab',
+          color_name: 'Pumpkin Orange',
+        });
+        expect(inventory.showOpenInInventory).toBe(false);
+        const data = withAssigned[0].data as { profile?: string; fillLevel?: number | null };
+        expect(data.profile).toContain('Pumpkin Orange');
+        expect(data.fillLevel).toBe(100);
+      }, { timeout: 3000 });
+    });
+
     it('lets Moonraker users set reported fan speeds from the status strip', async () => {
       const user = userEvent.setup();
       let requestedFan = '';
@@ -1066,6 +1213,57 @@ describe('PrintersPage', () => {
 
       expect(await screen.findByText('Loaded spool')).toBeInTheDocument();
       expect(screen.getByRole('button', { name: /^Assign$/i })).toBeInTheDocument();
+    });
+
+    it('renders multi-tool Klipper toolheads as AMS-style tiles', async () => {
+      const user = userEvent.setup();
+      const toolSlots = [0, 1, 2, 3].map((id) => ({
+        id,
+        extruder: id === 0 ? 'extruder' : `extruder${id}`,
+        nozzle_diameter: '0.4',
+        active: id === 0,
+        filament_present: id !== 3,
+        docked: id >= 2,
+        path_present: null,
+      }));
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          ...mockPrinters[0],
+          name: 'Slash',
+          provider: 'klipper',
+          model: 'WonderMaker ZR_ULTRA',
+        }])),
+        http.get('/api/v1/printers/:id/status', () => HttpResponse.json({
+          ...mockPrinterStatus,
+          ams: [],
+          vt_tray: [],
+          tool_slots: toolSlots,
+        })),
+        http.get('/api/v1/inventory/assignments', () => HttpResponse.json([{
+          id: 7,
+          printer_id: 1,
+          ams_id: -1,
+          tray_id: 0,
+          spool_id: 55,
+          spool: { id: 55, brand: 'Sunlu', material: 'PETG', color_name: 'Black', rgba: '#111111', label_weight: 1000, weight_used: 150 },
+        }])),
+      );
+
+      render(<PrintersPage />);
+
+      const active = await screen.findByTestId('tool-slot-0');
+      expect(active).toHaveTextContent('T0');
+      expect(active).toHaveTextContent('1');
+      expect(active).toHaveTextContent('PETG');
+      expect(active).toHaveTextContent('Sunlu · Black');
+      expect(active.className).toContain('ring-bambu-green');
+      expect(screen.getByTestId('tool-slot-1')).toHaveTextContent('Assign');
+      expect(screen.getByTestId('tool-slot-3')).toHaveTextContent('Empty');
+      expect(screen.queryByText('Loaded spool')).not.toBeInTheDocument();
+
+      await user.click(active);
+      expect(screen.getByRole('button', { name: /Change spool/ })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /Clear assignment/ })).toBeInTheDocument();
     });
 
     it('groups add-printer model choices by vendor and includes common Klipper machines', async () => {
@@ -1861,6 +2059,112 @@ describe('PrintersPage', () => {
       });
 
       expect(screen.queryByText('Nozzle Rack')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('AI monitoring badge (Obico / OctoEverywhere)', () => {
+    const obicoOn = {
+      auto_archive: true,
+      obico_enabled: true,
+      obico_ml_url: 'http://obico:3333',
+      obico_enabled_printers: '',
+      external_url: 'http://printbuddy:8000',
+    };
+    const obicoOff = { auto_archive: true, obico_enabled: false, obico_ml_url: '', obico_enabled_printers: '' };
+    const octo = (overrides: Record<string, unknown> = {}) => ({
+      enabled: true,
+      has_api_key: true,
+      sensitivity: 'medium',
+      action: 'notify',
+      poll_interval: 0,
+      enabled_printers: null,
+      notify_on_warning: true,
+      ...overrides,
+    });
+    const badges = (provider?: string) =>
+      Array.from(
+        document.querySelectorAll<HTMLButtonElement>(
+          provider ? `button[data-provider="${provider}"]` : 'button[aria-label*="Failure Detection"]'
+        )
+      );
+
+    it('shows one "unavailable" badge per printer when no provider is enabled', async () => {
+      server.use(
+        http.get('/api/v1/settings/', () => HttpResponse.json(obicoOff)),
+        http.get('/api/v1/octoeverywhere/settings', () => HttpResponse.json(octo({ enabled: false }))),
+      );
+      render(<PrintersPage />);
+      await waitFor(() => expect(screen.getAllByText('AI unavailable')).toHaveLength(2));
+      expect(badges('Obico')).toHaveLength(0);
+      expect(badges('OctoEverywhere')).toHaveLength(0);
+    });
+
+    it('labels the badge with Obico when only Obico is enabled', async () => {
+      server.use(
+        http.get('/api/v1/settings/', () => HttpResponse.json(obicoOn)),
+        http.get('/api/v1/octoeverywhere/settings', () => HttpResponse.json(octo({ enabled: false }))),
+      );
+      render(<PrintersPage />);
+      await waitFor(() => expect(badges('Obico')).toHaveLength(2));
+      expect(badges('OctoEverywhere')).toHaveLength(0);
+      expect(badges('Obico')[0]).toHaveTextContent('AI On · Obico');
+    });
+
+    it('labels the badge with OctoEverywhere and respects its printer list', async () => {
+      server.use(
+        http.get('/api/v1/settings/', () => HttpResponse.json(obicoOff)),
+        http.get('/api/v1/octoeverywhere/settings', () => HttpResponse.json(octo({ enabled_printers: [1] }))),
+      );
+      render(<PrintersPage />);
+      await waitFor(() => expect(badges('OctoEverywhere')).toHaveLength(2));
+      expect(badges('Obico')).toHaveLength(0);
+      const [first, second] = badges('OctoEverywhere');
+      expect(first).toHaveTextContent('AI On · OctoEverywhere');
+      expect(second).toHaveTextContent('AI Off · OctoEverywhere');
+      expect(second).toHaveAttribute('title', expect.stringContaining('OctoEverywhere AI monitoring is disabled'));
+    });
+
+    it('shows one badge per provider when both are enabled', async () => {
+      server.use(
+        http.get('/api/v1/settings/', () => HttpResponse.json(obicoOn)),
+        http.get('/api/v1/octoeverywhere/settings', () => HttpResponse.json(octo())),
+      );
+      render(<PrintersPage />);
+      await waitFor(() => expect(badges('OctoEverywhere')).toHaveLength(2));
+      expect(badges('Obico')).toHaveLength(2);
+    });
+
+    it('warns when OctoEverywhere is enabled without an API key', async () => {
+      server.use(
+        http.get('/api/v1/settings/', () => HttpResponse.json(obicoOff)),
+        http.get('/api/v1/octoeverywhere/settings', () => HttpResponse.json(octo({ has_api_key: false }))),
+      );
+      render(<PrintersPage />);
+      await waitFor(() => expect(badges('OctoEverywhere')).toHaveLength(2));
+      expect(badges('OctoEverywhere')[0]).toHaveTextContent('AI warning');
+      expect(badges('OctoEverywhere')[0]).toHaveAttribute('title', expect.stringContaining('needs an API key'));
+    });
+
+    it('toggling the OctoEverywhere badge updates only the OctoEverywhere printer list', async () => {
+      let octoBody: unknown = null;
+      let obicoUpdated = false;
+      server.use(
+        http.get('/api/v1/settings/', () => HttpResponse.json(obicoOn)),
+        http.put('/api/v1/settings/', () => {
+          obicoUpdated = true;
+          return HttpResponse.json(obicoOn);
+        }),
+        http.get('/api/v1/octoeverywhere/settings', () => HttpResponse.json(octo({ enabled_printers: [1] }))),
+        http.put('/api/v1/octoeverywhere/settings', async ({ request }) => {
+          octoBody = await request.json();
+          return HttpResponse.json(octo());
+        }),
+      );
+      render(<PrintersPage />);
+      await waitFor(() => expect(badges('OctoEverywhere')).toHaveLength(2));
+      fireEvent.click(badges('OctoEverywhere')[1]);
+      await waitFor(() => expect(octoBody).toEqual({ all_printers: true }));
+      expect(obicoUpdated).toBe(false);
     });
   });
 

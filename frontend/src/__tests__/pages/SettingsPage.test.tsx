@@ -159,6 +159,22 @@ describe('SettingsPage', () => {
       });
     });
 
+    it('lets users hide a sidebar item from the navigation preferences', async () => {
+      const user = userEvent.setup();
+      render(<SettingsPage />);
+
+      const modelImportLabel = (await screen.findAllByText('Model import')).find(element => element.tagName === 'SPAN');
+      if (!modelImportLabel) throw new Error('Model import sidebar label was not rendered');
+      const modelImportToggle = modelImportLabel.parentElement?.querySelector('[role="switch"]');
+      expect(modelImportToggle).not.toBeNull();
+      if (!modelImportToggle) throw new Error('Model import navigation toggle was not rendered');
+      expect(modelImportToggle.getAttribute('aria-checked')).toBe('true');
+
+      await user.click(modelImportToggle);
+
+      expect(localStorage.setItem).toHaveBeenCalledWith('sidebarHiddenItems', JSON.stringify(['model-import']));
+    });
+
     it('offers the printer-card camera view mode in the Camera settings', async () => {
       const user = userEvent.setup();
       render(<SettingsPage />);
@@ -203,6 +219,65 @@ describe('SettingsPage', () => {
       await waitFor(() => {
         const slicerSelect = screen.getAllByDisplayValue('Bambu Studio');
         expect(slicerSelect.length).toBeGreaterThan(0);
+      });
+    });
+
+    it('tests the enabled slicer API connection and disables the button while pending', async () => {
+      const user = userEvent.setup();
+      let completeRequest: (() => void) | undefined;
+      server.use(
+        http.get('/api/v1/settings/', () => HttpResponse.json({ ...mockSettings, use_slicer_api: true })),
+        http.post('/api/v1/settings/test-slicer-connection', async () => {
+          await new Promise<void>((resolve) => {
+            completeRequest = resolve;
+          });
+          return HttpResponse.json({
+            success: true,
+            slicer: 'bambu_studio',
+            health: { status: 'healthy', version: '02.08.02.61' },
+            detected_slicer: 'bambu_studio',
+          });
+        }),
+      );
+      render(<SettingsPage />);
+
+      await user.click(await screen.findByText('Workflow'));
+      const button = await screen.findByRole('button', { name: 'Test slicer connection' });
+      await user.click(button);
+
+      expect(button).toBeDisabled();
+      completeRequest?.();
+
+      await waitFor(() => {
+        expect(screen.getByText('Connected to Bambu Studio 02.08.02.61.')).toBeInTheDocument();
+      });
+      expect(button).not.toBeDisabled();
+    });
+
+    it('warns when the sidecar at the configured URL is the other slicer', async () => {
+      const user = userEvent.setup();
+      server.use(
+        http.get('/api/v1/settings/', () => HttpResponse.json({ ...mockSettings, use_slicer_api: true })),
+        http.post('/api/v1/settings/test-slicer-connection', () =>
+          HttpResponse.json({
+            success: true,
+            slicer: 'bambu_studio',
+            health: { status: 'healthy', version: '2.3.2' },
+            detected_slicer: 'orcaslicer',
+          }),
+        ),
+      );
+      render(<SettingsPage />);
+
+      await user.click(await screen.findByText('Workflow'));
+      await user.click(await screen.findByRole('button', { name: 'Test slicer connection' }));
+
+      await waitFor(() => {
+        expect(
+          screen.getByText(
+            'The sidecar at this URL runs OrcaSlicer 2.3.2, but Bambu Studio is selected. Check the sidecar URL and port.',
+          ),
+        ).toBeInTheDocument();
       });
     });
 

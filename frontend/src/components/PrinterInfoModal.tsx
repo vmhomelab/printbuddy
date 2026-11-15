@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { X, Copy, Check, Signal, Cable } from 'lucide-react';
 import { Card, CardContent } from './Card';
 import { formatDateOnly } from '../utils/date';
-import { getDefaultPrinterImage, getPrinterImage, getWifiStrength } from '../utils/printer';
+import { getDefaultPrinterImage, getPrinterDisplayImage, getWifiStrength } from '../utils/printer';
 import type { Printer, PrinterStatus } from '../api/client';
 
 interface PrinterInfoModalProps {
@@ -266,7 +266,7 @@ export function PrinterInfoModal({ printer, status, totalPrintHours, onClose }: 
           {/* Printer Image */}
           <div className="flex justify-center mb-4">
             <img
-              src={getPrinterImage(printer.model)}
+              src={getPrinterDisplayImage(printer)}
               alt={printer.model ?? printer.name}
               className="h-24 object-contain"
               onError={(event) => {

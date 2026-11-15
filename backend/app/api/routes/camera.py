@@ -5,6 +5,7 @@ import logging
 import os
 import subprocess
 import sys
+import time
 from collections.abc import AsyncGenerator
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -59,6 +60,9 @@ _last_frames: dict[int, bytes] = {}
 
 # Track last frame timestamp for each printer (for stall detection)
 _last_frame_times: dict[int, float] = {}
+
+# Snapshot consumers must never attach a frame from a stalled live stream.
+MAX_BUFFERED_FRAME_AGE_SECONDS = 5.0
 
 # Track stream start times for each printer
 _stream_start_times: dict[int, float] = {}
@@ -128,7 +132,14 @@ def try_get_active_buffered_frame(printer_id: int) -> bytes | None:
     """
     if not is_stream_active(printer_id):
         return None
-    return _last_frames.get(printer_id)
+    frame = _last_frames.get(printer_id)
+    frame_time = _last_frame_times.get(printer_id)
+    if not frame or frame_time is None:
+        return None
+    if time.time() - frame_time > MAX_BUFFERED_FRAME_AGE_SECONDS:
+        logger.warning("Discarding stale buffered camera frame for printer %s", printer_id)
+        return None
+    return frame
 
 
 async def get_printer_or_404(printer_id: int, db: AsyncSession) -> Printer:
@@ -332,7 +343,7 @@ async def generate_rtsp_mjpeg_stream(
     This is for X1/H2/P2 models that support RTSP streaming.
     Auto-reconnects when the printer drops the RTSP session (common on P2S).
     Per-model knobs (probesize, analyzeduration, reconnect cadence) come from
-    :func:`camera_profiles.get_camera_profile` so quirky firmwares can be
+    `camera_profiles.get_camera_profile` so quirky firmwares can be
     handled by adding a profile entry rather than tuning a global constant.
     """
     ffmpeg = get_ffmpeg_path()

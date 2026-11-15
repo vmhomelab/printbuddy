@@ -236,7 +236,7 @@ Planned providers:
 | `prusaconnect` | Prusa Connect (cloud) | Implemented, not tested ⌛ |
 | `pcl` | Prusa Connect Local (hosted server) | Implemented, in testing ⌛ |
 | `elegoo_sdcp` | Elegoo SDCP (e.g. Centauri Carbon / CC1) | Implemented, in testing ⌛ |
-| `octoprint` | OctoPrint REST API (Marlin / RepRap printers) | (mplemented, in testing ⌛ |
+| `octoprint` | OctoPrint REST API (Marlin / RepRap printers) | Implemented, in testing ⌛ |
 
 Each printer stores its provider plus provider metadata; provider-specific clients are created through `backend/app/services/printer_providers/factory.py`.
 

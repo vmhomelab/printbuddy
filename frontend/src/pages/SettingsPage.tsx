@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Loader2, Plus, Plug, AlertTriangle, RotateCcw, Bell, Download, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, Unlock, ChevronDown, Save, Mail, Flame, Layers, ListOrdered, Code, Search, Settings as SettingsIcon, ScanEye, Cog } from 'lucide-react';
+import { Loader2, Plus, Plug, AlertTriangle, RotateCcw, Bell, Download, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, Unlock, ChevronDown, Save, Mail, Flame, Layers, ListOrdered, Code, Search, Settings as SettingsIcon, ScanEye, Cog, Info } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
@@ -29,6 +29,7 @@ import { ExternalLinksSettings } from '../components/ExternalLinksSettings';
 import { VirtualPrinterList } from '../components/VirtualPrinterList';
 import { GitHubBackupSettings } from '../components/GitHubBackupSettings';
 import { FailureDetectionSettings } from '../components/FailureDetectionSettings';
+import { OctoEverywhereDetectionSettings } from '../components/OctoEverywhereDetectionSettings';
 import { EmailSettings } from '../components/EmailSettings';
 import { LDAPSettings } from '../components/LDAPSettings';
 import { TwoFactorSettings } from '../components/TwoFactorSettings';
@@ -37,7 +38,7 @@ import { SecurityStatusCard } from '../components/SecurityStatusCard';
 import { APIBrowser } from '../components/APIBrowser';
 import { Toggle } from '../components/Toggle';
 import { virtualPrinterApi } from '../api/client';
-import { defaultNavItems, getDefaultView, setDefaultView } from '../components/Layout';
+import { defaultNavItems, getDefaultView, getSidebarHiddenItems, saveSidebarHiddenItems, setDefaultView } from '../components/Layout';
 import { availableLanguages } from '../i18n';
 import { useToast } from '../contexts/ToastContext';
 import { useTheme, type ThemeStyle, type DarkBackground, type LightBackground, type ThemeAccent } from '../contexts/ThemeContext';
@@ -110,6 +111,7 @@ registerSettingsSearch({ labelKey: 'settings.currentUser', tab: 'users', subTab:
 registerSettingsSearch({ labelKey: 'settings.users', tab: 'users', subTab: 'users', keywords: 'users accounts list', anchor: 'card-users' });
 registerSettingsSearch({ labelKey: 'settings.groups', tab: 'users', subTab: 'users', keywords: 'groups roles permissions administrators operators viewers', anchor: 'card-groups' });
 registerSettingsSearch({ labelKey: 'settings.email.smtpSettings', labelFallback: 'SMTP Configuration', tab: 'users', subTab: 'email', keywords: 'smtp email send server port password auth starttls ssl', anchor: 'card-smtp' });
+registerSettingsSearch({ labelKey: 'settings.rememberMeExtended', labelFallback: 'Remember me for 30 days', tab: 'users', subTab: 'users', keywords: 'remember me session token lifetime 30 days stay signed in login', anchor: 'card-remember-me' });
 registerSettingsSearch({ labelKey: 'settings.ldap.title', labelFallback: 'LDAP Authentication', tab: 'users', subTab: 'ldap', keywords: 'ldap active directory ad authentication bind dn search base group mapping', anchor: 'card-ldap' });
 registerSettingsSearch({ labelKey: 'settings.tabs.backup', tab: 'backup', keywords: 'backup github restore download cloud sync profiles archives', anchor: 'card-backup' });
 // Sidebar Links (external links settings is rendered in the General tab)
@@ -255,6 +257,7 @@ export function SettingsPage() {
   const [changePasswordData, setChangePasswordData] = useState({ currentPassword: '', newPassword: '', confirmPassword: '' });
   const [changePasswordLoading, setChangePasswordLoading] = useState(false);
   const [storageUsageRefreshing, setStorageUsageRefreshing] = useState(false);
+  const [slicerConnectionTesting, setSlicerConnectionTesting] = useState(false);
 
   // User management state
   const [showCreateUserModal, setShowCreateUserModal] = useState(false);
@@ -300,7 +303,18 @@ export function SettingsPage() {
 
   const handleResetSidebarOrder = () => {
     localStorage.removeItem('sidebarOrder');
+    localStorage.removeItem('sidebarHiddenItems');
     window.location.reload();
+  };
+
+  const [sidebarHiddenItems, setSidebarHiddenItems] = useState<string[]>(getSidebarHiddenItems);
+
+  const handleSidebarItemVisibilityChange = (itemId: string, visible: boolean) => {
+    const nextHiddenItems = visible
+      ? sidebarHiddenItems.filter(id => id !== itemId)
+      : [...sidebarHiddenItems, itemId];
+    setSidebarHiddenItems(nextHiddenItems);
+    saveSidebarHiddenItems(nextHiddenItems);
   };
 
   const isDefaultSidebarEnabled = !!localSettings?.default_sidebar_order;
@@ -1067,9 +1081,11 @@ export function SettingsPage() {
       settings.energy_tracking_mode !== localSettings.energy_tracking_mode ||
       settings.check_updates !== localSettings.check_updates ||
       (settings.check_printer_firmware ?? true) !== (localSettings.check_printer_firmware ?? true) ||
+      (settings.remember_me_extended_session ?? false) !== (localSettings.remember_me_extended_session ?? false) ||
       (settings.include_beta_updates ?? false) !== (localSettings.include_beta_updates ?? false) ||
       settings.notification_language !== localSettings.notification_language ||
       (settings.bed_cooled_threshold ?? 35) !== (localSettings.bed_cooled_threshold ?? 35) ||
+      (settings.progress_milestone_mode ?? 'layers') !== (localSettings.progress_milestone_mode ?? 'layers') ||
       settings.ams_humidity_good !== localSettings.ams_humidity_good ||
       settings.ams_humidity_fair !== localSettings.ams_humidity_fair ||
       settings.ams_temp_good !== localSettings.ams_temp_good ||
@@ -1156,9 +1172,11 @@ export function SettingsPage() {
         energy_tracking_mode: localSettings.energy_tracking_mode,
         check_updates: localSettings.check_updates,
         check_printer_firmware: localSettings.check_printer_firmware,
+        remember_me_extended_session: localSettings.remember_me_extended_session ?? false,
         include_beta_updates: localSettings.include_beta_updates,
         notification_language: localSettings.notification_language,
         bed_cooled_threshold: localSettings.bed_cooled_threshold,
+        progress_milestone_mode: localSettings.progress_milestone_mode ?? 'layers',
         ams_humidity_good: localSettings.ams_humidity_good,
         ams_humidity_fair: localSettings.ams_humidity_fair,
         ams_temp_good: localSettings.ams_temp_good,
@@ -1234,6 +1252,75 @@ export function SettingsPage() {
     }
     setLocalSettings(prev => prev ? { ...prev, [key]: value } : null);
   }, [authEnabled, hasPermission, showToast, t]);
+
+  const handleTestSlicerConnection = async () => {
+    setSlicerConnectionTesting(true);
+    try {
+      const result = await api.testSlicerConnection();
+      const nameOf = (slicer: 'bambu_studio' | 'orcaslicer') =>
+        slicer === 'orcaslicer' ? 'OrcaSlicer' : 'Bambu Studio';
+      const slicerName = nameOf(result.slicer);
+      const version = result.health?.version ?? '';
+      if (result.success && result.detected_slicer && result.detected_slicer !== result.slicer) {
+        // The URL answers, but with the other sidecar — typically a swapped
+        // port (3001 Bambu Studio / 3003 OrcaSlicer).
+        showToast(
+          t(
+            'settings.slicerConnectionMismatch',
+            'The sidecar at this URL runs {{detected}} {{version}}, but {{slicer}} is selected. Check the sidecar URL and port.',
+            { detected: nameOf(result.detected_slicer), version, slicer: slicerName },
+          ),
+          'warning',
+        );
+      } else if (result.success && result.sidecar_up_to_date === false) {
+        // The sidecar answers but runs another revision than this Printbuddy
+        // expects (or one too old to report it): fixes and API changes the
+        // slice flow relies on may be missing.
+        showToast(
+          t(
+            'settings.slicerSidecarOutdated',
+            'Connected to {{slicer}}, but the sidecar image is not the version this Printbuddy expects (running {{running}}, expected {{expected}}). Update it: docker compose pull && docker compose up -d.',
+            {
+              slicer: slicerName,
+              running: result.sidecar_revision?.slice(0, 7) ?? t('settings.slicerSidecarRevisionOld', 'an older build'),
+              expected: (result.expected_sidecar_revision ?? '').slice(0, 7),
+            },
+          ),
+          'warning',
+        );
+      } else if (result.success && version) {
+        showToast(
+          t('settings.slicerConnectionSuccessVersion', 'Connected to {{slicer}} {{version}}.', {
+            slicer: slicerName,
+            version,
+          }),
+          'success',
+        );
+      } else if (result.success) {
+        showToast(
+          t('settings.slicerConnectionSuccess', '{{slicer}} slicer connection succeeded.', { slicer: slicerName }),
+          'success',
+        );
+      } else if (result.error === 'invalid_response') {
+        showToast(
+          t(
+            'settings.slicerConnectionInvalidResponse',
+            'The URL answers, but not with the slicer API. A desktop slicer (e.g. an OrcaSlicer web GUI on port 3000) cannot be used here: point it at the slicer-API sidecar (OrcaSlicer default port 3003).',
+          ),
+          'error',
+        );
+      } else {
+        showToast(
+          t('settings.slicerConnectionFailed', '{{slicer}} slicer connection failed.', { slicer: slicerName }),
+          'error',
+        );
+      }
+    } catch {
+      showToast(t('settings.slicerConnectionError', 'Slicer connection failed.'), 'error');
+    } finally {
+      setSlicerConnectionTesting(false);
+    }
+  };
 
   const handleTestExternalCamera = async (printerId: number, url: string, cameraType: string) => {
     const trimmedUrl = url.trim();
@@ -1777,6 +1864,25 @@ export function SettingsPage() {
                     </div>
                   )}
                 </div>
+              </div>
+              <div className="border-t border-bambu-dark-tertiary pt-3">
+                <p className="text-white">{t('settings.sidebarVisibility')}</p>
+                <p className="text-sm text-bambu-gray mb-3">{t('settings.sidebarVisibilityDescription')}</p>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {defaultNavItems.filter(item => item.id !== 'settings').map(item => {
+                    const visible = !sidebarHiddenItems.includes(item.id);
+                    return (
+                      <div key={item.id} className="flex items-center justify-between rounded-lg border border-bambu-dark-tertiary px-3 py-2">
+                        <span className="text-sm text-white">{t(item.labelKey)}</span>
+                        <Toggle
+                          checked={visible}
+                          onChange={(checked) => handleSidebarItemVisibilityChange(item.id, checked)}
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+                <p className="text-xs text-bambu-gray mt-3">{t('settings.sidebarSettingsAlwaysVisible')}</p>
               </div>
             </CardContent>
           </Card>
@@ -3763,6 +3869,36 @@ export function SettingsPage() {
               </CardContent>
             </Card>
 
+            {/* Progress Milestone Mode Setting */}
+            <Card className="mb-4">
+              <CardContent className="py-3">
+                <div>
+                  <p className="text-white text-sm font-medium">{t('settings.progressMilestoneMode')}</p>
+                  <p className="text-xs text-bambu-gray">{t('settings.progressMilestoneModeDescription')}</p>
+                </div>
+                <div className="mt-2">
+                  <select
+                    value={localSettings.progress_milestone_mode ?? 'layers'}
+                    onChange={(e) =>
+                      updateSetting('progress_milestone_mode', e.target.value as 'layers' | 'print_progress')
+                    }
+                    className="w-full px-2 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-bambu-green"
+                  >
+                    <option value="print_progress">{t('settings.progressMilestoneModePrintProgress')}</option>
+                    <option value="layers">{t('settings.progressMilestoneModeLayers')}</option>
+                  </select>
+                </div>
+                <div className="mt-2 flex items-start gap-2 rounded bg-bambu-dark px-3 py-2 text-xs text-bambu-gray">
+                  <Info className="w-4 h-4 mt-0.5 shrink-0 text-bambu-green" />
+                  <span>
+                    {(localSettings.progress_milestone_mode ?? 'layers') === 'print_progress'
+                      ? t('settings.progressMilestoneModePrintProgressInfo')
+                      : t('settings.progressMilestoneModeLayersInfo')}
+                  </span>
+                </div>
+              </CardContent>
+            </Card>
+
             {/* Bed Cooled Threshold Setting */}
             <Card className="mb-4">
               <CardContent className="py-3">
@@ -4644,25 +4780,23 @@ export function SettingsPage() {
                 <p className="text-xs text-bambu-gray mt-1">
                   {t('settings.preferredSlicerDescription')}
                 </p>
-                {/* Upstream OrcaSlicer 2.3.2 / 2.4.0-dev have two known
-                    CLI bugs that block slicing many Bambu-authored 3MFs:
-                    a SIGSEGV on painted multi-extruder 3MFs (#12426) and
-                    a strict range-check on sentinel parameter values
-                    BambuStudio writes by default. Until the upstream
-                    fixes land, surface a clear warning when a user has
-                    OrcaSlicer selected so they know what to expect; we
-                    don't auto-switch them in case they're testing. */}
-                {(localSettings.preferred_slicer ?? 'bambu_studio') === 'orcaslicer' && (
-                  <div
-                    role="alert"
-                    className="text-xs text-amber-200 bg-amber-900/20 border border-amber-700/40 rounded p-2 mt-2"
-                  >
-                    {t(
-                      'settings.orcaslicerKnownIssuesWarning',
-                      'OrcaSlicer 2.3.2 / 2.4.0-dev have known CLI bugs that block slicing many Bambu-authored 3MFs — see upstream issues #12426 (segfault on painted multi-extruder files) and #13386 (parameter-range strict-validation reject). Bambu Studio is recommended until the upstream fixes land.',
-                    )}
-                  </div>
-                )}
+                {/* Which sidecar fits which printer. Bambu Studio ships profiles
+                    for Bambu Lab printers (incl. the newest, e.g. X2D) but few
+                    others; OrcaSlicer covers most other vendors but lacks the
+                    newest Bambu models and can crash on painted multi-colour
+                    Bambu 3MFs (upstream #12426). The "-1" range-check rejects
+                    (#13386) are handled by the sidecar since 9ff0c6e. */}
+                <p className="text-xs text-bambu-gray bg-bambu-dark border border-bambu-dark-tertiary/40 rounded p-2 mt-2">
+                  {(localSettings.preferred_slicer ?? 'bambu_studio') === 'orcaslicer'
+                    ? t(
+                        'settings.orcaslicerKnownIssuesWarning',
+                        'Use OrcaSlicer for non-Bambu printers (Prusa, Elegoo, Klipper, …). For Bambu Lab printers Bambu Studio is recommended: OrcaSlicer 2.3.2 has no profiles for the newest models such as the X2D and can crash on painted multi-colour Bambu 3MFs (upstream #12426).',
+                      )
+                    : t(
+                        'settings.bambuStudioSlicerHint',
+                        'Bambu Studio is recommended for Bambu Lab printers. It ships only a few profiles for other brands; use OrcaSlicer for Prusa, Elegoo, Klipper and other printers.',
+                      )}
+                </p>
               </div>
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0">
@@ -4716,6 +4850,19 @@ export function SettingsPage() {
                       'URL of the slicer-API sidecar container. Leave blank to use the SLICER_API_URL / BAMBU_STUDIO_API_URL env var defaults.',
                     )}
                   </p>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    onClick={handleTestSlicerConnection}
+                    disabled={slicerConnectionTesting}
+                    className="mt-3"
+                  >
+                    {slicerConnectionTesting && <Loader2 className="w-4 h-4 animate-spin" />}
+                    {slicerConnectionTesting
+                      ? t('settings.testingSlicerConnection', 'Testing slicer connection…')
+                      : t('settings.testSlicerConnection', 'Test slicer connection')}
+                  </Button>
                 </div>
               )}
             </CardContent>
@@ -5421,6 +5568,24 @@ export function SettingsPage() {
                   </Button>
                 )}
               </div>
+              {authEnabled && localSettings && (
+                <div className="flex items-center justify-between gap-4 mt-4 pt-4 border-t border-bambu-dark-tertiary" id="card-remember-me">
+                  <div>
+                    <p className="text-white">{t('settings.rememberMeExtended')}</p>
+                    <p className="text-sm text-bambu-gray">{t('settings.rememberMeExtendedDescription')}</p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer flex-shrink-0">
+                    <input
+                      type="checkbox"
+                      checked={localSettings.remember_me_extended_session ?? false}
+                      onChange={(e) => updateSetting('remember_me_extended_session', e.target.checked)}
+                      className="sr-only peer"
+                      aria-label={t('settings.rememberMeExtended')}
+                    />
+                    <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                  </label>
+                </div>
+              )}
             </CardContent>
           </Card>
 
@@ -6263,6 +6428,7 @@ export function SettingsPage() {
       {activeTab === 'failure-detection' && (
         <div id="card-failure-detection">
           <FailureDetectionSettings />
+          <OctoEverywhereDetectionSettings />
         </div>
       )}
 

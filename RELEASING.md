@@ -12,6 +12,17 @@ Printbuddy's update checker uses `backend/app/core/config.py::APP_VERSION` as th
 6. Merge `dev` into `main`.
 7. Create the matching GitHub release/tag, for example `v0.2.4.8`.
 
+## Slicer sidecar images
+
+Pushing a release tag (`v*`, betas included) also tags the slicer-sidecar
+images with it (`printbuddy-orca-slicer-api:v<version>`,
+`printbuddy-bambu-studio-api:v<version>`) via **Docker publish slicer
+sidecars**. The images themselves come from the sidecar revision pinned in
+`slicer-api/.env.example` of the tagged commit. The in-app updater installs
+these when a user updates to that release. Check that the workflow run for
+the tag is green: if the pinned revision was never built (e.g. a failed `dev`
+build), the tag run builds it, which needs GitHub release downloads to work.
+
 ## Safety guard
 
 The Docker publish workflow validates release builds before pushing images:

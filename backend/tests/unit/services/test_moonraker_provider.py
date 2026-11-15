@@ -1,4 +1,55 @@
-from backend.app.services.printer_providers.moonraker import MoonrakerPrinterClient
+import httpx
+import pytest
+
+from backend.app.services.printer_providers.moonraker import MoonrakerPrinterClient, _generic_moonraker_tool_slots
+
+
+def test_generic_moonraker_tool_slots_exposes_verified_multitool_sensor_state():
+    status = {
+        "toolhead": {"extruder": "extruder1"},
+        "extruder": {"nozzle_diameter": 0.4},
+        "extruder1": {"nozzle_diameter": 0.4},
+        "extruder2": {"nozzle_diameter": 0.6},
+        "filament_switch_sensor filament0": {"filament_detected": True},
+        "filament_switch_sensor filament1": {"filament_detected": True},
+        "filament_switch_sensor docked1": {"filament_detected": False},
+        "filament_switch_sensor path_1": {"filament_detected": True},
+    }
+
+    assert _generic_moonraker_tool_slots(status) == [
+        {
+            "id": 0,
+            "extruder": "extruder",
+            "nozzle_diameter": "0.4",
+            "active": False,
+            "filament_present": True,
+            "docked": None,
+            "path_present": None,
+        },
+        {
+            "id": 1,
+            "extruder": "extruder1",
+            "nozzle_diameter": "0.4",
+            "active": True,
+            "filament_present": True,
+            "docked": False,
+            "path_present": True,
+        },
+        {
+            "id": 2,
+            "extruder": "extruder2",
+            "nozzle_diameter": "0.6",
+            "active": False,
+            "filament_present": None,
+            "docked": None,
+            "path_present": None,
+        },
+    ]
+
+
+def test_generic_moonraker_tool_slots_ignores_single_tool_and_real_feeder_status():
+    assert _generic_moonraker_tool_slots({"extruder": {}}) == []
+    assert _generic_moonraker_tool_slots({"extruder": {}, "extruder1": {}, "filament_feed left": {}}) == []
 
 
 def _moonraker_status_with_cfs(active_filament="A"):
@@ -291,6 +342,97 @@ def test_moonraker_normalizes_snapmaker_u1_nozzles_chamber_and_feed_slots(monkey
     assert ams[0]["tray"][3]["tray_color"] is None
     assert snapmaker["loaded_to_extruder_slots"] == ["U1-E2"]
     assert snapmaker["loaded_to_feeder_slots"] == ["U1-E0", "U1-E1", "U1-E2"]
+    # Slots without RFID remain stay unknown (-1) rather than false 0%.
+    assert ams[0]["tray"][1]["remain"] == -1
+
+
+def test_moonraker_snapmaker_u1_fills_remain_from_spoolman_spool_ids(monkeypatch):
+    """SpoolLink exposes filament_spool_id without remain %; resolve via Moonraker proxy."""
+    client = MoonrakerPrinterClient("http://snapmaker-u1.local:7125", printer_model="Snapmaker U1")
+    status = _moonraker_status_with_snapmaker_u1()
+    # Real U1 SpoolLink payloads have spool IDs but no remain on filament_feed.
+    status["filament_feed left"]["extruder0"].pop("filament_info", None)
+    status["filament_feed right"]["extruder2"].pop("remain", None)
+    status["print_task_config"]["filament_spool_id"] = [25, 105, 15, 0]
+    base_status = {
+        key: status[key] for key in ("print_stats", "virtual_sdcard", "display_status", "heater_bed", "toolhead")
+    }
+    u1_status = {
+        key: value
+        for key, value in status.items()
+        if key
+        in {
+            "temperature_sensor cavity",
+            "extruder",
+            "extruder1",
+            "extruder2",
+            "extruder3",
+            "filament_feed left",
+            "filament_feed right",
+            "print_task_config",
+        }
+    }
+    monkeypatch.setattr(client, "_query_objects", lambda object_names: base_status)
+    monkeypatch.setattr(client, "_query_cfs_status", lambda *args, **kwargs: {})
+    monkeypatch.setattr(client, "_query_snapmaker_u1_status", lambda *args, **kwargs: u1_status)
+    monkeypatch.setattr(client, "_query_fan_status", lambda *args, **kwargs: {})
+    monkeypatch.setattr(
+        client,
+        "_jsonrpc",
+        lambda method, params=None: (
+            [
+                {
+                    "id": 25,
+                    "remaining_weight": 398.2,
+                    "filament": {
+                        "weight": 1000.0,
+                        "name": "Charcoal",
+                        "material": "PLA",
+                        "vendor": {"name": "Bambu Lab"},
+                    },
+                },
+                {
+                    "id": 105,
+                    "remaining_weight": 851.8,
+                    "filament": {
+                        "weight": 1000.0,
+                        "name": "Indigo Purple",
+                        "material": "PLA",
+                        "vendor": {"name": "Bambu Lab"},
+                    },
+                },
+                {
+                    "id": 15,
+                    "remaining_weight": 74.1,
+                    "filament": {
+                        "weight": 1000.0,
+                        "name": "Cobalt Blue",
+                        "material": "PLA",
+                        "vendor": {"name": "Bambu Lab"},
+                    },
+                },
+            ]
+            if method == "server.spoolman.proxy"
+            else None
+        ),
+    )
+
+    assert client.request_status_update() is True
+
+    trays = client.state.raw_data["ams"][0]["tray"]
+    assert trays[0]["filament_spool_id"] == 25
+    assert trays[0]["remain"] == 40
+    assert trays[0]["remaining_weight"] == 398.2
+    assert trays[0]["filament_spool_brand"] == "Bambu Lab"
+    assert trays[0]["filament_spool_material"] == "PLA"
+    assert trays[0]["filament_spool_color_name"] == "Charcoal"
+    assert trays[1]["filament_spool_id"] == 105
+    assert trays[1]["remain"] == 85
+    assert trays[2]["filament_spool_id"] == 15
+    assert trays[2]["remain"] == 7
+    assert trays[2]["filament_spool_color_name"] == "Cobalt Blue"
+    assert trays[3].get("filament_spool_id") in (None, 0)
+    assert trays[3]["remain"] == -1
 
 
 def test_moonraker_snapmaker_u1_clears_active_extruder_when_toolhead_reports_none(monkeypatch):
@@ -652,3 +794,433 @@ def test_moonraker_list_files_filters_flat_root_listing_to_requested_folder(monk
     assert [file["name"] for file in files] == ["cached-cube.gcode", "nested"]
     assert [file["type"] for file in files] == ["file", "directory"]
     assert [file["path"] for file in files] == ["/cache/cached-cube.gcode", "/cache/nested"]
+
+
+@pytest.mark.parametrize(
+    ("method_name", "expected_path"),
+    [
+        ("pause_print", "printer/print/pause"),
+        ("resume_print", "printer/print/resume"),
+    ],
+)
+def test_moonraker_print_control_commands_use_the_expected_endpoint(monkeypatch, method_name, expected_path):
+    client = MoonrakerPrinterClient("http://klipper.local:7125")
+    calls = []
+
+    def fake_post(path, payload):
+        calls.append((path, payload))
+        return {"result": "ok"}
+
+    monkeypatch.setattr(client, "_post", fake_post)
+
+    assert getattr(client, method_name)() is True
+    assert calls == [(expected_path, {})]
+
+
+def test_moonraker_print_control_commands_idempotent_when_state_matches():
+    client = MoonrakerPrinterClient("http://klipper.local:7125")
+    client._has_status_sample = True
+
+    # When already paused, pause_print succeeds without HTTP call
+    client.state.state = "PAUSE"
+    assert client.pause_print() is True
+
+    # When not running, pause_print returns False safely
+    client.state.state = "IDLE"
+    assert client.pause_print() is False
+
+    # When already running, resume_print succeeds without HTTP call
+    client.state.state = "RUNNING"
+    assert client.resume_print() is True
+
+    # When not paused, resume_print returns False safely
+    client.state.state = "IDLE"
+    assert client.resume_print() is False
+
+    # When idle/finished, stop_print succeeds idempotently without HTTP call
+    client.state.state = "IDLE"
+    assert client.stop_print() is True
+    client.state.state = "FINISH"
+    assert client.stop_print() is True
+
+
+@pytest.mark.parametrize("method_name", ["pause_print", "resume_print"])
+def test_moonraker_print_control_commands_preserve_transport_errors(monkeypatch, method_name):
+    client = MoonrakerPrinterClient("http://klipper.local:7125")
+
+    def failing_post(path, payload):
+        raise RuntimeError("Moonraker rejected command")
+
+    monkeypatch.setattr(client, "_post", failing_post)
+
+    with pytest.raises(RuntimeError, match="Moonraker rejected command"):
+        getattr(client, method_name)()
+
+
+def _moonraker_http_400(path: str) -> httpx.HTTPStatusError:
+    request = httpx.Request("POST", f"http://klipper.local:7125/{path}")
+    response = httpx.Response(400, request=request, json={"error": {"message": "rejected"}})
+    return httpx.HTTPStatusError("400 Bad Request", request=request, response=response)
+
+
+@pytest.mark.parametrize(
+    ("method_name", "path", "known_state", "state_after_refresh"),
+    [
+        ("pause_print", "printer/print/pause", "RUNNING", "PAUSE"),
+        ("resume_print", "printer/print/resume", "PAUSE", "RUNNING"),
+        ("stop_print", "printer/print/cancel", "RUNNING", "IDLE"),
+        ("stop_print", "printer/print/cancel", "PAUSE", "CANCELLED"),
+    ],
+)
+def test_moonraker_control_400_is_success_only_when_refresh_shows_target_state(
+    monkeypatch, method_name, path, known_state, state_after_refresh
+):
+    client = MoonrakerPrinterClient("http://klipper.local:7125")
+    client._has_status_sample = True
+    client.state.state = known_state
+    refreshes = []
+
+    def fake_post(p, payload):
+        raise _moonraker_http_400(p)
+
+    def fake_refresh():
+        refreshes.append(True)
+        client.state.state = state_after_refresh
+        return True
+
+    monkeypatch.setattr(client, "_post", fake_post)
+    monkeypatch.setattr(client, "request_status_update", fake_refresh)
+
+    assert getattr(client, method_name)() is True
+    assert refreshes == [True]
+
+
+@pytest.mark.parametrize(
+    ("method_name", "known_state", "state_after_refresh"),
+    [
+        ("pause_print", "RUNNING", "RUNNING"),
+        ("resume_print", "PAUSE", "PAUSE"),
+        ("stop_print", "RUNNING", "RUNNING"),
+        ("stop_print", "PAUSE", "PAUSE"),
+    ],
+)
+def test_moonraker_control_400_is_reraised_when_printer_did_not_reach_target(
+    monkeypatch, method_name, known_state, state_after_refresh
+):
+    client = MoonrakerPrinterClient("http://klipper.local:7125")
+    client._has_status_sample = True
+    client.state.state = known_state
+
+    def fake_post(p, payload):
+        raise _moonraker_http_400(p)
+
+    def fake_refresh():
+        client.state.state = state_after_refresh
+        return True
+
+    monkeypatch.setattr(client, "_post", fake_post)
+    monkeypatch.setattr(client, "request_status_update", fake_refresh)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        getattr(client, method_name)()
+
+
+def test_moonraker_control_400_reraises_original_error_when_refresh_fails(monkeypatch):
+    client = MoonrakerPrinterClient("http://klipper.local:7125")
+    client._has_status_sample = True
+    client.state.state = "RUNNING"
+    original = _moonraker_http_400("printer/print/pause")
+
+    def fake_post(p, payload):
+        raise original
+
+    def fake_refresh():
+        raise httpx.ConnectError("printer unreachable")
+
+    monkeypatch.setattr(client, "_post", fake_post)
+    monkeypatch.setattr(client, "request_status_update", fake_refresh)
+
+    with pytest.raises(httpx.HTTPStatusError) as caught:
+        client.pause_print()
+    assert caught.value is original
+
+
+def test_moonraker_control_non_400_errors_are_not_swallowed(monkeypatch):
+    client = MoonrakerPrinterClient("http://klipper.local:7125")
+    client._has_status_sample = True
+    client.state.state = "RUNNING"
+    request = httpx.Request("POST", "http://klipper.local:7125/printer/print/pause")
+    error = httpx.HTTPStatusError("500", request=request, response=httpx.Response(500, request=request))
+
+    def fake_post(p, payload):
+        raise error
+
+    def fake_refresh():
+        raise AssertionError("status must not be refreshed for non-400 errors")
+
+    monkeypatch.setattr(client, "_post", fake_post)
+    monkeypatch.setattr(client, "request_status_update", fake_refresh)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        client.pause_print()
+
+
+def test_moonraker_refreshes_active_gcode_metadata(monkeypatch):
+    """Archive fallbacks must use the real active G-code, never a fabricated 3MF."""
+    client = MoonrakerPrinterClient("http://k2-plus.local:7125", printer_model="Creality K2 Plus")
+    client.state.gcode_file = "models/cube.gcode"
+    requested: list[str] = []
+
+    def get(path: str):
+        requested.append(path)
+        return {
+            "filename": "models/cube.gcode",
+            "estimated_time": 1234.5,
+            "layer_height": 0.2,
+            "object_height": 10.0,
+            "filament_total": 4567.8,
+            "slicer": "OrcaSlicer",
+            "thumbnails": [{"width": 320, "height": 240, "relative_path": ".thumbs/cube.png"}],
+        }
+
+    monkeypatch.setattr(client, "_get", get)
+
+    assert client.refresh_current_file_metadata() == {
+        "source": "moonraker_file_metadata",
+        "raw_filename": "models/cube.gcode",
+        "print_time_seconds": 1234,
+        "layer_height": 0.2,
+        "total_layers": 50,
+        "filament_total_mm": 4567.8,
+        "slicer": "OrcaSlicer",
+        "thumbnails": [{"width": 320, "height": 240, "relative_path": ".thumbs/cube.png"}],
+        "thumbnail_path": "models/.thumbs/cube.png",
+        "raw_metadata": {
+            "filename": "models/cube.gcode",
+            "estimated_time": 1234.5,
+            "layer_height": 0.2,
+            "object_height": 10.0,
+            "filament_total": 4567.8,
+            "slicer": "OrcaSlicer",
+            "thumbnails": [{"width": 320, "height": 240, "relative_path": ".thumbs/cube.png"}],
+        },
+    }
+    assert requested == ["server/files/metadata?filename=models%2Fcube.gcode"]
+
+
+def test_moonraker_motion_prefers_gcode_position_and_reads_z_offset():
+    from backend.app.services.printer_providers.moonraker import _moonraker_motion
+
+    position, z_offset = _moonraker_motion(
+        {
+            "toolhead": {"position": [1.0, 2.0, 3.0, 0.0]},
+            "gcode_move": {"gcode_position": [117.5, 42.25, 0.4, 12.0], "homing_origin": [0.0, 0.0, -0.035, 0.0]},
+        }
+    )
+    assert position == {"x": 117.5, "y": 42.25, "z": 0.4}
+    assert z_offset == -0.035
+
+
+def test_moonraker_motion_falls_back_to_toolhead_and_tolerates_missing_data():
+    from backend.app.services.printer_providers.moonraker import _moonraker_motion
+
+    assert _moonraker_motion({"toolhead": {"position": [10, 20, 5, 0]}}) == ({"x": 10.0, "y": 20.0, "z": 5.0}, None)
+    assert _moonraker_motion({}) == (None, None)
+    assert _moonraker_motion({"gcode_move": {"gcode_position": [None, 1, 2]}}) == (None, None)
+
+
+def test_moonraker_status_update_exposes_position_and_z_offset(monkeypatch):
+    client = MoonrakerPrinterClient("http://moonraker.local:7125", printer_model="Generic Klipper Printer")
+    base_status = {
+        "print_stats": {"state": "standby"},
+        "virtual_sdcard": {},
+        "display_status": {},
+        "extruder": {"temperature": 25.0, "target": 0.0},
+        "heater_bed": {"temperature": 24.0, "target": 0.0},
+    }
+    motion_status = {
+        "toolhead": {"extruder": "extruder", "position": [0, 0, 0, 0]},
+        "gcode_move": {"gcode_position": [100.0, 50.0, 10.0, 0.0], "homing_origin": [0.0, 0.0, 0.05, 0.0]},
+    }
+
+    def query(object_names):
+        if "gcode_move" in object_names:
+            return {name: motion_status[name] for name in object_names if name in motion_status}
+        return dict(base_status)
+
+    monkeypatch.setattr(client, "_available_objects", lambda: ["toolhead", "gcode_move", "extruder", "heater_bed"])
+    monkeypatch.setattr(client, "_query_objects", query)
+    monkeypatch.setattr(client, "_query_cfs_status", lambda *args, **kwargs: {})
+    monkeypatch.setattr(client, "_query_fan_status", lambda *args, **kwargs: {})
+    monkeypatch.setattr(client, "_query_snapmaker_u1_status", lambda *args, **kwargs: {})
+
+    assert client.request_status_update() is True
+
+    assert client.state.raw_data["position"] == {"x": 100.0, "y": 50.0, "z": 10.0}
+    assert client.state.raw_data["z_offset"] == 0.05
+
+    from backend.app.services.printer_manager import printer_state_to_dict
+
+    payload = printer_state_to_dict(client.state)
+    assert payload["position"] == {"x": 100.0, "y": 50.0, "z": 10.0}
+    assert payload["z_offset"] == 0.05
+
+
+# --- QIDI Q2 (issue #35) ---------------------------------------------------
+
+QIDI_Q2_OBJECTS = [
+    "webhooks",
+    "configfile",
+    "print_stats",
+    "virtual_sdcard",
+    "display_status",
+    "extruder",
+    "heater_bed",
+    "heater_generic chamber",
+    "temperature_sensor Chamber_Thermal_Protection_Sensor",
+    "fan_generic chamber_circulation_fan",
+    "controller_fan chamber_fan",
+    "heater_fan hotend_fan",
+    "fan_generic cooling_fan",
+    "controller_fan board_fan",
+    "fan_generic auxiliary_cooling_fan",
+    "output_pin polar_cooler",
+    "output_pin beeper",
+    "output_pin caselight",
+    "gcode_macro M141",
+    "gcode_macro M106",
+]
+
+
+def _qidi_q2_status():
+    return {
+        "webhooks": {"state": "ready"},
+        "print_stats": {"state": "standby", "filename": ""},
+        "virtual_sdcard": {"progress": 0.0},
+        "display_status": {"progress": 0.0},
+        "extruder": {"temperature": 25.0, "target": 0.0},
+        "heater_bed": {"temperature": 24.0, "target": 0.0},
+        "heater_generic chamber": {"temperature": 31.4, "target": 45.0, "power": 0.6},
+        "temperature_sensor Chamber_Thermal_Protection_Sensor": {"temperature": 33.0},
+        "fan_generic cooling_fan": {"speed": 0.5, "rpm": 3000},
+        "fan_generic auxiliary_cooling_fan": {"speed": 0.0, "rpm": 0},
+        "fan_generic chamber_circulation_fan": {"speed": 1.0, "rpm": 2000},
+        "heater_fan hotend_fan": {"speed": 1.0, "rpm": 5000},
+        "output_pin caselight": {"value": 1.0},
+        "configfile": {"settings": {"heater_generic chamber": {"max_temp": 70.0, "min_temp": -100.0}}},
+    }
+
+
+def _qidi_q2_client(monkeypatch, sent: list[str] | None = None):
+    client = MoonrakerPrinterClient("http://qidi-q2.local:7125", printer_model="Generic Klipper Printer")
+    status = _qidi_q2_status()
+    monkeypatch.setattr(client, "_available_objects", lambda: list(QIDI_Q2_OBJECTS))
+    monkeypatch.setattr(
+        client, "_query_objects", lambda object_names: {name: status[name] for name in object_names if name in status}
+    )
+    if sent is not None:
+        monkeypatch.setattr(client, "send_gcode", lambda script: sent.append(script) or True)
+    return client, status
+
+
+def test_moonraker_qidi_q2_maps_fan_generic_fans_to_roles(monkeypatch):
+    client, _ = _qidi_q2_client(monkeypatch)
+
+    assert client.request_status_update() is True
+
+    assert client.state.cooling_fan_speed == 50
+    assert client.state.big_fan1_speed == 0
+    assert client.state.big_fan2_speed == 100
+    assert client.state.heatbreak_fan_speed == 100
+
+
+def test_moonraker_qidi_q2_reports_chamber_heater_and_light(monkeypatch):
+    client, status = _qidi_q2_client(monkeypatch)
+
+    client.request_status_update()
+
+    temps = client.state.temperatures
+    assert temps["chamber"] == 31.4
+    assert temps["chamber_target"] == 45.0
+    assert temps["chamber_heating"] is True
+    assert client.state.chamber_temp_supported is True
+    assert client.state.chamber_heater_supported is True
+    assert client.state.chamber_temp_max == 70.0
+    assert client.state.chamber_light_supported is True
+    assert client.state.chamber_light is True
+
+    # State changed on the printer screen / another client is picked up on the next poll.
+    status["output_pin caselight"] = {"value": 0.0}
+    status["heater_generic chamber"] = {"temperature": 30.0, "target": 0.0}
+    client.request_status_update()
+    assert client.state.chamber_light is False
+    assert client.state.temperatures["chamber_target"] == 0.0
+    assert client.state.temperatures["chamber_heating"] is False
+
+
+def test_moonraker_qidi_q2_controls_part_and_aux_fans(monkeypatch):
+    sent: list[str] = []
+    client, _ = _qidi_q2_client(monkeypatch, sent)
+
+    assert client.set_fan_speed("part", 75) is True
+    assert client.set_fan_speed("aux", 40) is True
+    assert client.set_fan_speed("chamber", 100) is True
+    assert sent == [
+        "SET_FAN_SPEED FAN=cooling_fan SPEED=0.75",
+        "SET_FAN_SPEED FAN=auxiliary_cooling_fan SPEED=0.40",
+        "SET_FAN_SPEED FAN=chamber_circulation_fan SPEED=1.00",
+    ]
+
+
+def test_moonraker_qidi_q2_sets_chamber_light_with_set_pin(monkeypatch):
+    sent: list[str] = []
+    client, _ = _qidi_q2_client(monkeypatch, sent)
+
+    assert client.set_chamber_light(False) is True
+    assert client.state.chamber_light is False
+    assert client.set_chamber_light(True) is True
+    assert sent == ["SET_PIN PIN=caselight VALUE=0", "SET_PIN PIN=caselight VALUE=1"]
+
+
+def test_moonraker_qidi_q2_sets_chamber_temperature_via_m141_and_clamps(monkeypatch):
+    sent: list[str] = []
+    client, _ = _qidi_q2_client(monkeypatch, sent)
+
+    assert client.set_chamber_temperature(50) is True
+    assert client.set_chamber_temperature(0) is True
+    assert client.set_chamber_temperature(90) is True
+    assert sent == ["M141 S50", "M141 S0", "M141 S70"]
+
+
+def test_moonraker_chamber_temperature_falls_back_to_set_heater_temperature(monkeypatch):
+    sent: list[str] = []
+    client, _ = _qidi_q2_client(monkeypatch, sent)
+    monkeypatch.setattr(
+        client, "_available_objects", lambda: [name for name in QIDI_Q2_OBJECTS if name != "gcode_macro M141"]
+    )
+
+    assert client.set_chamber_temperature(40) is True
+    assert sent == ["SET_HEATER_TEMPERATURE HEATER=chamber TARGET=40"]
+
+
+def test_moonraker_without_chamber_objects_reports_no_capabilities(monkeypatch):
+    client = MoonrakerPrinterClient("http://moonraker.local:7125", printer_model="Generic Klipper Printer")
+    status = {
+        "print_stats": {"state": "standby"},
+        "extruder": {"temperature": 25.0, "target": 0.0},
+        "heater_bed": {"temperature": 24.0, "target": 0.0},
+        "fan": {"speed": 0.2},
+    }
+    monkeypatch.setattr(client, "_available_objects", lambda: ["print_stats", "extruder", "heater_bed", "fan"])
+    monkeypatch.setattr(
+        client, "_query_objects", lambda object_names: {name: status[name] for name in object_names if name in status}
+    )
+
+    client.request_status_update()
+
+    assert "chamber" not in client.state.temperatures
+    assert client.state.chamber_temp_supported is False
+    assert client.state.chamber_heater_supported is False
+    assert client.state.chamber_light_supported is False
+    assert client.state.cooling_fan_speed == 20
+    assert client.set_chamber_light(True) is False

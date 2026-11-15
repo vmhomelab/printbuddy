@@ -1,0 +1,155 @@
+{
+  "files": [
+    {
+      "date": 1793375603,
+      "display": "root.gcode",
+      "gcodeAnalysis": {
+        "dimensions": {
+          "depth": 59.0,
+          "height": 0.0,
+          "width": 59.0
+        },
+        "estimatedPrintTime": 25.951614716074836,
+        "filament": {
+          "tool0": {
+            "length": 5.9,
+            "volume": 0.0
+          }
+        },
+        "printingArea": {
+          "maxX": 69.0,
+          "maxY": 69.0,
+          "maxZ": 0.0,
+          "minX": 10.0,
+          "minY": 10.0,
+          "minZ": 0.0
+        },
+        "travelArea": {
+          "maxX": 69.0,
+          "maxY": 69.0,
+          "maxZ": 0.0,
+          "minX": 0.0,
+          "minY": 0.0,
+          "minZ": 0.0
+        },
+        "travelDimensions": {
+          "depth": 69.0,
+          "height": 0.0,
+          "width": 69.0
+        }
+      },
+      "hash": "834f7f9d81beaa5fc5d9eda4459625e735473f8e",
+      "name": "root.gcode",
+      "origin": "local",
+      "path": "root.gcode",
+      "refs": {
+        "download": "http://octopi.local/downloads/files/local/root.gcode",
+        "resource": "http://octopi.local/api/files/local/root.gcode"
+      },
+      "size": 1914,
+      "type": "machinecode",
+      "typePath": [
+        "machinecode",
+        "gcode"
+      ],
+      "user": "admin"
+    },
+    {
+      "children": [
+        {
+          "date": 1793375603,
+          "display": "cube.gcode",
+          "gcodeAnalysis": {
+            "dimensions": {
+              "depth": 59.0,
+              "height": 0.0,
+              "width": 59.0
+            },
+            "estimatedPrintTime": 25.951614716074836,
+            "filament": {
+              "tool0": {
+                "length": 5.9,
+                "volume": 0.0
+              }
+            },
+            "printingArea": {
+              "maxX": 69.0,
+              "maxY": 69.0,
+              "maxZ": 0.0,
+              "minX": 10.0,
+              "minY": 10.0,
+              "minZ": 0.0
+            },
+            "travelArea": {
+              "maxX": 69.0,
+              "maxY": 69.0,
+              "maxZ": 0.0,
+              "minX": 0.0,
+              "minY": 0.0,
+              "minZ": 0.0
+            },
+            "travelDimensions": {
+              "depth": 69.0,
+              "height": 0.0,
+              "width": 69.0
+            }
+          },
+          "hash": "834f7f9d81beaa5fc5d9eda4459625e735473f8e",
+          "name": "cube.gcode",
+          "origin": "local",
+          "path": "prints/cube.gcode",
+          "refs": {
+            "download": "http://octopi.local/downloads/files/local/prints/cube.gcode",
+            "resource": "http://octopi.local/api/files/local/prints/cube.gcode"
+          },
+          "size": 1914,
+          "type": "machinecode",
+          "typePath": [
+            "machinecode",
+            "gcode"
+          ],
+          "user": "admin"
+        }
+      ],
+      "date": 1793375604,
+      "display": "prints",
+      "name": "prints",
+      "origin": "local",
+      "path": "prints",
+      "prints": {
+        "failure": 0,
+        "success": 0
+      },
+      "refs": {
+        "resource": "http://octopi.local/api/files/local/prints"
+      },
+      "size": 1914,
+      "type": "folder",
+      "typePath": [
+        "folder"
+      ]
+    },
+    {
+      "children": [],
+      "date": 1793375603,
+      "display": "empty",
+      "name": "empty",
+      "origin": "local",
+      "path": "empty",
+      "prints": {
+        "failure": 0,
+        "success": 0
+      },
+      "refs": {
+        "resource": "http://octopi.local/api/files/local/empty"
+      },
+      "size": 0,
+      "type": "folder",
+      "typePath": [
+        "folder"
+      ]
+    }
+  ],
+  "free": 31014293504,
+  "total": 270553174016
+}

@@ -417,12 +417,17 @@ async def _track_from_archive_estimate(
     default_filament_cost: float = 0.0,
     spool_assignments: dict[tuple[int, int], int] | None = None,
     print_started_at: datetime | None = None,
+    actual_filament_used_mm: float | None = None,
 ) -> list[dict]:
-    """Track PrusaLink no-3MF prints from archive-level slicer estimates.
+    """Track PrusaLink/Moonraker no-3MF prints from archive-level slicer estimates.
 
     This is deliberately narrower than the 3MF path: it only runs for fallback
-    archives carrying normalized PrusaLink file metadata. Other providers keep
-    their existing 3MF/AMS/Spoolman paths.
+    archives carrying normalized PrusaLink or Moonraker file metadata. Other
+    providers keep their existing 3MF/AMS/Spoolman paths.
+
+    Moonraker reports the filament actually extruded (``print_stats.filament_used``
+    in mm); when the slicer's total length is known the estimate is scaled by
+    that ratio, which is exact for cancelled/failed prints too.
     """
     from backend.app.models.archive import PrintArchive
 
@@ -433,12 +438,20 @@ async def _track_from_archive_estimate(
     if not isinstance(metadata, dict) or metadata.get("source") not in {
         "prusalink_file_meta",
         "prusalink_filename_meta",
+        "moonraker_file_metadata",
     }:
         return []
     if not archive.filament_used_grams or archive.filament_used_grams <= 0:
         return []
 
     scale = 1.0 if status == "completed" else max(0.0, min((progress or 0.0) / 100.0, 1.0))
+    try:
+        planned_mm = float(metadata.get("filament_total_mm") or metadata.get("filament_used_mm") or 0)
+        used_mm = float(actual_filament_used_mm) if actual_filament_used_mm is not None else None
+    except (TypeError, ValueError):
+        planned_mm, used_mm = 0.0, None
+    if used_mm is not None and planned_mm > 0:
+        scale = max(0.0, min(used_mm / planned_mm, 1.0))
     weight_grams = archive.filament_used_grams * scale
     if weight_grams <= 0:
         return []
@@ -485,10 +498,11 @@ async def _track_from_archive_estimate(
     db.add(history)
 
     logger.info(
-        "[UsageTracker] Archive estimate: spool %d consumed %.1fg on printer %d (PrusaLink fallback, %s)",
+        "[UsageTracker] Archive estimate: spool %d consumed %.1fg on printer %d (%s, %s)",
         spool.id,
         weight_grams,
         printer_id,
+        metadata.get("source"),
         status,
     )
     return [
@@ -607,6 +621,7 @@ async def on_print_complete(
             default_filament_cost=default_filament_cost,
             spool_assignments=session.spool_assignments if session else None,
             print_started_at=session.started_at if session else None,
+            actual_filament_used_mm=data.get("actual_filament_used_mm"),
         )
         results.extend(archive_estimate_results)
 

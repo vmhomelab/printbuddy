@@ -37,6 +37,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -98,7 +99,7 @@ DEVICE_CODE_TTL = timedelta(minutes=10)
 
 
 class DevicePoll:
-    """String outcomes of one :meth:`OrcaCloudService.poll_token` attempt.
+    """String outcomes of one `OrcaCloudService.poll_token` attempt.
 
     ``PENDING`` / ``SLOW_DOWN`` are non-terminal (keep polling; on SLOW_DOWN
     widen the interval). ``DENIED`` / ``EXPIRED`` are terminal — the pairing
@@ -137,7 +138,7 @@ _shared_http_client: httpx.AsyncClient | None = None
 def set_shared_http_client(client: httpx.AsyncClient | None) -> None:
     """Register an app-scoped ``httpx.AsyncClient`` so per-request
     ``OrcaCloudService`` instances can reuse its connection pool. Mirrors the
-    pattern used by :mod:`backend.app.services.bambu_cloud`."""
+    pattern used by `backend.app.services.bambu_cloud`."""
     global _shared_http_client
     _shared_http_client = client
 
@@ -151,8 +152,8 @@ class OrcaCloudService:
     """Stateful per-request client for the Orca Cloud external API.
 
     Instantiated by the route layer, populated with a stored token via
-    :meth:`set_tokens`, then used to call the sync endpoints. Token rotation
-    on refresh is the route layer's responsibility (see :meth:`refresh` —
+    `set_tokens`, then used to call the sync endpoints. Token rotation
+    on refresh is the route layer's responsibility (see `refresh` —
     mutates ``self`` and returns the new pair, but does NOT persist).
     """
 
@@ -176,7 +177,7 @@ class OrcaCloudService:
     @property
     def is_authenticated(self) -> bool:
         """True iff we have an access token that won't expire within
-        :data:`_REFRESH_LEEWAY`. The leeway prevents a slow API call from
+        `_REFRESH_LEEWAY`. The leeway prevents a slow API call from
         timing out mid-flight on a token that was nominally still valid."""
         if not self.access_token:
             return False
@@ -255,12 +256,12 @@ class OrcaCloudService:
     async def poll_token(self, device_code: str) -> tuple[str, dict[str, Any] | None]:
         """Poll the token endpoint once for a pending device-code grant.
 
-        Returns ``(status, data)`` where ``status`` is a :class:`DevicePoll`
-        value. On :data:`DevicePoll.COMPLETE` the service is mutated with the
+        Returns ``(status, data)`` where ``status`` is a `DevicePoll`
+        value. On `DevicePoll.COMPLETE` the service is mutated with the
         new tokens and ``data`` is the raw token response (so the caller can
         persist it); otherwise ``data`` is ``None``.
 
-        Raises :class:`OrcaCloudError` only for genuinely unexpected responses
+        Raises `OrcaCloudError` only for genuinely unexpected responses
         (5xx, network, or an unrecognized error code) — the four RFC error
         codes are returned as statuses, not raised, because they're normal
         control flow for a polling loop."""
@@ -447,6 +448,38 @@ class OrcaCloudService:
         using an injected or app-shared client (those are managed elsewhere)."""
         if self._owns_client:
             await self._client.aclose()
+
+
+_ORCA_QUOTED_ITEM = re.compile(r'"((?:[^"\\]|\\.)*)"')
+
+
+def parse_orca_string_list(value: object) -> list[str]:
+    """Normalise an Orca string-vector option (e.g. ``compatible_printers``).
+
+    Orca Cloud returns such options in OrcaSlicer's serialised config form,
+    where every item is double-quoted and items are ``;``-separated, either as
+    one string (``'"Printer A";"Printer B"'``) or as a list of quoted items
+    (``['"Printer A"']``). Plain lists and plain strings are accepted too.
+    Returns the bare, non-empty names.
+    """
+    raw_items: list[str]
+    if isinstance(value, str):
+        raw_items = [value]
+    elif isinstance(value, list):
+        raw_items = [item for item in value if isinstance(item, str)]
+    else:
+        return []
+
+    names: list[str] = []
+    for item in raw_items:
+        text = item.strip()
+        quoted = _ORCA_QUOTED_ITEM.findall(text) if text.startswith('"') else []
+        if quoted:
+            parts = [re.sub(r"\\(.)", r"\1", part) for part in quoted]
+        else:
+            parts = text.split(";")
+        names.extend(part.strip() for part in parts if part.strip())
+    return names
 
 
 def _error_code(resp: httpx.Response) -> str | None:

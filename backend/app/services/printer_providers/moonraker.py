@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import logging
+import re
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -10,6 +13,9 @@ from urllib.parse import quote, urljoin, urlparse, urlunparse
 import httpx
 
 from backend.app.services.bambu_mqtt import FilaSwitchState, NozzleInfo, PrintOptions
+from backend.app.services.printer_providers._http_common import serialized_status_update
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -44,6 +50,11 @@ class MoonrakerPrinterState:
     airduct_mode: int = 0
     speed_level: int = 2
     chamber_light: bool = False
+    # Capability flags discovered from Moonraker objects (None/False = not present)
+    chamber_light_supported: bool = False
+    chamber_temp_supported: bool = False
+    chamber_heater_supported: bool = False
+    chamber_temp_max: float | None = None
     active_extruder: int = 0
     tray_now: int = 255
     ams_status_main: int = 0
@@ -134,10 +145,202 @@ def _safe_float(value: Any) -> float | None:
         return None
 
 
+_GENERIC_KLIPPER_EXTRUDER_RE = re.compile(r"^extruder(\d*)$")
+
+
+def _moonraker_motion(status: dict[str, Any]) -> tuple[dict[str, float] | None, float | None]:
+    """Return the toolhead position (``{"x", "y", "z"}``) and the active Z offset.
+
+    ``gcode_move.gcode_position`` is the position in G-code coordinates, i.e. the
+    value Mainsail/Fluidd show and the one manual jogs refer to. ``toolhead.position``
+    is the fallback for firmware that does not expose ``gcode_move``. The Z offset
+    (babystepping / ``SET_GCODE_OFFSET``) lives in ``gcode_move.homing_origin``.
+    """
+    gcode_move = status.get("gcode_move") if isinstance(status.get("gcode_move"), dict) else {}
+    toolhead = status.get("toolhead") if isinstance(status.get("toolhead"), dict) else {}
+
+    position: dict[str, float] | None = None
+    for raw in (gcode_move.get("gcode_position"), toolhead.get("position")):
+        if isinstance(raw, (list, tuple)) and len(raw) >= 3:
+            values = [_safe_float(v) for v in raw[:3]]
+            if all(v is not None for v in values):
+                position = {axis: round(v, 3) for axis, v in zip(("x", "y", "z"), values, strict=True)}  # type: ignore[arg-type]
+                break
+
+    z_offset: float | None = None
+    homing_origin = gcode_move.get("homing_origin")
+    if isinstance(homing_origin, (list, tuple)) and len(homing_origin) >= 3:
+        z = _safe_float(homing_origin[2])
+        if z is not None:
+            z_offset = round(z, 4)
+    return position, z_offset
+
+
+def _generic_moonraker_tool_slots(status: dict[str, Any]) -> list[dict[str, Any]]:
+    """Normalize generic multi-tool Klipper state without replacing real feeders."""
+    if not isinstance(status, dict) or any(key.startswith("filament_feed ") for key in status):
+        return []
+    extruders: list[tuple[int, str, dict[str, Any]]] = []
+    for name, values in status.items():
+        match = _GENERIC_KLIPPER_EXTRUDER_RE.fullmatch(name)
+        if match and isinstance(values, dict):
+            extruders.append((int(match.group(1) or 0), name, values))
+    extruders.sort(key=lambda item: item[0])
+    if len(extruders) < 2:
+        return []
+    toolhead = status.get("toolhead") if isinstance(status.get("toolhead"), dict) else {}
+    active_extruder = toolhead.get("extruder")
+
+    def sensor_state(*names: str) -> bool | None:
+        for sensor_name in names:
+            sensor = status.get(sensor_name)
+            if isinstance(sensor, dict) and "filament_detected" in sensor:
+                return bool(sensor["filament_detected"])
+        return None
+
+    return [
+        {
+            "id": index,
+            "extruder": name,
+            "nozzle_diameter": str(values.get("nozzle_diameter") or ""),
+            "active": name == active_extruder,
+            "filament_present": sensor_state(f"filament_switch_sensor filament{index}"),
+            "docked": sensor_state(f"filament_switch_sensor docked{index}"),
+            "path_present": sensor_state(f"filament_switch_sensor path_{index}", f"filament_switch_sensor path{index}"),
+        }
+        for index, name, values in extruders
+    ]
+
+
 def _list_value(values: Any, index: int, default: Any = None) -> Any:
     if isinstance(values, list) and 0 <= index < len(values):
         return values[index]
     return default
+
+
+def _split_metadata_list(value: Any) -> list[str]:
+    """Split Moonraker multi-extruder metadata (``"PLA;PETG"`` or a list) into items."""
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item or "").strip()]
+    if isinstance(value, str):
+        return [item.strip() for item in value.replace(",", ";").split(";") if item.strip()]
+    return []
+
+
+def _largest_moonraker_thumbnail(thumbnails: Any) -> str | None:
+    """Return the ``relative_path`` of the largest thumbnail Moonraker extracted."""
+    best_path: str | None = None
+    best_area = -1
+    for thumb in thumbnails if isinstance(thumbnails, list) else []:
+        if not isinstance(thumb, dict):
+            continue
+        relative_path = str(thumb.get("relative_path") or "").strip()
+        if not relative_path:
+            continue
+        area = (_safe_int(thumb.get("width")) or 0) * (_safe_int(thumb.get("height")) or 0)
+        if area > best_area:
+            best_area = area
+            best_path = relative_path
+    return best_path
+
+
+def normalize_moonraker_file_metadata(meta: Any, filename: str | None = None) -> dict[str, Any]:
+    """Map Moonraker ``/server/files/metadata`` to Printbuddy's canonical fields.
+
+    Moonraker parses slicer comments from every uploaded G-code file
+    (PrusaSlicer, SuperSlicer, OrcaSlicer, Cura, ...). Moonraker archives are
+    G-code based, so this replaces the 3MF parsing Bambu archives get.
+    ``filament_total`` is a length in millimetres and is kept as length; grams
+    are only taken from the slicer's own ``filament_weight_total``.
+    """
+    if not isinstance(meta, dict) or not meta:
+        return {}
+
+    raw_filename = str(meta.get("filename") or filename or "").strip().lstrip("/")
+    normalized: dict[str, Any] = {
+        "source": "moonraker_file_metadata",
+        "raw_filename": raw_filename,
+        "raw_metadata": meta,
+    }
+
+    estimated_time = _safe_float(meta.get("estimated_time"))
+    if estimated_time is not None and estimated_time > 0:
+        normalized["print_time_seconds"] = int(estimated_time)
+
+    layer_height = _safe_float(meta.get("layer_height"))
+    if layer_height is not None and layer_height > 0:
+        normalized["layer_height"] = layer_height
+        layer_count = _safe_int(meta.get("layer_count"))
+        object_height = _safe_float(meta.get("object_height"))
+        if layer_count is not None and layer_count > 0:
+            normalized["total_layers"] = layer_count
+        elif object_height is not None and object_height > 0:
+            normalized["total_layers"] = max(1, round(object_height / layer_height))
+
+    filament_total = _safe_float(meta.get("filament_total"))
+    if filament_total is not None and filament_total > 0:
+        normalized["filament_total_mm"] = filament_total
+
+    grams = _safe_float(meta.get("filament_weight_total"))
+    if grams is not None and grams > 0:
+        normalized["filament_used_grams"] = round(grams, 2)
+
+    filament_types = _split_metadata_list(meta.get("filament_type"))
+    if filament_types:
+        normalized["filament_type"] = filament_types[0]
+        if len(set(filament_types)) > 1:
+            normalized["filament_types"] = filament_types
+
+    filament_name = str(meta.get("filament_name") or "").strip()
+    if filament_name:
+        normalized["filament_name"] = filament_name
+
+    colors = [
+        color if color.startswith("#") else f"#{color}" for color in _split_metadata_list(meta.get("filament_colors"))
+    ]
+    if colors:
+        normalized["filament_colors"] = colors
+
+    nozzle_diameter = _safe_float(meta.get("nozzle_diameter"))
+    if nozzle_diameter is not None and nozzle_diameter > 0:
+        normalized["nozzle_diameter"] = nozzle_diameter
+
+    for source_key, target_key in (
+        ("first_layer_extr_temp", "nozzle_temperature"),
+        ("first_layer_bed_temp", "bed_temperature"),
+    ):
+        value = _safe_int(meta.get(source_key))
+        if value is not None and value > 0:
+            normalized[target_key] = value
+
+    weights = meta.get("filament_weights")
+    if isinstance(weights, list):
+        slots: list[dict[str, Any]] = []
+        for idx, raw_weight in enumerate(weights):
+            weight = _safe_float(raw_weight)
+            if weight is None or weight <= 0:
+                continue
+            slot: dict[str, Any] = {"slot_id": idx + 1, "used_g": round(weight, 2)}
+            if idx < len(filament_types):
+                slot["type"] = filament_types[idx]
+            if idx < len(colors):
+                slot["color"] = colors[idx]
+            slots.append(slot)
+        if len(slots) > 1:
+            normalized["filament_slots"] = slots
+
+    for key in ("slicer", "thumbnails"):
+        value = meta.get(key)
+        if value:
+            normalized[key] = value
+
+    thumbnail = _largest_moonraker_thumbnail(meta.get("thumbnails"))
+    if thumbnail:
+        # Thumbnail paths are relative to the G-code file's directory.
+        parent = str(Path(raw_filename).parent) if raw_filename else ""
+        normalized["thumbnail_path"] = f"{parent}/{thumbnail}" if parent not in {"", "."} else thumbnail
+
+    return normalized
 
 
 def _normalize_creality_cfs_color(value: Any) -> str | None:
@@ -246,6 +449,7 @@ def _snapmaker_u1_task_filament_metadata(config: dict[str, Any], index: int) -> 
     official = bool(_snapmaker_list_value(config, "filament_official", index))
     edited = bool(_snapmaker_list_value(config, "filament_edit", index))
     sku = _safe_int(_snapmaker_list_value(config, "filament_sku", index))
+    spool_id = _safe_int(_snapmaker_list_value(config, "filament_spool_id", index))
     color = None
     if material:
         color = _normalize_snapmaker_u1_color(_snapmaker_list_value(config, "filament_color_rgba", index))
@@ -265,6 +469,7 @@ def _snapmaker_u1_task_filament_metadata(config: dict[str, Any], index: int) -> 
         "official": official,
         "edited": edited,
         "sku": sku,
+        "spool_id": spool_id if spool_id and spool_id > 0 else None,
         "source": source,
     }
 
@@ -329,6 +534,30 @@ def _snapmaker_u1_filament_metadata(values: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+_CHAMBER_FAN_MARKERS = ("chamber", "cavity", "exhaust", "filter", "enclosure", "circulation")
+_AUX_FAN_MARKERS = ("aux", "auxiliary", "side", "boost")
+_PART_FAN_MARKERS = ("cooling", "part", "model", "print")
+_CHAMBER_MARKERS = ("chamber", "cavity", "enclosure")
+_LIGHT_MARKERS = ("caselight", "case_light", "chamber_light", "chamberlight", "light", "led")
+
+
+def _classify_generic_fan(fan_name: str) -> str | None:
+    """Classify a ``fan_generic`` by name into a Printbuddy fan role.
+
+    Order matters: chamber and auxiliary markers are checked before the part
+    cooling markers so names such as ``auxiliary_cooling_fan`` (QIDI) map to
+    the auxiliary fan, while ``cooling_fan`` maps to part cooling.
+    """
+    name = fan_name.lower()
+    if any(marker in name for marker in _CHAMBER_FAN_MARKERS):
+        return "chamber"
+    if any(marker in name for marker in _AUX_FAN_MARKERS):
+        return "aux"
+    if any(marker in name for marker in _PART_FAN_MARKERS):
+        return "part"
+    return None
+
+
 def _apply_moonraker_fans(state: MoonrakerPrinterState, status: dict[str, Any]) -> None:
     """Map reported Klipper/Moonraker fan objects onto Printbuddy fan badges.
 
@@ -340,6 +569,7 @@ def _apply_moonraker_fans(state: MoonrakerPrinterState, status: dict[str, Any]) 
     state.big_fan1_speed = None
     state.big_fan2_speed = None
     state.heatbreak_fan_speed = None
+    has_standard_part_fan = False
 
     for name, values in status.items():
         percent = _moonraker_fan_percent(values)
@@ -348,7 +578,9 @@ def _apply_moonraker_fans(state: MoonrakerPrinterState, status: dict[str, Any]) 
 
         normalized = name.lower()
         if normalized == "fan":
+            # The standard Klipper [fan] always wins over a fan_generic part fan.
             state.cooling_fan_speed = percent
+            has_standard_part_fan = True
         elif normalized.startswith("heater_fan "):
             fan_name = normalized.removeprefix("heater_fan ")
             if state.heatbreak_fan_speed is None or any(
@@ -356,11 +588,13 @@ def _apply_moonraker_fans(state: MoonrakerPrinterState, status: dict[str, Any]) 
             ):
                 state.heatbreak_fan_speed = percent
         elif normalized.startswith("fan_generic "):
-            fan_name = normalized.removeprefix("fan_generic ")
-            if any(marker in fan_name for marker in ("chamber", "cavity", "exhaust", "filter", "enclosure")):
+            role = _classify_generic_fan(normalized.removeprefix("fan_generic "))
+            if role == "chamber":
                 state.big_fan2_speed = percent
-            elif any(marker in fan_name for marker in ("aux", "auxiliary", "side", "boost")):
+            elif role == "aux":
                 state.big_fan1_speed = percent
+            elif role == "part" and not has_standard_part_fan:
+                state.cooling_fan_speed = percent
 
 
 def _remaining_minutes(print_stats: dict[str, Any], progress: float) -> int:
@@ -427,6 +661,17 @@ def _moonraker_url_candidates(base_url: str) -> list[str]:
         if fallback not in candidates:
             candidates.append(fallback)
     return candidates
+
+
+def _moonraker_error_message(exc: httpx.HTTPStatusError) -> str:
+    """Klipper's own error text from a failed Moonraker request (e.g. a gcode error)."""
+    try:
+        data = exc.response.json()
+    except ValueError:
+        return str(exc)
+    error = data.get("error") if isinstance(data, dict) else None
+    message = error.get("message") if isinstance(error, dict) else None
+    return str(message).strip() if message else str(exc)
 
 
 def _creality_cfs_slot_name(tray_id: int) -> str | None:
@@ -523,6 +768,18 @@ def _normalize_moonraker_webcam(base_url: str, webcam: dict[str, Any]) -> dict[s
     }
 
 
+logger = logging.getLogger(__name__)
+
+_MOONRAKER_ACTIVE_PRINT_STATES = frozenset({"RUNNING", "PAUSE"})
+
+# Klipper's object list only changes on a config reload/restart, but the status
+# poll needs it several times per cycle (fans, chamber, tool heads) and light/
+# fan/chamber commands need it too. Cache it briefly instead of re-fetching it
+# on every request; it is also dropped on (re)connect and whenever Klippy is
+# not ready or a status poll fails.
+_MOONRAKER_OBJECTS_CACHE_TTL_SECONDS = 300.0
+
+
 class MoonrakerPrinterClient:
     """Minimal Klipper/Mainsail provider backed by Moonraker.
 
@@ -552,6 +809,7 @@ class MoonrakerPrinterClient:
         self.printer_model = printer_model or ""
         self._gcodes_path_prefixes: list[str] | None = None
         self.state = MoonrakerPrinterState()
+        self._chamber_max_temp_cache: dict[str, float] = {}
         self.on_state_change = on_state_change
         self.on_print_start = on_print_start
         self.on_print_complete = on_print_complete
@@ -560,13 +818,55 @@ class MoonrakerPrinterClient:
         self._has_status_sample = False
         self._last_bed_temp: float | None = None
         self._current_print_started_at: float | None = None
+        self._current_file_metadata: dict[str, Any] = {}
+        self._current_file_metadata_name: str | None = None
+        # Firmware message of the last failed CFS/print-start command, for the
+        # API and print-dispatch error shown to the user.
+        self.last_error: str | None = None
+        # One pooled HTTP client per printer: keep-alive avoids a fresh TCP
+        # connect (and DNS lookup) for each of the several requests a status
+        # poll makes. httpx.Client is safe to share between threads.
+        self._http: httpx.Client | None = None
+        self._http_lock = threading.Lock()
+        self._objects_cache: list[str] | None = None
+        self._objects_cache_at = 0.0
+        # Snapmaker U1 SpoolLink exposes Spoolman IDs on print_task_config but
+        # not remain %. Cache Moonraker's spoolman proxy results briefly so
+        # status polling does not re-fetch the full spool list every cycle.
+        # Values: remain %, remaining_weight g, brand, material, color_name.
+        self._spoolman_remain_cache: dict[int, dict[str, Any]] = {}
+        self._spoolman_remain_cache_at: float = 0.0
 
     @property
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.auth_token}"} if self.auth_token else {}
 
+    def _http_client(self) -> httpx.Client:
+        with self._http_lock:
+            if self._http is None:
+                self._http = httpx.Client(timeout=self.timeout)
+            return self._http
+
+    def _close_http_client(self) -> None:
+        with self._http_lock:
+            client, self._http = self._http, None
+        if client is not None:
+            try:
+                client.close()
+            except Exception:  # noqa: BLE001 - closing is best effort
+                pass
+
+    def _http_get(self, url: str, **kwargs: Any) -> httpx.Response:
+        return self._http_client().get(url, **kwargs)
+
+    def _http_post(self, url: str, **kwargs: Any) -> httpx.Response:
+        return self._http_client().post(url, **kwargs)
+
+    def _invalidate_objects_cache(self) -> None:
+        self._objects_cache = None
+
     def _get(self, path: str, *, base_url: str | None = None) -> dict[str, Any]:
-        response = httpx.get(
+        response = self._http_get(
             urljoin(base_url or self.base_url, path.lstrip("/")), headers=self._headers, timeout=self.timeout
         )
         response.raise_for_status()
@@ -574,6 +874,82 @@ class MoonrakerPrinterClient:
         if isinstance(data, dict) and isinstance(data.get("result"), dict):
             return data["result"]
         return data if isinstance(data, dict) else {"value": data}
+
+    def _jsonrpc(self, method: str, params: dict[str, Any] | None = None) -> Any:
+        response = self._http_post(
+            urljoin(self.base_url, "server/jsonrpc"),
+            headers={**self._headers, "Content-Type": "application/json"},
+            json={"jsonrpc": "2.0", "method": method, "params": params or {}, "id": 1},
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        data = response.json()
+        if not isinstance(data, dict):
+            return None
+        if data.get("error"):
+            return None
+        return data.get("result")
+
+    def _spoolman_remain_by_id(self, spool_ids: set[int]) -> dict[int, dict[str, Any]]:
+        """Map Spoolman spool IDs to remain % and spool identity fields.
+
+        Snapmaker U1 Extended Firmware / SpoolLink stores per-lane Spoolman IDs
+        in ``print_task_config.filament_spool_id`` but does not publish remain %
+        on ``filament_feed``. Moonraker's spoolman proxy is the authoritative
+        source for remaining weight and brand/material labels on those printers.
+        """
+        wanted = {sid for sid in spool_ids if isinstance(sid, int) and sid > 0}
+        if not wanted:
+            return {}
+
+        now = time.monotonic()
+        cache_fresh = (now - self._spoolman_remain_cache_at) < 30.0
+        if cache_fresh and wanted.issubset(self._spoolman_remain_cache.keys()):
+            return {sid: self._spoolman_remain_cache[sid] for sid in wanted}
+
+        try:
+            spools = self._jsonrpc(
+                "server.spoolman.proxy",
+                {"request_method": "GET", "path": "/v1/spool"},
+            )
+        except Exception:  # noqa: BLE001 - Spoolman is optional; keep tray status usable
+            return {sid: self._spoolman_remain_cache[sid] for sid in wanted if sid in self._spoolman_remain_cache}
+
+        if not isinstance(spools, list):
+            return {sid: self._spoolman_remain_cache[sid] for sid in wanted if sid in self._spoolman_remain_cache}
+
+        refreshed: dict[int, dict[str, Any]] = {}
+        for spool in spools:
+            if not isinstance(spool, dict):
+                continue
+            sid = _safe_int(spool.get("id"))
+            if sid is None or sid <= 0:
+                continue
+            remaining = _safe_float(spool.get("remaining_weight"))
+            filament = spool.get("filament") if isinstance(spool.get("filament"), dict) else {}
+            if not isinstance(filament, dict):
+                filament = {}
+            initial = _safe_float(filament.get("weight"))
+            if remaining is None or initial is None or initial <= 0:
+                continue
+            pct = max(0, min(100, round((remaining / initial) * 100)))
+            vendor = filament.get("vendor") if isinstance(filament.get("vendor"), dict) else {}
+            brand = _snapmaker_clean_text(vendor.get("name")) if isinstance(vendor, dict) else ""
+            material = _snapmaker_clean_text(filament.get("material"))
+            color_name = _snapmaker_clean_text(filament.get("name"))
+            refreshed[sid] = {
+                "remain": pct,
+                "remaining_weight": remaining,
+                "brand": brand or None,
+                "material": material or None,
+                "color_name": color_name or None,
+            }
+
+        if refreshed:
+            self._spoolman_remain_cache.update(refreshed)
+            self._spoolman_remain_cache_at = now
+
+        return {sid: self._spoolman_remain_cache[sid] for sid in wanted if sid in self._spoolman_remain_cache}
 
     def _query_objects(self, object_names: list[str]) -> dict[str, Any]:
         query = "printer/objects/query?" + "&".join(quote(name, safe="") for name in object_names)
@@ -642,9 +1018,15 @@ class MoonrakerPrinterClient:
         return normalized
 
     def _available_objects(self) -> list[str]:
+        cached = self._objects_cache
+        if cached is not None and time.monotonic() - self._objects_cache_at < _MOONRAKER_OBJECTS_CACHE_TTL_SECONDS:
+            return list(cached)
         objects = self._get("printer/objects/list")
         available = objects.get("objects", []) if isinstance(objects, dict) else []
-        return [name for name in available if isinstance(name, str)] if isinstance(available, list) else []
+        names = [name for name in available if isinstance(name, str)] if isinstance(available, list) else []
+        self._objects_cache = names
+        self._objects_cache_at = time.monotonic()
+        return list(names)
 
     def _available_fan_objects(self, available: list[str] | None = None) -> list[str]:
         if available is None:
@@ -667,33 +1049,119 @@ class MoonrakerPrinterClient:
     def _target_fan_object(self, fan: str) -> str | None:
         """Return the Klipper fan object to control for a Printbuddy fan role."""
         normalized_fan = fan.strip().lower().replace("-", "_")
-        available = [name.lower() for name in self._available_fan_objects()]
-        if normalized_fan in {"part", "model", "model_fan", "cooling"}:
-            return "fan" if "fan" in available else None
-
-        marker_sets = {
-            "aux": ("aux", "auxiliary", "side", "boost"),
-            "auxiliary": ("aux", "auxiliary", "side", "boost"),
-            "auxiliary_fan": ("aux", "auxiliary", "side", "boost"),
-            "chamber": ("chamber", "cavity", "exhaust", "filter", "enclosure"),
-            "box": ("chamber", "cavity", "exhaust", "filter", "enclosure"),
-            "box_fan": ("chamber", "cavity", "exhaust", "filter", "enclosure"),
+        available = self._available_fan_objects()
+        role_aliases = {
+            "part": "part",
+            "model": "part",
+            "model_fan": "part",
+            "cooling": "part",
+            "aux": "aux",
+            "auxiliary": "aux",
+            "auxiliary_fan": "aux",
+            "chamber": "chamber",
+            "box": "chamber",
+            "box_fan": "chamber",
         }
-        markers = marker_sets.get(normalized_fan)
-        if not markers:
+        role = role_aliases.get(normalized_fan)
+        if role is None:
             return None
+        if role == "part" and "fan" in available:
+            return "fan"
         for object_name in available:
             if not object_name.startswith("fan_generic "):
                 continue
-            fan_name = object_name.removeprefix("fan_generic ")
-            if any(marker in fan_name for marker in markers):
+            if _classify_generic_fan(object_name.removeprefix("fan_generic ")) == role:
                 return object_name
         return None
+
+    @staticmethod
+    def _chamber_heater_object(available: list[str]) -> str | None:
+        for name in available:
+            if name.startswith("heater_generic ") and any(
+                marker in name.removeprefix("heater_generic ").lower() for marker in _CHAMBER_MARKERS
+            ):
+                return name
+        return None
+
+    @staticmethod
+    def _chamber_sensor_object(available: list[str]) -> str | None:
+        candidates = [
+            name
+            for name in available
+            if name.startswith(("temperature_sensor ", "temperature_fan "))
+            and any(marker in name.split(" ", 1)[1].lower() for marker in _CHAMBER_MARKERS)
+        ]
+        # Prefer a plain chamber sensor over safety/protection sensors.
+        candidates.sort(key=lambda name: "protect" in name.lower())
+        return candidates[0] if candidates else None
+
+    @staticmethod
+    def _chamber_light_object(available: list[str]) -> str | None:
+        for name in available:
+            if name.startswith("output_pin ") and any(
+                marker in name.removeprefix("output_pin ").lower() for marker in _LIGHT_MARKERS
+            ):
+                return name
+        return None
+
+    def _chamber_objects(self, available: list[str]) -> list[str]:
+        heater = self._chamber_heater_object(available)
+        sensor = None if heater else self._chamber_sensor_object(available)
+        light = self._chamber_light_object(available)
+        return [name for name in (heater, sensor, light) if name]
+
+    def _query_chamber_status(self, available: list[str] | None = None) -> dict[str, Any]:
+        try:
+            if available is None:
+                available = self._available_objects()
+            objects = self._chamber_objects(available)
+            if not objects:
+                return {}
+            return self._query_objects(objects)
+        except Exception:  # noqa: BLE001 - chamber/light objects are optional
+            return {}
+
+    def _chamber_max_temperature(self, heater_object: str) -> float | None:
+        """Return the configured max_temp of the chamber heater (cached)."""
+        cached = self._chamber_max_temp_cache.get(heater_object)
+        if cached is not None:
+            return cached
+        try:
+            config = self._query_objects(["configfile"]).get("configfile", {})
+            settings = config.get("settings", {}) if isinstance(config, dict) else {}
+            section = settings.get(heater_object.lower()) or settings.get(heater_object) or {}
+            max_temp = _safe_float(section.get("max_temp")) if isinstance(section, dict) else None
+        except Exception:  # noqa: BLE001 - limits are best effort
+            return None
+        if max_temp is not None:
+            self._chamber_max_temp_cache[heater_object] = max_temp
+        return max_temp
+
+    def _apply_chamber_status(self, status: dict[str, Any], available: list[str]) -> None:
+        heater = self._chamber_heater_object(available)
+        sensor = None if heater else self._chamber_sensor_object(available)
+        light = self._chamber_light_object(available)
+
+        self.state.chamber_heater_supported = heater is not None
+        self.state.chamber_temp_max = self._chamber_max_temperature(heater) if heater else None
+
+        values = status.get(heater) if heater else status.get(sensor) if sensor else None
+        if isinstance(values, dict) and "chamber" not in self.state.temperatures:
+            self.state.temperatures["chamber"] = _heater_temperature(values)
+            if heater:
+                self.state.temperatures["chamber_target"] = _heater_target(values)
+                self.state.temperatures["chamber_heating"] = _is_heating(values)
+        self.state.chamber_temp_supported = "chamber" in self.state.temperatures
+
+        self.state.chamber_light_supported = light is not None
+        light_values = status.get(light) if light else None
+        if isinstance(light_values, dict) and "value" in light_values:
+            self.state.chamber_light = (_safe_float(light_values.get("value")) or 0.0) > 0
 
     def _available_cfs_objects(self, available: list[str] | None = None) -> list[str]:
         if available is None:
             available = self._available_objects()
-        wanted = ["box", "filament_rack", "filament_switch_sensor filament_sensor"]
+        wanted = ["box", "box_cfs_runtime", "filament_rack", "filament_switch_sensor filament_sensor"]
         return [name for name in wanted if name in available]
 
     def _query_cfs_status(self, available: list[str] | None = None) -> dict[str, Any]:
@@ -762,7 +1230,19 @@ class MoonrakerPrinterClient:
             return False
         return self.send_gcode(macro)
 
+    def is_k2_openhost_cfs(self) -> bool:
+        """True for a K2 running K2-OpenHost (Kalico) with its own CFS "Box" driver.
+
+        That driver has its own commands (BOX_SELECT_SLOT, BOX_PRINT_MAP, ...)
+        and no Creality M8200, so the Creality load/unload/print-slot paths
+        must not run against it.
+        """
+        cfs = self.state.raw_data.get("cfs")
+        return isinstance(cfs, dict) and cfs.get("type") == "k2_openhost_cfs"
+
     def _has_creality_cfs(self) -> bool:
+        if self.is_k2_openhost_cfs():
+            return False
         if isinstance(self.state.raw_data.get("cfs"), dict):
             return True
         for ams_unit in self.state.raw_data.get("ams") or []:
@@ -827,6 +1307,106 @@ class MoonrakerPrinterClient:
         except Exception:
             return False
         return self._current_cfs_tray_id() == tray_id
+
+    # ------------------------------------------------------------------
+    # K2-OpenHost (Kalico) CFS control: BOX_* commands, see the firmware's
+    # docs/box-status-api.md. Slot numbers are global
+    # ((box address - 1) * 4 + local), the external spool is the last
+    # physical slot + 1.
+    # ------------------------------------------------------------------
+
+    def _openhost_slot(self, tray_id: int) -> int | None:
+        """Firmware slot number for a Printbuddy tray id (254/255 = external spool)."""
+        cfs = self.state.raw_data.get("cfs")
+        if not isinstance(cfs, dict):
+            return None
+        if tray_id in (254, 255):
+            return _safe_int(cfs.get("external_slot"))
+        slots = cfs.get("slot_index_by_tray")
+        return _safe_int(slots.get(tray_id)) if isinstance(slots, dict) else None
+
+    def _openhost_command(self, script: str) -> bool:
+        """Send a BOX_* command; keep the firmware's refusal text in last_error."""
+        self.last_error = None
+        try:
+            return self.send_gcode(script)
+        except httpx.HTTPStatusError as exc:
+            self.last_error = _moonraker_error_message(exc)
+            logger.warning("K2-OpenHost CFS command %r refused: %s", script, self.last_error)
+            return False
+
+    def _openhost_printer_busy(self) -> bool:
+        if self.state.state in {"RUNNING", "PAUSE"}:
+            self.last_error = "Finish or cancel the current print before changing CFS filament"
+            return True
+        return False
+
+    def _openhost_load(self, tray_id: int) -> bool:
+        if self._openhost_printer_busy():
+            return False
+        slot = self._openhost_slot(int(tray_id))
+        if slot is None:
+            self.last_error = f"CFS slot {tray_id} is not available"
+            return False
+        # Full change like the printer UI: unload the current filament, load
+        # and purge the new one.
+        return self._openhost_command(f"BOX_SELECT_SLOT SLOT={slot}")
+
+    def _openhost_unload(self) -> bool:
+        if self._openhost_printer_busy():
+            return False
+        return self._openhost_command("BOX_UNLOAD")
+
+    def _openhost_print_tools(self, filename: str) -> list[int] | None:
+        """Tools the file uses, as the firmware reads them (BOX_PRINT_INFO).
+
+        Returns None when the firmware refused the command (last_error set).
+        """
+        quoted = filename.replace('"', "")
+        if not self._openhost_command(f'BOX_PRINT_INFO FILENAME="{quoted}"'):
+            return None
+        status = self._query_objects(["box"])
+        box = status.get("box") if isinstance(status, dict) else None
+        info = box.get("print_info") if isinstance(box, dict) else None
+        if not isinstance(info, dict) or str(info.get("filename") or "").lstrip("/") != filename.lstrip("/"):
+            return []
+        tools = []
+        for item in info.get("tools") or []:
+            tool = _safe_int(item.get("tool")) if isinstance(item, dict) else None
+            if tool is not None and tool >= 0:
+                tools.append(tool)
+        return sorted(set(tools))
+
+    def _apply_openhost_print_map(self, filename: str, ams_mapping: list[int] | None) -> bool:
+        """Send the print dialog's tool -> slot choice as BOX_PRINT_MAP.
+
+        ``ams_mapping[tool]`` is the Printbuddy tray id chosen for that tool
+        (-1 = none). The firmware needs every tool the file uses mapped
+        exactly once, so without a complete choice no map is sent and the
+        firmware maps the tools itself, as before.
+        """
+        if not ams_mapping or all(_safe_int(tray) is None or _safe_int(tray) < 0 for tray in ams_mapping):
+            return True
+        tools = self._openhost_print_tools(filename)
+        if tools is None:
+            return False
+        if not tools:
+            logger.info("K2-OpenHost: %s has no tool metadata; starting without a CFS tool map", filename)
+            return True
+        pairs: list[str] = []
+        for tool in tools:
+            tray = _safe_int(ams_mapping[tool]) if tool < len(ams_mapping) else None
+            if tray is None or tray < 0:
+                logger.info(
+                    "K2-OpenHost: no slot chosen for T%d of %s; the firmware maps the tools itself", tool, filename
+                )
+                return True
+            slot = self._openhost_slot(tray)
+            if slot is None:
+                self.last_error = f"CFS slot {tray} chosen for T{tool} is not available"
+                return False
+            pairs.append(f"{tool}:{slot}")
+        return self._openhost_command("BOX_PRINT_MAP MAP=" + ",".join(pairs))
 
     def _prepare_creality_cfs_slot_for_print(self, ams_mapping: list[int] | None) -> bool:
         target_tray_id = self._target_cfs_tray_from_mapping(ams_mapping)
@@ -933,9 +1513,137 @@ class MoonrakerPrinterClient:
                 normalized.append(candidate)
         return normalized
 
+    def _apply_k2_openhost_box(self, box: dict[str, Any]) -> None:
+        """Map the K2-OpenHost (Kalico) CFS state to Printbuddy's AMS units.
+
+        The driver reports one flat ``slots`` list (global ``index``, ``present``,
+        ``loaded``, ``material``, ``color``, ``brand``, ``name``,
+        ``rfid_percent``, ``external``) and ``boxes`` (``address``, ``online``,
+        the ``slots`` indices of that unit, ``temp_c``, ``humidity_pct``).
+        Each box becomes one 4-tray unit; the external spool holder becomes
+        the virtual tray 254.
+        """
+        slots_by_index: dict[int, dict[str, Any]] = {}
+        external: dict[str, Any] | None = None
+        for slot in box.get("slots") or []:
+            if not isinstance(slot, dict):
+                continue
+            if slot.get("external"):
+                external = slot
+                continue
+            index = _safe_int(slot.get("index"))
+            if index is not None and index >= 0:
+                slots_by_index[index] = slot
+
+        boxes = [unit for unit in box.get("boxes") or [] if isinstance(unit, dict)]
+        if not boxes:
+            # Older driver revisions: group the slots in fours.
+            boxes = [
+                {"address": group + 1, "online": True, "slots": [i for i in sorted(slots_by_index) if i // 4 == group]}
+                for group in sorted({i // 4 for i in slots_by_index})
+            ]
+
+        loaded_slot = _safe_int(box.get("loaded_slot"))
+        self.state.tray_now = 255
+        ams_units: list[dict[str, Any]] = []
+        active_slots: list[str] = []
+        # Printbuddy tray id (unit * 4 + position) -> driver slot index; the
+        # CFS controls address slots by the driver's index.
+        slot_index_by_tray: dict[int, int] = {}
+
+        for unit in boxes:
+            if unit.get("online") is False:
+                continue
+            ams_id = (_safe_int(unit.get("address")) or 1) - 1
+            if ams_id < 0 or ams_id > 3:
+                continue
+            trays: list[dict[str, Any]] = []
+            for position, raw_index in enumerate((unit.get("slots") or [])[:4]):
+                index = _safe_int(raw_index)
+                slot = slots_by_index.get(index) if index is not None else None
+                tray_id = ams_id * 4 + position
+                name = _creality_cfs_slot_name(tray_id) or f"T{ams_id + 1}{position + 1}"
+                if index is not None:
+                    slot_index_by_tray[tray_id] = index
+                present = bool(slot and slot.get("present"))
+                is_active = present and index is not None and index == loaded_slot
+                if is_active:
+                    active_slots.append(name)
+                    self.state.tray_now = tray_id
+                trays.append(
+                    {
+                        "id": position,
+                        "slot": name,
+                        "tray_type": str(slot.get("material") or "") if present else "",
+                        "tray_sub_brands": str(slot.get("name") or "") if present else "",
+                        "tray_color": _normalize_creality_cfs_color(slot.get("color")) if present else None,
+                        "remain": _safe_int(slot.get("rfid_percent")) if present else None,
+                        "active": is_active,
+                        # 11 = spool present, 9 = empty slot (Bambu tray states)
+                        "state": 11 if present else 9,
+                        "tray_uuid": name,
+                        "tag_uid": "",
+                        "vendor": str(slot.get("brand") or "") if present else "",
+                    }
+                )
+            if trays:
+                ams_units.append(
+                    {
+                        "id": ams_id,
+                        "name": f"CFS T{ams_id + 1}",
+                        # Distinct from Creality's "cfs": the UI offers load/unload
+                        # only for this driver's BOX_* commands.
+                        "module_type": "k2oh_cfs",
+                        "humidity_raw": _safe_int(unit.get("humidity_pct", box.get("humidity_pct"))),
+                        "temp": _safe_int(unit.get("temp_c", box.get("temp_c"))),
+                        "state": unit.get("state"),
+                        "tray": trays,
+                    }
+                )
+
+        if not ams_units:
+            return
+        self.state.raw_data["ams"] = ams_units
+        if external and external.get("present"):
+            self.state.raw_data["vt_tray"] = [
+                {
+                    "id": 254,
+                    "tray_type": str(external.get("material") or ""),
+                    "tray_sub_brands": str(external.get("name") or ""),
+                    "tray_color": _normalize_creality_cfs_color(external.get("color")),
+                    "remain": _safe_int(external.get("rfid_percent")),
+                    "tag_uid": "",
+                    "tray_uuid": "",
+                }
+            ]
+            if external.get("loaded"):
+                self.state.tray_now = 254
+        self.state.raw_data["cfs"] = {
+            "type": "k2_openhost_cfs",
+            "api_version": box.get("api_version"),
+            "api_revision": box.get("api_revision"),
+            "state": box.get("state"),
+            "status": box.get("status"),
+            "loaded_slot": loaded_slot,
+            "active_slots": active_slots,
+            "slot_index_by_tray": slot_index_by_tray,
+            "external_slot": _safe_int(external.get("index")) if external else None,
+            "print_mapping": box.get("print_mapping"),
+            "print_info": box.get("print_info"),
+            "filament_detected": box.get("filament_detected"),
+            "runout_swap_enabled": box.get("runout_swap_enabled"),
+        }
+        self.state.raw_data["box"] = box
+
     def _apply_creality_cfs_box(self, status: dict[str, Any]) -> None:
         box = status.get("box") if isinstance(status, dict) else None
         if not isinstance(box, dict):
+            return
+        runtime = status.get("box_cfs_runtime") if isinstance(status, dict) else None
+        if isinstance(box.get("slots"), list) or (
+            isinstance(runtime, dict) and runtime.get("firmware_family") == "k2oh"
+        ):
+            self._apply_k2_openhost_box(box)
             return
 
         filament_rack = status.get("filament_rack") if isinstance(status, dict) else None
@@ -1064,13 +1772,17 @@ class MoonrakerPrinterClient:
                 channel_action_state = str(values.get("channel_action_state") or "").strip().lower()
                 loaded_to_extruder = channel_state == "load_finish" or channel_action_state == "load_finish"
                 material = task_metadata.get("material") or metadata["material"] or ("Unknown" if detected else "")
+                # RFID/feed payloads often omit remain; use -1 (unknown) so the UI
+                # does not treat a missing value as 0% empty. Spoolman enrichment
+                # below overwrites this when filament_spool_id is present.
+                remain = metadata["remain"] if metadata.get("remain") is not None else -1
                 feed_slots[extruder_index] = {
                     "id": extruder_index,
                     "slot": f"U1-E{extruder_index}",
                     "tray_type": material,
                     "tray_sub_brands": task_metadata.get("subtype") or metadata["subtype"],
                     "tray_color": task_metadata.get("color") or metadata["color"],
-                    "remain": metadata["remain"],
+                    "remain": remain,
                     "remaining_weight": metadata["remaining_weight"],
                     "weight": metadata["weight"],
                     "active": active_index is not None and extruder_index == active_index,
@@ -1090,6 +1802,7 @@ class MoonrakerPrinterClient:
                     "filament_edit": task_metadata.get("edited"),
                     "filament_sku": task_metadata.get("sku"),
                     "filament_exist": task_metadata.get("exists"),
+                    "filament_spool_id": task_metadata.get("spool_id"),
                     "raw": values,
                 }
 
@@ -1134,6 +1847,24 @@ class MoonrakerPrinterClient:
 
         if feed_slots:
             trays = [feed_slots[index] for index in sorted(feed_slots)]
+            spool_ids = {
+                sid for tray in trays if (sid := _safe_int(tray.get("filament_spool_id"))) is not None and sid > 0
+            }
+            if spool_ids:
+                remain_by_id = self._spoolman_remain_by_id(spool_ids)
+                for tray in trays:
+                    sid = _safe_int(tray.get("filament_spool_id"))
+                    if sid is None or sid not in remain_by_id:
+                        continue
+                    info = remain_by_id[sid]
+                    tray["remain"] = info["remain"]
+                    tray["remaining_weight"] = info["remaining_weight"]
+                    if info.get("brand"):
+                        tray["filament_spool_brand"] = info["brand"]
+                    if info.get("material"):
+                        tray["filament_spool_material"] = info["material"]
+                    if info.get("color_name"):
+                        tray["filament_spool_color_name"] = info["color_name"]
             active_slots = [tray["slot"] for tray in trays if tray.get("active")]
             loaded_to_extruder_slots = [tray["slot"] for tray in trays if tray.get("loaded_to_extruder")]
             loaded_to_feeder_slots = [tray["slot"] for tray in trays if tray.get("loaded_to_feeder")]
@@ -1161,7 +1892,7 @@ class MoonrakerPrinterClient:
             }
 
     def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
-        response = httpx.post(
+        response = self._http_post(
             urljoin(self.base_url, path.lstrip("/")), json=payload, headers=self._headers, timeout=self.timeout
         )
         response.raise_for_status()
@@ -1204,7 +1935,7 @@ class MoonrakerPrinterClient:
         root = str(storage or "gcodes").strip().strip("/") or "gcodes"
         target = self._normalize_gcodes_path(remote_path) or local_path.name
         with open(local_path, "rb") as fh:
-            response = httpx.post(
+            response = self._http_post(
                 urljoin(self.base_url, "server/files/upload"),
                 data={"root": root, "path": target.rsplit("/", 1)[0] if "/" in target else ""},
                 files={"file": (target.rsplit("/", 1)[-1], fh, "application/octet-stream")},
@@ -1215,6 +1946,7 @@ class MoonrakerPrinterClient:
         return True
 
     def connect(self) -> None:
+        self._invalidate_objects_cache()
         last_exc: Exception | None = None
         for candidate in self.base_url_candidates:
             try:
@@ -1240,6 +1972,8 @@ class MoonrakerPrinterClient:
 
     def disconnect(self, timeout: float = 0) -> None:  # noqa: ARG002 - kept for Bambu client compatibility
         self.state.connected = False
+        self._invalidate_objects_cache()
+        self._close_http_client()
 
     def check_staleness(self) -> bool:
         try:
@@ -1248,9 +1982,55 @@ class MoonrakerPrinterClient:
             self.state.connected = False
         return self.state.connected
 
+    def _active_gcode_filename(self) -> str:
+        filename = str(self.state.gcode_file or "").strip().lstrip("/")
+        if filename:
+            return filename
+        raw_data = self.state.raw_data if isinstance(self.state.raw_data, dict) else {}
+        virtual_sdcard = raw_data.get("virtual_sdcard") if isinstance(raw_data.get("virtual_sdcard"), dict) else {}
+        print_stats = raw_data.get("print_stats") if isinstance(raw_data.get("print_stats"), dict) else {}
+        return str(virtual_sdcard.get("file_path") or print_stats.get("filename") or "").strip().lstrip("/")
+
+    def get_file_metadata(self, filename: str) -> dict[str, Any]:
+        """Fetch and normalize Moonraker's slicer metadata for a G-code file."""
+        normalized_name = self._normalize_gcodes_path(filename)
+        if not normalized_name:
+            return {}
+        raw = self._get(f"server/files/metadata?filename={quote(normalized_name, safe='')}")
+        return normalize_moonraker_file_metadata(raw, normalized_name)
+
+    def refresh_current_file_metadata(self) -> dict[str, Any]:
+        """Return normalized Moonraker metadata for the active G-code file.
+
+        Fetched once per print and cached for the completion payload. Never
+        raises so archive/notification paths are not interrupted by a metadata
+        hiccup.
+        """
+        filename = self._active_gcode_filename()
+        if not filename:
+            return {}
+        if self._current_file_metadata_name == filename and self._current_file_metadata:
+            return dict(self._current_file_metadata)
+        try:
+            metadata = self.get_file_metadata(filename)
+        except Exception as exc:  # noqa: BLE001 - metadata is best-effort
+            logger.debug("Moonraker file metadata lookup failed for %s: %s", filename, exc)
+            return {}
+        self._current_file_metadata = metadata
+        self._current_file_metadata_name = filename
+        return dict(metadata)
+
+    def download_thumbnail(self, thumbnail_path: str) -> bytes | None:
+        """Download a slicer thumbnail extracted by Moonraker (``.thumbs/...``)."""
+        try:
+            return self.download_file(thumbnail_path)
+        except Exception as exc:  # noqa: BLE001 - thumbnail is best-effort
+            logger.debug("Moonraker thumbnail download failed for %s: %s", thumbnail_path, exc)
+            return None
+
     def _build_lifecycle_payload(self) -> dict[str, Any]:
         filename = self.state.subtask_name or self.state.current_print or self.state.gcode_file or "Unknown"
-        return {
+        payload: dict[str, Any] = {
             "filename": filename,
             "subtask_name": filename,
             "progress": self.state.progress,
@@ -1258,6 +2038,15 @@ class MoonrakerPrinterClient:
             "status": self.state.state,
             "raw_data": self.state.raw_data,
         }
+        metadata = self.refresh_current_file_metadata() if filename != "Unknown" else {}
+        if metadata:
+            payload["file_metadata"] = metadata
+        print_stats = self.state.raw_data.get("print_stats") if isinstance(self.state.raw_data, dict) else None
+        if isinstance(print_stats, dict):
+            used_mm = _safe_float(print_stats.get("filament_used"))
+            if used_mm is not None and used_mm >= 0:
+                payload["actual_filament_used_mm"] = round(used_mm, 2)
+        return payload
 
     def _emit_status_callbacks(self, previous_state: str | None) -> None:
         if self.on_state_change:
@@ -1278,6 +2067,9 @@ class MoonrakerPrinterClient:
         # owns that case; this edge detector is for new Moonraker transitions.
         if previous_state is not None and not previous_running and current_running:
             self._current_print_started_at = time.monotonic()
+            # A re-uploaded file may reuse the old name; fetch fresh metadata per print.
+            self._current_file_metadata = {}
+            self._current_file_metadata_name = None
             if self.on_print_start:
                 self.on_print_start(self._build_lifecycle_payload())
         elif previous_running and not current_running:
@@ -1296,11 +2088,21 @@ class MoonrakerPrinterClient:
             if self.on_print_complete:
                 self.on_print_complete(payload)
 
+    @serialized_status_update
     def request_status_update(self) -> bool:
         previous_state = self._last_state if self._has_status_sample else None
-        status = self._query_objects(
-            ["webhooks", "print_stats", "virtual_sdcard", "display_status", "extruder", "heater_bed"]
-        )
+        try:
+            status = self._query_objects(
+                ["webhooks", "print_stats", "virtual_sdcard", "display_status", "extruder", "heater_bed"]
+            )
+        except Exception:
+            # Moonraker/Klippy may have restarted with a different config.
+            self._invalidate_objects_cache()
+            raise
+        webhooks = status.get("webhooks") if isinstance(status, dict) else None
+        if isinstance(webhooks, dict) and str(webhooks.get("state") or "ready").lower() != "ready":
+            # Klippy is starting up/shutdown: its object list is incomplete.
+            self._invalidate_objects_cache()
         try:
             available_objects = self._available_objects()
         except Exception:  # noqa: BLE001 - optional object discovery must not break core status polling
@@ -1314,6 +2116,21 @@ class MoonrakerPrinterClient:
         snapmaker_u1_status = self._query_snapmaker_u1_status(available_objects)
         if snapmaker_u1_status:
             status.update(snapmaker_u1_status)
+        generic_tool_objects = [
+            name
+            for name in available_objects
+            if _GENERIC_KLIPPER_EXTRUDER_RE.fullmatch(name)
+            or name in {"toolhead", "gcode_move"}
+            or re.fullmatch(r"filament_switch_sensor (?:filament|docked|path_?)\d+", name)
+        ]
+        if generic_tool_objects:
+            try:
+                status.update(self._query_objects(generic_tool_objects))
+            except Exception:  # noqa: BLE001 - optional tool telemetry must not break core status polling
+                pass
+        chamber_status = self._query_chamber_status(available_objects)
+        if chamber_status:
+            status.update(chamber_status)
         self.state.connected = True
         self.state.raw_status = status
         self.state.raw_data = status
@@ -1352,6 +2169,23 @@ class MoonrakerPrinterClient:
             self.state.remaining_time = _remaining_minutes(print_stats, self.state.progress)
         self.state.temperatures = _moonraker_temperatures(status)
         self._apply_snapmaker_u1_status(status)
+        tool_slots = _generic_moonraker_tool_slots(status)
+        if tool_slots:
+            self.state.raw_data["tool_slots"] = tool_slots
+            self.state.active_extruder = next((slot["id"] for slot in tool_slots if slot["active"]), -1)
+            self.state.nozzles = [NozzleInfo(nozzle_diameter=slot["nozzle_diameter"]) for slot in tool_slots]
+        else:
+            self.state.raw_data.pop("tool_slots", None)
+        position, z_offset = _moonraker_motion(status)
+        if position is not None:
+            self.state.raw_data["position"] = position
+        else:
+            self.state.raw_data.pop("position", None)
+        if z_offset is not None:
+            self.state.raw_data["z_offset"] = z_offset
+        else:
+            self.state.raw_data.pop("z_offset", None)
+        self._apply_chamber_status(status, available_objects)
         _apply_moonraker_fans(self.state, status)
         self._emit_status_callbacks(previous_state)
         self._last_state = self.state.state
@@ -1360,7 +2194,7 @@ class MoonrakerPrinterClient:
 
     def download_file(self, remote_path: str) -> bytes | None:
         normalized = self._normalize_gcodes_path(remote_path)
-        response = httpx.get(
+        response = self._http_get(
             urljoin(self.base_url, f"server/files/gcodes/{normalized}"),
             headers=self._headers,
             timeout=max(self.timeout, 60.0),
@@ -1408,6 +2242,41 @@ class MoonrakerPrinterClient:
             return self.send_gcode(f"SET_FAN_SPEED FAN={klipper_fan_name} SPEED={clamped_speed / 100:.2f}")
         raise ValueError(f"Fan '{fan}' is not controllable through Moonraker")
 
+    def set_chamber_temperature(self, target: int | float) -> bool:
+        """Set the chamber heater target; 0 turns the heater off.
+
+        Uses the printer's own ``M141`` macro when defined (QIDI clamps the
+        target there), otherwise ``SET_HEATER_TEMPERATURE``. The target is
+        always clamped to the heater's configured ``max_temp``.
+        """
+        available = self._available_objects()
+        heater = self._chamber_heater_object(available)
+        if heater is None:
+            raise ValueError("This Moonraker printer has no chamber heater")
+        max_temp = self._chamber_max_temperature(heater)
+        clamped = max(0, int(target))
+        if max_temp is not None:
+            clamped = min(clamped, int(max_temp))
+        macros = {name.lower() for name in available if name.lower().startswith("gcode_macro ")}
+        if "gcode_macro m141" in macros:
+            sent = self.send_gcode(f"M141 S{clamped}")
+        else:
+            heater_name = heater.removeprefix("heater_generic ")
+            sent = self.send_gcode(f"SET_HEATER_TEMPERATURE HEATER={heater_name} TARGET={clamped}")
+        if sent:
+            self.state.temperatures["chamber_target"] = float(clamped)
+        return sent
+
+    def set_chamber_light(self, on: bool) -> bool:
+        light = self._chamber_light_object(self._available_objects())
+        if light is None:
+            return False
+        pin_name = light.removeprefix("output_pin ")
+        sent = self.send_gcode(f"SET_PIN PIN={pin_name} VALUE={1 if on else 0}")
+        if sent:
+            self.state.chamber_light = bool(on)
+        return sent
+
     def home_axes(self, axes: list[str] | None = None) -> bool:
         script = ("G28 " + " ".join(a.upper() for a in axes)) if axes else "G28"
         return self.send_gcode(script)
@@ -1417,12 +2286,16 @@ class MoonrakerPrinterClient:
 
     def ams_load_filament(self, tray_id: int, extruder_id: int | None = None) -> bool:  # noqa: ARG002
         """Load/select a Creality CFS slot using the hardware-verified M8200 path."""
+        if self.is_k2_openhost_cfs():
+            return self._openhost_load(tray_id)
         if _creality_cfs_slot_name(tray_id) is None:
             return False
         return self.send_gcode(f"M8200 P\nM8200 L I={int(tray_id)}\nM8200 O")
 
     def ams_unload_filament(self, tray_id: int | None = None) -> bool:
         """Unload the currently loaded Creality CFS filament using M8200."""
+        if self.is_k2_openhost_cfs():
+            return self._openhost_unload()
         if tray_id is not None and _creality_cfs_slot_name(int(tray_id)) is None:
             return False
         return self.send_gcode("M8200 P\nM8200 C\nM8200 R\nM8200 O")
@@ -1439,6 +2312,9 @@ class MoonrakerPrinterClient:
 
     def start_print(self, filename: str, plate_id: int = 1, **kwargs: Any) -> bool:  # noqa: ARG002
         normalized = self._normalize_gcodes_path(filename)
+        self.last_error = None
+        if self.is_k2_openhost_cfs() and not self._apply_openhost_print_map(normalized, kwargs.get("ams_mapping")):
+            return False
         if not self._prepare_creality_cfs_slot_for_print(kwargs.get("ams_mapping")):
             return False
         try:
@@ -1458,9 +2334,63 @@ class MoonrakerPrinterClient:
             raise
         return True
 
-    def stop_print(self) -> bool:
-        self._post("printer/print/cancel", {})
+    def _confirm_state_after_rejection(
+        self,
+        exc: httpx.HTTPStatusError,
+        accepted_states: set[str] | None = None,
+        *,
+        rejected_states: set[str] | None = None,
+    ) -> bool:
+        """Decide what a Moonraker HTTP 400 on a print-control command means.
+
+        A 400 can be an external state race (someone paused from the printer
+        screen between our last poll and this command) or a genuine command
+        rejection. Refresh status and only report success when the printer is
+        already in the requested target state; otherwise re-raise the original
+        error so the caller sees the rejection.
+        """
+        try:
+            self.request_status_update()
+        except Exception as refresh_exc:  # noqa: BLE001 - surface the original rejection, not the refresh failure
+            logger.warning("Moonraker status refresh after HTTP 400 failed: %s", refresh_exc)
+            raise exc from refresh_exc
+        state = self.state.state
+        if accepted_states is not None and state in accepted_states:
+            return True
+        if rejected_states is not None and state not in rejected_states:
+            return True
+        raise exc
+
+    def _post_control(
+        self, path: str, accepted_states: set[str] | None = None, *, rejected_states: set[str] | None = None
+    ) -> bool:
+        try:
+            self._post(path, {})
+        except httpx.HTTPStatusError as exc:
+            if exc.response is not None and exc.response.status_code == 400:
+                return self._confirm_state_after_rejection(exc, accepted_states, rejected_states=rejected_states)
+            raise
         return True
+
+    def stop_print(self) -> bool:
+        if self._has_status_sample and self.state.state not in _MOONRAKER_ACTIVE_PRINT_STATES:
+            return True
+        # Success after a 400 only if the printer is no longer printing.
+        return self._post_control("printer/print/cancel", rejected_states=_MOONRAKER_ACTIVE_PRINT_STATES)
+
+    def pause_print(self) -> bool:
+        if self._has_status_sample and self.state.state == "PAUSE":
+            return True
+        if self._has_status_sample and self.state.state != "RUNNING":
+            return False
+        return self._post_control("printer/print/pause", {"PAUSE"})
+
+    def resume_print(self) -> bool:
+        if self._has_status_sample and self.state.state == "RUNNING":
+            return True
+        if self._has_status_sample and self.state.state != "PAUSE":
+            return False
+        return self._post_control("printer/print/resume", {"RUNNING"})
 
 
 def create_moonraker_client(printer: Any, **callbacks: Any) -> MoonrakerPrinterClient:  # noqa: ARG001

@@ -202,6 +202,7 @@ async def init_db():
         printer_fleet_group,
         project,
         project_bom,
+        project_plan,
         settings,
         shopping_list,
         slot_preset,
@@ -261,14 +262,14 @@ async def _migrate_encrypt_legacy_secrets() -> None:
     """Re-encrypt OIDC ``client_secret`` and TOTP ``secret`` rows that are still
     stored as plaintext (no ``fernet:`` prefix).
 
-    Called from :func:`init_db` after :func:`run_migrations` finishes. No-ops
+    Called from `init_db` after `run_migrations` finishes. No-ops
     when no encryption key is configured (so plaintext storage stays the
     legacy behaviour for installs without a key).
 
     B2: per-row strategy — each row is committed in its own AsyncSession so a
     single corrupt row does NOT block other successful re-encryptions on every
     startup forever. The skipped-row count is exposed via
-    :func:`get_migration_error_count` and surfaced on /encryption-status.
+    `get_migration_error_count` and surfaced on /encryption-status.
 
     B3: unexpected (non-row) failures during the read phase are re-raised so
     operators see the problem instead of silent data corruption — startup
@@ -664,7 +665,14 @@ async def run_migrations(conn):
 
     # Migration: Add on_print_stopped column to notification_providers
     await _safe_execute(conn, "ALTER TABLE notification_providers ADD COLUMN on_print_stopped BOOLEAN DEFAULT 1")
-    await _safe_execute(conn, "ALTER TABLE notification_providers ADD COLUMN on_print_almost_done BOOLEAN DEFAULT 0")
+    # No column default: the model has none either (default=False is client-side),
+    # and PostgreSQL rejects an integer default on a BOOLEAN column, which aborted
+    # startup when upgrading a PostgreSQL database created before this column.
+    await _safe_execute(conn, "ALTER TABLE notification_providers ADD COLUMN on_print_almost_done BOOLEAN")
+    async with conn.begin_nested():
+        await conn.execute(
+            text("UPDATE notification_providers SET on_print_almost_done = FALSE WHERE on_print_almost_done IS NULL")
+        )
 
     # Migration: Add source_3mf_path column to print_archives
     await _safe_execute(conn, "ALTER TABLE print_archives ADD COLUMN source_3mf_path VARCHAR(500)")
@@ -986,6 +994,12 @@ async def run_migrations(conn):
             conn, "ALTER TABLE virtual_printers ADD COLUMN queue_force_color_match BOOLEAN DEFAULT FALSE"
         )
 
+    # Migration: protocol + api_key on virtual_printers (#52). Existing rows are
+    # Bambu-emulating VPs; "moonraker" VPs expose an OctoPrint/Moonraker-compatible
+    # HTTP upload endpoint authenticated by api_key instead.
+    await _safe_execute(conn, "ALTER TABLE virtual_printers ADD COLUMN protocol VARCHAR(20) DEFAULT 'bambu'")
+    await _safe_execute(conn, "ALTER TABLE virtual_printers ADD COLUMN api_key VARCHAR(64)")
+
     # Migration: Add target_parts_count column to projects for tracking total parts needed
     await _safe_execute(conn, "ALTER TABLE projects ADD COLUMN target_parts_count INTEGER")
 
@@ -995,6 +1009,9 @@ async def run_migrations(conn):
     # existing attachments dir; rendered as a thumbnail on the card.
     await _safe_execute(conn, "ALTER TABLE projects ADD COLUMN url VARCHAR(2048)")
     await _safe_execute(conn, "ALTER TABLE projects ADD COLUMN cover_image_filename VARCHAR(255)")
+
+    # Migration: optional per-printer custom image filename (#40).
+    await _safe_execute(conn, "ALTER TABLE printers ADD COLUMN custom_image_filename VARCHAR(255)")
 
     # Migration: enhanced filament colour handling on color_catalog (#1154).
     # Mirrors the Spool columns added below; widens hex_color to VARCHAR(9)
@@ -2756,6 +2773,39 @@ async def run_migrations(conn):
     # Data migration: drop the embedded 3MF Title (`print_name`) from library
     # file metadata so the FileManager displays the filename, not the title (#1489).
     await _migrate_drop_library_print_name(conn)
+
+    # Migration: project "jobs" — order number on projects plus plan-item
+    # links on queue items and archives. The project_plan_items table itself
+    # is created by create_all(). Plain ANSI ALTER TABLE works on SQLite and
+    # PostgreSQL; _safe_execute swallows the duplicate-column error on rerun.
+    if is_sqlite():
+        await _safe_execute(conn, "ALTER TABLE projects ADD COLUMN order_number VARCHAR(100)")
+        await _safe_execute(
+            conn,
+            "ALTER TABLE print_queue ADD COLUMN plan_item_id INTEGER "
+            "REFERENCES project_plan_items(id) ON DELETE SET NULL",
+        )
+        await _safe_execute(
+            conn,
+            "ALTER TABLE print_archives ADD COLUMN plan_item_id INTEGER "
+            "REFERENCES project_plan_items(id) ON DELETE SET NULL",
+        )
+    else:
+        await _safe_execute(conn, "ALTER TABLE projects ADD COLUMN IF NOT EXISTS order_number VARCHAR(100)")
+        await _safe_execute(
+            conn,
+            "ALTER TABLE print_queue ADD COLUMN IF NOT EXISTS plan_item_id INTEGER "
+            "REFERENCES project_plan_items(id) ON DELETE SET NULL",
+        )
+        await _safe_execute(
+            conn,
+            "ALTER TABLE print_archives ADD COLUMN IF NOT EXISTS plan_item_id INTEGER "
+            "REFERENCES project_plan_items(id) ON DELETE SET NULL",
+        )
+    await _safe_execute(conn, "CREATE INDEX IF NOT EXISTS ix_print_queue_plan_item_id ON print_queue (plan_item_id)")
+    await _safe_execute(
+        conn, "CREATE INDEX IF NOT EXISTS ix_print_archives_plan_item_id ON print_archives (plan_item_id)"
+    )
 
 
 def _repair_default_notification_template(existing_template, template_data: dict) -> bool:

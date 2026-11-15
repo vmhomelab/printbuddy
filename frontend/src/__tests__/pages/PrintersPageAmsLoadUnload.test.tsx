@@ -304,6 +304,52 @@ describe('PrintersPage - AMS load/unload (#891)', () => {
     });
   });
 
+  it('K2-OpenHost CFS slot exposes Load and Unload through the BOX_* driver', async () => {
+    const user = userEvent.setup();
+    let loadedTray: string | null = null;
+    let unloadCalled = false;
+    const openHostStatus = {
+      ...mockIdleStatusWithCfs,
+      ams: [{ ...mockIdleStatusWithCfs.ams[0], id: 1, name: 'CFS T2', module_type: 'k2oh_cfs' }],
+    };
+
+    server.use(
+      http.get('/api/v1/printers/', () => HttpResponse.json([mockK2Printer])),
+      http.get('/api/v1/printers/:id/status', () => HttpResponse.json(openHostStatus)),
+      http.post('/api/v1/printers/:id/ams/load', ({ request }) => {
+        loadedTray = new URL(request.url).searchParams.get('tray_id');
+        return HttpResponse.json({ success: true, message: 'Loading filament' });
+      }),
+      http.post('/api/v1/printers/:id/ams/unload', () => {
+        unloadCalled = true;
+        return HttpResponse.json({ success: true, message: 'Unloading filament' });
+      }),
+    );
+
+    render(<PrintersPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('CFS T2')).toBeInTheDocument();
+      expect(document.querySelectorAll('[title="Slot options"]').length).toBeGreaterThan(0);
+    });
+
+    // CFS T2, fourth slot -> tray_id = 1*4 + 3 = 7
+    let menuButtons = document.querySelectorAll<HTMLButtonElement>('[title="Slot options"]');
+    await user.click(menuButtons[3]);
+    await waitFor(() => {
+      expect(screen.getByText('Load')).toBeInTheDocument();
+      expect(screen.queryByText(/Re-read/i)).not.toBeInTheDocument();
+    });
+    await user.click(screen.getByText('Load'));
+    await waitFor(() => expect(loadedTray).toBe('7'));
+
+    menuButtons = document.querySelectorAll<HTMLButtonElement>('[title="Slot options"]');
+    await user.click(menuButtons[3]);
+    await waitFor(() => expect(screen.getByText('Unload')).toBeInTheDocument());
+    await user.click(screen.getByText('Unload'));
+    await waitFor(() => expect(unloadCalled).toBe(true));
+  });
+
   it('K2 AMS fallback status is treated as CFS for slot controls and assignment', async () => {
     const user = userEvent.setup();
 

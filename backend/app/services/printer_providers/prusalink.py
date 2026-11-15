@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import logging
 import re
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -12,6 +11,12 @@ from urllib.parse import quote, urljoin
 import httpx
 
 from backend.app.services.bambu_mqtt import FilaSwitchState, NozzleInfo, PrintOptions
+from backend.app.services.printer_providers._http_common import (
+    PolledLifecycleMixin,
+    float_or_none,
+    minutes_from_seconds,
+    serialized_status_update,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +74,10 @@ def _map_prusalink_state(raw_state: Any) -> str:
     state = str(raw_state or "").upper()
     return {
         "PRINTING": "RUNNING",
-        "BUSY": "RUNNING",
+        # BUSY is reported for non-print motion too (homing, maintenance moving
+        # the bed on a CORE One, ...). It only counts as an active print when a
+        # job is present, which request_status_update() decides (PB-2).
+        "BUSY": "PREPARE",
         "PAUSED": "PAUSE",
         "FINISHED": "FINISH",
         "STOPPED": "FAILED",
@@ -78,13 +86,6 @@ def _map_prusalink_state(raw_state: Any) -> str:
         "IDLE": "IDLE",
         "READY": "IDLE",
     }.get(state, state or "unknown")
-
-
-def _minutes_from_seconds(value: Any) -> int:
-    try:
-        return int(max(float(value or 0), 0) // 60)
-    except (TypeError, ValueError):
-        return 0
 
 
 def _progress_percent(value: Any) -> float:
@@ -97,15 +98,6 @@ def _progress_percent(value: Any) -> float:
     return max(0.0, min(progress, 100.0))
 
 
-def _float_or_none(value: Any) -> float | None:
-    try:
-        if value is None or value == "":
-            return None
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
 def _normalize_prusalink_file_meta(meta: dict[str, Any] | None) -> dict[str, Any]:
     """Map PrusaLink's G-code metadata keys to Printbuddy's canonical fields."""
     if not isinstance(meta, dict) or not meta:
@@ -113,19 +105,19 @@ def _normalize_prusalink_file_meta(meta: dict[str, Any] | None) -> dict[str, Any
 
     normalized: dict[str, Any] = {"source": "prusalink_file_meta", "raw_prusalink_meta": meta}
 
-    grams = _float_or_none(meta.get("filament used [g]"))
+    grams = float_or_none(meta.get("filament used [g]"))
     if grams is not None:
         normalized["filament_used_grams"] = grams
 
-    millimeters = _float_or_none(meta.get("filament used [mm]"))
+    millimeters = float_or_none(meta.get("filament used [mm]"))
     if millimeters is not None:
         normalized["filament_used_mm"] = millimeters
 
-    cubic_cm = _float_or_none(meta.get("filament used [cm3]"))
+    cubic_cm = float_or_none(meta.get("filament used [cm3]"))
     if cubic_cm is not None:
         normalized["filament_used_cm3"] = cubic_cm
 
-    filament_cost = _float_or_none(meta.get("filament cost"))
+    filament_cost = float_or_none(meta.get("filament cost"))
     if filament_cost is not None:
         normalized["filament_cost"] = filament_cost
 
@@ -133,7 +125,7 @@ def _normalize_prusalink_file_meta(meta: dict[str, Any] | None) -> dict[str, Any
     if filament_type:
         normalized["filament_type"] = str(filament_type)
 
-    estimated_time = _float_or_none(meta.get("estimated_print_time") or meta.get("print_time"))
+    estimated_time = float_or_none(meta.get("estimated_print_time") or meta.get("print_time"))
     if estimated_time is not None:
         normalized["print_time_seconds"] = int(estimated_time)
 
@@ -142,7 +134,7 @@ def _normalize_prusalink_file_meta(meta: dict[str, Any] | None) -> dict[str, Any
     if isinstance(per_tool_grams, list):
         slots: list[dict[str, Any]] = []
         for idx, raw_grams in enumerate(per_tool_grams):
-            tool_grams = _float_or_none(raw_grams)
+            tool_grams = float_or_none(raw_grams)
             if tool_grams is None or tool_grams <= 0:
                 continue
             slot: dict[str, Any] = {"slot_id": idx + 1, "used_g": round(tool_grams, 2)}
@@ -191,8 +183,8 @@ def _prusalink_filename_meta(filename: str | None) -> dict[str, Any]:
     )
     if not match:
         return {}
-    grams = _float_or_none(match.group("grams").replace(",", "."))
-    cost = _float_or_none(match.group("cost").replace(",", "."))
+    grams = float_or_none(match.group("grams").replace(",", "."))
+    cost = float_or_none(match.group("cost").replace(",", "."))
     if grams is None or grams <= 0:
         return {}
     metadata: dict[str, Any] = {
@@ -217,7 +209,7 @@ def _prusalink_digest_auth(username: str | None, password: str | None) -> httpx.
     return httpx.DigestAuth(username or "maker", password)
 
 
-class PrusaLinkPrinterClient:
+class PrusaLinkPrinterClient(PolledLifecycleMixin):
     """Prusa printer provider backed by the PrusaLink HTTP API.
 
     Printbuddy stores the PrusaLink password / API key in ``auth_token`` and an
@@ -226,6 +218,11 @@ class PrusaLinkPrinterClient:
     mock/API-key compatible endpoints, and retry with Digest auth if the device
     explicitly asks for it.
     """
+
+    # A paused job is still the same print: pausing must not end the lifecycle
+    # (and send a print-stopped notification), resuming must not start a new
+    # one (PB-2).
+    LIFECYCLE_ACTIVE_STATES = frozenset({"RUNNING", "PAUSE"})
 
     def __init__(
         self,
@@ -257,6 +254,9 @@ class PrusaLinkPrinterClient:
         self.on_bed_temp_update = on_bed_temp_update
         self._last_state: str | None = None
         self._has_status_sample = False
+        # Upper-cased raw PrusaLink state behind self.state.state, so a STOPPED
+        # job can be reported as "stopped" instead of "failed" (PB-2).
+        self._raw_state: str = ""
         self._last_bed_temp: float | None = None
         self._current_print_started_at: float | None = None
         self._file_storage: str | None = None
@@ -542,54 +542,7 @@ class PrusaLinkPrinterClient:
             self.state.connected = False
         return self.state.connected
 
-    def _build_lifecycle_payload(self) -> dict[str, Any]:
-        filename = self.state.subtask_name or self.state.current_print or self.state.gcode_file or "Unknown"
-        payload = {
-            "filename": filename,
-            "subtask_name": filename,
-            "progress": self.state.progress,
-            "remaining_time": self.state.remaining_time * 60 if self.state.remaining_time else None,
-            "status": self.state.state,
-        }
-        file_metadata = self.state.raw_data.get("file_metadata") if isinstance(self.state.raw_data, dict) else None
-        if file_metadata:
-            payload["file_metadata"] = file_metadata
-        return payload
-
-    def _emit_status_callbacks(self, previous_state: str | None) -> None:
-        if self.on_state_change:
-            self.on_state_change(self.state)
-
-        bed_temp = self.state.temperatures.get("bed") if self.state.temperatures else None
-        if isinstance(bed_temp, (int, float)) and bed_temp != self._last_bed_temp:
-            self._last_bed_temp = float(bed_temp)
-            if self.on_bed_temp_update:
-                self.on_bed_temp_update(float(bed_temp))
-
-        current_state = self.state.state
-        previous_running = previous_state in {"RUNNING", "PRINTING"}
-        current_running = current_state in {"RUNNING", "PRINTING"}
-
-        if previous_state is not None and not previous_running and current_running:
-            self._current_print_started_at = time.monotonic()
-            if self.on_print_start:
-                self.on_print_start(self._build_lifecycle_payload())
-        elif previous_running and not current_running:
-            payload = self._build_lifecycle_payload()
-            if self._current_print_started_at is not None:
-                payload["actual_time_seconds"] = max(1, int(time.monotonic() - self._current_print_started_at))
-                self._current_print_started_at = None
-            if current_state == "FAILED":
-                payload["status"] = "failed"
-            elif current_state == "FINISH":
-                payload["status"] = "completed"
-            elif current_state == "IDLE":
-                payload["status"] = "completed" if self.state.progress >= 99 else "stopped"
-            else:
-                payload["status"] = "stopped"
-            if self.on_print_complete:
-                self.on_print_complete(payload)
-
+    @serialized_status_update
     def request_status_update(self) -> bool:
         previous_state = self._last_state if self._has_status_sample else None
         if self.api_mode == "legacy":
@@ -598,7 +551,7 @@ class PrusaLinkPrinterClient:
             self.state.raw_status = job_detail
             self.state.raw_data = {**self.state.raw_data, **job_detail}
             state = job_detail.get("state") or job_detail.get("status") or "IDLE"
-            self.state.state = _map_prusalink_state(state)
+            self._set_state(state)
             if job_detail:
                 self._apply_job_detail(job_detail)
             self._emit_status_callbacks(previous_state)
@@ -619,9 +572,9 @@ class PrusaLinkPrinterClient:
             job = {}
 
         self._job_id = job.get("id") if isinstance(job.get("id"), int) else self._job_id
-        self.state.state = _map_prusalink_state(printer.get("state"))
+        self._set_state(printer.get("state"), job_active=bool(job.get("id")))
         self.state.progress = _progress_percent(job.get("progress"))
-        self.state.remaining_time = _minutes_from_seconds(job.get("time_remaining"))
+        self.state.remaining_time = minutes_from_seconds(job.get("time_remaining"))
         self.state.temperatures = {
             "nozzle": float(printer.get("temp_nozzle") or 0.0),
             "nozzle_target": float(printer.get("target_nozzle") or 0.0),
@@ -646,14 +599,28 @@ class PrusaLinkPrinterClient:
         self._has_status_sample = True
         return True
 
+    def _set_state(self, raw_state: Any, *, job_active: bool = False) -> None:
+        self._raw_state = str(raw_state or "").upper()
+        mapped = _map_prusalink_state(raw_state)
+        if self._raw_state == "BUSY" and job_active:
+            mapped = "RUNNING"
+        self.state.state = mapped
+
+    def _completion_status(self, current_state: str) -> str:
+        # STOPPED is a user/firmware stop (e.g. CORE One maintenance moving the
+        # bed), not a print failure: send the print-stopped notification (PB-2).
+        if self._raw_state == "STOPPED":
+            return "stopped"
+        return super()._completion_status(current_state)
+
     def _apply_job_detail(self, job_detail: dict[str, Any]) -> None:
         self._job_id = job_detail.get("id") if isinstance(job_detail.get("id"), int) else self._job_id
         if job_detail.get("state"):
-            self.state.state = _map_prusalink_state(job_detail.get("state"))
+            self._set_state(job_detail.get("state"), job_active=True)
         if "progress" in job_detail:
             self.state.progress = _progress_percent(job_detail.get("progress"))
         if "time_remaining" in job_detail:
-            self.state.remaining_time = _minutes_from_seconds(job_detail.get("time_remaining"))
+            self.state.remaining_time = minutes_from_seconds(job_detail.get("time_remaining"))
         file_info = job_detail.get("file") if isinstance(job_detail.get("file"), dict) else {}
         filename = file_info.get("display_name") or file_info.get("name") or file_info.get("path")
         if filename:

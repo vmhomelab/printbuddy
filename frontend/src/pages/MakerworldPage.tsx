@@ -108,7 +108,7 @@ function useElapsedSeconds(active: boolean): number {
   return elapsed;
 }
 
-export function MakerworldPage() {
+export function MakerworldPage({ embedded = false }: { embedded?: boolean } = {}) {
   const { t } = useTranslation();
   const { hasPermission } = useAuth();
   const { showToast } = useToast();
@@ -192,7 +192,6 @@ export function MakerworldPage() {
     settingsQuery.data?.makerworld_archive_details_default ?? false;
   const makerworldCoverThumbnailDefault =
     settingsQuery.data?.makerworld_cover_thumbnail_default ?? false;
-  const canUpdateSettings = hasPermission('settings:update');
 
   useEffect(() => {
     const useCoverThumbnail = makerworldCoverThumbnailDefault;
@@ -200,25 +199,6 @@ export function MakerworldPage() {
     setUseCoverAsThumbnail(useCoverThumbnail);
   }, [makerworldArchiveDetailsDefault, makerworldCoverThumbnailDefault]);
 
-  const importDefaultsMutation = useMutation({
-    mutationFn: (defaults: {
-      makerworld_archive_details_default: boolean;
-      makerworld_cover_thumbnail_default: boolean;
-    }) => api.updateSettings(defaults),
-    onSuccess: (settings) => {
-      queryClient.setQueryData(['settings'], settings);
-      showToast(t('makerworld.importDefaultsSaved'), 'success');
-    },
-    onError: (err: Error) => showToast(err.message || t('makerworld.importDefaultsSaveFailed'), 'error'),
-  });
-
-  const updateImportDefaults = (archiveByDefault: boolean, coverByDefault: boolean) => {
-    if (!canUpdateSettings) return;
-    importDefaultsMutation.mutate({
-      makerworld_archive_details_default: archiveByDefault || coverByDefault,
-      makerworld_cover_thumbnail_default: coverByDefault,
-    });
-  };
   // MakerWorld plates are unsliced project files
   // Slice-via-API modal source. When set, the SliceModal is shown for the
   // referenced library file; it covers MakerWorld's "Slice in <Slicer>" /
@@ -476,13 +456,15 @@ export function MakerworldPage() {
   const downloadCount = pickNumber(design, 'downloadCount');
 
   return (
-    <div className="p-4 md:p-8 max-w-screen-2xl space-y-6">
+    <div className={embedded ? 'space-y-6' : 'p-4 md:p-8 max-w-screen-2xl space-y-6'}>
       <div>
-        <h1 className="text-2xl font-bold text-white flex items-center gap-3">
-          <Globe className="w-7 h-7 text-bambu-green" />
-          {t('makerworld.title')}
-        </h1>
-        <p className="text-bambu-gray mt-1">
+        {!embedded && (
+          <h1 className="text-2xl font-bold text-white flex items-center gap-3">
+            <Globe className="w-7 h-7 text-bambu-green" />
+            {t('makerworld.title')}
+          </h1>
+        )}
+        <p className={embedded ? 'text-bambu-gray' : 'text-bambu-gray mt-1'}>
           {t('makerworld.description')}
         </p>
       </div>
@@ -972,60 +954,6 @@ export function MakerworldPage() {
             reachable while browsing long plate lists. Vertical list here,
             not the horizontal scroll we used in the bottom-of-page layout. */}
         <aside className="lg:sticky lg:top-6 lg:self-start min-w-0 space-y-4">
-          <Card>
-            <CardHeader>
-              <h2 className="text-base font-semibold">{t('makerworld.importDefaults')}</h2>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-3 text-sm">
-                <p className="text-xs text-gray-500 dark:text-gray-400">
-                  {t('makerworld.importDefaultsDescription')}
-                </p>
-                <label className="flex cursor-pointer items-start gap-3">
-                  <input
-                    type="checkbox"
-                    aria-label={t('makerworld.archiveDetailsDefaultControl')}
-                    checked={makerworldArchiveDetailsDefault}
-                    onChange={(event) =>
-                      updateImportDefaults(
-                        event.target.checked,
-                        event.target.checked ? makerworldCoverThumbnailDefault : false,
-                      )
-                    }
-                    disabled={!canUpdateSettings || importDefaultsMutation.isPending}
-                    className="mt-0.5 h-4 w-4 rounded border-gray-400 text-bambu-green focus:ring-bambu-green"
-                  />
-                  <span>
-                    <span className="block font-medium">{t('makerworld.archiveDetailsByDefault')}</span>
-                    <span className="block text-xs text-gray-500 dark:text-gray-400">
-                      {t('makerworld.archiveDetailsByDefaultDescription')}
-                    </span>
-                  </span>
-                </label>
-                <label className="flex cursor-pointer items-start gap-3">
-                  <input
-                    type="checkbox"
-                    aria-label={t('makerworld.coverThumbnailDefaultControl')}
-                    checked={makerworldCoverThumbnailDefault}
-                    onChange={(event) =>
-                      updateImportDefaults(
-                        makerworldArchiveDetailsDefault,
-                        event.target.checked,
-                      )
-                    }
-                    disabled={!canUpdateSettings || importDefaultsMutation.isPending}
-                    className="mt-0.5 h-4 w-4 rounded border-gray-400 text-bambu-green focus:ring-bambu-green"
-                  />
-                  <span>
-                    <span className="block font-medium">{t('makerworld.useCoverAsThumbnailByDefault')}</span>
-                    <span className="block text-xs text-gray-500 dark:text-gray-400">
-                      {t('makerworld.useCoverAsThumbnailByDefaultDescription')}
-                    </span>
-                  </span>
-                </label>
-              </div>
-            </CardContent>
-          </Card>
           {recentQuery.data && recentQuery.data.length > 0 && (
             <Card>
               <CardHeader>

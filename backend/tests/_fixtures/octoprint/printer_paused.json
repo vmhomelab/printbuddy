@@ -1,0 +1,34 @@
+{
+  "sd": {
+    "ready": true
+  },
+  "state": {
+    "error": "",
+    "flags": {
+      "cancelling": false,
+      "closedOrError": false,
+      "error": false,
+      "finishing": false,
+      "operational": true,
+      "paused": true,
+      "pausing": false,
+      "printing": false,
+      "ready": false,
+      "resuming": false,
+      "sdReady": true
+    },
+    "text": "Paused"
+  },
+  "temperature": {
+    "bed": {
+      "actual": 49.99,
+      "offset": 0,
+      "target": 50.0
+    },
+    "tool0": {
+      "actual": 76.42,
+      "offset": 0,
+      "target": 200.0
+    }
+  }
+}

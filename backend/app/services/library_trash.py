@@ -5,7 +5,7 @@ Two-stage file deletion for the library:
 1. Users / admins soft-delete files — the row stays in ``library_files`` with
    ``deleted_at`` stamped; the bytes stay on disk. This is handled inline in
    ``backend.app.api.routes.library`` and exposed to admins as a bulk "purge
-   old files" operation via :meth:`LibraryTrashService.purge_older_than`.
+   old files" operation via `LibraryTrashService.purge_older_than`.
 
 2. A background sweeper in this service hard-deletes rows (and their bytes)
    whose ``deleted_at`` is older than the configured retention window.

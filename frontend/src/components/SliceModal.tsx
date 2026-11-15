@@ -1,4 +1,4 @@
-import { Cloud, CloudOff, Cog, Loader2, Package, X } from 'lucide-react';
+import { CloudOff, Cog, Loader2, Package, X } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useMutation, useQuery } from '@tanstack/react-query';
@@ -15,10 +15,12 @@ import {
   type UnifiedPresetsResponse,
 } from '../api/client';
 import { useSliceJobTracker } from '../contexts/SliceJobTrackerContext';
+import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { PlatePickerModal } from './PlatePickerModal';
 import type { PlateFilament } from '../types/plates';
 import { normalizeColorForCompare, colorsAreSimilar } from '../utils/amsHelpers';
+import { uuidV4 } from '../utils/random';
 import {
   presetCompatibility,
   buildCompatibilityIndex,
@@ -218,7 +220,7 @@ function fromRefValue(raw: string): PresetRef | null {
   if (idx < 0) return null;
   const source = raw.slice(0, idx) as PresetSource;
   const id = raw.slice(idx + 1);
-  if (source !== 'cloud' && source !== 'local' && source !== 'standard') return null;
+  if (source !== 'orca_cloud' && source !== 'cloud' && source !== 'local' && source !== 'standard') return null;
   return { source, id };
 }
 
@@ -340,6 +342,27 @@ function FilamentAnalysisSpinner({
   );
 }
 
+// Remembered per browser: whether a finished slice should open the
+// add-to-queue dialog. Storage can be unavailable (private mode, blocked
+// site data), so every access is guarded.
+const QUEUE_AFTER_SLICE_KEY = 'printbuddy.slice.queueAfterSlice';
+
+function readQueueAfterSlice(): boolean {
+  try {
+    return window.localStorage.getItem(QUEUE_AFTER_SLICE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function writeQueueAfterSlice(value: boolean): void {
+  try {
+    window.localStorage.setItem(QUEUE_AFTER_SLICE_KEY, value ? '1' : '0');
+  } catch {
+    // Preference only; ignore storage failures.
+  }
+}
+
 function formatElapsed(seconds: number): string {
   const s = Math.max(0, Math.floor(seconds));
   if (s < 60) return `${s}s`;
@@ -354,6 +377,9 @@ function formatElapsed(seconds: number): string {
 export function SliceModal({ source, onClose }: SliceModalProps) {
   const { t } = useTranslation();
   const { trackJob } = useSliceJobTracker();
+  const { hasPermission } = useAuth();
+  const canQueue = hasPermission('queue:create');
+  const [queueAfterSlice, setQueueAfterSlice] = useState(readQueueAfterSlice);
 
   const [printerPreset, setPrinterPreset] = useState<PresetRef | null>(null);
   const [processPreset, setProcessPreset] = useState<PresetRef | null>(null);
@@ -375,15 +401,12 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   // and we'll backfill 1 at submit time). Set to a 1-indexed plate number once
   // the user picks one (or implicitly for single-plate sources).
   const [selectedPlate, setSelectedPlate] = useState<number | null>(null);
-  // "Slice all plates" mode: sends ``plate=0`` to the backend which forwards
-  // ``--slice 0`` to the BS CLI, producing a single output 3MF whose
-  // ``Metadata/plate_N.gcode`` entries are *all* plates sliced together —
-  // one archive, one file, all plates. Distinct from the per-plate
-  // ``selectedPlate`` mode (which slices just that one plate). Filament
-  // selection in this mode covers every slot the project defines, not
-  // just the slots the currently-visible plate happens to use — see
-  // ``allProjectFilamentSlots`` below.
+  // "Slice all plates" mode: sends ``plate=0``. Combined (default) writes
+  // one multi-plate 3MF with ``Metadata/plate_N.gcode`` for every plate;
+  // ``splitPlates`` writes one library/archive file per plate instead.
+  // Filament selection covers every project slot — see filamentSlots.
   const [sliceAllPlates, setSliceAllPlates] = useState(false);
+  const [splitPlates, setSplitPlates] = useState(false);
   // Build-plate override (#1337). null = inherit from the process preset
   // (the default). Set to a canonical slicer enum value to patch
   // curr_bed_type into the resolved process JSON before slicing — needed
@@ -420,16 +443,13 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   // preview-slice and the FilamentAnalysisSpinner's progress poll share
   // the same id. useMemo keeps it stable across renders within the same
   // pair; switching plates regenerates so a stale poll doesn't bleed
-  // progress between plates.
-  const previewRequestId = useMemo(() => {
-    const random =
-      typeof crypto !== 'undefined' && 'randomUUID' in crypto
-        ? crypto.randomUUID()
-        : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    // Tag the id with the (source, plate) so logs/Network panel show which
-    // pair owns the poll. Also lets the lint rule see the deps in use.
-    return `${source.kind}-${source.id}-p${effectivePlateId}-${random}`;
-  }, [source.kind, source.id, effectivePlateId]);
+  // progress between plates. The sidecar only accepts a bare UUID as
+  // requestId, so the id carries no (source, plate) tag.
+  const previewRequestId = useMemo(
+    () => uuidV4(),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- regenerate per (source, plate) pair
+    [source.kind, source.id, effectivePlateId],
+  );
   const filamentReqsQuery = useQuery({
     queryKey: ['sliceFilamentReqs', source.kind, source.id, effectivePlateId],
     queryFn: async () => {
@@ -651,7 +671,9 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
       return api.sliceArchive(source.id, body);
     },
     onSuccess: (enqueue) => {
-      trackJob(enqueue.job_id, source.kind, source.filename);
+      trackJob(enqueue.job_id, source.kind, source.filename, {
+        queueAfterSlice: canQueue && queueAfterSlice,
+      });
       onClose();
     },
     onError: (err: unknown) => {
@@ -682,6 +704,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
       return {
         bundle: bundleSpec,
         ...(plate != null ? { plate } : {}),
+        ...(plate === 0 && splitPlates ? { split_plates: true } : {}),
         // Bed-type override (#1337) also flows through the bundle path —
         // the sidecar forwards `bedType` as --curr_bed_type to the CLI.
         ...(bedType != null ? { bed_type: bedType } : {}),
@@ -701,6 +724,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
       filament_preset: filamentPresets[0] as PresetRef,
       filament_presets: filamentPresets as PresetRef[],
       ...(plate != null ? { plate } : {}),
+      ...(plate === 0 && splitPlates ? { split_plates: true } : {}),
       ...(bedType != null ? { bed_type: bedType } : {}),
     };
   }
@@ -798,7 +822,8 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
 
           {presetsQuery.data && (
             <>
-              <CloudStatusBanner status={presetsQuery.data.cloud_status} />
+              <CloudStatusBanner provider="bambu" status={presetsQuery.data.cloud_status} />
+              <CloudStatusBanner provider="orca" status={presetsQuery.data.orca_cloud_status} />
               {/* Bundle picker — only renders when at least one .bbscfg has
                   been imported via Settings → Slicer Bundles. Lets the user
                   trade the cloud/local/standard tier for a single curated
@@ -975,20 +1000,95 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
           >
             {t('common.cancel')}
           </button>
-          {canSliceAll && (
-            <label
-              className="flex items-center gap-2 mr-auto text-sm text-bambu-gray cursor-pointer select-none"
-              title={t('slice.actionAllTitle', { count: totalPlateCount })}
-            >
-              <input
-                type="checkbox"
-                checked={sliceAllPlates}
-                onChange={(e) => setSliceAllPlates(e.target.checked)}
-                disabled={isEnqueuing}
-                className="cursor-pointer"
-              />
-              {t('slice.allPlatesToggle', { count: totalPlateCount })}
-            </label>
+          {(canSliceAll || canQueue) && (
+            <div className="mr-auto flex flex-col gap-1.5 text-sm text-bambu-gray">
+              {canSliceAll && (
+                <>
+                  <label
+                    className="flex items-center gap-2 cursor-pointer select-none"
+                    title={t('slice.actionAllTitle', {
+                      count: totalPlateCount,
+                      defaultValue:
+                        'Slice every plate. Choose combined (one multi-plate file) or separate files below.',
+                    })}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={sliceAllPlates}
+                      onChange={(e) => setSliceAllPlates(e.target.checked)}
+                      disabled={isEnqueuing}
+                      className="cursor-pointer"
+                    />
+                    {t('slice.allPlatesToggle', { count: totalPlateCount })}
+                  </label>
+                  {sliceAllPlates && (
+                    <div
+                      className="flex flex-wrap items-center gap-3 pl-6"
+                      role="radiogroup"
+                      aria-label={t('slice.outputModeLabel', 'Output')}
+                    >
+                      <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                        <input
+                          type="radio"
+                          name="slice-output-mode"
+                          checked={!splitPlates}
+                          onChange={() => setSplitPlates(false)}
+                          disabled={isEnqueuing}
+                          className="cursor-pointer"
+                        />
+                        {t('slice.outputCombined', 'One multi-plate file')}
+                      </label>
+                      <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                        <input
+                          type="radio"
+                          name="slice-output-mode"
+                          checked={splitPlates}
+                          onChange={() => setSplitPlates(true)}
+                          disabled={isEnqueuing}
+                          className="cursor-pointer"
+                        />
+                        {t('slice.outputSeparate', 'Separate file per plate')}
+                      </label>
+                    </div>
+                  )}
+                </>
+              )}
+              {canQueue && (
+                <label
+                  className="flex items-center gap-2 cursor-pointer select-none"
+                  title={t(
+                    'slice.queueAfterSliceTitle',
+                    'When slicing finishes, open the add-to-queue dialog for the sliced file.',
+                  )}
+                >
+                  <input
+                    type="checkbox"
+                    checked={queueAfterSlice}
+                    onChange={(e) => {
+                      setQueueAfterSlice(e.target.checked);
+                      writeQueueAfterSlice(e.target.checked);
+                    }}
+                    disabled={isEnqueuing}
+                    className="cursor-pointer"
+                  />
+                  {t('slice.queueAfterSlice', 'Add to print queue afterwards')}
+                </label>
+              )}
+            </div>
+          )}
+          {!isReady && !isEnqueuing && (
+            <p className="mr-auto text-xs text-amber-400/90 max-w-[18rem]">
+              {!isBundleMode && !processPreset
+                ? t(
+                    'slice.needProcess',
+                    'Pick a process preset (Import one under Profiles, or start the Orca slicer-api sidecar for Standard profiles).',
+                  )
+                : !isBundleMode && filamentPresets.some((r) => r == null)
+                  ? t('slice.needFilament', 'Pick a filament for every used slot.')
+                  : !filamentReqsQuery.isSuccess
+                    ? t('slice.needPlateMeta', 'Waiting for plate / filament metadata…')
+                    : t('slice.needPresets', 'Select printer, process, and filament to slice.')}
+            </p>
           )}
           <button
             type="button"
@@ -1020,37 +1120,43 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   );
 }
 
-function CloudStatusBanner({ status }: { status: SlicerCloudStatus }) {
+function CloudStatusBanner({ provider, status }: { provider: 'bambu' | 'orca'; status?: SlicerCloudStatus }) {
   const { t } = useTranslation();
-  if (status === 'ok') return null;
+  // Both clouds are optional preset sources, so not being signed in is not
+  // worth a banner. Only a session that stopped working is: the user expects
+  // those presets and would otherwise just see them disappear.
+  if (status !== 'expired' && status !== 'unreachable') return null;
 
-  // Map each non-ok status to the appropriate icon + tone. None of these are
-  // hard errors — the user can still slice using local + standard presets,
-  // so we use info / warn styling rather than error red.
-  const config: Record<Exclude<SlicerCloudStatus, 'ok'>, { tone: string; icon: typeof Cloud; key: string; fallback: string }> = {
-    not_authenticated: {
-      tone: 'border-bambu-dark-tertiary/40 bg-bambu-dark text-bambu-gray',
-      icon: Cloud,
-      key: 'slice.cloud.notAuthenticated',
-      fallback: 'Sign in to Bambu Cloud (Settings → Profiles → Cloud) to see your cloud presets.',
+  const messages = {
+    bambu: {
+      expired: {
+        key: 'slice.cloud.expired',
+        fallback: 'Bambu Cloud session expired — sign in again to refresh your cloud presets.',
+      },
+      unreachable: {
+        key: 'slice.cloud.unreachable',
+        fallback: 'Bambu Cloud is unreachable right now. Local and standard presets still work.',
+      },
     },
-    expired: {
-      tone: 'border-amber-700/40 bg-amber-900/20 text-amber-200',
-      icon: CloudOff,
-      key: 'slice.cloud.expired',
-      fallback: 'Bambu Cloud session expired — sign in again to refresh your cloud presets.',
-    },
-    unreachable: {
-      tone: 'border-bambu-dark-tertiary/40 bg-bambu-dark text-bambu-gray',
-      icon: CloudOff,
-      key: 'slice.cloud.unreachable',
-      fallback: 'Bambu Cloud is unreachable right now. Local and standard presets still work.',
+    orca: {
+      expired: {
+        key: 'slice.orcaCloud.expired',
+        fallback: 'Orca Cloud session expired — reconnect it under Profiles → Orca Cloud to see your Orca Cloud presets.',
+      },
+      unreachable: {
+        key: 'slice.orcaCloud.unreachable',
+        fallback: 'Orca Cloud is unreachable right now. Other presets still work.',
+      },
     },
   };
-  const { tone, icon: Icon, key, fallback } = config[status];
+  const tone =
+    status === 'expired'
+      ? 'border-amber-700/40 bg-amber-900/20 text-amber-200'
+      : 'border-bambu-dark-tertiary/40 bg-bambu-dark text-bambu-gray';
+  const { key, fallback } = messages[provider][status];
   return (
     <div className={`flex items-start gap-2 text-xs rounded-md border p-2 ${tone}`} role="status">
-      <Icon className="w-4 h-4 flex-shrink-0 mt-0.5" />
+      <CloudOff className="w-4 h-4 flex-shrink-0 mt-0.5" />
       <span>{t(key, fallback)}</span>
     </div>
   );
@@ -1138,12 +1244,10 @@ function PresetDropdown({
 }: PresetDropdownProps) {
   const { t } = useTranslation();
 
-  // Tier sections (imported → cloud → standard), plus — for a process /
-  // filament slot with a selected printer — a trailing group of presets that
-  // resolve to a different printer (#1325). Compatibility-unknown presets
-  // stay in their tier, so a custom / untagged preset is never hidden, and
-  // empty sections collapse out.
-  const { sections, otherEntries } = useMemo(() => {
+  // A confirmed mismatch must not be selectable: running a Dremel process
+  // profile against a P1S is unsafe and invariably fails downstream. Profiles
+  // with no compatibility declaration remain visible as custom/legacy input.
+  const sections = useMemo(() => {
     const tiers: { key: PresetTier; label: string; fallback: string }[] = [
       { key: 'local', label: 'slice.tier.local', fallback: 'Imported' },
       { key: 'orca_cloud', label: 'slice.tier.orcaCloud', fallback: 'Orca Cloud' },
@@ -1152,7 +1256,6 @@ function PresetDropdown({
     ];
     const filterByPrinter = slot !== 'printer';
     const compatSections: { tierLabel: string; entries: UnifiedPreset[] }[] = [];
-    const other: UnifiedPreset[] = [];
     for (const { key, label: lk, fallback } of tiers) {
       const entries = (data[key] ?? { printer: [], process: [], filament: [] })[slot];
       if (!filterByPrinter) {
@@ -1168,10 +1271,8 @@ function PresetDropdown({
             slot as 'process' | 'filament',
             selectedPrinterName ?? null,
             compatIndex ?? EMPTY_COMPATIBILITY_INDEX,
-          ) === 'mismatch'
+          ) !== 'mismatch'
         ) {
-          other.push(p);
-        } else {
           compatible.push(p);
         }
       }
@@ -1179,11 +1280,10 @@ function PresetDropdown({
         compatSections.push({ tierLabel: t(lk, fallback), entries: compatible });
       }
     }
-    return { sections: compatSections, otherEntries: other };
+    return compatSections;
   }, [data, slot, t, selectedPrinterName, compatIndex]);
 
-  const totalEntries =
-    sections.reduce((sum, s) => sum + s.entries.length, 0) + otherEntries.length;
+  const totalEntries = sections.reduce((sum, s) => sum + s.entries.length, 0);
 
   return (
     <label className="block">
@@ -1217,15 +1317,6 @@ function PresetDropdown({
             ))}
           </optgroup>
         ))}
-        {otherEntries.length > 0 && (
-          <optgroup label={t('slice.otherPrinters')}>
-            {otherEntries.map((p) => (
-              <option key={`${p.source}:${p.id}`} value={`${p.source}:${p.id}`}>
-                {p.name}
-              </option>
-            ))}
-          </optgroup>
-        )}
       </select>
     </label>
   );

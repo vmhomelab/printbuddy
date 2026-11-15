@@ -1,4 +1,4 @@
-"""Backend retry worker for active printers that are offline or missing a client."""
+"""Backend retry worker for offline PrusaLink printers."""
 
 from __future__ import annotations
 
@@ -17,10 +17,16 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_RECONNECT_INTERVAL_SECONDS = 30
 STARTUP_RECONNECT_GRACE_SECONDS = 60
+RECOVERABLE_PROVIDER = "prusalink"
 
 
 class PrinterReconnectService:
-    """Reconnect active offline printers without relying on an open browser tab."""
+    """Reconnect active offline PrusaLink printers without an open browser tab.
+
+    This intentionally excludes Bambu MQTT and every other provider. Replacing
+    an existing Bambu client can block the API event loop; other providers are
+    outside the scope of this targeted recovery path.
+    """
 
     def __init__(self, printer_manager: Any, session_factory: Callable[[], Any] | None) -> None:
         self._printer_manager = printer_manager
@@ -40,16 +46,12 @@ class PrinterReconnectService:
             return DEFAULT_RECONNECT_INTERVAL_SECONDS
 
     def _needs_reconnect(self, printer: Any) -> bool:
+        if normalize_provider(getattr(printer, "provider", None)) != RECOVERABLE_PROVIDER:
+            return False
+
         client = self._printer_manager.get_client(printer.id)
         if client is None:
             return True
-
-        # BambuMQTTClient uses Paho's own reconnect loop. Replacing an existing
-        # disconnected client can synchronously stop Paho's network thread and
-        # stall the FastAPI event loop, taking the WebUI down with it.
-        if normalize_provider(getattr(printer, "provider", None)) == "bambu":
-            return False
-
         return not bool(getattr(getattr(client, "state", None), "connected", False))
 
     async def reconnect_due_printers(self, printers: list[Any], *, now: float | None = None) -> None:

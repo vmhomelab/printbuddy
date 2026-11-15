@@ -15,6 +15,13 @@ class VirtualPrinter(Base):
     name: Mapped[str] = mapped_column(String(100), default="Printbuddy")
     enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     mode: Mapped[str] = mapped_column(String(20), default="immediate")  # immediate|review|print_queue|proxy
+    # Which slicer-facing protocol this VP speaks:
+    #   bambu     - emulates a Bambu Lab printer (SSDP + FTPS + MQTT on bind_ip)
+    #   moonraker - OctoPrint/Moonraker-compatible HTTP upload endpoint served on
+    #               the Printbuddy port (/api/v1/vp-host/<id>), for Klipper,
+    #               Prusa, OctoPrint and other non-Bambu printers (#52)
+    protocol: Mapped[str] = mapped_column(String(20), server_default="bambu", default="bambu")
+    api_key: Mapped[str | None] = mapped_column(String(64), nullable=True)  # moonraker protocol: X-Api-Key
     auto_dispatch: Mapped[bool] = mapped_column(
         Boolean, server_default="true"
     )  # print_queue mode: auto-start or manual

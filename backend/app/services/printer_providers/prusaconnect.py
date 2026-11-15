@@ -9,6 +9,7 @@ from urllib.parse import quote, urljoin
 import httpx
 
 from backend.app.services.bambu_mqtt import FilaSwitchState, NozzleInfo, PrintOptions
+from backend.app.services.printer_providers._http_common import serialized_status_update
 
 PRUSA_CONNECT_MOBILE_BASE_URL = "https://connect-mobile-api.prusa3d.com"
 
@@ -175,6 +176,7 @@ class PrusaConnectMobilePrinterClient:
             self.state.connected = False
         return self.state.connected
 
+    @serialized_status_update
     def request_status_update(self) -> bool:
         data = self._get(f"api/v1/printers/{quote(self.printer_uuid, safe='')}")
         self.state.connected = _map_prusa_connect_state(data.get("state")) != "OFFLINE"

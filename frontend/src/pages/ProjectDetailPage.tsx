@@ -45,6 +45,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { RichTextEditor } from '../components/RichTextEditor';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { PrintModal } from '../components/PrintModal';
+import { ProjectPlanSection } from '../components/ProjectPlanSection';
 
 // Project edit modal (reused from ProjectsPage)
 import { ProjectModal } from './ProjectsPage';
@@ -387,10 +388,10 @@ function ProductionPlan({ bomItems, archives, files, fileStates, onStageFile }: 
                       <tr key={`file-${file.id}`}>
                         <td className="px-3 py-2 text-white">{file.print_name || file.filename}</td>
                         <td className="px-3 py-2"><ProductionStateBadge state={fileStates.get(file.id)} /></td>
+                        <td className="px-3 py-2 text-bambu-gray-light">{file.filament_type || '-'}</td>
+                        <td className="px-3 py-2 text-bambu-gray-light">{file.sliced_for_model || '-'}</td>
                         <td className="px-3 py-2 text-bambu-gray-light">-</td>
-                        <td className="px-3 py-2 text-bambu-gray-light">-</td>
-                        <td className="px-3 py-2 text-bambu-gray-light">-</td>
-                        <td className="px-3 py-2 text-bambu-gray-light">-</td>
+                        <td className="px-3 py-2 text-bambu-gray-light">{[formatProductionFilament(file.filament_used_grams), formatProductionDuration(file.print_time_seconds)].filter(Boolean).join(' · ') || '-'}</td>
                         <td className="px-3 py-2 text-right">
                           {isSlicedFilename(file.filename) ? (
                             <button
@@ -969,38 +970,51 @@ export function ProjectDetailPage() {
   return (
     <div className="p-4 md:p-8 space-y-8">
       {/* Breadcrumb */}
-      <div className="flex items-center gap-2 text-sm text-bambu-gray">
-        <Link to="/projects" className="hover:text-white transition-colors">
+      <div className="flex min-w-0 items-center gap-2 text-sm text-bambu-gray">
+        <Link to="/projects" className="shrink-0 hover:text-white transition-colors">
           {t('nav.projects')}
         </Link>
-        <ChevronRight className="w-4 h-4" />
-        <span className="text-white">{project.name}</span>
+        <ChevronRight className="w-4 h-4 shrink-0" />
+        <span className="truncate text-white">{project.name}</span>
       </div>
 
-      {/* Header */}
-      <div className="flex items-start justify-between">
-        <div className="flex items-center gap-4">
+      {/* Header — stacks on phones: title row, then full-width actions */}
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div className="flex min-w-0 items-start gap-3 sm:items-center sm:gap-4">
           <button
             onClick={() => navigate('/projects')}
-            className="p-2 rounded-lg bg-bambu-card hover:bg-bambu-dark-tertiary transition-colors"
+            className="shrink-0 p-2 rounded-lg bg-bambu-card hover:bg-bambu-dark-tertiary transition-colors"
+            aria-label={t('nav.projects')}
           >
             <ArrowLeft className="w-5 h-5 text-bambu-gray" />
           </button>
-          <div className="flex items-center gap-3">
+          <div className="flex min-w-0 items-start gap-3 pt-1.5 sm:items-center sm:pt-0">
             <div
-              className="w-4 h-4 rounded-full shrink-0"
+              className="mt-1.5 w-4 h-4 rounded-full shrink-0 sm:mt-0"
               style={{ backgroundColor: project.color || '#6b7280' }}
             />
-            <div>
-              <h1 className="text-2xl font-bold text-white">{project.name}</h1>
+            <div className="min-w-0">
+              <h1 className="text-xl sm:text-2xl font-bold text-white flex flex-wrap items-center gap-2 break-words">
+                <span className="min-w-0 break-words">{project.name}</span>
+                {project.order_number && (
+                  <span className="rounded bg-bambu-dark-tertiary px-2 py-0.5 text-sm font-medium text-bambu-gray-light" title={t('projectDetail.orderNumber')}>
+                    #{project.order_number}
+                  </span>
+                )}
+                <span className="sm:hidden">
+                  <StatusBadge status={project.status} t={t} />
+                </span>
+              </h1>
               {project.description && (
-                <p className="text-bambu-gray mt-1">{project.description}</p>
+                <p className="text-bambu-gray mt-1 break-words">{project.description}</p>
               )}
             </div>
           </div>
-          <StatusBadge status={project.status} t={t} />
+          <span className="hidden sm:inline-flex">
+            <StatusBadge status={project.status} t={t} />
+          </span>
         </div>
-        <div className="flex gap-2">
+        <div className="flex shrink-0 gap-2 [&>button]:flex-1 sm:[&>button]:flex-none">
           <Button
             variant="secondary"
             onClick={handleExportProject}
@@ -1113,16 +1127,37 @@ export function ProjectDetailPage() {
             icon={Clock}
             label={t('projectDetail.stats.printTime')}
             value={formatDurationFromHours(stats.total_print_time_hours)}
+            subValue={stats.planned_source && stats.planned_print_time_hours ? t('projectDetail.stats.planned', { value: formatDurationFromHours(stats.planned_print_time_hours) }) : undefined}
+            hint={stats.planned_source === 'files' ? t('projectDetail.stats.plannedFromFiles') : stats.planned_source === 'plan' ? t('projectDetail.stats.plannedFromPlan') : undefined}
             color="text-yellow-400"
           />
           <StatCard
             icon={Printer}
             label={t('projectDetail.stats.filamentUsed')}
             value={formatFilament(stats.total_filament_grams)}
+            subValue={stats.planned_source && stats.planned_filament_grams ? t('projectDetail.stats.planned', { value: formatFilament(stats.planned_filament_grams) }) : undefined}
+            hint={stats.planned_source === 'files' ? t('projectDetail.stats.plannedFromFiles') : stats.planned_source === 'plan' ? t('projectDetail.stats.plannedFromPlan') : undefined}
             color="text-purple-400"
           />
+          {(stats.plan_total_plates ?? 0) > 0 && (
+            <StatCard
+              icon={ListTodo}
+              label={t('projectDetail.stats.jobPlates')}
+              value={`${stats.plan_completed_plates ?? 0} / ${stats.plan_total_plates}`}
+              subValue={t('projectDetail.progress.percentComplete', { percent: (stats.plan_progress_percent ?? 0).toFixed(0) })}
+              color="text-bambu-green"
+            />
+          )}
         </div>
       )}
+
+      <ProjectPlanSection
+        projectId={projectId}
+        projectFiles={allProjectFiles || []}
+        printers={printers}
+        canEdit={hasPermission('projects:update')}
+        canQueue={hasPermission('queue:create')}
+      />
 
       <ProductionPlan bomItems={bomItems || []} archives={archives || []} files={allProjectFiles || []} fileStates={productionFileStates} onStageFile={(file) => { setSchedulePrinterIds([]); setScheduleFile(file); }} />
       <DispatchSuggestions suggestions={dispatchSuggestions} onReview={(suggestion) => { setSchedulePrinterIds(suggestion.printer ? [suggestion.printer.id] : []); setScheduleFile(suggestion.file); }} />

@@ -9,8 +9,14 @@ from backend.app.services.printer_reconnect import PrinterReconnectService
 
 
 @pytest.mark.asyncio
-async def test_reconnects_an_active_printer_without_a_client_when_due():
-    printer = SimpleNamespace(id=7, name="CORE One", is_active=True, reconnect_interval_seconds=30)
+async def test_reconnects_an_offline_prusalink_printer_when_due():
+    printer = SimpleNamespace(
+        id=7,
+        name="CORE One",
+        provider="prusalink",
+        is_active=True,
+        reconnect_interval_seconds=30,
+    )
     manager = SimpleNamespace(get_client=lambda printer_id: None, connect_printer=AsyncMock(return_value=True))
     service = PrinterReconnectService(manager, session_factory=None)
 
@@ -18,6 +24,24 @@ async def test_reconnects_an_active_printer_without_a_client_when_due():
 
     manager.connect_printer.assert_awaited_once_with(printer)
     assert service.next_attempt_at[printer.id] == 130.0
+
+
+@pytest.mark.asyncio
+async def test_does_not_reconnect_non_prusalink_printer_without_a_client():
+    printer = SimpleNamespace(
+        id=7,
+        name="Klipper",
+        provider="klipper",
+        is_active=True,
+        reconnect_interval_seconds=30,
+    )
+    manager = SimpleNamespace(get_client=lambda printer_id: None, connect_printer=AsyncMock(return_value=True))
+    service = PrinterReconnectService(manager, session_factory=None)
+
+    await service.reconnect_due_printers([printer], now=100.0)
+
+    manager.connect_printer.assert_not_awaited()
+    assert printer.id not in service.next_attempt_at
 
 
 @pytest.mark.asyncio
@@ -57,7 +81,7 @@ async def test_leaves_an_existing_disconnected_bambu_client_to_paho_reconnect():
 
 
 @pytest.mark.asyncio
-async def test_recreates_a_bambu_printer_when_no_client_exists():
+async def test_does_not_recreate_a_bambu_printer_when_no_client_exists():
     printer = SimpleNamespace(
         id=7,
         name="P1P",
@@ -70,15 +94,16 @@ async def test_recreates_a_bambu_printer_when_no_client_exists():
 
     await service.reconnect_due_printers([printer], now=100.0)
 
-    manager.connect_printer.assert_awaited_once_with(printer)
+    manager.connect_printer.assert_not_awaited()
+    assert printer.id not in service.next_attempt_at
 
 
 @pytest.mark.asyncio
-async def test_startup_grace_defers_reconnects_until_initial_connections_settle():
+async def test_startup_grace_defers_prusalink_reconnects_until_initial_connections_settle():
     printer = SimpleNamespace(
         id=7,
-        name="Klipper",
-        provider="klipper",
+        name="CORE One",
+        provider="prusalink",
         is_active=True,
         reconnect_interval_seconds=30,
     )
@@ -94,8 +119,14 @@ async def test_startup_grace_defers_reconnects_until_initial_connections_settle(
 
 
 @pytest.mark.asyncio
-async def test_waits_for_the_printer_specific_interval_before_retrying_again():
-    printer = SimpleNamespace(id=7, name="CORE One", is_active=True, reconnect_interval_seconds=45)
+async def test_waits_for_the_prusalink_printer_specific_interval_before_retrying_again():
+    printer = SimpleNamespace(
+        id=7,
+        name="CORE One",
+        provider="prusalink",
+        is_active=True,
+        reconnect_interval_seconds=45,
+    )
     manager = SimpleNamespace(get_client=lambda printer_id: None, connect_printer=AsyncMock(return_value=False))
     service = PrinterReconnectService(manager, session_factory=None)
 

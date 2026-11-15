@@ -44,3 +44,31 @@ async def test_orca_cloud_profile_resolves_to_slot_safe_slicer_json():
         "name": "My printer",
     }
     service.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_orca_cloud_compatible_printers_are_unquoted_for_the_sidecar():
+    """The sidecar compares bare printer names; quoted Orca items would make it
+    reject the profile for every printer."""
+    service = MagicMock()
+    service.get_profile = AsyncMock(
+        return_value={
+            "id": "orca-process",
+            "content": {
+                "type": "process",
+                "name": "process template @Elegoo Elegoo Neptune 4 Pro 0.4 nozzle",
+                "compatible_printers": ['"Elegoo Elegoo Neptune 4 Pro 0.4 nozzle"'],
+            },
+        }
+    )
+    service.close = AsyncMock()
+
+    with patch.object(resolver, "_build_orca_service", AsyncMock(return_value=service)):
+        payload = await resolver.resolve_preset_ref(
+            MagicMock(),
+            _OrcaAuthorizedUser(),
+            PresetRef(source="orca_cloud", id="orca-process"),
+            "process",
+        )
+
+    assert json.loads(payload)["compatible_printers"] == ["Elegoo Elegoo Neptune 4 Pro 0.4 nozzle"]
