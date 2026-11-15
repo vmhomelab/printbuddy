@@ -72,25 +72,118 @@ Until now, virtual printers only emulated a Bambu Lab printer, so slicers could 
 </p>
 -->
 
-#### Printer dashboard in OrcaSlicer's Device tab
+### Printbuddy in OrcaSlicer's Device tab
 
-OrcaSlicer and Snapmaker Orca open the printer's host URL in their **Device** tab and switch to it after a job is sent. For a Moonraker/OctoPrint-compatible virtual printer, this now shows a **Printbuddy printer dashboard** for the virtual printer's target printer:
+Send a job from OrcaSlicer and keep watching it in the **same window**. When you set up a Printbuddy virtual printer in OrcaSlicer with the host type **OctoPrint**, OrcaSlicer's **Device** tab now shows a Printbuddy dashboard for that printer. You can follow the print, watch the webcam and control the printer without switching to the browser.
 
-- State, file name, progress, layer, remaining and finish time
-- Pause, resume and stop
-- Active material per spool or toolhead
-- Live webcam stream and snapshot
-- All nozzle, bed and chamber temperatures with set, preheat and cool-down
-- Fan sliders and the chamber light
-
-Each printer you set up in the slicer points to its own virtual printer, so its Device tab shows exactly that printer. The page uses the virtual printer's API key, which OrcaSlicer passes along automatically. In a normal browser you can open it with `?apikey=` or enter the key in the form. Without a target printer, the page explains where to choose one.
+This also works with **Snapmaker Orca**, and for every printer type Printbuddy supports (Klipper/Moonraker, PrusaLink, PrusaConnect, OctoPrint, Elegoo, …), not just Bambu Lab.
 
 <!-- SCREENSHOT: docs/screenshots/v0254-vp-device-tab.png
-     OrcaSlicer with the Device tab open, showing the Printbuddy dashboard of a printer that is currently printing (progress, webcam, temperatures visible).
+     OrcaSlicer window with the Device tab open, showing the Printbuddy dashboard during a print
+     (progress, webcam and temperatures visible).
 <p align="center">
-  <img src="docs/screenshots/v0254-vp-device-tab.png" alt="Printbuddy dashboard in OrcaSlicer's Device tab" width="800">
+  <img src="docs/screenshots/v0254-vp-device-tab.png" alt="Printbuddy dashboard in OrcaSlicer's Device tab" width="900">
 </p>
 -->
+
+#### What you see
+
+**Print job**
+- Printer state with a coloured status indicator
+- File name and model, progress in percent with a progress bar, and the current layer
+- Remaining time and estimated finish time
+- **Pause / Resume** and **Stop** buttons
+- Printer error messages, if there are any
+
+**Active material**
+- The filament in each spool, AMS/CFS slot or toolhead, with colour and material
+
+**Webcam**
+- Live stream of the printer camera, with a fullscreen button
+- Snapshot button that opens a still image in a new window
+
+**Temperatures**
+- All nozzle, bed and chamber temperatures with current and target values
+- Set nozzle and bed targets directly
+- **Preheat PLA** (nozzle 200 °C, bed 60 °C) and **Cool down** with one click
+
+**Control**
+- Sliders for the part cooling, auxiliary and chamber fans (only the fans your printer has)
+- Chamber light switch (if your printer has one)
+
+**More**
+- Updates every 2 seconds
+- **Open in Printbuddy** link to the full web interface
+- English or German, based on your system language
+- Works on small windows as well
+
+<!-- SCREENSHOT: docs/screenshots/v0254-vp-device-controls.png
+     Close-up of the right column: temperatures with the set/preheat/cool-down controls, fan sliders and chamber light.
+<p align="center">
+  <img src="docs/screenshots/v0254-vp-device-controls.png" alt="Temperature, fan and light controls" width="500">
+</p>
+-->
+
+#### One printer per Device tab
+
+Each printer you set up in OrcaSlicer points to its **own** Printbuddy virtual printer. Its Device tab shows exactly the virtual printer's **target printer**, never a list of every printer in Printbuddy. The header shows the printer name and the virtual printer the job goes through.
+
+Every button acts on that target printer only. If the virtual printer has no target printer yet, or the target printer is inactive, the page tells you where to choose one.
+
+#### Setup
+
+**1. Create the virtual printer in Printbuddy**
+
+1. Open **Settings → Virtual printer** and click **Add**.
+2. Choose the type **Moonraker/OctoPrint**.
+3. Pick a mode. For the dashboard, set a **target printer**: the physical printer this virtual printer belongs to. In print-queue mode a target printer is required.
+4. Save. The virtual printer card shows the **host URL** and the **API key**.
+
+<!-- SCREENSHOT: docs/screenshots/v0254-vp-device-printbuddy-card.png
+     Printbuddy → Settings → Virtual printer: the Moonraker VP card with host URL, API key (blur it!) and the target printer.
+<p align="center">
+  <img src="docs/screenshots/v0254-vp-device-printbuddy-card.png" alt="Virtual printer card with host URL and API key" width="700">
+</p>
+-->
+
+**2. Add the printer in OrcaSlicer**
+
+1. In OrcaSlicer, open the **physical printer** settings of your printer preset (the Wi-Fi/network icon next to the printer).
+2. Set **Host type** to **OctoPrint**.
+3. Paste the **host URL** from the card, e.g. `http://<printbuddy-ip>:8000/api/v1/vp-host/<id>`.
+4. Paste the **API key**.
+5. Click **Test**, then **OK**.
+
+<!-- SCREENSHOT: docs/screenshots/v0254-vp-device-orca-setup.png
+     OrcaSlicer "Physical Printer" dialog with host type OctoPrint, the Printbuddy host URL and the API key field (blurred).
+<p align="center">
+  <img src="docs/screenshots/v0254-vp-device-orca-setup.png" alt="OrcaSlicer physical printer setup with host type OctoPrint" width="600">
+</p>
+-->
+
+**3. Open the Device tab**
+
+Switch to the **Device** tab in OrcaSlicer. The Printbuddy dashboard loads right away. After you send a job, OrcaSlicer switches to it automatically.
+
+#### Security
+
+- The page itself contains no printer data. All data and all control actions require the **virtual printer's API key**. OrcaSlicer sends it automatically.
+- In a normal browser, open the host URL with `?apikey=<key>` or enter the key in the form on the page. The key is stored **in this browser only**.
+- The webcam uses a short-lived stream token, which is renewed automatically.
+- Scripts and styles are separate files, so Printbuddy's strict Content Security Policy also applies to this page.
+- Anyone with the API key can control the target printer. Treat the key like a password, and regenerate it on the virtual printer card if it gets out.
+
+#### Troubleshooting
+
+| Problem | Solution |
+|---|---|
+| "API key required" | OrcaSlicer didn't send the key. Check the API key in the physical printer settings, or enter it in the form. |
+| "No target printer" message | Choose a target printer on the virtual printer card in Printbuddy. |
+| Buttons are greyed out | The target printer is offline or busy. Check the printer's connection in Printbuddy. |
+| No webcam image | Make sure a camera is configured for the target printer in Printbuddy. |
+| Device tab shows `{"detail":"Not found"}` | The host URL is wrong, or Printbuddy is older than v0.2.5.4. Copy the URL again from the virtual printer card. |
+
+The dashboard needs OrcaSlicer or Snapmaker Orca and a **Moonraker/OctoPrint-compatible** virtual printer with a target printer. Bambu-compatible virtual printers keep using Bambu's own Device view.
 
 ### Model import page and GyroidVault
 
