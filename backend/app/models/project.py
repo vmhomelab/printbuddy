@@ -23,6 +23,8 @@ class Project(Base):
     # Optional external order / tracking number (e.g. an Etsy order number)
     # for projects used as print "jobs".
     order_number: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # Optional waste / purge surcharge (%) applied to the planned material cost
+    waste_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     # External link rendered as a clickable icon next to the project name (#1155).
     url: Mapped[str | None] = mapped_column(String(2048), nullable=True)

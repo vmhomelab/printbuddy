@@ -37,6 +37,7 @@ class ProjectCreate(BaseModel):
     parent_id: int | None = None  # For sub-projects
     url: str | None = None
     order_number: str | None = None  # External order / tracking number (e.g. Etsy)
+    waste_percent: float | None = Field(default=None, ge=0, le=500)  # material waste surcharge (%)
     # File Manager folders to link to the new project right away
     folder_ids: list[int] | None = None
 
@@ -66,6 +67,7 @@ class ProjectUpdate(IgnoresNullForRequiredColumns):
     parent_id: int | None = None
     url: str | None = None
     order_number: str | None = None
+    waste_percent: float | None = Field(default=None, ge=0, le=500)  # null clears
 
     @field_validator("url")
     @classmethod
@@ -165,6 +167,7 @@ class ProjectResponse(BaseModel):
     url: str | None = None
     cover_image_filename: str | None = None
     order_number: str | None = None
+    waste_percent: float | None = None
 
     class Config:
         from_attributes = True
@@ -228,6 +231,8 @@ class ProjectListResponse(BaseModel):
     # Job plan progress (plates), present when the project has plan rows
     plan_total_plates: int = 0
     plan_completed_plates: int = 0
+    # Expected production cost (planned): {"material", "energy", "bom", "total"}
+    estimated_costs: dict | None = None
 
     class Config:
         from_attributes = True

@@ -187,6 +187,24 @@ async def get_plan_summary(
     return PlanSummary(**summarize_plan(overview))
 
 
+@router.get("/{project_id}/costs")
+async def get_project_costs(
+    project_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.PROJECTS_READ),
+):
+    """Expected production cost of the job: material, energy, BOM (+ waste).
+
+    Returns planned totals, what was actually spent so far and what is
+    still open, plus per-row breakdowns and the price source of each row.
+    """
+    from backend.app.services.project_costs import compute_project_costs, load_cost_context
+
+    project = await _get_project(db, project_id)
+    ctx = await load_cost_context(db)
+    return await compute_project_costs(db, project, ctx)
+
+
 @router.post("/{project_id}/plan", response_model=PlanItemResponse)
 async def create_plan_item(
     project_id: int,

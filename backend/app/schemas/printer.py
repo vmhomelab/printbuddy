@@ -223,6 +223,7 @@ class PrinterBase(BaseModel):
     provider_options: str | None = Field(default=None, max_length=4000)
     model: str | None = None
     location: str | None = None  # Group/location name
+    power_watts: float | None = Field(default=None, ge=0, le=10000)  # Avg power while printing (W)
     auto_archive: bool = True
     reconnect_interval_seconds: int = Field(default=30, ge=10, le=3600)
     external_camera_url: str | None = None
@@ -273,6 +274,7 @@ class PrinterUpdate(IgnoresNullForRequiredColumns):
     model: str | None = None
     location: str | None = None
     _location = field_validator("location")(normalize_location_name)
+    power_watts: float | None = Field(default=None, ge=0, le=10000)  # null clears
     is_active: bool | None = None
     auto_archive: bool | None = None
     reconnect_interval_seconds: int | None = Field(default=None, ge=10, le=3600)
@@ -335,6 +337,7 @@ class PrinterResponse(PrinterBase):
             "provider_options": getattr(printer, "provider_options", None),
             "model": printer.model,
             "location": printer.location,
+            "power_watts": getattr(printer, "power_watts", None),
             "custom_image_filename": getattr(printer, "custom_image_filename", None),
             "auto_archive": printer.auto_archive,
             "reconnect_interval_seconds": getattr(printer, "reconnect_interval_seconds", 30),

@@ -35,6 +35,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { getCurrencySymbol } from '../utils/currency';
 import { eligibleParents } from '../utils/projectTree';
 import { useUiSettings } from '../hooks/useUiSettings';
+import { CostMiniBar } from '../components/ProjectCostsCard';
 
 const PROJECT_COLORS = [
   '#ef4444', // red
@@ -614,10 +615,11 @@ interface ProjectCardProps {
   onEdit: () => void;
   onDelete: () => void;
   hasPermission: (permission: Permission) => boolean;
+  currencySymbol: string;
   t: TFunction;
 }
 
-function ProjectCard({ project, parentName, onClick, onEdit, onDelete, hasPermission, t }: ProjectCardProps) {
+function ProjectCard({ project, parentName, onClick, onEdit, onDelete, hasPermission, currencySymbol, t }: ProjectCardProps) {
   // Plates progress: archive_count / target_count
   const platesProgressPercent = project.target_count
     ? Math.round((project.archive_count / project.target_count) * 100)
@@ -847,6 +849,18 @@ function ProjectCard({ project, parentName, onClick, onEdit, onDelete, hasPermis
             )}
           </div>
         </div>
+
+        {/* Expected production cost (material / energy / BOM) */}
+        {project.estimated_costs && project.estimated_costs.total > 0 && (
+          <div
+            className="mb-3 inline-flex max-w-full items-center gap-2 rounded-md border border-bambu-dark-tertiary bg-bambu-dark px-2 py-1 text-xs"
+            title={`${t('projectCosts.material')}: ${currencySymbol}${project.estimated_costs.material.toFixed(2)} · ${t('projectCosts.energy')}: ${currencySymbol}${project.estimated_costs.energy.toFixed(2)} · ${t('projectCosts.bom')}: ${currencySymbol}${project.estimated_costs.bom.toFixed(2)}`}
+          >
+            <span className="whitespace-nowrap font-semibold text-white">≈ {currencySymbol}{project.estimated_costs.total.toFixed(2)}</span>
+            <CostMiniBar totals={project.estimated_costs} />
+            <span className="truncate text-bambu-gray">{t('projects.estimatedCost')}</span>
+          </div>
+        )}
 
         {/* Progress section - show for all projects */}
         <div className="mb-4">
@@ -1122,6 +1136,7 @@ export function ProjectsPage() {
         onEdit={() => handleEdit(project)}
         onDelete={() => handleDeleteClick(project.id)}
         hasPermission={hasPermission}
+        currencySymbol={currencySymbol}
         t={t}
       />
     );

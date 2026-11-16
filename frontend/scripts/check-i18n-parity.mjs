@@ -125,7 +125,7 @@ function isAlwaysAllowedIdentical(value) {
   if (/^https?:\/\//.test(value)) return true;          // URL
   if (/^ON,\s+true,\s+1$/.test(value)) return true;     // literal example "ON, true, 1"
   // Brand / technical names that ship verbatim everywhere.
-  if (/^(Printbuddy|Printbuddy URL|Printbuddy Backend URL|Obico|OctoEverywhere|Bambu Lab|Bambu Studio|Bambu Studio 2\.6\+|Bambu Studio sidecar URL|OrcaSlicer|OrcaSlicer sidecar URL|MakerWorld|GyroidVault|Manyfold|Spoolman|\(Spoolman\)|Spoolman URL|Tailscale|GitHub|GitLab|Gitea|Forgejo|Discord|MQTT|FTP|HTTPS?|JSON|YAML|RTSP|TLS|SSL|CSRF|OIDC|SSO|SSO \/ OIDC|LDAP|TOTP|2FA|MFA|API|AMS|CRC|SHA256|SHA-256|kWh|MB|GB|KB|RGBA?|HSL|RGB|UTC|ISO|UI|HTTP|HTTP Method|H2D|H2D Pro|X1C|X1E|P1S|P1P|A1|A1 Mini|H2C|N3F|N3S|PETG|PLA|ABS|PA|TPU|PEI|PA-CF|PVA|HIPS|ASA|PC|PETG-HF|G\.code|G-code|gcode|cm³|°C|°F|GCODE|SOURCE|ntfy|Notify|Notify!|Pushover|Bark|Gotify|Telegram|Webhook|Webhook URL|Home Assistant|Home Assistant URL|CallMeBot\/WhatsApp|Cool Plate|Cool Plate SuperTack|Engineering Plate|High Temp Plate|Smooth PEI Plate|Smooth PEI Plate \/ High Temp Plate|Textured PEI Plate|Ext-L|Ext-R|ISO \(YYYY-MM-DD\))$/.test(value)) return true;
+  if (/^(Printbuddy|Printbuddy URL|Printbuddy Backend URL|Obico|OctoEverywhere|Bambu Lab|Bambu Studio|Bambu Studio 2\.6\+|Bambu Studio sidecar URL|OrcaSlicer|OrcaSlicer sidecar URL|MakerWorld|GyroidVault|Manyfold|Spoolman|\(Spoolman\)|Spoolman URL|Tailscale|GitHub|GitLab|Gitea|Forgejo|Discord|MQTT|FTP|HTTPS?|JSON|YAML|RTSP|TLS|SSL|CSRF|OIDC|SSO|SSO \/ OIDC|LDAP|TOTP|2FA|MFA|API|AMS|CRC|SHA256|SHA-256|kWh|kWh\/h|MB|GB|KB|RGBA?|HSL|RGB|UTC|ISO|UI|HTTP|HTTP Method|H2D|H2D Pro|X1C|X1E|P1S|P1P|A1|A1 Mini|H2C|N3F|N3S|PETG|PLA|ABS|PA|TPU|PEI|PA-CF|PVA|HIPS|ASA|PC|PETG-HF|G\.code|G-code|gcode|cm³|°C|°F|GCODE|SOURCE|ntfy|Notify|Notify!|Pushover|Bark|Gotify|Telegram|Webhook|Webhook URL|Home Assistant|Home Assistant URL|CallMeBot\/WhatsApp|Cool Plate|Cool Plate SuperTack|Engineering Plate|High Temp Plate|Smooth PEI Plate|Smooth PEI Plate \/ High Temp Plate|Textured PEI Plate|Ext-L|Ext-R|ISO \(YYYY-MM-DD\))$/.test(value)) return true;
   return false;
 }
 
@@ -154,7 +154,7 @@ const DE_COGNATES = [
   'Material', 'Original', 'Position', 'Webhook', 'Workflow', 'Slicer',
   'Pipeline', 'Pipelines', 'Filament {{n}}',  // #1425 — Slicer Pipelines (DE)
   'parallel',  // #1425 PR C polish — "parallel" is the same word in German
-  'Region', 'Normal', 'Orange', 'Branch', 'Budget', 'Commit', 'Global',
+  'Region', 'Normal', 'Orange', 'Branch', 'Budget', 'Budget {{value}}', 'Commit', 'Global',
   'Version', 'Slot', 'Slot {{slot}}', 'Live', 'Rate', 'Host', 'Trend', 'Min', 'Admin', 'Cloud',
   'Filament', 'Filaments', 'Software', 'Hardware', 'Avatar', 'Pin', 'Modal',
   'Active', 'Plate', 'Layer', 'Total', 'Plus', 'Pro', 'Mini', 'Studio',
@@ -221,7 +221,7 @@ const FR_COGNATES = [
   'Expand dispatch details', 'Collapse dispatch details',
   'Cancelling upload...', 'Backup in progress...', 'Searching directory...',
   'EC984C,#6CD4BC,A66EB9,D87694',
-  'Proxy', 'Navigation', 'Budget', 'Commit', 'Designer',
+  'Proxy', 'Navigation', 'Budget', 'Budget {{value}}', 'Commit', 'Designer',
   'Compact',  // cam-wall status overlay mode — same word in French
   'ntfy, Pushover, Discord, etc.',
   '{{filament}} @ {{temp}}°C',  // drying badge: filament code + universal °C
@@ -255,7 +255,7 @@ const IT_COGNATES = [
   'Backup', 'Legacy', 'Branch', 'Auto On', 'Display', 'Password',
   'Auto Off', 'Dashboard', 'Timestamp', 'Pressure Advance', 'Provisioning...',
   '(25%, 50%, 75%)', 'Provider', 'Provider: {{type}}', 'Base: {{name}}',
-  'Slicing…', 'Designer', 'Firmware', 'Timelapse', 'Commit', 'Budget',
+  'Slicing…', 'Designer', 'Firmware', 'Timelapse', 'Commit', 'Budget', 'Budget {{value}}',
   '({{count}}/8)', 'Custom Headers (JSON)', 'ETA {{minutes}} min',
   '{{name}} - Timelapse', 'Box label (62 × 29 mm)',
   'Avery L7160 — A4 sheet (38.1 × 63.5 mm × 21)',
@@ -388,6 +388,7 @@ const ES_COGNATES = [
 // Swedish cognates — technical UI labels that Swedish speakers use verbatim
 // from English (loanwords + acronyms + format strings). Curated, not a shortcut.
 const SV_COGNATES = [
+  'Material (filament)',  // project costs — same words in Swedish
   'A4 (210 × 297 mm)',  // #3296 page size name in the custom label sheet form — ISO name and metric size, written the same
   'MakerWorld: {{designer}}',
   'email',
