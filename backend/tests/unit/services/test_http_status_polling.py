@@ -151,6 +151,28 @@ class TestStatusPoller:
         assert notified[:1] == [False]
         assert client.request_status_update.call_count >= pm_module.HTTP_POLL_FAILURES_BEFORE_OFFLINE
 
+    def test_refreshes_background_caches_only_after_successful_poll(self):
+        client = _http_client()
+        client.request_status_update.side_effect = [RuntimeError("timeout"), True, True, True, True, True]
+        poller = _StatusPoller(client, 0.01, "test")
+        poller.start()
+        try:
+            assert _wait_until(lambda: client.refresh_background_caches.call_count >= 2)
+        finally:
+            poller.stop()
+
+        assert client.refresh_background_caches.call_count < client.request_status_update.call_count
+
+    def test_failing_background_refresh_does_not_stop_polling(self):
+        client = _http_client()
+        client.refresh_background_caches.side_effect = RuntimeError("webcams down")
+        poller = _StatusPoller(client, 0.01, "test")
+        poller.start()
+        try:
+            assert _wait_until(lambda: client.request_status_update.call_count >= 3)
+        finally:
+            poller.stop()
+
 
 class TestSerializedStatusUpdate:
     def test_overlapping_updates_do_not_interleave(self):

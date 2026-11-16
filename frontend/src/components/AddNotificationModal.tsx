@@ -44,6 +44,8 @@ interface AddNotificationModalProps {
 }
 
 const PROVIDER_VALUES: ProviderType[] = ['email', 'telegram', 'discord', 'ntfy', 'pushover', 'callmebot', 'webhook', 'homeassistant', 'notify'];
+// Providers whose sender can attach the camera snapshot (see notification_service._send_to_provider).
+const IMAGE_ATTACHMENT_PROVIDERS = new Set<ProviderType>(['telegram', 'discord', 'ntfy', 'pushover', 'webhook']);
 
 export function AddNotificationModal({ provider, onClose }: AddNotificationModalProps) {
   const { t } = useTranslation();
@@ -66,6 +68,10 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
   // Daily digest
   const [dailyDigestEnabled, setDailyDigestEnabled] = useState(provider?.daily_digest_enabled || false);
   const [dailyDigestTime, setDailyDigestTime] = useState(provider?.daily_digest_time || '08:00');
+
+  // Camera snapshot attachment (only providers that can carry an image)
+  const [attachImage, setAttachImage] = useState(provider?.attach_image ?? true);
+  const supportsImageAttachment = IMAGE_ATTACHMENT_PROVIDERS.has(providerType);
 
   // Event toggles
   const [onPrintStart, setOnPrintStart] = useState(provider?.on_print_start ?? false);
@@ -244,6 +250,7 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
       // Daily digest
       daily_digest_enabled: dailyDigestEnabled,
       daily_digest_time: dailyDigestEnabled ? dailyDigestTime : null,
+      attach_image: attachImage,
       // Event toggles
       on_print_start: onPrintStart,
       on_print_complete: onPrintComplete,
@@ -676,6 +683,17 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
               </div>
             )}
           </div>
+
+          {/* Camera snapshot attachment */}
+          {supportsImageAttachment && (
+            <div className="flex items-center justify-between">
+              <div>
+                <label className="text-sm text-white">{t('notifications.attachImageLabel')}</label>
+                <p className="text-xs text-bambu-gray">{t('notifications.attachImageDescription')}</p>
+              </div>
+              <Toggle checked={attachImage} onChange={setAttachImage} />
+            </div>
+          )}
 
           {/* Event Toggles */}
           <div className="space-y-3">

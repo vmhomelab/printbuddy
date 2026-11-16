@@ -673,6 +673,11 @@ async def run_migrations(conn):
         await conn.execute(
             text("UPDATE notification_providers SET on_print_almost_done = FALSE WHERE on_print_almost_done IS NULL")
         )
+    # Per-provider camera snapshot attachment (on by default, matching the
+    # behaviour before the toggle existed). No column default, see above.
+    await _safe_execute(conn, "ALTER TABLE notification_providers ADD COLUMN attach_image BOOLEAN")
+    async with conn.begin_nested():
+        await conn.execute(text("UPDATE notification_providers SET attach_image = TRUE WHERE attach_image IS NULL"))
 
     # Migration: Add source_3mf_path column to print_archives
     await _safe_execute(conn, "ALTER TABLE print_archives ADD COLUMN source_3mf_path VARCHAR(500)")

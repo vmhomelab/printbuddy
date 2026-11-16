@@ -1133,3 +1133,126 @@ def test_moonraker_without_chamber_objects_reports_no_capabilities(monkeypatch):
     assert client.state.chamber_light_supported is False
     assert client.state.cooling_fan_speed == 20
     assert client.set_chamber_light(True) is False
+
+
+def _lifecycle_client(monkeypatch, history_jobs):
+    """Moonraker client fed a scripted sequence of print_stats states."""
+    client = MoonrakerPrinterClient("http://qidi-max4.local:7125", printer_model="Qidi Max 4")
+    completions: list[dict] = []
+    client.on_print_complete = completions.append
+    samples: list[dict] = []
+
+    def query(object_names):
+        return samples[0]
+
+    def fake_get(path, **kwargs):
+        if path.startswith("server/history/list"):
+            if history_jobs is None:
+                raise httpx.ConnectError("history component disabled")
+            return {"count": len(history_jobs), "jobs": history_jobs}
+        raise AssertionError(f"unexpected GET {path}")
+
+    monkeypatch.setattr(client, "_query_objects", query)
+    monkeypatch.setattr(client, "_get", fake_get)
+    monkeypatch.setattr(client, "_available_objects", lambda: [])
+    monkeypatch.setattr(client, "refresh_current_file_metadata", lambda: {})
+
+    def feed(state, progress, filename="benchy.gcode"):
+        samples[:] = [
+            {
+                "print_stats": {"state": state, "filename": filename if state != "standby" else ""},
+                "virtual_sdcard": {"progress": progress},
+                "display_status": {"progress": progress},
+                "extruder": {},
+                "heater_bed": {},
+            }
+        ]
+        assert client.request_status_update() is True
+
+    return client, completions, feed
+
+
+def test_moonraker_printing_to_standby_uses_history_completed_status(monkeypatch):
+    # Qidi end G-code resets the SD file: printing -> standby with progress 0.
+    _, completions, feed = _lifecycle_client(monkeypatch, [{"filename": "benchy.gcode", "status": "completed"}])
+    feed("standby", 0.0)
+    feed("printing", 0.5)
+    feed("standby", 0.0)
+
+    assert [c["status"] for c in completions] == ["completed"]
+
+
+def test_moonraker_printing_to_standby_uses_history_cancelled_status(monkeypatch):
+    _, completions, feed = _lifecycle_client(monkeypatch, [{"filename": "benchy.gcode", "status": "cancelled"}])
+    feed("standby", 0.0)
+    feed("printing", 0.999)
+    feed("standby", 0.0)
+
+    assert [c["status"] for c in completions] == ["stopped"]
+
+
+@pytest.mark.parametrize(
+    ("last_progress", "expected"),
+    [(0.995, "completed"), (0.42, "stopped")],
+)
+def test_moonraker_printing_to_standby_falls_back_to_last_running_progress(monkeypatch, last_progress, expected):
+    _, completions, feed = _lifecycle_client(monkeypatch, None)
+    feed("standby", 0.0)
+    feed("printing", 0.2)
+    feed("printing", last_progress)
+    feed("standby", 0.0)
+
+    assert [c["status"] for c in completions] == [expected]
+
+
+def test_moonraker_history_for_other_file_is_ignored(monkeypatch):
+    _, completions, feed = _lifecycle_client(monkeypatch, [{"filename": "other.gcode", "status": "cancelled"}])
+    feed("standby", 0.0)
+    feed("printing", 1.0)
+    feed("standby", 0.0)
+
+    assert [c["status"] for c in completions] == ["completed"]
+
+
+def test_moonraker_refresh_background_caches_caches_first_enabled_webcam(monkeypatch):
+    client = MoonrakerPrinterClient("http://qidi-max4.local:7125", printer_model="Qidi Max 4")
+    client.state.connected = True
+    calls = []
+
+    def fake_get(path, **kwargs):
+        calls.append(path)
+        return {
+            "webcams": [
+                {"name": "off", "enabled": False, "stream_url": "/webcam2/?action=stream"},
+                {
+                    "name": "chamber",
+                    "enabled": True,
+                    "stream_url": "/webcam/?action=stream",
+                    "snapshot_url": "/webcam/?action=snapshot",
+                },
+            ]
+        }
+
+    monkeypatch.setattr(client, "_get", fake_get)
+
+    client.refresh_background_caches()
+    client.refresh_background_caches()  # within TTL: no second request
+
+    assert calls == ["server/webcams/list"]
+    assert client.primary_webcam["name"] == "chamber"
+    assert client.primary_webcam["stream_url"] == "http://qidi-max4.local/webcam/?action=stream"
+    assert client.primary_webcam["snapshot_url"] == "http://qidi-max4.local/webcam/?action=snapshot"
+
+
+def test_moonraker_refresh_background_caches_skips_when_offline_and_survives_errors(monkeypatch):
+    client = MoonrakerPrinterClient("http://qidi-max4.local:7125")
+
+    def failing_get(path, **kwargs):
+        raise httpx.ConnectError("no webcams component")
+
+    monkeypatch.setattr(client, "_get", failing_get)
+    client.refresh_background_caches()  # not connected yet: no request, no error
+    client.state.connected = True
+    client.refresh_background_caches()
+
+    assert client.primary_webcam is None

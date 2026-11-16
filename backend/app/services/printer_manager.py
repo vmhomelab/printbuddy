@@ -267,6 +267,13 @@ class _StatusPoller:
                             on_state_change(state)
                         except Exception:  # noqa: BLE001
                             logger.debug("Offline state callback failed", exc_info=True)
+                continue
+            refresh = getattr(self.client, "refresh_background_caches", None)
+            if callable(refresh):
+                try:
+                    refresh()
+                except Exception:  # noqa: BLE001 - optional cache refresh must never kill the poller
+                    logger.debug("Background cache refresh failed", exc_info=True)
 
 
 async def run_client_call(client, method: Callable, *args, **kwargs):

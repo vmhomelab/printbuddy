@@ -770,6 +770,9 @@ logger = logging.getLogger(__name__)
 
 _MOONRAKER_ACTIVE_PRINT_STATES = frozenset({"RUNNING", "PAUSE"})
 
+# Webcam config changes rarely; re-check it every 10 minutes.
+_WEBCAM_CACHE_TTL_SECONDS = 600.0
+
 # Klipper's object list only changes on a config reload/restart, but the status
 # poll needs it several times per cycle (fans, chamber, tool heads) and light/
 # fan/chamber commands need it too. Cache it briefly instead of re-fetching it
@@ -816,6 +819,14 @@ class MoonrakerPrinterClient:
         self._has_status_sample = False
         self._last_bed_temp: float | None = None
         self._current_print_started_at: float | None = None
+        # Progress from the last sample taken while a job was running. Klipper
+        # firmwares whose end G-code calls SDCARD_RESET_FILE (e.g. Qidi) jump
+        # from ``printing`` straight to ``standby`` with progress reset to 0,
+        # so the finished/stopped decision must not rely on the IDLE sample.
+        self._last_running_progress: float = 0.0
+        # First enabled Moonraker webcam, refreshed by refresh_background_caches.
+        self._webcam_cache: dict[str, Any] | None = None
+        self._webcam_cache_at = 0.0
         self._current_file_metadata: dict[str, Any] = {}
         self._current_file_metadata_name: str | None = None
         # Firmware message of the last failed CFS/print-start command, for the
@@ -1416,6 +1427,9 @@ class MoonrakerPrinterClient:
                 self.connect()
             except Exception:
                 pass
+        return self._fetch_webcams()
+
+    def _fetch_webcams(self) -> list[dict[str, Any]]:
         result = self._get("server/webcams/list")
         webcams = result.get("webcams") if isinstance(result, dict) else None
         if webcams is None and isinstance(result, dict):
@@ -1428,6 +1442,30 @@ class MoonrakerPrinterClient:
             if candidate:
                 normalized.append(candidate)
         return normalized
+
+    @property
+    def primary_webcam(self) -> dict[str, Any] | None:
+        """First enabled webcam Moonraker reported, from the background cache.
+
+        Lets notification snapshots and finish photos use the printer's own
+        camera when the user never configured an external camera URL.
+        """
+        return self._webcam_cache
+
+    def refresh_background_caches(self) -> None:
+        """Refresh slow-changing data off the event loop (called by the status poller)."""
+        if not self.state.connected:
+            return
+        now = time.monotonic()
+        if self._webcam_cache_at and now - self._webcam_cache_at < _WEBCAM_CACHE_TTL_SECONDS:
+            return
+        self._webcam_cache_at = now
+        try:
+            webcams = self._fetch_webcams()
+        except Exception as exc:  # noqa: BLE001 - webcam discovery is optional
+            logger.debug("Moonraker webcam discovery failed for %s: %s", self.base_url, exc)
+            return
+        self._webcam_cache = next((cam for cam in webcams if cam.get("enabled")), None)
 
     def _apply_k2_openhost_box(self, box: dict[str, Any]) -> None:
         """Map the K2-OpenHost (Kalico) CFS state to Printbuddy's AMS units.
@@ -1960,6 +1998,7 @@ class MoonrakerPrinterClient:
         # owns that case; this edge detector is for new Moonraker transitions.
         if previous_state is not None and not previous_running and current_running:
             self._current_print_started_at = time.monotonic()
+            self._last_running_progress = 0.0
             # A re-uploaded file may reuse the old name; fetch fresh metadata per print.
             self._current_file_metadata = {}
             self._current_file_metadata_name = None
@@ -1975,11 +2014,49 @@ class MoonrakerPrinterClient:
             elif current_state == "FINISH":
                 payload["status"] = "completed"
             elif current_state == "IDLE":
-                payload["status"] = "completed" if self.state.progress >= 99 else "stopped"
+                payload["status"] = self._resolve_idle_job_status(payload.get("filename"))
             else:
                 payload["status"] = "stopped"
             if self.on_print_complete:
                 self.on_print_complete(payload)
+
+    def _last_history_job_status(self, filename: str | None) -> str | None:
+        """Return Moonraker's recorded end status for the most recent job.
+
+        Moonraker's job history records ``completed`` / ``cancelled`` / ``error``
+        from Klipper's own ``print_stats`` transitions, so it stays accurate
+        even when the poll missed the short-lived ``complete`` state. Returns
+        ``None`` when history is unavailable, still in progress, or belongs to
+        a different file.
+        """
+        try:
+            result = self._get("server/history/list?limit=1&order=desc")
+        except Exception as exc:  # noqa: BLE001 - history component is optional
+            logger.debug("Moonraker job history lookup failed: %s", exc)
+            return None
+        jobs = result.get("jobs") if isinstance(result, dict) else None
+        if not isinstance(jobs, list) or not jobs or not isinstance(jobs[0], dict):
+            return None
+        job = jobs[0]
+        status = str(job.get("status") or "").lower()
+        if not status or status == "in_progress":
+            return None
+        job_file = str(job.get("filename") or "")
+        if filename and filename != "Unknown" and job_file:
+            if job_file.lstrip("/").rsplit("/", 1)[-1] != str(filename).lstrip("/").rsplit("/", 1)[-1]:
+                return None
+        return status
+
+    def _resolve_idle_job_status(self, filename: str | None) -> str:
+        """Classify a RUNNING/PAUSE -> IDLE transition as completed or stopped."""
+        history_status = self._last_history_job_status(filename)
+        if history_status == "completed":
+            return "completed"
+        if history_status == "cancelled":
+            return "stopped"
+        if history_status in {"error", "klippy_shutdown", "klippy_disconnect"}:
+            return "failed"
+        return "completed" if self._last_running_progress >= 99 else "stopped"
 
     @serialized_status_update
     def request_status_update(self) -> bool:
@@ -2081,6 +2158,8 @@ class MoonrakerPrinterClient:
         self._apply_chamber_status(status, available_objects)
         _apply_moonraker_fans(self.state, status)
         self._emit_status_callbacks(previous_state)
+        if self.state.state in {"RUNNING", "PAUSE"}:
+            self._last_running_progress = self.state.progress
         self._last_state = self.state.state
         self._has_status_sample = True
         return True

@@ -4892,6 +4892,8 @@ export default {
     quietStart: 'Inizio',
     quietEnd: 'Fine',
     dailyDigestLabel: 'Riepilogo giornaliero',
+    attachImageLabel: 'Allega foto della fotocamera',
+    attachImageDescription: 'Includi uno scatto della fotocamera nelle notifiche quando disponibile',
     sendDigestAt: 'Invia riepilogo alle',
     digestCollected: 'Gli eventi verranno raccolti e inviati come riepilogo unico a quest\'ora',
     notificationEvents: 'Eventi di notifica',

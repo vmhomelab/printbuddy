@@ -4904,6 +4904,8 @@ export default {
     quietStart: '開始',
     quietEnd: '終了',
     dailyDigestLabel: 'デイリーダイジェスト',
+    attachImageLabel: 'カメラ写真を添付',
+    attachImageDescription: '利用可能な場合、通知にカメラのスナップショットを添付します',
     sendDigestAt: 'ダイジェスト送信時刻',
     digestCollected: 'イベントが収集され、この時刻にまとめて送信されます',
     notificationEvents: '通知イベント',

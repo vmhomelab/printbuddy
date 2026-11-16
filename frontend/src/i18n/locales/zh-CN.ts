@@ -4891,6 +4891,8 @@ export default {
     quietStart: '开始',
     quietEnd: '结束',
     dailyDigestLabel: '每日摘要',
+    attachImageLabel: '附加摄像头照片',
+    attachImageDescription: '可用时在通知中附加摄像头快照',
     sendDigestAt: '发送摘要于',
     digestCollected: '事件将被收集并在此时间作为单条摘要发送',
     notificationEvents: '通知事件',

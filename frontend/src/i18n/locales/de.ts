@@ -4903,6 +4903,8 @@ export default {
     quietStart: 'Start',
     quietEnd: 'Ende',
     dailyDigestLabel: 'Tägliche Zusammenfassung',
+    attachImageLabel: 'Kamerafoto anhängen',
+    attachImageDescription: 'Ein Kamerabild an Benachrichtigungen anhängen, sofern verfügbar',
     sendDigestAt: 'Zusammenfassung senden um',
     digestCollected: 'Ereignisse werden gesammelt und als einzelne Zusammenfassung zu dieser Zeit gesendet',
     notificationEvents: 'Benachrichtigungsereignisse',

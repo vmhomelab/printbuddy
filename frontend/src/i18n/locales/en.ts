@@ -4915,6 +4915,8 @@ export default {
     quietStart: 'Start',
     quietEnd: 'End',
     dailyDigestLabel: 'Daily Digest',
+    attachImageLabel: 'Attach camera photo',
+    attachImageDescription: 'Include a camera snapshot with notifications when one is available',
     sendDigestAt: 'Send digest at',
     digestCollected: 'Events will be collected and sent as a single summary at this time',
     notificationEvents: 'Notification Events',

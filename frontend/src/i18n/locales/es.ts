@@ -4911,6 +4911,8 @@ export default {
     quietStart: 'Inicio',
     quietEnd: 'Fin',
     dailyDigestLabel: 'Resumen diario',
+    attachImageLabel: 'Adjuntar foto de la cámara',
+    attachImageDescription: 'Incluir una captura de la cámara en las notificaciones cuando esté disponible',
     sendDigestAt: 'Enviar el resumen a las',
     digestCollected: 'Los eventos se recopilarán y se enviarán como un único resumen a esta hora',
     notificationEvents: 'Eventos de notificación',

@@ -699,6 +699,10 @@ class NotificationService:
 
         config = json.loads(provider.config) if isinstance(provider.config, str) else provider.config
 
+        # Per-provider opt-out of the camera snapshot attachment.
+        if getattr(provider, "attach_image", True) is False:
+            image_data = None
+
         try:
             if provider.provider_type == "callmebot":
                 return await self._send_callmebot(config, f"{title}\n{message}")

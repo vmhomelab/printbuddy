@@ -6947,7 +6947,8 @@ function AddPrinterModal({
       external_camera_url: externalCameraUrl || undefined,
       external_camera_type: externalCameraUrl ? inferExternalCameraType(externalCameraUrl) : undefined,
       external_camera_enabled: isHttpProvider && Boolean(externalCameraUrl),
-      external_camera_snapshot_url: undefined,
+      // Keep the snapshot URL "Detect Moonraker camera" found; editing the stream URL clears it.
+      external_camera_snapshot_url: externalCameraUrl ? (form.external_camera_snapshot_url || undefined) : undefined,
       provider_options: isPrusaLinkProvider
         ? buildPrusaLinkProviderOptions(prusaLinkApiAuthMode, form.provider_options)
         : form.provider_options,
@@ -7669,7 +7670,7 @@ function AddPrinterModal({
                     type="text"
                     className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                     value={form.external_camera_url || ''}
-                    onChange={(e) => setForm({ ...form, external_camera_url: e.target.value })}
+                    onChange={(e) => setForm({ ...form, external_camera_url: e.target.value, external_camera_snapshot_url: undefined })}
                     placeholder="http://printer.local/webcam/?action=stream"
                   />
                   <p className="text-xs text-bambu-gray mt-1">
