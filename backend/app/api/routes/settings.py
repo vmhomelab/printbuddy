@@ -302,6 +302,7 @@ async def _build_settings_response(db: AsyncSession, is_api_key: bool = False) -
             "default_timelapse",
             "ldap_enabled",
             "ldap_auto_provision",
+            "remember_me_extended_session",
             "makerworld_archive_details_default",
             "makerworld_cover_thumbnail_default",
             "gyroidvault_enabled",

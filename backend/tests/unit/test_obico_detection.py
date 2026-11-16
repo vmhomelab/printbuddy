@@ -295,6 +295,8 @@ class TestCaptureFrameSharesBroadcasterUpstream:
     @pytest.mark.asyncio
     async def test_returns_buffered_frame_when_stream_active(self):
         printer = MagicMock(
+            id=1,
+            provider="bambu",
             external_camera_enabled=False,
             external_camera_url=None,
             ip_address="192.168.1.10",
@@ -332,6 +334,8 @@ class TestCaptureFrameSharesBroadcasterUpstream:
     async def test_skips_poll_when_stream_active_but_buffer_empty(self):
         """#1348: viewer attached + buffer empty must NOT open a competing socket."""
         printer = MagicMock(
+            id=1,
+            provider="bambu",
             external_camera_enabled=False,
             external_camera_url=None,
             ip_address="192.168.1.10",
@@ -368,6 +372,8 @@ class TestCaptureFrameSharesBroadcasterUpstream:
     @pytest.mark.asyncio
     async def test_falls_back_to_fresh_capture_when_no_stream(self):
         printer = MagicMock(
+            id=1,
+            provider="bambu",
             external_camera_enabled=False,
             external_camera_url=None,
             ip_address="192.168.1.10",
@@ -396,6 +402,81 @@ class TestCaptureFrameSharesBroadcasterUpstream:
 
         assert result == FAKE_JPEG
         mock_fresh.assert_called_once()
+
+
+class TestObicoProviderCameras:
+    """PB-35: Obico used to try the Bambu camera protocol for every printer, so
+    printers whose camera comes from their provider (PrusaLink, Creality WebRTC,
+    Elegoo) or that have no camera never produced a frame."""
+
+    @staticmethod
+    def _session_for(printer):
+        mock_session = MagicMock()
+        mock_session.get = AsyncMock(return_value=printer)
+        mock_ctx = MagicMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_ctx.__aexit__ = AsyncMock(return_value=None)
+        return mock_ctx
+
+    @pytest.mark.asyncio
+    async def test_uses_provider_derived_camera(self):
+        from backend.app.services.elegoo_camera import EffectiveCameraSource
+
+        printer = MagicMock(id=1, provider="prusalink", ip_address="192.168.1.20")
+        derived = EffectiveCameraSource(
+            enabled=True,
+            url="http://192.168.1.20/api/v1/cameras/snap",
+            camera_type="snapshot",
+            snapshot_url=None,
+            derived=True,
+        )
+        svc = ObicoDetectionService()
+        with (
+            patch("backend.app.services.obico_detection.async_session", return_value=self._session_for(printer)),
+            patch("backend.app.services.elegoo_camera.get_effective_camera_source", return_value=derived),
+            patch("backend.app.api.routes.camera.is_stream_active", return_value=False),
+            patch("backend.app.api.routes.camera.try_get_active_buffered_frame", return_value=None),
+            patch(
+                "backend.app.services.external_camera.capture_frame", new=AsyncMock(return_value=FAKE_JPEG)
+            ) as mock_external,
+            patch("backend.app.services.camera.capture_camera_frame_bytes", new=AsyncMock()) as mock_bambu,
+        ):
+            result = await svc._capture_frame(printer_id=1)
+
+        assert result == FAKE_JPEG
+        assert mock_external.await_args.args[0] == derived.url
+        mock_bambu.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_non_bambu_printer_without_camera_reports_clear_error(self):
+        printer = MagicMock(
+            id=1,
+            provider="octoprint",
+            external_camera_enabled=False,
+            external_camera_url=None,
+            provider_options=None,
+        )
+        settings = {
+            "enabled": True,
+            "ml_url": "http://obico:3333",
+            "sensitivity": "medium",
+            "action": "notify",
+            "poll_interval": 10,
+            "enabled_printers": None,
+            "external_url": "http://printbuddy:8000",
+        }
+        status = MagicMock(state="RUNNING", task_name="job", subtask_name="")
+        svc = ObicoDetectionService()
+        with (
+            patch("backend.app.services.obico_detection.async_session", return_value=self._session_for(printer)),
+            patch("backend.app.services.camera.capture_camera_frame_bytes", new=AsyncMock()) as mock_bambu,
+            patch("backend.app.services.obico_detection.httpx.AsyncClient") as mock_http,
+        ):
+            await svc._check_printer(1, status, settings)
+
+        mock_bambu.assert_not_called()
+        mock_http.assert_not_called()
+        assert svc._last_error == "Printer 1 has no camera configured"
 
 
 class TestFrameCache:

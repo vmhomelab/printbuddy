@@ -19,6 +19,7 @@ vi.mock('../../api/client', () => ({
   multiVirtualPrinterApi: {
     update: vi.fn().mockResolvedValue({}),
     remove: vi.fn().mockResolvedValue({}),
+    regenerateApiKey: vi.fn().mockResolvedValue({}),
     getTailscaleStatus: vi.fn().mockResolvedValue({
       available: false,
       fqdn: '',
@@ -46,6 +47,7 @@ const createMockPrinter = (overrides: Partial<VirtualPrinterConfig> = {}): Virtu
   id: 1,
   name: 'Test VP',
   enabled: false,
+  protocol: 'bambu',
   mode: 'immediate',
   model: 'BL-P001',
   model_name: 'X1C',
@@ -58,6 +60,8 @@ const createMockPrinter = (overrides: Partial<VirtualPrinterConfig> = {}): Virtu
   remote_interface_ip: null,
   position: 0,
   status: { running: false, pending_files: 0 },
+  api_key: null,
+  host_path: null,
   ...overrides,
 });
 
@@ -404,6 +408,62 @@ describe('VirtualPrinterCard - Tailscale FQDN copy', () => {
     // The `finally` block must remove the textarea regardless of the exception.
     await waitFor(() => {
       expect(document.querySelectorAll('textarea').length).toBe(0);
+    });
+  });
+});
+
+describe('VirtualPrinterCard - Moonraker/OctoPrint-compatible VP (#52)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const moonraker = (overrides: Partial<VirtualPrinterConfig> = {}) =>
+    createMockPrinter({
+      protocol: 'moonraker',
+      model: null,
+      model_name: null,
+      api_key: 'abc123def456',
+      host_path: '/api/v1/vp-host/1',
+      ...overrides,
+    });
+
+  it('shows the slicer host URL and API key instead of Bambu settings', async () => {
+    render(<VirtualPrinterCard printer={moonraker()} models={models} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Slicer connection')).toBeInTheDocument();
+    });
+    expect(screen.getByDisplayValue(`${window.location.origin}/api/v1/vp-host/1`)).toBeInTheDocument();
+    expect(screen.getByDisplayValue('abc123def456')).toBeInTheDocument();
+    expect(screen.queryByText('Access Code')).not.toBeInTheDocument();
+    expect(screen.queryByText('Proxy')).not.toBeInTheDocument();
+    expect(screen.queryByText('00M00A391800001')).not.toBeInTheDocument();
+  });
+
+  it('enables without a bind IP', async () => {
+    vi.mocked(multiVirtualPrinterApi.update).mockResolvedValue(moonraker({ enabled: true }));
+    const user = userEvent.setup();
+    const { container } = render(<VirtualPrinterCard printer={moonraker()} models={models} />);
+
+    const toggle = container.querySelector('.ml-auto button') as HTMLButtonElement;
+    await user.click(toggle);
+
+    await waitFor(() => {
+      expect(multiVirtualPrinterApi.update).toHaveBeenCalledWith(1, { enabled: true });
+    });
+  });
+
+  it('regenerates the API key after confirmation', async () => {
+    vi.mocked(multiVirtualPrinterApi.regenerateApiKey).mockResolvedValue(moonraker({ api_key: 'new' }));
+    const user = userEvent.setup();
+    render(<VirtualPrinterCard printer={moonraker()} models={models} />);
+
+    await user.click(screen.getByTitle('Regenerate API key'));
+    const buttons = await screen.findAllByRole('button', { name: 'Regenerate API key' });
+    await user.click(buttons[buttons.length - 1]);
+
+    await waitFor(() => {
+      expect(multiVirtualPrinterApi.regenerateApiKey).toHaveBeenCalledWith(1);
     });
   });
 });

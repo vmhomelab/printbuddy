@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Loader2, Plus, Printer, ExternalLink, AlertTriangle, Info, FileText, ShieldCheck, Copy, Check, Download } from 'lucide-react';
+import { Loader2, Plus, Printer, ExternalLink, AlertTriangle, FileText, ShieldCheck, Copy, Check, Download, Plug } from 'lucide-react';
 import { multiVirtualPrinterApi, virtualPrinterApi } from '../api/client';
 import { Card, CardContent } from './Card';
 import { Button } from './Button';
@@ -84,51 +84,77 @@ export function VirtualPrinterList() {
 
   return (
     <div className="space-y-4">
-      {/* Top row - Setup Required (1 col) + How it works (2 cols) */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-stretch">
-        <Card className="border-l-4 border-l-yellow-500">
-          <CardContent className="py-3 px-4">
-            <div className="flex items-start gap-2">
-              <AlertTriangle className="w-4 h-4 text-yellow-500 flex-shrink-0 mt-0.5" />
-              <div className="text-xs">
-                <div className="flex flex-wrap items-center gap-2">
-                  <p className="text-white font-medium">{t('virtualPrinter.setupRequired.title')}</p>
-                  <span className="inline-flex items-center rounded-full border border-bambu-green/40 bg-bambu-green/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-bambu-green">
-                    {t('virtualPrinter.bambuOnly.badge')}
-                  </span>
-                </div>
-                <p className="text-bambu-gray mt-1">{t('virtualPrinter.bambuOnly.description')}</p>
-                <p className="text-bambu-gray mt-1">{t('virtualPrinter.setupRequired.description')}</p>
-                <a
-                  href={VIRTUAL_PRINTER_SETUP_GUIDE_URL}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1.5 mt-2 px-3 py-1.5 bg-yellow-500/20 border border-yellow-500/50 rounded text-yellow-400 hover:bg-yellow-500/30 transition-colors text-xs"
-                >
-                  <ExternalLink className="w-3 h-3" />
-                  {t('virtualPrinter.setupRequired.readGuide')}
-                </a>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
+      {/* Supported virtual printer types (#52): Bambu-compatible VPs emulate a
+          Bambu printer and need network setup; Moonraker/OctoPrint-compatible
+          VPs are an HTTP upload endpoint on the Printbuddy port. */}
+      <Card>
+        <CardContent className="py-4 px-4 space-y-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="text-base text-white font-semibold">{t('virtualPrinter.types.title')}</h2>
+            <span className="inline-flex items-center rounded-full border border-bambu-green/60 bg-bambu-green/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-bambu-green">
+              {t('virtualPrinter.types.newBadge')}
+            </span>
+          </div>
+          <p className="text-xs text-bambu-gray">{t('virtualPrinter.types.intro')}</p>
 
-        <Card className="lg:col-span-2">
-          <CardContent className="py-3 px-4">
-            <div className="flex items-start gap-2">
-              <Info className="w-4 h-4 text-blue-400 flex-shrink-0 mt-0.5" />
-              <div className="text-xs text-bambu-gray">
-                <p className="text-white font-medium mb-1">{t('virtualPrinter.howItWorks.title')}</p>
-                <ul className="space-y-1 list-disc list-inside">
-                  <li>{t('virtualPrinter.howItWorks.step1')}</li>
-                  <li>{t('virtualPrinter.howItWorks.step2')}</li>
-                  <li>{t('virtualPrinter.howItWorks.step3')}</li>
-                </ul>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-stretch">
+            {/* Bambu-compatible */}
+            <div className="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark p-4 flex flex-col gap-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <Printer className="w-4 h-4 text-bambu-green flex-shrink-0" />
+                <p className="text-sm text-white font-semibold">{t('virtualPrinter.protocol.bambu')}</p>
+                <span className="ml-auto text-[10px] text-bambu-gray-light bg-bambu-dark-tertiary rounded px-2 py-0.5">
+                  {t('virtualPrinter.types.bambu.tag')}
+                </span>
+              </div>
+              <ul className="space-y-1 list-disc pl-4 text-xs text-bambu-gray">
+                <li>{t('virtualPrinter.types.bambu.point1')}</li>
+                <li>{t('virtualPrinter.types.bambu.point2')}</li>
+                <li>{t('virtualPrinter.types.bambu.point3')}</li>
+              </ul>
+              <div className="mt-auto flex items-start gap-2 rounded-md border border-yellow-500/50 bg-yellow-500/10 px-3 py-2">
+                <AlertTriangle className="w-4 h-4 text-yellow-500 flex-shrink-0 mt-0.5" />
+                <p className="text-xs text-white">
+                  <span className="font-semibold text-yellow-400">{t('virtualPrinter.types.bambu.setupLabel')}</span>{' '}
+                  {t('virtualPrinter.types.bambu.setupText')}{' '}
+                  <a
+                    href={VIRTUAL_PRINTER_SETUP_GUIDE_URL}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 text-bambu-green underline hover:text-bambu-green-light"
+                  >
+                    {t('virtualPrinter.types.bambu.guide')}
+                    <ExternalLink className="w-3 h-3" />
+                  </a>
+                </p>
               </div>
             </div>
-          </CardContent>
-        </Card>
-      </div>
+
+            {/* Moonraker/OctoPrint-compatible */}
+            <div className="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark p-4 flex flex-col gap-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <Plug className="w-4 h-4 text-bambu-green flex-shrink-0" />
+                <p className="text-sm text-white font-semibold">{t('virtualPrinter.protocol.moonraker')}</p>
+                <span className="ml-auto text-[10px] text-bambu-gray-light bg-bambu-dark-tertiary rounded px-2 py-0.5">
+                  {t('virtualPrinter.types.moonraker.tag')}
+                </span>
+              </div>
+              <ul className="space-y-1 list-disc pl-4 text-xs text-bambu-gray">
+                <li>{t('virtualPrinter.types.moonraker.point1')}</li>
+                <li>{t('virtualPrinter.types.moonraker.point2')}</li>
+                <li>{t('virtualPrinter.types.moonraker.point3')}</li>
+              </ul>
+              <div className="mt-auto flex items-start gap-2 rounded-md border border-bambu-green/50 bg-bambu-green/10 px-3 py-2">
+                <Check className="w-4 h-4 text-bambu-green flex-shrink-0 mt-0.5" />
+                <p className="text-xs text-white">
+                  <span className="font-semibold text-bambu-green">{t('virtualPrinter.types.moonraker.noSetupLabel')}</span>{' '}
+                  {t('virtualPrinter.types.moonraker.noSetupText')}
+                </p>
+              </div>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Global VP behavior settings — two side-by-side cards, not full width */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-stretch">
@@ -140,9 +166,14 @@ export function VirtualPrinterList() {
               <ShieldCheck className="w-4 h-4 text-bambu-green flex-shrink-0 mt-1" />
               <div className="flex-1 min-w-0">
                 <div className="flex items-center justify-between gap-3">
-                  <p className="text-sm text-white font-medium">
-                    {t('virtualPrinter.caCert.title')}
-                  </p>
+                  <div className="flex flex-wrap items-center gap-2 min-w-0">
+                    <p className="text-sm text-white font-medium">
+                      {t('virtualPrinter.caCert.title')}
+                    </p>
+                    <span className="text-[10px] text-bambu-gray-light bg-bambu-dark-tertiary rounded px-2 py-0.5">
+                      {t('virtualPrinter.caCert.bambuOnlyBadge')}
+                    </span>
+                  </div>
                   <div className="flex items-center gap-2 flex-shrink-0">
                     <button
                       onClick={handleCopyCert}

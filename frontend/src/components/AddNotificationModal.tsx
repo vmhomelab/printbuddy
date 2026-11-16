@@ -46,6 +46,8 @@ interface AddNotificationModalProps {
 const PROVIDER_VALUES: ProviderType[] = ['email', 'telegram', 'discord', 'ntfy', 'pushover', 'callmebot', 'webhook', 'homeassistant', 'notify'];
 // Providers whose sender can attach the camera snapshot (see notification_service._send_to_provider).
 const IMAGE_ATTACHMENT_PROVIDERS = new Set<ProviderType>(['telegram', 'discord', 'ntfy', 'pushover', 'webhook']);
+// The Printbuddy mobile app registers itself; it can be edited here but not added by hand.
+const APP_REGISTERED_TYPES: ProviderType[] = ['printbuddy_app'];
 
 export function AddNotificationModal({ provider, onClose }: AddNotificationModalProps) {
   const { t } = useTranslation();
@@ -361,6 +363,11 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
           { key: 'live_activity_keepalive_seconds', label: 'Live Activity Keepalive Seconds', placeholder: '60', type: 'number', required: false },
           { key: 'live_activity_end_keep_for_seconds', label: 'Keep Final Tile Seconds', placeholder: '300', type: 'number', required: false },
         ];
+      case 'printbuddy_app':
+        return [
+          { key: 'device_name', label: 'Device', placeholder: 'iPhone', type: 'text', required: false },
+          { key: 'push_token', label: 'Push Token', placeholder: 'ExponentPushToken[…]', type: 'text', required: true, helperText: 'Set by the Printbuddy app when you turn on notifications there.' },
+        ];
       default:
         return [];
     }
@@ -434,7 +441,7 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
               disabled={isEditing}
               className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none disabled:opacity-50"
             >
-              {PROVIDER_VALUES.map((value) => (
+              {[...PROVIDER_VALUES, ...APP_REGISTERED_TYPES.filter((v) => v === providerType)].map((value) => (
                 <option key={value} value={value}>
                   {t(`notifications.providerTypes.${value}`, value)}
                 </option>

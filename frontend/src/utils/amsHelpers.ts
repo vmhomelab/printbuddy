@@ -5,6 +5,7 @@
  */
 import type { AMSTray, AMSUnit, InventorySpool, Printer, PrinterStatus, SpoolAssignment } from '../api/client';
 import { parseUTCDate } from './date';
+import { AMS3H_UNIT_ID, ams3hGlobalTrayId, externalSlotIndex, externalTrayId, rackExternalLabel } from './trayIds';
 
 /**
  * Normalize color format from various sources.
@@ -103,7 +104,9 @@ export function formatSlotLabel(
   isHt: boolean,
   isExternal: boolean
 ): string {
-  if (isExternal) return 'Ext';
+  // An H3C's per-hotend external inputs (stored as 255, 2-8) and its AMS 3H (unit 32)
+  if (isExternal) return trayId >= 2 ? rackExternalLabel(externalTrayId(trayId)) : 'Ext';
+  if (amsId === AMS3H_UNIT_ID) return `3H-${trayId + 1}`;
   // Convert AMS ID to letter (A, B, C, D)
   // AMS-HT uses IDs starting at 128
   const letter = String.fromCharCode(65 + (amsId >= 128 ? amsId - 128 : amsId));
@@ -124,7 +127,10 @@ export function getGlobalTrayId(
   trayId: number,
   isExternal: boolean
 ): number {
-  if (isExternal) return 254 + trayId;
+  // 0 -> 254, 1 -> 255; an H3C's per-hotend inputs 2-8 -> 247-253
+  if (isExternal) return externalTrayId(trayId);
+  // The H3C's AMS 3H (unit 32): Studio's 28 + slot
+  if (amsId === AMS3H_UNIT_ID) return ams3hGlobalTrayId(trayId);
   // AMS-HT units have IDs starting at 128 with a single tray — use ID directly
   if (amsId >= 128) return amsId;
   return amsId * 4 + trayId;
@@ -306,19 +312,28 @@ export function filterFilamentsByNozzle<T extends { extruderId?: number }>(
 /**
  * Detect Bambu Lab RFID-tagged spool by tray_uuid (32 hex) or tag_uid (16 hex).
  *
- * Permissive zero-string check: any non-zero non-empty value returns true. The
- * function exists to suppress assign/unassign actions on RFID-managed slots
- * whose state is owned by the printer firmware — manual changes there would be
- * overwritten on the next RFID re-read (eye → pen icon in BambuStudio).
+ * Requires hex format so synthetic IDs (e.g. Snapmaker `snapmaker-u1-e0`) are
+ * not treated as firmware-owned RFID. RFID-managed slots suppress manual
+ * unassign because the printer overwrites them on the next re-read.
  */
 export function isBambuLabSpool(tray: {
   tray_uuid?: string | null;
   tag_uid?: string | null;
 } | null | undefined): boolean {
   if (!tray) return false;
-  if (tray.tray_uuid && tray.tray_uuid !== '00000000000000000000000000000000') return true;
-  if (tray.tag_uid && tray.tag_uid !== '0000000000000000') return true;
+  const uuid = tray.tray_uuid?.trim();
+  if (uuid && /^[0-9A-Fa-f]{32}$/.test(uuid) && !/^0+$/.test(uuid)) return true;
+  const tag = tray.tag_uid?.trim();
+  if (tag && /^[0-9A-Fa-f]{16}$/.test(tag) && !/^0+$/.test(tag)) return true;
   return false;
+}
+
+/** Positive Spoolman spool id from Snapmaker SpoolLink telemetry, if present. */
+export function getTrayFilamentSpoolId(
+  tray: { filament_spool_id?: number | null } | null | undefined,
+): number | undefined {
+  const sid = tray?.filament_spool_id;
+  return typeof sid === 'number' && Number.isFinite(sid) && sid > 0 ? Math.trunc(sid) : undefined;
 }
 
 export interface SpoolmanSlotAssignmentLike {
@@ -397,7 +412,7 @@ function activeSlotCandidates(status?: PrinterStatus): Array<{ amsId: number; tr
 
   for (const vt of status.vt_tray ?? []) {
     const globalTrayId = vt.id ?? 254;
-    const trayId = globalTrayId >= 254 ? globalTrayId - 254 : 0;
+    const trayId = globalTrayId >= 247 ? externalSlotIndex(globalTrayId) : 0;
     if (trayNow === globalTrayId || (trayNow === 254 && globalTrayId === 254)) {
       candidates.push({ amsId: 255, trayId, globalTrayId, tray: vt });
     }
@@ -413,7 +428,7 @@ function fallbackSlotCandidates(status?: PrinterStatus): Array<{ amsId: number; 
   for (const vt of status.vt_tray ?? []) {
     if (vt.tray_type || vt.tray_sub_brands || vt.tray_color) {
       const globalTrayId = vt.id ?? 254;
-      candidates.push({ amsId: 255, trayId: globalTrayId >= 254 ? globalTrayId - 254 : 0, globalTrayId, tray: vt });
+      candidates.push({ amsId: 255, trayId: globalTrayId >= 247 ? externalSlotIndex(globalTrayId) : 0, globalTrayId, tray: vt });
     }
   }
   for (const ams of status.ams ?? []) {
@@ -456,8 +471,10 @@ export function resolveLoadedFilamentInfo({
     const spoolmanAssignment = spoolmanSlotAssignments.find((assignment) => (
       assignment.printer_id === printer.id && assignment.ams_id === candidate.amsId && assignment.tray_id === candidate.trayId
     ));
-    const spoolmanSpool = spoolmanAssignment
-      ? spoolmanSpools.find((spool) => spool.id === spoolmanAssignment.spoolman_spool_id)
+    const traySpoolId = getTrayFilamentSpoolId(candidate.tray);
+    const spoolmanSpoolId = spoolmanAssignment?.spoolman_spool_id ?? traySpoolId;
+    const spoolmanSpool = spoolmanSpoolId
+      ? spoolmanSpools.find((spool) => spool.id === spoolmanSpoolId)
       : undefined;
     if (spoolmanSpool) {
       return {

@@ -608,3 +608,30 @@ describe('AddNotificationModal — attach camera photo toggle', () => {
     expect(screen.queryByText(/attach camera photo/i)).not.toBeInTheDocument();
   });
 });
+
+describe('AddNotificationModal — Printbuddy app devices', () => {
+  const token = 'ExponentPushToken[abcdefghij1234567890]';
+
+  it('shows an app-registered device with its type, device name and push token', () => {
+    render(
+      <AddNotificationModal
+        provider={buildProvider({
+          name: 'Printbuddy App (iPhone)',
+          provider_type: 'printbuddy_app',
+          config: { push_token: token, device_name: 'iPhone', platform: 'ios' },
+        })}
+        onClose={() => undefined}
+      />,
+    );
+    const typeSelect = screen.getByDisplayValue('Printbuddy App') as HTMLSelectElement;
+    expect(typeSelect.value).toBe('printbuddy_app');
+    expect(typeSelect).toBeDisabled();
+    expect(screen.getByDisplayValue(token)).toBeInTheDocument();
+    expect(screen.getByDisplayValue('iPhone')).toBeInTheDocument();
+  });
+
+  it('does not offer the app type when adding a provider by hand', () => {
+    render(<AddNotificationModal onClose={() => undefined} />);
+    expect(screen.queryByRole('option', { name: 'Printbuddy App' })).toBeNull();
+  });
+});

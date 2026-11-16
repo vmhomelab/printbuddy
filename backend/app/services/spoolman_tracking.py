@@ -19,6 +19,7 @@ from backend.app.services.spoolman import (
     get_spoolman_client,
     init_spoolman_client,
 )
+from backend.app.utils.tray_ids import AmsType, h3c_global_tray, h3c_slot_key, unit_ams_type
 
 logger = logging.getLogger(__name__)
 
@@ -50,8 +51,14 @@ def _hash_serial_to_hex32(serial: str) -> str:
     return format(hash_value, "X").zfill(8)
 
 
-def _global_tray_id_to_ams_slot(global_tray_id: int) -> tuple[int, int]:
-    """Convert global tray id to (ams_id, tray_id) tuple for fallback tag generation."""
+def _global_tray_id_to_ams_slot(global_tray_id: int, ams3h: bool = False) -> tuple[int, int]:
+    """Convert global tray id to (ams_id, tray_id) tuple for fallback tag generation.
+
+    ``ams3h``: the printer is an H3C, whose AMS 3H slots are 28-36 and whose
+    per-hotend inputs are 247-253 (utils.tray_ids.h3c_slot_key).
+    """
+    if ams3h and (h3c_key := h3c_slot_key(global_tray_id)) is not None:
+        return h3c_key
     # External spool slots use IDs 254/255 and map to ams_id=255 tray_id=0/1.
     if global_tray_id >= 254:
         return 255, max(0, global_tray_id - 254)
@@ -62,11 +69,11 @@ def _global_tray_id_to_ams_slot(global_tray_id: int) -> tuple[int, int]:
     return global_tray_id // 4, global_tray_id % 4
 
 
-def _get_fallback_spool_tag(printer_serial: str, global_tray_id: int) -> str:
+def _get_fallback_spool_tag(printer_serial: str, global_tray_id: int, ams3h: bool = False) -> str:
     """Mirror frontend getFallbackSpoolTag(serial, amsId, trayId) exactly."""
     if not printer_serial:
         return ""
-    ams_id, tray_id = _global_tray_id_to_ams_slot(global_tray_id)
+    ams_id, tray_id = _global_tray_id_to_ams_slot(global_tray_id, ams3h)
     return get_fallback_spool_tag_for_slot(printer_serial, ams_id, tray_id)
 
 
@@ -81,7 +88,9 @@ def get_fallback_spool_tag_for_slot(printer_serial: str, ams_id: int, tray_id: i
     return f"{_hash_serial_to_hex32(printer_serial)}{_to_fixed_hex(ams_id, 4)}{_to_fixed_hex(tray_id, 4)}"
 
 
-def _resolve_spool_tag(tray_info: dict, printer_serial: str = "", global_tray_id: int | None = None) -> str:
+def _resolve_spool_tag(
+    tray_info: dict, printer_serial: str = "", global_tray_id: int | None = None, ams3h: bool = False
+) -> str:
     """Get the best spool identifier from tray info (prefer tray_uuid over tag_uid).
 
     Returns empty string if no usable identifier is found.
@@ -94,8 +103,23 @@ def _resolve_spool_tag(tray_info: dict, printer_serial: str = "", global_tray_id
     if tag_uid and tag_uid != _ZERO_TAG_UID and _is_non_zero_identifier(tag_uid):
         return tag_uid
     if global_tray_id is not None:
-        return _get_fallback_spool_tag(printer_serial, global_tray_id)
+        return _get_fallback_spool_tag(printer_serial, global_tray_id, ams3h)
     return ""
+
+
+async def _printer_has_ams3h(printer_id: int | None) -> bool:
+    """Whether the printer is an H3C (AMS 3H slots 28-36, per-hotend inputs 247-253)."""
+    if printer_id is None:
+        return False
+    from backend.app.models.printer import Printer
+    from backend.app.utils.printer_models import has_ams3h
+
+    try:
+        async with async_session() as db:
+            model = (await db.execute(select(Printer.model).where(Printer.id == printer_id))).scalar_one_or_none()
+    except Exception:  # noqa: BLE001 - a lookup failure must not stop usage reporting
+        return False
+    return has_ams3h(model)
 
 
 async def _get_printer_serial(printer_id: int) -> str:
@@ -163,6 +187,9 @@ def build_ams_tray_lookup(raw_data: dict) -> dict[int, dict]:
             tray_id = int(tray.get("id", 0))
             # AMS-HT units have IDs starting at 128 with a single tray
             global_tray_id = ams_id if ams_id >= 128 else ams_id * 4 + tray_id
+            # The H3C's AMS 3H (unit 32): Studio's 28 + slot.
+            if unit_ams_type(ams_id, ams_unit.get("info")) == AmsType.ZMULTI_A:
+                global_tray_id = h3c_global_tray(ams_id, tray_id) or global_tray_id
             lookup[global_tray_id] = {
                 "tray_uuid": tray.get("tray_uuid", ""),
                 "tag_uid": tray.get("tag_uid", ""),
@@ -398,12 +425,13 @@ async def _report_spool_usage_for_slots(
 
     When ``slot_colors_out`` is provided it is populated with
     ``{slot_id: color_hex}`` for every resolved spool — used by
-    :func:`report_usage` to stamp the archive's filament colour from the
+    `report_usage` to stamp the archive's filament colour from the
     Spoolman spool rather than the slicer's 3MF value (#1494).
 
     Returns number of spools successfully updated.
     """
     spools_updated = 0
+    ams3h = await _printer_has_ams3h(printer_id)
     positive_usage_items = [(slot_id, grams_used) for slot_id, grams_used in filament_usage_items if grams_used > 0]
     allow_loaded_spool_fallback = (
         printer_id is not None and not ams_trays and not slot_to_tray and len(positive_usage_items) == 1
@@ -427,7 +455,8 @@ async def _report_spool_usage_for_slots(
             logger.debug("[SPOOLMAN] Slot %s: no tray at global_tray_id %s", slot_id, global_tray_id)
             continue
 
-        is_external = global_tray_id >= 254
+        # On an H3C each hotend has its own external input, 247-255.
+        is_external = global_tray_id >= 254 or (ams3h and 247 <= global_tray_id <= 253)
         tray_type = tray_info.get("tray_type", "")
         logger.debug(
             "[SPOOLMAN] Slot %s resolved to global_tray_id %s (tray_type=%s, external=%s)",
@@ -444,7 +473,7 @@ async def _report_spool_usage_for_slots(
         # the slot-assignment path only yields an id and is fetched below.
         spool_color_hex: str | None = None
 
-        ams_id, tray_id = _global_tray_id_to_ams_slot(global_tray_id)
+        ams_id, tray_id = _global_tray_id_to_ams_slot(global_tray_id, ams3h)
 
         # External/non-AMS/virtual-tray slots are user-assigned in Printbuddy.
         # Prefer the local row before any tag lookup so a stale deterministic
@@ -455,7 +484,7 @@ async def _report_spool_usage_for_slots(
             if spool_id_to_use is not None:
                 resolution_path = "slot-assignment"
 
-        spool_tag = _resolve_spool_tag(tray_info, printer_serial, global_tray_id)
+        spool_tag = _resolve_spool_tag(tray_info, printer_serial, global_tray_id, ams3h)
         if spool_id_to_use is None and spool_tag:
             spool = await client.find_spool_by_tag(spool_tag)
             if spool:
@@ -608,7 +637,9 @@ async def _report_partial_usage(
                 diameter = 1.75
 
                 if tray_info:
-                    spool_tag = _resolve_spool_tag(tray_info, printer_serial, global_tray_id)
+                    spool_tag = _resolve_spool_tag(
+                        tray_info, printer_serial, global_tray_id, await _printer_has_ams3h(printer_id)
+                    )
                     if spool_tag:
                         spool = await client.find_spool_by_tag(spool_tag)
                         if spool:

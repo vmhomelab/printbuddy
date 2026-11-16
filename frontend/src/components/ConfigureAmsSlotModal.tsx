@@ -5,6 +5,7 @@ import { X, Loader2, Settings2, ChevronDown, CheckCircle2, RotateCcw } from 'luc
 import { api } from '../api/client';
 import type { KProfile } from '../api/client';
 import { Button } from './Button';
+import { AMS3H_UNIT_ID, externalTrayId, isH3cModel, rackExternalLabel } from '../utils/trayIds';
 
 interface SlotInfo {
   amsId: number;
@@ -23,6 +24,8 @@ interface SlotInfo {
 function getAmsLabel(amsId: number, trayCount: number): string {
   // External spool
   if (amsId === 255) return 'External';
+  // The H3C's AMS 3H (unit 32, nine slots)
+  if (amsId === AMS3H_UNIT_ID) return 'AMS 3H';
 
   let normalizedId: number;
   let isHt = false;
@@ -249,6 +252,11 @@ export function ConfigureAmsSlotModal({
   fullScreen,
 }: ConfigureAmsSlotModalProps) {
   const { t } = useTranslation();
+  // An H3C names its per-hotend external inputs "Ext-n" (Bambu Studio's numbering).
+  const slotHeading = slotInfo?.amsId === 255 && isH3cModel(printerModel)
+    ? rackExternalLabel(externalTrayId(slotInfo?.trayId ?? 0))
+    : t('configureAmsSlot.slotLabel', { ams: getAmsLabel(slotInfo?.amsId ?? 0, slotInfo?.trayCount ?? 0), slot: (slotInfo?.trayId ?? 0) + 1 });
+
   const [selectedPresetId, setSelectedPresetId] = useState<string>('');
   const [selectedKProfile, setSelectedKProfile] = useState<KProfile | null>(null);
   const [colorHex, setColorHex] = useState<string>(''); // Just the 6-char hex, no alpha
@@ -846,7 +854,7 @@ export function ConfigureAmsSlotModal({
                   />
                 )}
                 <span className="text-white/70">
-                  {t('configureAmsSlot.slotLabel', { ams: getAmsLabel(slotInfo.amsId, slotInfo.trayCount), slot: slotInfo.trayId + 1 })}
+                  {slotHeading}
                 </span>
                 {slotInfo.traySubBrands && (
                   <span>({slotInfo.traySubBrands})</span>
@@ -887,7 +895,7 @@ export function ConfigureAmsSlotModal({
                   />
                 )}
                 <span className="text-white font-medium">
-                  {t('configureAmsSlot.slotLabel', { ams: getAmsLabel(slotInfo.amsId, slotInfo.trayCount), slot: slotInfo.trayId + 1 })}
+                  {slotHeading}
                 </span>
                 {slotInfo.traySubBrands && (
                   <span className="text-bambu-gray">({slotInfo.traySubBrands})</span>
