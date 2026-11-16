@@ -748,6 +748,10 @@ export default {
       customSubnetLabel: 'カスタムサブネット (CIDR)',
       customSubnetNote: 'プリンターがこのサーバーと別のネットワークにある場合は、カスタムサブネットを使用してください。FTP (990) と MQTT (8883) のポートが、ルーティング境界を越えて到達可能である必要があります。',
     },
+    // H3C AMS 3H
+    ams3h: {
+      dryZone: '乾燥: スロット {{slots}}',
+    },
     // AMS Drying
     drying: {
       start: '乾燥開始',
@@ -2390,6 +2394,12 @@ export default {
     apiKeyQrTitle: 'スキャンして設定',
     apiKeyQrCaption: 'モバイルアプリでスキャンして、このサーバーとAPIキーを追加します。',
     apiKeyQrWarning: '秘密のAPIキーが含まれています。他人に見られる場所で共有・スクリーンショットしないでください。',
+    mobilePairing: {
+      title: 'モバイルアプリと連携',
+      description: 'スマートフォンのカメラまたは Printbuddy アプリでこのコードを読み取ると、このキーで接続できます。',
+      qrAlt: 'Printbuddy モバイルアプリ連携用の QR コード',
+      localhostWarning: 'このアドレスはこのコンピューターでのみ有効です。スマートフォンから接続できるよう、ネットワークアドレス（IP など）で Printbuddy を開いてください。',
+    },
     createNewApiKey: '新しいAPIキーを作成',
     keyName: 'キー名',
     keyNamePlaceholder: '例: Home Assistant, OctoPrint',
@@ -2570,6 +2580,8 @@ export default {
     authentication: '認証',
     authEnabledDescription: 'ユーザー認証でインスタンスが保護されています',
     authDisabledDescription: '認証を有効にして、ユーザーアカウントの作成、権限の管理、Printbuddyインスタンスのセキュリティを確保しましょう。',
+    rememberMeExtended: '30日間ログイン状態を保持',
+    rememberMeExtendedDescription: 'ログイン時に「ログイン状態を保持」を選択すると、24時間ではなく30日間ログインしたままになります',
     authDisabledMessage: '認証を有効にして、ユーザーアカウントの作成、権限の管理、Printbuddyインスタンスのセキュリティを確保しましょう。',
     enableAuthentication: '認証を有効にする',
     currentUser: '現在のユーザー',
@@ -4864,6 +4876,10 @@ export default {
     allPlatesToggle: '{{count}} プレートすべてをスライス',
     queueAfterSlice: '完了後に印刷キューへ追加',
     queueAfterSliceTitle: 'スライス完了後、スライス済みファイルを印刷キューに追加するダイアログを開きます。',
+    outputModeLabel: '出力',
+    outputCombined: 'マルチプレートの1ファイル',
+    outputSeparate: 'プレートごとに別ファイル',
+    completedToastSplit: '{{name}} から {{count}} プレートをスライスしました',
     slicing: 'スライス中…',
     printer: 'プリンタープロファイル',
     process: 'プロセスプロファイル',
@@ -6348,6 +6364,45 @@ export default {
 
   // Virtual Printer
   virtualPrinter: {
+    types: {
+      title: "2種類の仮想プリンター",
+      newBadge: "新機能",
+      intro: "仮想プリンターを追加するときにタイプを選択します。スライサーから送信したファイルは、プリンターに直接送られるのではなくPrintbuddy（アーカイブ、レビュー、印刷キュー）に届きます。",
+      bambu: {
+        tag: "Bambu Labプリンター",
+        point1: "Bambu Studio / Bambuプロファイルを使うOrcaSlicer向けにBambuプリンターをエミュレート",
+        point2: "LANで自動検出、またはIPとアクセスコードで追加",
+        point3: "モード：アーカイブ、レビュー、キュー、プロキシ",
+        setupLabel: "セットアップが必要：",
+        setupText: "専用のバインドIP、開放ポート、スライサーへのPrintbuddy CAの登録が必要です。",
+        guide: "セットアップガイドを読む",
+      },
+      moonraker: {
+        tag: "Klipper、Prusa、OctoPrintなど",
+        point1: "OrcaSlicer / Snapmaker Orca：ホストタイプ「Octo/Klipper」の物理プリンターを追加。PrusaSlicer：ホストタイプ「OctoPrint」（バイナリG-codeにも対応）",
+        point2: "仮想プリンターカードのホストURLとAPIキーを貼り付け",
+        point3: "モード：アーカイブ、レビュー、キュー（ターゲットプリンターに送信）",
+        noSetupLabel: "追加設定不要：",
+        noSetupText: "Printbuddyのポートで動作します。バインドIP、ポート、証明書は不要です。",
+      },
+    },
+    protocol: {
+      title: "プリンタータイプ",
+      bambu: "Bambu互換",
+      bambuDesc: "Bambu Labプリンターをエミュレート（Bambu Studio / Bambuプロファイルを使うOrca）",
+      moonraker: "Moonraker/OctoPrint互換",
+      moonrakerDesc: "Klipper、Prusa、OctoPrintなどBambu以外のプリンター向けアップロードエンドポイント",
+    },
+    slicerConnection: {
+      title: "スライサー接続",
+      hostUrl: "ホストURL",
+      apiKey: "APIキー",
+      regenerate: "APIキーを再生成",
+      regenerateConfirmTitle: "APIキーを再生成",
+      regenerateConfirmMessage: "現在のキーはすぐに使えなくなります。スライサーの物理プリンター設定に新しいキーを入力する必要があります。",
+      keyRegenerated: "新しいAPIキーを生成しました",
+      hint: "スライサーでホストタイプ「Octo/Klipper」（OrcaSlicer / Snapmaker Orca）または「OctoPrint」（PrusaSlicer、バイナリG-codeにも対応）の物理プリンターを追加し、ホストURLとAPIキーを入力してください。送信したジョブはプリンターに直接ではなくPrintbuddyに届きます。",
+    },
     model: {
       title: 'プリンターモデル',
       description: 'エミュレートするプリンターモデルを選択。',
@@ -6366,6 +6421,7 @@ export default {
     },
     targetPrinter: {
       title: 'ターゲットプリンター',
+      moonrakerHint: "Bambu以外のプリンターのみ選択できます。印刷キューモードでは必須です。",
       placeholder: 'プリンターを選択...',
     },
     remoteInterface: {
@@ -6409,10 +6465,6 @@ export default {
       description: '仮想プリンター機能を使用するには追加のシステム設定が必要です。ポートフォワーディング、ファイアウォールルール、プラットフォーム固有の設定が含まれます。',
       readGuide: '有効にする前にセットアップガイドをお読みください',
     },
-    bambuOnly: {
-      badge: 'Bambu Lab専用',
-      description: '仮想プリンターはBambu StudioとOrcaSlicer向けのBambu LANプロトコルをエミュレートします。Prusa、Klipper/Moonraker、Elegoo SDCP向けの汎用仮想プリンター層ではありません。',
-    },
     howItWorks: {
       title: '仕組み',
       step1: '同じLAN上では、仮想プリンターはスライサー（Bambu Studio / OrcaSlicer）に自動的に表示されます。他のネットワークからは、IPアドレスとアクセスコードで手動で追加してください。',
@@ -6452,6 +6504,7 @@ export default {
       title: '仮想プリンターを追加',
       name: '名前',
       hint: 'アクセスコード、ターゲットプリンター、その他の設定は作成後に設定できます。',
+      hintMoonraker: "作成後、ホストURLとAPIキーをスライサーの物理プリンター設定にコピーしてください。",
       create: '作成',
     },
     deleteConfirm: {
@@ -6466,6 +6519,7 @@ export default {
     },
     caCert: {
       title: 'スライサー証明書',
+      bambuOnlyBadge: "Bambu互換のみ",
       description: '仮想プリンターは Printbuddy CA が署名した TLS 証明書を使用します。この CA 証明書をスライサーの信頼ストアに一度インポートすると接続が受け入れられます — コマンドラインからコピーする必要はありません。',
       copy: 'コピー',
       copied: 'コピーしました',
@@ -6842,6 +6896,7 @@ export default {
       homeassistant: 'Home Assistant',
       bark: 'Bark',
       gotify: 'Gotify',
+      printbuddy_app: 'Printbuddy アプリ',
     },
     // Provider descriptions
     providerDescriptions: {
@@ -6856,6 +6911,7 @@ export default {
       homeassistant: 'Home Assistantダッシュボードの永続通知',
       bark: 'Bark経由のiOSプッシュ通知（セルフホスト可能）',
       gotify: '自分の Gotify サーバー経由のプッシュ通知',
+      printbuddy_app: 'スマートフォンの Printbuddy アプリへのプッシュ通知。アプリで通知をオンにするとデバイスが追加されます。',
     },
     // NotificationProviderCard
     lastSuccess: '最終: {{date}}',
@@ -7673,6 +7729,30 @@ export default {
       problems: 'スライサーがこの仮想プリンターを認識または使用できない理由となる問題が見つかりました。',
     },
     check: {
+      mr_enabled: {
+        title: "仮想プリンター有効",
+        fail: "この仮想プリンターはオフになっています。有効にするまで、スライサーからの接続テストとアップロードは拒否されます。",
+      },
+      mr_endpoint: {
+        title: "アップロードエンドポイント準備完了",
+        pass: "スライサーはPrintbuddyのポートで{{path}}にアップロードできます。",
+        fail: "仮想プリンターは有効ですが、アップロードエンドポイントが登録されていません。オフにしてから再度オンにしてください。解決しない場合はPrintbuddyのログを確認してください。",
+      },
+      mr_api_key: {
+        title: "APIキー設定済み",
+        fail: "APIキーが設定されていません。APIキーの横にある更新ボタンで生成してください。",
+      },
+      mr_target_printer: {
+        title: "ターゲットプリンター",
+        pass: "ジョブは接続中の{{name}}に送られます。",
+        warn: "{{name}}は現在オフラインです。キュー内のジョブは再接続後に送信されます。",
+        fail: "印刷キューモードには、Bambu以外のターゲットプリンター（Klipper、Prusa、OctoPrintなど）が必要です。「ターゲットプリンター」で選択してください。",
+        skip: "アーカイブモードとレビューモードでは不要です。",
+      },
+      mr_upload_dir: {
+        title: "アップロードフォルダーに書き込み可能",
+        fail: "Printbuddyがこの仮想プリンターのアップロードフォルダーに書き込めません。Printbuddyのデータディレクトリが書き込み可能か確認してください。",
+      },
       enabled: {
         title: '仮想プリンターが有効',
         fail: 'この仮想プリンターはオフです。検出可能にするにはオンに切り替えてください。',

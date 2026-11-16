@@ -41,10 +41,13 @@ from sqlalchemy.orm import selectinload
 from backend.app.api.routes._spoolman_helpers import _map_spoolman_spool, spoolman_net_weight
 from backend.app.core.config import settings as app_settings
 from backend.app.models.print_queue import PrintQueueItem
+from backend.app.models.printer import Printer
 from backend.app.models.spool_assignment import SpoolAssignment
 from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
 from backend.app.services.filament_requirements import extract_filament_requirements
 from backend.app.utils.filament_ids import normalize_slicer_filament
+from backend.app.utils.printer_models import has_ams3h
+from backend.app.utils.tray_ids import h3c_slot_key
 
 logger = logging.getLogger(__name__)
 
@@ -71,8 +74,13 @@ class FilamentDeficit:
         }
 
 
-def _global_to_ams_key(global_tray_id: int) -> tuple[int, int]:
-    """Inverse of ``ams_id * 4 + tray_id`` — matches ``usage_tracker``."""
+def _global_to_ams_key(global_tray_id: int, ams3h: bool = False) -> tuple[int, int]:
+    """Inverse of ``ams_id * 4 + tray_id`` — matches ``usage_tracker``.
+
+    ``ams3h``: the printer is an H3C (AMS 3H 28-36, per-hotend inputs 247-253).
+    """
+    if ams3h and (h3c_key := h3c_slot_key(global_tray_id)) is not None:
+        return h3c_key
     if global_tray_id >= 254:
         return (255, global_tray_id - 254)
     if global_tray_id >= 128:
@@ -731,6 +739,8 @@ async def compute_deficit_for_queue_item(
         return []
 
     spoolman_mode = await _is_spoolman_mode(db)
+    printer_model = (await db.execute(select(Printer.model).where(Printer.id == item.printer_id))).scalar_one_or_none()
+    ams3h = has_ams3h(printer_model)
     backup_on, ams_extruder_map, is_dual = await _get_printer_backup_context(printer_id)
     live_keys = _live_tray_keys(printer_id) if backup_on else {}
 
@@ -784,7 +794,7 @@ async def compute_deficit_for_queue_item(
         if global_tray_id is None or global_tray_id < 0:
             _undetermined(req)
             continue
-        ams_id, tray_id = _global_to_ams_key(global_tray_id)
+        ams_id, tray_id = _global_to_ams_key(global_tray_id, ams3h)
 
         identity = "attrs:|||"
         remaining: float | None = None

@@ -339,6 +339,7 @@ async def set_setting(db: AsyncSession, key: str, value: str) -> None:
 # reads back as False for a boolean and is not a number at all.
 _BOOL_SETTING_KEYS = frozenset(
     {
+        "remember_me_extended_session",
         "auto_archive",
         "save_thumbnails",
         "capture_finish_photo",

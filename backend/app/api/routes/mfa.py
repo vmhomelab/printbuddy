@@ -44,11 +44,11 @@ from backend.app.core.auth import (
     RequireAdminIfAuthEnabled,
     RequirePermissionIfAuthEnabled,
     create_access_token,
+    get_access_token_ttl,
     get_current_active_user,
     get_user_by_email,
     get_user_by_username,
     is_auth_enabled,
-    resolve_session_max_minutes,
     session_dated,
     token_outlived_its_session,
     verify_password,
@@ -1240,7 +1240,7 @@ async def verify_2fa(
 
         access_token = create_access_token(
             data={"sub": user.username},
-            expires_delta=timedelta(minutes=await resolve_session_max_minutes(db)),
+            expires_delta=await get_access_token_ttl(db, body.remember_me),
         )
         result = await db.execute(select(User).where(User.id == user.id).options(selectinload(User.groups)))
         user = result.scalar_one()
@@ -1256,7 +1256,7 @@ async def verify_2fa(
 
     access_token = create_access_token(
         data={"sub": user.username},
-        expires_delta=timedelta(minutes=await resolve_session_max_minutes(db)),
+        expires_delta=await get_access_token_ttl(db, body.remember_me),
     )
 
     # Reload with groups for permission calculation
@@ -2273,7 +2273,7 @@ async def oidc_exchange(
 
     access_token = create_access_token(
         data={"sub": user.username},
-        expires_delta=timedelta(minutes=await resolve_session_max_minutes(db)),
+        expires_delta=await get_access_token_ttl(db, body.remember_me),
     )
 
     return LoginResponse(

@@ -17,7 +17,7 @@ from backend.app.core.database import async_session
 from backend.app.core.permissions import Permission
 from backend.app.models.user import User
 from backend.app.services.bug_report import submit_report
-from backend.app.services.printer_manager import printer_manager
+from backend.app.services.printer_manager import printer_manager, run_client_call
 
 router = APIRouter(prefix="/bug-report", tags=["bug-report"])
 logger = logging.getLogger(__name__)
@@ -63,7 +63,9 @@ async def start_logging(
 
     for printer_id in list(printer_manager._clients.keys()):
         try:
-            printer_manager.request_status_update(printer_id)
+            await run_client_call(
+                printer_manager.get_client(printer_id), printer_manager.request_status_update, printer_id
+            )
         except Exception:
             logger.debug("Failed to push_all for printer %s", printer_id)
 

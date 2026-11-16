@@ -18,6 +18,7 @@ from backend.app.models.virtual_printer import (
     VP_MODE_ARCHIVE,
     VP_MODE_PROXY,
     VP_MODE_QUEUE,
+    VP_MODE_REVIEW,
     normalize_vp_mode,
 )
 from backend.app.services.bambu_mqtt import resolve_external_spools_in_mapping
@@ -228,6 +229,22 @@ def _extract_slicer_ams_mapping_json(data: dict, log_prefix: str, *, is_dual_noz
     return json.dumps(raw)
 
 
+# Slicer-facing protocols a VP can speak (#52).
+VP_PROTOCOL_BAMBU = "bambu"
+VP_PROTOCOL_MOONRAKER = "moonraker"
+VP_PROTOCOLS = (VP_PROTOCOL_BAMBU, VP_PROTOCOL_MOONRAKER)
+
+# Modes a Moonraker/OctoPrint-compatible VP supports. Proxy mode tunnels the
+# Bambu protocol to a real Bambu printer and has no meaning here.
+MOONRAKER_VP_MODES = (VP_MODE_ARCHIVE, VP_MODE_REVIEW, VP_MODE_QUEUE)
+
+
+def vp_protocol(vp) -> str:
+    """Protocol of a VirtualPrinter row; rows from before #52 are Bambu VPs."""
+    protocol = getattr(vp, "protocol", None)
+    return protocol if isinstance(protocol, str) and protocol in VP_PROTOCOLS else VP_PROTOCOL_BAMBU
+
+
 def _get_serial_for_model(model: str, serial_suffix: str) -> str:
     """Get serial number for the given model and suffix."""
     prefix = MODEL_SERIAL_PREFIXES.get(model, "00M09A")
@@ -250,6 +267,7 @@ class VirtualPrinterInstance:
         model: str,
         access_code: str,
         serial_suffix: str,
+        protocol: str = VP_PROTOCOL_BAMBU,
         target_printer_ip: str = "",
         target_printer_serial: str = "",
         target_printer_id: int | None = None,
@@ -270,6 +288,7 @@ class VirtualPrinterInstance:
         # yet (e.g. fresh-from-disk during the boot window before the
         # one-shot migration in `core/database.py` has executed).
         self.mode = normalize_vp_mode(mode) or VP_MODE_ARCHIVE
+        self.protocol = protocol
         self.model = model
         self.access_code = access_code
         self.serial_suffix = serial_suffix
@@ -367,8 +386,32 @@ class VirtualPrinterInstance:
         return self.mode == "proxy"
 
     @property
+    def is_http_host(self) -> bool:
+        """True for Moonraker/OctoPrint-compatible VPs (#52).
+
+        These run no listeners of their own: uploads arrive through the
+        ``/api/v1/vp-host/<id>`` routes on the main Printbuddy port, so the
+        instance is "running" for as long as it is registered.
+        """
+        return self.protocol == VP_PROTOCOL_MOONRAKER
+
+    @property
     def is_running(self) -> bool:
+        if self.is_http_host:
+            return True
         return len(self._tasks) > 0 and all(not t.done() for t in self._tasks)
+
+    def accepts_file(self, file_path: Path) -> bool:
+        """Whether an uploaded file is a print job this VP should process.
+
+        Bambu VPs receive ``.gcode.3mf``; Moonraker-compatible VPs also take
+        the raw ``.gcode`` that Klipper/Prusa/OctoPrint slicer profiles emit
+        and Prusa's binary ``.bgcode``.
+        """
+        suffix = file_path.suffix.lower()
+        if suffix == ".3mf":
+            return True
+        return self.is_http_host and suffix in (".gcode", ".bgcode")
 
     def generate_certificates(self) -> tuple[Path, Path]:
         """Generate certificates for this instance."""
@@ -771,8 +814,8 @@ class VirtualPrinterInstance:
             self._pending_files.pop(file_path.name, None)
             return
 
-        if file_path.suffix.lower() != ".3mf":
-            logger.debug("Skipping non-3MF file: %s", file_path.name)
+        if not self.accepts_file(file_path):
+            logger.debug("Skipping unsupported file: %s", file_path.name)
             self._pending_files.pop(file_path.name, None)
             try:
                 file_path.unlink()
@@ -832,7 +875,7 @@ class VirtualPrinterInstance:
             self._pending_files.pop(file_path.name, None)
             return
 
-        if file_path.suffix.lower() != ".3mf":
+        if not self.accepts_file(file_path):
             self._pending_files.pop(file_path.name, None)
             try:
                 file_path.unlink()
@@ -847,6 +890,8 @@ class VirtualPrinterInstance:
         # not fatal — the response model falls back to the filename stem.
         metadata_print_name: str | None = None
         try:
+            if file_path.suffix.lower() != ".3mf":
+                raise ValueError("no embedded title in raw G-code")
             from backend.app.services.archive import ThreeMFParser
 
             parsed = ThreeMFParser(file_path).parse()
@@ -892,7 +937,7 @@ class VirtualPrinterInstance:
             self._pending_files.pop(file_path.name, None)
             return
 
-        if file_path.suffix.lower() != ".3mf":
+        if not self.accepts_file(file_path):
             self._pending_files.pop(file_path.name, None)
             try:
                 file_path.unlink()
@@ -1129,7 +1174,7 @@ class VirtualPrinterInstance:
                     logger.info("[VP %s] Archived: %s - %s", self.name, archive.id, archive.print_name)
                     # Assign to specific printer if configured, otherwise use model for "Any X" scheduling
                     target_model = None
-                    if not self.target_printer_id and self.model:
+                    if not self.target_printer_id and self.model and not self.is_http_host:
                         target_model = VIRTUAL_PRINTER_MODELS.get(self.model)
                     # #1733 / Printbuddy #25: multi-plate "Send All" uploads ship
                     # every plate in one 3MF. Enqueue one PrintQueueItem per
@@ -1800,6 +1845,8 @@ class VirtualPrinterInstance:
         }
         if self.is_proxy and self._proxy:
             status["proxy"] = self._proxy.get_status()
+        if self.is_http_host:
+            status["protocol"] = self.protocol
         return status
 
 
@@ -1941,6 +1988,7 @@ class VirtualPrinterManager:
                 # The name is advertised to the slicer (SSDP, bind) by the
                 # running services, so a rename only reaches it on restart.
                 or instance.name != vp.name
+                or instance.protocol != vp_protocol(vp)
                 or instance.model != (vp.model or DEFAULT_VIRTUAL_PRINTER_MODEL)
                 or instance.access_code != (vp.access_code or "")
                 or instance.bind_ip != (vp.bind_ip or "")
@@ -1970,7 +2018,28 @@ class VirtualPrinterManager:
             if vp.id in self._instances:
                 continue
 
-            if vp.mode == "proxy":
+            if vp_protocol(vp) == VP_PROTOCOL_MOONRAKER:
+                if normalize_vp_mode(vp.mode) not in MOONRAKER_VP_MODES:
+                    logger.warning("Moonraker VP %s: unsupported mode %s, skipping", vp.name, vp.mode)
+                    continue
+                instance = VirtualPrinterInstance(
+                    vp_id=vp.id,
+                    name=vp.name,
+                    mode=vp.mode,
+                    model=vp.model or DEFAULT_VIRTUAL_PRINTER_MODEL,
+                    access_code="",
+                    serial_suffix=vp.serial_suffix,
+                    protocol=VP_PROTOCOL_MOONRAKER,
+                    target_printer_id=vp.target_printer_id,
+                    auto_dispatch=vp.auto_dispatch,
+                    queue_force_color_match=vp.queue_force_color_match,
+                    base_dir=self._base_dir,
+                    session_factory=self._session_factory,
+                    printer_manager=self._printer_manager,
+                )
+                self._instances[vp.id] = instance
+                logger.info("Registered Moonraker-compatible VP: %s (id=%s)", instance.name, vp.id)
+            elif vp.mode == "proxy":
                 ip_info = proxy_ips.get(vp.id)
                 if not ip_info:
                     logger.warning("Proxy VP %s: target printer not found, skipping", vp.name)
@@ -2029,7 +2098,9 @@ class VirtualPrinterManager:
         """Stop and remove a single VP instance."""
         instance = self._instances.pop(vp_id, None)
         if instance:
-            if instance.is_proxy:
+            if instance.is_http_host:
+                pass  # no listeners of its own
+            elif instance.is_proxy:
                 await instance.stop_proxy()
             else:
                 await instance.stop_server()

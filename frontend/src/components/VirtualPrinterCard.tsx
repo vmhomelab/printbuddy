@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query';
 import {
   Loader2, Check, AlertTriangle, Eye, EyeOff, Info,
-  ChevronDown, ChevronRight, ArrowRightLeft, Trash2, ShieldCheck, Copy, Stethoscope,
+  ChevronDown, ChevronRight, ArrowRightLeft, Trash2, ShieldCheck, Copy, Stethoscope, RefreshCw, Plug,
 } from 'lucide-react';
 import { api, multiVirtualPrinterApi } from '../api/client';
 import type { VirtualPrinterConfig } from '../api/client';
@@ -63,6 +63,13 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showDiagnostic, setShowDiagnostic] = useState(false);
   const [fqdnCopied, setFqdnCopied] = useState(false);
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [showRegenerateConfirm, setShowRegenerateConfirm] = useState(false);
+
+  // Moonraker/OctoPrint-compatible VP (#52): an HTTP upload endpoint on the
+  // Printbuddy port instead of an emulated Bambu printer on its own IP.
+  const isMoonraker = printer.protocol === 'moonraker';
+  const hostUrl = isMoonraker && printer.host_path ? `${window.location.origin}${printer.host_path}` : '';
 
   // Host-level Tailscale identity (same for every VP) — shown inline on the card when
   // the user has marked this VP as "exposed over Tailscale". Cert handling does NOT
@@ -75,6 +82,12 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
   });
   const tailscaleFqdn = tailscaleStatus?.available ? tailscaleStatus.fqdn : '';
   const tailscaleIp = tailscaleStatus?.available ? tailscaleStatus.tailscale_ips?.[0] ?? '' : '';
+
+  const handleCopy = async (value: string) => {
+    if (!value) return;
+    const ok = await copyTextToClipboard(value);
+    showToast(ok ? t('printers.copied') : t('virtualPrinter.toast.copyFailed'), ok ? 'success' : 'error');
+  };
 
   const handleCopyFqdn = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -145,6 +158,19 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
     },
   });
 
+  const regenerateKeyMutation = useMutation({
+    mutationFn: () => multiVirtualPrinterApi.regenerateApiKey(printer.id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['virtual-printers'] });
+      showToast(t('virtualPrinter.slicerConnection.keyRegenerated'));
+      setShowRegenerateConfirm(false);
+    },
+    onError: (error: Error) => {
+      showToast(error.message || t('virtualPrinter.toast.failedToUpdate'), 'error');
+      setShowRegenerateConfirm(false);
+    },
+  });
+
   const deleteMutation = useMutation({
     mutationFn: () => multiVirtualPrinterApi.remove(printer.id),
     onSuccess: () => {
@@ -161,7 +187,12 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
   const handleToggleEnabled = (e: React.MouseEvent) => {
     e.stopPropagation();
     const newEnabled = !localEnabled;
-    if (newEnabled) {
+    if (newEnabled && isMoonraker) {
+      if (localMode === 'queue' && !localTargetPrinterId) {
+        showToast(t('virtualPrinter.toast.targetPrinterRequired'), 'error');
+        return;
+      }
+    } else if (newEnabled) {
       if (!localBindIp) {
         showToast(t('virtualPrinter.toast.bindIpRequired'), 'error');
         return;
@@ -252,6 +283,13 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
   // diverge it from the printer.
   const inheritsAccessCodeFromTarget = !!localTargetPrinterId;
   const inheritedAccessCode = inheritsAccessCodeFromTarget ? (targetPrinter?.access_code ?? '') : '';
+  // Moonraker-compatible VPs hand raw G-code to non-Bambu printers only.
+  const targetPrinterOptions = isMoonraker
+    ? printers?.filter((p) => (p.provider ?? 'bambu') !== 'bambu')
+    : printers;
+  const modeOptions: readonly LocalMode[] = isMoonraker
+    ? (['archive', 'review', 'queue'] as const)
+    : (['archive', 'review', 'queue', 'proxy'] as const);
 
   return (
     <>
@@ -297,7 +335,10 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
           <div className="flex-1 min-w-0 flex flex-wrap items-center gap-x-3 gap-y-1">
             <span className="text-white font-medium truncate max-w-full">{printer.name}</span>
             <span className="text-xs text-bambu-gray flex-shrink-0">{modeLabel}</span>
-            {printer.model_name && (
+            {isMoonraker && (
+              <span className="text-xs text-bambu-gray truncate min-w-0" title="Moonraker/OctoPrint">Moonraker</span>
+            )}
+            {!isMoonraker && printer.model_name && (
               <span className="text-xs text-bambu-gray flex-shrink-0">{printer.model_name}</span>
             )}
             {targetPrinterName && (
@@ -383,14 +424,83 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
                   </button>
                 </span>
               )}
-              <span className="text-xs text-bambu-gray font-mono ml-auto flex-shrink-0">{printer.serial}</span>
+              {!isMoonraker && (
+                <span className="text-xs text-bambu-gray font-mono ml-auto flex-shrink-0">{printer.serial}</span>
+              )}
             </div>
+
+            {/* Slicer connection - Moonraker/OctoPrint-compatible VPs (#52) */}
+            {isMoonraker && (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2 text-white text-sm font-medium">
+                  <Plug className="w-4 h-4" />
+                  {t('virtualPrinter.slicerConnection.title')}
+                </div>
+                <div>
+                  <div className="text-xs text-bambu-gray mb-1">{t('virtualPrinter.slicerConnection.hostUrl')}</div>
+                  <div className="flex gap-2">
+                    <input
+                      readOnly
+                      value={hostUrl}
+                      onFocus={(e) => e.target.select()}
+                      className="flex-1 min-w-0 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-md px-3 py-1.5 text-white text-sm font-mono"
+                    />
+                    <button
+                      onClick={() => handleCopy(hostUrl)}
+                      className="p-1.5 text-bambu-gray hover:text-white transition-colors flex-shrink-0"
+                      title={t('printers.copyToClipboard')}
+                    >
+                      <Copy className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+                <div>
+                  <div className="text-xs text-bambu-gray mb-1">{t('virtualPrinter.slicerConnection.apiKey')}</div>
+                  <div className="flex gap-2">
+                    <div className="relative flex-1 min-w-0">
+                      <input
+                        readOnly
+                        type={showApiKey ? 'text' : 'password'}
+                        value={printer.api_key ?? ''}
+                        onFocus={(e) => e.target.select()}
+                        className="w-full bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-md px-3 py-1.5 text-white text-sm font-mono pr-10"
+                      />
+                      <button
+                        onClick={() => setShowApiKey(!showApiKey)}
+                        className="absolute right-2 top-1/2 -translate-y-1/2 text-bambu-gray hover:text-white"
+                      >
+                        {showApiKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
+                    <button
+                      onClick={() => handleCopy(printer.api_key ?? '')}
+                      className="p-1.5 text-bambu-gray hover:text-white transition-colors flex-shrink-0"
+                      title={t('printers.copyToClipboard')}
+                    >
+                      <Copy className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick={() => setShowRegenerateConfirm(true)}
+                      disabled={regenerateKeyMutation.isPending}
+                      className="p-1.5 text-bambu-gray hover:text-yellow-400 transition-colors flex-shrink-0 disabled:opacity-50"
+                      title={t('virtualPrinter.slicerConnection.regenerate')}
+                    >
+                      <RefreshCw className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+                <div className="flex items-start gap-2 p-2 rounded bg-blue-500/10 border border-blue-500/30">
+                  <Info className="w-4 h-4 text-blue-400 flex-shrink-0 mt-0.5" />
+                  <p className="text-xs text-bambu-gray">{t('virtualPrinter.slicerConnection.hint')}</p>
+                </div>
+              </div>
+            )}
 
             {/* Mode */}
             <div>
               <div className="text-white text-sm font-medium mb-2">{t('virtualPrinter.mode.title')}</div>
               <div className="grid grid-cols-2 gap-2">
-                {(['archive', 'review', 'queue', 'proxy'] as const).map((mode) => (
+                {modeOptions.map((mode) => (
                   <button
                     key={mode}
                     onClick={() => handleModeChange(mode)}
@@ -536,6 +646,7 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
             )}
 
             {/* Tailscale toggle */}
+            {!isMoonraker && (
             <div className="pt-2 border-t border-bambu-dark-tertiary">
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0">
@@ -562,9 +673,10 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
                 </button>
               </div>
             </div>
+            )}
 
             {/* Printer Model - for non-proxy modes */}
-            {localMode !== 'proxy' && (
+            {!isMoonraker && localMode !== 'proxy' && (
               <div className="pt-2 border-t border-bambu-dark-tertiary">
                 <div className="text-white text-sm font-medium mb-1">{t('virtualPrinter.model.title')}</div>
                 <p className="text-xs text-bambu-gray mb-2">{t('virtualPrinter.model.description')}</p>
@@ -597,7 +709,7 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
             )}
 
             {/* Access Code - only for non-proxy modes */}
-            {localMode !== 'proxy' && (
+            {!isMoonraker && localMode !== 'proxy' && (
               <div className="pt-2 border-t border-bambu-dark-tertiary">
                 <div className="flex items-center gap-2 mb-2">
                   <div className="text-white text-sm font-medium">{t('virtualPrinter.accessCode.title')}</div>
@@ -682,6 +794,9 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
             {/* Target Printer */}
             <div className="pt-2 border-t border-bambu-dark-tertiary">
               <div className="text-white text-sm font-medium mb-2">{t('virtualPrinter.targetPrinter.title')}</div>
+              {isMoonraker && (
+                <p className="text-xs text-bambu-gray mb-2">{t('virtualPrinter.targetPrinter.moonrakerHint')}</p>
+              )}
               <div className="relative">
                 <select
                   value={localTargetPrinterId ?? ''}
@@ -693,7 +808,7 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
                   className="w-full bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-md px-3 py-1.5 text-white text-sm appearance-none cursor-pointer disabled:opacity-50 pr-10"
                 >
                   <option value="">{t('virtualPrinter.targetPrinter.placeholder')}</option>
-                  {printers?.map((p) => (
+                  {targetPrinterOptions?.map((p) => (
                     <option key={p.id} value={p.id}>{p.name} ({p.ip_address})</option>
                   ))}
                 </select>
@@ -701,7 +816,9 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
               </div>
             </div>
 
-            {/* Bind Interface */}
+            {/* Bind Interface + Remote Interface - Bambu-compatible VPs only */}
+            {!isMoonraker && (
+            <>
             <div className="pt-2 border-t border-bambu-dark-tertiary">
               <div className="text-white text-sm font-medium mb-1">{t('virtualPrinter.bindIp.title')}</div>
               <div className="relative">
@@ -754,6 +871,8 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
                 <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
               </div>
             </div>
+            </>
+            )}
           </CardContent>
         )}
       </Card>
@@ -767,6 +886,18 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
           isLoading={deleteMutation.isPending}
           onConfirm={() => deleteMutation.mutate()}
           onCancel={() => setShowDeleteConfirm(false)}
+        />
+      )}
+
+      {showRegenerateConfirm && (
+        <ConfirmModal
+          title={t('virtualPrinter.slicerConnection.regenerateConfirmTitle')}
+          message={t('virtualPrinter.slicerConnection.regenerateConfirmMessage')}
+          variant="danger"
+          confirmText={t('virtualPrinter.slicerConnection.regenerate')}
+          isLoading={regenerateKeyMutation.isPending}
+          onConfirm={() => regenerateKeyMutation.mutate()}
+          onCancel={() => setShowRegenerateConfirm(false)}
         />
       )}
 

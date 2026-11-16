@@ -15,6 +15,7 @@ import { useCancellableTimeout } from '../hooks/useCancellableTimeout';
 import { flowApplies, flowLabel, normaliseFlow } from '../utils/nozzleFlow';
 import { useToast } from '../contexts/ToastContext';
 import { ACTIVE_PRINT_STATES } from '../utils/printer';
+import { externalTrayId, isH3cModel, rackExternalLabel } from '../utils/trayIds';
 
 interface SlotInfo {
   amsId: number;
@@ -272,6 +273,11 @@ export function ConfigureAmsSlotModal({
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   // A running print may be feeding from this tray.
   const printing = ACTIVE_PRINT_STATES.includes(printerState ?? '');
+  // An H3C names its per-hotend external inputs "Ext-n" (Bambu Studio's numbering).
+  const slotHeading = slotInfo?.amsId === 255 && isH3cModel(printerModel)
+    ? rackExternalLabel(externalTrayId(slotInfo?.trayId ?? 0))
+    : t('configureAmsSlot.slotLabel', { ams: getAmsLabel(slotInfo?.amsId ?? 0), slot: (slotInfo?.trayId ?? 0) + 1 });
+
   const [selectedPresetId, setSelectedPresetId] = useState<string>('');
   // The preset the dialog preselected on open, i.e. what the slot is already
   // on. Lets the K-profile list tell "reopened the slot" from "picked another
@@ -1292,7 +1298,7 @@ export function ConfigureAmsSlotModal({
                   />
                 )}
                 <span className="text-white/70">
-                  {t('configureAmsSlot.slotLabel', { ams: getAmsLabel(slotInfo.amsId), slot: slotInfo.trayId + 1 })}
+                  {slotHeading}
                 </span>
                 {slotInfo.traySubBrands && (
                   <span>({slotInfo.traySubBrands})</span>
@@ -1333,7 +1339,7 @@ export function ConfigureAmsSlotModal({
                   />
                 )}
                 <span className="text-white font-medium">
-                  {t('configureAmsSlot.slotLabel', { ams: getAmsLabel(slotInfo.amsId), slot: slotInfo.trayId + 1 })}
+                  {slotHeading}
                 </span>
                 {slotInfo.traySubBrands && (
                   <span className="text-bambu-gray">({slotInfo.traySubBrands})</span>

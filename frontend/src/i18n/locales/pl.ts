@@ -989,6 +989,9 @@ export default {
     dropNotSliced: 'Ten plik nie zawiera pociętego G-code. Najpierw go potnij, a potem wydrukuj.',
     dropToPrint: 'Upuść, aby wydrukować',
     dropToQueue: 'Upuść, aby dodać do kolejki',
+    ams3h: {
+      dryZone: 'Suszarka: gniazda {{slots}}',
+    },
   },
 
   // Archives page
@@ -3279,6 +3282,14 @@ export default {
     slicerSidecarOutdated: 'Połączono z {{slicer}}, ale obraz sidecara nie jest wersją oczekiwaną przez ten Printbuddy (działa {{running}}, oczekiwano {{expected}}). Zaktualizuj go: docker compose pull && docker compose up -d.',
     slicerSidecarRevisionOld: 'starsza wersja',
     slicerConnectionError: 'Połączenie ze slicerem nie powiodło się.',
+    mobilePairing: {
+      title: 'Sparuj aplikację mobilną',
+      description: 'Zeskanuj ten kod aparatem telefonu lub w aplikacji Printbuddy, aby połączyć ją z tym kluczem.',
+      qrAlt: 'Kod QR do parowania aplikacji mobilnej Printbuddy',
+      localhostWarning: 'Ten adres działa tylko na tym komputerze. Otwórz Printbuddy pod adresem sieciowym (na przykład IP), aby telefon mógł się z nim połączyć.',
+    },
+    rememberMeExtended: 'Zapamiętaj mnie na 30 dni',
+    rememberMeExtendedDescription: "Gdy użytkownicy zaznaczą 'Zapamiętaj mnie' przy logowaniu, pozostają zalogowani przez 30 dni zamiast 24 godzin",
   },
 
   // Notifications (for push notifications)
@@ -5000,6 +5011,10 @@ export default {
     },
     queueAfterSlice: 'Potem dodaj do kolejki druku',
     queueAfterSliceTitle: 'Po zakończeniu cięcia otwiera okno dodawania pociętego pliku do kolejki.',
+    outputModeLabel: 'Wynik',
+    outputCombined: 'Jeden plik z wieloma płytami',
+    outputSeparate: 'Osobny plik dla każdej płyty',
+    completedToastSplit: 'Pocięto {{count}} płyt z {{name}}',
   },
 
   // Spoolman
@@ -6419,6 +6434,7 @@ export default {
     targetPrinter: {
       title: 'Drukarka docelowa',
       placeholder: 'Wybierz drukarkę...',
+      moonrakerHint: 'Można wybrać tylko drukarki spoza Bambu. Wymagane w trybie kolejki wydruku. Ta drukarka jest też widoczna na karcie Urządzenie w slicerze.',
     },
     remoteInterface: {
       title: 'Wymuszenie interfejsu sieciowego',
@@ -6461,10 +6477,6 @@ export default {
       description: 'Funkcja wirtualnej drukarki wymaga dodatkowej konfiguracji systemu, zanim zacznie działać. Obejmuje to przekierowanie portów, reguły zapory i ustawienia zależne od platformy.',
       readGuide: 'Przed włączeniem przeczytaj instrukcję konfiguracji',
     },
-    bambuOnly: {
-      badge: 'Tylko Bambu Lab',
-      description: 'Wirtualne drukarki emulują protokół LAN Bambu dla Bambu Studio i OrcaSlicer. Nie są ogólną warstwą wirtualnych drukarek dla drukarek Prusa, Klipper/Moonraker ani Elegoo SDCP.',
-    },
     archiveNameSource: {
       title: 'Źródło nazwy archiwum',
       description: 'Wybierz, jak nazywane są nowe archiwa, gdy pliki przychodzą przez wirtualną drukarkę. „Metadane” używa tytułu osadzonego przez slicer w pliku 3MF (domyślnie). „Nazwa pliku” używa nazwy pliku wysłanej przez Bambu Studio przez FTP. Uwaga: Bambu Studio zastępuje nazwę wpisaną w oknie „wyślij do drukarki” polem Title z pliku 3MF, jeśli jest ono obecne, więc oba tryby często dają ten sam ciąg znaków.',
@@ -6478,6 +6490,7 @@ export default {
       copied: 'Skopiowano',
       download: 'Pobierz',
       fingerprint: 'SHA-256',
+      bambuOnlyBadge: 'Tylko zgodne z Bambu',
     },
     howItWorks: {
       title: 'Jak to działa',
@@ -6519,10 +6532,50 @@ export default {
       name: 'Nazwa',
       hint: 'Kod dostępu, drukarkę docelową i inne ustawienia możesz skonfigurować po utworzeniu.',
       create: 'Utwórz',
+      hintMoonraker: 'Po utworzeniu skopiuj adres URL hosta i klucz API do ustawień drukarki fizycznej w slicerze.',
     },
     deleteConfirm: {
       title: 'Usuń wirtualną drukarkę',
       message: 'Czy na pewno chcesz usunąć „{{name}}”? Spowoduje to zatrzymanie wszystkich usług tej drukarki.',
+    },
+    types: {
+      title: 'Dwa rodzaje drukarek wirtualnych',
+      newBadge: 'Nowość',
+      intro: 'Wybierz typ podczas dodawania drukarki wirtualnej. Pliki wysłane ze slicera trafiają do Printbuddy (archiwum, przegląd lub kolejka wydruku), a nie bezpośrednio do drukarki.',
+      bambu: {
+        tag: 'Drukarki Bambu Lab',
+        point1: 'Emuluje drukarkę Bambu dla Bambu Studio / OrcaSlicer z profilem Bambu',
+        point2: 'Wykrywana automatycznie w sieci LAN lub dodawana przez IP i kod dostępu',
+        point3: 'Tryby: Archiwum, Przegląd, Kolejka, Proxy',
+        setupLabel: 'Wymagana konfiguracja:',
+        setupText: 'wymaga własnego adresu bind IP, otwartych portów i CA Printbuddy w slicerze.',
+        guide: 'Przeczytaj instrukcję konfiguracji',
+      },
+      moonraker: {
+        tag: 'Klipper, Prusa, OctoPrint i inne',
+        point1: 'OrcaSlicer / Snapmaker Orca: dodaj drukarkę fizyczną z typem hosta “Octo/Klipper”. PrusaSlicer: typ hosta “OctoPrint” (binarny G-code też działa)',
+        point2: 'Wklej adres URL hosta i klucz API z karty drukarki wirtualnej',
+        point3: 'Tryby: Archiwum, Przegląd, Kolejka (wysyła do drukarki docelowej)',
+        noSetupLabel: 'Bez dodatkowej konfiguracji:',
+        noSetupText: 'działa na porcie Printbuddy. Nie potrzeba bind IP, portów ani certyfikatu.',
+      },
+    },
+    protocol: {
+      title: 'Typ drukarki',
+      bambu: 'Zgodna z Bambu',
+      bambuDesc: 'Emuluje drukarkę Bambu Lab (Bambu Studio / Orca z profilem Bambu)',
+      moonraker: 'Zgodna z Moonraker/OctoPrint',
+      moonrakerDesc: 'Punkt przesyłania dla Klippera, Prusy, OctoPrint i innych drukarek spoza Bambu',
+    },
+    slicerConnection: {
+      title: 'Połączenie ze slicerem',
+      hostUrl: 'Adres URL hosta',
+      apiKey: 'Klucz API',
+      regenerate: 'Wygeneruj nowy klucz API',
+      regenerateConfirmTitle: 'Wygeneruj nowy klucz API',
+      regenerateConfirmMessage: 'Obecny klucz natychmiast przestanie działać. Musisz wpisać nowy klucz w ustawieniach drukarki fizycznej w slicerze.',
+      keyRegenerated: 'Wygenerowano nowy klucz API',
+      hint: 'W slicerze dodaj drukarkę fizyczną z typem hosta “Octo/Klipper” (OrcaSlicer / Snapmaker Orca) lub “OctoPrint” (PrusaSlicer, binarny G-code też działa) i wpisz adres URL hosta oraz klucz API. Wysłane do niej zadania trafiają do Printbuddy, a nie bezpośrednio do drukarki.',
     },
   },
 
@@ -6894,6 +6947,7 @@ export default {
       homeassistant: 'Home Assistant',
       bark: 'Bark',
       gotify: 'Gotify',
+      printbuddy_app: 'Aplikacja Printbuddy',
     },
     // Provider descriptions
     providerDescriptions: {
@@ -6908,6 +6962,7 @@ export default {
       homeassistant: 'Trwałe powiadomienia na pulpicie Home Assistant',
       bark: 'Powiadomienia push na iOS przez Bark (z możliwością własnego hostingu)',
       gotify: 'Powiadomienia push przez własny serwer Gotify',
+      printbuddy_app: 'Powiadomienia push do aplikacji Printbuddy na telefonie. Włącz je w aplikacji, aby dodać urządzenie.',
     },
     // NotificationProviderCard
     lastSuccess: 'Ostatnio: {{date}}',
@@ -7766,6 +7821,30 @@ export default {
         title: 'Certyfikat TLS',
         pass: 'Certyfikat gotowy. Upewnij się, że certyfikat CA Printbuddy (powyżej) jest zaimportowany do magazynu zaufanych certyfikatów slicera.',
         fail: 'Brakuje certyfikatu TLS dla tej wirtualnej drukarki. Sprawdź, czy katalog danych Printbuddy jest zapisywalny.',
+      },
+      mr_enabled: {
+        title: 'Drukarka wirtualna włączona',
+        fail: 'Ta drukarka wirtualna jest wyłączona. Test połączenia slicera i przesyłanie są odrzucane, dopóki jej nie włączysz.',
+      },
+      mr_endpoint: {
+        title: 'Punkt przesyłania gotowy',
+        pass: 'Slicery mogą przesyłać do {{path}} na porcie Printbuddy.',
+        fail: 'Drukarka wirtualna jest włączona, ale jej punkt przesyłania nie jest zarejestrowany. Wyłącz ją i włącz ponownie; jeśli to nie pomoże, sprawdź dziennik Printbuddy.',
+      },
+      mr_api_key: {
+        title: 'Klucz API ustawiony',
+        fail: 'Nie ustawiono klucza API. Wygeneruj go przyciskiem odświeżania obok klucza API.',
+      },
+      mr_target_printer: {
+        title: 'Drukarka docelowa',
+        pass: 'Zadania trafiają do {{name}}, która jest połączona.',
+        warn: '{{name}} jest teraz offline. Zadania z kolejki zostaną wysłane po ponownym połączeniu.',
+        fail: 'Tryb kolejki wydruku wymaga drukarki docelowej, która nie jest drukarką Bambu (Klipper, Prusa, OctoPrint, …). Wybierz ją w sekcji Drukarka docelowa.',
+        skip: 'Niepotrzebne w trybach Archiwum i Przegląd.',
+      },
+      mr_upload_dir: {
+        title: 'Folder przesyłania zapisywalny',
+        fail: 'Printbuddy nie może zapisywać w folderze przesyłania tej drukarki wirtualnej. Sprawdź, czy katalog danych Printbuddy jest zapisywalny.',
       },
     },
   },

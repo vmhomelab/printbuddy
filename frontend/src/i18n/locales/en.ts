@@ -754,6 +754,10 @@ export default {
       customSubnetLabel: 'Custom subnet (CIDR)',
       customSubnetNote: 'Use a custom subnet if your printer is on a different network than this server. The FTP (990) and MQTT (8883) ports must be reachable across the routing boundary.',
     },
+    // H3C AMS 3H
+    ams3h: {
+      dryZone: 'Dryer: slots {{slots}}',
+    },
     // AMS Drying
     drying: {
       start: 'Start Drying',
@@ -2412,6 +2416,12 @@ export default {
     apiKeyQrTitle: 'Scan to configure',
     apiKeyQrCaption: 'Scan with your mobile app to add this server and API key.',
     apiKeyQrWarning: "Contains your secret API key — don't share or screenshot it where others can see.",
+    mobilePairing: {
+      title: 'Pair the mobile app',
+      description: 'Scan this code with your phone\'s camera or in the Printbuddy app to connect it with this key.',
+      qrAlt: 'QR code for pairing the Printbuddy mobile app',
+      localhostWarning: 'This address only works on this computer. Open Printbuddy by its network address (for example its IP) so your phone can reach it.',
+    },
     createNewApiKey: 'Create New API Key',
     keyName: 'Key Name',
     keyNamePlaceholder: 'e.g., Home Assistant, OctoPrint',
@@ -2592,6 +2602,8 @@ export default {
     authentication: 'Authentication',
     authEnabledDescription: 'Your instance is secured with user authentication',
     authDisabledDescription: 'Enable to require login and manage user access',
+    rememberMeExtended: 'Remember me for 30 days',
+    rememberMeExtendedDescription: 'When users tick \'Remember Me\' at login, they stay signed in for 30 days instead of 24 hours',
     authDisabledMessage: 'Enable authentication to create user accounts, manage permissions, and secure your Printbuddy instance.',
     enableAuthentication: 'Enable Authentication',
     currentUser: 'Current User',
@@ -4897,10 +4909,15 @@ export default {
     title: 'Slice model',
     action: 'Slice',
     actionAll: 'Slice all {{count}} plates',
-    actionAllTitle: 'Slice every plate into one multi-plate output (single archive). Filament selection covers every slot the project defines.',
+    actionAllTitle:
+      'Slice every plate. Choose combined (one multi-plate file) or separate files below. Filament selection covers every slot the project defines.',
     allPlatesToggle: 'Slice all {{count}} plates',
     queueAfterSlice: 'Add to print queue afterwards',
     queueAfterSliceTitle: 'When slicing finishes, open the add-to-queue dialog for the sliced file.',
+    outputModeLabel: 'Output',
+    outputCombined: 'One multi-plate file',
+    outputSeparate: 'Separate file per plate',
+    completedToastSplit: 'Sliced {{count}} plates from {{name}}',
     slicing: 'Slicing…',
     printer: 'Printer profile',
     process: 'Process profile',
@@ -6400,6 +6417,45 @@ export default {
 
   // Virtual Printer
   virtualPrinter: {
+    types: {
+      title: "Two kinds of virtual printers",
+      newBadge: "New",
+      intro: "Choose the type when you add a virtual printer. Files sent from your slicer land in Printbuddy (archive, review or print queue) instead of going straight to the printer.",
+      bambu: {
+        tag: "Bambu Lab printers",
+        point1: "Emulates a Bambu printer for Bambu Studio / OrcaSlicer with a Bambu profile",
+        point2: "Found automatically on the LAN, or added by IP and access code",
+        point3: "Modes: Archive, Review, Queue, Proxy",
+        setupLabel: "Setup required:",
+        setupText: "needs its own bind IP, open ports and the Printbuddy CA in your slicer.",
+        guide: "Read the setup guide",
+      },
+      moonraker: {
+        tag: "Klipper, Prusa, OctoPrint & more",
+        point1: "OrcaSlicer / Snapmaker Orca: add a physical printer with host type “Octo/Klipper”. PrusaSlicer: host type “OctoPrint” (binary G-code works too)",
+        point2: "Paste the host URL and API key from the virtual printer card",
+        point3: "Modes: Archive, Review, Queue (sends to the target printer)",
+        noSetupLabel: "No extra setup:",
+        noSetupText: "runs on the Printbuddy port. No bind IP, ports or certificate needed.",
+      },
+    },
+    protocol: {
+      title: "Printer type",
+      bambu: "Bambu-compatible",
+      bambuDesc: "Emulates a Bambu Lab printer (Bambu Studio / Orca with a Bambu profile)",
+      moonraker: "Moonraker/OctoPrint-compatible",
+      moonrakerDesc: "Upload endpoint for Klipper, Prusa, OctoPrint and other non-Bambu printers",
+    },
+    slicerConnection: {
+      title: "Slicer connection",
+      hostUrl: "Host URL",
+      apiKey: "API key",
+      regenerate: "Regenerate API key",
+      regenerateConfirmTitle: "Regenerate API key",
+      regenerateConfirmMessage: "The current key stops working immediately. You must enter the new key in your slicer's physical printer settings.",
+      keyRegenerated: "New API key generated",
+      hint: "In your slicer, add a physical printer with host type “Octo/Klipper” (OrcaSlicer / Snapmaker Orca) or “OctoPrint” (PrusaSlicer, binary G-code works too) and enter the host URL and API key. Jobs sent to it go to Printbuddy instead of directly to the printer.",
+    },
     model: {
       title: 'Printer Model',
       description: 'Select which printer model to emulate.',
@@ -6418,6 +6474,7 @@ export default {
     },
     targetPrinter: {
       title: 'Target Printer',
+      moonrakerHint: "Only non-Bambu printers can be selected. Required for print queue mode. This printer is also shown in the slicer's Device tab.",
       placeholder: 'Select a printer...',
     },
     remoteInterface: {
@@ -6461,10 +6518,6 @@ export default {
       description: 'The virtual printer feature requires additional system configuration before it will work. This includes port forwarding, firewall rules, and platform-specific settings.',
       readGuide: 'Read the setup guide before enabling',
     },
-    bambuOnly: {
-      badge: 'Bambu Lab only',
-      description: 'Virtual printers emulate the Bambu LAN protocol for Bambu Studio and OrcaSlicer. They are not a generic virtual-printer layer for Prusa, Klipper/Moonraker, or Elegoo SDCP printers.',
-    },
     archiveNameSource: {
       title: 'Archive name source',
       description: 'Choose how new archives are named when files arrive via the virtual printer. "Metadata" uses the slicer-embedded Title from the 3MF (default). "Filename" uses the filename Bambu Studio sent over FTP. Note: Bambu Studio overwrites the name you type in the "send to printer" dialog with the 3MF\'s Title field whenever one is present, so both modes often produce the same string.',
@@ -6473,6 +6526,7 @@ export default {
     },
     caCert: {
       title: 'Slicer certificate',
+      bambuOnlyBadge: "Bambu-compatible only",
       description: 'Virtual printers use a TLS certificate signed by the Printbuddy CA. Import this CA certificate into your slicer\'s trust store once so it accepts the connection — no need to copy it from the command line.',
       copy: 'Copy',
       copied: 'Copied',
@@ -6518,6 +6572,7 @@ export default {
       title: 'Add Virtual Printer',
       name: 'Name',
       hint: 'You can configure access code, target printer, and other settings after creating.',
+      hintMoonraker: "After creating, copy the host URL and API key into your slicer's physical printer settings.",
       create: 'Create',
     },
     deleteConfirm: {
@@ -6894,6 +6949,7 @@ export default {
       homeassistant: 'Home Assistant',
       bark: 'Bark',
       gotify: 'Gotify',
+      printbuddy_app: 'Printbuddy App',
     },
     // Provider descriptions
     providerDescriptions: {
@@ -6908,6 +6964,7 @@ export default {
       homeassistant: 'Persistent notifications in Home Assistant dashboard',
       bark: 'iOS push notifications via Bark (self-hostable)',
       gotify: 'Push notifications via your own Gotify server',
+      printbuddy_app: 'Push notifications to the Printbuddy app on your phone. Turn them on in the app to add a device.',
     },
     // NotificationProviderCard
     lastSuccess: 'Last: {{date}}',
@@ -7725,6 +7782,30 @@ export default {
       problems: 'Found problems that explain why the slicer can\'t see or use this virtual printer.',
     },
     check: {
+      mr_enabled: {
+        title: "Virtual printer enabled",
+        fail: "This virtual printer is switched off. The slicer's connection test and uploads are refused until you turn it on.",
+      },
+      mr_endpoint: {
+        title: "Upload endpoint ready",
+        pass: "Slicers can upload to {{path}} on the Printbuddy port.",
+        fail: "The virtual printer is enabled, but its upload endpoint is not registered. Turn it off and on again; if that doesn't help, check the Printbuddy log.",
+      },
+      mr_api_key: {
+        title: "API key set",
+        fail: "No API key is set. Generate one with the refresh button next to the API key.",
+      },
+      mr_target_printer: {
+        title: "Target printer",
+        pass: "Jobs go to {{name}}, which is connected.",
+        warn: "{{name}} is offline right now. Queued jobs are sent once it reconnects.",
+        fail: "Print queue mode needs a target printer that is not a Bambu printer (Klipper, Prusa, OctoPrint, …). Select one under Target Printer.",
+        skip: "Not needed in Archive and Review mode.",
+      },
+      mr_upload_dir: {
+        title: "Upload folder writable",
+        fail: "Printbuddy can't write to this virtual printer's upload folder. Check that the Printbuddy data directory is writable.",
+      },
       enabled: {
         title: 'Virtual printer enabled',
         fail: 'This virtual printer is switched off. Toggle it on to make it discoverable.',

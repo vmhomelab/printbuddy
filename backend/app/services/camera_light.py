@@ -102,7 +102,7 @@ def _cancel_off(printer_id: int) -> None:
         task.cancel()
 
 
-def _acquire(printer_id: int) -> float | None:
+async def _acquire(printer_id: int) -> float | None:
     """Hold the light. Returns when it was turned on, or None if it was already on.
 
     The hold is counted before anything can fail, so the caller always releases.
@@ -118,7 +118,9 @@ def _acquire(printer_id: int) -> float | None:
     if lit_at is not None and time.monotonic() - lit_at < _REPORT_LAG_SECONDS:
         return lit_at  # our "on" hasn't been reported yet
 
-    if not client.set_chamber_light(True):
+    from backend.app.services.printer_manager import run_client_call
+
+    if not await run_client_call(client, client.set_chamber_light, True):
         return None
     logger.info("[CAMERA-LIGHT] Turned on chamber light for printer %s", printer_id)
     now = time.monotonic()
@@ -154,7 +156,9 @@ async def _turn_off_later(printer_id: int) -> None:
     if client is None:
         return
     try:
-        if client.set_chamber_light(False):
+        from backend.app.services.printer_manager import run_client_call
+
+        if await run_client_call(client, client.set_chamber_light, False):
             logger.info("[CAMERA-LIGHT] Turned chamber light back off for printer %s", printer_id)
     except Exception as e:
         logger.warning("[CAMERA-LIGHT] Failed to turn chamber light off for printer %s: %s", printer_id, e)
@@ -196,7 +200,7 @@ async def camera_light(
     printer_id = printer.id
     try:
         try:
-            lit_at = _acquire(printer_id)
+            lit_at = await _acquire(printer_id)
         except Exception as e:
             # A light we can't switch must never cost the picture.
             logger.warning("[CAMERA-LIGHT] Failed to turn chamber light on for printer %s: %s", printer_id, e)

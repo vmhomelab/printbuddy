@@ -17,7 +17,7 @@ import asyncio
 import logging
 import os
 
-from backend.app.models.virtual_printer import VirtualPrinter
+from backend.app.models.virtual_printer import VP_MODE_QUEUE, VirtualPrinter, normalize_vp_mode
 from backend.app.schemas.printer import DiagnosticCheck
 from backend.app.schemas.virtual_printer import VPDiagnosticResult
 
@@ -81,7 +81,7 @@ async def _check_port(ip: str, port: int, timeout: float = _PORT_PROBE_TIMEOUT) 
         return False
 
 
-async def run_vp_diagnostic(vp: VirtualPrinter, instance) -> VPDiagnosticResult:
+async def run_vp_diagnostic(vp: VirtualPrinter, instance, db=None) -> VPDiagnosticResult:
     """Run setup checks for a virtual printer.
 
     Args:
@@ -89,6 +89,11 @@ async def run_vp_diagnostic(vp: VirtualPrinter, instance) -> VPDiagnosticResult:
         instance: The running ``VirtualPrinterInstance`` from the manager, or
             ``None`` if the VP is not currently instantiated.
     """
+    from backend.app.services.virtual_printer.manager import VP_PROTOCOL_MOONRAKER, vp_protocol
+
+    if vp_protocol(vp) == VP_PROTOCOL_MOONRAKER:
+        return await _moonraker_diagnostic(vp, instance, db)
+
     checks: list[DiagnosticCheck] = []
     is_proxy = vp.mode == "proxy"
     running = bool(instance and instance.is_running)
@@ -249,3 +254,88 @@ async def run_vp_diagnostic(vp: VirtualPrinter, instance) -> VPDiagnosticResult:
         overall=overall,
         checks=checks,
     )
+
+
+def _overall(checks: list[DiagnosticCheck]) -> str:
+    statuses = {c.status for c in checks}
+    if "fail" in statuses:
+        return "problems"
+    if "warn" in statuses:
+        return "warnings"
+    return "ok"
+
+
+async def _moonraker_diagnostic(vp: VirtualPrinter, instance, db=None) -> VPDiagnosticResult:
+    """Checks for a Moonraker/OctoPrint-compatible VP (#52).
+
+    It has no listeners of its own (uploads arrive on the Printbuddy port), so
+    none of the Bambu checks (bind interface, access code, ports, TLS
+    certificate) apply. Check ids carry an ``mr_`` prefix so the frontend
+    shows texts written for this kind of VP.
+    """
+    checks: list[DiagnosticCheck] = []
+
+    # --- Enabled: a disabled VP answers every slicer request with 409 ---
+    checks.append(DiagnosticCheck(id="mr_enabled", status="pass" if vp.enabled else "fail"))
+
+    # --- Upload endpoint registered with the VP manager ---
+    registered = bool(instance and getattr(instance, "is_http_host", False))
+    if not vp.enabled:
+        checks.append(DiagnosticCheck(id="mr_endpoint", status="skip"))
+    else:
+        checks.append(
+            DiagnosticCheck(
+                id="mr_endpoint",
+                status="pass" if registered else "fail",
+                params={"path": f"/api/v1/vp-host/{vp.id}"},
+            )
+        )
+
+    # --- API key the slicer authenticates with ---
+    checks.append(DiagnosticCheck(id="mr_api_key", status="pass" if vp.api_key else "fail"))
+
+    # --- Target printer: required for print-queue mode ---
+    checks.append(await _moonraker_target_check(vp, db))
+
+    # --- Upload folder writable ---
+    if not registered:
+        checks.append(DiagnosticCheck(id="mr_upload_dir", status="skip"))
+    else:
+        upload_dir = instance.upload_dir
+        writable = upload_dir.is_dir() and os.access(upload_dir, os.W_OK)
+        checks.append(DiagnosticCheck(id="mr_upload_dir", status="pass" if writable else "fail"))
+
+    return VPDiagnosticResult(vp_id=vp.id, vp_name=vp.name, mode=vp.mode, overall=_overall(checks), checks=checks)
+
+
+async def _moonraker_target_check(vp: VirtualPrinter, db) -> DiagnosticCheck:
+    if not vp.target_printer_id:
+        # Archive/review only store the file; the queue needs a printer to send to.
+        return DiagnosticCheck(
+            id="mr_target_printer", status="fail" if normalize_vp_mode(vp.mode) == VP_MODE_QUEUE else "skip"
+        )
+
+    name = ""
+    provider = ""
+    if db is not None:
+        from sqlalchemy import select
+
+        from backend.app.models.printer import Printer
+
+        result = await db.execute(select(Printer).where(Printer.id == vp.target_printer_id))
+        printer = result.scalar_one_or_none()
+        if printer is None:
+            return DiagnosticCheck(id="mr_target_printer", status="fail")
+        name = printer.name
+        provider = (printer.provider or "bambu").strip().lower()
+    params = {"name": name}
+    if provider == "bambu":
+        # Raw G-code can't go to a Bambu printer; the API refuses this, but an
+        # old row or a printer whose type changed could still point there.
+        return DiagnosticCheck(id="mr_target_printer", status="fail", params=params)
+
+    from backend.app.services.printer_manager import printer_manager
+
+    state = printer_manager.get_status(vp.target_printer_id)
+    online = bool(state and state.connected)
+    return DiagnosticCheck(id="mr_target_printer", status="pass" if online else "warn", params=params)

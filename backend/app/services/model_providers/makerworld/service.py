@@ -44,6 +44,7 @@ from backend.app.services.model_providers.base import (
 from backend.app.services.model_providers.makerworld.auth import is_cloud_token_invalid
 from backend.app.services.model_providers.makerworld.errors import (
     MakerWorldAuthError,
+    MakerWorldError,
     MakerWorldForbiddenError,
     MakerWorldNotFoundError,
     MakerWorldUnavailableError,
@@ -172,9 +173,9 @@ class MakerWorldService(ProviderService):
         except Exception:
             logger.exception("Failed to record Bambu Cloud auth failure from MakerWorld")
 
-    def _headers(self) -> dict[str, str]:
+    def _headers(self, *, with_auth: bool = True) -> dict[str, str]:
         headers = dict(_CLIENT_HEADERS)
-        if self._auth_token:
+        if with_auth and self._auth_token:
             headers["Authorization"] = f"Bearer {self._auth_token}"
         return headers
 
@@ -272,17 +273,44 @@ class MakerWorldService(ProviderService):
                 raise MakerWorldUnavailableError("MakerWorld returned no instances for this model")
 
         manifest: dict[str, Any] = {}
+        instance_error: MakerWorldForbiddenError | MakerWorldNotFoundError | None = None
         instance_id = await self._instance_id_for_profile(model_id, design, profile_id, envelope)
         if instance_id is not None:
-            manifest = await self.get_instance_download(instance_id)
+            try:
+                manifest = await self.get_instance_download(instance_id)
+            except (MakerWorldForbiddenError, MakerWorldNotFoundError) as exc:
+                # Bambu sometimes refuses the design-service f3mf endpoint for
+                # third-party clients ("The client does not have access rights
+                # to the content.") while the legacy profile endpoint still
+                # serves the same file. Try that before failing.
+                logger.info(
+                    "MakerWorld instance download refused for instance %s (%s); trying legacy profile endpoint",
+                    instance_id,
+                    exc,
+                )
+                instance_error = exc
         signed_url = manifest.get("url")
         if not signed_url or not isinstance(signed_url, str):
             alphanumeric_model_id = design.get("modelId")
             if not isinstance(alphanumeric_model_id, str) or not alphanumeric_model_id:
+                if instance_error is not None:
+                    raise instance_error
                 raise MakerWorldUnavailableError("MakerWorld design metadata missing the modelId field")
-            manifest = await self.get_profile_download(profile_id, alphanumeric_model_id)
+            try:
+                manifest = await self.get_profile_download(profile_id, alphanumeric_model_id)
+            except MakerWorldError as exc:
+                # Prefer the instance endpoint's refusal when both fail: it is
+                # the more specific reason (e.g. purchase/points gating), while
+                # the legacy endpoint often answers 400 for profiles it no
+                # longer serves.
+                if instance_error is not None and not isinstance(exc, MakerWorldAuthError):
+                    logger.info("MakerWorld legacy profile download also failed: %s", exc)
+                    raise instance_error from exc
+                raise
             signed_url = manifest.get("url")
         if not signed_url or not isinstance(signed_url, str):
+            if instance_error is not None:
+                raise instance_error
             raise MakerWorldUnavailableError("MakerWorld did not return a download URL")
 
         # Raw upstream name — the route layer basenames / percent-decodes it
@@ -308,6 +336,22 @@ class MakerWorldService(ProviderService):
     # ---------------------------------------------------------------- endpoints
 
     async def _get_json(self, path: str) -> dict[str, Any]:
+        """Like :meth:`_get_raw_json`, but retries a 403 anonymously.
+
+        The metadata endpoints are public. When the stored Bambu Cloud token is
+        refused for them ("The client does not have access rights to the
+        content."), the anonymous request still succeeds, so a stale or
+        restricted token must not block resolving or importing a model.
+        """
+        try:
+            return await self._get_raw_json(path, with_auth=True)
+        except MakerWorldForbiddenError:
+            if not self._auth_token:
+                raise
+            logger.info("MakerWorld refused %s with the Bambu Cloud token; retrying anonymously", path)
+            return await self._get_raw_json(path, with_auth=False)
+
+    async def _get_raw_json(self, path: str, *, with_auth: bool) -> dict[str, Any]:
         """GET ``{MAKERWORLD_API_BASE}{path}`` returning the decoded JSON body.
 
         Raises ``MakerWorld{Auth,Forbidden,NotFound,Unavailable}Error`` based
@@ -320,7 +364,7 @@ class MakerWorldService(ProviderService):
 
         for attempt in range(2):
             try:
-                response = await self._client.get(url, headers=self._headers(), timeout=30.0)
+                response = await self._client.get(url, headers=self._headers(with_auth=with_auth), timeout=30.0)
             except httpx.TimeoutException as exc:
                 raise MakerWorldUnavailableError(f"MakerWorld request timed out: {exc}") from exc
             except httpx.HTTPError as exc:

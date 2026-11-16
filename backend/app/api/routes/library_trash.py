@@ -3,11 +3,11 @@
 Permission model:
 
 * **Admin purge** (``/library/purge/*``) and **retention settings**
-  (``/library/trash/settings``) require :attr:`Permission.LIBRARY_PURGE` —
+  (``/library/trash/settings``) require `Permission.LIBRARY_PURGE` —
   admin-only.
 * **Per-user trash** (list / restore / hard-delete / empty own trash) is
-  gated by the existing :attr:`Permission.LIBRARY_DELETE_ALL` /
-  :attr:`Permission.LIBRARY_DELETE_OWN` ownership pair, so a regular user
+  gated by the existing `Permission.LIBRARY_DELETE_ALL` /
+  `Permission.LIBRARY_DELETE_OWN` ownership pair, so a regular user
   sees their own trashed files and an admin sees everyone's.
 """
 

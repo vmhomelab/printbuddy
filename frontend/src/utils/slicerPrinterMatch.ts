@@ -76,6 +76,42 @@ export function matchesPrinterModelSuffix(presetSuffix: string, printerModel: st
   return false;
 }
 
+// Normalize printer-preset names for containment matching: drop the "# "
+// clone prefix, collapse whitespace, case-fold. Used so a system name in
+// compatible_printers (e.g. "Snapmaker U1 (0.4 nozzle)") still matches the
+// user's selected clone/rename ("… - Copy", "… - Copy 2", "… (workshop)", …)
+// without enumerating every Orca/Bambu Studio suffix variant.
+function normalizePrinterName(name: string): string {
+  return name.replace(/^#\s*/, '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+/**
+ * True when two printer-preset names refer to the same machine.
+ *
+ * Exact match first; otherwise either normalized name may contain the
+ * other (whichever is shorter). That covers Orca/BS " - Copy" clones and
+ * arbitrary user renames that keep the system name as a substring, without
+ * hard-coding suffix patterns. The shorter side must be long enough to
+ * avoid tiny false positives ("u1", "0.4").
+ */
+export function printerNamesMatch(a: string, b: string): boolean {
+  const na = normalizePrinterName(a);
+  const nb = normalizePrinterName(b);
+  if (!na || !nb) return false;
+  if (na === nb) return true;
+  const shorter = na.length <= nb.length ? na : nb;
+  const longer = na.length <= nb.length ? nb : na;
+  // Short tokens like "A1" / "0.4" would otherwise match every printer that
+  // happens to include them. Real system names are much longer.
+  if (shorter.length < 12) return false;
+  return longer.includes(shorter);
+}
+
+function compatListIncludes(compat: readonly string[], selected: string): boolean {
+  if (compat.includes(selected)) return true;
+  return compat.some((entry) => printerNamesMatch(entry, selected));
+}
+
 /**
  * Invert the backend's PRINTER_MODEL_MAP into the shape the @BBL fallback
  * needs: short code → printer-preset fragment (the part of "Bambu Lab X1
@@ -268,7 +304,17 @@ function classifyByBambuName(
   const parsed = extractPrinterTag(presetName);
   if (!parsed) return 'unknown';
   const selectedParts = extractPrinterPresetModel(selectedPrinterName);
-  if (!selectedParts) return 'unknown';
+  // @BBL tags are Bambu-scoped. A non-Bambu selected printer (Snapmaker,
+  // Klipper custom, …) can't match a model tag — treat it as a mismatch so
+  // the SliceModal won't keep an embedded Bambu process when the user picks
+  // e.g. an Orca Cloud Snapmaker U1 printer (the Orca CLI then rejects with
+  // CLI_PROCESS_NOT_COMPATIBLE, -17). A nozzle-only tag, or a selected name that
+  // is not a printer preset at all, stays 'unknown'.
+  if (!selectedParts) {
+    // A printer preset name carries a model or nozzle number; a bare word
+    // (an Object.prototype key, a placeholder) proves nothing either way.
+    return parsed.token !== null && /\d/.test(selectedPrinterName) ? 'mismatch' : 'unknown';
+  }
   if (parsed.token === null) {
     // Nozzle-only tag ("Overture PLA Matte @0.2"). The size can rule a
     // printer OUT, but a matching size proves nothing about the model, so
@@ -301,9 +347,8 @@ function classifyByBambuName(
     return 'mismatch';
   }
   // Nozzle compare — only when we have a usable size from the printer
-  // side. A Bambu printer preset always carries one, so this branch is
-  // taken in practice; the null path is defensive degrade for hand-typed
-  // or non-Bambu printer names that happened to match the model.
+  // side. A Bambu printer preset always carries one; non-Bambu printers
+  // already returned 'mismatch' above.
   if (selectedParts.nozzle !== null) {
     const presetNozzle = parsed.nozzle ?? DEFAULT_NOZZLE;
     if (!sameNozzle(presetNozzle, selectedParts.nozzle)) return 'mismatch';
@@ -334,7 +379,8 @@ export function presetCompatibility(
   const parent = parents && Object.hasOwn(parents, selectedPrinterName) ? parents[selectedPrinterName] : null;
   const parentName = typeof parent === 'string' && parent && parent !== selectedPrinterName ? parent : null;
   // (1) Imported presets carry the slicer's own compatible_printers list —
-  // authoritative when set.
+  // authoritative when set. Match Bambu clones via canonical name equality
+  // and Snapmaker/other renames via containment.
   const compat = preset.compatible_printers;
   if (compat && compat.length > 0) {
     // Compared with the clone prefix off both sides: a preset cloned from a
@@ -342,7 +388,12 @@ export function presetCompatibility(
     // against a selected "# Bambu Lab …" reads as a mismatch — which now
     // hides the preset rather than merely demoting it.
     const names = [selectedPrinterName, parentName].filter((n): n is string => !!n).map(canonicalPrinterPresetName);
-    return compat.some((name) => names.includes(canonicalPrinterPresetName(name))) ? 'match' : 'mismatch';
+    // Containment covers Snapmaker/Orca " - Copy" clones and renames that
+    // keep the system name (printerNamesMatch).
+    return compat.some((name) => names.includes(canonicalPrinterPresetName(name)))
+      || names.some((n) => compatListIncludes(compat, n))
+      ? 'match'
+      : 'mismatch';
   }
   // (2) BambuStudio's `@BBL <model>` name convention — covers cloud /
   // standard presets that don't carry compatible_printers. A name of the

@@ -329,23 +329,18 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     <ToastContext.Provider value={{ showToast, showPersistentToast, dismissToast, setViewportSuppressed }}>
       {children}
 
-      {/* Toast Container — to the left of the bug-report bubble (bottom-4 right-4 w-12).
-          Position is set via safe-area-aware calc() rather than bottom-4/right-20 so an
-          installed PWA on a notched phone clears the home indicator / landscape notch
-          (#2612): the 5rem right offset keeps clearance for the bug bubble. */}
+      {/* Toast Container — to the left of the bug-report bubble (bottom-4 right-4 w-12) on
+          desktop; full width above the mobile bottom bar on phones. Safe-area insets keep
+          an installed PWA on a notched phone clear of the home indicator (#2612). */}
       <div
         data-testid="toast-viewport"
-        className={`fixed z-[60] flex flex-col items-end gap-2 ${viewportSuppressed ? 'hidden' : ''}`}
-        style={{
-          bottom: 'calc(1rem + env(safe-area-inset-bottom))',
-          right: 'calc(5rem + env(safe-area-inset-right))',
-        }}
+        className={`toast-viewport fixed bottom-[calc(4.5rem+env(safe-area-inset-bottom,0px))] left-4 right-4 sm:left-auto sm:bottom-[calc(1rem+env(safe-area-inset-bottom,0px))] sm:right-[calc(5rem+env(safe-area-inset-right,0px))] z-[60] flex flex-col items-stretch sm:items-end gap-2 ${viewportSuppressed ? 'hidden' : ''}`}
       >
         {toasts.map((toast) => (
           <div
             key={toast.id}
             className={`rounded-lg border shadow-lg backdrop-blur-sm animate-slide-in ${bgColors[toast.type]} ${
-              toast.dispatchData ? 'w-[420px] p-3' : 'flex items-center gap-3 px-4 py-3'
+              toast.dispatchData ? 'w-full sm:w-[420px] p-3' : 'flex items-center gap-3 px-4 py-3'
             }`}
             // Cap width to the viewport so the fixed-width dispatch toast (420px)
             // can't run off the left edge on a phone (#2612). At the cap the toast

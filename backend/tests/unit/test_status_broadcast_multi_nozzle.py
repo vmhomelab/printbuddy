@@ -106,6 +106,9 @@ async def test_nozzle_count_persistence_retries_after_database_failure():
         patch.object(main, "smart_plug_manager") as smart_plug_manager,
         patch.object(main.ws_manager, "send_printer_status", new_callable=AsyncMock) as send_status,
         patch.object(main, "printer_state_to_dict", return_value={"connected": True}),
+        # With a cold settings cache this would read the DB through the same
+        # mocked session and use up db.execute's side effects.
+        patch.object(main, "_get_progress_milestone_mode", new_callable=AsyncMock, return_value="layers"),
     ):
         mqtt_relay.on_printer_status = AsyncMock()
         printer_manager.get_printer.return_value = None

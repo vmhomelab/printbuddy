@@ -93,6 +93,8 @@ from backend.app.api.routes import (
     user_notifications,
     users,
     virtual_printers,
+    vp_device,
+    vp_host,
     webhook,
     websocket,
 )
@@ -154,12 +156,14 @@ from backend.app.services.print_storage import (
     print_file_reachable_over_ftp,
 )
 from backend.app.services.printer_manager import (
+    fire_client_call,
     init_printer_connections,
     parse_plate_id,
     printer_manager,
     printer_state_to_dict,
     reported_nozzle_temperatures,
     resolve_plate_id,
+    run_client_call,
 )
 from backend.app.services.slot_kprofile import find_slot_kprofile_for_extruder
 from backend.app.services.slot_nozzle import (
@@ -3217,7 +3221,9 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
             )
         else:
             try:
-                stopped = printer_manager.stop_print(printer_id)
+                stopped = await run_client_call(
+                    printer_manager.get_client(printer_id), printer_manager.stop_print, printer_id
+                )
                 if stopped:
                     _unauthorized_print_kill_sent.add(printer_id)
                     _kill_switch_stopped.add(printer_id)
@@ -5069,7 +5075,7 @@ async def _dispatch_user_print_email(
     """Send a user-specific print-completion email based on print status.
 
     Maps the normalised print status to the correct event type and delegates
-    to :meth:`NotificationService.send_user_print_email`.  A single helper
+    to `NotificationService.send_user_print_email`.  A single helper
     avoids duplicating the ``if status == "completed" / elif "failed" / elif
     "stopped"`` dispatch block at every call site.
 
@@ -6117,7 +6123,8 @@ async def on_print_start(printer_id: int, data: dict):
                         )
                         pause_client = printer_manager.get_client(printer_id)
                         if pause_client:
-                            pause_client.pause_print()
+                            # HTTP providers block on I/O; keep it off the event loop.
+                            await run_client_call(pause_client, pause_client.pause_print)
                             logger.info("[PLATE CHECK] Print paused for printer %s", printer_id)
 
                         # Snapshot while the light's still on — restoring it first
@@ -9564,7 +9571,7 @@ async def _restore_plate_for_finish_photo(printer_id: int, max_z_height: float, 
         return False
 
     target_z = max_z_height + _PLATE_RESTORE_CLEARANCE_MM
-    if not client.send_gcode(f"G90\nG1 Z{target_z:.2f} F{_PLATE_RESTORE_FEEDRATE}"):
+    if not await run_client_call(client, client.send_gcode, f"G90\nG1 Z{target_z:.2f} F{_PLATE_RESTORE_FEEDRATE}"):
         logger.warning("[PLATE-RESTORE] printer %s: send failed — capturing where it is", printer_id)
         return False
 
@@ -9596,7 +9603,7 @@ def _park_plate_after_finish_photo(printer_id: int, end_z: float, logger) -> Non
     state = getattr(client, "state", None) if client else None
     if client is None or state is None or state.state != "FINISH":
         return
-    client.send_gcode(f"G90\nG1 Z{end_z:.2f} F{_PLATE_RESTORE_FEEDRATE}")
+    fire_client_call(client, client.send_gcode, f"G90\nG1 Z{end_z:.2f} F{_PLATE_RESTORE_FEEDRATE}")
     logger.info("[PLATE-RESTORE] printer %s: plate back to the end G-code's Z%.2f", printer_id, end_z)
 
 
@@ -13760,6 +13767,9 @@ PUBLIC_API_PREFIXES = [
     # /dl/ slicer downloads below). The route grants nothing beyond writing
     # good/reject on the one archive the token was minted for.
     "/api/v1/archives/confirm/",
+    # Moonraker/OctoPrint-compatible virtual printer upload endpoint (#52).
+    # Slicers authenticate with the VP's own API key, checked by the route.
+    "/api/v1/vp-host/",
 ]
 
 # Route patterns that are public (read-only display data)
@@ -14289,6 +14299,8 @@ app.include_router(octoeverywhere.router, prefix=app_settings.api_prefix)
 app.include_router(open_filament_database.router, prefix=app_settings.api_prefix)
 app.include_router(metrics.router, prefix=app_settings.api_prefix)
 app.include_router(virtual_printers.router, prefix=app_settings.api_prefix)
+app.include_router(vp_host.router, prefix=app_settings.api_prefix)
+app.include_router(vp_device.router, prefix=app_settings.api_prefix)
 
 
 # Serve static files (React build)

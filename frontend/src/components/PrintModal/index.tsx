@@ -1,5 +1,5 @@
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
-import { AlertCircle, AlertTriangle, Layers, Loader2, Pencil, Printer, ThumbsUp, X } from 'lucide-react';
+import { AlertCircle, AlertTriangle, Circle, Layers, Loader2, Pencil, Printer, ThumbsUp, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { CostCenterSummary, PrintQueueItemCreate, PrintQueueItemUpdate, SlotMaterial } from '../../api/client';
@@ -22,7 +22,7 @@ import { isGcodeCompatible, isPrinterCurrentlyDispatchable } from '../../utils/p
 import { getCurrencySymbol } from '../../utils/currency';
 import { getBedTypeInfo } from '../../utils/bedType';
 import { toDateTimeLocalValue, parseUTCDate } from '../../utils/date';
-import { isPlaceholderDate, effectivePreferLowest, filamentTypesCompatible } from '../../utils/amsHelpers';
+import { isPlaceholderDate, effectivePreferLowest, filamentTypesCompatible, normalizeColor } from '../../utils/amsHelpers';
 import { getPrinterIdsWithSpoolAssignment } from '../../utils/spoolAssignments';
 import { resolveArchiveSlicerAmsMapping } from './archiveAmsMapping';
 import { FilamentMapping } from './FilamentMapping';
@@ -562,6 +562,21 @@ export function PrintModal({
     () => withFilamentOverrides(effectiveFilamentReqs, filamentOverrides),
     [effectiveFilamentReqs, filamentOverrides],
   );
+
+  // Colors for the job header. Prefer /filament-requirements (used_g > 0), but
+  // fall back to plates[].filaments which already carries correct colors for
+  // split-per-plate library files (slice_info index may be 2/3 while callers
+  // briefly request plate_id=1 before auto-select settles).
+  const scheduleFilamentSwatches = useMemo(() => {
+    const fromReqs = (effectiveFilamentReqs?.filaments ?? []).filter(
+      (f) => (f.used_grams ?? 0) > 0,
+    );
+    if (fromReqs.length > 0) return fromReqs;
+    const plate =
+      platesData?.plates?.find((p) => selectedPlate == null || p.index === selectedPlate)
+      ?? platesData?.plates?.[0];
+    return (plate?.filaments ?? []).filter((f) => (f.used_grams ?? 0) > 0);
+  }, [effectiveFilamentReqs, platesData, selectedPlate]);
 
   // Fetch available filaments for model-based assignment (for filament override UI)
   // Preset id -> name, to store a colour name within its product line (SN-C9)
@@ -1929,11 +1944,46 @@ export function PrintModal({
           </div>
 
           <form onSubmit={handleSubmit} className="p-4 space-y-4">
-            {/* Archive name */}
-            <p className="text-sm text-bambu-gray">
-              <span className="block text-bambu-gray mb-1">Print Job</span>
-              <span className="text-white font-medium truncate block">{archiveName}</span>
-            </p>
+            {/* Job summary: name + filament colors (and library thumb when plate picker is hidden) */}
+            <div className="flex items-start gap-3">
+              {isLibraryFile && libraryFileDetails?.thumbnail_path && !isMultiPlate && (
+                <img
+                  src={api.getLibraryFileThumbnailUrl(libraryFileId!)}
+                  alt=""
+                  className="w-14 h-14 rounded object-cover bg-bambu-dark-tertiary flex-shrink-0"
+                />
+              )}
+              <div className="min-w-0 flex-1">
+                <p className="text-sm text-bambu-gray">
+                  <span className="block text-bambu-gray mb-1">Print Job</span>
+                  <span className="text-white font-medium truncate block">{archiveName}</span>
+                </p>
+                {/* Filament colors — visible before printer selection / AMS mapping
+                    expand. Split-per-plate library files hide PlateSelector, so
+                    this is the only early color signal. */}
+                {scheduleFilamentSwatches.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-1.5 mt-2" aria-label={t('printModal.filamentMapping')}>
+                    {scheduleFilamentSwatches.map((filament) => {
+                      const color = normalizeColor(filament.color);
+                      return (
+                        <span
+                          key={filament.slot_id}
+                          title={`${filament.type || 'Filament'} — ${getColorName(color)} (${filament.used_grams}g)`}
+                          className="inline-flex items-center justify-center"
+                        >
+                          <Circle
+                            className="w-3.5 h-3.5"
+                            fill={color}
+                            stroke={color === '#000000' || color === '#000' ? '#666' : color}
+                            strokeWidth={color === '#000000' || color === '#000' ? 1.5 : 1}
+                          />
+                        </span>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
 
             {/* Build-plate badge for the selected (or sole) plate — surfaced
                 early so the user knows which plate to mount before scheduling

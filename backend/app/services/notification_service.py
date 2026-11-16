@@ -422,6 +422,8 @@ class NotificationService:
             elif provider_type == "gotify":
                 photo_url = await self._get_or_build_photo_url(db, image_data, "test") if attach_photo else None
                 return await self._send_gotify(config, title, message, event_type="test", image_url=photo_url)
+            elif provider_type == "printbuddy_app":
+                return await self._send_printbuddy_app(config, title, message, event_type="test")
             else:
                 return False, f"Unknown provider type: {provider_type}"
         except Exception as e:
@@ -1426,6 +1428,75 @@ class NotificationService:
             photo_cache["url"] = url
         return url
 
+    # Expo's push service relays to APNs/FCM with the app publisher's credentials,
+    # so self-hosted servers never hold Apple/Google push keys.
+    EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send"
+
+    async def _send_printbuddy_app(
+        self,
+        config: dict,
+        title: str,
+        message: str,
+        event_type: str | None = None,
+        printer_id: int | None = None,
+    ) -> tuple[bool, str]:
+        """Send a push notification to the Printbuddy mobile app via Expo's push service."""
+        push_token = str(config.get("push_token", "")).strip()
+        if not push_token:
+            return False, "Push token is required"
+
+        data: dict[str, Any] = {"event_type": event_type or "printbuddy"}
+        if printer_id is not None:
+            data["printer_id"] = printer_id
+        payload = {
+            "to": push_token,
+            "title": title,
+            "body": message,
+            "sound": "default",
+            "priority": "high" if event_type in ("print_failed", "printer_error") else "default",
+            "channelId": "print-events",
+            "data": data,
+        }
+
+        client = await self._get_client()
+        try:
+            response = await client.post(
+                self.EXPO_PUSH_URL,
+                json=payload,
+                headers={"Accept": "application/json", "Content-Type": "application/json"},
+            )
+        except httpx.HTTPError as exc:
+            # Typical for self-hosted servers without internet access or behind a filtering proxy.
+            return False, f"Could not reach Expo's push service (exp.host). Check that this server can reach it: {exc}"
+        if response.status_code >= 400:
+            return False, f"Expo push service HTTP {response.status_code}: {response.text[:200]}"
+        try:
+            body = response.json()
+        except ValueError:
+            return False, "Expo push service returned an invalid response"
+
+        if body.get("errors"):
+            first = body["errors"][0] if isinstance(body["errors"], list) and body["errors"] else body["errors"]
+            return (
+                False,
+                f"Expo push service error: {first.get('message', first) if isinstance(first, dict) else first}",
+            )
+
+        ticket = body.get("data")
+        if isinstance(ticket, list):
+            ticket = ticket[0] if ticket else {}
+        if not isinstance(ticket, dict):
+            return False, "Expo push service returned no ticket"
+        if ticket.get("status") == "ok":
+            return True, "Notification sent to the Printbuddy app"
+        detail = (ticket.get("details") or {}).get("error")
+        if detail == "DeviceNotRegistered":
+            return False, (
+                "This phone no longer accepts notifications (app removed or notifications turned off). "
+                "Remove this provider or turn notifications on again in the app."
+            )
+        return False, f"Expo push service: {ticket.get('message') or detail or 'unknown error'}"
+
     async def _send_to_provider(
         self,
         provider: NotificationProvider,
@@ -1437,6 +1508,7 @@ class NotificationService:
         variables: dict | None = None,
         photo_cache: dict | None = None,
         bypass_quiet_hours: bool = False,
+        printer_id: int | None = None,
     ) -> tuple[bool, str]:
         """Send notification to a specific provider.
 
@@ -1604,6 +1676,10 @@ class NotificationService:
                 return await self._send_gotify(
                     config, title, message, event_type=event_type, url=gotify_url, image_url=photo_url
                 )
+            elif provider.provider_type == "printbuddy_app":
+                return await self._send_printbuddy_app(
+                    config, title, message, event_type=event_type, printer_id=printer_id
+                )
             else:
                 return False, f"Unknown provider type: {provider.provider_type}"
         except Exception as e:
@@ -1731,6 +1807,7 @@ class NotificationService:
                     event_type=event_type,
                     variables=variables,
                     photo_cache=photo_cache,
+                    printer_id=printer_id,
                 )
 
                 # Also queue for digest if enabled (digest is a summary, not a queue)

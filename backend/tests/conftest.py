@@ -163,9 +163,6 @@ if TEST_PG_URL is not None:
 
     asyncio.run(_create_app_schema())
 
-# Use in-memory SQLite for tests
-TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
-
 
 def pytest_collection_modifyitems(config, items):
     """On PostgreSQL, skip the tests of SQLite-specific behaviour."""
@@ -481,9 +478,19 @@ async def _app_engine_released_after_each_test():
 
 
 @pytest.fixture
-async def test_engine():
-    """Create a test database engine."""
-    engine = create_async_engine(TEST_DATABASE_URL, echo=False)
+async def test_engine(tmp_path):
+    """Create a per-test SQLite engine.
+
+    File-backed (not ``:memory:``) so request sessions and background tasks
+    that open a second connection — slice jobs, thumbnail backfill — share
+    the same tables/rows. Plain ``:memory:`` isolates each connection.
+    """
+    db_path = tmp_path / "test.db"
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{db_path}",
+        echo=False,
+        connect_args={"check_same_thread": False},
+    )
 
     # Every model, as the app's schema has them: a hand-kept list here fell
     # behind and left four tables out of the SQLite test database.
@@ -556,7 +563,10 @@ async def async_client(test_engine, db_session) -> AsyncGenerator[AsyncClient, N
     async def mock_init_printer_connections(db):
         pass  # No-op - don't connect to real printers
 
-    # Also patch the module-level async_session used by services, auth, and middleware
+    # Also patch the module-level async_session used by services, auth, and middleware.
+    # Route modules that bind ``async_session`` at import time (e.g. library's
+    # background slice jobs) must be patched at the use site — patching only
+    # ``backend.app.core.database.async_session`` does not update those aliases.
     with (
         patch("backend.app.core.database.async_session", test_async_session),
         patch("backend.app.core.auth.async_session", test_async_session),
@@ -565,6 +575,7 @@ async def async_client(test_engine, db_session) -> AsyncGenerator[AsyncClient, N
         # without this patch they'd read whatever DB the cwd resolves to (#1546).
         patch("backend.app.services.obico_detection.async_session", test_async_session),
         patch("backend.app.services.octoeverywhere_detection.async_session", test_async_session),
+        patch("backend.app.api.routes.library.async_session", test_async_session),
         patch("backend.app.main.init_printer_connections", mock_init_printer_connections),
     ):
         # Seed default groups for tests that need them

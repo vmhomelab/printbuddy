@@ -24,6 +24,7 @@ PRINTER_MODEL_MAP = {
     "Bambu Lab H2C": "H2C",
     "Bambu Lab H2S": "H2S",
     "Bambu Lab X2D": "X2D",
+    "Bambu Lab H3C": "H3C",
     "Snapmaker U1": "Snapmaker U1",
 }
 
@@ -62,6 +63,9 @@ PRINTER_MODEL_ID_MAP = {
     "O1C": "H2C",
     "O1C2": "H2C",
     "O1S": "H2S",
+    # H3 series ("Bambu Lab H3C.json" model_id). One extruder with nine
+    # hotends on a SwapTek rack, so it is not in DUAL_NOZZLE_MODELS.
+    "N10": "H3C",
 }
 
 
@@ -108,6 +112,7 @@ LINEAR_RAIL_MODELS = frozenset(
         "H2DPRO",
         "H2C",
         "H2S",
+        "H3C",
         # Internal codes
         "N1",  # A1 Mini
         "N2S",  # A1
@@ -121,6 +126,7 @@ LINEAR_RAIL_MODELS = frozenset(
         "O1C",  # H2C
         "O1C2",  # H2C (dual nozzle variant)
         "O1S",  # H2S
+        "N10",  # H3C
     ]
 )
 
@@ -427,6 +433,60 @@ def uses_legacy_rfid_refresh(model: str | None) -> bool:
         return False
     short = PRINTER_MODEL_ID_MAP.get(model.strip(), model)
     return short.strip().upper().replace(" ", "") in LEGACY_RFID_REFRESH_MODELS
+
+
+# H3C support (ported from upstream 1.3.1, #3442). Everything that is
+# specific to the H3C and its AMS 3H is gated on these sets, so the other
+# printers keep their code paths unchanged.
+
+# The chamber heater only runs in the airduct's heating mode (in cooling mode
+# the H3C acks M141 and stays off; the H2 series heats in either).
+CHAMBER_HEATER_NEEDS_HEATING_MODE_MODELS = frozenset(["H3C", "N10"])
+
+# `mc_percent` counts the start sequence (an H3C is at ~20% on layer 0), so a
+# stopped print is charged by layers instead (usage_progress).
+PROGRESS_INCLUDES_START_SEQUENCE_MODELS = frozenset(["H3C", "N10"])
+
+# Models that come with an AMS 3H: one nine-slot unit, each slot feeding its
+# own hotend of the rack, plus one external input per hotend.
+AMS3H_MODELS = frozenset(["H3C", "N10"])
+
+
+def _model_key(model: str | None) -> str:
+    return model.strip().upper().replace(" ", "").replace("-", "") if isinstance(model, str) else ""
+
+
+def progress_includes_start_sequence(model: str | None) -> bool:
+    """True when the printer's progress percent counts its start sequence (H3C)."""
+    return _model_key(model) in PROGRESS_INCLUDES_START_SEQUENCE_MODELS
+
+
+def has_ams3h(model: str | None) -> bool:
+    """True for a model that comes with an AMS 3H (H3C)."""
+    return _model_key(model) in AMS3H_MODELS
+
+
+def usage_progress(
+    model: str | None,
+    progress: float | int | None,
+    layer_num: int | None,
+    total_layers: int | None,
+) -> float | int:
+    """How much of a stopped print was printed, in percent, for charging its filament.
+
+    The printer's own progress, except on a model whose progress counts the
+    start sequence: there the share of layers printed (0 before layer 1).
+    """
+    if not progress_includes_start_sequence(model):
+        return progress if progress is not None else 0.0
+    if layer_num and layer_num > 0 and total_layers and total_layers > 0:
+        return min(100.0, 100.0 * layer_num / total_layers)
+    return 0.0
+
+
+def chamber_heater_needs_heating_mode(model: str | None) -> bool:
+    """True when a chamber target only takes effect with the airduct in heating mode (H3C)."""
+    return _model_key(model) in CHAMBER_HEATER_NEEDS_HEATING_MODE_MODELS
 
 
 def get_rod_type(model: str | None) -> str | None:

@@ -27,7 +27,7 @@ from backend.app.schemas.printer import HMSErrorResponse, hms_error_responses
 from backend.app.services.print_confirmation import confirm_outcome_for_new_queue_item
 from backend.app.services.print_control import stop_print_by_user
 from backend.app.services.print_defaults import default_print_options
-from backend.app.services.printer_manager import printer_manager
+from backend.app.services.printer_manager import printer_manager, run_client_call
 from backend.app.services.queue_announcements import announce_queue_jobs_added
 from backend.app.services.queue_position import next_queue_position
 from backend.app.utils.local_time import to_naive_utc
@@ -295,10 +295,10 @@ async def webhook_start_print(
 _STOPPABLE_STATES = ("RUNNING", "PAUSE")
 
 
-def _stop_current_print(printer_id: int) -> None:
+async def _stop_current_print(printer_id: int) -> None:
     """Stop the print on the user's behalf (cancel and stop are the same command)."""
     try:
-        sent = stop_print_by_user(printer_id)
+        sent = await run_client_call(printer_manager.get_client(printer_id), stop_print_by_user, printer_id)
     except Exception as e:
         logger.error("Failed to stop print on printer %s: %s", printer_id, e)
         raise HTTPException(status_code=500, detail=str(e))
@@ -329,7 +329,7 @@ async def webhook_stop_print(
     if status.state not in _STOPPABLE_STATES:
         raise HTTPException(status_code=409, detail="No print in progress")
 
-    _stop_current_print(printer_id)
+    await _stop_current_print(printer_id)
 
     return {"message": "Print stopped"}
 
@@ -355,7 +355,7 @@ async def webhook_cancel_print(
     if status.state not in _STOPPABLE_STATES:
         raise HTTPException(status_code=409, detail="No print to cancel")
 
-    _stop_current_print(printer_id)
+    await _stop_current_print(printer_id)
 
     return {"message": "Print cancelled"}
 

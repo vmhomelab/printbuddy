@@ -988,6 +988,9 @@ export default {
     dropNotSliced: 'Bu dosyada dilimlenmiş G-code yok. Önce dilimleyin, sonra yazdırın.',
     dropToPrint: 'Yazdırmak için bırakın',
     dropToQueue: 'Kuyruğa eklemek için bırakın',
+    ams3h: {
+      dryZone: 'Kurutucu: yuvalar {{slots}}',
+    },
   },
 
   // Archives page
@@ -3263,6 +3266,14 @@ export default {
     slicerSidecarOutdated: "{{slicer}} ile bağlanıldı, ancak sidecar imajı bu Printbuddy'nin beklediği sürüm değil (çalışan {{running}}, beklenen {{expected}}). Güncelleyin: docker compose pull && docker compose up -d.",
     slicerSidecarRevisionOld: 'daha eski bir derleme',
     slicerConnectionError: 'Dilimleyici bağlantısı başarısız.',
+    mobilePairing: {
+      title: 'Mobil uygulamayı eşle',
+      description: 'Bu anahtarla bağlamak için kodu telefonunuzun kamerasıyla veya Printbuddy uygulamasında tarayın.',
+      qrAlt: 'Printbuddy mobil uygulamasını eşlemek için QR kodu',
+      localhostWarning: "Bu adres yalnızca bu bilgisayarda çalışır. Telefonunuzun ulaşabilmesi için Printbuddy'yi ağ adresiyle (örneğin IP'si) açın.",
+    },
+    rememberMeExtended: '30 gün boyunca beni hatırla',
+    rememberMeExtendedDescription: "Kullanıcılar girişte 'Beni hatırla' kutusunu işaretlediğinde 24 saat yerine 30 gün oturumları açık kalır",
   },
 
   // Notifications (for push notifications)
@@ -4980,6 +4991,10 @@ export default {
     },
     queueAfterSlice: 'Ardından baskı kuyruğuna ekle',
     queueAfterSliceTitle: 'Dilimleme bittiğinde dilimlenen dosya için kuyruğa ekleme penceresini açar.',
+    outputModeLabel: 'Çıktı',
+    outputCombined: 'Tek çok plakalı dosya',
+    outputSeparate: 'Her plaka için ayrı dosya',
+    completedToastSplit: '{{name}} dosyasından {{count}} plaka dilimlendi',
   },
 
   // Spoolman
@@ -6391,6 +6406,7 @@ export default {
     targetPrinter: {
       title: 'Hedef Yazıcı',
       placeholder: 'Bir yazıcı seçin...',
+      moonrakerHint: 'Yalnızca Bambu dışı yazıcılar seçilebilir. Baskı kuyruğu modu için gereklidir. Bu yazıcı dilimleyicinin Cihaz sekmesinde de gösterilir.',
     },
     remoteInterface: {
       title: 'Ağ Arayüzü Geçersiz Kılma',
@@ -6433,10 +6449,6 @@ export default {
       description: 'Sanal yazıcı özelliği çalışmadan önce ek sistem yapılandırması gerektirir. Bu, port yönlendirme, güvenlik duvarı kuralları ve platforma özgü ayarları içerir.',
       readGuide: 'Etkinleştirmeden önce kurulum kılavuzunu okuyun',
     },
-    bambuOnly: {
-      badge: 'Yalnızca Bambu Lab',
-      description: 'Sanal yazıcılar, Bambu Studio ve OrcaSlicer için Bambu LAN protokolünü taklit eder. Prusa, Klipper/Moonraker veya Elegoo SDCP yazıcılar için genel bir sanal yazıcı katmanı değildir.',
-    },
     archiveNameSource: {
       title: 'Arşiv ad kaynağı',
       description: 'Dosyalar sanal yazıcı aracılığıyla geldiğinde yeni arşivlerin nasıl adlandırılacağını seçin. "Meta veri" 3MF\'den dilimleyici-gömülü başlığı kullanır (varsayılan). "Dosya adı" Bambu Studio\'nun FTP üzerinden gönderdiği dosya adını kullanır. Not: Bambu Studio, 3MF\'de bir Başlık alanı varsa "yazıcıya gönder" iletişim kutusunda yazdığınız adı bu alanla geçersiz kılar, bu nedenle her iki mod da genellikle aynı dizeyi üretir.',
@@ -6450,6 +6462,7 @@ export default {
       copied: 'Kopyalandı',
       download: 'İndir',
       fingerprint: 'SHA-256',
+      bambuOnlyBadge: 'Yalnızca Bambu uyumlu',
     },
     howItWorks: {
       title: 'Nasıl çalışır',
@@ -6491,10 +6504,50 @@ export default {
       name: 'Ad',
       hint: 'Oluşturduktan sonra erişim kodunu, hedef yazıcıyı ve diğer ayarları yapılandırabilirsiniz.',
       create: 'Oluştur',
+      hintMoonraker: "Oluşturduktan sonra ana bilgisayar URL'sini ve API anahtarını dilimleyicinizin fiziksel yazıcı ayarlarına kopyalayın.",
     },
     deleteConfirm: {
       title: 'Sanal Yazıcıyı Sil',
       message: '"{{name}}" silmek istediğinizden emin misiniz? Bu, bu yazıcı için tüm servisleri durduracak.',
+    },
+    types: {
+      title: 'İki tür sanal yazıcı',
+      newBadge: 'Yeni',
+      intro: "Sanal yazıcı eklerken türü seçin. Dilimleyicinizden gönderilen dosyalar doğrudan yazıcıya gitmek yerine Printbuddy'ye (arşiv, inceleme veya baskı kuyruğu) gelir.",
+      bambu: {
+        tag: 'Bambu Lab yazıcıları',
+        point1: 'Bambu profiliyle Bambu Studio / OrcaSlicer için bir Bambu yazıcısını taklit eder',
+        point2: "LAN'da otomatik bulunur veya IP ve erişim koduyla eklenir",
+        point3: 'Modlar: Arşiv, İnceleme, Kuyruk, Proxy',
+        setupLabel: 'Kurulum gerekli:',
+        setupText: "kendi bind IP'sine, açık portlara ve dilimleyicinizde Printbuddy CA'sına ihtiyaç duyar.",
+        guide: 'Kurulum kılavuzunu okuyun',
+      },
+      moonraker: {
+        tag: 'Klipper, Prusa, OctoPrint ve dahası',
+        point1: 'OrcaSlicer / Snapmaker Orca: ana bilgisayar türü “Octo/Klipper” olan fiziksel bir yazıcı ekleyin. PrusaSlicer: ana bilgisayar türü “OctoPrint” (ikili G-code da çalışır)',
+        point2: "Sanal yazıcı kartındaki ana bilgisayar URL'sini ve API anahtarını yapıştırın",
+        point3: 'Modlar: Arşiv, İnceleme, Kuyruk (hedef yazıcıya gönderir)',
+        noSetupLabel: 'Ek kurulum yok:',
+        noSetupText: 'Printbuddy portunda çalışır. Bind IP, port veya sertifika gerekmez.',
+      },
+    },
+    protocol: {
+      title: 'Yazıcı türü',
+      bambu: 'Bambu uyumlu',
+      bambuDesc: 'Bir Bambu Lab yazıcısını taklit eder (Bambu profilli Bambu Studio / Orca)',
+      moonraker: 'Moonraker/OctoPrint uyumlu',
+      moonrakerDesc: 'Klipper, Prusa, OctoPrint ve diğer Bambu dışı yazıcılar için yükleme uç noktası',
+    },
+    slicerConnection: {
+      title: 'Dilimleyici bağlantısı',
+      hostUrl: "Ana bilgisayar URL'si",
+      apiKey: 'API anahtarı',
+      regenerate: 'API anahtarını yeniden oluştur',
+      regenerateConfirmTitle: 'API anahtarını yeniden oluştur',
+      regenerateConfirmMessage: 'Mevcut anahtar hemen çalışmayı bırakır. Yeni anahtarı dilimleyicinizin fiziksel yazıcı ayarlarına girmeniz gerekir.',
+      keyRegenerated: 'Yeni API anahtarı oluşturuldu',
+      hint: "Dilimleyicinizde ana bilgisayar türü “Octo/Klipper” (OrcaSlicer / Snapmaker Orca) veya “OctoPrint” (PrusaSlicer, ikili G-code da çalışır) olan fiziksel bir yazıcı ekleyin ve ana bilgisayar URL'sini ve API anahtarını girin. Buraya gönderilen işler doğrudan yazıcıya değil Printbuddy'ye gider.",
     },
   },
 
@@ -6866,6 +6919,7 @@ export default {
       homeassistant: 'Home Assistant',
       bark: 'Bark',
       gotify: 'Gotify',
+      printbuddy_app: 'Printbuddy uygulaması',
     },
     // Provider descriptions
     providerDescriptions: {
@@ -6880,6 +6934,7 @@ export default {
       homeassistant: 'Home Assistant gösterge panelinde kalıcı bildirimler',
       bark: 'Bark ile iOS anlık bildirimleri (kendi sunucunuzda barındırılabilir)',
       gotify: 'Kendi Gotify sunucunuz üzerinden anlık bildirimler',
+      printbuddy_app: 'Telefonunuzdaki Printbuddy uygulamasına anlık bildirimler. Bir cihaz eklemek için uygulamada açın.',
     },
     // NotificationProviderCard
     lastSuccess: 'Son: {{date}}',
@@ -7738,6 +7793,30 @@ export default {
         title: 'TLS sertifikası',
         pass: 'Sertifika hazır. Printbuddy CA sertifikasının (yukarıda) dilimleyicinizin güven deposuna içe aktarıldığından emin olun.',
         fail: 'Bu sanal yazıcı için TLS sertifikası eksik. Printbuddy veri dizininin yazılabilir olduğunu kontrol edin.',
+      },
+      mr_enabled: {
+        title: 'Sanal yazıcı etkin',
+        fail: 'Bu sanal yazıcı kapalı. Siz açana kadar dilimleyicinin bağlantı testi ve yüklemeler reddedilir.',
+      },
+      mr_endpoint: {
+        title: 'Yükleme uç noktası hazır',
+        pass: 'Dilimleyiciler Printbuddy portunda {{path}} adresine yükleyebilir.',
+        fail: 'Sanal yazıcı etkin, ancak yükleme uç noktası kayıtlı değil. Kapatıp yeniden açın; işe yaramazsa Printbuddy günlüğünü kontrol edin.',
+      },
+      mr_api_key: {
+        title: 'API anahtarı ayarlı',
+        fail: 'API anahtarı ayarlanmamış. API anahtarının yanındaki yenile düğmesiyle bir tane oluşturun.',
+      },
+      mr_target_printer: {
+        title: 'Hedef yazıcı',
+        pass: 'İşler bağlı olan {{name}} yazıcısına gider.',
+        warn: '{{name}} şu anda çevrimdışı. Kuyruktaki işler yeniden bağlandığında gönderilir.',
+        fail: 'Baskı kuyruğu modu, Bambu yazıcısı olmayan bir hedef yazıcı gerektirir (Klipper, Prusa, OctoPrint, …). Hedef Yazıcı altında birini seçin.',
+        skip: 'Arşiv ve İnceleme modunda gerekmez.',
+      },
+      mr_upload_dir: {
+        title: 'Yükleme klasörü yazılabilir',
+        fail: 'Printbuddy bu sanal yazıcının yükleme klasörüne yazamıyor. Printbuddy veri dizininin yazılabilir olduğunu kontrol edin.',
       },
     },
   },

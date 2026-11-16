@@ -3074,7 +3074,11 @@ async def stop_queue_item(
     try:
         # A printing job always has a printer; without one there is nothing to stop.
         if printer_id is not None:
-            stop_sent = stop_print_by_user(printer_id, mark_when_unsent=True)
+            from backend.app.services.printer_manager import printer_manager, run_client_call
+
+            stop_sent = await run_client_call(
+                printer_manager.get_client(printer_id), stop_print_by_user, printer_id, mark_when_unsent=True
+            )
         if not stop_sent:
             logger.warning("stop_print returned False for printer %s - printer may not be connected", printer_id)
     except Exception as e:

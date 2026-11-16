@@ -14,6 +14,7 @@ import {
   compareSortKeys,
 } from '../utils/amsHelpers';
 import type { PrinterStatus, SlotSpoolIdentity, SpoolAssignment } from '../api/client';
+import { RACK_EXTERNAL_MIN, externalSlotIndex, externalTrayId, isAms3hUnit, rackExternalLabel } from '../utils/trayIds';
 
 /** Global-tray-id → the identity of the spool Printbuddy has bound to that slot. */
 export type SlotSpoolIdentities = Map<number, SlotSpoolIdentity>;
@@ -62,10 +63,15 @@ export function buildLoadedFilaments(
   // dual-nozzle hardware exposes multiple external feeds) each independently
   // imply dual-nozzle — keep them as fallbacks for any firmware rev that
   // surfaces one signal but not the other. (#1257)
+  // An H3C lists one external input per hotend (247-255) on its one extruder:
+  // several vt_trays there do not mean two nozzles.
+  const isRackPrinter =
+    (printerStatus?.ams ?? []).some((unit) => isAms3hUnit(unit))
+    || (printerStatus?.vt_tray ?? []).some((vt) => (vt.id ?? 254) >= RACK_EXTERNAL_MIN && (vt.id ?? 254) < 254);
   const hasDualNozzle =
     Boolean(printerStatus?.nozzles?.[1]?.nozzle_diameter)
     || (amsExtruderMap && Object.keys(amsExtruderMap).length > 0)
-    || (printerStatus?.vt_tray?.length ?? 0) > 1;
+    || (!isRackPrinter && (printerStatus?.vt_tray?.length ?? 0) > 1);
 
   // Add filaments from all AMS units (regular and HT)
   printerStatus?.ams?.forEach((amsUnit) => {
@@ -112,10 +118,12 @@ export function buildLoadedFilaments(
         color,
         colorName: identity?.color_name?.trim() || getColorName(color, extTray.tray_sub_brands, extTray.tray_info_idx),
         amsId: -1,
-        trayId: trayId - 254,
+        trayId: externalSlotIndex(trayId),
         isHt: false,
         isExternal: true,
-        label: hasDualExternal ? (trayId === 254 ? 'Ext-L' : 'Ext-R') : 'External',
+        label: isRackPrinter
+          ? rackExternalLabel(trayId)
+          : hasDualExternal ? (trayId === 254 ? 'Ext-L' : 'Ext-R') : 'External',
         globalTrayId: trayId,
         trayInfoIdx: extTray.tray_info_idx || '',
         traySubBrands: extTray.tray_sub_brands || '',
@@ -152,7 +160,9 @@ export function buildLoadedFilaments(
       ? Math.max(0, Math.round(((spool.label_weight - spool.weight_used) / spool.label_weight) * 100))
       : -1;
     const trayLabel = isExternal
-      ? (assignment.tray_id === 1 ? 'Ext-R' : 'External')
+      ? (assignment.tray_id >= 2 || isRackPrinter
+        ? rackExternalLabel(externalTrayId(assignment.tray_id))
+        : assignment.tray_id === 1 ? 'Ext-R' : 'External')
       : formatSlotLabel(assignment.ams_id, assignment.tray_id, false, false);
 
     filaments.push({

@@ -526,6 +526,13 @@ export interface AMSTray {
   channel_action_state?: string | null;
   channel_error?: string | null;
   filament_source?: string | null;
+  /** Snapmaker U1 SpoolLink / Moonraker Spoolman spool id when the slot is bound. */
+  filament_spool_id?: number | null;
+  remaining_weight?: number | null;
+  /** Identity fields from Moonraker Spoolman proxy (independent of Printbuddy Spoolman sync). */
+  filament_spool_brand?: string | null;
+  filament_spool_material?: string | null;
+  filament_spool_color_name?: string | null;
 }
 
 export interface AMSUnit {
@@ -544,7 +551,9 @@ export interface AMSUnit {
   dry_sf_reason: number[]; // Cannot-dry reasons (1=InsufficientPower, 8=NeedPluginPower)
   dry_target_temp: number | null; // Active-cycle target °C (Bambu does not echo)
   dry_filament: string | null;    // Active-cycle filament name we sent
-  module_type: string;    // "ams", "ams_f1", "n3f", "n3s"
+  module_type: string;    // "ams", "ams_f1", "n3f", "n3s", "n10a" (the H3C's AMS 3H)
+  ams_type?: number | null;  // Bambu Studio's AMS type; 6 = AMS 3H (H3C, nine slots)
+  dry_zone_slots?: number[]; // AMS 3H: the slots (0-8) of the zone that can dry
 }
 
 export interface ScheduledDrying {
@@ -1819,6 +1828,8 @@ export interface AppSettings {
   ldap_group_mapping: string;
   ldap_auto_provision: boolean;
   ldap_default_group: string;
+  // Remember Me keeps users signed in for 30 days instead of 24 h
+  remember_me_extended_session?: boolean;
   obico_enabled: boolean;
   obico_ml_url: string;
   printbuddy_internal_url: string;
@@ -2317,6 +2328,8 @@ export interface SliceRequest {
   // preset's own default_filament_colour, then the source plate's colour).
   filament_colours?: string[];
   plate?: number;
+  /** When plate=0, write one library/archive file per plate instead of one multi-plate 3MF. */
+  split_plates?: boolean;
   export_3mf?: boolean;
   // Build-plate override (#1337). When omitted, the slicer uses the process
   // preset's curr_bed_type as-is. A name from BambuStudio / OrcaSlicer's
@@ -2606,6 +2619,9 @@ export interface SliceResponse {
    * slice. Surfaced to the user — a file filed somewhere they aren't looking
    * with no signal is what made #2810 invisible from the UI. */
   external_write_fallback?: string | null;
+  /** Present when split_plates wrote one file per plate. */
+  library_file_ids?: number[] | null;
+  names?: string[] | null;
 }
 
 export interface SliceArchiveResponse {
@@ -2615,6 +2631,8 @@ export interface SliceArchiveResponse {
   filament_used_g: number;
   filament_used_mm: number;
   used_embedded_settings: boolean;
+  archive_ids?: number[] | null;
+  names?: string[] | null;
 }
 
 // Background slice-job lifecycle. POST /slice returns 202 + this shape;
@@ -3579,7 +3597,7 @@ export interface Filament {
 }
 
 // Notification Provider types
-export type ProviderType = 'callmebot' | 'ntfy' | 'pushover' | 'telegram' | 'email' | 'discord' | 'webhook' | 'homeassistant' | 'bark' | 'gotify' | 'notify';
+export type ProviderType = 'callmebot' | 'ntfy' | 'pushover' | 'telegram' | 'email' | 'discord' | 'webhook' | 'homeassistant' | 'bark' | 'gotify' | 'notify' | 'printbuddy_app';
 // How a Telegram provider collects the outcome verdict (#3046)
 export type TelegramVerdictMode = 'buttons' | 'reactions' | 'both';
 
@@ -5202,6 +5220,9 @@ export interface UserEmailPreferences {
 export interface LoginRequest {
   username: string;
   password: string;
+  // Requests a 30-day token; the backend only honours it when the admin
+  // enabled remember_me_extended_session.
+  remember_me?: boolean;
 }
 
 export interface LoginResponse {
@@ -5315,6 +5336,7 @@ export interface TwoFAVerifyRequest {
   pre_auth_token: string;
   code: string;
   method: 'totp' | 'email' | 'backup';
+  remember_me?: boolean;
 }
 
 /**
@@ -5781,10 +5803,10 @@ export const api = {
     request<{ auth_url: string }>(`/auth/oidc/authorize/${providerId}`),
 
   // OIDC exchange token for JWT
-  exchangeOIDCToken: (oidcToken: string) =>
+  exchangeOIDCToken: (oidcToken: string, rememberMe = false) =>
     request<LoginResponse>('/auth/oidc/exchange', {
       method: 'POST',
-      body: JSON.stringify({ oidc_token: oidcToken }),
+      body: JSON.stringify({ oidc_token: oidcToken, remember_me: rememberMe }),
     }),
 
   // OIDC links for current user
@@ -10045,10 +10067,14 @@ export const virtualPrinterApi = {
 };
 
 // Multi Virtual Printer API
+export type VirtualPrinterProtocol = 'bambu' | 'moonraker';
+
 export interface VirtualPrinterConfig {
   id: number;
   name: string;
   enabled: boolean;
+  /** 'bambu' emulates a Bambu printer; 'moonraker' is an OctoPrint/Moonraker-compatible upload endpoint (#52). */
+  protocol: VirtualPrinterProtocol;
   mode: VirtualPrinterMode;
   model: string | null;
   model_name: string | null;
@@ -10064,6 +10090,10 @@ export interface VirtualPrinterConfig {
   remote_interface_ip: string | null;
   position: number;
   status: { running: boolean; pending_files: number; proxy?: VirtualPrinterProxyStatus };
+  /** Moonraker-compatible VPs only: key the slicer sends as X-Api-Key. */
+  api_key: string | null;
+  /** Moonraker-compatible VPs only: path to append to the Printbuddy origin for the slicer host URL. */
+  host_path: string | null;
 }
 
 export interface VirtualPrinterListResponse {
@@ -10079,6 +10109,7 @@ export const multiVirtualPrinterApi = {
   create: (data: {
     name?: string;
     enabled?: boolean;
+    protocol?: VirtualPrinterProtocol;
     mode?: string;
     model?: string;
     access_code?: string;
@@ -10128,6 +10159,11 @@ export const multiVirtualPrinterApi = {
 
   diagnose: (id: number) =>
     request<VPDiagnosticResult>(`/virtual-printers/${id}/diagnostic`),
+
+  regenerateApiKey: (id: number) =>
+    request<VirtualPrinterConfig>(`/virtual-printers/${id}/api-key`, {
+      method: 'POST',
+    }),
 };
 
 /** The shared CA certificate every virtual printer presents — imported once
@@ -10150,7 +10186,13 @@ export interface VPDiagnosticCheck {
     | 'port_ftps'
     | 'port_mqtt'
     | 'port_bind'
-    | 'certificate';
+    | 'certificate'
+    // Moonraker/OctoPrint-compatible VPs (#52)
+    | 'mr_enabled'
+    | 'mr_endpoint'
+    | 'mr_api_key'
+    | 'mr_target_printer'
+    | 'mr_upload_dir';
   status: VPDiagnosticStatus;
   params: Record<string, string | number>;
 }

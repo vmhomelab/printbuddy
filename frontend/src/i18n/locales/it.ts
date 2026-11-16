@@ -749,6 +749,10 @@ export default {
       customSubnetLabel: 'Sottorete personalizzata (CIDR)',
       customSubnetNote: 'Usa una sottorete personalizzata se la tua stampante è su una rete diversa da questo server. Le porte FTP (990) e MQTT (8883) devono essere raggiungibili attraverso il confine di routing.',
     },
+    // H3C AMS 3H
+    ams3h: {
+      dryZone: 'Essiccatore: slot {{slots}}',
+    },
     // AMS Drying
     drying: {
       start: 'Avvia essiccazione',
@@ -2390,6 +2394,12 @@ export default {
     apiKeyQrTitle: 'Scansiona per configurare',
     apiKeyQrCaption: 'Scansiona con la tua app mobile per aggiungere questo server e la chiave API.',
     apiKeyQrWarning: 'Contiene la tua chiave API segreta: non condividerla né farne screenshot dove altri possono vederla.',
+    mobilePairing: {
+      title: 'Associa l\'app mobile',
+      description: 'Scansiona questo codice con la fotocamera del telefono o nell\'app Printbuddy per collegarla con questa chiave.',
+      qrAlt: 'Codice QR per associare l\'app mobile Printbuddy',
+      localhostWarning: 'Questo indirizzo funziona solo su questo computer. Apri Printbuddy tramite il suo indirizzo di rete (ad esempio l\'IP) affinché il telefono possa raggiungerlo.',
+    },
     createNewApiKey: 'Crea nuova chiave API',
     keyName: 'Nome chiave',
     keyNamePlaceholder: 'es., Home Assistant, OctoPrint',
@@ -2570,6 +2580,8 @@ export default {
     authentication: 'Autenticazione',
     authEnabledDescription: 'La tua istanza è protetta con autenticazione',
     authDisabledDescription: 'Abilita per richiedere accesso e gestire utenti',
+    rememberMeExtended: 'Ricordami per 30 giorni',
+    rememberMeExtendedDescription: 'Se gli utenti selezionano \'Ricordami\' all\'accesso, restano connessi per 30 giorni invece di 24 ore',
     authDisabledMessage: 'Abilita autenticazione per creare account, gestire permessi e proteggere la tua istanza Printbuddy.',
     enableAuthentication: 'Abilita autenticazione',
     currentUser: 'Utente corrente',
@@ -4850,6 +4862,10 @@ export default {
     allPlatesToggle: 'Slicia tutti i {{count}} piatti',
     queueAfterSlice: 'Aggiungi poi alla coda di stampa',
     queueAfterSliceTitle: 'Al termine dello slicing apre la finestra per aggiungere il file alla coda di stampa.',
+    outputModeLabel: 'Uscita',
+    outputCombined: 'Un file multi-piatto',
+    outputSeparate: 'File separato per piatto',
+    completedToastSplit: 'Sliciati {{count}} piatti da {{name}}',
     slicing: 'Slicing…',
     printer: 'Profilo stampante',
     process: 'Profilo processo',
@@ -6333,6 +6349,45 @@ export default {
 
   // Virtual Printer
   virtualPrinter: {
+    types: {
+      title: "Due tipi di stampanti virtuali",
+      newBadge: "Nuovo",
+      intro: "Scegli il tipo quando aggiungi una stampante virtuale. I file inviati dallo slicer arrivano in Printbuddy (archivio, revisione o coda di stampa) invece che direttamente alla stampante.",
+      bambu: {
+        tag: "Stampanti Bambu Lab",
+        point1: "Emula una stampante Bambu per Bambu Studio / OrcaSlicer con profilo Bambu",
+        point2: "Rilevata automaticamente nella LAN o aggiunta tramite IP e codice di accesso",
+        point3: "Modalità: Archivio, Revisione, Coda, Proxy",
+        setupLabel: "Configurazione richiesta:",
+        setupText: "richiede un IP di binding dedicato, porte aperte e la CA di Printbuddy nello slicer.",
+        guide: "Leggi la guida di configurazione",
+      },
+      moonraker: {
+        tag: "Klipper, Prusa, OctoPrint e altro",
+        point1: "OrcaSlicer / Snapmaker Orca: aggiungi una stampante fisica con tipo host “Octo/Klipper”. PrusaSlicer: tipo host “OctoPrint” (anche G-code binario)",
+        point2: "Incolla URL host e chiave API dalla scheda della stampante virtuale",
+        point3: "Modalità: Archivio, Revisione, Coda (invia alla stampante di destinazione)",
+        noSetupLabel: "Nessuna configurazione aggiuntiva:",
+        noSetupText: "funziona sulla porta di Printbuddy. Nessun IP di binding, porte o certificato necessari.",
+      },
+    },
+    protocol: {
+      title: "Tipo di stampante",
+      bambu: "Compatibile Bambu",
+      bambuDesc: "Emula una stampante Bambu Lab (Bambu Studio / Orca con profilo Bambu)",
+      moonraker: "Compatibile Moonraker/OctoPrint",
+      moonrakerDesc: "Endpoint di caricamento per Klipper, Prusa, OctoPrint e altre stampanti non Bambu",
+    },
+    slicerConnection: {
+      title: "Connessione slicer",
+      hostUrl: "URL host",
+      apiKey: "Chiave API",
+      regenerate: "Rigenera chiave API",
+      regenerateConfirmTitle: "Rigenera chiave API",
+      regenerateConfirmMessage: "La chiave attuale smetterà subito di funzionare. Dovrai inserire la nuova chiave nelle impostazioni della stampante fisica del tuo slicer.",
+      keyRegenerated: "Nuova chiave API generata",
+      hint: "Nello slicer aggiungi una stampante fisica con tipo host “Octo/Klipper” (OrcaSlicer / Snapmaker Orca) o “OctoPrint” (PrusaSlicer, anche G-code binario) e inserisci URL host e chiave API. I lavori inviati arrivano a Printbuddy invece che direttamente alla stampante.",
+    },
     model: {
       title: 'Modello stampante',
       description: 'Seleziona il modello stampante da emulare.',
@@ -6351,6 +6406,7 @@ export default {
     },
     targetPrinter: {
       title: 'Stampante target',
+      moonrakerHint: "Sono selezionabili solo stampanti non Bambu. Obbligatorio per la modalità coda di stampa.",
       placeholder: 'Seleziona una stampante...',
     },
     remoteInterface: {
@@ -6394,10 +6450,6 @@ export default {
       description: 'La stampante virtuale richiede configurazioni di sistema aggiuntive prima di funzionare. Include port forwarding, regole firewall e impostazioni specifiche della piattaforma.',
       readGuide: 'Leggi la guida prima di abilitare',
     },
-    bambuOnly: {
-      badge: 'Solo Bambu Lab',
-      description: 'Le stampanti virtuali emulano il protocollo LAN Bambu per Bambu Studio e OrcaSlicer. Non sono un livello di stampante virtuale generico per Prusa, Klipper/Moonraker o Elegoo SDCP.',
-    },
     howItWorks: {
       title: 'Come funziona',
       step1: 'Sulla stessa LAN, le stampanti virtuali appaiono automaticamente nel tuo slicer (Bambu Studio / OrcaSlicer). Da altre reti, aggiungile manualmente tramite indirizzo IP e codice di accesso.',
@@ -6437,6 +6489,7 @@ export default {
       title: 'Aggiungi stampante virtuale',
       name: 'Nome',
       hint: 'Potrai configurare il codice di accesso, la stampante di destinazione e altre impostazioni dopo la creazione.',
+      hintMoonraker: "Dopo la creazione, copia URL host e chiave API nelle impostazioni della stampante fisica del tuo slicer.",
       create: 'Crea',
     },
     deleteConfirm: {
@@ -6451,6 +6504,7 @@ export default {
     },
     caCert: {
       title: 'Certificato dello slicer',
+      bambuOnlyBadge: "Solo compatibile Bambu",
       description: 'Le stampanti virtuali usano un certificato TLS firmato dalla CA di Printbuddy. Importa questo certificato CA nell\'archivio attendibile del tuo slicer una sola volta affinché accetti la connessione — senza doverlo copiare dalla riga di comando.',
       copy: 'Copia',
       copied: 'Copiato',
@@ -6827,6 +6881,7 @@ export default {
       homeassistant: 'Home Assistant',
       bark: 'Bark',
       gotify: 'Gotify',
+      printbuddy_app: 'App Printbuddy',
     },
     // Provider descriptions
     providerDescriptions: {
@@ -6841,6 +6896,7 @@ export default {
       homeassistant: 'Notifiche persistenti nella dashboard di Home Assistant',
       bark: 'Notifiche push iOS tramite Bark (auto-ospitabile)',
       gotify: 'Notifiche push tramite il tuo server Gotify',
+      printbuddy_app: 'Notifiche push all’app Printbuddy sul telefono. Attivale nell’app per aggiungere un dispositivo.',
     },
     // NotificationProviderCard
     lastSuccess: 'Ultimo: {{date}}',
@@ -7658,6 +7714,30 @@ export default {
       problems: 'Sono stati trovati problemi che spiegano perché lo slicer non riesce a vedere o usare questa stampante virtuale.',
     },
     check: {
+      mr_enabled: {
+        title: "Stampante virtuale attivata",
+        fail: "Questa stampante virtuale è spenta. Il test di connessione e i caricamenti dallo slicer vengono rifiutati finché non la attivi.",
+      },
+      mr_endpoint: {
+        title: "Endpoint di caricamento pronto",
+        pass: "Gli slicer possono caricare su {{path}} tramite la porta di Printbuddy.",
+        fail: "La stampante virtuale è attiva, ma il suo endpoint di caricamento non è registrato. Spegnila e riaccendila; se non basta, controlla il log di Printbuddy.",
+      },
+      mr_api_key: {
+        title: "Chiave API impostata",
+        fail: "Nessuna chiave API impostata. Generane una con il pulsante di aggiornamento accanto alla chiave API.",
+      },
+      mr_target_printer: {
+        title: "Stampante target",
+        pass: "I lavori vanno a {{name}}, che è connessa.",
+        warn: "{{name}} è offline in questo momento. I lavori in coda verranno inviati appena si riconnette.",
+        fail: "La modalità coda di stampa richiede una stampante target non Bambu (Klipper, Prusa, OctoPrint, …). Selezionane una in Stampante target.",
+        skip: "Non necessaria in modalità Archivio e Revisione.",
+      },
+      mr_upload_dir: {
+        title: "Cartella di caricamento scrivibile",
+        fail: "Printbuddy non riesce a scrivere nella cartella di caricamento di questa stampante virtuale. Verifica che la directory dei dati di Printbuddy sia scrivibile.",
+      },
       enabled: {
         title: 'Stampante virtuale abilitata',
         fail: 'Questa stampante virtuale è spenta. Attivala per renderla rilevabile.',

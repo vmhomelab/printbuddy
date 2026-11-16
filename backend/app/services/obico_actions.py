@@ -35,7 +35,7 @@ async def execute_action(
         printer_name = await _get_printer_name(printer_id)
 
     if action in ("pause", "pause_and_off"):
-        _pause_print(printer_id)
+        await _pause_print(printer_id)
 
     if action == "pause_and_off":
         await _turn_off_linked_plugs(printer_id)
@@ -50,14 +50,14 @@ async def _get_printer_name(printer_id: int) -> str:
     return printer.name if printer else f"Printer {printer_id}"
 
 
-def _pause_print(printer_id: int) -> None:
-    from backend.app.services.printer_manager import printer_manager
+async def _pause_print(printer_id: int) -> None:
+    from backend.app.services.printer_manager import printer_manager, run_client_call
 
     client = printer_manager.get_client(printer_id)
     if not client:
         logger.warning("AI failure detection: no MQTT client for printer %s", printer_id)
         return
-    if not client.pause_print():
+    if not await run_client_call(client, client.pause_print):
         logger.warning("AI failure detection: pause_print() returned False for printer %s", printer_id)
 
 

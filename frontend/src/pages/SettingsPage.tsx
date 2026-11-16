@@ -21,6 +21,7 @@ import { PreheatFilamentTargetsEditor } from '../components/PreheatFilamentTarge
 import type { Printer as PrinterInfo, APIKey, AppSettings, AppSettingsUpdate, PrinterHASensor, LocationHASensor, LocationHASensorReading, SmartPlug, SmartPlugStatus, NotificationProvider, NotificationTemplate, UpdateStatus, SelfUpdateJob, GitHubBackupStatus, CloudAuthStatus, UserCreate, UserUpdate, UserResponse, StorageUsageResponse, CalibrationMode } from '../api/client';
 import { Card, CardContent, CardDensityProvider, CardHeader } from '../components/Card';
 import { SlicerPipelinesPanel } from '../components/SlicerPipelinesPanel';
+import { MobilePairingQR } from '../components/MobilePairingQR';
 import { CameraTokensSection } from './CameraTokensPage';
 import { ConnectedAppsSection } from '../components/ConnectedAppsSection';
 import { StreamOverlayBuilder } from '../components/StreamOverlayBuilder';
@@ -146,6 +147,7 @@ registerSettingsSearch({ labelKey: 'settings.groups', tab: 'users', subTab: 'use
 registerSettingsSearch({ labelKey: 'printerAccess.tab', tab: 'users', subTab: 'printer-access', keywords: 'printer access groups teams locations limit restrict scope who can see', anchor: 'card-printer-access' });
 registerSettingsSearch({ labelKey: 'settings.sessionPolicy.title', labelFallback: 'Session Policy', tab: 'users', subTab: 'users', keywords: 'session timeout expiry logout remember me jwt token lifetime', anchor: 'card-session-policy' });
 registerSettingsSearch({ labelKey: 'settings.email.smtpSettings', labelFallback: 'SMTP Configuration', tab: 'users', subTab: 'email', keywords: 'smtp email send server port password auth starttls ssl', anchor: 'card-smtp' });
+registerSettingsSearch({ labelKey: 'settings.rememberMeExtended', labelFallback: 'Remember me for 30 days', tab: 'users', subTab: 'users', keywords: 'remember me session token lifetime 30 days stay signed in login', anchor: 'card-remember-me' });
 registerSettingsSearch({ labelKey: 'settings.ldap.title', labelFallback: 'LDAP Authentication', tab: 'users', subTab: 'ldap', keywords: 'ldap active directory ad authentication bind dn search base group mapping', anchor: 'card-ldap' });
 registerSettingsSearch({ labelKey: 'settings.tabs.backup', tab: 'backup', keywords: 'backup github restore download cloud sync profiles archives', anchor: 'card-backup' });
 // Sidebar (system pages and external links settings is rendered in the General tab)
@@ -1475,6 +1477,7 @@ export function SettingsPage() {
       (baseline.chamber_temp_presets ?? '') !== (localSettings.chamber_temp_presets ?? '') ||
       (baseline.fan_speed_presets ?? '') !== (localSettings.fan_speed_presets ?? '') ||
       (baseline.session_max_hours ?? 24) !== (localSettings.session_max_hours ?? 24) ||
+      (baseline.remember_me_extended_session ?? false) !== (localSettings.remember_me_extended_session ?? false) ||
       (baseline.billing_enabled ?? false) !== (localSettings.billing_enabled ?? false) ||
       (baseline.printer_kill_switch_enabled ?? false) !== (localSettings.printer_kill_switch_enabled ?? false) ||
       (baseline.finance_budget_reset_day ?? 1) !== (localSettings.finance_budget_reset_day ?? 1) ||
@@ -1523,6 +1526,7 @@ export function SettingsPage() {
         energy_price_ha_entity: localSettings.energy_price_ha_entity ?? '',
         check_updates: localSettings.check_updates,
         check_printer_firmware: localSettings.check_printer_firmware,
+        remember_me_extended_session: localSettings.remember_me_extended_session ?? false,
         include_beta_updates: localSettings.include_beta_updates,
         local_login_enabled: localSettings.local_login_enabled,
         bed_cooled_threshold: localSettings.bed_cooled_threshold,
@@ -5106,6 +5110,7 @@ export function SettingsPage() {
                           <Copy className="w-4 h-4" />
                         </Button>
                       </div>
+                      <MobilePairingQR apiKey={createdAPIKey} />
                       <div className="flex gap-2 mt-3">
                         <Button
                           variant="secondary"
@@ -7388,6 +7393,24 @@ export function SettingsPage() {
                   </Button>
                 )}
               </div>
+              {authEnabled && localSettings && (
+                <div className="flex items-center justify-between gap-4 mt-4 pt-4 border-t border-bambu-dark-tertiary" id="card-remember-me">
+                  <div>
+                    <p className="text-white">{t('settings.rememberMeExtended')}</p>
+                    <p className="text-sm text-bambu-gray">{t('settings.rememberMeExtendedDescription')}</p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer flex-shrink-0">
+                    <input
+                      type="checkbox"
+                      checked={localSettings.remember_me_extended_session ?? false}
+                      onChange={(e) => updateSetting('remember_me_extended_session', e.target.checked)}
+                      className="sr-only peer"
+                      aria-label={t('settings.rememberMeExtended')}
+                    />
+                    <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                  </label>
+                </div>
+              )}
             </CardContent>
           </Card>
 

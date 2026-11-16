@@ -749,6 +749,10 @@ export default {
       customSubnetLabel: '自定义子网 (CIDR)',
       customSubnetNote: '如果您的打印机与此服务器位于不同的网络中，请使用自定义子网。FTP (990) 和 MQTT (8883) 端口必须能够跨路由边界访问。',
     },
+    // H3C AMS 3H
+    ams3h: {
+      dryZone: '烘干: 槽位 {{slots}}',
+    },
     // AMS Drying
     drying: {
       start: '开始干燥',
@@ -2390,6 +2394,12 @@ export default {
     apiKeyQrTitle: '扫码配置',
     apiKeyQrCaption: '使用手机应用扫描以添加此服务器和 API 密钥。',
     apiKeyQrWarning: '包含您的机密 API 密钥——请勿在他人可见的地方分享或截图。',
+    mobilePairing: {
+      title: '配对移动应用',
+      description: '使用手机相机或在 Printbuddy 应用中扫描此二维码，即可用此密钥连接。',
+      qrAlt: '用于配对 Printbuddy 移动应用的二维码',
+      localhostWarning: '此地址仅在本机有效。请通过网络地址（例如 IP）打开 Printbuddy，以便手机可以访问。',
+    },
     createNewApiKey: '创建新 API 密钥',
     keyName: '密钥名称',
     keyNamePlaceholder: '例如：Home Assistant、OctoPrint',
@@ -2570,6 +2580,8 @@ export default {
     authentication: '身份验证',
     authEnabledDescription: '您的实例已通过用户身份验证保护',
     authDisabledDescription: '启用以要求登录并管理用户访问',
+    rememberMeExtended: '记住我 30 天',
+    rememberMeExtendedDescription: '用户登录时勾选“记住我”后，将保持登录 30 天，而不是 24 小时',
     authDisabledMessage: '启用身份验证以创建用户账户、管理权限并保护您的 Printbuddy 实例。',
     enableAuthentication: '启用身份验证',
     currentUser: '当前用户',
@@ -4850,6 +4862,10 @@ export default {
     allPlatesToggle: '切片全部 {{count}} 个盘面',
     queueAfterSlice: '切片后加入打印队列',
     queueAfterSliceTitle: '切片完成后，打开将切片文件加入打印队列的对话框。',
+    outputModeLabel: '输出',
+    outputCombined: '一个多盘面文件',
+    outputSeparate: '每个盘面单独文件',
+    completedToastSplit: '已从 {{name}} 切片 {{count}} 个盘面',
     slicing: '切片中…',
     printer: '打印机配置',
     process: '工艺配置',
@@ -6333,6 +6349,45 @@ export default {
 
   // Virtual Printer
   virtualPrinter: {
+    types: {
+      title: "两种虚拟打印机",
+      newBadge: "新",
+      intro: "添加虚拟打印机时选择类型。从切片软件发送的文件会进入 Printbuddy（归档、审核或打印队列），而不是直接发送到打印机。",
+      bambu: {
+        tag: "Bambu Lab 打印机",
+        point1: "为 Bambu Studio / 使用 Bambu 配置的 OrcaSlicer 模拟 Bambu 打印机",
+        point2: "在局域网中自动发现，或通过 IP 和访问码添加",
+        point3: "模式：归档、审核、队列、代理",
+        setupLabel: "需要设置：",
+        setupText: "需要独立的绑定 IP、开放端口，并在切片软件中导入 Printbuddy CA。",
+        guide: "阅读设置指南",
+      },
+      moonraker: {
+        tag: "Klipper、Prusa、OctoPrint 等",
+        point1: "OrcaSlicer / Snapmaker Orca：添加主机类型为“Octo/Klipper”的物理打印机。PrusaSlicer：主机类型选“OctoPrint”（也支持二进制 G-code）",
+        point2: "粘贴虚拟打印机卡片上的主机 URL 和 API 密钥",
+        point3: "模式：归档、审核、队列（发送到目标打印机）",
+        noSetupLabel: "无需额外设置：",
+        noSetupText: "通过 Printbuddy 端口运行。无需绑定 IP、端口或证书。",
+      },
+    },
+    protocol: {
+      title: "打印机类型",
+      bambu: "Bambu 兼容",
+      bambuDesc: "模拟 Bambu Lab 打印机（Bambu Studio / 使用 Bambu 配置的 Orca）",
+      moonraker: "Moonraker/OctoPrint 兼容",
+      moonrakerDesc: "面向 Klipper、Prusa、OctoPrint 等非 Bambu 打印机的上传端点",
+    },
+    slicerConnection: {
+      title: "切片软件连接",
+      hostUrl: "主机 URL",
+      apiKey: "API 密钥",
+      regenerate: "重新生成 API 密钥",
+      regenerateConfirmTitle: "重新生成 API 密钥",
+      regenerateConfirmMessage: "当前密钥将立即失效。您需要在切片软件的物理打印机设置中填入新密钥。",
+      keyRegenerated: "已生成新的 API 密钥",
+      hint: "在切片软件中添加主机类型为“Octo/Klipper”（OrcaSlicer / Snapmaker Orca）或“OctoPrint”（PrusaSlicer，也支持二进制 G-code）的物理打印机，并填入主机 URL 和 API 密钥。发送的任务将进入 Printbuddy，而不是直接发送到打印机。",
+    },
     model: {
       title: '打印机型号',
       description: '选择要模拟的打印机型号。',
@@ -6351,6 +6406,7 @@ export default {
     },
     targetPrinter: {
       title: '目标打印机',
+      moonrakerHint: "只能选择非 Bambu 打印机。打印队列模式下必填。",
       placeholder: '选择打印机...',
     },
     remoteInterface: {
@@ -6394,10 +6450,6 @@ export default {
       description: '虚拟打印机功能需要额外的系统配置才能工作。包括端口转发、防火墙规则和平台特定设置。',
       readGuide: '启用前请阅读设置指南',
     },
-    bambuOnly: {
-      badge: '仅限 Bambu Lab',
-      description: '虚拟打印机模拟 Bambu Studio 和 OrcaSlicer 使用的 Bambu LAN 协议。它不是适用于 Prusa、Klipper/Moonraker 或 Elegoo SDCP 的通用虚拟打印机层。',
-    },
     archiveNameSource: {
       title: '存档名称来源',
       description: '选择通过虚拟打印机接收文件时新存档的命名方式。"元数据"使用 3MF 中嵌入的切片标题（默认）。"文件名"使用 Bambu Studio 通过 FTP 发送的文件名。注意：当 3MF 包含标题字段时，Bambu Studio 会用该字段覆盖您在"发送到打印机"对话框中输入的名称，因此两种模式通常会产生相同的字符串。',
@@ -6406,6 +6458,7 @@ export default {
     },
     caCert: {
       title: '切片软件证书',
+      bambuOnlyBadge: "仅限 Bambu 兼容",
       description: '虚拟打印机使用由 Printbuddy CA 签发的 TLS 证书。将此 CA 证书导入切片软件的信任库一次，切片软件即可接受连接 — 无需再通过命令行获取。',
       copy: '复制',
       copied: '已复制',
@@ -6451,6 +6504,7 @@ export default {
       title: '添加虚拟打印机',
       name: '名称',
       hint: '创建后可以配置访问码、目标打印机和其他设置。',
+      hintMoonraker: "创建后，将主机 URL 和 API 密钥复制到切片软件的物理打印机设置中。",
       create: '创建',
     },
     deleteConfirm: {
@@ -6826,6 +6880,7 @@ export default {
       homeassistant: 'Home Assistant',
       bark: 'Bark',
       gotify: 'Gotify',
+      printbuddy_app: 'Printbuddy 应用',
     },
     // Provider descriptions
     providerDescriptions: {
@@ -6840,6 +6895,7 @@ export default {
       homeassistant: 'Home Assistant 仪表板中的持久通知',
       bark: '通过 Bark 推送 iOS 通知（可自建服务器）',
       gotify: '通过你自己的 Gotify 服务器推送通知',
+      printbuddy_app: '推送通知到手机上的 Printbuddy 应用。在应用中开启通知即可添加设备。',
     },
     // NotificationProviderCard
     lastSuccess: '上次：{{date}}',
@@ -7656,6 +7712,30 @@ export default {
       problems: '发现的问题可以解释切片软件为何无法看到或使用此虚拟打印机。',
     },
     check: {
+      mr_enabled: {
+        title: "虚拟打印机已启用",
+        fail: "此虚拟打印机已关闭。在启用之前，切片软件的连接测试和上传都会被拒绝。",
+      },
+      mr_endpoint: {
+        title: "上传端点就绪",
+        pass: "切片软件可以通过 Printbuddy 端口上传到 {{path}}。",
+        fail: "虚拟打印机已启用，但其上传端点未注册。请先关闭再重新启用；如果仍不行，请查看 Printbuddy 日志。",
+      },
+      mr_api_key: {
+        title: "已设置 API 密钥",
+        fail: "未设置 API 密钥。请使用 API 密钥旁的刷新按钮生成一个。",
+      },
+      mr_target_printer: {
+        title: "目标打印机",
+        pass: "任务将发送到已连接的 {{name}}。",
+        warn: "{{name}} 当前离线。队列中的任务会在其重新连接后发送。",
+        fail: "打印队列模式需要一台非 Bambu 的目标打印机（Klipper、Prusa、OctoPrint 等）。请在“目标打印机”中选择。",
+        skip: "归档和审核模式下不需要。",
+      },
+      mr_upload_dir: {
+        title: "上传文件夹可写",
+        fail: "Printbuddy 无法写入此虚拟打印机的上传文件夹。请检查 Printbuddy 数据目录是否可写。",
+      },
       enabled: {
         title: '虚拟打印机已启用',
         fail: '此虚拟打印机已关闭。请将其打开以使其可被发现。',

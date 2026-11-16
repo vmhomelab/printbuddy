@@ -78,6 +78,7 @@ from backend.app.utils.http import build_content_disposition, download_error_res
 from backend.app.utils.local_time import day_zone, local_date_end, local_date_start, to_naive_utc
 from backend.app.utils.threemf_tools import (
     default_plate_gcode_name,
+    discover_plate_indices,
     expand_to_project_slots,
     extract_embedded_presets_from_3mf,
     extract_nozzle_mapping_from_3mf,
@@ -5159,45 +5160,10 @@ async def get_archive_plates(
                 except (ValueError, OSError, KeyError):
                     design_overrides = []
 
-            # Find all plate gcode files to determine available plates
+            # Keep gcode_files for has_gcode below; indices come from the
+            # shared helper (gcode → preview png/json → model_settings).
             gcode_files = [n for n in namelist if n.startswith("Metadata/plate_") and n.endswith(".gcode")]
-
-            # If no gcode is present (source-only or unsliced), fall back to plate JSON/PNG
-            plate_indices: list[int] = []
-            if gcode_files:
-                # Extract plate indices from gcode filenames
-                for gf in gcode_files:
-                    # "Metadata/plate_5.gcode" -> 5
-                    try:
-                        # Remove "Metadata/plate_" and ".gcode"
-                        plate_str = gf[15:-6]
-                        plate_indices.append(int(plate_str))
-                    except ValueError:
-                        pass  # Skip gcode file with non-numeric plate index
-            else:
-                plate_json_files = [n for n in namelist if n.startswith("Metadata/plate_") and n.endswith(".json")]
-                plate_png_files = [
-                    n
-                    for n in namelist
-                    if n.startswith("Metadata/plate_")
-                    and n.endswith(".png")
-                    and "_small" not in n
-                    and "no_light" not in n
-                ]
-                plate_name_candidates = plate_json_files + plate_png_files
-                plate_re = re.compile(r"^Metadata/plate_(\d+)\.(json|png)$")
-                seen_indices: set[int] = set()
-                for name in plate_name_candidates:
-                    match = plate_re.match(name)
-                    if match:
-                        try:
-                            index = int(match.group(1))
-                        except ValueError:
-                            continue
-                        if index in seen_indices:
-                            continue
-                        seen_indices.add(index)
-                        plate_indices.append(index)
+            plate_indices = discover_plate_indices(zf)
 
             if not plate_indices:
                 # No plate metadata found
@@ -5206,9 +5172,9 @@ async def get_archive_plates(
                     "filename": archive.filename,
                     "plates": [],
                     "is_multi_plate": False,
+                    "embedded_printer": embedded_presets["printer"],
+                    "embedded_process": embedded_presets["process"],
                 }
-
-            plate_indices.sort()
 
             # Parse model_settings.config for plate names + object assignments
             # Plate names are stored with plater_id and plater_name keys

@@ -221,8 +221,9 @@ import { PrintModal } from '../components/PrintModal';
 import { PrinterInfoModal } from '../components/PrinterInfoModal';
 import { FeedDirectionModal } from '../components/FeedDirectionModal';
 import { plateCheckFailureText } from '../utils/plateCheck';
-import { amsHasLoadedTray, getAmsLabel, getEmptySlotKind, getGlobalTrayId, getFillBarColor, getSpoolmanFillLevel, getFallbackSpoolTag, installedNozzleDiameters, isAmsHtUnit, isBambuLabSpool, trayForSlot, resolveSlotNozzleDiameter, resolveSlotExtruder, formatSlotLabel, slotPresetDescribesTray, FTS_INLET_SIDE, resolveLoadedFilamentInfo, resolveTrayFillLevel } from '../utils/amsHelpers';
+import { amsHasLoadedTray, getAmsLabel, getEmptySlotKind, getGlobalTrayId, getTrayFilamentSpoolId, getFillBarColor, getSpoolmanFillLevel, getFallbackSpoolTag, installedNozzleDiameters, isAmsHtUnit, isBambuLabSpool, trayForSlot, resolveSlotNozzleDiameter, resolveSlotExtruder, formatSlotLabel, slotPresetDescribesTray, FTS_INLET_SIDE, resolveLoadedFilamentInfo, resolveTrayFillLevel } from '../utils/amsHelpers';
 import { MAX_CHAMBER_TEMP_C, getPrinterImage, getWifiStrength, filterCompatibleQueueItems, isPrinterCurrentlyDispatchable, IDLE_PRINTER_STATES, getDefaultPrinterImage, getPrinterDisplayImage } from '../utils/printer';
+import { RACK_EXTERNAL_MIN, externalSlotIndex, isAms3hUnit, isH3cModel, rackExternalLabel } from '../utils/trayIds';
 import { FilamentSlotCircle } from '../components/FilamentSlotCircle';
 import { Collapsible } from '../components/Collapsible';
 import { ConnectionDiagnosticModal, DiagnosticChecklist } from '../components/ConnectionDiagnostic';
@@ -1679,6 +1680,8 @@ function TemperatureIndicator({ temp, goodThreshold = 28, fairThreshold = 35, on
 }
 
 
+// The nine slots of the H3C's AMS 3H.
+const AMS3H_SLOT_INDEXES = [0, 1, 2, 3, 4, 5, 6, 7, 8];
 
 // How long to wait for an AMS to report a live drying cycle after the printer
 // acked the start command (#2533). Firmware moves to DryStatus 1 (Checking)
@@ -2796,7 +2799,8 @@ function PrinterCard({
     const filType = resolveDryingPresetKey(firstTray?.tray_type, dryingPresets);
     // Only reachable if a custom preset set dropped PLA itself.
     const preset = dryingPresets[filType] ?? DRYING_PRESETS['PLA'];
-    const moduleType = ams.module_type as 'n3f' | 'n3s';
+    // The AMS 3H dryer uses the AMS 2 Pro presets.
+    const moduleType = (isAms3hUnit(ams) ? 'n3f' : ams.module_type) as 'n3f' | 'n3s';
     setDryingFilament(filType);
     setDryingTemp(preset[moduleType] || preset.n3f);
     setDryingDuration(moduleType === 'n3s' ? preset.n3s_hours : preset.n3f_hours);
@@ -2930,10 +2934,10 @@ function PrinterCard({
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['settings'] });
       queryClient.invalidateQueries({ queryKey: ['obico-status'] });
-      showToast(t('printers.aiMonitoring.saved', 'AI monitoring updated'), 'success');
+      showToast(t('printers.aiMonitoring.saved'), 'success');
     },
     onError: (error) => {
-      showToast(error instanceof Error ? error.message : t('printers.aiMonitoring.saveFailed', 'Failed to update AI monitoring'), 'error');
+      showToast(error instanceof Error ? error.message : t('printers.aiMonitoring.saveFailed'), 'error');
     },
   });
 
@@ -5287,7 +5291,7 @@ function PrinterCard({
 
               {/* Enclosure Door Badge — models with an actual door sensor.
                   P1S has an enclosure door but no sensor; P1P has no enclosure at all. */}
-              {status?.connected && ['X1C', 'X1', 'X1E', 'X2D', 'P2S', 'H2D', 'H2D Pro', 'H2C', 'H2S'].includes(printer.model ?? '') && (
+              {status?.connected && ['X1C', 'X1', 'X1E', 'X2D', 'P2S', 'H2D', 'H2D Pro', 'H2C', 'H2S', 'H3C'].includes(printer.model ?? '') && (
                 <span
                   className={`flex items-center px-2 py-1 rounded-full text-xs ${
                     status.door_open
@@ -6199,8 +6203,8 @@ function PrinterCard({
                         </button>
                       )}
 
-                      {/* Airduct Mode (P2S / X2D / H2*, an H2D Pro stored as "H2D Pro", #3335) */}
-                      {(['P2S', 'X2D', 'H2D', 'H2D Pro', 'H2C', 'H2S'].includes(printer.model ?? '')) && (() => {
+                      {/* Airduct Mode (P2S / X2D / H2* / H3C, an H2D Pro stored as "H2D Pro", #3335) */}
+                      {(['P2S', 'X2D', 'H2D', 'H2D Pro', 'H2C', 'H2S', 'H3C'].includes(printer.model ?? '')) && (() => {
                         const isHeating = status.airduct_mode === 1;
                         const Icon = isHeating ? Flame : Snowflake;
                         const color = isHeating ? 'text-orange-600 dark:text-orange-400' : 'text-sky-600 dark:text-sky-400';
@@ -6620,6 +6624,10 @@ function PrinterCard({
                   minWidth,
                 };
               };
+              // H3C: one external input per hotend (247-255) on its one extruder.
+              const isRackPrinter = isH3cModel(printer.model)
+                || amsData.some((unit) => isAms3hUnit(unit))
+                || status.vt_tray.some((vt) => (vt.id ?? 254) >= RACK_EXTERNAL_MIN && (vt.id ?? 254) < 254);
 
               return (
                 <div className="mt-3">
@@ -6655,9 +6663,12 @@ function PrinterCard({
                       const isSnapmakerU1Unit = ams.module_type === 'snapmaker_u1';
                       const amsDisplayLabel = isSnapmakerU1Unit ? 'Spools' : (isK2CfsLikeUnit ? `CFS T${ams.id + 1}` : (ams.name || getAmsLabel(ams.id)));
                       const sideBadge = amsSideBadge(ams.id, amsExtruderMap, amsSwitchInlet, ftsInstalled);
+                      // H3C: its AMS 3H is one unit with nine slots, each feeding its own hotend.
+                      const isAms3h = isAms3hUnit(ams);
+                      const amsDryZoneSlots = isAms3h ? (ams.dry_zone_slots ?? []) : [];
 
                       return (
-                        <div key={ams.id} style={getAmsCardStyle(4)} className="min-w-0 p-2 bg-bambu-dark rounded-[10px] space-y-1">
+                        <div key={ams.id} style={getAmsCardStyle(isAms3h ? 9 : 4)} className="min-w-0 p-2 bg-bambu-dark rounded-[10px] space-y-1">
                             {/* Header: Label + Stats (no icon) */}
                             <div className="flex w-full min-h-7 items-center justify-between gap-2 rounded-lg bg-bambu-dark-secondary px-2 py-1">
                               <div className="flex min-w-0 flex-1 items-center gap-1.5">
@@ -6725,7 +6736,7 @@ function PrinterCard({
                                   {/* Drying button — only for AMS 2 Pro (n3f) and AMS-HT (n3s).
                                       Screen-only models (P1 series) keep the control but can't
                                       be commanded: it stays disabled and says why (#2533). */}
-                                  {(status.supports_drying || status.drying_screen_only) && (ams.module_type === 'n3f' || ams.module_type === 'n3s') && hasPermission('printers:control') && (
+                                  {(status.supports_drying || status.drying_screen_only) && (ams.module_type === 'n3f' || ams.module_type === 'n3s' || isAms3h) && hasPermission('printers:control') && (
                                     <button
                                       disabled={status.drying_screen_only || !!(ams.dry_sf_reason?.length && ams.dry_time === 0)}
                                       onClick={(e) => {
@@ -6785,6 +6796,11 @@ function PrinterCard({
                               <div className="flex items-center gap-2 rounded-lg bg-amber-50 dark:bg-amber-500/10 px-2 py-1 text-[length:var(--pc-t9,9px)]">
                                 <Flame className="w-[var(--pc-i3,0.75rem)] h-[var(--pc-i3,0.75rem)] text-amber-600 dark:text-amber-400 shrink-0" />
                                 <span className="text-amber-700 dark:text-amber-400 font-medium">{t('printers.drying.active')}</span>
+                                {amsDryZoneSlots.length > 0 && (
+                                  <span className="text-amber-700/80 dark:text-amber-300/70">
+                                    {t('printers.ams3h.dryZone', { slots: amsDryZoneSlots.map((slot) => slot + 1).join(' + ') })}
+                                  </span>
+                                )}
                                 {/* The temperature is only ever known from the target we
                                     cached when sending the command — the filament can also
                                     be read off a uniformly loaded unit, so it can outlive
@@ -6818,7 +6834,7 @@ function PrinterCard({
                               </div>
                             )}
                             {/* Slots grid: 4 columns - always render 4 slots */}
-                            <div className="grid w-full gap-1" style={slotGridStyle(4)}>
+                            <div className="grid w-full gap-1" style={slotGridStyle(isAms3h ? 9 : 4)}>
                               {isSnapmakerU1Unit && (
                                 <>
                                   <div className="col-span-2 text-center text-[9px] uppercase tracking-wider text-bambu-gray font-semibold">
@@ -6829,7 +6845,7 @@ function PrinterCard({
                                   </div>
                                 </>
                               )}
-                              {[0, 1, 2, 3].map((slotIdx) => {
+                              {(isAms3h ? AMS3H_SLOT_INDEXES : [0, 1, 2, 3]).map((slotIdx) => {
                                 // Find tray data for this slot (may be undefined if data incomplete)
                                 const tray = trayForSlot(ams.tray, slotIdx);
                                 const isCfsUnit = ams.module_type === 'cfs' || isK2CfsLikeUnit;
@@ -6841,8 +6857,9 @@ function PrinterCard({
                                 const isEmpty = !tray?.tray_type;
                                 const emptyKind = getEmptySlotKind(tray);
                                 // Check if this is the currently loaded tray
-                                // Global tray ID = ams.id * 4 + slot index (for standard AMS)
-                                const globalTrayId = ams.id * 4 + slotIdx;
+                                // Global tray ID = ams.id * 4 + slot index (for standard AMS;
+                                // the H3C's AMS 3H is 28 + slot)
+                                const globalTrayId = getGlobalTrayId(ams.id, slotIdx, false);
                                 const isActive = isSnapmakerU1Unit ? tray?.active === true : effectiveTrayNow === globalTrayId;
                                 // Runout guidance (#2587): the slot the paused print now
                                 // expects filament in, and the slot that ran out.
@@ -6863,16 +6880,40 @@ function PrinterCard({
                                 const trayTag = (tray?.tray_uuid || tray?.tag_uid || getFallbackSpoolTag(printer.serial_number, ams.id, slotIdx))?.toUpperCase();
                                 const linkedSpool = trayTag ? linkedSpools?.[trayTag] : undefined;
                                 const spoolmanFill = getSpoolmanFillLevel(linkedSpool);
-                                // Slot-assigned-only spool fill (no tag link required)
+                                // Slot-assigned-only spool fill (no tag link required).
+                                // Snapmaker SpoolLink also publishes filament_spool_id — treat that
+                                // as a Spoolman binding when no explicit Printbuddy assignment exists.
                                 const slotAssignmentForFill = spoolmanEnabled && !spoolmanLoading
                                   ? spoolmanSlotAssignments?.find(a => a.printer_id === printer.id && a.ams_id === ams.id && a.tray_id === slotIdx)
                                   : undefined;
-                                const slotSpoolForFill = slotAssignmentForFill
-                                  ? spoolmanSpools?.find(s => s.id === slotAssignmentForFill.spoolman_spool_id)
+                                const trayFilamentSpoolId = getTrayFilamentSpoolId(tray);
+                                const slotSpoolForFill = (spoolmanEnabled && !spoolmanLoading)
+                                  ? (
+                                    slotAssignmentForFill
+                                      ? spoolmanSpools?.find(s => s.id === slotAssignmentForFill.spoolman_spool_id)
+                                      : (trayFilamentSpoolId
+                                        ? spoolmanSpools?.find(s => s.id === trayFilamentSpoolId)
+                                        : undefined)
+                                  )
                                   : undefined;
                                 const slotSpoolFill = (slotSpoolForFill && (slotSpoolForFill.label_weight ?? 0) > 0)
                                   ? Math.round(Math.max(0, (slotSpoolForFill.label_weight ?? 0) - slotSpoolForFill.weight_used) / (slotSpoolForFill.label_weight ?? 1) * 100)
                                   : null;
+                                const effectiveSpoolmanSpoolId = slotAssignmentForFill?.spoolman_spool_id
+                                  ?? trayFilamentSpoolId
+                                  ?? (trayTag ? linkedSpools?.[trayTag]?.id : undefined);
+                                // SpoolLink identity from Moonraker Spoolman proxy — works even when
+                                // Printbuddy's Spoolman sync setting is disabled.
+                                const spoolLinkAssigned = trayFilamentSpoolId ? {
+                                  id: trayFilamentSpoolId,
+                                  material: tray?.filament_spool_material || tray?.tray_type || 'Filament',
+                                  subtype: null,
+                                  brand: tray?.filament_spool_brand ?? null,
+                                  color_name: tray?.filament_spool_color_name ?? null,
+                                  remainingWeightGrams: typeof tray?.remaining_weight === 'number'
+                                    ? Math.max(0, Math.round(tray.remaining_weight))
+                                    : undefined,
+                                } : null;
                                 const inventoryAssignment = onGetAssignment?.(printer.id, ams.id, slotIdx);
                                 const inventoryFill = (() => {
                                   const sp = inventoryAssignment?.spool;
@@ -6902,7 +6943,7 @@ function PrinterCard({
                                   // the hover card shows "Devil Design PLA Basic" rather than the
                                   // vendor-less form. Strip the "@<printer>..." suffix that
                                   // BambuStudio appends to user-preset names.
-                                  profile: slotPresetName || (slotSpoolForFill ? [slotSpoolForFill.brand, slotSpoolForFill.slicer_filament_name?.split('@')[0].trim() || slotSpoolForFill.material].filter(Boolean).join(' ').trim() : null) || inventoryAssignment?.spool?.slicer_filament_name || cloudInfo?.name || tray.tray_sub_brands || tray.tray_type,
+                                  profile: slotPresetName || (slotSpoolForFill ? [slotSpoolForFill.brand, slotSpoolForFill.slicer_filament_name?.split('@')[0].trim() || slotSpoolForFill.material].filter(Boolean).join(' ').trim() : null) || (spoolLinkAssigned ? [spoolLinkAssigned.brand, spoolLinkAssigned.material, spoolLinkAssigned.color_name].filter(Boolean).join(' ').trim() : null) || inventoryAssignment?.spool?.slicer_filament_name || cloudInfo?.name || tray.tray_sub_brands || tray.tray_type,
                                   colorName: getColorName(tray.tray_color || '', tray.tray_sub_brands, tray.tray_info_idx),
                                   colorHex: tray.tray_color || null,
                                   kFactor: formatKValue(tray.k),
@@ -7062,7 +7103,7 @@ function PrinterCard({
                                               onClick={(e) => {
                                                 e.stopPropagation();
                                                 if (!hasPermission('printers:control')) return;
-                                                loadAmsTrayMutation.mutate({ trayId: ams.id * 4 + slotIdx });
+                                                loadAmsTrayMutation.mutate({ trayId: getGlobalTrayId(ams.id, slotIdx, false) });
                                                 setAmsSlotMenu(null);
                                               }}
                                               disabled={!hasPermission('printers:control') || !tray?.tray_type}
@@ -7108,8 +7149,8 @@ function PrinterCard({
                                           // #1457: slot assignment is the user's most explicit action — it must
                                           // outrank the tag-link, which can be stale when a non-RFID slot's
                                           // fallback tag is still attached to a previous spool in Spoolman.
-                                          linkedSpoolId: slotAssignmentForFill?.spoolman_spool_id
-                                            ?? (trayTag ? linkedSpools?.[trayTag]?.id : undefined),
+                                          // Snapmaker SpoolLink filament_spool_id ranks above tag links.
+                                          linkedSpoolId: effectiveSpoolmanSpoolId,
                                           spoolmanUrl,
                                         }}
                                         inventory={(() => {
@@ -7117,6 +7158,9 @@ function PrinterCard({
                                             if (spoolmanLoading) return undefined;
                                             const slotAssignment = slotAssignmentForFill;
                                             const spoolmanSpool = slotSpoolForFill;
+                                            // SpoolLink bindings are printer-owned (like RFID): show as
+                                            // assigned with inventory deep-link, but don't offer Printbuddy unassign.
+                                            const spoolLinkOwned = !!trayFilamentSpoolId && !slotAssignment;
                                             return {
                                               assignedSpool: spoolmanSpool ? {
                                                 id: spoolmanSpool.id,
@@ -7134,7 +7178,7 @@ function PrinterCard({
                                                 remainingWeightGrams: spoolmanSpool.label_weight
                                                   ? Math.max(0, Math.round(spoolmanSpool.label_weight - spoolmanSpool.weight_used))
                                                   : undefined,
-                                              } : null,
+                                              } : spoolLinkAssigned,
                                               onAssignSpool: supportsSpoolAssignment ? () => setAssignSpoolModal({
                                                 printerId: printer.id,
                                                 amsId: ams.id,
@@ -7147,8 +7191,11 @@ function PrinterCard({
                                                   location: `${amsDisplayLabel} - Slot ${slotIdx + 1}`,
                                                 },
                                               }) : undefined,
-                                              onUnassignSpool: (spoolmanSpool && !isCfsUnit && !isBambuLabSpool(tray)) ? () => onUnassignSpoolmanSpool?.(spoolmanSpool.id) : undefined,
-                                              isAssigned: isCfsUnit ? !!slotAssignment : (!!slotAssignment || isBambuLabSpool(tray)),
+                                              onUnassignSpool: (spoolmanSpool && !isCfsUnit && !isSnapmakerU1Unit && !isBambuLabSpool(tray) && !spoolLinkOwned) ? () => onUnassignSpoolmanSpool?.(spoolmanSpool.id) : undefined,
+                                              isAssigned: isSlotAssignmentOnlyUnit
+                                                ? !!(slotAssignment || trayFilamentSpoolId)
+                                                : (!!slotAssignment || isBambuLabSpool(tray)),
+                                              showOpenInInventory: !!spoolmanSpool,
                                             };
                                           }
                                           // Spoolman mode with Spoolman down: neither table may be offered
@@ -7167,7 +7214,7 @@ function PrinterCard({
                                               extra_colors: assignment.spool.extra_colors ?? null,
                                               effect_type: assignment.spool.effect_type ?? null,
                                               remainingWeightGrams: Math.max(0, Math.round(assignment.spool.label_weight - assignment.spool.weight_used)),
-                                            } : null,
+                                            } : spoolLinkAssigned,
                                             onAssignSpool: supportsSpoolAssignment ? () => setAssignSpoolModal({
                                               printerId: printer.id,
                                               amsId: ams.id,
@@ -7180,8 +7227,12 @@ function PrinterCard({
                                                 location: `${amsDisplayLabel} - Slot ${slotIdx + 1}`,
                                               },
                                             }) : undefined,
-                                            onUnassignSpool: (assignment && !isCfsUnit && !isBambuLabSpool(tray)) ? () => onUnassignSpool?.(printer.id, ams.id, slotIdx) : undefined,
-                                            isAssigned: isCfsUnit ? !!assignment : (!!assignment || isBambuLabSpool(tray)),
+                                            onUnassignSpool: (assignment && !isCfsUnit && !isBambuLabSpool(tray) && !spoolLinkAssigned) ? () => onUnassignSpool?.(printer.id, ams.id, slotIdx) : undefined,
+                                            isAssigned: isSlotAssignmentOnlyUnit
+                                              ? !!(assignment || trayFilamentSpoolId)
+                                              : (!!assignment || isBambuLabSpool(tray)),
+                                            // SpoolLink-only (Printbuddy Spoolman off): show Assigned label, no inventory deep-link.
+                                            showOpenInInventory: !!assignment?.spool,
                                           };
                                         })()}
                                         configureSlot={{
@@ -7697,8 +7748,11 @@ function PrinterCard({
                           <div className="flex w-full min-h-7 items-center gap-1.5 rounded-lg bg-bambu-dark-secondary px-2 py-1">
                             <span className="block min-w-0 flex-1 truncate text-[length:var(--pc-t10,10px)] text-white font-medium">{t('printers.external')}</span>
                           </div>
-                          <div className="grid w-full gap-1" style={slotGridStyle(status.vt_tray.length > 1 ? 2 : 1)}>
-                            {[...status.vt_tray].sort((a, b) => (a.id ?? 254) - (b.id ?? 254)).map((extTray) => {
+                          <div className="grid w-full gap-1" style={slotGridStyle(status.vt_tray.length > 2 ? Math.min(status.vt_tray.length, 9) : status.vt_tray.length > 1 ? 2 : 1)}>
+                            {[...status.vt_tray].sort((a, b) => isRackPrinter
+                              // H3C: Ext-1 (255) ... Ext-9 (247), in hotend order
+                              ? (b.id ?? 254) - (a.id ?? 254)
+                              : (a.id ?? 254) - (b.id ?? 254)).map((extTray) => {
                               const extTrayId = extTray.id ?? 254;
                               // On dual-nozzle (H2C/H2D), tray_now=254 means "external spool"
                               // generically — use active_extruder to determine L vs R:
@@ -7707,10 +7761,12 @@ function PrinterCard({
                                 ? (extTrayId === 254 && status.active_extruder === 1) ||
                                   (extTrayId === 255 && status.active_extruder === 0)
                                 : effectiveTrayNow === extTrayId;
-                              const slotTrayId = extTrayId - 254; // 0 or 1
-                              const extLabel = isDualNozzle
-                                ? (extTrayId === 254 ? t('printers.extL') : t('printers.extR'))
-                                : '';
+                              const slotTrayId = externalSlotIndex(extTrayId); // 0 or 1 (H3C: 0-8)
+                              const extLabel = isRackPrinter
+                                ? rackExternalLabel(extTrayId)
+                                : isDualNozzle
+                                  ? (extTrayId === 254 ? t('printers.extL') : t('printers.extR'))
+                                  : '';
                               const extCloudInfo = extTray.tray_info_idx ? filamentInfo?.[extTray.tray_info_idx] : null;
                               const extSlotPreset = slotPresets?.[255 * 4 + slotTrayId];
                               // Only trusted while it still describes what the printer reports in the
@@ -9276,7 +9332,8 @@ export function AddPrinterModal({
       external_camera_url: externalCameraUrl || undefined,
       external_camera_type: externalCameraUrl ? inferExternalCameraType(externalCameraUrl) : undefined,
       external_camera_enabled: isHttpProvider && Boolean(externalCameraUrl),
-      external_camera_snapshot_url: undefined,
+      // Keep the snapshot URL "Detect Moonraker camera" found; editing the stream URL clears it.
+      external_camera_snapshot_url: externalCameraUrl ? (form.external_camera_snapshot_url || undefined) : undefined,
       provider_options: isPrusaLinkProvider
         ? buildPrusaLinkProviderOptions(prusaLinkApiAuthMode, form.provider_options)
         : form.provider_options,
@@ -10012,7 +10069,7 @@ export function AddPrinterModal({
                     type="text"
                     className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                     value={form.external_camera_url || ''}
-                    onChange={(e) => setForm({ ...form, external_camera_url: e.target.value })}
+                    onChange={(e) => setForm({ ...form, external_camera_url: e.target.value, external_camera_snapshot_url: undefined })}
                     placeholder="http://printer.local/webcam/?action=stream"
                   />
                   <p className="text-xs text-bambu-gray mt-1">

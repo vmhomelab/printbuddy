@@ -987,6 +987,9 @@ export default {
     dropNotSliced: 'Dit bestand bevat geen gesliceerde G-code. Slice het eerst en print het daarna.',
     dropToPrint: 'Sleep hierheen om af te drukken',
     dropToQueue: 'Sleep hierheen voor wachtrij',
+    ams3h: {
+      dryZone: 'Droger: sleuven {{slots}}',
+    },
   },
 
   // Archives page
@@ -3277,6 +3280,14 @@ export default {
     slicerSidecarOutdated: 'Verbonden met {{slicer}}, maar de sidecar-image is niet de versie die deze Printbuddy verwacht (draait {{running}}, verwacht {{expected}}). Werk hem bij: docker compose pull && docker compose up -d.',
     slicerSidecarRevisionOld: 'een oudere build',
     slicerConnectionError: 'Slicerverbinding mislukt.',
+    mobilePairing: {
+      title: 'Mobiele app koppelen',
+      description: 'Scan deze code met de camera van je telefoon of in de Printbuddy-app om de app met deze sleutel te verbinden.',
+      qrAlt: 'QR-code om de mobiele Printbuddy-app te koppelen',
+      localhostWarning: 'Dit adres werkt alleen op deze computer. Open Printbuddy via het netwerkadres (bijvoorbeeld het IP-adres), zodat je telefoon het kan bereiken.',
+    },
+    rememberMeExtended: '30 dagen onthouden',
+    rememberMeExtendedDescription: "Als gebruikers bij het inloggen 'Onthoud mij' aanvinken, blijven ze 30 dagen aangemeld in plaats van 24 uur",
   },
 
   // Notifications (for push notifications)
@@ -4998,6 +5009,10 @@ export default {
     },
     queueAfterSlice: 'Daarna aan de printwachtrij toevoegen',
     queueAfterSliceTitle: 'Opent na het slicen het venster om het geslicede bestand aan de wachtrij toe te voegen.',
+    outputModeLabel: 'Uitvoer',
+    outputCombined: 'Eén bestand met meerdere platen',
+    outputSeparate: 'Apart bestand per plaat',
+    completedToastSplit: '{{count}} platen van {{name}} gesliced',
   },
 
   // Spoolman
@@ -6417,6 +6432,7 @@ export default {
     targetPrinter: {
       title: 'Doelprinter',
       placeholder: 'Selecteer een printer...',
+      moonrakerHint: 'Alleen niet-Bambu-printers kunnen worden gekozen. Vereist voor de printwachtrijmodus. Deze printer wordt ook getoond op het tabblad Apparaat van de slicer.',
     },
     remoteInterface: {
       title: 'Overschrijving netwerkinterface',
@@ -6459,10 +6475,6 @@ export default {
       description: 'Voor de functie virtuele printer is aanvullende systeemconfiguratie nodig voordat deze werkt. Dit omvat port forwarding, firewallregels en platformspecifieke instellingen.',
       readGuide: 'Lees de installatiehandleiding voordat je dit inschakelt',
     },
-    bambuOnly: {
-      badge: 'Alleen Bambu Lab',
-      description: 'Virtuele printers emuleren het Bambu-LAN-protocol voor Bambu Studio en OrcaSlicer. Ze zijn geen algemene virtuele-printerlaag voor Prusa-, Klipper/Moonraker- of Elegoo SDCP-printers.',
-    },
     archiveNameSource: {
       title: 'Bron voor archiefnaam',
       description: 'Kies hoe nieuwe archieven worden genoemd wanneer bestanden via de virtuele printer binnenkomen. "Metadata" gebruikt de in de slicer opgenomen Titel uit de 3MF (standaard). "Bestandsnaam" gebruikt de bestandsnaam die Bambu Studio via FTP heeft verzonden. Let op: Bambu Studio overschrijft de naam die je in het dialoogvenster "naar printer verzenden" invoert met het Titel-veld van de 3MF wanneer dat aanwezig is, waardoor beide modi vaak dezelfde tekst opleveren.',
@@ -6476,6 +6488,7 @@ export default {
       copied: 'Gekopieerd',
       download: 'Downloaden',
       fingerprint: 'SHA-256',
+      bambuOnlyBadge: 'Alleen Bambu-compatibel',
     },
     howItWorks: {
       title: 'Hoe het werkt',
@@ -6517,10 +6530,50 @@ export default {
       name: 'Naam',
       hint: 'Je kunt de toegangscode, doelprinter en andere instellingen na het aanmaken configureren.',
       create: 'Maken',
+      hintMoonraker: 'Kopieer na het aanmaken de host-URL en API-sleutel naar de instellingen van de fysieke printer in je slicer.',
     },
     deleteConfirm: {
       title: 'Virtuele printer verwijderen',
       message: 'Weet je zeker dat je "{{name}}" wilt verwijderen? Hiermee worden alle services voor deze printer gestopt.',
+    },
+    types: {
+      title: 'Twee soorten virtuele printers',
+      newBadge: 'Nieuw',
+      intro: 'Kies het type wanneer je een virtuele printer toevoegt. Bestanden die je slicer verstuurt, komen in Printbuddy terecht (archief, controle of printwachtrij) in plaats van direct op de printer.',
+      bambu: {
+        tag: 'Bambu Lab-printers',
+        point1: 'Emuleert een Bambu-printer voor Bambu Studio / OrcaSlicer met een Bambu-profiel',
+        point2: 'Wordt automatisch op het LAN gevonden, of toegevoegd via IP en toegangscode',
+        point3: 'Modi: Archief, Controle, Wachtrij, Proxy',
+        setupLabel: 'Configuratie vereist:',
+        setupText: 'heeft een eigen bind-IP, open poorten en de Printbuddy-CA in je slicer nodig.',
+        guide: 'Lees de installatiehandleiding',
+      },
+      moonraker: {
+        tag: 'Klipper, Prusa, OctoPrint en meer',
+        point1: 'OrcaSlicer / Snapmaker Orca: voeg een fysieke printer toe met hosttype “Octo/Klipper”. PrusaSlicer: hosttype “OctoPrint” (binaire G-code werkt ook)',
+        point2: 'Plak de host-URL en API-sleutel van de kaart van de virtuele printer',
+        point3: 'Modi: Archief, Controle, Wachtrij (stuurt naar de doelprinter)',
+        noSetupLabel: 'Geen extra configuratie:',
+        noSetupText: 'draait op de Printbuddy-poort. Geen bind-IP, poorten of certificaat nodig.',
+      },
+    },
+    protocol: {
+      title: 'Printertype',
+      bambu: 'Bambu-compatibel',
+      bambuDesc: 'Emuleert een Bambu Lab-printer (Bambu Studio / Orca met een Bambu-profiel)',
+      moonraker: 'Moonraker/OctoPrint-compatibel',
+      moonrakerDesc: 'Upload-endpoint voor Klipper, Prusa, OctoPrint en andere niet-Bambu-printers',
+    },
+    slicerConnection: {
+      title: 'Slicerverbinding',
+      hostUrl: 'Host-URL',
+      apiKey: 'API-sleutel',
+      regenerate: 'API-sleutel opnieuw genereren',
+      regenerateConfirmTitle: 'API-sleutel opnieuw genereren',
+      regenerateConfirmMessage: 'De huidige sleutel werkt meteen niet meer. Je moet de nieuwe sleutel invoeren in de instellingen van de fysieke printer in je slicer.',
+      keyRegenerated: 'Nieuwe API-sleutel gegenereerd',
+      hint: 'Voeg in je slicer een fysieke printer toe met hosttype “Octo/Klipper” (OrcaSlicer / Snapmaker Orca) of “OctoPrint” (PrusaSlicer, binaire G-code werkt ook) en vul de host-URL en API-sleutel in. Opdrachten die je ernaartoe stuurt, gaan naar Printbuddy in plaats van direct naar de printer.',
     },
   },
 
@@ -6892,6 +6945,7 @@ export default {
       homeassistant: 'Home Assistant',
       bark: 'Bark',
       gotify: 'Gotify',
+      printbuddy_app: 'Printbuddy-app',
     },
     // Provider descriptions
     providerDescriptions: {
@@ -6906,6 +6960,7 @@ export default {
       homeassistant: 'Blijvende meldingen in het Home Assistant-dashboard',
       bark: 'iOS-pushmeldingen via Bark (zelf te hosten)',
       gotify: 'Pushmeldingen via je eigen Gotify-server',
+      printbuddy_app: 'Pushmeldingen naar de Printbuddy-app op je telefoon. Zet ze aan in de app om een apparaat toe te voegen.',
     },
     // NotificationProviderCard
     lastSuccess: 'Laatste: {{date}}',
@@ -7764,6 +7819,30 @@ export default {
         title: 'TLS-certificaat',
         pass: 'Certificaat gereed. Zorg dat het Printbuddy-CA-certificaat (hierboven) is geïmporteerd in de trust store van je slicer.',
         fail: 'Het TLS-certificaat voor deze virtuele printer ontbreekt. Controleer of de Printbuddy-datamap beschrijfbaar is.',
+      },
+      mr_enabled: {
+        title: 'Virtuele printer ingeschakeld',
+        fail: 'Deze virtuele printer staat uit. De verbindingstest van de slicer en uploads worden geweigerd totdat je hem inschakelt.',
+      },
+      mr_endpoint: {
+        title: 'Upload-endpoint gereed',
+        pass: 'Slicers kunnen uploaden naar {{path}} op de Printbuddy-poort.',
+        fail: 'De virtuele printer is ingeschakeld, maar het upload-endpoint is niet geregistreerd. Zet hem uit en weer aan; helpt dat niet, controleer dan het Printbuddy-logboek.',
+      },
+      mr_api_key: {
+        title: 'API-sleutel ingesteld',
+        fail: 'Er is geen API-sleutel ingesteld. Genereer er een met de vernieuwknop naast de API-sleutel.',
+      },
+      mr_target_printer: {
+        title: 'Doelprinter',
+        pass: 'Opdrachten gaan naar {{name}}, die verbonden is.',
+        warn: '{{name}} is nu offline. Opdrachten in de wachtrij worden verstuurd zodra de printer weer verbonden is.',
+        fail: 'De printwachtrijmodus heeft een doelprinter nodig die geen Bambu-printer is (Klipper, Prusa, OctoPrint, …). Kies er een onder Doelprinter.',
+        skip: 'Niet nodig in de modi Archief en Controle.',
+      },
+      mr_upload_dir: {
+        title: 'Uploadmap beschrijfbaar',
+        fail: 'Printbuddy kan niet schrijven naar de uploadmap van deze virtuele printer. Controleer of de Printbuddy-datamap beschrijfbaar is.',
       },
     },
   },

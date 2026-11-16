@@ -29,6 +29,7 @@ from backend.app.core.auth import (
     create_media_token,
     create_websocket_token,
     current_api_key_if_present,
+    get_access_token_ttl,
     get_current_active_user,
     get_password_hash,
     get_user_by_email,
@@ -36,7 +37,6 @@ from backend.app.core.auth import (
     is_jti_revoked,
     require_auth_if_enabled,
     resolve_apikey_owner,
-    resolve_session_max_minutes,
     revoke_jti,
     security,
     token_outlived_its_session,
@@ -666,9 +666,8 @@ async def login(
             two_fa_methods=methods,
         )
 
-    # No 2FA — issue full token immediately. Session lifetime honours the
-    # admin-configurable ceiling (#1706); resolver clamps to [1h, 720h].
-    access_token_expires = timedelta(minutes=await resolve_session_max_minutes(db))
+    # No 2FA — issue full token immediately
+    access_token_expires = await get_access_token_ttl(db, request.remember_me)
     access_token = create_access_token(data={"sub": user.username}, expires_delta=access_token_expires)
 
     return LoginResponse(

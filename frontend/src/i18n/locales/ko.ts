@@ -985,6 +985,9 @@ export default {
     dropNotSliced: '이 파일에는 슬라이스된 G-code가 없습니다. 먼저 슬라이스한 다음 출력하세요.',
     dropToPrint: '놓아서 인쇄',
     dropToQueue: '놓아서 대기열에 추가',
+    ams3h: {
+      dryZone: '건조기: 슬롯 {{slots}}',
+    },
   },
 
   // Archives page
@@ -3251,6 +3254,14 @@ export default {
     slicerSidecarOutdated: '{{slicer}}에 연결되었지만 사이드카 이미지가 이 Printbuddy가 기대하는 버전이 아닙니다(실행 중 {{running}}, 기대 {{expected}}). 업데이트하세요: docker compose pull && docker compose up -d.',
     slicerSidecarRevisionOld: '이전 빌드',
     slicerConnectionError: '슬라이서 연결에 실패했습니다.',
+    mobilePairing: {
+      title: '모바일 앱 연결',
+      description: '휴대폰 카메라나 Printbuddy 앱에서 이 코드를 스캔하면 이 키로 앱이 연결됩니다.',
+      qrAlt: 'Printbuddy 모바일 앱 연결용 QR 코드',
+      localhostWarning: '이 주소는 이 컴퓨터에서만 작동합니다. 휴대폰에서 접속할 수 있도록 네트워크 주소(예: IP)로 Printbuddy를 여세요.',
+    },
+    rememberMeExtended: '30일 동안 로그인 유지',
+    rememberMeExtendedDescription: "사용자가 로그인할 때 '로그인 유지'를 선택하면 24시간 대신 30일 동안 로그인 상태가 유지됩니다",
   },
 
   // Notifications (for push notifications)
@@ -4964,6 +4975,10 @@ export default {
     },
     queueAfterSlice: '이후 출력 대기열에 추가',
     queueAfterSliceTitle: '슬라이스가 끝나면 슬라이스된 파일을 대기열에 추가하는 대화 상자를 엽니다.',
+    outputModeLabel: '출력',
+    outputCombined: '여러 플레이트를 담은 파일 하나',
+    outputSeparate: '플레이트마다 별도 파일',
+    completedToastSplit: '{{name}}에서 플레이트 {{count}}개를 슬라이스했습니다',
   },
 
   // Spoolman
@@ -6367,6 +6382,7 @@ export default {
     targetPrinter: {
       title: '대상 프린터',
       placeholder: '프린터 선택...',
+      moonrakerHint: 'Bambu가 아닌 프린터만 선택할 수 있습니다. 인쇄 대기열 모드에 필요합니다. 이 프린터는 슬라이서의 장치 탭에도 표시됩니다.',
     },
     remoteInterface: {
       title: '네트워크 인터페이스 재정의',
@@ -6409,10 +6425,6 @@ export default {
       description: '가상 프린터 기능이 작동하려면 추가 시스템 구성이 필요합니다. 여기에는 포트 포워딩, 방화벽 규칙 및 플랫폼별 설정이 포함됩니다.',
       readGuide: '활성화 전에 설정 가이드를 읽으세요',
     },
-    bambuOnly: {
-      badge: 'Bambu Lab 전용',
-      description: '가상 프린터는 Bambu Studio와 OrcaSlicer를 위해 Bambu LAN 프로토콜을 에뮬레이션합니다. Prusa, Klipper/Moonraker 또는 Elegoo SDCP 프린터용 범용 가상 프린터 계층이 아닙니다.',
-    },
     archiveNameSource: {
       title: '아카이브 이름 출처',
       description: '가상 프린터를 통해 파일이 도착할 때 새 아카이브의 이름 지정 방법을 선택합니다. "메타데이터"는 3MF의 슬라이서 내장 제목을 사용합니다(기본값). "파일 이름"은 Bambu Studio가 FTP를 통해 전송한 파일 이름을 사용합니다. 참고: Bambu Studio는 3MF에 제목 필드가 있을 경우 "프린터로 보내기" 대화 상자에 입력한 이름을 해당 값으로 덮어쓰므로, 두 모드 모두 동일한 문자열이 표시되는 경우가 많습니다.',
@@ -6426,6 +6438,7 @@ export default {
       copied: '복사됨',
       download: '다운로드',
       fingerprint: 'SHA-256',
+      bambuOnlyBadge: 'Bambu 호환 전용',
     },
     howItWorks: {
       title: '작동 방식',
@@ -6467,10 +6480,50 @@ export default {
       name: '이름',
       hint: '생성 후 액세스 코드, 대상 프린터 및 기타 설정을 구성할 수 있습니다.',
       create: '생성',
+      hintMoonraker: '생성한 뒤 호스트 URL과 API 키를 슬라이서의 실제 프린터 설정에 복사하세요.',
     },
     deleteConfirm: {
       title: '가상 프린터 삭제',
       message: '"{{name}}"을(를) 삭제하시겠습니까? 이 프린터의 모든 서비스가 중지됩니다.',
+    },
+    types: {
+      title: '두 종류의 가상 프린터',
+      newBadge: '새 기능',
+      intro: '가상 프린터를 추가할 때 유형을 선택하세요. 슬라이서에서 보낸 파일은 프린터로 바로 가지 않고 Printbuddy(보관, 검토 또는 인쇄 대기열)로 들어옵니다.',
+      bambu: {
+        tag: 'Bambu Lab 프린터',
+        point1: 'Bambu 프로필을 쓰는 Bambu Studio / OrcaSlicer용 Bambu 프린터를 에뮬레이션합니다',
+        point2: 'LAN에서 자동으로 발견되거나 IP와 액세스 코드로 추가됩니다',
+        point3: '모드: 보관, 검토, 대기열, 프록시',
+        setupLabel: '설정 필요:',
+        setupText: '전용 바인드 IP, 열린 포트, 슬라이서의 Printbuddy CA가 필요합니다.',
+        guide: '설정 가이드 읽기',
+      },
+      moonraker: {
+        tag: 'Klipper, Prusa, OctoPrint 등',
+        point1: 'OrcaSlicer / Snapmaker Orca: 호스트 유형이 “Octo/Klipper”인 실제 프린터를 추가하세요. PrusaSlicer: 호스트 유형 “OctoPrint”(바이너리 G-code도 작동)',
+        point2: '가상 프린터 카드의 호스트 URL과 API 키를 붙여 넣으세요',
+        point3: '모드: 보관, 검토, 대기열(대상 프린터로 전송)',
+        noSetupLabel: '추가 설정 없음:',
+        noSetupText: 'Printbuddy 포트에서 실행됩니다. 바인드 IP, 포트, 인증서가 필요 없습니다.',
+      },
+    },
+    protocol: {
+      title: '프린터 유형',
+      bambu: 'Bambu 호환',
+      bambuDesc: 'Bambu Lab 프린터를 에뮬레이션합니다(Bambu 프로필을 쓰는 Bambu Studio / Orca)',
+      moonraker: 'Moonraker/OctoPrint 호환',
+      moonrakerDesc: 'Klipper, Prusa, OctoPrint 및 기타 Bambu가 아닌 프린터용 업로드 엔드포인트',
+    },
+    slicerConnection: {
+      title: '슬라이서 연결',
+      hostUrl: '호스트 URL',
+      apiKey: 'API 키',
+      regenerate: 'API 키 다시 생성',
+      regenerateConfirmTitle: 'API 키 다시 생성',
+      regenerateConfirmMessage: '현재 키는 즉시 작동을 멈춥니다. 슬라이서의 실제 프린터 설정에 새 키를 입력해야 합니다.',
+      keyRegenerated: '새 API 키가 생성되었습니다',
+      hint: '슬라이서에서 호스트 유형이 “Octo/Klipper”(OrcaSlicer / Snapmaker Orca) 또는 “OctoPrint”(PrusaSlicer, 바이너리 G-code도 작동)인 실제 프린터를 추가하고 호스트 URL과 API 키를 입력하세요. 여기로 보낸 작업은 프린터로 바로 가지 않고 Printbuddy로 갑니다.',
     },
   },
 
@@ -6840,7 +6893,8 @@ export default {
       webhook: 'Webhook',
       homeassistant: 'Home Assistant',
       bark: 'Bark',
-      gotify: 'Gotify'
+      gotify: 'Gotify',
+      printbuddy_app: 'Printbuddy 앱',
     },
     // Provider descriptions
     providerDescriptions: {
@@ -6854,7 +6908,8 @@ export default {
       webhook: '모든 URL에 일반 HTTP POST',
       homeassistant: 'Home Assistant 대시보드의 지속적인 알림',
       bark: 'Bark를 통한 iOS 푸시 알림(셀프 호스팅 가능)',
-      gotify: '직접 운영하는 Gotify 서버를 통한 푸시 알림'
+      gotify: '직접 운영하는 Gotify 서버를 통한 푸시 알림',
+      printbuddy_app: '휴대폰의 Printbuddy 앱으로 보내는 푸시 알림입니다. 기기를 추가하려면 앱에서 알림을 켜세요.',
     },
     // NotificationProviderCard
     lastSuccess: '마지막: {{date}}',
@@ -8426,7 +8481,31 @@ export default {
         title: 'TLS 인증서',
         pass: '인증서가 준비됐습니다. Printbuddy CA 인증서(위)가 슬라이서의 신뢰 저장소에 가져와져 있는지 확인하세요.',
         fail: '이 가상 프린터의 TLS 인증서가 없습니다. Printbuddy 데이터 디렉터리가 쓰기 가능한지 확인하세요.'
-      }
+      },
+      mr_enabled: {
+        title: '가상 프린터 활성화됨',
+        fail: '이 가상 프린터가 꺼져 있습니다. 켜기 전까지 슬라이서의 연결 테스트와 업로드가 거부됩니다.',
+      },
+      mr_endpoint: {
+        title: '업로드 엔드포인트 준비됨',
+        pass: '슬라이서는 Printbuddy 포트의 {{path}}(으)로 업로드할 수 있습니다.',
+        fail: '가상 프린터가 활성화되어 있지만 업로드 엔드포인트가 등록되지 않았습니다. 껐다가 다시 켜 보고, 그래도 안 되면 Printbuddy 로그를 확인하세요.',
+      },
+      mr_api_key: {
+        title: 'API 키 설정됨',
+        fail: 'API 키가 설정되지 않았습니다. API 키 옆의 새로 고침 버튼으로 생성하세요.',
+      },
+      mr_target_printer: {
+        title: '대상 프린터',
+        pass: '작업은 연결된 {{name}}(으)로 갑니다.',
+        warn: '{{name}}이(가) 현재 오프라인입니다. 대기열의 작업은 다시 연결되면 전송됩니다.',
+        fail: '인쇄 대기열 모드에는 Bambu가 아닌 대상 프린터(Klipper, Prusa, OctoPrint, …)가 필요합니다. 대상 프린터에서 하나를 선택하세요.',
+        skip: '보관 및 검토 모드에서는 필요하지 않습니다.',
+      },
+      mr_upload_dir: {
+        title: '업로드 폴더 쓰기 가능',
+        fail: 'Printbuddy가 이 가상 프린터의 업로드 폴더에 쓸 수 없습니다. Printbuddy 데이터 디렉터리에 쓸 수 있는지 확인하세요.',
+      },
     }
   },
   gyroidvault: {

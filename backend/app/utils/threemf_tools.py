@@ -15,6 +15,7 @@ import zipfile
 from collections import OrderedDict
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from io import BytesIO
 from pathlib import Path
 from threading import Lock
 
@@ -738,6 +739,84 @@ def _group_extruder_indices(plates: list[XmlElement]) -> dict[int, int] | None:
             if table.setdefault(group_id, extruder_index) != extruder_index:
                 return None
     return table or None
+
+
+def discover_plate_indices(zf: zipfile.ZipFile) -> list[int]:
+    """Return sorted 1-indexed plate numbers defined by a 3MF project.
+
+    Priority (first non-empty wins):
+
+    1. ``Metadata/plate_N.gcode`` — sliced projects
+    2. ``Metadata/plate_N.json`` / ``plate_N.png`` — Bambu unsliced exports
+       that still ship per-plate previews
+    3. ``<plate><metadata key="plater_id">`` in ``model_settings.config`` —
+       Snapmaker/Orca converted projects often drop the preview PNGs but
+       keep the plate list here. Without this fallback the plates API
+       reports ``is_multi_plate: false`` and SliceModal skips the picker.
+    """
+    namelist = zf.namelist()
+    indices: list[int] = []
+
+    for name in namelist:
+        if not (name.startswith("Metadata/plate_") and name.endswith(".gcode")):
+            continue
+        try:
+            indices.append(int(name[len("Metadata/plate_") : -len(".gcode")]))
+        except ValueError:
+            continue
+    if indices:
+        return sorted(set(indices))
+
+    plate_re = re.compile(r"^Metadata/plate_(\d+)\.(json|png)$")
+    seen: set[int] = set()
+    for name in namelist:
+        if name.endswith(".png") and ("_small" in name or "no_light" in name):
+            continue
+        match = plate_re.match(name)
+        if not match:
+            continue
+        try:
+            index = int(match.group(1))
+        except ValueError:
+            continue
+        if index not in seen:
+            seen.add(index)
+            indices.append(index)
+    if indices:
+        return sorted(indices)
+
+    if "Metadata/model_settings.config" not in namelist:
+        return []
+    try:
+        root = ET.fromstring(zf.read("Metadata/model_settings.config"))
+    except (ET.ParseError, UnicodeDecodeError, OSError, KeyError):
+        return []
+    for plate_elem in root.findall(".//plate"):
+        for meta in plate_elem.findall("metadata"):
+            if meta.get("key") not in ("plater_id", "plate_id"):
+                continue
+            value = meta.get("value")
+            if not value:
+                continue
+            try:
+                indices.append(int(value))
+            except ValueError:
+                continue
+            break
+    return sorted(set(indices))
+
+
+def discover_plate_indices_from_bytes(zip_bytes: bytes) -> list[int]:
+    """Return sorted plate IDs from 3MF bytes, or ``[]`` if unreadable.
+
+    Prefer this over counting ``plater_id`` metadata and assuming ``1..N`` —
+    retained plate IDs may be sparse (e.g. ``[1, 3]`` after deleting plate 2).
+    """
+    try:
+        with zipfile.ZipFile(BytesIO(zip_bytes), "r") as zf:
+            return discover_plate_indices(zf)
+    except (zipfile.BadZipFile, OSError):
+        return []
 
 
 def extract_nozzle_mapping_from_3mf(zf: zipfile.ZipFile, plate_id: int | None = None) -> dict[int, int] | None:
@@ -2200,6 +2279,39 @@ def _is_sentinel(value: object, sentinel: str) -> bool:
     return False
 
 
+def _ensure_process_lists_printer(config: dict) -> bool:
+    """Add ``printer_settings_id`` to ``print_compatible_printers`` when missing.
+
+    Snapmaker-converted MakerWorld 3MFs often keep a Bambu process compat list
+    (e.g. ``["Bambu Lab H2C 0.4 nozzle"]``) after the printer was switched to
+    U1, and Orca 2.5 then rejects the file with "The selected printer is not
+    compatible with the process preset in the 3mf." Returns True when the
+    config was changed.
+    """
+    printer_id = config.get("printer_settings_id")
+    if isinstance(printer_id, list):
+        printer_id = next((item for item in printer_id if isinstance(item, str) and item.strip()), None)
+    if not isinstance(printer_id, str) or not printer_id.strip():
+        return False
+    printer_id = printer_id.strip()
+    raw_compat = config.get("print_compatible_printers")
+    if isinstance(raw_compat, str) and raw_compat.strip():
+        compat_list = [raw_compat.strip()]
+    elif isinstance(raw_compat, list):
+        compat_list = [item.strip() for item in raw_compat if isinstance(item, str) and item.strip()]
+    else:
+        compat_list = []
+    if printer_id in compat_list:
+        return False
+    config["print_compatible_printers"] = [*compat_list, printer_id]
+    logger.info(
+        "3MF sanitiser: added %r to print_compatible_printers (was %s) so the embedded process matches the printer",
+        printer_id,
+        compat_list or "[]",
+    )
+    return True
+
+
 def sanitize_project_settings_sentinels(zip_bytes: bytes) -> bytes:
     """Strip inherit/unset sentinels from a 3MF's ``project_settings.config``
     so the slicer CLI's range validator accepts the file (#1201, #3030).
@@ -2234,15 +2346,17 @@ def sanitize_project_settings_sentinels(zip_bytes: bytes) -> bytes:
                 for key, sentinel in PROJECT_SETTINGS_SENTINELS.items()
                 if _is_sentinel(config.get(key), sentinel)
             }
-            if not removed:
-                return zip_bytes
             for key in removed:
                 config.pop(key, None)
+            if removed:
+                logger.info(
+                    "3MF sanitiser: removed inherit sentinels %s - slicer will use its defaults for those keys",
+                    sorted(f"{key}={sentinel}" for key, sentinel in removed.items()),
+                )
+            compat_added = _ensure_process_lists_printer(config)
+            if not removed and not compat_added:
+                return zip_bytes
             patched = json.dumps(config)
-            logger.info(
-                "3MF sanitiser: removed inherit sentinels %s - slicer will use its defaults for those keys",
-                sorted(f"{key}={sentinel}" for key, sentinel in removed.items()),
-            )
             dst = BytesIO()
             with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as zout:
                 for item in zin.infolist():

@@ -109,6 +109,7 @@ from backend.app.utils.filament_types import nozzle_temp_range, printer_filament
 from backend.app.utils.local_time import day_zone, local_date_end, local_date_start
 from backend.app.utils.natural_sort import natural_sort_key
 from backend.app.utils.tag_normalization import normalize_tag_uid, normalize_tray_uuid
+from backend.app.utils.tray_ids import external_tray_id
 
 logger = logging.getLogger(__name__)
 
@@ -2444,7 +2445,7 @@ async def assign_spool(
     accounting and picker filtering keep one source of truth, but it never
     attempts Bambu MQTT slot configuration.
     """
-    from backend.app.services.printer_manager import printer_manager
+    from backend.app.services.printer_manager import printer_manager, run_client_call
 
     printer_scope.ensure(data.printer_id)
 
@@ -2487,7 +2488,7 @@ async def assign_spool(
         if data.ams_id == 255:
             # External slot: look up tray from vt_tray by global ID
             vt_tray = state.raw_data.get("vt_tray") or []
-            ext_id = data.tray_id + 254  # 0→254, 1→255
+            ext_id = external_tray_id(data.tray_id)  # 0→254, 1→255, H3C 2-8→247-253
             for vt in vt_tray:
                 if isinstance(vt, dict) and int(vt.get("id", 254)) == ext_id:
                     fingerprint_color = vt.get("tray_color", "")
@@ -2714,7 +2715,7 @@ async def assign_spool(
                 try:
                     client = printer_manager.get_client(data.printer_id)
                     if client:
-                        client.request_status_update()
+                        await run_client_call(client, client.request_status_update)
                 except Exception:
                     pass
     # pending_config is the "config not landed yet" UI marker. True when the

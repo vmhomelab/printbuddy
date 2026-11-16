@@ -987,6 +987,9 @@ export default {
     dropNotSliced: 'Filen innehåller ingen slicad G-kod. Slica den först och skriv sedan ut den.',
     dropToPrint: 'Släpp för att skriva ut',
     dropToQueue: 'Skrivare upptagen',
+    ams3h: {
+      dryZone: 'Tork: fack {{slots}}',
+    },
   },
 
   // Archives page
@@ -3276,6 +3279,14 @@ export default {
     slicerSidecarOutdated: 'Ansluten till {{slicer}}, men sidecar-imagen är inte den version som denna Printbuddy förväntar sig (kör {{running}}, förväntad {{expected}}). Uppdatera den: docker compose pull && docker compose up -d.',
     slicerSidecarRevisionOld: 'en äldre version',
     slicerConnectionError: 'Slicer-anslutningen misslyckades.',
+    mobilePairing: {
+      title: 'Para mobilappen',
+      description: 'Skanna koden med telefonens kamera eller i Printbuddy-appen för att ansluta den med den här nyckeln.',
+      qrAlt: 'QR-kod för att para mobilappen Printbuddy',
+      localhostWarning: 'Den här adressen fungerar bara på den här datorn. Öppna Printbuddy via nätverksadressen (till exempel IP-adressen) så att telefonen kan nå den.',
+    },
+    rememberMeExtended: 'Kom ihåg mig i 30 dagar',
+    rememberMeExtendedDescription: "När användare kryssar i 'Kom ihåg mig' vid inloggning förblir de inloggade i 30 dagar i stället för 24 timmar",
   },
 
   // Notifications (for push notifications)
@@ -4997,6 +5008,10 @@ export default {
     },
     queueAfterSlice: 'Lägg till i utskriftskön efteråt',
     queueAfterSliceTitle: 'När slicningen är klar öppnas dialogen för att lägga den slicade filen i kön.',
+    outputModeLabel: 'Utdata',
+    outputCombined: 'En fil med flera plattor',
+    outputSeparate: 'En fil per platta',
+    completedToastSplit: 'Slicade {{count}} plattor från {{name}}',
   },
 
   // Spoolman
@@ -6415,6 +6430,7 @@ export default {
     targetPrinter: {
       title: 'Målskrivare',
       placeholder: 'Välj en skrivare...',
+      moonrakerHint: 'Endast skrivare som inte är från Bambu kan väljas. Krävs för utskriftsköläget. Skrivaren visas också på slicerns flik Enhet.',
     },
     remoteInterface: {
       title: 'Åsidosättning för nätverksgränssnitt',
@@ -6457,10 +6473,6 @@ export default {
       description: 'Funktionen för virtuell skrivare kräver ytterligare systemkonfiguration innan den fungerar. Detta inkluderar portvidarebefordran, brandväggsregler och plattformsspecifika inställningar.',
       readGuide: 'Läs inställningsguiden innan du aktiverar',
     },
-    bambuOnly: {
-      badge: 'Endast Bambu Lab',
-      description: 'Virtuella skrivare emulerar Bambus LAN-protokoll för Bambu Studio och OrcaSlicer. De är inte ett generellt lager för virtuella skrivare för Prusa-, Klipper/Moonraker- eller Elegoo SDCP-skrivare.',
-    },
     archiveNameSource: {
       title: 'Källa för arkivnamn',
       description: 'Välj hur nya arkiv ska namnges när filer anländer via den virtuella skrivaren. "Metadata" använder den inbäddade titeln från slicern från 3MF (standard). "Filnamn" använder filnamnet som Bambu Studio skickade via FTP. Obs: Bambu Studio skriver över det namn du skriver i dialogrutan "Skicka till skrivare" med 3MF:ens Titel-fält när sådant finns, så båda lägen producerar ofta samma sträng.',
@@ -6474,6 +6486,7 @@ export default {
       copied: 'Kopierad',
       download: 'Ladda ner',
       fingerprint: 'SHA-256',
+      bambuOnlyBadge: 'Endast Bambu-kompatibel',
     },
     howItWorks: {
       title: 'Hur det fungerar',
@@ -6515,10 +6528,50 @@ export default {
       name: 'Namn',
       hint: 'Du kan konfigurera åtkomstkod, målskrivare och andra inställningar efter skapande.',
       create: 'Skapa',
+      hintMoonraker: 'Kopiera värd-URL och API-nyckel till slicerns inställningar för den fysiska skrivaren när den har skapats.',
     },
     deleteConfirm: {
       title: 'Ta bort virtuell skrivare',
       message: 'Är du säker på att du vill ta bort "{{name}}"? Detta kommer att stoppa alla tjänster för denna skrivare.',
+    },
+    types: {
+      title: 'Två sorters virtuella skrivare',
+      newBadge: 'Ny',
+      intro: 'Välj typ när du lägger till en virtuell skrivare. Filer som skickas från slicern hamnar i Printbuddy (arkiv, granskning eller utskriftskö) i stället för direkt i skrivaren.',
+      bambu: {
+        tag: 'Bambu Lab-skrivare',
+        point1: 'Emulerar en Bambu-skrivare för Bambu Studio / OrcaSlicer med en Bambu-profil',
+        point2: 'Hittas automatiskt i LAN, eller läggs till via IP och åtkomstkod',
+        point3: 'Lägen: Arkiv, Granskning, Kö, Proxy',
+        setupLabel: 'Konfiguration krävs:',
+        setupText: 'behöver en egen bind-IP, öppna portar och Printbuddys CA i slicern.',
+        guide: 'Läs installationsguiden',
+      },
+      moonraker: {
+        tag: 'Klipper, Prusa, OctoPrint med flera',
+        point1: 'OrcaSlicer / Snapmaker Orca: lägg till en fysisk skrivare med värdtyp “Octo/Klipper”. PrusaSlicer: värdtyp “OctoPrint” (binär G-kod fungerar också)',
+        point2: 'Klistra in värd-URL och API-nyckel från den virtuella skrivarens kort',
+        point3: 'Lägen: Arkiv, Granskning, Kö (skickar till målskrivaren)',
+        noSetupLabel: 'Ingen extra konfiguration:',
+        noSetupText: 'körs på Printbuddys port. Ingen bind-IP, inga portar eller certifikat behövs.',
+      },
+    },
+    protocol: {
+      title: 'Skrivartyp',
+      bambu: 'Bambu-kompatibel',
+      bambuDesc: 'Emulerar en Bambu Lab-skrivare (Bambu Studio / Orca med en Bambu-profil)',
+      moonraker: 'Moonraker/OctoPrint-kompatibel',
+      moonrakerDesc: 'Uppladdningsslutpunkt för Klipper, Prusa, OctoPrint och andra skrivare som inte är från Bambu',
+    },
+    slicerConnection: {
+      title: 'Slicer-anslutning',
+      hostUrl: 'Värd-URL',
+      apiKey: 'API-nyckel',
+      regenerate: 'Skapa ny API-nyckel',
+      regenerateConfirmTitle: 'Skapa ny API-nyckel',
+      regenerateConfirmMessage: 'Den nuvarande nyckeln slutar fungera direkt. Du måste ange den nya nyckeln i slicerns inställningar för den fysiska skrivaren.',
+      keyRegenerated: 'Ny API-nyckel skapad',
+      hint: 'Lägg till en fysisk skrivare i slicern med värdtyp “Octo/Klipper” (OrcaSlicer / Snapmaker Orca) eller “OctoPrint” (PrusaSlicer, binär G-kod fungerar också) och ange värd-URL och API-nyckel. Jobb som skickas dit går till Printbuddy i stället för direkt till skrivaren.',
     },
   },
 
@@ -6890,6 +6943,7 @@ export default {
       homeassistant: 'Home Assistant',
       bark: 'Bark',
       gotify: 'Gotify',
+      printbuddy_app: 'Printbuddy-appen',
     },
     // Provider descriptions
     providerDescriptions: {
@@ -6904,6 +6958,7 @@ export default {
       homeassistant: 'Permanenta notiser i Home Assistant-instrumentpanel',
       bark: 'iOS push-notiser via Bark (självhostbar)',
       gotify: 'Push-notiser via din egen Gotify-server',
+      printbuddy_app: 'Pushnotiser till Printbuddy-appen på din telefon. Slå på dem i appen för att lägga till en enhet.',
     },
     // NotificationProviderCard
     lastSuccess: 'Senast: {{date}}',
@@ -7762,6 +7817,30 @@ export default {
         title: 'TLS-certifikat',
         pass: 'Certifikat redo. Se till att Printbuddy-CA-certifikatet (ovan) importeras till din slicerns betroddelagring.',
         fail: 'TLS-certifikatet för denna virtuella skrivare saknas. Kontrollera att Printbuddy-datakatalogen är skrivbar.',
+      },
+      mr_enabled: {
+        title: 'Virtuell skrivare aktiverad',
+        fail: 'Den här virtuella skrivaren är avstängd. Slicerns anslutningstest och uppladdningar nekas tills du slår på den.',
+      },
+      mr_endpoint: {
+        title: 'Uppladdningsslutpunkt klar',
+        pass: 'Slicers kan ladda upp till {{path}} på Printbuddys port.',
+        fail: 'Den virtuella skrivaren är aktiverad, men dess uppladdningsslutpunkt är inte registrerad. Stäng av och slå på den igen; hjälper inte det, kontrollera Printbuddys logg.',
+      },
+      mr_api_key: {
+        title: 'API-nyckel angiven',
+        fail: 'Ingen API-nyckel är angiven. Skapa en med uppdateringsknappen bredvid API-nyckeln.',
+      },
+      mr_target_printer: {
+        title: 'Målskrivare',
+        pass: 'Jobb går till {{name}}, som är ansluten.',
+        warn: '{{name}} är offline just nu. Köade jobb skickas när den ansluter igen.',
+        fail: 'Utskriftsköläget behöver en målskrivare som inte är en Bambu-skrivare (Klipper, Prusa, OctoPrint, …). Välj en under Målskrivare.',
+        skip: 'Behövs inte i lägena Arkiv och Granskning.',
+      },
+      mr_upload_dir: {
+        title: 'Uppladdningsmapp skrivbar',
+        fail: 'Printbuddy kan inte skriva till den här virtuella skrivarens uppladdningsmapp. Kontrollera att Printbuddys datakatalog är skrivbar.',
       },
     },
   },

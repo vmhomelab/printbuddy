@@ -59,6 +59,8 @@ interface AddNotificationModalProps {
 }
 
 const PROVIDER_VALUES: ProviderType[] = ['email', 'telegram', 'discord', 'ntfy', 'pushover', 'bark', 'gotify', 'callmebot', 'webhook', 'homeassistant', 'notify'];
+// The Printbuddy mobile app registers itself; it can be edited here but not added by hand.
+const APP_REGISTERED_TYPES: ProviderType[] = ['printbuddy_app'];
 
 export function AddNotificationModal({ provider, onClose }: AddNotificationModalProps) {
   const { t, i18n } = useTranslation();
@@ -486,6 +488,11 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
           { key: 'server', label: 'Server URL', placeholder: 'https://gotify.example.com', type: 'text', required: true },
           { key: 'app_token', label: 'App Token', placeholder: 'Token of a Gotify application', type: 'password', required: true },
         ];
+      case 'printbuddy_app':
+        return [
+          { key: 'device_name', label: 'Device', placeholder: 'iPhone', type: 'text', required: false },
+          { key: 'push_token', label: 'Push Token', placeholder: 'ExponentPushToken[…]', type: 'text', required: true, helperText: 'Set by the Printbuddy app when you turn on notifications there.' },
+        ];
       default:
         return [];
     }
@@ -634,7 +641,7 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
               className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none disabled:opacity-50"
             >
               {/* Sorted by the label shown, so the order holds in every language */}
-              {PROVIDER_VALUES.map((value) => ({ value, label: t(`notifications.providerTypes.${value}`, value) }))
+              {[...PROVIDER_VALUES, ...APP_REGISTERED_TYPES.filter((v) => v === providerType)].map((value) => ({ value, label: t(`notifications.providerTypes.${value}`, value) }))
                 .sort((a, b) => a.label.localeCompare(b.label, i18n.language, { sensitivity: 'base' }))
                 .map(({ value, label }) => (
                   <option key={value} value={value}>

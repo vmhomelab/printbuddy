@@ -57,7 +57,9 @@ from backend.app.services.mqtt_relay import mqtt_relay
 from backend.app.services.notification_service import notification_service
 from backend.app.services.print_cost_estimate import estimate_queue_source_cost
 from backend.app.services.printer_manager import (
+    fire_client_call,
     printer_manager,
+    run_client_call,
     supports_airduct,
     supports_chamber_heater,
     supports_chamber_temp,
@@ -94,6 +96,7 @@ from backend.app.utils.threemf_tools import (
     plate_bed_temperature,
     select_plate_gcode_name,
 )
+from backend.app.utils.tray_ids import AmsType, h3c_global_tray, unit_ams_type
 
 logger = logging.getLogger(__name__)
 
@@ -3152,12 +3155,12 @@ class PrintScheduler:
                 )
             else:
                 try:
-                    client.set_bed_temperature(0)
+                    fire_client_call(client, client.set_bed_temperature, 0)
                 except Exception as exc:
                     logger.warning("Dispatch item %s: rollback bed → 0 failed: %s", item_id, exc)
         if "chamber" in pin:
             try:
-                client.set_chamber_temperature(0)
+                fire_client_call(client, client.set_chamber_temperature, 0)
             except Exception as exc:
                 logger.warning("Dispatch item %s: rollback chamber → 0 failed: %s", item_id, exc)
         if "airduct" in pin:
@@ -4718,6 +4721,9 @@ class PrintScheduler:
                     # Calculate global tray ID
                     # AMS-HT units have IDs starting at 128 with a single tray
                     global_tray_id = ams_id if ams_id >= 128 else ams_id * 4 + tray_id
+                    # The H3C's AMS 3H (unit 32, nine trays): Studio's 28 + slot
+                    if unit_ams_type(ams_id, ams_unit.get("info")) == AmsType.ZMULTI_A:
+                        global_tray_id = h3c_global_tray(ams_id, tray_id) or global_tray_id
 
                     filaments.append(
                         {
@@ -7196,7 +7202,7 @@ class PrintScheduler:
             self._keep_warm.pop(pid, None)
             return
         try:
-            client.set_bed_temperature(0)
+            fire_client_call(client, client.set_bed_temperature, 0)
             logger.info("Queue: keep-warm released for printer %d (bed → 0)", pid)
             self._keep_warm.pop(pid, None)
         except Exception as exc:
@@ -7369,7 +7375,7 @@ class PrintScheduler:
                 cur_bed_target = float((state.temperatures or {}).get("bed_target", 0) or 0)
                 if int(cur_bed_target) == entry.held_target:
                     try:
-                        client.set_bed_temperature(0)
+                        await run_client_call(client, client.set_bed_temperature, 0)
                     except Exception as exc:
                         logger.warning(
                             "Queue: keep-warm timeout bed-off failed for printer %d: %s",
@@ -7392,7 +7398,7 @@ class PrintScheduler:
                 entry.held_target = bed_target
                 continue
             try:
-                client.set_bed_temperature(bed_target)
+                await run_client_call(client, client.set_bed_temperature, bed_target)
                 entry.held_target = bed_target
                 logger.info(
                     "Queue: keeping bed warm at %d°C for printer %d (FINISH, next item needs chamber heat)",
@@ -7766,7 +7772,7 @@ class PrintScheduler:
                         # unwinds them on any non-success exit.
                         pin = self._preheat_pin.setdefault(printer.id, set())
                         try:
-                            client.set_bed_temperature(bed_target)
+                            await run_client_call(client, client.set_bed_temperature, bed_target)
                             pin.add("bed")
                             self._preheat_pin_bed[printer.id] = bed_target
                         except Exception as exc:
@@ -7786,7 +7792,7 @@ class PrintScheduler:
                                     logger.warning("Queue item %s: fast-path airduct failed: %s", item.id, exc)
                         if has_heater:
                             try:
-                                client.set_chamber_temperature(chamber_target)
+                                await run_client_call(client, client.set_chamber_temperature, chamber_target)
                                 pin.add("chamber")
                             except Exception as exc:
                                 logger.warning("Queue item %s: fast-path chamber M141 failed: %s", item.id, exc)
@@ -7818,7 +7824,7 @@ class PrintScheduler:
         # cache the target locally so the polling reads below see consistent
         # state (firmware MQTT echoes lag by ~1s).
         try:
-            client.set_bed_temperature(bed_target)
+            await run_client_call(client, client.set_bed_temperature, bed_target)
             pin.add("bed")
             self._preheat_pin_bed[printer.id] = bed_target
         except Exception as exc:
@@ -7859,7 +7865,7 @@ class PrintScheduler:
 
         if do_chamber and has_heater:
             try:
-                client.set_chamber_temperature(chamber_target)
+                await run_client_call(client, client.set_chamber_temperature, chamber_target)
                 pin.add("chamber")
             except Exception as exc:
                 logger.warning("Queue item %s: preheat chamber M141 failed: %s", item.id, exc)
@@ -10185,7 +10191,9 @@ class PrintScheduler:
         # parses + injects it only for dual-nozzle models so a null on every
         # other model is a transparent pass-through. The rack fallback is
         # resolved down there too, where the live rack position is known.
-        started = printer_manager.start_print(
+        started = await run_client_call(
+            printer_manager.get_client(item.printer_id),
+            printer_manager.start_print,
             item.printer_id,
             remote_filename,
             plate_id=effective_plate_id,

@@ -720,6 +720,10 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 hours (M-2: reduced from 7 days)
 # matches the Pydantic le=720 on AppSettings.session_max_hours; defense in
 # depth so a tampered settings row can't request an absurd lifetime.
 SESSION_MAX_HOURS_HARD_CEILING = 720
+# Extended lifetime for "Remember Me" logins, only when an admin enables the
+# ``remember_me_extended_session`` setting (Settings → Users → Authentication).
+REMEMBER_ME_TOKEN_EXPIRE_DAYS = 30
+REMEMBER_ME_SETTING_KEY = "remember_me_extended_session"
 
 # HTTP Bearer token
 security = HTTPBearer(auto_error=False)
@@ -1438,6 +1442,24 @@ def create_access_token(data: dict, expires_delta: timedelta | None = None) -> s
     to_encode.update({"exp": expire, "jti": jti, "iat": now})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
+
+
+async def get_access_token_ttl(db: AsyncSession, remember_me: bool = False) -> timedelta:
+    """Return the lifetime for a newly issued session JWT.
+
+    Defaults to the admin-configurable session lifetime (#1706, 24 h unless
+    set). A "Remember Me" login gets 30 days, but only when the admin has
+    enabled the extended-session setting — the client flag alone never
+    extends the lifetime. 30 days is also the hard ceiling of that setting.
+    """
+    default = timedelta(minutes=await resolve_session_max_minutes(db))
+    if not remember_me:
+        return default
+    result = await db.execute(select(Settings).where(Settings.key == REMEMBER_ME_SETTING_KEY))
+    setting = result.scalar_one_or_none()
+    if setting is not None and setting.value.lower() == "true":
+        return max(default, timedelta(days=REMEMBER_ME_TOKEN_EXPIRE_DAYS))
+    return default
 
 
 def _is_token_fresh(iat: int | float | None, user: User) -> bool:

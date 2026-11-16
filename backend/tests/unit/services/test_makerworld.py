@@ -243,6 +243,35 @@ class TestGetDesign:
         assert "members" in str(exc_info.value)
 
     @pytest.mark.asyncio
+    async def test_403_with_token_retries_anonymously(self):
+        """A refused Bambu Cloud token must not block public metadata."""
+        svc = MakerWorldService(client=MagicMock(spec=httpx.AsyncClient), auth_token="tok")
+        forbidden = MagicMock()
+        forbidden.status_code = 403
+        forbidden.json.return_value = {"error": "The client does not have access rights to the content."}
+        ok = MagicMock()
+        ok.status_code = 200
+        ok.json.return_value = {"id": 1}
+        svc._client.get = AsyncMock(side_effect=[forbidden, ok])
+
+        assert await svc.get_design(1) == {"id": 1}
+        first, second = svc._client.get.call_args_list
+        assert first.kwargs["headers"]["Authorization"] == "Bearer tok"
+        assert "Authorization" not in second.kwargs["headers"]
+
+    @pytest.mark.asyncio
+    async def test_403_anonymous_retry_still_forbidden_raises(self):
+        svc = MakerWorldService(client=MagicMock(spec=httpx.AsyncClient), auth_token="tok")
+        forbidden = MagicMock()
+        forbidden.status_code = 403
+        forbidden.json.return_value = {"error": "This model is only available to members"}
+        svc._client.get = AsyncMock(return_value=forbidden)
+
+        with pytest.raises(MakerWorldForbiddenError, match="members"):
+            await svc.get_design(1)
+        assert svc._client.get.await_count == 2
+
+    @pytest.mark.asyncio
     async def test_maps_5xx_to_unavailable(self, service):
         resp = MagicMock()
         resp.status_code = 503
@@ -517,16 +546,42 @@ class TestGetDownload:
             await self._run(service, ProviderResourceRef(source_type="makerworld", external_id="1400373"))
 
     @pytest.mark.asyncio
-    async def test_a_refusal_from_the_instance_is_not_retried_on_the_profile(self, service):
+    async def test_a_refusal_from_the_instance_surfaces_when_the_profile_has_no_link(self, service):
         """Bambu's reason (paid, points, region) reaches the user rather than
         the profile endpoint's empty link."""
         service.get_design = AsyncMock(return_value=self._design())
         service.get_instance_download = AsyncMock(side_effect=MakerWorldForbiddenError("paid model"))
-        service.get_profile_download = AsyncMock()
+        service.get_profile_download = AsyncMock(return_value={"name": "benchy.3mf", "url": ""})
 
         with pytest.raises(MakerWorldForbiddenError, match="paid model"):
             await self._run(service, ProviderResourceRef(source_type="makerworld", external_id="1400373"))
-        service.get_profile_download.assert_not_awaited()
+        service.get_profile_download.assert_awaited_once_with(298919107, "US2bb73b106683e5")
+
+    @pytest.mark.asyncio
+    async def test_a_refused_instance_falls_back_to_the_profile_link(self, service):
+        """Bambu sometimes refuses the f3mf endpoint for third-party clients
+        while the legacy profile endpoint still serves the same file."""
+        service.get_design = AsyncMock(return_value=self._design())
+        service.get_instance_download = AsyncMock(
+            side_effect=MakerWorldForbiddenError("The client does not have access rights to the content.")
+        )
+        service.get_profile_download = AsyncMock(return_value=self._manifest())
+
+        info = await self._run(
+            service, ProviderResourceRef(source_type="makerworld", external_id="1400373", sub_id="298919107")
+        )
+        assert info.url == self._manifest()["url"]
+        service.get_profile_download.assert_awaited_once_with(298919107, "US2bb73b106683e5")
+
+    @pytest.mark.asyncio
+    async def test_instance_refusal_wins_over_a_legacy_error(self, service):
+        """A legacy 400 must not hide the real refusal from the primary endpoint."""
+        service.get_design = AsyncMock(return_value=self._design())
+        service.get_instance_download = AsyncMock(side_effect=MakerWorldForbiddenError("Requires points redemption"))
+        service.get_profile_download = AsyncMock(side_effect=MakerWorldUnavailableError("unexpected status 400"))
+
+        with pytest.raises(MakerWorldForbiddenError, match="points"):
+            await self._run(service, ProviderResourceRef(source_type="makerworld", external_id="1400373"))
 
     @pytest.mark.asyncio
     async def test_no_link_from_either_is_unavailable(self, service):

@@ -13,6 +13,7 @@ from backend.app.services.printer_providers._http_common import (
     PolledLifecycleMixin,
     float_or_none,
     minutes_from_seconds,
+    serialized_status_update,
 )
 
 logger = logging.getLogger(__name__)
@@ -346,6 +347,7 @@ class OctoPrintPrinterClient(PolledLifecycleMixin):
             return "failed"
         return super()._completion_status(current_state)
 
+    @serialized_status_update
     def request_status_update(self) -> bool:
         previous_state = self._last_state if self._has_status_sample else None
 

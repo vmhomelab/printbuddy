@@ -45,6 +45,7 @@ export const PRINTER_MODEL_GROUPS: PrinterModelOptionGroup[] = [
       { value: 'H2D', label: 'H2D' },
       { value: 'H2D Pro', label: 'H2D Pro' },
       { value: 'H2S', label: 'H2S' },
+      { value: 'H3C', label: 'H3C' },
     ],
   },
   {

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -12,6 +13,7 @@ from urllib.parse import quote, urljoin, urlparse, urlunparse
 import httpx
 
 from backend.app.services.bambu_mqtt import FilaSwitchState, NozzleInfo, PrintOptions
+from backend.app.services.printer_providers._http_common import serialized_status_update
 
 logger = logging.getLogger(__name__)
 
@@ -447,6 +449,7 @@ def _snapmaker_u1_task_filament_metadata(config: dict[str, Any], index: int) -> 
     official = bool(_snapmaker_list_value(config, "filament_official", index))
     edited = bool(_snapmaker_list_value(config, "filament_edit", index))
     sku = _safe_int(_snapmaker_list_value(config, "filament_sku", index))
+    spool_id = _safe_int(_snapmaker_list_value(config, "filament_spool_id", index))
     color = None
     if material:
         color = _normalize_snapmaker_u1_color(_snapmaker_list_value(config, "filament_color_rgba", index))
@@ -466,6 +469,7 @@ def _snapmaker_u1_task_filament_metadata(config: dict[str, Any], index: int) -> 
         "official": official,
         "edited": edited,
         "sku": sku,
+        "spool_id": spool_id if spool_id and spool_id > 0 else None,
         "source": source,
     }
 
@@ -768,6 +772,16 @@ logger = logging.getLogger(__name__)
 
 _MOONRAKER_ACTIVE_PRINT_STATES = frozenset({"RUNNING", "PAUSE"})
 
+# Webcam config changes rarely; re-check it every 10 minutes.
+_WEBCAM_CACHE_TTL_SECONDS = 600.0
+
+# Klipper's object list only changes on a config reload/restart, but the status
+# poll needs it several times per cycle (fans, chamber, tool heads) and light/
+# fan/chamber commands need it too. Cache it briefly instead of re-fetching it
+# on every request; it is also dropped on (re)connect and whenever Klippy is
+# not ready or a status poll fails.
+_MOONRAKER_OBJECTS_CACHE_TTL_SECONDS = 300.0
+
 
 class MoonrakerPrinterClient:
     """Minimal Klipper/Mainsail provider backed by Moonraker.
@@ -807,18 +821,63 @@ class MoonrakerPrinterClient:
         self._has_status_sample = False
         self._last_bed_temp: float | None = None
         self._current_print_started_at: float | None = None
+        # Progress from the last sample taken while a job was running. Klipper
+        # firmwares whose end G-code calls SDCARD_RESET_FILE (e.g. Qidi) jump
+        # from ``printing`` straight to ``standby`` with progress reset to 0,
+        # so the finished/stopped decision must not rely on the IDLE sample.
+        self._last_running_progress: float = 0.0
+        # First enabled Moonraker webcam, refreshed by refresh_background_caches.
+        self._webcam_cache: dict[str, Any] | None = None
+        self._webcam_cache_at = 0.0
         self._current_file_metadata: dict[str, Any] = {}
         self._current_file_metadata_name: str | None = None
         # Firmware message of the last failed CFS/print-start command, for the
         # API and print-dispatch error shown to the user.
         self.last_error: str | None = None
+        # One pooled HTTP client per printer: keep-alive avoids a fresh TCP
+        # connect (and DNS lookup) for each of the several requests a status
+        # poll makes. httpx.Client is safe to share between threads.
+        self._http: httpx.Client | None = None
+        self._http_lock = threading.Lock()
+        self._objects_cache: list[str] | None = None
+        self._objects_cache_at = 0.0
+        # Snapmaker U1 SpoolLink exposes Spoolman IDs on print_task_config but
+        # not remain %. Cache Moonraker's spoolman proxy results briefly so
+        # status polling does not re-fetch the full spool list every cycle.
+        # Values: remain %, remaining_weight g, brand, material, color_name.
+        self._spoolman_remain_cache: dict[int, dict[str, Any]] = {}
+        self._spoolman_remain_cache_at: float = 0.0
 
     @property
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.auth_token}"} if self.auth_token else {}
 
+    def _http_client(self) -> httpx.Client:
+        with self._http_lock:
+            if self._http is None:
+                self._http = httpx.Client(timeout=self.timeout)
+            return self._http
+
+    def _close_http_client(self) -> None:
+        with self._http_lock:
+            client, self._http = self._http, None
+        if client is not None:
+            try:
+                client.close()
+            except Exception:  # noqa: BLE001 - closing is best effort
+                pass
+
+    def _http_get(self, url: str, **kwargs: Any) -> httpx.Response:
+        return self._http_client().get(url, **kwargs)
+
+    def _http_post(self, url: str, **kwargs: Any) -> httpx.Response:
+        return self._http_client().post(url, **kwargs)
+
+    def _invalidate_objects_cache(self) -> None:
+        self._objects_cache = None
+
     def _get(self, path: str, *, base_url: str | None = None) -> dict[str, Any]:
-        response = httpx.get(
+        response = self._http_get(
             urljoin(base_url or self.base_url, path.lstrip("/")), headers=self._headers, timeout=self.timeout
         )
         response.raise_for_status()
@@ -826,6 +885,82 @@ class MoonrakerPrinterClient:
         if isinstance(data, dict) and isinstance(data.get("result"), dict):
             return data["result"]
         return data if isinstance(data, dict) else {"value": data}
+
+    def _jsonrpc(self, method: str, params: dict[str, Any] | None = None) -> Any:
+        response = self._http_post(
+            urljoin(self.base_url, "server/jsonrpc"),
+            headers={**self._headers, "Content-Type": "application/json"},
+            json={"jsonrpc": "2.0", "method": method, "params": params or {}, "id": 1},
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        data = response.json()
+        if not isinstance(data, dict):
+            return None
+        if data.get("error"):
+            return None
+        return data.get("result")
+
+    def _spoolman_remain_by_id(self, spool_ids: set[int]) -> dict[int, dict[str, Any]]:
+        """Map Spoolman spool IDs to remain % and spool identity fields.
+
+        Snapmaker U1 Extended Firmware / SpoolLink stores per-lane Spoolman IDs
+        in ``print_task_config.filament_spool_id`` but does not publish remain %
+        on ``filament_feed``. Moonraker's spoolman proxy is the authoritative
+        source for remaining weight and brand/material labels on those printers.
+        """
+        wanted = {sid for sid in spool_ids if isinstance(sid, int) and sid > 0}
+        if not wanted:
+            return {}
+
+        now = time.monotonic()
+        cache_fresh = (now - self._spoolman_remain_cache_at) < 30.0
+        if cache_fresh and wanted.issubset(self._spoolman_remain_cache.keys()):
+            return {sid: self._spoolman_remain_cache[sid] for sid in wanted}
+
+        try:
+            spools = self._jsonrpc(
+                "server.spoolman.proxy",
+                {"request_method": "GET", "path": "/v1/spool"},
+            )
+        except Exception:  # noqa: BLE001 - Spoolman is optional; keep tray status usable
+            return {sid: self._spoolman_remain_cache[sid] for sid in wanted if sid in self._spoolman_remain_cache}
+
+        if not isinstance(spools, list):
+            return {sid: self._spoolman_remain_cache[sid] for sid in wanted if sid in self._spoolman_remain_cache}
+
+        refreshed: dict[int, dict[str, Any]] = {}
+        for spool in spools:
+            if not isinstance(spool, dict):
+                continue
+            sid = _safe_int(spool.get("id"))
+            if sid is None or sid <= 0:
+                continue
+            remaining = _safe_float(spool.get("remaining_weight"))
+            filament = spool.get("filament") if isinstance(spool.get("filament"), dict) else {}
+            if not isinstance(filament, dict):
+                filament = {}
+            initial = _safe_float(filament.get("weight"))
+            if remaining is None or initial is None or initial <= 0:
+                continue
+            pct = max(0, min(100, round((remaining / initial) * 100)))
+            vendor = filament.get("vendor") if isinstance(filament.get("vendor"), dict) else {}
+            brand = _snapmaker_clean_text(vendor.get("name")) if isinstance(vendor, dict) else ""
+            material = _snapmaker_clean_text(filament.get("material"))
+            color_name = _snapmaker_clean_text(filament.get("name"))
+            refreshed[sid] = {
+                "remain": pct,
+                "remaining_weight": remaining,
+                "brand": brand or None,
+                "material": material or None,
+                "color_name": color_name or None,
+            }
+
+        if refreshed:
+            self._spoolman_remain_cache.update(refreshed)
+            self._spoolman_remain_cache_at = now
+
+        return {sid: self._spoolman_remain_cache[sid] for sid in wanted if sid in self._spoolman_remain_cache}
 
     def _query_objects(self, object_names: list[str]) -> dict[str, Any]:
         query = "printer/objects/query?" + "&".join(quote(name, safe="") for name in object_names)
@@ -894,9 +1029,15 @@ class MoonrakerPrinterClient:
         return normalized
 
     def _available_objects(self) -> list[str]:
+        cached = self._objects_cache
+        if cached is not None and time.monotonic() - self._objects_cache_at < _MOONRAKER_OBJECTS_CACHE_TTL_SECONDS:
+            return list(cached)
         objects = self._get("printer/objects/list")
         available = objects.get("objects", []) if isinstance(objects, dict) else []
-        return [name for name in available if isinstance(name, str)] if isinstance(available, list) else []
+        names = [name for name in available if isinstance(name, str)] if isinstance(available, list) else []
+        self._objects_cache = names
+        self._objects_cache_at = time.monotonic()
+        return list(names)
 
     def _available_fan_objects(self, available: list[str] | None = None) -> list[str]:
         if available is None:
@@ -1370,6 +1511,9 @@ class MoonrakerPrinterClient:
                 self.connect()
             except Exception:
                 pass
+        return self._fetch_webcams()
+
+    def _fetch_webcams(self) -> list[dict[str, Any]]:
         result = self._get("server/webcams/list")
         webcams = result.get("webcams") if isinstance(result, dict) else None
         if webcams is None and isinstance(result, dict):
@@ -1382,6 +1526,30 @@ class MoonrakerPrinterClient:
             if candidate:
                 normalized.append(candidate)
         return normalized
+
+    @property
+    def primary_webcam(self) -> dict[str, Any] | None:
+        """First enabled webcam Moonraker reported, from the background cache.
+
+        Lets notification snapshots and finish photos use the printer's own
+        camera when the user never configured an external camera URL.
+        """
+        return self._webcam_cache
+
+    def refresh_background_caches(self) -> None:
+        """Refresh slow-changing data off the event loop (called by the status poller)."""
+        if not self.state.connected:
+            return
+        now = time.monotonic()
+        if self._webcam_cache_at and now - self._webcam_cache_at < _WEBCAM_CACHE_TTL_SECONDS:
+            return
+        self._webcam_cache_at = now
+        try:
+            webcams = self._fetch_webcams()
+        except Exception as exc:  # noqa: BLE001 - webcam discovery is optional
+            logger.debug("Moonraker webcam discovery failed for %s: %s", self.base_url, exc)
+            return
+        self._webcam_cache = next((cam for cam in webcams if cam.get("enabled")), None)
 
     def _apply_k2_openhost_box(self, box: dict[str, Any]) -> None:
         """Map the K2-OpenHost (Kalico) CFS state to Printbuddy's AMS units.
@@ -1642,13 +1810,17 @@ class MoonrakerPrinterClient:
                 channel_action_state = str(values.get("channel_action_state") or "").strip().lower()
                 loaded_to_extruder = channel_state == "load_finish" or channel_action_state == "load_finish"
                 material = task_metadata.get("material") or metadata["material"] or ("Unknown" if detected else "")
+                # RFID/feed payloads often omit remain; use -1 (unknown) so the UI
+                # does not treat a missing value as 0% empty. Spoolman enrichment
+                # below overwrites this when filament_spool_id is present.
+                remain = metadata["remain"] if metadata.get("remain") is not None else -1
                 feed_slots[extruder_index] = {
                     "id": extruder_index,
                     "slot": f"U1-E{extruder_index}",
                     "tray_type": material,
                     "tray_sub_brands": task_metadata.get("subtype") or metadata["subtype"],
                     "tray_color": task_metadata.get("color") or metadata["color"],
-                    "remain": metadata["remain"],
+                    "remain": remain,
                     "remaining_weight": metadata["remaining_weight"],
                     "weight": metadata["weight"],
                     "active": active_index is not None and extruder_index == active_index,
@@ -1668,6 +1840,7 @@ class MoonrakerPrinterClient:
                     "filament_edit": task_metadata.get("edited"),
                     "filament_sku": task_metadata.get("sku"),
                     "filament_exist": task_metadata.get("exists"),
+                    "filament_spool_id": task_metadata.get("spool_id"),
                     "raw": values,
                 }
 
@@ -1712,6 +1885,24 @@ class MoonrakerPrinterClient:
 
         if feed_slots:
             trays = [feed_slots[index] for index in sorted(feed_slots)]
+            spool_ids = {
+                sid for tray in trays if (sid := _safe_int(tray.get("filament_spool_id"))) is not None and sid > 0
+            }
+            if spool_ids:
+                remain_by_id = self._spoolman_remain_by_id(spool_ids)
+                for tray in trays:
+                    sid = _safe_int(tray.get("filament_spool_id"))
+                    if sid is None or sid not in remain_by_id:
+                        continue
+                    info = remain_by_id[sid]
+                    tray["remain"] = info["remain"]
+                    tray["remaining_weight"] = info["remaining_weight"]
+                    if info.get("brand"):
+                        tray["filament_spool_brand"] = info["brand"]
+                    if info.get("material"):
+                        tray["filament_spool_material"] = info["material"]
+                    if info.get("color_name"):
+                        tray["filament_spool_color_name"] = info["color_name"]
             active_slots = [tray["slot"] for tray in trays if tray.get("active")]
             loaded_to_extruder_slots = [tray["slot"] for tray in trays if tray.get("loaded_to_extruder")]
             loaded_to_feeder_slots = [tray["slot"] for tray in trays if tray.get("loaded_to_feeder")]
@@ -1739,7 +1930,7 @@ class MoonrakerPrinterClient:
             }
 
     def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
-        response = httpx.post(
+        response = self._http_post(
             urljoin(self.base_url, path.lstrip("/")), json=payload, headers=self._headers, timeout=self.timeout
         )
         response.raise_for_status()
@@ -1782,7 +1973,7 @@ class MoonrakerPrinterClient:
         root = str(storage or "gcodes").strip().strip("/") or "gcodes"
         target = self._normalize_gcodes_path(remote_path) or local_path.name
         with open(local_path, "rb") as fh:
-            response = httpx.post(
+            response = self._http_post(
                 urljoin(self.base_url, "server/files/upload"),
                 data={"root": root, "path": target.rsplit("/", 1)[0] if "/" in target else ""},
                 files={"file": (target.rsplit("/", 1)[-1], fh, "application/octet-stream")},
@@ -1793,6 +1984,7 @@ class MoonrakerPrinterClient:
         return True
 
     def connect(self) -> None:
+        self._invalidate_objects_cache()
         last_exc: Exception | None = None
         for candidate in self.base_url_candidates:
             try:
@@ -1818,6 +2010,8 @@ class MoonrakerPrinterClient:
 
     def disconnect(self, timeout: float = 0) -> None:  # noqa: ARG002 - kept for Bambu client compatibility
         self.state.connected = False
+        self._invalidate_objects_cache()
+        self._close_http_client()
 
     def check_staleness(self) -> bool:
         try:
@@ -1911,6 +2105,7 @@ class MoonrakerPrinterClient:
         # owns that case; this edge detector is for new Moonraker transitions.
         if previous_state is not None and not previous_running and current_running:
             self._current_print_started_at = time.monotonic()
+            self._last_running_progress = 0.0
             # A re-uploaded file may reuse the old name; fetch fresh metadata per print.
             self._current_file_metadata = {}
             self._current_file_metadata_name = None
@@ -1926,17 +2121,65 @@ class MoonrakerPrinterClient:
             elif current_state == "FINISH":
                 payload["status"] = "completed"
             elif current_state == "IDLE":
-                payload["status"] = "completed" if self.state.progress >= 99 else "stopped"
+                payload["status"] = self._resolve_idle_job_status(payload.get("filename"))
             else:
                 payload["status"] = "stopped"
             if self.on_print_complete:
                 self.on_print_complete(payload)
 
+    def _last_history_job_status(self, filename: str | None) -> str | None:
+        """Return Moonraker's recorded end status for the most recent job.
+
+        Moonraker's job history records ``completed`` / ``cancelled`` / ``error``
+        from Klipper's own ``print_stats`` transitions, so it stays accurate
+        even when the poll missed the short-lived ``complete`` state. Returns
+        ``None`` when history is unavailable, still in progress, or belongs to
+        a different file.
+        """
+        try:
+            result = self._get("server/history/list?limit=1&order=desc")
+        except Exception as exc:  # noqa: BLE001 - history component is optional
+            logger.debug("Moonraker job history lookup failed: %s", exc)
+            return None
+        jobs = result.get("jobs") if isinstance(result, dict) else None
+        if not isinstance(jobs, list) or not jobs or not isinstance(jobs[0], dict):
+            return None
+        job = jobs[0]
+        status = str(job.get("status") or "").lower()
+        if not status or status == "in_progress":
+            return None
+        job_file = str(job.get("filename") or "")
+        if filename and filename != "Unknown" and job_file:
+            if job_file.lstrip("/").rsplit("/", 1)[-1] != str(filename).lstrip("/").rsplit("/", 1)[-1]:
+                return None
+        return status
+
+    def _resolve_idle_job_status(self, filename: str | None) -> str:
+        """Classify a RUNNING/PAUSE -> IDLE transition as completed or stopped."""
+        history_status = self._last_history_job_status(filename)
+        if history_status == "completed":
+            return "completed"
+        if history_status == "cancelled":
+            return "stopped"
+        if history_status in {"error", "klippy_shutdown", "klippy_disconnect"}:
+            return "failed"
+        return "completed" if self._last_running_progress >= 99 else "stopped"
+
+    @serialized_status_update
     def request_status_update(self) -> bool:
         previous_state = self._last_state if self._has_status_sample else None
-        status = self._query_objects(
-            ["webhooks", "print_stats", "virtual_sdcard", "display_status", "extruder", "heater_bed"]
-        )
+        try:
+            status = self._query_objects(
+                ["webhooks", "print_stats", "virtual_sdcard", "display_status", "extruder", "heater_bed"]
+            )
+        except Exception:
+            # Moonraker/Klippy may have restarted with a different config.
+            self._invalidate_objects_cache()
+            raise
+        webhooks = status.get("webhooks") if isinstance(status, dict) else None
+        if isinstance(webhooks, dict) and str(webhooks.get("state") or "ready").lower() != "ready":
+            # Klippy is starting up/shutdown: its object list is incomplete.
+            self._invalidate_objects_cache()
         try:
             available_objects = self._available_objects()
         except Exception:  # noqa: BLE001 - optional object discovery must not break core status polling
@@ -2022,13 +2265,15 @@ class MoonrakerPrinterClient:
         self._apply_chamber_status(status, available_objects)
         _apply_moonraker_fans(self.state, status)
         self._emit_status_callbacks(previous_state)
+        if self.state.state in {"RUNNING", "PAUSE"}:
+            self._last_running_progress = self.state.progress
         self._last_state = self.state.state
         self._has_status_sample = True
         return True
 
     def download_file(self, remote_path: str) -> bytes | None:
         normalized = self._normalize_gcodes_path(remote_path)
-        response = httpx.get(
+        response = self._http_get(
             urljoin(self.base_url, f"server/files/gcodes/{normalized}"),
             headers=self._headers,
             timeout=max(self.timeout, 60.0),

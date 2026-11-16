@@ -749,6 +749,10 @@ export default {
       customSubnetLabel: 'Sub-rede personalizada (CIDR)',
       customSubnetNote: 'Use uma sub-rede personalizada se sua impressora estiver em uma rede diferente deste servidor. As portas FTP (990) e MQTT (8883) devem estar acessíveis através do limite de roteamento.',
     },
+    // H3C AMS 3H
+    ams3h: {
+      dryZone: 'Secador: slots {{slots}}',
+    },
     // AMS Drying
     drying: {
       start: 'Iniciar secagem',
@@ -2390,6 +2394,12 @@ export default {
     apiKeyQrTitle: 'Escaneie para configurar',
     apiKeyQrCaption: 'Escaneie com seu app móvel para adicionar este servidor e a chave de API.',
     apiKeyQrWarning: 'Contém sua chave de API secreta — não compartilhe nem faça captura de tela onde outros possam ver.',
+    mobilePairing: {
+      title: 'Conectar o app móvel',
+      description: 'Leia este código com a câmera do celular ou no app Printbuddy para conectá-lo com esta chave.',
+      qrAlt: 'Código QR para conectar o app móvel Printbuddy',
+      localhostWarning: 'Este endereço só funciona neste computador. Abra o Printbuddy pelo endereço de rede (por exemplo, o IP) para que o celular consiga acessá-lo.',
+    },
     createNewApiKey: 'Criar Nova Chave API',
     keyName: 'Nome da Chave',
     keyNamePlaceholder: 'e.g., Home Assistant, OctoPrint',
@@ -2570,6 +2580,8 @@ export default {
     authentication: 'Autenticação',
     authEnabledDescription: 'Sua instância está protegida com autenticação de usuário',
     authDisabledDescription: 'Ative para exigir login e gerenciar o acesso dos usuários',
+    rememberMeExtended: 'Lembrar de mim por 30 dias',
+    rememberMeExtendedDescription: 'Quando os usuários marcam \'Lembrar de mim\' no login, permanecem conectados por 30 dias em vez de 24 horas',
     authDisabledMessage: 'Ative a autenticação para criar contas de usuário, gerenciar permissões e proteger sua instância do Printbuddy.',
     enableAuthentication: 'Ativar Autenticação',
     currentUser: 'Usuário Atual',
@@ -4850,6 +4862,10 @@ export default {
     allPlatesToggle: 'Fatiar todas as {{count}} bandejas',
     queueAfterSlice: 'Adicionar depois à fila de impressão',
     queueAfterSliceTitle: 'Ao terminar o fatiamento, abre a janela para adicionar o arquivo fatiado à fila de impressão.',
+    outputModeLabel: 'Saída',
+    outputCombined: 'Um arquivo multi-bandeja',
+    outputSeparate: 'Arquivo separado por bandeja',
+    completedToastSplit: 'Fatiadas {{count}} bandejas de {{name}}',
     slicing: 'Fatiando…',
     printer: 'Perfil de impressora',
     process: 'Perfil de processo',
@@ -6333,6 +6349,45 @@ export default {
 
   // Virtual Printer
   virtualPrinter: {
+    types: {
+      title: "Dois tipos de impressoras virtuais",
+      newBadge: "Novo",
+      intro: "Escolha o tipo ao adicionar uma impressora virtual. Os arquivos enviados pelo fatiador chegam ao Printbuddy (arquivo, revisão ou fila de impressão) em vez de irem direto para a impressora.",
+      bambu: {
+        tag: "Impressoras Bambu Lab",
+        point1: "Emula uma impressora Bambu para Bambu Studio / OrcaSlicer com perfil Bambu",
+        point2: "Encontrada automaticamente na rede local ou adicionada por IP e código de acesso",
+        point3: "Modos: Arquivo, Revisão, Fila, Proxy",
+        setupLabel: "Configuração necessária:",
+        setupText: "precisa de um IP de vínculo próprio, portas abertas e a CA do Printbuddy no fatiador.",
+        guide: "Ler o guia de configuração",
+      },
+      moonraker: {
+        tag: "Klipper, Prusa, OctoPrint e mais",
+        point1: "OrcaSlicer / Snapmaker Orca: adicione uma impressora física com tipo de host “Octo/Klipper”. PrusaSlicer: tipo de host “OctoPrint” (G-code binário também funciona)",
+        point2: "Cole a URL do host e a chave de API do cartão da impressora virtual",
+        point3: "Modos: Arquivo, Revisão, Fila (envia para a impressora alvo)",
+        noSetupLabel: "Sem configuração extra:",
+        noSetupText: "funciona na porta do Printbuddy. Sem IP de vínculo, portas ou certificado.",
+      },
+    },
+    protocol: {
+      title: "Tipo de impressora",
+      bambu: "Compatível com Bambu",
+      bambuDesc: "Emula uma impressora Bambu Lab (Bambu Studio / Orca com perfil Bambu)",
+      moonraker: "Compatível com Moonraker/OctoPrint",
+      moonrakerDesc: "Endpoint de upload para Klipper, Prusa, OctoPrint e outras impressoras não Bambu",
+    },
+    slicerConnection: {
+      title: "Conexão do fatiador",
+      hostUrl: "URL do host",
+      apiKey: "Chave de API",
+      regenerate: "Gerar nova chave de API",
+      regenerateConfirmTitle: "Gerar nova chave de API",
+      regenerateConfirmMessage: "A chave atual deixa de funcionar imediatamente. Você precisa inserir a nova chave nas configurações da impressora física do seu fatiador.",
+      keyRegenerated: "Nova chave de API gerada",
+      hint: "No fatiador, adicione uma impressora física com tipo de host “Octo/Klipper” (OrcaSlicer / Snapmaker Orca) ou “OctoPrint” (PrusaSlicer, G-code binário também funciona) e informe a URL do host e a chave de API. Os trabalhos enviados vão para o Printbuddy em vez de direto para a impressora.",
+    },
     model: {
       title: 'Modelo da Impressora',
       description: 'Selecione qual modelo de impressora emular.',
@@ -6351,6 +6406,7 @@ export default {
     },
     targetPrinter: {
       title: 'Impressora Alvo',
+      moonrakerHint: "Apenas impressoras não Bambu podem ser selecionadas. Obrigatório para o modo fila de impressão.",
       placeholder: 'Selecione uma impressora...',
     },
     remoteInterface: {
@@ -6394,10 +6450,6 @@ export default {
       description: 'O recurso de impressora virtual requer configuração adicional do sistema antes de funcionar. Isso inclui encaminhamento de portas, regras de firewall e configurações específicas da plataforma.',
       readGuide: 'Leia o guia de configuração antes de ativar',
     },
-    bambuOnly: {
-      badge: 'Somente Bambu Lab',
-      description: 'As impressoras virtuais emulam o protocolo LAN da Bambu para Bambu Studio e OrcaSlicer. Elas não são uma camada genérica de impressora virtual para Prusa, Klipper/Moonraker ou Elegoo SDCP.',
-    },
     howItWorks: {
       title: 'Como funciona',
       step1: 'Complete o guia de configuração para sua plataforma',
@@ -6437,6 +6489,7 @@ export default {
       title: 'Adicionar Impressora Virtual',
       name: 'Nome',
       hint: 'Você pode configurar o código de acesso, impressora alvo e outras configurações após a criação.',
+      hintMoonraker: "Depois de criar, copie a URL do host e a chave de API para as configurações da impressora física do seu fatiador.",
       create: 'Criar',
     },
     deleteConfirm: {
@@ -6451,6 +6504,7 @@ export default {
     },
     caCert: {
       title: 'Certificado do slicer',
+      bambuOnlyBadge: "Somente compatível com Bambu",
       description: 'As impressoras virtuais usam um certificado TLS assinado pela CA do Printbuddy. Importe este certificado CA para o armazenamento de confiança do seu slicer uma única vez para que ele aceite a conexão — sem precisar copiá-lo pela linha de comando.',
       copy: 'Copiar',
       copied: 'Copiado',
@@ -6827,6 +6881,7 @@ export default {
       homeassistant: 'Home Assistant',
       bark: 'Bark',
       gotify: 'Gotify',
+      printbuddy_app: 'App Printbuddy',
     },
     // Provider descriptions
     providerDescriptions: {
@@ -6841,6 +6896,7 @@ export default {
       homeassistant: 'Notificações persistentes no painel do Home Assistant',
       bark: 'Notificações push do iOS via Bark (auto-hospedável)',
       gotify: 'Notificações push pelo seu próprio servidor Gotify',
+      printbuddy_app: 'Notificações push para o app Printbuddy no seu celular. Ative-as no app para adicionar um dispositivo.',
     },
     // NotificationProviderCard
     lastSuccess: 'Último: {{date}}',
@@ -7658,6 +7714,30 @@ export default {
       problems: 'Foram encontrados problemas que explicam por que o slicer não consegue ver ou usar esta impressora virtual.',
     },
     check: {
+      mr_enabled: {
+        title: "Impressora virtual ativada",
+        fail: "Esta impressora virtual está desligada. O teste de conexão e os envios do fatiador são recusados até você ativá-la.",
+      },
+      mr_endpoint: {
+        title: "Endpoint de upload pronto",
+        pass: "Os fatiadores podem enviar para {{path}} na porta do Printbuddy.",
+        fail: "A impressora virtual está ativada, mas o endpoint de upload não está registrado. Desligue e ligue novamente; se não resolver, verifique o log do Printbuddy.",
+      },
+      mr_api_key: {
+        title: "Chave de API definida",
+        fail: "Nenhuma chave de API definida. Gere uma com o botão de atualizar ao lado da chave de API.",
+      },
+      mr_target_printer: {
+        title: "Impressora alvo",
+        pass: "Os trabalhos vão para {{name}}, que está conectada.",
+        warn: "{{name}} está offline no momento. Os trabalhos na fila serão enviados quando ela reconectar.",
+        fail: "O modo fila de impressão precisa de uma impressora alvo que não seja Bambu (Klipper, Prusa, OctoPrint, …). Selecione uma em Impressora Alvo.",
+        skip: "Não é necessária nos modos Arquivo e Revisão.",
+      },
+      mr_upload_dir: {
+        title: "Pasta de upload gravável",
+        fail: "O Printbuddy não consegue gravar na pasta de upload desta impressora virtual. Verifique se o diretório de dados do Printbuddy é gravável.",
+      },
       enabled: {
         title: 'Impressora virtual habilitada',
         fail: 'Esta impressora virtual está desligada. Ative-a para torná-la detectável.',

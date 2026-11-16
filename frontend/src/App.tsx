@@ -209,6 +209,8 @@ function App() {
                 {/* "Sign in with Printbuddy" for connected apps: standalone, no layout,
                     so it also fits inside the sidebar iframe of the app asking. */}
                 <Route path="/connect/authorize" element={<ProtectedRoute><ConnectAuthorizePage /></ProtectedRoute>} />
+                {/* Home-screen apps installed while the start page was /launch.html */}
+                <Route path="/launch.html" element={<Navigate to="/" replace />} />
 
                 {/* Camera page - standalone, no layout, no WebSocket (doesn't need real-time updates) */}
                 <Route path="/camera/:printerId" element={<CameraPage />} />

@@ -458,6 +458,20 @@ class AMSTray(BaseModel):
     # True for a non-RFID spool the firmware can't identify — the UI shows "?" rather
     # than "Empty" (#2527). None when the bitmask was unavailable (→ state-based fallback).
     exists: bool | None = None
+    # Snapmaker U1 Moonraker feeder / SpoolLink fields (generic AMS payloads omit these)
+    active: bool | None = None
+    loaded_to_feeder: bool | None = None
+    loaded_to_extruder: bool | None = None
+    filament_detected: bool | None = None
+    channel_state: str | None = None
+    channel_action_state: str | None = None
+    channel_error: str | None = None
+    filament_source: str | None = None
+    filament_spool_id: int | None = None
+    remaining_weight: float | None = None
+    filament_spool_brand: str | None = None
+    filament_spool_material: str | None = None
+    filament_spool_color_name: str | None = None
 
 
 class AMSUnit(BaseModel):
@@ -479,7 +493,11 @@ class AMSUnit(BaseModel):
     dry_sf_reason: list[int] = []  # Cannot-dry reasons from firmware (see CannotDryReason)
     dry_target_temp: int | None = None  # Active-cycle target °C (Bambu doesn't echo this)
     dry_filament: str | None = None  # Active-cycle filament name we sent
-    module_type: str = ""  # "ams", "ams_f1", "n3f", "n3s"
+    module_type: str = ""  # "ams", "n3f", "n3s", "n10a" (the H3C's AMS 3H)
+    # Bambu Studio's AMS type (bits 0-3 of `info`): 6 = AMS 3H (H3C, nine slots)
+    ams_type: int | None = None
+    # AMS 3H: the slots (0-8) of the zone that can dry; empty on other units
+    dry_zone_slots: list[int] = []
 
 
 class NozzleInfoResponse(BaseModel):
