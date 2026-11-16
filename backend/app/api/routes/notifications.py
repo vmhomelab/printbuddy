@@ -16,6 +16,8 @@ from backend.app.models.notification import NotificationLog, NotificationProvide
 from backend.app.models.printer import Printer
 from backend.app.models.user import User
 from backend.app.schemas.notification import (
+    AppDeviceRegister,
+    AppDeviceToken,
     NotificationLogResponse,
     NotificationLogStats,
     NotificationProviderCreate,
@@ -23,6 +25,7 @@ from backend.app.schemas.notification import (
     NotificationProviderUpdate,
     NotificationTestRequest,
     NotificationTestResponse,
+    ProviderType,
 )
 from backend.app.services.notification_service import notification_service
 
@@ -199,6 +202,87 @@ async def create_notification_provider(
 # ============================================================================
 # Static Path Routes (must come BEFORE parameterized routes)
 # ============================================================================
+
+
+# --- Printbuddy mobile app devices -------------------------------------------
+# The app registers itself as a "printbuddy_app" provider so it gets the same
+# event toggles, quiet hours, printer filter and logs as every other provider,
+# and shows up (and can be edited or removed) in Settings → Notifications.
+
+
+async def _find_app_device(db: AsyncSession, push_token: str) -> NotificationProvider | None:
+    result = await db.execute(
+        select(NotificationProvider)
+        .options(selectinload(NotificationProvider.printers))
+        .where(NotificationProvider.provider_type == ProviderType.PRINTBUDDY_APP.value)
+    )
+    for provider in result.scalars():
+        try:
+            config = json.loads(provider.config) if isinstance(provider.config, str) else provider.config
+        except (TypeError, ValueError):
+            continue
+        if isinstance(config, dict) and config.get("push_token") == push_token:
+            return provider
+    return None
+
+
+@router.post("/app-devices", response_model=NotificationProviderResponse)
+async def register_app_device(
+    device: AppDeviceRegister,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.NOTIFICATIONS_CREATE),
+):
+    """Register (or update) a phone running the Printbuddy app for push notifications.
+
+    Idempotent per push token: calling it again updates the device name and
+    the event toggles instead of creating a duplicate provider.
+    """
+    config = {"push_token": device.push_token, "device_name": device.device_name, "platform": device.platform}
+    name = f"Printbuddy App ({device.device_name})"
+    provider = await _find_app_device(db, device.push_token)
+    if provider is None:
+        provider = NotificationProvider(provider_type=ProviderType.PRINTBUDDY_APP.value, enabled=True)
+        provider.printers = []
+        db.add(provider)
+    provider.name = name
+    provider.config = json.dumps(config)
+    provider.on_print_complete = device.on_print_complete
+    provider.on_print_failed = device.on_print_failed
+    provider.on_print_stopped = device.on_print_stopped
+    provider.on_printer_error = device.on_printer_error
+    await db.commit()
+    await db.refresh(provider)
+    logger.info("Registered Printbuddy app device: %s", name)
+    return _provider_to_dict(provider)
+
+
+@router.post("/app-devices/lookup", response_model=NotificationProviderResponse)
+async def lookup_app_device(
+    device: AppDeviceToken,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.NOTIFICATIONS_READ),
+):
+    """Current settings for this phone, so the app can show what the server has."""
+    provider = await _find_app_device(db, device.push_token)
+    if provider is None:
+        raise HTTPException(status_code=404, detail="Device not registered")
+    return _provider_to_dict(provider)
+
+
+@router.post("/app-devices/unregister")
+async def unregister_app_device(
+    device: AppDeviceToken,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.NOTIFICATIONS_DELETE),
+):
+    """Stop push notifications to this phone (sign-out or turned off in the app)."""
+    provider = await _find_app_device(db, device.push_token)
+    if provider is None:
+        return {"deleted": False}
+    await db.delete(provider)
+    await db.commit()
+    logger.info("Unregistered Printbuddy app device: %s", provider.name)
+    return {"deleted": True}
 
 
 @router.post("/test-config", response_model=NotificationTestResponse)

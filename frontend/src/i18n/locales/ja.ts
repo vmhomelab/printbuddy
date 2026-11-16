@@ -4841,6 +4841,7 @@ export default {
       webhook: 'Webhook',
       homeassistant: 'Home Assistant',
       notify: 'Notify',
+      printbuddy_app: 'Printbuddy アプリ',
     },
     // Provider descriptions
     providerDescriptions: {
@@ -4853,6 +4854,7 @@ export default {
       webhook: '任意のURLへの汎用HTTP POST',
       homeassistant: 'Home Assistantダッシュボードの永続通知',
       notify: 'Notifyアプリ経由のプッシュ通知',
+      printbuddy_app: 'スマートフォンの Printbuddy アプリへのプッシュ通知。アプリで通知をオンにするとデバイスが追加されます。',
     },
     // NotificationProviderCard
     lastSuccess: '最終: {{date}}',

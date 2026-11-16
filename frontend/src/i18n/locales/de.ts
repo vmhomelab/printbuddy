@@ -4840,6 +4840,7 @@ export default {
       webhook: 'Webhook',
       homeassistant: 'Home Assistant',
       notify: 'Notify',
+      printbuddy_app: 'Printbuddy-App',
     },
     // Provider descriptions
     providerDescriptions: {
@@ -4852,6 +4853,7 @@ export default {
       webhook: 'Generischer HTTP-POST an beliebige URL',
       homeassistant: 'Dauerhafte Benachrichtigungen im Home Assistant Dashboard',
       notify: 'Push-Benachrichtigungen über die Notify-App',
+      printbuddy_app: 'Push-Benachrichtigungen an die Printbuddy-App auf deinem Handy. Schalte sie in der App ein, um ein Gerät hinzuzufügen.',
     },
     // NotificationProviderCard
     lastSuccess: 'Zuletzt: {{date}}',

@@ -20,6 +20,8 @@ class ProviderType(StrEnum):
     WEBHOOK = "webhook"
     HOMEASSISTANT = "homeassistant"
     NOTIFY = "notify"
+    # Printbuddy mobile app (vmhomelab/printbuddy-mobile-app), delivered via Expo's push service.
+    PRINTBUDDY_APP = "printbuddy_app"
 
 
 class NotificationProviderBase(BaseModel):
@@ -305,3 +307,26 @@ class NotificationLogStats(BaseModel):
     failure_count: int
     by_event_type: dict[str, int]
     by_provider: dict[str, int]
+
+
+# ============================================================================
+# Printbuddy mobile app devices
+# ============================================================================
+
+EXPO_PUSH_TOKEN_PATTERN = r"^Expo(nent)?PushToken\[[A-Za-z0-9_-]{8,200}\]$"
+
+
+class AppDeviceRegister(BaseModel):
+    """A phone running the Printbuddy app asks to receive push notifications."""
+
+    push_token: str = Field(..., pattern=EXPO_PUSH_TOKEN_PATTERN, max_length=220)
+    device_name: str = Field(default="Phone", min_length=1, max_length=60)
+    platform: str = Field(default="ios", pattern=r"^(ios|android)$")
+    on_print_complete: bool = True
+    on_print_failed: bool = True
+    on_print_stopped: bool = False
+    on_printer_error: bool = True
+
+
+class AppDeviceToken(BaseModel):
+    push_token: str = Field(..., pattern=EXPO_PUSH_TOKEN_PATTERN, max_length=220)

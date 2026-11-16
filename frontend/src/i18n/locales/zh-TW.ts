@@ -4828,6 +4828,7 @@ export default {
       webhook: 'Webhook',
       homeassistant: 'Home Assistant',
       notify: 'Notify',
+      printbuddy_app: 'Printbuddy 應用程式',
     },
     // Provider descriptions
     providerDescriptions: {
@@ -4840,6 +4841,7 @@ export default {
       webhook: '通用 HTTP POST 到任意 URL',
       homeassistant: 'Home Assistant 儀表板中的持久通知',
       notify: '透過 Notify 應用程式傳送推送通知',
+      printbuddy_app: '推播通知到手機上的 Printbuddy 應用程式。在應用程式中開啟通知即可新增裝置。',
     },
     // NotificationProviderCard
     lastSuccess: '上次：{{date}}',
