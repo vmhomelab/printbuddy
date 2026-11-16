@@ -521,10 +521,10 @@ async def run_client_call(client, method: Callable, *args, **kwargs):
     Bambu clients only publish to MQTT and stay on the loop thread as before.
     HTTP-backed providers block on network I/O, so they run in a worker thread.
     """
-    if isinstance(client, BambuMQTTClient):
+    if isinstance(client, BambuMQTTClient) or inspect.iscoroutinefunction(method):
         result = method(*args, **kwargs)
-        # Some Bambu calls are coroutines (ams_refresh_tray); await those here
-        # so callers get the result either way.
+        # Some calls are coroutines (Bambu's ams_refresh_tray); await those
+        # here so callers get the result either way.
         return await result if inspect.isawaitable(result) else result
     return await asyncio.to_thread(method, *args, **kwargs)
 
@@ -954,7 +954,7 @@ class PrinterManager:
         client = self._clients.get(printer_id)
         if not client:
             return
-        raw = client.state.raw_data or {}
+        raw = getattr(getattr(client, "state", None), "raw_data", None) or {}
         remembered = {key: raw[key] for key in ("ams", "vt_tray") if raw.get(key)}
         if remembered:
             self._last_trays[printer_id] = remembered

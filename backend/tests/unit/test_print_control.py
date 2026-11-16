@@ -113,6 +113,9 @@ ALLOWED = {
     "services/printer_manager.py",
     "services/bambu_mqtt.py",
     "main.py",
+    # The slicer Device tab delegates to the printer stop route, which goes
+    # through stop_print_by_user.
+    "api/routes/vp_device.py",
 }
 
 

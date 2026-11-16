@@ -152,6 +152,24 @@ _PUBLIC_ROUTES: frozenset[tuple[str, str]] = frozenset(
         # ``accept()`` (GHSA-r2qv WS fix). The qualname matches one of the
         # auth-bearing patterns above, so this entry is informational — the
         # walker recognises the inline check as auth.
+        # ---- Moonraker/OctoPrint-compatible virtual printer host (#52) ----
+        # Slicers talk to these with the VP's own API key (X-Api-Key or
+        # ?apikey=), checked in-handler by vp_host._authorize with
+        # compare_digest; there is no Printbuddy user on these requests.
+        ("GET", "/api/v1/vp-host/{vp_id}/api/version"),
+        ("GET", "/api/v1/vp-host/{vp_id}/api/server"),
+        ("POST", "/api/v1/vp-host/{vp_id}/api/files/{location}"),
+        ("GET", "/api/v1/vp-host/{vp_id}/server/info"),
+        ("GET", "/api/v1/vp-host/{vp_id}/printer/info"),
+        ("POST", "/api/v1/vp-host/{vp_id}/server/files/upload"),
+        # The slicer's Device tab: the page and its static assets carry no
+        # data; its API calls go through the same _authorize key check.
+        ("GET", "/api/v1/vp-host/{vp_id}/"),
+        ("GET", "/api/v1/vp-host/{vp_id}"),
+        ("GET", "/api/v1/vp-host/{vp_id}/device/{asset}"),
+        ("GET", "/api/v1/vp-host/{vp_id}/device/api/state"),
+        ("POST", "/api/v1/vp-host/{vp_id}/device/api/camera-token"),
+        ("POST", "/api/v1/vp-host/{vp_id}/device/api/control/{action}"),
     }
 )
 

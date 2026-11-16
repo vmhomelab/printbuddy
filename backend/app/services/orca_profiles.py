@@ -110,7 +110,7 @@ def _vendors_for_lookup(name: str, preferred_vendor: str | None) -> list[str]:
     child chain already identified Snapmaker (or the parent name itself is
     clearly Snapmaker/U1/klipper).
     """
-    vendors = list(ORCA_PROFILE_VENDORS)
+    vendors: list[str] = list(ORCA_PROFILE_VENDORS)
     hint = infer_profile_vendor(None, name)
     preferred = preferred_vendor or hint
     if preferred and preferred in vendors:

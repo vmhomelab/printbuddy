@@ -6785,11 +6785,11 @@ class BambuMQTTClient:
             #     never gets force-enabled by (a) either.
             if ams_mapping and not is_dual_nozzle:
                 # On an H3C its per-hotend inputs (247-253) are external spools too.
-                def _external(t: object) -> bool:
-                    return int(t) >= 254 or (layout.rack and layout.is_external(int(t)))
+                def _external(t: int) -> bool:
+                    return t >= 254 or (layout.rack and layout.is_external(t))
 
-                has_real_tray = any(t is not None and 0 <= int(t) <= 253 and not _external(t) for t in ams_mapping)
-                all_external = all(t is None or _external(t) for t in ams_mapping)
+                has_real_tray = any(t is not None and 0 <= int(t) <= 253 and not _external(int(t)) for t in ams_mapping)
+                all_external = all(t is None or _external(int(t)) for t in ams_mapping)
                 # (Not when the scheduler worked out from the plate's own
                 # filament list that it prints only from the spool holder: a
                 # real tray here is then one another plate of the file uses.)

@@ -282,6 +282,7 @@ async def device_state(
     vp, error = await _authorize(vp_id, request, db)
     if error:
         return error
+    assert vp is not None  # _authorize returns an error whenever vp is None
     return JSONResponse(await _build_state(vp, db), headers=NO_CACHE)
 
 
@@ -326,6 +327,7 @@ async def device_action(
     vp, error = await _authorize(vp_id, request, db)
     if error:
         return error
+    assert vp is not None  # _authorize returns an error whenever vp is None
     if action not in ACTIONS:
         return JSONResponse(status_code=404, content={"error": f"Unknown action {action}"})
     printer = await _target_printer(vp, db)

@@ -10192,7 +10192,7 @@ class PrintScheduler:
         # other model is a transparent pass-through. The rack fallback is
         # resolved down there too, where the live rack position is known.
         started = await run_client_call(
-            printer_manager.get_client(item.printer_id),
+            printer_manager.get_client(item.printer_id) if item.printer_id is not None else None,
             printer_manager.start_print,
             item.printer_id,
             remote_filename,

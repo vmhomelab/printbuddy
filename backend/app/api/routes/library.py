@@ -125,12 +125,10 @@ from backend.app.services.slicer_3mf_convert import (
     extract_3mf_meshes_as_stl,
     extract_3mf_paint_colors,
     extract_source_printer_model,
-    filaments_for_plate_load,
     merge_plate_3mfs,
-    plate_sole_used_slot,
     reapply_3mf_paint_colors,
-    remap_plate_extruders_to_one,
     strip_3mf_paint_color,
+    substitute_unused_plate_filaments,
 )
 from backend.app.services.slicer_api import SliceResult
 from backend.app.services.stl_thumbnail import MIN_USABLE_STL_BYTES, generate_stl_thumbnail
@@ -4945,9 +4943,7 @@ async def _run_slicer_with_fallback(
     # gets it rejected with "filament preset (slot N) is not compatible
     # with printer …" (#2628). Replace unused-slot entries with the
     # plate's lowest used slot before the real slice so the loaded set is
-    # materially homogeneous and printer-correct, and compact a mono-slot
-    # plate to one --load-filaments entry (Orca #12426: paint + 2+
-    # --load-filaments SIGSEGV) via ``filaments_for_plate_load``.
+    # materially homogeneous and printer-correct.
     #
     # ``plate`` is absent for single-plate and STL sources — the SliceModal
     # skips the picker and omits the field — and absent means plate 1, the
@@ -4964,14 +4960,10 @@ async def _run_slicer_with_fallback(
     # read from the project config and are not plate-scoped — they would
     # survive the (empty) geometry lookup for plate 0 and become the anchor,
     # collapsing every colour of a slice-all onto the support filament. The
-    # per-plate arrange loop below compacts each plate on its own instead.
+    # per-plate arrange loop below substitutes each plate on its own instead.
     full_filament_jsons = list(filament_jsons)
     if is_3mf and request.plate != 0 and not embedded_mode:
-        plate_for_load = request.plate or 1
-        filament_jsons = filaments_for_plate_load(primary_bytes, plate_for_load, full_filament_jsons)
-        sole = plate_sole_used_slot(primary_bytes, plate_for_load)
-        if sole is not None and sole > 1:
-            primary_bytes = remap_plate_extruders_to_one(primary_bytes, plate_for_load, sole)
+        filament_jsons = substitute_unused_plate_filaments(primary_bytes, request.plate or 1, full_filament_jsons)
 
     # Arrange slice-all loop (#1493): when the user asks for ``plate=0``
     # (all plates) AND arrange is on, ``--slice 0 --arrange 1``
@@ -4998,6 +4990,7 @@ async def _run_slicer_with_fallback(
     # result 3MF metadata only; G-code from a stripped retry stays mono.
     paint_stripped = False
     saved_paint: dict[str, list[str | None]] | None = None
+    result: SliceResult | None = None
 
     try:
         try:
@@ -5058,17 +5051,13 @@ async def _run_slicer_with_fallback(
                             on_progress=plate_cb,
                         )
                     else:
-                        # Per-plate filament list: mono-colour plates compact
-                        # to one --load-filaments entry so paint can stay
-                        # (Orca #12426), with the plate's objects remapped
-                        # onto that one loaded slot.
-                        plate_model_bytes = primary_bytes
-                        sole = plate_sole_used_slot(primary_bytes, plate_num)
-                        if sole is not None and sole > 1:
-                            plate_model_bytes = remap_plate_extruders_to_one(primary_bytes, plate_num, sole)
-                        plate_filaments = filaments_for_plate_load(primary_bytes, plate_num, full_filament_jsons)
+                        # Unused slots of this plate take its lowest used
+                        # slot's profile, as for a single-plate slice.
+                        plate_filaments = substitute_unused_plate_filaments(
+                            primary_bytes, plate_num, full_filament_jsons
+                        )
                         per_plate = await service.slice_with_profiles(
-                            model_bytes=plate_model_bytes,
+                            model_bytes=primary_bytes,
                             model_filename=model_filename,
                             printer_profile_json=presets["printer"],
                             process_profile_json=presets["process"],
@@ -5277,6 +5266,9 @@ async def _run_slicer_with_fallback(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     finally:
         await service.close()
+
+    # Every path above either set a result or raised.
+    assert result is not None
 
     # Best-effort: put face-paint back onto the result 3MF when the slicer
     # preserved same-topology .model meshes. No-op for STL fallback / G-code

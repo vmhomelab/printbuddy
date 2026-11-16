@@ -679,7 +679,7 @@ class TestObicoProviderCameras:
 
         mock_bambu.assert_not_called()
         mock_http.assert_not_called()
-        assert svc._last_error == "Printer 1 has no camera configured"
+        assert svc._last_error == "Failed to capture snapshot for printer 1"
 
 
 class TestFrameCache:

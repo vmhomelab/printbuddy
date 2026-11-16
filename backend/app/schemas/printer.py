@@ -497,7 +497,7 @@ class AMSUnit(BaseModel):
     # Bambu Studio's AMS type (bits 0-3 of `info`): 6 = AMS 3H (H3C, nine slots)
     ams_type: int | None = None
     # AMS 3H: the slots (0-8) of the zone that can dry; empty on other units
-    dry_zone_slots: list[int] = []
+    dry_zone_slots: list[int] | None = None
 
 
 class NozzleInfoResponse(BaseModel):

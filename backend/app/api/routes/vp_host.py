@@ -246,6 +246,7 @@ async def octoprint_upload(
     vp, error = await _authorize(vp_id, request, db)
     if error:
         return error
+    assert vp is not None  # _authorize returns an error whenever vp is None
     if location not in ("local", "sdcard"):
         return JSONResponse(status_code=404, content={"error": f"Unknown location {location}"})
 
@@ -282,6 +283,7 @@ async def moonraker_server_info(vp_id: int, request: Request, db: AsyncSession =
     vp, error = await _authorize(vp_id, request, db)
     if error:
         return error
+    assert vp is not None  # _authorize returns an error whenever vp is None
     return {
         "result": {
             "klippy_connected": True,
@@ -303,6 +305,7 @@ async def moonraker_printer_info(vp_id: int, request: Request, db: AsyncSession 
     vp, error = await _authorize(vp_id, request, db)
     if error:
         return error
+    assert vp is not None  # _authorize returns an error whenever vp is None
     return {
         "result": {
             "state": "ready",
@@ -327,6 +330,7 @@ async def moonraker_upload(
     vp, error = await _authorize(vp_id, request, db)
     if error:
         return error
+    assert vp is not None  # _authorize returns an error whenever vp is None
     if root and root != "gcodes":
         return JSONResponse(status_code=400, content={"error": f"Unsupported root {root}"})
 

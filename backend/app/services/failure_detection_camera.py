@@ -31,7 +31,7 @@ async def capture_detection_frame(printer_id: int, *, session_factory=async_sess
         logger.info("AI failure detection: printer %s has no camera configured", printer_id)
         return None
 
-    if has_external:
+    if has_external and effective.url:
         # Same rule as the built-in branch below, which this used to skip:
         # an external camera is single-reader too, so polling while a viewer
         # is attached just fails (#2707).

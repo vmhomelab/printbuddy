@@ -1026,7 +1026,7 @@ def _custom_image_path(filename: str | None, printer_id: int) -> Path | None:
         return None
     images_dir = get_printer_images_dir().resolve()
     image_path = (
-        images_dir / filename
+        images_dir / match.group(0)
     ).resolve()  # SEC-PATH-OK: filename fullmatched against printer_<id>_<32 hex>.<ext> above; parent == images_dir checked below
     return image_path if image_path.parent == images_dir else None
 
@@ -5254,7 +5254,8 @@ async def home_axes(
         # OctoPrint has a dedicated home command that respects its printer
         # profile (axis inversion, custom home G-code) instead of raw G28.
         home_axes = ["x", "y", "z"] if axes == "all" else list(axes)
-        if not await run_client_call(client, client.home_axes, home_axes):
+        home = getattr(client, "home_axes", None)
+        if not callable(home) or not await run_client_call(client, home, home_axes):
             raise HTTPException(409, "OctoPrint rejected the home command (printer busy or not operational)")
         return {"success": True, "message": f"Home {axes.upper()} command sent"}
     script = axis_scripts[axes] if provider in {"klipper", "mainsail", "fluidd", "prusalink"} else "G28"

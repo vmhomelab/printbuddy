@@ -388,6 +388,8 @@ def test_no_user_supplied_host_provider_formats_the_body_inline():
         "_send_telegram",
         "_send_telegram_message",
         "_send_discord",
+        # Posts only to EXPO_PUSH_URL (exp.host); the push token is not a URL.
+        "_send_printbuddy_app",
     }
 
     current = None

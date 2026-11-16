@@ -1397,7 +1397,7 @@ class VirtualPrinterInstance:
             logger.debug("[VP %s] archive_created broadcast failed: %s", self.name, e)
 
     @staticmethod
-    def _extract_plate_ids(file_path: Path) -> list[int]:
+    def _extract_plate_ids(file_path: Path) -> list[int | None]:
         """Extract every printable plate index from a sliced 3MF.
 
         A multi-plate "Send All" from BambuStudio / OrcaSlicer uploads a
@@ -1426,6 +1426,11 @@ class VirtualPrinterInstance:
             import xml.etree.ElementTree as ET
             import zipfile
 
+            # Plain G-code (Moonraker/OctoPrint-compatible VPs, #52) has no
+            # plates: one queue item with no plate index.
+            if not zipfile.is_zipfile(file_path):
+                return [None]
+
             with zipfile.ZipFile(file_path, "r") as zf:
                 names = zf.namelist()
                 plate_ids: set[int] = set()
@@ -1440,7 +1445,7 @@ class VirtualPrinterInstance:
                             pass
 
                 if plate_ids:
-                    return sorted(plate_ids)
+                    return list[int | None](sorted(plate_ids))
 
                 if "Metadata/slice_info.config" in names:
                     content = zf.read("Metadata/slice_info.config").decode()
@@ -1454,7 +1459,7 @@ class VirtualPrinterInstance:
                                     continue
                                 break
                     if plate_ids:
-                        return sorted(plate_ids)
+                        return list[int | None](sorted(plate_ids))
         except Exception as e:
             logger.debug("[VP] _extract_plate_ids failed for %s: %s", file_path.name, e)
         return [1]

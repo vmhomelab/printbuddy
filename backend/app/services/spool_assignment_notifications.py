@@ -132,7 +132,9 @@ def _decode_mqtt_mapping_to_global_trays(mapping_raw: object) -> list[int]:
         elif ams_hw_id in (254, 255):
             decoded.append(255 if slot == 255 else 254)
         elif ams_hw_id == AMS3H_UNIT_ID and slot < RACK_SLOT_COUNT:
-            decoded.append(h3c_global_tray(ams_hw_id, slot))  # H3C's AMS 3H: 28 + slot
+            global_id = h3c_global_tray(ams_hw_id, slot)  # H3C's AMS 3H: 28 + slot
+            if global_id is not None:
+                decoded.append(global_id)
         elif 247 <= ams_hw_id <= 253:
             decoded.append(ams_hw_id)  # H3C's per-hotend external input
 
