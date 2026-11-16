@@ -521,6 +521,8 @@ body {
 .slice-colour-swatch::-moz-color-swatch {
   border: none;
   border-radius: 999px;
+}
+
 /* ============================================
    MOBILE / SMARTPHONE LAYOUT
    ============================================ */
