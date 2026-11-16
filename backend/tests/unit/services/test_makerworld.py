@@ -183,6 +183,35 @@ class TestGetDesign:
         assert "members" in str(exc_info.value)
 
     @pytest.mark.asyncio
+    async def test_403_with_token_retries_anonymously(self):
+        """A refused Bambu Cloud token must not block public metadata."""
+        svc = MakerWorldService(client=MagicMock(spec=httpx.AsyncClient), auth_token="tok")
+        forbidden = MagicMock()
+        forbidden.status_code = 403
+        forbidden.json.return_value = {"error": "The client does not have access rights to the content."}
+        ok = MagicMock()
+        ok.status_code = 200
+        ok.json.return_value = {"id": 1}
+        svc._client.get = AsyncMock(side_effect=[forbidden, ok])
+
+        assert await svc.get_design(1) == {"id": 1}
+        first, second = svc._client.get.call_args_list
+        assert first.kwargs["headers"]["Authorization"] == "Bearer tok"
+        assert "Authorization" not in second.kwargs["headers"]
+
+    @pytest.mark.asyncio
+    async def test_403_anonymous_retry_still_forbidden_raises(self):
+        svc = MakerWorldService(client=MagicMock(spec=httpx.AsyncClient), auth_token="tok")
+        forbidden = MagicMock()
+        forbidden.status_code = 403
+        forbidden.json.return_value = {"error": "This model is only available to members"}
+        svc._client.get = AsyncMock(return_value=forbidden)
+
+        with pytest.raises(MakerWorldForbiddenError, match="members"):
+            await svc.get_design(1)
+        assert svc._client.get.await_count == 2
+
+    @pytest.mark.asyncio
     async def test_maps_5xx_to_unavailable(self, service):
         resp = MagicMock()
         resp.status_code = 503

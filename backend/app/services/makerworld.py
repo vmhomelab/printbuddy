@@ -211,13 +211,29 @@ class MakerWorldService:
         if self._owns_client:
             await self._client.aclose()
 
-    def _headers(self) -> dict[str, str]:
+    def _headers(self, *, with_auth: bool = True) -> dict[str, str]:
         headers = dict(_CLIENT_HEADERS)
-        if self._auth_token:
+        if with_auth and self._auth_token:
             headers["Authorization"] = f"Bearer {self._auth_token}"
         return headers
 
     async def _get_json(self, path: str) -> dict[str, Any]:
+        """Like :meth:`_get_raw_json`, but retries a 403 anonymously.
+
+        The metadata endpoints are public. When the stored Bambu Cloud token is
+        refused for them ("The client does not have access rights to the
+        content."), the anonymous request still succeeds, so a stale or
+        restricted token must not block resolving or importing a model.
+        """
+        try:
+            return await self._get_raw_json(path, with_auth=True)
+        except MakerWorldForbiddenError:
+            if not self._auth_token:
+                raise
+            logger.info("MakerWorld refused %s with the Bambu Cloud token; retrying anonymously", path)
+            return await self._get_raw_json(path, with_auth=False)
+
+    async def _get_raw_json(self, path: str, *, with_auth: bool) -> dict[str, Any]:
         """GET ``{MAKERWORLD_API_BASE}{path}`` returning the decoded JSON body.
 
         Raises ``MakerWorld{Auth,Forbidden,NotFound,Unavailable}Error`` based
@@ -230,7 +246,7 @@ class MakerWorldService:
 
         for attempt in range(2):
             try:
-                response = await self._client.get(url, headers=self._headers(), timeout=30.0)
+                response = await self._client.get(url, headers=self._headers(with_auth=with_auth), timeout=30.0)
             except httpx.TimeoutException as exc:
                 raise MakerWorldUnavailableError(f"MakerWorld request timed out: {exc}") from exc
             except httpx.HTTPError as exc:

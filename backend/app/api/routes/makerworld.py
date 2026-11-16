@@ -606,9 +606,21 @@ async def import_instance(
         source_url = _canonical_url(body.model_id, profile_id)
 
         manifest: dict = {}
+        instance_error: MakerWorldError | None = None
         if instance_id is not None:
             try:
                 manifest = await service.get_instance_download(instance_id)
+            except (MakerWorldForbiddenError, MakerWorldNotFoundError) as exc:
+                # Bambu sometimes refuses the design-service f3mf endpoint for
+                # third-party clients ("The client does not have access rights
+                # to the content.") while the legacy iot-service profile
+                # endpoint still serves the same file. Try that before failing.
+                logger.info(
+                    "MakerWorld instance download refused for instance %s (%s); trying legacy profile endpoint",
+                    instance_id,
+                    exc,
+                )
+                instance_error = exc
             except MakerWorldError as exc:
                 raise _map_service_error(exc) from exc
 
@@ -616,6 +628,8 @@ async def import_instance(
         if not signed_url or not isinstance(signed_url, str):
             alphanumeric_model_id = design.get("modelId")
             if not isinstance(alphanumeric_model_id, str) or not alphanumeric_model_id:
+                if instance_error is not None:
+                    raise _map_service_error(instance_error) from instance_error
                 raise HTTPException(
                     status_code=502,
                     detail="MakerWorld design metadata missing the modelId field",
@@ -623,6 +637,10 @@ async def import_instance(
             try:
                 manifest = await service.get_profile_download(profile_id, alphanumeric_model_id)
             except MakerWorldError as exc:
+                # Prefer the primary endpoint's refusal when both fail — it is
+                # the more specific reason (e.g. purchase/points gating).
+                if instance_error is not None and isinstance(exc, (MakerWorldForbiddenError, MakerWorldNotFoundError)):
+                    raise _map_service_error(instance_error) from exc
                 raise _map_service_error(exc) from exc
             signed_url = manifest.get("url")
 
