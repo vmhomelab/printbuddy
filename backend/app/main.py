@@ -47,6 +47,7 @@ from backend.app.api.routes import (
     notification_templates,
     notifications,
     obico,
+    octoeverywhere,
     open_filament_database,
     orca_cloud,
     pending_uploads,
@@ -68,6 +69,8 @@ from backend.app.api.routes import (
     user_notifications,
     users,
     virtual_printers,
+    vp_device,
+    vp_host,
     webhook,
     websocket,
 )
@@ -99,6 +102,7 @@ from backend.app.services.mqtt_smart_plug import mqtt_smart_plug_service
 from backend.app.services.notification_service import notification_service
 from backend.app.services.notify_live_activity_service import notify_live_activity_service
 from backend.app.services.obico_detection import obico_detection_service
+from backend.app.services.octoeverywhere_detection import octoeverywhere_detection_service
 from backend.app.services.print_progress import live_activity_progress, milestone_progress
 from backend.app.services.print_scheduler import scheduler as print_scheduler
 from backend.app.services.printer_manager import (
@@ -2767,7 +2771,7 @@ async def _dispatch_user_print_email(
     """Send a user-specific print-completion email based on print status.
 
     Maps the normalised print status to the correct event type and delegates
-    to :meth:`NotificationService.send_user_print_email`.  A single helper
+    to `NotificationService.send_user_print_email`.  A single helper
     avoids duplicating the ``if status == "completed" / elif "failed" / elif
     "stopped"`` dispatch block at every call site.
 
@@ -6201,6 +6205,7 @@ async def lifespan(app: FastAPI):
     # Start the local backup scheduler
     await local_backup_service.start_scheduler()
     await obico_detection_service.start()
+    await octoeverywhere_detection_service.start()
 
     # Start the library trash sweeper (#1008)
     await library_trash_service.start_scheduler()
@@ -6255,6 +6260,7 @@ async def lifespan(app: FastAPI):
     library_trash_service.stop_scheduler()
     archive_purge_service.stop_scheduler()
     obico_detection_service.stop()
+    octoeverywhere_detection_service.stop()
     stop_ams_history_recording()
     stop_runtime_tracking()
     stop_camera_cleanup()
@@ -6340,6 +6346,9 @@ PUBLIC_API_PREFIXES = [
     "/api/v1/ws",
     # OIDC authorize redirects — include provider_id in path
     "/api/v1/auth/oidc/authorize/",
+    # Moonraker/OctoPrint-compatible virtual printer upload endpoint (#52).
+    # Slicers authenticate with the VP's own API key, checked by the route.
+    "/api/v1/vp-host/",
 ]
 
 # Route patterns that are public (read-only display data)
@@ -6761,9 +6770,12 @@ app.include_router(firmware.router, prefix=app_settings.api_prefix)
 app.include_router(github_backup.router, prefix=app_settings.api_prefix)
 app.include_router(local_backup.router, prefix=app_settings.api_prefix)
 app.include_router(obico.router, prefix=app_settings.api_prefix)
+app.include_router(octoeverywhere.router, prefix=app_settings.api_prefix)
 app.include_router(open_filament_database.router, prefix=app_settings.api_prefix)
 app.include_router(metrics.router, prefix=app_settings.api_prefix)
 app.include_router(virtual_printers.router, prefix=app_settings.api_prefix)
+app.include_router(vp_host.router, prefix=app_settings.api_prefix)
+app.include_router(vp_device.router, prefix=app_settings.api_prefix)
 
 
 # Serve static files (React build)

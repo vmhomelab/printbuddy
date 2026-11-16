@@ -128,6 +128,19 @@ export default {
 
   // Printers page
   printers: {
+    aiMonitoring: {
+      onShort: 'AI 已开启',
+      offShort: 'AI 已关闭',
+      warningShort: 'AI 警告',
+      unavailableShort: 'AI 不可用',
+      globalDisabledTooltip: 'AI 故障检测已关闭。请在 设置 → 故障检测 中启用 Obico 或 OctoEverywhere。',
+      notConfiguredTooltip: 'Obico 需要 ML API 地址和外部 URL。请打开 设置 → 故障检测。',
+      octoNotConfiguredTooltip: 'OctoEverywhere 需要 API 密钥。请打开 设置 → 故障检测。',
+      enabledTooltip: '此打印机已启用 {{provider}} AI 监控。点击以停用。',
+      disabledTooltip: '此打印机已停用 {{provider}} AI 监控。点击以启用。',
+      saved: 'AI 监控已更新',
+      saveFailed: '无法更新 AI 监控',
+    },
     addPreflight: {
       checking: '正在检查连接...',
       warning: '部分连接检查未通过。此打印机可能显示为离线。请查看下方的检查项，尽量修复，或仍然保存。',
@@ -517,6 +530,10 @@ export default {
       serialRequired: '需要序列号',
       unknown: '未知',
       failedToStart: '启动发现失败',
+    },
+    // H3C AMS 3H
+    ams3h: {
+      dryZone: '烘干: 槽位 {{slots}}',
     },
     // AMS Drying
     drying: {
@@ -1768,6 +1785,12 @@ export default {
     apiKeyCreated: 'API 密钥创建成功',
     apiKeyCopyWarning: '请立即复制此密钥 - 它不会再次显示！',
     useInApiBrowser: '在 API 浏览器中使用',
+    mobilePairing: {
+      title: '配对移动应用',
+      description: '使用手机相机或在 Printbuddy 应用中扫描此二维码，即可用此密钥连接。',
+      qrAlt: '用于配对 Printbuddy 移动应用的二维码',
+      localhostWarning: '此地址仅在本机有效。请通过网络地址（例如 IP）打开 Printbuddy，以便手机可以访问。',
+    },
     createNewApiKey: '创建新 API 密钥',
     keyName: '密钥名称',
     keyNamePlaceholder: '例如：Home Assistant、OctoPrint',
@@ -1868,6 +1891,8 @@ export default {
     authentication: '身份验证',
     authEnabledDescription: '您的实例已通过用户身份验证保护',
     authDisabledDescription: '启用以要求登录并管理用户访问',
+    rememberMeExtended: '记住我 30 天',
+    rememberMeExtendedDescription: '用户登录时勾选“记住我”后，将保持登录 30 天，而不是 24 小时',
     authDisabledMessage: '启用身份验证以创建用户账户、管理权限并保护您的 Printbuddy 实例。',
     enableAuthentication: '启用身份验证',
     currentUser: '当前用户',
@@ -3491,6 +3516,10 @@ export default {
     allPlatesToggle: '切片全部 {{count}} 个盘面',
     queueAfterSlice: '切片后加入打印队列',
     queueAfterSliceTitle: '切片完成后，打开将切片文件加入打印队列的对话框。',
+    outputModeLabel: '输出',
+    outputCombined: '一个多盘面文件',
+    outputSeparate: '每个盘面单独文件',
+    completedToastSplit: '已从 {{name}} 切片 {{count}} 个盘面',
     slicing: '切片中…',
     printer: '打印机配置',
     process: '工艺配置',
@@ -4383,6 +4412,45 @@ export default {
 
   // Virtual Printer
   virtualPrinter: {
+    types: {
+      title: "两种虚拟打印机",
+      newBadge: "新",
+      intro: "添加虚拟打印机时选择类型。从切片软件发送的文件会进入 Printbuddy（归档、审核或打印队列），而不是直接发送到打印机。",
+      bambu: {
+        tag: "Bambu Lab 打印机",
+        point1: "为 Bambu Studio / 使用 Bambu 配置的 OrcaSlicer 模拟 Bambu 打印机",
+        point2: "在局域网中自动发现，或通过 IP 和访问码添加",
+        point3: "模式：归档、审核、队列、代理",
+        setupLabel: "需要设置：",
+        setupText: "需要独立的绑定 IP、开放端口，并在切片软件中导入 Printbuddy CA。",
+        guide: "阅读设置指南",
+      },
+      moonraker: {
+        tag: "Klipper、Prusa、OctoPrint 等",
+        point1: "OrcaSlicer / Snapmaker Orca：添加主机类型为“Octo/Klipper”的物理打印机。PrusaSlicer：主机类型选“OctoPrint”（也支持二进制 G-code）",
+        point2: "粘贴虚拟打印机卡片上的主机 URL 和 API 密钥",
+        point3: "模式：归档、审核、队列（发送到目标打印机）",
+        noSetupLabel: "无需额外设置：",
+        noSetupText: "通过 Printbuddy 端口运行。无需绑定 IP、端口或证书。",
+      },
+    },
+    protocol: {
+      title: "打印机类型",
+      bambu: "Bambu 兼容",
+      bambuDesc: "模拟 Bambu Lab 打印机（Bambu Studio / 使用 Bambu 配置的 Orca）",
+      moonraker: "Moonraker/OctoPrint 兼容",
+      moonrakerDesc: "面向 Klipper、Prusa、OctoPrint 等非 Bambu 打印机的上传端点",
+    },
+    slicerConnection: {
+      title: "切片软件连接",
+      hostUrl: "主机 URL",
+      apiKey: "API 密钥",
+      regenerate: "重新生成 API 密钥",
+      regenerateConfirmTitle: "重新生成 API 密钥",
+      regenerateConfirmMessage: "当前密钥将立即失效。您需要在切片软件的物理打印机设置中填入新密钥。",
+      keyRegenerated: "已生成新的 API 密钥",
+      hint: "在切片软件中添加主机类型为“Octo/Klipper”（OrcaSlicer / Snapmaker Orca）或“OctoPrint”（PrusaSlicer，也支持二进制 G-code）的物理打印机，并填入主机 URL 和 API 密钥。发送的任务将进入 Printbuddy，而不是直接发送到打印机。",
+    },
     title: '虚拟打印机',
     running: '运行中',
     stopped: '已停止',
@@ -4412,6 +4480,7 @@ export default {
     },
     targetPrinter: {
       title: '目标打印机',
+      moonrakerHint: "只能选择非 Bambu 打印机。打印队列模式下必填。",
       configured: '代理目标已配置',
       notConfigured: '未选择目标打印机 - 代理模式需要设置',
       placeholder: '选择打印机...',
@@ -4453,10 +4522,6 @@ export default {
       description: '虚拟打印机功能需要额外的系统配置才能工作。包括端口转发、防火墙规则和平台特定设置。',
       readGuide: '启用前请阅读设置指南',
     },
-    bambuOnly: {
-      badge: '仅限 Bambu Lab',
-      description: '虚拟打印机模拟 Bambu Studio 和 OrcaSlicer 使用的 Bambu LAN 协议。它不是适用于 Prusa、Klipper/Moonraker 或 Elegoo SDCP 的通用虚拟打印机层。',
-    },
     archiveNameSource: {
       title: '存档名称来源',
       description: '选择通过虚拟打印机接收文件时新存档的命名方式。"元数据"使用 3MF 中嵌入的切片标题（默认）。"文件名"使用 Bambu Studio 通过 FTP 发送的文件名 — 当您在"发送到打印机"对话框中重命名作业时非常有用。',
@@ -4465,6 +4530,7 @@ export default {
     },
     caCert: {
       title: '切片软件证书',
+      bambuOnlyBadge: "仅限 Bambu 兼容",
       description: '虚拟打印机使用由 Printbuddy CA 签发的 TLS 证书。将此 CA 证书导入切片软件的信任库一次，切片软件即可接受连接 — 无需再通过命令行获取。',
       copy: '复制',
       copied: '已复制',
@@ -4522,6 +4588,7 @@ export default {
       title: '添加虚拟打印机',
       name: '名称',
       hint: '创建后可以配置访问码、目标打印机和其他设置。',
+      hintMoonraker: "创建后，将主机 URL 和 API 密钥复制到切片软件的物理打印机设置中。",
       create: '创建',
     },
     deleteConfirm: {
@@ -4761,6 +4828,7 @@ export default {
       webhook: 'Webhook',
       homeassistant: 'Home Assistant',
       notify: 'Notify',
+      printbuddy_app: 'Printbuddy 应用',
     },
     // Provider descriptions
     providerDescriptions: {
@@ -4773,6 +4841,7 @@ export default {
       webhook: '通用 HTTP POST 到任意 URL',
       homeassistant: 'Home Assistant 仪表板中的持久通知',
       notify: '通过 Notify 应用发送推送通知',
+      printbuddy_app: '推送通知到手机上的 Printbuddy 应用。在应用中开启通知即可添加设备。',
     },
     // NotificationProviderCard
     lastSuccess: '上次：{{date}}',
@@ -4891,6 +4960,8 @@ export default {
     quietStart: '开始',
     quietEnd: '结束',
     dailyDigestLabel: '每日摘要',
+    attachImageLabel: '附加摄像头照片',
+    attachImageDescription: '可用时在通知中附加摄像头快照',
     sendDigestAt: '发送摘要于',
     digestCollected: '事件将被收集并在此时间作为单条摘要发送',
     notificationEvents: '通知事件',
@@ -5484,6 +5555,30 @@ export default {
       problems: '发现的问题可以解释切片软件为何无法看到或使用此虚拟打印机。',
     },
     check: {
+      mr_enabled: {
+        title: "虚拟打印机已启用",
+        fail: "此虚拟打印机已关闭。在启用之前，切片软件的连接测试和上传都会被拒绝。",
+      },
+      mr_endpoint: {
+        title: "上传端点就绪",
+        pass: "切片软件可以通过 Printbuddy 端口上传到 {{path}}。",
+        fail: "虚拟打印机已启用，但其上传端点未注册。请先关闭再重新启用；如果仍不行，请查看 Printbuddy 日志。",
+      },
+      mr_api_key: {
+        title: "已设置 API 密钥",
+        fail: "未设置 API 密钥。请使用 API 密钥旁的刷新按钮生成一个。",
+      },
+      mr_target_printer: {
+        title: "目标打印机",
+        pass: "任务将发送到已连接的 {{name}}。",
+        warn: "{{name}} 当前离线。队列中的任务会在其重新连接后发送。",
+        fail: "打印队列模式需要一台非 Bambu 的目标打印机（Klipper、Prusa、OctoPrint 等）。请在“目标打印机”中选择。",
+        skip: "归档和审核模式下不需要。",
+      },
+      mr_upload_dir: {
+        title: "上传文件夹可写",
+        fail: "Printbuddy 无法写入此虚拟打印机的上传文件夹。请检查 Printbuddy 数据目录是否可写。",
+      },
       enabled: {
         title: '虚拟打印机已启用',
         fail: '此虚拟打印机已关闭。请将其打开以使其可被发现。',
@@ -5599,6 +5694,43 @@ export default {
     noActivePrints: '当前没有正在进行的打印。',
     historyTitle: '最近检测',
     noHistory: '暂无检测记录。',
+  },
+
+  octoeverywhereDetection: {
+    title: 'OctoEverywhere AI 检测',
+    description: '可选的云端服务：打印期间将摄像头快照发送到 OctoEverywhere 的 Gadget AI。与上方的 Obico 设置相互独立。',
+    privacyNote: '打印机摄像头的快照会上传到 OctoEverywhere 的服务器。据 OctoEverywhere 称，通过 Gadget API 发送的图像不会用于 AI 训练。',
+    apiKey: 'Gadget API 密钥',
+    apiKeyPlaceholder: '粘贴你的 Gadget API 密钥',
+    apiKeyStored: '已保存密钥 — 输入新密钥以替换',
+    apiKeyHint: '每个账户每月包含 500 小时免费打印时长；在你启用之前不会产生付费用量。',
+    getApiKey: '获取免费 API 密钥',
+    removeApiKey: '删除已保存的密钥',
+    apiKeyMissing: '检测已启用，但未保存 API 密钥。',
+    test: '测试',
+    testSuccess: 'OctoEverywhere 已接受该密钥。',
+    testFailed: 'OctoEverywhere 拒绝了请求。',
+    sensitivityHint: 'Gadget 在建议警告或暂停之前需要达到的置信度。',
+    action: 'Gadget 建议暂停时的操作',
+    actionHint: '每次检测到失败只执行一次操作；Gadget 的警告只发送通知。',
+    notifyOnWarning: '警告时通知',
+    notifyOnWarningHint: '当 Gadget 首次为某次打印建议警告时发送通知。',
+    interval: '检查间隔',
+    intervalAuto: '自动（推荐）',
+    intervalSeconds: '每 {{seconds}} 秒',
+    intervalHint: '自动模式遵循 Gadget 的建议（通常为 20 秒）。间隔越短，免费额度消耗越快。',
+    save: '保存',
+    statusTitle: 'OctoEverywhere 状态',
+    accountError: 'OctoEverywhere 已暂停检查：{{error}}',
+    stopped: '已停止：{{reason}}',
+    quality: '质量 {{value}}/10',
+    waiting: '等待首个结果',
+    flagWarning: '警告',
+    flagPause: '建议暂停',
+    issueNoCamera: '无可用摄像头',
+    issueViewerBusy: '摄像头正被实时画面占用',
+    issueCaptureFailed: '快照获取失败',
+    historyTitle: '最近的 OctoEverywhere 检测',
   },
   modelImport: {
     title: '模型导入',

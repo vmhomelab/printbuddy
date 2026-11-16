@@ -342,6 +342,97 @@ def test_moonraker_normalizes_snapmaker_u1_nozzles_chamber_and_feed_slots(monkey
     assert ams[0]["tray"][3]["tray_color"] is None
     assert snapmaker["loaded_to_extruder_slots"] == ["U1-E2"]
     assert snapmaker["loaded_to_feeder_slots"] == ["U1-E0", "U1-E1", "U1-E2"]
+    # Slots without RFID remain stay unknown (-1) rather than false 0%.
+    assert ams[0]["tray"][1]["remain"] == -1
+
+
+def test_moonraker_snapmaker_u1_fills_remain_from_spoolman_spool_ids(monkeypatch):
+    """SpoolLink exposes filament_spool_id without remain %; resolve via Moonraker proxy."""
+    client = MoonrakerPrinterClient("http://snapmaker-u1.local:7125", printer_model="Snapmaker U1")
+    status = _moonraker_status_with_snapmaker_u1()
+    # Real U1 SpoolLink payloads have spool IDs but no remain on filament_feed.
+    status["filament_feed left"]["extruder0"].pop("filament_info", None)
+    status["filament_feed right"]["extruder2"].pop("remain", None)
+    status["print_task_config"]["filament_spool_id"] = [25, 105, 15, 0]
+    base_status = {
+        key: status[key] for key in ("print_stats", "virtual_sdcard", "display_status", "heater_bed", "toolhead")
+    }
+    u1_status = {
+        key: value
+        for key, value in status.items()
+        if key
+        in {
+            "temperature_sensor cavity",
+            "extruder",
+            "extruder1",
+            "extruder2",
+            "extruder3",
+            "filament_feed left",
+            "filament_feed right",
+            "print_task_config",
+        }
+    }
+    monkeypatch.setattr(client, "_query_objects", lambda object_names: base_status)
+    monkeypatch.setattr(client, "_query_cfs_status", lambda *args, **kwargs: {})
+    monkeypatch.setattr(client, "_query_snapmaker_u1_status", lambda *args, **kwargs: u1_status)
+    monkeypatch.setattr(client, "_query_fan_status", lambda *args, **kwargs: {})
+    monkeypatch.setattr(
+        client,
+        "_jsonrpc",
+        lambda method, params=None: (
+            [
+                {
+                    "id": 25,
+                    "remaining_weight": 398.2,
+                    "filament": {
+                        "weight": 1000.0,
+                        "name": "Charcoal",
+                        "material": "PLA",
+                        "vendor": {"name": "Bambu Lab"},
+                    },
+                },
+                {
+                    "id": 105,
+                    "remaining_weight": 851.8,
+                    "filament": {
+                        "weight": 1000.0,
+                        "name": "Indigo Purple",
+                        "material": "PLA",
+                        "vendor": {"name": "Bambu Lab"},
+                    },
+                },
+                {
+                    "id": 15,
+                    "remaining_weight": 74.1,
+                    "filament": {
+                        "weight": 1000.0,
+                        "name": "Cobalt Blue",
+                        "material": "PLA",
+                        "vendor": {"name": "Bambu Lab"},
+                    },
+                },
+            ]
+            if method == "server.spoolman.proxy"
+            else None
+        ),
+    )
+
+    assert client.request_status_update() is True
+
+    trays = client.state.raw_data["ams"][0]["tray"]
+    assert trays[0]["filament_spool_id"] == 25
+    assert trays[0]["remain"] == 40
+    assert trays[0]["remaining_weight"] == 398.2
+    assert trays[0]["filament_spool_brand"] == "Bambu Lab"
+    assert trays[0]["filament_spool_material"] == "PLA"
+    assert trays[0]["filament_spool_color_name"] == "Charcoal"
+    assert trays[1]["filament_spool_id"] == 105
+    assert trays[1]["remain"] == 85
+    assert trays[2]["filament_spool_id"] == 15
+    assert trays[2]["remain"] == 7
+    assert trays[2]["filament_spool_color_name"] == "Cobalt Blue"
+    assert trays[3].get("filament_spool_id") in (None, 0)
+    assert trays[3]["remain"] == -1
 
 
 def test_moonraker_snapmaker_u1_clears_active_extruder_when_toolhead_reports_none(monkeypatch):
@@ -1133,3 +1224,126 @@ def test_moonraker_without_chamber_objects_reports_no_capabilities(monkeypatch):
     assert client.state.chamber_light_supported is False
     assert client.state.cooling_fan_speed == 20
     assert client.set_chamber_light(True) is False
+
+
+def _lifecycle_client(monkeypatch, history_jobs):
+    """Moonraker client fed a scripted sequence of print_stats states."""
+    client = MoonrakerPrinterClient("http://qidi-max4.local:7125", printer_model="Qidi Max 4")
+    completions: list[dict] = []
+    client.on_print_complete = completions.append
+    samples: list[dict] = []
+
+    def query(object_names):
+        return samples[0]
+
+    def fake_get(path, **kwargs):
+        if path.startswith("server/history/list"):
+            if history_jobs is None:
+                raise httpx.ConnectError("history component disabled")
+            return {"count": len(history_jobs), "jobs": history_jobs}
+        raise AssertionError(f"unexpected GET {path}")
+
+    monkeypatch.setattr(client, "_query_objects", query)
+    monkeypatch.setattr(client, "_get", fake_get)
+    monkeypatch.setattr(client, "_available_objects", lambda: [])
+    monkeypatch.setattr(client, "refresh_current_file_metadata", lambda: {})
+
+    def feed(state, progress, filename="benchy.gcode"):
+        samples[:] = [
+            {
+                "print_stats": {"state": state, "filename": filename if state != "standby" else ""},
+                "virtual_sdcard": {"progress": progress},
+                "display_status": {"progress": progress},
+                "extruder": {},
+                "heater_bed": {},
+            }
+        ]
+        assert client.request_status_update() is True
+
+    return client, completions, feed
+
+
+def test_moonraker_printing_to_standby_uses_history_completed_status(monkeypatch):
+    # Qidi end G-code resets the SD file: printing -> standby with progress 0.
+    _, completions, feed = _lifecycle_client(monkeypatch, [{"filename": "benchy.gcode", "status": "completed"}])
+    feed("standby", 0.0)
+    feed("printing", 0.5)
+    feed("standby", 0.0)
+
+    assert [c["status"] for c in completions] == ["completed"]
+
+
+def test_moonraker_printing_to_standby_uses_history_cancelled_status(monkeypatch):
+    _, completions, feed = _lifecycle_client(monkeypatch, [{"filename": "benchy.gcode", "status": "cancelled"}])
+    feed("standby", 0.0)
+    feed("printing", 0.999)
+    feed("standby", 0.0)
+
+    assert [c["status"] for c in completions] == ["stopped"]
+
+
+@pytest.mark.parametrize(
+    ("last_progress", "expected"),
+    [(0.995, "completed"), (0.42, "stopped")],
+)
+def test_moonraker_printing_to_standby_falls_back_to_last_running_progress(monkeypatch, last_progress, expected):
+    _, completions, feed = _lifecycle_client(monkeypatch, None)
+    feed("standby", 0.0)
+    feed("printing", 0.2)
+    feed("printing", last_progress)
+    feed("standby", 0.0)
+
+    assert [c["status"] for c in completions] == [expected]
+
+
+def test_moonraker_history_for_other_file_is_ignored(monkeypatch):
+    _, completions, feed = _lifecycle_client(monkeypatch, [{"filename": "other.gcode", "status": "cancelled"}])
+    feed("standby", 0.0)
+    feed("printing", 1.0)
+    feed("standby", 0.0)
+
+    assert [c["status"] for c in completions] == ["completed"]
+
+
+def test_moonraker_refresh_background_caches_caches_first_enabled_webcam(monkeypatch):
+    client = MoonrakerPrinterClient("http://qidi-max4.local:7125", printer_model="Qidi Max 4")
+    client.state.connected = True
+    calls = []
+
+    def fake_get(path, **kwargs):
+        calls.append(path)
+        return {
+            "webcams": [
+                {"name": "off", "enabled": False, "stream_url": "/webcam2/?action=stream"},
+                {
+                    "name": "chamber",
+                    "enabled": True,
+                    "stream_url": "/webcam/?action=stream",
+                    "snapshot_url": "/webcam/?action=snapshot",
+                },
+            ]
+        }
+
+    monkeypatch.setattr(client, "_get", fake_get)
+
+    client.refresh_background_caches()
+    client.refresh_background_caches()  # within TTL: no second request
+
+    assert calls == ["server/webcams/list"]
+    assert client.primary_webcam["name"] == "chamber"
+    assert client.primary_webcam["stream_url"] == "http://qidi-max4.local/webcam/?action=stream"
+    assert client.primary_webcam["snapshot_url"] == "http://qidi-max4.local/webcam/?action=snapshot"
+
+
+def test_moonraker_refresh_background_caches_skips_when_offline_and_survives_errors(monkeypatch):
+    client = MoonrakerPrinterClient("http://qidi-max4.local:7125")
+
+    def failing_get(path, **kwargs):
+        raise httpx.ConnectError("no webcams component")
+
+    monkeypatch.setattr(client, "_get", failing_get)
+    client.refresh_background_caches()  # not connected yet: no request, no error
+    client.state.connected = True
+    client.refresh_background_caches()
+
+    assert client.primary_webcam is None

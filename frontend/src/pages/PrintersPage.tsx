@@ -72,7 +72,6 @@ import {
   Download,
   Upload,
   ScanSearch,
-  ScanEye,
   CheckCircle,
   CheckSquare,
   XCircle,
@@ -98,7 +97,7 @@ import {
 import { useNavigate } from 'react-router-dom';
 import { api, discoveryApi, firmwareApi, withStreamToken, ApiError, getAuthToken } from '../api/client';
 import { formatDateOnly, formatETA, formatDuration, parseUTCDate } from '../utils/date';
-import type { Printer, PrinterCreate, PrinterStatus, AMSUnit, DiscoveredPrinter, FirmwareUpdateInfo, FirmwareUploadStatus, LinkedSpoolInfo, SpoolAssignment, HMSError, InventorySpool, SmartPlug, PrinterDiagnosticResult, PandaBreathStatus, AppSettings } from '../api/client';
+import type { Printer, PrinterCreate, PrinterStatus, AMSUnit, DiscoveredPrinter, FirmwareUpdateInfo, FirmwareUploadStatus, LinkedSpoolInfo, SpoolAssignment, HMSError, InventorySpool, SmartPlug, PrinterDiagnosticResult, PandaBreathStatus, AppSettings, OctoEverywhereSettings } from '../api/client';
 import { Card, CardContent } from '../components/Card';
 import { Button } from '../components/Button';
 import { ConfirmModal } from '../components/ConfirmModal';
@@ -121,7 +120,8 @@ import { SkipObjectsModal, SkipObjectsIcon } from '../components/SkipObjectsModa
 import { FileUploadModal } from '../components/FileUploadModal';
 import { PrintModal } from '../components/PrintModal';
 import { PrinterInfoModal } from '../components/PrinterInfoModal';
-import { getGlobalTrayId, getFillBarColor, getSpoolmanFillLevel, getFallbackSpoolTag, isBambuLabSpool, resolveLoadedFilamentInfo, resolveTrayFillLevel } from '../utils/amsHelpers';
+import { AMS3H_UNIT_ID, RACK_EXTERNAL_MIN, externalSlotIndex, isAms3hUnit, isH3cModel, rackExternalLabel } from '../utils/trayIds';
+import { getGlobalTrayId, getFillBarColor, getSpoolmanFillLevel, getFallbackSpoolTag, getTrayFilamentSpoolId, isBambuLabSpool, resolveLoadedFilamentInfo, resolveTrayFillLevel } from '../utils/amsHelpers';
 import { getDefaultPrinterImage, getPrinterDisplayImage, getPrinterImage, getWifiStrength, filterCompatibleQueueItems } from '../utils/printer';
 import { appAssetPath } from '../utils/assetPaths';
 import { FilamentSlotCircle } from '../components/FilamentSlotCircle';
@@ -131,6 +131,7 @@ import { KlipperControlPanel } from '../components/KlipperControlPanel';
 import { getColorName, parseFilamentColor, isLightColor } from '../utils/colors';
 import { getPrinterFileRuleSet, isPrintableForProvider } from '../utils/printerFileRules';
 import type { CameraViewMode } from '../api/client';
+import { AiMonitoringBadge, type AiMonitoringBadgeState } from '../components/AiMonitoringBadge';
 import { canOpenPrinterCamera } from '../utils/printerCamera';
 import { getAssignedPandaBreathState } from '../utils/pandaBreath';
 import { classifyPrinterStatus as classifySharedPrinterStatus } from '../utils/printerStatus';
@@ -1369,10 +1370,15 @@ function TemperatureIndicator({ temp, goodThreshold = 28, fairThreshold = 35, on
 }
 
 
+// The nine slots of the H3C's AMS 3H.
+const AMS3H_SLOT_INDEXES = [0, 1, 2, 3, 4, 5, 6, 7, 8];
+
 function getAmsLabel(amsId: number | string, trayCount: number): string {
   // Ensure amsId is a number (backend might send string)
   const id = typeof amsId === 'string' ? parseInt(amsId, 10) : amsId;
   const safeId = isNaN(id) ? 0 : id;
+  // The H3C's AMS 3H (unit 32, nine slots)
+  if (safeId === AMS3H_UNIT_ID) return 'AMS 3H';
   const isHt = trayCount === 1;
   // AMS-HT uses IDs starting at 128, regular AMS uses 0-3
   const normalizedId = safeId >= 128 ? safeId - 128 : safeId;
@@ -1983,6 +1989,7 @@ function PrinterCard({
   requirePlateClear = false,
   pandaBreathState,
   obicoSettings,
+  octoEverywhereSettings,
   allPrinterIds = [],
   layoutEditing = false,
   selectionMode = false,
@@ -2022,6 +2029,7 @@ function PrinterCard({
   requirePlateClear?: boolean;
   pandaBreathState?: PandaBreathStatus['state'] | null;
   obicoSettings?: Pick<AppSettings, 'obico_enabled' | 'obico_ml_url' | 'obico_enabled_printers' | 'external_url'>;
+  octoEverywhereSettings?: Pick<OctoEverywhereSettings, 'enabled' | 'has_api_key' | 'enabled_printers'>;
   allPrinterIds?: number[];
   layoutEditing?: boolean;
   selectionMode?: boolean;
@@ -2175,10 +2183,10 @@ function PrinterCard({
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['settings'] });
       queryClient.invalidateQueries({ queryKey: ['obico-status'] });
-      showToast(t('printers.aiMonitoring.saved', 'AI monitoring updated'), 'success');
+      showToast(t('printers.aiMonitoring.saved'), 'success');
     },
     onError: (error) => {
-      showToast(error instanceof Error ? error.message : t('printers.aiMonitoring.saveFailed', 'Failed to update AI monitoring'), 'error');
+      showToast(error instanceof Error ? error.message : t('printers.aiMonitoring.saveFailed'), 'error');
     },
   });
 
@@ -2194,6 +2202,41 @@ function PrinterCard({
     }
     if (!canUpdateObicoSettings || obicoPrinterToggleMutation.isPending) return;
     obicoPrinterToggleMutation.mutate(!isObicoPrinterEnabled);
+  };
+
+  // OctoEverywhere Gadget provider (PB-35): same per-printer toggle, own settings.
+  const octoEnabledPrinterIds = octoEverywhereSettings?.enabled_printers ?? null;
+  const isOctoPrinterEnabled = octoEnabledPrinterIds === null || octoEnabledPrinterIds.includes(printer.id);
+  const isOctoGloballyEnabled = octoEverywhereSettings?.enabled === true;
+  const isOctoConfigured = octoEverywhereSettings?.has_api_key === true;
+
+  const octoPrinterToggleMutation = useMutation({
+    mutationFn: (nextEnabled: boolean) => {
+      const currentIds = octoEnabledPrinterIds === null ? allPrinterIds : octoEnabledPrinterIds;
+      const nextIds = Array.from(
+        new Set(nextEnabled ? [...currentIds, printer.id] : currentIds.filter((id) => id !== printer.id))
+      ).filter((id) => allPrinterIds.includes(id));
+      return api.updateOctoEverywhereSettings(
+        nextIds.length === allPrinterIds.length ? { all_printers: true } : { enabled_printers: nextIds }
+      );
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['octoeverywhere-settings'] });
+      queryClient.invalidateQueries({ queryKey: ['octoeverywhere-status'] });
+      showToast(t('printers.aiMonitoring.saved'), 'success');
+    },
+    onError: (error) => {
+      showToast(error instanceof Error ? error.message : t('printers.aiMonitoring.saveFailed'), 'error');
+    },
+  });
+
+  const handleToggleOctoPrinter = () => {
+    if (!isOctoConfigured && isOctoPrinterEnabled) {
+      navigate('/settings?tab=failure-detection');
+      return;
+    }
+    if (!canUpdateObicoSettings || octoPrinterToggleMutation.isPending) return;
+    octoPrinterToggleMutation.mutate(!isOctoPrinterEnabled);
   };
 
   // Collect unique tray_info_idx values for cloud filament info lookup
@@ -3493,53 +3536,69 @@ function PrinterCard({
                       />
                     );
                   })()}
-                  {obicoSettings && (() => {
-                    const unavailable = !isObicoGloballyEnabled;
-                    const misconfigured = isObicoGloballyEnabled && isObicoPrinterEnabled && !isObicoConfigured;
-                    const enabled = isObicoGloballyEnabled && isObicoConfigured && isObicoPrinterEnabled;
-                    const disabled = isObicoGloballyEnabled && !isObicoPrinterEnabled;
-                    const label = unavailable
-                      ? t('printers.aiMonitoring.unavailableShort', 'AI unavailable')
-                      : misconfigured
-                        ? t('printers.aiMonitoring.warningShort', 'AI warning')
-                        : enabled
-                          ? t('printers.aiMonitoring.onShort', 'AI On')
-                          : t('printers.aiMonitoring.offShort', 'AI Off');
-                    const title = unavailable
-                      ? t('printers.aiMonitoring.globalDisabledTooltip', 'Global failure detection is disabled. Enable it in Settings → Failure Detection.')
-                      : misconfigured
-                        ? t('printers.aiMonitoring.notConfiguredTooltip', 'AI failure detection needs an ML URL and External URL. Open Settings → Failure Detection.')
+                  {(obicoSettings || octoEverywhereSettings) && (() => {
+                    // One pill per active detection provider; a single "unavailable" pill when none is on.
+                    const stateLabel = (state: AiMonitoringBadgeState) =>
+                      state === 'unavailable'
+                        ? t('printers.aiMonitoring.unavailableShort')
+                        : state === 'misconfigured'
+                          ? t('printers.aiMonitoring.warningShort')
+                          : state === 'enabled'
+                            ? t('printers.aiMonitoring.onShort')
+                            : t('printers.aiMonitoring.offShort');
+                    const providerState = (configured: boolean, printerEnabled: boolean): AiMonitoringBadgeState =>
+                      printerEnabled && !configured ? 'misconfigured' : printerEnabled ? 'enabled' : 'disabled';
+                    const toggleTitle = (state: AiMonitoringBadgeState, provider: string, notConfigured: string) =>
+                      state === 'misconfigured'
+                        ? notConfigured
                         : !canUpdateObicoSettings
-                          ? t('settings.toast.noPermissionUpdate', 'You do not have permission to update settings')
-                          : disabled
-                            ? t('printers.aiMonitoring.disabledTooltip', 'AI monitoring is disabled for this printer. Click to enable.')
-                            : t('printers.aiMonitoring.enabledTooltip', 'AI monitoring is enabled for this printer. Click to disable.');
-                    const classes = unavailable
-                      ? 'border-gray-600 bg-gray-800/60 text-bambu-gray hover:text-white'
-                      : misconfigured
-                        ? 'border-amber-500/60 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20'
-                        : enabled
-                          ? 'border-bambu-green/60 bg-bambu-green/10 text-bambu-green hover:bg-bambu-green/20'
-                          : 'border-gray-600 bg-gray-800/60 text-bambu-gray hover:text-white';
+                          ? t('settings.toast.noPermissionUpdate')
+                          : state === 'disabled'
+                            ? t('printers.aiMonitoring.disabledTooltip', { provider })
+                            : t('printers.aiMonitoring.enabledTooltip', { provider });
+
+                    if (!isObicoGloballyEnabled && !isOctoGloballyEnabled) {
+                      return (
+                        <AiMonitoringBadge
+                          state="unavailable"
+                          label={stateLabel('unavailable')}
+                          title={t('printers.aiMonitoring.globalDisabledTooltip')}
+                          onClick={() => navigate('/settings?tab=failure-detection')}
+                        />
+                      );
+                    }
+
+                    const obicoState = providerState(isObicoConfigured, isObicoPrinterEnabled);
+                    const octoState = providerState(isOctoConfigured, isOctoPrinterEnabled);
                     return (
-                      <button
-                        type="button"
-                        onClick={handleToggleObicoPrinter}
-                        disabled={obicoPrinterToggleMutation.isPending || (!canUpdateObicoSettings && isObicoGloballyEnabled && isObicoConfigured)}
-                        title={title}
-                        aria-label={title}
-                        className={`inline-flex h-6 flex-shrink-0 items-center gap-1 rounded-full border px-2 text-[11px] font-semibold leading-none transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${classes}`}
-                      >
-                        {obicoPrinterToggleMutation.isPending ? (
-                          <Loader2 className="h-3 w-3 animate-spin" />
-                        ) : misconfigured ? (
-                          <AlertTriangle className="h-3 w-3" />
-                        ) : (
-                          <ScanEye className="h-3 w-3" />
+                      <>
+                        {isObicoGloballyEnabled && (
+                          <AiMonitoringBadge
+                            state={obicoState}
+                            label={stateLabel(obicoState)}
+                            provider="Obico"
+                            title={toggleTitle(obicoState, 'Obico', t('printers.aiMonitoring.notConfiguredTooltip'))}
+                            pending={obicoPrinterToggleMutation.isPending}
+                            disabled={obicoPrinterToggleMutation.isPending || (!canUpdateObicoSettings && isObicoConfigured)}
+                            onClick={handleToggleObicoPrinter}
+                          />
                         )}
-                        <span className="hidden sm:inline">{label}</span>
-                        <span className="sm:hidden">AI</span>
-                      </button>
+                        {isOctoGloballyEnabled && (
+                          <AiMonitoringBadge
+                            state={octoState}
+                            label={stateLabel(octoState)}
+                            provider="OctoEverywhere"
+                            title={toggleTitle(
+                              octoState,
+                              'OctoEverywhere',
+                              t('printers.aiMonitoring.octoNotConfiguredTooltip')
+                            )}
+                            pending={octoPrinterToggleMutation.isPending}
+                            disabled={octoPrinterToggleMutation.isPending || (!canUpdateObicoSettings && isOctoConfigured)}
+                            onClick={handleToggleOctoPrinter}
+                          />
+                        )}
+                      </>
                     );
                   })()}
                 </div>
@@ -3813,8 +3872,8 @@ function PrinterCard({
                 </span>
               ) : null}
 
-              {/* Enclosure Door Badge (X1/X2D/P1S/P2S/H2*) */}
-              {status?.connected && ['X1C', 'X1', 'X1E', 'X2D', 'P1S', 'P1P', 'P2S', 'H2D', 'H2D Pro', 'H2C', 'H2S'].includes(printer.model ?? '') && (
+              {/* Enclosure Door Badge (X1/X2D/P1S/P2S/H2*, H3C) */}
+              {status?.connected && ['X1C', 'X1', 'X1E', 'X2D', 'P1S', 'P1P', 'P2S', 'H2D', 'H2D Pro', 'H2C', 'H2S', 'H3C'].includes(printer.model ?? '') && (
                 <span
                   className={`flex items-center px-2 py-1 rounded-full text-xs ${
                     status.door_open
@@ -4411,8 +4470,8 @@ function PrinterCard({
 
                       {(fanItems.length > 0 || isElegooSDCPProvider) && <div className="w-px h-5 bg-bambu-gray/30" />}
 
-                      {/* Airduct Mode (P2S / X2D / H2*) */}
-                      {(['P2S', 'X2D', 'H2D', 'H2C', 'H2S'].includes(printer.model ?? '')) && (() => {
+                      {/* Airduct Mode (P2S / X2D / H2* / H3C) */}
+                      {(['P2S', 'X2D', 'H2D', 'H2C', 'H2S', 'H3C'].includes(printer.model ?? '')) && (() => {
                         const isHeating = status.airduct_mode === 1;
                         const Icon = isHeating ? Flame : Snowflake;
                         const color = isHeating ? 'text-orange-400' : 'text-sky-400';
@@ -4573,6 +4632,10 @@ function PrinterCard({
               const regularAms = amsData.filter(ams => ams.tray.length > 1);
               const htAms = amsData.filter(ams => ams.tray.length === 1);
               const isDualNozzle = printer.nozzle_count === 2 || status?.temperatures?.nozzle_2 !== undefined;
+              // H3C: one external input per hotend (247-255) on its one extruder.
+              const isRackPrinter = isH3cModel(printer.model)
+                || amsData.some((unit) => isAms3hUnit(unit))
+                || status.vt_tray.some((vt) => (vt.id ?? 254) >= RACK_EXTERNAL_MIN && (vt.id ?? 254) < 254);
 
               return (
                 <div className="mt-3">
@@ -4598,9 +4661,12 @@ function PrinterCard({
                         const isLeftNozzle = extruderId === 1;
                         const isRightNozzle = extruderId === 0;
                         const amsDisplayLabel = isSnapmakerU1Unit ? 'Spools' : (isK2CfsLikeUnit ? `CFS T${ams.id + 1}` : (ams.name || getAmsLabel(ams.id, ams.tray.length)));
+                        // H3C: its AMS 3H is one unit with nine slots, each feeding its own hotend.
+                        const isAms3h = isAms3hUnit(ams);
+                        const amsDryZoneSlots = isAms3h ? (ams.dry_zone_slots ?? []) : [];
 
                         return (
-                          <div key={ams.id} className="p-2.5 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary/30">
+                          <div key={ams.id} className={`p-2.5 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary/30 ${isAms3h ? 'col-span-2' : ''}`}>
                             {/* Header: Label + Stats (no icon) */}
                             <div className="flex items-center justify-between mb-2">
                               <div className="flex items-center gap-1.5">
@@ -4655,7 +4721,7 @@ function PrinterCard({
                                     />
                                   )}
                                   {/* Drying button — only for AMS 2 Pro (n3f) and AMS-HT (n3s) */}
-                                  {status.supports_drying && (ams.module_type === 'n3f' || ams.module_type === 'n3s') && hasPermission('printers:control') && (
+                                  {status.supports_drying && (ams.module_type === 'n3f' || ams.module_type === 'n3s' || isAms3h) && hasPermission('printers:control') && (
                                     <button
                                       disabled={!!(ams.dry_sf_reason?.length && ams.dry_time === 0)}
                                       onClick={(e) => {
@@ -4667,7 +4733,8 @@ function PrinterCard({
                                           const firstTray = ams.tray.find(t => t.tray_type);
                                           const filType = (firstTray?.tray_type || 'PLA').split(' ')[0].toUpperCase();
                                           const preset = dryingPresets[filType] || dryingPresets['PLA'];
-                                          const moduleType = ams.module_type as 'n3f' | 'n3s';
+                                          // The AMS 3H dryer uses the AMS 2 Pro presets.
+                                          const moduleType = (isAms3h ? 'n3f' : ams.module_type) as 'n3f' | 'n3s';
                                           setDryingFilament(filType);
                                           setDryingTemp(preset[moduleType] || preset.n3f);
                                           setDryingDuration(moduleType === 'n3s' ? preset.n3s_hours : preset.n3f_hours);
@@ -4698,6 +4765,11 @@ function PrinterCard({
                               <div className="flex items-center gap-2 px-2 py-1 mb-1 bg-amber-500/10 border border-amber-500/20 rounded text-[9px]">
                                 <Flame className="w-3 h-3 text-amber-400 shrink-0" />
                                 <span className="text-amber-400 font-medium">{t('printers.drying.active')}</span>
+                                {amsDryZoneSlots.length > 0 && (
+                                  <span className="text-amber-300/70">
+                                    {t('printers.ams3h.dryZone', { slots: amsDryZoneSlots.map((slot) => slot + 1).join(' + ') })}
+                                  </span>
+                                )}
                                 <span className="text-amber-300/70">
                                   {t('printers.drying.timeRemaining', {
                                     time: ams.dry_time >= 60
@@ -4716,7 +4788,7 @@ function PrinterCard({
                               </div>
                             )}
                             {/* Slots grid: 4 columns - always render 4 slots */}
-                            <div className="grid grid-cols-4 gap-1.5">
+                            <div className={`grid ${isAms3h ? 'grid-cols-9' : 'grid-cols-4'} gap-1.5`}>
                               {isSnapmakerU1Unit && (
                                 <>
                                   <div className="col-span-2 text-center text-[9px] uppercase tracking-wider text-bambu-gray font-semibold">
@@ -4727,7 +4799,7 @@ function PrinterCard({
                                   </div>
                                 </>
                               )}
-                              {[0, 1, 2, 3].map((slotIdx) => {
+                              {(isAms3h ? AMS3H_SLOT_INDEXES : [0, 1, 2, 3]).map((slotIdx) => {
                                 // Find tray data for this slot (may be undefined if data incomplete)
                                 // Use array index if available, as tray.id may not always be set
                                 const tray = ams.tray[slotIdx] || ams.tray.find(t => t.id === slotIdx);
@@ -4740,8 +4812,9 @@ function PrinterCard({
                                 const isEmpty = !tray?.tray_type;
                                 const emptyKind = getEmptySlotKind(tray);
                                 // Check if this is the currently loaded tray
-                                // Global tray ID = ams.id * 4 + slot index (for standard AMS)
-                                const globalTrayId = ams.id * 4 + slotIdx;
+                                // Global tray ID = ams.id * 4 + slot index (for standard AMS;
+                                // the H3C's AMS 3H is 28 + slot)
+                                const globalTrayId = getGlobalTrayId(ams.id, slotIdx, false);
                                 const isActive = isSnapmakerU1Unit ? tray?.active === true : effectiveTrayNow === globalTrayId;
                                 // Get cloud preset info if available
                                 const cloudInfo = tray?.tray_info_idx ? filamentInfo?.[tray.tray_info_idx] : null;
@@ -4752,16 +4825,39 @@ function PrinterCard({
                                 const trayTag = (tray?.tray_uuid || tray?.tag_uid || getFallbackSpoolTag(printer.serial_number, ams.id, slotIdx))?.toUpperCase();
                                 const linkedSpool = trayTag ? linkedSpools?.[trayTag] : undefined;
                                 const spoolmanFill = getSpoolmanFillLevel(linkedSpool);
-                                // Slot-assigned-only spool fill (no tag link required)
+                                // Slot-assigned-only spool fill (no tag link required).
+                                // Snapmaker SpoolLink also publishes filament_spool_id — treat that
+                                // as a Spoolman binding when no explicit Printbuddy assignment exists.
                                 const slotAssignmentForFill = spoolmanEnabled && !spoolmanLoading
                                   ? spoolmanSlotAssignments?.find(a => a.printer_id === printer.id && a.ams_id === ams.id && a.tray_id === slotIdx)
                                   : undefined;
-                                const slotSpoolForFill = slotAssignmentForFill
-                                  ? spoolmanSpools?.find(s => s.id === slotAssignmentForFill.spoolman_spool_id)
+                                const trayFilamentSpoolId = getTrayFilamentSpoolId(tray);
+                                const slotSpoolForFill = (spoolmanEnabled && !spoolmanLoading)
+                                  ? (
+                                    slotAssignmentForFill
+                                      ? spoolmanSpools?.find(s => s.id === slotAssignmentForFill.spoolman_spool_id)
+                                      : (trayFilamentSpoolId
+                                        ? spoolmanSpools?.find(s => s.id === trayFilamentSpoolId)
+                                        : undefined)
+                                  )
                                   : undefined;
                                 const slotSpoolFill = (slotSpoolForFill && (slotSpoolForFill.label_weight ?? 0) > 0)
                                   ? Math.round(Math.max(0, (slotSpoolForFill.label_weight ?? 0) - slotSpoolForFill.weight_used) / (slotSpoolForFill.label_weight ?? 1) * 100)
                                   : null;
+                                const effectiveSpoolmanSpoolId = slotAssignmentForFill?.spoolman_spool_id
+                                  ?? trayFilamentSpoolId
+                                  ?? (trayTag ? linkedSpools?.[trayTag]?.id : undefined);
+                                // SpoolLink identity from Moonraker Spoolman proxy — works even when
+                                // Printbuddy's Spoolman sync setting is disabled.
+                                const spoolLinkAssigned = trayFilamentSpoolId ? {
+                                  id: trayFilamentSpoolId,
+                                  material: tray?.filament_spool_material || tray?.tray_type || 'Filament',
+                                  brand: tray?.filament_spool_brand ?? null,
+                                  color_name: tray?.filament_spool_color_name ?? null,
+                                  remainingWeightGrams: typeof tray?.remaining_weight === 'number'
+                                    ? Math.max(0, Math.round(tray.remaining_weight))
+                                    : undefined,
+                                } : null;
                                 const inventoryAssignment = onGetAssignment?.(printer.id, ams.id, slotIdx);
                                 const inventoryFill = (() => {
                                   const sp = inventoryAssignment?.spool;
@@ -4791,7 +4887,7 @@ function PrinterCard({
                                   // the hover card shows "Devil Design PLA Basic" rather than the
                                   // vendor-less form. Strip the "@<printer>..." suffix that
                                   // BambuStudio appends to user-preset names.
-                                  profile: slotPreset?.preset_name || (slotSpoolForFill ? [slotSpoolForFill.brand, slotSpoolForFill.slicer_filament_name?.split('@')[0].trim() || slotSpoolForFill.material].filter(Boolean).join(' ').trim() : null) || inventoryAssignment?.spool?.slicer_filament_name || cloudInfo?.name || tray.tray_sub_brands || tray.tray_type,
+                                  profile: slotPreset?.preset_name || (slotSpoolForFill ? [slotSpoolForFill.brand, slotSpoolForFill.slicer_filament_name?.split('@')[0].trim() || slotSpoolForFill.material].filter(Boolean).join(' ').trim() : null) || (spoolLinkAssigned ? [spoolLinkAssigned.brand, spoolLinkAssigned.material, spoolLinkAssigned.color_name].filter(Boolean).join(' ').trim() : null) || inventoryAssignment?.spool?.slicer_filament_name || cloudInfo?.name || tray.tray_sub_brands || tray.tray_type,
                                   colorName: getColorName(tray.tray_color || ''),
                                   colorHex: tray.tray_color || null,
                                   kFactor: formatKValue(tray.k),
@@ -4900,7 +4996,7 @@ function PrinterCard({
                                           onClick={(e) => {
                                             e.stopPropagation();
                                             if (!hasPermission('printers:control')) return;
-                                            loadAmsTrayMutation.mutate({ trayId: ams.id * 4 + slotIdx });
+                                            loadAmsTrayMutation.mutate({ trayId: getGlobalTrayId(ams.id, slotIdx, false) });
                                             setAmsSlotMenu(null);
                                           }}
                                           disabled={!hasPermission('printers:control')}
@@ -4966,7 +5062,7 @@ function PrinterCard({
                                               onClick={(e) => {
                                                 e.stopPropagation();
                                                 if (!hasPermission('printers:control')) return;
-                                                loadAmsTrayMutation.mutate({ trayId: ams.id * 4 + slotIdx });
+                                                loadAmsTrayMutation.mutate({ trayId: getGlobalTrayId(ams.id, slotIdx, false) });
                                                 setAmsSlotMenu(null);
                                               }}
                                               disabled={!hasPermission('printers:control') || !tray?.tray_type}
@@ -5006,15 +5102,13 @@ function PrinterCard({
                                           // #1457: slot assignment is the user's most explicit action — it must
                                           // outrank the tag-link, which can be stale when a non-RFID slot's
                                           // fallback tag is still attached to a previous spool in Spoolman.
-                                          linkedSpoolId: slotAssignmentForFill?.spoolman_spool_id
-                                            ?? (trayTag ? linkedSpools?.[trayTag]?.id : undefined),
+                                          // Snapmaker SpoolLink filament_spool_id ranks above tag links.
+                                          linkedSpoolId: effectiveSpoolmanSpoolId,
                                           spoolmanUrl,
                                           syncMode: spoolmanSyncMode,
                                           // Suppress Link button when slot is already occupied by ANY assignment
-                                          // (Spoolman SlotAssignment OR local SpoolAssignment). Phase 9 only
-                                          // suppressed for Spoolman; the maintainer screenshot shows the badge
-                                          // still appearing on slots with a local Devil Design PLA assigned.
-                                          onLinkSpool: (spoolmanEnabled && !slotAssignmentForFill && !inventoryAssignment) ? () => {
+                                          // (Spoolman SlotAssignment, SpoolLink id, OR local SpoolAssignment).
+                                          onLinkSpool: (spoolmanEnabled && !slotAssignmentForFill && !trayFilamentSpoolId && !inventoryAssignment) ? () => {
                                             const linkTag = (filamentData.trayUuid || filamentData.tagUid || getFallbackSpoolTag(printer.serial_number, ams.id, slotIdx)).toUpperCase();
                                             setLinkSpoolModal({
                                               tagUid: filamentData.tagUid || linkTag,
@@ -5031,16 +5125,20 @@ function PrinterCard({
                                             if (spoolmanLoading) return undefined;
                                             const slotAssignment = slotAssignmentForFill;
                                             const spoolmanSpool = slotSpoolForFill;
+                                            // SpoolLink bindings are printer-owned (like RFID): show as
+                                            // assigned with inventory deep-link, but don't offer Printbuddy unassign.
+                                            const spoolLinkOwned = !!trayFilamentSpoolId && !slotAssignment;
+                                            const assignedSpool = spoolmanSpool ? {
+                                              id: spoolmanSpool.id,
+                                              material: spoolmanSpool.material,
+                                              brand: spoolmanSpool.brand ?? null,
+                                              color_name: spoolmanSpool.color_name ?? null,
+                                              remainingWeightGrams: spoolmanSpool.label_weight
+                                                ? Math.max(0, Math.round(spoolmanSpool.label_weight - spoolmanSpool.weight_used))
+                                                : undefined,
+                                            } : spoolLinkAssigned;
                                             return {
-                                              assignedSpool: spoolmanSpool ? {
-                                                id: spoolmanSpool.id,
-                                                material: spoolmanSpool.material,
-                                                brand: spoolmanSpool.brand ?? null,
-                                                color_name: spoolmanSpool.color_name ?? null,
-                                                remainingWeightGrams: spoolmanSpool.label_weight
-                                                  ? Math.max(0, Math.round(spoolmanSpool.label_weight - spoolmanSpool.weight_used))
-                                                  : undefined,
-                                              } : null,
+                                              assignedSpool,
                                               onAssignSpool: supportsSpoolAssignment ? () => setAssignSpoolModal({
                                                 printerId: printer.id,
                                                 amsId: ams.id,
@@ -5053,8 +5151,11 @@ function PrinterCard({
                                                   location: `${amsDisplayLabel} - Slot ${slotIdx + 1}`,
                                                 },
                                               }) : undefined,
-                                              onUnassignSpool: (spoolmanSpool && !isCfsUnit && !isBambuLabSpool(tray)) ? () => onUnassignSpoolmanSpool?.(spoolmanSpool.id) : undefined,
-                                              isAssigned: isCfsUnit ? !!slotAssignment : (!!slotAssignment || isBambuLabSpool(tray)),
+                                              onUnassignSpool: (spoolmanSpool && !isCfsUnit && !isSnapmakerU1Unit && !isBambuLabSpool(tray) && !spoolLinkOwned) ? () => onUnassignSpoolmanSpool?.(spoolmanSpool.id) : undefined,
+                                              isAssigned: isSlotAssignmentOnlyUnit
+                                                ? !!(slotAssignment || trayFilamentSpoolId)
+                                                : (!!slotAssignment || isBambuLabSpool(tray)),
+                                              showOpenInInventory: !!spoolmanSpool,
                                             };
                                           }
                                           const assignment = onGetAssignment?.(printer.id, ams.id, slotIdx);
@@ -5065,7 +5166,7 @@ function PrinterCard({
                                               brand: assignment.spool.brand,
                                               color_name: assignment.spool.color_name,
                                               remainingWeightGrams: Math.max(0, Math.round(assignment.spool.label_weight - assignment.spool.weight_used)),
-                                            } : null,
+                                            } : spoolLinkAssigned,
                                             onAssignSpool: supportsSpoolAssignment ? () => setAssignSpoolModal({
                                               printerId: printer.id,
                                               amsId: ams.id,
@@ -5078,8 +5179,12 @@ function PrinterCard({
                                                 location: `${amsDisplayLabel} - Slot ${slotIdx + 1}`,
                                               },
                                             }) : undefined,
-                                            onUnassignSpool: (assignment && !isCfsUnit && !isBambuLabSpool(tray)) ? () => onUnassignSpool?.(printer.id, ams.id, slotIdx) : undefined,
-                                            isAssigned: isCfsUnit ? !!assignment : (!!assignment || isBambuLabSpool(tray)),
+                                            onUnassignSpool: (assignment && !isCfsUnit && !isBambuLabSpool(tray) && !spoolLinkAssigned) ? () => onUnassignSpool?.(printer.id, ams.id, slotIdx) : undefined,
+                                            isAssigned: isSlotAssignmentOnlyUnit
+                                              ? !!(assignment || trayFilamentSpoolId)
+                                              : (!!assignment || isBambuLabSpool(tray)),
+                                            // SpoolLink-only (Printbuddy Spoolman off): show Assigned label, no inventory deep-link.
+                                            showOpenInInventory: !!assignment?.spool,
                                           };
                                         })()}
                                         configureSlot={{
@@ -5566,12 +5671,15 @@ function PrinterCard({
                       })}
                       {/* External spool(s) - grouped in one card like regular AMS */}
                       {status.vt_tray.length > 0 && (
-                        <div className={`p-2.5 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary/30 ${status.vt_tray.length === 1 ? 'max-w-[50%]' : ''}`}>
+                        <div className={`p-2.5 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary/30 ${status.vt_tray.length === 1 ? 'max-w-[50%]' : ''} ${status.vt_tray.length > 2 ? 'col-span-2' : ''}`}>
                           <div className="flex items-center gap-1 mb-2">
                             <span className="text-[10px] text-white font-medium">{t('printers.external')}</span>
                           </div>
-                          <div className={`grid ${status.vt_tray.length > 1 ? 'grid-cols-2' : 'grid-cols-1'} gap-1.5`}>
-                            {[...status.vt_tray].sort((a, b) => (a.id ?? 254) - (b.id ?? 254)).map((extTray) => {
+                          <div className={`grid ${status.vt_tray.length > 2 ? 'grid-cols-9' : status.vt_tray.length > 1 ? 'grid-cols-2' : 'grid-cols-1'} gap-1.5`}>
+                            {[...status.vt_tray].sort((a, b) => isRackPrinter
+                              // H3C: Ext-1 (255) ... Ext-9 (247), in hotend order
+                              ? (b.id ?? 254) - (a.id ?? 254)
+                              : (a.id ?? 254) - (b.id ?? 254)).map((extTray) => {
                               const extTrayId = extTray.id ?? 254;
                               // On dual-nozzle (H2C/H2D), tray_now=254 means "external spool"
                               // generically — use active_extruder to determine L vs R:
@@ -5580,10 +5688,12 @@ function PrinterCard({
                                 ? (extTrayId === 254 && status.active_extruder === 1) ||
                                   (extTrayId === 255 && status.active_extruder === 0)
                                 : effectiveTrayNow === extTrayId;
-                              const slotTrayId = extTrayId - 254; // 0 or 1
-                              const extLabel = isDualNozzle
-                                ? (extTrayId === 254 ? t('printers.extL') : t('printers.extR'))
-                                : '';
+                              const slotTrayId = externalSlotIndex(extTrayId); // 0 or 1 (H3C: 0-8)
+                              const extLabel = isRackPrinter
+                                ? rackExternalLabel(extTrayId)
+                                : isDualNozzle
+                                  ? (extTrayId === 254 ? t('printers.extL') : t('printers.extR'))
+                                  : '';
                               const extCloudInfo = extTray.tray_info_idx ? filamentInfo?.[extTray.tray_info_idx] : null;
                               const extSlotPreset = slotPresets?.[255 * 4 + slotTrayId];
 
@@ -6947,7 +7057,8 @@ function AddPrinterModal({
       external_camera_url: externalCameraUrl || undefined,
       external_camera_type: externalCameraUrl ? inferExternalCameraType(externalCameraUrl) : undefined,
       external_camera_enabled: isHttpProvider && Boolean(externalCameraUrl),
-      external_camera_snapshot_url: undefined,
+      // Keep the snapshot URL "Detect Moonraker camera" found; editing the stream URL clears it.
+      external_camera_snapshot_url: externalCameraUrl ? (form.external_camera_snapshot_url || undefined) : undefined,
       provider_options: isPrusaLinkProvider
         ? buildPrusaLinkProviderOptions(prusaLinkApiAuthMode, form.provider_options)
         : form.provider_options,
@@ -7669,7 +7780,7 @@ function AddPrinterModal({
                     type="text"
                     className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                     value={form.external_camera_url || ''}
-                    onChange={(e) => setForm({ ...form, external_camera_url: e.target.value })}
+                    onChange={(e) => setForm({ ...form, external_camera_url: e.target.value, external_camera_snapshot_url: undefined })}
                     placeholder="http://printer.local/webcam/?action=stream"
                   />
                   <p className="text-xs text-bambu-gray mt-1">
@@ -8600,6 +8711,12 @@ export function PrintersPage() {
     enabled: hasPermission('settings:read'),
   });
 
+  const { data: octoEverywhereSettings } = useQuery({
+    queryKey: ['octoeverywhere-settings'],
+    queryFn: api.getOctoEverywhereSettings,
+    enabled: hasPermission('settings:read'),
+  });
+
   const { data: pandaBreathStatus } = useQuery({
     queryKey: ['panda-breath-status'],
     queryFn: api.getPandaBreathStatus,
@@ -9442,6 +9559,7 @@ export function PrintersPage() {
         requirePlateClear={settings?.require_plate_clear === true}
         pandaBreathState={getAssignedPandaBreathState(printer.id, settings?.panda_breath_printer_assignments, pandaBreathStatus)}
         obicoSettings={obicoSettings}
+        octoEverywhereSettings={octoEverywhereSettings}
         allPrinterIds={allPrinterIds}
         layoutEditing={layoutEditing}
         selectionMode={selectionMode}

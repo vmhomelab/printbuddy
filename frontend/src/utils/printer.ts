@@ -13,6 +13,7 @@ const MODEL_IMAGE_ALIASES: Array<[RegExp, string]> = [
   [/^h2dpro$/, 'h2dpro'],
   [/^h2d$/, 'h2d'],
   [/^h2c$/, 'h2c'],
+  [/^(?:h3c|n10)$/, 'h3c'],
   [/^h2s$/, 'h2d'],
   [/^o1c$/, 'o1c'],
   [/^o1e$/, 'o1e'],

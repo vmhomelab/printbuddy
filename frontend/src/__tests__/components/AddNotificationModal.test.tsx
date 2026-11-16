@@ -567,3 +567,71 @@ describe('AddNotificationModal — stock alert toggles', () => {
     void user; // referenced to avoid unused-var lint warning
   });
 });
+
+describe('AddNotificationModal — attach camera photo toggle', () => {
+  const findAttachSwitch = () =>
+    screen.getAllByRole('switch').find((s) => s.closest('div')?.parentElement?.textContent?.match(/attach camera photo/i));
+
+  it('is on by default and saves attach_image=false when switched off', async () => {
+    let captured: unknown = null;
+    server.use(
+      http.patch('*/api/v1/notifications/1', async ({ request }) => {
+        captured = await request.json();
+        return HttpResponse.json({ id: 1 });
+      }),
+    );
+
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    render(<AddNotificationModal provider={buildProvider()} onClose={onClose} />);
+
+    await screen.findByText(/attach camera photo/i);
+    const attachSwitch = findAttachSwitch()!;
+    expect(attachSwitch).toHaveAttribute('aria-checked', 'true');
+    await user.click(attachSwitch);
+
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+
+    expect((captured as Record<string, unknown>).attach_image).toBe(false);
+  });
+
+  it('is hidden for providers that cannot carry an image', async () => {
+    render(
+      <AddNotificationModal
+        provider={buildProvider({ provider_type: 'email', config: { smtp_server: 'smtp.local' } })}
+        onClose={() => undefined}
+      />,
+    );
+
+    await screen.findByText(/inventory alerts/i);
+    expect(screen.queryByText(/attach camera photo/i)).not.toBeInTheDocument();
+  });
+});
+
+describe('AddNotificationModal — Printbuddy app devices', () => {
+  const token = 'ExponentPushToken[abcdefghij1234567890]';
+
+  it('shows an app-registered device with its type, device name and push token', () => {
+    render(
+      <AddNotificationModal
+        provider={buildProvider({
+          name: 'Printbuddy App (iPhone)',
+          provider_type: 'printbuddy_app',
+          config: { push_token: token, device_name: 'iPhone', platform: 'ios' },
+        })}
+        onClose={() => undefined}
+      />,
+    );
+    const typeSelect = screen.getByDisplayValue('Printbuddy App') as HTMLSelectElement;
+    expect(typeSelect.value).toBe('printbuddy_app');
+    expect(typeSelect).toBeDisabled();
+    expect(screen.getByDisplayValue(token)).toBeInTheDocument();
+    expect(screen.getByDisplayValue('iPhone')).toBeInTheDocument();
+  });
+
+  it('does not offer the app type when adding a provider by hand', () => {
+    render(<AddNotificationModal onClose={() => undefined} />);
+    expect(screen.queryByRole('option', { name: 'Printbuddy App' })).toBeNull();
+  });
+});

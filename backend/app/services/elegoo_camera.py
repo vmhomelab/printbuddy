@@ -194,6 +194,42 @@ def _creality_webrtc_provider_camera_source(printer: Any) -> EffectiveCameraSour
     )
 
 
+def _moonraker_discovered_camera_source(printer: Any) -> EffectiveCameraSource | None:
+    """Return the webcam Moonraker itself reports for a connected Klipper printer.
+
+    Printers added without running "Detect Moonraker camera" have no external
+    camera URL, so finish photos and notification snapshots fell through to the
+    Bambu camera path and never got an image. The Moonraker client caches its
+    first enabled ``server/webcams/list`` entry from the status poller; use it.
+    """
+
+    provider = str(getattr(printer, "provider", None) or "").strip().lower()
+    printer_id = getattr(printer, "id", None)
+    if provider not in MOONRAKER_CAMERA_PROVIDERS or printer_id is None:
+        return None
+
+    try:
+        from backend.app.services.printer_manager import printer_manager
+
+        client = printer_manager.get_client(printer_id)
+    except Exception:  # noqa: BLE001 - camera resolution must never raise
+        return None
+    webcam = getattr(client, "primary_webcam", None) if client is not None else None
+    if not isinstance(webcam, dict):
+        return None
+    stream_url = str(webcam.get("stream_url") or "").strip()
+    if not stream_url:
+        return None
+    camera_type = str(webcam.get("camera_type") or "mjpeg")
+    return EffectiveCameraSource(
+        enabled=True,
+        url=stream_url,
+        camera_type=camera_type,
+        snapshot_url=webcam.get("snapshot_url") or None,
+        derived=True,
+    )
+
+
 def _prusalink_provider_camera_source(printer: Any) -> EffectiveCameraSource | None:
     """Return a PrusaLink camera source declared in provider_options.
 
@@ -270,6 +306,10 @@ def get_effective_camera_source(printer: Any) -> EffectiveCameraSource:
     creality_webrtc_camera = _creality_webrtc_provider_camera_source(printer)
     if creality_webrtc_camera:
         return creality_webrtc_camera
+
+    moonraker_camera = _moonraker_discovered_camera_source(printer)
+    if moonraker_camera:
+        return moonraker_camera
 
     if is_elegoo_sdcp_provider(getattr(printer, "provider", None)):
         derived_url = build_elegoo_sdcp_camera_url(getattr(printer, "ip_address", None))

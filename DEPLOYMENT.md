@@ -154,6 +154,10 @@ To allow Printbuddy to use the host Tailscale daemon for certificate handling:
 
 Without this mount, Printbuddy falls back to self-signed certificates.
 
+### iPhone home-screen launcher
+
+`deploy/ios-launcher/` contains an optional launcher that opens Printbuddy full screen on iPhone and switches automatically between the local address (home Wi-Fi) and the Tailscale address. See [deploy/ios-launcher/README.md](deploy/ios-launcher/README.md).
+
 ## Health checks and logs
 
 Health endpoint:

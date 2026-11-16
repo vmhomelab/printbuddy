@@ -127,6 +127,19 @@ export default {
   },
   // Printers page
   printers: {
+    aiMonitoring: {
+      onShort: 'AI オン',
+      offShort: 'AI オフ',
+      warningShort: 'AI 警告',
+      unavailableShort: 'AI 利用不可',
+      globalDisabledTooltip: 'AI 失敗検出はオフです。設定 → 失敗検出で Obico または OctoEverywhere を有効にしてください。',
+      notConfiguredTooltip: 'Obico には ML API の URL と外部 URL が必要です。設定 → 失敗検出を開いてください。',
+      octoNotConfiguredTooltip: 'OctoEverywhere には API キーが必要です。設定 → 失敗検出を開いてください。',
+      enabledTooltip: 'このプリンターでは {{provider}} の AI 監視が有効です。クリックで無効にします。',
+      disabledTooltip: 'このプリンターでは {{provider}} の AI 監視が無効です。クリックで有効にします。',
+      saved: 'AI 監視を更新しました',
+      saveFailed: 'AI 監視を更新できませんでした',
+    },
     addPreflight: {
       checking: '接続を確認しています...',
       warning: '一部の接続チェックに失敗しました。このプリンターはオフラインと表示される可能性があります。下のチェックを確認し、可能な範囲で修正するか、そのまま保存してください。',
@@ -516,6 +529,10 @@ export default {
       serialRequired: 'シリアル番号が必要です',
       unknown: '不明',
       failedToStart: '印刷の開始に失敗しました',
+    },
+    // H3C AMS 3H
+    ams3h: {
+      dryZone: '乾燥: スロット {{slots}}',
     },
     // AMS Drying
     drying: {
@@ -1767,6 +1784,12 @@ export default {
     apiKeyCreated: 'APIキーを作成しました',
     apiKeyCopyWarning: '今すぐこのキーをコピーしてください - 再表示されません！',
     useInApiBrowser: 'APIブラウザーで使用',
+    mobilePairing: {
+      title: 'モバイルアプリと連携',
+      description: 'スマートフォンのカメラまたは Printbuddy アプリでこのコードを読み取ると、このキーで接続できます。',
+      qrAlt: 'Printbuddy モバイルアプリ連携用の QR コード',
+      localhostWarning: 'このアドレスはこのコンピューターでのみ有効です。スマートフォンから接続できるよう、ネットワークアドレス（IP など）で Printbuddy を開いてください。',
+    },
     createNewApiKey: '新しいAPIキーを作成',
     keyName: 'キー名',
     keyNamePlaceholder: '例: Home Assistant, OctoPrint',
@@ -1867,6 +1890,8 @@ export default {
     authentication: '認証',
     authEnabledDescription: 'ユーザー認証でインスタンスが保護されています',
     authDisabledDescription: '認証を有効にして、ユーザーアカウントの作成、権限の管理、Printbuddyインスタンスのセキュリティを確保しましょう。',
+    rememberMeExtended: '30日間ログイン状態を保持',
+    rememberMeExtendedDescription: 'ログイン時に「ログイン状態を保持」を選択すると、24時間ではなく30日間ログインしたままになります',
     authDisabledMessage: '認証を有効にして、ユーザーアカウントの作成、権限の管理、Printbuddyインスタンスのセキュリティを確保しましょう。',
     enableAuthentication: '認証を有効にする',
     currentUser: '現在のユーザー',
@@ -3504,6 +3529,10 @@ export default {
     allPlatesToggle: '{{count}} プレートすべてをスライス',
     queueAfterSlice: '完了後に印刷キューへ追加',
     queueAfterSliceTitle: 'スライス完了後、スライス済みファイルを印刷キューに追加するダイアログを開きます。',
+    outputModeLabel: '出力',
+    outputCombined: 'マルチプレートの1ファイル',
+    outputSeparate: 'プレートごとに別ファイル',
+    completedToastSplit: '{{name}} から {{count}} プレートをスライスしました',
     slicing: 'スライス中…',
     printer: 'プリンタープロファイル',
     process: 'プロセスプロファイル',
@@ -4396,6 +4425,45 @@ export default {
 
   // Virtual Printer
   virtualPrinter: {
+    types: {
+      title: "2種類の仮想プリンター",
+      newBadge: "新機能",
+      intro: "仮想プリンターを追加するときにタイプを選択します。スライサーから送信したファイルは、プリンターに直接送られるのではなくPrintbuddy（アーカイブ、レビュー、印刷キュー）に届きます。",
+      bambu: {
+        tag: "Bambu Labプリンター",
+        point1: "Bambu Studio / Bambuプロファイルを使うOrcaSlicer向けにBambuプリンターをエミュレート",
+        point2: "LANで自動検出、またはIPとアクセスコードで追加",
+        point3: "モード：アーカイブ、レビュー、キュー、プロキシ",
+        setupLabel: "セットアップが必要：",
+        setupText: "専用のバインドIP、開放ポート、スライサーへのPrintbuddy CAの登録が必要です。",
+        guide: "セットアップガイドを読む",
+      },
+      moonraker: {
+        tag: "Klipper、Prusa、OctoPrintなど",
+        point1: "OrcaSlicer / Snapmaker Orca：ホストタイプ「Octo/Klipper」の物理プリンターを追加。PrusaSlicer：ホストタイプ「OctoPrint」（バイナリG-codeにも対応）",
+        point2: "仮想プリンターカードのホストURLとAPIキーを貼り付け",
+        point3: "モード：アーカイブ、レビュー、キュー（ターゲットプリンターに送信）",
+        noSetupLabel: "追加設定不要：",
+        noSetupText: "Printbuddyのポートで動作します。バインドIP、ポート、証明書は不要です。",
+      },
+    },
+    protocol: {
+      title: "プリンタータイプ",
+      bambu: "Bambu互換",
+      bambuDesc: "Bambu Labプリンターをエミュレート（Bambu Studio / Bambuプロファイルを使うOrca）",
+      moonraker: "Moonraker/OctoPrint互換",
+      moonrakerDesc: "Klipper、Prusa、OctoPrintなどBambu以外のプリンター向けアップロードエンドポイント",
+    },
+    slicerConnection: {
+      title: "スライサー接続",
+      hostUrl: "ホストURL",
+      apiKey: "APIキー",
+      regenerate: "APIキーを再生成",
+      regenerateConfirmTitle: "APIキーを再生成",
+      regenerateConfirmMessage: "現在のキーはすぐに使えなくなります。スライサーの物理プリンター設定に新しいキーを入力する必要があります。",
+      keyRegenerated: "新しいAPIキーを生成しました",
+      hint: "スライサーでホストタイプ「Octo/Klipper」（OrcaSlicer / Snapmaker Orca）または「OctoPrint」（PrusaSlicer、バイナリG-codeにも対応）の物理プリンターを追加し、ホストURLとAPIキーを入力してください。送信したジョブはプリンターに直接ではなくPrintbuddyに届きます。",
+    },
     title: '仮想プリンター',
     running: '稼働中',
     stopped: '停止',
@@ -4425,6 +4493,7 @@ export default {
     },
     targetPrinter: {
       title: 'ターゲットプリンター',
+      moonrakerHint: "Bambu以外のプリンターのみ選択できます。印刷キューモードでは必須です。",
       configured: 'プロキシターゲット設定済み',
       notConfigured: 'ターゲットプリンター未選択 - プロキシモードに必要です',
       placeholder: 'プリンターを選択...',
@@ -4465,10 +4534,6 @@ export default {
       title: 'セットアップが必要です',
       description: '仮想プリンター機能を使用するには追加のシステム設定が必要です。ポートフォワーディング、ファイアウォールルール、プラットフォーム固有の設定が含まれます。',
       readGuide: '有効にする前にセットアップガイドをお読みください',
-    },
-    bambuOnly: {
-      badge: 'Bambu Lab専用',
-      description: '仮想プリンターはBambu StudioとOrcaSlicer向けのBambu LANプロトコルをエミュレートします。Prusa、Klipper/Moonraker、Elegoo SDCP向けの汎用仮想プリンター層ではありません。',
     },
     howItWorks: {
       title: '仕組み',
@@ -4521,6 +4586,7 @@ export default {
       title: '仮想プリンターを追加',
       name: '名前',
       hint: 'アクセスコード、ターゲットプリンター、その他の設定は作成後に設定できます。',
+      hintMoonraker: "作成後、ホストURLとAPIキーをスライサーの物理プリンター設定にコピーしてください。",
       create: '作成',
     },
     deleteConfirm: {
@@ -4535,6 +4601,7 @@ export default {
     },
     caCert: {
       title: 'スライサー証明書',
+      bambuOnlyBadge: "Bambu互換のみ",
       description: '仮想プリンターは Printbuddy CA が署名した TLS 証明書を使用します。この CA 証明書をスライサーの信頼ストアに一度インポートすると接続が受け入れられます — コマンドラインからコピーする必要はありません。',
       copy: 'コピー',
       copied: 'コピーしました',
@@ -4774,6 +4841,7 @@ export default {
       webhook: 'Webhook',
       homeassistant: 'Home Assistant',
       notify: 'Notify',
+      printbuddy_app: 'Printbuddy アプリ',
     },
     // Provider descriptions
     providerDescriptions: {
@@ -4786,6 +4854,7 @@ export default {
       webhook: '任意のURLへの汎用HTTP POST',
       homeassistant: 'Home Assistantダッシュボードの永続通知',
       notify: 'Notifyアプリ経由のプッシュ通知',
+      printbuddy_app: 'スマートフォンの Printbuddy アプリへのプッシュ通知。アプリで通知をオンにするとデバイスが追加されます。',
     },
     // NotificationProviderCard
     lastSuccess: '最終: {{date}}',
@@ -4904,6 +4973,8 @@ export default {
     quietStart: '開始',
     quietEnd: '終了',
     dailyDigestLabel: 'デイリーダイジェスト',
+    attachImageLabel: 'カメラ写真を添付',
+    attachImageDescription: '利用可能な場合、通知にカメラのスナップショットを添付します',
     sendDigestAt: 'ダイジェスト送信時刻',
     digestCollected: 'イベントが収集され、この時刻にまとめて送信されます',
     notificationEvents: '通知イベント',
@@ -5498,6 +5569,30 @@ export default {
       problems: 'スライサーがこの仮想プリンターを認識または使用できない理由となる問題が見つかりました。',
     },
     check: {
+      mr_enabled: {
+        title: "仮想プリンター有効",
+        fail: "この仮想プリンターはオフになっています。有効にするまで、スライサーからの接続テストとアップロードは拒否されます。",
+      },
+      mr_endpoint: {
+        title: "アップロードエンドポイント準備完了",
+        pass: "スライサーはPrintbuddyのポートで{{path}}にアップロードできます。",
+        fail: "仮想プリンターは有効ですが、アップロードエンドポイントが登録されていません。オフにしてから再度オンにしてください。解決しない場合はPrintbuddyのログを確認してください。",
+      },
+      mr_api_key: {
+        title: "APIキー設定済み",
+        fail: "APIキーが設定されていません。APIキーの横にある更新ボタンで生成してください。",
+      },
+      mr_target_printer: {
+        title: "ターゲットプリンター",
+        pass: "ジョブは接続中の{{name}}に送られます。",
+        warn: "{{name}}は現在オフラインです。キュー内のジョブは再接続後に送信されます。",
+        fail: "印刷キューモードには、Bambu以外のターゲットプリンター（Klipper、Prusa、OctoPrintなど）が必要です。「ターゲットプリンター」で選択してください。",
+        skip: "アーカイブモードとレビューモードでは不要です。",
+      },
+      mr_upload_dir: {
+        title: "アップロードフォルダーに書き込み可能",
+        fail: "Printbuddyがこの仮想プリンターのアップロードフォルダーに書き込めません。Printbuddyのデータディレクトリが書き込み可能か確認してください。",
+      },
       enabled: {
         title: '仮想プリンターが有効',
         fail: 'この仮想プリンターはオフです。検出可能にするにはオンに切り替えてください。',
@@ -5613,6 +5708,43 @@ export default {
     noActivePrints: '現在、実行中の印刷はありません。',
     historyTitle: '最近の検出',
     noHistory: 'まだ検出はありません。',
+  },
+
+  octoeverywhereDetection: {
+    title: 'OctoEverywhere AI 検出',
+    description: 'オプションのクラウドプロバイダー：印刷中にウェブカメラの画像を OctoEverywhere の Gadget AI に送信します。上の Obico 設定とは独立して動作します。',
+    privacyNote: 'プリンターカメラの画像は OctoEverywhere のサーバーにアップロードされます。OctoEverywhere によると、Gadget API で送信された画像は AI の学習には使用されません。',
+    apiKey: 'Gadget API キー',
+    apiKeyPlaceholder: 'Gadget API キーを貼り付け',
+    apiKeyStored: 'キーが保存されています — 置き換えるには新しいキーを入力',
+    apiKeyHint: '各アカウントには毎月 500 時間分の無料印刷時間が含まれます。有料利用は有効にするまでオフのままです。',
+    getApiKey: '無料の API キーを取得',
+    removeApiKey: '保存済みのキーを削除',
+    apiKeyMissing: '検出は有効ですが、API キーが保存されていません。',
+    test: 'テスト',
+    testSuccess: 'OctoEverywhere が API キーを受け付けました。',
+    testFailed: 'OctoEverywhere がリクエストを拒否しました。',
+    sensitivityHint: 'Gadget が警告や一時停止を提案するまでに必要な確信度。',
+    action: 'Gadget が一時停止を提案したときの動作',
+    actionHint: '動作は検出された失敗ごとに 1 回実行されます。Gadget の警告は通知のみを送信します。',
+    notifyOnWarning: '警告を通知',
+    notifyOnWarningHint: '印刷で Gadget が初めて警告を提案したときに通知を送信します。',
+    interval: '検査間隔',
+    intervalAuto: '自動（推奨）',
+    intervalSeconds: '{{seconds}} 秒ごと',
+    intervalHint: '自動は Gadget の推奨値（通常 20 秒）に従います。間隔を短くすると無料枠の消費が早くなります。',
+    save: '保存',
+    statusTitle: 'OctoEverywhere の状態',
+    accountError: 'OctoEverywhere が検査を一時停止しました：{{error}}',
+    stopped: '停止：{{reason}}',
+    quality: '品質 {{value}}/10',
+    waiting: '最初の結果を待機中',
+    flagWarning: '警告',
+    flagPause: '一時停止を推奨',
+    issueNoCamera: 'カメラがありません',
+    issueViewerBusy: 'ライブ表示でカメラが使用中',
+    issueCaptureFailed: '画像の取得に失敗',
+    historyTitle: '最近の OctoEverywhere 検出',
   },
   modelImport: {
     title: 'モデルのインポート',

@@ -49,6 +49,7 @@ const mockNotificationProviders = [
     on_print_stopped: false,
     on_print_progress: false,
   on_print_almost_done: false,
+    attach_image: true,
     on_printer_offline: false,
     on_printer_error: false,
     on_filament_low: false,
@@ -533,6 +534,28 @@ export const handlers = [
       action: 'notify',
       poll_interval: 30,
       external_url_configured: false,
+    })
+  ),
+  http.get('/api/v1/octoeverywhere/settings', () =>
+    HttpResponse.json({
+      enabled: false,
+      has_api_key: false,
+      sensitivity: 'medium',
+      action: 'notify',
+      poll_interval: 0,
+      enabled_printers: null,
+      notify_on_warning: true,
+    })
+  ),
+  http.get('/api/v1/octoeverywhere/status', () =>
+    HttpResponse.json({
+      is_running: false,
+      last_error: null,
+      account_error: null,
+      per_printer: {},
+      history: [],
+      enabled: false,
+      has_api_key: false,
     })
   ),
   http.get('/api/v1/printers/:id/current-print-user', () => HttpResponse.json(null)),

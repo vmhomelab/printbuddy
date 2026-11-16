@@ -83,6 +83,23 @@ export function withStreamToken(url: string): string {
   return `${url}${sep}token=${encodeURIComponent(streamToken)}`;
 }
 
+// WebSocket auth: browsers can't set headers on the handshake, so the token
+// rides along as a second subprotocol. The server answers with only
+// "printbuddy.v1" (see backend/app/core/auth.py, WS_SUBPROTOCOL).
+const WS_SUBPROTOCOL = 'printbuddy.v1';
+
+/** Open the live-update WebSocket, authenticated with the current token when there is one. */
+export function openAuthenticatedWebSocket(url: string): WebSocket {
+  if (!authToken) return new WebSocket(url);
+  try {
+    return new WebSocket(url, [WS_SUBPROTOCOL, `bearer.${authToken}`]);
+  } catch {
+    // A token with characters not allowed in a subprotocol makes the constructor
+    // throw; connect without it so auth-disabled servers keep working.
+    return new WebSocket(url);
+  }
+}
+
 function parseContentDispositionFilename(header: string | null): string | null {
   if (!header) return null;
   // RFC 5987: filename*=utf-8''percent-encoded-name
@@ -335,6 +352,13 @@ export interface AMSTray {
   channel_action_state?: string | null;
   channel_error?: string | null;
   filament_source?: string | null;
+  /** Snapmaker U1 SpoolLink / Moonraker Spoolman spool id when the slot is bound. */
+  filament_spool_id?: number | null;
+  remaining_weight?: number | null;
+  /** Identity fields from Moonraker Spoolman proxy (independent of Printbuddy Spoolman sync). */
+  filament_spool_brand?: string | null;
+  filament_spool_material?: string | null;
+  filament_spool_color_name?: string | null;
 }
 
 export interface AMSUnit {
@@ -350,7 +374,9 @@ export interface AMSUnit {
   dry_status: number;     // 0=Off, 1=Checking, 2=Drying, 3=Cooling, 4=Stopping, 5=Error
   dry_sub_status: number; // 0=Off, 1=Heating, 2=Dehumidify
   dry_sf_reason: number[]; // Cannot-dry reasons (1=InsufficientPower, 8=NeedPluginPower)
-  module_type: string;    // "ams", "n3f", "n3s"
+  module_type: string;    // "ams", "n3f", "n3s", "n10a" (the H3C's AMS 3H)
+  ams_type?: number | null;  // Bambu Studio's AMS type; 6 = AMS 3H (H3C, nine slots)
+  dry_zone_slots?: number[]; // AMS 3H: the slots (0-8) of the zone that can dry
 }
 
 export interface NozzleInfo {
@@ -1333,6 +1359,8 @@ export interface AppSettings {
   ldap_group_mapping: string;
   ldap_auto_provision: boolean;
   ldap_default_group: string;
+  // Remember Me keeps users signed in for 30 days instead of 24 h
+  remember_me_extended_session?: boolean;
   obico_enabled: boolean;
   obico_ml_url: string;
   obico_sensitivity: 'low' | 'medium' | 'high';
@@ -1701,6 +1729,8 @@ export interface SliceRequest {
   // dispatch ignores the preset side when bundle is set).
   bundle?: SliceBundleSpec;
   plate?: number;
+  /** When plate=0, write one library/archive file per plate instead of one multi-plate 3MF. */
+  split_plates?: boolean;
   export_3mf?: boolean;
   // Build-plate override (#1337). When omitted, the slicer uses the process
   // preset's curr_bed_type as-is. Canonical values match BambuStudio /
@@ -1799,6 +1829,9 @@ export interface SliceResponse {
   filament_used_g: number;
   filament_used_mm: number;
   used_embedded_settings: boolean;
+  /** Present when split_plates wrote one file per plate. */
+  library_file_ids?: number[] | null;
+  names?: string[] | null;
 }
 
 export interface SliceArchiveResponse {
@@ -1808,6 +1841,8 @@ export interface SliceArchiveResponse {
   filament_used_g: number;
   filament_used_mm: number;
   used_embedded_settings: boolean;
+  archive_ids?: number[] | null;
+  names?: string[] | null;
 }
 
 // Background slice-job lifecycle. POST /slice returns 202 + this shape;
@@ -2453,7 +2488,7 @@ export interface Filament {
 }
 
 // Notification Provider types
-export type ProviderType = 'callmebot' | 'ntfy' | 'pushover' | 'telegram' | 'email' | 'discord' | 'webhook' | 'homeassistant' | 'notify';
+export type ProviderType = 'callmebot' | 'ntfy' | 'pushover' | 'telegram' | 'email' | 'discord' | 'webhook' | 'homeassistant' | 'notify' | 'printbuddy_app';
 
 export interface NotificationProvider {
   id: number;
@@ -2468,6 +2503,7 @@ export interface NotificationProvider {
   on_print_stopped: boolean;
   on_print_progress: boolean;
   on_print_almost_done: boolean;
+  attach_image?: boolean;
   on_print_missing_spool_assignment: boolean;
   // Printer status events
   on_printer_offline: boolean;
@@ -2528,6 +2564,7 @@ export interface NotificationProviderCreate {
   on_print_stopped?: boolean;
   on_print_progress?: boolean;
   on_print_almost_done?: boolean;
+  attach_image?: boolean;
   on_print_missing_spool_assignment?: boolean;
   // Printer status events
   on_printer_offline?: boolean;
@@ -2581,6 +2618,7 @@ export interface NotificationProviderUpdate {
   on_print_stopped?: boolean;
   on_print_progress?: boolean;
   on_print_almost_done?: boolean;
+  attach_image?: boolean;
   on_print_missing_spool_assignment?: boolean;
   // Printer status events
   on_printer_offline?: boolean;
@@ -2736,6 +2774,74 @@ export interface ObicoTestConnection {
   ok: boolean;
   status_code: number | null;
   body: string | null;
+  error: string | null;
+}
+
+// OctoEverywhere Gadget AI failure detection (PB-35). Mirrors
+// backend/app/schemas/octoeverywhere.py; the API key is write-only.
+export type OctoEverywhereSensitivity = 'low' | 'medium' | 'high';
+export type OctoEverywhereAction = 'notify' | 'pause' | 'pause_and_off';
+
+export interface OctoEverywhereSettings {
+  enabled: boolean;
+  has_api_key: boolean;
+  sensitivity: OctoEverywhereSensitivity;
+  action: OctoEverywhereAction;
+  /** 0 = automatic (Gadget's recommended interval), otherwise 5-120 seconds. */
+  poll_interval: number;
+  /** null = all connected printers */
+  enabled_printers: number[] | null;
+  notify_on_warning: boolean;
+}
+
+export interface OctoEverywhereSettingsUpdate {
+  enabled?: boolean;
+  /** New key; empty string clears it; omit to keep the stored key. */
+  api_key?: string;
+  sensitivity?: OctoEverywhereSensitivity;
+  action?: OctoEverywhereAction;
+  poll_interval?: number;
+  enabled_printers?: number[];
+  all_printers?: boolean;
+  notify_on_warning?: boolean;
+}
+
+export interface OctoEverywherePrinterStatus {
+  print_quality: number | null;
+  score: number | null;
+  warning: boolean;
+  pause: boolean;
+  frame_count: number;
+  last_checked: string | null;
+  next_check_in: number | null;
+  using_fallback: boolean;
+  stopped_reason: string | null;
+  last_issue: string | null;
+}
+
+export interface OctoEverywhereDetectionEvent {
+  printer_id: number;
+  task_name: string;
+  timestamp: string;
+  print_quality: number | null;
+  score: number | null;
+  warning: boolean;
+  pause: boolean;
+}
+
+export interface OctoEverywhereStatus {
+  is_running: boolean;
+  last_error: string | null;
+  account_error: string | null;
+  per_printer: Record<string, OctoEverywherePrinterStatus>;
+  history: OctoEverywhereDetectionEvent[];
+  enabled: boolean;
+  has_api_key: boolean;
+}
+
+export interface OctoEverywhereTestResult {
+  ok: boolean;
+  error_type: string | null;
   error: string | null;
 }
 
@@ -3444,6 +3550,9 @@ export interface UserEmailPreferences {
 export interface LoginRequest {
   username: string;
   password: string;
+  // Requests a 30-day token; the backend only honours it when the admin
+  // enabled remember_me_extended_session.
+  remember_me?: boolean;
 }
 
 export interface LoginResponse {
@@ -3546,6 +3655,7 @@ export interface TwoFAVerifyRequest {
   pre_auth_token: string;
   code: string;
   method: 'totp' | 'email' | 'backup';
+  remember_me?: boolean;
 }
 
 /**
@@ -3831,10 +3941,10 @@ export const api = {
     request<{ auth_url: string }>(`/auth/oidc/authorize/${providerId}`),
 
   // OIDC exchange token for JWT
-  exchangeOIDCToken: (oidcToken: string) =>
+  exchangeOIDCToken: (oidcToken: string, rememberMe = false) =>
     request<LoginResponse>('/auth/oidc/exchange', {
       method: 'POST',
-      body: JSON.stringify({ oidc_token: oidcToken }),
+      body: JSON.stringify({ oidc_token: oidcToken, remember_me: rememberMe }),
     }),
 
   // OIDC links for current user
@@ -6673,6 +6783,20 @@ export const api = {
       body: JSON.stringify({ url }),
     }),
 
+  // OctoEverywhere Gadget AI failure detection (PB-35)
+  getOctoEverywhereSettings: () => request<OctoEverywhereSettings>('/octoeverywhere/settings'),
+  updateOctoEverywhereSettings: (data: OctoEverywhereSettingsUpdate) =>
+    request<OctoEverywhereSettings>('/octoeverywhere/settings', {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  getOctoEverywhereStatus: () => request<OctoEverywhereStatus>('/octoeverywhere/status'),
+  testOctoEverywhereConnection: (apiKey?: string) =>
+    request<OctoEverywhereTestResult>('/octoeverywhere/test-connection', {
+      method: 'POST',
+      body: JSON.stringify(apiKey ? { api_key: apiKey } : {}),
+    }),
+
   // Slicer API — slice in the background. Both endpoints return 202 + a
   // job_id; poll /slice-jobs/{id} until status is `completed` or `failed`.
   sliceLibraryFile: (fileId: number, body: SliceRequest) =>
@@ -7332,10 +7456,14 @@ export const virtualPrinterApi = {
 };
 
 // Multi Virtual Printer API
+export type VirtualPrinterProtocol = 'bambu' | 'moonraker';
+
 export interface VirtualPrinterConfig {
   id: number;
   name: string;
   enabled: boolean;
+  /** 'bambu' emulates a Bambu printer; 'moonraker' is an OctoPrint/Moonraker-compatible upload endpoint (#52). */
+  protocol: VirtualPrinterProtocol;
   mode: VirtualPrinterMode;
   model: string | null;
   model_name: string | null;
@@ -7349,6 +7477,10 @@ export interface VirtualPrinterConfig {
   remote_interface_ip: string | null;
   position: number;
   status: { running: boolean; pending_files: number; proxy?: VirtualPrinterProxyStatus };
+  /** Moonraker-compatible VPs only: key the slicer sends as X-Api-Key. */
+  api_key: string | null;
+  /** Moonraker-compatible VPs only: path to append to the Printbuddy origin for the slicer host URL. */
+  host_path: string | null;
 }
 
 export interface VirtualPrinterListResponse {
@@ -7364,6 +7496,7 @@ export const multiVirtualPrinterApi = {
   create: (data: {
     name?: string;
     enabled?: boolean;
+    protocol?: VirtualPrinterProtocol;
     mode?: string;
     model?: string;
     access_code?: string;
@@ -7409,6 +7542,11 @@ export const multiVirtualPrinterApi = {
 
   diagnose: (id: number) =>
     request<VPDiagnosticResult>(`/virtual-printers/${id}/diagnostic`),
+
+  regenerateApiKey: (id: number) =>
+    request<VirtualPrinterConfig>(`/virtual-printers/${id}/api-key`, {
+      method: 'POST',
+    }),
 };
 
 /** The shared CA certificate every virtual printer presents — imported once
@@ -7431,7 +7569,13 @@ export interface VPDiagnosticCheck {
     | 'port_ftps'
     | 'port_mqtt'
     | 'port_bind'
-    | 'certificate';
+    | 'certificate'
+    // Moonraker/OctoPrint-compatible VPs (#52)
+    | 'mr_enabled'
+    | 'mr_endpoint'
+    | 'mr_api_key'
+    | 'mr_target_printer'
+    | 'mr_upload_dir';
   status: VPDiagnosticStatus;
   params: Record<string, string | number>;
 }

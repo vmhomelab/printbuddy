@@ -18,6 +18,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.models.spool import Spool
 from backend.app.models.spool_assignment import SpoolAssignment
 from backend.app.models.spool_usage_history import SpoolUsageHistory
+from backend.app.utils.printer_models import has_ams3h
+from backend.app.utils.tray_ids import (
+    AMS3H_UNIT_ID,
+    RACK_SLOT_COUNT,
+    AmsType,
+    external_slot_index,
+    h3c_global_tray,
+    h3c_slot_key,
+    unit_ams_type,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +63,12 @@ def _decode_mqtt_mapping(mapping_raw: list | None) -> list[int] | None:
         elif ams_hw_id in (254, 255):
             # External spool
             result.append(254 if slot != 255 else 255)
+        elif ams_hw_id == AMS3H_UNIT_ID and slot < RACK_SLOT_COUNT:
+            # H3C's AMS 3H (unit 32): Studio's 28 + slot
+            result.append(h3c_global_tray(ams_hw_id, slot))
+        elif 247 <= ams_hw_id <= 253:
+            # H3C's per-hotend external input: its own id
+            result.append(ams_hw_id)
         else:
             result.append(-1)
 
@@ -158,6 +174,8 @@ def _match_slots_by_color(
             norm = tray_color[:6].lower() if len(tray_color) >= 6 else tray_color.lower()
             if ams_id >= 128:
                 global_id = ams_id  # AMS-HT
+            elif unit_ams_type(ams_id, ams_unit.get("info")) == AmsType.ZMULTI_A:
+                global_id = h3c_global_tray(ams_id, tray_id) or ams_id * 4 + tray_id  # H3C's AMS 3H
             else:
                 global_id = ams_id * 4 + tray_id
             color_to_trays.setdefault(norm, []).append(global_id)
@@ -316,7 +334,8 @@ async def on_print_start(printer_id: int, data: dict, printer_manager, db: Async
             continue
         vt_id = int(vt.get("id", 254))
         # VT tray id 254 → (ams_id=255, tray_id=0), id 255 → (ams_id=255, tray_id=1)
-        vt_tray_id = vt_id - 254
+        # 254 -> 0, 255 -> 1; an H3C's per-hotend inputs 247-253 -> 2-8.
+        vt_tray_id = external_slot_index(vt_id)
         remain = vt.get("remain", -1)
         if isinstance(remain, int) and 0 <= remain <= 100:
             tray_remain_start[(255, vt_tray_id)] = remain
@@ -638,7 +657,11 @@ async def on_print_complete(
             # Without this guard, swapping a spool in an UNUSED slot mid-print
             # makes that slot's remain% drop to 0, which the fallback below
             # would otherwise charge to the originally-assigned spool.
+            ams3h = has_ams3h(printer_manager.get_model(printer_id))
+
             def _global_to_ams_key(global_tray_id: int) -> tuple[int, int]:
+                if ams3h and (h3c_key := h3c_slot_key(global_tray_id)) is not None:
+                    return h3c_key
                 if global_tray_id >= 254:
                     return (255, global_tray_id - 254)
                 if global_tray_id >= 128:
@@ -677,7 +700,7 @@ async def on_print_complete(
                 if not isinstance(vt, dict):
                     continue
                 vt_id = int(vt.get("id", 254))
-                vt_tray_id = vt_id - 254  # 254→0, 255→1
+                vt_tray_id = external_slot_index(vt_id)  # 254→0, 255→1, H3C 247-253→2-8
                 remain = vt.get("remain", -1)
                 trays_to_check.append((255, vt_tray_id, remain, f"VT{vt_id}"))
 
@@ -1023,6 +1046,9 @@ async def _track_from_3mf(
     from backend.app.models.print_queue import PrintQueueItem
     from backend.app.utils.threemf_tools import extract_filament_usage_from_3mf
 
+    # H3C: AMS 3H slots are 28-36 and per-hotend inputs 247-253 (utils.tray_ids).
+    ams3h = has_ams3h(printer_manager.get_model(printer_id))
+
     file_path: Path | None = threemf_path
     archive: PrintArchive | None = None
 
@@ -1257,7 +1283,9 @@ async def _track_from_3mf(
                     continue
 
                 # Convert global tray ID to (ams_id, tray_id)
-                if tray_global >= 254:
+                if ams3h and (h3c_key := h3c_slot_key(tray_global)) is not None:
+                    seg_ams_id, seg_tray_id = h3c_key
+                elif tray_global >= 254:
                     seg_ams_id = 255
                     seg_tray_id = tray_global - 254
                 elif tray_global >= 128:
@@ -1404,7 +1432,10 @@ async def _track_from_3mf(
                 global_tray_id = slot_id - 1
 
         if pre_resolved_spool_id is None:
-            if global_tray_id >= 254:
+            if ams3h and (h3c_key := h3c_slot_key(global_tray_id)) is not None:
+                # H3C: AMS 3H 28-36 -> (32, 0-8), per-hotend inputs 247-253 -> (255, 2-8)
+                ams_id, tray_id = h3c_key
+            elif global_tray_id >= 254:
                 # External spool: ams_id=255 (sentinel), tray_id=slot index (0 or 1)
                 ams_id = 255
                 tray_id = global_tray_id - 254

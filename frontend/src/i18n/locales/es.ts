@@ -128,6 +128,19 @@ export default {
 
   // Printers page
   printers: {
+    aiMonitoring: {
+      onShort: 'IA activa',
+      offShort: 'IA inactiva',
+      warningShort: 'Aviso de IA',
+      unavailableShort: 'IA no disponible',
+      globalDisabledTooltip: 'La detección de fallos por IA está desactivada. Activa Obico u OctoEverywhere en Ajustes → Detección de fallos.',
+      notConfiguredTooltip: 'Obico necesita una URL de la API ML y una URL externa. Abre Ajustes → Detección de fallos.',
+      octoNotConfiguredTooltip: 'OctoEverywhere necesita una clave de API. Abre Ajustes → Detección de fallos.',
+      enabledTooltip: 'La supervisión por IA de {{provider}} está activa para esta impresora. Haz clic para desactivarla.',
+      disabledTooltip: 'La supervisión por IA de {{provider}} está desactivada para esta impresora. Haz clic para activarla.',
+      saved: 'Supervisión por IA actualizada',
+      saveFailed: 'No se pudo actualizar la supervisión por IA',
+    },
     addPreflight: {
       checking: 'Comprobando la conexión...',
       warning: 'Algunas comprobaciones de conexión fallaron. Esta impresora podría aparecer como desconectada. Revisa las comprobaciones de abajo, soluciona lo que puedas o guárdala de todos modos.',
@@ -517,6 +530,10 @@ export default {
       serialRequired: 'Número de serie obligatorio',
       unknown: 'Desconocido',
       failedToStart: 'Error al iniciar la detección',
+    },
+    // H3C AMS 3H
+    ams3h: {
+      dryZone: 'Secador: ranuras {{slots}}',
     },
     // AMS Drying
     drying: {
@@ -1770,6 +1787,12 @@ export default {
     apiKeyCreated: 'Clave API creada correctamente',
     apiKeyCopyWarning: '¡Copie esta clave ahora; no se volverá a mostrar!',
     useInApiBrowser: 'Usar en el explorador de API',
+    mobilePairing: {
+      title: 'Vincular la app móvil',
+      description: 'Escanea este código con la cámara del teléfono o en la app Printbuddy para conectarla con esta clave.',
+      qrAlt: 'Código QR para vincular la app móvil de Printbuddy',
+      localhostWarning: 'Esta dirección solo funciona en este ordenador. Abre Printbuddy con su dirección de red (por ejemplo, su IP) para que el teléfono pueda acceder.',
+    },
     createNewApiKey: 'Crear nueva clave API',
     keyName: 'Nombre de la clave',
     keyNamePlaceholder: 'p. ej., Home Assistant, OctoPrint',
@@ -1870,6 +1893,8 @@ export default {
     authentication: 'Autenticación',
     authEnabledDescription: 'Su instancia está protegida con autenticación de usuario',
     authDisabledDescription: 'Active para exigir el inicio de sesión y gestionar el acceso de los usuarios',
+    rememberMeExtended: 'Recordarme durante 30 días',
+    rememberMeExtendedDescription: 'Si los usuarios marcan \'Recordarme\' al iniciar sesión, la sesión dura 30 días en lugar de 24 horas',
     authDisabledMessage: 'Active la autenticación para crear cuentas de usuario, gestionar permisos y proteger su instancia de Printbuddy.',
     enableAuthentication: 'Activar la autenticación',
     currentUser: 'Usuario actual',
@@ -3506,6 +3531,10 @@ export default {
     allPlatesToggle: 'Laminar las {{count}} bandejas',
     queueAfterSlice: 'Añadir después a la cola de impresión',
     queueAfterSliceTitle: 'Al terminar el laminado, abre el diálogo para añadir el archivo laminado a la cola.',
+    outputModeLabel: 'Salida',
+    outputCombined: 'Un archivo multi-bandeja',
+    outputSeparate: 'Un archivo por bandeja',
+    completedToastSplit: 'Laminadas {{count}} bandejas de {{name}}',
     slicing: 'Laminando…',
     printer: 'Perfil de impresora',
     process: 'Perfil de proceso',
@@ -4403,6 +4432,45 @@ export default {
 
   // Virtual Printer
   virtualPrinter: {
+    types: {
+      title: "Dos tipos de impresoras virtuales",
+      newBadge: "Nuevo",
+      intro: "Elija el tipo al añadir una impresora virtual. Los archivos enviados desde su slicer llegan a Printbuddy (archivo, revisión o cola de impresión) en lugar de ir directamente a la impresora.",
+      bambu: {
+        tag: "Impresoras Bambu Lab",
+        point1: "Emula una impresora Bambu para Bambu Studio / OrcaSlicer con un perfil Bambu",
+        point2: "Se detecta automáticamente en la LAN o se añade por IP y código de acceso",
+        point3: "Modos: Archivo, Revisión, Cola, Proxy",
+        setupLabel: "Configuración necesaria:",
+        setupText: "necesita su propia IP de enlace, puertos abiertos y la CA de Printbuddy en su slicer.",
+        guide: "Leer la guía de configuración",
+      },
+      moonraker: {
+        tag: "Klipper, Prusa, OctoPrint y más",
+        point1: "OrcaSlicer / Snapmaker Orca: añada una impresora física con el tipo de host “Octo/Klipper”. PrusaSlicer: tipo de host “OctoPrint” (también G-code binario)",
+        point2: "Pegue la URL del host y la clave API de la tarjeta de la impresora virtual",
+        point3: "Modos: Archivo, Revisión, Cola (envía a la impresora de destino)",
+        noSetupLabel: "Sin configuración adicional:",
+        noSetupText: "funciona en el puerto de Printbuddy. No necesita IP de enlace, puertos ni certificado.",
+      },
+    },
+    protocol: {
+      title: "Tipo de impresora",
+      bambu: "Compatible con Bambu",
+      bambuDesc: "Emula una impresora Bambu Lab (Bambu Studio / Orca con perfil Bambu)",
+      moonraker: "Compatible con Moonraker/OctoPrint",
+      moonrakerDesc: "Punto de subida para Klipper, Prusa, OctoPrint y otras impresoras no Bambu",
+    },
+    slicerConnection: {
+      title: "Conexión del slicer",
+      hostUrl: "URL del host",
+      apiKey: "Clave API",
+      regenerate: "Regenerar clave API",
+      regenerateConfirmTitle: "Regenerar clave API",
+      regenerateConfirmMessage: "La clave actual dejará de funcionar de inmediato. Debe introducir la nueva clave en la configuración de la impresora física de su slicer.",
+      keyRegenerated: "Nueva clave API generada",
+      hint: "En su slicer, añada una impresora física con el tipo de host “Octo/Klipper” (OrcaSlicer / Snapmaker Orca) u “OctoPrint” (PrusaSlicer, también G-code binario) e introduzca la URL del host y la clave API. Los trabajos enviados llegan a Printbuddy en lugar de directamente a la impresora.",
+    },
     title: 'Impresora virtual',
     running: 'En ejecución',
     stopped: 'Detenida',
@@ -4432,6 +4500,7 @@ export default {
     },
     targetPrinter: {
       title: 'Impresora de destino',
+      moonrakerHint: "Solo se pueden seleccionar impresoras no Bambu. Obligatorio para el modo cola de impresión.",
       configured: 'Destino del proxy configurado',
       notConfigured: 'No hay impresora de destino seleccionada - necesaria para el modo proxy',
       placeholder: 'Seleccionar una impresora...',
@@ -4473,10 +4542,6 @@ export default {
       description: 'La función de impresora virtual requiere configuración adicional del sistema antes de funcionar. Esto incluye el reenvío de puertos, las reglas del cortafuegos y los ajustes específicos de la plataforma.',
       readGuide: 'Lea la guía de configuración antes de activarla',
     },
-    bambuOnly: {
-      badge: 'Solo Bambu Lab',
-      description: 'Las impresoras virtuales emulan el protocolo LAN de Bambu para Bambu Studio y OrcaSlicer. No son una capa genérica de impresora virtual para Prusa, Klipper/Moonraker ni Elegoo SDCP.',
-    },
     archiveNameSource: {
       title: 'Origen del nombre del archivo',
       description: 'Elija cómo se nombran los archivos nuevos cuando llegan a través de la impresora virtual. «Metadatos» usa el título incrustado por el laminador del 3MF (predeterminado). «Nombre de archivo» usa el nombre de archivo que Bambu Studio envió por FTP — útil si renombró el trabajo en el diálogo de «enviar a la impresora».',
@@ -4485,6 +4550,7 @@ export default {
     },
     caCert: {
       title: 'Certificado del laminador',
+      bambuOnlyBadge: "Solo compatible con Bambu",
       description: 'Las impresoras virtuales usan un certificado TLS firmado por la CA de Printbuddy. Importe este certificado de CA en el almacén de confianza de su laminador una sola vez para que acepte la conexión — sin necesidad de copiarlo desde la línea de comandos.',
       copy: 'Copiar',
       copied: 'Copiado',
@@ -4542,6 +4608,7 @@ export default {
       title: 'Añadir impresora virtual',
       name: 'Nombre',
       hint: 'Puede configurar el código de acceso, la impresora de destino y otros ajustes después de crearla.',
+      hintMoonraker: "Después de crearla, copie la URL del host y la clave API en la configuración de la impresora física de su slicer.",
       create: 'Crear',
     },
     deleteConfirm: {
@@ -4781,6 +4848,7 @@ export default {
       webhook: 'Webhook',
       homeassistant: 'Home Assistant',
       notify: 'Notify',
+      printbuddy_app: 'App Printbuddy',
     },
     // Provider descriptions
     providerDescriptions: {
@@ -4793,6 +4861,7 @@ export default {
       webhook: 'POST HTTP genérico a cualquier URL',
       homeassistant: 'Notificaciones persistentes en el panel de Home Assistant',
       notify: 'Notificaciones push mediante la app Notify',
+      printbuddy_app: 'Notificaciones push a la app Printbuddy de tu teléfono. Actívalas en la app para añadir un dispositivo.',
     },
     // NotificationProviderCard
     lastSuccess: 'Última: {{date}}',
@@ -4911,6 +4980,8 @@ export default {
     quietStart: 'Inicio',
     quietEnd: 'Fin',
     dailyDigestLabel: 'Resumen diario',
+    attachImageLabel: 'Adjuntar foto de la cámara',
+    attachImageDescription: 'Incluir una captura de la cámara en las notificaciones cuando esté disponible',
     sendDigestAt: 'Enviar el resumen a las',
     digestCollected: 'Los eventos se recopilarán y se enviarán como un único resumen a esta hora',
     notificationEvents: 'Eventos de notificación',
@@ -5505,6 +5576,30 @@ export default {
       problems: 'Se encontraron problemas que explican por qué el laminador no puede ver ni usar esta impresora virtual.',
     },
     check: {
+      mr_enabled: {
+        title: "Impresora virtual activada",
+        fail: "Esta impresora virtual está apagada. La prueba de conexión y las subidas del slicer se rechazan hasta que la active.",
+      },
+      mr_endpoint: {
+        title: "Punto de subida listo",
+        pass: "Los slicers pueden subir a {{path}} en el puerto de Printbuddy.",
+        fail: "La impresora virtual está activada, pero su punto de subida no está registrado. Desactívela y vuelva a activarla; si no ayuda, revise el registro de Printbuddy.",
+      },
+      mr_api_key: {
+        title: "Clave API configurada",
+        fail: "No hay ninguna clave API. Genere una con el botón de actualizar junto a la clave API.",
+      },
+      mr_target_printer: {
+        title: "Impresora de destino",
+        pass: "Los trabajos van a {{name}}, que está conectada.",
+        warn: "{{name}} está desconectada ahora. Los trabajos en cola se enviarán cuando vuelva a conectarse.",
+        fail: "El modo cola de impresión necesita una impresora de destino que no sea Bambu (Klipper, Prusa, OctoPrint, …). Seleccione una en Impresora de destino.",
+        skip: "No es necesaria en los modos Archivo y Revisión.",
+      },
+      mr_upload_dir: {
+        title: "Carpeta de subida con permiso de escritura",
+        fail: "Printbuddy no puede escribir en la carpeta de subida de esta impresora virtual. Compruebe que el directorio de datos de Printbuddy tenga permiso de escritura.",
+      },
       enabled: {
         title: 'Impresora virtual habilitada',
         fail: 'Esta impresora virtual está apagada. Actívela para que sea detectable.',
@@ -5620,6 +5715,43 @@ export default {
     noActivePrints: 'No hay impresiones en curso actualmente.',
     historyTitle: 'Detecciones recientes',
     noHistory: 'Aún no hay detecciones.',
+  },
+
+  octoeverywhereDetection: {
+    title: 'Detección IA de OctoEverywhere',
+    description: 'Proveedor en la nube opcional: envía capturas de la cámara a la IA Gadget de OctoEverywhere mientras se imprime. Funciona de forma independiente a la configuración de Obico.',
+    privacyNote: 'Las capturas de la cámara de tu impresora se suben a los servidores de OctoEverywhere. Según OctoEverywhere, las imágenes enviadas a la API Gadget no se usan para entrenar IA.',
+    apiKey: 'Clave de la API Gadget',
+    apiKeyPlaceholder: 'Pega tu clave de la API Gadget',
+    apiKeyStored: 'Hay una clave guardada; introduce una nueva para reemplazarla',
+    apiKeyHint: 'Cada cuenta incluye 500 horas de impresión gratis al mes; el uso de pago sigue desactivado hasta que lo actives.',
+    getApiKey: 'Obtener una clave gratuita',
+    removeApiKey: 'Eliminar la clave guardada',
+    apiKeyMissing: 'La detección está activada pero no hay ninguna clave guardada.',
+    test: 'Probar',
+    testSuccess: 'OctoEverywhere aceptó la clave.',
+    testFailed: 'OctoEverywhere rechazó la solicitud.',
+    sensitivityHint: 'Cuánta confianza necesita Gadget antes de sugerir un aviso o una pausa.',
+    action: 'Acción cuando Gadget sugiere pausar',
+    actionHint: 'La acción se ejecuta una vez por fallo detectado; los avisos de Gadget solo envían una notificación.',
+    notifyOnWarning: 'Notificar avisos',
+    notifyOnWarningHint: 'Enviar una notificación cuando Gadget sugiera por primera vez un aviso en una impresión.',
+    interval: 'Intervalo de inspección',
+    intervalAuto: 'Automático (recomendado)',
+    intervalSeconds: 'Cada {{seconds}} s',
+    intervalHint: 'Automático sigue la recomendación de Gadget (normalmente 20 s). Intervalos más cortos agotan antes la cuota gratuita.',
+    save: 'Guardar',
+    statusTitle: 'Estado de OctoEverywhere',
+    accountError: 'OctoEverywhere pausó las inspecciones: {{error}}',
+    stopped: 'Detenido: {{reason}}',
+    quality: 'Calidad {{value}}/10',
+    waiting: 'Esperando el primer resultado',
+    flagWarning: 'aviso',
+    flagPause: 'pausa sugerida',
+    issueNoCamera: 'Sin cámara disponible',
+    issueViewerBusy: 'Cámara ocupada por una vista en directo',
+    issueCaptureFailed: 'Error al capturar la imagen',
+    historyTitle: 'Detecciones recientes de OctoEverywhere',
   },
 
   modelImport: {

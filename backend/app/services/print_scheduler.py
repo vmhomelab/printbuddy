@@ -35,6 +35,7 @@ from backend.app.services.printer_providers.factory import normalize_provider
 from backend.app.services.smart_plug_manager import smart_plug_manager
 from backend.app.utils.printer_models import normalize_printer_model
 from backend.app.utils.sliced_upload import SlicedUploadError, prepare_sliced_upload
+from backend.app.utils.tray_ids import AmsType, h3c_global_tray, unit_ams_type
 
 logger = logging.getLogger(__name__)
 
@@ -990,6 +991,9 @@ class PrintScheduler:
                     # Calculate global tray ID
                     # AMS-HT units have IDs starting at 128 with a single tray
                     global_tray_id = ams_id if ams_id >= 128 else ams_id * 4 + tray_id
+                    # The H3C's AMS 3H (unit 32, nine trays): Studio's 28 + slot
+                    if unit_ams_type(ams_id, ams_unit.get("info")) == AmsType.ZMULTI_A:
+                        global_tray_id = h3c_global_tray(ams_id, tray_id) or global_tray_id
 
                     filaments.append(
                         {
