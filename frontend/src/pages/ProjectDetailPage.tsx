@@ -46,6 +46,7 @@ import { RichTextEditor } from '../components/RichTextEditor';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { PrintModal } from '../components/PrintModal';
 import { ProjectPlanSection } from '../components/ProjectPlanSection';
+import { ProjectCostsCard } from '../components/ProjectCostsCard';
 
 // Project edit modal (reused from ProjectsPage)
 import { ProjectModal } from './ProjectsPage';
@@ -1159,73 +1160,10 @@ export function ProjectDetailPage() {
         canQueue={hasPermission('queue:create')}
       />
 
+      <ProjectCostsCard projectId={projectId} canEdit={hasPermission('projects:update')} />
+
       <ProductionPlan bomItems={bomItems || []} archives={archives || []} files={allProjectFiles || []} fileStates={productionFileStates} onStageFile={(file) => { setSchedulePrinterIds([]); setScheduleFile(file); }} />
       <DispatchSuggestions suggestions={dispatchSuggestions} onReview={(suggestion) => { setSchedulePrinterIds(suggestion.printer ? [suggestion.printer.id] : []); setScheduleFile(suggestion.file); }} />
-
-      {/* Cost tracking */}
-      {stats && (() => {
-        const totalCost = stats.estimated_cost + stats.total_energy_cost + stats.bom_cost;
-        return (stats.estimated_cost > 0 || totalCost > 0 || project.budget !== null);
-      })() && (
-        <Card>
-          <CardContent className="p-4">
-            <h2 className="text-lg font-semibold text-white mb-3">
-              {t('projectDetail.cost.title')}
-            </h2>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <div>
-                <p className="text-xs text-bambu-gray uppercase">{t('projectDetail.cost.filamentCost')}</p>
-                <p className="text-lg font-semibold text-white">
-                  {currency}{stats.estimated_cost.toFixed(2)}
-                </p>
-              </div>
-              {stats.total_energy_kwh > 0 && (
-                <div>
-                  <p className="text-xs text-bambu-gray uppercase">{t('projectDetail.cost.energy')}</p>
-                  <p className="text-lg font-semibold text-white">
-                    {stats.total_energy_kwh.toFixed(3)} kWh
-                    {stats.total_energy_cost > 0 && (
-                      <span className="text-sm text-bambu-gray ml-1">
-                        ({currency}{stats.total_energy_cost.toFixed(2)})
-                      </span>
-                    )}
-                  </p>
-                </div>
-              )}
-              {(() => {
-                const totalCost = stats.estimated_cost + stats.total_energy_cost + stats.bom_cost;
-                if (totalCost <= 0) return null;
-                return (
-                  <div>
-                    <p className="text-xs text-bambu-gray uppercase">{t('projectDetail.cost.totalCost')}</p>
-                    <p className="text-lg font-semibold text-bambu-green">
-                      {currency}{totalCost.toFixed(2)}
-                    </p>
-                    {stats.bom_cost > 0 && (
-                      <p className="text-xs text-bambu-gray/70">{t('projectDetail.cost.includesBom')}</p>
-                    )}
-                  </div>
-                );
-              })()}
-              {project.budget !== null && (() => {
-                const totalCost = stats.estimated_cost + stats.total_energy_cost + stats.bom_cost;
-                const remaining = project.budget - totalCost;
-                return (
-                  <div>
-                    <p className="text-xs text-bambu-gray uppercase">{t('projectDetail.cost.budget')}</p>
-                    <p className="text-sm text-bambu-gray">
-                      {t('projectDetail.cost.total')}: <span className="text-white font-semibold">{currency}{project.budget.toFixed(2)}</span>
-                    </p>
-                    <p className={`text-sm ${remaining >= 0 ? 'text-bambu-green' : 'text-red-400'}`}>
-                      {t('projectDetail.cost.remaining')}: <span className="font-semibold">{currency}{remaining.toFixed(2)}</span>
-                    </p>
-                  </div>
-                );
-              })()}
-            </div>
-          </CardContent>
-        </Card>
-      )}
 
       {/* Sub-projects */}
       {project.children && project.children.length > 0 && (

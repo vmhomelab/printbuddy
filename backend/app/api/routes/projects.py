@@ -201,6 +201,9 @@ async def list_projects(
     projects = result.scalars().all()
 
     # Compute quick stats for each project
+    from backend.app.services.project_costs import compute_project_costs, load_cost_context
+
+    cost_ctx = await load_cost_context(db) if projects else None
     response = []
     for project in projects:
         # Get archive count (number of print jobs)
@@ -248,9 +251,12 @@ async def list_projects(
             progress_percent = round((archive_count / project.target_count) * 100, 1)
 
         # Job plan progress wins over the manual target when a plan exists
-        plan_summary = summarize_plan(await load_plan(db, project.id))
+        plan_overview = await load_plan(db, project.id)
+        plan_summary = summarize_plan(plan_overview)
         if plan_summary["total_plates"] > 0:
             progress_percent = plan_summary["progress_percent"]
+        costs = await compute_project_costs(db, project, cost_ctx, plan_overview)
+        estimated_costs = costs["planned"] if costs["planned"]["total"] > 0 else None
 
         # Get archive previews (up to 6 most recent)
         archives_result = await db.execute(
@@ -291,9 +297,11 @@ async def list_projects(
                 progress_percent=progress_percent,
                 plan_total_plates=plan_summary["total_plates"],
                 plan_completed_plates=plan_summary["completed_plates"],
+                estimated_costs=estimated_costs,
                 archives=archive_previews,
                 url=project.url,
                 order_number=project.order_number,
+                waste_percent=project.waste_percent,
                 cover_image_filename=project.cover_image_filename,
             )
         )
@@ -331,6 +339,7 @@ async def create_project(
         parent_id=data.parent_id,
         url=data.url,
         order_number=(data.order_number or "").strip() or None,
+        waste_percent=data.waste_percent,
     )
 
     # Optional File Manager folders to link right away (validated before insert)
@@ -366,6 +375,7 @@ async def create_project(
         attachments=project.attachments,
         url=project.url,
         order_number=project.order_number,
+        waste_percent=project.waste_percent,
         cover_image_filename=project.cover_image_filename,
         tags=project.tags,
         due_date=project.due_date,
@@ -418,6 +428,7 @@ async def list_templates(
                 archives=[],
                 url=project.url,
                 order_number=project.order_number,
+                waste_percent=project.waste_percent,
                 cover_image_filename=project.cover_image_filename,
             )
         )
@@ -497,6 +508,7 @@ async def create_project_from_template(
         attachments=project.attachments,
         url=project.url,
         order_number=project.order_number,
+        waste_percent=project.waste_percent,
         cover_image_filename=project.cover_image_filename,
         tags=project.tags,
         due_date=project.due_date,
@@ -610,6 +622,7 @@ async def get_project(
         attachments=project.attachments,
         url=project.url,
         order_number=project.order_number,
+        waste_percent=project.waste_percent,
         cover_image_filename=project.cover_image_filename,
         tags=project.tags,
         due_date=project.due_date,
@@ -672,6 +685,8 @@ async def update_project(
         project.url = data.url
     if "order_number" in data.model_fields_set:
         project.order_number = (data.order_number or "").strip()[:100] or None
+    if "waste_percent" in data.model_fields_set:
+        project.waste_percent = data.waste_percent
     if data.parent_id is not None:
         # Verify parent exists and prevent circular reference
         if data.parent_id == project_id:
@@ -710,6 +725,7 @@ async def update_project(
         attachments=project.attachments,
         url=project.url,
         order_number=project.order_number,
+        waste_percent=project.waste_percent,
         cover_image_filename=project.cover_image_filename,
         tags=project.tags,
         due_date=project.due_date,
@@ -1832,6 +1848,7 @@ async def import_project(
         attachments=project.attachments,
         url=project.url,
         order_number=project.order_number,
+        waste_percent=project.waste_percent,
         cover_image_filename=project.cover_image_filename,
         tags=project.tags,
         due_date=project.due_date,
@@ -2008,6 +2025,7 @@ async def import_project_file(
         attachments=project.attachments,
         url=project.url,
         order_number=project.order_number,
+        waste_percent=project.waste_percent,
         cover_image_filename=project.cover_image_filename,
         tags=project.tags,
         due_date=project.due_date,

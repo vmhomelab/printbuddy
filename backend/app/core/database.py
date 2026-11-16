@@ -2823,6 +2823,13 @@ async def run_migrations(conn):
             "REFERENCES project_plan_items(id) ON DELETE SET NULL",
         )
     await _safe_execute(conn, "CREATE INDEX IF NOT EXISTS ix_print_queue_plan_item_id ON print_queue (plan_item_id)")
+    # Migration: production cost estimate — printer power draw + project waste %
+    if is_sqlite():
+        await _safe_execute(conn, "ALTER TABLE printers ADD COLUMN power_watts REAL")
+        await _safe_execute(conn, "ALTER TABLE projects ADD COLUMN waste_percent REAL")
+    else:
+        await _safe_execute(conn, "ALTER TABLE printers ADD COLUMN IF NOT EXISTS power_watts DOUBLE PRECISION")
+        await _safe_execute(conn, "ALTER TABLE projects ADD COLUMN IF NOT EXISTS waste_percent DOUBLE PRECISION")
     await _safe_execute(
         conn, "CREATE INDEX IF NOT EXISTS ix_print_archives_plan_item_id ON print_archives (plan_item_id)"
     )

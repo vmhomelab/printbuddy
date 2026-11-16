@@ -8221,6 +8221,7 @@ function EditPrinterModal({
     access_code: '',
     model: printer.model || '',
     location: printer.location || '',
+    power_watts: printer.power_watts != null ? String(printer.power_watts) : '',
     auto_archive: printer.auto_archive,
     reconnect_interval_seconds: printer.reconnect_interval_seconds ?? 30,
     prusa_link_api_auth_mode: parsePrusaLinkApiAuthMode(printer.provider_options),
@@ -8256,6 +8257,8 @@ function EditPrinterModal({
       ip_address: form.ip_address,
       model: form.model || undefined,
       location: form.location || undefined,
+      // Empty clears the value (energy estimate falls back to smart-plug history)
+      power_watts: form.power_watts.trim() === '' ? null : Math.max(0, Number(form.power_watts)) || null,
       auto_archive: form.auto_archive,
       reconnect_interval_seconds: form.reconnect_interval_seconds,
     };
@@ -8426,6 +8429,20 @@ function EditPrinterModal({
                 placeholder={t('printers.modal.locationPlaceholder')}
               />
               <p className="text-xs text-bambu-gray mt-1">{t('printers.locationHelp')}</p>
+            </div>
+            <div>
+              <label className="block text-sm text-bambu-gray mb-1" htmlFor="printer-power-watts">{t('printers.modal.powerWatts')}</label>
+              <input
+                id="printer-power-watts"
+                type="number"
+                min={0}
+                step={1}
+                className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                value={form.power_watts}
+                onChange={(e) => setForm({ ...form, power_watts: e.target.value })}
+                placeholder={t('printers.modal.powerWattsPlaceholder')}
+              />
+              <p className="text-xs text-bambu-gray mt-1">{t('printers.modal.powerWattsHelp')}</p>
             </div>
             <div className="flex items-center gap-2">
               <input

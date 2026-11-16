@@ -144,7 +144,7 @@ const DE_COGNATES = [
   'Stop', 'Reset', 'Test', 'Code', 'Token', 'Server', 'Port', 'Bug', 'Job',
   'Pause', 'Power', 'System', 'Problem', 'Designer', 'Extruder', 'Firmware',
   'Material', 'Original', 'Position', 'Webhook', 'Workflow', 'Slicer',
-  'Region', 'Normal', 'Orange', 'Branch', 'Budget', 'Commit', 'Global',
+  'Region', 'Normal', 'Orange', 'Branch', 'Budget', 'Budget {{value}}', 'Commit', 'Global',
   'Version', 'Slot', 'Slot {{slot}}', 'Live', 'Rate', 'Host', 'Trend', 'Min', 'Admin', 'Cloud',
   'Filament', 'Filaments', 'Software', 'Hardware', 'Avatar', 'Pin', 'Modal',
   'Active', 'Plate', 'Layer', 'Total', 'Plus', 'Pro', 'Mini', 'Studio',
@@ -199,7 +199,7 @@ const FR_COGNATES = [
   'Expand dispatch details', 'Collapse dispatch details',
   'Cancelling upload...', 'Backup in progress...', 'Searching directory...',
   'EC984C,#6CD4BC,A66EB9,D87694',
-  'Proxy', 'Navigation', 'Budget', 'Commit', 'Designer',
+  'Proxy', 'Navigation', 'Budget', 'Budget {{value}}', 'Commit', 'Designer',
   'ntfy, Pushover, Discord, etc.',
 ];
 
@@ -218,7 +218,7 @@ const IT_COGNATES = [
   'Backup', 'Legacy', 'Branch', 'Auto On', 'Display', 'Password',
   'Auto Off', 'Dashboard', 'Timestamp', 'Pressure Advance', 'Provisioning...',
   '(25%, 50%, 75%)', 'Provider', 'Provider: {{type}}', 'Base: {{name}}',
-  'Slicing…', 'Designer', 'Firmware', 'Timelapse', 'Commit', 'Budget',
+  'Slicing…', 'Designer', 'Firmware', 'Timelapse', 'Commit', 'Budget', 'Budget {{value}}',
   '({{count}}/8)', 'Custom Headers (JSON)', 'ETA {{minutes}} min',
   '{{name}} - Timelapse', 'Box label (62 × 29 mm)',
   'Avery L7160 — A4 sheet (38.1 × 63.5 mm × 21)',

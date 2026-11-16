@@ -303,6 +303,7 @@ export interface Printer {
   provider_options: string | null;
   model: string | null;
   location: string | null;  // Group/location name
+  power_watts?: number | null;  // Optional avg power while printing (W), used for energy cost estimates
   custom_image_filename: string | null;
   nozzle_count: number;  // 1 or 2, auto-detected from MQTT
   is_active: boolean;
@@ -553,6 +554,7 @@ export interface PrinterCreate {
   provider_options?: string | null;
   model?: string;
   location?: string;
+  power_watts?: number | null;
   auto_archive?: boolean;
   reconnect_interval_seconds?: number;
   external_camera_url?: string | null;
@@ -904,6 +906,7 @@ export interface Project {
   url: string | null;  // External link rendered next to project name on the card (#1155)
   cover_image_filename: string | null;  // Filename within project attachments dir (#1155)
   order_number?: string | null;  // External order / tracking number (e.g. Etsy)
+  waste_percent?: number | null;  // Material waste / purge surcharge (%)
 }
 
 export interface ProjectAttachment {
@@ -944,6 +947,7 @@ export interface ProjectListItem {
   order_number?: string | null;
   plan_total_plates?: number;
   plan_completed_plates?: number;
+  estimated_costs?: CostTotals | null;  // Planned production cost
 }
 
 export interface ProjectCreate {
@@ -978,6 +982,81 @@ export interface ProjectUpdate {
   parent_id?: number;
   url?: string | null;  // #1155 — explicit null clears the URL
   order_number?: string | null;  // explicit null clears it
+  waste_percent?: number | null;  // explicit null clears it
+}
+
+// Production cost estimate of a project ("Job")
+export interface CostTotals {
+  material: number;
+  energy: number;
+  bom: number;
+  total: number;
+}
+
+export interface CostMaterialRow {
+  type: string;
+  color: string;
+  color_name: string | null;
+  planned_grams: number;
+  completed_grams: number;
+  remaining_grams: number;
+  price_per_kg: number;
+  source: 'spools' | 'catalog' | 'default';
+  spools: Array<{ id: number; brand: string | null; color_name: string | null; cost_per_kg: number; remaining_grams: number }>;
+  planned_cost: number;
+  completed_cost: number;
+  remaining_cost: number;
+}
+
+export interface CostEnergyRow {
+  key: string;
+  kind: 'printer' | 'model' | 'unassigned';
+  label: string | null;
+  plates: number;
+  planned_hours: number;
+  remaining_hours: number;
+  kwh_per_hour: number | null;
+  source: 'power_setting' | 'history' | 'fleet_average' | 'none';
+  source_detail: string | null;
+  history_prints: number;
+  planned_kwh: number;
+  planned_cost: number;
+  remaining_cost: number;
+}
+
+export interface CostBomRow {
+  id: number;
+  name: string;
+  quantity_needed: number;
+  quantity_acquired: number;
+  unit_price: number;
+  cost: number;
+}
+
+export interface CostWarning {
+  code: 'unestimated_plates' | 'default_price' | 'no_energy_rate' | 'bom_without_price';
+  count?: number;
+  type?: string;
+  color?: string;
+  color_name?: string | null;
+}
+
+export interface ProjectCosts {
+  currency: string;
+  has_plan: boolean;
+  energy_cost_per_kwh: number;
+  waste_percent: number;
+  budget: number | null;
+  total_plates: number;
+  completed_plates: number;
+  planned: CostTotals;
+  incurred: CostTotals;
+  remaining: CostTotals;
+  material: { rows: CostMaterialRow[]; planned_grams: number; planned_cost: number; waste_cost: number; total_cost: number };
+  energy: { rows: CostEnergyRow[]; planned_kwh: number; planned_cost: number };
+  bom: { rows: CostBomRow[]; total: number; acquired: number };
+  actual: { material: number; energy: number; energy_kwh: number; prints: number };
+  warnings: CostWarning[];
 }
 
 // Project plan ("Job") — every plate a project needs
@@ -6300,6 +6379,10 @@ export const api = {
     request<{ status: string; message: string }>(`/projects/${projectId}/bom/${itemId}`, {
       method: 'DELETE',
     }),
+
+  // Production cost estimate
+  getProjectCosts: (projectId: number) =>
+    request<ProjectCosts>(`/projects/${projectId}/costs`),
 
   // Project plan ("Job")
   getProjectPlan: (projectId: number) =>
