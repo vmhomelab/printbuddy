@@ -639,7 +639,10 @@ async def import_instance(
             except MakerWorldError as exc:
                 # Prefer the primary endpoint's refusal when both fail — it is
                 # the more specific reason (e.g. purchase/points gating).
-                if instance_error is not None and isinstance(exc, (MakerWorldForbiddenError, MakerWorldNotFoundError)):
+                # The legacy endpoint often answers 400 for profiles it no
+                # longer serves, which would hide the actual reason.
+                if instance_error is not None and not isinstance(exc, MakerWorldAuthError):
+                    logger.info("MakerWorld legacy profile download also failed: %s", exc)
                     raise _map_service_error(instance_error) from exc
                 raise _map_service_error(exc) from exc
             signed_url = manifest.get("url")

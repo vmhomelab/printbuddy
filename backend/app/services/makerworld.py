@@ -438,8 +438,10 @@ class MakerWorldService:
         if response.status_code == 404:
             raise MakerWorldNotFoundError(f"MakerWorld {resource_kind} not found: {resource_id}")
         if response.status_code != 200:
+            upstream = _extract_upstream_error(response)
+            suffix = f": {upstream}" if upstream else ""
             raise MakerWorldUnavailableError(
-                f"Bambu Lab API unexpected status {response.status_code} for {resource_kind} {resource_id}"
+                f"Bambu Lab API unexpected status {response.status_code} for {resource_kind} {resource_id}{suffix}"
             )
 
         try:
