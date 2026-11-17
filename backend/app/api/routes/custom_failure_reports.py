@@ -29,6 +29,7 @@ from backend.app.services.custom_failure_reports import (
     report_to_dict,
 )
 from backend.app.services.failure_history_import import SOURCE_MANUAL
+from backend.app.services.failure_progress import progress_by_run
 from backend.app.services.failure_reason_mapping import SKIP, hms_short_code, reason_for_hms_list
 from backend.app.services.hms_errors import get_error_description
 from backend.app.services.printer_manager import printer_manager
@@ -64,6 +65,7 @@ class CustomFailureReportResponse(BaseModel):
     original_reason: str | None = None
     hms_code: str | None = None
     hms_description: str | None = None
+    progress_percent: float | None = None
 
 
 class ReasonSuggestion(BaseModel):
@@ -152,6 +154,22 @@ def _printer_state(printer_id: int) -> str | None:
     return getattr(status, "state", None) if status else None
 
 
+async def _run_progress(db: AsyncSession, archive: PrintArchive, current: float | None) -> float | None:
+    """How far the reported print got: 100 if it completed, the value recorded when it
+    ended, or the live progress for a print that is still running."""
+    if archive.status == "completed":
+        return 100.0
+    recorded = (await progress_by_run(db, {archive.id})).get((archive.id, archive.started_at))
+    if recorded is not None:
+        return recorded
+    if archive.status == "printing":
+        status = printer_manager.get_status(archive.printer_id)
+        live = getattr(status, "progress", None) if status else None
+        if isinstance(live, (int, float)) and 0 <= live <= 100:
+            return round(float(live), 1)
+    return current
+
+
 async def _suggestion(db: AsyncSession, printer_id: int) -> dict | None:
     """Pre-select a reason from the printer's active HMS errors (Bambu only), if one maps to a visible reason."""
     status = printer_manager.get_status(printer_id)
@@ -222,6 +240,7 @@ async def create_report(
     await _validate_reason(db, data.custom_failure_reason, current_reason)
     report = existing or CustomFailureReport()
     apply_print_snapshot(report, archive, printer)
+    report.progress_percent = await _run_progress(db, archive, report.progress_percent)
     # A person decided now: the history import never overwrites this reason again.
     report.source = SOURCE_MANUAL
     report.dismissed_at = None
@@ -285,11 +304,12 @@ async def get_statistics(
     date_from: date | None = Query(default=None),
     date_to: date | None = Query(default=None),
     source: Literal["person", "automatic"] | None = Query(default=None),
+    printer_id: int | None = Query(default=None),
     _=RequirePermissionIfAuthEnabled(Permission.ARCHIVES_READ),
     db: AsyncSession = Depends(get_db),
 ):
     """Per-reason counts and shares with the latest prints for "Fail reason statistics"."""
-    return await reason_statistics(db, date_from=date_from, date_to=date_to, source=source)
+    return await reason_statistics(db, date_from=date_from, date_to=date_to, source=source, printer_id=printer_id)
 
 
 @router.get("/", response_model=list[CustomFailureReportResponse])
@@ -298,8 +318,11 @@ async def get_reports(
     date_from: date | None = Query(default=None),
     date_to: date | None = Query(default=None),
     source: Literal["person", "automatic"] | None = Query(default=None),
+    printer_id: int | None = Query(default=None),
     _=RequirePermissionIfAuthEnabled(Permission.ARCHIVES_READ),
     db: AsyncSession = Depends(get_db),
 ):
     """All reports (optionally for one reason), newest print first — used by "show all"."""
-    return await list_reports(db, reason=reason, date_from=date_from, date_to=date_to, source=source)
+    return await list_reports(
+        db, reason=reason, date_from=date_from, date_to=date_to, source=source, printer_id=printer_id
+    )

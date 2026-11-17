@@ -3892,6 +3892,8 @@ export interface CustomFailureReport {
   original_reason: string | null;
   hms_code: string | null;
   hms_description: string | null;
+  /** how far the print got when it stopped / failed (0-100); null = unknown */
+  progress_percent: number | null;
 }
 
 export type CustomFailureSource = 'manual' | 'auto' | 'imported';
@@ -4824,18 +4826,24 @@ export const api = {
     request<CustomFailureReport>(`/custom-failure-reports/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteCustomFailureReport: (id: number) =>
     request<{ status: string }>(`/custom-failure-reports/${id}`, { method: 'DELETE' }),
-  getCustomFailureStats: (options?: { dateFrom?: string; dateTo?: string; source?: CustomFailureSourceFilter }) =>
+  getCustomFailureStats: (options?: {
+    dateFrom?: string;
+    dateTo?: string;
+    source?: CustomFailureSourceFilter;
+    printerId?: number;
+  }) =>
     request<CustomFailureStats>(
-      `/custom-failure-reports/stats${customFailureQuery({ date_from: options?.dateFrom, date_to: options?.dateTo, source: options?.source })}`
+      `/custom-failure-reports/stats${customFailureQuery({ date_from: options?.dateFrom, date_to: options?.dateTo, source: options?.source, printer_id: options?.printerId?.toString() })}`
     ),
   getCustomFailureReports: (options?: {
     reason?: string;
     dateFrom?: string;
     dateTo?: string;
     source?: CustomFailureSourceFilter;
+    printerId?: number;
   }) =>
     request<CustomFailureReport[]>(
-      `/custom-failure-reports/${customFailureQuery({ reason: options?.reason, date_from: options?.dateFrom, date_to: options?.dateTo, source: options?.source })}`
+      `/custom-failure-reports/${customFailureQuery({ reason: options?.reason, date_from: options?.dateFrom, date_to: options?.dateTo, source: options?.source, printer_id: options?.printerId?.toString() })}`
     ),
   compareArchives: (archiveIds: number[]) =>
     request<ArchiveComparison>(`/archives/compare?archive_ids=${archiveIds.join(',')}`),

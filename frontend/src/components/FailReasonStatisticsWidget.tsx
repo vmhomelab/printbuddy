@@ -1,7 +1,7 @@
 import { Fragment, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
-import { ChevronDown, ChevronRight, Loader2, Pencil } from 'lucide-react';
+import { ChevronDown, ChevronRight, Loader2, Pencil, X } from 'lucide-react';
 import { api } from '../api/client';
 import type { CustomFailureReasonStats, CustomFailureReport, CustomFailureSourceFilter } from '../api/client';
 import { formatDuration } from '../utils/date';
@@ -30,14 +30,16 @@ export function FailReasonStatisticsWidget({ dateFrom, dateTo }: FailReasonStati
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [source, setSource] = useState<CustomFailureSourceFilter | undefined>(undefined);
+  const [printerId, setPrinterId] = useState<number | undefined>(undefined);
   const [editing, setEditing] = useState<CustomFailureReport | null>(null);
 
   const { data: stats, isLoading } = useQuery({
-    queryKey: ['customFailureStats', dateFrom, dateTo, source],
-    queryFn: () => api.getCustomFailureStats({ dateFrom, dateTo, source }),
+    queryKey: ['customFailureStats', dateFrom, dateTo, source, printerId],
+    queryFn: () => api.getCustomFailureStats({ dateFrom, dateTo, source, printerId }),
     // Keep the table while a new filter loads, so the filters don't jump away.
     placeholderData: (previous) => previous,
   });
+  const { data: printers = [] } = useQuery({ queryKey: ['printers'], queryFn: api.getPrinters });
   // Hidden reasons included: their earlier reports still show up here.
   const { data: reasons = [] } = useQuery({
     queryKey: ['customFailureReasons'],
@@ -55,8 +57,26 @@ export function FailReasonStatisticsWidget({ dateFrom, dateTo }: FailReasonStati
     'px-2 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-xs focus:border-bambu-green focus:outline-none';
   // The source filter only makes sense once automatically detected reports exist.
   const showSourceFilter = !!stats && (stats.automatic_total > 0 || source !== undefined);
+  const filtered = source !== undefined || printerId !== undefined;
   const filter = (
     <div className="flex flex-wrap items-center gap-3">
+      {printers.length > 0 && (
+        <label className="inline-flex items-center gap-2 text-xs text-bambu-gray">
+          {t('customFailure.widget.printerFilter')}
+          <select
+            value={printerId ?? ''}
+            onChange={(e) => setPrinterId(e.target.value ? Number(e.target.value) : undefined)}
+            className={selectClass}
+          >
+            <option value="">{t('customFailure.widget.printerAll')}</option>
+            {printers.map((printer) => (
+              <option key={printer.id} value={printer.id}>
+                {printer.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
       {showSourceFilter && (
         <label className="inline-flex items-center gap-2 text-xs text-bambu-gray">
           {t('customFailure.widget.sourceFilter')}
@@ -70,6 +90,19 @@ export function FailReasonStatisticsWidget({ dateFrom, dateTo }: FailReasonStati
             <option value="automatic">{t('customFailure.widget.sourceAutomatic')}</option>
           </select>
         </label>
+      )}
+      {filtered && (
+        <button
+          type="button"
+          onClick={() => {
+            setSource(undefined);
+            setPrinterId(undefined);
+          }}
+          className="inline-flex items-center gap-1 text-xs text-bambu-green hover:underline"
+        >
+          <X className="w-3.5 h-3.5" />
+          {t('customFailure.widget.resetFilter')}
+        </button>
       )}
     </div>
   );
@@ -144,6 +177,7 @@ export function FailReasonStatisticsWidget({ dateFrom, dateTo }: FailReasonStati
                         dateFrom={dateFrom}
                         dateTo={dateTo}
                         source={source}
+                        printerId={printerId}
                         onEdit={setEditing}
                       />
                     </td>
@@ -164,20 +198,22 @@ function AffectedPrints({
   dateFrom,
   dateTo,
   source,
+  printerId,
   onEdit,
 }: {
   row: CustomFailureReasonStats;
   dateFrom?: string;
   dateTo?: string;
   source?: CustomFailureSourceFilter;
+  printerId?: number;
   onEdit: (report: CustomFailureReport) => void;
 }) {
   const { t } = useTranslation();
   const [showAll, setShowAll] = useState(false);
 
   const { data: all, isLoading } = useQuery({
-    queryKey: ['customFailureReports', row.reason, dateFrom, dateTo, source],
-    queryFn: () => api.getCustomFailureReports({ reason: row.reason, dateFrom, dateTo, source }),
+    queryKey: ['customFailureReports', row.reason, dateFrom, dateTo, source, printerId],
+    queryFn: () => api.getCustomFailureReports({ reason: row.reason, dateFrom, dateTo, source, printerId }),
     enabled: showAll,
   });
 
@@ -193,6 +229,7 @@ function AffectedPrints({
           <th className="py-1 px-2 font-medium">{t('customFailure.widget.colMaterial')}</th>
           <th className="py-1 px-2 font-medium text-right whitespace-nowrap">{t('customFailure.widget.colAmount')}</th>
           <th className="py-1 px-2 font-medium text-right whitespace-nowrap">{t('customFailure.widget.colTime')}</th>
+          <th className="py-1 px-2 font-medium text-right whitespace-nowrap">{t('customFailure.widget.colStoppedAt')}</th>
           <th className="py-1 px-2 font-medium">{t('customFailure.widget.colPrintName')}</th>
           <th className="py-1 pl-2 font-medium">{t('customFailure.widget.colComment')}</th>
           <th className="py-1 pl-2 w-6" />
@@ -204,7 +241,7 @@ function AffectedPrints({
         ))}
         {!showAll && hiddenCount > 0 && (
           <tr>
-            <td colSpan={8} className="py-1">
+            <td colSpan={9} className="py-1">
               <button
                 type="button"
                 className="italic text-bambu-green hover:underline"
@@ -217,7 +254,7 @@ function AffectedPrints({
         )}
         {showAll && isLoading && (
           <tr>
-            <td colSpan={8} className="py-1">
+            <td colSpan={9} className="py-1">
               <Loader2 className="w-4 h-4 text-bambu-green animate-spin" />
             </td>
           </tr>
@@ -289,6 +326,9 @@ function AffectedPrintRow({ report, onEdit }: { report: CustomFailureReport; onE
       <td className="py-1 px-2 text-right whitespace-nowrap">{formatGrams(grams)}</td>
       <td className="py-1 px-2 text-right whitespace-nowrap">
         {report.print_time_seconds != null ? formatDuration(report.print_time_seconds) : '–'}
+      </td>
+      <td className="py-1 px-2 text-right whitespace-nowrap">
+        {report.progress_percent != null ? `${Math.round(report.progress_percent)} %` : '–'}
       </td>
       <td className="py-1 px-2">
         <span className="inline-flex items-center gap-2" title={report.filename ?? undefined}>
