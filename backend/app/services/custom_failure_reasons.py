@@ -38,7 +38,10 @@ DEFAULT_ICONS = {r["code"]: r["icon"] for r in DEFAULT_REASONS}
 
 
 async def ensure_default_reasons(db: AsyncSession) -> None:
-    """Create any missing default reason (first start, or after an upgrade)."""
+    """Create any missing default reason (first start, or after an upgrade).
+
+    Called once at startup from ``init_db`` (``seed_custom_failure_reasons``).
+    """
     existing = {reason.code: reason for reason in (await db.execute(select(CustomFailureReason))).scalars().all()}
     missing = [r for r in DEFAULT_REASONS if r["code"] not in existing]
     if not missing:
@@ -70,7 +73,6 @@ async def ensure_default_reasons(db: AsyncSession) -> None:
 
 
 async def list_reasons(db: AsyncSession, include_hidden: bool = False) -> list[CustomFailureReason]:
-    await ensure_default_reasons(db)
     query = select(CustomFailureReason).order_by(CustomFailureReason.sort_order, CustomFailureReason.id)
     if not include_hidden:
         query = query.where(CustomFailureReason.is_hidden.is_(False))
@@ -78,5 +80,4 @@ async def list_reasons(db: AsyncSession, include_hidden: bool = False) -> list[C
 
 
 async def get_reason_by_code(db: AsyncSession, code: str) -> CustomFailureReason | None:
-    await ensure_default_reasons(db)
     return (await db.execute(select(CustomFailureReason).where(CustomFailureReason.code == code))).scalar_one_or_none()

@@ -10,6 +10,14 @@ from httpx import AsyncClient
 API = "/api/v1/custom-failure-reports"
 
 
+@pytest.fixture(autouse=True)
+async def _seed_default_reasons(db_session):
+    """The app seeds the default reasons at startup (init_db), which the test client skips."""
+    from backend.app.services.custom_failure_reasons import ensure_default_reasons
+
+    await ensure_default_reasons(db_session)
+
+
 def _printer_state(state: str | None):
     """Patch the live printer state the target lookup sees (RUNNING, IDLE, ...)."""
     status = SimpleNamespace(state=state) if state else None
@@ -235,3 +243,38 @@ class TestStatistics:
             await async_client.get(f"{API}/stats", params={"date_from": "2026-10-01", "date_to": "2026-10-31"})
         ).json()
         assert stats["total"] == 1
+
+
+class TestSchema:
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_startup_seed_runs_once(self, test_engine, db_session):
+        """init_db seeds the defaults; running it again (restart, second worker) adds nothing."""
+        from sqlalchemy import func, select
+        from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+        from backend.app.core.database import seed_custom_failure_reasons
+        from backend.app.models.custom_failure_report import CustomFailureReason
+
+        sessions = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+        with patch("backend.app.core.database.async_session", sessions):
+            await seed_custom_failure_reasons()
+            await seed_custom_failure_reasons()
+        count = (await db_session.execute(select(func.count()).select_from(CustomFailureReason))).scalar()
+        assert count == 14
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_new_report_defaults_to_manual_source(
+        self, async_client, db_session, printer_factory, archive_factory
+    ):
+        """Columns for the later parts exist from the start; a person's report is "manual"."""
+        from backend.app.models.custom_failure_report import CustomFailureReport
+
+        printer = await printer_factory(name="Schema")
+        archive = await archive_factory(printer.id, started_at=datetime(2026, 10, 15, 10, 0))
+        created = await _report(async_client, printer.id, archive.id, "fail_reason_01")
+        row = await db_session.get(CustomFailureReport, created["id"])
+        assert row.source == "manual"
+        assert row.print_log_entry_id is None
+        assert row.progress_percent is None

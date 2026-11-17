@@ -246,6 +246,9 @@ async def init_db():
     await seed_spool_catalog()
     await seed_color_catalog()
 
+    # Seed the default fail reasons ("Report failed print")
+    await seed_custom_failure_reasons()
+
 
 # B2: Module-level counter exposing the number of rows skipped during the last
 # _migrate_encrypt_legacy_secrets() invocation. Surfaced via /encryption-status
@@ -3146,6 +3149,14 @@ async def seed_spool_catalog():
             session.add(SpoolCatalogEntry(name=name, weight=weight, is_default=True))
         await session.commit()
         logger.info("Seeded %d default spool catalog entries", len(DEFAULT_SPOOL_CATALOG))
+
+
+async def seed_custom_failure_reasons():
+    """Create any missing default fail reason (first start, or new defaults after an upgrade)."""
+    from backend.app.services.custom_failure_reasons import ensure_default_reasons
+
+    async with async_session() as session:
+        await ensure_default_reasons(session)
 
 
 async def seed_color_catalog():

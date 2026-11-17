@@ -44,6 +44,26 @@ class CustomFailureReport(Base):
     filament_used_grams: Mapped[float | None] = mapped_column(Float, nullable=True)
     print_time_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)  # slicer estimate
 
+    # The columns below are filled by later parts of the feature (history import,
+    # "Stopped/Failed at"); they are part of the table from the start so no
+    # ALTER TABLE is ever needed for them.
+    # Where the report comes from:
+    #   "manual"   - a person picked the reason ("Report failed print", or changed an imported one)
+    #   "auto"     - derived from what Printbuddy recorded automatically (HMS code / automatic text)
+    #   "imported" - taken over from a reason a person set in Printbuddy's Edit Archive dialog
+    source: Mapped[str] = mapped_column(String(20), default="manual", server_default="manual")
+    # What Printbuddy had recorded (failure_reason text) and the Bambu HMS code, if known.
+    original_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    hms_code: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # The print log entry this report was imported from / linked to (one report per entry).
+    # No foreign key on purpose: the print log can be cleared without touching reports.
+    print_log_entry_id: Mapped[int | None] = mapped_column(Integer, nullable=True, unique=True, index=True)
+    # Withdrawn imported reports are kept as an invisible marker so the next sync
+    # doesn't bring them back. All lists and statistics skip these.
+    dismissed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # How far the print got when it stopped / failed (0-100), if known.
+    progress_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
+
 
 class CustomFailureReason(Base):
     """A selectable reason for "Report failed print" (default or user-created).

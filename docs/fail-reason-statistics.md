@@ -55,4 +55,9 @@ The button, the pencil and **Withdraw report** are hidden for users without the 
 ## Database
 
 New tables `custom_failure_reports` and `custom_failure_reasons`, created by `create_all`
-(SQLite and PostgreSQL). Nothing in existing tables is changed.
+(SQLite and PostgreSQL). Nothing in existing tables is changed. The default reasons are seeded
+once at startup (`init_db`); defaults added in a later version are inserted before "Other".
+
+`custom_failure_reports` already contains the columns used by later parts of the feature
+(`source`, `original_reason`, `hms_code`, `print_log_entry_id` with a unique index,
+`dismissed_at`, `progress_percent`), so they never need an `ALTER TABLE`.
