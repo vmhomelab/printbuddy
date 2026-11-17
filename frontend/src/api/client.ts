@@ -3926,6 +3926,13 @@ export interface CustomFailureReason {
   sort_order: number;
 }
 
+export interface CustomFailureReasonInput {
+  title?: string | null;
+  subtitle?: string | null;
+  icon?: string | null;
+  is_hidden?: boolean;
+}
+
 export interface CustomFailureReportInput {
   custom_failure_reason: string;
   comment?: string | null;
@@ -4750,6 +4757,42 @@ export const api = {
     request<CustomFailureReason[]>(
       `/custom-failure-reports/reasons/${options?.includeHidden ? '?include_hidden=true' : ''}`
     ),
+  createCustomFailureReason: (data: CustomFailureReasonInput & { title: string }) =>
+    request<CustomFailureReason>('/custom-failure-reports/reasons/', { method: 'POST', body: JSON.stringify(data) }),
+  updateCustomFailureReason: (id: number, data: CustomFailureReasonInput) =>
+    request<CustomFailureReason>(`/custom-failure-reports/reasons/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+  deleteCustomFailureReason: (id: number) =>
+    request<{ status: 'hidden' | 'deleted' }>(`/custom-failure-reports/reasons/${id}`, { method: 'DELETE' }),
+  restoreDefaultCustomFailureReasons: () =>
+    request<{ restored: number }>('/custom-failure-reports/reasons/restore-defaults', { method: 'POST' }),
+  reorderCustomFailureReasons: (ids: number[]) =>
+    request<CustomFailureReason[]>('/custom-failure-reports/reasons/order', {
+      method: 'PUT',
+      body: JSON.stringify({ ids }),
+    }),
+  getCustomFailureReasonIconUrl: (id: number, filename: string) =>
+    withStreamToken(`${API_BASE}/custom-failure-reports/reasons/${id}/icon?v=${encodeURIComponent(filename)}`),
+  uploadCustomFailureReasonIcon: async (id: number, file: File): Promise<CustomFailureReason> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const headers: Record<string, string> = {};
+    if (authToken) headers.Authorization = `Bearer ${authToken}`;
+    const response = await fetch(`${API_BASE}/custom-failure-reports/reasons/${id}/icon`, {
+      method: 'POST',
+      headers,
+      body: formData,
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || `HTTP ${response.status}`);
+    }
+    return response.json();
+  },
+  deleteCustomFailureReasonIcon: (id: number) =>
+    request<CustomFailureReason>(`/custom-failure-reports/reasons/${id}/icon`, { method: 'DELETE' }),
   getCustomFailureReportTarget: (printerId: number) =>
     request<CustomFailureReportTarget>(`/custom-failure-reports/printers/${printerId}/target`),
   createCustomFailureReport: (data: CustomFailureReportInput & { printer_id: number; archive_id: number }) =>
