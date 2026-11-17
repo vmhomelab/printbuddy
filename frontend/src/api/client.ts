@@ -3883,6 +3883,25 @@ export interface CustomFailureReport {
   filament_used_grams: number | null;
   print_time_seconds: number | null;
   has_thumbnail: boolean;
+  /**
+   * manual = a person picked the reason; auto = derived from Printbuddy's automatic data, unconfirmed;
+   * imported = taken over from a reason picked in Printbuddy's Edit Archive dialog
+   */
+  source: CustomFailureSource;
+  /** failure_reason text Printbuddy had recorded for this print */
+  original_reason: string | null;
+  hms_code: string | null;
+  hms_description: string | null;
+}
+
+export type CustomFailureSource = 'manual' | 'auto' | 'imported';
+/** Statistics filter: person = manual + imported, automatic = auto */
+export type CustomFailureSourceFilter = 'person' | 'automatic';
+
+export interface CustomFailureSuggestion {
+  reason: string;
+  hms_code: string;
+  hms_description: string | null;
 }
 
 export interface CustomFailureReportTarget {
@@ -3896,6 +3915,8 @@ export interface CustomFailureReportTarget {
   print_started_at: string | null;
   has_thumbnail: boolean;
   existing_report: CustomFailureReport | null;
+  /** reason pre-selected from the printer's current error code */
+  suggestion: CustomFailureSuggestion | null;
 }
 
 export interface CustomFailureReasonStats {
@@ -3907,6 +3928,8 @@ export interface CustomFailureReasonStats {
 
 export interface CustomFailureStats {
   total: number;
+  /** automatically detected reports in the date range, regardless of the source filter */
+  automatic_total: number;
   latest_limit: number;
   reasons: CustomFailureReasonStats[];
 }
@@ -4801,13 +4824,18 @@ export const api = {
     request<CustomFailureReport>(`/custom-failure-reports/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteCustomFailureReport: (id: number) =>
     request<{ status: string }>(`/custom-failure-reports/${id}`, { method: 'DELETE' }),
-  getCustomFailureStats: (options?: { dateFrom?: string; dateTo?: string }) =>
+  getCustomFailureStats: (options?: { dateFrom?: string; dateTo?: string; source?: CustomFailureSourceFilter }) =>
     request<CustomFailureStats>(
-      `/custom-failure-reports/stats${customFailureQuery({ date_from: options?.dateFrom, date_to: options?.dateTo })}`
+      `/custom-failure-reports/stats${customFailureQuery({ date_from: options?.dateFrom, date_to: options?.dateTo, source: options?.source })}`
     ),
-  getCustomFailureReports: (options?: { reason?: string; dateFrom?: string; dateTo?: string }) =>
+  getCustomFailureReports: (options?: {
+    reason?: string;
+    dateFrom?: string;
+    dateTo?: string;
+    source?: CustomFailureSourceFilter;
+  }) =>
     request<CustomFailureReport[]>(
-      `/custom-failure-reports/${customFailureQuery({ reason: options?.reason, date_from: options?.dateFrom, date_to: options?.dateTo })}`
+      `/custom-failure-reports/${customFailureQuery({ reason: options?.reason, date_from: options?.dateFrom, date_to: options?.dateTo, source: options?.source })}`
     ),
   compareArchives: (archiveIds: number[]) =>
     request<ArchiveComparison>(`/archives/compare?archive_ids=${archiveIds.join(',')}`),

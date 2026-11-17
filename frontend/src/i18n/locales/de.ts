@@ -6340,6 +6340,14 @@ export default {
       withdrawn: 'Meldung zurückgezogen',
       saveFailed: 'Meldung konnte nicht gespeichert werden',
       noPrint: 'Für diesen Drucker wurde noch kein Druck aufgezeichnet.',
+      editTitle: 'Fehldruck bearbeiten',
+      autoDetected: 'Automatisch erkannt: {{reason}}. Bitte bestätigen oder einen anderen Grund wählen.',
+      autoUnassigned: 'Aus dem Druckverlauf übernommen, Grund unbekannt. Bitte einen Grund wählen.',
+      importedFromArchive: 'Aus dem Archiv übernommen: {{reason}}.',
+      printbuddyRecorded: 'Printbuddy hatte gespeichert: „{{text}}“',
+      printerError: 'Druckerfehler {{code}}: {{description}}',
+      suggestion: 'Vorschlag anhand des aktuellen Druckerfehlers – bitte prüfen.',
+      confirm: 'Grund bestätigen',
     },
     widget: {
       title: 'Fehlerursachen-Statistik',
@@ -6357,6 +6365,16 @@ export default {
       showAll: 'Alle anzeigen ({{count}})',
       reportedByLabel: 'Gemeldet von {{name}}',
       totalReports: '{{count}} gemeldete Fehldrucke',
+      automaticCount: 'davon {{count}} automatisch erkannt (unbestätigt)',
+      sourceFilter: 'Quelle',
+      sourceAll: 'Alle Meldungen',
+      sourcePerson: 'Von Personen gewählt',
+      sourceAutomatic: 'Nur automatisch erkannt',
+      badgeAuto: 'automatisch',
+      badgeAutoTitle: 'Automatisch aus dem Druckverlauf übernommen, noch von niemandem bestätigt',
+      badgeImported: 'aus Archiv',
+      badgeImportedTitle: 'In Printbuddys Archiv-Dialog als Fehlergrund gewählt',
+      edit: 'Grund ändern oder bestätigen',
     },
     // Default reasons: title + subtitle per code. The codes on the left are stored in the
     // database — never rename those. Text typed in the app's reason settings wins over these.
@@ -6390,6 +6408,8 @@ export default {
         subtitle: 'Über- oder Unterextrusion / Stringing / Layerbrüche / …',
       },
       fail_reason_11: { title: 'Anderes', subtitle: 'Bitte im Kommentar beschreiben' },
+      // Not selectable: failed prints taken over from the history without a known cause.
+      unassigned: { title: 'Nicht zugeordnet', subtitle: 'Aus dem Druckverlauf übernommen, Grund unbekannt' },
       fail_reason_12: {
         title: 'Spaghetti / Bauteil abgelöst',
         subtitle: 'Bauteil löst sich vom Bett / Spaghetti / Klumpen an der Düse',

@@ -6325,6 +6325,14 @@ export default {
       withdrawn: '回報已撤回',
       saveFailed: '無法儲存回報',
       noPrint: '此印表機尚未記錄任何列印。',
+      editTitle: '編輯失敗的列印',
+      autoDetected: '自動偵測：{{reason}}。請確認或選擇其他原因。',
+      autoUnassigned: '從列印歷史匯入，原因不明。請選擇一個原因。',
+      importedFromArchive: '從封存匯入：{{reason}}。',
+      printbuddyRecorded: 'Printbuddy 記錄的內容：「{{text}}」',
+      printerError: '印表機錯誤 {{code}}：{{description}}',
+      suggestion: '根據印表機目前錯誤提供的建議，請核對。',
+      confirm: '確認原因',
     },
     widget: {
       title: '失敗原因統計',
@@ -6342,6 +6350,16 @@ export default {
       showAll: '顯示全部（{{count}}）',
       reportedByLabel: '回報人：{{name}}',
       totalReports: '已回報 {{count}} 次失敗列印',
+      automaticCount: '其中 {{count}} 次為自動偵測（未確認）',
+      sourceFilter: '來源',
+      sourceAll: '所有回報',
+      sourcePerson: '由人員選擇',
+      sourceAutomatic: '僅自動偵測',
+      badgeAuto: '自動',
+      badgeAutoTitle: '從列印歷史自動匯入，尚未有人確認',
+      badgeImported: '來自封存',
+      badgeImportedTitle: '在 Printbuddy 封存對話框中選擇的失敗原因',
+      edit: '變更或確認原因',
     },
     // Default reasons: title + subtitle per code (the codes are stored in the database).
     reasons: {
@@ -6400,6 +6418,10 @@ export default {
       fail_reason_14: {
         title: '列印準備錯誤',
         subtitle: '缺少或用錯列印板 / 未安裝噴嘴 / 熱床上有異物 / …',
+      },
+      unassigned: {
+        title: '未分配',
+        subtitle: '從列印歷史匯入，原因不明',
       },
     },
     settings: {

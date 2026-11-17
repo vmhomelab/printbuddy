@@ -6327,6 +6327,14 @@ export default {
       withdrawn: 'Relato retirado',
       saveFailed: 'Não foi possível salvar o relato',
       noPrint: 'Nenhuma impressão foi registrada para esta impressora ainda.',
+      editTitle: 'Editar impressão com falha',
+      autoDetected: 'Detectado automaticamente: {{reason}}. Confirme ou escolha outro motivo.',
+      autoUnassigned: 'Obtido do histórico de impressão, causa desconhecida. Escolha um motivo.',
+      importedFromArchive: 'Obtido do arquivo: {{reason}}.',
+      printbuddyRecorded: 'O Printbuddy havia registrado: “{{text}}”',
+      printerError: 'Erro da impressora {{code}}: {{description}}',
+      suggestion: 'Sugerido a partir do erro atual da impressora – verifique.',
+      confirm: 'Confirmar motivo',
     },
     widget: {
       title: 'Estatísticas de motivos de falha',
@@ -6344,6 +6352,16 @@ export default {
       showAll: 'Mostrar tudo ({{count}})',
       reportedByLabel: 'Relatado por {{name}}',
       totalReports: '{{count}} impressões com falha relatadas',
+      automaticCount: '{{count}} delas detectadas automaticamente (não confirmadas)',
+      sourceFilter: 'Origem',
+      sourceAll: 'Todos os relatos',
+      sourcePerson: 'Escolhidos por pessoas',
+      sourceAutomatic: 'Somente detectados automaticamente',
+      badgeAuto: 'automático',
+      badgeAutoTitle: 'Obtido automaticamente do histórico de impressão, ainda não confirmado',
+      badgeImported: 'do arquivo',
+      badgeImportedTitle: 'Escolhido como motivo de falha na caixa de diálogo de arquivo do Printbuddy',
+      edit: 'Alterar ou confirmar motivo',
     },
     // Default reasons: title + subtitle per code (the codes are stored in the database).
     reasons: {
@@ -6402,6 +6420,10 @@ export default {
       fail_reason_14: {
         title: 'Erro de preparação',
         subtitle: 'Placa ausente ou errada / Bico não instalado / Mesa não livre / …',
+      },
+      unassigned: {
+        title: 'Não atribuído',
+        subtitle: 'Obtido do histórico de impressão, causa desconhecida',
       },
     },
     settings: {
