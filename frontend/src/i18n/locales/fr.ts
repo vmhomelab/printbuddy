@@ -6306,4 +6306,104 @@ export default {
     acquiredPartial: '{{have}} / {{need}} achetés',
     noPlanHint: 'Ajoutez des plateaux au plan pour voir les coûts prévus de matière et d’énergie.',
   },
+  // User-reported failure reasons ("Report failed print" / Fail reason statistics)
+  customFailure: {
+    reportButton: 'Signaler un échec d\'impression',
+    reportButtonTitle: 'Marquer l\'impression en cours ou la dernière de cette imprimante comme échouée et choisir une raison',
+    modal: {
+      title: 'Signaler un échec d\'impression',
+      currentPrint: 'Impression en cours',
+      lastPrint: 'Dernière impression',
+      alreadyReported: 'Cette impression a déjà été signalée ({{reason}}). L\'enregistrement remplace ce signalement.',
+      reason: 'Raison de l\'échec',
+      selectReason: 'Choisir une raison...',
+      comment: 'Commentaire (facultatif)',
+      commentPlaceholder: 'Que s\'est-il passé ? p. ex. couche, symptôme, ce que vous avez essayé',
+      reportedBy: 'Votre nom (facultatif)',
+      reportedByHelp: 'Laisser vide pour signaler anonymement.',
+      submit: 'Signaler',
+      update: 'Mettre à jour le signalement',
+      withdraw: 'Retirer le signalement',
+      saved: 'Échec d\'impression signalé',
+      withdrawn: 'Signalement retiré',
+      saveFailed: 'Impossible d\'enregistrer le signalement',
+      noPrint: 'Aucune impression n\'a encore été enregistrée pour cette imprimante.',
+    },
+    widget: {
+      title: 'Statistiques des raisons d\'échec',
+      noReports: 'Aucun échec d\'impression signalé sur cette période.',
+      colReason: 'Raison de l\'échec',
+      colCount: 'Nombre',
+      colPercent: '%',
+      colPrinter: 'Imprimante',
+      colDate: 'Date',
+      colMaterial: 'Matériau',
+      colAmount: 'Matériau (est.)',
+      colTime: 'Durée d\'impression (est.)',
+      colPrintName: 'Nom de l\'impression',
+      colComment: 'Commentaire',
+      showAll: 'Tout afficher ({{count}})',
+      reportedByLabel: 'Signalé par {{name}}',
+      totalReports: '{{count}} échecs d\'impression signalés',
+    },
+    // Default reasons: title + subtitle per code (the codes are stored in the database).
+    reasons: {
+      fail_reason_01: {
+        title: 'Buse bouchée',
+        subtitle: 'Aucun matériau ne sort',
+      },
+      fail_reason_02: {
+        title: 'Warping',
+        subtitle: 'Mauvaise adhérence au plateau / Trop de tension dans la pièce',
+      },
+      fail_reason_03: {
+        title: 'Décalage de couche',
+        subtitle: 'Pas moteur perdus / Collision avec la pièce',
+      },
+      fail_reason_04: {
+        title: 'Erreur de découpage',
+        subtitle: 'Mauvais matériau / Température, vitesse ou Ø de buse incorrects / Support oublié / …',
+      },
+      fail_reason_05: {
+        title: 'Matériau épuisé',
+        subtitle: 'Bobine vide / Changement automatique échoué / Erreur de capteur',
+      },
+      fail_reason_06: {
+        title: 'Défaut matériel/logiciel',
+        subtitle: 'Pièces desserrées / Capteur défectueux / Plantage logiciel / Roulement endommagé (hors extrudeur)',
+      },
+      fail_reason_07: {
+        title: 'Intervention extérieure',
+        subtitle: 'Bobine bloquée / Bouton pressé par erreur / Câble ou alimentation débranchés / …',
+      },
+      fail_reason_08: {
+        title: 'Filament emmêlé',
+        subtitle: 'Nœuds ou spires croisées sur la bobine',
+      },
+      fail_reason_09: {
+        title: 'Entretien insuffisant',
+        subtitle: 'Plateau sale / Buse usée / Pas de lubrification / Corps étranger / …',
+      },
+      fail_reason_10: {
+        title: 'Mauvaise qualité d\'impression',
+        subtitle: 'Sur- ou sous-extrusion / Fils / Fissures entre couches / …',
+      },
+      fail_reason_11: {
+        title: 'Autre',
+        subtitle: 'Veuillez décrire dans le commentaire',
+      },
+      fail_reason_12: {
+        title: 'Spaghetti / Pièce décollée',
+        subtitle: 'La pièce se détache du plateau / Spaghetti / Amas sur la buse',
+      },
+      fail_reason_13: {
+        title: 'Alimentation filament / AMS',
+        subtitle: 'Filament coincé dans le chemin d\'alimentation / Tube PTFE débranché / Couteau bloqué / Filament cassé',
+      },
+      fail_reason_14: {
+        title: 'Erreur de préparation',
+        subtitle: 'Plateau absent ou incorrect / Buse non installée / Plateau encombré / …',
+      },
+    },
+  },
 };

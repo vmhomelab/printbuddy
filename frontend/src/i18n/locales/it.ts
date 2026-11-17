@@ -6305,4 +6305,104 @@ export default {
     acquiredPartial: '{{have}} / {{need}} acquistati',
     noPlanHint: 'Aggiungi piatti al piano per vedere i costi previsti di materiale ed energia.',
   },
+  // User-reported failure reasons ("Report failed print" / Fail reason statistics)
+  customFailure: {
+    reportButton: 'Segnala stampa fallita',
+    reportButtonTitle: 'Segna la stampa attuale o l\'ultima di questa stampante come fallita e scegli un motivo',
+    modal: {
+      title: 'Segnala stampa fallita',
+      currentPrint: 'Stampa attuale',
+      lastPrint: 'Ultima stampa',
+      alreadyReported: 'Questa stampa è già stata segnalata ({{reason}}). Salvando si sostituisce la segnalazione.',
+      reason: 'Motivo del fallimento',
+      selectReason: 'Seleziona un motivo...',
+      comment: 'Commento (facoltativo)',
+      commentPlaceholder: 'Cosa è successo? es. layer, sintomo, cosa hai provato',
+      reportedBy: 'Il tuo nome (facoltativo)',
+      reportedByHelp: 'Lascia vuoto per segnalare in modo anonimo.',
+      submit: 'Segnala',
+      update: 'Aggiorna segnalazione',
+      withdraw: 'Ritira segnalazione',
+      saved: 'Stampa fallita segnalata',
+      withdrawn: 'Segnalazione ritirata',
+      saveFailed: 'Impossibile salvare la segnalazione',
+      noPrint: 'Nessuna stampa registrata finora per questa stampante.',
+    },
+    widget: {
+      title: 'Statistiche dei motivi di fallimento',
+      noReports: 'Nessuna stampa fallita segnalata in questo periodo.',
+      colReason: 'Motivo del fallimento',
+      colCount: 'Numero',
+      colPercent: '%',
+      colPrinter: 'Stampante',
+      colDate: 'Data',
+      colMaterial: 'Materiale',
+      colAmount: 'Materiale (stim.)',
+      colTime: 'Tempo di stampa (stim.)',
+      colPrintName: 'Nome stampa',
+      colComment: 'Commento',
+      showAll: 'Mostra tutto ({{count}})',
+      reportedByLabel: 'Segnalato da {{name}}',
+      totalReports: '{{count}} stampe fallite segnalate',
+    },
+    // Default reasons: title + subtitle per code (the codes are stored in the database).
+    reasons: {
+      fail_reason_01: {
+        title: 'Ugello intasato',
+        subtitle: 'Non esce materiale',
+      },
+      fail_reason_02: {
+        title: 'Warping',
+        subtitle: 'Scarsa adesione al piatto / Troppa tensione nel pezzo',
+      },
+      fail_reason_03: {
+        title: 'Spostamento layer',
+        subtitle: 'Passi motore persi / Collisione con il pezzo',
+      },
+      fail_reason_04: {
+        title: 'Errore di slicing',
+        subtitle: 'Materiale errato / Temperatura, velocità o Ø ugello errati / Supporti mancanti / …',
+      },
+      fail_reason_05: {
+        title: 'Materiale esaurito',
+        subtitle: 'Bobina vuota / Cambio automatico fallito / Errore sensore',
+      },
+      fail_reason_06: {
+        title: 'Guasto hardware/software',
+        subtitle: 'Parti allentate / Sensore difettoso / Crash software / Cuscinetto danneggiato (non estrusore)',
+      },
+      fail_reason_07: {
+        title: 'Interferenza esterna',
+        subtitle: 'Bobina bloccata / Pulsante premuto per errore / Cavo o corrente scollegati / …',
+      },
+      fail_reason_08: {
+        title: 'Filamento aggrovigliato',
+        subtitle: 'Nodi o spire incrociate sulla bobina',
+      },
+      fail_reason_09: {
+        title: 'Manutenzione carente',
+        subtitle: 'Piatto sporco / Ugello usurato / Nessuna lubrificazione / Corpo estraneo / …',
+      },
+      fail_reason_10: {
+        title: 'Scarsa qualità di stampa',
+        subtitle: 'Sovra- o sottoestrusione / Filamenti / Crepe tra i layer / …',
+      },
+      fail_reason_11: {
+        title: 'Altro',
+        subtitle: 'Descrivi nel commento',
+      },
+      fail_reason_12: {
+        title: 'Spaghetti / Pezzo staccato',
+        subtitle: 'Il pezzo si stacca dal piatto / Spaghetti / Grumo sull\'ugello',
+      },
+      fail_reason_13: {
+        title: 'Alimentazione filamento / AMS',
+        subtitle: 'Filamento bloccato nel percorso / Tubo PTFE scollegato / Taglierina bloccata / Filamento rotto',
+      },
+      fail_reason_14: {
+        title: 'Errore di preparazione',
+        subtitle: 'Piatto mancante o errato / Ugello non installato / Piatto non libero / …',
+      },
+    },
+  },
 };

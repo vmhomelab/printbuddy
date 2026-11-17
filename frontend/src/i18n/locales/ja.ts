@@ -6317,4 +6317,104 @@ export default {
     acquiredPartial: '{{have}} / {{need}} 調達済み',
     noPlanHint: 'ジョブ計画にプレートを追加すると、素材と電力の見込みコストが表示されます。',
   },
+  // User-reported failure reasons ("Report failed print" / Fail reason statistics)
+  customFailure: {
+    reportButton: '失敗した印刷を報告',
+    reportButtonTitle: 'このプリンターの現在または直前の印刷を失敗として記録し、理由を選択します',
+    modal: {
+      title: '失敗した印刷を報告',
+      currentPrint: '現在の印刷',
+      lastPrint: '直前の印刷',
+      alreadyReported: 'この印刷はすでに報告されています（{{reason}}）。保存するとその報告が置き換えられます。',
+      reason: '失敗理由',
+      selectReason: '理由を選択...',
+      comment: 'コメント（任意）',
+      commentPlaceholder: '何が起きましたか？例：レイヤー、症状、試したこと',
+      reportedBy: 'お名前（任意）',
+      reportedByHelp: '匿名で報告する場合は空欄のままにしてください。',
+      submit: '報告',
+      update: '報告を更新',
+      withdraw: '報告を取り消す',
+      saved: '失敗した印刷を報告しました',
+      withdrawn: '報告を取り消しました',
+      saveFailed: '報告を保存できませんでした',
+      noPrint: 'このプリンターではまだ印刷が記録されていません。',
+    },
+    widget: {
+      title: '失敗理由の統計',
+      noReports: 'この期間に報告された失敗した印刷はありません。',
+      colReason: '失敗理由',
+      colCount: '件数',
+      colPercent: '%',
+      colPrinter: 'プリンター',
+      colDate: '日付',
+      colMaterial: '材料',
+      colAmount: '材料（推定）',
+      colTime: '印刷時間（推定）',
+      colPrintName: '印刷名',
+      colComment: 'コメント',
+      showAll: 'すべて表示（{{count}}）',
+      reportedByLabel: '報告者：{{name}}',
+      totalReports: '報告された失敗印刷 {{count}} 件',
+    },
+    // Default reasons: title + subtitle per code (the codes are stored in the database).
+    reasons: {
+      fail_reason_01: {
+        title: 'ノズル詰まり',
+        subtitle: '材料が出てこない',
+      },
+      fail_reason_02: {
+        title: '反り',
+        subtitle: 'ビルドプレートへの定着不良 / 造形物の応力が大きすぎる',
+      },
+      fail_reason_03: {
+        title: 'レイヤーシフト',
+        subtitle: 'モーターの脱調 / 造形物との衝突',
+      },
+      fail_reason_04: {
+        title: 'スライスのミス',
+        subtitle: '材料の間違い / 温度・速度・ノズル径の誤り / サポート忘れ / …',
+      },
+      fail_reason_05: {
+        title: '材料切れ',
+        subtitle: 'スプールが空 / 自動切り替えの失敗 / センサーエラー',
+      },
+      fail_reason_06: {
+        title: 'ハードウェア/ソフトウェアの故障',
+        subtitle: '部品の緩み / センサー不良 / ソフトウェアのクラッシュ / ベアリング損傷（エクストルーダー以外）',
+      },
+      fail_reason_07: {
+        title: '外部からの影響',
+        subtitle: 'スプールの引っかかり / ボタンの誤操作 / ケーブルや電源の切断 / …',
+      },
+      fail_reason_08: {
+        title: 'フィラメントの絡まり',
+        subtitle: 'スプール上の結び目や巻きの交差',
+      },
+      fail_reason_09: {
+        title: 'メンテナンス不足',
+        subtitle: 'ビルドプレートの汚れ / ノズルの摩耗 / 潤滑不足 / 異物 / …',
+      },
+      fail_reason_10: {
+        title: '印刷品質の不良',
+        subtitle: '過剰/不足押出 / 糸引き / レイヤー割れ / …',
+      },
+      fail_reason_11: {
+        title: 'その他',
+        subtitle: 'コメントに記入してください',
+      },
+      fail_reason_12: {
+        title: 'スパゲッティ / 造形物の剥離',
+        subtitle: '造形物がベッドから外れる / スパゲッティ / ノズルへの塊付着',
+      },
+      fail_reason_13: {
+        title: 'フィラメント供給 / AMS',
+        subtitle: '供給経路でのフィラメント詰まり / PTFE チューブ外れ / カッターの固着 / フィラメント破断',
+      },
+      fail_reason_14: {
+        title: '印刷準備のミス',
+        subtitle: 'ビルドプレートがない・違う / ノズル未装着 / ベッド上に物がある / …',
+      },
+    },
+  },
 };
