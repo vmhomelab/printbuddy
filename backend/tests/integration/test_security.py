@@ -1173,7 +1173,7 @@ class TestEncryptLegacyMigration:
         db_session.add(user)
         await db_session.flush()
 
-        totp = UserTOTP(user_id=user.id, _secret_enc="JBSWY3DPEHPK3PXP", is_enabled=True)
+        totp = UserTOTP(user_id=user.id, _secret_enc="JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP", is_enabled=True)
         db_session.add(totp)
         await db_session.commit()
 
@@ -1181,7 +1181,7 @@ class TestEncryptLegacyMigration:
 
         await db_session.refresh(totp)
         assert totp._secret_enc.startswith("fernet:")
-        assert totp.secret == "JBSWY3DPEHPK3PXP"
+        assert totp.secret == "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -1206,7 +1206,7 @@ class TestEncryptLegacyMigration:
         user = User(username="logger1219", email="l@example.com", password_hash="x")
         db_session.add_all([provider, user])
         await db_session.flush()
-        totp = UserTOTP(user_id=user.id, _secret_enc="JBSWY3DPEHPK3PXP", is_enabled=True)
+        totp = UserTOTP(user_id=user.id, _secret_enc="JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP", is_enabled=True)
         db_session.add(totp)
         await db_session.commit()
 
@@ -1879,15 +1879,15 @@ class TestEncryptionRoundtrip:
         db_session.add(user)
         await db_session.flush()
 
-        totp = UserTOTP(user_id=user.id, secret="JBSWY3DPEHPK3PXP", is_enabled=True)
+        totp = UserTOTP(user_id=user.id, secret="JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP", is_enabled=True)
         db_session.add(totp)
         await db_session.commit()
 
         result = await db_session.execute(select(UserTOTP).where(UserTOTP.user_id == user.id))
         fetched = result.scalar_one()
         assert fetched._secret_enc.startswith("fernet:")
-        assert fetched._secret_enc != "JBSWY3DPEHPK3PXP"
-        assert fetched.secret == "JBSWY3DPEHPK3PXP"
+        assert fetched._secret_enc != "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
+        assert fetched.secret == "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
 
 
 # ============================================================================
@@ -2643,7 +2643,7 @@ class TestTOTPDecryptionBroken:
         # disable_totp's TOTP-decrypt path doesn't throw, AND seed real hashes.
         result = await db_session.execute(_select(UserTOTP).where(UserTOTP.user_id == user_id))
         totp = result.scalar_one()
-        totp.secret = "JBSWY3DPEHPK3PXP"  # via setter -> mfa_encrypt
+        totp.secret = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"  # via setter -> mfa_encrypt
         plain_codes, hashed_codes = _generate_backup_codes()
         totp.backup_code_hashes = hashed_codes
         await db_session.commit()
@@ -2691,7 +2691,7 @@ class TestTOTPDecryptionBroken:
 
         result = await db_session.execute(_select(UserTOTP).where(UserTOTP.user_id == user_id))
         totp = result.scalar_one()
-        totp.secret = "JBSWY3DPEHPK3PXP"
+        totp.secret = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
         plain_codes, hashed_codes = _generate_backup_codes()
         totp.backup_code_hashes = hashed_codes
         await db_session.commit()
