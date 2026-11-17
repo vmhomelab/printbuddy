@@ -42,6 +42,16 @@ class MakerWorldImportRequest(BaseModel):
         ...,
         description="The MakerWorld design ID (the number in /models/{id}).",
     )
+    source_type: str = Field(
+        default="makerworld",
+        description=(
+            "Which registered model provider owns the resource. Import "
+            "identifies a model by numeric id rather than URL, so there is no "
+            "URL for the provider registry to route on — the caller names the "
+            "provider instead. Defaults to 'makerworld' so existing callers "
+            "stay unchanged."
+        ),
+    )
     profile_id: int | None = Field(
         default=None,
         description=(
@@ -133,3 +143,7 @@ class MakerWorldStatus(BaseModel):
 
     has_cloud_token: bool = Field(description="Whether the caller's account has a stored Bambu Cloud token")
     can_download: bool = Field(description="Shortcut: has_cloud_token AND it looks valid. Downloads require it.")
+    sign_in_expired: bool = Field(
+        default=False,
+        description="A token is stored but Bambu has rejected it — the user must sign in to Bambu Cloud again.",
+    )

@@ -40,6 +40,7 @@ const createMockPlug = (overrides: Partial<SmartPlug> = {}): SmartPlug => ({
   mqtt_state_path: null,
   mqtt_state_on_value: null,
   printer_id: 1,
+  controls_printer_power: true,
   enabled: true,
   auto_on: true,
   auto_off: true,
@@ -78,6 +79,25 @@ describe('SmartPlugCard', () => {
       render(<SmartPlugCard plug={plug} onEdit={mockOnEdit} />);
 
       expect(screen.getByText('My Test Plug')).toBeInTheDocument();
+    });
+
+    it('names a REST plug by its URL for an editor and by its type for a reader', () => {
+      const { unmount } = render(
+        <SmartPlugCard
+          plug={createMockPlug({ plug_type: 'rest', ip_address: null, rest_on_url: 'http://plug.example/on' })}
+          onEdit={mockOnEdit}
+        />,
+      );
+      expect(screen.getByText('http://plug.example/on')).toBeInTheDocument();
+      unmount();
+
+      render(
+        <SmartPlugCard
+          plug={createMockPlug({ plug_type: 'rest', ip_address: null, rest_on_url: null, rest_off_url: null })}
+          onEdit={mockOnEdit}
+        />,
+      );
+      expect(screen.getByText('REST')).toBeInTheDocument();
     });
 
     it('renders plug IP address', () => {
@@ -284,6 +304,33 @@ describe('SmartPlugCard', () => {
       await waitFor(() => {
         expect(screen.getByText('Keep Enabled')).toBeInTheDocument();
       });
+    });
+  });
+
+  describe('powers the printer toggle (#2629)', () => {
+    it('shows the toggle when a printer is linked', async () => {
+      const user = userEvent.setup();
+      const plug = createMockPlug({ printer_id: 1, controls_printer_power: false });
+      render(<SmartPlugCard plug={plug} onEdit={mockOnEdit} />);
+
+      await user.click(screen.getByText('Automation Settings'));
+
+      await waitFor(() => {
+        expect(screen.getByText('Powers the printer')).toBeInTheDocument();
+      });
+    });
+
+    it('hides the toggle when no printer is linked', async () => {
+      const user = userEvent.setup();
+      const plug = createMockPlug({ printer_id: null });
+      render(<SmartPlugCard plug={plug} onEdit={mockOnEdit} />);
+
+      await user.click(screen.getByText('Automation Settings'));
+
+      await waitFor(() => {
+        expect(screen.getByText('Auto On')).toBeInTheDocument();
+      });
+      expect(screen.queryByText('Powers the printer')).not.toBeInTheDocument();
     });
   });
 

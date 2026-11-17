@@ -180,39 +180,29 @@ async def test_store_moonraker_thumbnail_writes_into_fileless_archive_dir(tmp_pa
     )
 
     assert stored is True
-    assert archive.thumbnail_path == "archive/_fileless/42/thumbnail.png"
+    # A no-3MF archive owns <archive_dir>/<id> (utils/archive_paths, #1820).
+    assert archive.thumbnail_path == "archive/42/thumbnail.png"
     assert (tmp_path / archive.thumbnail_path).read_bytes() == b"\x89PNG-data"
 
 
-def test_resolve_archive_dir_for_regular_and_fileless_archives(tmp_path, monkeypatch):
-    from backend.app.services import archive as archive_module
+def test_photo_written_under_fileless_dir_is_still_found(tmp_path, monkeypatch):
+    """Printbuddy dev builds kept no-3MF archives under archive/_fileless/<id>;
+    photos captured there must still be found, before and after a 3MF turns up."""
+    from backend.app.core.config import settings as app_config
+    from backend.app.utils.archive_paths import find_archive_photo
 
-    monkeypatch.setattr(archive_module.settings, "base_dir", tmp_path)
-    monkeypatch.setattr(archive_module.settings, "archive_dir", tmp_path / "archive")
-
-    regular = SimpleNamespace(id=7, file_path="archive/3/20260101_x/x.3mf")
-    fileless = SimpleNamespace(id=7, file_path="")
-
-    assert archive_module.resolve_archive_dir(regular) == tmp_path / "archive/3/20260101_x"
-    # Never the per-printer folder archive/<id>, which would collide with printer 7.
-    assert archive_module.resolve_archive_dir(fileless) == tmp_path / "archive/_fileless/7"
-
-
-def test_resolve_archive_photo_path_finds_legacy_fileless_photo(tmp_path, monkeypatch):
-    from backend.app.services import archive as archive_module
-
-    monkeypatch.setattr(archive_module.settings, "base_dir", tmp_path)
-    monkeypatch.setattr(archive_module.settings, "archive_dir", tmp_path / "archive")
-    legacy = tmp_path / "archive/9/photos/finish.jpg"
+    monkeypatch.setattr(app_config, "base_dir", tmp_path)
+    monkeypatch.setattr(app_config, "archive_dir", tmp_path / "archive")
+    legacy = tmp_path / "archive/_fileless/9/photos/finish.jpg"
     legacy.parent.mkdir(parents=True)
     legacy.write_bytes(b"jpg")
 
     archive = SimpleNamespace(id=9, file_path="")
+    assert find_archive_photo(archive, "finish.jpg") == legacy
 
-    assert archive_module.resolve_archive_photo_path(archive, "finish.jpg") == legacy
-    assert archive_module.resolve_archive_photo_path(archive, "new.jpg") == (
-        tmp_path / "archive/_fileless/9/photos/new.jpg"
-    )
+    archive.file_path = "archive/1/20260101_x/x.3mf"
+    assert find_archive_photo(archive, "finish.jpg") == legacy
+    assert find_archive_photo(archive, "missing.jpg") is None
 
 
 @pytest.mark.asyncio

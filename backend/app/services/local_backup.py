@@ -14,6 +14,12 @@ from sqlalchemy import select
 from backend.app.core.config import settings as app_settings
 from backend.app.core.database import async_session
 from backend.app.models.settings import Settings
+from backend.app.services.backup_path import classify_backup_dir_error, probe_backup_dir
+
+# The TZ-env resolution used to live here. It moved to utils/local_time when the
+# smart-plug energy history (#2539) needed the same local day boundary. Re-exported
+# under the old private name so existing importers keep working.
+from backend.app.utils.local_time import local_zone as _local_zone
 
 logger = logging.getLogger(__name__)
 
@@ -141,14 +147,16 @@ class LocalBackupService:
     def _calculate_next_run(self, schedule_type: str, time_str: str = "03:00") -> datetime:
         """Calculate the next scheduled run time.
 
-        For hourly: next full hour.
-        For daily/weekly: next occurrence of the configured time (HH:MM).
+        For hourly: next full hour (timezone-agnostic).
+        For daily/weekly: next occurrence of the configured HH:MM, interpreted
+        in the container's local timezone (TZ env var, UTC fallback). Returns
+        a UTC-aware datetime for storage / comparison against ``now``.
         """
-        now = datetime.now(timezone.utc)
+        now_utc = datetime.now(timezone.utc)
 
         if schedule_type == "hourly":
             # Next full hour
-            next_run = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+            next_run = now_utc.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
             return next_run
 
         # Parse HH:MM time
@@ -159,21 +167,36 @@ class LocalBackupService:
         except (ValueError, IndexError):
             hour, minute = 3, 0
 
-        # Next occurrence of this time today or tomorrow
-        next_run = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        if next_run <= now:
-            next_run += timedelta(days=1)
+        local_tz = _local_zone()
+        now_local = now_utc.astimezone(local_tz)
+        # Next occurrence of HH:MM local time, today or tomorrow.
+        # ``fold=0`` resolves the ambiguous wall-clock window at DST fall-back
+        # to the earlier instance (consistent with cron's behaviour). On the
+        # spring-forward gap the synthesized local time will normalise to the
+        # next valid instant when converted to UTC.
+        next_local = now_local.replace(hour=hour, minute=minute, second=0, microsecond=0, fold=0)
+        if next_local <= now_local:
+            next_local += timedelta(days=1)
 
         if schedule_type == "weekly":
-            next_run += timedelta(weeks=1)
+            next_local += timedelta(weeks=1)
 
-        return next_run
+        return next_local.astimezone(timezone.utc)
 
     def _resolve_backup_dir(self, path_setting: str) -> Path:
         """Resolve the backup output directory from settings."""
         if path_setting.strip():
             return Path(path_setting.strip())
         return _default_backup_dir()
+
+    def check_path(self, path_setting: str) -> dict:
+        """Probe the configured output directory with a real write.
+
+        Called when the path is saved and when the backup card is opened, so a
+        directory the service cannot write to is caught there and then instead
+        of at 03:00 for a week (#2544).
+        """
+        return probe_backup_dir(self._resolve_backup_dir(path_setting))
 
     async def run_backup(self, settings: dict | None = None) -> dict:
         """Run a backup now. Returns {success, message, filename}."""
@@ -186,11 +209,22 @@ class LocalBackupService:
                 settings = await self._load_settings()
 
             backup_dir = self._resolve_backup_dir(settings["path"])
-            backup_dir.mkdir(parents=True, exist_ok=True)
 
-            from backend.app.api.routes.settings import create_backup_zip
+            try:
+                backup_dir.mkdir(parents=True, exist_ok=True)
 
-            zip_path, filename = await create_backup_zip(output_path=backup_dir)
+                from backend.app.api.routes.settings import create_backup_zip
+
+                zip_path, filename = await create_backup_zip(output_path=backup_dir)
+            except OSError as e:
+                # A raw "[Errno 30] Read-only file system" sends people off to check
+                # folder permissions, which is exactly where the answer is not (#2544).
+                diagnosis = classify_backup_dir_error(e, backup_dir)
+                self._last_backup_at = datetime.now(timezone.utc).isoformat()
+                self._last_status = "failed"
+                self._last_message = diagnosis["message"]
+                logger.error("Local backup failed: %s (%s)", diagnosis["message"], diagnosis["detail"])
+                return {"success": False, "message": diagnosis["message"], "diagnosis": diagnosis}
 
             # Prune old backups
             retention = max(1, settings["retention"])
@@ -242,7 +276,9 @@ class LocalBackupService:
         if not _is_backup_filename(filename):
             return None
         backup_dir = self._resolve_backup_dir(path_setting)
-        target = backup_dir / filename
+        target = (
+            backup_dir / filename
+        )  # SEC-PATH-OK: filename rejected above on /, \\, .., plus startswith BACKUP_FILENAME_PREFIX / LEGACY_BACKUP_FILENAME_PREFIX + endswith ".zip" gate
         if not target.exists():
             return None
         return target
@@ -272,7 +308,9 @@ class LocalBackupService:
             return {"success": False, "message": "Invalid filename"}
 
         backup_dir = self._resolve_backup_dir(path_setting)
-        target = backup_dir / filename
+        target = (
+            backup_dir / filename
+        )  # SEC-PATH-OK: filename rejected above on /, \\, .., plus startswith BACKUP_FILENAME_PREFIX / LEGACY_BACKUP_FILENAME_PREFIX + endswith ".zip" gate below
 
         if not target.exists():
             return {"success": False, "message": "Backup not found"}

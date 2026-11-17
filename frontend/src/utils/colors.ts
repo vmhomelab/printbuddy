@@ -1,3 +1,5 @@
+import { colorDistance } from './amsHelpers';
+
 // Runtime color-name catalog, populated once at app startup by ColorCatalogProvider
 // from /api/inventory/colors/map. The backend color_catalog table is the single
 // source of truth — no hardcoded hex→name tables live on the frontend anymore.
@@ -10,10 +12,42 @@
 // arrives instead of staying stuck on the HSL fallback.
 
 let runtimeColorCatalog: Record<string, string> = {};
+// Names a plain hex lookup cannot reach, keyed "<material>|<hex>". A hex is not
+// one colour in Bambu's range -- #FFFFFF is Jade White in PLA Basic and Ivory
+// White in PLA Matte -- so a caller that knows the material (an AMS slot knows
+// it as tray_sub_brands) gets the right one instead of whichever row the
+// backend's collapse happened to keep (#2875).
+let runtimeMaterialCatalog: Record<string, string> = {};
+// Every Bambu Lab catalogue colour, for naming a hex no exact lookup finds
+// (#3279). A colour picked on the printer's touchscreen is reported a step or
+// two off Bambu Studio's hex -- 5A657B for Blue Grey 5B6579 -- and fell through
+// to the hue bucket, which called it "Blue".
+export interface BambuCatalogColor {
+  hex: string;
+  name: string;
+  material: string;
+}
+let runtimeBambuColors: BambuCatalogColor[] = [];
+// Bambu preset id (upper case) to its range in lower case: GFA00 -> "pla basic".
+let runtimePresetMaterials: Record<string, string> = {};
+// Nearest-name answers by "<material>|<hex>", as each miss compares against
+// every Bambu colour. Emptied whenever the catalogue is replaced.
+let nearestNameCache = new Map<string, string | null>();
+// CIEDE2000 delta-E within which a hex is taken to be the catalogue colour.
+// Blue Grey's two hexes are 0.78 apart; the next Bambu colour from 5A657B is
+// 8.3 away. Different Bambu colours can sit closer than this across materials
+// (Pumpkin Orange / Translucent Orange: 0.26), which is why the caller's
+// material is searched first.
+const NEAREST_NAME_MAX_DELTA_E = 3;
 let catalogVersion = 0;
 const catalogListeners = new Set<() => void>();
 
-export function setColorCatalog(map: Record<string, string>): void {
+export function setColorCatalog(
+  map: Record<string, string>,
+  byMaterial?: Record<string, string>,
+  bambu?: BambuCatalogColor[],
+  presetMaterials?: Record<string, string>,
+): void {
   // Normalize keys to lowercase 6-char hex (no '#'), defensively. Backend already
   // does this, but the frontend contract is explicit so callers from tests or
   // future integrations can't accidentally break lookups.
@@ -23,7 +57,32 @@ export function setColorCatalog(map: Record<string, string>): void {
     const hex = key.replace('#', '').toLowerCase().slice(0, 6);
     if (hex.length === 6) normalized[hex] = value;
   }
+  const normalizedByMaterial: Record<string, string> = {};
+  for (const [key, value] of Object.entries(byMaterial || {})) {
+    if (!key || !value) continue;
+    // Split on the LAST separator: a material is free text (users edit the
+    // catalog) and may itself contain a '|'.
+    const cut = key.lastIndexOf('|');
+    if (cut <= 0) continue;
+    const material = key.slice(0, cut).trim().toLowerCase();
+    const cleanHex = key.slice(cut + 1).replace('#', '').toLowerCase().slice(0, 6);
+    if (material && cleanHex.length === 6) normalizedByMaterial[`${material}|${cleanHex}`] = value;
+  }
   runtimeColorCatalog = normalized;
+  runtimeMaterialCatalog = normalizedByMaterial;
+  runtimeBambuColors = (bambu || [])
+    .map((entry) => ({
+      hex: (entry?.hex || '').replace('#', '').toLowerCase().slice(0, 6),
+      name: entry?.name || '',
+      material: (entry?.material || '').trim().toLowerCase(),
+    }))
+    .filter((entry) => /^[0-9a-f]{6}$/.test(entry.hex) && entry.name);
+  const normalizedPresets: Record<string, string> = {};
+  for (const [preset, range] of Object.entries(presetMaterials || {})) {
+    if (preset && range) normalizedPresets[preset.trim().toUpperCase()] = range.trim().toLowerCase();
+  }
+  runtimePresetMaterials = normalizedPresets;
+  nearestNameCache = new Map();
   catalogVersion += 1;
   // Snapshot listeners to avoid mutation-during-iteration if a listener unsubscribes.
   for (const listener of Array.from(catalogListeners)) {
@@ -45,20 +104,65 @@ export function getColorCatalogVersion(): number {
 /** Test-only hook: reset the catalog to empty so unit tests can exercise fallbacks. */
 export function __resetColorCatalogForTests(): void {
   runtimeColorCatalog = {};
+  runtimeMaterialCatalog = {};
+  runtimeBambuColors = [];
+  runtimePresetMaterials = {};
+  nearestNameCache = new Map();
   catalogVersion = 0;
   catalogListeners.clear();
 }
 
 /**
- * Convert hex color to basic color name using HSL analysis.
- * Used as fallback when hex is not in the runtime catalog.
+ * Colour families, in the order the Inventory's Color column sorts them (#2729).
+ *
+ * Chromatic families run in rainbow order with Brown after them (it is a dark
+ * orange by hue and would otherwise split the oranges in half), then the
+ * neutrals light-to-dark, then Clear.
  */
-export function hexToColorName(hex: string | null | undefined): string {
-  if (!hex || hex.length < 6) return 'Unknown';
+export const COLOR_FAMILY_ORDER = [
+  'Red',
+  'Orange',
+  'Yellow',
+  'Green',
+  'Cyan',
+  'Blue',
+  'Purple',
+  'Pink',
+  'Brown',
+  'White',
+  'Light Gray',
+  'Gray',
+  'Dark Gray',
+  'Black',
+  'Clear',
+] as const;
+
+export type ColorFamily = (typeof COLOR_FAMILY_ORDER)[number];
+
+/** Families whose hue carries no meaning — see ``colorSortKey``. */
+const ACHROMATIC_FAMILIES = new Set<ColorFamily>([
+  'White',
+  'Light Gray',
+  'Gray',
+  'Dark Gray',
+  'Black',
+  'Clear',
+]);
+
+interface Hsl {
+  h: number;
+  s: number;
+  l: number;
+}
+
+/** Parse 6/8-char hex (with or without '#') to HSL, or null if unparseable. */
+function hexToHsl(hex: string | null | undefined): Hsl | null {
+  if (!hex || hex.length < 6) return null;
   const cleanHex = hex.replace('#', '');
   const r = parseInt(cleanHex.substring(0, 2), 16);
   const g = parseInt(cleanHex.substring(2, 4), 16);
   const b = parseInt(cleanHex.substring(4, 6), 16);
+  if (Number.isNaN(r) || Number.isNaN(g) || Number.isNaN(b)) return null;
 
   const max = Math.max(r, g, b) / 255;
   const min = Math.min(r, g, b) / 255;
@@ -75,7 +179,29 @@ export function hexToColorName(hex: string | null | undefined): string {
     else if (max === gNorm) h = ((bNorm - rNorm) / d + 2) / 6;
     else h = ((rNorm - gNorm) / d + 4) / 6;
   }
-  h = h * 360;
+
+  return { h: h * 360, s, l };
+}
+
+/**
+ * Classify a hex colour into one of ``COLOR_FAMILY_ORDER``, or null if the
+ * value can't be parsed.
+ *
+ * This is the single source of truth for both the fallback colour *name* shown
+ * when a hex isn't in the catalog and the *order* the Color column sorts in, so
+ * the two cannot drift into disagreeing about what counts as brown or grey.
+ */
+export function colorFamily(hex: string | null | undefined): ColorFamily | null {
+  if (!hex || hex.length < 6) return null;
+  const cleanHex = hex.replace('#', '');
+  // Alpha=00 → fully transparent. Classify as 'Clear' before looking at RGB,
+  // otherwise #00000000 (Bambu's transparent code) would come out 'Black' (#1545).
+  if (cleanHex.length === 8 && cleanHex.substring(6, 8).toLowerCase() === '00') {
+    return 'Clear';
+  }
+  const hsl = hexToHsl(cleanHex);
+  if (!hsl) return null;
+  const { h, s, l } = hsl;
 
   if (l < 0.15) return 'Black';
   if (l > 0.85) return 'White';
@@ -98,36 +224,274 @@ export function hexToColorName(hex: string | null | undefined): string {
 }
 
 /**
+ * Convert hex color to basic color name using HSL analysis.
+ * Used as fallback when hex is not in the runtime catalog.
+ */
+export function hexToColorName(hex: string | null | undefined): string {
+  return colorFamily(hex) ?? 'Unknown';
+}
+
+/**
+ * Sort key placing a spool colour in rainbow order (#2729, reporter @macwhiz).
+ *
+ * Returns a fixed-width string so it drops into the Inventory table's existing
+ * ``string | number`` comparison with no extra plumbing, ascending = Red first.
+ *
+ * The issue asked for a straight hue → saturation → lightness sort, which does
+ * not survive contact with a real inventory: a near-neutral still has a hue and
+ * it can be anything. Measured against a 30-spool inventory, Titan Gray
+ * (5F6367, hue 210°, saturation 0.04) landed between Sky Blue and Purple, and
+ * 8B8889 (hue 340°, saturation 0.01) landed between Purple and Burgundy Red.
+ * Black, white and silver happen to clump correctly — zero saturation sorts
+ * first within hue 0 — but anything a shade off neutral flies into the colours.
+ *
+ * So the family from ``colorFamily`` leads, and the continuous sort the issue
+ * asked for runs inside each family. Within a neutral family hue is discarded
+ * rather than sorted on, for the same reason it is not trusted to pick the
+ * family: ordering greys by 210° vs 340° is ordering them by noise. Neutrals go
+ * light-to-dark instead, matching the order of the families themselves.
+ *
+ * Unparseable or missing colours sort last in ascending order, so a spool with
+ * no colour recorded never leads the list.
+ */
+export function colorSortKey(rgba: string | null | undefined): string {
+  const family = colorFamily(rgba);
+  if (!family) return '99|0000|0000|0000';
+
+  const rank = String(COLOR_FAMILY_ORDER.indexOf(family)).padStart(2, '0');
+  const hsl = hexToHsl(rgba) ?? { h: 0, s: 0, l: 0 };
+  const pad4 = (n: number) => String(Math.round(n)).padStart(4, '0');
+
+  if (ACHROMATIC_FAMILIES.has(family)) {
+    // Lightness descending, so lighter shades lead within the family just as
+    // White leads Black across families. Hue is deliberately zeroed.
+    return `${rank}|0000|${pad4(1000 - hsl.l * 1000)}|${pad4(hsl.s * 1000)}`;
+  }
+  return `${rank}|${pad4(hsl.h * 10)}|${pad4(hsl.s * 1000)}|${pad4(hsl.l * 1000)}`;
+}
+
+/**
  * Get color name from hex color.
  * Looks up the runtime color catalog (backend-sourced), then falls back to HSL.
+ *
+ * Pass `material` whenever the caller knows which variant the colour belongs to
+ * -- for an AMS slot that is the printer's own `tray_sub_brands` ("PLA Matte").
+ * Without it a white Matte spool reads "Jade White", the PLA Basic name that
+ * shares its hex, because the flat map can only keep one name per hex (#2875).
+ * An unknown material falls through to the flat lookup, so passing one can only
+ * ever improve the answer.
  */
-export function getColorName(hexColor: string): string {
+export function getColorName(hexColor: string, material?: string | null, trayInfoIdx?: string | null): string {
   if (!hexColor) return hexToColorName(hexColor);
-  const hex = hexColor.replace('#', '').toLowerCase().substring(0, 6);
+  const clean = hexColor.replace('#', '').toLowerCase();
+  if (clean.length === 8 && clean.substring(6, 8) === '00') return 'Clear';
+  const hex = clean.substring(0, 6);
+  // Without RFID the printer sends no tray_sub_brands, but it does report the
+  // preset picked on its screen, and a Bambu preset names its range (#3279).
+  const range = (material || '').trim().toLowerCase() || runtimePresetMaterials[(trayInfoIdx || '').toUpperCase()] || '';
+  if (range) {
+    const qualified = runtimeMaterialCatalog[`${range}|${hex}`];
+    if (qualified) return qualified;
+  }
+  const rangeColors = range ? runtimeBambuColors.filter((entry) => entry.material === range) : [];
+  if (rangeColors.length > 0) {
+    const inRange = nearestBambuColorName(hex, range, rangeColors);
+    if (inRange) return inRange;
+  }
   const mapped = runtimeColorCatalog[hex];
   if (mapped) return mapped;
+  // Other ranges only for a slot whose own range has no Bambu colours: a PLA
+  // Basic grey is not Translucent Gray because PLA Basic's Gray is further off.
+  if (rangeColors.length === 0) {
+    const anyRange = nearestBambuColorName(hex, '', runtimeBambuColors);
+    if (anyRange) return anyRange;
+  }
   return hexToColorName(hexColor);
 }
 
 /**
- * Resolve a spool's display color name.
- * Tries: stored color_name (if it's a readable name) → runtime catalog via rgba → null.
- * Detects Bambu internal codes (e.g. "A06-D0") and ignores them in favor of hex lookup
- * because the same code is not globally unique across material families (#857).
+ * The colour in ``entries`` within ``NEAREST_NAME_MAX_DELTA_E`` of ``hex``,
+ * or null (#3279). Nearest wins, the first listed on a tie. ``range`` keys
+ * the cache: the same hex has a different answer in each range.
  */
-export function resolveSpoolColorName(colorName: string | null, rgba: string | null): string | null {
-  // If color_name looks like a readable name (no pattern like "X00-Y0"), use it directly
-  if (colorName && !/^[A-Z]\d+-[A-Z]\d+$/.test(colorName)) {
-    return colorName;
+function nearestBambuColorName(hex: string, range: string, entries: BambuCatalogColor[]): string | null {
+  const cacheKey = `${range}|${hex}`;
+  const cached = nearestNameCache.get(cacheKey);
+  if (cached !== undefined) return cached;
+
+  let best: string | null = null;
+  let bestDistance = Infinity;
+  for (const entry of entries) {
+    const distance = colorDistance(hex, entry.hex);
+    if (distance !== null && distance < bestDistance) {
+      best = entry.name;
+      bestDistance = distance;
+    }
   }
-  // Try hex color lookup from rgba via the runtime catalog
+  const name = bestDistance <= NEAREST_NAME_MAX_DELTA_E ? best : null;
+  nearestNameCache.set(cacheKey, name);
+  return name;
+}
+
+/**
+ * Label two colours so a reader can tell which is which.
+ *
+ * `getColorName` resolves a hex against the catalogue and falls back to a
+ * coarse family bucket, so a slicer profile's near-pure `#0028FF` and Bambu's
+ * navy `#0A2989` are both called "Blue". A mismatch warning between those two
+ * then reads as a contradiction of the two identical names printed either side
+ * of it, which is the whole of #2941: the comparison was right, the labels gave
+ * the user no way to see what it was comparing.
+ *
+ * When the names collide the hex is appended to both, because that is what
+ * actually differs. Distinct names are returned untouched -- once the words
+ * separate them the hex is noise. A side with no name falls back to its hex, and
+ * a pair with no usable hex at all keeps the bare names rather than growing an
+ * empty "()".
+ */
+export function disambiguateColorNames(
+  first: { name?: string | null; hex?: string | null },
+  second: { name?: string | null; hex?: string | null },
+): [string, string] {
+  const hexLabel = (hex?: string | null): string => {
+    const clean = (hex ?? '').replace('#', '').trim().slice(0, 6).toUpperCase();
+    return /^[0-9A-F]{6}$/.test(clean) ? `#${clean}` : '';
+  };
+
+  const firstName = (first.name ?? '').trim();
+  const secondName = (second.name ?? '').trim();
+  const firstHex = hexLabel(first.hex);
+  const secondHex = hexLabel(second.hex);
+
+  if (!firstName || !secondName) return [firstName || firstHex, secondName || secondHex];
+  if (firstName.toLowerCase() !== secondName.toLowerCase()) return [firstName, secondName];
+  if (!firstHex && !secondHex) return [firstName, secondName];
+
+  return [
+    firstHex ? `${firstName} (${firstHex})` : firstName,
+    secondHex ? `${secondName} (${secondHex})` : secondName,
+  ];
+}
+
+/**
+ * Resolve a spool's display color name.
+ *
+ * Tries: stored color_name (if it is a readable name the user can be said to
+ * have chosen) → runtime catalog via rgba → the stored name after all → null.
+ *
+ * Two kinds of stored name are not answers, and both defer to the hex:
+ *
+ * - A Bambu internal code ("A06-D0"), which is what some RFID tags carry in
+ *   place of a name. The same code is not unique across material families, so
+ *   it cannot be translated on its own (#857).
+ * - A name Printbuddy synthesised from the spool's subtype because the inventory
+ *   backend had none. Spoolman has no `color_name` field at all, so every
+ *   Spoolman-backed spool arrives carrying its subtype as a stand-in, and
+ *   "Silk+" is not a colour (#3090). `colorNameIsSynthesized` is the flag the
+ *   backend already sets for exactly this; it is a weaker answer than the
+ *   catalog, not a wrong one, so it is still used when the hex resolves to
+ *   nothing.
+ */
+export function resolveSpoolColorName(
+  colorName: string | null,
+  rgba: string | null,
+  colorNameIsSynthesized = false,
+): string | null {
+  // A readable name the user (or their tag) actually set wins outright.
+  const readable = colorName && !/^[A-Z]\d+-[A-Z]\d+$/.test(colorName) ? colorName : null;
+  if (readable && !colorNameIsSynthesized) {
+    return readable;
+  }
   if (rgba && rgba.length >= 6) {
-    const hex = rgba.substring(0, 6).toLowerCase();
+    const clean = rgba.replace('#', '').toLowerCase();
+    // Transparent rgba: don't fall through to RGB-based lookup that would
+    // return 'Black' for #00000000 (#1545).
+    if (clean.length === 8 && clean.substring(6, 8) === '00') return 'Clear';
+    const hex = clean.substring(0, 6);
     const mapped = runtimeColorCatalog[hex];
     if (mapped) return mapped;
   }
+  // A synthesised subtype is a poor colour name and a fine last resort — it at
+  // least says what the spool is. A bare code never is.
+  if (readable) return readable;
   // Return null (displayed as "-") — better than showing a code
   return null;
+}
+
+/**
+ * Build a hex string suitable for SVG `fill=` / props that take a single
+ * colour value. Preserves the alpha byte when alpha < FF so a transparent
+ * spool renders translucent in SVG / CSS rather than collapsing to solid
+ * black (#1545). Null / malformed input falls back to `#808080`.
+ *
+ * Prefer `getSwatchStyle` for `style` objects that paint a div background —
+ * that helper paints a visible checkerboard under transparent fills.
+ */
+export function spoolColorString(rgba: string | null | undefined): string {
+  if (!rgba) return '#808080';
+  const clean = rgba.replace(/^#/, '');
+  if (clean.length < 6) return '#808080';
+  if (clean.length >= 8 && clean.substring(6, 8).toLowerCase() !== 'ff') {
+    return `#${clean.substring(0, 8)}`;
+  }
+  return `#${clean.substring(0, 6)}`;
+}
+
+// The transparency checkerboard, shared by every swatch that has to show a
+// translucent colour. One definition so the fully-transparent and partly-
+// transparent branches below cannot drift apart.
+const CHECKERBOARD = 'repeating-conic-gradient(#979797 0% 25%, #f5f5f5 0% 50%)';
+
+/**
+ * Build an inline-style object for a simple filament swatch (a div / button
+ * background) given a spool's rgba. Opaque colours return a plain
+ * `backgroundColor`; transparent (alpha=00) returns a small checkerboard
+ * pattern so the user can see the swatch instead of an invisible element
+ * (#1545); anything in between returns the colour at its real alpha layered
+ * over that checkerboard, so a half-translucent spool reads as neither opaque
+ * nor blank (#2912). Null / unparseable input falls back to the neutral
+ * `#808080` used elsewhere in the codebase.
+ *
+ * Use this anywhere a quick swatch was previously painted via
+ * `style={{ backgroundColor: '#' + rgba.slice(0, 6) }}` — alpha-stripping
+ * silently turned `Clear` spools into solid black.
+ *
+ * NOTE: `FilamentSwatch` already paints a richer checkerboard underlay
+ * automatically for translucent colours; prefer that for new code and use
+ * this helper only when retro-fitting an existing simple swatch site.
+ */
+export function getSwatchStyle(rgba: string | null | undefined): {
+  backgroundColor?: string;
+  backgroundImage?: string;
+  backgroundSize?: string;
+} {
+  if (!rgba) return { backgroundColor: '#808080' };
+  const clean = rgba.replace(/^#/, '');
+  if (clean.length < 6) return { backgroundColor: '#808080' };
+  if (clean.length >= 8) {
+    const alpha = clean.substring(6, 8).toLowerCase();
+    if (alpha === '00') {
+      return {
+        backgroundImage: CHECKERBOARD,
+        backgroundSize: '8px 8px',
+      };
+    }
+    if (alpha !== 'ff') {
+      // Partly translucent: paint the colour at its real alpha *over* the
+      // checkerboard, so the swatch shows both the tint and that it is
+      // see-through. Dropping to the RGB prefix here would render a 10%-alpha
+      // spool identically to an opaque one, and painting it alone would leave
+      // it near-invisible against the panel behind it. Two background layers
+      // rather than backgroundColor: a background colour paints *under* the
+      // image, which would put the checkerboard on top of the tint (#2912).
+      const translucent = `#${clean.substring(0, 8)}`;
+      return {
+        backgroundImage: `linear-gradient(${translucent}, ${translucent}), ${CHECKERBOARD}`,
+        backgroundSize: '100% 100%, 8px 8px',
+      };
+    }
+  }
+  return { backgroundColor: `#${clean.substring(0, 6)}` };
 }
 
 /**
@@ -151,6 +515,9 @@ export function parseFilamentColor(rgba: string): string | null {
 export function isLightColor(hex: string | null): boolean {
   if (!hex || hex.length < 6) return false;
   const cleanHex = hex.replace('#', '');
+  // Transparent swatches are painted over the light/mid-gray checkerboard
+  // underlay, so treat them as light for text-contrast purposes (#1545).
+  if (cleanHex.length === 8 && cleanHex.slice(6, 8).toLowerCase() === '00') return true;
   const r = parseInt(cleanHex.slice(0, 2), 16);
   const g = parseInt(cleanHex.slice(2, 4), 16);
   const b = parseInt(cleanHex.slice(4, 6), 16);

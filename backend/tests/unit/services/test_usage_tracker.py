@@ -21,6 +21,21 @@ from backend.app.services.usage_tracker import (
 )
 
 
+async def _charge_in_memory(_db, spool, grams):
+    """The fake session has no database for the tracker's UPDATE: add the
+    grams to the mock spool, which is what these tests check. The statement
+    itself is tested against a real database in test_usage_tracker_charge_race."""
+    spool.weight_used = (spool.weight_used or 0) + grams
+    spool.last_used = datetime.now(timezone.utc)
+    return True
+
+
+@pytest.fixture(autouse=True)
+def _charge_spools_in_memory():
+    with patch("backend.app.services.usage_tracker._charge_spool", _charge_in_memory):
+        yield
+
+
 def _make_spool(*, id=1, label_weight=1000, weight_used=0, tag_uid=None, tray_uuid=None, rgba=None):
     """Create a mock Spool object."""
     spool = MagicMock()
@@ -189,6 +204,63 @@ class TestOnPrintCompleteAMSDelta:
 
         assert results == []
         db.commit.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_an_unloaded_tray_at_start_does_not_exclude_every_slot(self):
+        """tray_now reads 255 at rest -- its initial value, and what an
+        unparseable reading falls back to. Mapped as a tray id that is (255, 1),
+        so taking it as evidence of which slots the print used would exclude
+        every real one and charge nothing (#1820)."""
+        _active_sessions[1] = PrintSession(
+            printer_id=1,
+            print_name="test",
+            started_at=datetime.now(timezone.utc),
+            tray_remain_start={(0, 0): 80},
+            tray_now_at_start=255,
+        )
+        ams_data = [{"id": 0, "tray": [{"id": 0, "remain": 70}]}]
+        pm = _make_printer_manager(_make_printer_state(ams_data))
+
+        spool = _make_spool(label_weight=1000, weight_used=0)
+        db = AsyncMock()
+        db.execute = AsyncMock(
+            side_effect=[
+                MagicMock(),  # _find_3mf_by_filename: library search
+                MagicMock(),  # _find_3mf_by_filename: archive search
+                MagicMock(scalar_one_or_none=MagicMock(return_value=_make_assignment())),
+                MagicMock(scalar_one_or_none=MagicMock(return_value=spool)),
+            ]
+        )
+
+        results = await on_print_complete(1, {"status": "completed"}, pm, db)
+
+        assert len(results) == 1
+        assert results[0]["weight_used"] == 100.0
+
+    @pytest.mark.asyncio
+    async def test_a_delta_that_charges_nothing_says_so(self, caplog):
+        """Charging nothing has to be distinguishable from having nothing to
+        charge (#1820). A fresh spool reads 100% for its first tens of grams
+        and the AMS estimate drifts upward on its own, so this fires on real
+        prints, not only on refills -- and used to fire in complete silence."""
+        import logging
+
+        _active_sessions[1] = PrintSession(
+            printer_id=1,
+            print_name="test",
+            started_at=datetime.now(timezone.utc),
+            tray_remain_start={(0, 0): 100},
+        )
+        ams_data = [{"id": 0, "tray": [{"id": 0, "remain": 100}]}]
+        pm = _make_printer_manager(_make_printer_state(ams_data))
+        db = AsyncMock()
+
+        with caplog.at_level(logging.INFO, logger="backend.app.services.usage_tracker"):
+            results = await on_print_complete(1, {"status": "completed"}, pm, db)
+
+        assert results == []
+        assert "did not fall" in caplog.text
+        assert "100% -> 100%" in caplog.text
 
     @pytest.mark.asyncio
     async def test_no_session_falls_through_to_3mf(self):
@@ -803,6 +875,9 @@ class TestSpoolAssignmentSnapshot:
                 MagicMock(scalar_one_or_none=MagicMock(return_value=spool)),
                 # Cost-update block re-selects the archive to mutate cost.
                 MagicMock(scalar_one_or_none=MagicMock(return_value=archive)),
+                # Priced at the default rate, so it asks whether this is the
+                # archive's first run before storing the cost.
+                MagicMock(scalar=MagicMock(return_value=0)),
             ]
         )
 

@@ -1,0 +1,1 @@
+var e=`/assets/pdf.worker.min-C77-Sbu5.js`;export{e as default};

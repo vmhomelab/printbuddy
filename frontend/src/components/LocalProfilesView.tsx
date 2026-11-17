@@ -15,7 +15,7 @@ import {
   AlertCircle,
 } from 'lucide-react';
 import { api } from '../api/client';
-import type { LocalPreset } from '../api/client';
+import type { LocalPreset, LocalPresetsResponse } from '../api/client';
 import { Card, CardContent } from './Card';
 import { Button } from './Button';
 import { useToast } from '../contexts/ToastContext';
@@ -127,7 +127,7 @@ function PresetCard({
               {vendor && (
                 <span className="text-xs text-bambu-gray">{vendor}</span>
               )}
-              <span className="text-xs px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-400">
+              <span className="text-xs px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-400">
                 {t('profiles.localProfiles.badge')}
               </span>
             </div>
@@ -138,7 +138,7 @@ function PresetCard({
             {hasPermission('settings:update') && (
               <button
                 onClick={() => onDelete(preset.id)}
-                className="p-1 text-bambu-gray hover:text-red-400 transition-colors"
+                className="p-1 text-bambu-gray hover:text-red-600 dark:hover:text-red-400 transition-colors"
                 title={t('profiles.localProfiles.delete')}
               >
                 <Trash2 className="w-3.5 h-3.5" />
@@ -245,6 +245,11 @@ export function LocalProfilesView() {
     },
     onSuccess: (results) => {
       queryClient.invalidateQueries({ queryKey: ['localPresets'] });
+      // The SliceModal reads from a separate `slicerPresets` query that lists
+      // cloud + local + standard in one shot. Without this second invalidation
+      // freshly-imported profiles wouldn't appear in the SliceModal dropdown
+      // until that query's staleTime elapsed plus a refocus / remount (#1581).
+      queryClient.invalidateQueries({ queryKey: ['slicerPresets'] });
       let totalImported = 0;
       let totalSkipped = 0;
       let totalErrors = 0;
@@ -271,8 +276,27 @@ export function LocalProfilesView() {
 
   const deleteMutation = useMutation({
     mutationFn: (id: number) => api.deleteLocalPreset(id),
-    onSuccess: () => {
+    onSuccess: (_, id) => {
+      // Optimistically drop the row from the cached list so the rendered table
+      // updates the instant the DELETE returns. Without this the row stays
+      // visible until invalidateQueries' background refetch completes, and a
+      // quick re-click on the same row opens a second delete-confirm modal
+      // that resolves to a 404 (server already deleted it). The cache holds a
+      // grouped response (filament / printer / process), not a flat list.
+      queryClient.setQueryData<LocalPresetsResponse>(['localPresets'], (old) => {
+        if (!old) return old;
+        return {
+          filament: old.filament.filter((p) => p.id !== id),
+          printer: old.printer.filter((p) => p.id !== id),
+          process: old.process.filter((p) => p.id !== id),
+        };
+      });
       queryClient.invalidateQueries({ queryKey: ['localPresets'] });
+      // Match the import path: the SliceModal's `slicerPresets` query needs
+      // to be invalidated too, otherwise the deleted preset keeps appearing
+      // in the slice dropdown until its 60s staleTime expires plus a
+      // refocus / remount (#1581).
+      queryClient.invalidateQueries({ queryKey: ['slicerPresets'] });
       setDeleteConfirm(null);
       showToast(t('profiles.localProfiles.toast.deleted'));
     },
@@ -419,7 +443,7 @@ export function LocalProfilesView() {
           {processes.length > 0 && (
             <div>
               <div className="flex items-center gap-2 mb-3">
-                <Layers className="w-4 h-4 text-blue-400" />
+                <Layers className="w-4 h-4 text-blue-600 dark:text-blue-400" />
                 <h3 className="text-sm font-medium text-white">
                   {t('profiles.localProfiles.process')}
                 </h3>
@@ -443,7 +467,7 @@ export function LocalProfilesView() {
           {printers.length > 0 && (
             <div>
               <div className="flex items-center gap-2 mb-3">
-                <Settings2 className="w-4 h-4 text-orange-400" />
+                <Settings2 className="w-4 h-4 text-orange-600 dark:text-orange-400" />
                 <h3 className="text-sm font-medium text-white">
                   {t('profiles.localProfiles.printer')}
                 </h3>
@@ -470,7 +494,7 @@ export function LocalProfilesView() {
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
           <div className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg p-6 max-w-sm mx-4">
             <div className="flex items-center gap-2 mb-3">
-              <AlertCircle className="w-5 h-5 text-red-400" />
+              <AlertCircle className="w-5 h-5 text-red-600 dark:text-red-400" />
               <h3 className="text-white font-medium">{t('profiles.localProfiles.deleteConfirmTitle')}</h3>
             </div>
             <p className="text-sm text-bambu-gray mb-4">{t('profiles.localProfiles.deleteConfirm')}</p>

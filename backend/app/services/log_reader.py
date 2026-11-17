@@ -14,6 +14,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.config import settings
+from backend.app.core.logging_filters import (
+    HOST_ONLY_LOGGERS,
+    URL_CREDENTIALS_PATTERN,
+    redact_device_urls,
+    redact_query_tokens,
+    redact_refused_headers,
+    redact_url_credentials,
+)
 from backend.app.models.printer import Printer
 from backend.app.models.settings import Settings
 from backend.app.models.user import User
@@ -24,6 +32,21 @@ logger = logging.getLogger(__name__)
 # The trace_id is left as part of the message group — callers that need it can
 # parse it out; the log-health scanner does not.
 LOG_LINE_PATTERN = re.compile(r"^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2},\d{3})\s+(\w+)\s+\[([^\]]+)\]\s+(.*)$")
+
+# LDAP Distinguished Names carry PII — the leaf ``CN=`` is the user's real name
+# (#2681). Match a run of at least two ``attr=value`` RDN components joined by
+# commas, where ``attr`` is a known LDAP attribute type. Requiring two components
+# keeps this from clobbering an incidental ``key=value`` in an unrelated log line,
+# while still catching DNs wherever they surface — the deliberate "auth successful"
+# line, ldap3 exception strings, and group DNs alike. Bias is intentionally toward
+# redaction: over-redacting a rare debug line to ``[DN]`` is a safe failure; leaking
+# a name is not.
+# The value char class excludes `<>;+` — RFC 4514 requires those escaped inside a
+# DN value, so an unescaped one marks the end of the DN, not part of it. That stops
+# the final (comma-unbounded) component from greedily swallowing trailing log text
+# such as ``… -> GroupName``.
+_LDAP_RDN = r"(?:CN|OU|DC|UID|O|L|ST|C|SN|GN|DN|E|MAIL|STREET|GIVENNAME|SURNAME)=[^,\n<>;+]+"
+_LDAP_DN_PATTERN = re.compile(rf"(?i)\b{_LDAP_RDN}(?:\s*,\s*{_LDAP_RDN})+")
 
 
 class LogEntry(BaseModel):
@@ -46,6 +69,20 @@ def parse_log_line(line: str) -> LogEntry | None:
             message=match.group(4),
         )
     return None
+
+
+def _logger_of(line: str) -> str | None:
+    match = LOG_LINE_PATTERN.match(line.strip())
+    return match.group(3) if match else None
+
+
+def _redacted(entry: LogEntry) -> LogEntry:
+    # Lines on disk may predate a redaction: masked as they are read, before
+    # any search, so a search cannot confirm a secret either.
+    entry.message = redact_refused_headers(redact_url_credentials(redact_query_tokens(entry.message))) or ""
+    if entry.logger_name in HOST_ONLY_LOGGERS:
+        entry.message = redact_device_urls(entry.message) or ""
+    return entry
 
 
 def read_log_entries(
@@ -79,6 +116,7 @@ def read_log_entries(
                 if parsed:
                     # Found a new log entry start
                     if current_entry:
+                        current_entry = _redacted(current_entry)
                         # Apply filters and add previous entry (without multi_line_buffer - it belongs to new entry)
                         should_include = True
 
@@ -114,6 +152,7 @@ def read_log_entries(
             # Don't forget the last (oldest) entry
             # Note: any remaining multi_line_buffer would be orphaned lines before the first entry
             if current_entry and len(entries) < limit:
+                current_entry = _redacted(current_entry)
                 should_include = True
                 if level_filter and current_entry.level.upper() != level_filter.upper():
                     should_include = False
@@ -143,7 +182,15 @@ def sanitize_log_content(content: str, sensitive_strings: dict[str, str] | None 
     Regex passes additionally redact credentials in URLs, emails, serials, and
     IP addresses that were not captured by exact matching.
     """
-    # First, replace known sensitive values (database-aware exact matching)
+    # Lines from loggers that name a device by its whole URL keep its host only.
+    # First, while each line's logger can still be read: a known value below
+    # may be part of a logger name.
+    content = "\n".join(
+        redact_device_urls(line) or "" if _logger_of(line) in HOST_ONLY_LOGGERS else line
+        for line in content.split("\n")
+    )
+
+    # Then replace known sensitive values (database-aware exact matching)
     # This catches printer names, usernames, and other arbitrary user-chosen strings
     # that regex patterns cannot detect
     if sensitive_strings:
@@ -153,18 +200,33 @@ def sanitize_log_content(content: str, sensitive_strings: dict[str, str] | None 
                 continue  # Skip very short strings to prevent over-redaction
             content = re.sub(re.escape(value), label, content)
 
-    # Replace credentials in URLs (e.g. http://user:pass@host, rtsps://bblp:code@host)
-    content = re.sub(r"((?:https?|rtsps?)://)[^/:@\s]+:[^/@\s]+@", r"\1[CREDENTIALS]@", content)
+    # Replace credentials in URLs (e.g. http://user:pass@host, rtsps://bblp:code@host).
+    # Shares its pattern with the log-pipeline redaction in ``core.logging_filters`` so
+    # the two can't drift; the bundle drops the username too, where the live log keeps
+    # it for diagnosis.
+    content = URL_CREDENTIALS_PATTERN.sub(r"\g<scheme>[CREDENTIALS]@", content)
+
+    # Query-string tokens (?token=...), for log lines written before the live
+    # filter existed or by a logger it is not attached to.
+    content = redact_query_tokens(content) or ""
+
+    # A header an HTTP client refused, quoted with its value.
+    content = redact_refused_headers(content) or ""
 
     # Replace email addresses
     content = re.sub(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b", "[EMAIL]", content)
 
+    # Replace LDAP Distinguished Names (#2681) — PII on par with email.
+    content = _LDAP_DN_PATTERN.sub("[DN]", content)
+
     # Replace Bambu Lab printer serial numbers (format: 00M/01D/01S/01P/03W + alphanumeric, 12-16 chars total)
     content = re.sub(r"\b0[0-3][A-Z0-9][A-Z0-9]{9,13}\b", "[SERIAL]", content, flags=re.IGNORECASE)
 
-    # Replace IPv4 addresses (skip firmware versions like 01.09.01.00 which have leading zeros)
+    # Replace IPv4 addresses (skip firmware versions like 01.09.01.00 which have leading zeros,
+    # and four-number runs inside a longer dotted number, such as the LDAP StartTLS OID
+    # 1.3.6.1.4.1.1466.20037, whose masked "[IP].4.1.1466.20037" hid what failed, #3197)
     content = re.sub(
-        r"\b(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)\b",
+        r"(?<!\d\.)\b(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)\b(?!\.\d)",
         "[IP]",
         content,
     )

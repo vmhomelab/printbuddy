@@ -34,15 +34,18 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install ruff
-        run: pip install ruff
+        # Install the exact pin from requirements-dev.txt rather than the latest
+        # release, so CI and contributors run the same linter. `pip install ruff`
+        # silently drifted ahead of every local venv.
+        run: pip install "$(grep -E '^ruff==' requirements-dev.txt)"
 
       - name: Run ruff check
         run: ruff check backend/
@@ -53,23 +56,63 @@ jobs:
       - name: Check slicer sidecar image references
         run: python scripts/slicer_images.py --check
 
+  backend-typecheck:
+    name: Backend Type Check
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install the pinned type-check environment
+        # requirements-typecheck.lock, not requirements.txt: the baseline only
+        # holds for these exact library versions (see requirements-typecheck.txt).
+        run: pip install -r requirements-typecheck.lock
+
+      - name: Check the lock covers requirements.txt
+        # A dependency added to requirements.txt but not to the lock would show
+        # up below as an unresolved import instead of saying what is wrong.
+        run: |
+          if ! out=$(pip install --dry-run -r requirements.txt 2>&1); then
+            echo "$out"
+            echo "::error::pip could not resolve requirements.txt against the type-check environment."
+            exit 1
+          fi
+          if echo "$out" | grep '^Would install'; then
+            echo "::error::requirements-typecheck.lock is missing packages from requirements.txt. Regenerate it as described in requirements-typecheck.txt."
+            exit 1
+          fi
+
+      - name: Run basedpyright
+        # Errors recorded in .basedpyright/baseline.json pass; any new one fails.
+        # Lock mode also fails when a baselined error was fixed but the smaller
+        # baseline was not committed.
+        run: basedpyright --pythonpath "$(which python)" --baselinemode=lock
+
   backend-security:
     name: Backend Security
     runs-on: ubuntu-latest
     if: github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          # Upgrade setuptools too: the runner's Python toolcache ships an old
+          # setuptools that trips pip-audit (PYSEC-2026-3447, fixed in 83.0.0).
+          # A fix exists, so we upgrade rather than --ignore-vuln.
+          python -m pip install --upgrade pip setuptools
+          pip install -r requirements.lock
           pip install pip-audit
 
       - name: Run pip-audit
@@ -99,43 +142,110 @@ jobs:
       matrix:
         shard: [1, 2, 3, 4]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Cache pip
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.lock', 'requirements-dev.txt') }}
           restore-keys: |
             ${{ runner.os }}-pip-
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          # The pinned versions that ship (Docker, installers), not whatever is newest.
+          pip install -r requirements.lock
           pip install -r requirements-dev.txt
 
       - name: Run tests (shard ${{ matrix.shard }}/4)
-        timeout-minutes: 10
+        timeout-minutes: 15
         run: |
           cd backend
           # -v dropped: 5300+ "PASSED foo::bar" lines per worker eat 30-60s
           # of stdout I/O time on 2-vCPU runners. --tb=short is enough.
-          # --splits 4 --group N uses pytest-split to slice the collected
-          # test set roughly evenly across the 4 matrix shards; first run
-          # is name-hash-based, subsequent runs improve via .test_durations
-          # if you ever commit one (we don't — even the naive hash split
-          # gets us ≈25% per shard given the test mix here).
+          #
+          # --splits 4 --group N slices the suite across the 4 matrix shards.
+          # Without a durations file pytest-split balances by test COUNT, which
+          # is not the same thing as time: measured 2026-08-31, that put 658s of
+          # the suite's 1046s into shard 1 and 101s into shard 4 -- a 6.5x spread
+          # that walked shard 1 into the old 10-minute timeout on a docs-only
+          # commit. tests/.test_durations is committed so the split is balanced
+          # by measured time instead (1.01x spread). Shard test counts are
+          # lopsided by design once it is used: shard 4 takes thousands of fast
+          # unit tests, shard 1 keeps the slow integration ones.
+          #
+          # --durations-path must be explicit: pytest-split defaults it to
+          # $CWD/.test_durations, and this job runs from backend/ while the
+          # Docker job below runs from the image root. Left implicit, one of
+          # them silently finds no file and falls back to the count split.
+          # Regenerate after adding slow tests:
+          #   cd backend && python -m pytest tests/ --store-durations \
+          #     --durations-path tests/.test_durations
           python -m pytest tests/ \
             --tb=short \
             --timeout=60 --timeout-method=thread \
             -n auto \
-            --splits 4 --group ${{ matrix.shard }}
+            --splits 4 --group ${{ matrix.shard }} \
+            --durations-path tests/.test_durations
+
+  backend-postgres-upgrade:
+    # The test suite runs on SQLite only. This builds PostgreSQL databases with
+    # older releases' code, upgrades them and compares each with a fresh
+    # install (see scripts/check_postgres_upgrade.py).
+    name: PostgreSQL Upgrade Check
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner
+    needs: backend-lint
+    services:
+      postgres:
+        # The version the docker-compose example and the wiki use.
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # The release tags: older releases' code builds the databases to upgrade.
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Cache pip
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/pip
+          # Its own key: this job installs the lock only, and finishes long
+          # before the test shards, so sharing theirs would save a cache
+          # without the dev packages under their key.
+          key: ${{ runner.os }}-pip-lock-${{ hashFiles('requirements.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-lock-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.lock
+
+      - name: Upgrade from older releases and compare with a fresh install
+        timeout-minutes: 10
+        run: python scripts/check_postgres_upgrade.py --url postgresql://postgres:ci@localhost:5432/postgres
 
   # ============================================================================
   # Frontend Checks
@@ -146,10 +256,10 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
@@ -163,16 +273,20 @@ jobs:
         working-directory: frontend
         run: npm run lint
 
+      - name: Unused files and dependencies (knip)
+        working-directory: frontend
+        run: npm run check:knip
+
   frontend-security:
     name: Frontend Security
     runs-on: ubuntu-latest
     if: github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
@@ -198,15 +312,47 @@ jobs:
               if path and not info.get('dev') and not info.get('devOptional'):
                   prod.add(path.split('node_modules/')[-1])
           vulns = data.get('vulnerabilities', {})
+          # Documented advisory exceptions: high/critical findings whose only offered
+          # 'fix' is a semver-major change and which do not apply to how Printbuddy ships.
+          # Keyed by GHSA id. An entry only holds while the fix stays major-only (see
+          # fix_is_major below) - once upstream backports, the gate fails until we take
+          # the patch. That is what retired the one entry this list used to carry:
+          # GHSA-qwww-vcr4-c8h2 (React Router RSC-mode CSRF) shipped in 7.18.2, so the
+          # pin moved rather than the exception staying.
+          ALLOWLIST = set()
+          def advisory_ids(name, seen=None):
+              seen = seen if seen is not None else set()
+              if name in seen:
+                  return set()
+              seen.add(name)
+              ids = set()
+              for item in vulns.get(name, {}).get('via', []):
+                  if isinstance(item, dict):
+                      url = item.get('url', '')
+                      if '/advisories/' in url:
+                          ids.add(url.rsplit('/', 1)[-1])
+                  elif isinstance(item, str):
+                      ids |= advisory_ids(item, seen)
+              return ids
+          def fix_is_major(v):
+              fa = v.get('fixAvailable')
+              return isinstance(fa, dict) and fa.get('isSemVerMajor')
+          def exempt(name, v):
+              ids = advisory_ids(name)
+              return bool(ids) and ids <= ALLOWLIST and fix_is_major(v)
           fixable = {n: v for n, v in vulns.items()
-                     if n in prod and v.get('severity') in ('high', 'critical') and v.get('fixAvailable')}
+                     if n in prod and v.get('severity') in ('high', 'critical')
+                     and v.get('fixAvailable') and not exempt(n, v)}
           skipped = len(vulns) - len({n: v for n, v in vulns.items() if n in prod})
           if fixable:
               for name, v in fixable.items():
                   print(f'FIXABLE {v[\"severity\"].upper()}: {name}')
               sys.exit(1)
           total = sum(1 for n, v in vulns.items() if n in prod and v.get('severity') in ('high', 'critical'))
+          exempted = sorted(n for n, v in vulns.items() if n in prod and exempt(n, v))
           print(f'npm audit: {total} high/critical (0 fixable), {len(vulns)} total ({skipped} npm-internal filtered)')
+          if exempted:
+              print('exempted (documented, unreachable): ' + ', '.join(exempted))
           "
 
   frontend-typecheck:
@@ -214,10 +360,10 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
@@ -227,9 +373,13 @@ jobs:
         working-directory: frontend
         run: npm ci
 
+      # `tsc -b`, not `tsc --noEmit`: the root tsconfig only holds project
+      # references, so plain `tsc` checks zero files. Kept out of `npm run
+      # build` because every installer runs that on the user's machine, and
+      # the type check alone needs ~1 GB of Node heap (#3181).
       - name: Run TypeScript check
         working-directory: frontend
-        run: npx tsc --noEmit
+        run: npm run typecheck
 
   frontend-tests:
     name: Frontend Tests
@@ -237,10 +387,10 @@ jobs:
     if: github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner
     needs: [frontend-lint, frontend-typecheck]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
@@ -261,10 +411,10 @@ jobs:
     if: github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner
     needs: [frontend-tests]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
@@ -299,17 +449,17 @@ jobs:
       matrix:
         shard: [1, 2, 3, 4]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       # Build the backend-test image with GHA BuildKit cache backend so
       # the pip-install layer is shared across the 4 matrix shards AND
       # across CI runs. First run on a given requirements.txt is cold
       # (~60-90s); subsequent runs are ~5-10s.
       - name: Build backend test image (cached)
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile.test
@@ -319,9 +469,14 @@ jobs:
           cache-from: type=gha,scope=backend-test
           cache-to: type=gha,scope=backend-test,mode=max
 
+      # Same as docker-compose.test.yml: some backend tests read the frontend
+      # sources and scripts/, and --init reaps the children some tests kill
+      # (with pytest as PID 1 they stay zombies that answer kill(pid, 0)).
       - name: Run backend tests in Docker (shard ${{ matrix.shard }}/4)
         run: |
-          docker run --rm \
+          docker run --rm --init \
+            -v "$PWD/frontend/src:/app/frontend/src:ro" \
+            -v "$PWD/scripts:/app/scripts:ro" \
             -e TESTING=1 \
             -e PYTHONUNBUFFERED=1 \
             printbuddy-backend-test:latest \
@@ -330,16 +485,18 @@ jobs:
               --timeout=60 --timeout-method=thread \
               -p no:cacheprovider \
               -n auto \
-              --splits 4 --group ${{ matrix.shard }}
+              --splits 4 --group ${{ matrix.shard }} \
+              --durations-path backend/tests/.test_durations
 
   docker-test:
     name: Docker Build
     runs-on: ubuntu-latest
     if: github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner
-    timeout-minutes: 20
+    # The integration suite alone takes well over 20 minutes on a runner.
+    timeout-minutes: 40
     needs: [backend-tests, frontend-build]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # Test 1: Docker Build
       - name: Build production image
@@ -387,8 +544,17 @@ jobs:
       - name: Build integration test runner
         run: docker compose -f docker-compose.test.yml build integration-test-runner
 
+      # The compose command's -n 30 fits the local test host, not a 4-CPU
+      # runner: there it was slower and tests ran out of time. --timeout
+      # turns a hung test into a failure with its name instead of a cancel.
       - name: Run integration test suite
-        run: docker compose -f docker-compose.test.yml run --rm integration-test-runner
+        run: |
+          docker compose -f docker-compose.test.yml run --rm integration-test-runner \
+            pytest backend/tests/integration/ \
+              --tb=short \
+              --timeout=60 --timeout-method=thread \
+              -p no:cacheprovider \
+              -n auto
 
       - name: Show logs on failure
         if: failure()

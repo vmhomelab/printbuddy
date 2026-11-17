@@ -657,19 +657,58 @@ class TestAdminDisable2FA:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_admin_disable_requires_admin(self, async_client: AsyncClient):
-        """Only admins can use the admin disable endpoint."""
-        # The only user in a fresh setup IS admin, so just check the 404 path
+    async def test_admin_disable_reports_a_user_without_2fa(self, async_client: AsyncClient):
+        """The Edit user dialog says so, rather than claiming it removed something."""
+        token = await _setup_and_login(async_client, "adminno2fa", "adminno2fa123")
+        created = await async_client.post(
+            "/api/v1/users",
+            json={"username": "plainuser2fa", "password": "Plainuser2fa1!"},
+            headers=_auth_header(token),
+        )
+        response = await async_client.request(
+            "DELETE",
+            f"/api/v1/auth/2fa/admin/{created.json()['id']}",
+            json={"admin_password": _norm_pw("adminno2fa123")},
+            headers=_auth_header(token),
+        )
+        assert response.status_code == 200
+        assert response.json()["had_2fa"] is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_admin_disable_reports_email_2fa(self, async_client: AsyncClient, db_session):
+        from backend.app.api.routes.settings import set_setting
+
+        token = await _setup_and_login(async_client, "adminmail2fa", "adminmail2fa123")
+        created = await async_client.post(
+            "/api/v1/users",
+            json={"username": "mailuser2fa", "password": "Mailuser2fa1!"},
+            headers=_auth_header(token),
+        )
+        user_id = created.json()["id"]
+        await set_setting(db_session, f"user_{user_id}_email_2fa_enabled", "true")
+        await db_session.commit()
+
+        response = await async_client.request(
+            "DELETE",
+            f"/api/v1/auth/2fa/admin/{user_id}",
+            json={"admin_password": _norm_pw("adminmail2fa123")},
+            headers=_auth_header(token),
+        )
+        assert response.status_code == 200
+        assert response.json()["had_2fa"] is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_admin_disable_unknown_user_is_404(self, async_client: AsyncClient):
         token = await _setup_and_login(async_client, "admincheck", "admincheck123")
-        # Try to disable for a non-existent user_id — should get 200 (no-op) or 404
         response = await async_client.request(
             "DELETE",
             "/api/v1/auth/2fa/admin/99999",
             json={"admin_password": _norm_pw("admincheck123")},
             headers=_auth_header(token),
         )
-        # Admin users succeed regardless (returns 200 even if user doesn't exist)
-        assert response.status_code == 200
+        assert response.status_code == 404
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -699,6 +738,7 @@ class TestAdminDisable2FA:
             headers=_auth_header(token),
         )
         assert response.status_code == 200
+        assert response.json()["had_2fa"] is True
 
         # I2: admin_disable_2fa bumps password_changed_at, invalidating the old token.
         # Re-login to get a fresh token before checking status.
@@ -975,7 +1015,14 @@ class TestOIDCProviders:
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_default_group_id_in_public_and_admin_list(self, async_client: AsyncClient, db_session: AsyncSession):
-        """default_group_id appears in both the public and admin list responses."""
+        """default_group_id appears in the admin list response.
+
+        #3107 review: the public list now serves the slim login-page shape
+        (id, name, has_icon, is_autologin) so group sync config and other
+        provider internals stay behind the permission gate — the previous
+        expectation of default_group_id on the public list is what let the
+        group mapping leak to anonymous callers.
+        """
         from sqlalchemy import select
 
         from backend.app.models.group import Group
@@ -1008,7 +1055,8 @@ class TestOIDCProviders:
         pub_resp = await async_client.get("/api/v1/auth/oidc/providers")
         pub_match = next((p for p in pub_resp.json() if p["id"] == provider_id), None)
         assert pub_match is not None
-        assert pub_match["default_group_id"] == operators.id
+        # Slim public shape: the config fields live on the admin response.
+        assert set(pub_match.keys()) == {"id", "name", "has_icon", "is_autologin"}
 
 
 # ===========================================================================
@@ -1149,6 +1197,37 @@ class TestAdminDisableNonAdminRejection:
             f"/api/v1/auth/2fa/admin/{create_resp.json()['id']}",
             headers=_auth_header(regular_token),
         )
+        assert resp.status_code == 403
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_users_update_permission_alone_is_not_enough(self, async_client: AsyncClient):
+        """Editing users is admin-only; so is removing their 2FA."""
+        admin_token = await _setup_and_login(async_client, "adminperm2fa", "adminperm2fa1")
+        admin_id = (await async_client.get("/api/v1/auth/me", headers=_auth_header(admin_token))).json()["id"]
+
+        group = await async_client.post(
+            "/api/v1/groups",
+            json={"name": "User managers", "permissions": ["users:read", "users:update"]},
+            headers=_auth_header(admin_token),
+        )
+        assert group.status_code == 201, group.text
+        created = await async_client.post(
+            "/api/v1/users",
+            json={"username": "usermgr2fa", "password": "Usermgr2fa1!", "group_ids": [group.json()["id"]]},
+            headers=_auth_header(admin_token),
+        )
+        assert created.status_code == 201, created.text
+        login = await async_client.post(LOGIN_URL, json={"username": "usermgr2fa", "password": "Usermgr2fa1!"})
+        manager_token = login.json()["access_token"]
+
+        resp = await async_client.request(
+            "DELETE",
+            f"/api/v1/auth/2fa/admin/{admin_id}",
+            json={"admin_password": "Usermgr2fa1!"},
+            headers=_auth_header(manager_token),
+        )
+
         assert resp.status_code == 403
 
 
@@ -1326,11 +1405,15 @@ class TestTOTPReplay:
         future_code = totp.generate_otp(future_counter)
         record = UserTOTP(user_id=1, secret=totp.secret, is_enabled=True)
 
-        mfa_routes._assert_totp_not_replayed(totp, record, future_code)
+        # The routes match the code's own step, then record it (upstream's
+        # _matched_totp_counter + UserTOTP.accept_counter).
+        counter = mfa_routes._matched_totp_counter(totp, future_code)
+        assert counter == future_counter
+        record.accept_counter(counter)
 
         assert record.last_totp_counter == future_counter
         with pytest.raises(HTTPException):
-            mfa_routes._assert_totp_not_replayed(totp, record, future_code)
+            record.accept_counter(mfa_routes._matched_totp_counter(totp, future_code))
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -1353,6 +1436,71 @@ class TestTOTPReplay:
             json={"pre_auth_token": pre_auth2, "method": "totp", "code": code},
         )
         assert second.status_code == 400
+
+    @staticmethod
+    def _freeze_mfa_clock(monkeypatch, at: float) -> type:
+        """Pin the clock the MFA routes read; set ``clock.at`` to move it."""
+        from backend.app.api.routes import mfa as mfa_module
+
+        class Clock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime.fromtimestamp(Clock.at, tz)
+
+        Clock.at = at
+        monkeypatch.setattr(mfa_module, "datetime", Clock)
+        return Clock
+
+    async def _verify(self, client: AsyncClient, username: str, password: str, code: str):
+        pre_auth = await _login_get_pre_auth_token(client, username, password)
+        return await client.post(
+            "/api/v1/auth/2fa/verify",
+            json={"pre_auth_token": pre_auth, "method": "totp", "code": code},
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_totp_replay_in_the_next_step_is_rejected(self, async_client: AsyncClient, monkeypatch):
+        """A code stays valid into the next 30-second step; its reuse there must still fail."""
+        _token, secret = await _setup_totp_user(async_client, "replaynext", "replaynext1")
+        totp = pyotp.TOTP(secret)
+        step_start = (int(time.time()) // 30 + 1) * 30
+        code = totp.at(step_start)
+        clock = self._freeze_mfa_clock(monkeypatch, step_start + 29)
+
+        first = await self._verify(async_client, "replaynext", "replaynext1", code)
+        assert first.status_code == 200
+
+        clock.at = step_start + 31
+        second = await self._verify(async_client, "replaynext", "replaynext1", code)
+        assert second.status_code == 400
+        assert second.json()["detail"] == "TOTP code already used"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_previous_step_code_records_its_own_step(self, async_client: AsyncClient, monkeypatch):
+        """Used first in the next step, the code is recorded under its own step: the
+        current step's code is still accepted afterwards, the replay is not."""
+        _token, secret = await _setup_totp_user(async_client, "prevstep", "prevstep12")
+        totp = pyotp.TOTP(secret)
+        step_start = (int(time.time()) // 30 + 1) * 30
+        old_code, new_code = totp.at(step_start), totp.at(step_start + 30)
+        self._freeze_mfa_clock(monkeypatch, step_start + 35)
+
+        assert (await self._verify(async_client, "prevstep", "prevstep12", old_code)).status_code == 200
+        assert (await self._verify(async_client, "prevstep", "prevstep12", old_code)).status_code == 400
+        assert (await self._verify(async_client, "prevstep", "prevstep12", new_code)).status_code == 200
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_code_two_steps_old_is_rejected(self, async_client: AsyncClient, monkeypatch):
+        _token, secret = await _setup_totp_user(async_client, "stalecode", "stalecode12")
+        step_start = (int(time.time()) // 30 + 1) * 30
+        code = pyotp.TOTP(secret).at(step_start)
+        self._freeze_mfa_clock(monkeypatch, step_start + 61)
+
+        resp = await self._verify(async_client, "stalecode", "stalecode12", code)
+        assert resp.status_code == 401
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -4272,6 +4420,217 @@ class TestOIDCEmailResolutionExtra:
 
 
 # ===========================================================================
+# Issue #1569: standard 'email' claim fallback for User.email during
+# auto-provisioning when email_claim is a non-email identity claim.
+# ===========================================================================
+
+
+class TestOIDCStandardEmailFallback:
+    """Issue #1569: when email_claim is set to a non-email identity claim
+    (e.g. preferred_username on Authentik) and the IdP token also carries a
+    standard 'email' claim, auto-created users get User.email from the
+    standard claim — without affecting the auto-link gate."""
+
+    async def _get_user_and_link(self, db_session: AsyncSession, provider_id: int, sub: str):
+        from sqlalchemy import select
+
+        from backend.app.models.oidc_provider import UserOIDCLink
+        from backend.app.models.user import User as UserModel
+
+        link_result = await db_session.execute(
+            select(UserOIDCLink)
+            .where(UserOIDCLink.provider_id == provider_id)
+            .where(UserOIDCLink.provider_user_id == sub)
+        )
+        link = link_result.scalar_one_or_none()
+        if link is None:
+            return None, None
+        user_result = await db_session.execute(select(UserModel).where(UserModel.id == link.user_id))
+        return user_result.scalar_one_or_none(), link
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_email_claim_preferred_username_falls_back_to_standard_email(
+        self,
+        async_client: AsyncClient,
+        db_session: AsyncSession,
+    ):
+        """email_claim=preferred_username + both claims → username from preferred_username,
+        email populated from the standard 'email' claim."""
+        private_pem, jwks_data = _make_test_rsa_key()
+        issuer = "https://issue1569-both.example"
+        client_id = "issue1569-both-client"
+
+        admin_token = await _setup_and_login(async_client, "i1569b_adm", "I1569b123!")
+        provider_id = await _create_provider_via_api(
+            async_client,
+            admin_token,
+            issuer,
+            client_id,
+            email_claim="preferred_username",
+            require_email_verified=False,
+            suffix="i1569both",
+        )
+
+        sub = f"sub-i1569-both-{secrets.token_hex(6)}"
+        await _run_oidc_callback(
+            async_client,
+            db_session,
+            provider_id=provider_id,
+            claims={
+                "sub": sub,
+                "preferred_username": "jdoe",
+                "email": "jdoe@example.com",
+                "email_verified": True,
+            },
+            private_pem=private_pem,
+            jwks_data=jwks_data,
+            issuer=issuer,
+            client_id=client_id,
+        )
+        db_session.expire_all()
+        user, link = await self._get_user_and_link(db_session, provider_id, sub)
+        assert user is not None and link is not None
+        assert user.username == "jdoe"
+        assert user.email == "jdoe@example.com"
+        assert link.provider_email == "jdoe@example.com"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_email_claim_preferred_username_no_standard_email_keeps_email_none(
+        self,
+        async_client: AsyncClient,
+        db_session: AsyncSession,
+    ):
+        """email_claim=preferred_username + no standard 'email' claim → behaviour unchanged:
+        username derived from preferred_username, User.email stays None."""
+        private_pem, jwks_data = _make_test_rsa_key()
+        issuer = "https://issue1569-noemail.example"
+        client_id = "issue1569-noemail-client"
+
+        admin_token = await _setup_and_login(async_client, "i1569n_adm", "I1569n123!")
+        provider_id = await _create_provider_via_api(
+            async_client,
+            admin_token,
+            issuer,
+            client_id,
+            email_claim="preferred_username",
+            require_email_verified=False,
+            suffix="i1569none",
+        )
+
+        sub = f"sub-i1569-none-{secrets.token_hex(6)}"
+        await _run_oidc_callback(
+            async_client,
+            db_session,
+            provider_id=provider_id,
+            claims={"sub": sub, "preferred_username": "jdoe2"},
+            private_pem=private_pem,
+            jwks_data=jwks_data,
+            issuer=issuer,
+            client_id=client_id,
+        )
+        db_session.expire_all()
+        user, link = await self._get_user_and_link(db_session, provider_id, sub)
+        assert user is not None and link is not None
+        assert user.username == "jdoe2"
+        assert user.email is None
+        assert link.provider_email is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_fallback_respects_email_verified_false(
+        self,
+        async_client: AsyncClient,
+        db_session: AsyncSession,
+    ):
+        """email_claim=preferred_username + standard 'email' claim with email_verified=False
+        → fallback drops the email (User.email None) — matches Fall B semantics."""
+        private_pem, jwks_data = _make_test_rsa_key()
+        issuer = "https://issue1569-evfalse.example"
+        client_id = "issue1569-evfalse-client"
+
+        admin_token = await _setup_and_login(async_client, "i1569f_adm", "I1569f123!")
+        provider_id = await _create_provider_via_api(
+            async_client,
+            admin_token,
+            issuer,
+            client_id,
+            email_claim="preferred_username",
+            require_email_verified=False,
+            suffix="i1569evfalse",
+        )
+
+        sub = f"sub-i1569-evfalse-{secrets.token_hex(6)}"
+        await _run_oidc_callback(
+            async_client,
+            db_session,
+            provider_id=provider_id,
+            claims={
+                "sub": sub,
+                "preferred_username": "jdoe3",
+                "email": "jdoe3@example.com",
+                "email_verified": False,
+            },
+            private_pem=private_pem,
+            jwks_data=jwks_data,
+            issuer=issuer,
+            client_id=client_id,
+        )
+        db_session.expire_all()
+        user, link = await self._get_user_and_link(db_session, provider_id, sub)
+        assert user is not None and link is not None
+        assert user.username == "jdoe3"
+        assert user.email is None
+        assert link.provider_email is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_fallback_skipped_when_email_claim_is_email(
+        self,
+        async_client: AsyncClient,
+        db_session: AsyncSession,
+    ):
+        """email_claim='email' (default) — fallback path must NOT fire. Primary
+        resolver result is authoritative; this guards against the fallback
+        accidentally widening Fall-A/B semantics."""
+        private_pem, jwks_data = _make_test_rsa_key()
+        issuer = "https://issue1569-default.example"
+        client_id = "issue1569-default-client"
+
+        admin_token = await _setup_and_login(async_client, "i1569d_adm", "I1569d123!")
+        provider_id = await _create_provider_via_api(
+            async_client,
+            admin_token,
+            issuer,
+            client_id,
+            email_claim="email",
+            require_email_verified=True,
+            suffix="i1569default",
+        )
+
+        sub = f"sub-i1569-default-{secrets.token_hex(6)}"
+        # email_verified absent → Fall A drops it. Fallback must NOT
+        # re-instate the email since email_claim='email' is already the
+        # primary path.
+        await _run_oidc_callback(
+            async_client,
+            db_session,
+            provider_id=provider_id,
+            claims={"sub": sub, "email": "jdoe4@example.com"},
+            private_pem=private_pem,
+            jwks_data=jwks_data,
+            issuer=issuer,
+            client_id=client_id,
+        )
+        db_session.expire_all()
+        user, link = await self._get_user_and_link(db_session, provider_id, sub)
+        assert user is not None and link is not None
+        assert user.email is None
+        assert link.provider_email is None
+
+
+# ===========================================================================
 # E2E: Fall C (custom email claim) auto-link actually links existing user
 # ===========================================================================
 
@@ -4885,6 +5244,7 @@ class TestListOidcLinksDefensiveProviderNull:
     row is removed without the ORM cascade running.
     """
 
+    @pytest.mark.sqlite_only  # a dangling reference needs foreign keys off
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_list_oidc_links_returns_deleted_marker_for_orphan_provider(

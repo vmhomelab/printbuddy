@@ -14,7 +14,13 @@
  *                confirmed no spool (state 9/10), "reset" for slots where
  *                the user cleared the assignment but the firmware hasn't
  *                positively confirmed emptiness. Ignored when isEmpty is false.
- *   slotNumber - 1-based slot number to display inside the circle.
+ *   pendingColor - Colour of a spool assigned in Printbuddy to a slot the
+ *                printer reports loaded but blank (#3434). Drawn with an amber
+ *                dashed border: assigned, not configured on the printer yet.
+ *   slotNumber - 1-based slot number to display inside the circle. Accepts
+ *                a string for non-numeric labels (e.g. "L" / "R" for the
+ *                dual-nozzle external trays, where carrying a separate
+ *                Ext-L/Ext-R caption underneath made the row taller).
  *   size       - "sm" (default, AMS slot grid) or "lg" (larger toolhead tiles).
  */
 
@@ -23,7 +29,8 @@ interface FilamentSlotCircleProps {
   trayType?: string | null;
   isEmpty: boolean;
   emptyKind?: 'physical' | 'reset' | null;
-  slotNumber: number;
+  pendingColor?: string | null;
+  slotNumber: number | string;
   size?: 'sm' | 'lg';
 }
 
@@ -43,18 +50,20 @@ function isLightFilamentColor(hex: string): boolean {
   return (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.6;
 }
 
-export function FilamentSlotCircle({ trayColor, trayType, isEmpty, emptyKind, slotNumber, size = 'sm' }: FilamentSlotCircleProps) {
+export function FilamentSlotCircle({ trayColor, trayType, isEmpty, emptyKind, pendingColor, slotNumber, size = 'sm' }: FilamentSlotCircleProps) {
   // Reset slots get a quieter border than physical-empty so they read as
   // "cleared but possibly still has a spool the firmware hasn't confirmed
   // gone" rather than "definitely no spool".
   const emptyBorderColor = emptyKind === 'reset' ? '#3d3d3d' : '#666';
-  const colorCss = cssFilamentColor(trayColor);
+  const pending = isEmpty && pendingColor ? pendingColor.slice(0, 6) : null;
+  const colorCss = cssFilamentColor(pending ?? trayColor);
   return (
     <div
       className={`${size === 'lg' ? 'w-6 h-6 mb-1' : 'w-3.5 h-3.5 mb-0.5'} rounded-full mx-auto border-2 flex items-center justify-center`}
+      data-pending-config={pending ? 'true' : undefined}
       style={{
         backgroundColor: colorCss || (trayType ? '#333' : 'transparent'),
-        borderColor: isEmpty ? emptyBorderColor : 'rgba(255,255,255,0.1)',
+        borderColor: pending ? '#f59e0b' : isEmpty ? emptyBorderColor : 'rgba(255,255,255,0.1)',
         borderStyle: isEmpty ? 'dashed' : 'solid',
       }}
     >

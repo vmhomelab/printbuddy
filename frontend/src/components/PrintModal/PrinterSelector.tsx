@@ -13,15 +13,19 @@ import {
 } from 'lucide-react';
 import { api, type PrinterStatus } from '../../api/client';
 import { getColorName } from '../../utils/colors';
+import { isGcodeCompatible } from '../../utils/printer';
 import {
   normalizeColorForCompare,
   colorsAreSimilar,
+  filamentTypesCompatible,
   autoMatchFilament,
   filterFilamentsByNozzle,
+  effectivePreferLowest,
 } from '../../utils/amsHelpers';
 import type { PrinterSelectorProps, AssignmentMode } from './types';
 import type { PrinterMappingResult, PerPrinterConfig } from '../../hooks/useMultiPrinterFilamentMapping';
 import type { FilamentRequirement, LoadedFilament } from '../../hooks/useFilamentMapping';
+import { useUiSettings } from '../../hooks/useUiSettings';
 
 interface PrinterSelectorWithMappingProps extends PrinterSelectorProps {
   /** Per-printer mapping results (only used when multiple printers selected) */
@@ -64,6 +68,7 @@ function InlineMappingEditor({
   onUpdateConfig: (config: Partial<PerPrinterConfig>) => void;
 }) {
   const queryClient = useQueryClient();
+  const { data: uiSettings } = useUiSettings();
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   const handleSlotChange = (slotId: number, value: string) => {
@@ -107,14 +112,19 @@ function InlineMappingEditor({
       isManual = true;
     } else {
       const usedTrayIds = new Set<number>(Object.values(printerResult.config.manualMappings));
-      const cachedSettings = queryClient.getQueryData<{ prefer_lowest_filament?: boolean }>(['settings']);
-      loaded = autoMatchFilament(req, printerResult.loadedFilaments, usedTrayIds, cachedSettings?.prefer_lowest_filament) as LoadedFilament | undefined;
+      loaded = autoMatchFilament(
+        req,
+        printerResult.loadedFilaments,
+        usedTrayIds,
+        effectivePreferLowest(uiSettings?.prefer_lowest_filament, printerResult.status?.ams_filament_backup),
+        printerResult.inventoryByTrayId,
+      ) as LoadedFilament | undefined;
     }
 
     // Determine status
     let status: 'match' | 'type_only' | 'mismatch' = 'mismatch';
     if (loaded) {
-      const typeMatch = loaded.type?.toUpperCase() === req.type?.toUpperCase();
+      const typeMatch = filamentTypesCompatible(loaded.type, req.type);
       const colorMatch =
         normalizeColorForCompare(loaded.color) === normalizeColorForCompare(req.color) ||
         colorsAreSimilar(loaded.color, req.color);
@@ -145,27 +155,31 @@ function InlineMappingEditor({
       </div>
 
       {slotAssignments.map(({ req, loaded, status, isManual }, idx) => (
+        // Below `sm` the slot select gets a line of its own, as on the
+        // single-printer mapping row (#3294).
         <div
           key={idx}
-          className="grid items-center gap-2 text-xs"
-          style={{ gridTemplateColumns: '16px minmax(70px, 1fr) auto 2fr 16px' }}
+          className="grid items-center gap-2 text-xs grid-cols-[16px_minmax(0,1fr)_16px] sm:grid-cols-[16px_minmax(70px,1fr)_auto_2fr_16px]"
         >
           <span title={`Required: ${req.type} - ${getColorName(req.color)}`}>
             <Circle className="w-3 h-3" fill={req.color} stroke={req.color} />
           </span>
-          <span className="text-white truncate">
-            {req.type} <span className="text-bambu-gray">({req.used_grams}g)</span>
+          {/* Only the name truncates; the gram usage is pinned (shrink-0) so
+              it never clips on narrow/mobile widths (#2669). */}
+          <span className="text-white flex items-center gap-1 min-w-0 col-span-2 sm:col-span-1">
+            <span className="truncate min-w-0" title={req.type}>{req.type}</span>
+            <span className="text-bambu-gray shrink-0 whitespace-nowrap">({req.used_grams}g)</span>
           </span>
           <span className="text-bambu-gray">→</span>
           <select
             value={loaded?.globalTrayId ?? ''}
             onChange={(e) => handleSlotChange(req.slot_id || 0, e.target.value)}
-            className={`flex-1 px-2 py-1 rounded border text-xs bg-bambu-dark-secondary focus:outline-none focus:ring-1 focus:ring-bambu-green ${
+            className={`flex-1 min-w-0 px-2 py-1 rounded border text-xs bg-bambu-dark-secondary focus:outline-none focus:ring-1 focus:ring-bambu-green ${
               status === 'match'
                 ? 'border-bambu-green/50 text-bambu-green'
                 : status === 'type_only'
-                ? 'border-yellow-400/50 text-yellow-400'
-                : 'border-orange-400/50 text-orange-400'
+                ? 'border-yellow-500 dark:border-yellow-400/50 text-yellow-700 dark:text-yellow-400'
+                : 'border-orange-500 dark:border-orange-400/50 text-orange-700 dark:text-orange-400'
             } ${isManual ? 'ring-1 ring-blue-400/50' : ''}`}
             title={isManual ? 'Manually selected' : 'Auto-matched'}
           >
@@ -183,11 +197,11 @@ function InlineMappingEditor({
             <Check className="w-3 h-3 text-bambu-green" />
           ) : status === 'type_only' ? (
             <span title="Same type, different color">
-              <AlertTriangle className="w-3 h-3 text-yellow-400" />
+              <AlertTriangle className="w-3 h-3 text-yellow-600 dark:text-yellow-400" />
             </span>
           ) : (
             <span title="Filament type not loaded">
-              <AlertTriangle className="w-3 h-3 text-orange-400" />
+              <AlertTriangle className="w-3 h-3 text-orange-600 dark:text-orange-400" />
             </span>
           )}
         </div>
@@ -323,7 +337,7 @@ export function PrinterSelector({
 
   if (displayPrinters.length === 0) {
     return (
-      <div className="flex items-center gap-2 text-red-400 text-sm mb-4">
+      <div className="flex items-center gap-2 text-red-700 dark:text-red-400 text-sm mb-4">
         <AlertCircle className="w-4 h-4" />
         No {showInactive ? '' : 'active '}printers available
       </div>
@@ -402,10 +416,15 @@ export function PrinterSelector({
             onClick={() => {
               onAssignmentModeChange!('model');
               onMultiSelect([]);
-              // Pre-select the sliced-for model if available, otherwise first model
+              // Pre-select the sliced-for model when it has printers. NEVER
+              // silently fall back to another model (#2578): uniqueModels is
+              // alphabetically sorted, so the old `uniqueModels[0]` default
+              // quietly targeted e.g. H2D for an X1C-sliced file whenever the
+              // metadata hadn't loaded yet. Leave it unset and let the user
+              // pick from the dropdown instead.
               const defaultModel = slicedForModel && uniqueModels.includes(slicedForModel)
                 ? slicedForModel
-                : uniqueModels[0];
+                : null;
               onTargetModelChange!(defaultModel);
             }}
             className={`flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg border transition-colors ${
@@ -415,7 +434,12 @@ export function PrinterSelector({
             }`}
           >
             <Users className="w-4 h-4" />
-            <span className="text-sm">Any {slicedForModel || 'Model'}</span>
+            {/* In model mode the label must reflect the ACTUAL scheduler
+                target, not the slice metadata — an edited queue item can
+                target a different model than the file was sliced for (#2578). */}
+            <span className="text-sm">
+              Any {(assignmentMode === 'model' ? targetModel : null) || slicedForModel || 'Model'}
+            </span>
           </button>
         </div>
       )}
@@ -423,29 +447,58 @@ export function PrinterSelector({
       {/* Model selection and location filter (when in model mode) */}
       {assignmentMode === 'model' && modelAssignmentAvailable && (
         <div className="space-y-3 mb-4">
-          {/* Model selector — only show when sliced model is unknown */}
-          {!slicedForModel && (
-            <div>
-              <label className="block text-xs text-bambu-gray mb-1">Target Model</label>
-              <select
-                value={targetModel || ''}
-                onChange={(e) => {
-                  onTargetModelChange!(e.target.value || null);
-                  // Clear location when model changes
-                  if (onTargetLocationChange) {
-                    onTargetLocationChange(null);
-                  }
-                }}
-                className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
-              >
-                <option value="">Select a model...</option>
-                {uniqueModels.map((model) => (
-                  <option key={model} value={model}>
+          {/* Model selector — always visible in model mode so a wrong target
+              on an existing queue item can be seen and fixed (#2578).
+              Incompatible models are disabled: G-code sliced for one model
+              must only go to that model or its interchange family. */}
+          <div>
+            <label className="block text-xs text-bambu-gray mb-1">
+              Target Model
+              {slicedForModel && <span className="ml-2 text-bambu-gray/70">(sliced for {slicedForModel})</span>}
+            </label>
+            <select
+              value={targetModel || ''}
+              onChange={(e) => {
+                onTargetModelChange!(e.target.value || null);
+                // Clear location when model changes
+                if (onTargetLocationChange) {
+                  onTargetLocationChange(null);
+                }
+              }}
+              className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
+            >
+              <option value="">Select a model...</option>
+              {uniqueModels.map((model) => {
+                const compatible = isGcodeCompatible(slicedForModel, model);
+                return (
+                  <option key={model} value={model} disabled={!compatible}>
                     {model}
+                    {!compatible ? ` — incompatible with ${slicedForModel} G-code` : ''}
                   </option>
-                ))}
-              </select>
-            </div>
+                );
+              })}
+            </select>
+          </div>
+
+          {/* Cross-model state on an existing row: same file/target mismatch
+              the specific-printer path already warns about (#2578). */}
+          {slicedForModel && targetModel && targetModel !== slicedForModel && (
+            isGcodeCompatible(slicedForModel, targetModel) ? (
+              <div className="p-3 bg-yellow-50 dark:bg-yellow-500/10 border border-yellow-300 dark:border-yellow-500/30 rounded-lg flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 text-yellow-600 dark:text-yellow-400 flex-shrink-0" />
+                <span className="text-sm text-yellow-700 dark:text-yellow-400">
+                  File was sliced for {slicedForModel}, but will be dispatched to a {targetModel} printer
+                </span>
+              </div>
+            ) : (
+              <div className="p-3 bg-red-50 dark:bg-red-500/10 border border-red-300 dark:border-red-500/30 rounded-lg flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-red-600 dark:text-red-400 flex-shrink-0" />
+                <span className="text-sm text-red-700 dark:text-red-400">
+                  File was sliced for {slicedForModel} and cannot be dispatched to {targetModel} printers —
+                  select a compatible model
+                </span>
+              </div>
+            )
           )}
 
           {/* Location filter (only show when target model is selected and locations exist) */}
@@ -555,7 +608,7 @@ export function PrinterSelector({
               {stateLabel && (
                 <span className={`text-xs px-2 py-0.5 rounded-full ${
                   busy
-                    ? 'bg-yellow-500/20 text-yellow-400'
+                    ? 'bg-yellow-100 dark:bg-yellow-500/20 text-yellow-700 dark:text-yellow-400'
                     : 'bg-bambu-green/20 text-bambu-green'
                 }`}>
                   {stateLabel}
@@ -599,8 +652,8 @@ export function PrinterSelector({
                     mappingResult.matchStatus === 'full'
                       ? 'text-bambu-green'
                       : mappingResult.matchStatus === 'partial'
-                      ? 'text-yellow-400'
-                      : 'text-orange-400'
+                      ? 'text-yellow-700 dark:text-yellow-400'
+                      : 'text-orange-700 dark:text-orange-400'
                   }`}>
                     ({mappingResult.exactMatches}/{mappingResult.totalSlots} matched)
                   </span>
@@ -647,7 +700,7 @@ export function PrinterSelector({
           onClick={() => setShowAllPrinters(true)}
           className="text-xs text-bambu-gray hover:text-white transition-colors mt-2 flex items-center gap-1"
         >
-          <AlertTriangle className="w-3 h-3 text-yellow-400" />
+          <AlertTriangle className="w-3 h-3 text-yellow-600 dark:text-yellow-400" />
           {hiddenPrinterCount} other printer{hiddenPrinterCount > 1 ? 's' : ''} hidden (different model) —
           <span className="underline">show all</span>
         </button>
@@ -666,7 +719,7 @@ export function PrinterSelector({
 
       {/* Warning when no printer selected (only in printer mode) */}
       {assignmentMode === 'printer' && selectedCount === 0 && (
-        <p className="text-xs text-orange-400 mt-1 flex items-center gap-1">
+        <p className="text-xs text-orange-700 dark:text-orange-400 mt-1 flex items-center gap-1">
           <AlertCircle className="w-3 h-3" />
           Select at least one printer
         </p>
@@ -674,7 +727,7 @@ export function PrinterSelector({
 
       {/* Warning when no model selected (only in model mode) */}
       {assignmentMode === 'model' && !targetModel && (
-        <p className="text-xs text-orange-400 mt-1 flex items-center gap-1">
+        <p className="text-xs text-orange-700 dark:text-orange-400 mt-1 flex items-center gap-1">
           <AlertCircle className="w-3 h-3" />
           Select a target printer model
         </p>

@@ -431,3 +431,16 @@ def h3c_slot_key(global_tray: object) -> tuple[int, int] | None:
     if RACK_EXTERNAL_IDS.start <= g < EXTERNAL_DEPUTY_ID:
         return EXTERNAL_AMS_ID, external_slot_index(g)
     return None
+
+
+def rack_ams_fields(ams_data: dict) -> dict:
+    """``ams_type`` / ``dry_zone_slots`` of an H3C's AMS 3H unit for the status API; {} for any other unit."""
+    try:
+        ams_id = int(ams_data.get("id", 0))
+    except (TypeError, ValueError):
+        return {}
+    kind = unit_ams_type(ams_id, ams_data.get("info"))
+    if kind != AmsType.ZMULTI_A:
+        return {}
+    slots = [s for s in ams_data.get("dry_zone_slots") or [] if isinstance(s, int) and 0 <= s < 9]
+    return {"ams_type": int(kind), "dry_zone_slots": slots}

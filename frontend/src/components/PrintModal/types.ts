@@ -1,12 +1,15 @@
-import type { PrintQueueItem, Printer } from '../../api/client';
+import type { PrintQueueItem, Printer, CalibrationMode } from '../../api/client';
+import type { VariantCandidate } from './VariantCandidates';
+
+export type { CalibrationMode };
+export type { VariantCandidate };
 
 /**
  * Mode of operation for the PrintModal.
- * - 'reprint': Immediate print from archive (no schedule options)
- * - 'add-to-queue': Schedule print to queue (includes schedule options)
+ * - 'create': Create a print queue item from an archive or library file
  * - 'edit-queue-item': Edit existing queue item (all options + existing values)
  */
-export type PrintModalMode = 'reprint' | 'add-to-queue' | 'edit-queue-item';
+export type PrintModalMode = 'create' | 'edit-queue-item';
 
 /**
  * Props for the unified PrintModal component.
@@ -28,6 +31,12 @@ export interface PrintModalProps {
   queueItem?: PrintQueueItem;
   /** Pre-select specific printers when opening the modal */
   initialSelectedPrinterIds?: number[];
+  /**
+   * Pre-select this plate when opening the modal (create mode): a reprint of
+   * an archive, or a re-queue, prints the plate that job printed, not plate 1.
+   * A plate the file no longer has falls back to the first plate.
+   */
+  preselectPlateId?: number | null;
   /** Handler for closing the modal */
   onClose: () => void;
   /** Handler for successful operation */
@@ -37,34 +46,61 @@ export interface PrintModalProps {
   /** Delete the LibraryFile after dispatch — used by the Printers-page Direct-Print flow
    *  so transient uploads don't linger in File Manager. Only applies to library-file prints. */
   cleanupLibraryAfterDispatch?: boolean;
+  /**
+   * Cross-model alternatives (#671): the same job sliced for several printers,
+   * to be queued as ONE item that runs on whichever frees up first.
+   *
+   * Supplied by the File Manager when the user multi-selects sliced files, or
+   * when the clicked file belongs to a variant group. Two or more entries put
+   * the modal in cross-model mode: the printer picker is replaced by the ordered
+   * candidate list, and submit posts `variants` instead of a single file.
+   * `libraryFileId` must still be the first candidate — the shared filament and
+   * plate preview reads from it.
+   */
+  variantFiles?: VariantCandidate[];
 }
 
 /**
  * Print options that can be configured for a print job.
  */
+export type PreheatOverride = 'inherit' | 'on' | 'off';
+
 export interface PrintOptions {
-  bed_levelling: boolean;
-  flow_cali: boolean;
+  bed_levelling: CalibrationMode;
+  flow_cali: CalibrationMode;
   vibration_cali: boolean;
   layer_inspect: boolean;
   timelapse: boolean;
+  nozzle_offset_cali: CalibrationMode;
+  // Ask for a post-print outcome verdict when this job completes (#1898)
+  confirm_outcome: boolean;
+  // Per-item preheat / heat-soak override (#1468). 'inherit' uses the global
+  // Settings → Workflow toggle; 'on' / 'off' force the per-print decision.
+  // chamber_target_override is non-null to bypass the per-filament-type
+  // derivation with an explicit °C target.
+  preheat_override: PreheatOverride;
+  preheat_chamber_target_override: number | null;
 }
 
 /**
  * Default print options values.
  */
 export const DEFAULT_PRINT_OPTIONS: PrintOptions = {
-  bed_levelling: true,
-  flow_cali: false,
+  bed_levelling: 'auto',
+  flow_cali: 'auto',
   vibration_cali: true,
   layer_inspect: false,
   timelapse: false,
+  nozzle_offset_cali: 'auto',
+  confirm_outcome: false,
+  preheat_override: 'inherit',
+  preheat_chamber_target_override: null,
 };
 
 /**
  * Schedule type for queue items.
  */
-export type ScheduleType = 'asap' | 'scheduled' | 'manual';
+export type ScheduleType = 'asap' | 'queue' | 'scheduled';
 
 /**
  * Schedule options for queue items.
@@ -72,6 +108,7 @@ export type ScheduleType = 'asap' | 'scheduled' | 'manual';
 export interface ScheduleOptions {
   scheduleType: ScheduleType;
   scheduledTime: string;
+  requireManualStart: boolean;
   requirePreviousSuccess: boolean;
   autoOffAfter: boolean;
   gcodeInjection: boolean;
@@ -86,6 +123,7 @@ export interface ScheduleOptions {
 export const DEFAULT_SCHEDULE_OPTIONS: ScheduleOptions = {
   scheduleType: 'asap',
   scheduledTime: '',
+  requireManualStart: false,
   requirePreviousSuccess: false,
   autoOffAfter: false,
   gcodeInjection: false,
@@ -109,6 +147,7 @@ export interface PlateInfo {
   }>;
   print_time_seconds: number | null;
   filament_used_grams: number | null;
+  bed_type?: string | null;  // Build plate type for this plate, e.g. "Textured PEI Plate" (#1281)
 }
 
 /**
@@ -137,7 +176,7 @@ export interface PrinterSelectorProps {
   allowMultiple?: boolean;
   /** Show inactive printers (for edit mode where original assignment may be inactive) */
   showInactive?: boolean;
-  /** Disable selection of busy printers (used in reprint mode) */
+  /** Disable selection of busy printers */
   disableBusy?: boolean;
   /** Current assignment mode */
   assignmentMode?: AssignmentMode;
@@ -165,8 +204,16 @@ export interface PlateSelectorProps {
   onToggle: (plateIndex: number) => void;
   onSelectAll?: () => void;
   onDeselectAll?: () => void;
-  /** Whether multi-select (checkboxes) is enabled — true in add-to-queue mode */
+  /** Whether multi-select (checkboxes) is enabled */
   multiSelect?: boolean;
+  /**
+   * How many runs of each plate to queue, keyed by plate index (#342). When
+   * provided, each selected plate gets its own quantity control and the
+   * modal's single global Quantity field is hidden — one number per plate is
+   * the whole point, and two controls for the same value would be ambiguous.
+   */
+  quantities?: Record<number, number>;
+  onQuantityChange?: (plateIndex: number, quantity: number) => void;
 }
 
 /**
@@ -180,7 +227,40 @@ export interface FilamentReqsData {
     used_grams: number;
     used_meters: number;
     nozzle_id?: number;
+    /** Bambu SKU code from the 3MF (e.g. `GFA01` = Bambu PLA Matte, `P4d64437`
+     *  = user custom). Used to resolve the "original" filament label in
+     *  FilamentOverride against the builtin + cloud user-preset maps. #1718. */
+    tray_info_idx?: string;
+    /** Which filament group this slot prints in, on a nozzle-rack machine
+     *  (#1784). The group is the slicer's logical nozzle, so it — not the slot
+     *  — is what a rack position is chosen for. Absent on every other model. */
+    group_id?: number;
+    /** What that group needs of a hotend. Only groups with `on_rack` get a
+     *  position picker; the rest are on the fixed carriage and have no choice
+     *  to make. */
+    group?: RackGroupInfo;
   }>;
+}
+
+/** A filament group's hotend requirements, from the 3MF (#1784). */
+export interface RackGroupInfo {
+  on_rack: boolean;
+  nozzle_diameter: string;
+  volume_type: string;
+  filament_color: string;
+}
+
+/** One position on the H2C's six-slot nozzle rack, as offered to the user. */
+export interface RackPositionOption {
+  /** 1-based, the way the printer card, BambuStudio and the operator count. */
+  position: number;
+  diameter: string;
+  nozzleType: string;
+  filamentColor: string;
+  /** False when the position is empty or holds the wrong nozzle for the group. */
+  eligible: boolean;
+  /** Why not, when `eligible` is false — shown as the option's title. */
+  reason?: string;
 }
 
 /**
@@ -192,8 +272,36 @@ export interface FilamentMappingProps {
   filamentReqs: FilamentReqsData | undefined;
   manualMappings: Record<number, number>;
   onManualMappingChange: (mappings: Record<number, number>) => void;
+  onEstimatedCostChange?: (estimatedCost: number | null) => void;
+  budgetAvailable?: number | null;
+  quantity?: number;
   currencySymbol: string;
   defaultCostPerKg: number;
+  /** Per-slot force-color-match flags. The scheduler honors this flag in both
+   *  model-mode and printer-mode dispatch, but the checkbox was previously only
+   *  surfaced in FilamentOverride (model mode). #1717. */
+  forceColorMatch?: Record<number, boolean>;
+  /** Called when a slot's force-color-match checkbox is toggled. */
+  onForceColorMatchChange?: (slotId: number, value: boolean) => void;
+  /** Names the plate this panel maps, when one panel is rendered per selected
+   *  plate. Each plate prints its own subset of the file's slots and gets its
+   *  own AMS mapping, so the panels have to be told apart. */
+  plateLabel?: string;
+  /** The archive's own saved AMS-slot pick from the slicer
+   *  (`extra_data.slicer_ams_mapping`, written when the source virtual
+   *  printer has "Save AMS mapping" enabled) — position = slot_id-1, value =
+   *  global tray ID. When present, a "Mapping" toggle next to "Re-read" lets
+   *  the user select every slot from this array instead of the type/color
+   *  auto-match. Undefined/omitted when the archive has no saved mapping —
+   *  the toggle is hidden and behaviour is unchanged. */
+  archiveAmsMapping?: number[];
+  /** The operator's rack-position pick per filament group (#1784), keyed by
+   *  group id. Only meaningful on a nozzle-rack model; omit elsewhere and no
+   *  picker is rendered. A group absent from the object is assigned a position
+   *  by the dispatcher against the rack as it stands at dispatch. */
+  nozzleRackChoice?: Record<number, number>;
+  /** Called when a rack position is picked for a group. */
+  onNozzleRackChoiceChange?: (choice: Record<number, number>) => void;
 }
 
 /**
@@ -204,6 +312,9 @@ export interface PrintOptionsProps {
   onChange: (options: PrintOptions) => void;
   defaultExpanded?: boolean;
   supportedOptions?: Array<keyof PrintOptions>;
+  /** Show the dual-nozzle-only options (nozzle offset calibration). Default false.
+   *  Pass true when at least one selected printer is dual-nozzle. */
+  showDualNozzleOptions?: boolean;
 }
 
 /**
@@ -224,4 +335,6 @@ export interface ScheduleOptionsProps {
   printerCount?: number;
   /** Whether G-code snippets are configured in settings */
   hasGcodeSnippets?: boolean;
+  /** The user's jobs wait for someone to start them (#1620) */
+  needsReview?: boolean;
 }

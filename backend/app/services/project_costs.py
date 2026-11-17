@@ -81,9 +81,11 @@ class CostContext:
         if matching:
             weights = [max(0.0, float(s.label_weight or 0) - float(s.weight_used or 0)) for s in matching]
             if sum(weights) > 0:
-                price = sum(s.cost_per_kg * w for s, w in zip(matching, weights, strict=True)) / sum(weights)
+                price = sum(float(s.cost_per_kg or 0) * w for s, w in zip(matching, weights, strict=True)) / sum(
+                    weights
+                )
             else:
-                price = sum(s.cost_per_kg for s in matching) / len(matching)
+                price = sum(float(s.cost_per_kg or 0) for s in matching) / len(matching)
             return {
                 "price_per_kg": round(price, 2),
                 "source": "spools",
@@ -120,7 +122,7 @@ class CostContext:
         own = [r for r in rates if r.source in ("power_setting", "history") and r.kwh_per_hour]
         if own:
             return EnergyRate(
-                sum(r.kwh_per_hour for r in own) / len(own),
+                sum(r.kwh_per_hour or 0.0 for r in own) / len(own),
                 own[0].source if len({r.source for r in own}) == 1 else "history",
                 None,
                 sum(r.prints for r in own),

@@ -19,7 +19,7 @@ async def test_auth_middleware_returns_503_when_auth_state_probe_fails(async_cli
         response = await async_client.get("/api/v1/filament-catalog/")
 
     assert response.status_code == 503
-    assert response.json()["detail"] == "Authentication state unavailable"
+    assert response.json()["detail"] == "Authentication service temporarily unavailable"
 
 
 @pytest.mark.asyncio
@@ -27,7 +27,7 @@ async def test_auth_middleware_returns_503_when_auth_state_probe_fails(async_cli
 async def test_route_errors_are_not_reported_as_auth_state_failures(async_client: AsyncClient):
     """With auth disabled, an exception raised by the route itself must not be
     swallowed by the auth probe's handler and misreported as a 503
-    "Authentication state unavailable" (it hid a sidecar JSON error once)."""
+    "Authentication service temporarily unavailable" (it hid a sidecar JSON error once)."""
 
     with patch("backend.app.api.routes.settings.SlicerApiService") as service:
         service.return_value.__aenter__.side_effect = RuntimeError("route failure")
@@ -37,4 +37,4 @@ async def test_route_errors_are_not_reported_as_auth_state_failures(async_client
             return  # Transport re-raised the route error: not masked.
 
     assert response.status_code != 503
-    assert response.json().get("detail") != "Authentication state unavailable"
+    assert response.json().get("detail") != "Authentication service temporarily unavailable"

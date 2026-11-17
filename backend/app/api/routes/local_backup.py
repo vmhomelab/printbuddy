@@ -5,7 +5,7 @@ import logging
 from fastapi import APIRouter, Path
 from fastapi.responses import FileResponse, JSONResponse
 
-from backend.app.core.auth import RequirePermissionIfAuthEnabled
+from backend.app.core.auth import RequireAdminIfAuthEnabled, RequirePermissionIfAuthEnabled
 from backend.app.core.permissions import Permission
 from backend.app.models.user import User
 from backend.app.services.local_backup import local_backup_service
@@ -20,6 +20,8 @@ async def get_status(
     _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_BACKUP),
 ):
     """Get local backup scheduler status and configuration."""
+    from backend.app.services.local_backup import _local_zone
+
     settings = await local_backup_service._load_settings()
     status = local_backup_service.get_status()
     return {
@@ -30,7 +32,25 @@ async def get_status(
         "retention": settings["retention"],
         "path": settings["path"],
         "default_path": str(local_backup_service._resolve_backup_dir("")),
+        # IANA zone name the HH:MM picker is interpreted in (TZ env, UTC fallback).
+        # Frontend renders this next to the time field so users see the same
+        # zone the backend will use. #1602 follow-up.
+        "timezone": str(_local_zone()),
     }
+
+
+@router.get("/path-check")
+async def check_path(
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_BACKUP),
+):
+    """Check that the configured output directory can actually be written to.
+
+    Writes and removes a probe file. A path the service cannot write to — a NAS
+    share outside the systemd unit's ReadWritePaths, say — otherwise only shows
+    up as a failed backup hours later (#2544).
+    """
+    settings = await local_backup_service._load_settings()
+    return local_backup_service.check_path(settings["path"])
 
 
 @router.post("/run")
@@ -54,6 +74,7 @@ async def list_backups(
 @router.get("/backups/{filename}/download")
 async def download_backup(
     filename: str = Path(..., description="Backup filename to download"),
+    _admin: User | None = RequireAdminIfAuthEnabled(),
     _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_BACKUP),
 ):
     """Download a specific backup file."""
@@ -71,6 +92,7 @@ async def download_backup(
 @router.post("/backups/{filename}/restore")
 async def restore_backup(
     filename: str = Path(..., description="Backup filename to restore"),
+    _admin: User | None = RequireAdminIfAuthEnabled(),
     _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_RESTORE),
 ):
     """Restore from a scheduled backup file on the server."""

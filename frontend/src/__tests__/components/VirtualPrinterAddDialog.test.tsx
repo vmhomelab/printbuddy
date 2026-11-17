@@ -37,7 +37,7 @@ describe('VirtualPrinterAddDialog', () => {
 
     await waitFor(() => {
       expect(multiVirtualPrinterApi.create).toHaveBeenCalledWith(
-        expect.objectContaining({ protocol: 'bambu', mode: 'immediate' }),
+        expect.objectContaining({ protocol: 'bambu', mode: 'archive' }),
       );
     });
   });
@@ -62,7 +62,7 @@ describe('VirtualPrinterAddDialog', () => {
 
     await waitFor(() => {
       expect(multiVirtualPrinterApi.create).toHaveBeenCalledWith(
-        expect.objectContaining({ protocol: 'moonraker', mode: 'print_queue', target_printer_id: 2 }),
+        expect.objectContaining({ protocol: 'moonraker', mode: 'queue', target_printer_id: 2 }),
       );
     });
   });

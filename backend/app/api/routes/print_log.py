@@ -3,20 +3,53 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, nullslast, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.auth import RequireCameraStreamTokenIfAuthEnabled, RequirePermissionIfAuthEnabled
+from backend.app.core.auth import (
+    ApiKeyActor,
+    MediaOrRequestPrinterScope,
+    RequestPrinterScope,
+    RequirePermissionIfAuthEnabled,
+    require_media_token_ownership,
+    require_ownership_permission,
+)
 from backend.app.core.config import settings
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
+from backend.app.core.printer_scope import PrinterScope
 from backend.app.models.print_log import PrintLogEntry
 from backend.app.models.user import User
-from backend.app.schemas.print_log import PrintLogEntrySchema, PrintLogResponse
+from backend.app.schemas.print_log import PrintLogEntrySchema, PrintLogEntryUpdate, PrintLogResponse
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/print-log", tags=["print-log"])
+
+# Sortable columns, keyed by the id the Print Log table uses for its columns
+# (#2636). An explicit map rather than getattr on a caller-supplied string:
+# the client picks the key, so anything else would let a request order by any
+# attribute it can name.
+#
+# ``date`` coalesces because the column renders ``started_at or created_at`` —
+# sorting on started_at alone would scatter the rows that have no start time
+# (queue-skipped entries) instead of interleaving them where the user sees
+# them.
+_SORTABLE_COLUMNS = {
+    "date": func.coalesce(PrintLogEntry.started_at, PrintLogEntry.created_at),
+    "print_name": PrintLogEntry.print_name,
+    "printer": PrintLogEntry.printer_name,
+    "user": PrintLogEntry.created_by_username,
+    "status": PrintLogEntry.status,
+    "duration": PrintLogEntry.duration_seconds,
+    "completed_at": PrintLogEntry.completed_at,
+    "filament": PrintLogEntry.filament_type,
+    "filament_used": PrintLogEntry.filament_used_grams,
+    "cost": PrintLogEntry.cost,
+    "energy": PrintLogEntry.energy_kwh,
+    "energy_cost": PrintLogEntry.energy_cost,
+    "wear_cost": PrintLogEntry.wear_cost,
+}
 
 
 @router.get("/", response_model=PrintLogResponse)
@@ -29,12 +62,28 @@ async def get_print_log(
     date_to: datetime | None = None,
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
-    db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.ARCHIVES_READ),
+    sort_by: str = Query(default="date"),
+    sort_dir: str = Query(default="desc", pattern="^(asc|desc)$"),
+    db: AsyncSession = Depends(get_db, scope="function"),
+    auth_result: tuple[User | ApiKeyActor | None, bool] = Depends(
+        require_ownership_permission(
+            Permission.ARCHIVES_READ_ALL,
+            Permission.ARCHIVES_READ_OWN,
+        )
+    ),
+    printer_scope: PrinterScope = RequestPrinterScope,
 ):
     """Get the print log."""
+    user, can_read_all = auth_result
     query = select(PrintLogEntry)
     count_query = select(func.count(PrintLogEntry.id))
+    if user is not None and not can_read_all:
+        query = query.where(PrintLogEntry.created_by_id == user.id)
+        count_query = count_query.where(PrintLogEntry.created_by_id == user.id)
+    # Only prints on printers the caller may see (#1727)
+    if (clause := printer_scope.where(PrintLogEntry.printer_id)) is not None:
+        query = query.where(clause)
+        count_query = count_query.where(clause)
 
     if printer_id is not None:
         query = query.where(PrintLogEntry.printer_id == printer_id)
@@ -59,44 +108,71 @@ async def get_print_log(
     total_result = await db.execute(count_query)
     total = total_result.scalar() or 0
 
-    # Get paginated results
-    query = query.order_by(PrintLogEntry.created_at.desc()).offset(offset).limit(limit)
+    # Sorting happens here rather than in the browser because the table is
+    # paginated server-side: ordering the 25 rows the client happens to hold
+    # would answer "the most expensive print on this page", which is not what
+    # clicking a column header means.
+    sort_column = _SORTABLE_COLUMNS.get(sort_by)
+    if sort_column is None:
+        raise HTTPException(400, f"Cannot sort by {sort_by!r}")
+    ordering = sort_column.asc() if sort_dir == "asc" else sort_column.desc()
+    # NULLs last in both directions, so a column that is empty for half the
+    # rows (cost before a spool is priced, energy without a smart plug) never
+    # buries the rows that do have values. Left to the database this differs
+    # per backend — Postgres sorts NULLs high, SQLite sorts them low — so the
+    # same click would give two different first pages depending on deployment.
+    query = query.order_by(nullslast(ordering), PrintLogEntry.id.desc())
+    # id.desc() above is the tiebreaker: without it, rows sharing a value
+    # (every "completed" when sorting by status) come back in whatever order
+    # the planner picks, which can differ between pages and duplicate or drop
+    # a row as the user pages through.
+    query = query.offset(offset).limit(limit)
     result = await db.execute(query)
     entries = result.scalars().all()
 
+    # Validate straight off the ORM rows rather than naming each field: the
+    # hand-written version dropped whatever it forgot to mention, and a
+    # forgotten field is indistinguishable from a NULL column on the wire.
+    # It lost failure_reason that way (#1687 part 4), then cost / energy_kwh /
+    # energy_cost, which were written to the table but never sent — so the
+    # Print Log's cost and energy columns read empty for every run (#2636).
+    # Archives of these prints that were deleted (soft, #1343: their prints
+    # stay logged), so the log doesn't link to an archive page that is gone.
+    from backend.app.models.archive import PrintArchive
+
+    archive_ids = {e.archive_id for e in entries if e.archive_id is not None}
+    deleted = (
+        await db.scalars(
+            select(PrintArchive.id).where(PrintArchive.id.in_(archive_ids), PrintArchive.deleted_at.is_not(None))
+        )
+        if archive_ids
+        else None
+    )
     return PrintLogResponse(
-        items=[
-            PrintLogEntrySchema(
-                id=e.id,
-                print_name=e.print_name,
-                printer_name=e.printer_name,
-                printer_id=e.printer_id,
-                status=e.status,
-                started_at=e.started_at,
-                completed_at=e.completed_at,
-                duration_seconds=e.duration_seconds,
-                filament_type=e.filament_type,
-                filament_color=e.filament_color,
-                filament_used_grams=e.filament_used_grams,
-                thumbnail_path=e.thumbnail_path,
-                created_by_username=e.created_by_username,
-                created_at=e.created_at,
-            )
-            for e in entries
-        ],
+        items=[PrintLogEntrySchema.model_validate(e) for e in entries],
         total=total,
+        deleted_archive_ids=sorted(deleted.all()) if deleted is not None else [],
     )
 
 
 @router.get("/{entry_id}/thumbnail")
 async def get_print_log_thumbnail(
     entry_id: int,
-    db: AsyncSession = Depends(get_db),
-    _: None = RequireCameraStreamTokenIfAuthEnabled,
+    db: AsyncSession = Depends(get_db, scope="function"),
+    auth_result: tuple[User | ApiKeyActor | None, bool] = Depends(
+        require_media_token_ownership(
+            Permission.ARCHIVES_READ_ALL,
+            Permission.ARCHIVES_READ_OWN,
+        )
+    ),
+    printer_scope: PrinterScope = MediaOrRequestPrinterScope,
 ):
     """Get the thumbnail for a print log entry.
 
-    Requires a stream token query param (?token=xxx) when auth is enabled.
+    Requires a media token query param (?token=xxx) when auth is enabled, and
+    is scoped to the rows the caller can see in the log itself (#3025) -- the
+    same ``created_by_id`` filter ``get_print_log`` applies, including its
+    treatment of an ownerless entry as not-yours.
 
     Self-heals stale entries: when thumbnail_path points to a file that no
     longer exists on disk (archive was deleted, or print failed before the
@@ -105,8 +181,11 @@ async def get_print_log_thumbnail(
     gated on entry.thumbnail_path being truthy, so the next fetch of the
     log list will simply not request this thumbnail again.
     """
+    user, can_read_all = auth_result
     entry = await db.get(PrintLogEntry, entry_id)
-    if not entry or not entry.thumbnail_path:
+    if not entry or not entry.thumbnail_path or not printer_scope.allows(entry.printer_id):
+        raise HTTPException(404, "Thumbnail not found")
+    if not can_read_all and (user is None or entry.created_by_id != user.id):
         raise HTTPException(404, "Thumbnail not found")
 
     thumb_path = settings.base_dir / entry.thumbnail_path
@@ -124,16 +203,173 @@ async def get_print_log_thumbnail(
 
 @router.delete("/")
 async def clear_print_log(
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
     _: User | None = RequirePermissionIfAuthEnabled(Permission.ARCHIVES_DELETE_ALL),
+    printer_scope: PrinterScope = RequestPrinterScope,
 ):
     """Clear the print log.
 
     Only deletes log entries. Archives and queue items are never touched.
     """
-    result = await db.execute(delete(PrintLogEntry))
+    # Entries for printers the caller can't see stay (#1727)
+    statement = delete(PrintLogEntry)
+    if (clause := printer_scope.where(PrintLogEntry.printer_id)) is not None:
+        statement = statement.where(clause)
+    result = await db.execute(statement)
     deleted = result.rowcount
     await db.commit()
 
     logger.info("Print log cleared: %d entries deleted", deleted)
     return {"deleted": deleted}
+
+
+@router.delete("/{entry_id}")
+async def delete_print_log_entry(
+    entry_id: int,
+    db: AsyncSession = Depends(get_db, scope="function"),
+    auth_result: tuple[User | ApiKeyActor | None, bool] = Depends(
+        require_ownership_permission(
+            Permission.ARCHIVES_DELETE_ALL,
+            Permission.ARCHIVES_DELETE_OWN,
+        )
+    ),
+    printer_scope: PrinterScope = RequestPrinterScope,
+):
+    """Delete a single print-log entry (#1687).
+
+    Removes the row entirely. Because /archives/stats aggregates over
+    PrintLogEntry, the deleted row's filament / cost / duration / count
+    contributions drop out of the totals in the same response cycle.
+    The linked archive (if any) is untouched — the FK on the archive row
+    is from PrintLogEntry, not the other way around.
+    """
+    user, can_modify_all = auth_result
+
+    entry = await db.get(PrintLogEntry, entry_id)
+    if not entry or not printer_scope.allows(entry.printer_id):
+        raise HTTPException(404, "Print log entry not found")
+
+    if not can_modify_all:
+        if entry.created_by_id is None or (user is not None and entry.created_by_id != user.id):
+            raise HTTPException(403, "You can only delete your own print log entries")
+
+    await db.delete(entry)
+    await db.commit()
+
+    logger.info("Print log entry %d deleted", entry_id)
+    return {"status": "deleted", "id": entry_id}
+
+
+# Canonical failure-reason vocabulary. Mirrors the frontend dropdown in
+# EditArchiveModal.tsx; the empty string is the "clear classification" value.
+# The catch-all "other" is the escape hatch for failures that don't fit the
+# enumerated list. Keep these two lists in sync if the EditArchiveModal options
+# ever change.
+_FAILURE_REASON_KEYS = frozenset(
+    {
+        "",
+        "adhesionFailure",
+        "spaghettiDetached",
+        "layerShift",
+        "cloggedNozzle",
+        "filamentRunout",
+        "warping",
+        "stringing",
+        "underExtrusion",
+        "powerFailure",
+        "userCancelled",
+        # Written by the two stale-archive paths in main.py when no end-of-print
+        # status ever arrived (issue #2974). It has to be in the vocabulary, not
+        # just tolerated: the archive editor clears any stored value it does not
+        # recognise, so leaving it out would delete the classification on the
+        # next save of such an archive.
+        "noStatusUpdate",
+        # A print the printer kill switch stopped (written at its completion).
+        "killSwitch",
+        "other",
+    }
+)
+
+# Same status vocabulary the print-log column already filters by.
+_STATUS_KEYS = frozenset({"completed", "failed", "stopped", "cancelled", "skipped"})
+
+
+@router.patch("/{entry_id}", response_model=PrintLogEntrySchema)
+async def update_print_log_entry(
+    entry_id: int,
+    update: PrintLogEntryUpdate,
+    db: AsyncSession = Depends(get_db, scope="function"),
+    auth_result: tuple[User | ApiKeyActor | None, bool] = Depends(
+        require_ownership_permission(
+            Permission.ARCHIVES_UPDATE_ALL,
+            Permission.ARCHIVES_UPDATE_OWN,
+        )
+    ),
+    printer_scope: PrinterScope = RequestPrinterScope,
+):
+    """Edit a single Print Log row's classification (#1687 part 4, reporter
+    IndividualGhost1905).
+
+    Lets the user set ``failure_reason`` (and optionally re-classify ``status``)
+    directly on a Print Log row — including orphan entries that have no
+    archive to edit through. The Failure Analysis widget already groups by
+    ``PrintLogEntry.failure_reason`` (see ``archives.py:1421`` for the
+    archive-side mirror); this endpoint is the missing edit affordance for the
+    log-side, mirror-less case.
+
+    Ownership semantics mirror the per-row delete: archives:update_all sees
+    everything; archives:update_own sees only rows it owns.
+    """
+    user, can_modify_all = auth_result
+
+    entry = await db.get(PrintLogEntry, entry_id)
+    if not entry or not printer_scope.allows(entry.printer_id):
+        raise HTTPException(404, "Print log entry not found")
+
+    if not can_modify_all:
+        if entry.created_by_id is None or (user is not None and entry.created_by_id != user.id):
+            raise HTTPException(403, "You can only update your own print log entries")
+
+    payload = update.model_dump(exclude_unset=True)
+
+    # Validate against the canonical vocabularies. Reject unknown values rather
+    # than silently storing them — the Failure Analysis widget renders the
+    # values back as i18n keys, and an unrecognised value would surface as a
+    # raw string in the UI.
+    if "failure_reason" in payload:
+        new_reason = payload["failure_reason"] or ""
+        if new_reason not in _FAILURE_REASON_KEYS:
+            raise HTTPException(400, f"Unknown failure_reason: {new_reason!r}")
+        # Store empty string back as NULL so the column's nullable=True intent
+        # is preserved end-to-end.
+        entry.failure_reason = new_reason or None
+
+    if "status" in payload and payload["status"] is not None:
+        new_status = payload["status"]
+        if new_status not in _STATUS_KEYS:
+            raise HTTPException(400, f"Unknown status: {new_status!r}")
+        entry.status = new_status
+
+    if "notes" in payload:
+        entry.notes = (payload["notes"] or "").strip() or None
+
+    if entry.archive_id is not None:
+        from backend.app.services.print_log import mirror_latest_run
+
+        # The archive card shows its latest run; this may be it.
+        await mirror_latest_run(db, entry.archive_id)
+
+    await db.commit()
+    await db.refresh(entry)
+
+    logger.info(
+        "Print log entry %d updated (failure_reason=%r, status=%r)",
+        entry_id,
+        entry.failure_reason,
+        entry.status,
+    )
+
+    # Same field-by-field trap as the list route: this one also omitted cost
+    # and the energy pair, so the row the client merged back after an edit
+    # blanked whichever columns it was showing for them.
+    return PrintLogEntrySchema.model_validate(entry)

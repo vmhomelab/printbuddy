@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, false, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.core.database import Base
@@ -32,6 +32,13 @@ class PrintQueueItem(Base):
     library_file_id: Mapped[int | None] = mapped_column(
         ForeignKey("library_files.id", ondelete="CASCADE"), nullable=True
     )
+    cost_center_id: Mapped[int | None] = mapped_column(
+        ForeignKey("cost_centers.id", ondelete="SET NULL"), nullable=True
+    )
+    estimated_cost: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Printbuddy-owned globally unique identity for one physical dispatch. This
+    # must not reuse the printer protocol's 31-bit subtask_id.
+    billing_run_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
     batch_id: Mapped[int | None] = mapped_column(ForeignKey("print_batches.id", ondelete="SET NULL"), nullable=True)
     # Plan row of a project "job" this item was queued for (progress tracking)
@@ -69,43 +76,110 @@ class PrintQueueItem(Base):
     # Auto-print G-code injection (#422)
     gcode_injection: Mapped[bool] = mapped_column(Boolean, default=False)
 
-    # How many times the start watchdog has reverted this item from 'printing'
-    # back to 'pending'. Bounds retry loops when a printer accepts upload but
-    # never acknowledges the start command.
+    # How many times the start-watchdog has reverted this item from 'printing'
+    # back to 'pending' (#2555). A printer that accepts project_file but never
+    # starts (#1678) used to be retried forever: upload, wait out the watchdog,
+    # revert, upload again — burning a full 3MF transfer per cycle and, with
+    # the queue dispatching serially, dragging every other printer's start time
+    # out with it. The counter bounds that loop; see DISPATCH_MAX_ATTEMPTS.
     dispatch_attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
-    # Print options
-    bed_levelling: Mapped[bool] = mapped_column(Boolean, default=True)
+    # H2C dual-nozzle-rack slicer pick preservation (#1780). BambuStudio's
+    # project_file MQTT command for rack-swap-capable models (O1C2 today)
+    # carries per-filament physical nozzle position IDs in `nozzle_mapping`,
+    # forwarded verbatim through the queue and replayed by the dispatcher so
+    # the firmware honours the user's pick instead of falling back to
+    # "last matching nozzle type" auto-pick. Stored as opaque JSON string
+    # (list[int]); NULL on every other model. `nozzles_info` is a deprecated
+    # column from the original #1780 attempt — kept nullable so old rows still
+    # load; never written to or read from.
+    nozzle_mapping: Mapped[str | None] = mapped_column(Text, nullable=True)
+    nozzles_info: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Which rack position each filament group prints from, on a nozzle-rack
+    # machine (#1784). JSON object keyed by the 3MF's group id, valued with a
+    # 1-based rack position as the operator counts them.
+    #
+    # Deliberately not the expanded `nozzle_mapping` above, though that is what
+    # goes on the wire: the rack can be re-loaded between queueing and
+    # dispatch, and only the position-and-group form can be re-checked against
+    # what is actually mounted at the moment the job runs. NULL means nothing
+    # was picked, and the dispatcher assigns positions itself.
+    nozzle_rack_choice: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Slots sent with a spool of another colour than the file asked for (#3279),
+    # as a JSON list of {slot_id, type, wanted, got, tray}. Worked out from the
+    # mapping each time the job is sent, so a retry replaces it. NULL when every
+    # slot got its colour or nothing could be compared.
+    color_substitutions: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Printer-card direct uploads create transient library rows. When this is
+    # true, the scheduler deletes the source row/files after archiving a copy.
+    cleanup_library_after_dispatch: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+
+    # Print options. bed_levelling / flow_cali / nozzle_offset_cali are tri-state
+    # strings (off/on/auto) matching BambuStudio; "auto" = skip if recently done.
+    # The remaining three stay boolean (BambuStudio exposes no auto for them).
+    bed_levelling: Mapped[str] = mapped_column(String(8), default="auto", server_default="auto")
+    # Elegoo Centauri Carbon (SDCP) build plate: 0 = textured, 1 = smooth.
+    # NULL for every other provider.
     print_platform_type: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    flow_cali: Mapped[bool] = mapped_column(Boolean, default=False)
+    flow_cali: Mapped[str] = mapped_column(String(8), default="auto", server_default="auto")
     vibration_cali: Mapped[bool] = mapped_column(Boolean, default=True)
     layer_inspect: Mapped[bool] = mapped_column(Boolean, default=False)
     timelapse: Mapped[bool] = mapped_column(Boolean, default=False)
     use_ams: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Nozzle offset calibration — dual-nozzle printers only, MQTT-gated (#1682)
+    nozzle_offset_cali: Mapped[str] = mapped_column(String(8), default="auto", server_default="auto")
+    # Ask for a post-print outcome verdict when this job completes (#1898).
+    # Copied onto the archive as confirm_requested at dispatch, like plate_id.
+    confirm_outcome: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+
+    # Preheat / heat-soak override (#1468). 'inherit' uses the global
+    # preheat_enabled setting; 'on' / 'off' force the per-item decision. The
+    # chamber target falls through: per-item override → max(filament-map[loaded
+    # tray type]) → 0 (skips chamber phase). 'inherit' + global off + override
+    # null = no preheat. Default 'inherit' so existing queue items behave
+    # exactly as before the migration.
+    preheat_override: Mapped[str] = mapped_column(String(10), default="inherit", server_default="inherit")
+    preheat_chamber_target_override: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     # Status: pending, printing, completed, failed, skipped, cancelled
     status: Mapped[str] = mapped_column(String(20), default="pending")
 
-    # Set while the scheduler is actively uploading/dispatching this pending
-    # row. Edit routes reject changes while claimed so printer_id/options cannot
-    # diverge from an in-flight upload.
+    # Dispatch claim (#2615). Set atomically by the scheduler the moment it
+    # begins dispatching this row and cleared when dispatch ends. The row stays
+    # `status='pending'` throughout the (slow) FTP upload, which left a window
+    # where a concurrent PATCH could reassign printer_id mid-upload and split the
+    # queue row from the archive/expected-print/physical command. While this is
+    # set the edit routes reject changes (409) and the scheduler won't re-select
+    # the row. Startup reconciliation clears any left over by a crash mid-dispatch
+    # (no coroutine survives a restart), so a stale claim never wedges an item.
     dispatching_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
-    # Cleared by a resume-after-failure action so require_previous_success can
-    # skip an acknowledged failed row.
-    gate_acknowledged: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Cleared by the per-printer "Resume after failure" action (#1818) so the
+    # scheduler's `_check_previous_success` lookback skips this row. Without
+    # this, a single `failed` or `aborted` print poisoned every later
+    # `require_previous_success` item on the same printer forever — the
+    # lookback excluded `skipped` but had no way to dismiss the originating
+    # failure. The flag is per-item, not per-printer, so a fresh failure
+    # after a resume re-gates downstream items independently.
+    gate_acknowledged: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
 
     # Set by the dispatch scheduler when the assigned spool can't satisfy
     # this print's per-slot filament weight (#1496). Display-only flag — the
     # actual deficit is recomputed live every time the user clicks ▶, so
     # swapping a spool to a fuller one between flag and dispatch clears the
     # block automatically.
-    filament_short: Mapped[bool] = mapped_column(Boolean, default=False)
+    filament_short: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
 
     # User has acknowledged the filament-shortage warning for this item
-    # ("Print Anyway"). Survives scheduler ticks so the item is not immediately
-    # re-promoted to manual_start after the operator confirms dispatch.
-    skip_filament_check: Mapped[bool] = mapped_column(Boolean, default=False)
+    # ("Print Anyway"). Set by the start route when the user passes
+    # skip_filament_check=true, or at queue-creation time if PrintModal's
+    # frontend deficit warning was acknowledged. Survives scheduler ticks so
+    # the dispatch no longer bounces between "user said anyway" and
+    # "scheduler re-flagged" (#1698-followup).
+    skip_filament_check: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
 
     # Tracking
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -122,12 +196,91 @@ class PrintQueueItem(Base):
     printer: Mapped["Printer"] = relationship()
     archive: Mapped["PrintArchive | None"] = relationship()
     library_file: Mapped["LibraryFile | None"] = relationship()
+    cost_center: Mapped["CostCenter | None"] = relationship()
     project: Mapped["Project | None"] = relationship(back_populates="queue_items")
     batch: Mapped["PrintBatch | None"] = relationship(back_populates="queue_items")
     created_by: Mapped["User | None"] = relationship()
+    variants: Mapped[list["PrintQueueVariant"]] = relationship(
+        back_populates="queue_item",
+        cascade="all, delete-orphan",
+        order_by="PrintQueueVariant.position",
+    )
+
+
+class PrintQueueVariant(Base):
+    """One candidate file for a queue item that may print on several models (#671).
+
+    A user with an H2S and an H2C slices the same job twice and does not care
+    which machine runs it. Each slice becomes a variant; the scheduler walks them
+    in ``position`` order and takes the first whose model has an idle printer.
+
+    **This is a snapshot, not a pointer.** The candidate list is copied from the
+    library's variant group when the item is queued, and every per-file setting
+    the dispatcher needs is copied with it. Two reasons:
+
+    - Editing the library group afterwards must not silently change a job that is
+      already waiting in the queue.
+    - The per-file settings genuinely differ between candidates and are choices
+      the user made for *this* job, not properties of the file. An H2C slice is
+      dual-nozzle and will not have the same slot count, AMS mapping or nozzle
+      mapping as the H2S slice of the same model.
+
+    On a match the winning variant's fields are written onto the queue row before
+    the dispatch commit, so everything downstream — upload, archive creation,
+    print history, reprint — sees an ordinary single-file item and needs no
+    knowledge that variants exist.
+
+    Variants reference library files only. An archive records a print that already
+    happened, of one specific file, so it is never a candidate for "which of these
+    should we run".
+    """
+
+    __tablename__ = "print_queue_variants"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    queue_item_id: Mapped[int] = mapped_column(
+        ForeignKey("print_queue.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # User's priority order. When two printers are idle in the same scheduler
+    # pass, the lowest position wins — so the choice is reproducible instead of
+    # depending on which match the matcher happened to find first.
+    position: Mapped[int] = mapped_column(Integer, default=0)
+
+    # CASCADE: deleting the file drops this candidate but leaves the item and its
+    # other candidates alone. Losing the *last* candidate is handled by the
+    # resolver, which holds the item pending with an explicit waiting_reason
+    # rather than letting it sit there looking dispatchable forever.
+    library_file_id: Mapped[int] = mapped_column(ForeignKey("library_files.id", ondelete="CASCADE"), nullable=False)
+    # Normalized short name ("H2S"), taken from the file's own sliced_for_model
+    # at creation, or picked by the user for a legacy file that declares none.
+    target_model: Mapped[str] = mapped_column(String(50), nullable=False)
+
+    # Per-file dispatch settings, same semantics as the identically named columns
+    # on PrintQueueItem — see there for the formats.
+    plate_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ams_mapping: Mapped[str | None] = mapped_column(Text, nullable=True)
+    nozzle_mapping: Mapped[str | None] = mapped_column(Text, nullable=True)
+    nozzle_rack_choice: Mapped[str | None] = mapped_column(Text, nullable=True)
+    filament_overrides: Mapped[str | None] = mapped_column(Text, nullable=True)
+    required_filament_types: Mapped[str | None] = mapped_column(Text, nullable=True)
+    print_time_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # How many times this candidate has been dispatched and bounced back to
+    # pending by the start-watchdog. The resolver tries least-attempted first, so
+    # a printer that accepts the file and never starts (#1678) hands the job to
+    # the other machine on the next lap instead of burning the item's whole
+    # DISPATCH_MAX_ATTEMPTS budget against the same wedged printer — which is the
+    # entire reason the user queued an alternative.
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    queue_item: Mapped["PrintQueueItem"] = relationship(back_populates="variants")
+    library_file: Mapped["LibraryFile"] = relationship()
 
 
 from backend.app.models.archive import PrintArchive  # noqa: E402
+from backend.app.models.finance import CostCenter  # noqa: E402
 from backend.app.models.library import LibraryFile  # noqa: E402
 from backend.app.models.print_batch import PrintBatch  # noqa: E402
 from backend.app.models.printer import Printer  # noqa: E402

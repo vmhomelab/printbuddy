@@ -8,7 +8,8 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { getPrinterDisplayImage, getPrinterImage } from '../../utils/printer';
+import { getPrinterDisplayImage, getPrinterImage, isGcodeCompatible, filterCompatibleQueueItems } from '../../utils/printer';
+import type { PrintQueueItem } from '../../api/client';
 
 describe('getPrinterImage', () => {
   it('prefers a printer custom image over the model artwork', () => {
@@ -42,11 +43,25 @@ describe('getPrinterImage', () => {
     });
   });
 
-  describe('A2L', () => {
+  describe('A2L (#1684)', () => {
     it('resolves display name and SSDP code to a2l.png', () => {
       expect(getPrinterImage('A2L')).toBe('/img/printers/a2l.png');
       expect(getPrinterImage('N9')).toBe('/img/printers/a2l.png');
       expect(getPrinterImage('Bambu Lab A2L')).toBe('/img/printers/a2l.png');
+    });
+
+    it('resolves case-insensitive variants', () => {
+      expect(getPrinterImage('a2l')).toBe('/img/printers/a2l.png');
+      expect(getPrinterImage(' A2L ')).toBe('/img/printers/a2l.png');
+    });
+
+    it('does not match A2L on unrelated A-series strings', () => {
+      // Regression guard: a hypothetical future "A2M" or similar must not
+      // silently pick up a2l.png until it's explicitly mapped, and "A1" /
+      // "A1 Mini" must still resolve to their own artwork.
+      expect(getPrinterImage('A2M')).toBe('/img/printers/default.png');
+      expect(getPrinterImage('A1')).toBe('/img/printers/a1.png');
+      expect(getPrinterImage('A1 Mini')).toBe('/img/printers/a1mini.png');
     });
   });
 
@@ -67,10 +82,13 @@ describe('getPrinterImage', () => {
       expect(getPrinterImage('H2D Pro')).toBe('/img/printers/h2dpro.png');
     });
 
-    it('P2S → p1s.png (shared with P1S)', () => {
-      // Pre-existing behaviour: P2S currently reuses the P1S artwork. Not
-      // changed by the X2D diff; asserted to catch accidental regressions.
-      expect(getPrinterImage('P2S')).toBe('/img/printers/p1s.png');
+    it('P2S → p2s.png', () => {
+      expect(getPrinterImage('P2S')).toBe('/img/printers/p2s.png');
+    });
+
+    it('P1S → p1s.png', () => {
+      // Ensure that P1S still resolves correctly
+      expect(getPrinterImage('P1S')).toBe('/img/printers/p1s.png');
     });
 
     it('A1 Mini → a1mini.png (not a1.png)', () => {
@@ -161,5 +179,102 @@ describe('getPrinterImage', () => {
         '/img/printers/default.png',
       );
     });
+  });
+});
+
+// Mirrors backend/tests/unit/test_scheduler_model_mismatch.py — the frontend
+// table must stay in sync with backend GCODE_COMPAT_FAMILIES (#2578).
+describe('isGcodeCompatible', () => {
+  it('accepts same model', () => {
+    expect(isGcodeCompatible('X1C', 'X1C')).toBe(true);
+    expect(isGcodeCompatible('H2D', 'H2D')).toBe(true);
+  });
+
+  it('accepts the X1/P1 interchange family', () => {
+    expect(isGcodeCompatible('X1C', 'P1S')).toBe(true);
+    expect(isGcodeCompatible('X1C', 'P1P')).toBe(true);
+    expect(isGcodeCompatible('P1S', 'X1E')).toBe(true);
+    expect(isGcodeCompatible('X1', 'P1P')).toBe(true);
+  });
+
+  it('rejects cross-family targets', () => {
+    // The reporter's case: X1C-sliced G-code targeted at an H2D (#2578)
+    expect(isGcodeCompatible('X1C', 'H2D')).toBe(false);
+    expect(isGcodeCompatible('P1S', 'H2D')).toBe(false);
+    expect(isGcodeCompatible('X1C', 'A1')).toBe(false);
+    expect(isGcodeCompatible('A1', 'A1 Mini')).toBe(false);
+    expect(isGcodeCompatible('H2D', 'H2S')).toBe(false);
+    expect(isGcodeCompatible('X1C', 'P2S')).toBe(false);
+  });
+
+  it('is fail-safe on unknown metadata', () => {
+    expect(isGcodeCompatible(null, 'H2D')).toBe(true);
+    expect(isGcodeCompatible('X1C', null)).toBe(true);
+    expect(isGcodeCompatible(undefined, undefined)).toBe(true);
+    expect(isGcodeCompatible('', 'H2D')).toBe(true);
+  });
+
+  it('normalizes case, spaces and dashes', () => {
+    expect(isGcodeCompatible('x1c', 'X1C')).toBe(true);
+    expect(isGcodeCompatible('A1 Mini', 'A1-MINI')).toBe(true);
+    expect(isGcodeCompatible('H2D Pro', 'H2DPRO')).toBe(true);
+  });
+});
+
+describe('filterCompatibleQueueItems — force-color PLA variant (#2650)', () => {
+  const makeItem = (
+    overrides: Array<{ slot_id: number; type: string; color: string; tray_info_idx?: string; force_color_match?: boolean }>,
+  ): PrintQueueItem => ({ id: 1, filament_overrides: overrides } as unknown as PrintQueueItem);
+
+  // A job sliced for White PLA Matte (GFA01).
+  const matteJob = makeItem([
+    { slot_id: 1, type: 'PLA', color: '#FFFFFF', tray_info_idx: 'GFA01', force_color_match: true },
+  ]);
+  const loadedTypes = new Set(['PLA']);
+  const loaded = new Set(['PLA:ffffff']);
+
+  it('rejects a printer loaded only with other white PLA variants (Basic/Silk)', () => {
+    const variants = new Set(['PLA:ffffff:GFA00', 'PLA:ffffff:GFA06']);
+    expect(filterCompatibleQueueItems([matteJob], loadedTypes, loaded, variants)).toHaveLength(0);
+  });
+
+  it('accepts a printer loaded with the matching variant (Matte GFA01)', () => {
+    const variants = new Set(['PLA:ffffff:GFA00', 'PLA:ffffff:GFA01']);
+    expect(filterCompatibleQueueItems([matteJob], loadedTypes, loaded, variants)).toHaveLength(1);
+  });
+
+  it('accepts a same-colour spool that reports no tray_info_idx (custom/third-party)', () => {
+    const variants = new Set(['PLA:ffffff:']);
+    expect(filterCompatibleQueueItems([matteJob], loadedTypes, loaded, variants)).toHaveLength(1);
+  });
+
+  it('falls back to type+colour when no variant data is supplied', () => {
+    // loadedVariants omitted → the hint is never stricter than the data it has.
+    expect(filterCompatibleQueueItems([matteJob], loadedTypes, loaded)).toHaveLength(1);
+  });
+
+  it('an override without a tray_info_idx keeps the old type+colour behaviour', () => {
+    const noIdxJob = makeItem([{ slot_id: 1, type: 'PLA', color: '#FFFFFF', force_color_match: true }]);
+    const variants = new Set(['PLA:ffffff:GFA06']);
+    expect(filterCompatibleQueueItems([noIdxJob], loadedTypes, loaded, variants)).toHaveLength(1);
+  });
+});
+
+describe('filterCompatibleQueueItems — printer-targeted jobs (#3133)', () => {
+  // A job moved from "Any P2S" to one P2S keeps its override. The printer is
+  // already chosen, so a colour it has not loaded must not hide the job from
+  // that printer's card — the scheduler maps the trays at dispatch.
+  const boneWhite = [{ slot_id: 1, type: 'PLA', color: '#F5F5DC', force_color_match: false }];
+  const loadedTypes = new Set(['PLA']);
+  const loadedBrown = new Set(['PLA:8b4513']);
+
+  it('keeps a specific-printer job whose override colour is not loaded', () => {
+    const item = { id: 1, printer_id: 3, filament_overrides: boneWhite } as unknown as PrintQueueItem;
+    expect(filterCompatibleQueueItems([item], loadedTypes, loadedBrown)).toHaveLength(1);
+  });
+
+  it('still filters the same job while it targets any printer of a model', () => {
+    const item = { id: 1, printer_id: null, target_model: 'P2S', filament_overrides: boneWhite } as unknown as PrintQueueItem;
+    expect(filterCompatibleQueueItems([item], loadedTypes, loadedBrown)).toHaveLength(0);
   });
 });

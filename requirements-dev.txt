@@ -9,7 +9,12 @@ pytest-timeout>=2.4.0
 # run, and uses recorded durations on subsequent runs (.test_durations).
 pytest-split>=0.9.0
 httpx>=0.27.0
-ruff>=0.8.0
+# Exact pin, deliberately. A floor lets a contributor's older ruff enforce rules
+# the current one has retired (UP038 was removed — PEP 604 in isinstance() is
+# slower than the tuple form), and lets `format --check` disagree between
+# machines. CI's lint job installs this exact line, so local == CI. Bump on
+# purpose, not by resolution order.
+ruff==0.15.20
 pre-commit>=4.0
 
 # Required by pyftpdlib TLS_FTPHandler for mock FTP server tests
@@ -18,5 +23,18 @@ pyOpenSSL>=26.0.0
 # Security scanning
 bandit[sarif]>=1.7.0
 pip-audit>=2.7.0
+# Transitive of pip-audit→CacheControl. 1.2.1 patches GHSA-6v7p-g79w-8964
+# (Unpacker SEGV/DoS on reuse after caught error). Not a runtime dep of
+# Printbuddy — pinned here so the audit stays clean.
+msgpack>=1.2.1
+# Transitive of pre-commit. 21.14.9 closes eight advisories in 21.14.6.
+# Not a runtime dep of Printbuddy — pinned here so the audit stays clean.
+virtualenv>=21.14.9
+# Transitive of pre-commit→virtualenv. 4.2.1 closes three advisories in
+# 3.x. Not a runtime dep of Printbuddy — pinned here so the audit stays clean.
+filelock>=4.2.1
+# Transitive of bandit[sarif]→pbr. 84.1.0 closes one advisory in 83.x.
+# Not a runtime dep of Printbuddy — pinned here so the audit stays clean.
+setuptools>=84.1.0
 # Secrets scan: gitleaks (Go binary, not a Python package).
 # Install: go install github.com/zricethezav/gitleaks/v8@latest

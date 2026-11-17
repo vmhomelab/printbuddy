@@ -1,14 +1,17 @@
+import { useEffect, useRef } from 'react';
 import { Layers, Check, AlertTriangle, Square, CheckSquare } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { PlateSelectorProps } from './types';
 import { formatDuration } from '../../utils/date';
-import { withStreamToken } from '../../api/client';
+import { withMediaToken } from '../../api/client';
+import { getBedTypeInfo } from '../../utils/bedType';
+import { NumberInput } from '../NumberInput';
 
 /**
  * Plate selection grid for multi-plate 3MF files.
  * Shows thumbnails, names, objects, and print times for each plate.
- * In multi-select mode (add-to-queue), plates have checkboxes for selecting a subset.
- * In single-select mode (reprint/edit), only one plate can be selected at a time.
+ * In multi-select mode, plates have checkboxes for selecting a subset.
+ * In single-select mode, only one plate can be selected at a time.
  */
 export function PlateSelector({
   plates,
@@ -18,8 +21,21 @@ export function PlateSelector({
   onSelectAll,
   onDeselectAll,
   multiSelect,
+  quantities,
+  onQuantityChange,
 }: PlateSelectorProps) {
   const { t } = useTranslation();
+  // A plate selected on opening (a reprint of plate 10, say) can be far down a
+  // long list: bring it into view once, when the cards first appear (#3395).
+  const firstSelectedRef = useRef<HTMLDivElement | null>(null);
+  const scrolled = useRef(false);
+  const visible = isMultiPlate && plates.length > 1;
+  useEffect(() => {
+    if (scrolled.current || !visible || !firstSelectedRef.current) return;
+    scrolled.current = true;
+    firstSelectedRef.current.scrollIntoView?.({ block: 'nearest' });
+  }, [visible, selectedPlates]);
+  const firstSelected = plates.find((p) => selectedPlates.has(p.index))?.index;
 
   // Only show for multi-plate files with multiple plates
   if (!isMultiPlate || plates.length <= 1) {
@@ -27,6 +43,10 @@ export function PlateSelector({
   }
 
   const allSelected = selectedPlates.size === plates.length;
+  const showQuantities = !!quantities && !!onQuantityChange;
+  const totalRuns = showQuantities
+    ? plates.reduce((sum, p) => (selectedPlates.has(p.index) ? sum + (quantities[p.index] ?? 1) : sum), 0)
+    : 0;
 
   return (
     <div className="mb-4">
@@ -34,7 +54,7 @@ export function PlateSelector({
         <Layers className="w-4 h-4 text-bambu-gray" />
         <span className="text-sm text-bambu-gray">Select Plate{multiSelect ? 's' : ''} to Print</span>
         {selectedPlates.size === 0 && (
-          <span className="text-xs text-orange-400 flex items-center gap-1">
+          <span className="text-xs text-orange-700 dark:text-orange-400 flex items-center gap-1">
             <AlertTriangle className="w-3 h-3" />
             Selection required
           </span>
@@ -59,15 +79,23 @@ export function PlateSelector({
         {plates.map((plate) => {
           const isSelected = selectedPlates.has(plate.index);
           return (
-            <button
+            /* The quantity stepper can't live inside the selection button —
+               nesting an input in a button is invalid and every keystroke
+               would toggle the plate. The card is a div; the selectable
+               region stays a button beside the stepper. */
+            <div
               key={plate.index}
-              type="button"
-              onClick={() => onToggle(plate.index)}
-              className={`flex items-center gap-2 p-2 rounded-lg border transition-colors text-left ${
+              ref={plate.index === firstSelected ? firstSelectedRef : undefined}
+              className={`flex items-center gap-2 p-2 rounded-lg border transition-colors ${
                 isSelected
                   ? 'border-bambu-green bg-bambu-green/10'
                   : 'border-bambu-dark-tertiary bg-bambu-dark hover:border-bambu-gray'
               }`}
+            >
+            <button
+              type="button"
+              onClick={() => onToggle(plate.index)}
+              className="flex items-center gap-2 text-left min-w-0 flex-1"
             >
               {multiSelect && (
                 isSelected
@@ -76,7 +104,7 @@ export function PlateSelector({
               )}
               {plate.has_thumbnail && plate.thumbnail_url != null ? (
                 <img
-                  src={withStreamToken(plate.thumbnail_url)}
+                  src={withMediaToken(plate.thumbnail_url)}
                   alt={`Plate ${plate.index}`}
                   className="w-10 h-10 rounded object-cover bg-bambu-dark-tertiary"
                 />
@@ -96,14 +124,48 @@ export function PlateSelector({
                     : `${plate.filaments.length} filament${plate.filaments.length !== 1 ? 's' : ''}`}
                   {plate.print_time_seconds != null ? ` • ${formatDuration(plate.print_time_seconds)}` : ''}
                 </p>
+                {(() => {
+                  // Per-plate bed-type badge so multi-plate prints make the
+                  // required plate explicit at scheduling time (#1281).
+                  const bed = getBedTypeInfo(plate.bed_type);
+                  if (!bed) return null;
+                  return (
+                    <p className="text-xs text-bambu-gray flex items-center gap-1 mt-0.5 truncate" title={bed.label}>
+                      <img src={bed.icon} alt="" className="w-3.5 h-3.5 object-contain flex-shrink-0" />
+                      <span className="truncate">{bed.label}</span>
+                    </p>
+                  );
+                })()}
               </div>
               {!multiSelect && isSelected && (
                 <Check className="w-4 h-4 text-bambu-green flex-shrink-0" />
               )}
             </button>
+            {showQuantities && isSelected && (
+              <div className="flex items-center gap-1 flex-shrink-0">
+                <span className="text-xs text-bambu-gray" aria-hidden="true">×</span>
+                <NumberInput
+                  min={1}
+                  max={999}
+                  value={quantities[plate.index] ?? 1}
+                  aria-label={t('queue.plateQuantityLabel', {
+                    plate: plate.name || t('queue.plateNumber', { index: plate.index }),
+                  })}
+                  onChange={(v) => onQuantityChange(plate.index, v)}
+                  fallback={1}
+                  className="w-14 px-1.5 py-1 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-center focus:outline-none focus:ring-1 focus:ring-bambu-green"
+                />
+              </div>
+            )}
+            </div>
           );
         })}
       </div>
+      {showQuantities && totalRuns > selectedPlates.size && (
+        <p className="text-xs text-bambu-gray mt-2">
+          {t('queue.plateQuantityTotal', { count: totalRuns })}
+        </p>
+      )}
     </div>
   );
 }

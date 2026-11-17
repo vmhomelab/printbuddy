@@ -43,16 +43,17 @@ export function UploadModal({ onClose, initialFiles }: UploadModalProps) {
   const uploadMutation = useMutation({
     mutationFn: (filesToUpload: File[]) =>
       api.uploadArchivesBulk(filesToUpload),
-    onSuccess: (result) => {
+    onSuccess: (result, sent) => {
       setUploadResult(result);
       queryClient.invalidateQueries({ queryKey: ['archives'] });
       queryClient.invalidateQueries({ queryKey: ['archiveStats'] });
 
-      // Update file statuses based on result
+      // Update file statuses based on result. Each outcome names its file by
+      // position in the batch sent; two files can share a name.
       setFiles((prev) =>
         prev.map((f) => {
-          const success = result.results.find((r) => r.filename === f.file.name);
-          const error = result.errors.find((e) => e.filename === f.file.name);
+          const success = result.results.find((r) => sent[r.index] === f.file);
+          const error = result.errors.find((e) => sent[e.index] === f.file);
           if (success) {
             return { ...f, status: 'success', archiveId: success.id };
           }
@@ -222,7 +223,7 @@ export function UploadModal({ onClose, initialFiles }: UploadModalProps) {
                     {f.status === 'pending' && (
                       <button
                         onClick={() => removeFile(index)}
-                        className="text-bambu-gray hover:text-red-400 transition-colors"
+                        className="text-bambu-gray hover:text-red-600 dark:hover:text-red-400 transition-colors"
                         disabled={isUploading}
                       >
                         <X className="w-4 h-4" />
@@ -236,8 +237,8 @@ export function UploadModal({ onClose, initialFiles }: UploadModalProps) {
                     )}
                     {f.status === 'error' && (
                       <div className="flex items-center gap-2">
-                        <span className="text-xs text-red-400">{f.error}</span>
-                        <AlertCircle className="w-4 h-4 text-red-400" />
+                        <span className="text-xs text-red-700 dark:text-red-400">{f.error}</span>
+                        <AlertCircle className="w-4 h-4 text-red-600 dark:text-red-400" />
                       </div>
                     )}
                   </div>
@@ -253,7 +254,7 @@ export function UploadModal({ onClose, initialFiles }: UploadModalProps) {
                 <p className="text-sm text-white">
                   <span className="text-bambu-green">{uploadResult.uploaded}</span> {t('uploadModal.uploaded')}
                   {uploadResult.failed > 0 && (
-                    <>, <span className="text-red-400">{uploadResult.failed}</span> {t('uploadModal.failed')}</>
+                    <>, <span className="text-red-700 dark:text-red-400">{uploadResult.failed}</span> {t('uploadModal.failed')}</>
                   )}
                 </p>
               </div>

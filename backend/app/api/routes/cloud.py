@@ -4,6 +4,7 @@ Bambu Lab Cloud API Routes
 Handles authentication and profile management with Bambu Cloud.
 """
 
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -11,9 +12,10 @@ from typing import Literal
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.core import database
 from backend.app.core.auth import (
     RequirePermissionIfAuthEnabled,
     _user_from_api_key,
@@ -23,6 +25,7 @@ from backend.app.core.auth import (
 )
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
+from backend.app.core.tasks import spawn_background_task
 from backend.app.models.api_key import APIKey
 from backend.app.models.settings import Settings
 from backend.app.models.user import User
@@ -46,6 +49,23 @@ from backend.app.services.bambu_cloud import (
     BambuCloudAuthError,
     BambuCloudError,
     BambuCloudService,
+    invalidate_validation_cache,
+)
+
+# Credential read/write lives in the services layer so feature packages can
+# consume it without importing the route layer. Imported here for this
+# module's own use; consumers should import from bambu_cloud_credentials
+# directly rather than through this route module.
+from backend.app.services.bambu_cloud_credentials import (
+    CLOUD_EMAIL_KEY,
+    CLOUD_REGION_KEY,
+    CLOUD_TOKEN_INVALID_KEY,
+    CLOUD_TOKEN_KEY,
+    _clear_cloud_token_invalid,
+    _normalise_region,
+    get_stored_token,
+    is_cloud_token_invalid,
+    mark_cloud_token_invalid,
 )
 from backend.app.utils.filament_ids import filament_id_to_setting_id
 
@@ -56,7 +76,7 @@ async def _cloud_api_key_gate(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
     x_api_key: str | None = Header(default=None, alias="X-API-Key"),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
 ) -> None:
     """Router-level dependency: enforce API-key cloud-access fences (#1182).
 
@@ -128,7 +148,7 @@ def cloud_caller(*permissions: Permission):
 async def resolve_api_key_cloud_owner(
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
     x_api_key: str | None = Header(default=None, alias="X-API-Key"),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
 ) -> User | None:
     """Route-level dep for non-/cloud/* endpoints that need to read the
     caller's stored Bambu Cloud token (e.g. the slice path resolving cloud
@@ -163,38 +183,20 @@ async def resolve_api_key_cloud_owner(
 router = APIRouter(prefix="/cloud", tags=["cloud"], dependencies=[Depends(_cloud_api_key_gate)])
 
 
-# Keys for storing cloud credentials in settings
-CLOUD_TOKEN_KEY = "bambu_cloud_token"
-CLOUD_EMAIL_KEY = "bambu_cloud_email"
-CLOUD_REGION_KEY = "bambu_cloud_region"
+def _forget_account_presets(account: int | None) -> None:
+    """Drop what was read with an account's cloud token, once that token changes."""
+    _filament_id_name_cache.pop(account, None)
+    # A build still running reads with the old token; it must not be joined.
+    _filament_id_map_inflight.pop(account, None)
+    for key in [key for key in _filament_cache if key[0] == account]:
+        del _filament_cache[key]
 
 
-def _normalise_region(region: str | None) -> str:
-    """Treat NULL/empty as 'global' for legacy rows that predate the region column."""
-    return region if region in ("global", "china") else "global"
-
-
-async def get_stored_token(db: AsyncSession, user: User | None = None) -> tuple[str | None, str | None, str]:
-    """Get stored cloud token, email, and region.
-
-    When a user is provided (auth enabled), returns that user's per-user credentials.
-    When user is None (auth disabled), falls back to global Settings table.
-    Region defaults to ``"global"`` when unset (including for rows that predate
-    the ``cloud_region`` column).
-    """
-    if user is not None:
-        return user.cloud_token, user.cloud_email, _normalise_region(user.cloud_region)
-
-    # Fallback: global storage (auth disabled)
-    result = await db.execute(
-        select(Settings).where(Settings.key.in_([CLOUD_TOKEN_KEY, CLOUD_EMAIL_KEY, CLOUD_REGION_KEY]))
-    )
-    settings = {s.key: s.value for s in result.scalars().all()}
-    return (
-        settings.get(CLOUD_TOKEN_KEY),
-        settings.get(CLOUD_EMAIL_KEY),
-        _normalise_region(settings.get(CLOUD_REGION_KEY)),
-    )
+def forget_all_cloud_presets() -> None:
+    """Drop every account's cached presets (the user table was replaced)."""
+    _filament_id_name_cache.clear()
+    _filament_id_map_inflight.clear()
+    _filament_cache.clear()
 
 
 async def store_token(db: AsyncSession, token: str, email: str, region: str, user: User | None = None) -> None:
@@ -202,15 +204,21 @@ async def store_token(db: AsyncSession, token: str, email: str, region: str, use
 
     When a user is provided (auth enabled), stores on the user record.
     When user is None (auth disabled), stores in global Settings table.
+
+    Always clears the rejected-token flag: this is a *fresh* credential, and
+    leaving the flag set would report the new sign-in as expired.
     """
     region = _normalise_region(region)
+    invalidate_validation_cache(token)
+    # The account may be another one now.
+    _forget_account_presets(user.id if user is not None else None)
     if user is not None:
         # User object is from the auth dependency's session (detached),
         # so use a direct UPDATE via the route's db session.
-        from sqlalchemy import update
-
         await db.execute(
-            update(User).where(User.id == user.id).values(cloud_token=token, cloud_email=email, cloud_region=region)
+            update(User)
+            .where(User.id == user.id)
+            .values(cloud_token=token, cloud_email=email, cloud_region=region, cloud_token_invalid_at=None)
         )
         await db.commit()
         return
@@ -223,6 +231,7 @@ async def store_token(db: AsyncSession, token: str, email: str, region: str, use
             setting.value = value
         else:
             db.add(Settings(key=key, value=value))
+    await _clear_cloud_token_invalid(db, None)
     await db.commit()
 
 
@@ -231,23 +240,97 @@ async def clear_token(db: AsyncSession, user: User | None = None) -> None:
 
     When a user is provided (auth enabled), clears that user's credentials.
     When user is None (auth disabled), clears from global Settings table.
-    """
-    if user is not None:
-        from sqlalchemy import update
 
+    The rejected-token flag goes with the token: once there is no credential,
+    "the credential is dead" is not a state worth remembering, and leaving it
+    behind would make the next login look expired the moment it is stored.
+    """
+    token, _email, _region = await get_stored_token(db, user)
+    if token:
+        invalidate_validation_cache(token)
+    _forget_account_presets(user.id if user is not None else None)
+
+    if user is not None:
         await db.execute(
-            update(User).where(User.id == user.id).values(cloud_token=None, cloud_email=None, cloud_region=None)
+            update(User)
+            .where(User.id == user.id)
+            .values(cloud_token=None, cloud_email=None, cloud_region=None, cloud_token_invalid_at=None)
         )
         await db.commit()
         return
 
     # Fallback: global storage (auth disabled)
     result = await db.execute(
-        select(Settings).where(Settings.key.in_([CLOUD_TOKEN_KEY, CLOUD_EMAIL_KEY, CLOUD_REGION_KEY]))
+        select(Settings).where(
+            Settings.key.in_([CLOUD_TOKEN_KEY, CLOUD_EMAIL_KEY, CLOUD_REGION_KEY, CLOUD_TOKEN_INVALID_KEY])
+        )
     )
     for setting in result.scalars().all():
         await db.delete(setting)
     await db.commit()
+
+
+async def migrate_global_cloud_token_to_user(db: AsyncSession, user: User) -> bool:
+    """Move a globally-stored cloud token onto ``user`` (auth being enabled).
+
+    ``get_stored_token`` reads the global ``Settings`` rows when auth is off and
+    ``User.cloud_token`` when it's on. Enabling auth therefore switches which
+    column the cloud routes consult — without this migration the token linked
+    before setup is stranded in ``Settings``, ``build_authenticated_cloud``
+    returns ``None``, and every ``/cloud/*`` route silently degrades (#2530).
+
+    The global rows are deleted after the copy so the credential isn't left at
+    rest in a table nothing reads any more. Does **not** commit — the caller
+    owns the transaction. Returns True when a token was actually migrated.
+    """
+    token, email, region = await get_stored_token(db, None)
+    if not token:
+        return False
+
+    user.cloud_token = token
+    user.cloud_email = email
+    user.cloud_region = _normalise_region(region)
+
+    result = await db.execute(
+        select(Settings).where(Settings.key.in_([CLOUD_TOKEN_KEY, CLOUD_EMAIL_KEY, CLOUD_REGION_KEY]))
+    )
+    for setting in result.scalars().all():
+        await db.delete(setting)
+    return True
+
+
+async def migrate_user_cloud_token_to_global(db: AsyncSession, user: User) -> bool:
+    """Move ``user``'s cloud token into global storage (auth being disabled).
+
+    The mirror of :func:`migrate_global_cloud_token_to_user`: once auth is off,
+    ``get_stored_token`` stops consulting ``User.cloud_token`` entirely, so the
+    admin who turns auth off would otherwise lose their own cloud link.
+
+    Refuses to overwrite an existing global token — a stale row from a previous
+    no-auth stint is still someone's credential, and clobbering it silently is
+    worse than leaving this admin to re-link. Does **not** commit. Returns True
+    when a token was actually migrated.
+    """
+    if not user.cloud_token:
+        return False
+
+    existing, _, _ = await get_stored_token(db, None)
+    if existing:
+        return False
+
+    for key, value in [
+        (CLOUD_TOKEN_KEY, user.cloud_token),
+        (CLOUD_EMAIL_KEY, user.cloud_email),
+        (CLOUD_REGION_KEY, _normalise_region(user.cloud_region)),
+    ]:
+        if value is None:
+            continue
+        db.add(Settings(key=key, value=value))
+
+    user.cloud_token = None
+    user.cloud_email = None
+    user.cloud_region = None
+    return True
 
 
 def _assert_api_key_can_access_cloud(api_key: APIKey) -> None:
@@ -284,48 +367,82 @@ async def build_authenticated_cloud(db: AsyncSession, user: User | None) -> Bamb
 
     Returns ``None`` when no token is stored, so callers can 401 without constructing
     (and then closing) a useless client. Caller is responsible for ``await cloud.close()``.
+
+    The service is wired to persist a rejected-token flag the moment Bambu
+    answers 401, so every route that builds a client this way makes the whole
+    app agree the sign-in is dead — rather than each feature discovering it
+    separately and reporting Bambu's own opaque "Please login." at the user.
     """
     token, _email, region = await get_stored_token(db, user)
     if not token:
         return None
-    cloud = BambuCloudService(region=region)
+    user_id = user.id if user is not None else None
+    cloud = BambuCloudService(region=region, on_auth_failure=lambda: mark_cloud_token_invalid(user_id))
     cloud.set_token(token)
     return cloud
 
 
 @router.get("/status", response_model=CloudAuthStatus)
 async def get_auth_status(
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
     current_user: User | None = cloud_caller(Permission.CLOUD_AUTH),
 ):
     """Get current cloud authentication status.
 
-    Reads the stored credentials in one DB round-trip (we used to call
-    ``get_stored_token`` twice — once here and once inside
-    ``build_authenticated_cloud``). ``region`` is exposed so the frontend can
-    show "Connected (China)" after a reload without relying on local state.
+    "We hold a token" is not the same claim as "Bambu accepts it", and this
+    endpoint used to make the former while reporting the latter: it asked
+    ``cloud.is_authenticated``, which was a string-presence check behind a
+    self-renewing expiry, so it answered ``true`` for as long as any token
+    existed — including tokens Bambu had been rejecting for months (#2562
+    follow-up). It now asks Bambu.
+
+    The verdict is cached for five minutes inside the service, so the several
+    components polling this endpoint don't each pay a round-trip. When Bambu
+    can't be reached the answer is ``None`` and we report the last known state
+    rather than signing the user out over a transient outage.
+
+    ``region`` is exposed so the frontend can show "Connected (China)" after a
+    reload without relying on local state.
     """
     token, email, region = await get_stored_token(db, current_user)
     if not token:
-        return CloudAuthStatus(is_authenticated=False, email=None, region=None)
+        return CloudAuthStatus(is_authenticated=False, email=None, region=None, sign_in_expired=False)
 
-    cloud = BambuCloudService(region=region)
+    known_invalid = await is_cloud_token_invalid(db, current_user)
+
+    user_id = current_user.id if current_user is not None else None
+    cloud = BambuCloudService(region=region, on_auth_failure=lambda: mark_cloud_token_invalid(user_id))
     cloud.set_token(token)
     try:
-        authenticated = cloud.is_authenticated
-        return CloudAuthStatus(
-            is_authenticated=authenticated,
-            email=email if authenticated else None,
-            region=region if authenticated else None,
-        )
+        if known_invalid:
+            # Already recorded as dead. Don't re-ask Bambu on every poll — only a
+            # new login can change this, and that clears the flag.
+            accepted: bool | None = False
+        else:
+            accepted = await cloud.validate_token()
     finally:
         await cloud.close()
+
+    if accepted is None:
+        # Bambu unreachable / 5xx / Cloudflare challenge. Report what we last
+        # knew — a cloud outage must not present as "your sign-in expired".
+        accepted = not known_invalid
+
+    return CloudAuthStatus(
+        is_authenticated=bool(accepted),
+        email=email if accepted else None,
+        region=region if accepted else None,
+        # Distinguishes "you were signed in and the token died" from "you never
+        # signed in" — the UI shows the same login form either way, but only the
+        # former deserves an explanation for why it reappeared.
+        sign_in_expired=not accepted,
+    )
 
 
 @router.post("/login", response_model=CloudLoginResponse)
 async def login(
     request: CloudLoginRequest,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
     current_user: User | None = cloud_caller(Permission.CLOUD_AUTH),
 ):
     """
@@ -353,11 +470,13 @@ async def login(
             message=result.get("message", "Unknown error"),
             verification_type=result.get("verification_type"),
             tfa_key=result.get("tfa_key"),
+            reason=result.get("reason"),
         )
     except BambuCloudAuthError as e:
         raise HTTPException(status_code=401, detail=str(e))
     except BambuCloudError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # Bambu Cloud failed or could not be reached: a bad gateway.
+        raise HTTPException(status_code=502, detail=str(e))
     finally:
         await cloud.close()
 
@@ -365,7 +484,7 @@ async def login(
 @router.post("/verify", response_model=CloudLoginResponse)
 async def verify_code(
     request: CloudVerifyRequest,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
     current_user: User | None = cloud_caller(Permission.CLOUD_AUTH),
 ):
     """
@@ -398,11 +517,13 @@ async def verify_code(
             success=result.get("success", False),
             needs_verification=False,
             message=result.get("message", "Unknown error"),
+            reason=result.get("reason"),
         )
     except BambuCloudAuthError as e:
         raise HTTPException(status_code=401, detail=str(e))
     except BambuCloudError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # Bambu Cloud failed or could not be reached: a bad gateway.
+        raise HTTPException(status_code=502, detail=str(e))
     finally:
         await cloud.close()
 
@@ -410,7 +531,7 @@ async def verify_code(
 @router.post("/token", response_model=CloudAuthStatus)
 async def set_token(
     request: CloudTokenRequest,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
     current_user: User | None = cloud_caller(Permission.CLOUD_AUTH),
 ):
     """
@@ -420,23 +541,35 @@ async def set_token(
     selected ``region`` is persisted alongside the token so every subsequent
     request hits the right Bambu API endpoint, including after a restart.
     """
+    # A pasted token often carries a stray space or line break. One that still
+    # cannot be sent as a header (control characters, spaces, non-ASCII) is not
+    # a token Bambu could accept: refused here, without reaching Bambu, and
+    # without echoing it back in an HTTP client's error.
+    token = request.access_token.strip()
+    if not token or not token.isascii() or not token.isprintable() or " " in token:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
     cloud = BambuCloudService(region=request.region)
-    cloud.set_token(request.access_token)
+    cloud.set_token(token)
 
     try:
         # Verify token works by trying to get profile
         await cloud.get_user_profile()
-        await store_token(db, request.access_token, "token-auth", request.region, current_user)
+        await store_token(db, token, "token-auth", request.region, current_user)
         return CloudAuthStatus(is_authenticated=True, email="token-auth")
-    except BambuCloudError:
-        raise HTTPException(status_code=401, detail="Invalid token")
+    except BambuCloudError as e:
+        # Invalid only when Bambu Cloud refused it; a cloud that could not be
+        # reached or failed says nothing about the token.
+        if isinstance(e, BambuCloudAuthError) or e.status_code in (401, 403):
+            raise HTTPException(status_code=401, detail="Invalid token")
+        raise HTTPException(status_code=502, detail=str(e))
     finally:
         await cloud.close()
 
 
 @router.post("/logout")
 async def logout(
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
     current_user: User | None = cloud_caller(Permission.CLOUD_AUTH),
 ):
     """Log out of Bambu Cloud."""
@@ -447,7 +580,7 @@ async def logout(
 @router.get("/settings", response_model=SlicerSettingsResponse)
 async def get_slicer_settings(
     version: str = _SLICER_API_VERSION,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
     current_user: User | None = cloud_caller(Permission.CLOUD_AUTH),
 ):
     """
@@ -488,6 +621,7 @@ async def get_slicer_settings(
                         user_id=s.get("user_id"),
                         updated_time=s.get("updated_time"),
                         is_custom=True,
+                        filament_id=_listed_filament_id(s),
                     )
                 )
             # Public (default) presets
@@ -501,16 +635,19 @@ async def get_slicer_settings(
                         user_id=s.get("user_id"),
                         updated_time=s.get("updated_time"),
                         is_custom=False,
+                        filament_id=_listed_filament_id(s),
                     )
                 )
             setattr(result, our_type, parsed)
 
         return result
     except BambuCloudAuthError:
-        await clear_token(db, current_user)
+        # The sign-in is kept: /cloud/status shows it as expired from the stored
+        # token and its invalid flag, and the region carries to the next sign-in.
         raise HTTPException(status_code=401, detail="Authentication expired")
     except BambuCloudError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # Bambu Cloud failed or could not be reached: a bad gateway.
+        raise HTTPException(status_code=502, detail=str(e))
     finally:
         await cloud.close()
 
@@ -518,7 +655,7 @@ async def get_slicer_settings(
 @router.get("/settings/{setting_id}")
 async def get_setting_detail(
     setting_id: str,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
     current_user: User | None = cloud_caller(Permission.CLOUD_AUTH),
 ):
     """
@@ -534,10 +671,12 @@ async def get_setting_detail(
         data = await cloud.get_setting_detail(setting_id)
         return data
     except BambuCloudAuthError:
-        await clear_token(db, current_user)
+        # The sign-in is kept: /cloud/status shows it as expired from the stored
+        # token and its invalid flag, and the region carries to the next sign-in.
         raise HTTPException(status_code=401, detail="Authentication expired")
     except BambuCloudError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # Bambu Cloud failed or could not be reached: a bad gateway.
+        raise HTTPException(status_code=502, detail=str(e))
     finally:
         await cloud.close()
 
@@ -545,7 +684,7 @@ async def get_setting_detail(
 @router.get("/filaments", response_model=list[SlicerSetting])
 async def get_filament_presets(
     version: str = _SLICER_API_VERSION,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
     current_user: User | None = cloud_caller(Permission.FILAMENTS_READ),
 ):
     """
@@ -558,10 +697,99 @@ async def get_filament_presets(
     return settings.filament
 
 
-# Cache for filament preset info (setting_id -> {name, k})
-_filament_cache: dict[str, dict] = {}
+# Cache for filament preset info ((account, setting_id) -> {name, k}). The
+# account is the user whose cloud token resolved it, None for the global one:
+# a personal preset read with one account's token is not another account's.
+_filament_cache: dict[tuple[int | None, str], dict] = {}
 _filament_cache_time: float = 0
 FILAMENT_CACHE_TTL = 300  # 5 minutes
+
+# In-flight cloud lookups, keyed by setting_id (#2572). The printer overview
+# mounts one filament-info request per printer card, so at farm scale several
+# browsers ask for the same uncached preset within the same instant. Without
+# coalescing each request issues its own Bambu Cloud round-trip for the same id
+# (a thundering herd against a rate-limited API). The first caller to miss a
+# given id becomes the leader and resolves it; concurrent callers await its
+# future and reuse the result instead of duplicating the call.
+_filament_inflight: dict[tuple[int | None, str], asyncio.Future] = {}
+
+
+async def _fetch_one_cloud_filament(setting_id: str, cloud: BambuCloudService) -> dict | None:
+    """Fetch a single filament preset from Bambu Cloud.
+
+    Returns ``{"name", "k"}`` on success (name may be empty when the preset
+    resolves but carries no display name), or ``None`` when the lookup fails.
+    Never raises — a 400 is the expected answer for many bare preset IDs and is
+    logged at DEBUG; anything else is a real fault logged at WARNING.
+    """
+    try:
+        api_setting_id = _filament_id_to_setting_id(setting_id)
+        data = await cloud.get_setting_detail(api_setting_id)
+        setting = data.get("setting", {})
+        name = data.get("name", "")
+        k_value = setting.get("pressure_advance")
+        if k_value is not None:
+            try:
+                k_value = float(k_value)
+            except (ValueError, TypeError):
+                k_value = None
+        return {"name": name, "k": k_value}
+    except Exception as e:
+        # A 400 here is the *expected* answer, not a fault, and the local-preset
+        # fallback (Phase 3) exists to handle it (#2530). Two routine causes:
+        #   * Many official presets are only addressable with a printer variant
+        #     suffix — "GFSA00" resolves, "GFSL05" does not, only "GFSL05_07"
+        #     (@BBL A1) does. The bare ID is all the AMS reports, so the lookup
+        #     legitimately misses.
+        #   * Personal presets ("P…") belong to the Bambu account that sliced the
+        #     file; another account will never resolve them.
+        # Logging those at WARNING on every AMS tooltip refresh trains users to
+        # ignore the log. Anything else — expired token, 5xx, a connection
+        # failure — stays at WARNING because it is a fault.
+        expected_miss = isinstance(e, BambuCloudError) and e.status_code == 400
+        logger.log(
+            logging.DEBUG if expected_miss else logging.WARNING,
+            "Failed to get cloud preset %s (API ID: %s): %s",
+            setting_id,
+            _filament_id_to_setting_id(setting_id),
+            e,
+        )
+        return None
+
+
+async def _resolve_cloud_filament(setting_id: str, cloud: BambuCloudService, account: int | None = None) -> dict | None:
+    """Resolve one preset via Bambu Cloud, single-flighting concurrent misses (#2572).
+
+    Concurrent callers for the same ``setting_id`` share one cloud round-trip:
+    the first caller resolves it while the rest await the shared future. Returns
+    the info dict (also populating ``_filament_cache``) or ``None`` on failure.
+    """
+    key = (account, setting_id)
+    if key in _filament_cache:
+        return _filament_cache[key]
+
+    existing = _filament_inflight.get(key)
+    if existing is not None:
+        # Another request is already fetching this id — reuse its result.
+        # shield() so our own cancellation can't cancel the shared leader.
+        try:
+            return await asyncio.shield(existing)
+        except Exception:
+            return None
+
+    fut: asyncio.Future = asyncio.get_event_loop().create_future()
+    _filament_inflight[key] = fut
+    info: dict | None = None
+    try:
+        info = await _fetch_one_cloud_filament(setting_id, cloud)
+        return info
+    finally:
+        if info is not None:
+            _filament_cache[key] = info
+        if not fut.done():
+            fut.set_result(info)
+        _filament_inflight.pop(key, None)
+
 
 # Built-in filament ID → name mapping (fallback when cloud API and local profiles
 # don't have the entry). Based on Bambu Lab's known filament catalogue.
@@ -574,11 +802,15 @@ _BUILTIN_FILAMENT_NAMES: dict[str, str] = {
     "GFA07": "Bambu PLA Marble",
     "GFA08": "Bambu PLA Sparkle",
     "GFA09": "Bambu PLA Tough",
+    "GFA10": "Bambu PLA Tough+",
     "GFA11": "Bambu PLA Aero",
     "GFA12": "Bambu PLA Glow",
     "GFA13": "Bambu PLA Dynamic",
     "GFA15": "Bambu PLA Galaxy",
     "GFA16": "Bambu PLA Wood",
+    "GFA17": "Bambu PLA Translucent",
+    "GFA18": "Bambu PLA Lite",
+    "GFA19": "Bambu PLA Pure",
     "GFA50": "Bambu PLA-CF",
     "GFB00": "Bambu ABS",
     "GFB01": "Bambu ASA",
@@ -595,6 +827,7 @@ _BUILTIN_FILAMENT_NAMES: dict[str, str] = {
     "GFG00": "Bambu PETG Basic",
     "GFG01": "Bambu PETG Translucent",
     "GFG02": "Bambu PETG HF",
+    "GFG03": "Bambu PETG Matte",
     "GFG50": "Bambu PETG-CF",
     "GFG60": "PolyLite PETG",
     "GFG96": "Generic PETG HF",
@@ -643,6 +876,13 @@ _BUILTIN_FILAMENT_NAMES: dict[str, str] = {
     "GFS97": "Generic BVOH",
     "GFS98": "Generic HIPS",
     "GFS99": "Generic PVA",
+    "GFSNL02": "SUNLU PLA Matte",
+    "GFSNL03": "SUNLU PLA+",
+    "GFSNL04": "SUNLU PLA+ 2.0",
+    "GFSNL05": "SUNLU Silk PLA+",
+    "GFSNL06": "SUNLU PLA Marble",
+    "GFSNL07": "SUNLU Wood PLA",
+    "GFSNL08": "SUNLU PETG",
     "GFT01": "Bambu PET-CF",
     "GFT02": "Bambu PPS-CF",
     "GFT97": "Generic PPS",
@@ -650,6 +890,8 @@ _BUILTIN_FILAMENT_NAMES: dict[str, str] = {
     "GFU00": "Bambu TPU 95A HF",
     "GFU01": "Bambu TPU 95A",
     "GFU02": "Bambu TPU for AMS",
+    "GFU03": "Bambu TPU 90A",
+    "GFU04": "Bambu TPU 85A",
     "GFU98": "Generic TPU for AMS",
     "GFU99": "Generic TPU",
 }
@@ -659,6 +901,7 @@ async def _enrich_from_local_presets(
     unresolved_ids: list[str],
     result: dict,
     db: AsyncSession,
+    account: int | None = None,
 ) -> dict:
     """Fall back to local profiles for filament IDs not resolved by cloud.
 
@@ -706,7 +949,7 @@ async def _enrich_from_local_presets(
                             info["k"] = k_val
                         except (ValueError, TypeError, IndexError):
                             pass
-                    _filament_cache[original_id] = info
+                    _filament_cache[(account, original_id)] = info
                     result[original_id] = info
             except Exception:
                 continue
@@ -721,16 +964,22 @@ async def _enrich_from_local_presets(
                 # Preserve K value from earlier phases if available
                 existing_k = result.get(fid, {}).get("k")
                 info = {"name": name, "k": existing_k}
-                _filament_cache[fid] = info
+                _filament_cache[(account, fid)] = info
                 result[fid] = info
 
     # Fill remaining unresolved with empty entries
     for fid in unresolved_ids:
         if fid not in result:
-            _filament_cache[fid] = {"name": "", "k": None}
+            _filament_cache[(account, fid)] = {"name": "", "k": None}
             result[fid] = {"name": "", "k": None}
 
     return result
+
+
+def _listed_filament_id(entry: dict) -> str | None:
+    """The filament_id an entry of Bambu's preset list carries, if it is one."""
+    raw = entry.get("filament_id")
+    return (raw.strip() or None) if isinstance(raw, str) else None
 
 
 # _filament_id_to_setting_id is now imported from backend.app.utils.filament_ids
@@ -740,7 +989,7 @@ _filament_id_to_setting_id = filament_id_to_setting_id
 @router.post("/filament-info")
 async def get_filament_info(
     setting_ids: list[str] = Body(...),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
     current_user: User | None = cloud_caller(Permission.FILAMENTS_READ),
 ):
     """
@@ -762,48 +1011,37 @@ async def get_filament_info(
 
     result = {}
     unresolved_ids: list[str] = []
+    account = current_user.id if current_user is not None else None
 
     # Phase 1: Check cache
     for setting_id in setting_ids:
         if not setting_id:
             continue
-        if setting_id in _filament_cache:
-            result[setting_id] = _filament_cache[setting_id]
+        if (account, setting_id) in _filament_cache:
+            result[setting_id] = _filament_cache[(account, setting_id)]
         else:
             unresolved_ids.append(setting_id)
 
     # Phase 2: Try cloud for uncached IDs
     if unresolved_ids:
         cloud = await build_authenticated_cloud(db, current_user)
+        # Release the request's DB transaction before the sequential Bambu Cloud
+        # round-trips below (#2572). build_authenticated_cloud has read the
+        # stored token — the only DB access this phase needs — and nothing until
+        # Phase 3 touches the DB again. Without this the session sat "idle in
+        # transaction" for the full duration of N external HTTP calls, pinning a
+        # pooled connection per in-flight request. Phase 3's read transparently
+        # opens a fresh transaction on the same still-open session.
+        await db.rollback()
         if cloud is not None and cloud.is_authenticated:
             try:
                 still_unresolved: list[str] = []
                 for setting_id in unresolved_ids:
-                    try:
-                        api_setting_id = _filament_id_to_setting_id(setting_id)
-                        data = await cloud.get_setting_detail(api_setting_id)
-                        setting = data.get("setting", {})
-                        name = data.get("name", "")
-                        k_value = setting.get("pressure_advance")
-                        if k_value is not None:
-                            try:
-                                k_value = float(k_value)
-                            except (ValueError, TypeError):
-                                k_value = None
-
-                        info = {"name": name, "k": k_value}
-                        _filament_cache[setting_id] = info
+                    info = await _resolve_cloud_filament(setting_id, cloud, account)
+                    if info is not None:
                         result[setting_id] = info
-
-                        if not name:
-                            still_unresolved.append(setting_id)
-                    except Exception as e:
-                        logger.warning(
-                            f"Failed to get cloud preset {setting_id} "
-                            f"(API ID: {_filament_id_to_setting_id(setting_id)}): {e}"
-                        )
+                    if info is None or not info.get("name"):
                         still_unresolved.append(setting_id)
-
                 unresolved_ids = still_unresolved
             finally:
                 await cloud.close()
@@ -812,14 +1050,14 @@ async def get_filament_info(
 
     # Phase 3: Try local profiles for any IDs still without a name
     if unresolved_ids:
-        result = await _enrich_from_local_presets(unresolved_ids, result, db)
+        result = await _enrich_from_local_presets(unresolved_ids, result, db, account)
 
     return result
 
 
 @router.get("/devices", response_model=list[CloudDevice])
 async def get_devices(
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
     current_user: User | None = cloud_caller(Permission.PRINTERS_READ),
 ):
     """
@@ -846,17 +1084,19 @@ async def get_devices(
             for d in devices
         ]
     except BambuCloudAuthError:
-        await clear_token(db, current_user)
+        # The sign-in is kept: /cloud/status shows it as expired from the stored
+        # token and its invalid flag, and the region carries to the next sign-in.
         raise HTTPException(status_code=401, detail="Authentication expired")
     except BambuCloudError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # Bambu Cloud failed or could not be reached: a bad gateway.
+        raise HTTPException(status_code=502, detail=str(e))
     finally:
         await cloud.close()
 
 
 @router.get("/firmware-updates", response_model=FirmwareUpdatesResponse)
 async def get_firmware_updates(
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
     current_user: User | None = cloud_caller(Permission.FIRMWARE_READ),
 ):
     """
@@ -904,6 +1144,8 @@ async def get_firmware_updates(
                         release_notes=firmware_info.get("release_notes"),
                     )
                 )
+            except BambuCloudAuthError:
+                raise  # the session expired: not an unknown version per device
             except BambuCloudError as e:
                 logger.warning("Failed to get firmware info for %s: %s", device_name, e)
                 # Still include device but with unknown firmware status
@@ -921,10 +1163,12 @@ async def get_firmware_updates(
         return FirmwareUpdatesResponse(updates=updates, updates_available=updates_available)
 
     except BambuCloudAuthError:
-        await clear_token(db, current_user)
+        # The sign-in is kept: /cloud/status shows it as expired from the stored
+        # token and its invalid flag, and the region carries to the next sign-in.
         raise HTTPException(status_code=401, detail="Authentication expired")
     except BambuCloudError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # Bambu Cloud failed or could not be reached: a bad gateway.
+        raise HTTPException(status_code=502, detail=str(e))
     finally:
         await cloud.close()
 
@@ -932,7 +1176,7 @@ async def get_firmware_updates(
 @router.post("/settings")
 async def create_setting(
     request: SlicerSettingCreate,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
     current_user: User | None = cloud_caller(Permission.CLOUD_AUTH),
 ):
     """
@@ -957,10 +1201,12 @@ async def create_setting(
         )
         return data
     except BambuCloudAuthError:
-        await clear_token(db, current_user)
+        # The sign-in is kept: /cloud/status shows it as expired from the stored
+        # token and its invalid flag, and the region carries to the next sign-in.
         raise HTTPException(status_code=401, detail="Authentication expired")
     except BambuCloudError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # Bambu Cloud failed or could not be reached: a bad gateway.
+        raise HTTPException(status_code=502, detail=str(e))
     finally:
         await cloud.close()
 
@@ -969,7 +1215,7 @@ async def create_setting(
 async def update_setting(
     setting_id: str,
     request: SlicerSettingUpdate,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
     current_user: User | None = cloud_caller(Permission.CLOUD_AUTH),
 ):
     """
@@ -989,10 +1235,12 @@ async def update_setting(
         )
         return data
     except BambuCloudAuthError:
-        await clear_token(db, current_user)
+        # The sign-in is kept: /cloud/status shows it as expired from the stored
+        # token and its invalid flag, and the region carries to the next sign-in.
         raise HTTPException(status_code=401, detail="Authentication expired")
     except BambuCloudError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # Bambu Cloud failed or could not be reached: a bad gateway.
+        raise HTTPException(status_code=502, detail=str(e))
     finally:
         await cloud.close()
 
@@ -1000,7 +1248,7 @@ async def update_setting(
 @router.delete("/settings/{setting_id}", response_model=SlicerSettingDeleteResponse)
 async def delete_setting(
     setting_id: str,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
     current_user: User | None = cloud_caller(Permission.CLOUD_AUTH),
 ):
     """
@@ -1019,10 +1267,12 @@ async def delete_setting(
             message=result.get("message", "Setting deleted"),
         )
     except BambuCloudAuthError:
-        await clear_token(db, current_user)
+        # The sign-in is kept: /cloud/status shows it as expired from the stored
+        # token and its invalid flag, and the region carries to the next sign-in.
         raise HTTPException(status_code=401, detail="Authentication expired")
     except BambuCloudError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # Bambu Cloud failed or could not be reached: a bad gateway.
+        raise HTTPException(status_code=502, detail=str(e))
     finally:
         await cloud.close()
 
@@ -1076,14 +1326,16 @@ async def get_builtin_filaments(
     return [{"filament_id": fid, "name": name} for fid, name in _BUILTIN_FILAMENT_NAMES.items()]
 
 
-# Cache for filament_id → name mapping (resolved from cloud preset details)
-_filament_id_name_cache: dict[str, str] = {}
-_filament_id_name_cache_time: float = 0
+# filament_id → name mappings (resolved from cloud preset details), one per
+# cloud account: the user whose token read it, or None for the global token
+# used when auth is off. Value: (time read, mapping).
+_filament_id_name_cache: dict[int | None, tuple[float, dict[str, str]]] = {}
+# Builds still running, by account (RC-C11).
+_filament_id_map_inflight: dict[int | None, asyncio.Future] = {}
 
 
 @router.get("/filament-id-map")
 async def get_filament_id_map(
-    db: AsyncSession = Depends(get_db),
     current_user: User | None = cloud_caller(Permission.FILAMENTS_READ),
 ):
     """
@@ -1092,20 +1344,50 @@ async def get_filament_id_map(
     K-profiles store a filament_id (e.g., "P4d64437") which is different from
     the cloud preset setting_id (e.g., "PFUS9ac902733670a9"). This endpoint
     fetches details for all custom presets and returns the mapping.
-    Cached for 5 minutes.
+    Cached for 5 minutes per cloud account; a caller is only ever given the
+    mapping of their own account's presets.
     """
     import time
 
-    global _filament_id_name_cache, _filament_id_name_cache_time
+    account = current_user.id if current_user is not None else None
+    cached = _filament_id_name_cache.get(account)
+    if cached and time.time() - cached[0] < FILAMENT_CACHE_TTL:
+        return cached[1]
 
-    if _filament_id_name_cache and time.time() - _filament_id_name_cache_time < FILAMENT_CACHE_TTL:
-        return _filament_id_name_cache
+    # One build per account at a time: when the cache expired, every K-profile
+    # view asked at once and each ran the full 1 + N fetch (RC-C11). Registered
+    # before anything is awaited, so callers arriving together all join it.
+    running = _filament_id_map_inflight.get(account)
+    if running is None or running.done():
+        running = spawn_background_task(_build_filament_id_map(current_user, account), name="cloud-filament-id-map")
+        _filament_id_map_inflight[account] = running
 
-    cloud = await build_authenticated_cloud(db, current_user)
+        def _forget(done: asyncio.Future, account: int | None = account) -> None:
+            if _filament_id_map_inflight.get(account) is done:
+                del _filament_id_map_inflight[account]
+
+        running.add_done_callback(_forget)
+    try:
+        # shield: a caller that goes away must not cancel the build others joined.
+        return dict(await asyncio.shield(running))
+    except Exception:
+        return cached[1] if cached else {}
+
+
+async def _build_filament_id_map(user: User | None, account: int | None) -> dict[str, str]:
+    """Fetch an account's custom presets and map their filament ids to names.
+
+    Reads the stored token in a session of its own, closed before the Bambu
+    Cloud round-trips: no request holds a database connection across them.
+    """
+    import time
+
+    async with database.async_session() as db:
+        cloud = await build_authenticated_cloud(db, user)
     if cloud is None or not cloud.is_authenticated:
         if cloud is not None:
             await cloud.close()
-        return _filament_id_name_cache or {}
+        return {}
 
     try:
         data = await cloud.get_slicer_settings()
@@ -1118,7 +1400,10 @@ async def get_filament_id_map(
                 continue
             try:
                 detail = await cloud.get_setting_detail(setting_id)
-                fid = detail.get("filament_id", "")
+                # On the envelope normally; in the preset JSON under `setting`
+                # when not (the same fallback as slicer_filament_resolver).
+                nested = detail.get("setting")
+                fid = detail.get("filament_id") or (nested.get("filament_id") if isinstance(nested, dict) else "")
                 name = detail.get("name", "")
                 if fid and name:
                     # Strip printer/nozzle suffix: "Devil Design PLA Basic @Bambu Lab H2D 0.4 nozzle" → "Devil Design PLA Basic"
@@ -1127,11 +1412,11 @@ async def get_filament_id_map(
             except Exception:
                 pass
 
-        _filament_id_name_cache = result
-        _filament_id_name_cache_time = time.time()
+        # Not when the account signed out meanwhile: its build was dropped,
+        # and this map was read with the token that is gone.
+        if _filament_id_map_inflight.get(account) is asyncio.current_task():
+            _filament_id_name_cache[account] = (time.time(), result)
         return result
-    except Exception:
-        return _filament_id_name_cache or {}
     finally:
         await cloud.close()
 

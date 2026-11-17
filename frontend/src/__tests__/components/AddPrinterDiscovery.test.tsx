@@ -109,7 +109,9 @@ describe('AddPrinterModal Discovery', () => {
     await userEvent.click(addButton);
 
     await waitFor(() => {
-      // Should show a select element (dropdown) with both subnets + Custom
+      // Should show a select element (dropdown) with both subnets and
+      // the trailing "Custom subnet..." sentinel that lets a user enter
+      // a CIDR for a printer on a different L3 segment (#1564).
       const selectElement = screen.getByDisplayValue('192.168.1.0/24');
       expect(selectElement.tagName).toBe('SELECT');
 
@@ -117,7 +119,7 @@ describe('AddPrinterModal Discovery', () => {
       expect(options).toHaveLength(3);
       expect(options[0].textContent).toBe('192.168.1.0/24');
       expect(options[1].textContent).toBe('10.0.0.0/24');
-      expect(options[2].textContent).toMatch(/custom cidr/i);
+      expect(options[2].textContent).toMatch(/custom (cidr|subnet)/i);
     });
   });
 
@@ -147,7 +149,9 @@ describe('AddPrinterModal Discovery', () => {
 
     await userEvent.selectOptions(screen.getByDisplayValue('10.2.0.0/24'), '__custom__');
 
-    const textInput = await screen.findByPlaceholderText('192.168.1.0/24');
+    // Picking "Custom subnet..." keeps the dropdown and reveals a separate
+    // CIDR input underneath (upstream #1564 layout).
+    const textInput = await screen.findByLabelText(/custom subnet \(cidr\)/i);
     expect(textInput.tagName).toBe('INPUT');
     await userEvent.type(textInput, '10.0.0.0/24');
     expect(textInput).toHaveValue('10.0.0.0/24');
@@ -182,7 +186,11 @@ describe('AddPrinterModal Discovery', () => {
     });
   });
 
-  it('does not show subnet field in non-Docker mode', async () => {
+  it('shows the subnet picker in non-Docker mode too, with a Custom option (#1564)', async () => {
+    // Pre-#1564 the subnet picker was gated on isDocker and a native
+    // install only saw the "Discover Printers" button. SSDP doesn't
+    // cross routers, so users with a printer on a different L3 segment
+    // had no path to scan it. The picker is now always visible.
     server.use(
       http.get('/api/v1/discovery/info', () => {
         return HttpResponse.json({
@@ -203,14 +211,20 @@ describe('AddPrinterModal Discovery', () => {
     const addButton = screen.getByText(/add printer/i);
     await userEvent.click(addButton);
 
+    // Detected subnet is the default value; "Custom subnet..." sits
+    // alongside it so the user can pick a foreign CIDR.
     await waitFor(() => {
-      // Should show the discover button but NOT the subnet field
-      expect(screen.getByText(/discover printers/i)).toBeInTheDocument();
+      const selectElement = screen.getByDisplayValue('192.168.1.0/24');
+      expect(selectElement.tagName).toBe('SELECT');
+      const options = selectElement.querySelectorAll('option');
+      expect(options).toHaveLength(2);
+      expect(options[0].textContent).toBe('192.168.1.0/24');
+      expect(options[1].textContent).toMatch(/custom subnet/i);
     });
 
-    // Subnet field should not exist
-    expect(screen.queryByPlaceholderText('192.168.1.0/24')).not.toBeInTheDocument();
-    expect(screen.queryByDisplayValue('192.168.1.0/24')).not.toBeInTheDocument();
+    // Default selection leaves the SSDP path in place — the button
+    // still reads "Discover Printers on Network", not "Scan Subnet".
+    expect(screen.getByText(/discover printers/i)).toBeInTheDocument();
   });
 
   it('shows Moonraker subnet scan UI when Fluidd is selected', async () => {

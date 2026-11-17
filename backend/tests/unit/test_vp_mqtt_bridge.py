@@ -2,13 +2,24 @@
 
 import asyncio
 import json
+import logging
+import socket
+import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from backend.app.services.virtual_printer.mqtt_bridge import MQTTBridge, _ip_to_uint32_le
-from backend.app.services.virtual_printer.mqtt_server import SimpleMQTTServer
+from backend.app.services.virtual_printer.mqtt_bridge import (
+    MQTTBridge,
+    _ip_to_uint32_le,
+    _resolve_host_interface_for_target,
+    _resolve_target_to_ipv4,
+)
+from backend.app.services.virtual_printer.mqtt_server import (
+    _UPLOAD_SETTLE_SECONDS,
+    SimpleMQTTServer,
+)
 
 H2D_SERIAL = "0948BB540200427"
 VP_SERIAL = "09400A391800003"
@@ -143,6 +154,22 @@ class TestBridgeLifecycle:
         target.request_status_update.assert_called_once()
         await bridge.stop()
 
+    @pytest.mark.asyncio
+    async def test_post_bind_nudge_skipped_when_target_not_connected(self):
+        """#1721: the bridge can attach before the real printer's MQTT TLS
+        handshake completes. Calling request_status_update on a disconnected
+        client logs WARNING (bambu_mqtt.py:3224); on A1 firmware that
+        reconnects aggressively, every bind cycle pollutes the support bundle
+        with a benign line. The bridge must check state.connected before
+        nudging — the next periodic pushall picks up the cache anyway.
+        """
+        target = _make_paho_client(connected=False)
+        bridge = _make_bridge(_make_server(), target)
+        await bridge.start()
+        target._request_version.assert_not_called()
+        target.request_status_update.assert_not_called()
+        await bridge.stop()
+
 
 # ---------------------------------------------------------------------------
 # Caching: push_status
@@ -217,6 +244,95 @@ class TestPushStatusCache:
         cached = bridge.get_latest_print_state()
         assert cached["net"]["info"][0]["ip"] == vp_le
         assert cached["net"]["info"][1]["ip"] == 0  # untouched
+
+        await bridge.stop()
+
+    @pytest.mark.asyncio
+    async def test_net_info_ip_rewritten_for_unknown_secondary_interface(self):
+        """Regression for #1429: real printers (X1C / H2D Pro) report multiple
+        active interfaces (WiFi + Ethernet) — only ONE matches the IP Printbuddy
+        tracks. The rewrite must catch every non-zero entry, not just the one
+        whose IP equals `_target_ip_uint32_le`, or the slicer's FTP fallback
+        path leaks straight to the real printer."""
+        server = _make_server(bind_address=VP_IP)
+        bridge = _make_bridge(server)
+        await bridge.start()
+
+        h2d_le = _ip_to_uint32_le(H2D_IP)
+        # A second IP Printbuddy never saw (e.g. printer's ethernet interface
+        # while Printbuddy talks over wifi).
+        other_le = _ip_to_uint32_le("192.168.99.42")
+        vp_le = _ip_to_uint32_le(VP_IP)
+        payload = json.dumps(
+            {
+                "print": {
+                    "command": "push_status",
+                    "net": {
+                        "info": [
+                            {"ip": h2d_le, "mask": 0xFFFFFF},
+                            {"ip": other_le, "mask": 0xFFFFFF},
+                            {"ip": 0, "mask": 0},
+                        ]
+                    },
+                }
+            }
+        ).encode()
+        bridge._on_printer_raw(f"device/{H2D_SERIAL}/report", payload)
+        await asyncio.sleep(0.01)
+
+        cached = bridge.get_latest_print_state()
+        assert cached["net"]["info"][0]["ip"] == vp_le
+        assert cached["net"]["info"][1]["ip"] == vp_le  # secondary interface also rewritten
+        assert cached["net"]["info"][2]["ip"] == 0  # placeholder untouched
+
+        await bridge.stop()
+
+    @pytest.mark.asyncio
+    async def test_late_arriving_printer_ip_rewrites_existing_cache(self):
+        """Regression for #1429: if the printer's `ip_address` is empty at
+        first bind (DB row stale, or the client object exists before the
+        first SSDP refresh fills it in), the rewrite stays disabled and the
+        first cached push poisons the cache with the real-printer IP.
+        Once `ip_address` becomes valid, the next refresh tick must (a) arm
+        the encoding and (b) sweep the cached `net.info[].ip` so the slicer
+        sees the rewritten value on its next pull. Without the sweep the
+        sticky-key preservation keeps the poisoned value alive across
+        every subsequent incremental push."""
+        server = _make_server(bind_address=VP_IP)
+        # Bind to a client whose ip_address is empty at start — simulates the
+        # late-arrival path.
+        target = _make_paho_client(ip="")
+        bridge = _make_bridge(server, target)
+        await bridge.start()
+        assert bridge._target_ip_uint32_le is None  # not yet armed
+
+        h2d_le = _ip_to_uint32_le(H2D_IP)
+        vp_le = _ip_to_uint32_le(VP_IP)
+        payload = json.dumps(
+            {
+                "print": {
+                    "command": "push_status",
+                    "net": {"info": [{"ip": h2d_le, "mask": 0xFFFFFF}]},
+                }
+            }
+        ).encode()
+        bridge._on_printer_raw(f"device/{H2D_SERIAL}/report", payload)
+        await asyncio.sleep(0.01)
+
+        # First push landed before encoding was armed → cache holds real IP.
+        cached = bridge.get_latest_print_state()
+        assert cached["net"]["info"][0]["ip"] == h2d_le
+
+        # Printer's IP becomes known. Next refresh tick must self-heal.
+        target.ip_address = H2D_IP
+        bridge._resolve_client()
+
+        cached = bridge.get_latest_print_state()
+        assert cached["net"]["info"][0]["ip"] == vp_le, (
+            "cache must be swept once encoding becomes valid; sticky-key "
+            "preservation would otherwise keep the poisoned IP forever"
+        )
+        assert bridge._target_ip_uint32_le == h2d_le
 
         await bridge.stop()
 
@@ -303,6 +419,167 @@ class TestPushStatusCache:
         assert cached["ams"]["tray_exist_bits"] == "3"
         assert cached["vt_tray"]["id"] == "254"
         assert cached["lights_report"][0]["mode"] == "on"
+
+        await bridge.stop()
+
+    @pytest.mark.asyncio
+    async def test_incremental_push_preserves_non_allowlisted_capability_fields(self):
+        """Regression for #1622: BambuStudio gates Device-tab UIs (manage
+        calibration, AMS-slot filament dropdown, ...) on capability /
+        lifecycle fields (cali_version, print_type, mc_print_stage,
+        device, ...) it reads off the cached push_status. Before the fix
+        these fields were not in the allowlist and drained out of the
+        bridge cache on the first 1 Hz incremental tick, so the slicer's
+        Device tab would grey out the gated UIs once the cache thinned.
+        After the fix the cache accumulates everything the printer has
+        ever sent, dropped only when explicitly overwritten.
+        """
+        server = _make_server()
+        bridge = _make_bridge(server)
+        await bridge.start()
+
+        full_push = json.dumps(
+            {
+                "print": {
+                    "command": "push_status",
+                    "cali_version": 2,
+                    "print_type": "idle",
+                    "gcode_state": "IDLE",
+                    "mc_print_stage": "0",
+                    "mc_stage": 0,
+                    "device": {"ext_tool": {"info": []}},
+                    "cfg": "",
+                    "home_flag": 256,
+                    "wifi_signal": "-50dBm",
+                }
+            }
+        ).encode()
+        bridge._on_printer_raw(f"device/{H2D_SERIAL}/report", full_push)
+        await asyncio.sleep(0.01)
+
+        # Incremental push carrying only temps + wifi — none of the
+        # capability/lifecycle fields above are mentioned.
+        incremental_push = json.dumps(
+            {
+                "print": {
+                    "command": "push_status",
+                    "wifi_signal": "-55dBm",
+                    "nozzle_temper": 24.5,
+                }
+            }
+        ).encode()
+        bridge._on_printer_raw(f"device/{H2D_SERIAL}/report", incremental_push)
+        await asyncio.sleep(0.01)
+
+        cached = bridge.get_latest_print_state()
+        # Incremental values applied.
+        assert cached["wifi_signal"] == "-55dBm"
+        assert cached["nozzle_temper"] == 24.5
+        # Capability / lifecycle fields preserved from the prior pushall
+        # — the symptoms in #1622 (Device-tab UIs disabled) trace to these
+        # exact keys missing.
+        assert cached["cali_version"] == 2
+        assert cached["print_type"] == "idle"
+        assert cached["gcode_state"] == "IDLE"
+        assert cached["mc_print_stage"] == "0"
+        assert cached["mc_stage"] == 0
+        assert cached["device"] == {"ext_tool": {"info": []}}
+        assert cached["cfg"] == ""
+        assert cached["home_flag"] == 256
+
+        await bridge.stop()
+
+    @pytest.mark.asyncio
+    async def test_partial_vt_tray_update_overlays_onto_cached_full_dict(self):
+        """Regression for #1622 round 5 (reported by @shaddowlink): right after
+        the slicer picks a filament for the external spool (vt_tray, ams_id=255),
+        Bambu firmware pushes a partial vt_tray carrying just the changed
+        fields — typically ``{tray_info_idx, tray_color}`` — and omits the
+        ~18 other keys (tray_type, state, k, n, cali_idx, nozzle_temp_min/max,
+        tray_uuid, xcam_info, ...) the slicer needs to render the slot.
+        Before this fix the per-field accumulate replaced the cached vt_tray
+        wholesale (it only carried over prev keys NOT present in new), so the
+        next 1 Hz cached-as-base push handed the slicer a stripped vt_tray and
+        BambuStudio rendered the external slot as "invalid" until a reload
+        triggered a fresh pushall. AMS slots didn't suffer because
+        `_merge_ams_dict` already deep-merged them. The fix overlays incoming
+        keys onto the previous dict for every top-level dict-shaped field
+        (excluding ams, which keeps its own deep merge).
+        """
+        server = _make_server()
+        bridge = _make_bridge(server)
+        await bridge.start()
+
+        # 1. Pushall response with the full ~20-field vt_tray dict a real
+        # P1S sends to bootstrap the slot.
+        full_push = json.dumps(
+            {
+                "print": {
+                    "command": "push_status",
+                    "vt_tray": {
+                        "id": "254",
+                        "tray_info_idx": "Pea5f68f",
+                        "tray_type": "PLA",
+                        "tray_sub_brands": "",
+                        "tray_color": "F72323FF",
+                        "tray_weight": "0",
+                        "tray_diameter": "0.00",
+                        "tray_temp": "0",
+                        "tray_time": "0",
+                        "bed_temp_type": "0",
+                        "bed_temp": "0",
+                        "nozzle_temp_max": "240",
+                        "nozzle_temp_min": "190",
+                        "xcam_info": "000000000000000000000000",
+                        "tray_uuid": "00000000000000000000000000000000",
+                        "ctype": 0,
+                        "remain": -1,
+                        "k": 0.01999999955296,
+                        "n": 1,
+                        "cali_idx": -1,
+                        "state": 3,
+                    },
+                }
+            }
+        ).encode()
+        bridge._on_printer_raw(f"device/{H2D_SERIAL}/report", full_push)
+        await asyncio.sleep(0.01)
+
+        # 2. Incremental push carrying just the two fields the slicer's pick
+        # changed — exactly the shape the P1S firmware sends after an
+        # ams_filament_setting ack. This is what shaddowlink's wire dump
+        # captured for the failing case.
+        incremental_push = json.dumps(
+            {
+                "print": {
+                    "command": "push_status",
+                    "vt_tray": {
+                        "tray_info_idx": "Pea5f68f",
+                        "tray_color": "76D9F4FF",
+                    },
+                }
+            }
+        ).encode()
+        bridge._on_printer_raw(f"device/{H2D_SERIAL}/report", incremental_push)
+        await asyncio.sleep(0.01)
+
+        cached = bridge.get_latest_print_state()
+        vt = cached["vt_tray"]
+        # Incoming fields applied.
+        assert vt["tray_info_idx"] == "Pea5f68f"
+        assert vt["tray_color"] == "76D9F4FF"
+        # All other fields preserved from the prior pushall — without these
+        # the slicer rendered the slot as invalid.
+        assert vt["tray_type"] == "PLA"
+        assert vt["state"] == 3
+        assert vt["remain"] == -1
+        assert vt["k"] == 0.01999999955296
+        assert vt["n"] == 1
+        assert vt["cali_idx"] == -1
+        assert vt["nozzle_temp_min"] == "190"
+        assert vt["nozzle_temp_max"] == "240"
+        assert vt["tray_uuid"] == "00000000000000000000000000000000"
+        assert vt["id"] == "254"
 
         await bridge.stop()
 
@@ -397,7 +674,12 @@ class TestPushStatusCache:
                                 {"id": "0", "tray": [{"id": "0", "tray_type": "PLA"}]},
                                 {"id": "1", "tray": [{"id": "0", "tray_type": "PETG"}]},
                             ],
-                            "tray_exist_bits": "3",
+                            # bit 0 (AMS 0 slot 0) + bit 4 (AMS 1 slot 0) = 0x11.
+                            # `_on_printer_raw` now applies the #1726 bitmask
+                            # cleanup to the cached state, so the test fixture
+                            # must declare both loaded slots — same shape the
+                            # real printer sends.
+                            "tray_exist_bits": "11",
                         },
                     }
                 }
@@ -428,6 +710,292 @@ class TestPushStatusCache:
         # Unit 1 survives the incremental.
         assert "1" in units
         assert units["1"]["tray"][0]["tray_type"] == "PETG"
+
+        await bridge.stop()
+
+    @pytest.mark.asyncio
+    async def test_an_unplugged_ams_leaves_the_slicer_cache(self):
+        """#3356: the printer card drops an AMS the printer reports unplugged;
+        the slicer must not go on seeing it. Shapes from an X1C capture: unit 1
+        comes with ams_exist_bits "2", and with the AMS unplugged every push
+        carries an empty unit list and "0"."""
+        server = _make_server()
+        bridge = _make_bridge(server)
+        await bridge.start()
+
+        def push(units, bits):
+            bridge._on_printer_raw(
+                f"device/{H2D_SERIAL}/report",
+                json.dumps(
+                    {
+                        "print": {
+                            "command": "push_status",
+                            "ams": {
+                                "ams": units,
+                                "ams_exist_bits": bits,
+                                "tray_exist_bits": "0",
+                                "power_on_flag": False,
+                            },
+                        }
+                    }
+                ).encode(),
+            )
+
+        push([{"id": "1", "tray": [{"id": "0", "tray_type": "PLA"}]}], "2")
+        await asyncio.sleep(0.01)
+        push([], "0")
+        await asyncio.sleep(0.01)
+
+        assert bridge.get_latest_print_state()["ams"]["ams"] == []
+
+        await bridge.stop()
+
+    @pytest.mark.asyncio
+    async def test_tray_exist_bits_clears_empty_slots_in_slicer_cache(self):
+        """#1726 (reported by @needo37): the bridge cache forwards the real
+        printer's raw AMS payload to the slicer. Without the empty-slot
+        cleanup that bambu_mqtt.py applies to Printbuddy's internal state, the
+        cached units carried stale `tray_type` / `tray_color` /
+        `tray_info_idx` for slots whose `tray_exist_bits` bit was 0 — and
+        BambuStudio's Sync rendered those empty slots as phantom loaded
+        filaments. After the fix the bridge runs the same shared
+        ``apply_tray_exist_bits`` helper before storing the cache.
+        """
+        server = _make_server()
+        bridge = _make_bridge(server)
+        await bridge.start()
+
+        # Pushall: AMS 0 has slots 0/1/2/3; only slots 1, 2, 3 are loaded.
+        # Slot 0 carries stale data (RFID/color/material from a previously
+        # loaded spool). `tray_exist_bits` = 0xe = 0b1110 → bit 0 unset.
+        bridge._on_printer_raw(
+            f"device/{H2D_SERIAL}/report",
+            json.dumps(
+                {
+                    "print": {
+                        "command": "push_status",
+                        "ams": {
+                            "ams": [
+                                {
+                                    "id": "0",
+                                    "tray": [
+                                        {
+                                            "id": "0",
+                                            "tray_type": "PLA",
+                                            "tray_color": "FF0000FF",
+                                            "tray_info_idx": "GFL00",
+                                            "tag_uid": "1234567890abcdef",
+                                            "tray_uuid": "abcdef1234567890abcdef1234567890",
+                                            "remain": 75,
+                                            "state": "11",
+                                        },
+                                        {"id": "1", "tray_type": "PETG", "tray_color": "00FF00FF"},
+                                        {"id": "2", "tray_type": "ABS", "tray_color": "0000FFFF"},
+                                        {"id": "3", "tray_type": "TPU", "tray_color": "FFFF00FF"},
+                                    ],
+                                }
+                            ],
+                            "tray_exist_bits": "e",
+                        },
+                    }
+                }
+            ).encode(),
+        )
+        await asyncio.sleep(0.01)
+
+        cached = bridge.get_latest_print_state()
+        slot0 = cached["ams"]["ams"][0]["tray"][0]
+        # Empty slot: stale per-tray fields wiped, state promoted to 9.
+        assert slot0["state"] == 9, "empty slot must be promoted to state=9"
+        assert slot0["tray_type"] == ""
+        assert slot0["tray_color"] == ""
+        assert slot0["tray_info_idx"] == ""
+        assert slot0["tag_uid"] == "0000000000000000"
+        assert slot0["tray_uuid"] == "00000000000000000000000000000000"
+        assert slot0["remain"] == 0
+        # Loaded slots preserved.
+        assert cached["ams"]["ams"][0]["tray"][1]["tray_type"] == "PETG"
+        assert cached["ams"]["ams"][0]["tray"][2]["tray_type"] == "ABS"
+        assert cached["ams"]["ams"][0]["tray"][3]["tray_type"] == "TPU"
+
+        await bridge.stop()
+
+    @pytest.mark.asyncio
+    async def test_a2l_ams_lite_slots_survive_in_slicer_cache(self):
+        """#2697 (reported by @qoatzelcoat): every A2L slot rendered as "?" in
+        BambuStudio through the VP, while Printbuddy's own AMS card was correct.
+
+        The A2L reports its AMS Lite as physical unit id 16 but packs the
+        presence bits at base 24. Printbuddy's internal path normalises 16 -> 6
+        before the cleanup runs, so it read the right bits; the bridge parses
+        the raw printer payload itself and still held 16, so the cleanup read
+        bits 64-67 — never set — and wiped all four slots in the cache the
+        slicer reads. A slicer-side filament pick reverted on the next 1 Hz
+        push for the same reason.
+
+        The cached units must keep the physical id 16: BambuStudio addresses
+        the Lite as 16 (it sends `ams_get_rfid {ams_id: 16}` through the VP).
+        """
+        server = _make_server()
+        bridge = _make_bridge(server)
+        await bridge.start()
+
+        # Reporter's capture: tray_exist_bits 0x7000000 = bits 24/25/26 →
+        # slots 0, 1, 2 loaded, slot 3 empty.
+        bridge._on_printer_raw(
+            f"device/{H2D_SERIAL}/report",
+            json.dumps(
+                {
+                    "print": {
+                        "command": "push_status",
+                        "ams": {
+                            "ams": [
+                                {
+                                    "id": "16",
+                                    "tray": [
+                                        {
+                                            "id": "0",
+                                            "state": 3,
+                                            "tray_type": "PLA",
+                                            "tray_sub_brands": "PLA Basic",
+                                            "tray_color": "C12E1FFF",
+                                            "tray_info_idx": "GFA00",
+                                            "remain": 100,
+                                        },
+                                        {"id": "1", "state": 3, "tray_type": "PETG", "tray_info_idx": "GFG00"},
+                                        {"id": "2", "state": 3, "tray_type": "ABS", "tray_info_idx": "GFB00"},
+                                        {"id": "3", "state": 3, "tray_type": "TPU", "tray_info_idx": "GFU00"},
+                                    ],
+                                }
+                            ],
+                            "tray_exist_bits": "7000000",
+                        },
+                    }
+                }
+            ).encode(),
+        )
+        await asyncio.sleep(0.01)
+
+        cached = bridge.get_latest_print_state()
+        unit = cached["ams"]["ams"][0]
+        # The slicer-facing cache keeps the PHYSICAL id — BambuStudio speaks 16.
+        assert unit["id"] == "16"
+        trays = unit["tray"]
+        assert trays[0]["tray_type"] == "PLA", "loaded slot wrongly cleared (bit base 64 regression)"
+        assert trays[1]["tray_type"] == "PETG"
+        assert trays[2]["tray_type"] == "ABS"
+        assert trays[0]["tray_info_idx"] == "GFA00"
+        # Slot 3 is genuinely empty and still gets the normal cleanup.
+        assert trays[3]["state"] == 9
+        assert trays[3]["tray_type"] == ""
+
+        await bridge.stop()
+
+    @pytest.mark.asyncio
+    async def test_tray_exist_bits_shutdown_guard_preserves_cache(self):
+        """#765 shutdown guard mirrored at the bridge: when the printer
+        powers off it sends all-zero `tray_exist_bits` paired with
+        `power_on_flag=False`. Wiping the cache on that pattern would
+        propagate phantom empties to every slicer reconnect until the
+        printer powers back on and pushes a real state. Skip cleanup
+        on the shutdown-shaped payload."""
+        server = _make_server()
+        bridge = _make_bridge(server)
+        await bridge.start()
+
+        # 1. Normal pushall — all four slots loaded.
+        bridge._on_printer_raw(
+            f"device/{H2D_SERIAL}/report",
+            json.dumps(
+                {
+                    "print": {
+                        "command": "push_status",
+                        "ams": {
+                            "ams": [
+                                {
+                                    "id": "0",
+                                    "tray": [
+                                        {"id": str(i), "tray_type": "PLA", "tray_color": f"{i:02x}{i:02x}{i:02x}FF"}
+                                        for i in range(4)
+                                    ],
+                                }
+                            ],
+                            "tray_exist_bits": "f",
+                            "power_on_flag": True,
+                        },
+                    }
+                }
+            ).encode(),
+        )
+        await asyncio.sleep(0.01)
+
+        # 2. Shutdown-shaped push: tray_exist_bits=0 + power_on_flag=False.
+        bridge._on_printer_raw(
+            f"device/{H2D_SERIAL}/report",
+            json.dumps(
+                {
+                    "print": {
+                        "command": "push_status",
+                        "ams": {
+                            "tray_exist_bits": "0",
+                            "power_on_flag": False,
+                        },
+                    }
+                }
+            ).encode(),
+        )
+        await asyncio.sleep(0.01)
+
+        cached = bridge.get_latest_print_state()
+        for i in range(4):
+            assert cached["ams"]["ams"][0]["tray"][i]["tray_type"] == "PLA", f"slot {i} must survive the shutdown push"
+
+        await bridge.stop()
+
+    @pytest.mark.asyncio
+    async def test_tray_exist_bits_clears_empty_ams_ht_unit(self):
+        """AMS-HT (id 128-135) presence rides bit 16+(ams_id-128), so the bridge
+        cache clears an empty HT slot just like the internal AMS card — keeping
+        the slicer-facing view in sync (#1726, #2670). Loaded (bit 16 set) is
+        preserved; empty (bit 16 clear) is wiped.
+        """
+        server = _make_server()
+        bridge = _make_bridge(server)
+        await bridge.start()
+
+        def _push(tray_exist_bits: str) -> dict:
+            bridge._on_printer_raw(
+                f"device/{H2D_SERIAL}/report",
+                json.dumps(
+                    {
+                        "print": {
+                            "command": "push_status",
+                            "ams": {
+                                "ams": [
+                                    {
+                                        "id": "128",
+                                        "tray": [
+                                            {"id": "0", "tray_type": "PLA", "tray_color": "FF0000FF"},
+                                        ],
+                                    }
+                                ],
+                                "tray_exist_bits": tray_exist_bits,
+                                "power_on_flag": True,
+                            },
+                        }
+                    }
+                ).encode(),
+            )
+
+        # Loaded: bit 16 set → HT slot preserved.
+        _push("10000")
+        await asyncio.sleep(0.01)
+        assert bridge.get_latest_print_state()["ams"]["ams"][0]["tray"][0]["tray_type"] == "PLA"
+
+        # Empty: bit 16 clear → HT slot wiped so the slicer sees no phantom spool.
+        _push("0")
+        await asyncio.sleep(0.01)
+        assert bridge.get_latest_print_state()["ams"]["ams"][0]["tray"][0]["tray_type"] == ""
 
         await bridge.stop()
 
@@ -640,18 +1208,22 @@ class TestForwardToPrinter:
 # ---------------------------------------------------------------------------
 
 
+def _capture_published(server: SimpleMQTTServer) -> list:
+    """Wrap _publish_to_report to capture (topic, payload_dict)."""
+    published: list = []
+
+    async def _capture(writer, payload, serial="", log_event=True):
+        published.append((serial or server.serial, payload))
+
+    server._publish_to_report = _capture  # type: ignore[assignment]
+    return published
+
+
 class TestStatusReportCachedAsBase:
     """`_send_status_report` sends near-byte-identical real data when bridge cache exists."""
 
     def _capture_published(self, server: SimpleMQTTServer):
-        """Wrap _publish_to_report to capture (topic, payload_dict)."""
-        published: list = []
-
-        async def _capture(writer, payload, serial=""):
-            published.append((serial or server.serial, payload))
-
-        server._publish_to_report = _capture  # type: ignore[assignment]
-        return published
+        return _capture_published(server)
 
     @pytest.mark.asyncio
     async def test_uses_real_cache_when_bridge_active(self):
@@ -776,6 +1348,181 @@ class TestStatusReportCachedAsBase:
 
 
 # ---------------------------------------------------------------------------
+# Live print progress (#1887 / #1558)
+# ---------------------------------------------------------------------------
+
+
+def _printing_cache(**overrides) -> dict:
+    """Bridge cache for a target printer that is mid-print."""
+    cache = {
+        "command": "push_status",
+        "msg": 0,
+        "gcode_state": "RUNNING",
+        "gcode_file": "Metadata/plate_1.gcode",
+        "subtask_name": "benchy",
+        "mc_print_stage": "2",
+        "mc_percent": 47,
+        "mc_remaining_time": 3600,
+        "stg": [1, 2, 3],
+        "stg_cur": 14,
+        "layer_num": 120,
+        "total_layer_num": 250,
+        "print_error": 0,
+    }
+    cache.update(overrides)
+    return cache
+
+
+class TestLiveProgressMirror:
+    """The VP mirrors the target printer's progress without ever looking busy.
+
+    Both slicers gate the Device-tab progress panel and the Send button on the
+    same predicate — `MachineObject::is_in_printing()`, i.e. gcode_state in
+    {RUNNING, PAUSE, SLICING, PREPARE}. Reporting the printer's real state
+    shows progress but blocks Send for as long as it prints (#1558); zeroing
+    everything keeps Send alive but shows nothing (#1887). FINISH is the one
+    state that does both: StatusPanel renders on `is_in_printing() ||
+    print_status == "FINISH"`, while SelectMachineDialog only blocks on
+    `is_in_printing()`.
+    """
+
+    @pytest.mark.asyncio
+    async def test_progress_mirrored_while_target_prints(self):
+        """#1887: the numbers the slicer needs come straight from the cache."""
+        server = _make_server()
+        bridge = MagicMock()
+        bridge.get_latest_print_state.return_value = _printing_cache()
+        server.set_bridge(bridge)
+        published = _capture_published(server)
+
+        await server._send_status_report(MagicMock())
+        _serial, payload = published[0]
+        assert payload["print"]["mc_print_stage"] == "2"
+        assert payload["print"]["mc_percent"] == 47
+        assert payload["print"]["mc_remaining_time"] == 3600
+        assert payload["print"]["stg"] == [1, 2, 3]
+        assert payload["print"]["stg_cur"] == 14
+        assert payload["print"]["layer_num"] == 120
+        assert payload["print"]["total_layer_num"] == 250
+        # The job the printer is really running, not the VP's last upload.
+        assert payload["print"]["subtask_name"] == "benchy"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("target_state", ["RUNNING", "PAUSE"])
+    async def test_mirror_never_reports_a_printing_gcode_state(self, target_state):
+        """#1558 guard: any state in `is_in_printing()` disables the Send button.
+
+        This is the assertion that keeps the mirror honest — it may show the
+        printer's numbers, but it must never claim the VP itself is printing.
+        """
+        server = _make_server()
+        bridge = MagicMock()
+        bridge.get_latest_print_state.return_value = _printing_cache(gcode_state=target_state)
+        server.set_bridge(bridge)
+        published = _capture_published(server)
+
+        await server._send_status_report(MagicMock())
+        _serial, payload = published[0]
+        assert payload["print"]["gcode_state"] == "FINISH"
+        assert payload["print"]["gcode_state"] not in ("RUNNING", "PAUSE", "SLICING", "PREPARE")
+
+    @pytest.mark.asyncio
+    async def test_progress_zeroed_while_target_idle(self):
+        """Nothing to mirror — the VP's own upload state owns the report."""
+        server = _make_server()
+        server.set_gcode_state("FINISH", filename="foo.3mf", prepare_percent="100")
+        server._state_changed_at = time.monotonic() - 60  # settled long ago
+        bridge = MagicMock()
+        bridge.get_latest_print_state.return_value = _printing_cache(gcode_state="IDLE", mc_percent=0, layer_num=0)
+        server.set_bridge(bridge)
+        published = _capture_published(server)
+
+        await server._send_status_report(MagicMock())
+        _serial, payload = published[0]
+        assert payload["print"]["gcode_state"] == "FINISH"  # the VP's own, not mirrored
+        assert payload["print"]["subtask_name"] == "foo"
+        assert payload["print"]["mc_print_stage"] == ""
+        assert payload["print"]["stg"] == []
+        assert payload["print"]["total_layer_num"] == 0
+
+    @pytest.mark.asyncio
+    async def test_progress_zeroed_while_upload_in_flight(self):
+        """A job being handed over outranks the mirror.
+
+        The slicer is watching its own PREPARE → FINISH cycle here; feeding it
+        the printer's progress mid-handshake would contradict the PREPARE it is
+        waiting on.
+        """
+        server = _make_server()
+        server.set_gcode_state("PREPARE", filename="bar.3mf", prepare_percent="0")
+        bridge = MagicMock()
+        bridge.get_latest_print_state.return_value = _printing_cache()
+        server.set_bridge(bridge)
+        published = _capture_published(server)
+
+        await server._send_status_report(MagicMock())
+        _serial, payload = published[0]
+        assert payload["print"]["gcode_state"] == "PREPARE"
+        assert payload["print"]["gcode_file"] == "bar.3mf"
+        assert payload["print"]["subtask_name"] == "bar"
+        assert payload["print"]["mc_percent"] == 0
+        assert payload["print"]["layer_num"] == 0
+
+    @pytest.mark.asyncio
+    async def test_upload_settle_window_keeps_the_slicers_own_filename(self):
+        """#1658: the send modal releases on FINISH carrying the name it uploaded.
+
+        Swapping in the printer's filename while that handshake is still in
+        flight wedges the slicer at "Downloading", so the mirror waits.
+        """
+        server = _make_server()
+        bridge = MagicMock()
+        bridge.get_latest_print_state.return_value = _printing_cache()
+        server.set_bridge(bridge)
+        published = _capture_published(server)
+
+        server.set_gcode_state("FINISH", filename="bar.3mf", prepare_percent="100")
+        await server._send_status_report(MagicMock())
+        _serial, payload = published[0]
+        assert payload["print"]["subtask_name"] == "bar"
+        assert payload["print"]["mc_percent"] == 0
+
+    @pytest.mark.asyncio
+    async def test_mirror_resumes_once_the_upload_has_settled(self):
+        """Same VP as above, once the slicer has had its FINISH."""
+        server = _make_server()
+        bridge = MagicMock()
+        bridge.get_latest_print_state.return_value = _printing_cache()
+        server.set_bridge(bridge)
+        published = _capture_published(server)
+
+        server.set_gcode_state("FINISH", filename="bar.3mf", prepare_percent="100")
+        server._state_changed_at = time.monotonic() - _UPLOAD_SETTLE_SECONDS - 1
+        await server._send_status_report(MagicMock())
+        _serial, payload = published[0]
+        assert payload["print"]["subtask_name"] == "benchy"
+        assert payload["print"]["mc_percent"] == 47
+
+    @pytest.mark.asyncio
+    async def test_print_error_never_mirrored(self):
+        """A fault on the printer must not raise a modal error dialog in the slicer.
+
+        The VP is not the machine that threw it — Printbuddy's own printer card
+        reports the fault.
+        """
+        server = _make_server()
+        bridge = MagicMock()
+        bridge.get_latest_print_state.return_value = _printing_cache(print_error=515)
+        server.set_bridge(bridge)
+        published = _capture_published(server)
+
+        await server._send_status_report(MagicMock())
+        _serial, payload = published[0]
+        assert payload["print"]["print_error"] == 0
+        assert payload["print"]["mc_percent"] == 47  # the rest still mirrors
+
+
+# ---------------------------------------------------------------------------
 # Wire format
 # ---------------------------------------------------------------------------
 
@@ -800,6 +1547,52 @@ class TestWireFormat:
 
         body = b"".join(captured)
         assert b'\n    "print"' in body, "publish_to_report must use indent=4 JSON"
+
+    @pytest.mark.asyncio
+    async def test_publish_records_bridge_to_slicer_event_by_default(self, monkeypatch):
+        """#1622 round 3: every bridge-synthesised reply (info.get_version answer,
+        project_file ack, on-demand pushall response) must show up in the
+        cmd.jsonl trace under the ``bridge_to_slicer`` direction so a P1S↔H2D
+        diff captures the fingerprint the slicer reads back from us."""
+        server = _make_server()
+        writer = MagicMock()
+        writer.write = lambda data: None
+        writer.drain = AsyncMock()
+
+        recorded: list = []
+        monkeypatch.setattr(
+            "backend.app.services.virtual_printer.mqtt_server.append_event",
+            lambda vp_name, direction, topic, payload: recorded.append((vp_name, direction, topic, payload)),
+        )
+
+        payload = {"info": {"command": "get_version", "sequence_id": "0"}}
+        await server._publish_to_report(writer, payload)
+
+        assert len(recorded) == 1
+        vp_name, direction, topic, recorded_payload = recorded[0]
+        assert direction == "bridge_to_slicer"
+        assert topic.endswith("/report")
+        assert recorded_payload == payload
+
+    @pytest.mark.asyncio
+    async def test_publish_skips_event_when_log_event_false(self, monkeypatch):
+        """The 1Hz periodic-push path passes ``log_event=False`` so dump_wire's
+        snapshot stays the canonical record of cache shape and the cmd.jsonl
+        isn't flooded with ~60 lines/min per VP."""
+        server = _make_server()
+        writer = MagicMock()
+        writer.write = lambda data: None
+        writer.drain = AsyncMock()
+
+        recorded: list = []
+        monkeypatch.setattr(
+            "backend.app.services.virtual_printer.mqtt_server.append_event",
+            lambda *args, **kwargs: recorded.append(args),
+        )
+
+        await server._publish_to_report(writer, {"print": {"command": "push_status"}}, log_event=False)
+
+        assert recorded == []
 
 
 # ---------------------------------------------------------------------------
@@ -950,3 +1743,407 @@ class TestIpEncoding:
     def test_invalid_ip_raises(self):
         with pytest.raises(ValueError):
             _ip_to_uint32_le("not.an.ip.actually")
+
+
+class TestHostnameResolution:
+    """#1429 follow-up: users who configured the printer by FQDN (common on
+    LANs with router-provided DNS like `p1s.fritz.box`) hit `invalid IPv4`
+    on the encoder and the rewrite never armed — slicer kept FTPing direct
+    to the real printer. The bridge now resolves hostname→IPv4 first."""
+
+    def test_pass_through_for_valid_ipv4(self):
+        assert _resolve_target_to_ipv4("192.168.1.50") == "192.168.1.50"
+
+    def test_empty_returns_none(self):
+        assert _resolve_target_to_ipv4("") is None
+        assert _resolve_target_to_ipv4(None) is None  # type: ignore[arg-type]
+
+    def test_hostname_resolves_via_getaddrinfo(self):
+        with patch(
+            "backend.app.services.virtual_printer.mqtt_bridge.socket.getaddrinfo",
+            return_value=[(2, 1, 6, "", ("192.168.3.153", 0))],
+        ) as mock_gai:
+            assert _resolve_target_to_ipv4("p1s.fritz.box") == "192.168.3.153"
+        # AF_INET filter prevents an IPv6-only result from being picked,
+        # since net.info[*].ip is a uint32 LE that can't carry v6.
+        assert mock_gai.call_args.kwargs.get("family") == socket.AF_INET
+
+    def test_dns_failure_returns_none(self):
+        with patch(
+            "backend.app.services.virtual_printer.mqtt_bridge.socket.getaddrinfo",
+            side_effect=OSError("Name or service not known"),
+        ):
+            assert _resolve_target_to_ipv4("nope.invalid") is None
+
+    def test_fqdn_target_arms_encoding(self, caplog):
+        """End-to-end: a client whose `ip_address` is an FQDN should arm
+        the bridge once DNS resolves, and the cached rewrite uses the
+        resolved IPv4 (not the hostname string) for the `net.info[].ip`
+        encoding."""
+        server = _make_server(bind_address=VP_IP)
+        bridge = _make_bridge(server)
+        client = _make_paho_client(ip="p1s.fritz.box")
+        bridge._target_client = client
+        with (
+            patch(
+                "backend.app.services.virtual_printer.mqtt_bridge.socket.getaddrinfo",
+                return_value=[(2, 1, 6, "", (H2D_IP, 0))],
+            ),
+            caplog.at_level(logging.INFO, logger="backend.app.services.virtual_printer.mqtt_bridge"),
+        ):
+            bridge._refresh_ip_encoding()
+        assert bridge._target_ip_uint32_le == _ip_to_uint32_le(H2D_IP)
+        assert bridge._vp_ip_uint32_le == _ip_to_uint32_le(VP_IP)
+        armed = [r for r in caplog.records if "MQTT bridge IP encoding armed" in r.getMessage()]
+        assert len(armed) == 1
+        # Operator should see configured→resolved in the log line so a
+        # bad-DNS regression is immediately legible.
+        assert "p1s.fritz.box→192.168.255.133" in armed[0].getMessage()
+
+
+# ---------------------------------------------------------------------------
+# Auto-resolve fallback for default-config (bind_address = "0.0.0.0")
+# ---------------------------------------------------------------------------
+
+
+class TestBindAddressAutoResolve:
+    """#1429 residual: VPs created without a dedicated bind IP run on
+    `bind_address=0.0.0.0`. The original fix's `_refresh_ip_encoding`
+    early-returned on 0.0.0.0, so the rewrite never armed and `net.info[].ip`
+    kept leaking the real printer IP. Now the bridge auto-resolves a host
+    interface in the printer's subnet and uses that as the VP IP."""
+
+    @pytest.mark.asyncio
+    async def test_rewrite_arms_via_auto_resolved_host_ip(self):
+        """When bind_address is 0.0.0.0, fall back to the host interface in
+        the target printer's subnet and rewrite to that IP."""
+        server = _make_server(bind_address="0.0.0.0")  # nosec B104
+        bridge = _make_bridge(server)
+        with patch(
+            "backend.app.services.virtual_printer.mqtt_bridge._resolve_host_interface_for_target",
+            return_value=VP_IP,
+        ):
+            await bridge.start()
+
+            h2d_le = _ip_to_uint32_le(H2D_IP)
+            vp_le = _ip_to_uint32_le(VP_IP)
+            payload = json.dumps(
+                {
+                    "print": {
+                        "command": "push_status",
+                        "net": {"info": [{"ip": h2d_le, "mask": 0xFFFFFF}]},
+                    }
+                }
+            ).encode()
+            bridge._on_printer_raw(f"device/{H2D_SERIAL}/report", payload)
+            await asyncio.sleep(0.01)
+
+            cached = bridge.get_latest_print_state()
+            assert cached["net"]["info"][0]["ip"] == vp_le
+            assert bridge._vp_ip_uint32_le == vp_le
+
+            await bridge.stop()
+
+    @pytest.mark.asyncio
+    async def test_rewrite_disabled_when_no_matching_host_interface(self):
+        """If no host interface shares a subnet with the printer, the bridge
+        cannot pick a sensible VP IP — leave encoding unarmed and let the
+        push through unrewritten (no crash, no wrong rewrite)."""
+        server = _make_server(bind_address="")
+        bridge = _make_bridge(server)
+        with patch(
+            "backend.app.services.virtual_printer.mqtt_bridge._resolve_host_interface_for_target",
+            return_value=None,
+        ):
+            await bridge.start()
+
+            h2d_le = _ip_to_uint32_le(H2D_IP)
+            payload = json.dumps(
+                {
+                    "print": {
+                        "command": "push_status",
+                        "net": {"info": [{"ip": h2d_le, "mask": 0xFFFFFF}]},
+                    }
+                }
+            ).encode()
+            bridge._on_printer_raw(f"device/{H2D_SERIAL}/report", payload)
+            await asyncio.sleep(0.01)
+
+            assert bridge._vp_ip_uint32_le is None
+            assert bridge._target_ip_uint32_le is None
+
+            await bridge.stop()
+
+    @pytest.mark.asyncio
+    async def test_explicit_bind_ip_takes_precedence_over_auto_resolve(self):
+        """Auto-resolve only kicks in when bind_address is empty/0.0.0.0; an
+        explicitly-set bind IP must be used verbatim even if there's also a
+        same-subnet host interface."""
+        server = _make_server(bind_address=VP_IP)
+        bridge = _make_bridge(server)
+        # Auto-resolver would have returned a DIFFERENT IP — we must not use it.
+        with patch(
+            "backend.app.services.virtual_printer.mqtt_bridge._resolve_host_interface_for_target",
+            return_value="10.99.99.99",
+        ):
+            await bridge.start()
+            assert bridge._vp_ip_uint32_le == _ip_to_uint32_le(VP_IP)
+            await bridge.stop()
+
+    def test_resolve_helper_returns_none_for_unreachable_target(self):
+        """The helper itself must be defensive — if `find_interface_for_ip`
+        raises or returns None, we get None (no crash)."""
+        with patch(
+            "backend.app.services.network_utils.find_interface_for_ip",
+            return_value=None,
+        ):
+            assert _resolve_host_interface_for_target("203.0.113.1") is None
+
+
+# ---------------------------------------------------------------------------
+# VIRTUAL_PRINTER_ADVERTISE_ADDRESS override (#2930)
+# ---------------------------------------------------------------------------
+
+
+class TestAdvertiseAddressOverride:
+    """#2930: behind NAT — Docker bridge networking being the case that
+    prompted it — no local interface carries the address a slicer uses to
+    reach Printbuddy, so both the bind address and the auto-resolved host
+    interface put a container-private IP into `net.info[].ip` and the
+    slicer's FTP upload goes nowhere. The env override supplies that address
+    directly. It is opt-in precisely so that every install which does not
+    set it keeps the behaviour it has today.
+    """
+
+    ENV = "VIRTUAL_PRINTER_ADVERTISE_ADDRESS"
+    HOST_IP = "192.168.1.50"
+    CONTAINER_IP = "172.24.0.2"
+
+    @staticmethod
+    def _bound_bridge(bind_address: str) -> MQTTBridge:
+        """A bridge with its target client already attached, so
+        `_refresh_ip_encoding` reaches IP resolution instead of returning
+        early on an unbound client."""
+        bridge = _make_bridge(_make_server(bind_address=bind_address))
+        bridge._target_client = _make_paho_client()
+        return bridge
+
+    @pytest.mark.asyncio
+    async def test_override_wins_over_an_explicit_bind_address(self, monkeypatch):
+        """The bind address is the container IP; the slicer has to be told the
+        host IP or its FTP connection has nowhere to land."""
+        monkeypatch.setenv(self.ENV, self.HOST_IP)
+        bridge = _make_bridge(_make_server(bind_address=self.CONTAINER_IP))
+        await bridge.start()
+        try:
+            payload = json.dumps(
+                {
+                    "print": {
+                        "command": "push_status",
+                        "net": {"info": [{"ip": _ip_to_uint32_le(H2D_IP), "mask": 0xFFFFFF}]},
+                    }
+                }
+            ).encode()
+            bridge._on_printer_raw(f"device/{H2D_SERIAL}/report", payload)
+            await asyncio.sleep(0.01)
+
+            assert bridge._vp_ip_uint32_le == _ip_to_uint32_le(self.HOST_IP)
+            encoded = bridge.get_latest_print_state()["net"]["info"][0]["ip"]
+            assert encoded == _ip_to_uint32_le(self.HOST_IP)
+            # Decoded independently of the helper that produced it: asserting
+            # both sides with `_ip_to_uint32_le` would agree even if the byte
+            # order were wrong, and the slicer reads this field as LE.
+            assert socket.inet_ntoa(encoded.to_bytes(4, "little")) == self.HOST_IP
+        finally:
+            await bridge.stop()
+
+    @pytest.mark.asyncio
+    async def test_override_wins_over_auto_resolve(self, monkeypatch):
+        """A VP left on the default 0.0.0.0 bind would otherwise auto-resolve a
+        host interface — inside a bridge-network container that resolves to the
+        container's own address, or to nothing at all."""
+        monkeypatch.setenv(self.ENV, self.HOST_IP)
+        bridge = self._bound_bridge("0.0.0.0")  # nosec B104
+        with patch(
+            "backend.app.services.virtual_printer.mqtt_bridge._resolve_host_interface_for_target",
+            return_value=self.CONTAINER_IP,
+        ):
+            bridge._refresh_ip_encoding()
+        assert bridge._vp_ip_uint32_le == _ip_to_uint32_le(self.HOST_IP)
+
+    def test_unset_leaves_the_bind_address_untouched(self, monkeypatch):
+        """The whole point of making this opt-in: with nothing set, resolution
+        is byte-for-byte what it was before the override existed."""
+        monkeypatch.delenv(self.ENV, raising=False)
+        bridge = self._bound_bridge(VP_IP)
+        bridge._refresh_ip_encoding()
+        assert bridge._vp_ip_uint32_le == _ip_to_uint32_le(VP_IP)
+
+    def test_invalid_override_falls_back_instead_of_disarming(self, caplog, monkeypatch):
+        """A typo must not un-arm the rewrite. Unarmed means the *real printer
+        IP* reaches the slicer (#1429) — strictly worse than the wrong VP IP,
+        so an unusable override degrades to the bind address."""
+        monkeypatch.setenv(self.ENV, "192.168.1")
+        with caplog.at_level(logging.WARNING, logger="backend.app.services.virtual_printer.mqtt_bridge"):
+            bridge = self._bound_bridge(VP_IP)
+        bridge._refresh_ip_encoding()
+        assert bridge._vp_ip_uint32_le == _ip_to_uint32_le(VP_IP)
+        warnings = [r for r in caplog.records if self.ENV in r.getMessage()]
+        assert len(warnings) == 1, "operator gets exactly one line naming the bad value"
+        assert "192.168.1" in warnings[0].getMessage()
+
+    def test_hostname_override_falls_back(self, monkeypatch):
+        """`net.info[].ip` is a uint32 — a hostname cannot round-trip through
+        it, and resolving one here would pick an address the operator did not
+        choose. Fall back rather than guess."""
+        monkeypatch.setenv(self.ENV, "printbuddy.local")
+        bridge = self._bound_bridge(VP_IP)
+        bridge._refresh_ip_encoding()
+        assert bridge._vp_ip_uint32_le == _ip_to_uint32_le(VP_IP)
+
+    def test_whitespace_only_override_is_ignored(self, monkeypatch):
+        """`VIRTUAL_PRINTER_ADVERTISE_ADDRESS=` in a compose file is how people
+        leave a variable listed but unused — not a configuration error."""
+        monkeypatch.setenv(self.ENV, "   ")
+        bridge = self._bound_bridge(VP_IP)
+        bridge._refresh_ip_encoding()
+        assert bridge._vp_ip_uint32_le == _ip_to_uint32_le(VP_IP)
+
+    def test_surrounding_whitespace_is_tolerated(self, monkeypatch):
+        """Copy-pasted compose values carry stray spaces; that should not cost
+        the user a warning and a silent fall back to the wrong address."""
+        monkeypatch.setenv(self.ENV, f"  {self.HOST_IP}  ")
+        bridge = self._bound_bridge(self.CONTAINER_IP)
+        bridge._refresh_ip_encoding()
+        assert bridge._vp_ip_uint32_le == _ip_to_uint32_le(self.HOST_IP)
+
+    def test_wildcard_override_falls_through_to_auto_resolve(self, monkeypatch):
+        """0.0.0.0 is a bind address, never a destination — treat it as unset
+        rather than encoding it and sending the slicer to 0.0.0.0."""
+        monkeypatch.setenv(self.ENV, "0.0.0.0")  # nosec B104
+        bridge = self._bound_bridge("0.0.0.0")  # nosec B104
+        with patch(
+            "backend.app.services.virtual_printer.mqtt_bridge._resolve_host_interface_for_target",
+            return_value=VP_IP,
+        ):
+            bridge._refresh_ip_encoding()
+        assert bridge._vp_ip_uint32_le == _ip_to_uint32_le(VP_IP)
+
+    def test_armed_log_names_the_override_as_the_source(self, caplog, monkeypatch):
+        """An operator reading the log has to be able to tell where the
+        advertised IP came from, otherwise a stale variable is invisible."""
+        monkeypatch.setenv(self.ENV, self.HOST_IP)
+        bridge = self._bound_bridge(self.CONTAINER_IP)
+        with caplog.at_level(logging.INFO, logger="backend.app.services.virtual_printer.mqtt_bridge"):
+            bridge._refresh_ip_encoding()
+        armed = [r for r in caplog.records if "IP encoding armed" in r.getMessage()]
+        assert len(armed) == 1
+        assert self.ENV in armed[0].getMessage()
+        assert self.HOST_IP in armed[0].getMessage()
+
+    def test_not_armed_message_points_at_the_override(self, caplog, monkeypatch):
+        """The bridge-network install that has NOT set the variable is exactly
+        the one that cannot auto-resolve — the diagnostic has to name the
+        remedy, or the operator sees only that nothing works."""
+        monkeypatch.delenv(self.ENV, raising=False)
+        bridge = self._bound_bridge("0.0.0.0")  # nosec B104
+        with (
+            patch(
+                "backend.app.services.virtual_printer.mqtt_bridge._resolve_host_interface_for_target",
+                return_value=None,
+            ),
+            caplog.at_level(logging.INFO, logger="backend.app.services.virtual_printer.mqtt_bridge"),
+        ):
+            bridge._refresh_ip_encoding()
+        not_armed = [r for r in caplog.records if "NOT armed" in r.getMessage()]
+        assert len(not_armed) == 1
+        assert self.ENV in not_armed[0].getMessage()
+
+
+class TestNotArmedDiagnosticLogging:
+    """#1429 follow-up: every silent early-return in `_refresh_ip_encoding`
+    now emits one INFO line explaining WHY the rewrite couldn't arm. Throttled
+    to one line per state change so an idle unarmed bridge doesn't spam the
+    log every 30s tick. Cleared on arm so a future failure re-emits.
+    """
+
+    def test_no_client_logs_once(self, caplog):
+        bridge = _make_bridge(_make_server())
+        # Force the "no client" path: bridge starts with _target_client=None.
+        assert bridge._target_client is None
+        with caplog.at_level(logging.INFO, logger="backend.app.services.virtual_printer.mqtt_bridge"):
+            bridge._refresh_ip_encoding()
+            bridge._refresh_ip_encoding()  # 2nd tick — same reason, must NOT re-log.
+            bridge._refresh_ip_encoding()
+        not_armed = [r for r in caplog.records if "NOT armed" in r.getMessage()]
+        assert len(not_armed) == 1
+        assert "target_client is None" in not_armed[0].getMessage()
+
+    def test_missing_target_ip_logs_specific_reason(self, caplog):
+        bridge = _make_bridge(_make_server())
+        # Manually attach a client with no ip_address (simulates pre-DHCP).
+        client = _make_paho_client()
+        client.ip_address = ""
+        bridge._target_client = client
+        with caplog.at_level(logging.INFO, logger="backend.app.services.virtual_printer.mqtt_bridge"):
+            bridge._refresh_ip_encoding()
+        not_armed = [r for r in caplog.records if "NOT armed" in r.getMessage()]
+        assert len(not_armed) == 1
+        assert "no ip_address" in not_armed[0].getMessage()
+
+    def test_no_matching_host_interface_logs_specific_reason(self, caplog):
+        server = _make_server(bind_address="0.0.0.0")  # nosec B104
+        bridge = _make_bridge(server)
+        with (
+            patch(
+                "backend.app.services.virtual_printer.mqtt_bridge._resolve_host_interface_for_target",
+                return_value=None,
+            ),
+            caplog.at_level(logging.INFO, logger="backend.app.services.virtual_printer.mqtt_bridge"),
+        ):
+            bridge._target_client = _make_paho_client()
+            bridge._refresh_ip_encoding()
+        not_armed = [r for r in caplog.records if "NOT armed" in r.getMessage()]
+        assert len(not_armed) == 1
+        msg = not_armed[0].getMessage()
+        assert H2D_IP in msg
+        assert "no host interface" in msg
+
+    def test_unresolvable_target_logs_reason(self, caplog):
+        """When `ip_address` isn't a valid IPv4 *and* doesn't resolve via DNS,
+        the bridge must report a single concrete not-armed reason naming the
+        configured value — operator can then see exactly what input failed."""
+        server = _make_server(bind_address=VP_IP)
+        bridge = _make_bridge(server)
+        client = _make_paho_client()
+        client.ip_address = "not.an.ip"
+        bridge._target_client = client
+        with (
+            patch(
+                "backend.app.services.virtual_printer.mqtt_bridge.socket.getaddrinfo",
+                side_effect=OSError("nodename nor servname provided"),
+            ),
+            caplog.at_level(logging.INFO, logger="backend.app.services.virtual_printer.mqtt_bridge"),
+        ):
+            bridge._refresh_ip_encoding()
+        not_armed = [r for r in caplog.records if "NOT armed" in r.getMessage()]
+        assert len(not_armed) == 1
+        assert "could not resolve printer host 'not.an.ip'" in not_armed[0].getMessage()
+
+    def test_successful_arm_clears_dedup_so_future_failure_relogs(self, caplog):
+        """After a successful arm, the dedup must reset so a subsequent
+        regression (e.g. printer client unbinds) re-emits the diagnostic
+        line instead of being silenced by the previous failure reason."""
+        bridge = _make_bridge(_make_server(bind_address=VP_IP))
+        bridge._target_client = _make_paho_client()
+        with caplog.at_level(logging.INFO, logger="backend.app.services.virtual_printer.mqtt_bridge"):
+            bridge._refresh_ip_encoding()  # arms
+            assert bridge._not_armed_reason is None
+            # Simulate a regression — target_client drops away.
+            bridge._target_client = None
+            bridge._refresh_ip_encoding()
+            bridge._refresh_ip_encoding()  # 2nd same-reason tick must not re-log
+        not_armed = [r for r in caplog.records if "NOT armed" in r.getMessage()]
+        assert len(not_armed) == 1  # the post-arm failure
+        armed = [r for r in caplog.records if "MQTT bridge IP encoding armed" in r.getMessage()]
+        assert len(armed) == 1

@@ -65,7 +65,7 @@ async def test_order_number_roundtrip(async_client: AsyncClient, make_project):
     assert resp.json()["order_number"] == "ETSY-9"
 
     listing = (await async_client.get("/api/v1/projects/")).json()
-    assert next(p for p in listing if p["id"] == project["id"])["order_number"] == "ETSY-1"
+    assert next(p for p in listing if p["id"] == project["id"])["order_number"] == "ETSY-9"
 
 
 @pytest.mark.asyncio

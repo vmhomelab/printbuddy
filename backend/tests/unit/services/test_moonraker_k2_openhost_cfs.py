@@ -380,14 +380,15 @@ def test_creality_cfs_printers_keep_the_m8200_path(monkeypatch):
 
 
 def test_print_dispatch_shows_the_firmware_reason(monkeypatch):
-    from backend.app.services import background_dispatch as dispatch_module
+    from backend.app.services import print_scheduler as scheduler_module
 
     class _Client:
         last_error = "[BOX]: Box 2 slot A has no filament"
 
-    monkeypatch.setattr(dispatch_module.printer_manager, "get_client", lambda printer_id: _Client())
-    message = dispatch_module.BackgroundDispatchService._start_failure_message(1)
-    assert message == "Failed to start print: [BOX]: Box 2 slot A has no filament"
+    scheduler = scheduler_module.PrintScheduler
+    monkeypatch.setattr(scheduler_module.printer_manager, "get_client", lambda printer_id: _Client())
+    message = scheduler._start_failure_message(1)
+    assert message == "Failed to send print command to printer: [BOX]: Box 2 slot A has no filament"
 
-    monkeypatch.setattr(dispatch_module.printer_manager, "get_client", lambda printer_id: None)
-    assert dispatch_module.BackgroundDispatchService._start_failure_message(1) == "Failed to start print"
+    monkeypatch.setattr(scheduler_module.printer_manager, "get_client", lambda printer_id: None)
+    assert scheduler._start_failure_message(1) == "Failed to send print command to printer"

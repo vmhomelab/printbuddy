@@ -275,6 +275,25 @@ describe('ProjectDetailPage', () => {
     );
   });
 
+  describe('archive tiles', () => {
+    it('open the archive on the Archives page, marked (#3336)', async () => {
+      server.use(
+        http.get('/api/v1/projects/:id/archives', () =>
+          HttpResponse.json([{ id: 42, print_name: 'Bracket', status: 'completed', thumbnail_path: null }]),
+        ),
+        http.get('/api/v1/library/files', () => HttpResponse.json([])),
+      );
+
+      render(<ProjectDetailPage />);
+
+      // ?search= was never read by the Archives page. The name also appears in
+      // Printbuddy's production plan table, so pick the tile's own link.
+      const names = await screen.findAllByText('Bracket');
+      const tile = names.map((name) => name.closest('a')).find((link) => link !== null);
+      expect(tile).toHaveAttribute('href', '/archives?highlight=42');
+    });
+  });
+
   describe('isSlicedFilename — conditional print button', () => {
     it('shows print button for .gcode files', async () => {
       server.use(
@@ -286,7 +305,7 @@ describe('ProjectDetailPage', () => {
       render(<ProjectDetailPage />);
 
       await waitFor(() => {
-        expect(screen.getByTitle('Print Now')).toBeInTheDocument();
+        expect(screen.getByTitle('Print')).toBeInTheDocument();
       });
     });
 
@@ -300,7 +319,7 @@ describe('ProjectDetailPage', () => {
       render(<ProjectDetailPage />);
 
       await waitFor(() => {
-        expect(screen.getByTitle('Print Now')).toBeInTheDocument();
+        expect(screen.getByTitle('Print')).toBeInTheDocument();
       });
     });
 
@@ -317,7 +336,7 @@ describe('ProjectDetailPage', () => {
         expect(screen.getAllByText('benchy.gcode.bak').length).toBeGreaterThan(0);
       });
 
-      expect(screen.queryByTitle('Print Now')).not.toBeInTheDocument();
+      expect(screen.queryByTitle('Print')).not.toBeInTheDocument();
     });
 
     it('does NOT show print button for .stl files', async () => {
@@ -333,7 +352,7 @@ describe('ProjectDetailPage', () => {
         expect(screen.getAllByText('model.stl').length).toBeGreaterThan(0);
       });
 
-      expect(screen.queryByTitle('Print Now')).not.toBeInTheDocument();
+      expect(screen.queryByTitle('Print')).not.toBeInTheDocument();
     });
   });
 
@@ -396,10 +415,10 @@ describe('ProjectDetailPage', () => {
       render(<ProjectDetailPage />);
 
       await waitFor(() => {
-        expect(screen.getByTitle('Print Now')).toBeInTheDocument();
+        expect(screen.getByTitle('Print')).toBeInTheDocument();
       });
 
-      await user.click(screen.getByTitle('Print Now'));
+      await user.click(screen.getByTitle('Print'));
 
       // PrintModal should open — look for the modal heading "Print"
       await waitFor(() => {
@@ -466,7 +485,8 @@ describe('ProjectDetailPage', () => {
 
       expect(await screen.findByRole('heading', { name: 'Production Plan' })).toBeInTheDocument();
       await waitFor(() => expect(screen.getByText('Printing on PRA-01')).toBeInTheDocument());
-      expect(screen.getByText('68%')).toBeInTheDocument();
+      // Printer statuses arrive through the batched bulk read, a beat after the page.
+      expect(await screen.findByText('68%')).toBeInTheDocument();
     });
 
     it('opens add-to-queue modal from a production plan project file', async () => {
@@ -489,7 +509,7 @@ describe('ProjectDetailPage', () => {
       expect(await screen.findByRole('heading', { name: 'Production Plan' })).toBeInTheDocument();
       await user.click(screen.getByRole('button', { name: /stage gridfinity-bin-plate-02\.gcode\.3mf to queue/i }));
 
-      expect(await screen.findByRole('heading', { name: 'Schedule Print' })).toBeInTheDocument();
+      expect(await screen.findByRole('heading', { name: 'Print' })).toBeInTheDocument();
     });
 
     it('reviews selected dispatch suggestions before opening the staging modal', async () => {
@@ -526,7 +546,7 @@ describe('ProjectDetailPage', () => {
       expect(within(dialog).getByText('gridfinity-bin-plate-03.gcode.3mf')).toBeInTheDocument();
 
       await user.click(within(dialog).getByRole('button', { name: /stage first selected job/i }));
-      expect(await screen.findByRole('heading', { name: 'Schedule Print' })).toBeInTheDocument();
+      expect(await screen.findByRole('heading', { name: 'Print' })).toBeInTheDocument();
     });
 
     it('suggests safe dispatch targets and opens review staging for the suggested printer', async () => {
@@ -574,7 +594,212 @@ describe('ProjectDetailPage', () => {
 
       await user.click(screen.getByRole('button', { name: /review staging for gridfinity-bin-plate-02\.gcode\.3mf on PRA-01/i }));
 
-      expect(await screen.findByRole('heading', { name: 'Schedule Print' })).toBeInTheDocument();
+      expect(await screen.findByRole('heading', { name: 'Print' })).toBeInTheDocument();
+    });
+  });
+  describe('per-file print progress (#1897)', () => {
+    it('shows X / N badges and the Complete Sets bar when target_sets is set', async () => {
+      server.use(
+        http.get('/api/v1/projects/:id', () => {
+          return HttpResponse.json({ ...mockProject, target_sets: 10 });
+        }),
+        http.get('/api/v1/library/files', () => {
+          return HttpResponse.json([
+            makeFile({ id: 5, filename: 'plate_1.gcode.3mf', file_type: '3mf' }),
+            makeFile({ id: 6, filename: 'plate_2.gcode.3mf', file_type: '3mf' }),
+          ]);
+        }),
+        http.get('/api/v1/projects/:id/file-progress', () => {
+          return HttpResponse.json([{ file_id: 5, completed_count: 3 }]);
+        }),
+      );
+
+      render(<ProjectDetailPage />);
+
+      // Per-file badges: 3 / 10 for plate_1, 0 / 10 for the never-printed plate_2
+      await waitFor(() => {
+        expect(screen.getByTitle('3 of 10 completed prints')).toBeInTheDocument();
+      });
+      expect(screen.getByTitle('0 of 10 completed prints')).toBeInTheDocument();
+
+      // Complete sets = min across printable files = 0
+      expect(screen.getByText('Complete Sets')).toBeInTheDocument();
+      expect(
+        screen.getByText((_, element) => element?.tagName === 'SPAN' && element.textContent === '0 / 10 sets')
+      ).toBeInTheDocument();
+    });
+
+    it('counts a complete set once every printable file reached the target', async () => {
+      server.use(
+        http.get('/api/v1/projects/:id', () => {
+          return HttpResponse.json({ ...mockProject, target_sets: 2 });
+        }),
+        http.get('/api/v1/library/files', () => {
+          return HttpResponse.json([
+            makeFile({ id: 5, filename: 'plate_1.gcode.3mf', file_type: '3mf' }),
+            // STL is not printable and must not drag the set count to 0
+            makeFile({ id: 8, filename: 'source.stl', file_type: 'stl' }),
+            makeFile({ id: 6, filename: 'plate_2.gcode.3mf', file_type: '3mf' }),
+          ]);
+        }),
+        http.get('/api/v1/projects/:id/file-progress', () => {
+          // plate_1 overshot the target; capped at 2 for the set count
+          return HttpResponse.json([
+            { file_id: 5, completed_count: 3 },
+            { file_id: 6, completed_count: 2 },
+          ]);
+        }),
+      );
+
+      render(<ProjectDetailPage />);
+
+      await waitFor(() => {
+        expect(
+          screen.getByText((_, element) => element?.tagName === 'SPAN' && element.textContent === '2 / 2 sets')
+        ).toBeInTheDocument();
+      });
+    });
+
+    it('shows a plain printed-count badge when no target_sets is set', async () => {
+      server.use(
+        http.get('/api/v1/library/files', () => {
+          return HttpResponse.json([makeFile({ id: 5, filename: 'plate_1.gcode.3mf', file_type: '3mf' })]);
+        }),
+        http.get('/api/v1/projects/:id/file-progress', () => {
+          return HttpResponse.json([{ file_id: 5, completed_count: 4 }]);
+        }),
+      );
+
+      render(<ProjectDetailPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('4\u00d7')).toBeInTheDocument();
+      });
+      // No sets bar without a target
+      expect(screen.queryByText('Complete Sets')).not.toBeInTheDocument();
+    });
+  });
+  describe('sub-project roll-up (#1264)', () => {
+    const withChildren = {
+      ...mockProject,
+      // Supplying `stats` opens the cost card, which reads `budget` — the API
+      // always sends the key, so the mock has to as well.
+      budget: null,
+      descendant_count: 2,
+      children: [
+        {
+          id: 2,
+          name: 'Wing',
+          color: '#ff0000',
+          status: 'active',
+          progress_percent: 50,
+          descendant_count: 1,
+          total_archives: 4,
+          completed_prints: 4,
+          total_print_time_hours: 6,
+          total_filament_grams: 250,
+          total_cost: 12.5,
+        },
+      ],
+      stats: {
+        total_archives: 1,
+        total_items: 1,
+        completed_prints: 1,
+        failed_prints: 0,
+        queued_prints: 0,
+        in_progress_prints: 0,
+        total_print_time_hours: 2,
+        total_filament_grams: 100,
+        progress_percent: null,
+        parts_progress_percent: null,
+        estimated_cost: 5,
+        total_energy_kwh: 0,
+        total_energy_cost: 0,
+        remaining_prints: null,
+        remaining_parts: null,
+        bom_total_items: 0,
+        bom_completed_items: 0,
+        bom_cost: 0,
+      },
+      rollup_stats: {
+        total_archives: 5,
+        total_items: 5,
+        completed_prints: 5,
+        failed_prints: 0,
+        queued_prints: 0,
+        in_progress_prints: 0,
+        total_print_time_hours: 8,
+        total_filament_grams: 350,
+        progress_percent: 40,
+        parts_progress_percent: null,
+        estimated_cost: 17.5,
+        total_energy_kwh: 0,
+        total_energy_cost: 0,
+        remaining_prints: 3,
+        remaining_parts: null,
+        bom_total_items: 0,
+        bom_completed_items: 0,
+        bom_cost: 0,
+      },
+    };
+
+    it('shows the whole programme alongside the project own numbers', async () => {
+      server.use(http.get('/api/v1/projects/:id', () => HttpResponse.json(withChildren)));
+
+      render(<ProjectDetailPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Including 2 sub-projects')).toBeInTheDocument();
+      });
+      // Both sets are on screen at once, which is the point — the roll-up must
+      // not quietly replace what the project itself printed.
+      expect(screen.getByText('350g')).toBeInTheDocument();
+      expect(screen.getByText('100g')).toBeInTheDocument();
+    });
+
+    it('stays quiet when the project has no sub-projects', async () => {
+      // Reversion-proof: if the roll-up were computed unconditionally it would
+      // print a second, identical set of figures under every ordinary project.
+      server.use(
+        http.get('/api/v1/projects/:id', () =>
+          HttpResponse.json({ ...withChildren, children: [], descendant_count: 0, rollup_stats: null })
+        )
+      );
+
+      render(<ProjectDetailPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('100g')).toBeInTheDocument();
+      });
+      expect(screen.queryByText(/Including .* sub-projects/)).not.toBeInTheDocument();
+    });
+
+    it('gives each listed sub-project its own branch total', async () => {
+      server.use(http.get('/api/v1/projects/:id', () => HttpResponse.json(withChildren)));
+
+      render(<ProjectDetailPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Wing')).toBeInTheDocument();
+      });
+      expect(screen.getByText('4 jobs')).toBeInTheDocument();
+      expect(screen.getByText('250g')).toBeInTheDocument();
+      expect(screen.getByText('50%')).toBeInTheDocument();
+    });
+
+    it('marks a sub-project that is itself a parent', async () => {
+      // Otherwise its figures look inflated for a single project rather than
+      // covering the branch under it.
+      server.use(http.get('/api/v1/projects/:id', () => HttpResponse.json(withChildren)));
+
+      render(<ProjectDetailPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Wing')).toBeInTheDocument();
+      });
+      const row = screen.getByText('Wing').closest('a');
+      expect(row).not.toBeNull();
+      expect(row!.textContent).toContain('1');
     });
   });
 });

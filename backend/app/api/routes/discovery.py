@@ -6,7 +6,6 @@ Supports both SSDP discovery (for native installs) and subnet scanning (for Dock
 Also supports Moonraker/Klipper subnet scanning via HTTP ``server/info``.
 """
 
-import asyncio
 import logging
 
 from fastapi import APIRouter
@@ -14,6 +13,7 @@ from pydantic import BaseModel
 
 from backend.app.core.auth import RequirePermissionIfAuthEnabled
 from backend.app.core.permissions import Permission
+from backend.app.core.tasks import spawn_background_task
 from backend.app.models.user import User
 from backend.app.services.discovery import (
     discovery_service,
@@ -184,7 +184,10 @@ async def start_subnet_scan(
         request: Subnet to scan in CIDR notation (e.g., "192.168.1.0/24")
     """
     # Start scan in background
-    asyncio.create_task(subnet_scanner.scan_subnet(request.subnet, request.timeout))
+    spawn_background_task(
+        subnet_scanner.scan_subnet(request.subnet, request.timeout),
+        name=f"subnet-scan-{request.subnet}",
+    )
 
     # Return immediate status
     scanned, total = subnet_scanner.progress
@@ -231,12 +234,13 @@ async def start_moonraker_subnet_scan(
     _: User | None = RequirePermissionIfAuthEnabled(Permission.DISCOVERY_SCAN),
 ):
     """Start a subnet scan for Moonraker instances (HTTP ``server/info``)."""
-    asyncio.create_task(
+    spawn_background_task(
         moonraker_subnet_scanner.scan_subnet(
             request.subnet,
             request.timeout,
             ports=request.ports,
-        )
+        ),
+        name=f"moonraker-subnet-scan-{request.subnet}",
     )
     scanned, total = moonraker_subnet_scanner.progress
     return SubnetScanStatus(
@@ -301,12 +305,13 @@ async def start_octoprint_subnet_scan(
     _: User | None = RequirePermissionIfAuthEnabled(Permission.DISCOVERY_SCAN),
 ):
     """Start a subnet scan for OctoPrint instances (unauthenticated discovery.xml / login page)."""
-    asyncio.create_task(
+    spawn_background_task(
         octoprint_subnet_scanner.scan_subnet(
             request.subnet,
             request.timeout,
             ports=request.ports,
-        )
+        ),
+        name=f"octoprint-subnet-scan-{request.subnet}",
     )
     scanned, total = octoprint_subnet_scanner.progress
     return SubnetScanStatus(

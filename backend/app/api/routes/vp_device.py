@@ -277,16 +277,17 @@ async def _build_state(vp, db: AsyncSession) -> dict[str, Any]:
 async def device_state(
     vp_id: int,
     request: Request,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
 ):
     vp, error = await _authorize(vp_id, request, db)
     if error:
         return error
+    assert vp is not None  # _authorize returns an error whenever vp is None
     return JSONResponse(await _build_state(vp, db), headers=NO_CACHE)
 
 
 @router.post("/device/api/camera-token")
-async def device_camera_token(vp_id: int, request: Request, db: AsyncSession = Depends(get_db)):
+async def device_camera_token(vp_id: int, request: Request, db: AsyncSession = Depends(get_db, scope="function")):
     """Token for the camera ``<img>`` (it cannot send the API key header)."""
     from backend.app.core.auth import CAMERA_STREAM_TOKEN_EXPIRE_MINUTES, create_camera_stream_token
 
@@ -313,7 +314,7 @@ async def device_action(
     action: str,
     request: Request,
     body: DeviceAction | None = None,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
 ):
     """Run a printer control on the VP's target printer.
 
@@ -326,6 +327,7 @@ async def device_action(
     vp, error = await _authorize(vp_id, request, db)
     if error:
         return error
+    assert vp is not None  # _authorize returns an error whenever vp is None
     if action not in ACTIONS:
         return JSONResponse(status_code=404, content={"error": f"Unknown action {action}"})
     printer = await _target_printer(vp, db)

@@ -20,7 +20,10 @@ import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 
-from backend.app.utils.threemf_tools import extract_nozzle_mapping_from_3mf
+from backend.app.utils.threemf_tools import (
+    extract_nozzle_mapping_from_3mf,
+    extract_rack_plan_from_3mf,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -91,15 +94,106 @@ def extract_filament_requirements(file_path: Path, plate_id: int | None = None) 
             # Dual-nozzle printers (H2D / X2D) — annotate which extruder each
             # slot is fed into. Empty mapping for single-nozzle printers, in
             # which case we just don't add the key.
-            nozzle_mapping = extract_nozzle_mapping_from_3mf(zf)
+            # Same plate the filaments above were collected from: a multi-plate
+            # file can assign one slot to different extruders per plate, and
+            # annotating slot 2 with plate 3's nozzle is worse than not
+            # annotating it.
+            nozzle_mapping = extract_nozzle_mapping_from_3mf(zf, plate_id=plate_id)
             if nozzle_mapping:
                 for filament in filaments:
                     filament["nozzle_id"] = nozzle_mapping.get(filament["slot_id"])
+
+            annotate_rack_groups(filaments, file_path, plate_id)
     except Exception as e:
         logger.warning("Failed to parse filament requirements from %s: %s", file_path, e)
         return []
 
     return filaments
+
+
+def annotate_rack_groups(filaments: list[dict], file_path: Path, plate_id: int | None) -> None:
+    """Tag each filament with its group and that group's hotend needs (#1784).
+
+    `nozzle_id` says which *carriage*, which is all a two-hotend printer needs.
+    An H2C's rack carriage hosts six, so the print dialog also needs the
+    filament *group* — the slicer's logical nozzle — to offer a rack position
+    for it. Groups are the unit of choice, not slots: two slots in one group
+    share a hotend and cannot be pointed at different positions.
+
+    Annotated whenever the file describes a rack, independently of the nozzle
+    mapping, which is deliberately withheld for exactly the multi-rack plates
+    this is most needed for.
+
+    Mutates ``filaments`` in place and returns nothing, so every caller lands
+    on one implementation: the three filament-requirements paths (archive,
+    library and this module's own parser) each build their filament list
+    differently and would otherwise drift.
+    """
+    rack_plan = extract_rack_plan_from_3mf(file_path, plate_id=plate_id)
+    if rack_plan is None:
+        return
+
+    group_dicts = rack_plan.group_dicts()
+    for filament in filaments:
+        index = filament.get("slot_id", 0) - 1
+        if not 0 <= index < len(rack_plan.slot_groups):
+            continue
+        group_id = rack_plan.slot_groups[index]
+        if group_id < 0:
+            continue
+        filament["group_id"] = group_id
+        filament["group"] = group_dicts.get(group_id)
+
+
+def overrides_for_plate(
+    overrides: list[dict],
+    file_path: Path | None,
+    plate_id: int | None,
+) -> list[dict]:
+    """Drop the filament overrides whose slots this plate never prints.
+
+    Queueing several plates of one 3MF builds a single override list out of every
+    selected plate's filaments and hands that same list to each plate's item. A
+    ``force_color_match`` entry blocks dispatch until the printer has that exact
+    colour loaded, so a single-colour plate ended up waiting on every colour in
+    the batch (#2551). Each item may only demand what its own plate consumes.
+
+    Overrides are kept as-is when the plate's slots cannot be established (whole
+    file selected, source gone, unreadable 3MF, malformed entry): an item that
+    waits on a colour it does not need is visible and fixable, whereas one that
+    silently loses a forced colour can dispatch the print in the wrong filament.
+    """
+    if not overrides or plate_id is None or file_path is None or not file_path.exists():
+        return overrides
+
+    plate_slots = {f["slot_id"] for f in extract_filament_requirements(file_path, plate_id)}
+    if not plate_slots:
+        logger.warning(
+            "Cannot read the filaments of plate %s in %s; keeping all %d filament override(s)",
+            plate_id,
+            file_path.name,
+            len(overrides),
+        )
+        return overrides
+
+    narrowed = []
+    for override in overrides:
+        try:
+            slot_id = int(override["slot_id"])
+        except (KeyError, TypeError, ValueError):
+            narrowed.append(override)
+            continue
+        if slot_id in plate_slots:
+            narrowed.append(override)
+
+    if len(narrowed) != len(overrides):
+        logger.info(
+            "Plate %s: kept %d of %d filament override(s) — the rest belong to other plates",
+            plate_id,
+            len(narrowed),
+            len(overrides),
+        )
+    return narrowed
 
 
 def _collect_filaments(parent: ET.Element, into: list[dict]) -> None:

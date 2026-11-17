@@ -1,13 +1,18 @@
 import logging
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.api.routes.notifications import forget_app_senders
 from backend.app.core.auth import RequirePermissionIfAuthEnabled, generate_api_key
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
+from backend.app.core.printer_scope import ensure_printers_exist
+from backend.app.core.websocket import ws_manager
 from backend.app.models.api_key import APIKey
+from backend.app.models.auth_ephemeral import AuthEphemeralToken
 from backend.app.models.user import User
 from backend.app.schemas.api_key import (
     APIKeyCreate,
@@ -23,7 +28,7 @@ router = APIRouter(prefix="/api-keys", tags=["api-keys"])
 
 @router.get("/", response_model=list[APIKeyResponse])
 async def list_api_keys(
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
     _: User | None = RequirePermissionIfAuthEnabled(Permission.API_KEYS_READ),
 ):
     """List all API keys (without full key values)."""
@@ -34,7 +39,7 @@ async def list_api_keys(
 @router.post("/", response_model=APIKeyCreateResponse)
 async def create_api_key(
     data: APIKeyCreate,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
     current_user: User | None = RequirePermissionIfAuthEnabled(Permission.API_KEYS_CREATE),
 ):
     """Create a new API key.
@@ -52,6 +57,8 @@ async def create_api_key(
             detail="can_access_cloud requires authentication to be enabled (per-user cloud tokens)",
         )
 
+    await ensure_printers_exist(db, data.printer_ids)
+
     # Generate the key
     full_key, key_hash, key_prefix = generate_api_key()
 
@@ -63,8 +70,14 @@ async def create_api_key(
         can_queue=data.can_queue,
         can_control_printer=data.can_control_printer,
         can_read_status=data.can_read_status,
+        can_manage_library=data.can_manage_library,
+        can_manage_inventory=data.can_manage_inventory,
+        can_manage_maintenance=data.can_manage_maintenance,
+        can_manage_archives=data.can_manage_archives,
+        can_manage_projects=data.can_manage_projects,
         can_access_cloud=data.can_access_cloud,
         can_update_energy_cost=data.can_update_energy_cost,
+        can_send_notifications=data.can_send_notifications,
         printer_ids=data.printer_ids,
         expires_at=data.expires_at,
     )
@@ -82,8 +95,14 @@ async def create_api_key(
         can_queue=api_key.can_queue,
         can_control_printer=api_key.can_control_printer,
         can_read_status=api_key.can_read_status,
+        can_manage_library=api_key.can_manage_library,
+        can_manage_inventory=api_key.can_manage_inventory,
+        can_manage_maintenance=api_key.can_manage_maintenance,
+        can_manage_archives=api_key.can_manage_archives,
+        can_manage_projects=api_key.can_manage_projects,
         can_access_cloud=api_key.can_access_cloud,
         can_update_energy_cost=api_key.can_update_energy_cost,
+        can_send_notifications=api_key.can_send_notifications,
         printer_ids=api_key.printer_ids,
         enabled=api_key.enabled,
         last_used=api_key.last_used,
@@ -95,7 +114,7 @@ async def create_api_key(
 @router.get("/{key_id}", response_model=APIKeyResponse)
 async def get_api_key(
     key_id: int,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
     _: User | None = RequirePermissionIfAuthEnabled(Permission.API_KEYS_READ),
 ):
     """Get an API key by ID."""
@@ -112,7 +131,7 @@ async def get_api_key(
 async def update_api_key(
     key_id: int,
     data: APIKeyUpdate,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
     _: User | None = RequirePermissionIfAuthEnabled(Permission.API_KEYS_UPDATE),
 ):
     """Update an API key."""
@@ -131,6 +150,16 @@ async def update_api_key(
         api_key.can_control_printer = data.can_control_printer
     if data.can_read_status is not None:
         api_key.can_read_status = data.can_read_status
+    if data.can_manage_library is not None:
+        api_key.can_manage_library = data.can_manage_library
+    if data.can_manage_inventory is not None:
+        api_key.can_manage_inventory = data.can_manage_inventory
+    if data.can_manage_maintenance is not None:
+        api_key.can_manage_maintenance = data.can_manage_maintenance
+    if data.can_manage_archives is not None:
+        api_key.can_manage_archives = data.can_manage_archives
+    if data.can_manage_projects is not None:
+        api_key.can_manage_projects = data.can_manage_projects
     if data.can_access_cloud is not None:
         # Same constraint as create — flipping cloud access on a legacy key
         # without an owner would be silently broken; reject at the route layer.
@@ -142,7 +171,10 @@ async def update_api_key(
         api_key.can_access_cloud = data.can_access_cloud
     if data.can_update_energy_cost is not None:
         api_key.can_update_energy_cost = data.can_update_energy_cost
+    if data.can_send_notifications is not None:
+        api_key.can_send_notifications = data.can_send_notifications
     if data.printer_ids is not None:
+        await ensure_printers_exist(db, data.printer_ids)
         api_key.printer_ids = data.printer_ids
     if data.enabled is not None:
         api_key.enabled = data.enabled
@@ -151,14 +183,44 @@ async def update_api_key(
 
     await db.flush()
     await db.refresh(api_key)
+    if not api_key.enabled or (
+        api_key.expires_at is not None
+        and api_key.expires_at.replace(tzinfo=api_key.expires_at.tzinfo or timezone.utc) < datetime.now(timezone.utc)
+    ):
+        # Its camera and WebSocket tokens go with it; the scope refresh below
+        # closes its open dashboards.
+        await drop_api_key_tokens(db, [api_key.id])
+    if (
+        data.printer_ids is not None
+        or data.enabled is not None
+        or data.expires_at is not None
+        or data.can_read_status is not None
+    ):
+        # Sockets opened with this key may now see fewer printers, or none
+        # (#1727), or not connect at all (can_read_status grants
+        # websocket:connect). Committed first so the refresh reads the new row.
+        await db.commit()
+        await ws_manager.refresh_printer_scopes()
 
     return api_key
+
+
+async def drop_api_key_tokens(db: AsyncSession, key_ids) -> None:
+    """Delete the camera and WebSocket tokens deleted keys minted (media tokens
+    never record the key).
+
+    They name the key by id, which SQLite gives to the next key created: a
+    token of a key limited to one printer would get the new key's printers.
+    """
+    key_ids = list(key_ids)
+    if key_ids:
+        await db.execute(delete(AuthEphemeralToken).where(AuthEphemeralToken.api_key_id.in_(key_ids)))
 
 
 @router.delete("/{key_id}")
 async def delete_api_key(
     key_id: int,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
     _: User | None = RequirePermissionIfAuthEnabled(Permission.API_KEYS_DELETE),
 ):
     """Delete (revoke) an API key."""
@@ -169,5 +231,11 @@ async def delete_api_key(
         raise HTTPException(status_code=404, detail="API key not found")
 
     await db.delete(api_key)
+    await drop_api_key_tokens(db, [key_id])
+    await db.commit()
+    # Its sockets are closed, not just given no printers: their scope is looked
+    # up by key id, which SQLite gives to the next key created.
+    await ws_manager.close_api_keys([key_id])
+    forget_app_senders([key_id])
 
     return {"message": "API key deleted"}

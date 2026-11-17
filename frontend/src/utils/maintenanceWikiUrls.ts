@@ -54,8 +54,6 @@ export function getMaintenanceWikiUrl(typeName: string, printerModel: string | n
       return 'https://wiki.bambulab.com/en/x1/troubleshooting/nozzle-clog';
 
     case 'Check Belt Tension':
-      if (isX1) return 'https://wiki.bambulab.com/en/x1/maintenance/belt-tension';
-      if (isP1) return 'https://wiki.bambulab.com/en/p1/maintenance/p1p-maintenance';
       if (isA1Mini) return 'https://wiki.bambulab.com/en/a1-mini/maintenance/belt_tension';
       if (isA1) return 'https://wiki.bambulab.com/en/a1/maintenance/belt_tension';
       if (isH2D) return 'https://wiki.bambulab.com/en/h2/maintenance/belt-tension';
@@ -63,6 +61,8 @@ export function getMaintenanceWikiUrl(typeName: string, printerModel: string | n
       if (isH2S) return 'https://wiki.bambulab.com/en/h2s/maintenance/belt-tension';
       if (isH3C) return 'https://wiki.bambulab.com/en/h3c/maintenance/belt_tension';
       if (isSteelRod) return 'https://wiki.bambulab.com/en/p2s/maintenance/belt-tension';
+      // X1 and P1 share one page, "X1/P1 Series Belt tensioning procedure";
+      // P1 has none of its own, so it must not get a branch above (#3302).
       return 'https://wiki.bambulab.com/en/x1/maintenance/belt-tension';
 
     case 'Clean Carbon Rods':

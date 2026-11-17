@@ -30,6 +30,7 @@ class _FakeMjpegResponse:
         self._chunks = list(chunks)
         self._raise_after = raise_after
         self._raise_exc = raise_exc
+        self.headers = {}
         self.content = self  # the function calls `response.content.iter_chunked(...)`
 
     def iter_chunked(self, _size):  # noqa: ARG002 — chunk size is informational
@@ -59,7 +60,7 @@ class _FakeMjpegSession:
     def __init__(self, response):
         self._response = response
 
-    def get(self, _url):
+    def get(self, _url, **_kwargs):
         return self._response
 
     async def __aenter__(self):
@@ -591,3 +592,182 @@ class TestUsbCameraHandling:
 
         result = await capture_frame("http://example.com", "usb", timeout=1)
         assert result is None
+
+
+def _encode_image(ext: str) -> bytes:
+    """Encode a small solid test image to the given container (.png/.webp/.jpg)."""
+    import cv2
+    import numpy as np
+
+    img = np.zeros((16, 24, 3), dtype=np.uint8)
+    img[:, :12] = (0, 0, 255)  # half red so the frame isn't uniformly black
+    ok, buf = cv2.imencode(ext, img)
+    assert ok, f"failed to encode {ext}"
+    return buf.tobytes()
+
+
+def _fake_snapshot_session(body: bytes, status: int = 200):
+    """Build an aiohttp.ClientSession stand-in whose GET yields `body`.
+
+    Matches the `async with ClientSession(...) as session, session.get(url) as
+    response` usage inside `_capture_snapshot`.
+    """
+
+    class _Resp:
+        def __init__(self):
+            self.status = status
+            self.headers = {}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def read(self):
+            return body
+
+    class _Session:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def get(self, _url, **_kwargs):
+            return _Resp()
+
+    return _Session
+
+
+class TestSnapshotTranscode:
+    """Regression for #1902. Snapshot endpoints that serve PNG/WebP (not JPEG)
+    broke the browser MJPEG stream, because every multipart part is hard-labelled
+    ``Content-Type: image/jpeg`` — the browser rejected the non-JPEG payload and
+    dropped the whole stream ("connection lost"). ``_capture_snapshot`` now
+    transcodes non-JPEG stills to JPEG; only genuinely undecodable payloads fall
+    through to the raw bytes (unchanged last-resort behaviour)."""
+
+    def test_transcode_png_to_jpeg(self):
+        from backend.app.services.external_camera import _transcode_to_jpeg
+
+        png = _encode_image(".png")
+        assert not png.startswith(JPEG_START)  # sanity: input really is PNG
+        out = _transcode_to_jpeg(png)
+        assert out is not None and out.startswith(JPEG_START)
+
+    def test_transcode_webp_to_jpeg(self):
+        from backend.app.services.external_camera import _transcode_to_jpeg
+
+        webp = _encode_image(".webp")
+        assert not webp.startswith(JPEG_START)
+        out = _transcode_to_jpeg(webp)
+        assert out is not None and out.startswith(JPEG_START)
+
+    def test_transcode_returns_none_for_non_image(self):
+        """HTML error pages / auth redirects / empty bodies aren't images —
+        transcode returns None so the caller can log and fall back."""
+        from backend.app.services.external_camera import _transcode_to_jpeg
+
+        assert _transcode_to_jpeg(b"<html><body>404 Not Found</body></html>") is None
+        assert _transcode_to_jpeg(b"") is None
+
+    @pytest.mark.asyncio
+    async def test_capture_snapshot_transcodes_png_response(self):
+        """The reported case: a snapshot URL returning PNG yields JPEG bytes."""
+        from backend.app.services import external_camera as ec
+
+        png = _encode_image(".png")
+        with patch.object(ec.aiohttp, "ClientSession", _fake_snapshot_session(png)):
+            out = await ec._capture_snapshot("http://192.168.50.50/snapshot.png", 10)
+        assert out is not None and out.startswith(JPEG_START)
+
+    @pytest.mark.asyncio
+    async def test_capture_snapshot_jpeg_passthrough_unchanged(self):
+        """A JPEG snapshot must be returned byte-for-byte (fast path, no
+        re-encode) so we don't degrade quality or waste CPU on JPEG cameras."""
+        from backend.app.services import external_camera as ec
+
+        jpeg = _encode_image(".jpg")
+        assert jpeg.startswith(JPEG_START)
+        with patch.object(ec.aiohttp, "ClientSession", _fake_snapshot_session(jpeg)):
+            out = await ec._capture_snapshot("http://192.168.50.50/snapshot.jpg", 10)
+        assert out == jpeg  # identical object bytes — proves no transcode ran
+
+    @pytest.mark.asyncio
+    async def test_capture_snapshot_non_image_is_not_passed_on(self):
+        """An undecodable (non-image) response is no frame: whatever a URL
+        returns would otherwise reach the viewer of the camera stream."""
+        from backend.app.services import external_camera as ec
+
+        html = b"<html><body>unauthorized</body></html>"
+        with patch.object(ec.aiohttp, "ClientSession", _fake_snapshot_session(html)):
+            out = await ec._capture_snapshot("http://192.168.50.50/snapshot", 10)
+        assert out is None
+
+
+class TestUsbOneShotIsSparedByTheJanitor:
+    """The janitor kills unregistered USB ffmpeg every 60 s; the one-shot
+    capture never registered itself, so a finish photo or timelapse frame
+    in flight could be killed under it (SP-C6)."""
+
+    @pytest.mark.asyncio
+    async def test_pid_is_registered_while_capturing(self):
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from backend.app.services import external_camera
+        from backend.app.services.camera import _active_capture_pids
+
+        seen: list[bool] = []
+        process = MagicMock()
+        process.pid = 51515
+        process.returncode = 0
+
+        async def communicate():
+            seen.append(51515 in _active_capture_pids)
+            return b"\xff\xd8" + b"x" * 200, b""
+
+        process.communicate = communicate
+        with (
+            patch.object(external_camera, "get_ffmpeg_path", return_value="/usr/bin/ffmpeg"),
+            patch.object(external_camera, "_safe_usb_device_path", return_value="/dev/video0"),
+            patch("asyncio.create_subprocess_exec", AsyncMock(return_value=process)),
+        ):
+            frame = await external_camera._capture_usb_frame("/dev/video0", timeout=5)
+
+        assert frame is not None
+        assert seen == [True]
+        assert 51515 not in _active_capture_pids
+
+    @pytest.mark.asyncio
+    async def test_a_timed_out_capture_is_killed_reaped_and_unregistered(self):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from backend.app.services import external_camera
+        from backend.app.services.camera import _active_capture_pids
+
+        process = MagicMock()
+        process.pid = 51516
+        process.returncode = None
+        process.kill = MagicMock()
+        process.wait = AsyncMock(return_value=-9)
+
+        async def communicate():
+            await asyncio.sleep(10)
+
+        process.communicate = communicate
+        with (
+            patch.object(external_camera, "get_ffmpeg_path", return_value="/usr/bin/ffmpeg"),
+            patch.object(external_camera, "_safe_usb_device_path", return_value="/dev/video0"),
+            patch("asyncio.create_subprocess_exec", AsyncMock(return_value=process)),
+        ):
+            frame = await external_camera._capture_usb_frame("/dev/video0", timeout=0.05)
+
+        assert frame is None
+        process.kill.assert_called_once()
+        process.wait.assert_awaited()
+        assert 51516 not in _active_capture_pids

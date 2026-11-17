@@ -1,9 +1,8 @@
 """In-memory background dispatcher for slice jobs.
 
-Mirrors the shape of `background_dispatch.py` (the print-upload dispatcher)
-but tailored for slicing: jobs are independent (no printer-busy gating),
-short-lived (typically 5-60s), and the result is a `LibraryFile` or
-`PrintArchive` row rather than a printer-side dispatch.
+Slice jobs are independent (no printer-busy gating), short-lived (typically
+5-60s), and the result is a `LibraryFile` or `PrintArchive` row rather than a
+printer-side dispatch.
 
 The frontend kicks off a slice via `POST /library/files/{id}/slice` or
 `POST /archives/{id}/slice`, gets back `{job_id, status_url}`, then polls
@@ -31,6 +30,10 @@ class SliceJob:
     kind: Literal["library_file", "archive"]
     source_id: int
     source_name: str
+    # JWT user id that started the job, for per-row scoping of the polling
+    # endpoint. None when no user was recorded (auth off, some API-key paths);
+    # those jobs are visible only to READ_ALL pollers — see slice_jobs.py.
+    owner_id: int | None = None
     status: SliceJobStatus = "pending"
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     started_at: datetime | None = None
@@ -69,6 +72,7 @@ class SliceDispatchService:
         kind: Literal["library_file", "archive"],
         source_id: int,
         source_name: str,
+        owner_id: int | None = None,
         run: Callable[[int], Awaitable[dict[str, Any]]],
     ) -> SliceJob:
         """Register a new slice job and start it on the event loop.
@@ -84,6 +88,7 @@ class SliceDispatchService:
                 kind=kind,
                 source_id=source_id,
                 source_name=source_name,
+                owner_id=owner_id,
             )
             self._next_id += 1
             self._jobs[job.id] = job
@@ -120,6 +125,23 @@ class SliceDispatchService:
 
     def get(self, job_id: int) -> SliceJob | None:
         return self._jobs.get(job_id)
+
+    def forget_owner(self, user_id: int) -> None:
+        """A deleted user's jobs lose their owner (only READ_ALL pollers see them)."""
+        for job in self._jobs.values():
+            if job.owner_id == user_id:
+                job.owner_id = None
+
+    def owner_now(self, job_id: int | None, user_id: int | None) -> int | None:
+        """*user_id*, unless job *job_id* lost that owner while it ran.
+
+        A slice takes minutes. When its user is deleted meanwhile (forget_owner),
+        the result belongs to nobody: the id may already be another user's.
+        """
+        if job_id is None or user_id is None:
+            return user_id
+        job = self._jobs.get(job_id)
+        return user_id if job is not None and job.owner_id == user_id else None
 
     def set_progress(self, job_id: int, progress: dict[str, Any] | None) -> None:
         """Update the live-progress snapshot for a running job.

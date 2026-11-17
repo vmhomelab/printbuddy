@@ -136,7 +136,7 @@ export function NotificationTemplateEditor({ template, onClose }: NotificationTe
         {/* Content */}
         <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-4 space-y-4">
           {error && (
-            <div className="p-3 bg-red-500/20 border border-red-500/50 rounded text-red-400 text-sm">
+            <div className="p-3 bg-red-100 dark:bg-red-500/20 border border-red-300 dark:border-red-500/50 rounded text-red-700 dark:text-red-400 text-sm">
               {error}
             </div>
           )}
@@ -227,6 +227,22 @@ export function NotificationTemplateEditor({ template, onClose }: NotificationTe
                       <span className="text-xs text-bambu-gray">{t('notifications.bodyPreview')}</span>
                       <div className="text-white whitespace-pre-wrap text-sm">{preview.body}</div>
                     </div>
+                    {eventVariables?.supports_photo && (
+                      <div className="pt-2 mt-2 border-t border-bambu-dark-tertiary/60 flex items-center gap-3">
+                        <img
+                          src="/img/screenshot-desktop.png"
+                          alt={t('notifications.photoPreview')}
+                          className="w-24 h-14 object-cover rounded border border-bambu-dark-tertiary shrink-0"
+                        />
+                        <p className="text-xs text-bambu-gray">
+                          {template.event_type.startsWith('user_')
+                            ? t('notifications.photoPreviewNoteEmailOnly')
+                            : eventVariables.variables.includes('finish_photo_url')
+                              ? t('notifications.photoPreviewNoteWithEmail')
+                              : t('notifications.photoPreviewNote')}
+                        </p>
+                      </div>
+                    )}
                   </>
                 ) : (
                   <div className="text-bambu-gray text-sm">
@@ -245,7 +261,7 @@ export function NotificationTemplateEditor({ template, onClose }: NotificationTe
             variant="ghost"
             onClick={() => resetMutation.mutate()}
             disabled={resetMutation.isPending}
-            className="text-orange-400 hover:text-orange-300"
+            className="text-orange-600 dark:text-orange-400 hover:text-orange-700 dark:hover:text-orange-300"
           >
             {resetMutation.isPending ? (
               <Loader2 className="w-4 h-4 animate-spin mr-2" />

@@ -21,28 +21,52 @@ tokens — a leaked permanent token would be irrevocable footgun-by-design).
 
 from __future__ import annotations
 
+import logging
 import secrets
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.auth import get_password_hash, verify_password
 from backend.app.models.long_lived_token import LongLivedToken
+from backend.app.services.last_used import LastUsedThrottle
+
+logger = logging.getLogger(__name__)
 
 # Issue #1108 hard cap. Bump here if policy changes — UI default is shorter
 # (90 days) and the create route enforces this ceiling.
 MAX_TOKEN_LIFETIME_DAYS = 365
 
-# Only V1 scope. Adding "snapshot" or "control" later means adding a value
-# to this tuple and an `if scope == ...` branch in the route, no schema work.
-ALLOWED_SCOPES: frozenset[str] = frozenset({"camera_stream"})
+# Every scope is a separate grant, never implied by another. A token minted for
+# one purpose must not silently widen when a later scope is added.
+#
+#   camera_stream — the MJPEG stream / snapshot endpoints and nothing else
+#                   (#1108). What a Home Assistant or Frigate card needs.
+#   camwall       — those same streams *plus* the read-only tile metadata the
+#                   Cam Wall draws: printer names and print state (#2531).
+#                   Strictly wider than camera_stream, so it gets its own scope
+#                   rather than quietly extending tokens already handed out.
+#   overlay       — the streaming overlay (#2613): the camera stream plus the
+#                   single-printer status the /overlay page draws, which unlike
+#                   the Cam Wall *includes the print filename*. A distinct grant
+#                   precisely because it reveals the part name a camwall token
+#                   is trusted never to expose, so folding it into camwall would
+#                   silently widen every wall token already handed out.
+ALLOWED_SCOPES: frozenset[str] = frozenset({"camera_stream", "camwall", "overlay"})
+
+# Scopes the camera stream / snapshot endpoints honour. A Cam Wall or overlay
+# token has to be able to pull the video its own view is showing.
+STREAM_SCOPES: tuple[str, ...] = ("camera_stream", "camwall", "overlay")
 
 # Don't write to last_used_at more than once per minute per token. MJPEG
 # streams call verify() at most once per fetch (the browser holds the
-# connection open), but snapshots may rapid-fire — this caps DB churn.
-_LAST_USED_DEBOUNCE = timedelta(minutes=1)
+# connection open), but snapshots may rapid-fire — this caps DB churn. The
+# throttle also holds when the write fails (#3360).
+_last_used = LastUsedThrottle(timedelta(minutes=1))
 
 # Token format constants — kept in one place so format changes are localized.
 _TOKEN_PREFIX = "bblt_"
@@ -142,23 +166,34 @@ async def create_token(
     return CreatedToken(record=record, plaintext=plaintext)
 
 
-async def verify_token(db: AsyncSession, token: str, *, scope: str = "camera_stream") -> LongLivedToken | None:
+async def verify_token(
+    db: AsyncSession,
+    token: str,
+    *,
+    scope: str | Collection[str] = "camera_stream",
+) -> LongLivedToken | None:
     """Validate a token. Returns the matching record on success, None otherwise.
 
-    The bcrypt-style verify is the slow step (intentional — pbkdf2 by design),
-    so we pre-filter by the indexed ``lookup_prefix`` to ensure the verify
-    runs against at most one or two candidate rows.
+    ``scope`` accepts a single scope or a collection of acceptable ones — the
+    stream endpoints pass ``STREAM_SCOPES`` because more than one scope may
+    legitimately reach them. The record must carry one of them; a token is
+    never accepted on the strength of a scope it does not hold.
+
+    The pbkdf2 verify is the slow step (intentional), so we pre-filter by the
+    indexed ``lookup_prefix`` to ensure the verify runs against at most one or
+    two candidate rows.
     """
     parsed = _parse_token(token)
     if parsed is None:
         return None
     lookup_prefix, full_token = parsed
+    scopes = (scope,) if isinstance(scope, str) else tuple(scope)
 
     now = datetime.now(timezone.utc)
     result = await db.execute(
         select(LongLivedToken).where(
             LongLivedToken.lookup_prefix == lookup_prefix,
-            LongLivedToken.scope == scope,
+            LongLivedToken.scope.in_(scopes),
             LongLivedToken.revoked_at.is_(None),
         )
     )
@@ -169,16 +204,23 @@ async def verify_token(db: AsyncSession, token: str, *, scope: str = "camera_str
         if not verify_password(full_token, record.secret_hash):
             continue
         # Record use, but rate-limit DB writes to keep MJPEG-keepalive cheap.
-        last = record.last_used_at
-        if last is None or _coerce_utc(last) + _LAST_USED_DEBOUNCE <= now:
+        if _last_used.due(record.secret_hash, record.last_used_at, now):
+            record_id = record.id
             record.last_used_at = now
-            await db.commit()
+            try:
+                await db.commit()
+            except SQLAlchemyError as e:
+                # The token matched; only the bookkeeping failed (a read-only
+                # replica after a failover, a locked database), which must not
+                # turn a Cam Wall kiosk away (#3360). Re-read it so a revoke
+                # that landed meanwhile still counts; a failed re-read raises.
+                await db.rollback()
+                logger.warning("Could not record token %s as used: %s", record_id, e)
+                await db.refresh(record)
+                if record.revoked_at is not None or _is_expired(record, now):
+                    return None
         return record
     return None
-
-
-def _coerce_utc(dt: datetime) -> datetime:
-    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
 
 
 async def list_user_tokens(db: AsyncSession, user_id: int) -> list[LongLivedToken]:

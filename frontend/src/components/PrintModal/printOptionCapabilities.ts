@@ -1,7 +1,13 @@
 import type { Printer } from '../../api/client';
 import type { PrintOptions } from './types';
 
-export type PrintOptionKey = keyof PrintOptions;
+// Provider-gated Bambu print-start flags. The per-item preheat override is a
+// scheduler stage and the post-print outcome prompt (#1898) is Printbuddy-side
+// state, not firmware flags, so neither is part of this list.
+export type PrintOptionKey = Exclude<
+  keyof PrintOptions,
+  'preheat_override' | 'preheat_chamber_target_override' | 'confirm_outcome'
+>;
 
 const ALL_PRINT_OPTIONS: PrintOptionKey[] = [
   'bed_levelling',
@@ -9,16 +15,20 @@ const ALL_PRINT_OPTIONS: PrintOptionKey[] = [
   'vibration_cali',
   'layer_inspect',
   'timelapse',
+  'nozzle_offset_cali',
 ];
 
 const EMPTY_PRINT_OPTIONS: PrintOptionKey[] = [];
 
-const EMPTY_PRINT_OPTIONS_VALUE: PrintOptions = {
-  bed_levelling: false,
-  flow_cali: false,
+// "Disabled" value per key: tri-state calibration options use 'off', the
+// rest are plain booleans.
+const DISABLED_PRINT_OPTIONS: Pick<PrintOptions, PrintOptionKey> = {
+  bed_levelling: 'off',
+  flow_cali: 'off',
   vibration_cali: false,
   layer_inspect: false,
   timelapse: false,
+  nozzle_offset_cali: 'off',
 };
 
 /**
@@ -54,12 +64,9 @@ export function sanitizePrintOptionsForPrinter(
   printer: Pick<Printer, 'provider' | 'model'> | null | undefined
 ): PrintOptions {
   const supportedKeys = getSupportedPrintOptionKeysForPrinter(printer);
-  if (supportedKeys.length === 0) {
-    return EMPTY_PRINT_OPTIONS_VALUE;
+  const sanitized: PrintOptions = { ...options, ...DISABLED_PRINT_OPTIONS };
+  for (const key of supportedKeys) {
+    (sanitized as Record<PrintOptionKey, unknown>)[key] = options[key];
   }
-
-  return ALL_PRINT_OPTIONS.reduce<PrintOptions>((acc, key) => {
-    acc[key] = supportedKeys.includes(key) ? options[key] : false;
-    return acc;
-  }, { ...EMPTY_PRINT_OPTIONS_VALUE });
+  return sanitized;
 }

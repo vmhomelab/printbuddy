@@ -30,6 +30,12 @@ class CloudLoginResponse(BaseModel):
     message: str
     verification_type: str | None = None  # "email" or "totp"
     tfa_key: str | None = None  # Key needed for TOTP verification
+    # Machine-readable cause of a failure, when we know it. Currently only
+    # "captcha" — Bambu's anti-abuse layer is challenging this network and no
+    # credential will be accepted until it clears (#2790). The UI needs this to
+    # explain the situation in place, rather than flashing ``message`` as a
+    # toast that vanishes and leaves the user retrying a password that is fine.
+    reason: str | None = None
 
 
 class CloudAuthStatus(BaseModel):
@@ -38,6 +44,10 @@ class CloudAuthStatus(BaseModel):
     is_authenticated: bool
     email: str | None = None
     region: Region | None = None
+    # True when a token is stored but Bambu no longer accepts it. Both this and
+    # "never signed in" render the login form, but only this one warrants
+    # telling the user why it came back.
+    sign_in_expired: bool = False
 
 
 class CloudTokenRequest(BaseModel):
@@ -57,6 +67,10 @@ class SlicerSetting(BaseModel):
     user_id: str | None = None
     updated_time: str | None = None
     is_custom: bool = False
+    # The id Bambu Studio puts in an AMS slot for this preset. It cannot be
+    # derived from setting_id for every preset (SUNLU's "GFSNLS03_04" is
+    # "GFSNL03", #3387), so it is passed through from Bambu's list as is.
+    filament_id: str | None = None
 
 
 class SlicerSettingsResponse(BaseModel):
@@ -92,24 +106,6 @@ class SlicerSettingUpdate(BaseModel):
 
     name: str | None = Field(None, description="New display name")
     setting: dict | None = Field(None, description="Setting key-value pairs to update")
-
-
-class SlicerSettingDetail(BaseModel):
-    """Detailed slicer setting/preset response."""
-
-    message: str | None = None
-    code: str | None = None
-    error: str | None = None
-    public: bool = False
-    version: str | None = None
-    type: str
-    name: str
-    update_time: str | None = None
-    nickname: str | None = None
-    base_id: str | None = None
-    setting: dict = Field(default_factory=dict)
-    filament_id: str | None = None
-    setting_id: str | None = None  # For response after create
 
 
 class SlicerSettingDeleteResponse(BaseModel):

@@ -1,6 +1,8 @@
 # Claude
 .claude/
 CLAUDE.md
+CLAUDE.local.md
+.mcp.json
 
 # macOS
 .DS_Store
@@ -14,6 +16,7 @@ __pycache__/
 *.so
 venv/
 .venv/
+.typecheck-venv/
 env/
 .env
 docker-compose.override.yml
@@ -64,7 +67,15 @@ firmware/
 # Node modules
 node_modules/
 
-data/
+# Runtime data dir (db, archives, backups). Anchored to the repo root on
+# purpose: a bare `data/` also matches frontend/src/data and
+# backend/app/data, which are source, not runtime state.
+/data/
+
+# Local-dev runtime caches (matplotlib MPLCONFIGDIR lands here when DATA_DIR
+# is unset, so base_dir resolves to the repo root). In Docker this sits
+# inside the /app/data volume and is already covered.
+.cache/
 
 # JWT secret file (should be in data dir, but protect project root too)
 .jwt_secret
@@ -72,8 +83,6 @@ data/
 # MFA encryption key file (#1219) — same protection as .jwt_secret
 .mfa_encryption_key
 
-# SpoolBuddy SSH keys (generated at runtime for remote updates)
-spoolbuddy/ssh/
 
 # Security scan output
 *.sarif
@@ -89,3 +98,15 @@ advertisements/
 gitleaks-report.json
 
 scripts/pip-audit.sh
+
+security/
+
+test_pipeline_archive_source.3mf
+test_pipeline_run_1.3mf
+
+# Python coverage artifacts
+.coverage
+.coverage.*
+htmlcov/
+
+feature_votes.sh

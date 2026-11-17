@@ -1,45 +1,44 @@
 """Spoolman integration service for syncing AMS filament data."""
 
 import asyncio
+import json
 import logging
+import math
+import time
 import weakref
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from typing import Literal
 
 import httpx
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from backend.app.services.color_catalog_lookup import CatalogColor, best_product_line_match, resolve_bambu_color
+from backend.app.services.spoolman_extra_keys import (
+    COLOR_NAME_KEY,
+    FIELD_NAMES,
+    SLICER_FILAMENT_KEY,
+    SLICER_FILAMENT_NAME_KEY,
+    WEIGHT_USED_BASELINE_KEY,
+    extra_raw,
+)
+from backend.app.utils.color_utils import color_match_key, spoolman_color_hex
 
 logger = logging.getLogger(__name__)
 
-BAMBU_RFID_TAG_LENGTH = 32
+# How long a Spoolman without native tags is believed before it is asked again,
+# so upgrading Spoolman to 0.27 needs no Printbuddy restart.
+TAG_API_RECHECK_SECONDS = 600
 
+# How long a native tag Spoolman refused for a spool is left alone. The AMS sync
+# would otherwise ask again on every AMS update; this way a conflict settled in
+# Spoolman is still picked up without a restart.
+TAG_REFUSAL_RETRY_SECONDS = 600
 
-@dataclass
-class SpoolmanSpool:
-    """Represents a spool in Spoolman."""
-
-    id: int
-    filament_id: int | None
-    remaining_weight: float | None
-    used_weight: float
-    first_used: str | None
-    last_used: str | None
-    location: str | None
-    lot_nr: str | None
-    comment: str | None
-    extra: dict | None  # Contains tag_uid in extra.tag
-
-
-@dataclass
-class SpoolmanFilament:
-    """Represents a filament type in Spoolman."""
-
-    id: int
-    name: str
-    vendor_id: int | None
-    material: str | None
-    color_hex: str | None
-    weight: float | None  # Net weight in grams
+# Spool.extra key holding the consumed-counter baseline. Taken from
+# spoolman_extra_keys rather than the routes package so the client does not
+# depend on it; _spoolman_helpers declares the same name for the read side
+# (#2906), and test_spoolman_reset_baseline_2906.py asserts the two are equal.
+BAMBU_WEIGHT_USED_BASELINE_KEY = WEIGHT_USED_BASELINE_KEY
 
 
 @dataclass
@@ -75,6 +74,30 @@ class SpoolmanClientError(Exception):
         self.response_text = response_text
 
 
+def _tray_preset_extra(tray: AMSTray) -> dict:
+    """The tray's filament preset as Spoolman spool ``extra`` fields, or {}.
+
+    Same values an internal RFID spool gets (``spool_tag_matcher``): the
+    tray's filament id, named from the built-in table, else by the tray's
+    sub-brand.
+    """
+    preset = (tray.tray_info_idx or "").strip()
+    if not preset:
+        return {}
+    name = None
+    try:
+        from backend.app.api.routes.cloud import _BUILTIN_FILAMENT_NAMES
+
+        name = _BUILTIN_FILAMENT_NAMES.get(preset)
+    except Exception:  # noqa: BLE001 - a display name; the preset is what counts
+        name = None
+    name = name or (tray.tray_sub_brands or "").strip() or None
+    fields = {SLICER_FILAMENT_KEY: json.dumps(preset)}
+    if name:
+        fields[SLICER_FILAMENT_NAME_KEY] = json.dumps(name)
+    return fields
+
+
 def _filament_subtype_part(name: str, material: str) -> str:
     """Return the subtype portion of a filament name, lowercased.
 
@@ -106,6 +129,26 @@ class SpoolmanClient:
         # Per-spool locks for atomic read-modify-write in merge_spool_extra.
         # WeakValueDictionary: locks are GC'd once no coroutine holds a reference.
         self._extra_locks: weakref.WeakValueDictionary[int, asyncio.Lock] = weakref.WeakValueDictionary()
+        # Extra-field names this client has already registered with Spoolman.
+        # Bounded by the number of distinct keys Printbuddy writes, so it never
+        # grows with spool count; scoped to the instance so a client pointed at
+        # a different Spoolman starts over.
+        self._ensured_extra_fields: set[str] = set()
+        # Whether Spoolman's extra-field listing has been read once. Separate
+        # from the set above because the two answer different questions: the
+        # set is "which fields are known to exist", this is "have we asked".
+        # Without it a client registering three brand-new fields re-read the
+        # whole listing before each one.
+        self._extra_fields_listed = False
+        # The listing's field definitions by key, as last read.
+        self._extra_field_defs: dict[str, dict] = {}
+        self._ensure_extra_lock = asyncio.Lock()
+        # Whether this server links tags natively (Spoolman 0.27+), None until asked.
+        # Per instance like the field cache above: a client for another URL asks again.
+        self._tag_api: bool | None = None
+        self._tag_api_asked_at = 0.0
+        # (spool id, UID) -> when Spoolman last refused that native tag for that spool.
+        self._refused_tags: dict[tuple[int, str], float] = {}
 
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create the HTTP client with connection pooling limits."""
@@ -350,9 +393,10 @@ class SpoolmanClient:
         if material:
             data["material"] = material
         if color_hex:
-            # Strip alpha channel if present (RRGGBBAA -> RRGGBB)
-            color_hex = color_hex[:6] if len(color_hex) >= 6 else color_hex
-            data["color_hex"] = color_hex
+            # Every create funnels through here, so this is where the stored shape
+            # is decided: six characters for an opaque spool, eight only when the
+            # alpha byte says the filament is translucent. See #2912.
+            data["color_hex"] = spoolman_color_hex(color_hex) or color_hex
         if color_name:
             data["color_name"] = color_name
         if weight:
@@ -391,21 +435,30 @@ class SpoolmanClient:
         lot_nr: str | None = None,
         comment: str | None = None,
         extra: dict | None = None,
+        initial_weight: float | None = None,
     ) -> dict:
         """Create a new spool in Spoolman."""
         data: dict = {"filament_id": filament_id}
+        # The spool's own net weight. Left off, Spoolman copies the filament's
+        # weight, which is wrong for a spool of another size (#3194).
+        if initial_weight is not None:
+            data["initial_weight"] = initial_weight
         if remaining_weight is not None:
             data["remaining_weight"] = remaining_weight
-        if spool_weight is not None:
-            data["spool_weight"] = spool_weight
         if location:
             data["location"] = location
         if lot_nr:
             data["lot_nr"] = lot_nr
         if comment:
             data["comment"] = comment
+        # `is not None`, not truthiness: 0 g is a legitimate tare (a spool-less
+        # coil), and it is not the same answer as "inherit from the filament",
+        # which is what leaving the field off means to Spoolman.
+        if spool_weight is not None:
+            data["spool_weight"] = spool_weight
         if extra:
             data["extra"] = extra
+            await self._ensure_extra_fields(extra)
 
         logger.debug("Creating spool in Spoolman: %s", data)
         try:
@@ -436,7 +489,12 @@ class SpoolmanClient:
         clear_location: bool = False,
         extra: dict | None = None,
     ) -> dict:
-        """Update an existing spool in Spoolman, always setting last_used."""
+        """Update an existing spool in Spoolman.
+
+        Leaves ``last_used`` alone: syncs, location changes and weighing are not
+        use. Print usage goes through ``use_spool`` (Spoolman's /use endpoint),
+        which sets it.
+        """
         data: dict = {}
         if remaining_weight is not None:
             data["remaining_weight"] = remaining_weight
@@ -446,8 +504,7 @@ class SpoolmanClient:
             data["location"] = location
         if extra:
             data["extra"] = extra
-        data["last_used"] = datetime.now(timezone.utc).isoformat()
-
+            await self._ensure_extra_fields(extra)
         response = await self._request_spool("PATCH", spool_id, json_body=data, operation="update")
         return response.json()
 
@@ -547,6 +604,86 @@ class SpoolmanClient:
             params["allow_archived"] = "true"
         return await self._get_with_retry("/spool", params=params or None)
 
+    async def get_distinct_locations(self) -> list[str]:
+        """Return distinct location strings currently assigned to Spoolman spools.
+
+        Spoolman's `/location` endpoint shape varies across versions: older
+        releases return `list[str]`, newer ones return `list[dict]` with a
+        `name` field. Normalize to `list[str]` so callers can iterate without
+        runtime shape checks.
+        """
+        raw = await self._get_with_retry("/location")
+        if not isinstance(raw, list):
+            return []
+        names: list[str] = []
+        for entry in raw:
+            if isinstance(entry, str):
+                names.append(entry)
+            elif isinstance(entry, dict):
+                name = entry.get("name")
+                if isinstance(name, str):
+                    names.append(name)
+        return names
+
+    async def rename_location(self, current_name: str, new_name: str) -> int:
+        """Bulk-rename a location string on all Spoolman spools.
+
+        Tries the bulk `PATCH /location/{name}` endpoint first. Spoolman
+        versions older than ~0.16 don't expose it and respond 404/405 — in
+        that case fall back to iterating every spool currently at
+        ``current_name`` and PATCHing each one's ``location`` field directly.
+        Returns the number of spools renamed (or 0 if the bulk endpoint
+        succeeded without enumerating).
+        """
+        from urllib.parse import quote
+
+        encoded = quote(current_name, safe="")
+        client = await self._get_client()
+        try:
+            response = await client.patch(
+                f"{self.api_url}/location/{encoded}",
+                json={"name": new_name},
+            )
+            response.raise_for_status()
+            return 0
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code not in (404, 405):
+                raise
+            logger.info(
+                "Spoolman bulk-rename endpoint unavailable (status %d); falling back to per-spool PATCH",
+                exc.response.status_code,
+            )
+
+        # Per-spool fallback: enumerate every spool currently at the old name
+        # and PATCH each. Keep going on individual failures so a single
+        # already-deleted spool doesn't strand the rest at the old name —
+        # collect errors and re-raise as a single SpoolmanClientError if any
+        # leftover survives.
+        spools = await self.get_all_spools(allow_archived=True)
+        renamed = 0
+        failures: list[str] = []
+        for spool in spools:
+            if (spool.get("location") or "").strip() != current_name:
+                continue
+            try:
+                await self._request_spool(
+                    "PATCH",
+                    spool["id"],
+                    json_body={"location": new_name},
+                    operation="rename-location",
+                )
+                renamed += 1
+            except SpoolmanNotFoundError:
+                continue
+            except Exception as exc:  # noqa: BLE001 — accumulate and re-raise below
+                failures.append(f"spool {spool.get('id')}: {exc}")
+        if failures:
+            raise SpoolmanClientError(
+                f"Spoolman rename fallback failed for {len(failures)} spool(s): {'; '.join(failures[:3])}",
+                status_code=502,
+            )
+        return renamed
+
     async def delete_spool(self, spool_id: int) -> None:
         """Delete a spool from Spoolman."""
         await self._request_spool("DELETE", spool_id, operation="delete")
@@ -578,20 +715,50 @@ class SpoolmanClient:
         )
         return response.json()
 
-    async def reset_spool_usage(self, spool_id: int) -> dict:
-        """Reset a spool's used_weight to 0 in Spoolman.
+    async def reset_spool_consumed_counter(self, spool_id: int) -> dict:
+        """Zero the displayed consumed counter by recording a baseline in spool.extra.
 
-        Used by the per-spool / bulk "Reset usage to 0" actions on the
-        Inventory page so the Total Consumed stat can be cleared without
-        touching the rest of the spool's data.
+        This used to PATCH ``used_weight = 0``, which is not a baseline: Spoolman
+        recomputes ``remaining_weight`` as initial minus used, so zeroing used
+        weight put the spool back to full and threw away the measured remaining
+        filament. The confirmation copy promised the opposite in all thirteen
+        locales (#2906).
+
+        Writing the baseline into ``extra`` instead touches no native Spoolman
+        field -- initial, remaining and used all survive -- and is the same
+        mechanism internal mode has always used for its ``weight_used_baseline``
+        column, which is what #1644 asked the two modes to share rather than
+        approximate. ``_map_spoolman_spool`` folds the stored value back into the
+        baseline it reports.
+
+        Serialised on the same per-spool lock as ``merge_spool_extra`` so a
+        concurrent tag or colour write cannot read the extra dict between this
+        method's fetch and its PATCH and put the old one back.
         """
-        response = await self._request_spool(
-            "PATCH",
-            spool_id,
-            json_body={"used_weight": 0},
-            operation="reset-usage",
-        )
-        return response.json()
+        async with self.extra_lock(spool_id):
+            current = await self.get_spool(spool_id)  # raises on error
+            used_weight = current.get("used_weight")
+            try:
+                baseline = float(used_weight) if used_weight is not None else 0.0
+            except (TypeError, ValueError):
+                baseline = 0.0
+            if not math.isfinite(baseline) or baseline < 0:
+                baseline = 0.0
+            merged = {
+                **(current.get("extra") or {}),
+                # Stored as a JSON *string*, not a JSON number. Spoolman
+                # registers an unseen extra key as field_type "text" on first
+                # write, and its validate_extra_field_value then requires the
+                # value to decode to a str -- a bare 263.0 is rejected with
+                # "Value is not a string." and the PATCH 400s, so the reset
+                # would never land. It has to be right the first time:
+                # add_or_update_extra_field refuses to change a field's type
+                # afterwards, so one numeric write would pin the key to text on
+                # that install permanently. tag, the colour name and both
+                # slicer keys already store the string form for this reason.
+                BAMBU_WEIGHT_USED_BASELINE_KEY: json.dumps(str(baseline)),
+            }
+            return await self.update_spool_full(spool_id=spool_id, extra=merged)
 
     async def update_spool_full(
         self,
@@ -606,11 +773,17 @@ class SpoolmanClient:
         extra: dict | None = None,
         spool_weight: float | None = None,
         clear_spool_weight: bool = False,
+        initial_weight: float | None = None,
     ) -> dict:
-        """Update a spool with full field support; unlike update_spool, does not auto-set last_used."""
+        """Update a spool with full field support; like update_spool, leaves last_used alone."""
         data: dict = {}
         if filament_id is not None:
             data["filament_id"] = filament_id
+        # Spoolman applies the fields in its own schema order, which puts
+        # initial_weight before remaining_weight, so a remaining_weight in the
+        # same PATCH is measured against the new net weight.
+        if initial_weight is not None:
+            data["initial_weight"] = initial_weight
         if remaining_weight is not None:
             data["remaining_weight"] = remaining_weight
         if comment is not None:
@@ -623,6 +796,7 @@ class SpoolmanClient:
             data["location"] = location
         if extra is not None:
             data["extra"] = extra
+            await self._ensure_extra_fields(extra)
         if clear_spool_weight:
             data["spool_weight"] = None
         elif spool_weight is not None:
@@ -638,6 +812,30 @@ class SpoolmanClient:
             lock = asyncio.Lock()
             self._extra_locks[spool_id] = lock
         return lock
+
+    async def _fill_missing_tray_preset(self, spool: dict, tray: AMSTray) -> None:
+        """Give a tag-matched Bambu spool the tray's preset when it has none (#3433).
+
+        Spools the AMS sync created before it stored the preset have none, as do
+        ones linked to a tag some other way. As an internal spool gets one when
+        its tag is linked. A preset already set, by hand or otherwise, stays.
+        Best effort: the sync goes on without it.
+        """
+        fields = _tray_preset_extra(tray)
+        if not fields:
+            return
+        extra = spool.get("extra") or {}
+        current = extra_raw(extra, SLICER_FILAMENT_KEY)
+        try:
+            if isinstance(current, str) and json.loads(current):
+                return
+        except (ValueError, TypeError):
+            return  # something is there; not ours to replace
+        try:
+            await self.merge_spool_extra(spool["id"], fields)
+            logger.info("Stored the tray's preset %s on Spoolman spool %s", tray.tray_info_idx, spool["id"])
+        except (SpoolmanNotFoundError, SpoolmanUnavailableError, SpoolmanClientError) as e:
+            logger.warning("Could not store the tray's preset on Spoolman spool %s: %s", spool["id"], e)
 
     async def merge_spool_extra(self, spool_id: int, new_fields: dict) -> dict:
         """Fetch the spool's extra dict, merge new_fields into it, then PATCH back — serialised per spool."""
@@ -671,7 +869,12 @@ class SpoolmanClient:
     ) -> int:
         """Return the filament ID matching material/name/brand/color, creating it if absent."""
         name = f"{material} {subtype}".strip() if subtype else material
-        color = color_hex[:6].upper() if len(color_hex) >= 6 else color_hex.upper()
+        # One value in both roles. `color_match_key` returns the shape the colour
+        # would be stored as, so the key the loop below compares on and the value
+        # a new filament is created with are the same string by construction: an
+        # opaque spool keys and stores as six characters, a translucent one as
+        # eight, and neither can be conflated with the other (#2912).
+        color = color_match_key(color_hex)
 
         vendor_id: int | None = None
         if brand:
@@ -686,7 +889,7 @@ class SpoolmanClient:
         filaments = await self.get_filaments()
         for f in filaments:
             f_material = (f.get("material") or "").upper()
-            f_color = (f.get("color_hex") or "").upper()[:6]
+            f_color = color_match_key(f.get("color_hex"))
             f_vendor = f.get("vendor") or {}
             f_vendor_name = (f_vendor.get("name") or "").strip().lower()
 
@@ -759,12 +962,180 @@ class SpoolmanClient:
             logger.error("Failed to record spool usage in Spoolman: %s", e)
             raise SpoolmanUnavailableError(f"Failed to record usage for spool {spool_id}") from e
 
+    async def has_tag_api(self) -> bool:
+        """Whether this Spoolman links tags natively (0.27+); older servers answer 404.
+
+        A yes is kept for the client's lifetime. A no is asked again after
+        TAG_API_RECHECK_SECONDS, so a Spoolman upgraded underneath is picked up.
+        """
+        stale = self._tag_api is False and time.monotonic() - self._tag_api_asked_at > TAG_API_RECHECK_SECONDS
+        if self._tag_api is None or stale:
+            try:
+                client = await self._get_client()
+                response = await client.get(f"{self.api_url}/tag/reader")
+            except httpx.HTTPError as e:
+                # Not cached: a Spoolman that is briefly down is asked again next time.
+                logger.debug("Spoolman tag API probe failed: %s", e)
+                return False
+            self._tag_api = response.status_code == 200
+            self._tag_api_asked_at = time.monotonic()
+            logger.info("Spoolman native tags: %s", "available" if self._tag_api else "not available")
+        return self._tag_api
+
+    async def _tag_request(self, method: str, path: str, **kwargs) -> httpx.Response:
+        """A request to Spoolman's tag endpoints, with errors as the typed exceptions the routes translate.
+
+        409 and 400 come back as responses: they are answers the callers act on.
+        """
+        try:
+            client = await self._get_client()
+            response = await client.request(method, f"{self.api_url}{path}", **kwargs)
+        except httpx.HTTPError as e:
+            raise SpoolmanUnavailableError(f"Cannot reach Spoolman for {method} {path}") from e
+        if response.status_code in (400, 409) or response.status_code < 400:
+            return response
+        if response.status_code == 404:
+            raise SpoolmanNotFoundError(f"Spoolman answered 404 for {method} {path}")
+        if response.status_code < 500:
+            raise SpoolmanClientError(
+                f"Spoolman rejected {method} {path} (HTTP {response.status_code})",
+                response.status_code,
+                response.text[:500],
+            )
+        raise SpoolmanUnavailableError(f"Spoolman failed {method} {path} (HTTP {response.status_code})")
+
+    async def find_spool_by_native_tag(self, uid: str) -> dict | None:
+        """Return the spool a native tag is linked to, asked on the server side, or None."""
+        response = await self._tag_request("GET", "/spool", params={"tag": uid})
+        if response.status_code == 400:
+            return None  # not a hex UID, so no spool can hold it
+        # Only a spool that really carries the tag counts: a server that does not
+        # know the parameter ignores it and answers every spool.
+        return next(
+            (s for s in response.json() if any(t.get("uid") == uid for t in s.get("tags") or [])),
+            None,
+        )
+
+    async def link_native_tag(self, spool_id: int, uid: str, tag_format: str | None = None) -> int | None:
+        """Link a native tag to a spool; None on success, the holder's spool id on a conflict.
+
+        A conflict whose holder is not a spool (a filament or a location) answers -1.
+        """
+        body: dict = {"uid": uid}
+        if tag_format:
+            body["format"] = tag_format
+        response = await self._tag_request("POST", f"/spool/{spool_id}/tag", json=body)
+        if response.status_code == 409:
+            holder = response.json().get("spool_id")
+            return holder if isinstance(holder, int) else -1
+        if response.status_code == 400:
+            raise SpoolmanClientError(f"Spoolman refused tag {uid!r}", 400, response.text[:500])
+        return None
+
+    async def claim_native_tag(self, spool_id: int, uid: str, tag_format: str | None = None) -> int | None:
+        """Link a native tag to a spool, taking it from an archived spool that still holds it.
+
+        Spoolman keeps a tag unique across archived spools too, while Printbuddy never
+        looks at those: a spool is archived once it is used up or replaced, so the tag
+        it still holds belongs to the active spool now. A tag held by an active spool,
+        a filament or a location is refused as with link_native_tag.
+        """
+        holder = await self.link_native_tag(spool_id, uid, tag_format)
+        if holder is None or holder < 0:
+            return holder
+        try:
+            held_by = await self.get_spool(holder)
+        except SpoolmanNotFoundError:
+            return holder
+        if not held_by.get("archived"):
+            return holder
+        await self.unlink_native_tag(holder, uid)
+        logger.info("Native tag %s moved from archived spool %s to spool %s", uid, holder, spool_id)
+        return await self.link_native_tag(spool_id, uid, tag_format)
+
+    async def unlink_native_tag(self, spool_id: int, uid: str) -> None:
+        """Remove a native tag from a spool; a tag the spool does not hold is not an error."""
+        try:
+            await self._tag_request("DELETE", f"/spool/{spool_id}/tag/{uid}")
+        except SpoolmanNotFoundError:
+            pass
+
+    async def unlink_all_native_tags(self, spool: dict) -> None:
+        """Remove every native tag a spool carries. No-op on a server without the tag API."""
+        if not await self.has_tag_api():
+            return
+        for tag in spool.get("tags") or []:
+            uid = tag.get("uid")
+            if uid:
+                await self.unlink_native_tag(int(spool["id"]), uid)
+
+    async def add_native_tags(
+        self,
+        spool: dict,
+        uids: list[str | None],
+        tag_format: str | None = None,
+        *,
+        retry_refused: bool = False,
+    ) -> int:
+        """Link the given UIDs to the spool as native tags, skipping those it already has.
+
+        Best-effort: a UID another spool holds, or a failed request, is logged and
+        skipped, so a caller never loses its main result over this. A refused UID is
+        not asked for again for TAG_REFUSAL_RETRY_SECONDS, and warned about once:
+        the AMS sync calls this on every AMS update. A scan passes retry_refused,
+        since someone is standing at the spool and may just have settled the
+        conflict in Spoolman. Returns how many tags were added.
+        """
+        if not await self.has_tag_api():
+            return 0
+        spool_id = int(spool["id"])
+        have = {t.get("uid") for t in spool.get("tags") or []}
+        wanted = {u.strip('"').upper() for u in uids if u and u.strip('"').strip("0")}
+        now = time.monotonic()
+        added = 0
+        for uid in sorted(wanted - have):
+            refused_at = self._refused_tags.get((spool_id, uid))
+            if not retry_refused and refused_at is not None and now - refused_at < TAG_REFUSAL_RETRY_SECONDS:
+                continue
+            try:
+                holder = await self.claim_native_tag(spool_id, uid, tag_format)
+            except (SpoolmanNotFoundError, SpoolmanClientError, SpoolmanUnavailableError) as e:
+                logger.warning("Could not add native tag %s to spool %s: %s", uid, spool_id, e)
+                continue
+            if holder is None:
+                added += 1
+                self._refused_tags.pop((spool_id, uid), None)
+                logger.info("Added native tag %s to Spoolman spool %s", uid, spool_id)
+                continue
+            log = logger.debug if refused_at is not None else logger.warning
+            where = f"spool {holder}" if holder > 0 else "a filament or location"
+            log("Native tag %s belongs to %s, not added to spool %s", uid, where, spool_id)
+            self._refused_tags[(spool_id, uid)] = now
+        return added
+
     async def find_spool_by_tag(self, tag_uid: str, cached_spools: list[dict] | None = None) -> dict | None:
-        """Return the spool matching the given RFID tag UID, or None if not found."""
+        """Return the spool matching the given RFID tag UID, or None if not found.
+
+        Native tags (Spoolman 0.27+) are asked first: out of the cached list when there
+        is one, otherwise with one server-side query instead of loading every spool.
+        extra.tag stays the fallback for spools that were linked before.
+        """
+        search_tag = tag_uid.strip('"').upper()
+        if cached_spools is not None:
+            for spool in cached_spools:
+                if any(t.get("uid") == search_tag for t in spool.get("tags") or []):
+                    return spool
+        elif await self.has_tag_api():
+            try:
+                spool = await self.find_spool_by_native_tag(search_tag)
+            except (SpoolmanClientError, SpoolmanUnavailableError) as e:
+                logger.warning("Native tag lookup failed, falling back to extra.tag: %s", e)
+                spool = None
+            if spool is not None:
+                return spool
+
         # Use cached spools if provided, otherwise fetch from API
         spools = cached_spools if cached_spools is not None else await self.get_spools()
-        # Normalize tag_uid for comparison (uppercase, strip quotes)
-        search_tag = tag_uid.strip('"').upper()
 
         for spool in spools:
             extra = spool.get("extra", {})
@@ -777,72 +1148,6 @@ class SpoolmanClient:
                         logger.debug("Found spool %s matching tag %s", spool["id"], tag_uid)
                         return spool
         return None
-
-    def _find_spool_by_location(self, location: str, cached_spools: list[dict] | None) -> dict | None:
-        """Return the spool at the exact location string, or None; fallback when RFID is unavailable."""
-        if not cached_spools:
-            return None
-        for spool in cached_spools:
-            if spool.get("location") == location:
-                return spool
-        return None
-
-    async def find_spools_by_location_prefix(
-        self, location_prefix: str, cached_spools: list[dict] | None = None
-    ) -> list[dict]:
-        """Return all spools whose location starts with location_prefix."""
-        # Use cached spools if provided, otherwise fetch from API
-        spools = cached_spools if cached_spools is not None else await self.get_spools()
-        matching = []
-        for spool in spools:
-            location = spool.get("location", "")
-            if location and location.startswith(location_prefix):
-                matching.append(spool)
-        return matching
-
-    async def clear_location_for_removed_spools(
-        self,
-        printer_name: str,
-        current_tray_uuids: set[str],
-        cached_spools: list[dict] | None = None,
-        synced_spool_ids: set[int] | None = None,
-    ) -> int:
-        """Clear location for Bambu Lab spools at this printer whose tray_uuid is no longer in the AMS."""
-        location_prefix = f"{printer_name} - "
-        spools_at_printer = await self.find_spools_by_location_prefix(location_prefix, cached_spools=cached_spools)
-        cleared_count = 0
-
-        for spool in spools_at_printer:
-            spool_id = spool.get("id")
-
-            # Skip spools that were just synced (matched by location or tag)
-            if synced_spool_ids and spool_id in synced_spool_ids:
-                continue
-
-            # Get the tray_uuid (stored as "tag" in extra field)
-            extra = spool.get("extra", {}) or {}
-            stored_tag = extra.get("tag", "")
-            if stored_tag:
-                # Normalize: strip quotes and uppercase
-                spool_uuid = stored_tag.strip('"').upper()
-            else:
-                spool_uuid = ""
-
-            # Only clear location for Bambu Lab spools (those with a stored 32-character RFID tag).
-            if len(spool_uuid) != BAMBU_RFID_TAG_LENGTH:
-                continue
-
-            # If this spool's UUID is not in the current AMS, clear its location
-            if spool_uuid not in current_tray_uuids:
-                logger.info(
-                    f"Clearing location for spool {spool_id} "
-                    f"(was: {spool.get('location')}, uuid: {spool_uuid[:16] if spool_uuid else 'none'}...)"
-                )
-                result = await self.update_spool(spool_id=spool_id, clear_location=True)
-                if result:
-                    cleared_count += 1
-
-        return cleared_count
 
     async def ensure_bambu_vendor(self) -> int | None:
         """Return the Bambu Lab vendor ID in Spoolman, creating the vendor if absent."""
@@ -859,32 +1164,150 @@ class SpoolmanClient:
         """Register the 'tag' extra field in Spoolman if not present; returns True on success."""
         return await self.ensure_extra_field("tag")
 
-    async def ensure_extra_field(self, name: str, field_type: str = "text") -> bool:
+    async def _load_existing_extra_field_keys(self) -> set[str] | None:
+        """Keys of the spool extra fields Spoolman already has, or ``None`` when
+        the listing could not be read.
+
+        ``None`` and ``set()`` mean different things and the caller acts on the
+        difference: an empty set is "Spoolman has no extra fields", which means
+        every field Printbuddy needs must be created; ``None`` is "we could not
+        find out", where the only safe move is to fall back to attempting the
+        write blind.
+        """
+        try:
+            client = await self._get_client()
+            response = await client.get(f"{self.api_url}/field/spool")
+            if response.status_code != 200:
+                logger.debug(
+                    "Spoolman extra-field listing returned %s; falling back to blind registration",
+                    response.status_code,
+                )
+                return None
+            fields = response.json()
+        except Exception as e:  # noqa: BLE001 — registration is best-effort, see _ensure_extra_fields
+            logger.debug("Could not read Spoolman extra-field listing: %s", e)
+            return None
+        if not isinstance(fields, list):
+            return None
+        # Match on `key`, not `name`: `key` is the identifier the extra dict is
+        # written under and the one Printbuddy cares about, while `name` is the
+        # free-text label a user is free to change in Spoolman's UI.
+        self._extra_field_defs = {f["key"]: f for f in fields if isinstance(f, dict) and isinstance(f.get("key"), str)}
+        return set(self._extra_field_defs)
+
+    async def name_default_named_fields(self) -> int:
+        """Give Printbuddy's fields that still carry their key as name a readable one.
+
+        Only a field whose name is still its key, which is what Printbuddy used
+        to create, is renamed: a name the user chose in Spoolman stays (#2983).
+        Spoolman's POST is an upsert, so the definition is sent back whole --
+        same key, type, default and choices -- with only the name changed; no
+        spool value is touched. Run once at start, with the key migration.
+        Best effort; returns how many were named.
+        """
+        if await self._load_existing_extra_field_keys() is None:
+            return 0
+        named = 0
+        client = await self._get_client()
+        for key, label in FIELD_NAMES.items():
+            field = self._extra_field_defs.get(key)
+            # Without its type the definition cannot be sent back unchanged,
+            # and Spoolman refuses a type change anyway: leave it.
+            if not field or field.get("name") != key or not field.get("field_type"):
+                continue
+            body = {
+                k: field[k]
+                for k in ("order", "unit", "field_type", "default_value", "choices", "multi_choice")
+                if field.get(k) is not None
+            }
+            body["name"] = label
+            try:
+                response = await client.post(f"{self.api_url}/field/spool/{key}", json=body)
+                if response.status_code in (200, 201):
+                    field["name"] = label
+                    named += 1
+                    logger.info("Named Spoolman extra field %r %r", key, label)
+                else:
+                    logger.debug("Spoolman refused naming extra field %r: %s", key, response.status_code)
+            except Exception as e:  # noqa: BLE001 — a label only
+                logger.debug("Could not name Spoolman extra field %r: %s", key, e)
+        return named
+
+    async def delete_extra_field(self, key: str) -> bool:
+        """Delete a spool extra field definition (and its values); True when one was deleted.
+
+        Nothing is sent for a field Spoolman does not list, so a second call is
+        free. False also when Spoolman answers 404/405 (nothing to delete, or a
+        server without the endpoint).
+        """
+        existing = await self._load_existing_extra_field_keys()
+        if existing is None or key not in existing:
+            return False
+        client = await self._get_client()
+        response = await client.delete(f"{self.api_url}/field/spool/{key}")
+        if response.status_code in (404, 405):
+            return False
+        response.raise_for_status()
+        self._ensured_extra_fields.discard(key)
+        self._extra_field_defs.pop(key, None)
+        logger.info("Deleted Spoolman extra field %r", key)
+        return True
+
+    async def ensure_extra_field(self, name: str, field_type: str = "text", display_name: str | None = None) -> bool:
         """Register a custom extra field in Spoolman if not present.
+
+        ``name`` is the field's key; ``display_name`` is the label Spoolman
+        shows for a field this creates: by default the name ``FIELD_NAMES``
+        gives Printbuddy's own keys, else the key. A field that exists is never
+        sent again here (see below); ``name_default_named_fields`` names those.
 
         Spoolman rejects PATCH requests that include unknown extra-dict keys
         with HTTP 400 ('Unknown extra field <name>.'), so any custom field
         Printbuddy persists alongside spools needs to be pre-registered.
         Idempotent — returns True if the field already exists.
+
+        Existence is read from ``GET /field/spool``, the whole-listing endpoint.
+        This used to probe ``GET /field/spool/{name}`` for one field at a time,
+        which Spoolman has never served: it declares only POST and DELETE at
+        that path, so the probe answered 405 every time and the check could
+        never succeed (issue #2983, reported by @ngreatorex).
+
+        Falling through to the POST on every call was worse than a wasted
+        request, because that endpoint is an upsert rather than a create. It
+        answered 200 whether or not the field was already there, so a field a
+        user had renamed, retyped or given a default in Spoolman's own UI was
+        silently reset to Printbuddy's version of it on every restart. Reading
+        the listing first is what lets an existing field be left alone.
         """
         try:
-            client = await self._get_client()
-
-            # Check if field already exists
-            response = await client.get(f"{self.api_url}/field/spool/{name}")
-            if response.status_code == 200:
-                logger.debug("Spoolman extra field %r already exists", name)
+            if name in self._ensured_extra_fields:
                 return True
 
-            # Field doesn't exist - create it
+            if not self._extra_fields_listed:
+                existing = await self._load_existing_extra_field_keys()
+                if existing is not None:
+                    # Bank the whole listing: the caller registers several
+                    # fields in a row, and each one it already has is a request
+                    # not sent and a user customisation not overwritten. Read
+                    # once per client — every field created after this point is
+                    # added to the set as it is created, so re-reading would
+                    # only ever confirm what we already know.
+                    self._ensured_extra_fields |= existing
+                    self._extra_fields_listed = True
+                    if name in existing:
+                        logger.debug("Spoolman extra field %r already exists", name)
+                        return True
+
+            client = await self._get_client()
             field_data = {
-                "name": name,
+                "name": display_name or FIELD_NAMES.get(name) or name,
                 "field_type": field_type,
                 "default_value": None,
             }
             response = await client.post(f"{self.api_url}/field/spool/{name}", json=field_data)
             if response.status_code in (200, 201):
                 logger.info("Created Spoolman extra field %r", name)
+                self._ensured_extra_fields.add(name)
                 return True
 
             logger.warning(
@@ -899,6 +1322,43 @@ class SpoolmanClient:
             logger.warning("Failed to ensure Spoolman extra field %r exists: %s", name, e)
             return False
 
+    async def _ensure_extra_fields(self, extra: dict | None) -> None:
+        """Register every extra key an outgoing write declares, once per client.
+
+        Spoolman answers HTTP 400 "Unknown extra field <name>." for any extra
+        key that was not registered first, so registration has to happen before
+        the write, not before the feature. It used to happen before the feature:
+        three hand-maintained lists (the connect route, startup, and two inline
+        blocks in the inventory routes) each named the fields they expected to
+        be written later. Enabling Spoolman from Settings reaches none of them,
+        so the first AMS sync on a fresh Spoolman failed on every slot -- and
+        the Connect button that would have registered them is hidden by then,
+        because saving the settings initialises the client and the status
+        endpoint reads that as "connected" (issue #2903).
+
+        Keying off the payload instead removes the chance to forget: a write
+        that carries a key is a write that registers it. The colour name key
+        is the cautionary case -- it never made it into the connect or startup
+        lists, and only works today because two call sites remembered to
+        register it by hand.
+
+        Best-effort by design. ``ensure_extra_field`` logs and returns False
+        rather than raising, and a failure here must not turn a write that
+        might still succeed into one that never happens -- the caller's own
+        error handling stays exactly as it was.
+        """
+        names = [name for name in (extra or {}) if name not in self._ensured_extra_fields]
+        if not names:
+            return
+
+        async with self._ensure_extra_lock:
+            for name in names:
+                # Re-check under the lock: a concurrent write may have just
+                # registered this one, and two syncs racing to POST the same
+                # field is how one of them gets a needless warning logged.
+                if name not in self._ensured_extra_fields:
+                    await self.ensure_extra_field(name)
+
     def parse_ams_tray(self, ams_id: int, tray_data: dict) -> AMSTray | None:
         """Parse raw MQTT tray data into an AMSTray; returns None for empty or invalid trays."""
         # Skip empty trays - check for valid tray_type
@@ -912,10 +1372,13 @@ class SpoolmanClient:
             logger.debug("Skipping tray with empty color")
             return None
 
-        # Handle transparent/natural filament (RRGGBBAA with alpha=00)
-        # Replace with cream color that represents how natural PLA actually looks
-        if tray_color == "00000000":
-            tray_color = "F5E6D3FF"  # Light cream/natural color
+        # Transparent filament (alpha=00) used to be rewritten to a cream
+        # "natural PLA" colour before being stored, because the swatch
+        # renderer couldn't show alpha. The swatch now paints a checkerboard
+        # underlay for translucent rgbas (see filamentSwatchHelpers.ts), so
+        # we pass `00000000` through verbatim — the inventory row keeps the
+        # AMS-reported colour and the frontend resolves the name to "Clear"
+        # via getColorName (#1545).
 
         # Get sub_brands, falling back to tray_type
         tray_sub_brands = tray_data.get("tray_sub_brands", "")
@@ -948,19 +1411,6 @@ class SpoolmanClient:
             tray_info_idx=tray_info_idx.strip(),
             tray_weight=int(tray_data.get("tray_weight", 1000)),
         )
-
-    def convert_ams_slot_to_location(self, ams_id: int, tray_id: int) -> str:
-        """Return a human-readable location string (e.g. "AMS A1") for the given AMS slot."""
-        if ams_id >= 254:
-            return "External Spool"
-
-        if 128 <= ams_id <= 135:
-            # AMS-HT units use IDs 128-135
-            ht_letter = chr(ord("A") + (ams_id - 128))
-            return f"AMS-HT {ht_letter}{tray_id + 1}"
-
-        ams_letter = chr(ord("A") + ams_id)
-        return f"AMS {ams_letter}{tray_id + 1}"
 
     def is_bambu_lab_spool(self, tray_uuid: str, tag_uid: str = "", tray_info_idx: str = "") -> bool:
         """Return True if tray_uuid or tag_uid identifies a Bambu Lab spool; tray_info_idx is ignored."""
@@ -996,10 +1446,12 @@ class SpoolmanClient:
         self,
         tray: AMSTray,
         printer_name: str,
+        db: AsyncSession,
         disable_weight_sync: bool = False,
         cached_spools: list[dict] | None = None,
         inventory_remaining: float | None = None,
         spoolman_spool_id_hint: int | None = None,
+        auto_add_unknown_rfid: bool = True,
     ) -> dict | None:
         """Sync one AMS tray to Spoolman; creates the spool on first sight, updates weight otherwise."""
         logger.debug(
@@ -1039,17 +1491,48 @@ class SpoolmanClient:
         if spool_tag:
             # Primary path: match by RFID tag
             existing = await self.find_spool_by_tag(spool_tag, cached_spools=cached_spools)
+            is_bambu = self.is_bambu_lab_spool(tray.tray_uuid, tray.tag_uid, tray.tray_info_idx)
+            tag_format = "bambu" if is_bambu else None
+            # The AMS reports a Bambu chip's 4-byte UID padded to 8 bytes
+            # ("D3E68F32" arrives as "D3E68F3200000100"). A native tag is the UID any
+            # reader sees, so only the chip's own 4 bytes go there.
+            chip_uid = tray.tag_uid[:8] if is_bambu and tray.tag_uid and len(tray.tag_uid) == 16 else tray.tag_uid
+            # A spool linked by its chip UID alone - one side of a Bambu spool read by
+            # SpoolBuddy, say - is found by that too, not only by the tray UUID. A
+            # reader stores the chip's own UID, a link from the AMS the padded one.
+            if tray.tag_uid and tray.tag_uid != zero_tag:
+                for uid in dict.fromkeys((chip_uid, tray.tag_uid)):
+                    if existing is None and uid != spool_tag:
+                        existing = await self.find_spool_by_tag(uid, cached_spools=cached_spools)
             if existing:
                 logger.info("Updating existing spool %s for tag %s...", existing["id"], spool_tag[:16])
+                # Native tags collect what the AMS reads: the tray UUID, and the chip
+                # UID of whichever side faces the reader, so both sides end up linked.
+                await self.add_native_tags(existing, [tray.tray_uuid, chip_uid], tag_format)
+                if is_bambu:
+                    await self._fill_missing_tray_preset(existing, tray)
                 return await self.update_spool(
                     spool_id=existing["id"],
                     remaining_weight=None if disable_weight_sync else remaining,
                 )
 
-            # Spool not found by tag - auto-create it
+            # Spool not found by tag - auto-create it, unless the user has
+            # opted out of auto-adding unknown RFIDs (settings.auto_add_unknown_rfid).
+            # Caller broadcasts unknown_tag on the resulting None so the UI can
+            # surface a "+ Add to inventory" affordance on the slot.
+            if not auto_add_unknown_rfid:
+                logger.info(
+                    "Auto-add disabled; skipping Spoolman spool create for %s (tag: %s...)",
+                    tray.tray_sub_brands,
+                    spool_tag[:16],
+                )
+                return None
+
             logger.info("Creating new spool in Spoolman for %s (tag: %s...)", tray.tray_sub_brands, spool_tag[:16])
+            catalog_color = None
             if self.is_bambu_lab_spool(tray.tray_uuid, tray.tag_uid, tray.tray_info_idx):
-                filament = await self._find_or_create_filament(tray)
+                catalog_color = await resolve_bambu_color(db, tray.tray_color, (tray.tray_sub_brands or "").strip())
+                filament = await self._find_or_create_filament(tray, catalog_color)
                 filament_id = filament["id"] if filament else None
             else:
                 # Non-BL spool with custom RFID: use generic vendor lookup
@@ -1059,7 +1542,7 @@ class SpoolmanClient:
                         material=tray.tray_type,
                         subtype="",
                         brand=brand,
-                        color_hex=tray.tray_color[:6],
+                        color_hex=tray.tray_color,
                         label_weight=tray.tray_weight,
                     )
                 except (SpoolmanNotFoundError, SpoolmanUnavailableError, SpoolmanClientError):
@@ -1070,14 +1553,37 @@ class SpoolmanClient:
                 logger.error("Failed to find or create filament for %s", tray.tray_sub_brands)
                 return None
 
-            import json
-
-            return await self.create_spool(
+            extra = {"tag": json.dumps(spool_tag)}
+            # The colour name goes where #1357 put it, not into the filament. A
+            # Spoolman Filament has no color_name, so the route stores the user's
+            # choice under spool.extra.bambu_color_name and _map_spoolman_spool
+            # reads that first. This path never wrote it, which is why the colour
+            # ended up in filament.name and the product line fell out of subtype.
+            # _ensure_extra_fields registers the key from the payload (#2903).
+            if catalog_color is not None:
+                extra[COLOR_NAME_KEY] = json.dumps(catalog_color.name)
+            # The tag's filament preset, as an internal RFID spool keeps it as
+            # slicer_filament (#3433). Without it a slot this spool is later
+            # assigned to -- the external one has no reader -- got the generic
+            # preset for its material.
+            if self.is_bambu_lab_spool(tray.tray_uuid, tray.tag_uid, tray.tray_info_idx):
+                extra.update(_tray_preset_extra(tray))
+            created = await self.create_spool(
                 filament_id=filament_id,
                 remaining_weight=remaining,
                 comment="Created by Printbuddy",
-                extra={"tag": json.dumps(spool_tag)},
+                extra=extra,
+                # The roll's own net weight: the filament may be another size's
+                # (a 250 g refill of a 1000 g line), and Spoolman copies its
+                # weight when the spool gives none (#3194).
+                initial_weight=tray.tray_weight if tray.tray_weight > 0 else None,
             )
+            await self.add_native_tags(created, [tray.tray_uuid, chip_uid], tag_format)
+            # The product's profile default (#1326).
+            from backend.app.services.filament_profile_default import fill_auto_added_spoolman_spool
+
+            await fill_auto_added_spoolman_spool(created, self, include_slicer=not tray.tray_info_idx)
+            return created
 
         # No-RFID fallback: use the spool ID resolved from the local slot-assignment table.
         # Never create new spools without a tag to avoid duplicates.
@@ -1106,30 +1612,49 @@ class SpoolmanClient:
         )
         return None
 
-    async def _find_or_create_filament(self, tray: AMSTray) -> dict | None:
-        """Return a Bambu Lab filament matching the tray's material/color, creating it if absent."""
+    async def _find_or_create_filament(self, tray: AMSTray, catalog_color: CatalogColor | None) -> dict | None:
+        """Return the Bambu Lab filament for this tray's product line, creating it if absent.
+
+        Material plus colour is not an identity. PLA Basic Black and PLA Matte
+        Charcoal are both PLA at ``#000000``, so a Matte roll was linked to the
+        Basic filament and inherited its name (#2907). The product line lives in
+        ``tray_sub_brands``, so the filament's name carries it -- the same place
+        internal mode keeps it, as the subtype _map_spoolman_spool derives from
+        the name. The colour name belongs to the spool (``bambu_color_name``),
+        which the caller writes from ``catalog_color``.
+
+        ``catalog_color`` is what the colour catalogue says about this roll, or
+        None when it has no row. It is resolved by the caller rather than here so
+        this client stays pure HTTP and the caller can store the name too.
+        """
         bambu_vendor_id = await self.ensure_bambu_vendor()
-        color_hex = tray.tray_color[:6]  # Strip alpha channel
         material_upper = tray.tray_type.upper()
-        color_upper = color_hex.upper()
+        # Same single value as the user-driven path: the match key is the stored
+        # shape. That is what lets an opaque tray still find the six-character
+        # filaments every existing instance is full of, while a clear tray keys
+        # to eight and gets its own record (#2912).
+        color = color_match_key(tray.tray_color)
+        sub_brand = (tray.tray_sub_brands or "").strip()
+        color_name = catalog_color.name if catalog_color else None
 
         # Search internal filaments - only match Bambu Lab vendor
-        filaments = await self.get_filaments()
-        for filament in filaments:
+        same_colour = []
+        for filament in await self.get_filaments():
             fil_vendor_id = filament.get("vendor_id") or filament.get("vendor", {}).get("id")
             if fil_vendor_id != bambu_vendor_id:
                 continue
             fil_material = filament.get("material") or ""
-            fil_color = filament.get("color_hex") or ""
-            if fil_material.upper() == material_upper and fil_color.upper() == color_upper:
-                return filament
+            if fil_material.upper() == material_upper and color_match_key(filament.get("color_hex")) == color:
+                same_colour.append(filament)
+        existing = best_product_line_match(same_colour, color_name, sub_brand, tray.tray_type)
+        if existing is not None:
+            return existing
 
         # Search external filaments (SpoolmanDB) — restrict to Bambu Lab only.
         # The /api/v1/external/filament endpoint returns the full multi-vendor catalog
         # with no server-side filter, so without a manufacturer check the first PLA/black
         # hit is typically 3DJAKE or 3DXTECH, not Bambu Lab.
         external = await self.get_external_filaments()
-        sub_brand = (tray.tray_sub_brands or "").strip().lower()
         bambu_candidates = []
         for filament in external:
             manufacturer = (filament.get("manufacturer") or "").strip().lower()
@@ -1137,37 +1662,54 @@ class SpoolmanClient:
             if manufacturer != "bambu lab" and not ext_id.startswith("bambulab_"):
                 continue
             fil_material = filament.get("material") or ""
-            fil_color = filament.get("color_hex") or ""
-            if fil_material.upper() == material_upper and fil_color.upper() == color_upper:
+            if fil_material.upper() == material_upper and color_match_key(filament.get("color_hex")) == color:
                 bambu_candidates.append(filament)
 
-        if bambu_candidates:
-            # Prefer the entry whose `name` matches the AMS `tray_sub_brands`
-            # (e.g. "PLA Basic", "Support for PLA/PETG Black") so the more specific
-            # variant wins over a generic "Black" entry when both are present.
-            chosen = next(
-                (f for f in bambu_candidates if (f.get("name") or "").strip().lower() == sub_brand),
-                bambu_candidates[0],
-            )
+        # SpoolmanDB folds the product line into the name ("Matte Charcoal",
+        # "Tough+ Black", "Brown Galaxy") everywhere except PLA Basic and the
+        # lines with a base material of their own, which get the bare colour
+        # ("Black"). The catalogue keeps the line in its material column and a
+        # bare colour in color_name. So neither side's name equals the other's
+        # for most lines, and the selector has to rebuild the library's spelling
+        # from the line and the colour -- preferring it over the bare colour,
+        # which several lines share at the same hex.
+        chosen = best_product_line_match(bambu_candidates, color_name, sub_brand, tray.tray_type)
+        if chosen is not None:
             return await self._create_filament_from_external(chosen, tray)
 
-        # Not found in either source - create a new Bambu Lab filament from scratch.
+        # Either the catalogue has no row for this colour -- it is seeded from
+        # Bambu's published list and lags new releases -- or it has one and no
+        # external entry carries that name. Both mean the library cannot say what
+        # this roll is, so build it from what the printer reported rather than
+        # attaching to whichever candidate happened to come first.
         return await self.create_filament(
             name=tray.tray_sub_brands or tray.tray_type,
             vendor_id=bambu_vendor_id,
             material=tray.tray_type,
-            color_hex=color_hex,
+            color_hex=color,
             weight=tray.tray_weight,
         )
 
     async def _create_filament_from_external(self, external: dict, tray: AMSTray) -> dict | None:
-        """Create an internal Spoolman filament from an external library entry."""
+        """Create an internal Spoolman filament from an external library entry.
+
+        The entry supplies what the printer cannot: density and label weight. The
+        name comes from the tray, not the entry, so a filament taken from the
+        library is named the same way as one built from scratch and the two modes
+        agree on the subtype. The library's own name ("Matte Charcoal") is a
+        colour name with the line folded in, and the colour name is stored on the
+        spool instead.
+        """
         vendor_id = await self.ensure_bambu_vendor()
         return await self.create_filament(
-            name=external.get("name", tray.tray_sub_brands),
+            name=tray.tray_sub_brands or external.get("name") or tray.tray_type,
             vendor_id=vendor_id,
             material=external.get("material", tray.tray_type),
-            color_hex=external.get("color_hex", tray.tray_color[:6]),
+            # `or`, not a two-argument get: an entry that carries the key with an
+            # explicit null would hand None to create_filament rather than reach
+            # the tray fallback. Only a candidate when the tray colour is empty
+            # too, so this is a correctness tidy, not a fix for a live path.
+            color_hex=external.get("color_hex") or color_match_key(tray.tray_color),
             weight=external.get("weight", tray.tray_weight),
             density=external.get("density"),
         )

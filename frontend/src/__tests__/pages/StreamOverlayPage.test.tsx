@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { screen, waitFor, render as rtlRender } from '@testing-library/react';
+import { act, screen, waitFor, render as rtlRender } from '@testing-library/react';
 import { StreamOverlayPage } from '../../pages/StreamOverlayPage';
 import { http, HttpResponse } from 'msw';
 import { server } from '../mocks/server';
@@ -11,6 +11,8 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ThemeProvider } from '../../contexts/ThemeContext';
 import { ToastProvider } from '../../contexts/ToastContext';
+import { AuthProvider } from '../../contexts/AuthContext';
+import { setStreamToken } from '../../api/client';
 
 const mockPrinter = {
   id: 1,
@@ -57,16 +59,22 @@ function renderOverlayPage(printerId: number, queryParams = '') {
     },
   });
 
-  return rtlRender(
+  return rtlRender(overlayTree(printerId, queryParams, queryClient));
+}
+
+function overlayTree(printerId: number, queryParams: string, queryClient: QueryClient) {
+  return (
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[`/overlay/${printerId}${queryParams}`]}>
-        <ThemeProvider>
-          <ToastProvider>
-            <Routes>
-              <Route path="/overlay/:printerId" element={<StreamOverlayPage />} />
-            </Routes>
-          </ToastProvider>
-        </ThemeProvider>
+        <AuthProvider>
+          <ThemeProvider>
+            <ToastProvider>
+              <Routes>
+                <Route path="/overlay/:printerId" element={<StreamOverlayPage />} />
+              </Routes>
+            </ToastProvider>
+          </ThemeProvider>
+        </AuthProvider>
       </MemoryRouter>
     </QueryClientProvider>
   );
@@ -76,14 +84,17 @@ describe('StreamOverlayPage', () => {
   const originalTitle = document.title;
 
   beforeEach(() => {
-    // Mock WebSocket
-    vi.stubGlobal('WebSocket', vi.fn().mockImplementation(function () {
-      return {
-        close: vi.fn(),
-        onmessage: null,
-        onerror: null,
-      };
-    }));
+    // Mock WebSocket. vitest 4 dropped support for arrow-function constructor
+    // mocks (`new (() => ...)` throws "is not a constructor"); use a plain
+    // function so `new WebSocket(...)` resolves correctly.
+    vi.stubGlobal(
+      'WebSocket',
+      vi.fn().mockImplementation(function (this: { close: () => void; onmessage: null; onerror: null }) {
+        this.close = vi.fn();
+        this.onmessage = null;
+        this.onerror = null;
+      }),
+    );
 
     server.use(
       http.get('/api/v1/printers/:id', () => {
@@ -100,12 +111,290 @@ describe('StreamOverlayPage', () => {
     vi.unstubAllGlobals();
   });
 
+  it.each(['1', '2'])('sizes custom logos against the portrait canvas in artwork %s', async (artwork) => {
+    server.use(http.get('/api/v1/settings/overlay-logo', () => new HttpResponse(new Blob(['png'], { type: 'image/png' }))));
+    renderOverlayPage(1, `?layout=portrait&artwork=${artwork}&logo=1`);
+    expect(await screen.findByAltText('Custom logo')).toHaveStyle({ maxWidth: '216px', maxHeight: '268.8px' });
+  });
+
+  describe.each(['', 'layout=landscape&', 'layout=portrait&'])('branding with %s', (layout) => {
+    it.each(['1', '2'])('uses the requested gradient in artwork %s', async (artwork) => {
+      server.use(http.get('/api/v1/printers/:id/status', () => HttpResponse.json(mockStatusPrinting)));
+      const { container } = renderOverlayPage(1, `?${layout}artwork=${artwork}&progressFrom=%23ff0000&progressTo=%230000ff`);
+      await screen.findByAltText('Printbuddy');
+      const bar = container.querySelector('[style*="width: 45%"]');
+      expect(bar).toHaveStyle({ width: '45%', background: 'linear-gradient(to right, #ff0000, #0000ff)' });
+      for (const text of [screen.getByText('Progress'), screen.getByText('45%')]) {
+        expect(text).toHaveStyle({
+          'background-image': 'linear-gradient(to right, #ff0000, #0000ff)',
+          'background-clip': 'text',
+          color: 'rgba(0, 0, 0, 0)',
+        });
+      }
+    });
+
+    it.each(['1', '2'])('ignores malformed branding colours in artwork %s', async (artwork) => {
+      server.use(http.get('/api/v1/printers/:id/status', () => HttpResponse.json(mockStatusPrinting)));
+      const { container } = renderOverlayPage(1, `?${layout}artwork=${artwork}&progressFrom=red&progressTo=%230000ff`);
+      await screen.findByAltText('Printbuddy');
+      expect(container.querySelector('[style*="linear-gradient"]')).toBeNull();
+    });
+
+    it.each([
+      ['0', '1'], ['50', '0.5'], ['100', '0'], ['-10', '1'], ['150', '0'], ['invalid', '1'], ['', '1'],
+    ])('validates Version 2 background transparency %s', async (value, alpha) => {
+      const { container, unmount } = renderOverlayPage(1, `?${layout}artwork=2&camera=false&backgroundTransparency=${value}`);
+      await screen.findByAltText('Printbuddy');
+      expect(container.querySelector('.updated-overlay')).toHaveStyle({ '--overlay-background-alpha': alpha });
+      if (alpha !== '1') expect(document.body.style.backgroundColor).toBe('transparent');
+      unmount();
+      expect(document.body.style.backgroundColor).not.toBe('transparent');
+    });
+
+    it('ignores background transparency in Classic', async () => {
+      const { container } = renderOverlayPage(1, '?backgroundTransparency=100');
+      await screen.findByAltText('Printbuddy');
+      expect(container.querySelector('[style*="--overlay-background-alpha"]')).toBeNull();
+      expect(document.body.style.backgroundColor).not.toBe('transparent');
+    });
+
+  });
+
+  describe.each(['', 'layout=landscape&', 'layout=portrait&'])('consistent status for %s', (layout) => {
+    it.each(['FINISH', 'FAILED', 'IDLE'])('honors the hidden status field for Classic %s', async (state) => {
+      server.use(http.get('/api/v1/printers/:id/status', () => HttpResponse.json({ ...mockStatusPrinting, state })));
+      renderOverlayPage(1, `?${layout}show=filename`);
+      expect(await screen.findByText('Benchy')).toBeInTheDocument();
+      expect(screen.queryByText('Printer is idle')).not.toBeInTheDocument();
+      expect(screen.queryByText('Finished')).not.toBeInTheDocument();
+      expect(screen.queryByText('Failed')).not.toBeInTheDocument();
+    });
+
+    it.each(['1', '2'])('keeps disconnected and finished states truthful in artwork %s', async (artwork) => {
+      server.use(http.get('/api/v1/printers/:id/status', () => HttpResponse.json({ ...mockStatusPrinting, connected: false, temperatures: { nozzle: 210 } })));
+      const view = renderOverlayPage(1, `?${layout}artwork=${artwork}&show=filename,status,progress,layers,eta,nozzle`);
+      await screen.findAllByText('Printer offline');
+      expect(screen.queryByText('45%')).not.toBeInTheDocument();
+      expect(screen.queryByText('210°C')).not.toBeInTheDocument();
+      expect(screen.queryByText('Printing')).not.toBeInTheDocument();
+      view.unmount();
+      server.use(http.get('/api/v1/printers/:id/status', () => HttpResponse.json({ ...mockStatusPrinting, state: 'FINISH' })));
+      renderOverlayPage(1, `?${layout}artwork=${artwork}&show=filename,status,progress,layers,eta,nozzle`);
+      expect(await screen.findByText('Finished')).toBeInTheDocument();
+      expect(screen.queryByText('Printer is idle')).not.toBeInTheDocument();
+    });
+  });
+
+  it.each(['', '&artwork=2'])('reconnects the kiosk camera without changing its token or settings (%s)', async (artwork) => {
+    server.use(http.get('/api/v1/printers/:id/overlay-status', () => HttpResponse.json({
+      ...mockStatusIdle, camera_rotation: 90,
+    })));
+    const timers = vi.spyOn(globalThis, 'setTimeout');
+    const view = renderOverlayPage(1, `?token=overlay-test&fps=7${artwork}`);
+    try {
+      const image = await screen.findByAltText('Camera stream');
+      const source = image.getAttribute('src');
+      expect(source).toContain('token=overlay-test');
+      const renewal = timers.mock.calls.find(([, delay]) => delay === 60_000)?.[0];
+      expect(renewal).toBeTypeOf('function');
+      if (typeof renewal !== 'function') throw new Error('Missing camera renewal timer');
+      act(() => renewal());
+      const renewed = screen.getByAltText('Camera stream');
+      // Classic remounts the img; version 2 switches the src of the same one.
+      if (!artwork) expect(renewed).not.toBe(image);
+      expect(renewed.getAttribute('src')).not.toBe(source);
+      expect(renewed.getAttribute('src')).toContain('token=overlay-test');
+      expect(renewed.getAttribute('src')).toContain('fps=7');
+      expect(renewed.style.transform).toBe(artwork ? 'translate(-50%, -50%) rotate(90deg)' : 'rotate(90deg)');
+    } finally {
+      view.unmount();
+      timers.mockRestore();
+    }
+  });
+
+  // A detached img keeps its MJPEG connection open (measured in Chromium, which
+  // OBS browser sources run on): the old stream is closed before it is replaced.
+  it.each(['', '&artwork=2'])('closes the old camera stream before it is replaced (%s)', async (artwork) => {
+    server.use(http.get('/api/v1/printers/:id/overlay-status', () => HttpResponse.json(mockStatusIdle)));
+    const timers = vi.spyOn(globalThis, 'setTimeout');
+    const view = renderOverlayPage(1, `?token=overlay-test${artwork}`);
+    try {
+      const image = await screen.findByAltText('Camera stream');
+      const close = timers.mock.calls.find(([, delay]) => delay === 59_800)?.[0];
+      const renewal = timers.mock.calls.find(([, delay]) => delay === 60_000)?.[0];
+      if (typeof close !== 'function' || typeof renewal !== 'function') throw new Error('Missing renewal timers');
+
+      const source = image.getAttribute('src');
+      // Both in one batch: React never renders the closed state in between.
+      act(() => {
+        close();
+        renewal();
+      });
+
+      const renewed = screen.getByAltText('Camera stream');
+      if (artwork) {
+        // Version 2 keeps the img: changing its src is what closes the old stream.
+        expect(renewed).toBe(image);
+        expect(renewed.getAttribute('src')).not.toBe(source);
+        expect(renewed.getAttribute('src')).toContain('/camera/stream');
+      } else {
+        expect(image.getAttribute('src')).toBeNull();
+        expect(renewed).not.toBe(image);
+      }
+    } finally {
+      view.unmount();
+      timers.mockRestore();
+    }
+  });
+
+  it.each(['', '&artwork=2'])('keeps the camera closed while it waits, whatever re-renders the page (%s)', async (artwork) => {
+    // Signed in: a new stream token (minted after a failed stream) changes the
+    // URL; the re-render it causes must not reconnect before the renewal.
+    setStreamToken('first');
+    const timers = vi.spyOn(globalThis, 'setTimeout');
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const view = rtlRender(overlayTree(1, artwork ? `?${artwork.slice(1)}` : '', queryClient));
+    try {
+      await screen.findByAltText('Camera stream');
+      const close = timers.mock.calls.find(([, delay]) => delay === 59_800)?.[0];
+      if (typeof close !== 'function') throw new Error('Missing close timer');
+      act(() => close());
+
+      setStreamToken('second');
+      view.rerender(overlayTree(1, artwork ? `?${artwork.slice(1)}` : '', queryClient));
+
+      expect(screen.getByAltText('Camera stream').getAttribute('src')).toBeNull();
+    } finally {
+      view.unmount();
+      timers.mockRestore();
+      setStreamToken(null);
+    }
+  });
+
+  describe('updated artwork', () => {
+    it('maps legacy model codes in version 2', async () => {
+      server.use(http.get('/api/v1/printers/:id', () => HttpResponse.json({ ...mockPrinter, model: 'BL-P001' })));
+      renderOverlayPage(1, '?artwork=2&show=model');
+      expect(await screen.findByText('X1C')).toBeInTheDocument();
+      expect(screen.queryByText('BL-P001')).not.toBeInTheDocument();
+    });
+
+    it.each(['', '?artwork=other', '?artwork=updated'])('retains the original renderer for %s', async (query) => {
+      const { container } = renderOverlayPage(1, query);
+      await screen.findByAltText('Printbuddy');
+      expect(container.querySelector('.updated-overlay')).not.toBeInTheDocument();
+      expect(screen.getByAltText('Camera stream')).toHaveClass('object-contain');
+    });
+    it('uses token data, rotation and both nozzles without inventing missing temperatures', async () => {
+      server.use(http.get('/api/v1/printers/:id/overlay-status', () => HttpResponse.json({
+        ...mockStatusPrinting, name: 'Token printer', model: 'O1D', camera_rotation: 90,
+        time_format: '24h', temperatures: { nozzle: 210, nozzle_target: 220, nozzle_2: 215, bed: 45 },
+      })));
+      renderOverlayPage(1, '?artwork=2&token=bblt_test&show=model,nozzle,bed,chamber&size=large');
+      expect(await screen.findByText('H2D')).toBeInTheDocument();
+      expect(screen.queryByText('Token printer')).not.toBeInTheDocument();
+      expect(screen.getByText('Nozzle 2')).toBeInTheDocument();
+      expect(screen.queryByText('Chamber')).not.toBeInTheDocument();
+      const camera = screen.getByAltText('Camera stream');
+      expect(camera).toHaveAttribute('src', expect.stringContaining('token=bblt_test'));
+      expect(camera).toHaveStyle({ transform: 'translate(-50%, -50%) rotate(90deg)' });
+      expect(camera.closest('.updated-overlay')).toHaveAttribute('data-size', 'large');
+      expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
+    });
+
+    it.each([
+      [90, { width: '640px', height: '360px' }],
+      [0, null],
+    ])('sizes a camera turned %i degrees from its slot, not the viewport', async (rotation, expected) => {
+      // A portrait source: the camera fills a 360 x 640 middle row, so the
+      // viewport (the old vw/vh fallback) would be the wrong box to swap.
+      const width = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(function (this: HTMLElement) {
+        return this.classList.contains('updated-overlay__camera') ? 360 : 0;
+      });
+      const height = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function (this: HTMLElement) {
+        return this.classList.contains('updated-overlay__camera') ? 640 : 0;
+      });
+      try {
+        server.use(http.get('/api/v1/printers/:id', () => HttpResponse.json({ ...mockPrinter, camera_rotation: rotation })));
+        renderOverlayPage(1, '?artwork=2');
+        const camera = await screen.findByAltText('Camera stream');
+        await waitFor(() => expect(camera).toHaveStyle({ transform: `translate(-50%, -50%) rotate(${rotation}deg)` }));
+        if (expected) {
+          await waitFor(() => expect(camera).toHaveStyle(expected));
+        } else {
+          expect(camera.style.width).toBe('');
+          expect(camera.style.height).toBe('');
+        }
+      } finally {
+        width.mockRestore();
+        height.mockRestore();
+      }
+    });
+
+    it.each([
+      [90, { width: '720px', height: '1280px' }],
+      [0, null],
+    ])('fits a classic overlay camera turned %i degrees into the window (#3362)', async (rotation, expected) => {
+      const width = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(function (this: HTMLElement) {
+        return this.classList.contains('classic-overlay') ? 1280 : 0;
+      });
+      const height = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function (this: HTMLElement) {
+        return this.classList.contains('classic-overlay') ? 720 : 0;
+      });
+      try {
+        server.use(http.get('/api/v1/printers/:id', () => HttpResponse.json({ ...mockPrinter, camera_rotation: rotation })));
+        renderOverlayPage(1, '');
+        const camera = await screen.findByAltText('Camera stream');
+        if (expected) {
+          await waitFor(() => expect(camera).toHaveStyle(expected));
+          expect(camera.style.transform).toBe(`translate(-50%, -50%) rotate(${rotation}deg)`);
+        } else {
+          await waitFor(() => expect(camera.style.transform).toBe(''));
+          expect(camera.style.width).toBe('');
+        }
+      } finally {
+        width.mockRestore();
+        height.mockRestore();
+      }
+    });
+
+    it('renders selected fields and accessible progress', async () => {
+      server.use(http.get('/api/v1/printers/:id/status', () => HttpResponse.json(mockStatusPrinting)));
+      renderOverlayPage(1, '?artwork=2&show=printer,model,filename,status,progress,layers,eta');
+      expect(await screen.findByRole('progressbar')).toHaveAttribute('aria-valuenow', '45');
+      expect(screen.getByText('X1 Carbon')).toBeInTheDocument();
+      expect(screen.getByText('X1C')).toBeInTheDocument();
+      expect(screen.getByText('Benchy')).toBeInTheDocument();
+      expect(screen.getByText('150 / 300')).toBeInTheDocument();
+    });
+    it('hides all unselected information, including idle status', async () => {
+      const { container } = renderOverlayPage(1, '?artwork=2&show=&camera=false');
+      await screen.findByAltText('Printbuddy');
+      expect(screen.queryByText('Printer is idle')).not.toBeInTheDocument();
+      expect(screen.queryByAltText('Camera stream')).not.toBeInTheDocument();
+      expect(container.querySelector('.updated-overlay__panel')).not.toBeInTheDocument();
+    });
+    it.each(['FINISH', 'FAILED'])('shows %s without contradictory idle text', async (state) => {
+      server.use(http.get('/api/v1/printers/:id/status', () => HttpResponse.json({ ...mockStatusPrinting, state })));
+      renderOverlayPage(1, '?artwork=2&show=status,progress');
+      expect(await screen.findByText(state === 'FINISH' ? 'Finished' : 'Failed')).toBeInTheDocument();
+      expect(screen.queryByText('Printer is idle')).not.toBeInTheDocument();
+      expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
+    });
+    it('hides stale progress when disconnected', async () => {
+      server.use(http.get('/api/v1/printers/:id/status', () => HttpResponse.json({ ...mockStatusPrinting, connected: false, temperatures: { nozzle: 210 } })));
+      renderOverlayPage(1, '?artwork=2&show=status,progress,layers,eta');
+      expect(await screen.findByText('Printer offline')).toBeInTheDocument();
+      expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
+    });
+  });
+
   describe('rendering', () => {
     it('renders overlay page for printer', async () => {
       renderOverlayPage(1);
 
       await waitFor(() => {
-        expect(screen.getByText('Printer is idle')).toBeInTheDocument();
+        expect(screen.getByText('Idle')).toBeInTheDocument();
       });
     });
 
@@ -125,6 +414,59 @@ describe('StreamOverlayPage', () => {
         const link = logo.closest('a');
         expect(link).toHaveAttribute('href', 'https://github.com/vmhomelab/Printbuddy');
       });
+    });
+  });
+
+  describe('printer model', () => {
+    it.each(['', '?show=printer', '?show='])('hides the model unless selected (%s)', async (query) => {
+      renderOverlayPage(1, query);
+      await screen.findByAltText('Printbuddy');
+      expect(screen.queryByText(/X1C/)).not.toBeInTheDocument();
+    });
+
+    it.each([
+      ['?show=model', 'X1C'],
+      ['?show=printer,model', 'X1 Carbon · X1C'],
+    ])('shows the selected printer identity (%s)', async (query, identity) => {
+      renderOverlayPage(1, query);
+      expect(await screen.findByText(identity)).toBeInTheDocument();
+      if (query === '?show=model') expect(screen.queryByText(/X1 Carbon/)).not.toBeInTheDocument();
+    });
+
+    it.each([
+      ['BL-P001', 'X1C'],
+      ['O1D', 'H2D'],
+      ['H2D', 'H2D'],
+      ['Future printer', 'Future printer'],
+    ])('displays the saved model %s as %s', async (model, displayName) => {
+      server.use(http.get('/api/v1/printers/:id', () => HttpResponse.json({ ...mockPrinter, model })));
+      renderOverlayPage(1, '?show=model');
+      expect(await screen.findByText(displayName)).toBeInTheDocument();
+    });
+
+    it.each([null, ''])('omits a missing model without adding a separator (%s)', async (model) => {
+      server.use(http.get('/api/v1/printers/:id', () => HttpResponse.json({ ...mockPrinter, model })));
+      renderOverlayPage(1, '?show=printer,model');
+      expect(await screen.findByText('X1 Carbon')).toBeInTheDocument();
+      expect(screen.queryByText(/·/)).not.toBeInTheDocument();
+    });
+
+    it.each([['H2D', 'H2D'], ['BL-P001', 'X1C'], ['O1D', 'H2D'], [null, ''], ['', '']] as const)('reads the model %s from the OBS token feed without requesting printer details', async (model, displayName) => {
+      let printerHit = false;
+      server.use(
+        http.get('/api/v1/printers/:id/overlay-status', () => HttpResponse.json({
+          ...mockStatusIdle, name: 'Workshop', model, camera_rotation: 0,
+          gcode_file: null, temperatures: {}, time_format: 'system',
+        })),
+        http.get('/api/v1/printers/:id', () => {
+          printerHit = true;
+          return new HttpResponse(null, { status: 401 });
+        }),
+      );
+      renderOverlayPage(1, '?token=obs-tok&show=printer,model');
+      expect(await screen.findByText(displayName ? `Workshop · ${displayName}` : 'Workshop')).toBeInTheDocument();
+      expect(printerHit).toBe(false);
+      if (!model) expect(screen.queryByText(/·/)).not.toBeInTheDocument();
     });
   });
 
@@ -168,6 +510,35 @@ describe('StreamOverlayPage', () => {
       await waitFor(() => {
         expect(screen.getByText('Printing')).toBeInTheDocument();
       });
+    });
+  });
+
+  describe('live updates', () => {
+    // ws-1: the backend sends a status update as `data`; the overlay read
+    // `data.status`, which is undefined, so every websocket update was
+    // dropped and only the 2 s poll moved it.
+    it('applies a websocket status update, keeping fields it does not carry', async () => {
+      const sockets: Array<{ onmessage: ((e: { data: string }) => void) | null }> = [];
+      vi.stubGlobal(
+        'WebSocket',
+        vi.fn().mockImplementation(function (this: { close: () => void; onmessage: null; onerror: null }) {
+          this.close = vi.fn();
+          this.onmessage = null;
+          this.onerror = null;
+          sockets.push(this);
+        }),
+      );
+      server.use(http.get('/api/v1/printers/:id/status', () => HttpResponse.json(mockStatusPrinting)));
+      renderOverlayPage(1);
+      expect(await screen.findByText('45%')).toBeInTheDocument();
+      await waitFor(() => expect(sockets[0]?.onmessage).toBeTypeOf('function'));
+
+      act(() => {
+        sockets[0].onmessage!({ data: JSON.stringify({ type: 'printer_status', printer_id: 1, data: { progress: 46 } }) });
+      });
+
+      expect(await screen.findByText('46%')).toBeInTheDocument();
+      expect(screen.getByText('Benchy')).toBeInTheDocument();
     });
   });
 
@@ -271,7 +642,7 @@ describe('StreamOverlayPage', () => {
 
       await waitFor(() => {
         // Status should still be visible
-        expect(screen.getByText('Printer is idle')).toBeInTheDocument();
+        expect(screen.getByText('Idle')).toBeInTheDocument();
       });
 
       // Camera should not be rendered
@@ -282,7 +653,7 @@ describe('StreamOverlayPage', () => {
       renderOverlayPage(1, '?camera=0');
 
       await waitFor(() => {
-        expect(screen.getByText('Printer is idle')).toBeInTheDocument();
+        expect(screen.getByText('Idle')).toBeInTheDocument();
       });
 
       expect(screen.queryByAltText('Camera stream')).not.toBeInTheDocument();
@@ -319,7 +690,7 @@ describe('StreamOverlayPage', () => {
       renderOverlayPage(1, '?camera=false&size=large');
 
       await waitFor(() => {
-        expect(screen.getByText('Printer is idle')).toBeInTheDocument();
+        expect(screen.getByText('Idle')).toBeInTheDocument();
       });
 
       expect(screen.queryByAltText('Camera stream')).not.toBeInTheDocument();
@@ -360,6 +731,211 @@ describe('StreamOverlayPage', () => {
       await waitFor(() => {
         expect(screen.getByText('Printer offline')).toBeInTheDocument();
       });
+    });
+  });
+
+  describe('kiosk token mode (#2613)', () => {
+    const mockOverlayPrinting = {
+      id: 1,
+      name: 'X1 Carbon',
+      camera_rotation: 0,
+      connected: true,
+      state: 'RUNNING',
+      current_print: 'KioskBenchy.gcode.3mf',
+      gcode_file: 'plate_1.gcode',
+      progress: 67,
+      remaining_time: 40,
+      layer_num: 10,
+      total_layers: 20,
+      stg_cur_name: null,
+      time_format: 'system',
+    };
+
+    it('reads the token-authed overlay-status feed and carries the token to the camera', async () => {
+      let overlayHit = false;
+      server.use(
+        http.get('/api/v1/printers/:id/overlay-status', () => {
+          overlayHit = true;
+          return HttpResponse.json(mockOverlayPrinting);
+        })
+      );
+
+      renderOverlayPage(1, '?token=obs-tok');
+
+      await waitFor(() => {
+        expect(screen.getByText('KioskBenchy')).toBeInTheDocument();
+      });
+      expect(overlayHit).toBe(true);
+      expect(screen.getByText('67%')).toBeInTheDocument();
+
+      // The camera <img> must carry the same kiosk token — a fresh OBS browser
+      // has no session to mint a camera stream token from.
+      const img = screen.getByAltText('Camera stream') as HTMLImageElement;
+      expect(img.src).toContain('token=obs-tok');
+    });
+
+    it('does not touch the JWT-only status endpoint or a WebSocket in kiosk mode', async () => {
+      let statusHit = false;
+      server.use(
+        http.get('/api/v1/printers/:id/overlay-status', () => HttpResponse.json(mockOverlayPrinting)),
+        http.get('/api/v1/printers/:id/status', () => {
+          statusHit = true;
+          return HttpResponse.json(mockStatusIdle);
+        })
+      );
+
+      renderOverlayPage(1, '?token=obs-tok');
+
+      await waitFor(() => {
+        expect(screen.getByText('KioskBenchy')).toBeInTheDocument();
+      });
+      // The logged-in status query is disabled when a token is present, so an
+      // unauthenticated OBS browser never fires a doomed 401 (or opens a socket).
+      expect(statusHit).toBe(false);
+      expect(WebSocket).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('temperatures (#1422)', () => {
+    const withTemps = {
+      ...mockStatusPrinting,
+      temperatures: {
+        nozzle: 219.6,
+        nozzle_target: 220,
+        bed: 60,
+        bed_target: 60,
+        chamber: 38.4,
+      },
+    };
+
+    beforeEach(() => {
+      server.use(http.get('/api/v1/printers/:id/status', () => HttpResponse.json(withTemps)));
+    });
+
+    it('draws no temperatures unless the URL asks for them', async () => {
+      renderOverlayPage(1);
+
+      await waitFor(() => {
+        expect(screen.getByText('45%')).toBeInTheDocument();
+      });
+      // Default ?show= is unchanged by #1422, so overlays already running in an
+      // OBS scene look identical after the upgrade.
+      expect(screen.queryByText('Nozzle')).not.toBeInTheDocument();
+      expect(screen.queryByText('Bed')).not.toBeInTheDocument();
+    });
+
+    it('draws only the readings named in ?show=', async () => {
+      renderOverlayPage(1, '?show=progress,nozzle');
+
+      await waitFor(() => {
+        expect(screen.getByText('Nozzle')).toBeInTheDocument();
+      });
+      expect(screen.queryByText('Bed')).not.toBeInTheDocument();
+      expect(screen.queryByText('Chamber')).not.toBeInTheDocument();
+    });
+
+    it('rounds the reading and hides a target it has already reached', async () => {
+      renderOverlayPage(1, '?show=nozzle,bed');
+
+      await waitFor(() => {
+        expect(screen.getByText('220°C')).toBeInTheDocument();
+      });
+      // Nozzle is 219.6 against a target of 220: both round to 220, so the
+      // "/ 220°C" half is dropped rather than reading "220 / 220°C" all print.
+      expect(screen.queryByText('/')).not.toBeInTheDocument();
+      expect(screen.getByText('60°C')).toBeInTheDocument();
+    });
+
+    it('shows the target while the heater is still climbing', async () => {
+      server.use(
+        http.get('/api/v1/printers/:id/status', () =>
+          HttpResponse.json({ ...withTemps, temperatures: { nozzle: 140, nozzle_target: 220 } }),
+        ),
+      );
+      renderOverlayPage(1, '?show=nozzle');
+
+      await waitFor(() => {
+        expect(screen.getByText('140°C')).toBeInTheDocument();
+      });
+      expect(screen.getByText('220°C')).toBeInTheDocument();
+    });
+
+    it('skips a reading the printer does not report', async () => {
+      server.use(
+        http.get('/api/v1/printers/:id/status', () =>
+          // A P1S: the backend drops chamber for models without a real sensor,
+          // so asking for it in ?show= must not produce an empty row.
+          HttpResponse.json({ ...withTemps, temperatures: { nozzle: 200, bed: 55 } }),
+        ),
+      );
+      renderOverlayPage(1, '?show=nozzle,bed,chamber');
+
+      await waitFor(() => {
+        expect(screen.getByText('Nozzle')).toBeInTheDocument();
+      });
+      expect(screen.queryByText('Chamber')).not.toBeInTheDocument();
+    });
+
+    it('draws both nozzles on a dual-nozzle printer', async () => {
+      server.use(
+        http.get('/api/v1/printers/:id/status', () =>
+          HttpResponse.json({
+            ...withTemps,
+            temperatures: { nozzle: 220, nozzle_2: 250, nozzle_2_target: 250 },
+          }),
+        ),
+      );
+      renderOverlayPage(1, '?show=nozzle');
+
+      await waitFor(() => {
+        expect(screen.getByText('Nozzle')).toBeInTheDocument();
+      });
+      expect(screen.getByText('Nozzle 2')).toBeInTheDocument();
+      expect(screen.getByText('250°C')).toBeInTheDocument();
+    });
+
+    it('draws temperatures while the printer is idle', async () => {
+      server.use(
+        http.get('/api/v1/printers/:id/status', () =>
+          HttpResponse.json({ ...mockStatusIdle, temperatures: { bed: 45, bed_target: 60 } }),
+        ),
+      );
+      renderOverlayPage(1, '?show=bed');
+
+      await screen.findByText('45°C');
+      // A preheating printer is exactly when the readings are worth watching,
+      // so they are not gated behind a running print.
+      expect(screen.getByText('45°C')).toBeInTheDocument();
+      expect(screen.getByText('60°C')).toBeInTheDocument();
+    });
+
+    it('reads temperatures from the token-authed feed in kiosk mode', async () => {
+      server.use(
+        http.get('/api/v1/printers/:id/overlay-status', () =>
+          HttpResponse.json({
+            id: 1,
+            name: 'X1 Carbon',
+            camera_rotation: 0,
+            connected: true,
+            state: 'RUNNING',
+            current_print: 'KioskBenchy.gcode.3mf',
+            gcode_file: 'plate_1.gcode',
+            progress: 67,
+            remaining_time: 40,
+            layer_num: 10,
+            total_layers: 20,
+            stg_cur_name: null,
+            temperatures: { chamber: 38, chamber_target: 40 },
+            time_format: 'system',
+          }),
+        ),
+      );
+      renderOverlayPage(1, '?token=obs-tok&show=chamber');
+
+      await waitFor(() => {
+        expect(screen.getByText('Chamber')).toBeInTheDocument();
+      });
+      expect(screen.getByText('38°C')).toBeInTheDocument();
     });
   });
 });

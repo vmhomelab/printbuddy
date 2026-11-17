@@ -9,6 +9,7 @@ import logging
 import os
 import platform
 import re
+import time
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,7 +33,7 @@ from backend.app.models.project import Project
 from backend.app.models.settings import Settings
 from backend.app.models.smart_plug import SmartPlug
 from backend.app.models.user import User
-from backend.app.services.discovery import is_running_in_docker
+from backend.app.services.discovery import detect_container_runtime, is_running_in_docker
 from backend.app.services.log_reader import (
     LogEntry,
     collect_sensitive_strings,
@@ -41,6 +42,7 @@ from backend.app.services.log_reader import (
 )
 from backend.app.services.network_utils import get_network_interfaces
 from backend.app.services.printer_manager import printer_manager
+from backend.app.utils.local_time import utcnow_naive
 
 router = APIRouter(prefix="/support", tags=["support"])
 logger = logging.getLogger(__name__)
@@ -175,7 +177,7 @@ async def get_logs(
     limit: int = Query(200, ge=1, le=1000, description="Maximum number of entries to return"),
     level: str | None = Query(None, description="Filter by log level (DEBUG, INFO, WARNING, ERROR)"),
     search: str | None = Query(None, description="Search in message or logger name"),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_READ),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_UPDATE),
 ):
     """Get recent application log entries with optional filtering."""
     entries, total_lines = read_log_entries(limit=limit, level_filter=level, search=search)
@@ -220,21 +222,20 @@ def _sanitize_path(path: str) -> str:
 
 
 def _detect_docker_network_mode() -> str:
-    """Detect Docker network mode by checking for host-level interfaces.
+    """The container's network mode as the connection diagnostic reads it:
+    "host", "bridge", "macvlan", "ipvlan", "ipvlan_l3", or "unknown".
 
-    In host mode the container shares the host network namespace, so Docker
-    infrastructure interfaces (docker0, br-*, veth*) are visible.  In bridge
-    mode the container is isolated and only sees its own veth (named eth0).
+    This used to be its own copy of the diagnostic's first rule only, so it
+    called a macvlan container bridge (#3417). Shells out to ``ip``: call it
+    off the event loop.
     """
-    try:
-        import socket
+    from backend.app.services.discovery import detect_container_runtime
+    from backend.app.services.printer_diagnostic import _detect_container_network_mode
 
-        for _idx, name in socket.if_nameindex():
-            if name.startswith(("docker", "br-", "veth", "virbr")):
-                return "host"
+    try:
+        return _detect_container_network_mode(detect_container_runtime()) or "unknown"
     except Exception:
-        pass
-    return "bridge"
+        return "unknown"
 
 
 def _mask_subnet(subnet: str) -> str:
@@ -298,6 +299,182 @@ def _get_container_memory_limit() -> int | None:
         except Exception:
             pass
     return None
+
+
+# Above this RSS the heap census is skipped — see _collect_process_info.
+_GC_CENSUS_RSS_LIMIT = 2 * 1024**3
+
+
+def _collect_process_info() -> dict:
+    """Snapshot this process's resource usage, for reports about it growing.
+
+    Bundles used to carry nothing about Printbuddy's own footprint, which made
+    "memory climbs over days until the OOM killer fires" impossible to triage
+    from a bundle alone — the reporter of #2734 had to be asked to run commands
+    by hand, and the numbers that would have identified the mechanism could not
+    be recovered after the fact.
+
+    The four figures below separate the mechanisms that look identical from
+    outside:
+
+    * ``rss_bytes`` vs ``vms_bytes`` — a large virtual size against a modest
+      resident one is address space, not live data: thread stacks or allocator
+      arenas rather than a heap that keeps growing.
+    * ``num_threads`` — every leaked MQTT client reconnect would leave a paho
+      network thread behind, each reserving its stack.
+    * ``children`` — the ffmpeg-per-camera-stream leak class (#776).
+    * ``open_files`` / ``connections`` — descriptors held by streams or sockets
+      that were never closed.
+
+    Everything is best-effort: psutil raises on hardened kernels and inside
+    restricted containers, and a support bundle must still be produced when it
+    does. Child command lines are reduced to the executable name — a full
+    ffmpeg argv carries the camera URL, and with it the camera's password.
+    """
+    import psutil
+
+    out: dict = {}
+    try:
+        proc = psutil.Process()
+    except Exception:
+        return {"available": False}
+
+    out["available"] = True
+    try:
+        mem = proc.memory_info()
+        out["rss_bytes"] = mem.rss
+        out["rss_formatted"] = _format_bytes(mem.rss)
+        out["vms_bytes"] = mem.vms
+        out["vms_formatted"] = _format_bytes(mem.vms)
+    except Exception:
+        pass
+    try:
+        out["num_threads"] = proc.num_threads()
+    except Exception:
+        pass
+    try:
+        out["uptime_seconds"] = int(time.time() - proc.create_time())
+    except Exception:
+        pass
+    try:
+        out["open_files"] = len(proc.open_files())
+    except Exception:
+        pass
+    try:
+        out["connections"] = len(proc.net_connections(kind="inet"))
+    except Exception:
+        pass
+    out.update(_collect_fd_info(proc))
+
+    # Children by executable name only. The count per name is what identifies a
+    # leak; the arguments would leak credentials.
+    try:
+        names: dict[str, int] = {}
+        for child in proc.children(recursive=True):
+            try:
+                names[child.name()] = names.get(child.name(), 0) + 1
+            except Exception:
+                names["<unknown>"] = names.get("<unknown>", 0) + 1
+        out["children_total"] = sum(names.values())
+        out["children_by_name"] = dict(sorted(names.items(), key=lambda kv: -kv[1]))
+    except Exception:
+        pass
+
+    # Live object counts by type, top 15. Identifies a heap that is growing and
+    # what it is growing with — the one thing RSS alone cannot say.
+    #
+    # Skipped above _GC_CENSUS_RSS_LIMIT. gc.get_objects() materialises a list
+    # of every tracked object, so the census costs most on exactly the process
+    # that can least afford it: a bundle generated to diagnose runaway memory
+    # must not be the allocation that tips the host over. The numbers that
+    # actually separate the mechanisms — RSS vs VMS, threads, children — are
+    # collected above and unaffected.
+    rss = out.get("rss_bytes")
+    if rss is not None and rss > _GC_CENSUS_RSS_LIMIT:
+        out["gc_census"] = (
+            f"skipped: process is using {_format_bytes(rss)}, above the "
+            f"{_format_bytes(_GC_CENSUS_RSS_LIMIT)} limit for walking the heap"
+        )
+        return out
+    try:
+        import gc
+
+        counts: dict[str, int] = {}
+        for obj in gc.get_objects():
+            name = type(obj).__name__
+            counts[name] = counts.get(name, 0) + 1
+        out["gc_tracked_objects"] = sum(counts.values())
+        out["gc_top_types"] = dict(sorted(counts.items(), key=lambda kv: -kv[1])[:15])
+    except Exception:
+        pass
+
+    return out
+
+
+def _fd_kind(target: str) -> str:
+    """What an open descriptor points at, without saying where (#2883)."""
+    for prefix, kind in (("socket:", "socket"), ("pipe:", "pipe"), ("anon_inode:", "anon_inode")):
+        if target.startswith(prefix):
+            return kind
+    if target.endswith(".db"):
+        return "database"
+    if target.endswith(".db-wal"):
+        return "database_wal"
+    if target.endswith(".db-shm"):
+        return "database_shm"
+    if target.startswith("/dev/"):
+        return "device"
+    return "file"
+
+
+def _collect_fd_info(proc) -> dict:
+    """Descriptors in use, by kind, against the limit (#2883).
+
+    #2883 ran out of descriptors at a 1024 limit, and the SQLite pool could
+    account for only part of that. Nobody could say what held the rest, because
+    a bundle carried no count. ``fds_by_type`` answers it from the next report:
+    database, -wal and -shm separately (WAL keeps a closed connection's db fd
+    open), sockets, pipes and everything else. Kinds only, never paths. Linux
+    only for the breakdown; best-effort throughout.
+    """
+    import os
+
+    out: dict = {}
+    try:
+        out["num_fds"] = proc.num_fds()
+    except Exception:
+        pass
+    try:
+        import resource
+
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        infinity = resource.RLIM_INFINITY
+        out["fd_limit"] = {
+            "soft": "unlimited" if soft == infinity else soft,
+            "hard": "unlimited" if hard == infinity else hard,
+        }
+    except Exception:
+        pass
+    try:
+        from backend.app.core import fd_limit
+
+        if fd_limit.startup_status is not None:
+            out["fd_limit_at_startup"] = dict(fd_limit.startup_status)
+    except Exception:
+        pass
+    try:
+        kinds: dict[str, int] = {}
+        for name in os.listdir("/proc/self/fd"):
+            try:
+                kind = _fd_kind(os.readlink(f"/proc/self/fd/{name}"))
+            except OSError:
+                # Closed between listing and reading, which is normal.
+                continue
+            kinds[kind] = kinds.get(kind, 0) + 1
+        out["fds_by_type"] = dict(sorted(kinds.items(), key=lambda kv: -kv[1]))
+    except Exception:
+        pass
+    return out
 
 
 def _format_bytes(size_bytes: int) -> str:
@@ -486,9 +663,12 @@ async def _collect_queue_info(db: AsyncSession) -> dict:
         )
     ).scalar_one_or_none()
     if oldest_row is not None:
-        # created_at is naive in this codebase (server_default=func.now()); compare
-        # against naive utc-now to get the actual age without TZ-conversion surprises.
-        age = (datetime.now() - oldest_row).total_seconds()
+        # created_at is naive in this codebase (server_default=func.now()) and holds
+        # UTC, so the clock on the other side of the subtraction has to be naive UTC
+        # too. datetime.now() is naive *local*: on a UTC+3 host it reported an item
+        # queued five minutes ago as three hours old, and went negative west of
+        # Greenwich (#2855).
+        age = (utcnow_naive() - oldest_row).total_seconds()
         info["oldest_pending_age_seconds"] = int(age)
     else:
         info["oldest_pending_age_seconds"] = None
@@ -527,23 +707,6 @@ async def _collect_github_backup_info(db: AsyncSession) -> dict:
         "schedule_enabled_count": schedule_enabled_count,
         "last_failure_count": last_failure_count,
     }
-
-
-async def _check_url_reachable(url: str, timeout: float = 2.0) -> bool | None:
-    """Single HEAD/GET ping with a short timeout. Returns None if URL is empty."""
-    if not url or not url.strip():
-        return None
-    try:
-        import httpx
-
-        async with httpx.AsyncClient(timeout=timeout, verify=False) as client:  # nosec B501 — local sidecars often use self-signed; this is a reachability/health probe only, no secrets are sent
-            r = await client.get(url, follow_redirects=False)
-            # Anything that returned a status code counts as reachable, even 404
-            # (the API server is up, just the path was wrong) — separates network
-            # failure from configuration mistakes for the user.
-            return r.status_code is not None
-    except Exception:
-        return False
 
 
 async def _fetch_slicer_health(url: str, timeout: float = 2.0) -> dict | None:
@@ -647,20 +810,29 @@ async def _collect_slicer_api_info() -> dict:
     return info
 
 
-def _parse_obico_enabled_printers(raw: str) -> set[int]:
-    """Parse the comma-separated `obico_enabled_printers` setting. Same shape as
-    obico_detection.py uses but tolerant of legacy formats."""
+def _parse_obico_enabled_printers(raw: str | None) -> set[int] | None:
+    """Parse the `obico_enabled_printers` setting the way the detection service does.
+
+    The setting is a JSON array of printer IDs and an empty value means *all*
+    printers — see ``ObicoDetectionService._load_settings``. This used to split
+    on commas and treat empty as *none*, so a bundle from a default Obico setup
+    reported every printer as unmonitored while the service was in fact polling
+    all of them. Returns ``None`` for "all printers"; a comma-separated fallback
+    is kept in case an install ever stored the legacy shape.
+    """
     if not raw or not raw.strip():
-        return set()
+        return None
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        parsed = None
+    if isinstance(parsed, list):
+        return {int(item) for item in parsed if isinstance(item, (int, str)) and str(item).strip().isdigit()}
     result: set[int] = set()
     for token in raw.split(","):
         token = token.strip()
-        if not token:
-            continue
-        try:
+        if token.isdigit():
             result.add(int(token))
-        except ValueError:
-            continue
     return result
 
 
@@ -669,7 +841,7 @@ async def _collect_support_info() -> dict:
     in_docker = is_running_in_docker()
 
     info = {
-        "generated_at": datetime.now().isoformat(),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
         "app": {
             "version": APP_VERSION,
             "debug_mode": settings.debug,
@@ -683,6 +855,11 @@ async def _collect_support_info() -> dict:
         },
         "environment": {
             "docker": in_docker,
+            # Named separately from the Docker flag: a Podman or LXC bundle
+            # used to carry `"docker": false` and nothing else, which reads
+            # as bare metal and hid the deployment shape a report depended on
+            # (#3092).
+            "container_runtime": detect_container_runtime(),
             "data_dir": _sanitize_path(str(settings.base_dir)),
             "log_dir": _sanitize_path(str(settings.log_dir)),
             "timezone": os.environ.get("TZ", ""),
@@ -690,6 +867,12 @@ async def _collect_support_info() -> dict:
         "database": {},
         "printers": [],
         "settings": {},
+        # Printbuddy's own footprint. Cheap to collect and the only thing that
+        # makes a "memory grows over days" report triageable from the bundle
+        # rather than a round trip of shell commands (#2734). Off the event
+        # loop: the heap census walks every tracked object, and a bundle
+        # request must not stall status ingest while it does.
+        "process": await asyncio.to_thread(_collect_process_info),
     }
 
     # Docker-specific info
@@ -699,7 +882,7 @@ async def _collect_support_info() -> dict:
             info["docker"] = {
                 "container_memory_limit_bytes": mem_limit,
                 "container_memory_limit_formatted": _format_bytes(mem_limit) if mem_limit else None,
-                "network_mode_hint": _detect_docker_network_mode(),
+                "network_mode_hint": await asyncio.to_thread(_detect_docker_network_mode),
             }
         except Exception:
             logger.debug("Failed to collect Docker info", exc_info=True)
@@ -729,18 +912,27 @@ async def _collect_support_info() -> dict:
         printers = result.scalars().all()
         statuses = printer_manager.get_all_statuses()
 
-        # Pre-load the obico per-printer enabled-list. Settings are loaded later
-        # in this function (and would overwrite this key in info["settings"]),
-        # so do a targeted query here for the per-printer flag below.
-        obico_enabled_set: set[int] = set()
+        # Pre-load the obico settings that decide which printers are monitored.
+        # Settings are loaded later in this function (and would overwrite these
+        # keys in info["settings"]), so do a targeted query here for the
+        # per-printer flag below. ``None`` means every printer is monitored.
+        obico_enabled_set: set[int] | None = None
+        obico_globally_enabled = False
         try:
-            obico_row = (
-                await db.execute(select(Settings).where(Settings.key == "obico_enabled_printers"))
-            ).scalar_one_or_none()
-            if obico_row is not None:
-                obico_enabled_set = _parse_obico_enabled_printers(obico_row.value)
+            obico_rows = {
+                row.key: row.value
+                for row in (
+                    await db.execute(
+                        select(Settings).where(Settings.key.in_(["obico_enabled_printers", "obico_enabled"]))
+                    )
+                )
+                .scalars()
+                .all()
+            }
+            obico_enabled_set = _parse_obico_enabled_printers(obico_rows.get("obico_enabled_printers"))
+            obico_globally_enabled = (obico_rows.get("obico_enabled") or "false").lower() == "true"
         except Exception:
-            logger.debug("Failed to load obico_enabled_printers", exc_info=True)
+            logger.debug("Failed to load obico settings", exc_info=True)
 
         # Check reachability in parallel
         reachability_tasks = [_check_port(p.ip_address, 8883) for p in printers]
@@ -783,8 +975,10 @@ async def _collect_support_info() -> dict:
                     "ams_tray_count": ams_tray_count,
                     "has_vt_tray": has_vt_tray,
                     "external_camera_configured": bool(printer.external_camera_url),
+                    "camera_light_auto": bool(printer.camera_light_auto),
                     "plate_detection_enabled": printer.plate_detection_enabled,
-                    "obico_enabled": printer.id in obico_enabled_set,
+                    "obico_enabled": obico_globally_enabled
+                    and (obico_enabled_set is None or printer.id in obico_enabled_set),
                     "hms_error_count": len(state.hms_errors) if state else 0,
                     "developer_mode": state.developer_mode if state else None,
                     "nozzle_rack_count": len(state.nozzle_rack) if state else 0,
@@ -848,6 +1042,7 @@ async def _collect_support_info() -> dict:
             "host",
             "broker",  # MQTT broker hostname / IP — network exposure
             "credential",
+            "client_id",  # e.g. manyfold_client_id (#1471): half of an OAuth login
         }
         # Value-based safety net: redact anything whose value carries an
         # unambiguous secret prefix, even if the key name didn't match.
@@ -1081,25 +1276,141 @@ async def _collect_support_info() -> dict:
 
 
 def _get_log_content(max_bytes: int = 10 * 1024 * 1024, sensitive_strings: dict[str, str] | None = None) -> bytes:
-    """Get log file content, limited to max_bytes from the end."""
+    """Get recent log content, limited to max_bytes from the end.
+
+    Spans the rotated files as well as the live one. ``printbuddy.log`` is capped
+    at 5 MB by the RotatingFileHandler, and the bundle used to ship only that
+    file — so on a large fleet with debug logging on, the window we ask a
+    reporter for was far shorter than anyone realised. The 19-printer farm in
+    #2555 emits ~100 lines/s of MQTT frame dumps, which fills 5 MB in under five
+    minutes: the bundle we received to diagnose a *queue* problem barely
+    contained one upload. The three rotated backups were sitting on disk unread.
+
+    Reads oldest -> newest so the result is chronological, then takes the last
+    ``max_bytes``, which is where the budget was all along.
+    """
     log_file = settings.log_dir / "printbuddy.log"
     if not log_file.exists():
         return b"Log file not found"
 
-    file_size = log_file.stat().st_size
-    if file_size <= max_bytes:
-        content = log_file.read_text(encoding="utf-8", errors="replace")
-    else:
-        # Read last max_bytes
-        with open(log_file, "rb") as f:
-            f.seek(file_size - max_bytes)
-            # Skip partial line at start
-            f.readline()
-            content = f.read().decode("utf-8", errors="replace")
+    # RotatingFileHandler names its backups .log.1 (newest) .. .log.N (oldest).
+    # Walk them in reverse so the concatenation reads forwards in time.
+    candidates: list[Path] = []
+    for index in range(settings.log_backup_count, 0, -1):
+        rotated = log_file.with_name(f"{log_file.name}.{index}")
+        if rotated.exists():
+            candidates.append(rotated)
+    candidates.append(log_file)
+
+    chunks: list[str] = []
+    remaining = max_bytes
+    # Fill from the newest backwards so the byte budget is spent on recent
+    # history, then flip back to chronological order for the reader.
+    for path in reversed(candidates):
+        if remaining <= 0:
+            break
+        try:
+            size = path.stat().st_size
+            with open(path, "rb") as f:
+                if size > remaining:
+                    f.seek(size - remaining)
+                    f.readline()  # discard the partial line the seek landed in
+                chunks.append(f.read().decode("utf-8", errors="replace"))
+            remaining -= min(size, remaining)
+        except OSError:
+            logger.debug("Failed to read log file %s for support bundle", path, exc_info=True)
+
+    content = "".join(reversed(chunks))
 
     # Sanitize sensitive data
     content = sanitize_log_content(content, sensitive_strings)
     return content.encode("utf-8")
+
+
+# Top-level push_status keys that carry user-private data (filenames, BambuCloud
+# IDs). Dropped from the bundled per-printer snapshot. Keep print.cfg /
+# print.option / ams / vt_tray / vir_slot / mapping — those are the fields that
+# make the snapshot worth shipping (per-model AMS Backup detection, tray-shape
+# research, VP regression baselines).
+_RAW_DATA_DROP_KEYS = frozenset(
+    {
+        "subtask_name",
+        "gcode_file",
+        "gcode_file_prepare_percent",
+        "subtask_id",
+        "task_id",
+        "project_id",
+        "gcode_state",  # not sensitive, but mirrors current_print which we strip
+        "design_id",
+        "profile_id",
+        "model_id",
+    }
+)
+
+
+def _redact_raw_push_status(raw: dict) -> dict:
+    """Strip user-private keys from a cached push_status snapshot.
+
+    Drops the keys in :data:`_RAW_DATA_DROP_KEYS` anywhere in the tree, then
+    rewrites every entry under ``net.info[*].ip`` to ``"0.0.0.0"``. Mirrors the
+    LAN-topology leak fixed in the virtual-printer bridge (#1429) — the same
+    field exposes the printer's local IP plus the gateway/peers it sees. Returns
+    a NEW dict; the live ``state.raw_data`` is never mutated.
+    """
+
+    if not isinstance(raw, dict):
+        return {}
+
+    def _walk(value):
+        if isinstance(value, dict):
+            return {k: _walk(v) for k, v in value.items() if k not in _RAW_DATA_DROP_KEYS}
+        if isinstance(value, list):
+            return [_walk(v) for v in value]
+        return value
+
+    out = _walk(raw)
+
+    # Scrub net.info[*].ip after the structural walk — only meaningful at the
+    # top level; nested "net" blocks don't appear in Bambu push_status payloads.
+    net = out.get("net")
+    if isinstance(net, dict):
+        info_list = net.get("info")
+        if isinstance(info_list, list):
+            net["info"] = [
+                ({**entry, "ip": "0.0.0.0"} if isinstance(entry, dict) and "ip" in entry else entry)  # nosec B104 - redaction sentinel, not a bind address
+                for entry in info_list
+            ]
+
+    return out
+
+
+def _sanitize_push_status_values(node, sensitive_strings: dict[str, str]):
+    """Sanitize a push_status snapshot's string *values*, never its JSON text.
+
+    This used to run :func:`sanitize_log_content` over the serialised snapshot.
+    That pass includes a generic Bambu-serial regex
+    (``0[0-3][A-Z0-9][A-Z0-9]{9,13}`` in ``log_reader``) which matches the
+    decimal expansion of a float just as happily as a serial: an AMS ``k`` flow
+    factor of ``0.0199999995529652`` came out as ``0.[SERIAL]``, and the bundle
+    shipped invalid JSON — unusable for exactly the ground-truth purpose the
+    snapshot exists for (found while diagnosing #2702).
+
+    Walking the structure instead leaves numbers, bools and None untouched, so
+    the output always parses. Keys are structural and never rewritten.
+    """
+    if isinstance(node, str):
+        return sanitize_log_content(node, sensitive_strings)
+    if isinstance(node, dict):
+        return {k: _sanitize_push_status_values(v, sensitive_strings) for k, v in node.items()}
+    if isinstance(node, list | tuple):
+        # Tuples too: `json.dumps` renders them as arrays, so stringifying one
+        # here would change the file's shape rather than just its content.
+        return [_sanitize_push_status_values(v, sensitive_strings) for v in node]
+    if node is None or isinstance(node, bool | int | float):
+        return node
+    # Anything else (datetime, Decimal, …) would be stringified by json.dumps'
+    # ``default=str`` *after* this pass and so escape sanitisation entirely.
+    return sanitize_log_content(str(node), sensitive_strings)
 
 
 async def _get_recent_sanitized_logs(max_lines: int = 200) -> str:
@@ -1125,7 +1436,7 @@ async def _get_recent_sanitized_logs(max_lines: int = 200) -> str:
 
 @router.get("/bundle")
 async def generate_support_bundle(
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_READ),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_UPDATE),
 ):
     """Generate a support bundle ZIP file for issue reporting."""
     # Check if debug logging is enabled and collect sensitive values for redaction
@@ -1153,8 +1464,43 @@ async def generate_support_bundle(
         # Add support info JSON
         zf.writestr("support-info.json", json.dumps(support_info, indent=2, default=str))
 
+        # Per-printer cached push_status dump. Bambu firmware ships per-model
+        # config in a different shape for every family (the bit-26 / print.cfg
+        # gap that blocked AMS Backup awareness in 85fbd7fc), and shape-of-
+        # vt_tray / mapping / vir_slot has bitten the VP bridge repeatedly.
+        # Including the redacted snapshot turns every future support bundle
+        # into a ground-truth sample for that exact model+firmware. Index
+        # matches the 1-based ordering in support-info.json["printers"] so a
+        # maintainer can cross-reference without re-deriving identifiers.
+        statuses = printer_manager.get_all_statuses()
+        async with async_session() as db:
+            db_printers = (await db.execute(select(Printer))).scalars().all()
+        for i, printer in enumerate(db_printers):
+            state = statuses.get(printer.id)
+            if state is None or not state.raw_data:
+                continue
+            redacted = _redact_raw_push_status(state.raw_data)
+            snapshot = {
+                "model": printer.model or "Unknown",
+                "firmware_version": state.firmware_version,
+                "captured_at": datetime.now(timezone.utc).isoformat(),
+                "raw_data": redacted,
+            }
+            # Belt-and-suspenders: pass every string value through the
+            # string-based sanitizer so any user-named string (printer name,
+            # serial baked into a tray uuid) the structural pass missed still
+            # gets caught. Values only — sanitizing the serialised JSON text
+            # corrupted numeric literals (see _sanitize_push_status_values).
+            snapshot = _sanitize_push_status_values(snapshot, sensitive_strings)
+            zf.writestr(f"push-status/printer-{i + 1}.json", json.dumps(snapshot, indent=2, default=str))
+
         # Add log file
-        log_content = _get_log_content(sensitive_strings=sensitive_strings)
+        # Off the event loop: this reads up to 10 MB and then runs one full regex
+        # pass per sensitive string over it. Now that the bundle spans the rotated
+        # files it can genuinely reach that ceiling, and the blocking cost scales
+        # with the number of printers (4 redaction patterns each) — i.e. it is
+        # worst on exactly the fleet size this change was written for.
+        log_content = await asyncio.to_thread(_get_log_content, sensitive_strings=sensitive_strings)
         zf.writestr("printbuddy.log", log_content)
 
     zip_buffer.seek(0)

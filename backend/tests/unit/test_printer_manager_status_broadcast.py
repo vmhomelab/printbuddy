@@ -90,18 +90,43 @@ def _fake_state(**overrides):
         "firmware_version": None,
         "gcode_file": None,
         "heatbreak_fan_speed": None,
+        "left_aux_fan_speed": None,
+        "exhaust_fan_present": False,
         "layer_num": None,
         "remaining_time": None,
         "speed_level": None,
+        "airduct_mode": None,
         "stg_cur": 0,  # get_derived_status_name does ``0 <= state.stg_cur < 255``
         "subtask_name": None,
         "total_layers": None,
         "tray_now": None,
         "wifi_signal": None,
         "wired_network": None,
+        "ams_filament_backup": None,
+        "developer_mode": None,
+        "nozzles": [],
+        "ams_extruder_map": {},
+        "print_ams_mapping": None,
+        # Filament Track Switch. None means "no accessory", which is what
+        # printer_state_to_dict gates both of these on.
+        "fila_switch": None,
+        "ams_switch_inlet": {},
+        "extruder_slots": {},
     }
     base.update(overrides)
     return SimpleNamespace(**base)
+
+
+def _scheduled_names(mock) -> list[str]:
+    """Coroutine names passed to the patched ``_schedule_async``.
+
+    Asserting on names rather than a bare call count keeps this file pinned to
+    #1128's contract (persist + broadcast on every flag mutation) without
+    breaking every time another emission is hung off the same setter — #2525
+    added an edge-triggered MQTT/notification relay, which is covered by its
+    own test module.
+    """
+    return [call.args[0].__qualname__.rsplit(".", 1)[-1] for call in mock.call_args_list]
 
 
 class TestSchedulingFromSetAwaitingPlateClear:
@@ -118,8 +143,10 @@ class TestSchedulingFromSetAwaitingPlateClear:
         with patch.object(manager, "_schedule_async", side_effect=_close_unawaited) as scheduled:
             manager.set_awaiting_plate_clear(7, True)
 
-        # Two coroutines: persist + broadcast. Order doesn't matter.
-        assert scheduled.call_count == 2
+        # Persist + broadcast, in either order.
+        names = _scheduled_names(scheduled)
+        assert "_persist_awaiting_plate_clear" in names
+        assert "_broadcast_status_change" in names
 
     def test_does_not_schedule_when_no_loop_attached(self, manager):
         """Sync unit-test path (no loop attached): nothing must be
@@ -158,8 +185,10 @@ class TestSchedulingFromSetAwaitingPlateClear:
             scheduled.reset_mock()
             manager.set_awaiting_plate_clear(7, False)
 
-        # Each flip = persist + broadcast = 2 calls.
-        assert scheduled.call_count == 2
+        # The False flip persists and broadcasts just like the True flip did.
+        names = _scheduled_names(scheduled)
+        assert "_persist_awaiting_plate_clear" in names
+        assert "_broadcast_status_change" in names
 
 
 class TestBroadcastStatusChange:
@@ -271,6 +300,11 @@ class TestEndToEndUnderRunningLoop:
             # Persistence path opens a DB session; stub it out so this
             # stays a pure unit test.
             patch.object(manager, "_persist_awaiting_plate_clear", new_callable=AsyncMock),
+            # So does the MQTT/notification emit, through its DB fallback for
+            # a printer with no client. Left real, its query is still running
+            # on aiosqlite's thread when the test's loop closes, and warns
+            # under whichever test runs next.
+            patch.object(manager, "_emit_plate_clear_change", new_callable=AsyncMock),
         ):
             manager.set_awaiting_plate_clear(7, False)
             # Yield repeatedly so run_coroutine_threadsafe has a chance

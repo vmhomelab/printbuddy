@@ -1,6 +1,5 @@
-import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import QRCode from 'qrcode';
+import { QRCodeSVG } from 'qrcode.react';
 import { Smartphone } from 'lucide-react';
 
 import { buildPairingUri, currentServerUrl, isLocalOnly } from '../utils/mobilePairing';
@@ -13,34 +12,20 @@ import { buildPairingUri, currentServerUrl, isLocalOnly } from '../utils/mobileP
  */
 export function MobilePairingQR({ apiKey, serverUrl = currentServerUrl() }: { apiKey: string; serverUrl?: string }) {
   const { t } = useTranslation();
-  const [dataUrl, setDataUrl] = useState<string | null>(null);
   const isLocal = isLocalOnly(serverUrl);
-
-  useEffect(() => {
-    let cancelled = false;
-    QRCode.toDataURL(buildPairingUri(serverUrl, apiKey), { margin: 1, width: 220, errorCorrectionLevel: 'M' })
-      .then((url) => {
-        if (!cancelled) setDataUrl(url);
-      })
-      .catch(() => {
-        if (!cancelled) setDataUrl(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [apiKey, serverUrl]);
 
   return (
     <div className="mt-4 flex flex-col sm:flex-row gap-4 items-start" data-testid="mobile-pairing-qr">
-      {dataUrl && (
-        <img
-          src={dataUrl}
-          alt={t('settings.mobilePairing.qrAlt')}
-          width={160}
-          height={160}
-          className="rounded-lg bg-white p-1 flex-shrink-0"
-        />
-      )}
+      {/* qrcode.react, as the API key QR modal uses: no second QR library. */}
+      <QRCodeSVG
+        value={buildPairingUri(serverUrl, apiKey)}
+        size={160}
+        level="M"
+        marginSize={1}
+        role="img"
+        aria-label={t('settings.mobilePairing.qrAlt')}
+        className="rounded-lg bg-white p-1 flex-shrink-0"
+      />
       <div className="text-sm text-bambu-gray space-y-1 min-w-0">
         <p className="text-white font-medium flex items-center gap-2">
           <Smartphone className="w-4 h-4" />

@@ -396,6 +396,10 @@ class TestTimelapseTracking:
             }
         )
 
+        # A later status update records the last non-zero progress before
+        # firmware resets it during a display-side abort.
+        client._process_message({"print": {"gcode_state": "RUNNING", "mc_percent": 25}})
+
         # User cancels (goes to IDLE)
         client._process_message(
             {
@@ -409,6 +413,7 @@ class TestTimelapseTracking:
 
         assert completion_data["status"] == "aborted"
         assert "hms_errors" in completion_data
+        assert completion_data["last_progress"] == 25
 
     @pytest.mark.asyncio
     async def test_timelapse_detected_from_ipcam_data(self):

@@ -129,9 +129,9 @@ class TestLocalInventoryLabels:
 
         original = labels_module.render_labels
 
-        def _capture(template, data_list):
+        def _capture(template, data_list, **kwargs):
             captured["ids"] = [d.spool_id for d in data_list]
-            return original(template, data_list)
+            return original(template, data_list, **kwargs)
 
         with patch.object(labels_module, "render_labels", side_effect=_capture):
             resp = await async_client.post(
@@ -140,6 +140,29 @@ class TestLocalInventoryLabels:
             )
         assert resp.status_code == 200
         assert captured["ids"] == [s3.id, s1.id, s2.id]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_forwards_sheet_starting_position(self, async_client: AsyncClient, spool_factory):
+        spool = await spool_factory()
+
+        from backend.app.api.routes import labels as labels_module
+
+        captured = {}
+        original = labels_module.render_labels
+
+        def _capture(template, data_list, **kwargs):
+            captured["starting_position"] = kwargs["starting_position"]
+            return original(template, data_list, **kwargs)
+
+        with patch.object(labels_module, "render_labels", side_effect=_capture):
+            resp = await async_client.post(
+                "/api/v1/inventory/labels",
+                json={"spool_ids": [spool.id], "template": "avery_5160", "starting_position": 8},
+            )
+
+        assert resp.status_code == 200
+        assert captured["starting_position"] == 8
 
 
 # ── /spoolman/labels (Spoolman-backed) ───────────────────────────────────────
@@ -193,6 +216,7 @@ class TestSpoolmanLabels:
         mock_client = MagicMock()
         mock_client.is_connected = True
         mock_client.get_spools = AsyncMock(return_value=[spoolman_spool])
+        mock_client.get_all_spools = AsyncMock(return_value=[spoolman_spool])
 
         with patch(
             "backend.app.api.routes.labels.get_spoolman_client",
@@ -220,6 +244,7 @@ class TestSpoolmanLabels:
         mock_client = MagicMock()
         mock_client.is_connected = True
         mock_client.get_spools = AsyncMock(return_value=[{"id": 1, "filament": {"name": "X", "material": "PLA"}}])
+        mock_client.get_all_spools = mock_client.get_spools
 
         with patch(
             "backend.app.api.routes.labels.get_spoolman_client",
@@ -232,11 +257,54 @@ class TestSpoolmanLabels:
         assert resp.status_code == 404
         assert "99" in resp.text
 
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_renders_an_archived_spool(self, async_client: AsyncClient, db_session: AsyncSession):
+        """SM-C12: Spoolman leaves archived spools out of its plain list, so the
+        whole batch failed with a 404 when one was selected."""
+        from backend.app.models.settings import Settings
+
+        db_session.add(Settings(key="spoolman_enabled", value="true"))
+        await db_session.commit()
+        active = {"id": 1, "filament": {"name": "X", "material": "PLA"}}
+        archived = {"id": 2, "archived": True, "filament": {"name": "Y", "material": "PETG"}}
+        mock_client = MagicMock()
+        mock_client.is_connected = True
+        mock_client.get_spools = AsyncMock(return_value=[active])
+        mock_client.get_all_spools = AsyncMock(
+            side_effect=lambda allow_archived=False: [active, archived] if allow_archived else [active]
+        )
+
+        with patch("backend.app.api.routes.labels.get_spoolman_client", AsyncMock(return_value=mock_client)):
+            resp = await async_client.post(
+                "/api/v1/spoolman/labels", json={"spool_ids": [1, 2], "template": "box_62x29"}
+            )
+
+        assert resp.status_code == 200, resp.text
+
 
 # ── Validation cross-cutting ─────────────────────────────────────────────────
 
 
 class TestValidation:
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    @pytest.mark.parametrize(
+        ("template", "starting_position"),
+        (("avery_5160", 0), ("avery_5160", 31), ("avery_l7160", 22), ("box_62x29", 2)),
+    )
+    async def test_invalid_starting_position_rejected(
+        self,
+        async_client: AsyncClient,
+        template: str,
+        starting_position: int,
+    ):
+        resp = await async_client.post(
+            "/api/v1/inventory/labels",
+            json={"spool_ids": [1], "template": template, "starting_position": starting_position},
+        )
+        assert resp.status_code == 422
+
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_request_body_size_capped(self, async_client: AsyncClient):
@@ -252,3 +320,402 @@ class TestValidation:
             },
         )
         assert resp.status_code == 422
+
+
+# ── Fields, PNG and preview (#2981) ──────────────────────────────────────────
+
+
+def _spoolman_on(db_session: AsyncSession):
+    from backend.app.models.settings import Settings
+
+    db_session.add(Settings(key="spoolman_enabled", value="true"))
+
+
+def _spoolman_client(spools: list[dict]) -> MagicMock:
+    client = MagicMock()
+    client.is_connected = True
+    client.get_spools = AsyncMock(return_value=spools)
+    client.get_all_spools = AsyncMock(return_value=spools)
+    return client
+
+
+class TestLabelFieldsAndFormats:
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_omitted_fields_print_the_default_set(self, async_client: AsyncClient, spool_factory):
+        from backend.app.api.routes import labels as labels_module
+        from backend.app.services.label_renderer import DEFAULT_LABEL_FIELDS
+
+        spool = await spool_factory()
+        captured = {}
+        original = labels_module.render_labels
+
+        def _capture(template, data_list, **kwargs):
+            captured["fields"] = kwargs["fields"]
+            return original(template, data_list, **kwargs)
+
+        with patch.object(labels_module, "render_labels", side_effect=_capture):
+            resp = await async_client.post(
+                "/api/v1/inventory/labels", json={"spool_ids": [spool.id], "template": "box_40x30"}
+            )
+        assert resp.status_code == 200
+        assert captured["fields"] == DEFAULT_LABEL_FIELDS
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_chosen_fields_and_new_spool_data_reach_the_renderer(self, async_client: AsyncClient, spool_factory):
+        from backend.app.api.routes import labels as labels_module
+
+        spool = await spool_factory(material_number="MN-15", nozzle_temp_min=190, nozzle_temp_max=230, note="Dry first")
+        captured = {}
+        original = labels_module.render_labels
+
+        def _capture(template, data_list, **kwargs):
+            captured["fields"] = kwargs["fields"]
+            captured["data"] = data_list[0]
+            return original(template, data_list, **kwargs)
+
+        with patch.object(labels_module, "render_labels", side_effect=_capture):
+            resp = await async_client.post(
+                "/api/v1/inventory/labels",
+                json={
+                    "spool_ids": [spool.id],
+                    "template": "box_40x30",
+                    "fields": ["temps", "material_number", "temps"],
+                },
+            )
+        assert resp.status_code == 200
+        assert captured["fields"] == {"temps", "material_number"}
+        data = captured["data"]
+        assert (data.material_number, data.nozzle_temp_min, data.nozzle_temp_max) == ("MN-15", 190, 230)
+        assert (data.label_weight, data.note) == (1000, "Dry first")
+        assert data.added is not None
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_unknown_field_rejected(self, async_client: AsyncClient, spool_factory):
+        spool = await spool_factory()
+        resp = await async_client.post(
+            "/api/v1/inventory/labels",
+            json={"spool_ids": [spool.id], "template": "box_40x30", "fields": ["brand", "password"]},
+        )
+        assert resp.status_code == 422
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    @pytest.mark.parametrize("body", [{"format": "gif"}, {"format": "png", "dpi": 72}, {"spool_ids": [0]}])
+    async def test_invalid_output_options_rejected(self, async_client: AsyncClient, body: dict):
+        resp = await async_client.post(
+            "/api/v1/inventory/labels", json={"spool_ids": [1], "template": "box_40x30", **body}
+        )
+        assert resp.status_code == 422
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_one_label_as_png(self, async_client: AsyncClient, spool_factory):
+        spool = await spool_factory()
+        resp = await async_client.post(
+            "/api/v1/inventory/labels",
+            json={"spool_ids": [spool.id], "template": "box_40x30", "format": "png", "dpi": 203},
+        )
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "image/png"
+        assert "printbuddy-labels-box_40x30.png" in resp.headers["content-disposition"]
+        assert resp.content.startswith(b"\x89PNG")
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_several_roll_labels_come_as_a_zip_named_by_spool(self, async_client: AsyncClient, spool_factory):
+        import io
+        import zipfile
+
+        s1 = await spool_factory()
+        s2 = await spool_factory()
+        resp = await async_client.post(
+            "/api/v1/inventory/labels",
+            json={"spool_ids": [s2.id, s1.id], "template": "box_62x29", "format": "png"},
+        )
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "application/zip"
+        with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+            assert zf.namelist() == [f"label-{s2.id}.png", f"label-{s1.id}.png"]
+            assert all(zf.read(n).startswith(b"\x89PNG") for n in zf.namelist())
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_sheet_pngs_are_numbered_by_page(self, async_client: AsyncClient, spool_factory):
+        import io
+        import zipfile
+
+        s1 = await spool_factory()
+        s2 = await spool_factory()
+        resp = await async_client.post(
+            "/api/v1/inventory/labels",
+            # 21 per L7160 page; starting at 21 puts the second label on page two.
+            json={
+                "spool_ids": [s1.id, s2.id],
+                "template": "avery_l7160",
+                "format": "png",
+                "starting_position": 21,
+            },
+        )
+        assert resp.status_code == 200
+        with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+            assert zf.namelist() == ["sheet-1.png", "sheet-2.png"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_preview_is_one_png(self, async_client: AsyncClient, spool_factory):
+        spool = await spool_factory()
+        resp = await async_client.post(
+            "/api/v1/inventory/labels/preview",
+            json={"spool_id": spool.id, "template": "avery_5160", "fields": ["brand", "qr"]},
+        )
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "image/png"
+        assert resp.headers["cache-control"] == "no-store"
+        assert resp.content.startswith(b"\x89PNG")
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_preview_of_unknown_spool_is_404(self, async_client: AsyncClient):
+        resp = await async_client.post(
+            "/api/v1/inventory/labels/preview", json={"spool_id": 99999, "template": "box_40x30"}
+        )
+        assert resp.status_code == 404
+
+
+class TestSpoolmanLabelParity:
+    """A Spoolman spool's label is built from the same mapping the inventory
+    page shows, so it carries what a built-in spool's label does."""
+
+    SPOOL = {
+        "id": 7,
+        "filament": {
+            "name": "PLA Matte",
+            "material": "PLA",
+            "color_hex": "000000",
+            "vendor": {"name": "Bambu Lab"},
+            "article_number": "MN-15",
+            "settings_extruder_temp": 220,
+            "weight": 1000,
+        },
+        "extra": {"bambu_color_name": '"Charcoal"'},
+        "comment": "Dry first",
+        "registered": "2026-09-01T10:00:00Z",
+        "location": "Shelf 2",
+    }
+
+    async def _captured(self, async_client: AsyncClient, db_session: AsyncSession, spool: dict):
+        from backend.app.api.routes import labels as labels_module
+
+        _spoolman_on(db_session)
+        await db_session.commit()
+        captured = {}
+        original = labels_module.render_labels
+
+        def _capture(template, data_list, **kwargs):
+            captured["data"] = data_list[0]
+            return original(template, data_list, **kwargs)
+
+        with (
+            patch.object(labels_module, "render_labels", side_effect=_capture),
+            patch(
+                "backend.app.api.routes.labels.get_spoolman_client",
+                AsyncMock(return_value=_spoolman_client([spool])),
+            ),
+        ):
+            resp = await async_client.post(
+                "/api/v1/spoolman/labels", json={"spool_ids": [spool["id"]], "template": "box_40x30"}
+            )
+        assert resp.status_code == 200
+        return captured["data"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_carries_subtype_colour_name_and_the_new_fields(
+        self, async_client: AsyncClient, db_session: AsyncSession
+    ):
+        from datetime import date
+
+        data = await self._captured(async_client, db_session, self.SPOOL)
+        assert (data.material, data.subtype, data.name, data.brand) == ("PLA", "Matte", "Charcoal", "Bambu Lab")
+        assert (data.material_number, data.nozzle_temp_min, data.label_weight) == ("MN-15", 220, 1000)
+        assert (data.note, data.added, data.storage_location) == ("Dry first", date(2026, 9, 1), "Shelf 2")
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_without_a_colour_name_the_filament_name_is_used(
+        self, async_client: AsyncClient, db_session: AsyncSession
+    ):
+        """As before: the name line falls back to the filament name, not to the
+        subtype the mapping synthesises as a colour name."""
+        spool = {**self.SPOOL, "extra": {}}
+        data = await self._captured(async_client, db_session, spool)
+        assert data.name == "PLA Matte"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_preview_uses_spoolman(self, async_client: AsyncClient, db_session: AsyncSession):
+        _spoolman_on(db_session)
+        await db_session.commit()
+        with patch(
+            "backend.app.api.routes.labels.get_spoolman_client",
+            AsyncMock(return_value=_spoolman_client([self.SPOOL])),
+        ):
+            resp = await async_client.post(
+                "/api/v1/spoolman/labels/preview", json={"spool_id": 7, "template": "box_40x30"}
+            )
+        assert resp.status_code == 200
+        assert resp.content.startswith(b"\x89PNG")
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_preview_refused_when_spoolman_is_off(self, async_client: AsyncClient):
+        resp = await async_client.post("/api/v1/spoolman/labels/preview", json={"spool_id": 7, "template": "box_40x30"})
+        assert resp.status_code == 400
+
+
+# ── Custom sheets (#3296) ────────────────────────────────────────────────────
+
+# A 3 × 8 sheet of 70 × 36 mm labels on A4, edge to edge (Avery 3490).
+CUSTOM_LAYOUT = {
+    "page": "a4",
+    "label_w_mm": 70.0,
+    "label_h_mm": 36.0,
+    "cols": 3,
+    "rows": 8,
+    "top_mm": 4.5,
+    "left_mm": 0.0,
+}
+
+
+class TestCustomSheet:
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_the_layout_reaches_the_renderer(self, async_client: AsyncClient, spool_factory):
+        from backend.app.services.label_renderer import SheetLayout
+
+        spool = await spool_factory()
+        captured: dict = {}
+
+        def _capture(template, data_list, **kwargs):
+            captured["template"] = template
+            captured.update(kwargs)
+            return b"%PDF-1.4\n%%EOF\n"
+
+        with patch("backend.app.api.routes.labels.render_labels", side_effect=_capture):
+            resp = await async_client.post(
+                "/api/v1/inventory/labels",
+                json={"spool_ids": [spool.id], "template": "custom", "layout": CUSTOM_LAYOUT, "starting_position": 24},
+            )
+        assert resp.status_code == 200, resp.text
+        assert captured["template"] == SheetLayout(**CUSTOM_LAYOUT)
+        assert captured["starting_position"] == 24
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_renders_a_pdf_and_page_pngs(self, async_client: AsyncClient, spool_factory):
+        import io
+        import zipfile
+
+        s1 = await spool_factory()
+        s2 = await spool_factory()
+        body = {"spool_ids": [s1.id, s2.id], "template": "custom", "layout": CUSTOM_LAYOUT}
+
+        pdf = await async_client.post("/api/v1/inventory/labels", json=body)
+        assert pdf.status_code == 200, pdf.text
+        assert pdf.content.startswith(b"%PDF")
+        assert "printbuddy-labels-custom.pdf" in pdf.headers["content-disposition"]
+
+        # 24 per page; starting at 24 puts the second label on page two.
+        pngs = await async_client.post(
+            "/api/v1/inventory/labels", json={**body, "format": "png", "starting_position": 24}
+        )
+        assert pngs.status_code == 200
+        with zipfile.ZipFile(io.BytesIO(pngs.content)) as zf:
+            assert zf.namelist() == ["sheet-1.png", "sheet-2.png"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_preview_is_one_cell(self, async_client: AsyncClient, spool_factory):
+        spool = await spool_factory()
+        resp = await async_client.post(
+            "/api/v1/inventory/labels/preview",
+            json={"spool_id": spool.id, "template": "custom", "layout": CUSTOM_LAYOUT},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.content.startswith(b"\x89PNG")
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_spoolman_spools_print_on_a_custom_sheet(self, async_client: AsyncClient, db_session: AsyncSession):
+        _spoolman_on(db_session)
+        await db_session.commit()
+        with patch(
+            "backend.app.api.routes.labels.get_spoolman_client",
+            AsyncMock(return_value=_spoolman_client([TestSpoolmanLabelParity.SPOOL])),
+        ):
+            resp = await async_client.post(
+                "/api/v1/spoolman/labels",
+                json={"spool_ids": [7], "template": "custom", "layout": CUSTOM_LAYOUT},
+            )
+        assert resp.status_code == 200, resp.text
+        assert resp.content.startswith(b"%PDF")
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {"template": "custom"},  # no layout
+            {"template": "avery_l7160", "layout": CUSTOM_LAYOUT},  # layout with a built-in
+            {"template": "custom", "layout": {**CUSTOM_LAYOUT, "left_mm": 1.0}},  # off the page
+            {"template": "custom", "layout": CUSTOM_LAYOUT, "starting_position": 25},  # past 3 × 8
+            {"template": "custom", "layout": {**CUSTOM_LAYOUT, "label_w_mm": 39.0}},  # too small for text
+        ],
+    )
+    async def test_invalid_custom_requests_are_refused(self, async_client: AsyncClient, spool_factory, body):
+        spool = await spool_factory()
+        resp = await async_client.post("/api/v1/inventory/labels", json={"spool_ids": [spool.id], **body})
+        assert resp.status_code == 422, resp.text
+
+
+class TestPngSheetCap:
+    """PNG export of sheets is capped at pages × dpi, so a one-label-per-page
+    custom sheet can't hold the PDFium lock for minutes."""
+
+    ONE_PER_PAGE = {**CUSTOM_LAYOUT, "label_w_mm": 70.0, "label_h_mm": 36.0, "cols": 1, "rows": 1}
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_too_many_pages_at_the_resolution_is_refused(self, async_client: AsyncClient):
+        # 26 pages at 600 dpi is over the 25 allowed; no spool is looked up first.
+        resp = await async_client.post(
+            "/api/v1/inventory/labels",
+            json={
+                "spool_ids": list(range(1, 27)),
+                "template": "custom",
+                "layout": self.ONE_PER_PAGE,
+                "format": "png",
+                "dpi": 600,
+            },
+        )
+        assert resp.status_code == 422
+        assert "25 sheet pages at 600 dpi" in resp.text
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_the_same_pages_as_pdf_or_at_a_lower_resolution_are_allowed(self, async_client: AsyncClient):
+        from backend.app.api.routes.labels import LabelRequest
+
+        ids = list(range(1, 27))
+        LabelRequest(spool_ids=ids, template="custom", layout=self.ONE_PER_PAGE, format="pdf")
+        LabelRequest(spool_ids=ids, template="custom", layout=self.ONE_PER_PAGE, format="png", dpi=300)
+
+    def test_the_built_in_sheets_always_fit(self):
+        from backend.app.api.routes.labels import MAX_LABELS_PER_REQUEST, LabelRequest
+
+        ids = list(range(1, MAX_LABELS_PER_REQUEST + 1))
+        for template in ("avery_5160", "avery_l7160"):
+            LabelRequest(spool_ids=ids, template=template, format="png", dpi=600)

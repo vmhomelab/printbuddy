@@ -387,8 +387,9 @@ describe('PrintFarmMonitorPage', () => {
     render(<PrintFarmMonitorPage />);
 
     await screen.findAllByText('Demo Bambu Lab P1S');
-    await waitFor(() => expect(screen.getByText('0 PRINTERS ACTIVE')).toBeInTheDocument());
-    expect(screen.getAllByText('IDLE').length).toBeGreaterThan(0);
+    // Printer statuses arrive through the batched bulk read, a beat after the page.
+    expect((await screen.findAllByText('IDLE')).length).toBeGreaterThan(0);
+    expect(screen.getByText('0 PRINTERS ACTIVE')).toBeInTheDocument();
     expect(screen.queryByText('Finished Gridfinity Plate')).not.toBeInTheDocument();
     expect(screen.queryByText('100%')).not.toBeInTheDocument();
     expect(document.body.textContent).not.toContain('1228 / 1228 layers');

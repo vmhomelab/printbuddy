@@ -1,470 +1,897 @@
-"""OctoEverywhere Gadget AI print-failure detection service (PB-35).
+"""OctoEverywhere AI print-failure detection service.
 
-An optional second detection provider next to the self-hosted Obico service.
-It is configured separately and does not touch any Obico setting or state.
-
-Per monitored printer and print:
-  1. create a Gadget context (free, uses the API key),
-  2. upload JPEG snapshots at the interval Gadget asks for,
-  3. act on rising edges of ``WarningSuggested`` (notify) and
-     ``PauseSuggested`` (configured action: notify / pause / pause_and_off).
-
-Gadget's temporal model already smooths results over the print, so there is
-no client-side smoothing. Context IDs and process URLs are secrets: they are
-kept in memory only and never logged or exposed through the status API.
+Each print owns a context so OctoEverywhere can combine camera snapshots over
+time. Snapshots follow the configured interval, sped up to the API's
+recommended interval while it suggests faster inspection, always respecting its
+minimum. The API decides when to warn or pause; raw model scores are not used
+for classification or actions.
 """
 
 import asyncio
-import hashlib
 import json
 import logging
+import math
 import time
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+from functools import partial
+from urllib.parse import urlsplit
 
+import httpx
 from sqlalchemy import select
 
 from backend.app.core.database import async_session
-from backend.app.models.printer import Printer
 from backend.app.models.settings import Settings
-from backend.app.services import octoeverywhere_gadget as gadget
-from backend.app.services.failure_detection_camera import NO_CAMERA, capture_detection_frame
+from backend.app.services.octoeverywhere_images import MAX_IMAGE_BYTES, prepare_frame
 
 logger = logging.getLogger(__name__)
 
-SOURCE = "OctoEverywhere"
+CREATE_CONTEXT_URL = "https://gadget-pv1-oeapi.octoeverywhere.com/api/gadget/v1/createcontext"
+DETECTION_TIMEOUT = 30.0
+POLL_INTERVAL = 5
+DEFAULT_POLL_INTERVAL = 20
+ERROR_RETRY_INTERVAL = 60
+NOTIFICATION_REPEAT_INTERVAL = 3 * 60 * 60
 HISTORY_MAX = 50
-TICK_ENABLED = 2.0  # seconds between scheduler ticks while enabled
-TICK_DISABLED = 10.0
-NO_CAMERA_RETRY = 60  # seconds before retrying a printer that has no camera
-ACCOUNT_BLOCK_SECONDS = 3600  # back-off after a key/account error (free limit, IP restriction, ...)
-ACTIVE_PRINT_STATES = ("RUNNING", "PAUSE")
+# Gadget's confidence levels: 1 suggests a warning or pause soonest, with more
+# false positives; 5 waits until the model is most certain.
+CONFIDENCE_LEVELS = {"lowest": 1, "low": 2, "medium": 3, "high": 4, "highest": 5}
+IP_RESTRICTED_ERROR = "OE_API_KEY_IP_RESTRICTED"
+ACCOUNT_ERROR_CODES = {
+    "OE_INVALID_API_KEY",
+    "OE_API_KEY_DISABLED",
+    "OE_API_KEY_BLOCKED_PAYMENT_FAILED",
+    IP_RESTRICTED_ERROR,
+    "OE_FREE_USAGE_LIMIT_REACHED",
+}
 
-KEY_ENABLED = "octoeverywhere_enabled"
-KEY_API_KEY = "octoeverywhere_api_key"
-KEY_SENSITIVITY = "octoeverywhere_sensitivity"
-KEY_ACTION = "octoeverywhere_action"
-KEY_POLL_INTERVAL = "octoeverywhere_poll_interval"
-KEY_ENABLED_PRINTERS = "octoeverywhere_enabled_printers"
-KEY_NOTIFY_ON_WARNING = "octoeverywhere_notify_on_warning"
-ALL_KEYS = (
-    KEY_ENABLED,
-    KEY_API_KEY,
-    KEY_SENSITIVITY,
-    KEY_ACTION,
-    KEY_POLL_INTERVAL,
-    KEY_ENABLED_PRINTERS,
-    KEY_NOTIFY_ON_WARNING,
-)
-
-SENSITIVITIES = ("low", "medium", "high")
-ACTIONS = ("notify", "pause", "pause_and_off")
-POLL_INTERVAL_AUTO = 0  # follow Gadget's recommended interval
-POLL_INTERVAL_MIN = 5
-POLL_INTERVAL_MAX = 120
-
-
-def parse_enabled_printers(raw: str | None) -> list[int] | None:
-    """'' / missing / invalid -> None (all printers); JSON int array -> list."""
-    if not raw:
-        return None
-    try:
-        parsed = json.loads(raw)
-    except (json.JSONDecodeError, TypeError):
-        return None
-    if not isinstance(parsed, list) or not all(isinstance(i, int) and not isinstance(i, bool) for i in parsed):
-        return None
-    return parsed
+API_ERRORS = {
+    "OE_BAD_ARGS": "OctoEverywhere rejected the request arguments.",
+    "OE_ARGS_PARSE_FAILED": "OctoEverywhere could not parse the request.",
+    "OE_CONTEXT_RATE_LIMITED": "OctoEverywhere requested a delay before the next check. Detection will retry automatically.",
+    "OE_IMAGE_DECODE_FAILED": "OctoEverywhere could not decode the camera snapshot.",
+    "OE_INVALID_API_KEY": "OctoEverywhere rejected the Gadget API key. Check your API key in AI Failure Detection settings.",
+    "OE_API_KEY_DISABLED": "The OctoEverywhere Gadget API key is disabled. Contact OctoEverywhere support to restore access.",
+    "OE_API_KEY_BLOCKED_PAYMENT_FAILED": ("The OctoEverywhere API account is unavailable. Check the account status."),
+    IP_RESTRICTED_ERROR: (
+        "This IP address is already in use by another OctoEverywhere Gadget API key. "
+        "Use the original key, or contact OctoEverywhere support."
+    ),
+    "OE_FREE_USAGE_LIMIT_REACHED": "API usage limit reached. Set up billing to continue.",
+    "OE_BACKEND_THROTTLED": "OctoEverywhere is temporarily busy. Detection will retry automatically.",
+    "OE_INTERNAL_ERROR": "OctoEverywhere encountered a service error. Detection will retry automatically.",
+}
 
 
-def _key_fingerprint(api_key: str) -> str:
-    return hashlib.sha256(api_key.encode()).hexdigest()[:16] if api_key else ""
+class _ApiError(Exception):
+    """An actionable error with no remote response bodies or request secrets."""
 
-
-async def load_settings() -> dict:
-    """Read the OctoEverywhere settings; decrypts the API key."""
-    from backend.app.core.encryption import mfa_decrypt
-
-    async with async_session() as db:
-        result = await db.execute(select(Settings).where(Settings.key.in_(ALL_KEYS)))
-        rows = {r.key: r.value for r in result.scalars().all()}
-
-    api_key = ""
-    key_error = None
-    stored_key = rows.get(KEY_API_KEY) or ""
-    if stored_key:
-        try:
-            api_key = mfa_decrypt(stored_key)
-        except RuntimeError:
-            key_error = "Stored OctoEverywhere API key cannot be decrypted; re-enter it in Settings"
-
-    sensitivity = rows.get(KEY_SENSITIVITY) or "medium"
-    if sensitivity not in SENSITIVITIES:
-        sensitivity = "medium"
-    action = rows.get(KEY_ACTION) or "notify"
-    if action not in ACTIONS:
-        action = "notify"
-    try:
-        poll_interval = int(rows.get(KEY_POLL_INTERVAL) or POLL_INTERVAL_AUTO)
-    except ValueError:
-        poll_interval = POLL_INTERVAL_AUTO
-    if poll_interval != POLL_INTERVAL_AUTO:
-        poll_interval = max(POLL_INTERVAL_MIN, min(POLL_INTERVAL_MAX, poll_interval))
-
-    return {
-        "enabled": (rows.get(KEY_ENABLED) or "false").lower() == "true",
-        "api_key": api_key,
-        "has_api_key": bool(stored_key),
-        "key_error": key_error,
-        "sensitivity": sensitivity,
-        "action": action,
-        "poll_interval": poll_interval,
-        "enabled_printers": parse_enabled_printers(rows.get(KEY_ENABLED_PRINTERS)),
-        "notify_on_warning": (rows.get(KEY_NOTIFY_ON_WARNING) or "true").lower() == "true",
-    }
+    def __init__(
+        self,
+        message: str,
+        status_code: int | None = None,
+        retry_after: float = 0,
+        *,
+        context_missing: bool = False,
+        error_code: str | None = None,
+    ):
+        super().__init__(message)
+        self.status_code = status_code
+        self.retry_after = retry_after
+        self.context_missing = context_missing
+        self.error_code = _known_error_code(error_code)
 
 
 @dataclass
-class PrinterDetectionState:
-    """Per-printer, per-print state. Reset whenever a new print starts."""
+class _Context:
+    context_id: str
+    process_url: str
+    fallback_url: str
 
-    task_key: str
-    context: gadget.GadgetContext | None = None
-    using_fallback: bool = False
-    next_due: float = 0.0
-    min_interval: int = gadget.DEFAULT_MIN_INTERVAL_SEC
-    recommended_interval: int = gadget.DEFAULT_INTERVAL_SEC
+
+@dataclass
+class _PrintState:
+    print_id: str | None = None
+    context: _Context | None = None
+    next_check_at: float = 0
+    last_processed_at: float | None = None
+    interval: int | None = None
+    recommended_interval: int | None = None  # Active only while faster inspections are suggested.
     frame_count: int = 0
     print_quality: int | None = None
-    score: int | None = None
-    warning: bool = False
-    pause: bool = False
-    last_checked: str | None = None
-    # Terminal reason for this print (context expired/cancelled/not found)
-    stopped_reason: str | None = None
-    # Last non-fatal problem for this printer (no_camera, viewer_busy, ...)
-    last_issue: str | None = None
+    verdict: str = "unknown"
+    error: str | None = None
+    error_code: str | None = None
+    failures: int = 0
+    warning_fired: bool = False
+    action_fired: bool = False
+    last_notification_at: float | None = None
+
+
+def _process_interval(server_interval: int | None, poll_interval: int, recommended_interval: int | None = None) -> int:
+    """Use the configured cadence, sped up by an active timing hint, respecting the minimum."""
+    # A faster-inspection hint may only shorten the interval the user chose.
+    interval = poll_interval if recommended_interval is None else min(recommended_interval, poll_interval)
+    return max(server_interval or interval, interval)
+
+
+def _known_error_code(value) -> str | None:
+    """Only expose documented, recognized codes, never arbitrary remote text."""
+    return value if isinstance(value, str) and value in API_ERRORS else None
+
+
+def _process_url(value) -> str:
+    """Only send the API key to HTTPS endpoints owned by OctoEverywhere."""
+    if not isinstance(value, str):
+        raise _ApiError("OctoEverywhere returned an invalid processing URL.")
+    try:
+        parsed = urlsplit(value)
+        valid = (
+            parsed.scheme == "https"
+            and parsed.hostname is not None
+            and parsed.hostname.endswith(".octoeverywhere.com")
+            and parsed.port in (None, 443)
+            and parsed.username is None
+            and parsed.password is None
+            and not parsed.fragment
+            and not any(character.isspace() for character in value)
+        )
+    except ValueError:
+        valid = False
+    if not valid:
+        raise _ApiError("OctoEverywhere returned an invalid processing URL.")
+    return value
+
+
+def _retry_after(response: httpx.Response) -> float:
+    value = response.headers.get("Retry-After", "")
+    try:
+        seconds = float(value)
+    except ValueError:
+        try:
+            seconds = (parsedate_to_datetime(value) - datetime.now(timezone.utc)).total_seconds()
+        except (TypeError, ValueError, OverflowError):
+            return 0
+    return max(0, seconds) if math.isfinite(seconds) else 0
+
+
+def _response_payload(response: httpx.Response) -> dict:
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = None
+    if not 200 <= response.status_code < 300:
+        error_type = payload.get("ErrorType") if isinstance(payload, dict) else None
+        # The v1 server uses this specific 500 response for a missing context,
+        # including one removed by its 14-day TTL. Other internal errors must
+        # retain their context so a transient outage does not reset the model.
+        context_missing = (
+            response.status_code == 500
+            and isinstance(payload, dict)
+            and error_type == "OE_INTERNAL_ERROR"
+            and payload.get("ErrorDetails") == "Failed to get context object."
+        )
+        message = API_ERRORS.get(error_type) if isinstance(error_type, str) else None
+        if context_missing:
+            message = "OctoEverywhere print context is no longer available. Detection will reconnect automatically."
+        if not message:
+            if response.status_code in (401, 403):
+                message = API_ERRORS["OE_INVALID_API_KEY"]
+                error_type = "OE_INVALID_API_KEY"
+            elif response.status_code == 429:
+                message = API_ERRORS["OE_CONTEXT_RATE_LIMITED"]
+            else:
+                message = f"OctoEverywhere API request failed (HTTP {response.status_code})."
+        raise _ApiError(
+            message,
+            response.status_code,
+            _retry_after(response),
+            context_missing=context_missing,
+            error_code=error_type,
+        )
+    if not isinstance(payload, dict):
+        raise _ApiError("OctoEverywhere returned an invalid response.", response.status_code)
+    return payload
 
 
 class OctoEverywhereDetectionService:
+    """Singleton service that uploads snapshots from monitored, running prints."""
+
     def __init__(self):
         self._task: asyncio.Task | None = None
-        self._states: dict[int, PrinterDetectionState] = {}
-        self._inflight: dict[int, asyncio.Task] = {}
+        self._running = False
+        self._checks: dict[int, asyncio.Task] = {}
+        self._actions: set[asyncio.Task] = set()
+        self._states: dict[int, _PrintState] = {}
+        self._configuration: tuple[str, str] | None = None
+        self._settings: dict | None = None
+        self._settings_refresh_at = 0.0
+        self._generation = 0
+        self._blocked_api_key: str | None = None
+        self._blocked_error_code: str | None = None
         self._history: deque = deque(maxlen=HISTORY_MAX)
         self._last_error: str | None = None
-        # {"error_type", "until" (monotonic), "key_fp"}
-        self._account_block: dict | None = None
-        self._key_fp: str = ""
+        self._last_error_code: str | None = None
 
-    # ---- lifecycle ----
+    def _set_last_error(self, reason: str | None, error_code: str | None = None):
+        if self._blocked_error_code:
+            reason = API_ERRORS[self._blocked_error_code]
+            error_code = self._blocked_error_code
+        self._last_error = reason
+        self._last_error_code = _known_error_code(error_code) if reason else None
+
+    def _refresh_last_error(self):
+        state = next((state for state in self._states.values() if state.error), None)
+        self._set_last_error(state.error if state else None, state.error_code if state else None)
+
+    def _block_account(self, api_key: str, error_code: str):
+        """Account failures stop every printer until the user explicitly retries."""
+        self._blocked_api_key = api_key
+        self._blocked_error_code = error_code
+        self._generation += 1
+        for task in self._checks.values():
+            if task is not asyncio.current_task():
+                task.cancel()
+        self._refresh_last_error()
+        logger.warning("OctoEverywhere inspections stopped: %s", API_ERRORS[error_code])
+
+    def _clear_account_error(self):
+        # Keep contexts, action tracking, and reserved server deadlines intact.
+        self._blocked_api_key = None
+        self._blocked_error_code = None
+        self._refresh_last_error()
 
     async def start(self):
-        if self._task is not None:
+        self._running = True
+        if self._task is not None and not self._task.done():
             return
         logger.info("Starting OctoEverywhere detection service")
         self._task = asyncio.create_task(self._loop())
 
     def stop(self):
+        self._running = False
         if self._task:
             self._task.cancel()
             self._task = None
-        for task in self._inflight.values():
+            logger.info("Stopped OctoEverywhere detection service")
+        for task in self._checks.values():
             task.cancel()
-        self._inflight.clear()
-        logger.info("Stopped OctoEverywhere detection service")
+        self._checks.clear()
+        for task in self._actions:
+            task.cancel()
+        self._actions.clear()
+        self._states.clear()
+        self._generation += 1
+        self._configuration = None
+        self._settings = None
+        self._clear_account_error()
+        self._set_last_error(None)
+
+    def reset_printer(self, printer_id: int):
+        """Discard a completed print, including any inference still in flight."""
+        task = self._checks.pop(printer_id, None)
+        if task is not None and task is not asyncio.current_task():
+            task.cancel()
+        self._states.pop(printer_id, None)
+        self._refresh_last_error()
+
+    def forget_printer(self, printer_id: int) -> None:
+        """Forget a deleted printer and reload its committed monitoring limits."""
+        self.reset_printer(printer_id)
+        self._history = deque(
+            (entry for entry in self._history if entry["printer_id"] != printer_id), maxlen=HISTORY_MAX
+        )
+        self._generation += 1
+        self._settings = None
+        self._settings_refresh_at = 0
+
+    # ---- settings ----
+
+    async def refresh_settings(self):
+        """Invalidate in-flight decisions immediately after settings are saved."""
+        self._generation += 1
+        self._settings = None
+        generation = self._generation
+        task = self._task
+        self._task = None
+        try:
+            if task is not None:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            # Cancel stale inspections, but let already committed actions finish.
+            checks = [task for task in self._checks.values() if task is not asyncio.current_task()]
+            for task in checks:
+                task.cancel()
+            if checks:
+                await asyncio.gather(*checks, return_exceptions=True)
+            settings = await self._load_settings()
+            if self._generation == generation:
+                self._cache_settings(settings)
+                self._apply_settings(settings)
+        finally:
+            # A failed/cancelled refresh must not permanently stop detection.
+            # Lifecycle intent is separate from settings generations so stop()
+            # during this refresh cannot accidentally resurrect the scheduler.
+            if self._running and self._task is None:
+                await self.start()
+
+    def _cache_settings(self, settings: dict):
+        self._settings = settings
+        self._settings_refresh_at = time.monotonic() + settings["poll_interval"]
+
+    def _apply_settings(self, settings: dict):
+        configuration = (settings["api_key"], settings["confidence"])
+        if self._configuration != configuration:
+            self._generation += 1
+            for task in self._checks.values():
+                if task is not asyncio.current_task():
+                    task.cancel()
+            if settings["api_key"] != self._blocked_api_key:
+                self._clear_account_error()
+            # A settings edit is still the same print. Replace its remote
+            # context, but keep server pacing and actions already performed.
+            for state in self._states.values():
+                state.context = None
+                state.recommended_interval = None
+                state.frame_count = 0
+                state.print_quality = None
+                state.verdict = "unknown"
+                state.error = None
+                state.error_code = None
+                state.failures = 0
+            self._configuration = configuration
+            self._set_last_error(None)
+        if not settings["enabled"] or not settings["api_key"]:
+            for printer_id in self._states.keys() | self._checks.keys():
+                self.reset_printer(printer_id)
+            self._set_last_error(None)
+        if settings["enabled"] and not settings["api_key"]:
+            self._set_last_error(
+                "An OctoEverywhere Gadget API key is required. Add a key in Failure Detection settings."
+            )
+        if settings["enabled_printers"] is not None:
+            for printer_id in self._states.keys() | self._checks.keys():
+                if printer_id not in settings["enabled_printers"]:
+                    self.reset_printer(printer_id)
+
+    async def _load_settings(self) -> dict:
+        keys = [
+            "obico_enabled",
+            "octoeverywhere_enabled",
+            "octoeverywhere_api_key",
+            "octoeverywhere_confidence",
+            "octoeverywhere_action",
+            "octoeverywhere_enabled_printers",
+            "octoeverywhere_poll_interval",
+        ]
+        async with async_session() as db:
+            result = await db.execute(select(Settings).where(Settings.key.in_(keys)))
+            rows = {r.key: r.value for r in result.scalars().all()}
+
+        enabled_printers_raw = rows.get("octoeverywhere_enabled_printers", "")
+        enabled_printers = None
+        if enabled_printers_raw:
+            try:
+                printer_ids = json.loads(enabled_printers_raw)
+                enabled_printers = (
+                    set(printer_ids)
+                    if isinstance(printer_ids, list) and all(type(pid) is int for pid in printer_ids)
+                    else set()
+                )
+            except (TypeError, ValueError):
+                enabled_printers = set()
+
+        try:
+            poll_interval = int(rows.get("octoeverywhere_poll_interval", DEFAULT_POLL_INTERVAL))
+            if not 5 <= poll_interval <= 30:
+                poll_interval = DEFAULT_POLL_INTERVAL
+        except (TypeError, ValueError):
+            poll_interval = DEFAULT_POLL_INTERVAL
+
+        return {
+            # Restores can bypass PUT /settings and leave both flags enabled.
+            # Refuse to act while the other provider is enabled as well.
+            "enabled": rows.get("octoeverywhere_enabled", "false").lower() == "true"
+            and rows.get("obico_enabled", "false").lower() != "true",
+            "api_key": (rows.get("octoeverywhere_api_key") or "").strip(),
+            "confidence": rows.get("octoeverywhere_confidence", "medium"),
+            "action": rows.get("octoeverywhere_action", "notify"),
+            "enabled_printers": enabled_printers,
+            "poll_interval": poll_interval,
+        }
 
     # ---- main loop ----
 
     async def _loop(self):
         while True:
             try:
-                settings = await load_settings()
-                if not settings["enabled"] or not settings["api_key"]:
-                    self._reset_all()
-                    if settings["enabled"] and settings["key_error"]:
-                        self._last_error = settings["key_error"]
-                    await asyncio.sleep(TICK_DISABLED)
-                    continue
-                self._poll_once(settings)
-                await asyncio.sleep(TICK_ENABLED)
+                # Printer deadlines need one-second resolution, but settings
+                # only need the configured polling cadence or an explicit refresh.
+                if self._settings is None or time.monotonic() >= self._settings_refresh_at:
+                    generation = self._generation
+                    settings = await self._load_settings()
+                    if generation != self._generation:
+                        continue
+                    self._cache_settings(settings)
+                else:
+                    settings = self._settings
+                await self._poll_once(settings)
+                # Enabled printers need whole-second scheduling for values such
+                # as 21 seconds; disabled detection can check settings less often.
+                await asyncio.sleep(1 if settings["enabled"] else POLL_INTERVAL)
             except asyncio.CancelledError:
                 break
-            except Exception as e:
-                logger.error("OctoEverywhere detection loop error: %s", e)
-                self._last_error = str(e) or type(e).__name__
-                await asyncio.sleep(30)
+            except Exception as exc:
+                # Never include exception text: transport errors can contain
+                # request URLs and user-supplied credentials.
+                self._set_last_error("OctoEverywhere detection is temporarily unavailable. Retrying automatically.")
+                logger.error("OctoEverywhere detection loop error: %s", type(exc).__name__)
+                await asyncio.sleep(ERROR_RETRY_INTERVAL)
 
-    def _reset_all(self):
-        self._states.clear()
-        self._account_block = None
-
-    def _account_blocked(self) -> bool:
-        block = self._account_block
-        if block is None:
-            return False
-        if block["key_fp"] != self._key_fp or time.monotonic() >= block["until"]:
-            self._account_block = None
-            return False
-        return True
-
-    def _poll_once(self, settings: dict):
-        """Schedule a check for every monitored printer that is due. Non-blocking."""
+    async def _poll_once(self, settings: dict):
         from backend.app.services.printer_manager import printer_manager
 
-        key_fp = _key_fingerprint(settings["api_key"])
-        if key_fp != self._key_fp:
-            # Contexts belong to the account that created them; start over on a new key.
-            self._key_fp = key_fp
-            self._states.clear()
-            self._account_block = None
-            self._last_error = None
-
-        if self._account_blocked():
+        self._apply_settings(settings)
+        if not settings["enabled"] or not settings["api_key"]:
             return
 
         statuses = printer_manager.get_all_statuses()
-        enabled_printers = settings["enabled_printers"]
-        now = time.monotonic()
-
-        for printer_id in list(self._states):
+        for printer_id in self._states.keys() | self._checks.keys():
             if printer_id not in statuses:
-                self._states.pop(printer_id, None)
+                self.reset_printer(printer_id)
 
         for printer_id, status in list(statuses.items()):
-            if enabled_printers is not None and printer_id not in enabled_printers:
-                self._states.pop(printer_id, None)
+            if settings["enabled_printers"] is not None and printer_id not in settings["enabled_printers"]:
+                self.reset_printer(printer_id)
                 continue
             if not printer_manager.is_connected(printer_id):
+                task = self._checks.get(printer_id)
+                if task:
+                    task.cancel()
+                state = self._states.get(printer_id)
+                if state:
+                    self._no_verdict(printer_id, state, "Printer is disconnected. Detection will resume on reconnect.")
                 continue
-            state_name = getattr(status, "state", None) if status else None
-            if state_name not in ACTIVE_PRINT_STATES:
-                # Print ended: the next print gets a fresh context.
-                self._states.pop(printer_id, None)
+            print_state = getattr(status, "state", None)
+            if print_state in ("FINISH", "FAILED", "IDLE"):
+                self.reset_printer(printer_id)
                 continue
-
-            task_key = _task_key(status)
+            # Unknown or transitional status is not evidence that a print ended.
+            # Keep its context, but only upload while the printer is running.
+            if print_state != "RUNNING":
+                task = self._checks.get(printer_id)
+                if task:
+                    task.cancel()
+                continue
             state = self._states.get(printer_id)
-            if state is None or state.task_key != task_key:
-                state = PrinterDetectionState(task_key=task_key)
-                self._states[printer_id] = state
-
-            # Keep the context while paused so a resumed print keeps its history,
-            # but only inspect while actually printing.
-            if state_name != "RUNNING" or state.stopped_reason or now < state.next_due:
+            if state and not self._same_print(state, status):
+                self.reset_printer(printer_id)
+            task = self._checks.get(printer_id)
+            if task is not None and not task.done():
                 continue
-            if printer_id in self._inflight:
-                continue
-            task = asyncio.create_task(self._check_printer(printer_id, state, settings))
-            self._inflight[printer_id] = task
-            task.add_done_callback(lambda _t, pid=printer_id: self._inflight.pop(pid, None))
+            # One check per printer; a slow camera or API request must not
+            # delay another printer's next inspection or lifecycle updates.
+            task = asyncio.create_task(self._check_printer(printer_id, status, settings))
+            self._checks[printer_id] = task
+            task.add_done_callback(partial(self._check_done, printer_id))
 
-    # ---- one inspection ----
+    def _check_done(self, printer_id: int, task: asyncio.Task):
+        # A canceled check may finish after its printer has started a new one.
+        if self._checks.get(printer_id) is task:
+            self._checks.pop(printer_id, None)
+        if not task.cancelled():
+            error = task.exception()
+            if error is not None:
+                logger.error("OctoEverywhere printer check failed: %s", type(error).__name__)
 
-    async def _check_printer(self, printer_id: int, state: PrinterDetectionState, settings: dict):
-        now = time.monotonic()
-        # Never hot-loop, whatever happens below.
-        state.next_due = now + state.recommended_interval
+    @staticmethod
+    def _print_id(status) -> str | None:
+        subtask_id = getattr(status, "subtask_id", None)
+        if subtask_id and str(subtask_id) != "0":
+            return str(subtask_id)
+        return None
 
-        async with async_session() as db:
-            printer = await db.get(Printer, printer_id)
-        if printer is None:
-            state.last_issue = "printer_not_found"
+    def _same_print(self, state: _PrintState, status) -> bool:
+        """Learn late job IDs without discarding the context or forgetting a known ID."""
+        print_id = self._print_id(status)
+        if state.print_id and print_id and state.print_id != print_id:
+            return False
+        # Names and filenames may arrive late or change independently. Without
+        # two distinct job IDs, rely on the print start/end callbacks instead.
+        state.print_id = print_id or state.print_id
+        return True
+
+    def _is_current(self, printer_id: int, state: _PrintState, status, generation: int) -> bool:
+        return (
+            self._states.get(printer_id) is state
+            and self._generation == generation
+            and getattr(status, "state", None) == "RUNNING"
+            and self._same_print(state, status)
+        )
+
+    async def _capture_frame(self, printer_id: int) -> bytes | None:
+        from backend.app.services.failure_detection_camera import capture_detection_frame
+
+        return await capture_detection_frame(printer_id)
+
+    async def _create_context(self, client: httpx.AsyncClient, api_key: str, confidence: str) -> tuple[_Context, int]:
+        level = CONFIDENCE_LEVELS.get(confidence, 3)
+        response = await client.post(
+            CREATE_CONTEXT_URL,
+            headers={"X-API-Key": api_key},
+            json={"WarningConfidenceLevel": level, "PauseConfidenceLevel": level},
+        )
+        payload = _response_payload(response)
+        context_id = payload.get("ContextId")
+        if not isinstance(context_id, str) or not context_id.strip():
+            raise _ApiError("OctoEverywhere returned an invalid context.", response.status_code)
+        return (
+            _Context(
+                context_id=context_id,
+                process_url=_process_url(payload.get("ProcessRequestUrl")),
+                fallback_url=_process_url(payload.get("FallbackProcessRequestUrl")),
+            ),
+            response.status_code,
+        )
+
+    def _no_verdict(self, printer_id: int, state: _PrintState, reason: str, error_code: str | None = None):
+        if self._states.get(printer_id) is not state:
+            return
+        if state.error != reason:
+            logger.warning("OctoEverywhere printer %s: %s", printer_id, reason)
+        state.error = reason
+        state.error_code = _known_error_code(error_code)
+        self._set_last_error(reason, state.error_code)
+
+    async def _check_printer(self, printer_id: int, status, settings: dict):
+        generation = self._generation
+        state = self._states.get(printer_id)
+        if state is None or not self._same_print(state, status):
+            state = _PrintState(print_id=self._print_id(status))
+            self._states[printer_id] = state
+            self._refresh_last_error()
+        if self._blocked_error_code:
+            return
+        if state.last_processed_at is not None and not state.error:
+            # Apply interval edits to an existing context on the next poll.
+            # Failed/canceled requests clear last_processed_at, preserving their
+            # reserved retry deadline regardless of the configured interval.
+            state.next_check_at = state.last_processed_at + _process_interval(
+                state.interval, settings["poll_interval"], state.recommended_interval
+            )
+        if time.monotonic() < state.next_check_at:
             return
 
-        frame, reason = await capture_detection_frame(printer)
-        if not frame:
-            state.last_issue = reason
-            if reason == NO_CAMERA:
-                state.next_due = time.monotonic() + NO_CAMERA_RETRY
-            return
-        if len(frame) > gadget.MAX_IMAGE_BYTES:
-            state.last_issue = "frame_too_large"
-            return
-
-        if state.context is None:
-            try:
-                state.context = await gadget.create_context(settings["api_key"], settings["sensitivity"])
-            except gadget.GadgetError as e:
-                self._handle_error(printer_id, state, e, during="create context")
-                return
-
-        url = state.context.fallback_url if state.using_fallback else state.context.process_url
+        # Reserve this poll before awaiting camera/network I/O. Even a failed
+        # capture must not create a hot loop or compete with a live camera.
+        state.next_check_at = time.monotonic() + _process_interval(
+            state.interval, settings["poll_interval"], state.recommended_interval
+        )
+        logger.debug(
+            "OctoEverywhere inspection starting for printer %s (frame=%s, context_reused=%s)",
+            printer_id,
+            state.frame_count + 1,
+            state.context is not None,
+        )
+        processing = False
         try:
-            result = await gadget.process_frame(url, frame)
-        except gadget.GadgetError as e:
-            self._handle_error(printer_id, state, e, during="process snapshot")
+            frame = await self._capture_frame(printer_id)
+            if not frame:
+                raise _ApiError("Could not capture a camera snapshot. Detection will retry automatically.")
+            if len(frame) > MAX_IMAGE_BYTES:
+                try:
+                    frame = await asyncio.to_thread(prepare_frame, frame)
+                except ValueError:
+                    raise _ApiError("Could not reduce the camera snapshot to OctoEverywhere's 6 MiB image limit.")
+            if not self._is_current(printer_id, state, status, generation):
+                logger.debug(
+                    "OctoEverywhere inspection discarded for printer %s: print status or settings changed", printer_id
+                )
+                return
+            async with httpx.AsyncClient(timeout=DETECTION_TIMEOUT, follow_redirects=False) as client:
+                if state.context is None:
+                    context, _ = await self._create_context(client, settings["api_key"], settings["confidence"])
+                    if not self._is_current(printer_id, state, status, generation):
+                        logger.debug(
+                            "OctoEverywhere inspection discarded for printer %s: print status or settings changed",
+                            printer_id,
+                        )
+                        return
+                    state.context = context
+                    logger.debug("OctoEverywhere context created for printer %s", printer_id)
+                if not self._is_current(printer_id, state, status, generation):
+                    logger.debug(
+                        "OctoEverywhere inspection discarded for printer %s: print status or settings changed",
+                        printer_id,
+                    )
+                    return
+                processing = True
+                response = await client.post(
+                    state.context.process_url,
+                    headers={"X-API-Key": settings["api_key"]},
+                    files={"image": ("snapshot.jpg", frame, "image/jpeg")},
+                )
+                payload = _response_payload(response)
+                interval = payload.get("NextProcessIntervalSec")
+                if not isinstance(interval, dict):
+                    raise _ApiError("OctoEverywhere returned an invalid processing interval.")
+                minimum_interval = interval.get("Minimum")
+                if type(minimum_interval) is int and minimum_interval > 0:
+                    # Preserve the latest minimum even if the assessment is
+                    # invalid or canceled before its timing hint is accepted.
+                    state.interval = minimum_interval
+                    state.next_check_at = time.monotonic() + _process_interval(
+                        minimum_interval, settings["poll_interval"], state.recommended_interval
+                    )
+                else:
+                    raise _ApiError("OctoEverywhere returned an invalid processing interval.")
+                faster_inspection_suggested = payload.get("FasterInspectionSuggested") is True
+                recommended_interval = interval.get("Recommended") if faster_inspection_suggested else None
+                # This hint is optional. Older responses and malformed hints
+                # keep fixed timing without discarding a valid assessment.
+                if type(recommended_interval) is not int or recommended_interval <= 0:
+                    recommended_interval = None
+                print_quality = payload.get("PrintQuality")
+                warning = payload.get("WarningSuggested")
+                pause = payload.get("PauseSuggested")
+                if (
+                    type(print_quality) is not int
+                    or not 1 <= print_quality <= 10
+                    or type(warning) is not bool
+                    or type(pause) is not bool
+                ):
+                    raise _ApiError("OctoEverywhere returned an invalid print assessment.")
+        except asyncio.CancelledError:
+            # A request canceled during a settings edit may already have been
+            # processed remotely. Preserve the previous minimum before retrying.
+            state.next_check_at = max(
+                state.next_check_at,
+                time.monotonic()
+                + _process_interval(state.interval, settings["poll_interval"], state.recommended_interval),
+            )
+            state.last_processed_at = None
+            logger.debug("OctoEverywhere inspection canceled for printer %s", printer_id)
+            raise
+        except Exception as exc:
+            state.last_processed_at = None
+            # Account failures still apply if this print ended during the
+            # request, but an old key or generation must not block new work.
+            if (
+                isinstance(exc, _ApiError)
+                and exc.error_code in ACCOUNT_ERROR_CODES
+                and generation == self._generation
+                and (self._configuration is None or settings["api_key"] == self._configuration[0])
+            ):
+                self._block_account(settings["api_key"], exc.error_code)
+                logger.debug(
+                    "OctoEverywhere inspection failed for printer %s (error_code=%s); inspections stopped",
+                    printer_id,
+                    exc.error_code,
+                )
+                return
+            if not self._is_current(printer_id, state, status, generation):
+                state.next_check_at = max(
+                    state.next_check_at,
+                    time.monotonic()
+                    + _process_interval(state.interval, settings["poll_interval"], state.recommended_interval),
+                )
+                logger.debug(
+                    "OctoEverywhere inspection discarded for printer %s: print status or settings changed", printer_id
+                )
+                return
+            if processing and state.context:
+                # Keep the fallback for the rest of this context. Retrying on
+                # the next scheduled poll also respects the API's rate limit.
+                if isinstance(exc, _ApiError) and exc.context_missing:
+                    state.context = None  # Recreate after backoff; preserve actions already performed.
+                    state.recommended_interval = None
+                elif isinstance(exc, httpx.RequestError) or (
+                    isinstance(exc, _ApiError)
+                    and exc.status_code is not None
+                    and exc.status_code >= 500
+                    and exc.error_code in (None, "OE_INTERNAL_ERROR", "OE_BACKEND_THROTTLED")
+                ):
+                    state.context.process_url = state.context.fallback_url
+            state.failures += 1
+            retry_after = exc.retry_after if isinstance(exc, _ApiError) else 0
+            delay = max(
+                _process_interval(state.interval, settings["poll_interval"], state.recommended_interval),
+                ERROR_RETRY_INTERVAL * 2 ** min(state.failures - 1, 4),
+                retry_after,
+            )
+            state.next_check_at = time.monotonic() + delay
+            if isinstance(exc, _ApiError):
+                reason = str(exc)
+            elif isinstance(exc, httpx.TimeoutException):
+                reason = "OctoEverywhere request timed out. Detection will retry automatically."
+            elif isinstance(exc, httpx.RequestError):
+                reason = "Could not reach OctoEverywhere. Check the internet connection."
+            else:
+                reason = "OctoEverywhere detection failed. Detection will retry automatically."
+            self._no_verdict(printer_id, state, reason, exc.error_code if isinstance(exc, _ApiError) else None)
+            logger.debug(
+                "OctoEverywhere inspection failed for printer %s (error_code=%s, retry_in=%.1fs): %s",
+                printer_id,
+                state.error_code,
+                delay,
+                reason,
+            )
             return
 
-        self._apply_result(state, result, settings)
-        self._last_error = None
-        state.last_issue = None
-        await self._handle_suggestions(printer_id, state, result, settings, frame)
-
-    def _apply_result(self, state: PrinterDetectionState, result: gadget.GadgetResult, settings: dict):
+        if not self._is_current(printer_id, state, status, generation):
+            logger.debug(
+                "OctoEverywhere inspection discarded for printer %s: print status or settings changed", printer_id
+            )
+            return
+        state.recommended_interval = recommended_interval
+        state.last_processed_at = time.monotonic()
+        state.next_check_at = state.last_processed_at + _process_interval(
+            state.interval, settings["poll_interval"], state.recommended_interval
+        )
         state.frame_count += 1
-        state.print_quality = result.print_quality
-        state.score = result.score
-        state.min_interval = result.min_interval
-        state.recommended_interval = result.recommended_interval
-        state.last_checked = datetime.now(timezone.utc).isoformat()
-
-        configured = settings["poll_interval"]
-        if configured == POLL_INTERVAL_AUTO or result.faster_inspection_suggested:
-            delay = result.recommended_interval
-        else:
-            delay = configured
-        state.next_due = time.monotonic() + max(delay, result.min_interval)
-
-    async def _handle_suggestions(
-        self,
-        printer_id: int,
-        state: PrinterDetectionState,
-        result: gadget.GadgetResult,
-        settings: dict,
-        frame: bytes,
-    ):
-        """Act on rising edges only: Gadget keeps the flags true while the issue lasts."""
-        warning_rose = result.warning_suggested and not state.warning
-        pause_rose = result.pause_suggested and not state.pause
-        state.warning = result.warning_suggested
-        state.pause = result.pause_suggested
-
-        if result.warning_suggested or result.pause_suggested or (result.print_quality or 10) <= 5:
+        state.print_quality = print_quality
+        state.verdict = "failure" if pause else "warning" if warning else "safe"
+        state.error = None
+        state.error_code = None
+        state.failures = 0
+        self._refresh_last_error()
+        logger.debug(
+            "OctoEverywhere inspection result for printer %s: frame=%s, verdict=%s, print_quality=%s, "
+            "warning_suggested=%s, pause_suggested=%s, faster_inspection_suggested=%s, "
+            "minimum_interval=%ss, next_check_in=%ss",
+            printer_id,
+            state.frame_count,
+            state.verdict,
+            print_quality,
+            warning,
+            pause,
+            faster_inspection_suggested,
+            state.interval,
+            _process_interval(state.interval, settings["poll_interval"], state.recommended_interval),
+        )
+        task_name = getattr(status, "task_name", None) or getattr(status, "subtask_name", "") or ""
+        if state.verdict != "safe":
             self._history.appendleft(
                 {
                     "printer_id": printer_id,
-                    "task_name": state.task_key,
-                    "timestamp": state.last_checked,
-                    "print_quality": result.print_quality,
-                    "score": result.score,
-                    "warning": result.warning_suggested,
-                    "pause": result.pause_suggested,
+                    "task_name": task_name,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "class": state.verdict,
+                    "print_quality": print_quality,
                 }
             )
 
-        if pause_rose:
-            await self._dispatch(printer_id, state, settings["action"], "pause", result, frame)
-        elif warning_rose and settings["notify_on_warning"]:
-            await self._dispatch(printer_id, state, "notify", "warning", result, frame)
+        notification_due = not state.warning_fired or (
+            state.last_notification_at is not None
+            and time.monotonic() - state.last_notification_at >= NOTIFICATION_REPEAT_INTERVAL
+        )
+        if pause and not state.action_fired:
+            action = settings["action"]
+            # A pause or power cut always notifies, even after a warning: the
+            # user needs to know the printer stopped. Notify-only follows the
+            # same reminder cadence as warnings.
+            if action == "notify" and not notification_due:
+                state.action_fired = True
+                return
+        elif (warning or pause) and notification_due:
+            # Only a fresh positive assessment can trigger a reminder. Never
+            # repeat hardware control, even if Gadget still suggests pausing.
+            action = "notify"
+        else:
+            return
 
-    async def _dispatch(
+        # Preparation is still cancellable: a print/settings change before any
+        # side effect must prevent stale hardware control.
+        printer_name = await self._prepare_action(printer_id)
+        if not self._is_current(printer_id, state, status, generation):
+            return
+        # Once committed, a pause/disconnect or autosave must neither interrupt
+        # the remaining plug-off/notification nor make this print act twice.
+        state.action_fired = state.action_fired or pause
+        state.warning_fired = True
+        # Reserve the reminder deadline before yielding, including when a
+        # settings save cancels this check while the notification is in flight.
+        state.last_notification_at = time.monotonic()
+        action_task = asyncio.create_task(
+            self._dispatch_action(printer_id, action, task_name, print_quality, frame, printer_name=printer_name)
+        )
+        self._actions.add(action_task)
+        action_task.add_done_callback(self._action_done)
+        await asyncio.shield(action_task)
+
+    async def _prepare_action(self, printer_id: int) -> str:
+        from backend.app.services.obico_actions import _get_printer_name
+
+        return await _get_printer_name(printer_id)
+
+    def _action_done(self, task: asyncio.Task):
+        self._actions.discard(task)
+        if not task.cancelled():
+            error = task.exception()
+            if error is not None:
+                logger.error("OctoEverywhere action task failed: %s", type(error).__name__)
+
+    async def _dispatch_action(
         self,
         printer_id: int,
-        state: PrinterDetectionState,
         action: str,
-        level: str,
-        result: gadget.GadgetResult,
-        frame: bytes,
+        task_name: str,
+        print_quality: int,
+        frame: bytes | None = None,
+        *,
+        printer_name: str | None = None,
     ):
-        from backend.app.services.obico_actions import execute_action
+        from backend.app.services.octoeverywhere_actions import execute_action
 
-        task_name = state.task_key or "current job"
-        quality = f"{result.print_quality}/10" if result.print_quality is not None else "unknown"
-        if level == "pause":
-            detail = (
-                f"OctoEverywhere AI: likely print failure on '{task_name}' "
-                f"(print quality {quality}). Action taken: {action}."
-            )
-        else:
-            detail = f"OctoEverywhere AI: possible print issue on '{task_name}' (print quality {quality})."
         logger.warning(
-            "OctoEverywhere: %s suggested for printer %s (task=%r quality=%s score=%s) - action=%s",
-            level,
-            printer_id,
-            state.task_key,
-            result.print_quality,
-            result.score,
-            action,
+            "OctoEverywhere: print issue on printer %s (quality=%s) — action=%s", printer_id, print_quality, action
         )
         try:
-            await execute_action(
-                printer_id,
-                action,
-                state.task_key,
-                (result.score or 0) / 100,
-                source=SOURCE,
-                detail=detail,
-                image_data=frame,
-            )
-        except Exception as e:
-            self._last_error = f"Action dispatch failed: {e or type(e).__name__}"
-            logger.error(self._last_error)
-
-    def _handle_error(self, printer_id: int, state: PrinterDetectionState, err: gadget.GadgetError, during: str):
-        now = time.monotonic()
-        self._last_error = f"Printer {printer_id}: {during} failed: {err}"
-        logger.warning("OctoEverywhere: %s", self._last_error)
-
-        if err.is_account_error:
-            self._account_block = {
-                "error_type": err.error_type,
-                "until": now + ACCOUNT_BLOCK_SECONDS,
-                "key_fp": self._key_fp,
-            }
-            return
-        if err.is_context_ended:
-            state.stopped_reason = err.error_type
-            return
-        if err.error_type == "OE_CONTEXT_RATE_LIMITED":
-            state.next_due = now + max(err.retry_after or 0, state.min_interval, state.recommended_interval)
-            return
-        if (
-            err.is_connection_failure
-            and during == "process snapshot"
-            and state.context is not None
-            and state.context.fallback_url
-            and not state.using_fallback
-        ):
-            # Docs: switch to the fallback URL and keep using it for this context.
-            state.using_fallback = True
-        state.next_due = now + state.recommended_interval
+            await execute_action(printer_id, action, task_name, print_quality, frame, printer_name=printer_name)
+        except Exception as exc:
+            self._set_last_error("OctoEverywhere could not execute the configured failure action.")
+            logger.error("OctoEverywhere action dispatch failed: %s", type(exc).__name__)
 
     # ---- queries ----
 
+    def get_per_printer(self) -> dict:
+        return {
+            printer_id: {
+                "class": "error" if self._blocked_error_code or state.error else state.verdict,
+                "print_quality": state.print_quality,
+                "frame_count": state.frame_count,
+                "error": API_ERRORS[self._blocked_error_code] if self._blocked_error_code else state.error,
+                "error_code": self._blocked_error_code or state.error_code,
+            }
+            for printer_id, state in self._states.items()
+        }
+
     def get_status(self) -> dict:
-        blocked = self._account_blocked()
-        now = time.monotonic()
         return {
             "is_running": self._task is not None and not self._task.done(),
             "last_error": self._last_error,
-            "account_error": self._account_block["error_type"] if blocked else None,
-            "per_printer": {
-                pid: {
-                    "print_quality": st.print_quality,
-                    "score": st.score,
-                    "warning": st.warning,
-                    "pause": st.pause,
-                    "frame_count": st.frame_count,
-                    "last_checked": st.last_checked,
-                    "next_check_in": max(0, round(st.next_due - now)) if not st.stopped_reason else None,
-                    "using_fallback": st.using_fallback,
-                    "stopped_reason": st.stopped_reason,
-                    "last_issue": st.last_issue,
-                }
-                for pid, st in self._states.items()
-            },
+            "last_error_code": self._last_error_code,
+            "per_printer": self.get_per_printer(),
             "history": list(self._history),
         }
 
-    async def test_connection(self, api_key: str) -> dict:
-        """Validate a key by creating (and immediately cancelling) a context.
-
-        Creating a context is free; no snapshot is uploaded, so nothing is billed.
-        """
+    async def test_connection(self, api_key: str, confidence: str = "medium") -> dict:
+        """Validate a key with a context request; never upload a camera frame."""
+        generation = self._generation
+        api_key = api_key.strip()
         if not api_key:
-            return {"ok": False, "error_type": None, "error": "API key is empty"}
+            return {
+                "ok": False,
+                "status_code": None,
+                "error": "An OctoEverywhere Gadget API key is required.",
+                "error_code": None,
+            }
         try:
-            ctx = await gadget.create_context(api_key)
-        except gadget.GadgetError as e:
-            return {"ok": False, "error_type": e.error_type, "error": str(e)}
-        await gadget.cancel_context(ctx.context_id)
-        return {"ok": True, "error_type": None, "error": None}
-
-
-def _task_key(status) -> str:
-    return str(getattr(status, "task_name", None) or getattr(status, "subtask_name", "") or "")
+            async with httpx.AsyncClient(timeout=DETECTION_TIMEOUT, follow_redirects=False) as client:
+                _, status_code = await self._create_context(client, api_key, confidence)
+        except _ApiError as exc:
+            if (
+                generation == self._generation
+                and self._configuration
+                and api_key == self._configuration[0]
+                and exc.error_code in ACCOUNT_ERROR_CODES
+            ):
+                self._block_account(api_key, exc.error_code)
+            return {"ok": False, "status_code": exc.status_code, "error": str(exc), "error_code": exc.error_code}
+        except httpx.TimeoutException:
+            return {"ok": False, "status_code": None, "error": "OctoEverywhere request timed out.", "error_code": None}
+        except Exception:
+            return {
+                "ok": False,
+                "status_code": None,
+                "error": "Could not connect to OctoEverywhere.",
+                "error_code": None,
+            }
+        if generation == self._generation and self._configuration and api_key == self._configuration[0]:
+            self._clear_account_error()
+        return {"ok": True, "status_code": status_code, "error": None, "error_code": None}
 
 
 octoeverywhere_detection_service = OctoEverywhereDetectionService()

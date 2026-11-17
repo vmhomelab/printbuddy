@@ -1,127 +1,97 @@
-"""API routes for the OctoEverywhere Gadget AI failure-detection provider (PB-35).
+"""API routes for OctoEverywhere AI failure detection."""
 
-Settings live in their own endpoints (not the generic /settings payload) so the
-API key can be stored encrypted and is never returned to any caller.
-"""
-
-import json
-import logging
+from typing import Literal
 
 from fastapi import APIRouter, Depends
+from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.api.routes.settings import get_setting, set_setting
-from backend.app.core.auth import RequirePermissionIfAuthEnabled
+from backend.app.core.auth import ApiKeyActor, RequestActor, RequestPrinterScope, RequirePermissionIfAuthEnabled
 from backend.app.core.database import get_db
-from backend.app.core.encryption import mfa_decrypt, mfa_encrypt
 from backend.app.core.permissions import Permission
+from backend.app.core.printer_scope import PrinterScope
+from backend.app.models.printer import Printer
 from backend.app.models.user import User
-from backend.app.schemas.octoeverywhere import (
-    OctoEverywhereSettings,
-    OctoEverywhereSettingsUpdate,
-    OctoEverywhereTestRequest,
-    OctoEverywhereTestResult,
-)
-from backend.app.services import octoeverywhere_detection as svc_module
-from backend.app.services.octoeverywhere_detection import (
-    KEY_ACTION,
-    KEY_API_KEY,
-    KEY_ENABLED,
-    KEY_ENABLED_PRINTERS,
-    KEY_NOTIFY_ON_WARNING,
-    KEY_POLL_INTERVAL,
-    KEY_SENSITIVITY,
-    octoeverywhere_detection_service,
-    parse_enabled_printers,
-)
-
-logger = logging.getLogger(__name__)
+from backend.app.services.notification_service import notification_service
+from backend.app.services.octoeverywhere_detection import octoeverywhere_detection_service
 
 router = APIRouter(prefix="/octoeverywhere", tags=["octoeverywhere"])
 
 
-async def _read_settings(db: AsyncSession) -> OctoEverywhereSettings:
-    sensitivity = await get_setting(db, KEY_SENSITIVITY) or "medium"
-    action = await get_setting(db, KEY_ACTION) or "notify"
-    try:
-        poll_interval = int(await get_setting(db, KEY_POLL_INTERVAL) or 0)
-    except ValueError:
-        poll_interval = 0
-    return OctoEverywhereSettings(
-        enabled=(await get_setting(db, KEY_ENABLED) or "false").lower() == "true",
-        has_api_key=bool(await get_setting(db, KEY_API_KEY)),
-        sensitivity=sensitivity if sensitivity in svc_module.SENSITIVITIES else "medium",
-        action=action if action in svc_module.ACTIONS else "notify",
-        poll_interval=poll_interval,
-        enabled_printers=parse_enabled_printers(await get_setting(db, KEY_ENABLED_PRINTERS)),
-        notify_on_warning=(await get_setting(db, KEY_NOTIFY_ON_WARNING) or "true").lower() == "true",
-    )
-
-
-@router.get("/settings", response_model=OctoEverywhereSettings)
-async def get_octoeverywhere_settings(
-    db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_READ),
-):
-    return await _read_settings(db)
-
-
-@router.put("/settings", response_model=OctoEverywhereSettings)
-async def update_octoeverywhere_settings(
-    body: OctoEverywhereSettingsUpdate,
-    db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_UPDATE),
-):
-    if body.api_key is not None:
-        key = body.api_key.strip()
-        await set_setting(db, KEY_API_KEY, mfa_encrypt(key) if key else "")
-    if body.enabled is not None:
-        await set_setting(db, KEY_ENABLED, "true" if body.enabled else "false")
-    if body.sensitivity is not None:
-        await set_setting(db, KEY_SENSITIVITY, body.sensitivity)
-    if body.action is not None:
-        await set_setting(db, KEY_ACTION, body.action)
-    if body.poll_interval is not None:
-        await set_setting(db, KEY_POLL_INTERVAL, str(body.poll_interval))
-    if body.all_printers:
-        await set_setting(db, KEY_ENABLED_PRINTERS, "")
-    elif body.enabled_printers is not None:
-        await set_setting(db, KEY_ENABLED_PRINTERS, json.dumps(sorted(set(body.enabled_printers))))
-    if body.notify_on_warning is not None:
-        await set_setting(db, KEY_NOTIFY_ON_WARNING, "true" if body.notify_on_warning else "false")
-    await db.commit()
-    return await _read_settings(db)
+class TestConnectionRequest(BaseModel):
+    # Omitted = test the saved key; empty = test with no key.
+    api_key: str | None = None
+    confidence: Literal["lowest", "low", "medium", "high", "highest"] | None = None
 
 
 @router.get("/status")
-async def get_octoeverywhere_status(
-    db: AsyncSession = Depends(get_db),
+async def get_status(
     _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_READ),
+    db: AsyncSession = Depends(get_db, scope="function"),
+    printer_scope: PrinterScope = RequestPrinterScope,
 ):
-    """Service state, per-printer results and recent detections. Never includes context IDs or URLs."""
-    settings = await _read_settings(db)
+    """Scheduler status, print quality, and recent detection history."""
+    settings = await octoeverywhere_detection_service._load_settings()
+    providers = await notification_service._get_providers_for_event(db, "on_ai_failure_detection", fleet_wide=True)
+    providers = [provider for provider in providers if printer_scope.allows(provider.printer_id)]
+    printers = select(Printer.id).where(Printer.is_active.is_(True))
+    scope_filter = printer_scope.where_strict(Printer.id)
+    if scope_filter is not None:
+        printers = printers.where(scope_filter)
+    if settings["enabled_printers"] is not None:
+        printers = printers.where(Printer.id.in_(settings["enabled_printers"]))
+    printer_ids = (await db.execute(printers)).scalars().all()
+    # Use the same per-printer subscription rules as notification delivery.
+    covered_printers = {provider.printer_id for provider in providers}
+    uncovered_printers = (
+        sorted(pid for pid in printer_ids if pid not in covered_printers) if None not in covered_printers else []
+    )
+    status = octoeverywhere_detection_service.get_status()
     return {
-        **octoeverywhere_detection_service.get_status(),
-        "enabled": settings.enabled,
-        "has_api_key": settings.has_api_key,
+        **status,
+        "per_printer": {pid: entry for pid, entry in status["per_printer"].items() if printer_scope.allows(int(pid))},
+        "history": [entry for entry in status["history"] if printer_scope.allows(entry["printer_id"])],
+        "enabled": settings["enabled"],
+        "api_key_configured": bool(settings["api_key"]),
+        "confidence": settings["confidence"],
+        "action": settings["action"],
+        "poll_interval": settings["poll_interval"],
+        "notifications": {"configured": bool(providers), "uncovered_printers": uncovered_printers},
     }
 
 
-@router.post("/test-connection", response_model=OctoEverywhereTestResult)
-async def test_octoeverywhere_connection(
-    body: OctoEverywhereTestRequest,
-    db: AsyncSession = Depends(get_db),
+@router.get("/printer-status")
+async def get_printer_status(
+    user: User | None = RequirePermissionIfAuthEnabled(Permission.PRINTERS_READ),
+    printer_scope: PrinterScope = RequestPrinterScope,
+    actor: User | ApiKeyActor | None = RequestActor,
+):
+    """Live printer-card status without exposing provider configuration."""
+    settings = await octoeverywhere_detection_service._load_settings()
+    enabled_printers = settings["enabled_printers"]
+    can_see_error = actor is None or actor.has_permission(Permission.SETTINGS_READ.value)
+    per_printer = octoeverywhere_detection_service.get_per_printer()
+    if not can_see_error:
+        per_printer = {pid: {**entry, "error": None, "error_code": None} for pid, entry in per_printer.items()}
+    per_printer = {pid: entry for pid, entry in per_printer.items() if printer_scope.allows(int(pid))}
+    if enabled_printers is not None:
+        enabled_printers = [pid for pid in enabled_printers if printer_scope.allows(int(pid))]
+    return {
+        "enabled": settings["enabled"],
+        "monitored_printers": sorted(enabled_printers) if enabled_printers is not None else None,
+        "per_printer": per_printer,
+        "last_error": octoeverywhere_detection_service._last_error if can_see_error else None,
+        "last_error_code": octoeverywhere_detection_service._last_error_code if can_see_error else None,
+    }
+
+
+@router.post("/test-connection")
+async def test_connection(
+    req: TestConnectionRequest,
     _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_UPDATE),
 ):
-    """Validate the API key (given, or stored) by creating and cancelling a free context."""
-    api_key = (body.api_key or "").strip()
-    if not api_key:
-        stored = await get_setting(db, KEY_API_KEY) or ""
-        if stored:
-            try:
-                api_key = mfa_decrypt(stored)
-            except RuntimeError:
-                return OctoEverywhereTestResult(
-                    ok=False, error="Stored API key cannot be decrypted; re-enter it in Settings"
-                )
-    return OctoEverywhereTestResult(**await octoeverywhere_detection_service.test_connection(api_key))
+    """Validate the key by creating a context, without uploading a camera image."""
+    settings = await octoeverywhere_detection_service._load_settings()
+    api_key = settings["api_key"] if req.api_key is None else req.api_key
+    return await octoeverywhere_detection_service.test_connection(api_key, req.confidence or settings["confidence"])

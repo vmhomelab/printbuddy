@@ -98,7 +98,8 @@ async def test_running_observed_skips_when_baseline_already_present():
     """If on_print_start already ran in this Printbuddy process for the same
     printer (the realistic same-session race), a second capture would
     overwrite the correct pre-print baseline with one taken later — which
-    could include the in-flight MP4. Skip when a baseline exists."""
+    could include the in-flight MP4. The archive lookup still has to run so
+    restart recovery can restore durable print ownership for the kill switch."""
     _timelapse_baselines[1] = {"pre_existing_a.mp4", "pre_existing_b.mp4"}
 
     with (
@@ -118,8 +119,9 @@ async def test_running_observed_skips_when_baseline_already_present():
             },
         )
 
-        # Neither the DB lookup nor the FTP scan should have run.
-        mock_session_maker.assert_not_called()
+        # Ownership reconciliation still consults the DB, but the expensive
+        # timelapse scan remains one-shot.
+        mock_session_maker.assert_called_once()
         mock_list.assert_not_called()
 
     # Original baseline preserved.

@@ -8,6 +8,9 @@ from backend.app.core.config import GITHUB_REPO
 from backend.app.core.database import async_session
 from backend.app.models.bug_report import BugReport
 
+# The reporter's email goes into the prefilled issue body (it is how the report
+# gets answered) and is not kept in bug_reports: nothing reads that table.
+
 # Rate limiting: max 5 prepared reports per hour
 _rate_limit_window = 3600
 _rate_limit_max = 5
@@ -98,7 +101,6 @@ async def submit_report(
     async with async_session() as db:
         report = BugReport(
             description=description,
-            reporter_email=reporter_email,
             github_issue_number=None,
             # The full prefilled URL can exceed the DB column size; keep the
             # stable issue creation endpoint in history and return the full URL

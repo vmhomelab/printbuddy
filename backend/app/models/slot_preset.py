@@ -25,6 +25,12 @@ class SlotPresetMapping(Base):
     preset_id: Mapped[str] = mapped_column(String(100))  # Cloud preset setting_id
     preset_name: Mapped[str] = mapped_column(String(200))  # Preset name for display
     preset_source: Mapped[str] = mapped_column(String(20), default="cloud")  # cloud or local
+    # The filament id the slot was configured with alongside this preset. When
+    # the printer later reports a different one, something else (the slicer's
+    # Device tab, the printer screen) re-configured the slot and this row no
+    # longer describes it (#3216). None for rows written before it was recorded
+    # and by callers that do not know it.
+    tray_info_idx: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 

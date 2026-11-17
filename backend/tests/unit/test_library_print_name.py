@@ -13,6 +13,7 @@ import io
 import zipfile
 from pathlib import Path
 
+import pytest
 from sqlalchemy import select
 
 from backend.app.api.routes.library import _read_3mf_entry, _without_print_name
@@ -51,6 +52,7 @@ def test_print_name_only_collapses_to_empty_dict():
 # --- _migrate_drop_library_print_name --------------------------------------
 
 
+@pytest.mark.sqlite_only  # pins the SQLite branch of the migration
 async def test_migration_strips_print_name_from_existing_rows(db_session, monkeypatch):
     """Rows imported before the fix get print_name cleared; siblings and rows
     that never had it are untouched. Idempotent on a second run.

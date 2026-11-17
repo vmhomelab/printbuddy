@@ -29,7 +29,7 @@ from backend.app.api.routes.library import (
     to_relative_path,
 )
 from backend.app.api.routes.settings import get_setting, set_setting
-from backend.app.core.auth import RequireCameraStreamTokenIfAuthEnabled, RequirePermissionIfAuthEnabled
+from backend.app.core.auth import RequirePermissionIfAuthEnabled, require_media_token_permission
 from backend.app.core.database import get_db
 from backend.app.core.encryption import mfa_decrypt, mfa_encrypt
 from backend.app.core.permissions import Permission
@@ -259,7 +259,7 @@ def _safe_filename(raw: str | None, fallback: str) -> str:
 
 @router.get("/settings", response_model=GyroidVaultSettings)
 async def get_gyroidvault_settings(
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
     _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_READ),
 ):
     enabled, url, has_key = await _load_settings(db)
@@ -270,7 +270,7 @@ async def get_gyroidvault_settings(
 @router.put("/settings", response_model=GyroidVaultSettings)
 async def update_gyroidvault_settings(
     body: GyroidVaultSettingsUpdate,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
     _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_UPDATE),
 ):
     if body.url is not None:
@@ -289,7 +289,7 @@ async def update_gyroidvault_settings(
 @router.post("/test", response_model=GyroidVaultTestResult)
 async def test_connection(
     body: GyroidVaultTestRequest | None = None,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
     _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_UPDATE),
 ):
     """Check reachability, version and the API key. Body values override stored ones."""
@@ -356,7 +356,7 @@ async def test_connection(
 
 @router.get("/status", response_model=GyroidVaultStatus)
 async def get_status(
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
     _: User | None = RequirePermissionIfAuthEnabled(Permission.LIBRARY_READ),
 ):
     enabled, url, has_key = await _load_settings(db)
@@ -386,7 +386,7 @@ async def list_models(
     order: str | None = Query(default=None, pattern=r"^(asc|desc)$"),
     page: int = Query(default=1, ge=1, le=10_000),
     limit: int = Query(default=24, ge=1, le=100),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
     _: User | None = RequirePermissionIfAuthEnabled(Permission.LIBRARY_READ),
 ):
     async with await _build_client(db) as client:
@@ -416,7 +416,7 @@ async def list_models(
 @router.get("/models/{model_id}", response_model=GyroidVaultModelDetail)
 async def get_model(
     model_id: int,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
     _: User | None = RequirePermissionIfAuthEnabled(Permission.LIBRARY_READ),
 ):
     async with await _build_client(db) as client:
@@ -470,7 +470,7 @@ async def get_model(
 
 @router.get("/categories", response_model=list[GyroidVaultCategory])
 async def list_categories(
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
     _: User | None = RequirePermissionIfAuthEnabled(Permission.LIBRARY_READ),
 ):
     async with await _build_client(db) as client:
@@ -492,7 +492,7 @@ async def list_categories(
 
 @router.get("/tags", response_model=list[GyroidVaultTag])
 async def list_tags(
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
     _: User | None = RequirePermissionIfAuthEnabled(Permission.LIBRARY_READ),
 ):
     async with await _build_client(db) as client:
@@ -506,14 +506,14 @@ async def list_tags(
 @router.get("/asset")
 async def proxy_asset(
     path: str = Query(..., max_length=1000),
-    db: AsyncSession = Depends(get_db),
-    _: None = RequireCameraStreamTokenIfAuthEnabled,
+    db: AsyncSession = Depends(get_db, scope="function"),
+    _: User | None = Depends(require_media_token_permission(Permission.LIBRARY_READ)),
 ):
     """Proxy a GyroidVault thumbnail.
 
     ``<img>`` tags cannot send the bearer token, and GyroidVault thumbnails can
-    be private, so this uses the same short-lived ``?token=`` stream token as
-    library thumbnails. Only GyroidVault image paths are fetched (see
+    be private, so this takes the same ``?token=`` media token as library
+    thumbnails (#3025) and needs ``library:read`` like the other browse routes. Only GyroidVault image paths are fetched (see
     ``is_safe_asset_path``) and only raster image responses are returned.
     """
     if not is_safe_asset_path(path):
@@ -561,7 +561,7 @@ async def _resolve_target_folder(db: AsyncSession, folder_id: int | None) -> int
 @router.post("/import", response_model=GyroidVaultImportResponse)
 async def import_files(
     body: GyroidVaultImportRequest,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
     current_user: User | None = RequirePermissionIfAuthEnabled(Permission.LIBRARY_UPLOAD),
 ):
     """Download selected files of a GyroidVault model into the Printbuddy library.
@@ -670,7 +670,7 @@ async def import_files(
 @router.get("/recent-imports", response_model=list[GyroidVaultRecentImport])
 async def recent_imports(
     limit: int = Query(default=10, ge=1, le=50),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
     _: User | None = RequirePermissionIfAuthEnabled(Permission.LIBRARY_READ),
 ):
     result = await db.execute(

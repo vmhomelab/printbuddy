@@ -9,6 +9,7 @@ import { Button } from './Button';
 import { useToast } from '../contexts/ToastContext';
 import { useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
+import { NumberInput } from './NumberInput';
 
 const SECURITY_PORT_MAP: Record<string, number> = {
   starttls: 587,
@@ -62,6 +63,15 @@ export function EmailSettings() {
       });
     }
   }, [existingSettings]);
+
+  // The saved password only goes to the server it was entered for.
+  const smtpPasswordNeedsReentry =
+    !!existingSettings &&
+    smtpSettings.smtp_auth_enabled &&
+    !smtpSettings.smtp_password &&
+    (smtpSettings.smtp_host !== existingSettings.smtp_host ||
+      smtpSettings.smtp_port !== existingSettings.smtp_port ||
+      smtpSettings.smtp_security !== existingSettings.smtp_security);
 
   const handleSecurityChange = (security: 'starttls' | 'ssl' | 'none') => {
     setSMTPSettings({
@@ -144,8 +154,10 @@ export function EmailSettings() {
       showToast(t('settings.email.errors.enterTestEmail'), 'error');
       return;
     }
+    // What the form holds, saved or not.
     testMutation.mutate({
       test_recipient: testEmail,
+      smtp: smtpSettings,
     });
   };
 
@@ -207,14 +219,14 @@ export function EmailSettings() {
         <CardContent>
           <div className="space-y-3">
             {advancedEnabled ? (
-              <div className="bg-green-500/10 border border-green-500/30 rounded-lg p-4">
+              <div className="bg-green-50 dark:bg-green-500/10 border border-green-300 dark:border-green-500/30 rounded-lg p-4">
                 <div className="flex items-start gap-3">
-                  <CheckCircle className="w-5 h-5 text-green-400 mt-0.5 flex-shrink-0" />
+                  <CheckCircle className="w-5 h-5 text-green-600 dark:text-green-400 mt-0.5 flex-shrink-0" />
                   <div className="space-y-2">
                     <p className="text-white font-medium">
                       {t('settings.email.advancedAuthEnabled') || 'Advanced Authentication is enabled'}
                     </p>
-                    <ul className="text-sm text-green-300 space-y-1 list-disc list-inside">
+                    <ul className="text-sm text-green-700 dark:text-green-300 space-y-1 list-disc list-inside">
                       <li>{t('settings.email.feature1') || 'Passwords are auto-generated and emailed to new users'}</li>
                       <li>{t('settings.email.feature2') || 'Users can login with username or email'}</li>
                       <li>{t('settings.email.feature3') || 'Forgot password feature is available'}</li>
@@ -224,14 +236,14 @@ export function EmailSettings() {
                 </div>
               </div>
             ) : (
-              <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-4">
+              <div className="bg-yellow-50 dark:bg-yellow-500/10 border border-yellow-300 dark:border-yellow-500/30 rounded-lg p-4">
                 <div className="flex items-start gap-3">
-                  <AlertTriangle className="w-5 h-5 text-yellow-400 mt-0.5 flex-shrink-0" />
+                  <AlertTriangle className="w-5 h-5 text-yellow-600 dark:text-yellow-400 mt-0.5 flex-shrink-0" />
                   <div className="space-y-2">
                     <p className="text-white font-medium">
                       {t('settings.email.advancedAuthDisabled') || 'Advanced Authentication is disabled'}
                     </p>
-                    <p className="text-sm text-yellow-300">
+                    <p className="text-sm text-yellow-700 dark:text-yellow-300">
                       {t('settings.email.advancedAuthDisabledDesc') || 'Enable advanced authentication to activate email-based features for user management.'}
                     </p>
                   </div>
@@ -295,6 +307,9 @@ export function EmailSettings() {
                     disabled={!smtpSettings.smtp_auth_enabled}
                     className={smtpSettings.smtp_auth_enabled ? inputClasses : disabledInputClasses}
                   />
+                  {smtpPasswordNeedsReentry && (
+                    <p className="text-xs mt-1 text-yellow-400">{t('common.secretReenter')}</p>
+                  )}
                 </div>
               </div>
 
@@ -316,10 +331,12 @@ export function EmailSettings() {
                   <label className="block text-sm font-medium text-white mb-1">
                     {t('settings.email.smtpPort') || 'SMTP Port'}
                   </label>
-                  <input
-                    type="number"
+                  <NumberInput
                     value={smtpSettings.smtp_port}
-                    onChange={(e) => handlePortChange(parseInt(e.target.value) || 587)}
+                    onChange={handlePortChange}
+                    min={1}
+                    max={65535}
+                    fallback={587}
                     placeholder="587"
                     className={inputClasses}
                   />

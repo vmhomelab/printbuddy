@@ -1,5 +1,13 @@
-import { describe, expect, it } from 'vitest';
-import QRCode from 'qrcode';
+import { describe, expect, it, vi } from 'vitest';
+
+// Capture what the QR encodes; the SVG itself is qrcode.react's business.
+const qrValues: string[] = [];
+vi.mock('qrcode.react', () => ({
+  QRCodeSVG: (props: { value: string; 'aria-label'?: string }) => {
+    qrValues.push(props.value);
+    return <svg role="img" aria-label={props['aria-label']} />;
+  },
+}));
 
 import { render, screen, waitFor } from '../utils';
 import { MobilePairingQR } from '../../components/MobilePairingQR';
@@ -28,15 +36,9 @@ describe('isLocalOnly', () => {
 describe('MobilePairingQR', () => {
   it('renders a QR image for the pairing link and shows the server address', async () => {
     render(<MobilePairingQR apiKey={KEY} serverUrl="http://192.168.1.10:8000" />);
-    const img = await screen.findByRole('img');
-    expect(img.getAttribute('src')).toMatch(/^data:image\/png;base64,/);
-    // The rendered image is exactly the QR for the pairing link.
-    const expected = await QRCode.toDataURL(buildPairingUri('http://192.168.1.10:8000', KEY), {
-      margin: 1,
-      width: 220,
-      errorCorrectionLevel: 'M',
-    });
-    expect(img.getAttribute('src')).toBe(expected);
+    await screen.findByRole('img');
+    // The QR encodes exactly the pairing link.
+    expect(qrValues.at(-1)).toBe(buildPairingUri('http://192.168.1.10:8000', KEY));
     expect(screen.getByText('http://192.168.1.10:8000')).toBeInTheDocument();
   });
 

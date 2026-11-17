@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { renderHook, waitFor, act } from '@testing-library/react';
+import { renderHook, act, screen } from '@testing-library/react';
 import React from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ToastProvider } from '../../contexts/ToastContext';
@@ -22,6 +22,14 @@ vi.mock('react-i18next', () => ({
       if (key === 'printers.toast.missingSpoolAssignment' && options) {
         const { printer, slots } = options as { printer: string; slots: string };
         return `Missing assignments for ${printer}: ${slots}`;
+      }
+      if (key === 'printers.toast.killSwitchTriggered' && options) {
+        const { printer, filename } = options as { printer: string; filename: string };
+        return `Billing kill switch stopped ${filename} on ${printer}`;
+      }
+      if (key === 'printers.toast.billingChargeFailed' && options) {
+        const { printer, filename } = options as { printer: string; filename: string };
+        return `Billing failed for ${filename} on ${printer}. The budget reservation was retained; check the server logs.`;
       }
       return key;
     },
@@ -68,6 +76,15 @@ class MockWebSocket {
     }
   }
 
+  // Helper to simulate the server closing with a specific code (e.g. 4401,
+  // the /ws auth-rejection close code).
+  simulateClose(code: number) {
+    this.readyState = MockWebSocket.CLOSED;
+    if (this.onclose) {
+      this.onclose(new CloseEvent('close', { code }));
+    }
+  }
+
   // Helper to simulate receiving a message
   simulateMessage(data: unknown) {
     if (this.onmessage) {
@@ -107,8 +124,27 @@ function createWrapper(queryClient: QueryClient) {
   };
 }
 
-function getLatestWs(): MockWebSocket | undefined {
-  return wsInstances[wsInstances.length - 1];
+/**
+ * After GHSA-r2qv, useWebSocket awaits a ws-token fetch before constructing
+ * the WebSocket. The MockWebSocket isn't pushed into ``wsInstances`` until
+ * that promise resolves. ``waitFor`` from testing-library uses real-time
+ * polling and so wedges under ``vi.useFakeTimers()``; flushing microtasks
+ * manually works under both real and fake timers because Promise resolution
+ * runs on the microtask queue, not on the mocked clock.
+ *
+ * Two iterations suffice for ``await fetch(...)`` → ``await resp.json()``;
+ * a small headroom lets future awaits land here without changing every
+ * call site.
+ */
+async function waitForWs(): Promise<MockWebSocket> {
+  for (let i = 0; i < 10 && wsInstances.length === 0; i++) {
+    await Promise.resolve();
+  }
+  const ws = wsInstances[wsInstances.length - 1];
+  if (!ws) {
+    throw new Error('WebSocket was not constructed after microtask flush');
+  }
+  return ws;
 }
 
 describe('useWebSocket hook', () => {
@@ -122,10 +158,28 @@ describe('useWebSocket hook', () => {
     // Save original and install mock
     originalWebSocket = globalThis.WebSocket;
     globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
+
+    // After GHSA-r2qv, useWebSocket fetches a ws-token via api.getWebSocketToken
+    // before opening the socket. ``api.request`` reads ``response.headers``
+    // and ``response.status``; the stub must expose those (a missing
+    // ``headers`` field throws inside request() and the silent catch in
+    // useWebSocket then proceeds with an undefined token, so the assertion
+    // "URL contains ?token=" fails without making the cause obvious).
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        headers: { get: () => null },
+        json: async () => ({ token: 'test-ws-token' }),
+      })),
+    );
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
     // Restore original WebSocket
     globalThis.WebSocket = originalWebSocket;
   });
@@ -190,30 +244,11 @@ describe('useWebSocket hook', () => {
         wrapper: createWrapper(queryClient),
       });
 
-      const ws = getLatestWs();
+      const ws = await waitForWs();
       expect(ws).toBeDefined();
-      expect(ws?.url).toContain('/api/v1/ws');
-    });
-
-    it('reports connected state when WebSocket opens', async () => {
-      const { useWebSocket } = await import('../../hooks/useWebSocket');
-
-      const { result } = renderHook(() => useWebSocket(), {
-        wrapper: createWrapper(queryClient),
-      });
-
-      // Initially not connected
-      expect(result.current.isConnected).toBe(false);
-
-      // Simulate connection opening
-      const ws = getLatestWs();
-      act(() => {
-        ws?.open();
-      });
-
-      await waitFor(() => {
-        expect(result.current.isConnected).toBe(true);
-      });
+      expect(ws.url).toContain('/api/v1/ws');
+      // GHSA-r2qv: the ws-token mint result is appended as ?token=...
+      expect(ws.url).toContain('token=test-ws-token');
     });
   });
 
@@ -273,10 +308,6 @@ describe('useWebSocket hook', () => {
 
     it('invalidates archives on print_complete message', async () => {
       vi.useFakeTimers();
-      vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
-        cb(0);
-        return 0;
-      });
       const { useWebSocket } = await import('../../hooks/useWebSocket');
 
       const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
@@ -285,7 +316,7 @@ describe('useWebSocket hook', () => {
         wrapper: createWrapper(queryClient),
       });
 
-      const ws = getLatestWs()!;
+      const ws = await waitForWs();
 
       // Open connection
       act(() => {
@@ -315,10 +346,6 @@ describe('useWebSocket hook', () => {
 
     it('invalidates archives on archive_created message', async () => {
       vi.useFakeTimers();
-      vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
-        cb(0);
-        return 0;
-      });
       const { useWebSocket } = await import('../../hooks/useWebSocket');
 
       const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
@@ -327,7 +354,7 @@ describe('useWebSocket hook', () => {
         wrapper: createWrapper(queryClient),
       });
 
-      const ws = getLatestWs()!;
+      const ws = await waitForWs();
 
       // Open connection
       act(() => {
@@ -356,10 +383,6 @@ describe('useWebSocket hook', () => {
 
     it('invalidates archives on archive_updated message', async () => {
       vi.useFakeTimers();
-      vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
-        cb(0);
-        return 0;
-      });
       const { useWebSocket } = await import('../../hooks/useWebSocket');
 
       const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
@@ -368,7 +391,7 @@ describe('useWebSocket hook', () => {
         wrapper: createWrapper(queryClient),
       });
 
-      const ws = getLatestWs()!;
+      const ws = await waitForWs();
 
       // Open connection
       act(() => {
@@ -394,18 +417,209 @@ describe('useWebSocket hook', () => {
       vi.unstubAllGlobals();
     });
 
-    it('handles missing_spool_assignment message without error', async () => {
-      vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
-        cb(0);
-        return 0;
+
+    it('relays a plate check that could not run to the layout', async () => {
+      const { useWebSocket } = await import('../../hooks/useWebSocket');
+      const received: unknown[] = [];
+      const listener = (event: Event) => received.push((event as CustomEvent).detail);
+      window.addEventListener('plate-check-failed', listener);
+
+      renderHook(() => useWebSocket(), { wrapper: createWrapper(queryClient) });
+      const ws = await waitForWs();
+      act(() => {
+        ws.open();
       });
+      act(() => {
+        ws.simulateMessage({
+          type: 'plate_check_failed',
+          printer_id: 3,
+          printer_name: 'X1C',
+          reason: 'no_camera_frame',
+        });
+      });
+      window.removeEventListener('plate-check-failed', listener);
+
+      expect(received).toEqual([{ printer_id: 3, printer_name: 'X1C', reason: 'no_camera_frame' }]);
+    });
+
+    it('invalidates inventory queries on inventory_changed message', async () => {
+      vi.useFakeTimers();
+      const { useWebSocket } = await import('../../hooks/useWebSocket');
+
+      const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
+
+      renderHook(() => useWebSocket(), {
+        wrapper: createWrapper(queryClient),
+      });
+
+      const ws = await waitForWs();
+
+      act(() => {
+        ws.open();
+      });
+
+      act(() => {
+        ws.simulateMessage({ type: 'inventory_changed' });
+      });
+
+      // 3 s debounce, then one key every 500 ms.
+      await act(async () => {
+        vi.advanceTimersByTime(6000);
+      });
+
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['inventory-spools'] });
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['spoolman-inventory-spools'] });
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['inventory-locations'] });
+      // #2988: without this key the supplier broadcast reached nothing, so a
+      // supplier created in one tab never showed up in another.
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['inventory-suppliers'] });
+      // The per-material-number aggregate is derived from the same rows (#2870).
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['material-number-stats'] });
+      // A weight synced or weighed elsewhere reaches printer cards through the slot rows (WU-9).
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['spool-assignments'] });
+      // A Spoolman spool linked to a tag elsewhere: the slot cards find it by tag (#3402).
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['linked-spools'] });
+
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    });
+
+    it("refreshes the slot rows when a print's usage is logged", async () => {
+      // The printer card reads a spool's remaining weight from the slot rows;
+      // a finished print is the most common weight change.
+      vi.useFakeTimers();
+      const { useWebSocket } = await import('../../hooks/useWebSocket');
+      const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
+      renderHook(() => useWebSocket(), { wrapper: createWrapper(queryClient) });
+      const ws = await waitForWs();
+      act(() => {
+        ws.open();
+      });
+
+      act(() => {
+        ws.simulateMessage({ type: 'spool_usage_logged', data: {} });
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(6000);
+      });
+
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['inventory-spools'] });
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['spool-assignments'] });
+
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    });
+
+    /*
+     * Swapping a spool leaves the previous spool's preset name on the AMS slot
+     * card.
+     *
+     * The RFID auto-assign rewrites the slot's slot_preset_mappings row, and
+     * PrintersPage reads `slotPreset?.preset_name` *ahead of* the live
+     * tray_info_idx lookup -- so a cached row wins over correct data pushed
+     * over the socket. Everything else on the card rides the status push and
+     * updates instantly, which is why this surfaces as one wrong line rather
+     * than a stale card: pull a Bambu ABS Orange, insert a PLA Matte Dark
+     * Blue, and the card reads "Bambu ABS" against the new colour.
+     *
+     * `slotPresets` has a 2-minute staleTime and no refetch interval, so on a
+     * dashboard left open and focused nothing ever refetches it.
+     */
+    it('invalidates slot presets on spool_auto_assigned message', async () => {
+      vi.useFakeTimers();
+      const { useWebSocket } = await import('../../hooks/useWebSocket');
+
+      const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
+
+      renderHook(() => useWebSocket(), {
+        wrapper: createWrapper(queryClient),
+      });
+
+      const ws = await waitForWs();
+
+      act(() => {
+        ws.open();
+      });
+
+      act(() => {
+        ws.simulateMessage({
+          type: 'spool_auto_assigned',
+          printer_id: 7,
+          ams_id: 0,
+          tray_id: 0,
+          spool_id: 110,
+        });
+      });
+
+      // No timer advance: the user is standing at the printer looking at the
+      // card, so the slot's own queries must not wait out the 3s cascade
+      // debounce (which any further event would restart anyway).
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['slotPresets'] });
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['spool-assignments'] });
+
+      // The spool list is not on the card's critical path and stays debounced.
+      expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ['inventory-spools'] });
+      await act(async () => {
+        vi.advanceTimersByTime(5000);
+      });
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['inventory-spools'] });
+
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    });
+
+    /*
+     * Spoolman mode reaches the same slot_preset_mappings row through its own
+     * AMS sync, which raises spool_assignment_changed. Its slot rows live under
+     * a different query key, so the internal-mode key alone left that half of
+     * the UI on the previous spool.
+     */
+    it('invalidates both inventory modes on spool_assignment_changed message', async () => {
+      vi.useFakeTimers();
+      const { useWebSocket } = await import('../../hooks/useWebSocket');
+
+      const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
+
+      renderHook(() => useWebSocket(), {
+        wrapper: createWrapper(queryClient),
+      });
+
+      const ws = await waitForWs();
+
+      act(() => {
+        ws.open();
+      });
+
+      act(() => {
+        ws.simulateMessage({
+          type: 'spool_assignment_changed',
+          printer_id: 7,
+          ams_id: 0,
+          tray_id: 0,
+        });
+      });
+
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['slotPresets'] });
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['spool-assignments'] });
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['spoolman-slot-assignments'] });
+      // The print dialog prices each slot and shows its grams from this one,
+      // in both modes; an open dialog kept the previous spool's figures.
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['printer-inventory-remain'] });
+      // A Spoolman move clears the old slot's fallback tag; the slot cards in
+      // other tabs and on the kiosk read the tag -> spool map (#1574).
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['linked-spools'] });
+
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    });
+    it('handles missing_spool_assignment message without error', async () => {
       const { useWebSocket } = await import('../../hooks/useWebSocket');
 
       renderHook(() => useWebSocket(), {
         wrapper: createWrapper(queryClient),
       });
 
-      const ws = getLatestWs()!;
+      const ws = await waitForWs();
       act(() => {
         ws.open();
       });
@@ -426,6 +640,97 @@ describe('useWebSocket hook', () => {
       vi.unstubAllGlobals();
     });
 
+    it('shows an error toast when the billing kill switch stops a print', async () => {
+      const { useWebSocket } = await import('../../hooks/useWebSocket');
+
+      renderHook(() => useWebSocket(), {
+        wrapper: createWrapper(queryClient),
+      });
+
+      const ws = await waitForWs();
+      act(() => {
+        ws.open();
+        ws.simulateMessage({
+          type: 'kill_switch_triggered',
+          printer_id: 7,
+          printer_name: 'Printer B',
+          filename: 'foreign_job.3mf',
+        });
+      });
+
+      const toast = screen.getByText('Billing kill switch stopped foreign_job.3mf on Printer B');
+      expect(toast.parentElement).toHaveClass('bg-red-500/10');
+    });
+
+    it('shows an error toast when a completed print could not be charged', async () => {
+      const { useWebSocket } = await import('../../hooks/useWebSocket');
+
+      renderHook(() => useWebSocket(), {
+        wrapper: createWrapper(queryClient),
+      });
+
+      const ws = await waitForWs();
+      act(() => {
+        ws.open();
+        ws.simulateMessage({
+          type: 'billing_charge_failed',
+          printer_id: 7,
+          printer_name: 'Printer B',
+          filename: 'paid-job.3mf',
+        });
+      });
+
+      const toast = screen.getByText(
+        'Billing failed for paid-job.3mf on Printer B. The budget reservation was retained; check the server logs.',
+      );
+      expect(toast.parentElement).toHaveClass('bg-red-500/10');
+    });
+
+    it('handles spool_assignment_verified messages (success and failure) without error', async () => {
+      const { useWebSocket } = await import('../../hooks/useWebSocket');
+
+      renderHook(() => useWebSocket(), {
+        wrapper: createWrapper(queryClient),
+      });
+
+      const ws = await waitForWs();
+      act(() => {
+        ws.open();
+      });
+
+      // #2582: verified (loaded), loaded-but-no-K-profile, and not-confirmed
+      // all route to a toast — assert none of the branches throw.
+      expect(() => {
+        act(() => {
+          ws.simulateMessage({
+            type: 'spool_assignment_verified',
+            printer_id: 3,
+            printer_name: 'Printer A',
+            slot: 'A1',
+            verified: true,
+            kprofile_applied: true,
+          });
+          ws.simulateMessage({
+            type: 'spool_assignment_verified',
+            printer_id: 3,
+            printer_name: 'Printer A',
+            slot: 'A1',
+            verified: true,
+            kprofile_applied: false,
+          });
+          ws.simulateMessage({
+            type: 'spool_assignment_verified',
+            printer_id: 3,
+            printer_name: 'Printer A',
+            slot: 'A1',
+            verified: false,
+          });
+        });
+      }).not.toThrow();
+
+      vi.unstubAllGlobals();
+    });
+
     it('ignores pong messages without error', async () => {
       const { useWebSocket } = await import('../../hooks/useWebSocket');
 
@@ -435,7 +740,7 @@ describe('useWebSocket hook', () => {
         wrapper: createWrapper(queryClient),
       });
 
-      const ws = getLatestWs()!;
+      const ws = await waitForWs();
 
       // Open connection
       act(() => {
@@ -460,7 +765,7 @@ describe('useWebSocket hook', () => {
         wrapper: createWrapper(queryClient),
       });
 
-      const ws = getLatestWs()!;
+      const ws = await waitForWs();
 
       // Open connection
       act(() => {
@@ -490,7 +795,7 @@ describe('useWebSocket hook', () => {
         wrapper: createWrapper(queryClient),
       });
 
-      const ws = getLatestWs()!;
+      const ws = await waitForWs();
 
       // Open connection
       act(() => {
@@ -511,46 +816,186 @@ describe('useWebSocket hook', () => {
     });
   });
 
-  describe('sendMessage', () => {
-    it('sends JSON message when connected', async () => {
-      const { useWebSocket } = await import('../../hooks/useWebSocket');
+  /**
+   * #2754 (reporter @mic4rd): live updates froze whenever the tab wasn't in
+   * front, and caught up all at once on switching back.
+   *
+   * Two causes, fixed in two rounds. First the cache writes ran inside a
+   * requestAnimationFrame, and a hidden tab gets no rendering opportunities —
+   * the browser holds queued frame callbacks indefinitely rather than merely
+   * throttling them. The rAF stub below is what makes those tests meaningful:
+   * it hands back a handle and never invokes the callback, which is what a
+   * real hidden tab does.
+   *
+   * Removing the frame callback did not close the report, because the 100ms
+   * coalescing timer was still in the path and a hidden page's timers are
+   * clamped to at best once a second — once a minute past five minutes hidden.
+   * So the writes must not depend on a timer either while hidden, which is
+   * what `writes without waiting on a timer` pins down. Note it deliberately
+   * never advances the clock: a test that advances fake timers cannot tell a
+   * throttled timer from a prompt one, which is exactly why the original tests
+   * kept passing while the reporter's tab stayed frozen.
+   */
+  describe('hidden tab (#2754)', () => {
+    let rafSpy: ReturnType<typeof vi.fn>;
 
-      const { result } = renderHook(() => useWebSocket(), {
-        wrapper: createWrapper(queryClient),
+    beforeEach(() => {
+      // The shared test client sets gcTime: 0, which collects a query the
+      // moment it has no observers — advancing timers past the 100ms
+      // coalescing window would drop the entry we just wrote before we could
+      // read it back. Nothing observes ['printerStatus', 1] here, so this
+      // block needs a client that keeps unobserved data.
+      queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false, gcTime: Infinity } },
       });
-
-      const ws = getLatestWs()!;
-
-      // Open connection
-      act(() => {
-        ws.open();
-      });
-
-      act(() => {
-        result.current.sendMessage({ type: 'test', data: 'hello' });
-      });
-
-      expect(ws.send).toHaveBeenCalledWith(
-        JSON.stringify({ type: 'test', data: 'hello' })
-      );
+      Object.defineProperty(document, 'hidden', { configurable: true, value: true });
+      // Order matters: vi.useFakeTimers() fakes requestAnimationFrame as well
+      // (backing it with the mock clock, so advanceTimersByTime would run it
+      // and hide the very defect under test). Stub it afterwards so the
+      // never-firing version is the one the hook sees.
+      vi.useFakeTimers();
+      rafSpy = vi.fn(() => 1);
+      vi.stubGlobal('requestAnimationFrame', rafSpy);
     });
 
-    it('does not send when disconnected', async () => {
+    afterEach(() => {
+      vi.useRealTimers();
+      Object.defineProperty(document, 'hidden', { configurable: true, value: false });
+    });
+
+    it('applies printer status to the query cache', async () => {
       const { useWebSocket } = await import('../../hooks/useWebSocket');
 
-      const { result } = renderHook(() => useWebSocket(), {
-        wrapper: createWrapper(queryClient),
-      });
-
-      const ws = getLatestWs()!;
-
-      // Don't open connection - still in CONNECTING state
+      renderHook(() => useWebSocket(), { wrapper: createWrapper(queryClient) });
+      const ws = await waitForWs();
+      act(() => ws.open());
 
       act(() => {
-        result.current.sendMessage({ type: 'test' });
+        ws.simulateMessage({
+          type: 'printer_status',
+          printer_id: 1,
+          data: { state: 'RUNNING', progress: 42 },
+        });
       });
 
-      expect(ws.send).not.toHaveBeenCalled();
+      // Past the 100ms coalescing window.
+      await act(async () => {
+        vi.advanceTimersByTime(200);
+      });
+
+      // The status lands under the per-printer query key and nothing else.
+      expect(queryClient.getQueryData(['printerStatus', 1])).toMatchObject({
+        state: 'RUNNING',
+        progress: 42,
+      });
+      expect(rafSpy).not.toHaveBeenCalled();
+    });
+
+    it('writes without waiting on a timer', async () => {
+      const { useWebSocket } = await import('../../hooks/useWebSocket');
+
+      renderHook(() => useWebSocket(), { wrapper: createWrapper(queryClient) });
+      const ws = await waitForWs();
+      act(() => ws.open());
+
+      act(() => {
+        ws.simulateMessage({
+          type: 'printer_status',
+          printer_id: 1,
+          data: { state: 'RUNNING', progress: 42 },
+        });
+      });
+
+      // No advanceTimersByTime: a hidden tab's timers are throttled to once a
+      // second at best, so anything the title depends on has to have landed
+      // already. Reintroduce the coalescing timer on this path and the cache
+      // is still empty here.
+      expect(queryClient.getQueryData(['printerStatus', 1])).toMatchObject({
+        state: 'RUNNING',
+        progress: 42,
+      });
+    });
+
+    it('applies the newest value when several arrive before a frame would have run', async () => {
+      const { useWebSocket } = await import('../../hooks/useWebSocket');
+
+      renderHook(() => useWebSocket(), { wrapper: createWrapper(queryClient) });
+      const ws = await waitForWs();
+      act(() => ws.open());
+
+      act(() => {
+        ws.simulateMessage({ type: 'printer_status', printer_id: 1, data: { progress: 40 } });
+        ws.simulateMessage({ type: 'printer_status', printer_id: 1, data: { progress: 41 } });
+      });
+
+      // Writing through per message must not resurrect an earlier one: the
+      // pending map is drained on each flush, so a stale entry cannot be
+      // re-applied over the newer value.
+      expect(queryClient.getQueryData(['printerStatus', 1])).toMatchObject({ progress: 41 });
+    });
+
+    it('drains queued messages instead of wedging the queue', async () => {
+      const { useWebSocket } = await import('../../hooks/useWebSocket');
+      const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
+
+      renderHook(() => useWebSocket(), { wrapper: createWrapper(queryClient) });
+      const ws = await waitForWs();
+      act(() => ws.open());
+
+      // Everything other than printer_status goes through the message queue,
+      // which used to stall with processingRef stuck true — messages then
+      // piled up unbounded until the tab was shown again.
+      act(() => {
+        ws.simulateMessage({ type: 'print_complete', printer_id: 1, data: {} });
+      });
+
+      // 3s debounce, then the 500ms-apart stagger.
+      await act(async () => {
+        vi.advanceTimersByTime(4000);
+      });
+
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['archives'] });
+      expect(rafSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('visible tab still coalesces (#2754)', () => {
+    /**
+     * The counterpart to the hidden-tab block: the write-through is scoped to
+     * a hidden tab on purpose. A visible one is painting, and the 100ms window
+     * is what stops a burst of status messages turning into a render cascade —
+     * so "just always write through" is not the simplification it looks like.
+     */
+    it('defers the write while the tab is visible', async () => {
+      const { useWebSocket } = await import('../../hooks/useWebSocket');
+
+      const client = new QueryClient({
+        defaultOptions: { queries: { retry: false, gcTime: Infinity } },
+      });
+      vi.useFakeTimers();
+      try {
+        renderHook(() => useWebSocket(), { wrapper: createWrapper(client) });
+        const ws = await waitForWs();
+        act(() => ws.open());
+
+        act(() => {
+          ws.simulateMessage({
+            type: 'printer_status',
+            printer_id: 1,
+            data: { state: 'RUNNING', progress: 42 },
+          });
+        });
+
+        expect(client.getQueryData(['printerStatus', 1])).toBeUndefined();
+
+        await act(async () => {
+          vi.advanceTimersByTime(200);
+        });
+
+        expect(client.getQueryData(['printerStatus', 1])).toMatchObject({ progress: 42 });
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 
@@ -564,7 +1009,11 @@ describe('useWebSocket hook', () => {
         wrapper: createWrapper(queryClient),
       });
 
-      const firstWs = getLatestWs()!;
+      // GHSA-r2qv: connect() awaits a ws-token fetch before constructing
+      // the WebSocket. Flush microtasks under fake timers so the await
+      // resolves and MockWebSocket is pushed into wsInstances.
+      await vi.advanceTimersByTimeAsync(0);
+      const firstWs = wsInstances[wsInstances.length - 1]!;
 
       // Open connection
       act(() => {
@@ -578,14 +1027,225 @@ describe('useWebSocket hook', () => {
         firstWs.close();
       });
 
-      // Wait for reconnect timeout (3 seconds)
-      act(() => {
-        vi.advanceTimersByTime(3000);
-      });
+      // Wait for reconnect timeout (3 seconds) + microtask flush for the
+      // async connect() that the reconnect schedules.
+      await vi.advanceTimersByTimeAsync(3000);
 
       // Should have created new WebSocket
       expect(wsInstances.length).toBe(instanceCountBefore + 1);
-      expect(getLatestWs()).not.toBe(firstWs);
+      expect(wsInstances[wsInstances.length - 1]).not.toBe(firstWs);
+
+      vi.useRealTimers();
+    });
+
+    it('after a 4401 asks for an auth re-check and reconnects with a fresh token', async () => {
+      // The server closes 4401 when the session ended (password change, reset,
+      // deactivation), auth was turned on, or a scope refresh failed. A session
+      // that is still valid reconnects; one that ended fails the token mint,
+      // and the re-check sends the tab to the login page.
+      vi.useFakeTimers();
+      const recheck = vi.fn();
+      window.addEventListener('auth:recheck', recheck);
+
+      const { useWebSocket } = await import('../../hooks/useWebSocket');
+      renderHook(() => useWebSocket(), { wrapper: createWrapper(queryClient) });
+
+      await vi.advanceTimersByTimeAsync(0);
+      const firstWs = wsInstances[wsInstances.length - 1]!;
+      act(() => {
+        firstWs.open();
+      });
+      const instanceCountBefore = wsInstances.length;
+
+      act(() => {
+        firstWs.simulateClose(4401);
+      });
+      expect(recheck).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(wsInstances.length).toBe(instanceCountBefore + 1);
+
+      window.removeEventListener('auth:recheck', recheck);
+      vi.useRealTimers();
+    });
+
+    it('backs off when the reconnect is refused with 4401 again, instead of looping', async () => {
+      // Regression: a 4401 used to reschedule connect() every 3s, spamming
+      // /auth/ws-token forever. A socket closed with 4401 again before its
+      // first message (the server's check after accepting it) doubles the wait
+      // (capped), so a failure that clears (a database hiccup) still recovers.
+      vi.useFakeTimers();
+
+      const { useWebSocket } = await import('../../hooks/useWebSocket');
+      renderHook(() => useWebSocket(), { wrapper: createWrapper(queryClient) });
+
+      await vi.advanceTimersByTimeAsync(0);
+      const firstWs = wsInstances[wsInstances.length - 1]!;
+      act(() => {
+        firstWs.open();
+        firstWs.simulateClose(4401);
+      });
+      await vi.advanceTimersByTimeAsync(3000);
+      const retry = wsInstances[wsInstances.length - 1]!;
+      expect(retry).not.toBe(firstWs);
+      const instanceCountBefore = wsInstances.length;
+
+      act(() => {
+        retry.open();
+        retry.simulateClose(4401); // refused again before any message
+      });
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(wsInstances.length).toBe(instanceCountBefore); // not after 3 s
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(wsInstances.length).toBe(instanceCountBefore + 1); // after 6 s
+
+      vi.useRealTimers();
+    });
+
+    it('backs off when the handshake keeps failing (a refusal shows as 1006)', async () => {
+      // The server refuses a socket before accepting it, which the browser
+      // reports as 1006 with no open, like a server that is down. Retrying
+      // every 3 s would mint a ws-token per tab every 3 s while it lasts.
+      vi.useFakeTimers();
+
+      const { useWebSocket } = await import('../../hooks/useWebSocket');
+      renderHook(() => useWebSocket(), { wrapper: createWrapper(queryClient) });
+
+      await vi.advanceTimersByTimeAsync(0);
+      act(() => {
+        wsInstances[wsInstances.length - 1]!.simulateClose(1006); // never opened
+      });
+      await vi.advanceTimersByTimeAsync(3000);
+      const second = wsInstances[wsInstances.length - 1]!;
+      const count = wsInstances.length;
+      act(() => {
+        second.simulateClose(1006); // refused again
+      });
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(wsInstances.length).toBe(count); // not after 3 s
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(wsInstances.length).toBe(count + 1); // after 6 s
+
+      vi.useRealTimers();
+    });
+
+    it('allows a retry again once a reconnected socket was admitted', async () => {
+      vi.useFakeTimers();
+
+      const { useWebSocket } = await import('../../hooks/useWebSocket');
+      renderHook(() => useWebSocket(), { wrapper: createWrapper(queryClient) });
+
+      await vi.advanceTimersByTimeAsync(0);
+      const firstWs = wsInstances[wsInstances.length - 1]!;
+      act(() => {
+        firstWs.open();
+        firstWs.simulateClose(4401);
+      });
+      await vi.advanceTimersByTimeAsync(3000);
+      const second = wsInstances[wsInstances.length - 1]!;
+      act(() => {
+        second.open();
+        second.simulateMessage({ type: 'pong' }); // admitted
+        second.simulateClose(4401); // a later, separate rejection
+      });
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(wsInstances[wsInstances.length - 1]).not.toBe(second);
+
+      vi.useRealTimers();
+    });
+
+    it('asks for an auth re-check when the ws-token mint returns 401', async () => {
+      // A tab opened while auth was off, whose socket was down when auth was
+      // turned on: the mint answers 401 "Authentication required", which does
+      // not count as a sign-out in request(). Without a re-check the tab froze.
+      vi.useFakeTimers();
+      const recheck = vi.fn();
+      window.addEventListener('auth:recheck', recheck);
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => ({
+          ok: false,
+          status: 401,
+          statusText: 'Unauthorized',
+          headers: { get: () => null },
+          json: async () => ({ detail: 'Authentication required' }),
+        })),
+      );
+
+      const { useWebSocket } = await import('../../hooks/useWebSocket');
+      renderHook(() => useWebSocket(), { wrapper: createWrapper(queryClient) });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(recheck).toHaveBeenCalledTimes(1);
+      expect(wsInstances.length).toBe(0);
+
+      window.removeEventListener('auth:recheck', recheck);
+      vi.useRealTimers();
+    });
+
+    it('does NOT open a socket or reconnect when ws-token mint returns 403, but re-checks auth', async () => {
+      // Mike/Forge's case: an authenticated user whose group lacks
+      // WEBSOCKET_CONNECT. POST /auth/ws-token returns 403; the hook must NOT
+      // fall through to a tokenless socket (server closes it 4401) and must NOT
+      // enter the reconnect loop — it degrades to REST polling instead.
+      vi.useFakeTimers();
+      const recheck = vi.fn();
+      window.addEventListener('auth:recheck', recheck);
+
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => ({
+          ok: false,
+          status: 403,
+          statusText: 'Forbidden',
+          headers: { get: () => null },
+          json: async () => ({ detail: 'Insufficient permissions' }),
+        })),
+      );
+
+      const { useWebSocket } = await import('../../hooks/useWebSocket');
+      renderHook(() => useWebSocket(), { wrapper: createWrapper(queryClient) });
+
+      // Flush the token-mint rejection, then let the (would-be) reconnect
+      // window pass. No socket should ever be constructed. Auth is re-checked:
+      // a 403 also means an API key (a kiosk) whose owner was deactivated while
+      // its socket was down, which then goes to the login; a user who only
+      // lacks the permission gets their user back and nothing changes.
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(wsInstances.length).toBe(0);
+      expect(recheck).toHaveBeenCalledTimes(1);
+      window.removeEventListener('auth:recheck', recheck);
+
+      vi.useRealTimers();
+    });
+
+    it('does NOT reconnect when a close fires during unmount', async () => {
+      // The provider unmounting (e.g. logout redirect) must not leave a
+      // scheduled reconnect behind — the cleanup marks disposed before
+      // close(), so the resulting onclose is a no-op.
+      vi.useFakeTimers();
+
+      const { useWebSocket } = await import('../../hooks/useWebSocket');
+      const { unmount } = renderHook(() => useWebSocket(), {
+        wrapper: createWrapper(queryClient),
+      });
+
+      await vi.advanceTimersByTimeAsync(0);
+      const ws = wsInstances[wsInstances.length - 1]!;
+      act(() => {
+        ws.open();
+      });
+
+      const instanceCountBefore = wsInstances.length;
+
+      // Unmount closes the socket, which fires onclose synchronously.
+      act(() => {
+        unmount();
+      });
+
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(wsInstances.length).toBe(instanceCountBefore);
 
       vi.useRealTimers();
     });
@@ -597,7 +1257,7 @@ describe('useWebSocket hook', () => {
         wrapper: createWrapper(queryClient),
       });
 
-      const ws = getLatestWs()!;
+      const ws = await waitForWs();
 
       // Open connection
       act(() => {

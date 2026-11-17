@@ -2,6 +2,8 @@ export interface PlateFilament {
   slot_id: number;
   type: string;
   color: string;
+  // The slicer preset (GFA01, ...); names the product line for colour names
+  tray_info_idx?: string;
   used_grams: number;
   used_meters: number;
   // True when this AMS slot is consumed by the picked plate. False
@@ -25,6 +27,10 @@ export interface PlateMetadata {
   print_time_seconds: number | null;
   filament_used_grams: number | null;
   filaments: PlateFilament[];
+  // Per-plate build plate type so multi-plate prints can show the right
+  // plate at scheduling time (#1281). Falls back to null for older 3MFs
+  // that don't carry curr_bed_type in slice_info.config.
+  bed_type?: string | null;
 }
 
 // Printer / process preset names the source 3MF was prepared with, read from
@@ -34,6 +40,26 @@ export interface PlateMetadata {
 interface EmbeddedPresets {
   embedded_printer?: string | null;
   embedded_process?: string | null;
+  // Process settings the designer changed away from the stock preset, read
+  // from the 3MF's own `different_settings_to_system` (#2622). Offered in the
+  // SliceModal so a re-slice for another printer can carry them instead of
+  // losing them to the picked process profile. Empty for STL, OrcaSlicer
+  // files, and older exports that predate the field.
+  design_overrides?: DesignOverride[];
+}
+
+// One process setting the designer deviated on. `printer_coupled` marks the
+// values that only make sense on the machine they were tuned for (speeds,
+// accelerations, prime-tower geometry) — offered, but never pre-selected.
+// `preset_defining` marks the ones that *are* the picked process preset —
+// layer height and first layer height — which must not be carried over an
+// explicit preset pick without the user asking. Also offered, never
+// pre-selected.
+export interface DesignOverride {
+  key: string;
+  value: unknown;
+  printer_coupled: boolean;
+  preset_defining: boolean;
 }
 
 export interface ArchivePlatesResponse extends EmbeddedPresets {

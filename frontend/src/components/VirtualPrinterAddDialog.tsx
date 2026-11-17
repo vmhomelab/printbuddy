@@ -8,12 +8,12 @@ import { Card, CardContent } from './Card';
 import { Button } from './Button';
 import { useToast } from '../contexts/ToastContext';
 
-type Mode = 'immediate' | 'review' | 'print_queue' | 'proxy';
+type Mode = 'archive' | 'review' | 'queue' | 'proxy';
 
 const MODE_LABELS: Record<string, string> = {
-  immediate: 'archive',
+  archive: 'archive',
   review: 'review',
-  print_queue: 'queue',
+  queue: 'queue',
   proxy: 'proxy',
 };
 
@@ -28,20 +28,20 @@ export function VirtualPrinterAddDialog({ onClose }: VirtualPrinterAddDialogProp
 
   const [name, setName] = useState('');
   const [protocol, setProtocol] = useState<VirtualPrinterProtocol>('bambu');
-  const [mode, setMode] = useState<Mode>('immediate');
+  const [mode, setMode] = useState<Mode>('archive');
   const [targetPrinterId, setTargetPrinterId] = useState<number | null>(null);
 
   const isMoonraker = protocol === 'moonraker';
   const availableModes: readonly Mode[] = isMoonraker
-    ? (['immediate', 'review', 'print_queue'] as const)
-    : (['immediate', 'review', 'print_queue', 'proxy'] as const);
+    ? (['archive', 'review', 'queue'] as const)
+    : (['archive', 'review', 'queue', 'proxy'] as const);
   // Proxy mode targets a Bambu printer; Moonraker-compatible VPs target the rest.
-  const showTargetPrinter = isMoonraker ? mode === 'print_queue' : mode === 'proxy';
+  const showTargetPrinter = isMoonraker ? mode === 'queue' : mode === 'proxy';
 
   const handleProtocolChange = (next: VirtualPrinterProtocol) => {
     setProtocol(next);
     setTargetPrinterId(null);
-    if (next === 'moonraker' && mode === 'proxy') setMode('immediate');
+    if (next === 'moonraker' && mode === 'proxy') setMode('archive');
   };
 
   const { data: printers } = useQuery({

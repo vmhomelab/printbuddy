@@ -210,7 +210,7 @@ def _truthy(value: str | None) -> bool:
 
 
 @router.get("/api/version")
-async def octoprint_version(vp_id: int, request: Request, db: AsyncSession = Depends(get_db)):
+async def octoprint_version(vp_id: int, request: Request, db: AsyncSession = Depends(get_db, scope="function")):
     """Connection test used by OrcaSlicer/PrusaSlicer before every upload."""
     _vp, error = await _authorize(vp_id, request, db)
     if error:
@@ -219,7 +219,7 @@ async def octoprint_version(vp_id: int, request: Request, db: AsyncSession = Dep
 
 
 @router.get("/api/server")
-async def octoprint_server(vp_id: int, request: Request, db: AsyncSession = Depends(get_db)):
+async def octoprint_server(vp_id: int, request: Request, db: AsyncSession = Depends(get_db, scope="function")):
     _vp, error = await _authorize(vp_id, request, db)
     if error:
         return error
@@ -235,7 +235,7 @@ async def octoprint_upload(
     path: str | None = Form(None),
     print_: str | None = Form(None, alias="print"),
     select_: str | None = Form(None, alias="select"),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
 ):
     """OctoPrint ``POST /api/files/local`` upload.
 
@@ -246,6 +246,7 @@ async def octoprint_upload(
     vp, error = await _authorize(vp_id, request, db)
     if error:
         return error
+    assert vp is not None  # _authorize returns an error whenever vp is None
     if location not in ("local", "sdcard"):
         return JSONResponse(status_code=404, content={"error": f"Unknown location {location}"})
 
@@ -278,10 +279,11 @@ async def octoprint_upload(
 
 
 @router.get("/server/info")
-async def moonraker_server_info(vp_id: int, request: Request, db: AsyncSession = Depends(get_db)):
+async def moonraker_server_info(vp_id: int, request: Request, db: AsyncSession = Depends(get_db, scope="function")):
     vp, error = await _authorize(vp_id, request, db)
     if error:
         return error
+    assert vp is not None  # _authorize returns an error whenever vp is None
     return {
         "result": {
             "klippy_connected": True,
@@ -299,10 +301,11 @@ async def moonraker_server_info(vp_id: int, request: Request, db: AsyncSession =
 
 
 @router.get("/printer/info")
-async def moonraker_printer_info(vp_id: int, request: Request, db: AsyncSession = Depends(get_db)):
+async def moonraker_printer_info(vp_id: int, request: Request, db: AsyncSession = Depends(get_db, scope="function")):
     vp, error = await _authorize(vp_id, request, db)
     if error:
         return error
+    assert vp is not None  # _authorize returns an error whenever vp is None
     return {
         "result": {
             "state": "ready",
@@ -321,12 +324,13 @@ async def moonraker_upload(
     root: str | None = Form(None),
     path: str | None = Form(None),
     print_: str | None = Form(None, alias="print"),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
 ):
     """Moonraker ``POST /server/files/upload``."""
     vp, error = await _authorize(vp_id, request, db)
     if error:
         return error
+    assert vp is not None  # _authorize returns an error whenever vp is None
     if root and root != "gcodes":
         return JSONResponse(status_code=400, content={"error": f"Unsupported root {root}"})
 
@@ -342,8 +346,15 @@ async def moonraker_upload(
             "result": {
                 "item": {"path": stored, "root": "gcodes"},
                 "print_started": False,
-                "print_queued": vp.mode == "print_queue",
+                "print_queued": _is_queue_mode(vp.mode),
                 "action": "create_file",
             }
         },
     )
+
+
+def _is_queue_mode(mode: str | None) -> bool:
+    """Whether a VP's mode queues uploads (legacy ``print_queue`` included)."""
+    from backend.app.models.virtual_printer import VP_MODE_QUEUE, normalize_vp_mode
+
+    return normalize_vp_mode(mode) == VP_MODE_QUEUE

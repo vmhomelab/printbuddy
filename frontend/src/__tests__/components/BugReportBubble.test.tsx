@@ -2,7 +2,7 @@
  * Tests for the BugReportBubble component.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, screen, waitFor } from '../utils';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
@@ -135,8 +135,7 @@ describe('BugReportBubble', () => {
 
     // Should show step indicators and elapsed timer
     await waitFor(() => {
-      const reproduceText = screen.queryByText(/reproduce|Reproduce|reproduzieren|reproduire|riproduci|再現|reproduza|重现/i);
-      expect(reproduceText).toBeInTheDocument();
+      expect(screen.queryByTestId('bug-report-step-reproduce')).toBeInTheDocument();
     });
 
     // Should show elapsed timer (00:00 format)
@@ -171,14 +170,11 @@ describe('BugReportBubble', () => {
 
     // Wait for logging state, then click stop
     await waitFor(() => {
-      expect(screen.queryByText(/reproduce|Reproduce|reproduzieren|reproduire|riproduci|再現|reproduza|重现/i)).toBeInTheDocument();
+      expect(screen.queryByTestId('bug-report-step-reproduce')).toBeInTheDocument();
     });
 
-    // Find and click the Stop & Submit button
-    const stopBtn = screen.getAllByRole('button').find(
-      (b) => b.className.includes('bg-red-500') && !b.className.includes('rounded-full')
-    );
-    if (stopBtn) await user.click(stopBtn);
+    await user.click(screen.getByRole('button', { name: 'Stop Logging' }));
+    await user.click(await screen.findByRole('button', { name: 'Submit' }));
 
     await waitFor(
       () => {
@@ -218,13 +214,11 @@ describe('BugReportBubble', () => {
 
     // Wait for logging state, then click stop
     await waitFor(() => {
-      expect(screen.queryByText(/reproduce|Reproduce|reproduzieren|reproduire|riproduci|再現|reproduza|重现/i)).toBeInTheDocument();
+      expect(screen.queryByTestId('bug-report-step-reproduce')).toBeInTheDocument();
     });
 
-    const stopBtn = screen.getAllByRole('button').find(
-      (b) => b.className.includes('bg-red-500') && !b.className.includes('rounded-full')
-    );
-    if (stopBtn) await user.click(stopBtn);
+    await user.click(screen.getByRole('button', { name: 'Stop Logging' }));
+    await user.click(await screen.findByRole('button', { name: 'Submit' }));
 
     await waitFor(
       () => {
@@ -318,5 +312,303 @@ describe('BugReportBubble', () => {
 
     expect(await screen.findByText('Known issues found in your logs')).toBeInTheDocument();
     expect(screen.getByText('Printer rejected the access code')).toBeInTheDocument();
+  });
+
+  // Step 2 asks the user to reproduce the problem, and the panel sits over the
+  // part of the app they have to reach to do it. Closing it used to be the only
+  // way through and it threw the run away: the reset-on-open effect put the
+  // panel back on step 1 while the server stayed at DEBUG, with nothing left
+  // that could stop it (#2847).
+  describe('a logging run that outlives the panel (#2847)', () => {
+    afterEach(() => {
+      vi.mocked(localStorage.getItem).mockReset();
+    });
+
+    /** The mock is shared with every other localStorage reader in the tree --
+     *  the theme context among them -- so only answer for our own key. */
+    const storeSession = (session: Record<string, unknown>) => {
+      vi.mocked(localStorage.getItem).mockImplementation((key: string) =>
+        key === 'printbuddy-bug-report-session' ? JSON.stringify(session) : null
+      );
+    };
+
+    /** Types a description and presses Start, landing on step 2. */
+    const startRun = async (user: ReturnType<typeof userEvent.setup>, description: string) => {
+      await user.click(screen.getByRole('button'));
+      await user.type(getDescriptionTextarea(), description);
+      const startBtn = getSubmitButton();
+      if (startBtn) await user.click(startBtn);
+      await waitFor(() => {
+        expect(screen.queryByTestId('bug-report-step-reproduce')).toBeInTheDocument();
+      });
+    };
+
+    const closePanel = async (user: ReturnType<typeof userEvent.setup>) => {
+      const closeButton = screen.getAllByRole('button').find((b) => b.querySelector('.lucide-x'));
+      if (closeButton) await user.click(closeButton);
+      await waitFor(() => {
+        expect(screen.queryByTestId('bug-report-step-reproduce')).not.toBeInTheDocument();
+      });
+    };
+
+    it('survives a close and reopens on the step it left, description intact', async () => {
+      const user = userEvent.setup();
+      let stopCalls = 0;
+      let submitted: { description?: string } | null = null;
+      server.use(
+        http.post('*/bug-report/start-logging', () => HttpResponse.json({ started: true, was_debug: false })),
+        http.post('*/bug-report/stop-logging', () => {
+          stopCalls += 1;
+          return HttpResponse.json({ logs: 'captured' });
+        }),
+        http.post('*/bug-report/submit', async ({ request }) => {
+          submitted = (await request.json()) as { description?: string };
+          return HttpResponse.json({ success: true, message: 'ok', issue_number: 7 });
+        }),
+      );
+
+      render(<BugReportBubble />);
+      await startRun(user, 'Queue page freezes');
+      await closePanel(user);
+
+      // Closing is not cancelling: the log level only comes back down when the
+      // user presses Stop Logging.
+      expect(stopCalls).toBe(0);
+
+      // The disc carries the run's colour, so a closed panel still says a
+      // recording is live and that clicking gets back to it.
+      const disc = screen.getByRole('button');
+      expect(disc.className).toContain('bg-amber-500');
+
+      await user.click(disc);
+      expect(screen.getByTestId('bug-report-step-reproduce')).toBeInTheDocument();
+
+      await user.click(screen.getByRole('button', { name: 'Stop Logging' }));
+      await user.click(await screen.findByRole('button', { name: 'Submit' }));
+
+      await waitFor(() => expect(submitted).not.toBeNull());
+      expect(submitted!.description).toBe('Queue page freezes');
+      expect(stopCalls).toBe(1);
+    });
+
+    it('picks the run back up after a reload while the server is still logging', async () => {
+      const user = userEvent.setup();
+      const startedAt = Date.now() - 30_000;
+      storeSession({ description: 'Printer card goes blank', email: '', wasDebug: false, startedAt });
+      server.use(
+        http.get('*/support/debug-logging', () =>
+          HttpResponse.json({
+            enabled: true,
+            enabled_at: new Date(startedAt).toISOString(),
+            duration_seconds: 30,
+          })
+        ),
+      );
+
+      render(<BugReportBubble />);
+
+      await waitFor(() => {
+        expect(screen.getByRole('button').className).toContain('bg-amber-500');
+      });
+      await user.click(screen.getByRole('button'));
+      expect(screen.getByTestId('bug-report-step-reproduce')).toBeInTheDocument();
+      // Elapsed comes off the run's start time, so the reload does not reset it.
+      expect(screen.getByText('00:30')).toBeInTheDocument();
+    });
+
+    it('drops a stored run the server already stopped', async () => {
+      storeSession({ description: 'stale', email: '', wasDebug: false, startedAt: Date.now() - 30_000 });
+      let stopCalls = 0;
+      server.use(
+        http.get('*/support/debug-logging', () =>
+          HttpResponse.json({ enabled: false, enabled_at: null, duration_seconds: null })
+        ),
+        http.post('*/bug-report/stop-logging', () => {
+          stopCalls += 1;
+          return HttpResponse.json({ logs: '' });
+        }),
+      );
+
+      render(<BugReportBubble />);
+
+      await waitFor(() => expect(localStorage.removeItem).toHaveBeenCalled());
+      expect(screen.getByRole('button').className).toContain('bg-red-500');
+      // Logging is already off; there is nothing to put back.
+      expect(stopCalls).toBe(0);
+    });
+
+    it('restores the log level for a run that outlived the cap, without filing it', async () => {
+      let stopCalls = 0;
+      let submitCalls = 0;
+      storeSession({ description: 'from an hour ago', email: '', wasDebug: false, startedAt: Date.now() - 3_600_000 });
+      server.use(
+        http.get('*/support/debug-logging', () =>
+          HttpResponse.json({ enabled: true, enabled_at: new Date(Date.now() - 3_600_000).toISOString(), duration_seconds: 3600 })
+        ),
+        http.post('*/bug-report/stop-logging', () => {
+          stopCalls += 1;
+          return HttpResponse.json({ logs: '' });
+        }),
+        http.post('*/bug-report/submit', () => {
+          submitCalls += 1;
+          return HttpResponse.json({ success: true, message: 'ok' });
+        }),
+      );
+
+      render(<BugReportBubble />);
+
+      // The level comes back down, because nothing else was going to do it...
+      await waitFor(() => expect(stopCalls).toBe(1));
+      // ...but an hour-old description is not a report anyone is still waiting
+      // to be filed, and nobody is here to see it happen.
+      expect(submitCalls).toBe(0);
+      expect(screen.getByRole('button').className).toContain('bg-red-500');
+    });
+  });
+
+  describe('stopping holds the report for review (#3363)', () => {
+    afterEach(() => {
+      vi.mocked(localStorage.getItem).mockReset();
+    });
+
+    /** Counts the calls and records what was submitted. */
+    const setupRun = (submitResult: Record<string, unknown> = { success: true, message: 'ok', issue_number: 9 }) => {
+      const calls = { stop: 0, submit: 0, submitted: null as { debug_logs?: string } | null };
+      server.use(
+        http.post('*/bug-report/start-logging', () => HttpResponse.json({ started: true, was_debug: false })),
+        http.post('*/bug-report/stop-logging', () => {
+          calls.stop += 1;
+          return HttpResponse.json({ logs: 'line one\nline two\nline three\n' });
+        }),
+        http.post('*/bug-report/submit', async ({ request }) => {
+          calls.submit += 1;
+          calls.submitted = (await request.json()) as { debug_logs?: string };
+          return HttpResponse.json(submitResult);
+        }),
+      );
+      return calls;
+    };
+
+    const startAndStop = async (user: ReturnType<typeof userEvent.setup>) => {
+      await user.click(screen.getByRole('button'));
+      await user.type(getDescriptionTextarea(), 'Archive links do nothing');
+      await user.click(screen.getByRole('button', { name: 'Start Debug Logging' }));
+      await user.click(await screen.findByRole('button', { name: 'Stop Logging' }));
+      await screen.findByTestId('bug-report-review');
+    };
+
+    it('stops logging without filing anything and says what would be sent', async () => {
+      const user = userEvent.setup();
+      const calls = setupRun();
+      render(<BugReportBubble />);
+
+      await startAndStop(user);
+
+      expect(calls.stop).toBe(1);
+      expect(calls.submit).toBe(0);
+      expect(screen.getByText(/public issue on GitHub/)).toBeInTheDocument();
+      expect(screen.getByText('Log lines collected: 3')).toBeInTheDocument();
+    });
+
+    it('submits the held logs from the review', async () => {
+      const user = userEvent.setup();
+      const calls = setupRun();
+      render(<BugReportBubble />);
+
+      await startAndStop(user);
+      await user.click(screen.getByRole('button', { name: 'Submit' }));
+
+      // Printbuddy prepares the issue for manual submission on GitHub.
+      await screen.findByText('Bug report prepared');
+      expect(calls.submit).toBe(1);
+      expect(calls.submitted!.debug_logs).toBe('line one\nline two\nline three\n');
+      expect(calls.stop).toBe(1);
+    });
+
+    it('discarding sends nothing and starts over', async () => {
+      const user = userEvent.setup();
+      const calls = setupRun();
+      render(<BugReportBubble />);
+
+      await startAndStop(user);
+      await user.click(screen.getByRole('button', { name: 'Discard' }));
+
+      await waitFor(() => expect(screen.queryByTestId('bug-report-review')).not.toBeInTheDocument());
+      await user.click(screen.getByRole('button'));
+      expect(getDescriptionTextarea().value).toBe('');
+      expect(calls.submit).toBe(0);
+    });
+
+    it('keeps the review through a close', async () => {
+      const user = userEvent.setup();
+      const calls = setupRun();
+      render(<BugReportBubble />);
+
+      await startAndStop(user);
+      const closeButton = screen.getAllByRole('button').find((b) => b.querySelector('.lucide-x'));
+      await user.click(closeButton!);
+      await waitFor(() => expect(screen.queryByTestId('bug-report-review')).not.toBeInTheDocument());
+
+      await user.click(screen.getByRole('button'));
+      expect(screen.getByTestId('bug-report-review')).toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: 'Submit' }));
+      await waitFor(() => expect(calls.submit).toBe(1));
+      expect(calls.submitted!.debug_logs).toBe('line one\nline two\nline three\n');
+    });
+
+    it('a failed send goes back to the review, logs kept', async () => {
+      const user = userEvent.setup();
+      const calls = setupRun({ success: false, message: 'Relay not available' });
+      render(<BugReportBubble />);
+
+      await startAndStop(user);
+      await user.click(screen.getByRole('button', { name: 'Submit' }));
+      await screen.findByText(/Relay not available/);
+      await user.click(screen.getByRole('button', { name: 'Submit' }));
+
+      expect(await screen.findByTestId('bug-report-review')).toBeInTheDocument();
+      expect(calls.submit).toBe(1);
+      expect(calls.stop).toBe(1);
+    });
+
+    it('a failed send closed and reopened comes back on the review, logs kept', async () => {
+      const user = userEvent.setup();
+      const calls = setupRun({ success: false, message: 'Relay not available' });
+      render(<BugReportBubble />);
+
+      await startAndStop(user);
+      await user.click(screen.getByRole('button', { name: 'Submit' }));
+      await screen.findByText(/Relay not available/);
+      await user.click(screen.getByRole('button', { name: 'Close' }));
+      await waitFor(() => expect(screen.queryByText(/Relay not available/)).not.toBeInTheDocument());
+
+      await user.click(screen.getByRole('button'));
+      expect(screen.getByTestId('bug-report-review')).toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: 'Submit' }));
+      await waitFor(() => expect(calls.submit).toBe(2));
+      expect(calls.submitted!.debug_logs).toBe('line one\nline two\nline three\n');
+    });
+
+    it('the 5-minute cap stops logging and waits for the user', async () => {
+      const calls = setupRun();
+      const startedAt = Date.now() - 299_000;
+      vi.mocked(localStorage.getItem).mockImplementation((key: string) =>
+        key === 'printbuddy-bug-report-session'
+          ? JSON.stringify({ description: 'left running', email: '', wasDebug: false, startedAt })
+          : null
+      );
+      server.use(
+        http.get('*/support/debug-logging', () =>
+          HttpResponse.json({ enabled: true, enabled_at: new Date(startedAt).toISOString(), duration_seconds: 299 })
+        ),
+      );
+
+      render(<BugReportBubble />);
+
+      // The cap opens the panel on the review rather than filing behind the user.
+      expect(await screen.findByTestId('bug-report-review', {}, { timeout: 5000 })).toBeInTheDocument();
+      expect(calls.stop).toBe(1);
+      expect(calls.submit).toBe(0);
+    });
   });
 });

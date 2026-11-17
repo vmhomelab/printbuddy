@@ -1,13 +1,31 @@
 """Integration tests for Updates API endpoints."""
 
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, mock_open, patch
 
 import pytest
 from httpx import AsyncClient
 
 
 class TestUpdatesAPI:
+    @pytest.fixture(autouse=True)
+    def _reset_update_status(self):
+        """Isolate the module-global ``_update_status`` between tests.
+
+        ``POST /updates/apply`` short-circuits (line 850) when ``_update_status``
+        is ``"downloading"``/``"installing"``, returning a payload WITHOUT the
+        per-branch keys (``is_windows_installer`` etc.). A prior test that let an
+        apply flow run leaves the global mid-update, so a later test in the same
+        parallel worker hits the guard instead of its intended branch. This is
+        order-dependent — it passes locally but flakes on CI's sharded run
+        (``test_apply_update_windows_installer_rejection`` KeyError). Reset to
+        idle before every test so the guard never fires spuriously.
+        """
+        from backend.app.api.routes import updates as updates_module
+
+        updates_module._update_status = {"status": "idle", "progress": 0, "message": "", "error": None}
+        yield
+
     @pytest.mark.asyncio
     async def test_get_version(self, async_client: AsyncClient):
         with patch.dict("os.environ", {"PRINTBUDDY_REF": "1a593e7b9440ce692cf7eddb8006d8f45add755f"}, clear=False):
@@ -784,3 +802,352 @@ class TestUpdatesAPI:
         # at the captured cwd. If this fails the cwd is wrong even if it isn't
         # base_dir — useful diagnostic if someone refactors path handling.
         assert (Path(pip_cwd) / "requirements.txt").exists()
+
+    @pytest.mark.asyncio
+    async def test_perform_update_runs_git_in_app_dir_when_data_dir_on_separate_mount(self, tmp_path):
+        """Regression for #1715: when DATA_DIR is on a path separate from the
+        install (e.g. WorkingDirectory=/opt/printbuddy + DATA_DIR=/srv/printbuddy/data),
+        ``base_dir`` and the repo working tree are on different mounts. Pre-fix,
+        every git subprocess (`remote get-url`, `remote set-url`, `fetch`,
+        `reset --hard`) used ``cwd=base_dir`` — and git could no longer walk up
+        to find ``.git`` because the data dir is not a subdir of the repo.
+        Every update failed with "not a git repository". The fix routes every
+        git step (and the embedded ``safe.directory`` config) through
+        ``app_dir`` instead. This test pins the cwd of all four git steps so a
+        future refactor that re-introduces ``base_dir`` for any of them surfaces
+        loudly here instead of silently re-breaking native installs."""
+        from backend.app.api.routes import updates as updates_module
+
+        # Separate-mount layout: app_dir and data_dir are SIBLINGS, not parent/
+        # child. base_dir is not under app_dir, so git cannot walk up.
+        app_dir = tmp_path / "opt" / "printbuddy"
+        data_dir = tmp_path / "srv" / "printbuddy" / "data"
+        app_dir.mkdir(parents=True)
+        data_dir.mkdir(parents=True)
+        (app_dir / "requirements.txt").write_text("fastapi\n")
+
+        calls: list[dict] = []
+
+        async def fake_create_subprocess_exec(*args, **kwargs):
+            calls.append({"args": args, "cwd": kwargs.get("cwd")})
+            proc = MagicMock()
+            if "get-url" in args and "origin" in args:
+                proc.communicate = AsyncMock(return_value=(b"git@github.com:vmhomelab/Printbuddy.git\n", b""))
+            else:
+                proc.communicate = AsyncMock(return_value=(b"", b""))
+            proc.returncode = 0
+            return proc
+
+        with (
+            patch.object(updates_module.settings, "base_dir", data_dir),
+            patch.object(updates_module.settings, "app_dir", app_dir),
+            patch.object(updates_module, "_find_executable", return_value="/usr/bin/git"),
+            patch.object(
+                updates_module.asyncio,
+                "create_subprocess_exec",
+                side_effect=fake_create_subprocess_exec,
+            ),
+        ):
+            await updates_module._perform_update("v0.2.4b1")
+
+        # Every git subprocess must run in app_dir (the working tree). A
+        # regression to base_dir would silently break #1715-class installs.
+        git_calls = [c for c in calls if c["args"] and c["args"][0] == "/usr/bin/git"]
+        assert git_calls, "no git subprocess was invoked; setup is wrong"
+        wrong_cwd = [c for c in git_calls if c["cwd"] != str(app_dir)]
+        assert not wrong_cwd, (
+            "git subprocess ran with cwd != app_dir; #1715 would resurface. "
+            f"Offending calls: {[(c['args'][1:5], c['cwd']) for c in wrong_cwd]}"
+        )
+
+        # ``safe.directory`` must equal app_dir (the repo root git discovers),
+        # not the data dir — otherwise git refuses with "dubious ownership"
+        # even when the cwd is technically correct.
+        safe_dir_configs = [
+            arg for c in git_calls for arg in c["args"] if isinstance(arg, str) and arg.startswith("safe.directory=")
+        ]
+        assert safe_dir_configs, "safe.directory config was never set on git calls"
+        assert all(s == f"safe.directory={app_dir}" for s in safe_dir_configs), (
+            f"safe.directory must point at app_dir ({app_dir}); got {safe_dir_configs}"
+        )
+
+    # --- Windows installer update_method ---
+    # The Inno-Setup installer stages backend source via ``copytree`` (no
+    # ``.git``) and does not bundle ``git.exe``. The git-fetch update path
+    # therefore can't run on those installs — surface a distinct
+    # ``update_method`` and a release-asset download link instead.
+
+    def test_is_windows_installer_install_true_when_no_dot_git(self, tmp_path: Path):
+        from backend.app.api.routes import updates as updates_module
+
+        with (
+            patch.object(updates_module.sys, "platform", "win32"),
+            patch.object(updates_module.settings, "app_dir", tmp_path),
+        ):
+            assert updates_module._is_windows_installer_install() is True
+
+    def test_is_windows_installer_install_false_on_dev_checkout(self, tmp_path: Path):
+        """A Windows developer with a real ``git clone`` keeps the git path."""
+        from backend.app.api.routes import updates as updates_module
+
+        (tmp_path / ".git").mkdir()
+        with (
+            patch.object(updates_module.sys, "platform", "win32"),
+            patch.object(updates_module.settings, "app_dir", tmp_path),
+        ):
+            assert updates_module._is_windows_installer_install() is False
+
+    def test_is_windows_installer_install_false_off_windows(self, tmp_path: Path):
+        from backend.app.api.routes import updates as updates_module
+
+        with (
+            patch.object(updates_module.sys, "platform", "linux"),
+            patch.object(updates_module.settings, "app_dir", tmp_path),
+        ):
+            assert updates_module._is_windows_installer_install() is False
+
+    def test_find_windows_installer_asset_prefers_versioned(self):
+        from backend.app.api.routes.updates import _find_windows_installer_asset
+
+        release = {
+            "assets": [
+                {"name": "printbuddy-0.2.5b1-windows-x64-setup.exe", "browser_download_url": "https://x/v.exe"},
+                {"name": "printbuddy-windows-x64-setup.exe", "browser_download_url": "https://x/alias.exe"},
+                {"name": "checksums.txt", "browser_download_url": "https://x/c.txt"},
+            ],
+        }
+        assert _find_windows_installer_asset(release) == "https://x/v.exe"
+
+    def test_find_windows_installer_asset_falls_back_to_alias(self):
+        from backend.app.api.routes.updates import _find_windows_installer_asset
+
+        release = {
+            "assets": [
+                {"name": "printbuddy-windows-x64-setup.exe", "browser_download_url": "https://x/alias.exe"},
+            ],
+        }
+        assert _find_windows_installer_asset(release) == "https://x/alias.exe"
+
+    def test_find_windows_installer_asset_none_when_missing(self):
+        from backend.app.api.routes.updates import _find_windows_installer_asset
+
+        assert _find_windows_installer_asset({"assets": []}) is None
+        assert _find_windows_installer_asset({}) is None
+
+    @pytest.mark.asyncio
+    async def test_apply_update_windows_installer_rejection(self, async_client: AsyncClient):
+        """Direct POST /apply on a Windows-installer install must be rejected
+        with a friendly message — the git path would error out with "git not
+        found" (or worse, "not a git repository") if it ran."""
+        with (
+            patch("backend.app.api.routes.updates._is_ha_addon", return_value=False),
+            patch("backend.app.api.routes.updates._is_docker_environment", return_value=False),
+            patch(
+                "backend.app.api.routes.updates._is_windows_installer_install",
+                return_value=True,
+            ),
+        ):
+            response = await async_client.post("/api/v1/updates/apply")
+        result = response.json()
+        assert result["success"] is False
+        assert result["is_windows_installer"] is True
+        assert "installer" in result["message"].lower()
+
+    @pytest.mark.asyncio
+    async def test_check_windows_installer_returns_method_and_url(self, async_client: AsyncClient):
+        """/updates/check must surface update_method=windows_installer plus
+        the installer .exe URL so the frontend can render a Download button
+        instead of the in-app Install button."""
+        import httpx as _httpx
+
+        fake_release = {
+            # Non-prerelease tag — beta-channel filter defaults to off, so a
+            # `b1` suffix would be skipped and the route would return
+            # "No releases found" before reaching update_method.
+            "tag_name": "v999.9.9",
+            "name": "v999.9.9",
+            "body": "",
+            "html_url": "https://github.com/vmhomelab/Printbuddy/releases/tag/v999.9.9",
+            "published_at": "2099-01-01T00:00:00Z",
+            "assets": [
+                {
+                    "name": "printbuddy-999.9.9-windows-x64-setup.exe",
+                    "browser_download_url": "https://github.com/vmhomelab/Printbuddy/releases/download/v999.9.9/printbuddy-999.9.9-windows-x64-setup.exe",
+                },
+            ],
+        }
+
+        class _Resp:
+            status_code = 200
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return [fake_release]
+
+        class _FakeClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_):
+                return None
+
+            async def get(self, *_, **__):
+                return _Resp()
+
+        with (
+            patch.object(_httpx, "AsyncClient", _FakeClient),
+            patch("backend.app.api.routes.updates._is_ha_addon", return_value=False),
+            patch("backend.app.api.routes.updates._is_docker_environment", return_value=False),
+            patch(
+                "backend.app.api.routes.updates._is_windows_installer_install",
+                return_value=True,
+            ),
+        ):
+            response = await async_client.get("/api/v1/updates/check")
+        body = response.json()
+        assert "update_method" in body, f"unexpected response shape: {body}"
+        assert body["update_method"] == "windows_installer"
+        assert body["is_windows_installer"] is True
+        assert body["installer_download_url"].endswith("printbuddy-999.9.9-windows-x64-setup.exe")
+
+    # --- Compose directory detection (#2664, reporter pchulpjoost) ---
+    # `docker compose pull` only works from the directory holding the compose
+    # file, so the update box's command was unusable until the user remembered
+    # where that was. Compose stamps the answer onto every container it
+    # creates, but reading your own labels needs the Docker socket — a
+    # root-equivalent mount, not worth it for a convenience string. So the
+    # host side of a bind mount in /proc/self/mountinfo is inferred instead.
+
+    def _mountinfo(self, *lines: str):
+        """Patch /proc/self/mountinfo with the given raw lines."""
+        return patch("builtins.open", mock_open(read_data="".join(f"{line}\n" for line in lines)))
+
+    def test_compose_dir_inferred_from_bind_mount(self):
+        """`./data:/app/data` surfaces as the host path; its parent is the
+        compose directory."""
+        from backend.app.api.routes.updates import _compose_dir_from_mountinfo
+
+        with self._mountinfo(
+            "2244 1668 0:137 / / rw,relatime - overlay overlay rw,lowerdir=/x",
+            "1437 2244 0:48 /opt/printbuddy/data /app/data rw,relatime - ext4 /dev/sda1 rw",
+        ):
+            assert _compose_dir_from_mountinfo() == "/opt/printbuddy"
+
+    def test_compose_dir_none_for_named_volume(self):
+        """The shipped compose file uses named volumes, which resolve to
+        /var/lib/docker/volumes/<project>_printbuddy_data/_data. That names the
+        compose *project* and reveals nothing about where the file lives, so
+        the correct answer is "don't know" rather than a plausible guess."""
+        from backend.app.api.routes.updates import _compose_dir_from_mountinfo
+
+        with self._mountinfo(
+            "1290 2246 0:65 /var/lib/docker/volumes/printbuddy_printbuddy_data/_data /app/data rw - ext4 /dev/sda1 rw",
+        ):
+            assert _compose_dir_from_mountinfo() is None
+
+    def test_compose_dir_none_for_relocated_bind_mount(self):
+        """`/mnt/nas/prints:/app/data` is a perfectly ordinary bind mount whose
+        parent is emphatically not a compose directory. The leaf must match the
+        mount point's own name before the parent is trusted."""
+        from backend.app.api.routes.updates import _compose_dir_from_mountinfo
+
+        with self._mountinfo(
+            "1437 2244 0:48 /mnt/nas/prints /app/data rw,relatime - nfs4 nas:/prints rw",
+        ):
+            assert _compose_dir_from_mountinfo() is None
+
+    def test_compose_dir_falls_back_to_logs_mount(self):
+        """A user who bind-mounts only ./logs still gets the directory."""
+        from backend.app.api.routes.updates import _compose_dir_from_mountinfo
+
+        with self._mountinfo(
+            "1290 2246 0:65 /var/lib/docker/volumes/printbuddy_printbuddy_data/_data /app/data rw - ext4 /dev/sda1 rw",
+            "1441 2244 0:48 /srv/printbuddy/logs /app/logs rw,relatime - ext4 /dev/sda1 rw",
+        ):
+            assert _compose_dir_from_mountinfo() == "/srv/printbuddy"
+
+    def test_compose_dir_none_without_mountinfo(self):
+        """Windows and macOS have no /proc; the guess simply doesn't happen."""
+        from backend.app.api.routes.updates import _compose_dir_from_mountinfo
+
+        with patch("builtins.open", side_effect=FileNotFoundError):
+            assert _compose_dir_from_mountinfo() is None
+
+    def test_detect_compose_dir_prefers_env_var(self):
+        """PRINTBUDDY_COMPOSE_DIR is stated rather than inferred, so it wins over
+        a mountinfo guess that would otherwise point somewhere else."""
+        from backend.app.api.routes import updates as updates_module
+
+        with (
+            patch.dict("os.environ", {"PRINTBUDDY_COMPOSE_DIR": "/srv/stacks/printbuddy"}),
+            patch.object(updates_module, "_compose_dir_from_mountinfo", return_value="/opt/wrong"),
+        ):
+            assert updates_module._detect_compose_dir() == "/srv/stacks/printbuddy"
+
+    def test_detect_compose_dir_skips_mountinfo_outside_docker(self):
+        """A native install has no compose file; mountinfo would still show
+        bind mounts on a host that happens to run other containers."""
+        from backend.app.api.routes import updates as updates_module
+
+        with (
+            patch.dict("os.environ", {"PRINTBUDDY_COMPOSE_DIR": ""}),
+            patch.object(updates_module, "_is_docker_environment", return_value=False),
+            patch.object(updates_module, "_compose_dir_from_mountinfo", return_value="/opt/wrong"),
+        ):
+            assert updates_module._detect_compose_dir() is None
+
+    @pytest.mark.asyncio
+    async def test_check_surfaces_compose_dir_only_for_docker(self, async_client: AsyncClient):
+        """The prefill rides along with the Docker branch. A git install must
+        not receive one — there is no compose file to cd into."""
+        import httpx as _httpx
+
+        fake_release = {
+            "tag_name": "v999.9.9",
+            "name": "Far Future Release",
+            "body": "",
+            "html_url": "https://example.invalid/r",
+            "published_at": "2099-01-01T00:00:00Z",
+        }
+
+        class _Resp:
+            status_code = 200
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return [fake_release]
+
+        class _FakeClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_):
+                return None
+
+            async def get(self, *_, **__):
+                return _Resp()
+
+        with (
+            patch.object(_httpx, "AsyncClient", _FakeClient),
+            patch("backend.app.api.routes.updates._is_ha_addon", return_value=False),
+            patch("backend.app.api.routes.updates._is_docker_environment", return_value=True),
+            patch("backend.app.api.routes.updates._detect_compose_dir", return_value="/opt/printbuddy"),
+        ):
+            body = (await async_client.get("/api/v1/updates/check")).json()
+        assert body["update_method"] == "docker"
+        assert body["compose_dir_detected"] == "/opt/printbuddy"
+
+        with (
+            patch.object(_httpx, "AsyncClient", _FakeClient),
+            patch("backend.app.api.routes.updates._is_ha_addon", return_value=False),
+            patch("backend.app.api.routes.updates._is_docker_environment", return_value=False),
+            patch("backend.app.api.routes.updates._is_windows_installer_install", return_value=False),
+            patch("backend.app.api.routes.updates._detect_compose_dir", return_value="/opt/printbuddy"),
+        ):
+            body = (await async_client.get("/api/v1/updates/check")).json()
+        assert body["update_method"] == "git"
+        assert body["compose_dir_detected"] is None

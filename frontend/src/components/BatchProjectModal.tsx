@@ -6,6 +6,8 @@ import { api } from '../api/client';
 import { Card, CardContent } from './Card';
 import { Button } from './Button';
 import { useToast } from '../contexts/ToastContext';
+import { invalidateArchiveAndProjectViews } from '../utils/projectQueries';
+import { assignableProjects } from '../utils/projectTree';
 
 interface BatchProjectModalProps {
   selectedIds: number[];
@@ -23,8 +25,10 @@ export function BatchProjectModal({ selectedIds, onClose }: BatchProjectModalPro
     queryFn: () => api.getProjects(),
   });
 
+  // Assigning in bulk, so nothing here has a project to preserve: archived
+  // ones drop off outright (#2888).
   const sortedProjects = useMemo(
-    () => (projects ? [...projects].sort((a, b) => a.name.localeCompare(b.name)) : undefined),
+    () => (projects ? assignableProjects([...projects].sort((a, b) => a.name.localeCompare(b.name))) : undefined),
     [projects],
   );
 
@@ -43,25 +47,21 @@ export function BatchProjectModal({ selectedIds, onClose }: BatchProjectModalPro
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [onClose]);
 
-  // Helper to invalidate all project-related queries
-  const invalidateProjectQueries = () => {
-    queryClient.invalidateQueries({ queryKey: ['archives'] });
-    queryClient.invalidateQueries({ queryKey: ['projects'] });
-    // Invalidate project detail pages (partial match catches all project IDs)
-    queryClient.invalidateQueries({ queryKey: ['project'] });
-    queryClient.invalidateQueries({ queryKey: ['project-archives'] });
-  };
+  // Helper to invalidate all project-related queries. The shared version also
+  // covers the timeline and file-progress views, which this list was missing.
+  const invalidateProjectQueries = () => invalidateArchiveAndProjectViews(queryClient);
 
   // Assign to project mutation (uses bulk API)
   const assignMutation = useMutation({
     mutationFn: async (projectId: number) => {
-      await api.addArchivesToProject(projectId, selectedIds);
-      return projectId;
+      // The server skips archives the user may not change, so count what it added.
+      const { count } = await api.addArchivesToProject(projectId, selectedIds);
+      return { projectId, count };
     },
-    onSuccess: (projectId) => {
+    onSuccess: ({ projectId, count }) => {
       const project = projects?.find(p => p.id === projectId);
       invalidateProjectQueries();
-      showToast(`Added ${selectedIds.length} archive${selectedIds.length !== 1 ? 's' : ''} to "${project?.name}"`);
+      showToast(`Added ${count} archive${count !== 1 ? 's' : ''} to "${project?.name}"`);
       onClose();
     },
     onError: () => {
@@ -129,7 +129,7 @@ export function BatchProjectModal({ selectedIds, onClose }: BatchProjectModalPro
                   className="w-full flex items-center gap-3 p-3 rounded-lg bg-bambu-dark hover:bg-bambu-dark-tertiary border border-bambu-dark-tertiary transition-colors text-left disabled:opacity-50"
                 >
                   <div className="w-8 h-8 rounded-full bg-red-500/20 flex items-center justify-center shrink-0">
-                    <XCircle className="w-4 h-4 text-red-400" />
+                    <XCircle className="w-4 h-4 text-red-600 dark:text-red-400" />
                   </div>
                   <div className="min-w-0 flex-1">
                     <p className="text-white font-medium">Remove from project</p>

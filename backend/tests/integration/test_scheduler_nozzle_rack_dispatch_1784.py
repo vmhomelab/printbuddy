@@ -1,0 +1,357 @@
+"""What the dispatcher does with a rack-position pick (#1784).
+
+The resolution itself is covered in
+``backend/tests/unit/test_nozzle_rack_positions_1784.py``. This covers the glue
+around it, where the two failure modes deliberately differ:
+
+- an **explicit** pick that no longer fits the rack stops the print, because the
+  operator named a hotend and printing from a different one is how a plate gets
+  levelled on one nozzle and drawn with another, millimetres above the bed;
+- an **assignment** that cannot be made falls through to the pre-existing #2800
+  path, which is strictly not worse than the behaviour before any of this.
+
+And a non-rack printer must be untouched by all of it.
+"""
+
+from __future__ import annotations
+
+import json
+import zipfile
+from contextlib import ExitStack
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+import backend.app.models  # noqa: F401 - populate Base.metadata
+import backend.app.services.print_scheduler as scheduler_module
+from backend.app.core.database import Base
+from backend.app.models.archive import PrintArchive
+from backend.app.models.print_queue import PrintQueueItem
+from backend.app.models.printer import Printer
+from backend.app.models.settings import Settings  # noqa: F401 - registers the table
+from backend.app.services.print_scheduler import PrintScheduler
+from backend.tests._fixtures.background_tasks import discarding_spawn_patch
+
+pytestmark = pytest.mark.integration
+
+# Three filaments in groups 2/0/1, groups 1 and 2 both on the rack carriage --
+# the maintainer's own plate, the one that printed in mid-air.
+_FILAMENTS = (
+    '<filament id="1" group_id="2" color="#DE4343" nozzle_diameter="0.40" volume_type="High Flow"/>'
+    '<filament id="2" group_id="0" color="#F4EE2A" nozzle_diameter="0.40" volume_type="High Flow"/>'
+    '<filament id="3" group_id="1" color="#0078BF" nozzle_diameter="0.40" volume_type="High Flow"/>'
+)
+_NOZZLES = '<nozzle id="0" extruder_id="1"/><nozzle id="1" extruder_id="2"/><nozzle id="2" extruder_id="2"/>'
+
+
+def _write_3mf(path: Path, gcode_members: tuple[str, ...] = (), slice_info: str | None = None) -> None:
+    """The rack cases need no G-code member and carry none, which is why
+    ``gcode_members`` defaults to empty. #2947 does need one: the plate a
+    dispatch resolves to when the queue item names none is read out of the
+    archive's G-code member names, and with none present the resolution has
+    nothing to answer from and falls back to 1 regardless.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr(
+            "Metadata/project_settings.config",
+            json.dumps(
+                {
+                    "physical_extruder_map": ["1", "0"],
+                    "extruder_max_nozzle_count": ["1", "6"],
+                    "extruder_nozzle_stats": ["High Flow#1", "High Flow#6"],
+                }
+            ),
+        )
+        zf.writestr(
+            "Metadata/slice_info.config",
+            slice_info or f'<config><plate><metadata key="index" value="1"/>{_FILAMENTS}{_NOZZLES}</plate></config>',
+        )
+        for name in gcode_members:
+            zf.writestr(name, "")
+
+
+def _rack(present=(1, 2, 3, 4, 5, 6)):
+    """Live rack telemetry, plus the always-reported fixed carriage."""
+    return [{"id": 15 + p, "diameter": "0.4", "type": "HH01", "filament_color": ""} for p in present] + [
+        {"id": 1, "diameter": "0.4", "type": "HH01", "filament_color": ""}
+    ]
+
+
+@pytest.fixture
+async def rack_case(tmp_path):
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    session_maker = async_sessionmaker(engine, expire_on_commit=False)
+
+    base_dir = tmp_path / "rack-dispatch"
+    archive_rel = Path("archives") / "benchy.gcode.3mf"
+    _write_3mf(base_dir / archive_rel)
+
+    async def _build(
+        model: str,
+        choice: dict | None,
+        *,
+        plate_id: int | None = 1,
+        gcode_members: tuple[str, ...] = (),
+        slice_info: str | None = None,
+    ):
+        if gcode_members or slice_info:
+            _write_3mf(base_dir / archive_rel, gcode_members, slice_info)
+        async with session_maker() as db:
+            printer = Printer(
+                name="H2C-1",
+                serial_number="RACK-SERIAL",
+                ip_address="127.0.0.1",
+                access_code="access-code",
+                model=model,
+            )
+            db.add(printer)
+            await db.flush()
+            archive = PrintArchive(
+                printer_id=printer.id,
+                filename="benchy.gcode.3mf",
+                file_path=str(archive_rel),
+                file_size=(base_dir / archive_rel).stat().st_size,
+                status="completed",
+            )
+            db.add(archive)
+            await db.flush()
+            item = PrintQueueItem(
+                printer_id=printer.id,
+                archive_id=archive.id,
+                plate_id=plate_id,
+                status="pending",
+                nozzle_rack_choice=json.dumps(choice) if choice else None,
+            )
+            db.add(item)
+            await db.commit()
+            return SimpleNamespace(item_id=item.id, printer_id=printer.id)
+
+    try:
+        yield SimpleNamespace(session_maker=session_maker, base_dir=base_dir, build=_build)
+    finally:
+        await engine.dispose()
+
+
+async def _dispatch(ctx, ids, rack_slots):
+    """Run one dispatch, returning the mocked ``start_print`` and the delete."""
+    scheduler = PrintScheduler()
+    start_print = MagicMock(return_value=True)
+    delete_file = AsyncMock(return_value=True)
+    status = SimpleNamespace(state="IDLE", nozzle_rack=rack_slots)
+
+    with ExitStack() as stack:
+        for patcher in (
+            patch.object(scheduler_module, "async_session", ctx.session_maker),
+            patch.object(scheduler_module.settings, "base_dir", ctx.base_dir),
+            patch("backend.app.services.print_scheduler.printer_manager.is_connected", MagicMock(return_value=True)),
+            patch("backend.app.services.print_scheduler.printer_manager.get_status", MagicMock(return_value=status)),
+            patch("backend.app.services.print_scheduler.printer_manager.start_print", start_print),
+            patch("backend.app.services.print_scheduler.printer_manager.set_awaiting_plate_clear", MagicMock()),
+            patch("backend.app.services.print_scheduler.delete_file_async", delete_file),
+            patch("backend.app.services.print_scheduler.upload_file_async", AsyncMock(return_value=True)),
+            # Reads settings through its own session on the real app database,
+            # which the in-memory engine here does not have.
+            patch(
+                "backend.app.services.print_scheduler.get_ftp_retry_settings",
+                AsyncMock(return_value=(False, 3, 2.0, 30.0)),
+            ),
+            patch("backend.app.services.print_scheduler.cache_3mf_download", MagicMock()),
+            discarding_spawn_patch(),
+            patch("backend.app.services.notification_service.notification_service.on_queue_job_started", AsyncMock()),
+            patch("backend.app.services.notification_service.notification_service.on_queue_job_failed", AsyncMock()),
+            patch("backend.app.services.mqtt_relay.mqtt_relay.on_queue_job_started", AsyncMock()),
+            patch.object(scheduler, "_propagate_owner_to_printer_manager", AsyncMock()),
+            patch.object(scheduler, "_power_off_if_needed", AsyncMock()),
+            patch.object(scheduler, "_preheat_and_soak", AsyncMock()),
+        ):
+            stack.enter_context(patcher)
+        await scheduler._dispatch_one(ids.item_id)
+
+    async with ctx.session_maker() as db:
+        item = await db.get(PrintQueueItem, ids.item_id)
+    return start_print, delete_file, item
+
+
+def _sent_mapping(start_print):
+    assert start_print.call_count == 1, "the print command was never sent"
+    return json.loads(start_print.call_args.kwargs["nozzle_mapping"])
+
+
+class TestAPickThatStillFits:
+    async def test_the_chosen_positions_reach_the_printer(self, rack_case):
+        """Picking R1 for group 2 and R2 for group 1 is BambuStudio's own
+        dispatch of this plate on 2026-08-14: nozzle_mapping [16, 1, 17].
+        """
+        ids = await rack_case.build("H2C", {"2": 1, "1": 2})
+        start_print, _, item = await _dispatch(rack_case, ids, _rack())
+
+        assert _sent_mapping(start_print)[:3] == [16, 1, 17]
+        assert item.status == "printing"
+
+    async def test_a_different_pick_of_the_same_plate_sends_a_different_mapping(self, rack_case):
+        """The 2026-08-13 dispatch of the identical file: [16, 1, 18]."""
+        ids = await rack_case.build("H2C", {"2": 1, "1": 3})
+        start_print, _, _ = await _dispatch(rack_case, ids, _rack())
+
+        assert _sent_mapping(start_print)[:3] == [16, 1, 18]
+
+
+class TestNoPickAtAll:
+    async def test_positions_are_assigned_rather_than_left_to_the_firmware(self, rack_case):
+        """The plate that used to dispatch with no mapping now gets one."""
+        ids = await rack_case.build("H2C", None)
+        start_print, _, item = await _dispatch(rack_case, ids, _rack())
+
+        assert _sent_mapping(start_print)[:3] == [17, 1, 16]
+        assert item.status == "printing"
+
+    async def test_an_unassignable_plate_falls_back_instead_of_failing(self, rack_case):
+        """Nothing was promised, so nothing is broken by letting the firmware
+        pick -- exactly what happened before this feature existed.
+        """
+        ids = await rack_case.build("H2C", None)
+        start_print, _, item = await _dispatch(rack_case, ids, _rack(present=()))
+
+        assert start_print.call_count == 1
+        assert start_print.call_args.kwargs["nozzle_mapping"] is None
+        assert item.status == "printing"
+
+
+class TestAPickThatNoLongerFits:
+    """Someone re-loaded the rack between queueing and dispatch."""
+
+    async def test_the_print_is_refused_rather_than_sent_to_another_hotend(self, rack_case):
+        ids = await rack_case.build("H2C", {"2": 1, "1": 3})
+        start_print, _, item = await _dispatch(rack_case, ids, _rack(present=(1, 2)))
+
+        start_print.assert_not_called()
+        assert item.status == "failed"
+
+    async def test_the_error_names_the_position_and_says_how_to_fix_it(self, rack_case):
+        ids = await rack_case.build("H2C", {"2": 1, "1": 3})
+        _, _, item = await _dispatch(rack_case, ids, _rack(present=(1, 2)))
+
+        assert "rack position 3" in item.error_message
+        assert "Edit the item" in item.error_message
+
+    async def test_the_uploaded_file_is_removed_from_the_sd_card(self, rack_case):
+        """It is already uploaded by this point, and a 3MF left there is a
+        phantom print waiting to be started from the touchscreen.
+        """
+        ids = await rack_case.build("H2C", {"2": 1, "1": 3})
+        _, delete_file, _ = await _dispatch(rack_case, ids, _rack(present=(1, 2)))
+
+        delete_file.assert_awaited()
+
+
+class TestThePlateThatGetsDispatched:
+    """#2947: a queue item with no plate of its own used to dispatch a bare 1.
+
+    Driven on an X1C so the rack machinery is out of the way entirely (see
+    ``test_a_non_rack_printer_is_left_entirely_alone``): the only thing under
+    test here is which plate number leaves ``_start_print``.
+
+    The archive is the shape that wedged a real printer: a single-plate export
+    cut out of a two-plate project, so its one G-code member is
+    ``plate_2.gcode`` and there is no ``plate_1.gcode`` for the firmware to
+    find.
+    """
+
+    async def test_the_print_command_names_the_plate_the_archive_holds(self, rack_case):
+        ids = await rack_case.build("X1C", None, plate_id=None, gcode_members=("Metadata/plate_2.gcode",))
+        start_print, _, item = await _dispatch(rack_case, ids, [])
+
+        assert start_print.call_count == 1
+        assert start_print.call_args.kwargs["plate_id"] == 2
+        assert item.status == "printing"
+
+    async def test_usage_tracking_is_registered_for_that_same_plate(self, rack_case):
+        """Imported inside ``_start_print``, so it patches on its own module.
+
+        Without this the archive says plate 2 printed while the usage tracker
+        was told nothing, and a None there books every filament in the file
+        instead of the plate that ran.
+        """
+        ids = await rack_case.build("X1C", None, plate_id=None, gcode_members=("Metadata/plate_2.gcode",))
+        with patch("backend.app.main.register_expected_print") as register:
+            start_print, _, _ = await _dispatch(rack_case, ids, [])
+
+        assert start_print.call_count == 1
+        assert register.call_args.kwargs["plate_id"] == 2
+
+
+# Plates 2 and 3 cut out of a larger project, so there is no plate 1. Plate 2
+# prints filaments 1 and 2 (one rack group, one fixed); plate 3 prints filament
+# 3 on a second rack group. The rack lookups read every plate when asked for one
+# the file does not describe, and across both plates this becomes the
+# two-rack-groups case that neither lookup can answer the same way.
+_PLATES_2_AND_3 = (
+    "<config>"
+    '<plate><metadata key="index" value="2"/>'
+    '<filament id="1" group_id="2" color="#DE4343" nozzle_diameter="0.40" volume_type="High Flow"/>'
+    '<filament id="2" group_id="0" color="#F4EE2A" nozzle_diameter="0.40" volume_type="High Flow"/>'
+    '<nozzle id="0" extruder_id="1"/><nozzle id="2" extruder_id="2"/></plate>'
+    '<plate><metadata key="index" value="3"/>'
+    '<filament id="3" group_id="1" color="#0078BF" nozzle_diameter="0.40" volume_type="High Flow"/>'
+    '<nozzle id="1" extruder_id="2"/></plate>'
+    "</config>"
+)
+
+
+class TestTheRackLookupsReadThePlateThatGetsDispatched:
+    """#2947 on an H2C: the rack plan and the slot extruders are read for the
+    same plate the print command names, not for a plate 1 the file lacks.
+    """
+
+    async def _build(self, rack_case):
+        return await rack_case.build(
+            "H2C",
+            None,
+            plate_id=None,
+            gcode_members=("Metadata/plate_2.gcode", "Metadata/plate_3.gcode"),
+            slice_info=_PLATES_2_AND_3,
+        )
+
+    async def test_the_rack_is_resolved_for_plate_two_only(self, rack_case):
+        ids = await self._build(rack_case)
+        start_print, _, _ = await _dispatch(rack_case, ids, _rack())
+
+        assert start_print.call_args.kwargs["plate_id"] == 2
+        # Filament 3 belongs to plate 3; plate 2 has no third slot to map.
+        assert _sent_mapping(start_print)[:3] == [16, 1, -1]
+
+    async def test_the_slot_extruders_are_read_for_plate_two_only(self, rack_case):
+        """With no rack to assign from, the dispatch falls back to the #2800
+        slot extruders, which plate 2 alone can state and the pair cannot."""
+        ids = await self._build(rack_case)
+        start_print, _, _ = await _dispatch(rack_case, ids, _rack(present=()))
+
+        assert start_print.call_args.kwargs["nozzle_mapping"] is None
+        assert json.loads(start_print.call_args.kwargs["nozzle_slot_extruders"]) == [0, 1]
+
+
+class TestOtherModels:
+    async def test_a_non_rack_printer_is_left_entirely_alone(self, rack_case):
+        """No rack means no resolution, no refusal, and no mapping invented."""
+        ids = await rack_case.build("X1C", None)
+        start_print, _, item = await _dispatch(rack_case, ids, [])
+
+        assert start_print.call_count == 1
+        assert start_print.call_args.kwargs["nozzle_mapping"] is None
+        assert item.status == "printing"
+
+    async def test_a_stale_pick_on_a_non_rack_printer_does_not_stop_the_print(self, rack_case):
+        """The column can survive a reassignment to another model; it must not
+        then block a printer the pick never applied to.
+        """
+        ids = await rack_case.build("X1C", {"2": 1, "1": 3})
+        start_print, _, item = await _dispatch(rack_case, ids, [])
+
+        assert start_print.call_count == 1
+        assert item.status == "printing"
