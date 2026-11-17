@@ -3857,6 +3857,90 @@ export interface AuthStatus {
 }
 
 // API functions
+// User-reported failure reasons ("Report failed print"). Separate from the
+// automatic failure_reason used by the Failure Analysis widget.
+export interface CustomFailureMaterial {
+  type: string | null;
+  color: string | null;
+  grams: number | null;
+}
+
+export interface CustomFailureReport {
+  id: number;
+  custom_failure_reason: string;
+  comment: string | null;
+  reported_by: string | null;
+  reported_at: string | null;
+  printer_id: number | null;
+  printer_name: string | null;
+  archive_id: number | null;
+  print_name: string | null;
+  filename: string | null;
+  print_status: string | null;
+  print_started_at: string | null;
+  print_date: string | null;
+  materials: CustomFailureMaterial[];
+  filament_used_grams: number | null;
+  print_time_seconds: number | null;
+  has_thumbnail: boolean;
+}
+
+export interface CustomFailureReportTarget {
+  printer_id: number;
+  printer_name: string;
+  is_current_print: boolean;
+  archive_id: number;
+  print_name: string | null;
+  filename: string | null;
+  print_status: string | null;
+  print_started_at: string | null;
+  has_thumbnail: boolean;
+  existing_report: CustomFailureReport | null;
+}
+
+export interface CustomFailureReasonStats {
+  reason: string;
+  count: number;
+  percent: number;
+  latest: CustomFailureReport[];
+}
+
+export interface CustomFailureStats {
+  total: number;
+  latest_limit: number;
+  reasons: CustomFailureReasonStats[];
+}
+
+export interface CustomFailureReason {
+  id: number;
+  code: string;
+  /** null on a default reason = use the translated default text */
+  title: string | null;
+  subtitle: string | null;
+  /** built-in icon name (lucide) */
+  icon: string | null;
+  /** uploaded image, shown instead of the built-in icon */
+  custom_icon_filename: string | null;
+  is_system: boolean;
+  is_hidden: boolean;
+  sort_order: number;
+}
+
+export interface CustomFailureReportInput {
+  custom_failure_reason: string;
+  comment?: string | null;
+  reported_by?: string | null;
+}
+
+function customFailureQuery(params: Record<string, string | undefined>): string {
+  const search = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value) search.set(key, value);
+  });
+  const qs = search.toString();
+  return qs ? `?${qs}` : '';
+}
+
 export const api = {
   // Authentication
   getAuthStatus: () => request<AuthStatus>('/auth/status'),
@@ -4661,6 +4745,27 @@ export const api = {
     const qs = params.toString();
     return request<FailureAnalysis>(`/archives/analysis/failures${qs ? `?${qs}` : ''}`);
   },
+  // Custom failure reports ("Report failed print" / "Fail reason statistics")
+  getCustomFailureReasons: (options?: { includeHidden?: boolean }) =>
+    request<CustomFailureReason[]>(
+      `/custom-failure-reports/reasons/${options?.includeHidden ? '?include_hidden=true' : ''}`
+    ),
+  getCustomFailureReportTarget: (printerId: number) =>
+    request<CustomFailureReportTarget>(`/custom-failure-reports/printers/${printerId}/target`),
+  createCustomFailureReport: (data: CustomFailureReportInput & { printer_id: number; archive_id: number }) =>
+    request<CustomFailureReport>('/custom-failure-reports/', { method: 'POST', body: JSON.stringify(data) }),
+  updateCustomFailureReport: (id: number, data: Partial<CustomFailureReportInput>) =>
+    request<CustomFailureReport>(`/custom-failure-reports/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteCustomFailureReport: (id: number) =>
+    request<{ status: string }>(`/custom-failure-reports/${id}`, { method: 'DELETE' }),
+  getCustomFailureStats: (options?: { dateFrom?: string; dateTo?: string }) =>
+    request<CustomFailureStats>(
+      `/custom-failure-reports/stats${customFailureQuery({ date_from: options?.dateFrom, date_to: options?.dateTo })}`
+    ),
+  getCustomFailureReports: (options?: { reason?: string; dateFrom?: string; dateTo?: string }) =>
+    request<CustomFailureReport[]>(
+      `/custom-failure-reports/${customFailureQuery({ reason: options?.reason, date_from: options?.dateFrom, date_to: options?.dateTo })}`
+    ),
   compareArchives: (archiveIds: number[]) =>
     request<ArchiveComparison>(`/archives/compare?archive_ids=${archiveIds.join(',')}`),
   findSimilarArchives: (archiveId: number, limit = 10) =>

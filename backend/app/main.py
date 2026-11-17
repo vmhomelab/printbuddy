@@ -26,6 +26,8 @@ from backend.app.api.routes import (
     bug_report,
     camera,
     cloud,
+    custom_failure_reasons,
+    custom_failure_reports,
     discovery,
     external_links,
     filaments,
@@ -6776,6 +6778,8 @@ app.include_router(metrics.router, prefix=app_settings.api_prefix)
 app.include_router(virtual_printers.router, prefix=app_settings.api_prefix)
 app.include_router(vp_host.router, prefix=app_settings.api_prefix)
 app.include_router(vp_device.router, prefix=app_settings.api_prefix)
+app.include_router(custom_failure_reasons.router, prefix=app_settings.api_prefix)
+app.include_router(custom_failure_reports.router, prefix=app_settings.api_prefix)
 
 
 # Serve static files (React build)

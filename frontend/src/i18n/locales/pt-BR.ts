@@ -6305,4 +6305,104 @@ export default {
     acquiredPartial: '{{have}} / {{need}} adquiridos',
     noPlanHint: 'Adicione placas ao plano para ver os custos previstos de material e energia.',
   },
+  // User-reported failure reasons ("Report failed print" / Fail reason statistics)
+  customFailure: {
+    reportButton: 'Relatar impressão com falha',
+    reportButtonTitle: 'Marcar a impressão atual ou a última desta impressora como falha e escolher um motivo',
+    modal: {
+      title: 'Relatar impressão com falha',
+      currentPrint: 'Impressão atual',
+      lastPrint: 'Última impressão',
+      alreadyReported: 'Esta impressão já foi relatada ({{reason}}). Salvar substitui esse relato.',
+      reason: 'Motivo da falha',
+      selectReason: 'Selecione um motivo...',
+      comment: 'Comentário (opcional)',
+      commentPlaceholder: 'O que aconteceu? ex.: camada, sintoma, o que você tentou',
+      reportedBy: 'Seu nome (opcional)',
+      reportedByHelp: 'Deixe vazio para relatar anonimamente.',
+      submit: 'Relatar',
+      update: 'Atualizar relato',
+      withdraw: 'Retirar relato',
+      saved: 'Impressão com falha relatada',
+      withdrawn: 'Relato retirado',
+      saveFailed: 'Não foi possível salvar o relato',
+      noPrint: 'Nenhuma impressão foi registrada para esta impressora ainda.',
+    },
+    widget: {
+      title: 'Estatísticas de motivos de falha',
+      noReports: 'Nenhuma impressão com falha foi relatada neste período.',
+      colReason: 'Motivo da falha',
+      colCount: 'Quantidade',
+      colPercent: '%',
+      colPrinter: 'Impressora',
+      colDate: 'Data',
+      colMaterial: 'Material',
+      colAmount: 'Material (estimado)',
+      colTime: 'Tempo de impressão (est.)',
+      colPrintName: 'Nome da impressão',
+      colComment: 'Comentário',
+      showAll: 'Mostrar tudo ({{count}})',
+      reportedByLabel: 'Relatado por {{name}}',
+      totalReports: '{{count}} impressões com falha relatadas',
+    },
+    // Default reasons: title + subtitle per code (the codes are stored in the database).
+    reasons: {
+      fail_reason_01: {
+        title: 'Bico entupido',
+        subtitle: 'Não sai material',
+      },
+      fail_reason_02: {
+        title: 'Warping',
+        subtitle: 'Má aderência à mesa / Tensão demais na peça',
+      },
+      fail_reason_03: {
+        title: 'Deslocamento de camada',
+        subtitle: 'Passos do motor perdidos / Colisão com a peça',
+      },
+      fail_reason_04: {
+        title: 'Erro de fatiamento',
+        subtitle: 'Material errado / Temperatura, velocidade ou Ø do bico errados / Suporte esquecido / …',
+      },
+      fail_reason_05: {
+        title: 'Material esgotado',
+        subtitle: 'Carretel vazio / Troca automática falhou / Erro do sensor',
+      },
+      fail_reason_06: {
+        title: 'Falha de hardware/software',
+        subtitle: 'Peças soltas / Sensor com defeito / Travamento do software / Rolamento danificado (exceto extrusora)',
+      },
+      fail_reason_07: {
+        title: 'Interferência externa',
+        subtitle: 'Carretel travado / Botão pressionado sem querer / Cabo ou energia desconectados / …',
+      },
+      fail_reason_08: {
+        title: 'Filamento embaraçado',
+        subtitle: 'Nós ou voltas cruzadas no carretel',
+      },
+      fail_reason_09: {
+        title: 'Falta de manutenção',
+        subtitle: 'Mesa suja / Bico gasto / Sem lubrificação / Objeto estranho / …',
+      },
+      fail_reason_10: {
+        title: 'Baixa qualidade de impressão',
+        subtitle: 'Sobre- ou subextrusão / Fios / Rachaduras entre camadas / …',
+      },
+      fail_reason_11: {
+        title: 'Outro',
+        subtitle: 'Descreva no comentário',
+      },
+      fail_reason_12: {
+        title: 'Spaghetti / Peça descolada',
+        subtitle: 'A peça se solta da mesa / Spaghetti / Acúmulo no bico',
+      },
+      fail_reason_13: {
+        title: 'Alimentação de filamento / AMS',
+        subtitle: 'Filamento preso no caminho / Tubo PTFE desconectado / Cortador travado / Filamento quebrado',
+      },
+      fail_reason_14: {
+        title: 'Erro de preparação',
+        subtitle: 'Placa ausente ou errada / Bico não instalado / Mesa não livre / …',
+      },
+    },
+  },
 };

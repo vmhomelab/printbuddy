@@ -6303,4 +6303,104 @@ export default {
     acquiredPartial: '已采购 {{have}} / {{need}}',
     noPlanHint: '向作业计划添加打印板以查看预计材料和能耗成本。',
   },
+  // User-reported failure reasons ("Report failed print" / Fail reason statistics)
+  customFailure: {
+    reportButton: '报告打印失败',
+    reportButtonTitle: '将此打印机当前或最近一次的打印标记为失败并选择原因',
+    modal: {
+      title: '报告打印失败',
+      currentPrint: '当前打印',
+      lastPrint: '最近一次打印',
+      alreadyReported: '此打印已被报告（{{reason}}）。保存将替换该报告。',
+      reason: '失败原因',
+      selectReason: '选择原因...',
+      comment: '备注（可选）',
+      commentPlaceholder: '发生了什么？例如：层、现象、尝试过的方法',
+      reportedBy: '你的名字（可选）',
+      reportedByHelp: '留空即可匿名报告。',
+      submit: '报告',
+      update: '更新报告',
+      withdraw: '撤回报告',
+      saved: '已报告打印失败',
+      withdrawn: '报告已撤回',
+      saveFailed: '无法保存报告',
+      noPrint: '此打印机尚未记录任何打印。',
+    },
+    widget: {
+      title: '失败原因统计',
+      noReports: '此期间没有报告的失败打印。',
+      colReason: '失败原因',
+      colCount: '数量',
+      colPercent: '%',
+      colPrinter: '打印机',
+      colDate: '日期',
+      colMaterial: '材料',
+      colAmount: '材料（估算）',
+      colTime: '打印时间（估算）',
+      colPrintName: '打印名称',
+      colComment: '备注',
+      showAll: '显示全部（{{count}}）',
+      reportedByLabel: '报告人：{{name}}',
+      totalReports: '已报告 {{count}} 次失败打印',
+    },
+    // Default reasons: title + subtitle per code (the codes are stored in the database).
+    reasons: {
+      fail_reason_01: {
+        title: '喷嘴堵塞',
+        subtitle: '没有材料挤出',
+      },
+      fail_reason_02: {
+        title: '翘曲',
+        subtitle: '热床附着力差 / 零件内应力过大',
+      },
+      fail_reason_03: {
+        title: '层偏移',
+        subtitle: '电机丢步 / 与零件碰撞',
+      },
+      fail_reason_04: {
+        title: '切片错误',
+        subtitle: '材料错误 / 温度、速度或喷嘴直径错误 / 忘记加支撑 / …',
+      },
+      fail_reason_05: {
+        title: '材料耗尽',
+        subtitle: '料盘已空 / 自动切换失败 / 传感器错误',
+      },
+      fail_reason_06: {
+        title: '硬件/软件故障',
+        subtitle: '零件松动 / 传感器故障 / 软件崩溃 / 轴承损坏（非挤出机）',
+      },
+      fail_reason_07: {
+        title: '外部干扰',
+        subtitle: '料盘卡住 / 误按按钮 / 线缆或电源断开 / …',
+      },
+      fail_reason_08: {
+        title: '耗材缠绕',
+        subtitle: '料盘上打结或交叉缠绕',
+      },
+      fail_reason_09: {
+        title: '维护不足',
+        subtitle: '热床脏污 / 喷嘴磨损 / 未润滑 / 异物 / …',
+      },
+      fail_reason_10: {
+        title: '打印质量差',
+        subtitle: '过度或不足挤出 / 拉丝 / 层间开裂 / …',
+      },
+      fail_reason_11: {
+        title: '其他',
+        subtitle: '请在备注中说明',
+      },
+      fail_reason_12: {
+        title: '炒面 / 零件脱落',
+        subtitle: '零件从热床脱落 / 炒面 / 喷嘴结块',
+      },
+      fail_reason_13: {
+        title: '耗材进料 / AMS',
+        subtitle: '耗材卡在进料路径 / PTFE 管脱开 / 切刀卡住 / 耗材断裂',
+      },
+      fail_reason_14: {
+        title: '打印准备错误',
+        subtitle: '缺少或用错打印板 / 未安装喷嘴 / 热床上有异物 / …',
+      },
+    },
+  },
 };

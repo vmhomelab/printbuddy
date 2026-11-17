@@ -6318,4 +6318,90 @@ export default {
     acquiredPartial: '{{have}} / {{need}} da',
     noPlanHint: 'Füge Platten zum Job-Plan hinzu, um die voraussichtlichen Material- und Energiekosten zu sehen.',
   },
+  // User-reported failure reasons ("Report failed print" / Fail reason statistics)
+  customFailure: {
+    reportButton: 'Fehldruck melden',
+    reportButtonTitle: 'Aktuellen oder letzten Druck dieses Druckers als Fehldruck melden und einen Grund wählen',
+    modal: {
+      title: 'Fehldruck melden',
+      currentPrint: 'Aktueller Druck',
+      lastPrint: 'Letzter Druck',
+      alreadyReported: 'Dieser Druck wurde bereits gemeldet ({{reason}}). Speichern ersetzt diese Meldung.',
+      reason: 'Fehlergrund',
+      selectReason: 'Grund auswählen...',
+      comment: 'Kommentar (optional)',
+      commentPlaceholder: 'Was ist passiert? z. B. Schicht, Fehlerbild, was versucht wurde',
+      reportedBy: 'Dein Name (optional)',
+      reportedByHelp: 'Leer lassen, um anonym zu melden.',
+      submit: 'Melden',
+      update: 'Meldung aktualisieren',
+      withdraw: 'Meldung zurückziehen',
+      saved: 'Fehldruck gemeldet',
+      withdrawn: 'Meldung zurückgezogen',
+      saveFailed: 'Meldung konnte nicht gespeichert werden',
+      noPrint: 'Für diesen Drucker wurde noch kein Druck aufgezeichnet.',
+    },
+    widget: {
+      title: 'Fehlerursachen-Statistik',
+      noReports: 'In diesem Zeitraum wurden keine Fehldrucke gemeldet.',
+      colReason: 'Fehlergrund',
+      colCount: 'Anzahl',
+      colPercent: '%',
+      colPrinter: 'Drucker',
+      colDate: 'Datum',
+      colMaterial: 'Material',
+      colAmount: 'Material (geschätzt)',
+      colTime: 'Druckzeit (geschätzt)',
+      colPrintName: 'Druckname',
+      colComment: 'Kommentar',
+      showAll: 'Alle anzeigen ({{count}})',
+      reportedByLabel: 'Gemeldet von {{name}}',
+      totalReports: '{{count}} gemeldete Fehldrucke',
+    },
+    // Default reasons: title + subtitle per code. The codes on the left are stored in the
+    // database — never rename those. Text typed in the app's reason settings wins over these.
+    reasons: {
+      fail_reason_01: { title: 'Verstopfte Düse', subtitle: 'Kein Materialaustritt' },
+      fail_reason_02: { title: 'Warping', subtitle: 'Schlechte Druckbett-Haftung / Bauteilspannung zu hoch' },
+      fail_reason_03: { title: 'Schichtversatz', subtitle: 'Schrittverluste am Motor / Kollision mit Bauteil' },
+      fail_reason_04: {
+        title: 'Fehler beim Slicen',
+        subtitle: 'Falsches Material / Temperatur, Geschwindigkeit oder Nozzle-Ø falsch / Support vergessen / …',
+      },
+      fail_reason_05: {
+        title: 'Material alle',
+        subtitle: 'Spule leer / Automatischer Wechsel fehlgeschlagen / Sensorfehler',
+      },
+      fail_reason_06: {
+        title: 'Hard-/Softwarefehler',
+        subtitle: 'Lose Teile / Defekter Sensor / Software-Absturz / Lagerschaden (nicht Extruder)',
+      },
+      fail_reason_07: {
+        title: 'Einwirkung von außen',
+        subtitle: 'Blockierte Spule / Knopf versehentlich gedrückt / Kabel oder Strom getrennt / …',
+      },
+      fail_reason_08: { title: 'Verknotetes Filament', subtitle: 'Knoten oder überkreuzte Wicklung auf der Spule' },
+      fail_reason_09: {
+        title: 'Mangelhafte Wartung',
+        subtitle: 'Dreckiges Druckbett / Nozzle-Abnutzung / Keine Schmierung / Fremdkörper / …',
+      },
+      fail_reason_10: {
+        title: 'Unbefriedigendes Druckbild',
+        subtitle: 'Über- oder Unterextrusion / Stringing / Layerbrüche / …',
+      },
+      fail_reason_11: { title: 'Anderes', subtitle: 'Bitte im Kommentar beschreiben' },
+      fail_reason_12: {
+        title: 'Spaghetti / Bauteil abgelöst',
+        subtitle: 'Bauteil löst sich vom Bett / Spaghetti / Klumpen an der Düse',
+      },
+      fail_reason_13: {
+        title: 'Störung Materialzufuhr / AMS',
+        subtitle: 'Filament klemmt im Zufuhrweg / PTFE-Schlauch getrennt / Cutter klemmt / Filament gebrochen',
+      },
+      fail_reason_14: {
+        title: 'Fehler bei Druckvorbereitung',
+        subtitle: 'Druckplatte fehlt oder falsch / Düse nicht eingesetzt / Bett nicht frei / …',
+      },
+    },
+  },
 };

@@ -6303,4 +6303,104 @@ export default {
     acquiredPartial: '已採購 {{have}} / {{need}}',
     noPlanHint: '向工作計畫新增列印板以查看預計材料與能源成本。',
   },
+  // User-reported failure reasons ("Report failed print" / Fail reason statistics)
+  customFailure: {
+    reportButton: '回報列印失敗',
+    reportButtonTitle: '將此印表機目前或最近一次的列印標記為失敗並選擇原因',
+    modal: {
+      title: '回報列印失敗',
+      currentPrint: '目前列印',
+      lastPrint: '最近一次列印',
+      alreadyReported: '此列印已被回報（{{reason}}）。儲存將取代該回報。',
+      reason: '失敗原因',
+      selectReason: '選擇原因...',
+      comment: '備註（選填）',
+      commentPlaceholder: '發生了什麼？例如：層、現象、嘗試過的方法',
+      reportedBy: '你的名字（選填）',
+      reportedByHelp: '留空即可匿名回報。',
+      submit: '回報',
+      update: '更新回報',
+      withdraw: '撤回回報',
+      saved: '已回報列印失敗',
+      withdrawn: '回報已撤回',
+      saveFailed: '無法儲存回報',
+      noPrint: '此印表機尚未記錄任何列印。',
+    },
+    widget: {
+      title: '失敗原因統計',
+      noReports: '此期間沒有回報的失敗列印。',
+      colReason: '失敗原因',
+      colCount: '數量',
+      colPercent: '%',
+      colPrinter: '印表機',
+      colDate: '日期',
+      colMaterial: '材料',
+      colAmount: '材料（估算）',
+      colTime: '列印時間（估算）',
+      colPrintName: '列印名稱',
+      colComment: '備註',
+      showAll: '顯示全部（{{count}}）',
+      reportedByLabel: '回報人：{{name}}',
+      totalReports: '已回報 {{count}} 次失敗列印',
+    },
+    // Default reasons: title + subtitle per code (the codes are stored in the database).
+    reasons: {
+      fail_reason_01: {
+        title: '噴嘴堵塞',
+        subtitle: '沒有材料擠出',
+      },
+      fail_reason_02: {
+        title: '翹曲',
+        subtitle: '熱床附著力差 / 零件內應力過大',
+      },
+      fail_reason_03: {
+        title: '層偏移',
+        subtitle: '馬達失步 / 與零件碰撞',
+      },
+      fail_reason_04: {
+        title: '切片錯誤',
+        subtitle: '材料錯誤 / 溫度、速度或噴嘴直徑錯誤 / 忘記加支撐 / …',
+      },
+      fail_reason_05: {
+        title: '材料用盡',
+        subtitle: '料盤已空 / 自動切換失敗 / 感測器錯誤',
+      },
+      fail_reason_06: {
+        title: '硬體/軟體故障',
+        subtitle: '零件鬆動 / 感測器故障 / 軟體當機 / 軸承損壞（非擠出機）',
+      },
+      fail_reason_07: {
+        title: '外部干擾',
+        subtitle: '料盤卡住 / 誤按按鈕 / 線材或電源斷開 / …',
+      },
+      fail_reason_08: {
+        title: '線材纏繞',
+        subtitle: '料盤上打結或交叉纏繞',
+      },
+      fail_reason_09: {
+        title: '維護不足',
+        subtitle: '熱床髒污 / 噴嘴磨損 / 未潤滑 / 異物 / …',
+      },
+      fail_reason_10: {
+        title: '列印品質差',
+        subtitle: '過度或不足擠出 / 拉絲 / 層間開裂 / …',
+      },
+      fail_reason_11: {
+        title: '其他',
+        subtitle: '請在備註中說明',
+      },
+      fail_reason_12: {
+        title: '炒麵 / 零件脫落',
+        subtitle: '零件從熱床脫落 / 炒麵 / 噴嘴結塊',
+      },
+      fail_reason_13: {
+        title: '線材進料 / AMS',
+        subtitle: '線材卡在進料路徑 / PTFE 管脫開 / 切刀卡住 / 線材斷裂',
+      },
+      fail_reason_14: {
+        title: '列印準備錯誤',
+        subtitle: '缺少或用錯列印板 / 未安裝噴嘴 / 熱床上有異物 / …',
+      },
+    },
+  },
 };

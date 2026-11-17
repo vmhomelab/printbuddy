@@ -178,6 +178,7 @@ async def init_db():
         auth_ephemeral,
         bug_report,
         color_catalog,
+        custom_failure_report,
         external_link,
         filament,
         filament_sku_settings,

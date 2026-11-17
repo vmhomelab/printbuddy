@@ -6326,4 +6326,104 @@ export default {
     acquiredPartial: '{{have}} / {{need}} adquiridos',
     noPlanHint: 'Añade placas al plan para ver los costes previstos de material y energía.',
   },
+  // User-reported failure reasons ("Report failed print" / Fail reason statistics)
+  customFailure: {
+    reportButton: 'Informar impresión fallida',
+    reportButtonTitle: 'Marcar la impresión actual o la última de esta impresora como fallida y elegir un motivo',
+    modal: {
+      title: 'Informar impresión fallida',
+      currentPrint: 'Impresión actual',
+      lastPrint: 'Última impresión',
+      alreadyReported: 'Esta impresión ya se informó ({{reason}}). Al guardar se reemplaza ese informe.',
+      reason: 'Motivo del fallo',
+      selectReason: 'Selecciona un motivo...',
+      comment: 'Comentario (opcional)',
+      commentPlaceholder: '¿Qué pasó? p. ej. capa, síntoma, qué intentaste',
+      reportedBy: 'Tu nombre (opcional)',
+      reportedByHelp: 'Déjalo vacío para informar de forma anónima.',
+      submit: 'Informar',
+      update: 'Actualizar informe',
+      withdraw: 'Retirar informe',
+      saved: 'Impresión fallida informada',
+      withdrawn: 'Informe retirado',
+      saveFailed: 'No se pudo guardar el informe',
+      noPrint: 'Todavía no se ha registrado ninguna impresión para esta impresora.',
+    },
+    widget: {
+      title: 'Estadísticas de motivos de fallo',
+      noReports: 'No se han informado impresiones fallidas en este período.',
+      colReason: 'Motivo del fallo',
+      colCount: 'Cantidad',
+      colPercent: '%',
+      colPrinter: 'Impresora',
+      colDate: 'Fecha',
+      colMaterial: 'Material',
+      colAmount: 'Material (estimado)',
+      colTime: 'Tiempo de impresión (est.)',
+      colPrintName: 'Nombre de impresión',
+      colComment: 'Comentario',
+      showAll: 'Mostrar todo ({{count}})',
+      reportedByLabel: 'Informado por {{name}}',
+      totalReports: '{{count}} impresiones fallidas informadas',
+    },
+    // Default reasons: title + subtitle per code (the codes are stored in the database).
+    reasons: {
+      fail_reason_01: {
+        title: 'Boquilla obstruida',
+        subtitle: 'No sale material',
+      },
+      fail_reason_02: {
+        title: 'Warping',
+        subtitle: 'Mala adherencia a la cama / Demasiada tensión en la pieza',
+      },
+      fail_reason_03: {
+        title: 'Desplazamiento de capa',
+        subtitle: 'Pasos perdidos del motor / Colisión con la pieza',
+      },
+      fail_reason_04: {
+        title: 'Error de laminado',
+        subtitle: 'Material incorrecto / Temperatura, velocidad o Ø de boquilla incorrectos / Falta soporte / …',
+      },
+      fail_reason_05: {
+        title: 'Material agotado',
+        subtitle: 'Bobina vacía / Cambio automático fallido / Error del sensor',
+      },
+      fail_reason_06: {
+        title: 'Fallo de hardware/software',
+        subtitle: 'Piezas sueltas / Sensor defectuoso / Fallo del software / Daño en rodamientos (no extrusor)',
+      },
+      fail_reason_07: {
+        title: 'Interferencia externa',
+        subtitle: 'Bobina bloqueada / Botón pulsado sin querer / Cable o corriente desconectados / …',
+      },
+      fail_reason_08: {
+        title: 'Filamento enredado',
+        subtitle: 'Nudos o espiras cruzadas en la bobina',
+      },
+      fail_reason_09: {
+        title: 'Falta de mantenimiento',
+        subtitle: 'Cama sucia / Boquilla desgastada / Sin lubricación / Objeto extraño / …',
+      },
+      fail_reason_10: {
+        title: 'Mala calidad de impresión',
+        subtitle: 'Sobre- o subextrusión / Hilos / Grietas entre capas / …',
+      },
+      fail_reason_11: {
+        title: 'Otro',
+        subtitle: 'Descríbelo en el comentario',
+      },
+      fail_reason_12: {
+        title: 'Espagueti / Pieza despegada',
+        subtitle: 'La pieza se suelta de la cama / Espagueti / Grumo en la boquilla',
+      },
+      fail_reason_13: {
+        title: 'Alimentación de filamento / AMS',
+        subtitle: 'Filamento atascado en el recorrido / Tubo PTFE desconectado / Cortador atascado / Filamento roto',
+      },
+      fail_reason_14: {
+        title: 'Error de preparación',
+        subtitle: 'Falta la placa o es incorrecta / Boquilla no instalada / Cama no despejada / …',
+      },
+    },
+  },
 };
