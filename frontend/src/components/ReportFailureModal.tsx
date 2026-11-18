@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Flag, Loader2, X } from 'lucide-react';
+import { ArrowLeft, Flag, Loader2, Settings, X } from 'lucide-react';
 import { api, ApiError } from '../api/client';
 import type { CustomFailureReason, Printer } from '../api/client';
 import { Card, CardContent } from './Card';
 import { Button } from './Button';
 import { FailureReasonIcon } from './FailureReasonIcon';
+import { FailureReasonSettings } from './FailureReasonSettings';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import {
@@ -37,7 +38,7 @@ function useWindowWidth(): number {
 
 /**
  * "Report failed print": flag the printer's current (or most recent) print with a
- * reason, picked from a grid of tiles.
+ * reason, picked from a grid of tiles. The cog opens the reason settings.
  * Separate from the automatic failure_reason on archives.
  */
 export function ReportFailureModal({ printer, onClose }: ReportFailureModalProps) {
@@ -46,7 +47,9 @@ export function ReportFailureModal({ printer, onClose }: ReportFailureModalProps
   const { showToast } = useToast();
   const { hasPermission } = useAuth();
   const canWithdraw = hasPermission('archives:delete_all');
+  const canEditReasons = hasPermission('settings:update');
   const windowWidth = useWindowWidth();
+  const [showSettings, setShowSettings] = useState(false);
 
   const {
     data: target,
@@ -94,7 +97,8 @@ export function ReportFailureModal({ printer, onClose }: ReportFailureModalProps
   );
   const columns = reasonGridColumns(selectable.length, windowWidth - MODAL_PADDING, TILE_MIN_WIDTH + TILE_GAP);
   // Tiles are ~200 px wide when there is room, enough for a 3-line subtitle of ~90 characters.
-  const cardWidth = Math.max(448, columns * (TILE_MIN_WIDTH + 62) + 48);
+  const reportWidth = Math.max(448, columns * (TILE_MIN_WIDTH + 62) + 48);
+  const cardWidth = showSettings ? 640 : reportWidth;
 
   const refreshStats = () => {
     queryClient.invalidateQueries({ queryKey: ['customFailureStats'] });
@@ -155,15 +159,47 @@ export function ReportFailureModal({ printer, onClose }: ReportFailureModalProps
         <CardContent className="p-6">
           <div className="flex items-start justify-between gap-3 mb-4">
             <h3 className="text-lg font-semibold text-white flex items-center gap-2">
-              <Flag className="w-5 h-5 text-red-400" />
-              {t('customFailure.modal.title')}
+              {showSettings ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setShowSettings(false)}
+                    className="p-1 -ml-1 hover:bg-bambu-dark rounded"
+                    aria-label={t('customFailure.settings.back')}
+                    title={t('customFailure.settings.back')}
+                  >
+                    <ArrowLeft className="w-5 h-5 text-bambu-gray" />
+                  </button>
+                  {t('customFailure.settings.title')}
+                </>
+              ) : (
+                <>
+                  <Flag className="w-5 h-5 text-red-400" />
+                  {t('customFailure.modal.title')}
+                </>
+              )}
             </h3>
-            <button onClick={onClose} className="p-1 hover:bg-bambu-dark rounded" aria-label={t('common.close')}>
-              <X className="w-5 h-5 text-bambu-gray" />
-            </button>
+            <div className="flex items-center gap-1">
+              {canEditReasons && !showSettings && (
+                <button
+                  type="button"
+                  onClick={() => setShowSettings(true)}
+                  className="p-1 hover:bg-bambu-dark rounded"
+                  aria-label={t('customFailure.settings.open')}
+                  title={t('customFailure.settings.open')}
+                >
+                  <Settings className="w-5 h-5 text-bambu-gray" />
+                </button>
+              )}
+              <button onClick={onClose} className="p-1 hover:bg-bambu-dark rounded" aria-label={t('common.close')}>
+                <X className="w-5 h-5 text-bambu-gray" />
+              </button>
+            </div>
           </div>
 
-          {targetLoading || reasonsLoading ? (
+          {showSettings ? (
+            <FailureReasonSettings reasons={allReasons} />
+          ) : targetLoading || reasonsLoading ? (
             <div className="flex justify-center py-6">
               <Loader2 className="w-6 h-6 text-bambu-green animate-spin" />
             </div>
@@ -281,20 +317,22 @@ export function ReportFailureModal({ printer, onClose }: ReportFailureModalProps
             </div>
           )}
 
-          <div className="flex flex-wrap gap-3 mt-6">
-            {existing && canWithdraw && (
-              <Button variant="danger" onClick={() => withdrawMutation.mutate()} disabled={busy}>
-                {t('customFailure.modal.withdraw')}
+          {!showSettings && (
+            <div className="flex flex-wrap gap-3 mt-6">
+              {existing && canWithdraw && (
+                <Button variant="danger" onClick={() => withdrawMutation.mutate()} disabled={busy}>
+                  {t('customFailure.modal.withdraw')}
+                </Button>
+              )}
+              <Button variant="secondary" onClick={onClose} className="flex-1" disabled={busy}>
+                {t('common.cancel')}
               </Button>
-            )}
-            <Button variant="secondary" onClick={onClose} className="flex-1" disabled={busy}>
-              {t('common.cancel')}
-            </Button>
-            <Button onClick={() => saveMutation.mutate()} className="flex-1" disabled={!print || !reason || busy}>
-              {saveMutation.isPending && <Loader2 className="w-4 h-4 animate-spin" />}
-              {existing ? t('customFailure.modal.update') : t('customFailure.modal.submit')}
-            </Button>
-          </div>
+              <Button onClick={() => saveMutation.mutate()} className="flex-1" disabled={!print || !reason || busy}>
+                {saveMutation.isPending && <Loader2 className="w-4 h-4 animate-spin" />}
+                {existing ? t('customFailure.modal.update') : t('customFailure.modal.submit')}
+              </Button>
+            </div>
+          )}
         </CardContent>
       </Card>
     </div>

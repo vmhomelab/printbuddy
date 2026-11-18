@@ -170,6 +170,75 @@ describe('ReportFailureModal', () => {
   });
 });
 
+describe('reason settings (cog)', () => {
+  it('adds a custom reason with title, subtitle and icon', async () => {
+    useTarget();
+    let created: Record<string, unknown> | null = null;
+    server.use(
+      http.post(`${API}/reasons/`, async ({ request }) => {
+        created = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json({ ...buildReasons()[0], id: 11, code: 'custom_abc', is_system: false, ...created });
+      })
+    );
+    const user = userEvent.setup();
+    renderModal();
+
+    await user.click(await screen.findByRole('button', { name: 'Edit failure reasons' }));
+    expect(screen.getByText('10 of 100 reasons')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'New reason' }));
+    await user.type(screen.getByLabelText('Title'), 'Head crash');
+    await user.type(screen.getByLabelText('Subtitle (optional)'), 'Collision, nozzle torn off');
+    await user.click(screen.getByRole('button', { name: 'Zap' }));
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() =>
+      expect(created).toEqual({ title: 'Head crash', subtitle: 'Collision, nozzle torn off', icon: 'Zap' })
+    );
+  });
+
+  it('uploads an own image as icon when saving', async () => {
+    useTarget();
+    let uploaded = false;
+    server.use(
+      http.patch(`${API}/reasons/1`, () => HttpResponse.json(buildReasons()[0])),
+      http.post(`${API}/reasons/1/icon`, () => {
+        uploaded = true;
+        return HttpResponse.json({ ...buildReasons()[0], custom_icon_filename: 'reason_1_x.png' });
+      })
+    );
+    const user = userEvent.setup();
+    renderModal();
+
+    await user.click(await screen.findByRole('button', { name: 'Edit failure reasons' }));
+    await user.click(screen.getAllByRole('button', { name: 'Edit' })[0]);
+    await user.upload(screen.getByTestId('reason-icon-upload'), new File(['png'], 'icon.png', { type: 'image/png' }));
+    expect(screen.getByText(/Uploaded when you save/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(uploaded).toBe(true));
+  });
+
+  it('hides a default reason and offers hidden ones back', async () => {
+    useTarget(null, buildReasons({ fail_reason_10: { is_hidden: true } }));
+    let removed = '';
+    server.use(
+      http.delete(`${API}/reasons/:id`, ({ params }) => {
+        removed = String(params.id);
+        return HttpResponse.json({ status: 'hidden' });
+      })
+    );
+    const user = userEvent.setup();
+    renderModal();
+
+    await user.click(await screen.findByRole('button', { name: 'Edit failure reasons' }));
+    expect(screen.getByText('Hidden reasons')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Show again/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Restore default reasons/ })).toBeInTheDocument();
+    await user.click(screen.getAllByRole('button', { name: 'Hide' })[0]);
+    await waitFor(() => expect(removed).toBe('1'));
+  });
+});
+
 describe('reasonGridColumns', () => {
   it('arranges tiles as square as possible, limited by the screen width', () => {
     expect(reasonGridColumns(10, 2000)).toBe(4);

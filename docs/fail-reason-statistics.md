@@ -29,10 +29,23 @@ interference, tangled filament, missing maintenance, poor print quality, spaghet
 detached, filament feeding / AMS, print preparation error and other ("other" is always
 listed last).
 
+Users with `settings:update` (everyone when authentication is off) see a cog in the dialog:
+
+- add, edit, re-order and hide reasons (at most 100 reasons, hidden ones included);
+- default reasons are only hidden, never deleted; custom reasons that already have reports
+  are hidden, unused ones are deleted; **Restore default reasons** shows hidden defaults again;
+- text typed for a default reason replaces the translated text; leaving it empty goes back
+  to the translation;
+- icon: one of ~50 built-in icons, or an uploaded image (JPG/PNG/GIF/WebP, max 10 MB),
+  scaled down to fit 500 × 500 px and stored as PNG under `<archive dir>/failure_reason_icons`.
+
+Hidden reasons can't be chosen for new reports. Existing reports keep them and they stay
+in the statistics.
+
 ## Statistics widget
 
 **Statistics → Fail reason statistics** lists every visible reason with count and share for
-the page's date range. Each row expands to the
+the page's date range (plus hidden reasons that have reports). Each row expands to the
 affected prints: printer, date, material, estimated grams and time, print name with
 thumbnail, comment and reporter. The latest 15 are shown, then "Show all (N)".
 
@@ -46,7 +59,13 @@ thumbnail, comment and reporter. The latest 15 are shown, then "Show all (N)".
 | `DELETE /api/v1/custom-failure-reports/{id}` | `archives:delete_all` | Withdraw a report |
 | `GET /api/v1/custom-failure-reports/stats` | `archives:read` | Counts per reason (`date_from`, `date_to`) |
 | `GET /api/v1/custom-failure-reports/` | `archives:read` | Reports, newest first (`reason`, `date_from`, `date_to`) |
-| `GET /api/v1/custom-failure-reports/reasons/` | `printers:read` | Reasons in display order |
+| `GET /api/v1/custom-failure-reports/reasons/` | `printers:read` | Reasons (`include_hidden`) |
+| `POST /api/v1/custom-failure-reports/reasons/` | `settings:update` | Add a reason |
+| `PATCH/DELETE /api/v1/custom-failure-reports/reasons/{id}` | `settings:update` | Edit / hide or delete a reason |
+| `PUT /api/v1/custom-failure-reports/reasons/order` | `settings:update` | Re-order |
+| `POST /api/v1/custom-failure-reports/reasons/restore-defaults` | `settings:update` | Show hidden defaults again |
+| `POST/DELETE /api/v1/custom-failure-reports/reasons/{id}/icon` | `settings:update` | Upload / remove an image |
+| `GET /api/v1/custom-failure-reports/reasons/{id}/icon` | stream token | Uploaded image |
 
 Reporting and changing a reason need `printers:control` (Operators, Administrators), so
 read-only Viewers can't create or change reports; withdrawing needs `archives:delete_all`.
