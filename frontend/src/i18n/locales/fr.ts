@@ -6328,6 +6328,14 @@ export default {
       withdrawn: 'Signalement retiré',
       saveFailed: 'Impossible d\'enregistrer le signalement',
       noPrint: 'Aucune impression n\'a encore été enregistrée pour cette imprimante.',
+      editTitle: 'Modifier l\'impression échouée',
+      autoDetected: 'Détecté automatiquement : {{reason}}. Veuillez confirmer ou choisir une autre raison.',
+      autoUnassigned: 'Repris de l\'historique d\'impression, cause inconnue. Veuillez choisir une raison.',
+      importedFromArchive: 'Repris de l\'archive : {{reason}}.',
+      printbuddyRecorded: 'Printbuddy avait enregistré : « {{text}} »',
+      printerError: 'Erreur imprimante {{code}} : {{description}}',
+      suggestion: 'Suggéré d\'après l\'erreur actuelle de l\'imprimante – à vérifier.',
+      confirm: 'Confirmer la raison',
     },
     widget: {
       title: 'Statistiques des raisons d\'échec',
@@ -6345,6 +6353,16 @@ export default {
       showAll: 'Tout afficher ({{count}})',
       reportedByLabel: 'Signalé par {{name}}',
       totalReports: '{{count}} échecs d\'impression signalés',
+      automaticCount: 'dont {{count}} détectés automatiquement (non confirmés)',
+      sourceFilter: 'Source',
+      sourceAll: 'Tous les signalements',
+      sourcePerson: 'Choisis par des personnes',
+      sourceAutomatic: 'Détectés automatiquement uniquement',
+      badgeAuto: 'automatique',
+      badgeAutoTitle: 'Repris automatiquement de l\'historique d\'impression, pas encore confirmé',
+      badgeImported: 'de l\'archive',
+      badgeImportedTitle: 'Choisi comme raison d\'échec dans la boîte de dialogue d\'archive de Printbuddy',
+      edit: 'Modifier ou confirmer la raison',
     },
     // Default reasons: title + subtitle per code (the codes are stored in the database).
     reasons: {
@@ -6403,6 +6421,10 @@ export default {
       fail_reason_14: {
         title: 'Erreur de préparation',
         subtitle: 'Plateau absent ou incorrect / Buse non installée / Plateau encombré / …',
+      },
+      unassigned: {
+        title: 'Non attribué',
+        subtitle: 'Repris de l\'historique d\'impression, cause inconnue',
       },
     },
     settings: {

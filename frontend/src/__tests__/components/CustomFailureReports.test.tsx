@@ -11,7 +11,7 @@ import { render } from '../utils';
 import { server } from '../mocks/server';
 import { ReportFailureModal } from '../../components/ReportFailureModal';
 import { FailReasonStatisticsWidget } from '../../components/FailReasonStatisticsWidget';
-import type { CustomFailureReason, CustomFailureReport } from '../../api/client';
+import type { CustomFailureReason, CustomFailureReport, CustomFailureReportTarget } from '../../api/client';
 import { reasonGridColumns } from '../../utils/customFailure';
 
 const API = '/api/v1/custom-failure-reports';
@@ -62,11 +62,19 @@ function buildReport(id: number, overrides: Partial<CustomFailureReport> = {}): 
     filament_used_grams: 4.28,
     print_time_seconds: 1824,
     has_thumbnail: false,
+    source: 'manual',
+    original_reason: null,
+    hms_code: null,
+    hms_description: null,
     ...overrides,
   };
 }
 
-function useTarget(existing: CustomFailureReport | null = null, reasons = buildReasons()) {
+function useTarget(
+  existing: CustomFailureReport | null = null,
+  reasons = buildReasons(),
+  suggestion: CustomFailureReportTarget['suggestion'] = null
+) {
   useReasons(reasons);
   server.use(
     http.get(`${API}/printers/1/target`, () =>
@@ -81,6 +89,7 @@ function useTarget(existing: CustomFailureReport | null = null, reasons = buildR
         print_started_at: '2026-11-02T13:41:00',
         has_thumbnail: false,
         existing_report: existing,
+        suggestion,
       })
     )
   );
@@ -306,8 +315,76 @@ describe('FailReasonStatisticsWidget', () => {
 
   it('says so when nothing has been reported', async () => {
     useReasons();
-    server.use(http.get(`${API}/stats`, () => HttpResponse.json({ total: 0, latest_limit: 15, reasons: [] })));
+    server.use(http.get(`${API}/stats`, () => HttpResponse.json({ total: 0, automatic_total: 0, latest_limit: 15, reasons: [] })));
     render(<FailReasonStatisticsWidget dateFrom="2026-10-01" dateTo="2026-10-31" />);
     expect(await screen.findByText('No failed prints have been reported in this period.')).toBeInTheDocument();
+  });
+});
+
+describe('Failure history import', () => {
+  it('pre-selects the reason suggested by the printer error', async () => {
+    useTarget(null, buildReasons(), {
+      reason: 'fail_reason_01',
+      hms_code: '0300_4006',
+      hms_description: 'The nozzle is clogged.',
+    });
+    renderModal();
+
+    expect(await screen.findByText(/Suggested from the printer/)).toBeInTheDocument();
+    expect(screen.getByText('Printer error 0300_4006: The nozzle is clogged.')).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: /Clogged nozzle/ })).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByRole('button', { name: 'Report' })).toBeEnabled();
+  });
+
+  it('asks to confirm an automatically detected reason', async () => {
+    useTarget(buildReport(7, { source: 'auto', custom_failure_reason: 'fail_reason_03', original_reason: 'Layer shift' }));
+    renderModal();
+
+    expect(await screen.findByText(/Detected automatically: Layer shift/)).toBeInTheDocument();
+    expect(screen.getByText('Printbuddy had recorded: “Layer shift”')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Confirm reason' })).toBeEnabled();
+  });
+
+  it('leaves the choice empty for an unassigned import', async () => {
+    useTarget(buildReport(8, { source: 'auto', custom_failure_reason: 'unassigned' }));
+    renderModal();
+
+    expect(await screen.findByText(/cause unknown. Please pick a reason/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Confirm reason' })).toBeDisabled();
+  });
+
+  it('changes a reason from the statistics via the pencil', async () => {
+    useReasons();
+    const auto = buildReport(9, { source: 'auto', custom_failure_reason: 'fail_reason_02', original_reason: 'Warping' });
+    server.use(
+      http.get(`${API}/stats`, () =>
+        HttpResponse.json({
+          total: 1,
+          automatic_total: 1,
+          latest_limit: 15,
+          reasons: [{ reason: 'fail_reason_02', count: 1, percent: 100, latest: [auto] }],
+        })
+      )
+    );
+    let patched: unknown = null;
+    server.use(
+      http.patch(`${API}/9`, async ({ request }) => {
+        patched = await request.json();
+        return HttpResponse.json({ ...auto, ...(patched as object), source: 'manual' });
+      })
+    );
+    const user = userEvent.setup();
+    render(<FailReasonStatisticsWidget />);
+
+    expect(await screen.findByText(/1 of them detected automatically/)).toBeInTheDocument();
+    expect(screen.getByLabelText('Source')).toBeInTheDocument();
+    await user.click(screen.getByText('Warping'));
+    expect(screen.getByText('automatic')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Change or confirm reason' }));
+
+    expect(await screen.findByText('Edit failed print')).toBeInTheDocument();
+    await user.click(screen.getByRole('radio', { name: /Layer shift/ }));
+    await user.click(screen.getByRole('button', { name: 'Confirm reason' }));
+    await waitFor(() => expect(patched).toMatchObject({ custom_failure_reason: 'fail_reason_03' }));
   });
 });

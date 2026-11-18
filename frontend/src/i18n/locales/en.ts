@@ -6353,6 +6353,14 @@ export default {
       withdrawn: 'Report withdrawn',
       saveFailed: 'Could not save the report',
       noPrint: 'No print has been recorded for this printer yet.',
+      editTitle: 'Edit failed print',
+      autoDetected: 'Detected automatically: {{reason}}. Please confirm or pick another reason.',
+      autoUnassigned: 'Taken over from the print history, cause unknown. Please pick a reason.',
+      importedFromArchive: 'Taken over from the archive: {{reason}}.',
+      printbuddyRecorded: 'Printbuddy had recorded: “{{text}}”',
+      printerError: 'Printer error {{code}}: {{description}}',
+      suggestion: 'Suggested from the printer’s current error – please check.',
+      confirm: 'Confirm reason',
     },
     widget: {
       title: 'Fail reason statistics',
@@ -6370,6 +6378,16 @@ export default {
       showAll: 'Show all ({{count}})',
       reportedByLabel: 'Reported by {{name}}',
       totalReports: '{{count}} reported failed prints',
+      automaticCount: '{{count}} of them detected automatically (unconfirmed)',
+      sourceFilter: 'Source',
+      sourceAll: 'All reports',
+      sourcePerson: 'Picked by people',
+      sourceAutomatic: 'Detected automatically only',
+      badgeAuto: 'automatic',
+      badgeAutoTitle: 'Taken over automatically from the print history, not confirmed by anyone yet',
+      badgeImported: 'from archive',
+      badgeImportedTitle: 'Picked as failure reason in Printbuddy’s archive dialog',
+      edit: 'Change or confirm reason',
     },
     // Default reasons: title + subtitle per code. The codes on the left are stored in the
     // database — never rename those. Text typed in the app's reason settings wins over these.
@@ -6397,6 +6415,8 @@ export default {
       },
       fail_reason_10: { title: 'Poor print quality', subtitle: 'Over- or underextrusion / Stringing / Layer cracks / …' },
       fail_reason_11: { title: 'Other', subtitle: 'Please describe in the comment' },
+      // Not selectable: failed prints taken over from the history without a known cause.
+      unassigned: { title: 'Unassigned', subtitle: 'Taken over from the print history, cause unknown' },
       fail_reason_12: {
         title: 'Spaghetti / Part detached',
         subtitle: 'Part comes loose from the bed / Spaghetti / Blob on the nozzle',

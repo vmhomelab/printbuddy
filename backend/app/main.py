@@ -4954,6 +4954,11 @@ async def on_print_complete(printer_id: int, data: dict):
 
     log_timing("Print log entry")
 
+    # Take the new print log entry over into the fail reason statistics (background, never raises).
+    from backend.app.services.failure_history_import import schedule_failure_history_sync
+
+    schedule_failure_history_sync("print complete")
+
     # Run slow operations as background tasks to avoid blocking the event loop
     # These operations can take 5-10+ seconds and would freeze the UI if awaited
 
@@ -6247,6 +6252,11 @@ async def lifespan(app: FastAPI):
         logging.info("Virtual printer manager synced from database")
     except Exception as e:
         logging.warning("Failed to sync virtual printers: %s", e)
+
+    # Fail reason statistics: take over failed prints from the print log (background, never raises).
+    from backend.app.services.failure_history_import import schedule_failure_history_sync
+
+    schedule_failure_history_sync("startup")
 
     yield
 

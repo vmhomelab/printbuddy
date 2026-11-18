@@ -6348,6 +6348,14 @@ export default {
       withdrawn: 'Informe retirado',
       saveFailed: 'No se pudo guardar el informe',
       noPrint: 'Todavía no se ha registrado ninguna impresión para esta impresora.',
+      editTitle: 'Editar impresión fallida',
+      autoDetected: 'Detectado automáticamente: {{reason}}. Confirma o elige otro motivo.',
+      autoUnassigned: 'Tomado del historial de impresión, causa desconocida. Elige un motivo.',
+      importedFromArchive: 'Tomado del archivo: {{reason}}.',
+      printbuddyRecorded: 'Printbuddy había registrado: «{{text}}»',
+      printerError: 'Error de impresora {{code}}: {{description}}',
+      suggestion: 'Sugerido a partir del error actual de la impresora: compruébalo.',
+      confirm: 'Confirmar motivo',
     },
     widget: {
       title: 'Estadísticas de motivos de fallo',
@@ -6365,6 +6373,16 @@ export default {
       showAll: 'Mostrar todo ({{count}})',
       reportedByLabel: 'Informado por {{name}}',
       totalReports: '{{count}} impresiones fallidas informadas',
+      automaticCount: '{{count}} de ellas detectadas automáticamente (sin confirmar)',
+      sourceFilter: 'Origen',
+      sourceAll: 'Todos los informes',
+      sourcePerson: 'Elegidos por personas',
+      sourceAutomatic: 'Solo detectados automáticamente',
+      badgeAuto: 'automático',
+      badgeAutoTitle: 'Tomado automáticamente del historial de impresión, aún sin confirmar',
+      badgeImported: 'del archivo',
+      badgeImportedTitle: 'Elegido como motivo de fallo en el diálogo de archivo de Printbuddy',
+      edit: 'Cambiar o confirmar motivo',
     },
     // Default reasons: title + subtitle per code (the codes are stored in the database).
     reasons: {
@@ -6423,6 +6441,10 @@ export default {
       fail_reason_14: {
         title: 'Error de preparación',
         subtitle: 'Falta la placa o es incorrecta / Boquilla no instalada / Cama no despejada / …',
+      },
+      unassigned: {
+        title: 'Sin asignar',
+        subtitle: 'Tomado del historial de impresión, causa desconocida',
       },
     },
     settings: {

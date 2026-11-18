@@ -6325,6 +6325,14 @@ export default {
       withdrawn: '报告已撤回',
       saveFailed: '无法保存报告',
       noPrint: '此打印机尚未记录任何打印。',
+      editTitle: '编辑失败的打印',
+      autoDetected: '自动检测：{{reason}}。请确认或选择其他原因。',
+      autoUnassigned: '从打印历史导入，原因未知。请选择一个原因。',
+      importedFromArchive: '从归档导入：{{reason}}。',
+      printbuddyRecorded: 'Printbuddy 记录的内容：“{{text}}”',
+      printerError: '打印机错误 {{code}}：{{description}}',
+      suggestion: '根据打印机当前错误给出的建议，请核对。',
+      confirm: '确认原因',
     },
     widget: {
       title: '失败原因统计',
@@ -6342,6 +6350,16 @@ export default {
       showAll: '显示全部（{{count}}）',
       reportedByLabel: '报告人：{{name}}',
       totalReports: '已报告 {{count}} 次失败打印',
+      automaticCount: '其中 {{count}} 次为自动检测（未确认）',
+      sourceFilter: '来源',
+      sourceAll: '所有报告',
+      sourcePerson: '由人员选择',
+      sourceAutomatic: '仅自动检测',
+      badgeAuto: '自动',
+      badgeAutoTitle: '从打印历史自动导入，尚未有人确认',
+      badgeImported: '来自归档',
+      badgeImportedTitle: '在 Printbuddy 归档对话框中选择的失败原因',
+      edit: '更改或确认原因',
     },
     // Default reasons: title + subtitle per code (the codes are stored in the database).
     reasons: {
@@ -6400,6 +6418,10 @@ export default {
       fail_reason_14: {
         title: '打印准备错误',
         subtitle: '缺少或用错打印板 / 未安装喷嘴 / 热床上有异物 / …',
+      },
+      unassigned: {
+        title: '未分配',
+        subtitle: '从打印历史导入，原因未知',
       },
     },
     settings: {

@@ -6327,6 +6327,14 @@ export default {
       withdrawn: 'Segnalazione ritirata',
       saveFailed: 'Impossibile salvare la segnalazione',
       noPrint: 'Nessuna stampa registrata finora per questa stampante.',
+      editTitle: 'Modifica stampa fallita',
+      autoDetected: 'Rilevato automaticamente: {{reason}}. Conferma o scegli un altro motivo.',
+      autoUnassigned: 'Ripreso dalla cronologia di stampa, causa sconosciuta. Scegli un motivo.',
+      importedFromArchive: 'Ripreso dall\'archivio: {{reason}}.',
+      printbuddyRecorded: 'Printbuddy aveva registrato: «{{text}}»',
+      printerError: 'Errore stampante {{code}}: {{description}}',
+      suggestion: 'Suggerito in base all\'errore attuale della stampante – verifica.',
+      confirm: 'Conferma motivo',
     },
     widget: {
       title: 'Statistiche dei motivi di fallimento',
@@ -6344,6 +6352,16 @@ export default {
       showAll: 'Mostra tutto ({{count}})',
       reportedByLabel: 'Segnalato da {{name}}',
       totalReports: '{{count}} stampe fallite segnalate',
+      automaticCount: 'di cui {{count}} rilevate automaticamente (non confermate)',
+      sourceFilter: 'Origine',
+      sourceAll: 'Tutte le segnalazioni',
+      sourcePerson: 'Scelti da persone',
+      sourceAutomatic: 'Solo rilevati automaticamente',
+      badgeAuto: 'automatico',
+      badgeAutoTitle: 'Ripreso automaticamente dalla cronologia di stampa, non ancora confermato',
+      badgeImported: 'dall\'archivio',
+      badgeImportedTitle: 'Scelto come motivo di fallimento nella finestra dell\'archivio di Printbuddy',
+      edit: 'Modifica o conferma motivo',
     },
     // Default reasons: title + subtitle per code (the codes are stored in the database).
     reasons: {
@@ -6402,6 +6420,10 @@ export default {
       fail_reason_14: {
         title: 'Errore di preparazione',
         subtitle: 'Piatto mancante o errato / Ugello non installato / Piatto non libero / …',
+      },
+      unassigned: {
+        title: 'Non assegnato',
+        subtitle: 'Ripreso dalla cronologia di stampa, causa sconosciuta',
       },
     },
     settings: {

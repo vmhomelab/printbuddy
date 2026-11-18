@@ -5,6 +5,7 @@ backend/app/services/custom_failure_reports.py.
 """
 
 from datetime import date, datetime
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -27,6 +28,9 @@ from backend.app.services.custom_failure_reports import (
     reason_statistics,
     report_to_dict,
 )
+from backend.app.services.failure_history_import import SOURCE_MANUAL
+from backend.app.services.failure_reason_mapping import SKIP, hms_short_code, reason_for_hms_list
+from backend.app.services.hms_errors import get_error_description
 from backend.app.services.printer_manager import printer_manager
 
 router = APIRouter(prefix="/custom-failure-reports", tags=["custom-failure-reports"])
@@ -56,6 +60,18 @@ class CustomFailureReportResponse(BaseModel):
     filament_used_grams: float | None = None
     print_time_seconds: int | None = None
     has_thumbnail: bool = False
+    source: Literal["manual", "auto", "imported"] = "manual"
+    original_reason: str | None = None
+    hms_code: str | None = None
+    hms_description: str | None = None
+
+
+class ReasonSuggestion(BaseModel):
+    """A reason the pop-up pre-selects, derived from the printer's current error."""
+
+    reason: str
+    hms_code: str
+    hms_description: str | None = None
 
 
 class ReportTargetResponse(BaseModel):
@@ -71,6 +87,7 @@ class ReportTargetResponse(BaseModel):
     print_started_at: datetime | None = None
     has_thumbnail: bool = False
     existing_report: CustomFailureReportResponse | None = None
+    suggestion: ReasonSuggestion | None = None
 
 
 class CustomFailureReportCreate(BaseModel):
@@ -96,6 +113,7 @@ class ReasonStatistics(BaseModel):
 
 class ReasonStatisticsResponse(BaseModel):
     total: int
+    automatic_total: int = 0
     latest_limit: int
     reasons: list[ReasonStatistics]
 
@@ -116,9 +134,13 @@ async def _get_printer(db: AsyncSession, printer_id: int) -> Printer:
     return printer
 
 
-async def _get_report(db: AsyncSession, report_id: int) -> CustomFailureReport:
+async def _get_active_report(db: AsyncSession, report_id: int) -> CustomFailureReport:
     report = (
-        await db.execute(select(CustomFailureReport).where(CustomFailureReport.id == report_id))
+        await db.execute(
+            select(CustomFailureReport).where(
+                CustomFailureReport.id == report_id, CustomFailureReport.dismissed_at.is_(None)
+            )
+        )
     ).scalar_one_or_none()
     if not report:
         raise HTTPException(404, "Report not found")
@@ -128,6 +150,25 @@ async def _get_report(db: AsyncSession, report_id: int) -> CustomFailureReport:
 def _printer_state(printer_id: int) -> str | None:
     status = printer_manager.get_status(printer_id)
     return getattr(status, "state", None) if status else None
+
+
+async def _suggestion(db: AsyncSession, printer_id: int) -> dict | None:
+    """Pre-select a reason from the printer's active HMS errors (Bambu only), if one maps to a visible reason."""
+    status = printer_manager.get_status(printer_id)
+    errors = (getattr(status, "hms_errors", None) or []) if status else []
+    codes = []
+    for error in errors:
+        try:
+            codes.append(hms_short_code(getattr(error, "attr", 0), getattr(error, "code", 0)))
+        except (TypeError, ValueError):
+            continue
+    reason, code = reason_for_hms_list(codes)
+    if not reason or reason == SKIP:
+        return None
+    configured = await get_reason_by_code(db, reason)
+    if not configured or configured.is_hidden:
+        return None
+    return {"reason": reason, "hms_code": code, "hms_description": get_error_description(code)}
 
 
 @router.get("/printers/{printer_id}/target", response_model=ReportTargetResponse)
@@ -156,6 +197,7 @@ async def get_report_target(
         "print_started_at": archive.started_at,
         "has_thumbnail": has_thumbnail,
         "existing_report": report_to_dict(existing, has_thumbnail=has_thumbnail) if existing else None,
+        "suggestion": await _suggestion(db, printer_id),
     }
 
 
@@ -175,10 +217,14 @@ async def create_report(
     if not archive:
         raise HTTPException(404, "Print not found for this printer")
 
-    existing = await find_report_for_run(db, archive)
-    await _validate_reason(db, data.custom_failure_reason, existing.custom_failure_reason if existing else None)
+    existing = await find_report_for_run(db, archive, include_dismissed=True)
+    current_reason = existing.custom_failure_reason if existing and existing.dismissed_at is None else None
+    await _validate_reason(db, data.custom_failure_reason, current_reason)
     report = existing or CustomFailureReport()
     apply_print_snapshot(report, archive, printer)
+    # A person decided now: the history import never overwrites this reason again.
+    report.source = SOURCE_MANUAL
+    report.dismissed_at = None
     report.custom_failure_reason = data.custom_failure_reason
     report.comment = clean_text(data.comment)
     report.reported_by = clean_text(data.reported_by)
@@ -196,7 +242,7 @@ async def update_report(
     db: AsyncSession = Depends(get_db),
 ):
     """Change the reason, comment or name of an existing report."""
-    report = await _get_report(db, report_id)
+    report = await _get_active_report(db, report_id)
 
     changes = data.model_dump(exclude_unset=True)
     if "custom_failure_reason" in changes:
@@ -204,6 +250,7 @@ async def update_report(
             raise HTTPException(400, "A failure reason is required")
         await _validate_reason(db, changes["custom_failure_reason"], report.custom_failure_reason)
         report.custom_failure_reason = changes["custom_failure_reason"]
+        report.source = SOURCE_MANUAL  # confirmed or corrected by a person
     if "comment" in changes:
         report.comment = clean_text(changes["comment"])
     if "reported_by" in changes:
@@ -219,9 +266,16 @@ async def delete_report(
     _=RequirePermissionIfAuthEnabled(Permission.ARCHIVES_DELETE_ALL),
     db: AsyncSession = Depends(get_db),
 ):
-    """Withdraw a report (e.g. flagged by mistake)."""
-    report = await _get_report(db, report_id)
-    await db.delete(report)
+    """Withdraw a report (e.g. flagged by mistake).
+
+    Reports linked to Printbuddy's print log are kept as an invisible marker, so the
+    history import doesn't bring them back.
+    """
+    report = await _get_active_report(db, report_id)
+    if report.print_log_entry_id is not None:
+        report.dismissed_at = datetime.now()
+    else:
+        await db.delete(report)
     await db.commit()
     return {"status": "deleted"}
 
@@ -230,11 +284,12 @@ async def delete_report(
 async def get_statistics(
     date_from: date | None = Query(default=None),
     date_to: date | None = Query(default=None),
+    source: Literal["person", "automatic"] | None = Query(default=None),
     _=RequirePermissionIfAuthEnabled(Permission.ARCHIVES_READ),
     db: AsyncSession = Depends(get_db),
 ):
     """Per-reason counts and shares with the latest prints for "Fail reason statistics"."""
-    return await reason_statistics(db, date_from=date_from, date_to=date_to)
+    return await reason_statistics(db, date_from=date_from, date_to=date_to, source=source)
 
 
 @router.get("/", response_model=list[CustomFailureReportResponse])
@@ -242,8 +297,9 @@ async def get_reports(
     reason: str | None = Query(default=None),
     date_from: date | None = Query(default=None),
     date_to: date | None = Query(default=None),
+    source: Literal["person", "automatic"] | None = Query(default=None),
     _=RequirePermissionIfAuthEnabled(Permission.ARCHIVES_READ),
     db: AsyncSession = Depends(get_db),
 ):
     """All reports (optionally for one reason), newest print first — used by "show all"."""
-    return await list_reports(db, reason=reason, date_from=date_from, date_to=date_to)
+    return await list_reports(db, reason=reason, date_from=date_from, date_to=date_to, source=source)

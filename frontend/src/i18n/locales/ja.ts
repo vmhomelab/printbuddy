@@ -6339,6 +6339,14 @@ export default {
       withdrawn: '報告を取り消しました',
       saveFailed: '報告を保存できませんでした',
       noPrint: 'このプリンターではまだ印刷が記録されていません。',
+      editTitle: '失敗した印刷を編集',
+      autoDetected: '自動検出：{{reason}}。確認するか、別の理由を選択してください。',
+      autoUnassigned: '印刷履歴から取り込みました。原因は不明です。理由を選択してください。',
+      importedFromArchive: 'アーカイブから取り込みました：{{reason}}。',
+      printbuddyRecorded: 'Printbuddy の記録：「{{text}}」',
+      printerError: 'プリンターエラー {{code}}：{{description}}',
+      suggestion: 'プリンターの現在のエラーに基づく提案です。確認してください。',
+      confirm: '理由を確定',
     },
     widget: {
       title: '失敗理由の統計',
@@ -6356,6 +6364,16 @@ export default {
       showAll: 'すべて表示（{{count}}）',
       reportedByLabel: '報告者：{{name}}',
       totalReports: '報告された失敗印刷 {{count}} 件',
+      automaticCount: 'うち {{count}} 件は自動検出（未確認）',
+      sourceFilter: 'ソース',
+      sourceAll: 'すべての報告',
+      sourcePerson: '人が選択',
+      sourceAutomatic: '自動検出のみ',
+      badgeAuto: '自動',
+      badgeAutoTitle: '印刷履歴から自動で取り込み、まだ誰も確認していません',
+      badgeImported: 'アーカイブから',
+      badgeImportedTitle: 'Printbuddy のアーカイブ画面で失敗理由として選択されました',
+      edit: '理由を変更または確定',
     },
     // Default reasons: title + subtitle per code (the codes are stored in the database).
     reasons: {
@@ -6414,6 +6432,10 @@ export default {
       fail_reason_14: {
         title: '印刷準備のミス',
         subtitle: 'ビルドプレートがない・違う / ノズル未装着 / ベッド上に物がある / …',
+      },
+      unassigned: {
+        title: '未分類',
+        subtitle: '印刷履歴から取り込み、原因不明',
       },
     },
     settings: {

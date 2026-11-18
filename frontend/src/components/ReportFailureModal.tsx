@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, Flag, Loader2, Settings, X } from 'lucide-react';
 import { api, ApiError } from '../api/client';
-import type { CustomFailureReason, Printer } from '../api/client';
+import type { CustomFailureReason, CustomFailureReport, Printer } from '../api/client';
 import { Card, CardContent } from './Card';
 import { Button } from './Button';
 import { FailureReasonIcon } from './FailureReasonIcon';
@@ -18,9 +18,15 @@ import {
 } from '../utils/customFailure';
 
 interface ReportFailureModalProps {
-  printer: Pick<Printer, 'id' | 'name'>;
+  /** Report the printer's current or last print ("Report failed print" button). */
+  printer?: Pick<Printer, 'id' | 'name'>;
+  /** Or: change / confirm an existing report (from the statistics). */
+  report?: CustomFailureReport;
   onClose: () => void;
 }
+
+// Failed prints taken over from the history without a known cause; not selectable.
+const UNASSIGNED = 'unassigned';
 
 const TILE_MIN_WIDTH = 150;
 const TILE_GAP = 8;
@@ -41,7 +47,7 @@ function useWindowWidth(): number {
  * reason, picked from a grid of tiles. The cog opens the reason settings.
  * Separate from the automatic failure_reason on archives.
  */
-export function ReportFailureModal({ printer, onClose }: ReportFailureModalProps) {
+export function ReportFailureModal({ printer, report, onClose }: ReportFailureModalProps) {
   const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
@@ -51,21 +57,24 @@ export function ReportFailureModal({ printer, onClose }: ReportFailureModalProps
   const windowWidth = useWindowWidth();
   const [showSettings, setShowSettings] = useState(false);
 
+  const editMode = !!report;
   const {
     data: target,
     isLoading: targetLoading,
     error: targetError,
   } = useQuery({
-    queryKey: ['customFailureTarget', printer.id],
-    queryFn: () => api.getCustomFailureReportTarget(printer.id),
+    queryKey: ['customFailureTarget', printer?.id],
+    queryFn: () => api.getCustomFailureReportTarget(printer!.id),
     retry: false,
+    enabled: !editMode && !!printer,
   });
   const { data: allReasons = [], isLoading: reasonsLoading } = useQuery({
     queryKey: ['customFailureReasons'],
     queryFn: () => api.getCustomFailureReasons({ includeHidden: true }),
   });
 
-  const existing = target?.existing_report ?? null;
+  const existing = editMode ? report : (target?.existing_report ?? null);
+  const suggestion = editMode ? null : (target?.suggestion ?? null);
   const [reason, setReason] = useState('');
   const [comment, setComment] = useState('');
   // Empty by default on purpose: nobody has to put their name on a failed print.
@@ -74,14 +83,16 @@ export function ReportFailureModal({ printer, onClose }: ReportFailureModalProps
 
   // Fill the form once the data is there (later refetches must not undo the user's choice).
   useEffect(() => {
-    if (initialised || !target) return;
+    if (initialised || (!editMode && !target)) return;
     if (existing) {
-      setReason(existing.custom_failure_reason);
+      setReason(existing.custom_failure_reason === UNASSIGNED ? '' : existing.custom_failure_reason);
       setComment(existing.comment ?? '');
       setReportedBy(existing.reported_by ?? '');
+    } else if (suggestion) {
+      setReason(suggestion.reason);
     }
     setInitialised(true);
-  }, [initialised, target, existing]);
+  }, [initialised, editMode, target, existing, suggestion]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -108,13 +119,15 @@ export function ReportFailureModal({ printer, onClose }: ReportFailureModalProps
 
   const saveMutation = useMutation({
     mutationFn: () =>
-      api.createCustomFailureReport({
-        printer_id: printer.id,
-        archive_id: target!.archive_id,
-        custom_failure_reason: reason,
-        comment,
-        reported_by: reportedBy,
-      }),
+      editMode
+        ? api.updateCustomFailureReport(report.id, { custom_failure_reason: reason, comment, reported_by: reportedBy })
+        : api.createCustomFailureReport({
+            printer_id: printer!.id,
+            archive_id: target!.archive_id,
+            custom_failure_reason: reason,
+            comment,
+            reported_by: reportedBy,
+          }),
     onSuccess: () => {
       refreshStats();
       showToast(t('customFailure.modal.saved'), 'success');
@@ -137,17 +150,29 @@ export function ReportFailureModal({ printer, onClose }: ReportFailureModalProps
   const noPrintYet = targetError instanceof ApiError && targetError.status === 404;
   const existingReason = allReasons.find((r) => r.code === existing?.custom_failure_reason);
   const existingTitle = existing ? customFailureReasonTitle(t, existing.custom_failure_reason, existingReason) : '';
-  // The print this report applies to.
-  const print = target
+  const unconfirmed = existing?.source === 'auto' || existing?.source === 'imported';
+  // The print this report applies to: the existing report's snapshot, or the printer's target print.
+  const print = editMode
     ? {
-        archiveId: target.archive_id,
-        hasThumbnail: target.has_thumbnail,
-        label: `${target.is_current_print ? t('customFailure.modal.currentPrint') : t('customFailure.modal.lastPrint')} · ${printer.name}`,
-        name: target.print_name || target.filename || '–',
-        filename: target.filename,
-        date: target.print_started_at,
+        archiveId: report.archive_id,
+        hasThumbnail: report.has_thumbnail,
+        label: report.printer_name || '–',
+        name: report.print_name || report.filename || '–',
+        filename: report.filename,
+        date: report.print_date,
       }
-    : null;
+    : target
+      ? {
+          archiveId: target.archive_id,
+          hasThumbnail: target.has_thumbnail,
+          label: `${target.is_current_print ? t('customFailure.modal.currentPrint') : t('customFailure.modal.lastPrint')} · ${printer?.name ?? ''}`,
+          name: target.print_name || target.filename || '–',
+          filename: target.filename,
+          date: target.print_started_at,
+        }
+      : null;
+  const hmsCode = existing?.hms_code ?? suggestion?.hms_code ?? null;
+  const hmsDescription = existing?.hms_code ? existing.hms_description : (suggestion?.hms_description ?? null);
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50" onClick={busy ? undefined : onClose}>
@@ -175,7 +200,7 @@ export function ReportFailureModal({ printer, onClose }: ReportFailureModalProps
               ) : (
                 <>
                   <Flag className="w-5 h-5 text-red-400" />
-                  {t('customFailure.modal.title')}
+                  {editMode ? t('customFailure.modal.editTitle') : t('customFailure.modal.title')}
                 </>
               )}
             </h3>
@@ -199,7 +224,7 @@ export function ReportFailureModal({ printer, onClose }: ReportFailureModalProps
 
           {showSettings ? (
             <FailureReasonSettings reasons={allReasons} />
-          ) : targetLoading || reasonsLoading ? (
+          ) : (!editMode && targetLoading) || reasonsLoading ? (
             <div className="flex justify-center py-6">
               <Loader2 className="w-6 h-6 text-bambu-green animate-spin" />
             </div>
@@ -227,10 +252,32 @@ export function ReportFailureModal({ printer, onClose }: ReportFailureModalProps
                 </div>
               </div>
 
-              {existing && (
-                <p className="text-xs text-yellow-400">
-                  {t('customFailure.modal.alreadyReported', { reason: existingTitle })}
-                </p>
+              {(existing || suggestion) && (
+                <div className="text-xs space-y-0.5" data-testid="report-origin">
+                  {existing && !unconfirmed && (
+                    <p className="text-yellow-400">{t('customFailure.modal.alreadyReported', { reason: existingTitle })}</p>
+                  )}
+                  {existing && unconfirmed && (
+                    <p className="text-yellow-400">
+                      {existing.custom_failure_reason === UNASSIGNED
+                        ? t('customFailure.modal.autoUnassigned')
+                        : existing.source === 'imported'
+                          ? t('customFailure.modal.importedFromArchive', { reason: existingTitle })
+                          : t('customFailure.modal.autoDetected', { reason: existingTitle })}
+                    </p>
+                  )}
+                  {!existing && suggestion && <p className="text-yellow-400">{t('customFailure.modal.suggestion')}</p>}
+                  {existing?.original_reason && (
+                    <p className="text-bambu-gray">
+                      {t('customFailure.modal.printbuddyRecorded', { text: existing.original_reason })}
+                    </p>
+                  )}
+                  {hmsCode && (
+                    <p className="text-bambu-gray">
+                      {t('customFailure.modal.printerError', { code: hmsCode, description: hmsDescription ?? '' })}
+                    </p>
+                  )}
+                </div>
               )}
 
               <div role="radiogroup" aria-label={t('customFailure.modal.reason')}>
@@ -329,7 +376,11 @@ export function ReportFailureModal({ printer, onClose }: ReportFailureModalProps
               </Button>
               <Button onClick={() => saveMutation.mutate()} className="flex-1" disabled={!print || !reason || busy}>
                 {saveMutation.isPending && <Loader2 className="w-4 h-4 animate-spin" />}
-                {existing ? t('customFailure.modal.update') : t('customFailure.modal.submit')}
+                {!existing
+                  ? t('customFailure.modal.submit')
+                  : unconfirmed
+                    ? t('customFailure.modal.confirm')
+                    : t('customFailure.modal.update')}
               </Button>
             </div>
           )}
