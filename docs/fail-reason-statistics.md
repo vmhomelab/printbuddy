@@ -59,9 +59,10 @@ change or confirm its reason.
 ## Existing failure history
 
 So that existing installations don't start from zero, print log entries with status
-`failed` or `aborted` are taken over automatically. The sync runs in the background once at
-startup, after every finished print and after a failure reason or status is changed in the
-Edit Archive dialog; reading the statistics never writes. It is idempotent, only reads
+`failed` or `aborted` are taken over automatically. The sync runs in the background: once at
+startup over the whole print log, and after every finished print and after a failure reason
+or status is changed in the Edit Archive dialog only for that print's archive, so it stays
+cheap with long histories. Reading the statistics never writes. It is idempotent, only reads
 Printbuddy's tables, and a unique index on `print_log_entry_id` rules out duplicates even
 with several workers.
 
