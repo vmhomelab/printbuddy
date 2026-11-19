@@ -515,3 +515,56 @@ class TestIncrementalSync:
         with patch("backend.app.services.failure_history_import.sync_failure_history") as sync:
             await run_failure_history_sync("print complete", [42])
         assert sync.call_args.args[1] == [42]
+
+
+class TestProgressCleanup:
+    @staticmethod
+    async def _progress_archives(db_session) -> set[int]:
+        from backend.app.models.custom_failure_report import PrintRunProgress
+
+        db_session.expire_all()
+        return {r.archive_id for r in (await db_session.execute(select(PrintRunProgress))).scalars()}
+
+    @staticmethod
+    async def _add_progress(db_session, printer_id: int, archive_id: int, percent: float) -> None:
+        from backend.app.models.custom_failure_report import PrintRunProgress
+
+        db_session.add(
+            PrintRunProgress(printer_id=printer_id, archive_id=archive_id, status="failed", progress_percent=percent)
+        )
+        await db_session.commit()
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_hard_delete_drops_progress_soft_delete_keeps_it(
+        self, async_client, printer_factory, archive_factory, db_session
+    ):
+        printer = await printer_factory(name="Cleanup")
+        kept = await _failed(archive_factory, printer.id, 1)
+        trashed = await _failed(archive_factory, printer.id, 2)
+        purged = await _failed(archive_factory, printer.id, 3)
+        kept_id, trashed_id, purged_id = kept.id, trashed.id, purged.id
+        for archive_id, percent in ((kept_id, 10), (trashed_id, 20), (purged_id, 30)):
+            await self._add_progress(db_session, printer.id, archive_id, percent)
+
+        assert (await async_client.delete(f"/api/v1/archives/{trashed_id}")).status_code == 200
+        assert (await async_client.delete(f"/api/v1/archives/{purged_id}?purge_stats=true")).status_code == 200
+
+        # The soft-deleted archive can come back, so its progress stays.
+        assert await self._progress_archives(db_session) == {kept_id, trashed_id}
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_full_sync_drops_progress_of_archives_that_are_gone(
+        self, printer_factory, archive_factory, db_session
+    ):
+        printer = await printer_factory(name="Orphans")
+        archive = await _failed(archive_factory, printer.id, 1)
+        archive_id = archive.id
+        await self._add_progress(db_session, printer.id, archive_id, 50)
+        await self._add_progress(db_session, printer.id, 99999, 60)  # archive deleted with its printer, say
+
+        await sync_failure_history(db_session, [archive_id])  # incremental: no cleanup
+        assert await self._progress_archives(db_session) == {archive_id, 99999}
+        await sync_failure_history(db_session)  # startup
+        assert await self._progress_archives(db_session) == {archive_id}

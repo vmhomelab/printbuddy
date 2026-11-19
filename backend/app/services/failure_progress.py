@@ -3,11 +3,16 @@
 Printbuddy doesn't store this for finished prints. ``record_run_progress`` is
 called once from Printbuddy's print-complete handler and writes our own table;
 nothing of Printbuddy's is changed. Older prints simply have no value.
+
+Rows belong to an archive: a hard-deleted archive takes its rows with it
+(``delete_progress_for_archive``), and the startup sync removes any rows whose
+archive is gone some other way (``delete_orphaned_progress``, e.g. when a printer
+or user was deleted together with its archives). Reports keep their own copy.
 """
 
 import logging
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.archive import PrintArchive
@@ -87,3 +92,30 @@ async def progress_by_run(db: AsyncSession, archive_ids: set[int]) -> dict[tuple
         )
     ).scalars()
     return {(r.archive_id, r.started_at): r.progress_percent for r in rows}
+
+
+async def delete_progress_for_archive(db: AsyncSession, archive_id: int) -> None:
+    """Drop the progress rows of an archive that is being hard-deleted (caller commits)."""
+    await db.execute(delete(PrintRunProgress).where(PrintRunProgress.archive_id == archive_id))
+
+
+async def delete_orphaned_progress(db: AsyncSession) -> int:
+    """Drop progress rows whose archive no longer exists. Returns how many (caller commits).
+
+    Reads first, so the usual case (nothing to drop) doesn't open a write transaction.
+    """
+    orphaned = (
+        (
+            await db.execute(
+                select(PrintRunProgress.id).where(
+                    PrintRunProgress.archive_id.is_not(None),
+                    PrintRunProgress.archive_id.not_in(select(PrintArchive.id)),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if orphaned:
+        await db.execute(delete(PrintRunProgress).where(PrintRunProgress.id.in_(orphaned)))
+    return len(orphaned)
