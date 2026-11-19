@@ -120,3 +120,9 @@ defaults added in a later version are inserted before "Other".
 `custom_failure_reports` contained the columns for the history import and the progress
 (`source`, `original_reason`, `hms_code`, `print_log_entry_id` with a unique index,
 `dismissed_at`, `progress_percent`) from its first version, so no `ALTER TABLE` is needed.
+
+`custom_failure_run_progress` rows belong to an archive: hard-deleting an archive
+(`?purge_stats=true`, or the automatic purge in hard-delete mode) removes them too, and the
+startup sync drops rows whose archive is gone in some other way (e.g. a printer deleted
+together with its archives). Soft-deleted archives keep theirs, since they can be restored.
+Reports keep their own copy of the value.

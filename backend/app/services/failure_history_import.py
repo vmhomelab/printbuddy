@@ -35,7 +35,7 @@ from backend.app.models.print_log import PrintLogEntry
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer import Printer
 from backend.app.services.custom_failure_reports import materials_from_archive
-from backend.app.services.failure_progress import progress_by_run
+from backend.app.services.failure_progress import delete_orphaned_progress, progress_by_run
 from backend.app.services.failure_reason_mapping import (
     SKIP,
     UNASSIGNED,
@@ -160,6 +160,10 @@ async def _sync(db: AsyncSession, scope: set[int] | None) -> dict:
     counts = {"created": 0, "updated": 0, "linked": 0, "removed": 0}
     if scope is not None and not scope:
         return counts
+    if scope is None:
+        # Full sync (startup): also drop progress rows of archives that are gone.
+        if await delete_orphaned_progress(db):
+            await db.commit()
     entry_query = select(PrintLogEntry).where(PrintLogEntry.status.in_(IMPORTED_STATUSES))
     if scope is not None:
         entry_query = entry_query.where(PrintLogEntry.archive_id.in_(scope))
