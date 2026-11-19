@@ -66,6 +66,7 @@ function buildReport(id: number, overrides: Partial<CustomFailureReport> = {}): 
     original_reason: null,
     hms_code: null,
     hms_description: null,
+    progress_percent: null,
     ...overrides,
   };
 }
@@ -203,7 +204,8 @@ describe('reason settings (cog)', () => {
     await waitFor(() =>
       expect(created).toEqual({ title: 'Head crash', subtitle: 'Collision, nozzle torn off', icon: 'Zap' })
     );
-  });
+    // Typing into the form with ~50 icon buttons can exceed the default 5 s on a busy CI runner.
+  }, 10000);
 
   it('uploads an own image as icon when saving', async () => {
     useTarget();
@@ -355,7 +357,7 @@ describe('Failure history import', () => {
 
   it('changes a reason from the statistics via the pencil', async () => {
     useReasons();
-    const auto = buildReport(9, { source: 'auto', custom_failure_reason: 'fail_reason_02', original_reason: 'Warping' });
+    const auto = buildReport(9, { source: 'auto', custom_failure_reason: 'fail_reason_02', original_reason: 'Warping', progress_percent: 37.4 });
     server.use(
       http.get(`${API}/stats`, () =>
         HttpResponse.json({
@@ -380,11 +382,50 @@ describe('Failure history import', () => {
     expect(screen.getByLabelText('Source')).toBeInTheDocument();
     await user.click(screen.getByText('Warping'));
     expect(screen.getByText('automatic')).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: 'Stopped/Failed at' })).toBeInTheDocument();
+    expect(screen.getByText('37 %')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Change or confirm reason' }));
 
     expect(await screen.findByText('Edit failed print')).toBeInTheDocument();
     await user.click(screen.getByRole('radio', { name: /Layer shift/ }));
     await user.click(screen.getByRole('button', { name: 'Confirm reason' }));
     await waitFor(() => expect(patched).toMatchObject({ custom_failure_reason: 'fail_reason_03' }));
+  });
+});
+
+describe('Printer filter', () => {
+  it('filters the statistics by printer and resets the filter', async () => {
+    useReasons();
+    server.use(
+      http.get('/api/v1/printers/', () =>
+        HttpResponse.json([
+          { id: 1, name: 'P1S Links' },
+          { id: 2, name: 'P1S Rechts' },
+        ])
+      )
+    );
+    const requested: (string | null)[] = [];
+    server.use(
+      http.get(`${API}/stats`, ({ request }) => {
+        requested.push(new URL(request.url).searchParams.get('printer_id'));
+        return HttpResponse.json({
+          total: 1,
+          automatic_total: 0,
+          latest_limit: 15,
+          reasons: [{ reason: 'fail_reason_01', count: 1, percent: 100, latest: [buildReport(1)] }],
+        });
+      })
+    );
+    const user = userEvent.setup();
+    render(<FailReasonStatisticsWidget />);
+
+    const select = await screen.findByLabelText('Printer');
+    expect(screen.queryByRole('button', { name: 'Reset filter' })).not.toBeInTheDocument();
+    await user.selectOptions(select, 'P1S Rechts');
+    await waitFor(() => expect(requested).toContain('2'));
+
+    await user.click(screen.getByRole('button', { name: 'Reset filter' }));
+    expect(screen.getByLabelText('Printer')).toHaveValue('');
+    expect(screen.queryByRole('button', { name: 'Reset filter' })).not.toBeInTheDocument();
   });
 });

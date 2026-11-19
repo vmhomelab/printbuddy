@@ -65,6 +65,26 @@ class CustomFailureReport(Base):
     progress_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
 
 
+class PrintRunProgress(Base):
+    """How far a print got when it ended without completing (failed, aborted, cancelled, stopped).
+
+    Printbuddy doesn't keep this, so it's recorded here at the moment the print ends.
+    A run is identified like everywhere else: archive + the run's start time.
+    """
+
+    __tablename__ = "custom_failure_run_progress"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    printer_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    archive_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    progress_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
+    layer_num: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_layers: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
 class CustomFailureReason(Base):
     """A selectable reason for "Report failed print" (default or user-created).
 

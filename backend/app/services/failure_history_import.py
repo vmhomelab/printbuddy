@@ -31,6 +31,7 @@ from backend.app.models.print_log import PrintLogEntry
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer import Printer
 from backend.app.services.custom_failure_reports import materials_from_archive
+from backend.app.services.failure_progress import progress_by_run
 from backend.app.services.failure_reason_mapping import (
     SKIP,
     UNASSIGNED,
@@ -179,12 +180,14 @@ async def _sync(db: AsyncSession) -> dict:
         ).scalars():
             queue_by_archive.setdefault(item.archive_id, []).append(item)
     printer_names = dict((await db.execute(select(Printer.id, Printer.name))).all())
+    progress = await progress_by_run(db, archive_ids)
 
     changed = False
     for entry in entries:
         codes = _queue_codes(queue_by_archive.get(entry.archive_id, []), entry) if entry.archive_id else []
         reason, source, hms_code = classify_entry(entry.failure_reason, entry.status, codes)
         original = (entry.failure_reason or "").strip() or None
+        run_progress = progress.get((entry.archive_id, entry.started_at))
 
         report = by_entry.get(entry.id)
         if report is not None and not _same_run(report, entry):
@@ -202,6 +205,10 @@ async def _sync(db: AsyncSession) -> dict:
         if report is not None:
             if report.dismissed_at is not None:
                 continue
+            if run_progress is not None and report.progress_percent != run_progress:
+                # Measured when the print ended; not a person's decision, so always filled in.
+                report.progress_percent = run_progress
+                changed = True
             if report.source == SOURCE_MANUAL:
                 # A person decided; only remember what Printbuddy had recorded.
                 if report.original_reason != original or (hms_code and report.hms_code != hms_code):
@@ -237,6 +244,7 @@ async def _sync(db: AsyncSession) -> dict:
             original_reason=original,
             hms_code=hms_code,
             print_log_entry_id=entry.id,
+            progress_percent=run_progress,
         )
         _snapshot(report, entry, archives.get(entry.archive_id), printer_names.get(entry.printer_id))
         db.add(report)

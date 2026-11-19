@@ -48,11 +48,13 @@ in the statistics.
 
 **Statistics → Fail reason statistics** lists every visible reason with count and share for
 the page's date range (plus hidden reasons that have reports). Each row expands to the
-affected prints: printer, date, material, estimated grams and time, print name with
-thumbnail, comment and reporter. The latest 15 are shown, then "Show all (N)".
+affected prints: printer, date, material, estimated grams and time, **Stopped/Failed at**
+(how far the print got), print name with thumbnail, comment and reporter. The latest 15 are
+shown, then "Show all (N)".
 
-Filter **Source**: all reports / picked by people / detected automatically. A pencil on each
-print opens the dialog to change or confirm its reason.
+Filters: **Printer** (one printer or all) and **Source** (all reports / picked by people /
+detected automatically), with **Reset filter**. A pencil on each print opens the dialog to
+change or confirm its reason.
 
 ## Existing failure history
 
@@ -80,6 +82,11 @@ with several workers.
 - A withdrawn imported report is kept as an invisible marker, so the next sync doesn't
   bring it back.
 
+**Stopped/Failed at:** when a print ends without completing, its last progress is stored
+(Bambu `last_progress`, Moonraker `progress`). Prints that ended before this feature
+existed show "–". A print reported after it completed shows 100 %; a print reported while
+it is still running shows the progress at that moment until it ends.
+
 ## API
 
 | Endpoint | Permission | Purpose |
@@ -88,8 +95,8 @@ with several workers.
 | `POST /api/v1/custom-failure-reports/` | `printers:control` | Report a print run (or update its report) |
 | `PATCH /api/v1/custom-failure-reports/{id}` | `printers:control` | Change reason, comment or name |
 | `DELETE /api/v1/custom-failure-reports/{id}` | `archives:delete_all` | Withdraw a report |
-| `GET /api/v1/custom-failure-reports/stats` | `archives:read` | Counts per reason (`date_from`, `date_to`, `source`) |
-| `GET /api/v1/custom-failure-reports/` | `archives:read` | Reports, newest first (`reason`, `date_from`, `date_to`, `source`) |
+| `GET /api/v1/custom-failure-reports/stats` | `archives:read` | Counts per reason (`date_from`, `date_to`, `source`, `printer_id`) |
+| `GET /api/v1/custom-failure-reports/` | `archives:read` | Reports, newest first (`reason`, `date_from`, `date_to`, `source`, `printer_id`) |
 | `GET /api/v1/custom-failure-reports/reasons/` | `printers:read` | Reasons (`include_hidden`) |
 | `POST /api/v1/custom-failure-reports/reasons/` | `settings:update` | Add a reason |
 | `PATCH/DELETE /api/v1/custom-failure-reports/reasons/{id}` | `settings:update` | Edit / hide or delete a reason |
@@ -104,10 +111,11 @@ The button, the pencil and **Withdraw report** are hidden for users without the 
 
 ## Database
 
-New tables `custom_failure_reports` and `custom_failure_reasons`, created by `create_all`
-(SQLite and PostgreSQL). Nothing in existing tables is changed. The default reasons are seeded
-once at startup (`init_db`); defaults added in a later version are inserted before "Other".
+New tables `custom_failure_reports`, `custom_failure_reasons` and
+`custom_failure_run_progress`, created by `create_all` (SQLite and PostgreSQL). Nothing in
+existing tables is changed. The default reasons are seeded once at startup (`init_db`);
+defaults added in a later version are inserted before "Other".
 
-`custom_failure_reports` already contains the columns used by later parts of the feature
+`custom_failure_reports` contained the columns for the history import and the progress
 (`source`, `original_reason`, `hms_code`, `print_log_entry_id` with a unique index,
-`dismissed_at`, `progress_percent`), so they never need an `ALTER TABLE`.
+`dismissed_at`, `progress_percent`) from its first version, so no `ALTER TABLE` is needed.

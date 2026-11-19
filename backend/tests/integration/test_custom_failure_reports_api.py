@@ -277,4 +277,4 @@ class TestSchema:
         row = await db_session.get(CustomFailureReport, created["id"])
         assert row.source == "manual"
         assert row.print_log_entry_id is None
-        assert row.progress_percent is None
+        assert row.progress_percent == 100.0  # reported after the print completed

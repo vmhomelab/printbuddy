@@ -4886,6 +4886,15 @@ async def on_print_complete(printer_id: int, data: dict):
 
     log_timing("Archive status update")
 
+    # Remember how far a failed/stopped print got ("Stopped/Failed at" in the fail reason statistics).
+    try:
+        async with async_session() as db:
+            from backend.app.services.failure_progress import record_run_progress
+
+            await record_run_progress(db, printer_id, archive_id, data)
+    except Exception as e:
+        logger.warning("[FAIL_REASON] Failed to record print progress for archive %s: %s", archive_id, e)
+
     # Write independent print log entry (separate table, never touches archives)
     try:
         async with async_session() as db:
