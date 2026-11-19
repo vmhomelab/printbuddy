@@ -300,6 +300,45 @@ describe('FailReasonStatisticsWidget', () => {
     expect(screen.queryByRole('button', { name: 'Show all (17)' })).not.toBeInTheDocument();
   });
 
+  it('lines up the columns of all expanded reasons', async () => {
+    useReasons();
+    server.use(
+      http.get(`${API}/stats`, () =>
+        HttpResponse.json({
+          total: 2,
+          latest_limit: 15,
+          reasons: [
+            {
+              reason: 'fail_reason_08',
+              count: 1,
+              percent: 50,
+              latest: [buildReport(1, { print_name: 'A_very_long_print_name_that_would_widen_its_column_v12' })],
+            },
+            {
+              reason: 'fail_reason_02',
+              count: 1,
+              percent: 50,
+              latest: [buildReport(2, { custom_failure_reason: 'fail_reason_02', print_name: 'Clip' })],
+            },
+          ],
+        })
+      )
+    );
+    const user = userEvent.setup();
+    render(<FailReasonStatisticsWidget />);
+
+    await user.click(await screen.findByText('Tangled filament'));
+    await user.click(screen.getByText('Warping'));
+    const tables = screen.getAllByText('Print name').map((header) => header.closest('table')!);
+    expect(tables).toHaveLength(2);
+    const layout = (table: HTMLTableElement) => [...table.querySelectorAll('col')].map((col) => col.className);
+    for (const table of tables) {
+      expect(table).toHaveClass('table-fixed');
+      expect(layout(table)).toHaveLength(9);
+    }
+    expect(layout(tables[0])).toEqual(layout(tables[1]));
+  });
+
   it('shows a renamed reason with its own title', async () => {
     useReasons(buildReasons({ fail_reason_08: { title: 'Filamentsalat' } }));
     server.use(

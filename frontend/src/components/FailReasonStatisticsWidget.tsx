@@ -26,6 +26,11 @@ interface FailReasonStatisticsWidgetProps {
  * per reason, expandable to the affected prints. Independent of the existing
  * Failure Analysis widget, which uses the automatic failure_reason.
  */
+// Column widths shared by every "affected prints" table, so the columns line up across
+// all expanded reasons instead of each table sizing itself to its own content.
+// The print name takes the remaining width.
+const AFFECTED_PRINT_COLUMNS = ['w-[13%]', 'w-[10%]', 'w-[13%]', 'w-[9%]', 'w-[9%]', 'w-[10%]', '', 'w-[14%]', 'w-8'];
+
 export function FailReasonStatisticsWidget({ dateFrom, dateTo }: FailReasonStatisticsWidgetProps) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -221,18 +226,23 @@ function AffectedPrints({
   const hiddenCount = row.count - row.latest.length;
 
   return (
-    <table className="w-full text-xs mt-1">
+    <table className="w-full min-w-[720px] table-fixed text-xs mt-1">
+      <colgroup>
+        {AFFECTED_PRINT_COLUMNS.map((width, index) => (
+          <col key={index} className={width || undefined} />
+        ))}
+      </colgroup>
       <thead>
-        <tr className="text-left text-bambu-gray">
+        <tr className="text-left text-bambu-gray align-bottom">
           <th className="py-1 pr-2 font-medium">{t('customFailure.widget.colPrinter')}</th>
-          <th className="py-1 px-2 font-medium whitespace-nowrap">{t('customFailure.widget.colDate')}</th>
+          <th className="py-1 px-2 font-medium">{t('customFailure.widget.colDate')}</th>
           <th className="py-1 px-2 font-medium">{t('customFailure.widget.colMaterial')}</th>
-          <th className="py-1 px-2 font-medium text-right whitespace-nowrap">{t('customFailure.widget.colAmount')}</th>
-          <th className="py-1 px-2 font-medium text-right whitespace-nowrap">{t('customFailure.widget.colTime')}</th>
-          <th className="py-1 px-2 font-medium text-right whitespace-nowrap">{t('customFailure.widget.colStoppedAt')}</th>
+          <th className="py-1 px-2 font-medium text-right">{t('customFailure.widget.colAmount')}</th>
+          <th className="py-1 px-2 font-medium text-right">{t('customFailure.widget.colTime')}</th>
+          <th className="py-1 px-2 font-medium text-right">{t('customFailure.widget.colStoppedAt')}</th>
           <th className="py-1 px-2 font-medium">{t('customFailure.widget.colPrintName')}</th>
           <th className="py-1 pl-2 font-medium">{t('customFailure.widget.colComment')}</th>
-          <th className="py-1 pl-2 w-6" />
+          <th className="py-1 pl-2" />
         </tr>
       </thead>
       <tbody>
@@ -295,7 +305,7 @@ function AffectedPrintRow({ report, onEdit }: { report: CustomFailureReport; onE
 
   return (
     <tr className="border-t border-bambu-dark-tertiary/40 align-top text-white">
-      <td className="py-1 pr-2">{report.printer_name || '–'}</td>
+      <td className="py-1 pr-2 break-words">{report.printer_name || '–'}</td>
       <td className="py-1 px-2 whitespace-nowrap">{formatIsoDay(report.print_date)}</td>
       <td className="py-1 px-2">
         {report.materials.length === 0 ? (
@@ -305,7 +315,7 @@ function AffectedPrintRow({ report, onEdit }: { report: CustomFailureReport; onE
             {report.materials.map((material, index) => {
               const color = normalizeFilamentColor(material.color);
               return (
-                <span key={index} className="inline-flex items-center gap-1 whitespace-nowrap">
+                <span key={index} className="inline-flex flex-wrap items-center gap-1">
                   {color && (
                     <span
                       className="inline-block w-3 h-3 rounded-full border border-white/30"
@@ -343,7 +353,7 @@ function AffectedPrintRow({ report, onEdit }: { report: CustomFailureReport; onE
           <span className="break-all">{report.print_name || report.filename || '–'}</span>
         </span>
       </td>
-      <td className="py-1 pl-2 text-bambu-gray">
+      <td className="py-1 pl-2 text-bambu-gray break-words">
         <SourceBadge report={report} />
         {report.comment && <div className="whitespace-pre-line">{report.comment}</div>}
         {report.reported_by && (
