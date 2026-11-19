@@ -421,7 +421,7 @@ class TestSyncTriggers:
         with patch("backend.app.services.failure_history_import.schedule_failure_history_sync") as schedule:
             response = await async_client.patch(f"/api/v1/archives/{archive.id}", json={"failure_reason": "Warping"})
         assert response.status_code == 200, response.text
-        schedule.assert_called_once_with("archive edited")
+        schedule.assert_called_once_with("archive edited", archive.id)
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -446,3 +446,72 @@ class TestSyncTriggers:
         with pytest.raises(IntegrityError):
             await db_session.commit()
         await db_session.rollback()
+
+
+class TestIncrementalSync:
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_sync_for_one_archive_only_touches_that_archive(self, printer_factory, archive_factory, db_session):
+        printer = await printer_factory(name="Scope")
+        first = await _failed(archive_factory, printer.id, 1, failure_reason="Clogged nozzle")
+        second = await _failed(archive_factory, printer.id, 2)
+
+        counts = await sync_failure_history(db_session, [first.id])
+        assert counts["created"] == 1
+        reports = (await db_session.execute(select(CustomFailureReport))).scalars().all()
+        assert [r.archive_id for r in reports] == [first.id]
+
+        # The same archive again: nothing new. The full sync (startup) picks up the rest.
+        assert (await sync_failure_history(db_session, [first.id]))["created"] == 0
+        assert (await sync_failure_history(db_session))["created"] == 1
+        assert (await sync_failure_history(db_session, []))["created"] == 0
+        archives = {r.archive_id for r in (await db_session.execute(select(CustomFailureReport))).scalars()}
+        assert archives == {first.id, second.id}
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_scoped_sync_links_a_person_report_and_follows_edits(
+        self, async_client, printer_factory, archive_factory, db_session
+    ):
+        printer = await printer_factory(name="Scope edit")
+        archive = await _failed(archive_factory, printer.id, 1, failure_reason="Clogged nozzle")
+        other = await _failed(archive_factory, printer.id, 2, failure_reason="Layer shift")
+        archive_id, other_id = archive.id, other.id
+        response = await async_client.post(
+            f"{API}/",
+            json={"printer_id": printer.id, "archive_id": archive_id, "custom_failure_reason": "fail_reason_03"},
+        )
+        assert response.status_code == 200
+
+        counts = await sync_failure_history(db_session, [archive_id])
+        assert counts == {"created": 0, "updated": 0, "linked": 1, "removed": 0}
+        db_session.expire_all()
+        report = (
+            await db_session.execute(select(CustomFailureReport).where(CustomFailureReport.archive_id == archive_id))
+        ).scalar_one()
+        assert (report.source, report.custom_failure_reason, report.original_reason) == (
+            "manual",
+            "fail_reason_03",
+            "Clogged nozzle",
+        )
+
+        # An imported report follows an Edit Archive change of its own archive.
+        await sync_failure_history(db_session, [other_id])
+        entry = (
+            await db_session.execute(select(PrintLogEntry).where(PrintLogEntry.archive_id == other_id))
+        ).scalar_one()
+        entry.failure_reason = "Verstopfte Düse"
+        await db_session.commit()
+        assert (await sync_failure_history(db_session, [other_id]))["updated"] == 1
+        db_session.expire_all()
+        imported = (
+            await db_session.execute(select(CustomFailureReport).where(CustomFailureReport.archive_id == other_id))
+        ).scalar_one()
+        assert (imported.custom_failure_reason, imported.source) == ("fail_reason_01", "imported")
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_background_runner_passes_the_archive_on(self):
+        with patch("backend.app.services.failure_history_import.sync_failure_history") as sync:
+            await run_failure_history_sync("print complete", [42])
+        assert sync.call_args.args[1] == [42]
