@@ -329,6 +329,7 @@ async def _build_settings_response(db: AsyncSession, is_api_key: bool = False) -
             "stagger_interval_minutes",
             "print_farm_monitor_refresh_interval",
             "forecast_global_lead_time_days",
+            "moonraker_archive_gcode_max_mb",
         ]:
             settings_dict[setting.key] = int(setting.value)
         elif setting.key == "default_printer_id":

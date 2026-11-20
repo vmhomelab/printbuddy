@@ -2202,6 +2202,8 @@ export default {
     // Archive
     autoArchivePrints: 'Drucke automatisch archivieren',
     autoArchiveDescription: '3MF-Dateien automatisch speichern, wenn Drucke abgeschlossen sind',
+    moonrakerArchiveGcode: 'G-Code von Klipper-Drucken behalten',
+    moonrakerArchiveGcodeDescription: 'Drucke, die aus Fluidd, Mainsail oder einem Slicer gestartet wurden, werden bis zu dieser Größe ins Archiv kopiert, damit sie erneut gedruckt werden können. 0 schaltet es aus.',
     saveThumbnailsDescription: 'Vorschaubilder aus 3MF-Dateien extrahieren und speichern',
     captureFinishPhotoDescription: 'Foto von der Druckerkamera aufnehmen, wenn der Druck abgeschlossen ist',
     ffmpegNotInstalled: 'ffmpeg nicht installiert',

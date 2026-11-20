@@ -2201,6 +2201,8 @@ export default {
     // Archive
     autoArchivePrints: '印刷を自動アーカイブ',
     autoArchiveDescription: '印刷完了時に3MFファイルを自動保存',
+    moonrakerArchiveGcode: 'Klipper印刷のG-codeを保存',
+    moonrakerArchiveGcodeDescription: 'Fluidd、Mainsail、スライサーから開始した印刷を、このサイズまでアーカイブにコピーして再印刷できるようにします。0で無効。',
     saveThumbnailsDescription: '3MFファイルからプレビュー画像を抽出して保存',
     captureFinishPhotoDescription: '印刷完了時にプリンターカメラから写真を撮影',
     ffmpegNotInstalled: 'ffmpegがインストールされていません',
