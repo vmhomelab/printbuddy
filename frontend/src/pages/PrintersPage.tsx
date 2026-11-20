@@ -4809,7 +4809,9 @@ function PrinterCard({
                                 const isCfsUnit = ams.module_type === 'cfs' || isK2CfsLikeUnit;
                                 // K2-OpenHost (Kalico) CFS: load/unload go through its BOX_* commands.
                                 const isOpenHostCfsUnit = ams.module_type === 'k2oh_cfs';
-                                const isSlotAssignmentOnlyUnit = isCfsUnit || isSnapmakerU1Unit;
+                                // QIDI Box: shown read-only for now (no Bambu RFID/load/unload/slot config).
+                                const isQidiBoxUnit = ams.module_type === 'qidi_box';
+                                const isSlotAssignmentOnlyUnit = isCfsUnit || isSnapmakerU1Unit || isQidiBoxUnit;
                                 const snapmakerLoadState = isSnapmakerU1Unit ? snapmakerU1LoadState(tray) : null;
                                 const hasFillLevel = tray?.tray_type && tray.remain >= 0;
                                 const isEmpty = !tray?.tray_type;

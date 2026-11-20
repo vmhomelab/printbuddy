@@ -694,6 +694,26 @@ def _creality_cfs_active_tray_id(value: Any) -> int | None:
     return None
 
 
+def _qidi_slot_number(value: Any) -> int | None:
+    """``"slot2"`` -> 2; only the 16 Box slots (0-15) count as loaded."""
+    match = re.fullmatch(r"slot(\d+)", str(value or "").strip())
+    if not match:
+        return None
+    number = int(match.group(1))
+    return number if 0 <= number < 16 else None
+
+
+def _qidi_slot_label(box_index: int, position: int) -> str:
+    """QIDI's own slot naming, as in ``auto_refill``: Box 1 slot B -> ``1B``."""
+    return f"{box_index + 1}{'ABCD'[position]}"
+
+
+def _qidi_color(value: Any) -> str | None:
+    if isinstance(value, list):
+        value = value[0] if value else None
+    return _normalize_creality_cfs_color(value)
+
+
 def _macro_object_to_command_name(object_name: str) -> str | None:
     prefix = "gcode_macro "
     if not object_name.startswith(prefix):
@@ -1184,6 +1204,23 @@ class MoonrakerPrinterClient:
         except Exception:  # noqa: BLE001 - CFS is optional; keep core Moonraker status healthy
             return {}
 
+    def _available_qidi_box_objects(self, available: list[str] | None = None) -> list[str]:
+        """QIDI Box objects (Plus4, Q2, Max4 with the QIDI Box multi-material unit)."""
+        if available is None:
+            available = self._available_objects()
+        if "box_extras" not in available:
+            return []
+        return [name for name in ("box_extras", "multi_color_controller") if name in available]
+
+    def _query_qidi_box_status(self, available: list[str] | None = None) -> dict[str, Any]:
+        try:
+            box_objects = self._available_qidi_box_objects(available)
+            if not box_objects:
+                return {}
+            return self._query_objects(box_objects)
+        except Exception:  # noqa: BLE001 - the QIDI Box is optional; keep core Moonraker status healthy
+            return {}
+
     def _available_snapmaker_u1_objects(self, available: list[str] | None = None) -> list[str]:
         """Return Snapmaker U1 specific objects plus discovered extruders/sensors.
 
@@ -1672,6 +1709,124 @@ class MoonrakerPrinterClient:
             "runout_swap_enabled": box.get("runout_swap_enabled"),
         }
         self.state.raw_data["box"] = box
+
+    def is_qidi_box(self) -> bool:
+        """True when a QIDI Box was found in the last status poll."""
+        return isinstance(self.state.raw_data.get("qidi_box"), dict)
+
+    def _apply_qidi_box(self, status: dict[str, Any]) -> None:
+        """Map the QIDI Box state (``box_extras``) to Printbuddy's AMS units.
+
+        ``box_extras.boxes`` always holds four entries (up to four Boxes per
+        printer); ``is_online`` says which are connected. Each Box has four
+        slots with ``filament_info`` (material, colour, vendor, QIDI filament
+        code) and ``box_inserted_<i>`` per slot. Slots are numbered globally
+        (``slot<box * 4 + i>``, matching the ``T0``-``T15`` macros), so the
+        Printbuddy tray id is the QIDI slot number. ``loaded_slot`` names the
+        slot that is loaded into the toolhead. The external spool comes from
+        ``multi_color_controller.extra`` when that object exists.
+
+        Read-only for now: load/unload/drying are not wired to QIDI commands.
+        """
+        box_extras = status.get("box_extras") if isinstance(status, dict) else None
+        if not isinstance(box_extras, dict):
+            return
+        controller = status.get("multi_color_controller") if isinstance(status, dict) else None
+        if isinstance(controller, dict) and controller.get("enable_box") in (0, False):
+            return
+
+        loaded_slot = _qidi_slot_number(box_extras.get("loaded_slot"))
+        self.state.tray_now = 255
+        ams_units: list[dict[str, Any]] = []
+        active_slots: list[str] = []
+
+        for box_index, unit in enumerate((box_extras.get("boxes") or [])[:4]):
+            if not isinstance(unit, dict) or not unit.get("is_online"):
+                continue
+            filament_info = {
+                _safe_int(info.get("index")): info
+                for info in unit.get("filament_info") or []
+                if isinstance(info, dict) and _safe_int(info.get("index")) is not None
+            }
+            trays: list[dict[str, Any]] = []
+            for position in range(4):
+                tray_id = box_index * 4 + position
+                name = _qidi_slot_label(box_index, position)
+                info = filament_info.get(position) or {}
+                material = str(info.get("filament_type") or "").strip()
+                present = bool(_safe_int(unit.get(f"box_inserted_{position}"))) and bool(material)
+                is_active = present and loaded_slot == tray_id
+                if is_active:
+                    active_slots.append(name)
+                    self.state.tray_now = tray_id
+                from_rfid = bool(_safe_int(info.get("info_from_rfid")))
+                remain = _safe_int(info.get("filament_per")) if present and from_rfid else None
+                trays.append(
+                    {
+                        "id": position,
+                        "slot": name,
+                        "tray_type": material if present else "",
+                        "tray_sub_brands": str(info.get("filament_str") or "") if present else "",
+                        "tray_color": _qidi_color(info.get("color_rgb_str")) if present else None,
+                        # -1 = unknown fill level (only RFID spools report one)
+                        "remain": remain if remain is not None else -1,
+                        "active": is_active,
+                        # 11 = spool present, 9 = empty slot (Bambu tray states)
+                        "state": 11 if present else 9,
+                        "tray_uuid": name,
+                        "tag_uid": "",
+                        "vendor": str(info.get("vendor_str") or "") if present else "",
+                        "qidi_filament_id": str(info.get("filament_id") or "") if present else "",
+                        "nozzle_temp_min": _safe_int(info.get("min_temp")) if present else None,
+                        "nozzle_temp_max": _safe_int(info.get("max_temp")) if present else None,
+                    }
+                )
+            ams_units.append(
+                {
+                    "id": box_index,
+                    "name": f"QIDI Box {box_index + 1}",
+                    "module_type": "qidi_box",
+                    "humidity_raw": _safe_int(unit.get("aht20_humidity")),
+                    "temp": _safe_int(unit.get("aht20_temp")),
+                    "dry_state": _safe_int(unit.get("dry_state")),
+                    "dry_end_time": _safe_int(unit.get("end_time")),
+                    "tray": trays,
+                }
+            )
+
+        if not ams_units:
+            return
+        self.state.raw_data["ams"] = ams_units
+
+        extra = controller.get("extra") if isinstance(controller, dict) else None
+        external = extra.get("filament_info") if isinstance(extra, dict) else None
+        if isinstance(external, dict) and str(external.get("filament_type") or "").strip():
+            self.state.raw_data["vt_tray"] = [
+                {
+                    "id": 254,
+                    "tray_type": str(external.get("filament_type") or ""),
+                    "tray_sub_brands": str(external.get("filament_str") or ""),
+                    "tray_color": _qidi_color(external.get("color_rgb_str")),
+                    "remain": -1,
+                    "tag_uid": "",
+                    "tray_uuid": "",
+                    "vendor": str(external.get("vendor_str") or ""),
+                }
+            ]
+
+        self.state.raw_data["qidi_box"] = {
+            "type": "qidi_box",
+            "loaded_slot": loaded_slot,
+            "active_slots": active_slots,
+            "auto_refill": box_extras.get("auto_refill"),
+            "is_tool_change": box_extras.get("is_tool_change"),
+            "filament_inserted": {
+                box_index * 4 + position: _safe_int(unit.get(f"filament_inserted_{position}"))
+                for box_index, unit in enumerate((box_extras.get("boxes") or [])[:4])
+                if isinstance(unit, dict) and unit.get("is_online")
+                for position in range(4)
+            },
+        }
 
     def _apply_creality_cfs_box(self, status: dict[str, Any]) -> None:
         box = status.get("box") if isinstance(status, dict) else None
@@ -2190,6 +2345,9 @@ class MoonrakerPrinterClient:
         cfs_status = self._query_cfs_status(available_objects)
         if cfs_status:
             status.update(cfs_status)
+        qidi_box_status = self._query_qidi_box_status(available_objects)
+        if qidi_box_status:
+            status.update(qidi_box_status)
         snapmaker_u1_status = self._query_snapmaker_u1_status(available_objects)
         if snapmaker_u1_status:
             status.update(snapmaker_u1_status)
@@ -2212,6 +2370,7 @@ class MoonrakerPrinterClient:
         self.state.raw_status = status
         self.state.raw_data = status
         self._apply_creality_cfs_box(status)
+        self._apply_qidi_box(status)
 
         print_stats = status.get("print_stats", {}) if isinstance(status, dict) else {}
         virtual_sdcard = status.get("virtual_sdcard", {}) if isinstance(status, dict) else {}
@@ -2367,6 +2526,9 @@ class MoonrakerPrinterClient:
         """Load/select a Creality CFS slot using the hardware-verified M8200 path."""
         if self.is_k2_openhost_cfs():
             return self._openhost_load(tray_id)
+        if self.is_qidi_box():
+            # QIDI Box control is not implemented yet; never send Creality M8200 to it.
+            return False
         if _creality_cfs_slot_name(tray_id) is None:
             return False
         return self.send_gcode(f"M8200 P\nM8200 L I={int(tray_id)}\nM8200 O")
@@ -2375,6 +2537,8 @@ class MoonrakerPrinterClient:
         """Unload the currently loaded Creality CFS filament using M8200."""
         if self.is_k2_openhost_cfs():
             return self._openhost_unload()
+        if self.is_qidi_box():
+            return False
         if tray_id is not None and _creality_cfs_slot_name(int(tray_id)) is None:
             return False
         return self.send_gcode("M8200 P\nM8200 C\nM8200 R\nM8200 O")
