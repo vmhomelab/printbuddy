@@ -2199,6 +2199,8 @@ export default {
     themeToggleHint: 'Alternar entre modo escuro e claro usando o ícone de sol/lua na barra lateral.',
     autoArchivePrints: 'Arquivar impressões automaticamente',
     autoArchiveDescription: 'Salvar automaticamente arquivos 3MF quando impressões forem concluídas',
+    moonrakerArchiveGcode: 'Manter o G-code das impressões Klipper',
+    moonrakerArchiveGcodeDescription: 'Impressões iniciadas pelo Fluidd, Mainsail ou por um fatiador são copiadas para o arquivo até este tamanho, para poderem ser reimpressas. 0 desativa.',
     saveThumbnailsDescription: 'Extrair e salvar imagens de pré-visualização dos arquivos 3MF',
     captureFinishPhotoDescription: 'Tirar foto da câmera da impressora quando a impressão for concluída',
     ffmpegNotInstalled: 'ffmpeg não instalado',

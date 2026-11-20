@@ -2204,6 +2204,8 @@ export default {
     // Archive
     autoArchivePrints: 'Archivar impresiones automáticamente',
     autoArchiveDescription: 'Guardar automáticamente los archivos 3MF cuando se completan las impresiones',
+    moonrakerArchiveGcode: 'Conservar el G-code de impresiones Klipper',
+    moonrakerArchiveGcodeDescription: 'Las impresiones iniciadas desde Fluidd, Mainsail o un laminador se copian al archivo hasta este tamaño para poder reimprimirlas. 0 lo desactiva.',
     saveThumbnailsDescription: 'Extraer y guardar imágenes de vista previa de los archivos 3MF',
     captureFinishPhotoDescription: 'Tomar una foto desde la cámara de la impresora cuando se completa la impresión',
     ffmpegNotInstalled: 'ffmpeg no instalado',
