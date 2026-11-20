@@ -1112,6 +1112,23 @@ export default {
       requeue: '重新佇列',
     },
     // Bulk edit
+    projectLink: {
+      action: '連結到專案',
+      bulkAction: '專案',
+      title: '連結到專案',
+      description: '已選取的佇列項目：{{count}}',
+      addToPlan: '同時加入工作計畫',
+      addToPlanHint: '僅存在於佇列中的檔案（例如虛擬印表機上傳的檔案）會先複製到檔案管理員。',
+      remove: '從專案移除',
+      removeHint: '取消專案連結',
+      search: '搜尋專案…',
+      noProjects: '尚無專案',
+      linked: '已將 {{count}} 個項目連結到「{{name}}」',
+      unlinked: '已取消 {{count}} 個項目的專案連結',
+      planResult: '工作計畫：建立 {{created}} 列，複製 {{files}} 個檔案到檔案管理員',
+      failed: '無法更新專案連結',
+      badgeTitle: '專案：{{name}}',
+    },
     bulkEdit: {
       title: '編輯 {{count}} 個項目',
       title_plural: '編輯 {{count}} 個項目',
@@ -4514,6 +4531,11 @@ export default {
     autoDispatch: {
       title: '自動派發',
       description: '新增到佇列時自動開始列印。關閉後，列印任務等待手動派發。',
+    },
+    defaultProject: {
+      title: '預設專案',
+      description: '將此虛擬印表機的每次上傳連結到此專案（封存、佇列項目和待處理上傳）。',
+      none: '無專案',
     },
     queueForceColorMatch: {
       title: '強制顏色匹配',

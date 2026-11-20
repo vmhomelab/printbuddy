@@ -1112,6 +1112,23 @@ export default {
       requeue: 'Reenfileirar',
     },
     // Bulk edit
+    projectLink: {
+      action: 'Vincular a projeto',
+      bulkAction: 'Projeto',
+      title: 'Vincular a projeto',
+      description: 'Itens da fila selecionados: {{count}}',
+      addToPlan: 'Adicionar também ao plano do trabalho',
+      addToPlanHint: 'Arquivos que existem apenas na fila (por ex. envios da impressora virtual) são copiados primeiro para o gerenciador de arquivos.',
+      remove: 'Remover do projeto',
+      removeHint: 'Desfazer o vínculo com o projeto',
+      search: 'Pesquisar projetos…',
+      noProjects: 'Nenhum projeto ainda',
+      linked: '{{count}} item(ns) vinculado(s) a "{{name}}"',
+      unlinked: 'Vínculo de projeto removido de {{count}} item(ns)',
+      planResult: 'Plano do trabalho: {{created}} linha(s) criada(s), {{files}} arquivo(s) copiado(s) para o gerenciador de arquivos',
+      failed: 'Não foi possível atualizar o vínculo do projeto',
+      badgeTitle: 'Projeto: {{name}}',
+    },
     bulkEdit: {
       title: 'Editar {{count}} Item',
       title_plural: 'Editar {{count}} Itens',
@@ -4515,6 +4532,11 @@ export default {
     autoDispatch: {
       title: 'Envio automático',
       description: 'Iniciar impressões automaticamente quando adicionadas à fila. Quando desativado, as impressões aguardam envio manual.',
+    },
+    defaultProject: {
+      title: 'Projeto padrão',
+      description: 'Vincula cada envio desta impressora virtual a este projeto (arquivo, itens da fila e envios pendentes).',
+      none: 'Nenhum projeto',
     },
     queueForceColorMatch: {
       title: 'Forçar correspondência de cor',

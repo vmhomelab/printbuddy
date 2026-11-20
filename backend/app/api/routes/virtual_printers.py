@@ -44,6 +44,7 @@ class VirtualPrinterCreate(BaseModel):
     target_printer_id: int | None = None
     auto_dispatch: bool = True
     queue_force_color_match: bool = False
+    default_project_id: int | None = None
     bind_ip: str | None = None
     remote_interface_ip: str | None = None
 
@@ -57,9 +58,33 @@ class VirtualPrinterUpdate(BaseModel):
     target_printer_id: int | None = None
     auto_dispatch: bool | None = None
     queue_force_color_match: bool | None = None
+    # Project every upload of this VP is linked to; an explicit null clears it.
+    default_project_id: int | None = None
     bind_ip: str | None = None
     remote_interface_ip: str | None = None
     tailscale_disabled: bool | None = None
+
+
+async def _validate_default_project(db: AsyncSession, project_id: int | None) -> JSONResponse | None:
+    """400 response when ``project_id`` names no project (None is always valid)."""
+    if project_id is None:
+        return None
+    from backend.app.models.project import Project
+
+    result = await db.execute(select(Project.id).where(Project.id == project_id))
+    if result.scalar_one_or_none() is None:
+        return JSONResponse(status_code=400, content={"detail": f"Project with ID {project_id} not found"})
+    return None
+
+
+async def _apply_default_project_update(vp, body: "VirtualPrinterUpdate", db: AsyncSession) -> JSONResponse | None:
+    if "default_project_id" not in body.model_fields_set:
+        return None
+    error = await _validate_default_project(db, body.default_project_id)
+    if error:
+        return error
+    vp.default_project_id = body.default_project_id
+    return None
 
 
 def _resolve_printer_model(printer_model: str | None) -> str | None:
@@ -143,6 +168,7 @@ def _vp_to_dict(vp, status: dict | None = None) -> dict:
         "target_printer_id": vp.target_printer_id,
         "auto_dispatch": vp.auto_dispatch,
         "queue_force_color_match": vp.queue_force_color_match,
+        "default_project_id": vp.default_project_id,
         "bind_ip": vp.bind_ip,
         "remote_interface_ip": vp.remote_interface_ip,
         "tailscale_disabled": vp.tailscale_disabled,
@@ -202,6 +228,9 @@ async def create_virtual_printer(
 
     if body.protocol not in VP_PROTOCOLS:
         return JSONResponse(status_code=400, content={"detail": "Invalid protocol"})
+    project_error = await _validate_default_project(db, body.default_project_id)
+    if project_error:
+        return project_error
     if body.protocol == "moonraker":
         return await _create_moonraker_virtual_printer(body, db)
 
@@ -278,6 +307,7 @@ async def create_virtual_printer(
         target_printer_id=body.target_printer_id,
         auto_dispatch=body.auto_dispatch,
         queue_force_color_match=body.queue_force_color_match,
+        default_project_id=body.default_project_id,
         bind_ip=body.bind_ip,
         remote_interface_ip=body.remote_interface_ip,
         serial_suffix=new_suffix,
@@ -338,6 +368,7 @@ async def _create_moonraker_virtual_printer(body: VirtualPrinterCreate, db: Asyn
         target_printer_id=body.target_printer_id,
         auto_dispatch=body.auto_dispatch,
         queue_force_color_match=body.queue_force_color_match,
+        default_project_id=body.default_project_id,
         serial_suffix=new_suffix,
         position=next_pos,
     )
@@ -509,6 +540,9 @@ async def update_virtual_printer(
         vp.auto_dispatch = body.auto_dispatch
     if body.queue_force_color_match is not None:
         vp.queue_force_color_match = body.queue_force_color_match
+    error = await _apply_default_project_update(vp, body, db)
+    if error:
+        return error
     if body.bind_ip is not None:
         vp.bind_ip = body.bind_ip
     if body.remote_interface_ip is not None:
@@ -624,6 +658,9 @@ async def _update_moonraker_virtual_printer(vp, body: VirtualPrinterUpdate, db: 
         vp.auto_dispatch = body.auto_dispatch
     if body.queue_force_color_match is not None:
         vp.queue_force_color_match = body.queue_force_color_match
+    error = await _apply_default_project_update(vp, body, db)
+    if error:
+        return error
     if not vp.api_key:
         vp.api_key = generate_vp_api_key()
 

@@ -1112,6 +1112,23 @@ export default {
       requeue: 'Remettre en file',
     },
     // Bulk edit
+    projectLink: {
+      action: 'Lier à un projet',
+      bulkAction: 'Projet',
+      title: 'Lier à un projet',
+      description: 'Éléments de file sélectionnés : {{count}}',
+      addToPlan: 'Ajouter aussi au plan du job',
+      addToPlanHint: 'Les fichiers présents uniquement dans la file (par ex. envois de l’imprimante virtuelle) sont d’abord copiés dans le gestionnaire de fichiers.',
+      remove: 'Retirer du projet',
+      removeHint: 'Supprimer le lien avec le projet',
+      search: 'Rechercher des projets…',
+      noProjects: 'Aucun projet pour le moment',
+      linked: '{{count}} élément(s) lié(s) à « {{name}} »',
+      unlinked: 'Lien de projet supprimé pour {{count}} élément(s)',
+      planResult: 'Plan du job : {{created}} ligne(s) créée(s), {{files}} fichier(s) copié(s) dans le gestionnaire de fichiers',
+      failed: 'Impossible de mettre à jour le lien du projet',
+      badgeTitle: 'Projet : {{name}}',
+    },
     bulkEdit: {
       title: 'Modifier {{count}} élément',
       title_plural: 'Modifier {{count}} éléments',
@@ -4516,6 +4533,11 @@ export default {
     autoDispatch: {
       title: 'Lancement automatique',
       description: 'Lancer automatiquement les impressions ajoutées à la file. Désactivé, les impressions attendent un lancement manuel.',
+    },
+    defaultProject: {
+      title: 'Projet par défaut',
+      description: 'Lier chaque envoi de cette imprimante virtuelle à ce projet (archive, éléments de file et envois en attente).',
+      none: 'Aucun projet',
     },
     queueForceColorMatch: {
       title: 'Forcer la correspondance des couleurs',

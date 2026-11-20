@@ -27,7 +27,7 @@ function formatTimeAgo(dateStr: string): string {
 interface PendingUploadItemProps {
   upload: PendingUpload;
   projects: ProjectListItem[];
-  onArchive: (id: number, data?: { tags?: string; notes?: string; project_id?: number }) => void;
+  onArchive: (id: number, data?: { tags?: string; notes?: string; project_id?: number | null }) => void;
   onDiscard: (id: number) => void;
   isArchiving: boolean;
   isDiscarding: boolean;
@@ -81,7 +81,7 @@ function PendingUploadItem({
             <Button
               variant="primary"
               size="sm"
-              onClick={() => onArchive(upload.id, { tags, notes, project_id: projectId || undefined })}
+              onClick={() => onArchive(upload.id, { tags, notes, project_id: projectId ?? null })}
               disabled={isArchiving}
             >
               {isArchiving ? (
@@ -192,7 +192,7 @@ export function PendingUploadsPanel() {
 
   // Archive mutation
   const archiveMutation = useMutation({
-    mutationFn: ({ id, data }: { id: number; data?: { tags?: string; notes?: string; project_id?: number } }) =>
+    mutationFn: ({ id, data }: { id: number; data?: { tags?: string; notes?: string; project_id?: number | null } }) =>
       pendingUploadsApi.archive(id, data),
     onMutate: ({ id }) => {
       setArchivingIds((prev) => new Set(prev).add(id));

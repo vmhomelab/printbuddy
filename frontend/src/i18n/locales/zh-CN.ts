@@ -1112,6 +1112,23 @@ export default {
       requeue: '重新排队',
     },
     // Bulk edit
+    projectLink: {
+      action: '关联到项目',
+      bulkAction: '项目',
+      title: '关联到项目',
+      description: '已选择的队列项：{{count}}',
+      addToPlan: '同时添加到作业计划',
+      addToPlanHint: '仅存在于队列中的文件（例如虚拟打印机上传的文件）会先复制到文件管理器。',
+      remove: '从项目中移除',
+      removeHint: '取消项目关联',
+      search: '搜索项目…',
+      noProjects: '暂无项目',
+      linked: '已将 {{count}} 项关联到“{{name}}”',
+      unlinked: '已取消 {{count}} 项的项目关联',
+      planResult: '作业计划：新建 {{created}} 行，复制 {{files}} 个文件到文件管理器',
+      failed: '无法更新项目关联',
+      badgeTitle: '项目：{{name}}',
+    },
     bulkEdit: {
       title: '编辑 {{count}} 个项目',
       title_plural: '编辑 {{count}} 个项目',
@@ -4514,6 +4531,11 @@ export default {
     autoDispatch: {
       title: '自动派发',
       description: '添加到队列时自动开始打印。关闭后，打印任务等待手动派发。',
+    },
+    defaultProject: {
+      title: '默认项目',
+      description: '将此虚拟打印机的每次上传关联到该项目（归档、队列项和待处理上传）。',
+      none: '无项目',
     },
     queueForceColorMatch: {
       title: '强制颜色匹配',

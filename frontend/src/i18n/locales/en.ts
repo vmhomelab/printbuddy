@@ -1112,6 +1112,23 @@ export default {
       requeue: 'Re-queue',
     },
     // Bulk edit
+    projectLink: {
+      action: 'Link to project',
+      bulkAction: 'Project',
+      title: 'Link to project',
+      description: 'Selected queue items: {{count}}',
+      addToPlan: 'Also add to job plan',
+      addToPlanHint: 'Files that only exist in the queue (e.g. virtual printer uploads) are copied into the File Manager first.',
+      remove: 'Remove from project',
+      removeHint: 'Clear the project link',
+      search: 'Search projects…',
+      noProjects: 'No projects yet',
+      linked: 'Linked {{count}} item(s) to "{{name}}"',
+      unlinked: 'Removed the project link from {{count}} item(s)',
+      planResult: 'Job plan: {{created}} row(s) created, {{files}} file(s) copied to the File Manager',
+      failed: 'Failed to update the project link',
+      badgeTitle: 'Project: {{name}}',
+    },
     bulkEdit: {
       title: 'Edit {{count}} Item',
       title_plural: 'Edit {{count}} Items',
@@ -4539,6 +4556,11 @@ export default {
     autoDispatch: {
       title: 'Auto-dispatch',
       description: 'Automatically start prints when added to queue. When off, prints wait for manual dispatch.',
+    },
+    defaultProject: {
+      title: 'Default project',
+      description: 'Link every upload of this virtual printer to this project (archive, queue items and pending uploads).',
+      none: 'No project',
     },
     queueForceColorMatch: {
       title: 'Force color match',
