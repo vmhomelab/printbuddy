@@ -555,6 +555,8 @@ export default {
     },
     // Filaments section
     filaments: 'Filamentos',
+    amsOrderBySideOn: 'AMS organizados pelo lado do bico, como no display da impressora (clique para a ordem padrão)',
+    amsOrderBySideOff: 'Organizar AMS pelo lado do bico, como no display da impressora',
     // Camera
     openCameraOverlay: 'Abrir sobreposição da câmera',
     showCameraInCard: 'Mostrar câmera no cartão da impressora',

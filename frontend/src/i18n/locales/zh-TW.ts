@@ -555,6 +555,8 @@ export default {
     },
     // 耗材 section
     filaments: '耗材',
+    amsOrderBySideOn: 'AMS 已依噴嘴側排列，與印表機螢幕一致（點擊恢復預設順序）',
+    amsOrderBySideOff: '依噴嘴側排列 AMS，與印表機螢幕一致',
     // Camera
     openCameraOverlay: '開啟攝影機疊加層',
     showCameraInCard: '在印表機卡片中顯示攝影機',

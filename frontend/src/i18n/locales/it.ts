@@ -555,6 +555,8 @@ export default {
     },
     // Filaments section
     filaments: 'Filamenti',
+    amsOrderBySideOn: "AMS disposti per lato dell'ugello, come sul display della stampante (clic per l'ordine predefinito)",
+    amsOrderBySideOff: "Disponi gli AMS per lato dell'ugello, come sul display della stampante",
     // Camera
     openCameraOverlay: 'Apri overlay camera',
     showCameraInCard: 'Mostra la fotocamera nella scheda della stampante',

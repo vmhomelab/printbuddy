@@ -554,6 +554,8 @@ export default {
     },
     // フィラメント section
     filaments: 'フィラメント',
+    amsOrderBySideOn: 'AMSをノズル側ごとに配置中（プリンター画面と同じ）。クリックで標準の順序に戻す',
+    amsOrderBySideOff: 'AMSをノズル側ごとに配置（プリンター画面と同じ）',
     // Camera
     openCameraOverlay: 'カメラオーバーレイを開く',
     showCameraInCard: 'プリンターカード内にカメラを表示',

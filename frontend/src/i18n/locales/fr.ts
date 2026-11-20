@@ -555,6 +555,8 @@ export default {
     },
     // Filaments section
     filaments: 'Filaments',
+    amsOrderBySideOn: "AMS disposés selon le côté de la buse, comme sur l'écran de l'imprimante (cliquer pour l'ordre par défaut)",
+    amsOrderBySideOff: "Disposer les AMS selon le côté de la buse, comme sur l'écran de l'imprimante",
     // Camera
     openCameraOverlay: 'Ouvrir la caméra en superposition',
     showCameraInCard: 'Afficher la caméra dans la carte de l’imprimante',

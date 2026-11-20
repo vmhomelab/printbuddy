@@ -555,6 +555,8 @@ export default {
     },
     // Filaments section
     filaments: 'Filaments',
+    amsOrderBySideOn: 'AMS arranged by nozzle side, like the printer display (click for default order)',
+    amsOrderBySideOff: 'Arrange AMS by nozzle side, like the printer display',
     // Camera
     openCameraOverlay: 'Open camera overlay',
     openCameraWindow: 'Open camera in new window',

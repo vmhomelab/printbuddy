@@ -555,6 +555,8 @@ export default {
     },
     // Filaments section
     filaments: 'Filamente',
+    amsOrderBySideOn: 'AMS nach Düsenseite angeordnet, wie am Druckerdisplay (klicken für Standardreihenfolge)',
+    amsOrderBySideOff: 'AMS nach Düsenseite anordnen, wie am Druckerdisplay',
     // Camera
     openCameraOverlay: 'Kamera-Overlay öffnen',
     showCameraInCard: 'Kamera in Druckerkarte anzeigen',
