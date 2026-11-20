@@ -1379,7 +1379,7 @@ async def update_archive(
         # Fail reason statistics follow reasons set here (background, never raises).
         from backend.app.services.failure_history_import import schedule_failure_history_sync
 
-        schedule_failure_history_sync("archive edited")
+        schedule_failure_history_sync("archive edited", archive_id)
 
     # Re-fetch with relationships loaded after commit
     result = await db.execute(

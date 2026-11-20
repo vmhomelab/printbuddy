@@ -4,10 +4,13 @@ Every print run Printbuddy logged as "failed" or "aborted" becomes a report,
 with the reason translated by failure_reason_mapping. Printbuddy's tables
 (print_log_entries, print_archives, print_queue) are only read, never changed.
 
-The sync is idempotent. It runs in the background once at startup, after each
-finished print (on_print_complete) and after a failure reason or status is
-changed in the Edit Archive dialog, never on a read request. A unique index on
-print_log_entry_id prevents duplicates even with several workers.
+The sync is idempotent. It runs in the background, never on a read request:
+* at startup over the whole print log (catches anything missed, e.g. after the
+  log was cleared),
+* after each finished print (on_print_complete) and after a failure reason or
+  status is changed in the Edit Archive dialog, only for that print's archive,
+  so it stays cheap however long the history gets.
+A unique index on print_log_entry_id prevents duplicates even with several workers.
 
 Rules:
 * A run that a person already reported keeps the person's reason; the import only
@@ -20,9 +23,10 @@ Rules:
 
 import asyncio
 import logging
+from collections.abc import Collection
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.archive import PrintArchive
@@ -31,7 +35,7 @@ from backend.app.models.print_log import PrintLogEntry
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer import Printer
 from backend.app.services.custom_failure_reports import materials_from_archive
-from backend.app.services.failure_progress import progress_by_run
+from backend.app.services.failure_progress import delete_orphaned_progress, progress_by_run
 from backend.app.services.failure_reason_mapping import (
     SKIP,
     UNASSIGNED,
@@ -124,39 +128,60 @@ def _snapshot(
         report.print_time_seconds = entry.duration_seconds
 
 
-def schedule_failure_history_sync(trigger: str) -> None:
-    """Run the sync in the background (startup, print completed, archive edited)."""
-    task = asyncio.create_task(run_failure_history_sync(trigger))
+def schedule_failure_history_sync(trigger: str, archive_id: int | None = None) -> None:
+    """Run the sync in the background: for one archive, or the whole log when archive_id is None."""
+    task = asyncio.create_task(run_failure_history_sync(trigger, None if archive_id is None else [archive_id]))
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
 
 
-async def run_failure_history_sync(trigger: str) -> None:
+async def run_failure_history_sync(trigger: str, archive_ids: Collection[int] | None = None) -> None:
     """Sync with its own session; never raises, so callers' flows can't break."""
     from backend.app.core.database import async_session
 
     try:
         async with async_session() as db:
-            await sync_failure_history(db)
+            await sync_failure_history(db, archive_ids)
     except Exception as exc:  # e.g. another worker imported the same entry first
         logger.warning("Failure history sync (%s) failed: %s", trigger, exc)
 
 
-async def sync_failure_history(db: AsyncSession) -> dict:
-    """Create / update reports from the print log. Returns counts (for logs and tests)."""
+async def sync_failure_history(db: AsyncSession, archive_ids: Collection[int] | None = None) -> dict:
+    """Create / update reports from the print log. Returns counts (for logs and tests).
+
+    archive_ids limits the sync to the log entries of these archives (incremental);
+    None processes the whole log.
+    """
     async with _sync_lock:
-        return await _sync(db)
+        return await _sync(db, None if archive_ids is None else set(archive_ids))
 
 
-async def _sync(db: AsyncSession) -> dict:
+async def _sync(db: AsyncSession, scope: set[int] | None) -> dict:
     counts = {"created": 0, "updated": 0, "linked": 0, "removed": 0}
-    entries = (
-        (await db.execute(select(PrintLogEntry).where(PrintLogEntry.status.in_(IMPORTED_STATUSES)))).scalars().all()
-    )
+    if scope is not None and not scope:
+        return counts
+    if scope is None:
+        # Full sync (startup): also drop progress rows of archives that are gone.
+        if await delete_orphaned_progress(db):
+            await db.commit()
+    entry_query = select(PrintLogEntry).where(PrintLogEntry.status.in_(IMPORTED_STATUSES))
+    if scope is not None:
+        entry_query = entry_query.where(PrintLogEntry.archive_id.in_(scope))
+    entries = (await db.execute(entry_query)).scalars().all()
     if not entries:
         return counts
 
-    reports = (await db.execute(select(CustomFailureReport))).scalars().all()
+    report_query = select(CustomFailureReport)
+    if scope is not None:
+        # Only the reports these entries can touch: linked to one of them, or a
+        # person's unlinked report on one of these archives.
+        report_query = report_query.where(
+            or_(
+                CustomFailureReport.print_log_entry_id.in_([e.id for e in entries]),
+                CustomFailureReport.archive_id.in_(scope),
+            )
+        )
+    reports = (await db.execute(report_query)).scalars().all()
     by_entry = {r.print_log_entry_id: r for r in reports if r.print_log_entry_id is not None}
     unlinked_by_run = {}
     for r in reports:

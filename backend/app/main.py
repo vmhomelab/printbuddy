@@ -4966,7 +4966,7 @@ async def on_print_complete(printer_id: int, data: dict):
     # Take the new print log entry over into the fail reason statistics (background, never raises).
     from backend.app.services.failure_history_import import schedule_failure_history_sync
 
-    schedule_failure_history_sync("print complete")
+    schedule_failure_history_sync("print complete", archive_id)
 
     # Run slow operations as background tasks to avoid blocking the event loop
     # These operations can take 5-10+ seconds and would freeze the UI if awaited
