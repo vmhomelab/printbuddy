@@ -1210,7 +1210,7 @@ class MoonrakerPrinterClient:
             available = self._available_objects()
         if "box_extras" not in available:
             return []
-        return [name for name in ("box_extras", "multi_color_controller") if name in available]
+        return [name for name in ("box_extras", "multi_color_controller", "save_variables") if name in available]
 
     def _query_qidi_box_status(self, available: list[str] | None = None) -> dict[str, Any]:
         try:
@@ -1715,30 +1715,49 @@ class MoonrakerPrinterClient:
         return isinstance(self.state.raw_data.get("qidi_box"), dict)
 
     def _apply_qidi_box(self, status: dict[str, Any]) -> None:
-        """Map the QIDI Box state (``box_extras``) to Printbuddy's AMS units.
+        """Map the QIDI Box state to Printbuddy's AMS units.
 
         ``box_extras.boxes`` always holds four entries (up to four Boxes per
         printer); ``is_online`` says which are connected. Each Box has four
         slots with ``filament_info`` (material, colour, vendor, QIDI filament
-        code) and ``box_inserted_<i>`` per slot. Slots are numbered globally
-        (``slot<box * 4 + i>``, matching the ``T0``-``T15`` macros), so the
-        Printbuddy tray id is the QIDI slot number. ``loaded_slot`` names the
-        slot that is loaded into the toolhead. The external spool comes from
-        ``multi_color_controller.extra`` when that object exists.
+        code). Slots are numbered globally (``slot<box * 4 + i>``, as in
+        ``LOAD_FILAMENT_CONTROL SLOT=`` and ``value_t<n>``), so the Printbuddy
+        tray id is the QIDI slot number; ``slot16`` is the external spool.
 
-        Read-only for now: load/unload/drying are not wired to QIDI commands.
+        The firmware's own slot state lives in ``save_variables``
+        (``slot<n>``: 0 empty, 1 in the Box, 2 in the extruder, 3 in the
+        feeder, negative = error/unknown/pending). It is preferred over
+        ``box_extras``: ``box_inserted_<i>`` only says a spool is present, and
+        ``loaded_slot`` switches as soon as filament reaches the hub and stays
+        there after a failed load, so the active slot is the one in the
+        extruder (state 2), else ``slot_sync``. Without ``save_variables``
+        both fall back to ``box_extras``.
+
+        ``enable_box`` is not read for display: the firmware sets it per print
+        (0 = that print used the external spool), not to switch the Box off.
         """
         box_extras = status.get("box_extras") if isinstance(status, dict) else None
         if not isinstance(box_extras, dict):
             return
         controller = status.get("multi_color_controller") if isinstance(status, dict) else None
-        if isinstance(controller, dict) and controller.get("enable_box") in (0, False):
-            return
+        saved = status.get("save_variables") if isinstance(status, dict) else None
+        variables = saved.get("variables") if isinstance(saved, dict) else None
+        if not isinstance(variables, dict):
+            variables = None
 
-        loaded_slot = _qidi_slot_number(box_extras.get("loaded_slot"))
+        slot_states: dict[int, int | None] = {}
+        if variables is not None:
+            for number in range(16):
+                slot_states[number] = _safe_int(variables.get(f"slot{number}"))
+            in_extruder = [number for number, state in slot_states.items() if state == 2]
+            active_slot = in_extruder[0] if in_extruder else _qidi_slot_number(variables.get("slot_sync"))
+        else:
+            active_slot = _qidi_slot_number(box_extras.get("loaded_slot"))
+
         self.state.tray_now = 255
         ams_units: list[dict[str, Any]] = []
         active_slots: list[str] = []
+        online_slots: list[int] = []
 
         for box_index, unit in enumerate((box_extras.get("boxes") or [])[:4]):
             if not isinstance(unit, dict) or not unit.get("is_online"):
@@ -1751,11 +1770,17 @@ class MoonrakerPrinterClient:
             trays: list[dict[str, Any]] = []
             for position in range(4):
                 tray_id = box_index * 4 + position
+                online_slots.append(tray_id)
                 name = _qidi_slot_label(box_index, position)
                 info = filament_info.get(position) or {}
                 material = str(info.get("filament_type") or "").strip()
-                present = bool(_safe_int(unit.get(f"box_inserted_{position}"))) and bool(material)
-                is_active = present and loaded_slot == tray_id
+                slot_state = slot_states.get(tray_id)
+                if variables is not None and slot_state is not None:
+                    spool = slot_state != 0
+                else:
+                    spool = bool(_safe_int(unit.get(f"box_inserted_{position}")))
+                present = spool and bool(material)
+                is_active = present and active_slot == tray_id
                 if is_active:
                     active_slots.append(name)
                     self.state.tray_now = tray_id
@@ -1777,6 +1802,7 @@ class MoonrakerPrinterClient:
                         "tag_uid": "",
                         "vendor": str(info.get("vendor_str") or "") if present else "",
                         "qidi_filament_id": str(info.get("filament_id") or "") if present else "",
+                        "qidi_slot_state": slot_state,
                         "nozzle_temp_min": _safe_int(info.get("min_temp")) if present else None,
                         "nozzle_temp_max": _safe_int(info.get("max_temp")) if present else None,
                     }
@@ -1814,19 +1840,117 @@ class MoonrakerPrinterClient:
                 }
             ]
 
+        task = controller.get("task") if isinstance(controller, dict) else None
         self.state.raw_data["qidi_box"] = {
             "type": "qidi_box",
-            "loaded_slot": loaded_slot,
+            "active_slot": active_slot,
             "active_slots": active_slots,
+            "online_slots": online_slots,
+            "loaded_slot": _qidi_slot_number(box_extras.get("loaded_slot")),
+            "enable_box": _safe_int(variables.get("enable_box")) if variables is not None else None,
+            "tool_mapping": {
+                tool: str(variables.get(f"value_t{tool}") or "")
+                for tool in range(16)
+                if variables is not None and variables.get(f"value_t{tool}")
+            },
+            # A running Box flow (load/unload/eject) blocks new Box commands.
+            "flow_id": task.get("flow_id") if isinstance(task, dict) else None,
             "auto_refill": box_extras.get("auto_refill"),
             "is_tool_change": box_extras.get("is_tool_change"),
-            "filament_inserted": {
-                box_index * 4 + position: _safe_int(unit.get(f"filament_inserted_{position}"))
-                for box_index, unit in enumerate((box_extras.get("boxes") or [])[:4])
-                if isinstance(unit, dict) and unit.get("is_online")
-                for position in range(4)
-            },
         }
+
+    # ------------------------------------------------------------------
+    # QIDI Box control. Commands and pitfalls as documented by the Valve Oil
+    # project's QIDI Box observations (firmware 01.01.06-01.01.07):
+    # - LOAD/UNLOAD_FILAMENT_CONTROL SLOT=<n> take the global slot 0-15.
+    # - A slot on no connected Box (also slot 16, the external spool, without
+    #   valid saved filament) shuts Klipper down, so only online slots are
+    #   ever sent.
+    # - FLOW_STOP can hang Klipper's G-code lock; it is never sent.
+    # ------------------------------------------------------------------
+
+    def _qidi_box_command(self, script: str) -> bool:
+        """Send a QIDI Box command; keep the firmware's refusal text in last_error."""
+        self.last_error = None
+        try:
+            return self.send_gcode(script)
+        except httpx.HTTPStatusError as exc:
+            self.last_error = _moonraker_error_message(exc)
+            logger.warning("QIDI Box command %r refused: %s", script, self.last_error)
+            return False
+
+    def _qidi_box_busy(self) -> bool:
+        if self.state.state in {"RUNNING", "PAUSE"}:
+            self.last_error = "Finish or cancel the current print before changing QIDI Box filament"
+            return True
+        box = self.state.raw_data.get("qidi_box") or {}
+        if box.get("flow_id") is not None:
+            self.last_error = "The QIDI Box is still loading or unloading; wait until it is done"
+            return True
+        return False
+
+    def _qidi_online_slot(self, tray_id: Any) -> int | None:
+        slot = _safe_int(tray_id)
+        box = self.state.raw_data.get("qidi_box") or {}
+        if slot is None or slot not in (box.get("online_slots") or []):
+            return None
+        return slot
+
+    def _qidi_box_load(self, tray_id: int) -> bool:
+        if self._qidi_box_busy():
+            return False
+        slot = self._qidi_online_slot(tray_id)
+        if slot is None:
+            self.last_error = f"QIDI Box slot {tray_id} is not on a connected Box"
+            return False
+        return self._qidi_box_command(f"LOAD_FILAMENT_CONTROL SLOT={slot}")
+
+    def _qidi_box_unload(self, tray_id: int | None = None) -> bool:
+        if self._qidi_box_busy():
+            return False
+        box = self.state.raw_data.get("qidi_box") or {}
+        slot = self._qidi_online_slot(tray_id if tray_id is not None else box.get("active_slot"))
+        if slot is None:
+            self.last_error = "No QIDI Box slot is loaded"
+            return False
+        return self._qidi_box_command(f"UNLOAD_FILAMENT_CONTROL SLOT={slot}")
+
+    def _apply_qidi_box_print_map(self, ams_mapping: list[int] | None) -> bool:
+        """Save the print dialog's tool -> slot choice before the print starts.
+
+        ``ams_mapping[tool]`` is the Printbuddy tray id chosen for tool T<n>
+        (-1 = none). QIDI's print start and ``T<n>`` read ``enable_box`` and
+        ``value_t<n>``, which otherwise keep whatever the last print left.
+        Box slots save ``enable_box`` 1 and ``value_t<n>`` = ``slot<m>``; a
+        print that uses only the external spool (254/255) saves
+        ``enable_box`` 0, as QIDI's own touchscreen does. Without a choice
+        nothing is saved. Mixing the external spool with Box slots is
+        refused: QIDI maps the external spool to slot 16, which no tool
+        change can reach.
+        """
+        if not ams_mapping:
+            return True
+        chosen: dict[int, int] = {}
+        for tool, raw in enumerate(ams_mapping[:16]):
+            tray = _safe_int(raw)
+            if tray is not None and tray >= 0:
+                chosen[tool] = tray
+        if not chosen:
+            return True
+        external = {tool for tool, tray in chosen.items() if tray in (254, 255)}
+        if external and len(external) != len(chosen):
+            self.last_error = "A QIDI print can use either the external spool or Box slots, not both"
+            return False
+        if external:
+            return self._qidi_box_command("SAVE_VARIABLE VARIABLE=enable_box VALUE=0")
+        commands = ["SAVE_VARIABLE VARIABLE=enable_box VALUE=1"]
+        for tool, tray in sorted(chosen.items()):
+            slot = self._qidi_online_slot(tray)
+            if slot is None:
+                self.last_error = f"QIDI Box slot {tray} chosen for T{tool} is not on a connected Box"
+                return False
+            commands.append(f"SAVE_VARIABLE VARIABLE=value_t{tool} VALUE='\"slot{slot}\"'")
+        return self._qidi_box_command("\n".join(commands))
 
     def _apply_creality_cfs_box(self, status: dict[str, Any]) -> None:
         box = status.get("box") if isinstance(status, dict) else None
@@ -2527,8 +2651,7 @@ class MoonrakerPrinterClient:
         if self.is_k2_openhost_cfs():
             return self._openhost_load(tray_id)
         if self.is_qidi_box():
-            # QIDI Box control is not implemented yet; never send Creality M8200 to it.
-            return False
+            return self._qidi_box_load(tray_id)
         if _creality_cfs_slot_name(tray_id) is None:
             return False
         return self.send_gcode(f"M8200 P\nM8200 L I={int(tray_id)}\nM8200 O")
@@ -2538,7 +2661,7 @@ class MoonrakerPrinterClient:
         if self.is_k2_openhost_cfs():
             return self._openhost_unload()
         if self.is_qidi_box():
-            return False
+            return self._qidi_box_unload(tray_id)
         if tray_id is not None and _creality_cfs_slot_name(int(tray_id)) is None:
             return False
         return self.send_gcode("M8200 P\nM8200 C\nM8200 R\nM8200 O")
@@ -2557,6 +2680,8 @@ class MoonrakerPrinterClient:
         normalized = self._normalize_gcodes_path(filename)
         self.last_error = None
         if self.is_k2_openhost_cfs() and not self._apply_openhost_print_map(normalized, kwargs.get("ams_mapping")):
+            return False
+        if self.is_qidi_box() and not self._apply_qidi_box_print_map(kwargs.get("ams_mapping")):
             return False
         if not self._prepare_creality_cfs_slot_for_print(kwargs.get("ams_mapping")):
             return False
