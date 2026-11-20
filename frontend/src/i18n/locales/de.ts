@@ -1110,6 +1110,23 @@ export default {
       requeue: 'Erneut einreihen',
     },
     // Bulk edit
+    projectLink: {
+      action: 'Mit Projekt verknüpfen',
+      bulkAction: 'Projekt',
+      title: 'Mit Projekt verknüpfen',
+      description: 'Ausgewählte Queue-Einträge: {{count}}',
+      addToPlan: 'Auch zum Projektplan hinzufügen',
+      addToPlanHint: 'Dateien, die nur in der Queue liegen (z. B. Uploads vom virtuellen Drucker), werden dafür zuerst in den Dateimanager kopiert.',
+      remove: 'Aus Projekt entfernen',
+      removeHint: 'Projektverknüpfung aufheben',
+      search: 'Projekte durchsuchen…',
+      noProjects: 'Noch keine Projekte',
+      linked: '{{count}} Eintrag/Einträge mit „{{name}}“ verknüpft',
+      unlinked: 'Projektverknüpfung bei {{count}} Eintrag/Einträgen entfernt',
+      planResult: 'Projektplan: {{created}} Zeile(n) angelegt, {{files}} Datei(en) in den Dateimanager kopiert',
+      failed: 'Projektverknüpfung konnte nicht geändert werden',
+      badgeTitle: 'Projekt: {{name}}',
+    },
     bulkEdit: {
       title: '{{count}} Element bearbeiten',
       title_plural: '{{count}} Elemente bearbeiten',
@@ -4524,6 +4541,11 @@ export default {
     autoDispatch: {
       title: 'Automatisch starten',
       description: 'Drucke automatisch starten, wenn sie zur Warteschlange hinzugefügt werden. Wenn deaktiviert, warten Drucke auf manuellen Start.',
+    },
+    defaultProject: {
+      title: 'Standard-Projekt',
+      description: 'Jeden Upload dieses virtuellen Druckers mit diesem Projekt verknüpfen (Archiv, Queue-Einträge und ausstehende Uploads).',
+      none: 'Kein Projekt',
     },
     queueForceColorMatch: {
       title: 'Farbabgleich erzwingen',

@@ -92,3 +92,51 @@ async def test_virtual_printer_print_queue_send_all_enqueues_each_plate(
     assert [json.loads(item.required_filament_types) for item in queued] == [["PLA"], ["PETG"], ["ASA"]]
     assert all(item.manual_start is True for item in queued)
     assert all(item.filament_overrides for item in queued)
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_virtual_printer_print_queue_applies_default_project(
+    test_engine,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    """A VP with a default project links the archive and every queue row to it."""
+    from backend.app.models.archive import PrintArchive
+    from backend.app.models.project import Project
+    from backend.app.models.virtual_printer import VirtualPrinter
+
+    monkeypatch.setattr(settings, "base_dir", tmp_path)
+    monkeypatch.setattr(settings, "archive_dir", tmp_path / "archives")
+    settings.archive_dir.mkdir(parents=True, exist_ok=True)
+
+    project = Project(name="Desk set")
+    db_session.add(project)
+    await db_session.flush()
+    vp = VirtualPrinter(name="Queue VP", mode="print_queue", default_project_id=project.id)
+    db_session.add(vp)
+    await db_session.commit()
+
+    upload_path = tmp_path / "MultiPlate.gcode.3mf"
+    _write_multi_plate_3mf(upload_path)
+
+    session_factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+    instance = VirtualPrinterInstance(
+        vp_id=vp.id,
+        name="Queue VP",
+        mode="print_queue",
+        model="BL-P001",
+        access_code="12345678",
+        serial_suffix="391800001",
+        base_dir=tmp_path,
+        session_factory=session_factory,
+    )
+
+    await instance._add_to_print_queue(upload_path, "192.0.2.10")
+
+    queued = (await db_session.execute(select(PrintQueueItem))).scalars().all()
+    assert len(queued) == 3
+    assert all(item.project_id == project.id for item in queued)
+    archive = (await db_session.execute(select(PrintArchive))).scalar_one()
+    assert archive.project_id == project.id

@@ -54,6 +54,7 @@ import {
   GanttChart,
   Code,
   Snail,
+  FolderKanban,
 } from 'lucide-react';
 import { api, ApiError } from '../api/client';
 import { type TimeFormat, formatETA, formatDuration, formatRelativeTime, parseUTCDate } from '../utils/date';
@@ -67,6 +68,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { QueueStatsBar } from '../components/QueueStatsBar';
 import { CompactHistoryRow } from '../components/CompactHistoryRow';
 import { QueueTimelineView } from '../components/QueueTimelineView';
+import { QueueProjectModal } from '../components/QueueProjectModal';
 
 const HISTORY_PAGE_SIZE = 50;
 const HISTORY_STATUSES = ['completed', 'failed', 'skipped', 'cancelled'];
@@ -294,6 +296,7 @@ function SortableQueueItem({
   onStop,
   onRequeue,
   onStart,
+  onLinkProject,
   timeFormat = 'system',
   isSelected = false,
   onToggleSelect,
@@ -310,6 +313,7 @@ function SortableQueueItem({
   onStop: () => void;
   onRequeue: () => void;
   onStart: () => void;
+  onLinkProject?: () => void;
   timeFormat?: TimeFormat;
   isSelected?: boolean;
   onToggleSelect?: () => void;
@@ -492,6 +496,16 @@ function SortableQueueItem({
                 {item.batch_name}
               </span>
             )}
+            {item.project_id != null && item.project_name && (
+              <Link
+                to={`/projects/${item.project_id}`}
+                className="flex-shrink-0 flex items-center gap-1 px-1.5 py-0.5 text-[10px] sm:text-xs bg-bambu-green/15 text-bambu-green rounded border border-bambu-green/30 hover:bg-bambu-green/25 transition-colors max-w-[160px]"
+                title={t('queue.projectLink.badgeTitle', { name: item.project_name })}
+              >
+                <FolderKanban className="w-3 h-3 flex-shrink-0" />
+                <span className="truncate">{item.project_name}</span>
+              </Link>
+            )}
           </div>
 
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs sm:text-sm text-bambu-gray">
@@ -640,6 +654,18 @@ function SortableQueueItem({
           <StatusBadge status={item.status} waitingReason={item.waiting_reason} printerState={printerState} t={t} />
 
           <div className="flex items-center gap-0.5 sm:gap-1">
+            {onLinkProject && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={onLinkProject}
+                disabled={!canModify('queue', 'update', item.created_by_id)}
+                title={!canModify('queue', 'update', item.created_by_id) ? t('queue.permissions.noEdit') : t('queue.projectLink.action')}
+                className="p-1.5 sm:p-2"
+              >
+                <FolderKanban className="w-4 h-4" />
+              </Button>
+            )}
             {isPrinting && (
               <Button
                 variant="ghost"
@@ -736,6 +762,7 @@ export function QueuePage() {
   } | null>(null);
   const [selectedItems, setSelectedItems] = useState<number[]>([]);
   const [showBulkEditModal, setShowBulkEditModal] = useState(false);
+  const [projectLinkTarget, setProjectLinkTarget] = useState<{ ids: number[]; currentProjectId: number | null } | null>(null);
   const [historySortBy, setHistorySortBy] = useState<'date' | 'name' | 'printer'>(() => {
     const saved = localStorage.getItem('queue.historySortBy');
     return (saved as 'date' | 'name' | 'printer') || 'date';
@@ -1344,6 +1371,7 @@ export function QueuePage() {
                     onStop={() => setConfirmAction({ type: 'stop', item })}
                     onRequeue={() => {}}
                     onStart={() => {}}
+                    onLinkProject={() => setProjectLinkTarget({ ids: [item.id], currentProjectId: item.project_id ?? null })}
                     timeFormat={timeFormat}
                     hasPermission={hasPermission}
                     canModify={canModify}
@@ -1427,6 +1455,25 @@ export function QueuePage() {
                     <Button
                       variant="ghost"
                       size="sm"
+                      onClick={() => {
+                        const linked = new Set(
+                          pendingItems.filter((i) => selectedItems.includes(i.id)).map((i) => i.project_id ?? null),
+                        );
+                        setProjectLinkTarget({
+                          ids: selectedItems,
+                          currentProjectId: linked.size === 1 ? [...linked][0] : null,
+                        });
+                      }}
+                      className="flex items-center gap-1.5 sm:gap-2 text-xs sm:text-sm text-bambu-green hover:text-bambu-green-light"
+                      disabled={!hasAnyPermission('queue:update_own', 'queue:update_all')}
+                      title={!hasAnyPermission('queue:update_own', 'queue:update_all') ? t('queue.permissions.noEditItems') : t('queue.projectLink.action')}
+                    >
+                      <FolderKanban className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                      <span className="hidden sm:inline">{t('queue.projectLink.bulkAction')}</span>
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
                       onClick={() => bulkCancelMutation.mutate(selectedItems)}
                       className="flex items-center gap-1.5 sm:gap-2 text-xs sm:text-sm text-red-400 hover:text-red-300"
                       disabled={bulkCancelMutation.isPending || !hasAnyPermission('queue:delete_own', 'queue:delete_all')}
@@ -1460,6 +1507,7 @@ export function QueuePage() {
                         onStop={() => {}}
                         onRequeue={() => {}}
                         onStart={() => startMutation.mutate({ id: item.id })}
+                        onLinkProject={() => setProjectLinkTarget({ ids: [item.id], currentProjectId: item.project_id ?? null })}
                         timeFormat={timeFormat}
                         isSelected={selectedItems.includes(item.id)}
                         onToggleSelect={() => handleToggleSelect(item.id)}
@@ -1519,6 +1567,7 @@ export function QueuePage() {
                       item={item}
                       onRemove={() => setConfirmAction({ type: 'remove', item })}
                       onRequeue={() => setRequeueItem(item)}
+                      onLinkProject={() => setProjectLinkTarget({ ids: [item.id], currentProjectId: item.project_id ?? null })}
                       timeFormat={timeFormat}
                       hasPermission={hasPermission}
                       canModify={canModify}
@@ -1641,6 +1690,18 @@ export function QueuePage() {
             setShowClearHistoryConfirm(false);
           }}
           onCancel={() => setShowClearHistoryConfirm(false)}
+        />
+      )}
+
+      {/* Project link modal */}
+      {projectLinkTarget && (
+        <QueueProjectModal
+          itemIds={projectLinkTarget.ids}
+          currentProjectId={projectLinkTarget.currentProjectId}
+          onClose={() => {
+            setProjectLinkTarget(null);
+            setSelectedItems([]);
+          }}
         />
       )}
 

@@ -46,6 +46,7 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
   const [localModel, setLocalModel] = useState(printer.model || '');
   const [localAutoDispatch, setLocalAutoDispatch] = useState(printer.auto_dispatch ?? true);
   const [localQueueForceColorMatch, setLocalQueueForceColorMatch] = useState(printer.queue_force_color_match ?? false);
+  const [localDefaultProjectId, setLocalDefaultProjectId] = useState<number | null>(printer.default_project_id ?? null);
   const [localTailscaleDisabled, setLocalTailscaleDisabled] = useState(printer.tailscale_disabled ?? true);
   const [showAccessCode, setShowAccessCode] = useState(false);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
@@ -104,6 +105,7 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
       setLocalModel(printer.model || '');
       setLocalAutoDispatch(printer.auto_dispatch ?? true);
       setLocalQueueForceColorMatch(printer.queue_force_color_match ?? false);
+      setLocalDefaultProjectId(printer.default_project_id ?? null);
       setLocalTailscaleDisabled(printer.tailscale_disabled ?? true);
     }
   }, [printer, pendingAction]);
@@ -112,6 +114,12 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
   const { data: printers } = useQuery({
     queryKey: ['printers'],
     queryFn: api.getPrinters,
+  });
+
+  // Projects for the default-project dropdown
+  const { data: projects } = useQuery({
+    queryKey: ['projects'],
+    queryFn: () => api.getProjects(),
   });
 
   // Fetch network interfaces
@@ -135,6 +143,7 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
       setLocalTargetPrinterId(printer.target_printer_id);
       setLocalBindIp(printer.bind_ip || '');
       setLocalTailscaleDisabled(printer.tailscale_disabled ?? true);
+      setLocalDefaultProjectId(printer.default_project_id ?? null);
       setPendingAction(null);
     },
   });
@@ -544,6 +553,35 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
                 </button>
               </div>
             </div>
+            )}
+
+            {/* Default project - every upload of this VP is linked to it */}
+            {localMode !== 'proxy' && (
+              <div className="pt-2 border-t border-bambu-dark-tertiary">
+                <div className="text-white text-sm font-medium mb-1">{t('virtualPrinter.defaultProject.title')}</div>
+                <p className="text-xs text-bambu-gray mb-2">{t('virtualPrinter.defaultProject.description')}</p>
+                <div className="relative">
+                  <select
+                    value={localDefaultProjectId ?? ''}
+                    onChange={(e) => {
+                      const value = e.target.value ? Number(e.target.value) : null;
+                      setLocalDefaultProjectId(value);
+                      setPendingAction('defaultProject');
+                      updateMutation.mutate({ default_project_id: value });
+                    }}
+                    disabled={pendingAction === 'defaultProject'}
+                    className="w-full bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-md px-3 py-1.5 text-white text-sm appearance-none cursor-pointer disabled:opacity-50 pr-10"
+                  >
+                    <option value="">{t('virtualPrinter.defaultProject.none')}</option>
+                    {[...(projects ?? [])]
+                      .sort((a, b) => a.name.localeCompare(b.name))
+                      .map((project) => (
+                        <option key={project.id} value={project.id}>{project.name}</option>
+                      ))}
+                  </select>
+                  <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
+                </div>
+              </div>
             )}
 
             {/* Printer Model - for non-proxy modes */}

@@ -1109,6 +1109,23 @@ export default {
       requeue: '再キュー',
     },
     // Bulk edit
+    projectLink: {
+      action: 'プロジェクトにリンク',
+      bulkAction: 'プロジェクト',
+      title: 'プロジェクトにリンク',
+      description: '選択したキュー項目: {{count}}',
+      addToPlan: 'ジョブプランにも追加',
+      addToPlanHint: 'キューにのみ存在するファイル（仮想プリンターからのアップロードなど）は、先にファイルマネージャーへコピーされます。',
+      remove: 'プロジェクトから外す',
+      removeHint: 'プロジェクトとのリンクを解除',
+      search: 'プロジェクトを検索…',
+      noProjects: 'プロジェクトはまだありません',
+      linked: '{{count}} 件を「{{name}}」にリンクしました',
+      unlinked: '{{count}} 件のプロジェクトリンクを解除しました',
+      planResult: 'ジョブプラン: {{created}} 行を作成、{{files}} 件のファイルをファイルマネージャーにコピー',
+      failed: 'プロジェクトリンクを更新できませんでした',
+      badgeTitle: 'プロジェクト: {{name}}',
+    },
     bulkEdit: {
       title: '{{count}}件のアイテムを編集',
       title_plural: '{{count}}件のアイテムを編集',
@@ -4525,6 +4542,11 @@ export default {
     autoDispatch: {
       title: '自動ディスパッチ',
       description: 'キューに追加されたときに自動的に印刷を開始します。オフの場合、手動ディスパッチを待ちます。',
+    },
+    defaultProject: {
+      title: 'デフォルトプロジェクト',
+      description: 'この仮想プリンターへのすべてのアップロードをこのプロジェクトにリンクします（アーカイブ、キュー項目、保留中のアップロード）。',
+      none: 'プロジェクトなし',
     },
     queueForceColorMatch: {
       title: '色の一致を強制',

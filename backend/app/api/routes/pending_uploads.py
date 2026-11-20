@@ -151,6 +151,7 @@ async def archive_all_pending(
                     "source_ip": pending.source_ip,
                 },
                 prefer_filename_for_name=prefer_filename,
+                project_id=pending.project_id,
             )
 
             if archive:
@@ -268,6 +269,9 @@ async def archive_pending_upload(
             archive.notes = request.notes
         if request.project_id:
             archive.project_id = request.project_id
+    if archive.project_id is None and pending.project_id and not (request and "project_id" in request.model_fields_set):
+        # Default project from the uploading virtual printer
+        archive.project_id = pending.project_id
 
     # Update pending record
     pending.status = "archived"

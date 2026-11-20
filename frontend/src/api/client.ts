@@ -2364,6 +2364,9 @@ export interface PrintQueueItem {
   // Batch grouping
   batch_id?: number | null;
   batch_name?: string | null;
+  project_id?: number | null;
+  project_name?: string | null;
+  plan_item_id?: number | null;
   // Shortest-job-first scheduling
   been_jumped?: boolean;
   // Auto-print G-code injection
@@ -2465,6 +2468,24 @@ export interface PrintQueueBulkUpdate {
   use_ams?: boolean;
   // Auto-print G-code injection
   gcode_injection?: boolean;
+  // Project link (null unlinks)
+  project_id?: number | null;
+}
+
+export interface PrintQueueProjectLink {
+  item_ids: number[];
+  project_id: number | null;
+  add_to_plan?: boolean;
+  folder_id?: number | null;
+}
+
+export interface PrintQueueProjectLinkResponse {
+  updated_count: number;
+  skipped_count: number;
+  plan_items_created: number;
+  plan_items_linked: number;
+  library_files_created: number;
+  message: string;
 }
 
 export interface PrintQueueBulkUpdateResponse {
@@ -5703,6 +5724,11 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(data),
     }),
+  linkQueueItemsToProject: (data: PrintQueueProjectLink) =>
+    request<PrintQueueProjectLinkResponse>('/queue/project-link', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
   // Batches
   getBatches: (status?: string) => {
     const params = status ? `?status=${status}` : '';
@@ -7739,6 +7765,8 @@ export interface VirtualPrinterConfig {
   target_printer_id: number | null;
   auto_dispatch: boolean;
   queue_force_color_match: boolean;
+  /** Project every upload of this VP is linked to (null = none). */
+  default_project_id?: number | null;
   tailscale_disabled: boolean;
   bind_ip: string | null;
   remote_interface_ip: string | null;
@@ -7770,6 +7798,7 @@ export const multiVirtualPrinterApi = {
     target_printer_id?: number;
     auto_dispatch?: boolean;
     queue_force_color_match?: boolean;
+    default_project_id?: number | null;
     bind_ip?: string;
     remote_interface_ip?: string;
   }) =>
@@ -7787,6 +7816,7 @@ export const multiVirtualPrinterApi = {
     target_printer_id?: number;
     auto_dispatch?: boolean;
     queue_force_color_match?: boolean;
+    default_project_id?: number | null;
     tailscale_disabled?: boolean;
     bind_ip?: string;
     remote_interface_ip?: string;
@@ -7872,7 +7902,7 @@ export const pendingUploadsApi = {
 
   get: (id: number) => request<PendingUpload>(`/pending-uploads/${id}`),
 
-  archive: (id: number, data?: { tags?: string; notes?: string; project_id?: number }) =>
+  archive: (id: number, data?: { tags?: string; notes?: string; project_id?: number | null }) =>
     request<{ id: number; print_name: string; filename: string }>(`/pending-uploads/${id}/archive`, {
       method: 'POST',
       body: JSON.stringify(data || {}),

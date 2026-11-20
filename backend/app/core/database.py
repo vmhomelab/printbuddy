@@ -1013,6 +1013,13 @@ async def run_migrations(conn):
             conn, "ALTER TABLE virtual_printers ADD COLUMN queue_force_color_match BOOLEAN DEFAULT FALSE"
         )
 
+    # Migration: default_project_id on virtual_printers. Uploads of a VP with a
+    # default project are linked to that project (archive + queue items).
+    await _safe_execute(
+        conn,
+        "ALTER TABLE virtual_printers ADD COLUMN default_project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL",
+    )
+
     # Migration: protocol + api_key on virtual_printers (#52). Existing rows are
     # Bambu-emulating VPs; "moonraker" VPs expose an OctoPrint/Moonraker-compatible
     # HTTP upload endpoint authenticated by api_key instead.
