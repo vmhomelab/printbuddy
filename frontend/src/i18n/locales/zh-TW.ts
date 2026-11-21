@@ -2199,6 +2199,8 @@ export default {
     themeToggleHint: '使用側邊欄中的太陽/月亮圖示在深色和淺色模式之間切換。',
     autoArchivePrints: '自動歸檔列印',
     autoArchiveDescription: '列印完成時自動儲存3MF檔案',
+    moonrakerArchiveGcode: '保留 Klipper 列印的 G-code',
+    moonrakerArchiveGcodeDescription: '從 Fluidd、Mainsail 或切片軟體啟動的列印，會在此大小以內複製到歸檔中，以便重新列印。0 表示關閉。',
     saveThumbnailsDescription: '從3MF檔案中提取並儲存預覽影像',
     captureFinishPhotoDescription: '列印完成時從印表機攝影機拍照',
     ffmpegNotInstalled: '未安裝ffmpeg',

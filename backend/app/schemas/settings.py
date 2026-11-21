@@ -9,6 +9,15 @@ class AppSettings(BaseModel):
     """Application settings schema."""
 
     auto_archive: bool = Field(default=True, description="Automatically archive prints when completed")
+    moonraker_archive_gcode_max_mb: int = Field(
+        default=200,
+        ge=0,
+        le=4096,
+        description=(
+            "Copy the G-code of Klipper/Moonraker prints started outside Printbuddy into the archive "
+            "so they can be reprinted, up to this size in MB (0 = off)"
+        ),
+    )
     save_thumbnails: bool = Field(default=True, description="Extract and save preview images from 3MF files")
     capture_finish_photo: bool = Field(
         default=True, description="Capture photo from printer camera when print completes"
@@ -384,6 +393,7 @@ class AppSettingsUpdate(BaseModel):
     """Schema for updating settings (all fields optional)."""
 
     auto_archive: bool | None = None
+    moonraker_archive_gcode_max_mb: int | None = Field(default=None, ge=0, le=4096)
     save_thumbnails: bool | None = None
     capture_finish_photo: bool | None = None
     default_filament_cost: float | None = None

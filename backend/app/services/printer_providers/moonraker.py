@@ -2566,6 +2566,40 @@ class MoonrakerPrinterClient:
         response.raise_for_status()
         return response.content
 
+    def download_file_to(self, remote_path: str, dest: Path, *, max_bytes: int | None = None) -> int | None:
+        """Stream a G-code file from Moonraker into ``dest``.
+
+        Returns the size written, or None when the file is not on the printer
+        or is larger than ``max_bytes`` (``dest`` is removed then). Streaming
+        keeps large G-code files out of memory.
+        """
+        normalized = self._normalize_gcodes_path(remote_path)
+        url = urljoin(self.base_url, f"server/files/gcodes/{quote(normalized)}")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        written = 0
+        try:
+            with self._http_client().stream(
+                "GET", url, headers=self._headers, timeout=max(self.timeout, 120.0)
+            ) as response:
+                if response.status_code == 404:
+                    return None
+                response.raise_for_status()
+                declared = _safe_int(response.headers.get("content-length"))
+                if max_bytes is not None and declared is not None and declared > max_bytes:
+                    return None
+                with dest.open("wb") as handle:
+                    for chunk in response.iter_bytes(1024 * 1024):
+                        written += len(chunk)
+                        if max_bytes is not None and written > max_bytes:
+                            handle.close()
+                            dest.unlink(missing_ok=True)
+                            return None
+                        handle.write(chunk)
+        except BaseException:
+            dest.unlink(missing_ok=True)
+            raise
+        return written
+
     def delete_file(self, remote_path: str, *, storage: str | None = None) -> bool:
         root = str(storage or "gcodes").strip().strip("/") or "gcodes"
         normalized = self._normalize_gcodes_path(remote_path)

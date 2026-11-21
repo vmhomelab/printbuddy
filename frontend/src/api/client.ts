@@ -1308,6 +1308,7 @@ export type CameraViewMode = 'window' | 'embedded' | 'card';
 
 export interface AppSettings {
   auto_archive: boolean;
+  moonraker_archive_gcode_max_mb?: number;
   save_thumbnails: boolean;
   capture_finish_photo: boolean;
   default_filament_cost: number;

@@ -1074,6 +1074,7 @@ export function SettingsPage() {
     // Check if there are actual changes
     const hasChanges =
       settings.auto_archive !== localSettings.auto_archive ||
+      Number(settings.moonraker_archive_gcode_max_mb ?? 200) !== Number(localSettings.moonraker_archive_gcode_max_mb ?? 200) ||
       settings.save_thumbnails !== localSettings.save_thumbnails ||
       settings.capture_finish_photo !== localSettings.capture_finish_photo ||
       settings.default_filament_cost !== localSettings.default_filament_cost ||
@@ -1165,6 +1166,7 @@ export function SettingsPage() {
       // Only send the fields we manage on this page (exclude virtual_printer_* which are managed separately)
       const settingsToSave: AppSettingsUpdate = {
         auto_archive: localSettings.auto_archive,
+        moonraker_archive_gcode_max_mb: localSettings.moonraker_archive_gcode_max_mb,
         save_thumbnails: localSettings.save_thumbnails,
         capture_finish_photo: localSettings.capture_finish_photo,
         default_filament_cost: localSettings.default_filament_cost,
@@ -2024,6 +2026,28 @@ export function SettingsPage() {
                   />
                   <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
                 </label>
+              </div>
+              {/* Klipper prints started outside Printbuddy: copy their G-code for reprints */}
+              <div>
+                <p className="text-white">{t('settings.moonrakerArchiveGcode')}</p>
+                <p className="text-sm text-bambu-gray mb-2">
+                  {t('settings.moonrakerArchiveGcodeDescription')}
+                </p>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    min="0"
+                    max="4096"
+                    step="10"
+                    value={localSettings.moonraker_archive_gcode_max_mb ?? 200}
+                    onChange={(e) => {
+                      const value = parseInt(e.target.value, 10);
+                      updateSetting('moonraker_archive_gcode_max_mb', Number.isNaN(value) ? 0 : Math.min(Math.max(value, 0), 4096));
+                    }}
+                    className="w-24 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                  />
+                  <span className="text-bambu-gray">MB</span>
+                </div>
               </div>
               <div className="flex items-center justify-between">
                 <div>

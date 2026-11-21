@@ -2199,6 +2199,8 @@ export default {
     themeToggleHint: 'Passa tra modalità scura e chiara con l\'icona sole/luna nella barra laterale.',
     autoArchivePrints: 'Archiviazione automatica stampe',
     autoArchiveDescription: 'Salva automaticamente i file 3MF al completamento delle stampe',
+    moonrakerArchiveGcode: 'Conserva il G-code delle stampe Klipper',
+    moonrakerArchiveGcodeDescription: 'Le stampe avviate da Fluidd, Mainsail o da uno slicer vengono copiate nell\'archivio fino a questa dimensione, per poterle ristampare. 0 lo disattiva.',
     saveThumbnailsDescription: 'Estrai e salva le immagini di anteprima dai file 3MF',
     captureFinishPhotoDescription: 'Scatta una foto dalla fotocamera della stampante al completamento della stampa',
     ffmpegNotInstalled: 'ffmpeg non installato',
