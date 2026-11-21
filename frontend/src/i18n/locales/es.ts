@@ -555,6 +555,8 @@ export default {
     },
     // Filaments section
     filaments: 'Filamentos',
+    amsOrderBySideOn: 'AMS ordenados por lado de boquilla, como en la pantalla de la impresora (clic para orden predeterminado)',
+    amsOrderBySideOff: 'Ordenar AMS por lado de boquilla, como en la pantalla de la impresora',
     // Camera
     openCameraOverlay: 'Abrir la cámara superpuesta',
     showCameraInCard: 'Mostrar cámara en la tarjeta de la impresora',
@@ -1110,6 +1112,23 @@ export default {
       requeue: 'Volver a encolar',
     },
     // Bulk edit
+    projectLink: {
+      action: 'Vincular a proyecto',
+      bulkAction: 'Proyecto',
+      title: 'Vincular a proyecto',
+      description: 'Elementos de la cola seleccionados: {{count}}',
+      addToPlan: 'Añadir también al plan del trabajo',
+      addToPlanHint: 'Los archivos que solo existen en la cola (p. ej. subidas de la impresora virtual) se copian primero al gestor de archivos.',
+      remove: 'Quitar del proyecto',
+      removeHint: 'Eliminar el vínculo con el proyecto',
+      search: 'Buscar proyectos…',
+      noProjects: 'Aún no hay proyectos',
+      linked: '{{count}} elemento(s) vinculado(s) a «{{name}}»',
+      unlinked: 'Vínculo de proyecto eliminado de {{count}} elemento(s)',
+      planResult: 'Plan del trabajo: {{created}} fila(s) creada(s), {{files}} archivo(s) copiado(s) al gestor de archivos',
+      failed: 'No se pudo actualizar el vínculo del proyecto',
+      badgeTitle: 'Proyecto: {{name}}',
+    },
     bulkEdit: {
       title: 'Editar {{count}} elemento',
       title_plural: 'Editar {{count}} elementos',
@@ -4532,6 +4551,11 @@ export default {
     autoDispatch: {
       title: 'Envío automático',
       description: 'Iniciar automáticamente las impresiones al añadirlas a la cola. Cuando está desactivado, las impresiones esperan al envío manual.',
+    },
+    defaultProject: {
+      title: 'Proyecto predeterminado',
+      description: 'Vincula cada subida de esta impresora virtual a este proyecto (archivo, elementos de la cola y subidas pendientes).',
+      none: 'Sin proyecto',
     },
     queueForceColorMatch: {
       title: 'Forzar la coincidencia de color',

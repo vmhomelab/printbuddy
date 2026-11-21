@@ -33,6 +33,10 @@ vi.mock('../../api/client', () => ({
     getSettings: vi.fn().mockResolvedValue({}),
     getPrinters: vi.fn().mockResolvedValue([]),
     getNetworkInterfaces: vi.fn().mockResolvedValue({ interfaces: [] }),
+    getProjects: vi.fn().mockResolvedValue([
+      { id: 7, name: 'Desk set' },
+      { id: 3, name: 'Arcade cabinet' },
+    ]),
   },
 }));
 
@@ -465,5 +469,47 @@ describe('VirtualPrinterCard - Moonraker/OctoPrint-compatible VP (#52)', () => {
     await waitFor(() => {
       expect(multiVirtualPrinterApi.regenerateApiKey).toHaveBeenCalledWith(1);
     });
+  });
+});
+
+describe('VirtualPrinterCard - default project', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(multiVirtualPrinterApi.update).mockResolvedValue(createMockPrinter());
+  });
+
+  it('saves the selected default project', async () => {
+    const user = userEvent.setup();
+    render(<VirtualPrinterCard printer={createMockPrinter({ mode: 'print_queue' })} models={models} />);
+
+    const option = await screen.findByRole('option', { name: 'Desk set' });
+    const select = option.closest('select')!;
+    await user.selectOptions(select, '7');
+
+    await waitFor(() => {
+      expect(multiVirtualPrinterApi.update).toHaveBeenCalledWith(1, { default_project_id: 7 });
+    });
+  });
+
+  it('clears the default project with "No project"', async () => {
+    const user = userEvent.setup();
+    render(
+      <VirtualPrinterCard printer={createMockPrinter({ mode: 'print_queue', default_project_id: 7 })} models={models} />,
+    );
+
+    const option = await screen.findByRole('option', { name: 'Desk set' });
+    const select = option.closest('select')!;
+    await waitFor(() => expect((select as HTMLSelectElement).value).toBe('7'));
+    await user.selectOptions(select, '');
+
+    await waitFor(() => {
+      expect(multiVirtualPrinterApi.update).toHaveBeenCalledWith(1, { default_project_id: null });
+    });
+  });
+
+  it('is hidden in proxy mode', async () => {
+    render(<VirtualPrinterCard printer={createMockPrinter({ mode: 'proxy' })} models={models} />);
+    await waitFor(() => expect(screen.getByText('Test VP')).toBeInTheDocument());
+    expect(screen.queryByText('Default project')).not.toBeInTheDocument();
   });
 });

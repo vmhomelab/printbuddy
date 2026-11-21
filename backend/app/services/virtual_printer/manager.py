@@ -346,6 +346,27 @@ class VirtualPrinterInstance:
         self._mqtt.set_gcode_state("FINISH", filename=filename, prepare_percent="100")
         logger.debug("[VP %s] Re-set gcode_state=FINISH after project_file ack (%s)", self.name, filename)
 
+    async def _default_project_id(self, db) -> int | None:
+        """Project configured on this VP for its uploads (read fresh, no restart needed)."""
+        try:
+            from sqlalchemy import select
+
+            from backend.app.models.project import Project
+            from backend.app.models.virtual_printer import VirtualPrinter
+
+            result = await db.execute(
+                select(Project.id)
+                .join(VirtualPrinter, VirtualPrinter.default_project_id == Project.id)
+                .where(VirtualPrinter.id == self.id)
+            )
+            value = result.scalar_one_or_none()
+            if hasattr(value, "__await__"):
+                value = await value
+            return value if isinstance(value, int) else None
+        except Exception as e:
+            logger.debug("[VP %s] Could not resolve default project: %s", self.name, e)
+            return None
+
     async def _archive_file(self, file_path: Path, source_ip: str) -> None:
         """Archive file immediately."""
         if not self._session_factory:
@@ -368,6 +389,7 @@ class VirtualPrinterInstance:
             async with self._session_factory() as db:
                 name_source = await get_setting(db, "virtual_printer_archive_name_source")
                 prefer_filename = name_source == "filename"
+                default_project_id = await self._default_project_id(db)
                 service = ArchiveService(db)
                 archive = await service.archive_print(
                     printer_id=None,
@@ -378,6 +400,7 @@ class VirtualPrinterInstance:
                         "source_ip": source_ip,
                     },
                     prefer_filename_for_name=prefer_filename,
+                    project_id=default_project_id,
                 )
                 if archive:
                     logger.info("[VP %s] Archived: %s - %s", self.name, archive.id, archive.print_name)
@@ -428,7 +451,9 @@ class VirtualPrinterInstance:
             from backend.app.models.pending_upload import PendingUpload
 
             async with self._session_factory() as db:
+                default_project_id = await self._default_project_id(db)
                 pending = PendingUpload(
+                    project_id=default_project_id,
                     filename=file_path.name,
                     file_path=str(file_path),
                     file_size=file_path.stat().st_size,
@@ -528,6 +553,7 @@ class VirtualPrinterInstance:
                 )
                 timelapse = _slicer_or("timelapse", _bool_setting(await get_setting(db, "default_timelapse"), False))
 
+                default_project_id = await self._default_project_id(db)
                 service = ArchiveService(db)
                 archive = await service.archive_print(
                     printer_id=None,
@@ -538,6 +564,7 @@ class VirtualPrinterInstance:
                         "source_ip": source_ip,
                     },
                     prefer_filename_for_name=prefer_filename,
+                    project_id=default_project_id,
                 )
                 if archive:
                     logger.info("[VP %s] Archived: %s - %s", self.name, archive.id, archive.print_name)
@@ -600,6 +627,7 @@ class VirtualPrinterInstance:
                             printer_id=self.target_printer_id,
                             target_model=target_model,
                             archive_id=archive.id,
+                            project_id=default_project_id,
                             plate_id=plate_id,
                             position=max_pos + 1 + offset,
                             status="pending",

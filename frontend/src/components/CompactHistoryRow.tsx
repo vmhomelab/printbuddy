@@ -8,7 +8,9 @@ import {
   Printer,
   Timer,
   Layers,
+  FolderKanban,
 } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { api } from '../api/client';
 import { type TimeFormat, formatDuration, formatRelativeTime } from '../utils/date';
 import type { PrintQueueItem, Permission } from '../api/client';
@@ -25,6 +27,7 @@ export function CompactHistoryRow({
   item,
   onRequeue,
   onRemove,
+  onLinkProject,
   timeFormat = 'system',
   hasPermission,
   canModify,
@@ -33,6 +36,7 @@ export function CompactHistoryRow({
   item: PrintQueueItem;
   onRequeue: () => void;
   onRemove: () => void;
+  onLinkProject?: () => void;
   timeFormat?: TimeFormat;
   hasPermission: (permission: Permission) => boolean;
   canModify: (resource: 'queue' | 'archives' | 'library', action: 'update' | 'delete' | 'reprint', createdById: number | null | undefined) => boolean;
@@ -71,6 +75,18 @@ export function CompactHistoryRow({
         {displayName}
       </span>
 
+      {/* Project */}
+      {item.project_id != null && item.project_name && (
+        <Link
+          to={`/projects/${item.project_id}`}
+          className="hidden sm:flex items-center gap-1 text-xs text-bambu-green hover:underline shrink-0"
+          title={t('queue.projectLink.badgeTitle', { name: item.project_name })}
+        >
+          <FolderKanban className="w-3 h-3" />
+          <span className="truncate max-w-[120px]">{item.project_name}</span>
+        </Link>
+      )}
+
       {/* Printer */}
       {item.printer_name && (
         <span className="hidden sm:flex items-center gap-1 text-xs text-bambu-gray shrink-0">
@@ -94,6 +110,18 @@ export function CompactHistoryRow({
 
       {/* Actions */}
       <div className="flex items-center gap-0.5 shrink-0">
+        {onLinkProject && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onLinkProject}
+            disabled={!canModify('queue', 'update', item.created_by_id)}
+            title={!canModify('queue', 'update', item.created_by_id) ? t('queue.permissions.noEdit') : t('queue.projectLink.action')}
+            className="p-1.5"
+          >
+            <FolderKanban className="w-3.5 h-3.5" />
+          </Button>
+        )}
         <Button
           variant="ghost"
           size="sm"

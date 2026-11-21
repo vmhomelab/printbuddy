@@ -555,6 +555,8 @@ export default {
     },
     // Filaments section
     filaments: 'Filamenti',
+    amsOrderBySideOn: "AMS disposti per lato dell'ugello, come sul display della stampante (clic per l'ordine predefinito)",
+    amsOrderBySideOff: "Disponi gli AMS per lato dell'ugello, come sul display della stampante",
     // Camera
     openCameraOverlay: 'Apri overlay camera',
     showCameraInCard: 'Mostra la fotocamera nella scheda della stampante',
@@ -1110,6 +1112,23 @@ export default {
       requeue: 'Rimetti in coda',
     },
     // Bulk edit
+    projectLink: {
+      action: 'Collega a progetto',
+      bulkAction: 'Progetto',
+      title: 'Collega a progetto',
+      description: 'Elementi della coda selezionati: {{count}}',
+      addToPlan: 'Aggiungi anche al piano del lavoro',
+      addToPlanHint: 'I file presenti solo nella coda (ad es. caricamenti della stampante virtuale) vengono prima copiati nel gestore file.',
+      remove: 'Rimuovi dal progetto',
+      removeHint: 'Elimina il collegamento al progetto',
+      search: 'Cerca progetti…',
+      noProjects: 'Ancora nessun progetto',
+      linked: '{{count}} elemento/i collegato/i a «{{name}}»',
+      unlinked: 'Collegamento al progetto rimosso da {{count}} elemento/i',
+      planResult: 'Piano del lavoro: {{created}} riga/e creata/e, {{files}} file copiato/i nel gestore file',
+      failed: 'Impossibile aggiornare il collegamento al progetto',
+      badgeTitle: 'Progetto: {{name}}',
+    },
     bulkEdit: {
       title: 'Modifica {{count}} elemento',
       title_plural: 'Modifica {{count}} elementi',
@@ -4513,6 +4532,11 @@ export default {
     autoDispatch: {
       title: 'Avvio automatico',
       description: 'Avvia automaticamente le stampe aggiunte alla coda. Se disattivato, le stampe attendono l\'avvio manuale.',
+    },
+    defaultProject: {
+      title: 'Progetto predefinito',
+      description: 'Collega ogni caricamento di questa stampante virtuale a questo progetto (archivio, elementi della coda e caricamenti in attesa).',
+      none: 'Nessun progetto',
     },
     queueForceColorMatch: {
       title: 'Forza corrispondenza colori',

@@ -30,6 +30,11 @@ class VirtualPrinter(Base):
     )  # print_queue mode: pin per-slot type+color from the 3MF onto the queue
     # item so the scheduler refuses to dispatch onto a printer with the wrong
     # filament loaded (#1188).
+    # Project every upload of this VP is linked to (archive, queue items and
+    # review-mode pending uploads). NULL = no project.
+    default_project_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("projects.id", ondelete="SET NULL"), nullable=True
+    )
     model: Mapped[str | None] = mapped_column(String(50), nullable=True)  # SSDP model code (server mode)
     access_code: Mapped[str | None] = mapped_column(String(8), nullable=True)  # 8 chars (server mode)
     target_printer_id: Mapped[int | None] = mapped_column(

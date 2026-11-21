@@ -1469,6 +1469,11 @@ class ArchiveService:
         # and produce 404 storms in the print-log view (#1348-followup).
         await _null_print_log_thumbnail_paths(self.db, archive_id)
 
+        # Fail reason statistics: the run progress rows belong to the archive.
+        from backend.app.services.failure_progress import delete_progress_for_archive
+
+        await delete_progress_for_archive(self.db, archive_id)
+
         # Delete database record FIRST — if the commit fails (e.g. database locked
         # during concurrent bulk deletes), the files stay on disk and nothing is lost.
         await self.db.delete(archive)

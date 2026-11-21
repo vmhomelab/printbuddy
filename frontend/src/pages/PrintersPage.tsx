@@ -93,6 +93,7 @@ import {
   SlidersHorizontal,
   Stethoscope,
   ExternalLink,
+  ArrowLeftRight,
 } from 'lucide-react';
 
 import { useNavigate } from 'react-router-dom';
@@ -2448,6 +2449,23 @@ function PrinterCard({
     ? status.ams_extruder_map
     : cachedAmsExtruderMap.current;
 
+  // Per-printer display preference: arrange AMS units by nozzle side (#56)
+  const amsOrderBySideStorageKey = `amsOrderByNozzleSide_${printer.id}`;
+  const [amsOrderBySide, setAmsOrderBySide] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(amsOrderBySideStorageKey) === 'true';
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(amsOrderBySideStorageKey, String(amsOrderBySide));
+    } catch {
+      // Ignore storage failures; the toggle still works for the current session.
+    }
+  }, [amsOrderBySide, amsOrderBySideStorageKey]);
+
   // Cache AMS data to prevent it disappearing on idle/offline printers
   const cachedAmsData = useRef<AMSUnit[]>([]);
   useEffect(() => {
@@ -4640,22 +4658,20 @@ function PrinterCard({
                 || amsData.some((unit) => isAms3hUnit(unit))
                 || status.vt_tray.some((vt) => (vt.id ?? 254) >= RACK_EXTERNAL_MIN && (vt.id ?? 254) < 254);
 
-              return (
-                <div className="mt-3">
-                  {/* Section Header */}
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className="text-[10px] uppercase tracking-wider text-bambu-gray font-medium">
-                      {t('printers.filaments')}
-                    </span>
-                    <div className="flex-1 h-px bg-bambu-dark-tertiary/30" />
-                  </div>
+              const getAmsExtruderId = (ams: AMSUnit) => {
+                const mappedExtruderId = amsExtruderMap[String(ams.id)];
+                return mappedExtruderId !== undefined ? mappedExtruderId : (ams.id >= 128 ? ams.id - 128 : ams.id);
+              };
+              // Optional (#56): mirror the printer display - left-nozzle AMS in the left column, right-nozzle AMS in the right column.
+              const canOrderAmsBySide = isDualNozzle && !isRackPrinter && regularAms.length > 1;
+              const amsSideColumns = canOrderAmsBySide && amsOrderBySide
+                ? {
+                    left: regularAms.filter((ams) => getAmsExtruderId(ams) === 1),
+                    right: regularAms.filter((ams) => getAmsExtruderId(ams) !== 1),
+                  }
+                : null;
 
-                  {/* AMS Content */}
-                  <div className="space-y-3">
-                    {/* Row 1-2: Regular AMS (4-tray) in 2-column grid */}
-                    {regularAms.length > 0 && (
-                      <div className="grid grid-cols-2 gap-3">
-                        {regularAms.map((ams) => {
+              const renderRegularAmsUnit = (ams: AMSUnit) => {
                         const isK2CfsLikeUnit = (isCrealityK2Moonraker && ams.tray.length === 4) || ams.module_type === 'cfs' || ams.module_type === 'k2oh_cfs';
                         const isSnapmakerU1Unit = ams.module_type === 'snapmaker_u1';
                         const mappedExtruderId = amsExtruderMap[String(ams.id)];
@@ -5244,9 +5260,43 @@ function PrinterCard({
                             </div>
                           </div>
                         );
-                      })}
-                    </div>
-                  )}
+              };
+
+              return (
+                <div className="mt-3">
+                  {/* Section Header */}
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="text-[10px] uppercase tracking-wider text-bambu-gray font-medium">
+                      {t('printers.filaments')}
+                    </span>
+                    <div className="flex-1 h-px bg-bambu-dark-tertiary/30" />
+                    {canOrderAmsBySide && (
+                      <button
+                        type="button"
+                        onClick={() => setAmsOrderBySide((v) => !v)}
+                        className={`p-0.5 rounded transition-colors ${amsOrderBySide ? 'text-bambu-green' : 'text-bambu-gray hover:text-white'}`}
+                        title={amsOrderBySide ? t('printers.amsOrderBySideOn') : t('printers.amsOrderBySideOff')}
+                        aria-label={amsOrderBySide ? t('printers.amsOrderBySideOn') : t('printers.amsOrderBySideOff')}
+                        aria-pressed={amsOrderBySide}
+                      >
+                        <ArrowLeftRight className="w-3 h-3" />
+                      </button>
+                    )}
+                  </div>
+
+                  {/* AMS Content */}
+                  <div className="space-y-3">
+                    {/* Row 1-2: Regular AMS (4-tray) in 2-column grid */}
+                    {regularAms.length > 0 && (amsSideColumns ? (
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="flex flex-col gap-3">{amsSideColumns.left.map(renderRegularAmsUnit)}</div>
+                        <div className="flex flex-col gap-3">{amsSideColumns.right.map(renderRegularAmsUnit)}</div>
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-2 gap-3">
+                        {regularAms.map(renderRegularAmsUnit)}
+                      </div>
+                    ))}
 
                     {/* Row 3: HT AMS + External spools (same style as regular AMS, 4 across) */}
                     {(htAms.length > 0 || status.vt_tray.length > 0) && (
